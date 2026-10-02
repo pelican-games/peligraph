@@ -6,11 +6,13 @@ target_sources(pelican_core PRIVATE
     debugtextpassinfojsonparser.cpp
     frameexecutionadapter.cpp
     frameplanner.cpp
+    oncescheduler.cpp
     framegraphruntime.cpp
     gizmopassinfojsonparser.cpp
     graphtransformregistry.cpp
     graphinputs.cpp
     graphdeformedattribute.cpp
+    graphimagesource.cpp
     graphmodelsource.cpp
     renderstrategyregistry.cpp
     rendercompilerprogram.cpp

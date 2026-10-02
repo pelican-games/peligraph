@@ -171,7 +171,7 @@ CompiledFrameGraphExecution compileExecution(
             }
             execution.nodes.push_back(FrameGraphExecutionNode{
                 node.kind, node.name, found->second, {},
-                node.view_family, node.view_select});
+                node.view_family, node.view_select, node.once});
         } else if (node.kind == FramePlanNodeKind::compute) {
             auto found = task_indices.find(node.name);
             if (found == task_indices.end()) {
@@ -197,14 +197,14 @@ CompiledFrameGraphExecution compileExecution(
             }
             execution.nodes.push_back(FrameGraphExecutionNode{
                 node.kind, node.name, found->second, {},
-                node.view_family, node.view_select});
+                node.view_family, node.view_select, node.once});
         } else if (node.kind == FramePlanNodeKind::acceleration_structure ||
                    node.kind == FramePlanNodeKind::anchor ||
                    node.kind == FramePlanNodeKind::snapshot_copy ||
                    node.kind == FramePlanNodeKind::output_transform) {
             execution.nodes.push_back(FrameGraphExecutionNode{
                 node.kind, node.name, 0, {},
-                node.view_family, node.view_select});
+                node.view_family, node.view_select, node.once});
         } else {
             throw std::runtime_error(
                 "Unsupported frame plan node kind: " + node.name);
@@ -552,6 +552,7 @@ FrameGraphRuntimeContainer::prepareGeneration(
         execution.deformed_attributes = std::move(program.deformed_attributes);
         execution.pose_attributes = std::move(program.pose_attributes);
         execution.attribute_source_files = std::move(program.attribute_source_files);
+        execution.image_initial_assets = std::move(program.image_initial_assets);
         candidate->programs.insert_or_assign(
             rendering_pass_id,
             CompiledRenderProgram{

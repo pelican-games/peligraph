@@ -56,6 +56,12 @@ ImagePixelFormat imageFormat(Ktx2Format format) {
     case Ktx2Format::Bc5Unorm: return ImagePixelFormat::Bc5Unorm;
     case Ktx2Format::Bc7Unorm: return ImagePixelFormat::Bc7Unorm;
     case Ktx2Format::Bc7Srgb: return ImagePixelFormat::Bc7Srgb;
+    case Ktx2Format::R16Sfloat: return ImagePixelFormat::R16Sfloat;
+    case Ktx2Format::R16G16Sfloat: return ImagePixelFormat::R16G16Sfloat;
+    case Ktx2Format::R16G16B16A16Sfloat: return ImagePixelFormat::Rgba16Sfloat;
+    case Ktx2Format::R32Sfloat: return ImagePixelFormat::R32Sfloat;
+    case Ktx2Format::R32G32Sfloat: return ImagePixelFormat::R32G32Sfloat;
+    case Ktx2Format::R32G32B32A32Sfloat: return ImagePixelFormat::Rgba32Sfloat;
     }
     throw std::runtime_error("Unknown KTX2 pixel format");
 }
@@ -83,6 +89,7 @@ LoadedImage loadedKtx2(Ktx2Image parsed) {
     loaded.array_layers = parsed.array_layers;
     loaded.dimension = imageDimension(parsed.dimension);
     loaded.format = imageFormat(parsed.format);
+    loaded.color_space_declared = true;
     loaded.pixels = std::move(parsed.payload);
     loaded.levels.reserve(parsed.levels.size());
     for (const auto &level : parsed.levels)
@@ -93,14 +100,20 @@ LoadedImage loadedKtx2(Ktx2Image parsed) {
 }
 
 LoadedImage loadKtx2File(const std::filesystem::path &path) {
-    std::ifstream file{path, std::ios::binary | std::ios::ate};
-    if (!file) throw std::runtime_error("Failed to open KTX2 texture '" + path.string() + "'");
-    const auto end = file.tellg();
-    if (end < 0) throw std::runtime_error("Failed to size KTX2 texture '" + path.string() + "'");
-    std::vector<std::byte> bytes(static_cast<size_t>(end));
-    file.seekg(0);
-    if (!bytes.empty() && !file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
-        throw std::runtime_error("Failed to read KTX2 texture '" + path.string() + "'");
+    std::vector<std::byte> bytes;
+    {
+        // AB-2: closed before parsing, so a bake replacing the file waits on
+        // the read alone.
+        std::ifstream file{path, std::ios::binary | std::ios::ate};
+        if (!file) throw std::runtime_error("Failed to open KTX2 texture '" + path.string() + "'");
+        const auto end = file.tellg();
+        if (end < 0) throw std::runtime_error("Failed to size KTX2 texture '" + path.string() + "'");
+        bytes.resize(static_cast<size_t>(end));
+        file.seekg(0);
+        if (!bytes.empty() &&
+            !file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
+            throw std::runtime_error("Failed to read KTX2 texture '" + path.string() + "'");
+    }
     return loadedKtx2(parseKtx2(bytes, path.string()));
 }
 
@@ -402,6 +415,23 @@ std::string_view loadedImageDimensionName(
     return "unknown";
 }
 
+std::string_view imagePixelFormatName(ImagePixelFormat format) {
+    switch (format) {
+    case ImagePixelFormat::Rgba8Unorm: return "R8G8B8A8_UNORM";
+    case ImagePixelFormat::Rgba8Srgb: return "R8G8B8A8_SRGB";
+    case ImagePixelFormat::Rgba16Sfloat: return "R16G16B16A16_SFLOAT";
+    case ImagePixelFormat::Rgba32Sfloat: return "R32G32B32A32_SFLOAT";
+    case ImagePixelFormat::Bc5Unorm: return "BC5_UNORM_BLOCK";
+    case ImagePixelFormat::Bc7Unorm: return "BC7_UNORM_BLOCK";
+    case ImagePixelFormat::Bc7Srgb: return "BC7_SRGB_BLOCK";
+    case ImagePixelFormat::R16Sfloat: return "R16_SFLOAT";
+    case ImagePixelFormat::R16G16Sfloat: return "R16G16_SFLOAT";
+    case ImagePixelFormat::R32Sfloat: return "R32_SFLOAT";
+    case ImagePixelFormat::R32G32Sfloat: return "R32G32_SFLOAT";
+    }
+    return "UNDEFINED";
+}
+
 size_t LoadedImage::bytesPerPixel() const {
     switch (format) {
     case ImagePixelFormat::Rgba8Unorm:
@@ -411,6 +441,13 @@ size_t LoadedImage::bytesPerPixel() const {
         return 8;
     case ImagePixelFormat::Rgba32Sfloat:
         return 16;
+    case ImagePixelFormat::R16Sfloat:
+        return 2;
+    case ImagePixelFormat::R16G16Sfloat:
+    case ImagePixelFormat::R32Sfloat:
+        return 4;
+    case ImagePixelFormat::R32G32Sfloat:
+        return 8;
     case ImagePixelFormat::Bc5Unorm:
     case ImagePixelFormat::Bc7Unorm:
     case ImagePixelFormat::Bc7Srgb:

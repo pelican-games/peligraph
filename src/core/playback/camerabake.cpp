@@ -101,10 +101,12 @@ void CameraBakeRecorder::recordFrame() {
         camera_name = sanitizeObjectName(camera.activeCameraName());
     }
     const auto position = camera.getPos();
-    const auto direction = normalizeOr(camera.getDir(), glm::vec3{0.0f, 0.0f, 1.0f});
-    const auto right = normalizeOr(glm::cross(camera.getUp(), direction), glm::vec3{1.0f, 0.0f, 0.0f});
-    const auto up = normalizeOr(glm::cross(direction, right), glm::vec3{0.0f, 1.0f, 0.0f});
-    const auto rotation = glm::normalize(glm::quat_cast(glm::mat3{right, up, direction}));
+    // CC-1a: the transform rotation of the camera: R * (0, 0, -1) is the
+    // view direction and R * (0, 1, 0) its up (clipspace.hpp cameraBasis).
+    const auto direction = normalizeOr(camera.getDir(), glm::vec3{0.0f, 0.0f, -1.0f});
+    const auto right = normalizeOr(glm::cross(direction, camera.getUp()), glm::vec3{1.0f, 0.0f, 0.0f});
+    const auto up = normalizeOr(glm::cross(right, direction), glm::vec3{0.0f, 1.0f, 0.0f});
+    const auto rotation = cameraRotation(direction, up);
     samples.push_back(CameraBakeSample{
         .time = static_cast<double>(samples.size()) / fps,
         .pos = {position.x, position.y, position.z},

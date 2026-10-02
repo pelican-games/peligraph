@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_build_ocean",
-  "description": "GB-3 target A (a Tessendorf FFT ocean), from File > New Project > Blank with Studio's GUI only; the shaders are written into the project's shaders/ as a person does in an editor of their own (file steps). Every stage is a fullscreen pass into a Fixed 256 x 256 R32G32B32A32_SFLOAT image (Add fullscreen pass, the image's Format picked and Fixed pressed): h0 (Phillips, a hash for the noise), the spectrum at the scene's time (pelicanFrame.time_delta.x, read in the shader: the graph has no way to hand a pass a value), then the inverse FFT as a graph.loop of 16 copies (Count written with its ƒ as 2 * log2(256): RS-15's log2), the carry drawn from the body's output back onto its boundary input. A compute task could not be used: the palette places one with no ports, a shader that declares a descriptor is refused at placement, and ports written later are refused for the unconnected input/output they add. The stage is the copy's element (LC-1s; GB-3 had a branch per stage, each a copy of the body whose pass drew with ocean_fft_<k>): the one body's pass picks ocean_fft from the Fragment list, which reads it with pelican_loop_element() (engine LC-1), and the body pass's band says reads element, its Pass fields that the shader reads the loop element. A displacement pass applies (-1)^(x+y); a render.raster from the palette draws the sea with project vertex and fragment shaders (fragment first: a vertex shader declaring input 0 beside engine://passthrough is refused), its draw counted in the Pass fields (UX-7 decision 4: Grid 257 x 257 pressed, 6 x 256 x 256 vertices with no index buffer, and 2 instances typed into the spin: instance 1 is the sky on the far plane), a new D32_SFLOAT depth image picked in its Depth field and less_equal in the Raster form's depth compare (UX-7 decision 3: the waves hide each other by depth, the sky is drawn where none is), the displacement dropped on its input 0 (read in the vertex stage) and its colour on present's + input. The raster pass is added first: added after the loop it reached the document but the canvas never drew it, because a pick that landed on a pill left that pill's editor open and the canvas waited for it to close (fixed by UX-7 decision 7). Pixels: the sea is not the gradient and not one colour; in edit two readings 30 frames apart agree; Play moves the waves (and one frame differs from a later one); Pause stops them; Stop returns to edit; the run is played again at the end, so Studio's quit comes during Play and has to stop it first (UX-7 decision 9). Typed: the project folder and name, render.raster in the palette's filter, 2 * log2(256) in Count's expression, and 2 in the raster pass's Instances.",
+  "description": "GB-3 target A (a Tessendorf FFT ocean), from File > New Project > Blank with Studio's GUI only; the shaders are written into the project's shaders/ as a person does in an editor of their own (file steps). PS-1s: h0 runs once (its Schedule picked Once, which makes the image it writes Persistent in the same edit; the frame plan says it ran in this generation and not again 30 frames later, and Recompute runs it again). Every stage is a fullscreen pass into a Fixed 256 x 256 R32G32B32A32_SFLOAT image (Add fullscreen pass, the image's Format picked and Fixed pressed): h0 (Phillips, a hash for the noise), the spectrum at the scene's time (pelicanFrame.time_delta.x, read in the shader: the graph has no way to hand a pass a value), then the inverse FFT as a graph.loop of 16 copies (Count written with its ƒ as 2 * log2(256): RS-15's log2), the carry drawn from the body's output back onto its boundary input. A compute task could not be used: the palette places one with no ports, a shader that declares a descriptor is refused at placement, and ports written later are refused for the unconnected input/output they add. The stage is the copy's element (LC-1s; GB-3 had a branch per stage, each a copy of the body whose pass drew with ocean_fft_<k>): the one body's pass picks ocean_fft from the Fragment list, which reads it with pelican_loop_element() (engine LC-1), and the body pass's band says reads element, its Pass fields that the shader reads the loop element. A displacement pass applies (-1)^(x+y); a render.raster from the palette draws the sea with project vertex and fragment shaders (fragment first: a vertex shader declaring input 0 beside engine://passthrough is refused), its draw counted in the Pass fields (UX-7 decision 4: Grid 257 x 257 pressed, 6 x 256 x 256 vertices with no index buffer, and 2 instances typed into the spin: instance 1 is the sky on the far plane), a new D32_SFLOAT depth image picked in its Depth field and less_equal in the Raster form's depth compare (UX-7 decision 3: the waves hide each other by depth, the sky is drawn where none is), the displacement dropped on its input 0 (read in the vertex stage) and its colour on present's + input. The raster pass is added first: added after the loop it reached the document but the canvas never drew it, because a pick that landed on a pill left that pill's editor open and the canvas waited for it to close (fixed by UX-7 decision 7). Pixels: the sea is not the gradient and not one colour; in edit two readings 30 frames apart agree; Play moves the waves (and one frame differs from a later one); Pause stops them; Stop returns to edit; the run is played again at the end, so Studio's quit comes during Play and has to stop it first (UX-7 decision 9). Typed: the project folder and name, render.raster in the palette's filter, 2 * log2(256) in Count's expression, and 2 in the raster pass's Instances.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -75,7 +75,7 @@
       "label": "write shaders/ocean_h0.frag (as an editor of one's own would)",
       "file": "write",
       "path": "{artifacts}/gb_ocean/shaders/ocean_h0.frag",
-      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\n// GB-3 A: the initial spectrum h0(k) of a Tessendorf ocean (Phillips), drawn\n// into an N x N image (this pass's own, Fixed 256 x 256, R32G32B32A32_SFLOAT).\n// Drawn every frame: the engine has no pass that runs once, and h0 is a pure\n// function of the pixel. rgba = (h0(k), conj(h0(-k))).\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n\nconst float PI = 3.14159265358979;\nconst float G = 9.81;\nconst float PATCH = 64.0;          // metres the patch covers\nconst float AMPLITUDE = 0.00003;   // Phillips A (about 0.4 m rms)\nconst vec2 WIND = vec2(1.0, 0.35);\nconst float WIND_SPEED = 9.0;      // m/s\n\nuint hash(uint x) {\n    x ^= x >> 16; x *= 0x7feb352dU;\n    x ^= x >> 15; x *= 0x846ca68bU;\n    x ^= x >> 16;\n    return x;\n}\nfloat uniform01(uint seed) { return (float(hash(seed) & 0x00ffffffU) + 0.5) / 16777216.0; }\nvec2 gaussian(uvec2 p) {\n    uint seed = hash(p.x * 1973U + p.y * 9277U + 26699U);\n    float u1 = uniform01(seed);\n    float u2 = uniform01(seed ^ 0x9e3779b9U);\n    float r = sqrt(-2.0 * log(u1));\n    return r * vec2(cos(2.0 * PI * u2), sin(2.0 * PI * u2));\n}\nfloat phillips(vec2 k) {\n    float kl = length(k);\n    if (kl < 1e-4) return 0.0;\n    float L = WIND_SPEED * WIND_SPEED / G;\n    float kw = dot(k / kl, normalize(WIND));\n    float damp = 0.001 * L;\n    return AMPLITUDE * exp(-1.0 / (kl * L * kl * L)) / (kl * kl * kl * kl) * kw * kw *\n           exp(-kl * kl * damp * damp);\n}\nvec2 h0At(ivec2 p, int n) {\n    vec2 k = 2.0 * PI * (vec2(p) - vec2(n / 2)) / PATCH;\n    return gaussian(uvec2(p)) * sqrt(phillips(k) * 0.5);\n}\n\nvoid main() {\n    const int n = 256;\n    ivec2 p = ivec2(gl_FragCoord.xy);\n    vec2 a = h0At(p, n);\n    vec2 b = h0At((ivec2(n) - p) % ivec2(n), n);\n    outColor = vec4(a, b.x, -b.y);\n}\n"
+      "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\n// GB-3 A: the initial spectrum h0(k) of a Tessendorf ocean (Phillips), drawn\n// into an N x N image (this pass's own, Fixed 256 x 256, R32G32B32A32_SFLOAT).\n// A pure function of the pixel: the pass runs once (PS-1s, Schedule = Once)\n// into a Persistent image. rgba = (h0(k), conj(h0(-k))).\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n\nconst float PI = 3.14159265358979;\nconst float G = 9.81;\nconst float PATCH = 64.0;          // metres the patch covers\nconst float AMPLITUDE = 0.00003;   // Phillips A (about 0.4 m rms)\nconst vec2 WIND = vec2(1.0, 0.35);\nconst float WIND_SPEED = 9.0;      // m/s\n\nuint hash(uint x) {\n    x ^= x >> 16; x *= 0x7feb352dU;\n    x ^= x >> 15; x *= 0x846ca68bU;\n    x ^= x >> 16;\n    return x;\n}\nfloat uniform01(uint seed) { return (float(hash(seed) & 0x00ffffffU) + 0.5) / 16777216.0; }\nvec2 gaussian(uvec2 p) {\n    uint seed = hash(p.x * 1973U + p.y * 9277U + 26699U);\n    float u1 = uniform01(seed);\n    float u2 = uniform01(seed ^ 0x9e3779b9U);\n    float r = sqrt(-2.0 * log(u1));\n    return r * vec2(cos(2.0 * PI * u2), sin(2.0 * PI * u2));\n}\nfloat phillips(vec2 k) {\n    float kl = length(k);\n    if (kl < 1e-4) return 0.0;\n    float L = WIND_SPEED * WIND_SPEED / G;\n    float kw = dot(k / kl, normalize(WIND));\n    float damp = 0.001 * L;\n    return AMPLITUDE * exp(-1.0 / (kl * L * kl * L)) / (kl * kl * kl * kl) * kw * kw *\n           exp(-kl * kl * damp * damp);\n}\nvec2 h0At(ivec2 p, int n) {\n    vec2 k = 2.0 * PI * (vec2(p) - vec2(n / 2)) / PATCH;\n    return gaussian(uvec2(p)) * sqrt(phillips(k) * 0.5);\n}\n\nvoid main() {\n    const int n = 256;\n    ivec2 p = ivec2(gl_FragCoord.xy);\n    vec2 a = h0At(p, n);\n    vec2 b = h0At((ivec2(n) - p) % ivec2(n), n);\n    outColor = vec4(a, b.x, -b.y);\n}\n"
     },
     {
       "label": "write shaders/ocean_spectrum.frag (as an editor of one's own would)",
@@ -579,6 +579,69 @@
       "name": "pelican.graphCanvasNotice",
       "timeout_ms": 120000,
       "text": "Graph change saved."
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick render_fullscreen",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen"
+    },
+    {
+      "label": "PS-1s decision 1: its Schedule field",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.schedule",
+      "timeout_ms": 30000,
+      "visible": true,
+      "enabled": true
+    },
+    {
+      "label": "Schedule: Once (h0 is a function of the pixel alone)",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPass.schedule",
+      "text": "Once"
+    },
+    {
+      "label": "PS-1s decision 2: saved, and the image it writes made Persistent in the same edit",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "contains": "Saved; render_fullscreen__color made Persistent"
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "PS-1s decision 3: the band says it runs once and has run",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_layer_band#render_fullscreen",
+      "contains": "once \u00b7 ran gen",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "PS-1s decision 2: and the image says it is kept",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_layer_band#render_fullscreen__color",
+      "contains": "persistent",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick render_fullscreen__color",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen__color"
+    },
+    {
+      "label": "its Lifetime field says Persistent",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.lifetime",
+      "timeout_ms": 30000,
+      "visible": true,
+      "text": "Persistent"
     },
     {
       "label": "fit",
@@ -1506,6 +1569,140 @@
       "path": "pixels[0]",
       "op": "eq",
       "value_of": "sea_0"
+    },
+    {
+      "label": "PS-1s decision 6: the frame plan's node 0 is render_fullscreen",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[0].name",
+      "value": "render_fullscreen",
+      "retry_ms": 30000
+    },
+    {
+      "label": "and it runs once",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[0].schedule",
+      "value": "once",
+      "retry_ms": 30000
+    },
+    {
+      "label": "it has run in this generation",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[0].last_run_generation",
+      "op": "ne",
+      "value": null,
+      "retry_ms": 30000
+    },
+    {
+      "label": "the frame it last ran in",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[0].last_run_frame",
+      "remember": "h0_ran"
+    },
+    {
+      "label": "the frame now",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.frame",
+      "remember": "h0_f0"
+    },
+    {
+      "label": "30 frames later",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.frame",
+      "op": "ge",
+      "value_of": "h0_f0",
+      "plus": 30,
+      "retry_ms": 30000
+    },
+    {
+      "label": "h0 has not run again: it does not run every frame",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[0].last_run_frame",
+      "value_of": "h0_ran"
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick render_fullscreen",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen"
+    },
+    {
+      "label": "PS-1s decision 3: its fields say when it ran",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.onceRun",
+      "timeout_ms": 30000,
+      "visible": true,
+      "contains": "Ran in generation"
+    },
+    {
+      "label": "PS-1s decision 4: Recompute",
+      "cmd": "click",
+      "name": "pelican.graphCanvasPass.recompute"
+    },
+    {
+      "label": "rerun_once was asked",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 30000,
+      "contains": "Recompute: 1 once pass runs again"
+    },
+    {
+      "label": "h0 ran again after the press",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[0].last_run_frame",
+      "op": "gt",
+      "value_of": "h0_ran",
+      "retry_ms": 30000
+    },
+    {
+      "label": "the band still says it runs once",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_layer_band#render_fullscreen",
+      "contains": "once \u00b7 ran gen",
+      "timeout_ms": 30000
     },
     {
       "label": "press Play",

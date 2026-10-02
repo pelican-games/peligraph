@@ -7,6 +7,7 @@
 #include "../build_features.hpp"
 #include "../ecs/predefined/transform.hpp"
 #include "../phys/physworld.hpp"
+#include "../renderer/clipspace.hpp"
 #include "../userpublic/components/collider.hpp"
 
 #include <algorithm>
@@ -685,9 +686,11 @@ OrderedJson cameraResult(const OrderedJson &object,
     const auto position = queryVec3(world.at("pos"), "prepared_camera/world/pos");
     const auto rotation = queryQuat(world.at("rotation"),
                                     "prepared_camera/world/rotation");
-    const auto orientation = glm::normalize(toGlm(rotation));
-    const auto direction = orientation * glm::vec3{0.0f, 0.0f, 1.0f};
-    const auto up = orientation * glm::vec3{0.0f, 1.0f, 0.0f};
+    // CC-1a: the camera's basis and projection, as the engine draws it
+    // (clipspace.hpp).
+    const auto basis = cameraBasis(toGlm(rotation));
+    const auto direction = basis.forward;
+    const auto up = basis.up;
     const auto width = query.value("width", 1U);
     const auto height = query.value("height", 1U);
     if (width == 0 || height == 0) {
@@ -695,17 +698,17 @@ OrderedJson cameraResult(const OrderedJson &object,
     }
     glm::mat4 projection;
     if (camera->projection_kind == CameraProjectionKind::Orthographic) {
-        projection = glm::orthoRH_ZO(-*camera->xmag, *camera->xmag,
-                                     -*camera->ymag, *camera->ymag,
-                                     *camera->znear, *camera->zfar);
+        projection = vulkanOrtho(-*camera->xmag, *camera->xmag,
+                                 -*camera->ymag, *camera->ymag,
+                                 *camera->znear, *camera->zfar);
     } else {
         const auto aspect = camera->aspect.value_or(
             static_cast<float>(width) / static_cast<float>(height));
-        projection = glm::perspectiveRH_ZO(*camera->yfov, aspect,
-                                           *camera->znear, *camera->zfar);
+        projection = vulkanPerspective(*camera->yfov, aspect,
+                                       *camera->znear, *camera->zfar);
     }
     const auto glm_position = toGlm(position);
-    const auto view = glm::lookAt(glm_position, glm_position + direction, up);
+    const auto view = viewFromBasis(glm_position, direction, up);
     return OrderedJson{{"position", vecJson(glm_position)},
                        {"direction", vecJson(direction)},
                        {"up", vecJson(up)},

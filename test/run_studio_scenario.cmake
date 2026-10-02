@@ -59,6 +59,34 @@ if(DEFINED GAME_LOGIC AND NOT "${GAME_LOGIC}" STREQUAL "")
         "PELICAN_STUDIO_PLAYER_ARGUMENTS=--game-logic \"${game_logic_native}\"")
 endif()
 
+# SG-2: the repository's test fixtures, which a scenario may read (a picture
+# to import, a PSD's conversion) but never writes: `{fixtures}`.
+get_filename_component(fixtures_dir "${FIXTURE_DIR}" DIRECTORY)
+# IA-1s: files a person makes outside Studio before opening it -- the LTC
+# tables a script of their own writes and pelican_cli bakes -- are made by the
+# scenario's <name>.prepare.py beside it, into this run's incoming/ folder, from
+# which the scenario imports them through Studio.
+get_filename_component(scenario_dir "${SCENARIO}" DIRECTORY)
+set(prepare "${scenario_dir}/${scenario_name}.prepare.py")
+if(EXISTS "${prepare}")
+    if(NOT DEFINED CLI OR NOT EXISTS "${CLI}")
+        message(FATAL_ERROR "scenario '${scenario_name}' prepares its files with pelican_cli, "
+            "which was not built: ${CLI}")
+    endif()
+    execute_process(
+        COMMAND "${PYTHON}" -B "${prepare}" --out "${run_dir}/incoming" --cli "${CLI}"
+        RESULT_VARIABLE prepare_result
+        OUTPUT_VARIABLE prepare_stdout
+        ERROR_VARIABLE prepare_stderr
+        TIMEOUT 120
+    )
+    message(STATUS "studio scenario ${scenario_name} prepared:\n${prepare_stdout}")
+    if(NOT prepare_result EQUAL 0)
+        message(FATAL_ERROR "scenario '${scenario_name}': ${prepare} failed with "
+            "${prepare_result}\n${prepare_stderr}")
+    endif()
+endif()
+
 set(report "${run_dir}/report.json")
 execute_process(
     COMMAND ${CMAKE_COMMAND} -E env "PATH=${scenario_path_env}" ${scenario_extra_env}
@@ -68,6 +96,7 @@ execute_process(
             --scenario "${SCENARIO}"
             --project "${project_dir}"
             --var "other_project=${other_project_dir}"
+            --var "fixtures=${fixtures_dir}"
             --artifacts "${run_dir}"
             --report "${report}"
     RESULT_VARIABLE driver_result

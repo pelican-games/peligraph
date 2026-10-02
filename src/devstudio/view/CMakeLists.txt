@@ -74,6 +74,12 @@ add_library(pelican_studio_view STATIC
     graphcanvasdrawing.hpp
     graphcanvasloopfields.cpp
     graphcanvasloopfields.hpp
+    # UX-11: the tag picker (the Loop's and the material pass's Tags) and a
+    # material pass's settings in the Pass Editor's forms.
+    graphcanvastagpicker.cpp
+    graphcanvastagpicker.hpp
+    graphcanvasmaterialfields.cpp
+    graphcanvasmaterialfields.hpp
     graphcanvasrenderfields.cpp
     graphcanvasrenderfields.hpp
     # UX-8: a curve's keys, a playback's map, a scalar's numbers, a pass's buffers.
@@ -85,6 +91,12 @@ add_library(pelican_studio_view STATIC
     # GL-3a: fold groups on the Graph canvas, and their Decisions.
     graphcanvasfoldgroups.cpp
     graphcanvasfoldgroups.hpp
+    # SG-1: a canvas.stack's Layers panel.
+    graphcanvaslayerspanel.cpp
+    graphcanvaslayerspanel.hpp
+    # AB-1s: Bake analysis, Use in Graph / in a shader, and Re-bake.
+    graphcanvasaudioanalysis.cpp
+    graphcanvasaudioanalysis.hpp
     graphcanvasreadcapability.cpp
     graphcanvasreadcapability.hpp
     proceduralassetdialog.cpp
@@ -100,6 +112,15 @@ add_library(pelican_studio_view STATIC
     # RSX: the rendering section's own keys (EL-3).
     renderingsettingswidget.cpp
     renderingsettingswidget.hpp
+    # UX-10: a feature's parameters as fields made from its schema.
+    featureparameterform.cpp
+    featureparameterform.hpp
+    # UX-10: a pose.clip_sample's rig, clip, speed and loop.
+    graphcanvasposefields.cpp
+    graphcanvasposefields.hpp
+    # UX-12a: a node's parameters as fields made from the catalog's table.
+    graphcanvasparameterfields.cpp
+    graphcanvasparameterfields.hpp
     viewselectfield.cpp
     viewselectfield.hpp
     playcontrols.cpp

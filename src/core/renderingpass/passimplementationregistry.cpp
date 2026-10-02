@@ -580,6 +580,11 @@ PassImplementationRegistry::snapshot() const {
             std::move(lock), impl_.get())};
 }
 
+std::vector<RenderProviderListing>
+PassImplementationRegistry::providerListing() const {
+    return impl_->listing();
+}
+
 void PassImplementationRegistry::activateOwner(
     internal::RegistrationOwner owner) noexcept {
     impl_->activateOwner(owner);

@@ -42,5 +42,21 @@
         "color_store_op": "store"
       }
     }
+  ],
+  "required_targets": [
+    {
+      "name": "gbuffer_worldpos",
+      "type": {
+        "semantic": "pelican.render.color_signal@1",
+        "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}
+      }
+    },
+    {
+      "name": "gbuffer_normal",
+      "type": {
+        "semantic": "pelican.render.color_signal@1",
+        "arguments": {"reference": "scene", "transfer": "linear", "range": "extended"}
+      }
+    }
   ]
 }

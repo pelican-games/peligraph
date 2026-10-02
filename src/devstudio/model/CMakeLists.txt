@@ -18,9 +18,20 @@ add_library(pelican_studio_inspector_model STATIC
     graphcanvasmodel.hpp
     # UX-8: a curve's keys, a playback's fields, buffer ports, packed scalars.
     graphcanvasvalues.cpp
+    # AB-1s: baked analysis tables -- read from the project, placed for a
+    # shader, read again after a Re-bake.
+    audioanalysistables.cpp
+    audioanalysistables.hpp
+    graphcanvasaudioanalysis.cpp
     # GL-3a: fold groups, read and written from the Graph tab.
     graphfoldgroups.cpp
     graphfoldgroups.hpp
+    # SG-1: pelican.canvas -- a stack's sockets and the Layers panel's edits.
+    graphcanvaslayerstack.cpp
+    graphcanvaslayerstack.hpp
+    # SG-2: pictures and PSD conversions copied into the project.
+    graphcanvasimport.cpp
+    graphcanvasimport.hpp
     renderedithistory.cpp
     renderedithistory.hpp
     # RSX: the one reading of a render config ticket's last answer.
@@ -37,6 +48,9 @@ add_library(pelican_studio_inspector_model STATIC
     # UX-6b: the frame's GPU time and the plan's size, per generation.
     planperfmodel.cpp
     planperfmodel.hpp
+    # UX-12b: the refusals FR-1 names with what is missing, and their fixes.
+    featurerefusalfix.cpp
+    featurerefusalfix.hpp
 )
 
 set_target_properties(pelican_studio_inspector_model PROPERTIES CXX_STANDARD 20)

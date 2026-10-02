@@ -3,7 +3,7 @@
     {"name":"transform","pos":[0.0,0.0,0.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0]}
   ]},
   {"name":"Camera","components":[
-    {"name":"transform","pos":[0.0,0.0,5.0],"rotation":[0.0,1.0,0.0,0.0],"scale":[1.0,1.0,1.0]},
+    {"name":"transform","pos":[0.0,0.0,5.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0]},
     {"name":"camera"}
   ]},
   {"name":"GlowBox","components":[

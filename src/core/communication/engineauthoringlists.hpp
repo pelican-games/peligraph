@@ -88,4 +88,17 @@ void stopShaderInterfaceReflection();
 void resetShaderInterfaceReflectionForTesting();
 void holdShaderInterfaceReflectionForTesting(bool held);
 
+// EL-6: get_registered_providers {}: the provider names each render provider
+// registry would resolve now, keyed by the document field that names one:
+//   {draw_sort: [<entry>...],            draw_sort.{opaque,transparent}.provider
+//    pass_implementation: [<entry>...],  a pass's implementation.provider
+//    region_replacements: [<entry>...],  region_replacements[].provider
+//    graph_transforms: [<entry>...],     graph_transforms[].provider
+//    render_strategy: [<entry>...]}      render_strategy.provider
+//   <entry> = {name, source: "engine" | "game", provider_version}
+// sorted by name. A game provider that shadows the engine's under one name is
+// the one listed. Read from the registries at each call: a game logic reload
+// that registers or releases providers shows in the next answer.
+nlohmann::ordered_json registeredProvidersJson();
+
 } // namespace Pelican

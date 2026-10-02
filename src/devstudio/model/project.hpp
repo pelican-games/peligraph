@@ -34,7 +34,7 @@ class ProjectMigrationRequiredError : public std::runtime_error {
     }
 };
 
-// OL-1: an object is the authoring id the engine gave it (`scene_tree`'s
+// OL-1: an object is the authoring id the engine gave it (`scene_outline`'s
 // `authoring_object_id`), which a duplicate, a delete, a reparent or an undo
 // does not move. Its declaration index is where it stands in the scene's
 // order right now, which any of those can move. A key read from the Outliner
@@ -71,7 +71,8 @@ struct OfflinePrefabExpansion {
     std::vector<std::string> resolved_component_json;
 };
 
-// Project metadata plus the most recent typed scene_tree RPC projection.
+// Project metadata plus the most recent scene_outline (or scene_tree) RPC
+// projection.
 // Object identity is (scene id, authoring object id); the declaration index is
 // the display order, and authored names are presentation and parent-reference
 // data only.
@@ -83,6 +84,8 @@ class ProjectOutlinerModel {
     std::vector<OfflinePrefabExpansion> offline_prefab_expansions_;
     std::optional<std::uint64_t> scene_revision_;
 
+    bool updateScene(const nlohmann::json &reply, bool parents_by_id);
+
   public:
     // Before any parser reads a document, the project's documents are read
     // for their (schema, version) envelopes, as the player does: one that a
@@ -92,6 +95,12 @@ class ProjectOutlinerModel {
     static ProjectOutlinerModel open(
         const std::filesystem::path &project_path,
         const Pelican::DocumentMigrationRegistry &migrations);
+    // UX-13c: the engine's scene_outline reply. Parents are authoring ids
+    // (parent_authoring_object_id); a not_modified reply for the revision
+    // already held changes nothing and returns false.
+    bool updateSceneOutline(const nlohmann::json &scene_outline);
+    // The same list from scene_tree, for an engine without scene_outline:
+    // parents are named.
     bool updateSceneTree(const nlohmann::json &scene_tree);
 
     const std::filesystem::path &projectRoot() const noexcept {

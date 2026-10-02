@@ -4,6 +4,7 @@
 #include "nodegraphics.hpp"
 #include "nodelayout.hpp"
 
+#include <QColor>
 #include <QFont>
 #include <QFontMetricsF>
 #include <QString>
@@ -27,6 +28,9 @@ namespace GraphCanvasDrawing {
 
 QString portSummary(const GraphCanvasPort &port);
 QString numberText(double value);
+// AB-1s, decision 4: a layer band that says a baked table is stale is
+// drawn orange; any other in the theme's dim text.
+QColor layerBandColor(const QString &text, const StudioTheme &theme);
 
 struct Value {
     QString text;

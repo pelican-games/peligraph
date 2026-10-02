@@ -18,6 +18,7 @@
 #include "../src/core/loader/renderconfigcandidate.hpp"
 #include "../src/project/renderconfigsection.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/core/renderingpass/previewgraph.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
@@ -55,6 +56,7 @@
 #include <mutex>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -1190,8 +1192,9 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
         CHECK(refused.at("error").at("code") == "graph.definition_referenced@1");
         CHECK(refused.at("error").at("definition") == "gain_shape");
         CHECK(Json(refused.at("error").at("referenced_by")) == Json::array({"left"}));
+        // CT-2: the document the definition was written in, in the message too.
         CHECK(refused.at("error").at("message") ==
-              R"(graph.definition_referenced@1 {"definition":"gain_shape","referenced_by":["left"]})");
+              R"(graph.definition_referenced@1 {"definition":"gain_shape","document":"project://passes/main.json","referenced_by":["left"]})");
         CHECK(readBytes(source.path) == before);
 
         // The inverse of a removal is the add with the body read beforehand.
@@ -1304,6 +1307,9 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
         expected_modules += PELICAN_WITH_AUDIO ? 1 : 0;
         CHECK(containsName(namespaces, "pelican.pose") == static_cast<bool>(PELICAN_WITH_ANIMATION));
         expected_modules += PELICAN_WITH_ANIMATION ? 1 : 0;
+        // CV-1: and pelican.canvas by the builds that carry the 2D module.
+        CHECK(containsName(namespaces, "pelican.canvas") == static_cast<bool>(PELICAN_WITH_CANVAS));
+        expected_modules += PELICAN_WITH_CANVAS ? 1 : 0;
         CHECK(namespaces.size() == expected_modules);
     }
 }
@@ -1375,6 +1381,367 @@ TEST_CASE("CT-1 a render port or parameter field the document lacks is refused b
     // The document still reads and still draws as it did.
     REQUIRE(readBytes(source.path) == saved);
     REQUIRE_NOTHROW(expandGraphDocument(Json::parse(saved)));
+}
+
+// CT-2: a graph refusal says which document the refused node was written in
+// -- the rendering root, as the project names it -- and, for a node of a
+// definition's body, which definition. The ticket's error carries both as
+// fields and in its message; the fields CT-1 gave it are unchanged.
+TEST_CASE("CT-2 a graph refusal names the document and the definition its node was written in",
+          "[render-config-editor][graph-composition][ct2]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    TemporaryConfig source{readBytes(fixture_path)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+    const auto saved = readBytes(source.path);
+    const auto refused = [&](Json op) {
+        const auto result = Json(service->editGraphDocument(
+            {{"base_source_digest", service->getGraphInstances(Json::object()).at("source_digest").at("hex")},
+             {"ops", Json::array({std::move(op)})}}));
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(readBytes(source.path) == saved);
+        return result.at("error");
+    };
+    const Json sim{{"id", "sim"}, {"op", "render.compute"},
+                   {"parameters", {{"ports", {{"data", {{"kind", "buffer"}, {"access", "read_write"}}}}},
+                                   {"shader", "shaders/sim.comp"}}},
+                   {"outputs", Json::array()}};
+
+    // A root node: the root document, and no definition.
+    auto error = refused({{"op", "add_node"}, {"node", sim}});
+    CHECK(error.at("code") == "graph.port_field_missing@1");
+    CHECK(error.at("node") == "sim");
+    CHECK(error.at("port") == "data");
+    CHECK(error.at("field") == "element");
+    CHECK(error.at("document") == "project://passes/main.json");
+    CHECK_FALSE(error.contains("definition"));
+    CHECK_THAT(error.at("message").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("\"document\":\"project://passes/main.json\""));
+
+    // A node of a definition's body: the document that wrote the definition,
+    // and the definition's name. The expansion names the instance's copy.
+    error = refused({{"op", "add_node"}, {"scope", "gain_curve"}, {"node", sim}});
+    CHECK(error.at("code") == "graph.port_field_missing@1");
+    CHECK(error.at("node") == "left/sim");
+    CHECK(error.at("field") == "element");
+    CHECK(error.at("document") == "project://passes/main.json");
+    CHECK(error.at("definition") == "gain_curve");
+    CHECK_THAT(error.at("message").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("\"definition\":\"gain_curve\""));
+
+    // RS-9's parameters code takes the same fields.
+    error = refused({{"op", "add_node"}, {"scope", "gain_curve"},
+                     {"node", {{"id", "canvas"}, {"op", "render.image"},
+                               {"parameters", {{"type", {{"semantic", "pelican.render.color_signal@1"}}}}},
+                               {"outputs", Json::array({"resource"})}}}});
+    CHECK(error.at("code") == "graph.render_node_parameters_missing@1");
+    CHECK(error.at("document") == "project://passes/main.json");
+    CHECK(error.at("definition") == "gain_curve");
+    REQUIRE(readBytes(source.path) == saved);
+}
+
+// CT-3: an edit that writes a parameter of the wrong kind, outside its enum
+// or outside its range is refused by name through the editing ticket, with
+// CT-2's document; nothing is written.
+TEST_CASE("CT-3 an edit with a parameter of the wrong kind, enum or range is refused by name",
+          "[render-config-editor][graph-composition][ct3]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    TemporaryConfig source{readBytes(fixture_path)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+    const auto saved = readBytes(source.path);
+    const auto refused = [&](Json node) {
+        const auto result = Json(service->editGraphDocument(
+            {{"base_source_digest", service->getGraphInstances(Json::object()).at("source_digest").at("hex")},
+             {"ops", Json::array({Json{{"op", "add_node"}, {"node", std::move(node)}}})}}));
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(readBytes(source.path) == saved);
+        const auto error = result.at("error");
+        CHECK(error.at("code") == "graph.render_node_parameter_invalid@1");
+        CHECK(error.at("document") == "project://passes/main.json");
+        return error;
+    };
+    const auto buffer = [](Json parameters) {
+        return Json{{"id", "data"}, {"op", "render.buffer"}, {"parameters", std::move(parameters)},
+                    {"outputs", Json::array({"resource"})}};
+    };
+
+    auto error = refused(buffer({{"element", "float"}, {"size", "big"}}));
+    CHECK(error.at("node") == "data");
+    CHECK(error.at("op") == "render.buffer");
+    CHECK(error.at("parameter") == "size");
+    CHECK(error.at("expected") == "integer");
+    CHECK(error.at("reason") == "type");
+
+    error = refused(buffer({{"element", "float"}, {"lifetime", "forever"}}));
+    CHECK(error.at("parameter") == "lifetime");
+    CHECK(error.at("expected") == "enum");
+    CHECK(error.at("reason") == "enum");
+    CHECK(error.at("allowed") == Json::array({"persistent", "transient"}));
+
+    error = refused({{"id", "points"}, {"op", "render.attribute"},
+                     {"parameters", {{"element", "vec4"}, {"domain", "vertex"}, {"count", 0}}},
+                     {"outputs", Json::array({"resource"})}});
+    CHECK(error.at("parameter") == "count");
+    CHECK(error.at("reason") == "range");
+    CHECK(error.at("min") == 1);
+    REQUIRE(readBytes(source.path) == saved);
+}
+
+// CT-4: an op that reads its owner's model (the pose ops, value.morph_weight)
+// placed at the root is refused by name, with the document, before anything
+// is saved.
+TEST_CASE("CT-4 an edit placing an owned-instance op at the root is refused by name",
+          "[render-config-editor][graph-composition][ct4]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    TemporaryConfig source{readBytes(fixture_path)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+    const auto saved = readBytes(source.path);
+    const auto refused = [&](Json node) {
+        const auto result = Json(service->editGraphDocument(
+            {{"base_source_digest", service->getGraphInstances(Json::object()).at("source_digest").at("hex")},
+             {"ops", Json::array({Json{{"op", "add_node"}, {"node", std::move(node)}}})}}));
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(readBytes(source.path) == saved);
+        const auto error = result.at("error");
+        CHECK(error.at("code") == "graph.op_requires_owned_instance@1");
+        CHECK(error.at("document") == "project://passes/main.json");
+        return error;
+    };
+    auto error = refused({{"id", "weight"}, {"op", "value.morph_weight"},
+                          {"parameters", {{"node", 0}, {"target", 0}}}, {"outputs", Json::array({"value"})}});
+    CHECK(error.at("node") == "weight");
+    CHECK(error.at("op") == "value.morph_weight");
+#if PELICAN_WITH_ANIMATION
+    error = refused({{"id", "walk"}, {"op", "pose.clip_sample"},
+                     {"parameters", {{"rig", "project://character.gltf"}, {"clip", "Turn"}}},
+                     {"inputs", {{"time", {{"node", "clock"}, {"port", "value"}}}}},
+                     {"outputs", Json::array({"pose"})}});
+    CHECK(error.at("node") == "walk");
+    CHECK(error.at("op") == "pose.clip_sample");
+#endif
+}
+
+// CT-5: a render.scalar writing a buffer of the graph that is not
+// runtime_f32, or not as large as the sinks writing it, is refused by name
+// through the editing ticket, with CT-2's document; nothing is written.
+TEST_CASE("CT-5 an edit writing a render.scalar into an incompatible buffer is refused by name",
+          "[render-config-editor][graph-composition][ct5]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    TemporaryConfig source{readBytes(fixture_path)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+    const auto saved = readBytes(source.path);
+    const auto edit = [&](Json buffer) {
+        const auto node = [](Json value) { return Json{{"op", "add_node"}, {"node", std::move(value)}}; };
+        return Json(service->editGraphDocument(
+            {{"base_source_digest", service->getGraphInstances(Json::object()).at("source_digest").at("hex")},
+             {"ops", Json::array({node({{"id", "data"}, {"op", "render.buffer"}, {"parameters", std::move(buffer)},
+                                        {"outputs", Json::array({"resource"})}}),
+                                  node({{"id", "write"}, {"op", "render.scalar"},
+                                        {"parameters", {{"target", "data"}, {"value", Json::array({1.0, 2.0})}}},
+                                        {"outputs", Json::array()}})})}}));
+    };
+    const auto refused = [&](Json buffer) {
+        const auto result = edit(std::move(buffer));
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(readBytes(source.path) == saved);
+        const auto error = result.at("error");
+        CHECK(error.at("code") == "graph.render_scalar_target_incompatible@1");
+        CHECK(error.at("node") == "write");
+        CHECK(error.at("target") == "data");
+        CHECK(error.at("document") == "project://passes/main.json");
+        CHECK_FALSE(error.contains("definition"));
+        return error;
+    };
+
+    // Not written from the host.
+    auto error = refused({{"element", "float"}, {"size", 8}});
+    CHECK(error.at("expected") == Json{{"host_source", "runtime_f32"}, {"size", 8}});
+    CHECK(error.at("actual") == Json{{"host_source", nullptr}, {"size", 8}});
+    // Larger than the vec2 written into it.
+    error = refused({{"element", "float"}, {"size", 16}, {"host_source", "runtime_f32"}});
+    CHECK(error.at("expected") == Json{{"host_source", "runtime_f32"}, {"size", 8}});
+    CHECK(error.at("actual") == Json{{"host_source", "runtime_f32"}, {"size", 16}});
+    // As the catalog's `where` and the sinks say: taken.
+    const auto taken = edit({{"element", "float"}, {"size", 8}, {"host_source", "runtime_f32"}});
+    INFO(taken.dump());
+    CHECK(taken.at("status") == "accepted");
+}
+
+// CT-5: graph.op_requires_owned_instance@1 names its document (and the
+// definition) on every editing path that can raise it: a node added inside a
+// definition an unowned instance runs, the same inside edit_batch; and
+// edit_graph_instances keeps a named graph refusal's code and document
+// (it said invalid_graph_attachment before).
+TEST_CASE("CT-5 an owned-instance op refused inside a definition names its document on every edit path",
+          "[render-config-editor][graph-composition][ct5]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    TemporaryConfig source{readBytes(fixture_path)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+    const auto saved = readBytes(source.path);
+    const auto digest = [&] {
+        return service->getGraphInstances(Json::object()).at("source_digest").at("hex").get<std::string>();
+    };
+    const auto rejected = [&](const Json &result) {
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(readBytes(source.path) == saved);
+        return result.at("error");
+    };
+    const Json unowned{{"id", "right"}, {"op", "graph.instance"}, {"definition", "gain_curve"},
+                       {"parameters", {{"gain", 1}, {"bias", 0}}}};
+    const Json weight{{"id", "weight"}, {"op", "value.morph_weight"}, {"parameters", {{"node", 0}, {"target", 0}}},
+                      {"outputs", Json::array({"value"})}};
+    const Json ops = Json::array({Json{{"op", "add_node"}, {"node", unowned}},
+                                  Json{{"op", "add_node"}, {"scope", "gain_curve"}, {"node", weight}}});
+
+    auto error = rejected(Json(service->editGraphDocument({{"base_source_digest", digest()}, {"ops", ops}})));
+    CHECK(error.at("code") == "graph.op_requires_owned_instance@1");
+    CHECK(error.at("node") == "right/weight");
+    CHECK(error.at("op") == "value.morph_weight");
+    CHECK(error.at("document") == "project://passes/main.json");
+    CHECK(error.at("definition") == "gain_curve");
+
+    error = rejected(Json(service->editBatch(
+        {{"base_source_digest", digest()},
+         {"edits", Json::array({Json{{"method", "edit_graph_document"}, {"params", {{"ops", ops}}}}})}})));
+    CHECK(error.at("code") == "graph.op_requires_owned_instance@1");
+    CHECK(error.at("node") == "right/weight");
+    CHECK(error.at("document") == "project://passes/main.json");
+    CHECK(error.at("definition") == "gain_curve");
+
+    auto again = unowned;
+    again["id"] = "left";
+    again["owner"] = {{"scene", "main"}, {"object", 42}};
+    error = rejected(Json(service->editGraphInstances(
+        {{"base_source_digest", digest()}, {"attach", Json::array({again})}})));
+    CHECK(error.at("code") == "graph.node_duplicate@1");
+    CHECK(error.at("node") == "left");
+    CHECK(error.at("document") == "project://passes/main.json");
+}
+
+// CT-5: get_graph_instances says, for each definition, which root nodes run
+// it and whether every one has an owner -- what an op of placement
+// owned_instance needs to stand in it. One nothing uses lists none.
+TEST_CASE("CT-5 get_graph_instances says which definitions only owned instances run",
+          "[render-config-editor][graph-composition][ct5]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    const auto uses = [](const std::string &bytes) {
+        TemporaryConfig source{bytes};
+        ActualCpuRenderRuntime runtime;
+        runtime.initialize(readBytes(source.path));
+        auto service = makeService(source, runtime);
+        return Json(service->getGraphInstances(Json::object())).at("definition_instances");
+    };
+    const Json left{{"id", "left"}, {"op", "graph.instance"}, {"owned", true}};
+    CHECK(uses(readBytes(fixture_path)) ==
+          Json{{"gain_curve", {{"owned_instances_only", true}, {"instances", Json::array({left})}}}});
+
+    auto document = Json::parse(readBytes(fixture_path));
+    document["nodes"].push_back({{"id", "right"}, {"op", "graph.instance"}, {"definition", "gain_curve"},
+                                 {"parameters", {{"gain", 1}, {"bias", 0}}}});
+    document["definitions"]["spare"] = {{"nodes", Json::array()}, {"outputs", Json::object()}};
+    CHECK(uses(document.dump(2)) ==
+          Json{{"gain_curve",
+                {{"owned_instances_only", false},
+                 {"instances", Json::array({left, Json{{"id", "right"}, {"op", "graph.instance"}, {"owned", false}}})}}},
+               {"spare", {{"owned_instances_only", true}, {"instances", Json::array()}}}});
+}
+
+// CT-5: the authoring context lists the acceleration structures a ray_query
+// may name ("scene" first) and how an explicit format class is written.
+TEST_CASE("CT-5 the authoring context lists acceleration structures and the explicit format class's form",
+          "[render-config-editor][graph-root][ct5]") {
+    TemporaryAnimgraphProject project;
+    writeBytes(project.render_config, graphRootFixture("main"));
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto context = Json(service->getRenderAuthoringContext(Json::object()));
+    REQUIRE(context.at("acceleration_structures").is_array());
+    CHECK(context.at("acceleration_structures").at(0) == "scene");
+    const auto &vocabulary = context.at("render_target_vocabulary");
+    CHECK(vocabulary.at("format_classes") == Json::array({"scene", "display", "data", "explicit"}));
+    CHECK(vocabulary.at("format_class_patterns") ==
+          Json::array({Json{{"name", "explicit"},
+                            {"form", "explicit(<format>)"},
+                            {"argument_choices_from",
+                             {{"rpc", "get_render_authoring_context"},
+                              {"key", "render_target_vocabulary.formats"}}}}}));
+}
+
+// CT-2: how a refused node's id finds its definition, and what a refusal
+// keeps. Only the document's structure is read: an instance's copy, a loop
+// body's template and an element's copy, and a body's own id.
+TEST_CASE("CT-2 a refused node id is traced to the definition that holds it",
+          "[graph-composition][ct2]") {
+    const Json document{
+        {"schema", "pelican.graph"}, {"version", 1},
+        {"definitions",
+         {{"curve", {{"nodes", Json::array({Json{{"id", "sum"}, {"op", "value.add"}}})}}},
+          {"wide", {{"nodes", Json::array({Json{{"id", "blur"}, {"op", "render.compute"}}})}}},
+          {"narrow", {{"nodes", Json::array({Json{{"id", "copy"}, {"op", "render.compute"}}})}}}}},
+        {"nodes", Json::array({
+            Json{{"id", "clock"}, {"op", "value.input"}},
+            Json{{"id", "left"}, {"op", "graph.instance"}, {"definition", "curve"}},
+            Json{{"id", "mips"}, {"op", "graph.loop"},
+                 {"parameters", {{"branches", Json::array({Json{{"body", "wide"}},
+                                                           Json{{"body", "narrow"}}})}}}}})}};
+    CHECK_FALSE(graphNodeDefinition(document, "clock"));
+    CHECK(graphNodeDefinition(document, "left/sum") == "curve");
+    CHECK(graphNodeDefinition(document, "mips/$0/blur") == "wide");
+    CHECK(graphNodeDefinition(document, "mips/$1/copy") == "narrow");
+    CHECK(graphNodeDefinition(document, "mips/3/copy") == "narrow");
+    CHECK(graphNodeDefinition(document, "sum") == "curve");
+    CHECK_FALSE(graphNodeDefinition(document, "nowhere/sum"));
+    CHECK_FALSE(graphNodeDefinition(document, "mips/$7/blur"));
+
+    CHECK(graphDocumentReference("passes/main.json") == "project://passes/main.json");
+    CHECK(graphDocumentReference("project://passes/main.json") == "project://passes/main.json");
+    CHECK_FALSE(graphDocumentReference(""));
+    CHECK_FALSE(graphDocumentReference("test://root"));
+
+    // Added to a graph.* refusal and to its message; a field it has is kept,
+    // and another code is left as it was.
+    const auto named = graphRefusalInDocument(
+        GraphRegistryError("graph.loop_expression_invalid@1",
+                           {{"node", "mips/$0/blur"}, {"pointer", "/x"}, {"reason", "r"}}),
+        document, "passes/main.json");
+    CHECK(named.detail().at("document") == "project://passes/main.json");
+    CHECK(named.detail().at("definition") == "wide");
+    CHECK(named.detail().at("pointer") == "/x");
+    CHECK_THAT(std::string{named.what()}, Catch::Matchers::ContainsSubstring("project://passes/main.json"));
+    const auto kept = graphRefusalInDocument(
+        GraphRegistryError("graph.loop_nested@1", {{"node", "left/sum"}, {"definition", "other"}}),
+        document, "passes/main.json");
+    CHECK(kept.detail().at("definition") == "other");
+    const auto other = graphRefusalInDocument(
+        GraphRegistryError("pose.root_node_unknown@1", {{"node", "left/sum"}}), document, "passes/main.json");
+    CHECK_FALSE(other.detail().contains("document"));
+    // A document no project names leaves the field out, never null.
+    const auto unnamed = graphRefusalInDocument(
+        GraphRegistryError("graph.port_field_missing@1", {{"node", "clock"}}), document, "/abs/main.json");
+    CHECK_FALSE(unnamed.detail().contains("document"));
+    CHECK_FALSE(unnamed.detail().contains("definition"));
 }
 
 // N-6 acceptance 1. The canvas's own placement -- where the nodes were put, the
@@ -1763,21 +2130,25 @@ TEST_CASE("node values report the definition scope the drawn frame evaluated",
         // Acceptance 3. A pose operation produces no value of its own, but the
         // values partition publishes every scalar it consumes as
         // `$pose/<node>/<port>` -- which is the only place the number an
-        // animation node ran on is observable at all.
-        const auto add = edit(Json::array({Json{{"op", "add_node"}, {"node",
-            {{"id", "pose"}, {"op", "pose.clip_sample"},
-             {"parameters", {{"rig", "project://character.gltf"}, {"clip", "Turn"}}},
-             {"inputs", {{"time", {{"node", "clock"}, {"port", "value"}}}}},
-             {"outputs", Json::array({"pose"})}}}}}));
+        // animation node ran on is observable at all. CT-4: a pose stands in
+        // an owned instance (`left`), its time the clock through `gain`.
+        const auto add = edit(Json::array({
+            Json{{"op", "add_node"}, {"scope", "gain_curve"}, {"node",
+                {{"id", "pose"}, {"op", "pose.clip_sample"},
+                 {"parameters", {{"rig", "project://character.gltf"}, {"clip", "Turn"}}},
+                 {"inputs", {{"time", {{"node", "gain"}, {"port", "value"}}}}},
+                 {"outputs", Json::array({"pose"})}}}},
+            Json{{"op", "set_input"}, {"node", "left"}, {"port", "gain"},
+                 {"source", {{"node", "clock"}, {"port", "value"}}}}}));
 #if PELICAN_WITH_ANIMATION
         REQUIRE(commit(add).at("committed") == true);
         draw();
-        const auto reply = service->getGraphNodeValues(Json::object());
+        const auto reply = service->getGraphNodeValues({{"instance", "left"}});
         const auto pose = nodeOf(reply, "pose");
         REQUIRE(pose.at("outputs").at("time") == 0.5);
         scene_time = 1.5;
         draw();
-        REQUIRE(nodeOf(service->getGraphNodeValues(Json::object()), "pose")
+        REQUIRE(nodeOf(service->getGraphNodeValues({{"instance", "left"}}), "pose")
                     .at("outputs").at("time") == 1.5);
 #else
         // The control: without the animation module the operation is not
@@ -3754,6 +4125,70 @@ TEST_CASE("P-2a-4a root scope materialization rewrites the section and releases 
     CHECK(derived.at("name") == "bloom");
     CHECK(derived.at("passes").size() == bloom.at("passes").size());
     CHECK(derived.contains("bound_parameters"));
+}
+
+// SC-1: a materialized feature reports the values it was cut with as its
+// parameters' `default`; the engine's own default stays beside it as
+// `engine_default`. A feature that is not materialized has only the one.
+TEST_CASE("SC-1 a materialized feature's parameter schema keeps the engine default",
+          "[render-config-editor][feature-materialize-edit][engine-default][sc1]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    auto root = Json::parse(readBytes(project.render_config));
+    auto &features = renderingSectionOf(root)["features"];
+    REQUIRE(features.at(1) == "engine://features/sky_ambient.json");
+    features[1] = {{"ref", "engine://features/sky_ambient.json"}, {"parameters", {{"color_r", 0.7}}}};
+    writeBytes(project.render_config, root.dump(2));
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+
+    const auto before = service->getRenderFeatures(Json::object());
+    const auto &engine_instance = before.at("feature_instances").at(1);
+    REQUIRE(engine_instance.at("reference") == "engine://features/sky_ambient.json");
+    for (const auto &declaration : engine_instance.at("parameter_schema").at("scalars"))
+        CHECK_FALSE(declaration.contains("engine_default"));
+
+    const auto accepted = service->editRenderFeatures(
+        {{"base_source_digest", before.at("source_digest").at("hex")},
+         {"operations",
+          Json::array({Json{{"op", "materialize"},
+                            {"scope", "root"},
+                            {"index", 1},
+                            {"destination_reference", "project://passes/sky-local.json"},
+                            {"base_feature_digest",
+                             engine_instance.at("feature_document_digest").at("hex")}}})}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    service->commitPending();
+    REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == true);
+
+    const auto after = service->getRenderFeatures(Json::object());
+    const auto &instance = after.at("feature_instances").at(1);
+    REQUIRE(instance.at("reference") == "project://passes/sky-local.json");
+    const auto &bound = instance.at("bound_parameters");
+    REQUIRE(bound.at("color_r") == 0.7);
+    const auto engine = nlohmann::ordered_json::parse(engineResourceOrThrow("features/sky_ambient.json"));
+    const auto &scalars = instance.at("parameter_schema").at("scalars");
+    REQUIRE(scalars.size() == engine.at("parameters").at("scalars").size());
+    for (const auto &original : engine.at("parameters").at("scalars")) {
+        const auto name = original.at("name").get<std::string>();
+        const auto declaration = std::find_if(scalars.begin(), scalars.end(), [&](const auto &entry) {
+            return entry.at("name") == name;
+        });
+        REQUIRE(declaration != scalars.end());
+        INFO(name);
+        CHECK(declaration->at("engine_default") == original.at("default"));
+        if (bound.contains(name)) CHECK(declaration->at("default") == bound.at(name));
+        else CHECK(declaration->at("default") == original.at("default"));
+    }
+    const auto color_r = std::find_if(scalars.begin(), scalars.end(), [](const auto &entry) {
+        return entry.at("name") == "color_r";
+    });
+    REQUIRE(color_r != scalars.end());
+    CHECK(color_r->at("default") == 0.7);
+    CHECK(color_r->at("engine_default") == 0.12);
+    std::cout << "SC1_ENGINE_DEFAULT " << color_r->dump() << '\n';
 }
 
 TEST_CASE("The shipping bloom component is readable from the project and derives without touching the engine document",
@@ -7918,56 +8353,34 @@ struct G6Harness {
 
 } // namespace
 
-TEST_CASE("G-6 an edit preview cannot compose is refused before it takes a ticket, "
-          "naming preview, and nothing is written",
-          "[render-config-editor][g6][preflight][preview]") {
+// PV-1 (was G-6 "an edit preview cannot compose is refused"): the one-shot
+// preview no longer decides whether an edit is taken. The edit that makes
+// present read last frame's trail -- which preview cannot compose -- is
+// committed like any other through the engine's own preflight; the published
+// generation reports preview as unavailable (engine_primitives_test PV-1).
+TEST_CASE("PV-1 an edit only the preview cannot compose is committed through the engine's preflight",
+          "[render-config-editor][g6][preflight][preview][pv1]") {
     auto history_target = sceneTarget("trail");
     history_target["history"] = true;
-
-    // The same edits against an engine-side service without the variant
-    // preflight: flat composes every one of them, the last included.
-    {
-        G6Harness flat_only{false};
-        flat_only.service = makeProjectService(flat_only.project,
-                                               flat_only.resolver,
-                                               flat_only.runtime);
-        REQUIRE(flat_only.settle(flat_only.targets(
-                    addOp(sceneTarget("lit_color"))))
-                    .at("committed") == true);
-        REQUIRE(flat_only.settle(flat_only.targets(addOp(history_target)))
-                    .at("committed") == true);
-        const auto read = flat_only.settle(flat_only.present(
-            Json::array({"lit_color", "trail@history"})));
-        INFO(read.dump());
-        REQUIRE(read.at("committed") == true);
-    }
 
     G6Harness harness{false};
     REQUIRE(harness.settle(harness.targets(addOp(sceneTarget("lit_color"))))
                 .at("committed") == true);
     REQUIRE(harness.settle(harness.present(Json::array({"lit_color"})))
                 .at("committed") == true);
-    // A history target is taken: preview leaves the fragment that declares
-    // it out, and nothing preview keeps reads it.
     REQUIRE(harness.settle(harness.targets(addOp(history_target)))
                 .at("committed") == true);
 
     // present reading last frame's trail is what preview cannot take.
-    const auto root_before = readBytes(harness.project.render_config);
     const auto applies_before = harness.runtime.apply_calls;
-    const auto refused =
-        harness.present(Json::array({"lit_color", "trail@history"}));
-    INFO(refused.dump());
-    REQUIRE(refused.at("status") == "rejected");
-    const auto &error = refused.at("error");
-    CHECK(error.at("code") == "render_pipeline_preflight_failed");
-    CHECK(error.at("variant") == "preview");
-    CHECK(error.at("message").get<std::string>().find("history read") !=
+    const auto read = harness.settle(
+        harness.present(Json::array({"lit_color", "trail@history"})));
+    INFO(read.dump());
+    REQUIRE(read.at("status") == "committed");
+    CHECK(read.at("committed") == true);
+    CHECK(harness.runtime.apply_calls == applies_before + 1);
+    CHECK(readBytes(harness.project.render_config).find("trail@history") !=
           std::string::npos);
-    CHECK_FALSE(refused.contains("ticket"));
-    harness.service->commitPending();
-    CHECK(harness.runtime.apply_calls == applies_before);
-    CHECK(readBytes(harness.project.render_config) == root_before);
 }
 
 TEST_CASE("G-6 xr composes an edit only in an engine that started it",
@@ -8069,21 +8482,24 @@ std::function<void(const RenderConfigCandidateDocumentSet &)> lp0dPreviewRefuses
 
 TEST_CASE("LP-0d a graph variant's named refusal keeps its code, with the variant beside its fields",
           "[render-config-editor][g6][preflight][preview][lp0d]") {
-    SECTION("the engine's preflight hands the composer's refusal on") {
+    SECTION("the engine's preflight leaves a graph only preview refuses to the published state") {
+        // PV-1: the engine's preflight composes the runtime variants only.
+        // The refusal preview raises is the reason a published generation
+        // gives for preview being unavailable, its code kept as the cause.
         const std::string document{lp0dPreviewRefusedGraph};
+        CHECK_NOTHROW(preflightRenderGraphVariants(document, lp0dHistoryBloom, true, false));
         try {
-            preflightRenderGraphVariants(document, lp0dHistoryBloom, true, false);
+            (void)precompilePreviewGraph(document, lp0dHistoryBloom, true);
             FAIL("preview composed the graph");
-        } catch (const GraphVariantCompositionError &error) {
-            CHECK(error.variant() == RenderPipelineGraphVariant::preview);
-            REQUIRE(error.cause());
-            try {
-                std::rethrow_exception(error.cause());
-            } catch (const GraphRegistryError &refusal) {
-                CHECK(refusal.code() == "graph.loop_expression_invalid@1");
-                CHECK(refusal.detail().at("node") == "steps");
-                CHECK(refusal.detail().at("reason") == "not_static");
-            }
+        } catch (const GraphRegistryError &refusal) {
+            CHECK(refusal.code() == "graph.loop_expression_invalid@1");
+            const auto reason = previewUnsupportedAuthoringReason(std::current_exception());
+            INFO(reason.dump());
+            CHECK(reason.at("code") == "preview.unsupported_authoring@1");
+            CHECK(reason.at("feature") == "composition");
+            CHECK(reason.at("cause").at("code") == "graph.loop_expression_invalid@1");
+            CHECK(reason.at("cause").at("node") == "steps");
+            CHECK(reason.at("cause").at("reason") == "not_static");
         }
     }
 
@@ -10055,6 +10471,56 @@ TEST_CASE("EL-1 get_graph_catalog lists the argument values render.image accepts
 // shaders by the stem references a pass gives, reflected on a worker thread
 // (EL-4c). Each list is read off the table the engine checks against (the
 // running engine's own case is in engine_primitives_test).
+TEST_CASE("MP-1 get_graph_catalog's material pass contracts list the screen inputs and surface resources the "
+          "engine takes",
+          "[render-config-editor][el4][mp1][graph-catalog]") {
+    G6Harness harness{false};
+    harness.service = makeProjectService(harness.project, harness.resolver, harness.runtime);
+    const auto catalog = Json(harness.service->getGraphCatalog(Json::object()));
+    const auto &contracts = catalog.at("material_pass_contracts");
+    REQUIRE(contracts.size() == materialPassContracts.size());
+    const auto names_of = [](const Json &entries) {
+        std::vector<std::string> names;
+        for (const auto &entry : entries) names.push_back(entry.at("name").get<std::string>());
+        return names;
+    };
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    for (const auto &contract : contracts) {
+        INFO(contract.dump());
+        // The names Studio held in a table of its own, now from the engine.
+        CHECK(names_of(contract.at("screen_inputs")) ==
+              std::vector<std::string>{"opaque_color", "opaque_depth", "scene_depth", "linear_view_depth"});
+        CHECK(names_of(contract.at("surface_resources")) ==
+              std::vector<std::string>{"directional_shadow", "point_shadow", "spot_shadow"});
+        // Each is one the parser binds there: a screen input a .surface may
+        // author, a surface resource a feature owns; source_type is the
+        // semantic type the bound target must carry.
+        for (const auto &entry : contract.at("screen_inputs")) {
+            const auto name = entry.at("name").get<std::string>();
+            const auto declared = makeBuiltinMaterialScreenInputContract(types, name);
+            CHECK_FALSE(isFeatureOwnedMaterialPassInputContract(name));
+            CHECK(entry.at("source_type") == semanticTypeIdName(declared.source_type.semantic));
+        }
+        for (const auto &entry : contract.at("surface_resources")) {
+            const auto name = entry.at("name").get<std::string>();
+            CHECK(isFeatureOwnedMaterialPassInputContract(name));
+            CHECK_THROWS(makeBuiltinMaterialScreenInputContract(types, name));
+            CHECK(entry.at("source_type") ==
+                  semanticTypeIdName(makeBuiltinMaterialPassInputContract(types, name).source_type.semantic));
+        }
+    }
+    const auto forward = std::find_if(contracts.begin(), contracts.end(), [](const Json &entry) {
+        return entry.at("contract") == "forward_opaque_v1";
+    });
+    REQUIRE(forward != contracts.end());
+    CHECK(forward->at("screen_inputs").at(0) ==
+          Json{{"name", "opaque_color"}, {"source_type", "pelican.render.color_signal@1"}});
+    CHECK(forward->at("surface_resources").at(0) ==
+          Json{{"name", "directional_shadow"}, {"source_type", "pelican.render.depth@1"}});
+    // A name in neither list is no input contract, whatever it names.
+    CHECK_THROWS(makeBuiltinMaterialPassInputContract(types, "lit_color"));
+}
+
 TEST_CASE("EL-4 get_graph_catalog lists material pass formats, material output formats and engine shaders",
           "[render-config-editor][el4][graph-catalog]") {
     G6Harness harness{false};
@@ -10223,6 +10689,93 @@ TEST_CASE("EL-4 get_graph_catalog lists material pass formats, material output f
     CHECK(std::find(formats.begin(), formats.end(), mask.at("format")) != formats.end());
     CHECK(port_of(shadow_mask, "normal").at("type") == "sampled_image");
     CHECK_FALSE(port_of(shadow_mask, "normal").contains("format"));
+}
+
+namespace {
+
+RenderStrategy::Status el6RefuseStrategy(void *, const RenderStrategy::ResolveRenderStrategyInputV1 *,
+                                         RenderStrategy::RenderStrategyOutputV1 *) noexcept {
+    return RenderStrategy::Status::provider_error;
+}
+
+} // namespace
+
+// EL-6: get_registered_providers lists, per registry, the provider names a
+// document may give now: the engine's builtins, and a game owner's once it
+// is the active owner, read at each call (a released owner's are gone from
+// the next answer). The game DLL's own path is render_policy_dll_test's.
+TEST_CASE("EL-6 get_registered_providers lists each render provider registry's names, a game owner's as it changes",
+          "[render-config-editor][el6]") {
+    G6Harness harness{false};
+    harness.service = makeProjectService(harness.project, harness.resolver, harness.runtime);
+    CHECK_THROWS_AS(harness.service->getRegisteredProviders({{"unexpected", 1}}), std::invalid_argument);
+    const auto names = [](const Json &entries) {
+        std::vector<std::string> result;
+        for (const auto &entry : entries) result.push_back(entry.at("name").get<std::string>());
+        return result;
+    };
+    const auto entry_of = [](const Json &entries, std::string_view name) {
+        for (const auto &entry : entries)
+            if (entry.at("name") == std::string{name}) return entry;
+        return Json{};
+    };
+    const auto before = Json(harness.service->getRegisteredProviders(Json::object()));
+    INFO(before.dump(2));
+    REQUIRE(before.size() == 5);
+    for (const auto *registry :
+         {"draw_sort", "pass_implementation", "region_replacements", "graph_transforms", "render_strategy"}) {
+        REQUIRE(before.contains(registry));
+        const auto listed = names(before.at(registry));
+        CHECK(std::is_sorted(listed.begin(), listed.end()));
+    }
+    // The engine's builtins, each under the name a document gives.
+    const auto builtin = [&](const char *registry, std::string_view name) {
+        const auto entry = entry_of(before.at(registry), name);
+        REQUIRE(entry.is_object());
+        CHECK(entry.at("source") == "engine");
+        CHECK(entry.at("provider_version").get<std::uint32_t>() >= 1);
+        CHECK(entry.size() == 3);
+    };
+    builtin("draw_sort", "state_batched_v1");
+    builtin("draw_sort", "back_to_front_v1");
+    builtin("pass_implementation", "builtin.fullscreen_v1");
+    builtin("region_replacements", builtinTaggedSubgraphReplacementProvider);
+    builtin("graph_transforms", builtinLogicalGraphTransformProvider);
+    builtin("render_strategy", builtinAuthoredRenderStrategyProvider);
+
+    // A game owner's provider: not listed while a candidate, listed as the
+    // game's once its owner is active, gone once the owner is released.
+    constexpr std::string_view game_name = "el6.game_strategy";
+    auto provider = RenderStrategy::descriptor<RenderStrategy::ProviderV1>();
+    provider.capability_bits = RenderStrategy::builtinProviderCapabilitiesV1;
+    provider.name_utf8 = game_name.data();
+    provider.name_size = static_cast<std::uint32_t>(game_name.size());
+    provider.resolve_render_strategy = el6RefuseStrategy;
+    const auto owner = internal::allocateRegistrationOwner();
+    struct Release {
+        internal::RegistrationOwner owner;
+        ~Release() {
+            renderStrategyRegistry().releaseOwner(owner);
+            (void)internal::releaseRegistrationOwner(owner);
+        }
+    } release{owner};
+    RenderStrategy::ProviderHandleV1 handle{};
+    REQUIRE(renderStrategyRegistry().registerProvider(provider, owner, handle) == RenderStrategy::Status::ok);
+    const auto strategies = [&] {
+        return Json(harness.service->getRegisteredProviders(Json::object())).at("render_strategy");
+    };
+    CHECK(entry_of(strategies(), game_name).is_null());
+    renderStrategyRegistry().activateOwner(owner);
+    const auto game = entry_of(strategies(), game_name);
+    INFO(strategies().dump(2));
+    REQUIRE(game.is_object());
+    CHECK(game.at("source") == "game");
+    CHECK(game.at("provider_version") == RenderStrategy::providerVersionV1);
+    // The engine's builtin stays listed beside it.
+    CHECK(entry_of(strategies(), builtinAuthoredRenderStrategyProvider).at("source") == "engine");
+    renderStrategyRegistry().releaseOwner(owner);
+    CHECK(entry_of(strategies(), game_name).is_null());
+    CHECK(Json(harness.service->getRegisteredProviders(Json::object())) == before);
 }
 
 // EL-5: get_shader_interface reads a project stem's stages as
@@ -10961,6 +11514,682 @@ TEST_CASE("FG-2 verify_fold refuses a group that is being verified, and drops ru
     fake.set(fg2Same(), /*held=*/true);
     REQUIRE(fg2Verify(harness).at("status") == "accepted");
     harness.service.reset();
+}
+
+// FR-1: Blank built up in the Graph -- a direct root whose rendering section
+// lights lit_color and presents it, with no scene depth -- takes sky_ambient
+// only once it declares the depth the feature reads. The catalog says so
+// before the edit, the edit's refusal names the target and its type, and the
+// authoring context lists where a snapshot can be taken.
+TEST_CASE("FR-1 the catalog gives each feature's required targets and adding one without them is refused by name",
+          "[render-config-editor][fr1]") {
+    TemporaryAnimgraphProject project;
+    writeBytes(project.render_config, R"json({
+  "schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {},
+  "rendering": {
+    "render_targets": [
+      {"name": "lit_color", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT",
+       "usage": ["COLOR_ATTACHMENT", "SAMPLED"]}
+    ],
+    "rendering_passes": [{"name": "main_render", "passes": [
+      {"name": "deferred_lighting", "type": "fullscreen", "input": [],
+       "output": {"color": ["lit_color"], "depth": null},
+       "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"}},
+      {"name": "present", "type": "fullscreen", "input": ["lit_color"],
+       "output": {"color": ["display"], "depth": null},
+       "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"}}
+    ]}]
+  }
+}
+)json");
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const Json depth{{"semantic", "pelican.render.depth@1"},
+                     {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+
+    const auto catalog = service->listRenderFeatures(Json::object());
+    const auto entry = std::ranges::find_if(catalog.at("features"), [](const auto &feature) {
+        return feature.at("name") == "sky_ambient";
+    });
+    REQUIRE(entry != catalog.at("features").end());
+    INFO(entry->dump());
+    const auto &required = entry->at("required_targets");
+    REQUIRE(required.size() == 2);
+    CHECK(required.at(0).at("name") == "lit_color");
+    CHECK(required.at(1) == nlohmann::ordered_json::parse(
+        Json{{"name", "scene_depth"}, {"type", depth}, {"usage", Json::array({"SAMPLED"})},
+             // FR-3: sky_ambient only reads it.
+             {"needs_writer", true}}.dump()));
+    // A feature that declares every target it touches needs none.
+    for (const auto &feature : catalog.at("features"))
+        if (feature.at("name") == "shadow_directional") CHECK(feature.at("required_targets").empty());
+
+    const auto before = readBytes(project.render_config);
+    const auto accepted = service->editRenderFeatures(
+        {{"base_source_digest", service->documentForTesting().sourceDigest()},
+         {"operations", operation("add", "engine://features/sky_ambient.json")}});
+    REQUIRE(accepted.at("status") == "accepted");
+    service->commitPending();
+    const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("status") == "rejected");
+    const auto &error = result.at("error");
+    CHECK(error.at("code") == "feature.required_target_missing@1");
+    CHECK(error.at("feature") == "sky_ambient");
+    CHECK(error.at("target") == "scene_depth");
+    CHECK(Json::parse(error.at("type").dump()) == depth);
+    CHECK(error.at("document") == "engine://features/sky_ambient.json");
+    CHECK(readBytes(project.render_config) == before);
+
+    const auto context = service->getRenderAuthoringContext(Json::object());
+    CHECK(context.at("snapshot_after_candidates") == nlohmann::ordered_json::array({"post_ldr"}));
+}
+
+// FR-2: Blank built up in the Graph with the depth sky_ambient reads but no
+// pass named deferred_lighting. The catalog says where sky_ambient's pass
+// goes before the edit; the edit's refusal names the missing anchor, the
+// feature document and the names this pipeline takes instead.
+TEST_CASE("FR-2 the catalog gives each feature's insertion points and adding one whose anchor is missing is refused by name",
+          "[render-config-editor][fr2]") {
+    TemporaryAnimgraphProject project;
+    writeBytes(project.render_config, R"json({
+  "schema": "pelican.graph", "version": 1, "definitions": {}, "outputs": {},
+  "nodes": [
+    {"id": "scene_depth_ref", "op": "render.target_ref", "outputs": ["resource"],
+     "parameters": {"name": "scene_depth", "type": {"semantic": "pelican.render.depth@1",
+                    "arguments": {"representation": "device", "space": "projection"}}}}
+  ],
+  "rendering": {
+    "render_targets": [
+      {"name": "lit_color", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT",
+       "usage": ["COLOR_ATTACHMENT", "SAMPLED"]},
+      {"name": "scene_depth", "extent_scale": 1.0, "format": "D32_SFLOAT",
+       "usage": ["DEPTH_STENCIL_ATTACHMENT"]}
+    ],
+    "rendering_passes": [{"name": "main_render", "passes": [
+      {"name": "lighting_pass", "type": "fullscreen", "input": [],
+       "output": {"color": ["lit_color"], "depth": null},
+       "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"}},
+      {"name": "present", "type": "fullscreen", "input": ["lit_color"],
+       "output": {"color": ["display"], "depth": null},
+       "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"}}
+    ]}]
+  }
+}
+)json");
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+
+    const auto catalog = service->listRenderFeatures(Json::object());
+    const auto entry = std::ranges::find_if(catalog.at("features"), [](const auto &feature) {
+        return feature.at("name") == "sky_ambient";
+    });
+    REQUIRE(entry != catalog.at("features").end());
+    INFO(entry->dump());
+    CHECK(entry->at("insertion") == nlohmann::ordered_json::parse(
+        R"([{"pass": "sky_background", "anchor": "deferred_lighting", "position": "after"}])"));
+    // Every feature carries the field; begin / end passes are not listed.
+    for (const auto &feature : catalog.at("features")) {
+        INFO(feature.at("name").dump());
+        CHECK(feature.at("insertion").is_array());
+    }
+
+    const auto before = readBytes(project.render_config);
+    const auto accepted = service->editRenderFeatures(
+        {{"base_source_digest", service->documentForTesting().sourceDigest()},
+         {"operations", operation("add", "engine://features/sky_ambient.json")}});
+    REQUIRE(accepted.at("status") == "accepted");
+    service->commitPending();
+    const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("status") == "rejected");
+    const auto &error = result.at("error");
+    CHECK(error.at("code") == "feature.insertion_anchor_missing@1");
+    CHECK(error.at("feature") == "sky_ambient");
+    CHECK(error.at("anchor") == "deferred_lighting");
+    CHECK(error.at("document") == "engine://features/sky_ambient.json");
+    const auto &candidates = error.at("candidates");
+    CHECK(std::ranges::find(candidates, "lighting_pass") != candidates.end());
+    CHECK(std::ranges::find(candidates, "present") != candidates.end());
+    CHECK(std::ranges::find(candidates, "deferred_lighting") == candidates.end());
+    CHECK(readBytes(project.render_config) == before);
+}
+
+namespace {
+
+// FR-3: the deferred pipeline the GUI session built from File > New Project >
+// Blank on the Graph tab (gui_settings_choose's project, its second lighting
+// pass left out): a render.material_pass of deferred_geometry_v1 drawing its
+// G-buffer and its depth into render.image nodes of its own, the Deferred
+// lighting template's fullscreen pass reading them and shadow_directional's
+// shadow_map through shadow_map_ref, and present. The edits go through the
+// editor's tickets, preflighted by the engine's own variant preflight and
+// published through a runtime that compiles the candidate as the running
+// renderer does (vf1CompileAsRenderer: the production Vulkan program, no
+// device) -- where "Pass input target is not produced as an earlier output"
+// and the graph type checks are raised. The root is kept as
+// main_rendering_config.graph, not .json: the frame planner tests read every
+// .json under test/fixtures that has rendering_passes as a flat config.
+struct Fr3Harness {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    ActualCpuRenderRuntime runtime;
+    std::unique_ptr<RenderConfigEditorService> service;
+
+    Fr3Harness() {
+        const auto fixtures =
+            std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" / "fr3_blank_graph";
+        writeBytes(project.render_config, readBytes(fixtures / "main_rendering_config.graph"));
+        std::filesystem::create_directories(project.root / "shaders");
+        writeBytes(project.root / "shaders" / "deferred_lighting.frag",
+                   readBytes(fixtures / "deferred_lighting.frag"));
+        resolver.setup(project.root, false);
+        service = makeProjectService(project, resolver, runtime, g6ProductionPreflight(resolver, false));
+        runtime.validate_candidate = [this](const RenderConfigCandidateDocumentSet &documents) {
+            vf1CompileAsRenderer(documents, resolver);
+        };
+    }
+
+    std::string digest() const { return service->documentForTesting().sourceDigest(); }
+
+    // The final answer: a refusal when the edit is asked for, or the ticket's
+    // result once the runtime judged it.
+    nlohmann::ordered_json settle(const nlohmann::ordered_json &answer) {
+        INFO(answer.dump());
+        if (answer.value("status", std::string{}) != "accepted") return answer;
+        service->commitPending();
+        return service->getResult({{"ticket", answer.at("ticket")}});
+    }
+
+    // One edit as edit_batch takes it, sent alone.
+    nlohmann::ordered_json single(const Json &edit) {
+        auto params = edit.at("params");
+        params["base_source_digest"] = digest();
+        const auto &method = edit.at("method");
+        if (method == "edit_render_features") return settle(service->editRenderFeatures(params));
+        if (method == "edit_graph_document") return settle(service->editGraphDocument(params));
+        if (method == "edit_render_targets") return settle(service->editRenderTargets(params));
+        FAIL("fr3 single: " << method);
+        return {};
+    }
+
+    nlohmann::ordered_json batch(const Json &edits) {
+        return settle(service->editBatch({{"base_source_digest", digest()}, {"edits", edits}}));
+    }
+};
+
+const Json &fr3Depth() {
+    static const Json type{{"semantic", "pelican.render.depth@1"},
+                           {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+    return type;
+}
+
+const Json &fr3ArrayDepth() {
+    static const Json type{{"semantic", "pelican.render.depth@1"},
+                           {"arguments", {{"representation", "device"}, {"space", "projection"},
+                                          {"topology", "two_d_array"}}}};
+    return type;
+}
+
+// What Studio's "Add with targets" sends for sky_ambient (UX-12b): the two
+// targets the catalog says the pipeline lacks, and a render.target_ref of each.
+Json fr3TargetsEdit() {
+    return {{"method", "edit_render_targets"},
+            {"params", {{"ops", Json::array({
+                {{"op", "add"}, {"target", {{"name", "lit_color"}, {"extent_scale", 1.0},
+                                            {"format", "R16G16B16A16_SFLOAT"}, {"format_class", "scene"},
+                                            {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}}},
+                {{"op", "add"}, {"target", {{"name", "scene_depth"}, {"extent_scale", 1.0},
+                                            {"format", "D32_SFLOAT"}, {"format_class", "data"},
+                                            {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"})}}}},
+            })}}}};
+}
+
+Json fr3RefsEdit() {
+    const auto ref = [](const char *id, const char *name, const Json &type) {
+        return Json{{"op", "add_node"},
+                    {"node", {{"id", id}, {"op", "render.target_ref"}, {"outputs", Json::array({"resource"})},
+                              {"parameters", {{"name", name}, {"type", type}}}}}};
+    };
+    return {{"method", "edit_graph_document"},
+            {"params", {{"ops", Json::array({
+                ref("scene_depth_ref", "scene_depth", fr3Depth()),
+                ref("lit_color_ref", "lit_color",
+                    Json{{"semantic", "pelican.render.legacy_opaque_image@1"}, {"arguments", Json::object()}}),
+            })}}}};
+}
+
+Json fr3SkyEdit() {
+    return {{"method", "edit_render_features"},
+            {"params", {{"operations", Json::array({{{"op", "add"},
+                                                     {"feature", "engine://features/sky_ambient.json"}}})}}}};
+}
+
+// shadow_directional's parameters as the fixture has them, cascade_count 3.
+Json fr3CascadeEdit() {
+    return {{"method", "edit_render_features"},
+            {"params", {{"operations", Json::array({{{"op", "set_parameters"}, {"index", 0},
+                {"parameters", {{"pcf_radius", 2}, {"strength", 1}, {"cascade_count", 3}}}}})}}}};
+}
+
+Json fr3RefArrayOp() {
+    return {{"op", "set_node_parameters"}, {"node", "shadow_map_ref"},
+            {"parameters", {{"name", "shadow_map"}, {"type", fr3ArrayDepth()}}}};
+}
+
+// The lighting pass's parameters with its shadow_map port read as a 2D array
+// depth. Its shader (the Deferred lighting template) samples the shadow map
+// with a layer, and its input binding is declared a sampler2DArray when the
+// image it is bound to has layers (PELICAN_INPUT_5_LAYERED).
+Json fr3PortArrayOp() {
+    const auto fixture = Json::parse(readBytes(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+                                               "fixtures" / "fr3_blank_graph" / "main_rendering_config.graph"));
+    Json parameters;
+    for (const auto &node : fixture.at("nodes"))
+        if (node.at("id") == "deferred_lighting") parameters = node.at("parameters");
+    REQUIRE(parameters.is_object());
+    parameters["ports"]["shadow_map"]["type"] = fr3ArrayDepth();
+    return {{"op", "set_node_parameters"}, {"node", "deferred_lighting"}, {"parameters", parameters}};
+}
+
+Json fr3GraphEdit(Json ops) { return {{"method", "edit_graph_document"}, {"params", {{"ops", std::move(ops)}}}}; }
+
+const Json *fr3PlanNode(const Json &plan, std::string_view name) {
+    for (const auto &node : plan.at("nodes"))
+        if (node.at("name").get<std::string>() == name) return &node;
+    return nullptr;
+}
+
+bool fr3Lists(const Json &list, std::string_view name) {
+    return std::find(list.begin(), list.end(), Json(name)) != list.end();
+}
+
+} // namespace
+
+// FR-3 (UX-12b's report): on the Blank-built deferred pipeline, sky_ambient
+// with the targets and target_refs it asked for was refused only by the
+// frame planner's text ("Pass input target is not produced as an earlier
+// output: scene_depth in pass: sky_background") -- scene_depth was declared
+// and drawn by nobody; the material pass draws its depth into an image of its
+// own. The catalog now says which required targets need a writer, the edit
+// is refused by name with the outputs that could write it, and connecting
+// the material pass's depth port to scene_depth_ref -- one edit -- lets the
+// feature compose and publish.
+TEST_CASE("FR-3 a feature's target that no pass writes is refused with the passes that could write it, and "
+          "connecting one composes",
+          "[render-config-editor][fr3][render-feature]") {
+    Fr3Harness harness;
+
+    const auto catalog = harness.service->listRenderFeatures(Json::object());
+    const auto sky = std::ranges::find_if(catalog.at("features"), [](const auto &feature) {
+        return feature.at("name") == "sky_ambient";
+    });
+    REQUIRE(sky != catalog.at("features").end());
+    const auto required = Json(sky->at("required_targets"));
+    INFO(required.dump());
+    REQUIRE(required.size() == 2);
+    CHECK(required.at(0).at("name") == "lit_color");
+    CHECK(required.at(0).at("needs_writer") == false); // sky_background draws into it
+    CHECK(required.at(1).at("name") == "scene_depth");
+    CHECK(required.at(1).at("needs_writer") == true); // it only reads it
+
+    // The targets and their target_refs, as Studio adds them: one ticket.
+    const auto declared = harness.batch(Json::array({fr3TargetsEdit(), fr3RefsEdit()}));
+    INFO(declared.dump());
+    REQUIRE(declared.at("status") == "committed");
+
+    const auto before = readBytes(harness.project.render_config);
+    const auto refused = harness.single(fr3SkyEdit());
+    INFO(refused.dump());
+    REQUIRE(refused.at("status") == "rejected");
+    const auto error = Json(refused.at("error"));
+    CHECK(error.at("code") == "feature.required_target_unwritten@1");
+    CHECK(error.at("feature") == "sky_ambient");
+    CHECK(error.at("target") == "scene_depth");
+    CHECK(error.at("type") == fr3Depth());
+    CHECK(error.at("document") == "engine://features/sky_ambient.json");
+    // The material pass's depth, by its graph node and port; shadow_depth
+    // (another view, and the feature's) is no candidate.
+    CHECK(error.at("writer_candidates") == Json::parse(R"([{"node": "render_material_pass",
+        "pass": "render_material_pass", "port": "depth", "resource": "render_material_pass__depth"}])"));
+    CHECK(readBytes(harness.project.render_config) == before);
+
+    // Studio's fix, one edit: the candidate's port writes scene_depth instead.
+    const auto &candidate = error.at("writer_candidates").at(0);
+    const auto connected = harness.single(fr3GraphEdit(Json::array({{{"op", "set_input"},
+        {"node", candidate.at("node")}, {"port", candidate.at("port")},
+        {"source", {{"node", "scene_depth_ref"}, {"port", "resource"}}}}})));
+    INFO(connected.dump());
+    REQUIRE(connected.at("status") == "committed");
+
+    const auto added = harness.single(fr3SkyEdit());
+    INFO(added.dump());
+    REQUIRE(added.at("status") == "committed");
+    const auto &plan = harness.runtime.frame_plan;
+    INFO(plan.dump());
+    const auto *material = fr3PlanNode(plan, "render_material_pass");
+    const auto *background = fr3PlanNode(plan, "sky_background");
+    REQUIRE(material != nullptr);
+    REQUIRE(background != nullptr);
+    CHECK(fr3Lists(material->at("writes"), "scene_depth"));
+    CHECK(fr3Lists(background->at("reads"), "scene_depth"));
+}
+
+// FR-3 (UX-12b's report): cascade_count 3 makes shadow_map a 3-layer array,
+// which the shadow_map_ref (2D) contradicts; a 2D-array shadow_map_ref
+// contradicts the cascade-1 map and the lighting pass's 2D depth port. No
+// single edit, in either order, composes. edit_batch applies them in order to
+// one candidate, composes it once and publishes one ticket; what is still
+// refused is named with the edit that raised it.
+TEST_CASE("FR-3 edit_batch applies edits in order to one candidate as one ticket, names the edit it refuses, "
+          "and RD-1 undoes it",
+          "[render-config-editor][fr3][edit-batch]") {
+    Fr3Harness harness;
+    const auto before = readBytes(harness.project.render_config);
+
+    // Alone, each is refused (the engine judges the type against the
+    // shadow map as it is).
+    const auto cascade_alone = harness.single(fr3CascadeEdit());
+    INFO(cascade_alone.dump());
+    REQUIRE(cascade_alone.at("status") == "rejected");
+    CHECK(cascade_alone.at("error").at("code") == "graph.target_ref_type_mismatch@1");
+    const auto graph_alone = harness.single(fr3GraphEdit(Json::array({fr3RefArrayOp(), fr3PortArrayOp()})));
+    INFO(graph_alone.dump());
+    REQUIRE(graph_alone.at("status") == "rejected");
+    CHECK(graph_alone.at("error").at("code") == "graph.target_ref_type_mismatch@1");
+
+    // cascade_count and the target_ref's type together: what is left is the
+    // lighting pass's own declaration (a 2D depth input), named with the
+    // index of the edit that met it.
+    const auto calls = harness.runtime.apply_calls;
+    const auto lighting_left = harness.batch(Json::array({fr3CascadeEdit(), fr3GraphEdit(Json::array({fr3RefArrayOp()}))}));
+    INFO(lighting_left.dump());
+    REQUIRE(lighting_left.at("status") == "rejected");
+    CHECK(lighting_left.at("error").at("batch_index") == 1);
+    CHECK(lighting_left.at("error").at("code") == "invalid_graph_document");
+    CHECK_THAT(lighting_left.at("error").at("message").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("graph type mismatch at deferred_lighting.shadow_map from "
+                                                  "shadow_map_ref.resource"));
+    harness.service->commitPending();
+    CHECK(harness.runtime.apply_calls == calls);
+    CHECK(readBytes(harness.project.render_config) == before);
+
+    // And the lighting pass's port in the same graph edit: one ticket, one
+    // publish, one RD-1 document set.
+    const auto read = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+    const auto accepted = harness.service->editBatch(
+        {{"base_source_digest", harness.digest()},
+         {"edits", Json::array({fr3CascadeEdit(), fr3GraphEdit(Json::array({fr3RefArrayOp(), fr3PortArrayOp()}))})}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    CHECK(accepted.at("methods") == nlohmann::ordered_json::array({"edit_render_features", "edit_graph_document"}));
+    const auto committed = harness.settle(accepted);
+    INFO(committed.dump());
+    REQUIRE(committed.at("status") == "committed");
+    CHECK(committed.at("operation") == "edit_batch");
+    CHECK(harness.runtime.apply_calls == calls + 1);
+    CHECK(Json(committed.at("documents")) ==
+          Json{{"passes/main.json", renderConfigSourceDigest(readBytes(harness.project.render_config))}});
+    const auto written = Json::parse(readBytes(harness.project.render_config));
+    CHECK(written.at("rendering").at("features").at(0).at("parameters").at("cascade_count") == 3);
+    for (const auto &node : written.at("nodes")) {
+        if (node.at("id") == "shadow_map_ref") CHECK(node.at("parameters").at("type") == fr3ArrayDepth());
+        if (node.at("id") == "deferred_lighting")
+            CHECK(node.at("parameters").at("ports").at("shadow_map").at("type") == fr3ArrayDepth());
+    }
+
+    // RD-1: the batch is one undo.
+    const auto restored = harness.settle(harness.service->restoreRenderDocuments(
+        {{"documents", Json::array({rd1Restore(read.at("passes/main.json"),
+                                               Json(committed.at("documents").at("passes/main.json")))})}}));
+    INFO(restored.dump());
+    REQUIRE(restored.at("status") == "committed");
+    CHECK(readBytes(harness.project.render_config) == before);
+
+    // The request's own shape.
+    const auto methods = RenderConfigEditorService::editBatchMethods();
+    CHECK(std::ranges::find(methods, "edit_render_features") != methods.end());
+    CHECK(std::ranges::find(methods, "edit_graph_document") != methods.end());
+    CHECK(std::ranges::find(methods, "edit_render_targets") != methods.end());
+    CHECK(std::ranges::find(methods, "edit_target_planning") != methods.end());
+    for (const auto *left_out : {"restore_render_documents", "reload_render_documents", "verify_fold", "edit_batch"})
+        CHECK(std::ranges::find(methods, left_out) == methods.end());
+    // FR-4: these read the document they rewrite as the editor holds it.
+    for (const auto *taken : {"edit_preset_pass", "edit_compute_task", "remove_compute_task"})
+        CHECK(std::ranges::find(methods, taken) != methods.end());
+    const auto invalid = [&](Json edits) {
+        return harness.service->editBatch({{"base_source_digest", harness.digest()}, {"edits", std::move(edits)}});
+    };
+    CHECK_THROWS_AS(invalid(Json::array({{{"method", "verify_fold"}, {"params", Json::object()}}})),
+                    std::invalid_argument);
+    auto carries_digest = fr3CascadeEdit();
+    carries_digest["params"]["base_source_digest"] = harness.digest();
+    CHECK_THROWS_AS(invalid(Json::array({carries_digest})), std::invalid_argument);
+    CHECK_THROWS_AS(invalid(Json::array()), std::invalid_argument);
+    // An edit's own invalid params are the batch's.
+    CHECK_THROWS_AS(invalid(Json::array({fr3CascadeEdit(), {{"method", "edit_render_features"},
+                                                             {"params", {{"operations", "add"}}}}})),
+                    std::invalid_argument);
+    CHECK(readBytes(harness.project.render_config) == before);
+}
+
+// FR-4 (UX-12d): on the Blank-built deferred pipeline with sky_ambient, the
+// sky reached present only with two tickets and two undos: the lighting
+// pass's color into lit_color (edit_graph_document) and present reading
+// lit_color (edit_preset_pass, here the direct root's own pass). edit_batch
+// takes both: one ticket, one publish, one RD-1 restore. lit_color_ref is
+// given the type the catalog gives sky_ambient's lit_color, which is the
+// lighting pass's color port's, so the connection needs no type rewritten.
+TEST_CASE("FR-4 edit_batch takes edit_graph_document and edit_preset_pass as one ticket, and RD-1 undoes both",
+          "[render-config-editor][fr4][edit-batch]") {
+    Fr3Harness harness;
+
+    const auto catalog = harness.service->listRenderFeatures(Json::object());
+    const auto sky = std::ranges::find_if(catalog.at("features"), [](const auto &feature) {
+        return feature.at("name") == "sky_ambient";
+    });
+    REQUIRE(sky != catalog.at("features").end());
+    const auto required = Json(sky->at("required_targets"));
+    INFO(required.dump());
+    REQUIRE(required.at(0).at("name") == "lit_color");
+    const auto lit_type = required.at(0).at("type");
+    CHECK(lit_type.at("semantic") == "pelican.render.color_signal@1");
+    const auto fixture = Json::parse(readBytes(harness.project.render_config));
+    for (const auto &node : fixture.at("nodes"))
+        if (node.at("id") == "deferred_lighting")
+            CHECK(node.at("parameters").at("ports").at("color").at("type") == lit_type);
+
+    // sky_ambient as FR-3 adds it, lit_color_ref of the catalog's type.
+    auto refs = fr3RefsEdit();
+    refs["params"]["ops"][1]["node"]["parameters"]["type"] = lit_type;
+    REQUIRE(harness.batch(Json::array({fr3TargetsEdit(), refs})).at("status") == "committed");
+    REQUIRE(harness.single(fr3GraphEdit(Json::array({{{"op", "set_input"}, {"node", "render_material_pass"},
+                                                       {"port", "depth"},
+                                                       {"source", {{"node", "scene_depth_ref"},
+                                                                   {"port", "resource"}}}}})))
+                .at("status") == "committed");
+    REQUIRE(harness.single(fr3SkyEdit()).at("status") == "committed");
+
+    const auto before = readBytes(harness.project.render_config);
+    const auto read = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+    const auto calls = harness.runtime.apply_calls;
+    const Json lighting_into_lit = fr3GraphEdit(Json::array({{{"op", "set_input"}, {"node", "deferred_lighting"},
+                                                              {"port", "color"},
+                                                              {"source", {{"node", "lit_color_ref"},
+                                                                          {"port", "resource"}}}}}));
+    const Json present_reads_lit{
+        {"method", "edit_preset_pass"},
+        {"params", {{"graph", "main_render"}, {"pass_name", "present"}, {"input", Json::array({"lit_color"})},
+                    {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+                    {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}}}};
+    const auto accepted = harness.service->editBatch(
+        {{"base_source_digest", harness.digest()}, {"edits", Json::array({lighting_into_lit, present_reads_lit})}});
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    CHECK(accepted.at("methods") == nlohmann::ordered_json::array({"edit_graph_document", "edit_preset_pass"}));
+    const auto committed = harness.settle(accepted);
+    INFO(committed.dump());
+    REQUIRE(committed.at("status") == "committed");
+    CHECK(committed.at("operation") == "edit_batch");
+    CHECK(harness.runtime.apply_calls == calls + 1);
+    CHECK(Json(committed.at("documents")) ==
+          Json{{"passes/main.json", renderConfigSourceDigest(readBytes(harness.project.render_config))}});
+    {
+        const auto &plan = harness.runtime.frame_plan;
+        INFO(plan.dump());
+        const auto *lighting = fr3PlanNode(plan, "deferred_lighting");
+        const auto *present = fr3PlanNode(plan, "present");
+        REQUIRE(lighting != nullptr);
+        REQUIRE(present != nullptr);
+        CHECK(fr3Lists(lighting->at("writes"), "lit_color"));
+        CHECK(present->at("reads") == Json::array({"lit_color"}));
+    }
+
+    // RD-1: the two edits are one undo.
+    const auto restored = harness.settle(harness.service->restoreRenderDocuments(
+        {{"documents", Json::array({rd1Restore(read.at("passes/main.json"),
+                                               Json(committed.at("documents").at("passes/main.json")))})}}));
+    INFO(restored.dump());
+    REQUIRE(restored.at("status") == "committed");
+    CHECK(readBytes(harness.project.render_config) == before);
+    const auto *present = fr3PlanNode(harness.runtime.frame_plan, "present");
+    REQUIRE(present != nullptr);
+    CHECK(present->at("reads") == Json::array({"deferred_lighting__color"}));
+}
+
+// FR-4: edit_preset_pass, edit_compute_task and remove_compute_task read the
+// project preset or feature they rewrite as the editor holds it, so inside
+// edit_batch each builds on what the edit before it made of the same
+// document; every digest the caller sends is the document's as it read it,
+// before the batch.
+TEST_CASE("FR-4 edit_batch takes edit_preset_pass with a compute task edit on one project preset or feature, "
+          "each on what the edit before it made",
+          "[render-config-editor][fr4][edit-batch][compute-task-edit][preset-pass-edit]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    const Json preset_task{{"name", "preset_task"}, {"shader", "project://shaders/probe"},
+                           {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}};
+    auto feature_task = preset_task;
+    feature_task["name"] = "feature_task";
+    auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
+    preset["config"]["compute_tasks"] = Json::array({preset_task});
+    Json present_output;
+    for (const auto &pass : preset.at("config").at("rendering_passes").at(0).at("passes"))
+        if (pass.at("name") == "scene_present") present_output = pass.at("output");
+    REQUIRE(present_output.is_object());
+    const auto preset_path = project.root / "passes" / "owned.json";
+    writeBytes(preset_path, preset.dump(2));
+    const Json overlay{{"name", "probe_overlay"}, {"type", "fullscreen"}, {"input", Json::array({"gbuffer_albedo"})},
+                       {"output", {{"color", Json::array({"lit_color"})}, {"depth", nullptr}}},
+                       {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}},
+                       {"color_load_op", "load"}};
+    const auto feature_path = project.root / "passes" / "probe_feature.json";
+    writeBytes(feature_path, Json{{"schema", "pelican.render_feature"}, {"version", 1}, {"name", "probe_feature"},
+                                  {"passes", Json::array({{{"insert", "after:deferred_lighting"}, {"pass", overlay}}})},
+                                  {"compute_tasks", Json::array({feature_task})}}
+                                 .dump(2));
+    writeBytes(project.render_config,
+               Pelican::TestSupport::renderGraphRoot(
+                   Json{{"pipeline", {{"preset", "project://passes/owned.json"}}},
+                        {"features", Json::array({"project://passes/probe_feature.json"})}})
+                   .dump(2));
+    const auto root_before = readBytes(project.render_config);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+
+    const auto settle = [&](const nlohmann::ordered_json &answer) {
+        INFO(answer.dump());
+        REQUIRE(answer.at("status") == "accepted");
+        service->commitPending();
+        return service->getResult({{"ticket", answer.at("ticket")}});
+    };
+    const auto task_digest = [&](std::string_view name) {
+        const auto catalog = service->getComputeTaskAuthoring(Json::object());
+        INFO(catalog.dump());
+        for (const auto &task : catalog.at("tasks"))
+            if (task.at("name").get<std::string>() == name && task.at("editable").get<bool>())
+                return task.at("source_digest").at("hex").get<std::string>();
+        FAIL("no editable task " << name);
+        return std::string{};
+    };
+    const auto batch = [&](Json edits) {
+        const auto root_digest = service->getRenderAuthoringContext(Json::object()).at("source_digest").at("hex");
+        return settle(service->editBatch({{"base_source_digest", root_digest}, {"edits", std::move(edits)}}));
+    };
+    // RD-1: every document the batch wrote, back as it was read before it.
+    const auto restore = [&](const std::map<std::string, Json> &read, const nlohmann::ordered_json &committed) {
+        auto documents = Json::array();
+        for (const auto &[reference, digest] : committed.at("documents").items()) {
+            INFO(reference);
+            REQUIRE(read.contains(reference));
+            documents.push_back(rd1Restore(read.at(reference), Json(digest)));
+        }
+        return settle(service->restoreRenderDocuments({{"documents", std::move(documents)}}));
+    };
+
+    SECTION("the project preset: a pass, then a task") {
+        const auto preset_digest = service->getRenderAuthoringContext(Json::object())
+                                       .at("pipeline_preset").at("source_digest").at("hex").get<std::string>();
+        REQUIRE(task_digest("preset_task") == preset_digest);
+        const auto preset_before = readBytes(preset_path);
+        const auto read = rd1Documents(service->getRenderDocuments(Json::object()));
+        auto changed = preset_task;
+        changed["dispatch"]["groups"] = {2, 1, 1};
+        const auto committed = batch(Json::array({
+            {{"method", "edit_preset_pass"},
+             {"params", {{"base_preset_digest", preset_digest}, {"graph", "main_render"}, {"pass_name", "scene_present"},
+                         {"input", Json::array({"gbuffer_albedo"})}, {"output", present_output},
+                         {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}}}}},
+            {{"method", "edit_compute_task"},
+             {"params", {{"base_task_source_digest", preset_digest}, {"task_name", "preset_task"}, {"task", changed}}}},
+        }));
+        INFO(committed.dump());
+        REQUIRE(committed.at("status") == "committed");
+        CHECK(committed.at("methods") == nlohmann::ordered_json::array({"edit_preset_pass", "edit_compute_task"}));
+        CHECK(committed.at("documents").contains("project://passes/owned.json"));
+        const auto written = Json::parse(readBytes(preset_path));
+        for (const auto &pass : written.at("config").at("rendering_passes").at(0).at("passes"))
+            if (pass.at("name") == "scene_present") CHECK(pass.at("input") == Json::array({"gbuffer_albedo"}));
+        CHECK(written.at("config").at("compute_tasks") == Json::array({changed}));
+        CHECK(readBytes(project.render_config) == root_before);
+
+        const auto restored = restore(read, committed);
+        INFO(restored.dump());
+        REQUIRE(restored.at("status") == "committed");
+        CHECK(readBytes(preset_path) == preset_before);
+    }
+    SECTION("a project feature: a pass, then the task removed") {
+        const auto feature_digest = renderConfigSourceDigest(readBytes(feature_path));
+        REQUIRE(task_digest("feature_task") == feature_digest);
+        const auto feature_before = readBytes(feature_path);
+        const auto read = rd1Documents(service->getRenderDocuments(Json::object()));
+        const auto committed = batch(Json::array({
+            {{"method", "edit_preset_pass"},
+             {"params", {{"base_feature_digest", feature_digest}, {"graph", "main_render"},
+                         {"pass_name", "probe_overlay"}, {"input", Json::array({"gbuffer_normal"})},
+                         {"output", overlay.at("output")}, {"shader", overlay.at("shader")}}}},
+            {{"method", "remove_compute_task"},
+             {"params", {{"base_task_source_digest", feature_digest}, {"task_name", "feature_task"}}}},
+        }));
+        INFO(committed.dump());
+        REQUIRE(committed.at("status") == "committed");
+        CHECK(committed.at("methods") == nlohmann::ordered_json::array({"edit_preset_pass", "remove_compute_task"}));
+        CHECK(committed.at("documents").contains("project://passes/probe_feature.json"));
+        const auto written = Json::parse(readBytes(feature_path));
+        CHECK(written.at("passes").at(0).at("pass").at("input") == Json::array({"gbuffer_normal"}));
+        CHECK(written.at("compute_tasks") == Json::array());
+        CHECK(readBytes(project.render_config) == root_before);
+
+        const auto restored = restore(read, committed);
+        INFO(restored.dump());
+        REQUIRE(restored.at("status") == "committed");
+        CHECK(readBytes(feature_path) == feature_before);
+    }
 }
 
 } // namespace Pelican

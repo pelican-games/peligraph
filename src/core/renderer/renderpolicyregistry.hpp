@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../renderingpass/providerlisting.hpp"
 #include "../userpublic/details/reload/registrationowner.hpp"
 #include "../userpublic/render/draw_sort_abi_v1.hpp"
 
@@ -8,6 +9,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Pelican {
 
@@ -72,6 +74,10 @@ class RenderPolicyRegistry {
 
     DrawSortProviderLease
     resolveDrawSortProvider(std::string_view name) const;
+
+    // EL-6: every provider a draw_sort opaque / transparent provider may
+    // name now (each name resolveDrawSortProvider resolves), by name.
+    std::vector<RenderProviderListing> drawSortProviderListing() const;
 
     // Candidate registrations stay invisible until their game-DLL owner is
     // committed. Releasing an owner takes the exclusive registry lock and

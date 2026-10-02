@@ -48,7 +48,8 @@ sprite::Bounds2 commandBounds(const glm::mat4 &world, const SpriteViewComponent 
     sprite::Bounds2 result{std::numeric_limits<float>::max(), std::numeric_limits<float>::max(),
                            std::numeric_limits<float>::lowest(), std::numeric_limits<float>::lowest()};
     for (const glm::vec2 corner : {glm::vec2{0, 0}, glm::vec2{1, 0}, glm::vec2{1, 1}, glm::vec2{0, 1}}) {
-        const auto p = world * glm::vec4{corner.x - view.pivot.x, corner.y - view.pivot.y, 0.0f, 1.0f};
+        // CC-1a: the quad spriterenderer.cpp draws (image y down, local y up).
+        const auto p = world * glm::vec4{corner.x - view.pivot.x, view.pivot.y - corner.y, 0.0f, 1.0f};
         result.min_x = std::min(result.min_x, p.x);
         result.min_y = std::min(result.min_y, p.y);
         result.max_x = std::max(result.max_x, p.x);

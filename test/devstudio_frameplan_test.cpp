@@ -1407,3 +1407,34 @@ TEST_CASE("WP367 Studio strictly consumes sparse anyhit slots",
                 "requires both hit_slot_count and closesthit_slots"));
     }
 }
+
+TEST_CASE("IA-1s decision 3: a physical resource names the asset it starts from and its "
+          "manifest sha256",
+          "[devstudio][frame-plan][ia1s]") {
+    Json input = Json::parse(capturedResponse());
+    bool listed = false;
+    for (auto &resource : input["physical_target_plan"]["resources"]) {
+        if (resource["logical_resource"] == "Bloom_Threshold_RT") {
+            resource["initial_asset"] = {
+                {"asset", "assets/images/ltc_1.ktx2"},
+                {"sha256", "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b"}};
+            listed = true;
+        } else if (resource["logical_resource"] == "g_emissive") {
+            resource["initial_asset"] = {{"asset", "assets/images/ramp.png"}, {"sha256", nullptr}};
+        } else {
+            resource["initial_asset"] = nullptr;
+        }
+    }
+    REQUIRE(listed);
+    const FramePlanModel model = buildFramePlanModel(input.dump());
+    REQUIRE(model.physical_plan.available());
+    std::map<std::string, std::string> lines;
+    for (const auto &resource : model.resources)
+        if (resource.initial_asset)
+            lines.emplace(resource.name, framePlanInitialAssetLine(*resource.initial_asset));
+    CHECK(lines == std::map<std::string, std::string>{
+                       {"Bloom_Threshold_RT",
+                        "initial: assets/images/ltc_1.ktx2 \xC2\xB7 sha256 1a2b3c4d"},
+                       {"g_emissive",
+                        "initial: assets/images/ramp.png \xC2\xB7 not in the manifest"}});
+}

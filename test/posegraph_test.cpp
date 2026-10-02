@@ -178,14 +178,24 @@ TEST_CASE("a clip sample carries the component's playback parameters",
     full["start_time"] = 0.5;
     full["loop"] = false;
     REQUIRE_NOTHROW(builtinGraphModuleRegistry().resolveOperation(node(full)));
+    // CT-3: a value of the wrong kind is refused by name, from the
+    // parameter table the catalog lists.
+    const auto invalid = [&](const Json &parameters, const char *parameter, const char *reason) {
+        try {
+            (void)builtinGraphModuleRegistry().resolveOperation(node(parameters));
+            FAIL("accepted " << parameters.dump());
+        } catch (const GraphRegistryError &error) {
+            REQUIRE(error.code() == "graph.render_node_parameter_invalid@1");
+            REQUIRE(error.detail().at("parameter") == parameter);
+            REQUIRE(error.detail().at("reason") == reason);
+        }
+    };
     auto bad_loop = base;
     bad_loop["loop"] = 1;
-    REQUIRE_THROWS_AS(builtinGraphModuleRegistry().resolveOperation(node(bad_loop)),
-                      std::invalid_argument);
+    invalid(bad_loop, "loop", "type");
     auto bad_speed = base;
     bad_speed["speed"] = "fast";
-    REQUIRE_THROWS_AS(builtinGraphModuleRegistry().resolveOperation(node(bad_speed)),
-                      std::invalid_argument);
+    invalid(bad_speed, "speed", "type");
 
     // The backend reads the same three through the same two functions, so a
     // node cannot mean one thing to the catalog and another to the evaluator.
@@ -330,8 +340,14 @@ TEST_CASE("root motion is a clip_sample parameter with its own classification",
 
     auto unusable = base;
     unusable["root_motion"] = "sideways";
-    REQUIRE_THROWS_AS(builtinGraphModuleRegistry().resolveOperation(node(unusable)),
-                      std::invalid_argument);
+    try {
+        (void)builtinGraphModuleRegistry().resolveOperation(node(unusable));
+        FAIL("root motion sideways was accepted");
+    } catch (const GraphRegistryError &error) {
+        REQUIRE(error.code() == "graph.render_node_parameter_invalid@1");
+        REQUIRE(error.detail().at("parameter") == "root_motion");
+        REQUIRE(error.detail().at("reason") == "enum");
+    }
     // Extracting without saying from which node is the same thing to the author
     // as naming a node the rig does not have, so it is the same name.
     auto nameless = base;

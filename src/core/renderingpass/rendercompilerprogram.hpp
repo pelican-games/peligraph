@@ -6,6 +6,7 @@
 #include "../../project/renderpipeline.hpp"
 
 #include <cstdint>
+#include <exception>
 #include <functional>
 #include <memory>
 #include <set>
@@ -120,6 +121,11 @@ struct RenderCompilerProgramVariantOutput {
     std::unique_ptr<
         RenderCompilerBackendPhysicalPackage>
         physical_package;
+    // PV-1: a data_only artifact only. The program could not compose this
+    // request-local artifact from an authoring the runtime artifacts of the
+    // same invocation accepted; this is why. Everything else is left empty
+    // (compiled_pipeline null). The runtime artifacts stand and publish.
+    std::exception_ptr unavailable;
 };
 
 struct RenderCompilerProgramOutput {

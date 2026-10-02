@@ -1,15 +1,22 @@
 #include "graphmodule.hpp"
 #include "featurecompose.hpp"
+#include "graphparameterschema.hpp"
 #include "materialoutput.hpp"
 #include "renderpipeline.hpp"
 #include "shaderresourceport.hpp"
 #if PELICAN_WITH_ANIMATION
 #include "posegraphmodule.hpp"
 #endif
+#if PELICAN_WITH_CANVAS
+#include "canvas/canvasmodule.hpp"
+#endif
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 #include <memory>
 #include <set>
+#include <string_view>
 #include <utility>
 
 namespace Pelican {
@@ -256,26 +263,10 @@ void checkDrawStepParameters(const std::string &op, const Json &parameters, cons
 // also be an input edge of that name: an audio.volume writes the voice its
 // `voice` edge brings, or the sound its `target` names; a render.attribute
 // takes its count from `count` or from its `source`.
-std::vector<std::vector<std::string_view>> renderNodeRequiredParameters(std::string_view op) {
-    if (op == "render.fullscreen") return {{"ports"}, {"shader"}};
-    if (op == "render.raster") return {{"ports"}, {"shader"}, {"draw"}};
-    if (op == "render.compute") return {{"ports"}, {"shader", "ray_tracing"}};
-    if (op == "render.material_pass") return {{"material_contract"}};
-    if (op == "render.snapshot_copy") return {{"snapshot_after"}};
-    if (op == "render.target_ref") return {{"name"}, {"type"}};
-    if (op == "render.image") return {{"type"}};
-    if (op == "render.buffer") return {{"element"}};
-    if (op == "render.attribute") return {{"element"}, {"domain"}, {"count", "source"}};
-    if (op == "render.scalar") return {{"target"}};
-    if (op == "value.input") return {{"name"}};
-    if (op == "value.constant") return {{"value"}};
-    if (op == "value.parameter") return {{"name"}, {"default"}};
-    if (op == "value.morph_weight") return {{"node"}, {"target"}};
-    if (op == "value.curve") return {{"keys"}};
-    if (op == "audio.playback") return {{"asset"}};
-    if (op == "audio.volume" || op == "audio.pitch") return {{"target", "voice"}};
-    if (op == "ui.value" || op == "ui.visible") return {{"node"}};
-    return {};
+// CT-3: read off the parameter schema's `required` entries
+// (graphparameterschema.cpp), the one table the catalog lists.
+std::vector<std::vector<std::string>> renderNodeRequiredParameters(std::string_view op) {
+    return graphOperationRequiredParameters(op);
 }
 
 // RS-9: graph.render_node_parameters_missing@1 {node, op, missing} when the
@@ -293,12 +284,12 @@ void checkRenderNodeRequiredParameters(const std::string &op, const Json &node) 
     const bool has_inputs = found_inputs != node.end() && found_inputs->is_object();
     auto missing = Json::array();
     for (const auto &alternatives : required) {
-        const bool given = std::any_of(alternatives.begin(), alternatives.end(), [&](std::string_view name) {
-            const auto found = parameters.find(std::string{name});
+        const bool given = std::any_of(alternatives.begin(), alternatives.end(), [&](const std::string &name) {
+            const auto found = parameters.find(name);
             return (found != parameters.end() && !found->is_null()) ||
-                   (has_inputs && found_inputs->contains(std::string{name}));
+                   (has_inputs && found_inputs->contains(name));
         });
-        if (!given) missing.push_back(std::string{alternatives.front()});
+        if (!given) missing.push_back(alternatives.front());
     }
     if (!missing.empty())
         throw GraphRegistryError("graph.render_node_parameters_missing@1",
@@ -336,6 +327,63 @@ void checkRenderPortDeclaration(const Json &node, const std::string &port, const
     if (const auto attachment = declaration.find("attachment");
         attachment != declaration.end() && *attachment == "color" && !declaration.contains("location"))
         missing("location");
+}
+
+// EN-2: what a render.image's parameters may hold. Everything else is refused
+// by name (graph.image_parameter_unknown@1 {node, key}) rather than passed to
+// the target declaration, which ignored it.
+bool isRenderImageParameter(std::string_view key) {
+    static const std::set<std::string, std::less<>> keys{"type", "format", "format_class", "format_candidates",
+        "role", "extent_scale", "width", "height", "layers", "dimension", "mip_levels", "usage", "history",
+        "clear_color", "source", "lifetime", "initial"};
+    return keys.contains(key);
+}
+
+// EN-2: a render.image read from a project image file:
+//   "source": {"asset": "project://...png", "color_space": "srgb" | "linear",
+//              "alpha": "straight" | "premultiply", "mips": "none" | "full"}
+// The file decides its size, format, usage and contents (which it keeps from
+// frame to frame), so a parameter that would say them as well, IA-1's
+// `initial` and PS-1's `lifetime` among them, is refused
+// (graph.image_source_conflict@1 {node, key}). The
+// source's `width` and `height` are the file's size: registration writes them
+// once it has read the file, and an authored value must match it.
+void checkRenderImageSource(const Json &parameters, const Json &node) {
+    const auto id = nodeId(node);
+    for (const auto &[key, value] : parameters.items()) {
+        (void)value;
+        if (!isRenderImageParameter(key))
+            throw GraphRegistryError("graph.image_parameter_unknown@1", {{"node", id}, {"key", key}});
+    }
+    const auto source = parameters.find("source");
+    if (source == parameters.end()) return;
+    const auto invalid = [&](const std::string &field, const char *reason) {
+        throw GraphRegistryError("graph.image_source_invalid@1",
+                                 {{"node", id}, {"field", field}, {"reason", reason}});
+    };
+    if (!source->is_object()) invalid("source", "not_an_object");
+    for (const auto &[key, value] : source->items()) {
+        if (key == "asset") {
+            if (!value.is_string() || value.get_ref<const std::string &>().empty()) invalid(key, "not_a_reference");
+        } else if (key == "color_space" || key == "alpha" || key == "mips") {
+            const auto &allowed = key == "color_space" ? std::set<std::string>{"srgb", "linear"}
+                                  : key == "alpha"     ? std::set<std::string>{"straight", "premultiply"}
+                                                       : std::set<std::string>{"none", "full"};
+            if (!value.is_string() || !allowed.contains(value.get<std::string>())) invalid(key, "unknown_value");
+        } else if (key == "width" || key == "height") {
+            if (!value.is_number_integer() || value.get<std::int64_t>() <= 0 ||
+                value.get<std::int64_t>() > (std::numeric_limits<std::uint32_t>::max)())
+                invalid(key, "not_a_positive_integer");
+        } else {
+            invalid(key, "unknown");
+        }
+    }
+    if (!source->contains("asset")) invalid("asset", "missing");
+    for (const auto *key : {"extent_scale", "width", "height", "layers", "dimension", "mip_levels", "format",
+                            "format_class", "format_candidates", "usage", "history", "clear_color", "lifetime",
+                            "initial"})
+        if (parameters.contains(key))
+            throw GraphRegistryError("graph.image_source_conflict@1", {{"node", id}, {"key", key}});
 }
 
 // Render resources and passes declare their own ports, so pelican.render
@@ -403,6 +451,12 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
         contract.outputs.emplace("resource", bufferType(registry, parameters, parameterFieldMissing(op, node)));
         contract.inputs.emplace("value", GraphInputContract{exactLogicalTypePattern(registry, scalar), false});
     } else if (op == "render.image") {
+        checkRenderImageSource(parameters, node);
+        // PS-1: persistent keeps its contents from frame to frame.
+        if (const auto lifetime = parameters.find("lifetime");
+            lifetime != parameters.end() &&
+            (!lifetime->is_string() || (*lifetime != "persistent" && *lifetime != "transient")))
+            throw std::invalid_argument("render.image lifetime must be persistent or transient: " + nodeId(node));
         auto declaration = parameters;
         declaration["kind"] = "image";
         contract.outputs.emplace("resource", resourceType(registry, declaration, parameterFieldMissing(op, node)));
@@ -488,6 +542,17 @@ GraphOperationContract renderPorts(const LogicalTypeRegistry &registry,
             }
             if (access != "read") contract.outputs.emplace(port, type);
         }
+        // PS-1: when the pass or task runs. A compute task also keeps its
+        // per_view (one dispatch per logical view).
+        if (const auto schedule = parameters.find("schedule"); schedule != parameters.end()) {
+            const bool known = schedule->is_string() &&
+                (*schedule == "per_frame" || *schedule == "once" ||
+                 (op == "render.compute" && *schedule == "per_view"));
+            if (!known)
+                throw std::invalid_argument(op == "render.compute"
+                    ? "render.compute schedule must be per_frame, per_view or once: " + nodeId(node)
+                    : op + " schedule must be per_frame or once: " + nodeId(node));
+        }
         checkRenderPlacement(op, parameters, node);
     } else {
         throw GraphRegistryError("graph.operation_unregistered@1",
@@ -560,11 +625,11 @@ OrderedJson operationJson(const std::string &op, const GraphOperationRegistratio
     auto required = OrderedJson::array();
     for (const auto &alternatives : renderNodeRequiredParameters(op)) {
         if (alternatives.size() == 1) {
-            required.push_back(OrderedJson{{"name", std::string{alternatives.front()}}});
+            required.push_back(OrderedJson{{"name", alternatives.front()}});
             continue;
         }
         auto names = OrderedJson::array();
-        for (const auto name : alternatives) names.push_back(std::string{name});
+        for (const auto &name : alternatives) names.push_back(name);
         required.push_back(OrderedJson{{"one_of", std::move(names)}});
     }
     OrderedJson result{{"op", op},
@@ -573,6 +638,18 @@ OrderedJson operationJson(const std::string &op, const GraphOperationRegistratio
                        {"change", std::move(change)},
                        {"sink", sink},
                        {"required_parameters", std::move(required)}};
+    // CT-3: what each parameter holds, from the same table.
+    auto parameters_schema = OrderedJson::array();
+    bool complete = false;
+    if (const auto *schema = graphOperationParameters(op)) {
+        for (const auto &parameter : schema->parameters)
+            parameters_schema.push_back(graphParameterSchemaJson(parameter));
+        complete = schema->complete;
+    }
+    result["parameters"] = std::move(parameters_schema);
+    result["parameters_complete"] = complete;
+    // CT-4: where a node of the op may stand, from the same table.
+    result["placement"] = std::string{graphOperationPlacementName(graphOperationPlacement(op))};
     // CT-1: the names value.input's `name` takes, from the table the frame
     // checks them against.
     if (op == "value.input") {
@@ -670,6 +747,8 @@ GraphOperationContract GraphModuleRegistry::resolveOperation(const nlohmann::jso
     // RS-9 / RS-15: what the op cannot do without, for a declared contract
     // and a factory alike.
     checkRenderNodeRequiredParameters(op, node);
+    // CT-3: a value of the wrong kind, named before the op's parser reads it.
+    checkGraphNodeParameterTypes(op, node);
     auto contract = registration.factory ? registration.factory(node) : registration.contract;
     if (registration.factory) {
         // The module declares the classification once; a factory supplies ports.
@@ -766,6 +845,15 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
             {"value.add", value({{"a", required}, {"b", required}}, value_output)},
             {"value.multiply", value({{"a", required}, {"b", required}}, value_output)},
             {"value.curve", value({{"time", required}}, value_output)},
+            // AB-1: a row of a baked table (bake_audio_analysis) at `time`,
+            // scene_time when no edge brings one. The table is read when the
+            // graph is built, so another asset or row rebuilds it.
+            {"value.sample_table", [&] {
+                auto registration = value({{"time", optional}}, value_output, GraphOperationEvaluation::baked);
+                registration.contract.parameter_changes = {{"asset", GraphParameterChange::rebuild},
+                                                           {"row", GraphParameterChange::rebuild}};
+                return registration;
+            }()},
             {"value.playback", value({{"elapsed", required}, {"source_begin", optional},
                 {"source_end", optional}, {"duration", optional}, {"speed", optional},
                 {"delay", optional}, {"sample_interval", optional}}, value_output)},
@@ -891,6 +979,12 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
     // build without the animation backend simply never calls this, and a
     // document naming a pose operation is rejected as graph.operation_unregistered@1.
     registerPoseGraphModule(registry);
+#endif
+#if PELICAN_WITH_CANVAS
+    // CV-1: registered like the pose module. The canvas nodes never run; a
+    // build without the module refuses a document naming one as
+    // graph.operation_unregistered@1.
+    registerCanvasGraphModule(registry);
 #endif
     return registry;
 }

@@ -1,14 +1,24 @@
 #include "../src/core/watch/reloadservice.hpp"
 #include "../src/core/watch/reloadtransaction.hpp"
+#include "../src/core/watch/reloadgate.hpp"
+#include "../src/core/container.hpp"
+#include "../src/core/launchconfig.hpp"
+#include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/log.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <memory>
+#include <optional>
+#include <span>
 #include <stdexcept>
 #include <thread>
 
@@ -354,6 +364,154 @@ TEST_CASE("ReloadService status preserves HR0 fields and adds resource counters 
     REQUIRE(json.at("last_reload_error").at("path") == "fake/a.bin");
     REQUIRE(json.at("last_reload_error").at("kind") == "transaction");
     REQUIRE(json.at("last_reload_error").at("message") == "invalid fake candidate");
+    // HW-1: no declaration, no watcher.
+    REQUIRE(json.at("watch").is_null());
+    REQUIRE(json.at("scans") == 0);
+    REQUIRE(json.at("hashed_files") == 0);
+    REQUIRE(json.at("hashed_bytes") == 0);
+}
+
+namespace {
+
+void writeHw1File(const std::filesystem::path &path, std::string_view text, bool aged) {
+    std::filesystem::create_directories(path.parent_path());
+    {
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output.write(text.data(), static_cast<std::streamsize>(text.size()));
+    }
+    // Aged: the watcher's start-up records it without hashing, and its later
+    // scans trust the listed size and mtime.
+    std::filesystem::last_write_time(
+        path, std::filesystem::file_time_type::clock::now() -
+                  (aged ? std::chrono::minutes{60} : std::chrono::minutes{30}));
+}
+
+template <class Predicate>
+bool waitFor(Predicate predicate) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{8};
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (predicate()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    }
+    return predicate();
+}
+
+struct Hw1Run {
+    nlohmann::json status_before_setup;
+    nlohmann::json status;
+    std::vector<std::string> texture_keys;
+    std::size_t render_pipeline_batches = 0;
+};
+
+// ReloadService::setup on a project whose project.json declares (or does not
+// declare) `hot_reload`, launched with or without an RPC driver. Writes a
+// texture and a render document inside the declaration and a file outside
+// it, then applies one frame of what the watcher queued.
+Hw1Run runHw1Watch(bool rpc, std::optional<nlohmann::json> hot_reload) {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_hw1_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() { std::error_code ec; std::filesystem::remove_all(root, ec); }
+    } cleanup{root};
+    const auto texture = root / "assets" / "textures" / "a.png";
+    const auto document = root / "passes" / "main.json";
+    const auto outside = root / "assets" / "other" / "b.png";
+    for (const auto &path : {texture, document, outside}) writeHw1File(path, "v1", true);
+
+    Hw1Run run;
+    FastModuleContainer modules;
+    EngineLaunchConfig launch;
+    launch.shader_hot_reload = true;
+    launch.rpc = rpc;
+    GET_MODULE(ReloadGate).configureFromLaunch(launch);
+    auto project = nlohmann::json{{"schema", "pelican.project"}, {"version", 1}, {"basic_config", nlohmann::json::object()}};
+    if (hot_reload) project["hot_reload"] = *hot_reload;
+    GET_MODULE(PathResolver).setup(root, false, parseProjectEnvelopeJson(project).envelope);
+
+    ReloadService service;
+    service.registerParticipant(ReloadParticipant{
+        .name = std::string{renderPipelineReloadParticipantName},
+        .file = FileReloadRole{
+            .claims = [](const ReloadRequest &request) { return request.key.path == "passes/main.json"; },
+            .apply = BatchReloadApply{.apply_batch = [&run](std::span<const ReloadRequest>) {
+                ++run.render_pipeline_batches;
+                return true;
+            }},
+        },
+    });
+    service.registerParticipant(ReloadParticipant{
+        .name = "fake.textures",
+        .file = FileReloadRole{
+            .claims = [](const ReloadRequest &request) { return request.key.path.ends_with(".png"); },
+            .apply = BatchReloadApply{.apply_batch = [&run](std::span<const ReloadRequest> requests) {
+                for (const auto &request : requests) run.texture_keys.push_back(request.key.path);
+                return true;
+            }},
+        },
+    });
+    run.status_before_setup = service.statusJson();
+    service.setup(GET_MODULE(PathResolver));
+    const auto gate_open = GET_MODULE(ReloadGate).enabled();
+    if (gate_open) {
+        REQUIRE(waitFor([&] { return service.statusJson().at("state") == "watching"; }));
+        for (const auto &path : {texture, document, outside}) writeHw1File(path, "v2 changed", false);
+        const auto expected = hot_reload ? std::size_t{2} : std::size_t{3};
+        REQUIRE(waitFor([&] { return service.watcherForTesting()->pendingCount() >= expected; }));
+        // Late notifications of the same writes add nothing.
+        std::this_thread::sleep_for(std::chrono::milliseconds{400});
+        CHECK(service.watcherForTesting()->pendingCount() == expected);
+        service.applyFrame();
+    }
+    run.status = service.statusJson();
+    return run;
+}
+
+} // namespace
+
+TEST_CASE("HW-1 a declared watch runs under an RPC driver and never reaches the render pipeline",
+          "[hw1][reload-service][status]") {
+    if (!logger) setupLogger();
+    const auto declared = nlohmann::json::array({"assets/textures", "passes/"});
+
+    SECTION("RPC driver and a declaration: the texture is applied, the render document is not") {
+        const auto run = runHw1Watch(true, declared);
+        CHECK(run.status_before_setup.at("error") == "rpc driver");
+        CHECK(run.status.at("state") == "watching");
+        CHECK(run.status.at("watch") == nlohmann::json::array({"assets/textures", "passes"}));
+        CHECK(run.status.at("scans").get<std::uint64_t>() >= 1);
+        CHECK(run.status.at("hashed_files").get<std::uint64_t>() >= 2);
+        CHECK(run.status.at("hashed_bytes").get<std::uint64_t>() >= 2 * std::string_view{"v2 changed"}.size());
+        CHECK(run.texture_keys == std::vector<std::string>{"assets/textures/a.png"});
+        CHECK(run.render_pipeline_batches == 0);
+    }
+    SECTION("no RPC driver and a declaration: the render document reaches its participant") {
+        const auto run = runHw1Watch(false, declared);
+        CHECK(run.texture_keys == std::vector<std::string>{"assets/textures/a.png"});
+        CHECK(run.render_pipeline_batches == 1);
+    }
+    SECTION("no RPC driver and no declaration: the whole project, as before") {
+        auto run = runHw1Watch(false, std::nullopt);
+        CHECK(run.status.at("watch").is_null());
+        std::ranges::sort(run.texture_keys);
+        CHECK(run.texture_keys ==
+              std::vector<std::string>{"assets/other/b.png", "assets/textures/a.png"});
+        CHECK(run.render_pipeline_batches == 1);
+    }
+    SECTION("RPC driver and no declaration: shut, the reason unchanged") {
+        const auto run = runHw1Watch(true, std::nullopt);
+        CHECK(run.status.at("state") == "disabled");
+        CHECK(run.status.at("error") == "rpc driver");
+        CHECK(run.status.at("watch").is_null());
+        CHECK(run.status.at("scans") == 0);
+    }
+    SECTION("RPC driver and an empty declaration: shut") {
+        const auto run = runHw1Watch(true, nlohmann::json::array());
+        CHECK(run.status.at("state") == "disabled");
+        CHECK(run.status.at("error") == "hot_reload empty");
+        CHECK(run.status.at("watch") == nlohmann::json::array());
+        CHECK(run.status.at("scans") == 0);
+    }
 }
 
 TEST_CASE("ReloadService routes requests through one named participant",

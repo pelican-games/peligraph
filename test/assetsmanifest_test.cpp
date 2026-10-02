@@ -1,13 +1,16 @@
 #include "../src/project/assetsmanifest.hpp"
+#include "../src/project/sha256stream.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace Pelican {
 
@@ -83,6 +86,43 @@ TEST_CASE("asset file hashing matches SHA-256 for empty, small, and multi-chunk 
     CHECK(assetFileSha256(small) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     CHECK(assetFileSha256(large) == "f578a61853ca2f4272dba551bd868420e22302fbb6d6dfc0cc80da1d2c7b779f");
     CHECK_THROWS(assetFileSha256(sandbox.store / "missing.bin"));
+}
+
+TEST_CASE("FW-1 Sha256Stream streams across the 1 MiB read unit like one-shot SHA-256",
+          "[assets][manifest][fw1][sha256]") {
+    Sandbox sandbox;
+    CHECK(sha256Hex("") == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    CHECK(sha256Hex("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+
+    // Reference digests from Python hashlib over byte i = (i * 131 + 7) & 0xff.
+    const std::pair<std::size_t, std::string> cases[] = {
+        {Sha256Stream::read_chunk_bytes - 1, "c27a704f6379855ce5af0db6208cfb79b4879f230290b48afd636eb4eaa3b166"},
+        {Sha256Stream::read_chunk_bytes, "b7f7ba5ce5463b3c84a283f779d7a652cbf99122de5923ba51627607ff1497d5"},
+        {Sha256Stream::read_chunk_bytes + 1, "5420b23d4fac850c1a38533d9427e301c0d1c398712bf0bac05a0d99163cd42a"},
+    };
+    for (const auto &[length, expected] : cases) {
+        std::string bytes(length, char{});
+        for (std::size_t i = 0; i < bytes.size(); ++i) {
+            bytes[i] = static_cast<char>((i * 131 + 7) & 0xff);
+        }
+        CHECK(sha256Hex(bytes) == expected);
+
+        Sha256Stream split;
+        std::size_t offset = 0;
+        std::size_t step = 1;
+        while (offset < bytes.size()) {
+            const auto count = std::min(step, bytes.size() - offset);
+            split.update(bytes.data() + offset, count);
+            offset += count;
+            step = step * 3 + 1;
+        }
+        CHECK(split.finishHex() == expected);
+        CHECK_THROWS(split.finishHex());
+
+        const auto file = sandbox.store / ("boundary-" + std::to_string(length) + ".bin");
+        writeText(file, bytes);
+        CHECK(assetFileSha256(file) == expected);
+    }
 }
 
 TEST_CASE("assets manifest generation is byte-idempotent and reuses unchanged hashes",

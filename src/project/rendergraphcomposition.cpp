@@ -151,7 +151,8 @@ std::set<std::string> declarationWrites(const Json &declaration);
 LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &document,
     const std::set<std::string> &inactive_scopes, const GraphModuleRegistry &modules,
     const std::string &default_pass_family) {
-    const auto graph = partitionGraphDocument(document, modules).rendering;
+    const auto partitions = partitionGraphDocument(document, modules);
+    const auto &graph = partitions.rendering;
     LoweredRenderGraphDocument lowered;
     auto config = document.value("rendering", Json::object());
     // Existing global settings, presets and image passes can coexist during
@@ -216,6 +217,9 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
     std::map<std::string, std::pair<Json, Json>> graph_pass_edges;
     std::map<std::string, std::string> graph_pass_family;
     std::vector<PendingPlacement> pending_placements;
+    // The usages a render.snapshot_copy needs of the render.image nodes it
+    // copies from and into, by image node id.
+    std::map<std::string, std::set<std::string>> snapshot_image_usages;
     std::set<std::string> resolving;
     std::function<std::string(const Json &)> resourceName = [&](const Json &endpoint) {
         // LP-1b: a carried input, and one element of a loop's `p[]`, are
@@ -361,6 +365,21 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         }
         return std::nullopt;
     };
+    // EN-2: a file image (render.image with a source) is uploaded once and
+    // only sampled: graph.image_source_access@1 {node, port, image, reason}
+    // refuses a pass that writes it ("write"), reads it as a storage image
+    // ("storage"), reads its previous frame ("history") or copies from it
+    // ("copy").
+    const auto refuseFileImage = [&](const std::string &reader, const std::string &port, const Json &endpoint,
+                                     const char *reason) {
+        const auto image = writtenImage(endpoint);
+        if (!image) return;
+        const auto &declaration = *nodes.at(*image);
+        const auto parameters = declaration.find("parameters");
+        if (parameters != declaration.end() && parameters->is_object() && parameters->contains("source"))
+            throw GraphRegistryError("graph.image_source_access@1",
+                                     {{"node", reader}, {"port", port}, {"image", *image}, {"reason", reason}});
+    };
     for (const auto &node : graph.nodes) {
         const auto id = node.at("id").get<std::string>();
         const auto inputs = node.find("inputs");
@@ -389,6 +408,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         const auto *const body = bodyOf(id);
         for (const auto &port : ports) {
             if (!inputs->contains(port)) continue;
+            refuseFileImage(id, port, inputs->at(port), "write");
             const auto image = writtenImage(inputs->at(port));
             // A root pass writes a root image; a body's pass, a root image or
             // one of its own body.
@@ -396,6 +416,172 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             auto &writers = image_writers[*image];
             if (std::none_of(writers.begin(), writers.end(), [&](const ImageWriter &writer) { return writer.node == id; }))
                 writers.push_back({id, body, passFamily(node)});
+        }
+    }
+    // PS-1: a `schedule: "once"` pass or task runs only on the frames where
+    // something it depends on changed, and records nothing on the others.
+    // What it writes must keep its contents (graph.once_writes_transient@1
+    // {node, resource}), and what it reads must not change every frame
+    // without the engine seeing it (graph.once_reads_per_frame@1 {node,
+    // input}): a pass's output that runs every frame, a transient resource,
+    // a previous frame (history), a buffer whose value the value graph
+    // derives from time / delta_time / scene_time. A buffer the host writes
+    // from anything else is compared by its bytes each frame instead. A
+    // render.target_ref's lifetime is known after composition
+    // (resolveGraphDocumentAfterComposition); a loop's output is not judged.
+    {
+        const auto onceNode = [&](const Json &node) {
+            const auto op = node.at("op").get<std::string>();
+            if (op != "render.fullscreen" && op != "render.raster" && op != "render.compute") return false;
+            const auto parameters = node.find("parameters");
+            return parameters != node.end() && parameters->is_object() &&
+                   parameters->value("schedule", Json{}) == "once";
+        };
+        // The resource node an endpoint names, however far up the chain of
+        // passes it was handed down; null for a loop's output or a carry.
+        const auto resourceNode = [&](Json endpoint) -> const Json * {
+            std::set<std::string> seen;
+            while (endpoint.is_object() && endpoint.contains("node") && endpoint.at("node").is_string() &&
+                   !endpoint.contains(graphLoopOutputMarker) && !endpoint.contains(graphLoopCarryMarker)) {
+                const auto id = endpoint.at("node").get<std::string>();
+                const auto found = nodes.find(id);
+                if (found == nodes.end() || !seen.insert(id).second) return nullptr;
+                if (resourceOp(found->second->at("op").get<std::string>())) return found->second;
+                const auto inputs = found->second->find("inputs");
+                const auto port = endpoint.value("port", std::string{});
+                if (inputs == found->second->end() || !inputs->is_object() || !inputs->contains(port)) return nullptr;
+                endpoint = inputs->at(port);
+            }
+            return nullptr;
+        };
+        const auto lifetimeKept = [](const Json &resource) {
+            const auto parameters = resource.value("parameters", Json::object());
+            const auto lifetime = parameters.is_object() ? parameters.value("lifetime", Json{}) : Json{};
+            // An image is transient unless it says otherwise; a buffer keeps
+            // its contents unless it says otherwise (the buffer default).
+            return resource.at("op") == "render.image" ? lifetime == "persistent" : lifetime != "transient";
+        };
+        bool any_once = false;
+        for (const auto &node : graph.nodes)
+            if (!inactive(node.at("id").get<std::string>()) && onceNode(node)) any_once = true;
+        if (any_once) {
+            // Which nodes write each resource node (by id), as the writers
+            // above are found for images.
+            std::map<std::string, std::set<std::string>> writers;
+            for (const auto &node : graph.nodes) {
+                const auto id = node.at("id").get<std::string>();
+                const auto inputs = node.find("inputs");
+                if (inactive(id) || inputs == node.end() || !inputs->is_object()) continue;
+                const auto op = node.at("op").get<std::string>();
+                const auto parameters = node.value("parameters", Json::object());
+                std::vector<std::string> ports;
+                if (op == "render.shadow_depth") {
+                    ports.push_back("depth");
+                } else if (op == "render.snapshot_copy") {
+                    ports.push_back("destination");
+                } else if (op == "render.material_pass") {
+                    ports = renderMaterialPassColorPorts(parameters);
+                    ports.push_back("depth");
+                } else if (op == "render.fullscreen" || op == "render.raster" || op == "render.compute") {
+                    const auto declared = parameters.is_object() ? parameters.find("ports") : parameters.end();
+                    if (declared != parameters.end() && declared->is_object())
+                        for (const auto &[port, declaration] : declared->items()) {
+                            if (!declaration.is_object()) continue;
+                            const auto access = declaration.value("access", std::string{});
+                            if (access == "write" || access == "read_write" || declaration.contains("attachment"))
+                                ports.push_back(port);
+                        }
+                }
+                for (const auto &port : ports)
+                    if (inputs->contains(port))
+                        if (const auto *resource = resourceNode(inputs->at(port)))
+                            writers[resource->at("id").get<std::string>()].insert(id);
+            }
+            // Whether the value graph derives a buffer's value from a clock.
+            std::map<std::string, const Json *> value_nodes;
+            for (const auto &node : partitions.values.nodes)
+                value_nodes.emplace(node.at("id").get<std::string>(), &node);
+            const auto clocked = [&](const std::string &buffer) {
+                std::vector<std::string> pending;
+                for (const auto &node : partitions.values.nodes) {
+                    if (node.at("op") != "render.scalar") continue;
+                    const auto parameters = node.value("parameters", Json::object());
+                    if (!parameters.is_object() || parameters.value("target", Json{}) != buffer) continue;
+                    const auto scalar_inputs = node.value("inputs", Json::object());
+                    if (!scalar_inputs.is_object()) continue;
+                    if (const auto value = scalar_inputs.find("value");
+                        value != scalar_inputs.end() && value->is_object() && value->contains("node") &&
+                        value->at("node").is_string())
+                        pending.push_back(value->at("node").get<std::string>());
+                }
+                std::set<std::string> seen;
+                while (!pending.empty()) {
+                    const auto id = std::move(pending.back());
+                    pending.pop_back();
+                    if (!seen.insert(id).second) continue;
+                    const auto found = value_nodes.find(id);
+                    if (found == value_nodes.end()) continue;
+                    const auto &upstream = *found->second;
+                    if (upstream.at("op") == "value.input") {
+                        const auto name = upstream.value("parameters", Json::object()).value("name", std::string{});
+                        if (name == "time" || name == "delta_time" || name == "scene_time") return true;
+                    }
+                    const auto upstream_inputs = upstream.value("inputs", Json::object());
+                    if (!upstream_inputs.is_object()) continue;
+                    for (const auto &[port, edge] : upstream_inputs.items()) {
+                        (void)port;
+                        if (edge.is_object() && edge.contains("node") && edge.at("node").is_string())
+                            pending.push_back(edge.at("node").get<std::string>());
+                    }
+                }
+                return false;
+            };
+            for (const auto &node : graph.nodes) {
+                const auto id = node.at("id").get<std::string>();
+                if (inactive(id) || !onceNode(node)) continue;
+                const auto inputs = node.value("inputs", Json::object());
+                const auto ports = node.at("parameters").value("ports", Json::object());
+                if (!ports.is_object() || !inputs.is_object()) continue;
+                for (const auto &[port, declaration] : ports.items()) {
+                    if (!declaration.is_object() || !inputs.contains(port)) continue;
+                    const auto &endpoint = inputs.at(port);
+                    const auto access = declaration.value("access", std::string{});
+                    const auto *resource = resourceNode(endpoint);
+                    const auto refuseRead = [&] {
+                        throw GraphRegistryError("graph.once_reads_per_frame@1", {{"node", id}, {"input", port}});
+                    };
+                    if (access == "write" || access == "read_write" || declaration.contains("attachment")) {
+                        if (resource == nullptr) continue;
+                        if (resource->at("op") == "render.target_ref") {
+                            lowered.once_target_refs.push_back(
+                                {id, port, resource->at("parameters").at("name").get<std::string>(), true});
+                            continue;
+                        }
+                        if (!lifetimeKept(*resource))
+                            throw GraphRegistryError("graph.once_writes_transient@1",
+                                                     {{"node", id}, {"resource", resource->at("id")}});
+                        continue;
+                    }
+                    if (access != "read") continue;
+                    if (declaration.value("history", false)) refuseRead();
+                    // A pass's output handed straight in.
+                    if (const auto producer = producerOf(endpoint);
+                        !producer.empty() && !onceNode(*nodes.at(producer)))
+                        refuseRead();
+                    if (resource == nullptr) continue;
+                    const auto resource_id = resource->at("id").get<std::string>();
+                    if (resource->at("op") == "render.target_ref") {
+                        lowered.once_target_refs.push_back(
+                            {id, port, resource->at("parameters").at("name").get<std::string>(), false});
+                        continue;
+                    }
+                    if (!lifetimeKept(*resource)) refuseRead();
+                    if (const auto found = writers.find(resource_id); found != writers.end())
+                        for (const auto &writer : found->second)
+                            if (writer != id && !onceNode(*nodes.at(writer))) refuseRead();
+                    if (resource->at("op") != "render.image" && clocked(resource_id)) refuseRead();
+                }
+            }
         }
     }
     const auto reaches = [&](const std::string &from, const std::string &to) {
@@ -506,7 +692,10 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                     std::find(after.begin(), after.end(), producer) == after.end())
                     after.push_back(producer);
                 // LP-6: a copy's source read from an image node.
-                if (port == "source") waitOnImageWriters(id, endpoint, after);
+                if (port == "source") {
+                    refuseFileImage(id, port, endpoint, "copy");
+                    waitOnImageWriters(id, endpoint, after);
+                }
                 return resourceName(endpoint);
             };
             const auto graph_pass = [&](const std::string &name) {
@@ -517,6 +706,20 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                        producer_op != "render.image" && producer_op != "render.target_ref" &&
                        producer_op != "render.compute";
             };
+            // A copy transfers out of its source and into its destination,
+            // which is then sampled: a render.image either end names gets
+            // those usages from the copy, whatever it declared (a pass's own
+            // image declares no TRANSFER_SRC; that flag keeps an image out of
+            // aliasing, so only an image that is copied carries it).
+            if (op == "render.snapshot_copy")
+                for (const auto &[port, usages] :
+                     {std::pair{"source", std::vector<const char *>{"TRANSFER_SRC"}},
+                      std::pair{"destination", std::vector<const char *>{"TRANSFER_DST", "SAMPLED"}}}) {
+                    const auto endpoint = node.at("inputs").find(port);
+                    if (endpoint == node.at("inputs").end()) continue;
+                    if (const auto image = writtenImage(*endpoint))
+                        snapshot_image_usages[*image].insert(usages.begin(), usages.end());
+                }
             landGraphicsPass(id, lowerRenderPassKindNode(node, std::move(parameters), attach, graph_pass), pass_body);
             continue;
         }
@@ -614,6 +817,42 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
         if (node.at("op") == "render.image") {
             forbid(parameters, {"name", "kind"});
             parameters.erase("type");
+            // EN-2: a file image. Registration read the file and wrote its
+            // size into the source; the declaration takes the size, the
+            // format its color space reads with and the usage of an image
+            // that is uploaded and then only sampled.
+            if (const auto source = parameters.find("source"); source != parameters.end()) {
+                if (!source->contains("width") || !source->contains("height"))
+                    throw std::invalid_argument("image source must be resolved before render lowering: " + id);
+                const Json lowered_source{{"asset", source->at("asset")},
+                                          {"color_space", source->value("color_space", "srgb")},
+                                          {"alpha", source->value("alpha", "straight")},
+                                          {"mips", source->value("mips", "none")}};
+                parameters["width"] = source->at("width");
+                parameters["height"] = source->at("height");
+                parameters["extent_scale"] = 1.0;
+                parameters["format"] = lowered_source.at("color_space") == "linear" ? "R8G8B8A8_UNORM"
+                                                                                    : "R8G8B8A8_SRGB";
+                parameters["usage"] = Json::array({"SAMPLED", "TRANSFER_DST"});
+                if (lowered_source.at("mips") == "full") {
+                    parameters["mip_levels"] = "full";
+                    parameters["usage"].push_back("TRANSFER_SRC");
+                }
+                parameters["source"] = lowered_source;
+            }
+            // IA-1: an image with initial contents is copied into, and its
+            // extent is the asset's when it gives none (the engine writes
+            // the asset's width and height in first:
+            // resolveGraphImageInitialAssets; a path that does not read
+            // assets keeps the output-relative placeholder).
+            if (parameters.contains("initial")) {
+                checkRenderImageInitial(id, parameters);
+                auto &usage = parameters["usage"];
+                if (!usage.is_array()) usage = Json::array();
+                if (std::find(usage.begin(), usage.end(), "TRANSFER_DST") == usage.end())
+                    usage.push_back("TRANSFER_DST");
+                if (!parameters.contains("extent_scale")) parameters["extent_scale"] = 1.0;
+            }
             parameters["name"] = id;
             (body != nullptr ? body->render_targets : config["render_targets"]).push_back(std::move(parameters));
             continue;
@@ -697,6 +936,13 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             // (graph.history_write@1), so this reads the previous frame and
             // waits for no pass of this one.
             const bool history = declaration.value("history", false);
+            // EN-2: a file image is read sampled (or as a numbered input) of
+            // this frame; its writes were refused above.
+            if (history) refuseFileImage(id, port, endpoint, "history");
+            else if (declaration.value("kind", std::string{"buffer"}) == "image" &&
+                     !declaration.contains("attachment") &&
+                     declaration.value("binding", std::string{graphics ? "sampled" : "storage"}) == "storage")
+                refuseFileImage(id, port, endpoint, "storage");
             const auto target = resourceName(endpoint);
             const auto resource = history ? target + "@history" : target;
             if (history) (body != nullptr ? body->history_reads : lowered.history_reads).push_back({id, port, target});
@@ -795,6 +1041,24 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             parameters["type"] = node.at("op") == "render.fullscreen" ? "fullscreen" : "raster";
             landGraphicsPass(id, std::move(parameters), body);
         } else (body != nullptr ? body->compute_tasks : config["compute_tasks"]).push_back(std::move(parameters));
+    }
+    if (!snapshot_image_usages.empty()) {
+        const auto addUsages = [&](Json &targets) {
+            if (!targets.is_array()) return;
+            for (auto &target : targets) {
+                if (!target.is_object() || !target.contains("name") || !target.at("name").is_string()) continue;
+                const auto found = snapshot_image_usages.find(target.at("name").get<std::string>());
+                if (found == snapshot_image_usages.end()) continue;
+                auto &usage = target["usage"];
+                if (!usage.is_array()) usage = Json::array();
+                for (const auto &name : found->second)
+                    if (std::find(usage.begin(), usage.end(), name) == usage.end()) usage.push_back(name);
+            }
+        };
+        if (config.contains("render_targets")) addUsages(config["render_targets"]);
+        for (auto &loop : lowered.loops)
+            for (auto &branch : loop.branches)
+                if (branch) addUsages(branch->render_targets);
     }
     // GL-2a: where each pass or task a node made is authored. Every such
     // declaration is named after its node's expanded id (a template id in a
@@ -1160,6 +1424,34 @@ std::string composedTargetTopology(const Json &target) {
         return "two_d_array";
     return "two_d";
 }
+
+// FR-1: what a render.target_ref naming `target` declares instead of
+// `declared` (whose kind is `declared_kind`): {type, layers?}. The declared
+// type with the target's topology when the kinds agree (or the target's is not
+// known); a depth target's device depth, or the untyped legacy image for a
+// color one, when they do not. `layers` is the array target's layer count.
+Json expectedTargetRefType(const Json &declared, const std::string &declared_kind, const Json &target) {
+    const auto kind = composedTargetKind(target);
+    const auto topology = composedTargetTopology(target);
+    Json type;
+    if (kind.empty() || kind == declared_kind) {
+        type = declared;
+    } else if (kind == "depth") {
+        type = {{"semantic", "pelican.render.depth@1"},
+                {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+    } else {
+        type = {{"semantic", "pelican.render.legacy_opaque_image@1"}, {"arguments", Json::object()}};
+    }
+    if (type.at("semantic") != "pelican.render.legacy_opaque_image@1") {
+        auto &arguments = type["arguments"];
+        if (!arguments.is_object()) arguments = Json::object();
+        if (topology == "two_d") arguments.erase("topology");
+        else arguments["topology"] = topology;
+    }
+    Json expected{{"type", std::move(type)}};
+    if (topology == "two_d_array") expected["layers"] = target.at("layers");
+    return expected;
+}
 }
 
 namespace {
@@ -1186,7 +1478,8 @@ void checkTargetReference(const Json &composed, const RenderGraphTargetReference
     const auto mismatch = [&](const char *field, const std::string &declared, const std::string &actual) {
         throw GraphRegistryError("graph.target_ref_type_mismatch@1",
             {{"node", reference.node}, {"name", reference.name}, {"field", field},
-             {"declared", declared}, {"actual", actual}});
+             {"declared", declared}, {"actual", actual},
+             {"expected", expectedTargetRefType(reference.type, declared_kind, *found)}});
     };
     const auto actual_kind = composedTargetKind(*found);
     if (!actual_kind.empty() && actual_kind != declared_kind)
@@ -1268,6 +1561,15 @@ RenderGraphLoopResolution resolveGraphDocumentAfterComposition(Json &composed, c
                                                                const RenderGraphFeatureContext &features) {
     for (const auto &reference : lowered.target_refs) checkTargetReference(composed, reference);
     for (const auto &read : lowered.history_reads) checkHistoryRead(composed, read);
+    // PS-1: a once node reads or writes a target declared outside the graph
+    // only when that target keeps its contents (lifetime: persistent).
+    for (const auto &use : lowered.once_target_refs) {
+        const auto *target = findComposedTarget(composed, use.target);
+        if (target == nullptr || target->value("lifetime", std::string{}) == "persistent") continue;
+        if (use.write)
+            throw GraphRegistryError("graph.once_writes_transient@1", {{"node", use.node}, {"resource", use.target}});
+        throw GraphRegistryError("graph.once_reads_per_frame@1", {{"node", use.node}, {"input", use.port}});
+    }
     // RS-13: a `<loop>.<output>` whose loop is no expanding loop's id names a
     // loop that is not there, unless a target or buffer has that name.
     if (!lowered.unknown_loop_output_references.empty()) {

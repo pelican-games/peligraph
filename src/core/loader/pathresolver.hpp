@@ -31,6 +31,9 @@ DECLARE_MODULE(PathResolver) {
         return resolver.projectRoot();
     }
     std::vector<AssetStoreStatus> stores() const;
+    const std::optional<std::vector<std::string>> &hotReloadPaths() const {
+        return resolver.hotReloadPaths();
+    }
 
     ResolvedRef resolveProjectRef(std::string_view ref) const;
     ResolvedRef resolveCliRef(std::string_view ref) const;

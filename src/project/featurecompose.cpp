@@ -16,6 +16,7 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -42,6 +43,10 @@ std::string canonicalAnchorNodeName(std::string_view anchor) {
 bool isCanonicalRenderPassAnchor(std::string_view name) {
     return std::find(canonical_anchors.begin(), canonical_anchors.end(),
                      name) != canonical_anchors.end();
+}
+
+std::vector<std::string> canonicalRenderPassAnchors() {
+    return {canonical_anchors.begin(), canonical_anchors.end()};
 }
 
 namespace {
@@ -507,6 +512,44 @@ void enforceTerminalAfterComputeTasks(nlohmann::json &config) {
     }
 }
 
+// FR-1: renderSnapshotAfterCandidates (featurecompose.hpp).
+std::vector<std::string> snapshotAfterCandidatesOf(const nlohmann::json &config) {
+    std::vector<std::string> result;
+    const auto families = config.find("rendering_passes");
+    if (families == config.end() || !families->is_array()) return result;
+    const auto post_ldr = canonicalAnchorNodeName("post_ldr");
+    const auto transparent_begin = canonicalAnchorNodeName("pelican_ui");
+    bool first = true;
+    for (const auto &family : *families) {
+        std::vector<std::string> names;
+        const auto passes = family.is_object() ? family.find("passes") : family.end();
+        if (family.is_object() && passes != family.end() && passes->is_array()) {
+            bool inside = false;
+            for (const auto &pass : *passes) {
+                if (!pass.is_object()) continue;
+                const auto name = pass.value("name", std::string{});
+                if (name == transparent_begin) break;
+                if (name == post_ldr) inside = true;
+                if (!inside) continue;
+                const auto type = pass.value("type", std::string{});
+                if (type == "snapshot_copy") continue;
+                auto candidate = type == "canonical_anchor" ? pass.value("anchor", std::string{}) : name;
+                if (!candidate.empty() && std::find(names.begin(), names.end(), candidate) == names.end())
+                    names.push_back(std::move(candidate));
+            }
+        }
+        if (first) {
+            result = std::move(names);
+            first = false;
+        } else {
+            std::erase_if(result, [&](const std::string &candidate) {
+                return std::find(names.begin(), names.end(), candidate) == names.end();
+            });
+        }
+    }
+    return result;
+}
+
 void materializeSnapshots(nlohmann::json &config) {
     if (!config.contains("snapshots")) {
         return;
@@ -543,12 +586,13 @@ void materializeSnapshots(nlohmann::json &config) {
     }
 
     const auto anchor_it = std::find(canonical_anchors.begin(), canonical_anchors.end(), authored_after);
-    const auto after = anchor_it == canonical_anchors.end()
-                           ? authored_after
-                           : canonicalAnchorNodeName(authored_after);
+    const bool anchor = anchor_it != canonical_anchors.end();
+    const auto after = anchor ? canonicalAnchorNodeName(authored_after) : authored_after;
     const auto post_ldr = canonicalAnchorNodeName("post_ldr");
     const auto transparent_begin = canonicalAnchorNodeName("pelican_ui");
     const auto node = "__snapshot_" + name;
+    // FR-1: what `after` may name, read before any family takes the copy.
+    const auto candidates = snapshotAfterCandidatesOf(config);
 
     for (auto &pass_set : ensureArray(config, "rendering_passes")) {
         auto &passes = pass_set.at("passes");
@@ -561,8 +605,10 @@ void materializeSnapshots(nlohmann::json &config) {
             return pass.value("name", std::string{}) == after;
         });
         if (found == passes.end()) {
-            throw std::runtime_error("snapshot '" + name + "' copy point was not found: " +
-                                     authored_after);
+            // FR-1: by name, with the names this pipeline takes.
+            nlohmann::json fields{{"snapshot", name}, {"after", authored_after}, {"candidates", candidates}};
+            if (anchor) fields["resolved"] = after;
+            throw GraphRegistryError(std::string{snapshotAfterUnknownCode}, std::move(fields));
         }
         const auto post_ldr_it = std::find_if(passes.begin(), passes.end(), [&](const auto &pass) {
             return pass.value("name", std::string{}) == post_ldr;
@@ -582,7 +628,10 @@ void materializeSnapshots(nlohmann::json &config) {
             {"source", "display"},
             {"destination", name},
             {"snapshot", name},
-            {"snapshot_after", authored_after},
+            // FR-1: the frame node the copy follows. An anchor's is
+            // `__anchor_<anchor>`; its bare name is no node, and the
+            // execution plan refused the dependency on it.
+            {"snapshot_after", after},
         };
         passes.insert(found + 1, std::move(copy));
     }
@@ -1905,6 +1954,236 @@ void applyRenderTargetOverrides(nlohmann::json &config, const nlohmann::json &fe
     }
 }
 
+// FR-1: a feature's `required_targets` gives the image types of targets it
+// leaves to the pipeline: [{name, type}], type a logical image type.
+void validateDeclaredRequiredTargets(const nlohmann::json &feature, const std::string &feature_name) {
+    const auto declared = feature.find("required_targets");
+    if (declared == feature.end()) return;
+    const auto refuse = [&](const std::string &what) {
+        throw std::runtime_error("render feature '" + feature_name + "' required_targets " + what);
+    };
+    if (!declared->is_array()) refuse("must be an array");
+    for (const auto &entry : *declared) {
+        if (!entry.is_object()) refuse("entries must be objects");
+        for (const auto &[key, value] : entry.items())
+            if (key != "name" && key != "type") refuse("entries accept only name and type: " + key);
+        if (!entry.contains("name") || !entry.at("name").is_string() ||
+            entry.at("name").get_ref<const std::string &>().empty())
+            refuse("entries require a target name");
+        const auto type = entry.find("type");
+        if (type == entry.end() || !type->is_object() || !type->contains("semantic") ||
+            !type->at("semantic").is_string() ||
+            (type->contains("arguments") && !type->at("arguments").is_object()))
+            refuse("entry " + entry.at("name").get<std::string>() +
+                   " requires a type {semantic, arguments}");
+    }
+}
+
+// FR-1: every target the feature leaves to the pipeline is one the pipeline,
+// a feature or a snapshot declares (`available`); the first that is not is
+// refused by name before anything of the feature is applied.
+void requireFeatureTargets(const nlohmann::json &feature, const std::string &feature_name,
+                           const std::string &reference, const std::unordered_set<std::string> &available) {
+    validateDeclaredRequiredTargets(feature, feature_name);
+    for (const auto &required : renderFeatureRequiredTargets(feature)) {
+        const auto name = required.at("name").get<std::string>();
+        if (available.contains(name)) continue;
+        throw GraphRegistryError(std::string{featureRequiredTargetMissingCode},
+                                 {{"feature", feature_name},
+                                  {"target", name},
+                                  {"type", required.at("type")},
+                                  {"document", reference}});
+    }
+}
+
+// FR-3: whether a declaration names `target` other than as something it
+// reads (its `input` or `reads`): an output, a resource port, a snapshot copy's
+// destination, anything that might write it. Erring towards "may write" only
+// leaves a case to the frame planner's own refusal.
+bool mayWriteTarget(const nlohmann::json &value, const std::string &target, std::string_view key = {}) {
+    if (key == "input" || key == "reads" || key == "input_sampling" || key == "name" || key == "after" ||
+        key == "before")
+        return false;
+    if (value.is_string()) return value.get_ref<const std::string &>() == target;
+    if (value.is_array()) {
+        for (const auto &entry : value)
+            if (mayWriteTarget(entry, target)) return true;
+        return false;
+    }
+    if (value.is_object())
+        for (const auto &[field, entry] : value.items())
+            if (mayWriteTarget(entry, target, field)) return true;
+    return false;
+}
+
+// FR-3: a pass's `input` (or output) entry as the target it names.
+std::string namedTarget(const nlohmann::json &entry) {
+    if (entry.is_string()) return entry.get<std::string>();
+    if (entry.is_object() && entry.contains("target") && entry.at("target").is_string())
+        return entry.at("target").get<std::string>();
+    return {};
+}
+
+// FR-3: "depth" for a D* format, "color" for any other (an absent format is
+// a color target whose format the color resolver fills in); "" for a name
+// the config does not declare.
+std::string composedTargetKindOf(const nlohmann::json &composed, const std::string &name) {
+    const auto targets = composed.find("render_targets");
+    if (targets == composed.end() || !targets->is_array()) return {};
+    for (const auto &target : *targets)
+        if (target.is_object() && target.value("name", std::string{}) == name) {
+            const auto format = target.value("format", std::string{});
+            return !format.empty() && format.front() == 'D' ? "depth" : "color";
+        }
+    return {};
+}
+
+// FR-3: the root graph node's port that writes `resource` directly -- an
+// input bound to the render.image of that id or to a render.target_ref of
+// that name -- or "" when the node binds none.
+std::string graphWritePort(const nlohmann::json &root, const std::string &node_id, const std::string &resource) {
+    const auto nodes = root.find("nodes");
+    if (nodes == root.end() || !nodes->is_array()) return {};
+    const auto nodeById = [&](const std::string &id) -> const nlohmann::json * {
+        for (const auto &node : *nodes)
+            if (node.is_object() && node.value("id", std::string{}) == id) return &node;
+        return nullptr;
+    };
+    const auto *node = nodeById(node_id);
+    if (node == nullptr) return {};
+    const auto inputs = node->find("inputs");
+    if (inputs == node->end() || !inputs->is_object()) return {};
+    for (const auto &[port, endpoint] : inputs->items()) {
+        if (!endpoint.is_object() || !endpoint.contains("node") || !endpoint.at("node").is_string()) continue;
+        const auto *source = nodeById(endpoint.at("node").get<std::string>());
+        if (source == nullptr) continue;
+        const auto op = source->value("op", std::string{});
+        const auto parameters = source->value("parameters", nlohmann::json::object());
+        if ((op == "render.image" && source->value("id", std::string{}) == resource) ||
+            (op == "render.target_ref" && parameters.is_object() &&
+             parameters.value("name", std::string{}) == resource))
+            return port;
+    }
+    return {};
+}
+
+// FR-3: feature.required_target_unwritten@1 for the first target a composed
+// feature reads that nothing in `composed` writes (featurecompose.hpp).
+void requireFeatureTargetsWritten(const nlohmann::json &composed, const nlohmann::json &root,
+                                  const std::vector<RenderPassProvenance> &provenance,
+                                  const std::unordered_set<std::string> &buffer_names,
+                                  const std::string &feature_name, const std::string &reference,
+                                  const nlohmann::json &required) {
+    const auto families = composed.find("rendering_passes");
+    if (families == composed.end() || !families->is_array()) return;
+    std::unordered_set<std::string> feature_passes;
+    for (const auto &entry : provenance)
+        if (entry.source == RenderPipelineProvenanceSource::feature && entry.provider_feature == feature_name)
+            feature_passes.insert(entry.name);
+    for (const auto &entry : required) {
+        if (!entry.is_object() || !entry.value("needs_writer", false)) continue;
+        const auto target = entry.at("name").get<std::string>();
+        if (buffer_names.contains(target)) continue;
+        // The feature's pass that reads it, in this composition (none: the
+        // feature's passes were left out here, and nothing reads it).
+        const nlohmann::json *reader_family = nullptr;
+        std::size_t reader_index = 0;
+        for (const auto &family : *families) {
+            const auto passes = family.is_object() ? family.find("passes") : family.end();
+            if (!family.is_object() || passes == family.end() || !passes->is_array()) continue;
+            for (std::size_t index = 0; index < passes->size() && reader_family == nullptr; ++index) {
+                const auto &pass = passes->at(index);
+                if (!pass.is_object() || !feature_passes.contains(pass.value("name", std::string{}))) continue;
+                const auto input = pass.find("input");
+                if (input == pass.end() || !input->is_array()) continue;
+                for (const auto &read : *input)
+                    if (namedTarget(read) == target) {
+                        reader_family = &family;
+                        reader_index = index;
+                    }
+            }
+            if (reader_family != nullptr) break;
+        }
+        if (reader_family == nullptr) continue;
+        // Declared, and without initial contents (IA-1: such an image holds
+        // them before any pass runs). An undeclared one is FR-1's refusal.
+        bool declared = false;
+        if (const auto targets = composed.find("render_targets"); targets != composed.end() && targets->is_array())
+            for (const auto &declaration : *targets)
+                if (declaration.is_object() && declaration.value("name", std::string{}) == target)
+                    declared = !declaration.contains("initial");
+        if (!declared) continue;
+        bool written = false;
+        for (const auto &family : *families) {
+            const auto passes = family.is_object() ? family.find("passes") : family.end();
+            if (!family.is_object() || passes == family.end() || !passes->is_array()) continue;
+            for (const auto &pass : *passes)
+                if (mayWriteTarget(pass, target)) written = true;
+        }
+        if (const auto tasks = composed.find("compute_tasks"); tasks != composed.end() && tasks->is_array())
+            for (const auto &task : *tasks)
+                if (mayWriteTarget(task, target)) written = true;
+        if (written) continue;
+        const auto &type = entry.at("type");
+        const std::string kind =
+            type.value("semantic", std::string{}) == "pelican.render.depth@1" ? "depth" : "color";
+        auto candidates = nlohmann::json::array();
+        const auto &passes = reader_family->at("passes");
+        for (std::size_t index = 0; index < reader_index; ++index) {
+            const auto &pass = passes.at(index);
+            const auto output = pass.is_object() ? pass.find("output") : pass.end();
+            if (!pass.is_object() || output == pass.end() || !output->is_object()) continue;
+            const auto pass_name = pass.value("name", std::string{});
+            // Not one that draws another view (a shadow map's), and not a
+            // feature's own pass: what it writes is the feature's to name.
+            if (!pass.value("view_family", std::string{}).empty()) continue;
+            if (std::any_of(provenance.begin(), provenance.end(), [&](const RenderPassProvenance &p) {
+                    return p.name == pass_name && p.source == RenderPipelineProvenanceSource::feature;
+                }))
+                continue;
+            std::vector<std::pair<std::string, std::string>> writes; // {port, resource}
+            if (kind == "depth") {
+                if (const auto depth = output->find("depth"); depth != output->end())
+                    writes.emplace_back("depth", namedTarget(*depth));
+            } else if (const auto colors = output->find("color"); colors != output->end()) {
+                if (colors->is_array()) {
+                    for (std::size_t color = 0; color < colors->size(); ++color)
+                        writes.emplace_back(color == 0 ? std::string{"color"} : "color." + std::to_string(color),
+                                            namedTarget(colors->at(color)));
+                } else {
+                    writes.emplace_back("color", namedTarget(*colors));
+                }
+            }
+            // A root node of the rendering graph made it: the port is that
+            // node's.
+            const auto origin = std::find_if(provenance.begin(), provenance.end(), [&](const RenderPassProvenance &p) {
+                return p.name == pass_name && p.graph_origin && !p.loop_origin &&
+                       p.graph_origin->instance_path.empty() && p.graph_origin->loop.empty();
+            });
+            for (const auto &[port, resource] : writes) {
+                if (resource.empty() || resource == "swapchain" || resource == "display" || resource == target ||
+                    composedTargetKindOf(composed, resource) != kind)
+                    continue;
+                nlohmann::json candidate = nlohmann::json::object();
+                std::string graph_port;
+                if (origin != provenance.end())
+                    graph_port = graphWritePort(root, origin->graph_origin->node, resource);
+                if (!graph_port.empty()) candidate["node"] = origin->graph_origin->node;
+                candidate["pass"] = pass_name;
+                candidate["port"] = graph_port.empty() ? port : graph_port;
+                candidate["resource"] = resource;
+                candidates.push_back(std::move(candidate));
+            }
+        }
+        throw GraphRegistryError(std::string{featureRequiredTargetUnwrittenCode},
+                                 {{"feature", feature_name},
+                                  {"target", target},
+                                  {"type", type},
+                                  {"writer_candidates", std::move(candidates)},
+                                  {"document", reference}});
+    }
+}
+
 void insertPassAtEnd(nlohmann::json &config, const nlohmann::json &pass) {
     auto &rendering_passes = ensureArray(config, "rendering_passes");
     if (rendering_passes.size() != 1) {
@@ -2008,7 +2287,30 @@ void insertRenderPassRunAtAnchor(nlohmann::json &passes, std::size_t anchor_inde
 
 namespace {
 
-void insertPassByAnchor(nlohmann::json &config, const std::string &insert, const nlohmann::json &pass) {
+// FR-2: the names a feature pass's `after:` / `before:` resolves to exactly
+// one frame node in `config`: an anchor by its anchor name, any other pass by
+// its name, in pipeline order.
+std::vector<std::string> insertionCandidatesOf(nlohmann::json &config) {
+    std::vector<std::string> names;
+    const auto families = config.find("rendering_passes");
+    if (families == config.end() || !families->is_array()) return names;
+    for (const auto &family : *families) {
+        const auto passes = family.is_object() ? family.find("passes") : family.end();
+        if (!family.is_object() || passes == family.end() || !passes->is_array()) continue;
+        for (const auto &pass : *passes) {
+            if (!pass.is_object()) continue;
+            auto name = pass.value("type", std::string{}) == "canonical_anchor" ? pass.value("anchor", std::string{})
+                                                                                 : pass.value("name", std::string{});
+            if (!name.empty() && std::find(names.begin(), names.end(), name) == names.end())
+                names.push_back(std::move(name));
+        }
+    }
+    std::erase_if(names, [&](const std::string &name) { return findRenderPassAnchorMatches(config, name).size() != 1; });
+    return names;
+}
+
+void insertPassByAnchor(nlohmann::json &config, const std::string &insert, const nlohmann::json &pass,
+                        std::string_view feature_name, std::string_view reference) {
     constexpr std::string_view before_prefix = "before:";
     constexpr std::string_view after_prefix = "after:";
 
@@ -2030,7 +2332,12 @@ void insertPassByAnchor(nlohmann::json &config, const std::string &insert, const
 
     auto matches = findRenderPassAnchorMatches(config, anchor);
     if (matches.empty()) {
-        throw std::runtime_error("render feature pass insert anchor was not found: " + anchor);
+        // FR-2: by name, with the names this pipeline takes.
+        throw GraphRegistryError(std::string{featureInsertionAnchorMissingCode},
+                                 {{"feature", std::string{feature_name}},
+                                  {"anchor", anchor},
+                                  {"candidates", insertionCandidatesOf(config)},
+                                  {"document", std::string{reference}}});
     }
     if (matches.size() > 1) {
         throw std::runtime_error("render feature pass insert anchor is ambiguous: " + anchor);
@@ -2066,7 +2373,7 @@ void addFeaturePasses(nlohmann::json &config, const nlohmann::json &feature,
         } else if (insert == "end") {
             insertPassAtEnd(config, *pass_it);
         } else {
-            insertPassByAnchor(config, insert, *pass_it);
+            insertPassByAnchor(config, insert, *pass_it, provider_feature, provider_reference);
         }
         provenance.push_back(RenderPassProvenance{
             .name = pass_name,
@@ -3356,6 +3663,29 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         pending_surface_resources;
     pending_surface_resources.reserve(
         loaded_features.size());
+    // FR-1: the targets a feature may leave to others: the pipeline's, every
+    // feature's and integration's own, and the snapshots' (added last).
+    auto available_targets = target_names;
+    // FR-3: each feature's required targets, judged once the pipeline is
+    // composed (requireFeatureTargetsWritten): {name, reference, targets}.
+    std::vector<std::tuple<std::string, std::string, nlohmann::json>> written_checks;
+    const auto addDeclaredNames = [&](const nlohmann::json &owner, const char *key) {
+        const auto found = owner.find(key);
+        if (found == owner.end() || !found->is_array()) return;
+        for (const auto &entry : *found)
+            if (entry.is_object() && entry.contains("name") && entry.at("name").is_string())
+                available_targets.insert(entry.at("name").get<std::string>());
+    };
+    addDeclaredNames(composed, "snapshots");
+    for (const auto &loaded : loaded_features) {
+        addDeclaredNames(loaded.feature, "render_targets");
+        if (const auto integrations = loaded.feature.find("integrations");
+            integrations != loaded.feature.end() && integrations->is_array())
+            for (const auto &integration : *integrations)
+                if (integration.is_object() && integration.contains("fragment") &&
+                    integration.at("fragment").is_object())
+                    addDeclaredNames(integration.at("fragment"), "render_targets");
+    }
     for (const auto &loaded : loaded_features) {
         nlohmann::json resolved_parameters;
         std::vector<std::string> scalar_defines;
@@ -3377,6 +3707,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             composed, feature, buffer_names,
             loaded.name, loaded.instance.ref,
             resource_provenance);
+        requireFeatureTargets(feature, loaded.name, loaded.instance.ref, available_targets);
+        written_checks.emplace_back(loaded.name, loaded.instance.ref, renderFeatureRequiredTargets(feature, true));
         applyRenderTargetOverrides(composed, feature);
         addFeaturePasses(
             composed, feature, pass_names,
@@ -3902,6 +4234,11 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     GraphFoldApplication fold_application;
     if (common_graph && config.contains("fold_groups"))
         fold_application = applyGraphFoldGroups(config, composed, pass_provenance, resource_provenance);
+    // FR-3: a target a feature reads is one something in the pipeline
+    // writes; the frame planner would refuse it later only by text.
+    for (const auto &[feature_name, reference, required] : written_checks)
+        requireFeatureTargetsWritten(composed, config, pass_provenance, buffer_names, feature_name, reference,
+                                     required);
     auto material_routing = resolveMaterialRoutingTable(composed);
     auto draw_sort = composed.contains("draw_sort")
                          ? composed.at("draw_sort")
@@ -3937,6 +4274,157 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     result.fold_planning = std::move(fold_application.planning);
     result.used_features = !feature_instances.empty();
     return result;
+}
+
+// FR-1: renderFeatureRequiredTargets (featurecompose.hpp).
+nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature, bool with_needs_writer) {
+    auto result = nlohmann::json::array();
+    if (!feature.is_object()) return result;
+    const auto stringOf = [](const nlohmann::json &value) {
+        if (value.is_string()) return value.get<std::string>();
+        if (value.is_object() && value.contains("target") && value.at("target").is_string())
+            return value.at("target").get<std::string>();
+        return std::string{};
+    };
+    std::unordered_set<std::string> own;
+    for (const auto *key : {"render_targets", "buffers"}) {
+        const auto declared = feature.find(key);
+        if (declared == feature.end() || !declared->is_array()) continue;
+        for (const auto &entry : *declared)
+            if (entry.is_object() && entry.contains("name") && entry.at("name").is_string())
+                own.insert(entry.at("name").get<std::string>());
+    }
+    std::unordered_map<std::string, const nlohmann::json *> parameters;
+    if (const auto declared = feature.find("parameters"); declared != feature.end() && declared->is_object())
+        if (const auto targets = declared->find("render_targets"); targets != declared->end() && targets->is_array())
+            for (const auto &entry : *targets)
+                if (entry.is_object() && entry.contains("name") && entry.at("name").is_string())
+                    parameters.emplace(entry.at("name").get<std::string>(), &entry);
+    struct Entry {
+        std::string name;
+        std::vector<std::string> usage;
+        // FR-3: a pass of the feature reads it this frame (an input), and
+        // one writes it (a color or depth output).
+        bool read = false;
+        bool written = false;
+    };
+    std::vector<Entry> entries;
+    const auto addUsage = [](Entry &entry, const nlohmann::json *usage) {
+        if (usage == nullptr || !usage->is_array()) return;
+        for (const auto &flag : *usage)
+            if (flag.is_string()) appendUnique(entry.usage, flag.get<std::string>());
+    };
+    const auto note = [&](std::string name, std::string_view usage, const nlohmann::json *more_usage) {
+        constexpr std::string_view history = "@history";
+        const bool previous_frame = name.size() > history.size() && name.ends_with(history);
+        if (previous_frame) name.resize(name.size() - history.size());
+        const nlohmann::json *parameter_usage = nullptr;
+        if (name.starts_with("$")) {
+            const auto parameter = parameters.find(name.substr(1));
+            if (parameter == parameters.end()) return;
+            const auto fallback = parameter->second->find("default");
+            if (fallback == parameter->second->end() || !fallback->is_string()) return;
+            if (const auto declared = parameter->second->find("usage"); declared != parameter->second->end())
+                parameter_usage = &*declared;
+            name = fallback->get<std::string>();
+        }
+        if (name.empty() || name == "swapchain" || name == "display" || own.contains(name)) return;
+        auto entry = std::find_if(entries.begin(), entries.end(), [&](const Entry &e) { return e.name == name; });
+        if (entry == entries.end()) {
+            entries.push_back({name, {}});
+            entry = std::prev(entries.end());
+        }
+        if (!usage.empty()) appendUnique(entry->usage, std::string{usage});
+        if (usage == "SAMPLED" && !previous_frame) entry->read = true;
+        if (usage == "COLOR_ATTACHMENT" || usage == "DEPTH_STENCIL_ATTACHMENT") entry->written = true;
+        addUsage(*entry, more_usage);
+        addUsage(*entry, parameter_usage);
+    };
+    if (const auto passes = feature.find("passes"); passes != feature.end() && passes->is_array()) {
+        for (const auto &entry : *passes) {
+            if (!entry.is_object()) continue;
+            const auto &pass = entry.contains("pass") && entry.at("pass").is_object() ? entry.at("pass") : entry;
+            if (const auto output = pass.find("output"); output != pass.end() && output->is_object()) {
+                if (const auto color = output->find("color"); color != output->end()) {
+                    if (color->is_array()) {
+                        for (const auto &target : *color) note(stringOf(target), "COLOR_ATTACHMENT", nullptr);
+                    } else {
+                        note(stringOf(*color), "COLOR_ATTACHMENT", nullptr);
+                    }
+                }
+                if (const auto depth = output->find("depth"); depth != output->end())
+                    note(stringOf(*depth), "DEPTH_STENCIL_ATTACHMENT", nullptr);
+            }
+            if (const auto input = pass.find("input"); input != pass.end()) {
+                if (input->is_array()) {
+                    for (const auto &target : *input) note(stringOf(target), "SAMPLED", nullptr);
+                } else {
+                    note(stringOf(*input), "SAMPLED", nullptr);
+                }
+            }
+        }
+    }
+    if (const auto overrides = feature.find("render_target_overrides");
+        overrides != feature.end() && overrides->is_object()) {
+        for (const auto &[name, value] : overrides->items()) {
+            const auto usage = value.is_object() ? value.find("usage") : value.end();
+            note(name, {}, value.is_object() && usage != value.end() ? &*usage : nullptr);
+        }
+    }
+    std::unordered_map<std::string, nlohmann::json> declared_types;
+    if (const auto declared = feature.find("required_targets"); declared != feature.end() && declared->is_array()) {
+        for (const auto &entry : *declared) {
+            if (!entry.is_object() || !entry.contains("name") || !entry.at("name").is_string()) continue;
+            const auto name = entry.at("name").get<std::string>();
+            note(name, {}, nullptr);
+            if (entry.contains("type") && entry.at("type").is_object()) declared_types.emplace(name, entry.at("type"));
+        }
+    }
+    for (const auto &entry : entries) {
+        nlohmann::json type;
+        if (const auto declared = declared_types.find(entry.name); declared != declared_types.end()) {
+            type = declared->second;
+        } else if (std::find(entry.usage.begin(), entry.usage.end(), "DEPTH_STENCIL_ATTACHMENT") != entry.usage.end()) {
+            type = {{"semantic", "pelican.render.depth@1"},
+                    {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+        } else {
+            type = {{"semantic", "pelican.render.legacy_opaque_image@1"}, {"arguments", nlohmann::json::object()}};
+        }
+        nlohmann::json encoded{{"name", entry.name}, {"type", std::move(type)}};
+        if (!entry.usage.empty()) encoded["usage"] = entry.usage;
+        if (with_needs_writer) encoded["needs_writer"] = entry.read && !entry.written;
+        result.push_back(std::move(encoded));
+    }
+    return result;
+}
+
+// FR-2: renderFeatureInsertions (featurecompose.hpp).
+nlohmann::json renderFeatureInsertions(const nlohmann::json &feature) {
+    auto result = nlohmann::json::array();
+    const auto passes = feature.is_object() ? feature.find("passes") : feature.end();
+    if (!feature.is_object() || passes == feature.end() || !passes->is_array()) return result;
+    for (const auto &entry : *passes) {
+        if (!entry.is_object()) continue;
+        const auto insert_it = entry.find("insert");
+        const auto pass = entry.find("pass");
+        if (insert_it == entry.end() || !insert_it->is_string() || pass == entry.end() || !pass->is_object() ||
+            !pass->contains("name") || !pass->at("name").is_string())
+            continue;
+        const auto &insert = insert_it->get_ref<const std::string &>();
+        for (const std::string_view position : {"after", "before"}) {
+            const auto prefix = std::string{position} + ":";
+            if (!insert.starts_with(prefix) || insert.size() == prefix.size()) continue;
+            result.push_back({{"pass", pass->at("name")},
+                              {"anchor", insert.substr(prefix.size())},
+                              {"position", std::string{position}}});
+        }
+    }
+    return result;
+}
+
+// FR-1: renderSnapshotAfterCandidates (featurecompose.hpp).
+std::vector<std::string> renderSnapshotAfterCandidates(const nlohmann::json &config) {
+    return snapshotAfterCandidatesOf(config);
 }
 
 } // namespace Pelican

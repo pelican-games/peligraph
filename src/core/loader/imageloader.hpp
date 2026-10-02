@@ -17,7 +17,16 @@ enum class ImagePixelFormat {
     Bc5Unorm,
     Bc7Unorm,
     Bc7Srgb,
+    // IA-1: one- and two-channel float data from KTX2.
+    R16Sfloat,
+    R16G16Sfloat,
+    R32Sfloat,
+    R32G32Sfloat,
 };
+
+// IA-1: the Vulkan name of a pixel format without the VK_FORMAT_ prefix
+// ("R32G32B32A32_SFLOAT"), the spelling of a render target's `format`.
+std::string_view imagePixelFormatName(ImagePixelFormat format);
 
 enum class LoadedImageDimension {
     TwoD,
@@ -42,6 +51,9 @@ struct LoadedImage {
     LoadedImageDimension dimension =
         LoadedImageDimension::TwoD;
     ImagePixelFormat format = ImagePixelFormat::Rgba8Unorm;
+    // IA-1: the file states its format, color space included (KTX2). A PNG
+    // or JPG decodes to RGBA8 without saying whether it is sRGB.
+    bool color_space_declared = false;
     std::vector<std::byte> pixels;
     std::vector<LoadedImageLevel> levels;
 

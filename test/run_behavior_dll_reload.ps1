@@ -45,7 +45,7 @@ Copy-Item -LiteralPath $ProjectPass -Destination `
     (Join-Path $project 'passes/main_rendering_config.json')
 
 @'
-{"schema":"pelican.project","version":1,"name":"wp162_behavior_reload","engine_min_version":"0.1.0","basic_config":{"window_title":"WP162","window_size":{"width":160,"height":90},"fullscreen":false,"framerate":30,"camera":{"yfov":0.7853981633974483,"znear":0.1,"zfar":1000.0,"up":[0.0,1.0,0.0]},"default_scene_id":"default_scene","scene_data_json":"scenes/main.scene.json","asset_data_json":"assets/asset_data.json","rendering_config_json":"passes/main_rendering_config.json","default_rendering_pass":"main_render","ui_config_json":"ui/ui_overlay.json"}}
+{"schema":"pelican.project","version":1,"name":"wp162_behavior_reload","engine_min_version":"0.1.0","basic_config":{"window_title":"WP162","window_size":{"width":160,"height":90},"fullscreen":false,"framerate":30,"camera":{"yfov":0.7853981633974483,"znear":0.1,"zfar":1000.0},"default_scene_id":"default_scene","scene_data_json":"scenes/main.scene.json","asset_data_json":"assets/asset_data.json","rendering_config_json":"passes/main_rendering_config.json","default_rendering_pass":"main_render","ui_config_json":"ui/ui_overlay.json"}}
 '@ | Set-Content -LiteralPath (Join-Path $project 'project.json') -Encoding ascii
 @'
 {"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[{"name":"CurrentBehavior","components":[{"name":"behavior","type":"wp162_reload_behavior","params":{"count":2,"label":"committed"}}]}]},"unused_scene":{"objects":[{"name":"OffscreenBehavior","components":[{"name":"behavior","type":"wp162_reload_behavior","params":{"count":99,"label":"offscreen"}}]}]}}}

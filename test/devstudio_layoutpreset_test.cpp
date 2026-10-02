@@ -210,18 +210,19 @@ TEST_CASE("Saved devstudio layouts remain restorable as later docks are added",
             Qt::NoDockWidgetArea);
 
     const auto docks = current_window.findChildren<QDockWidget *>();
-    REQUIRE(docks.size() == 7);
+    // SG-2 added the Layers dock (eight).
+    REQUIRE(docks.size() == 8);
     QSet<QString> object_names;
     for (const QDockWidget *current : docks) {
         REQUIRE_FALSE(current->objectName().isEmpty());
         object_names.insert(current->objectName());
     }
-    REQUIRE(object_names.size() == 7);
+    REQUIRE(object_names.size() == 8);
 
     auto *panels = current_window.findChild<QMenu *>(
         QStringLiteral("pelican.panelsMenu"));
     REQUIRE(panels != nullptr);
-    REQUIRE(panels->actions().size() == 7);
+    REQUIRE(panels->actions().size() == 8);
 }
 
 TEST_CASE("Devstudio restores the last panel layout at startup with an unsaved default control",
@@ -288,7 +289,7 @@ TEST_CASE("Devstudio restores the last panel layout at startup with an unsaved d
     REQUIRE(fallback_window.dockWidgetArea(project) ==
             Qt::LeftDockWidgetArea);
     const auto docks = fallback_window.findChildren<QDockWidget *>();
-    REQUIRE(docks.size() == 7);
+    REQUIRE(docks.size() == 8);
     for (const QDockWidget *dock : docks) {
         REQUIRE(fallback_window.dockWidgetArea(
                     const_cast<QDockWidget *>(dock)) !=

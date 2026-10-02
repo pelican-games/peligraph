@@ -101,6 +101,9 @@ struct GraphicsPipelineDesc {
     vk::CompareOp depth_compare = vk::CompareOp::eLess;
     vk::CullModeFlags cull_mode = vk::CullModeFlagBits::eNone;
     vk::FrontFace front_face = vk::FrontFace::eCounterClockwise;
+    // CC-1a: front_face becomes dynamic state; whoever records draws with
+    // the pipeline sets it per view (clipspace.hpp viewIsMirrored).
+    bool dynamic_front_face = false;
     bool blend = false;
     vk::BlendFactor src_color_blend_factor = vk::BlendFactor::eOne;
     vk::BlendFactor dst_color_blend_factor = vk::BlendFactor::eZero;

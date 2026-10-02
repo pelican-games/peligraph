@@ -346,6 +346,18 @@ GB-3(Blank から GUI で FFT の海を組む試験)で、body の shader に回
 
 **Studio 側(LC-1s、`ed4ed5f9`、2026-10-02)**: Graph の pass の欄の New… でループの body(分岐の body を含む)の pass に雛形を作ると、`pelican_sets.glsl` の include の次に `#include "pelican_loop.glsl"` と使い方の 1 行を入れる(ループの外では入れない。雛形は自分の push constant の block を持たないので `PELICAN_LOOP_CUSTOM_PUSH` の形にはしない。Pass Editor の New… は入れない。[`withLoopElementInclude()`](../src/devstudio/view/fullscreenshadertemplate.cpp#L358))。frame plan の node の `reads_loop_index` を読み、その node が作った pass が読んでいれば、body の pass の帯に `reads element`、pass の欄に「This shader reads the loop element (pelican_loop_element)」(ループに複製されない pass なら「outside a loop it reads element 0」)を出す([`GraphCanvasModel::loopElementRead()`](../src/devstudio/model/graphcanvasmodel.cpp#L3687))。`shader.loop_push_overlap@1` は Graph の拒否の 1 文の表に入る。GB-3 の `gui_build_ocean` は FFT の段を 16 本の分岐から 1 本の body(`ocean_fft.frag` が `pelican_loop_element()` で段を選ぶ、Count は `2 * log2(256)`)に書き直し、json の step は 552 から 235 になった。見え方は manual 第13章 §13.5 の「ループの body の pass は回の番号を読めます」。
 
+### body の once(PS-1、`9b3c9566`、2026-10-02)
+
+GB-3 で、初期スペクトル(h0)と twiddle を毎 frame 計算し直していた。graph の `render.fullscreen` / `render.raster` に `schedule: "per_frame" | "once"`、`render.compute` に `"once"` を足し(`per_frame` / `per_view` に加えて)、`render.image` に `lifetime: "persistent" | "transient"` を足した(GUI session と合意した形)。once の node は、世代が替わった・`rerun_once` に名指された・同じ frame で上流の once が走った・書く resource が作り直された・読む host 書きの buffer の bytes が変わった、のどれかの frame にだけ走り、ほかの frame は何も記録しない。書き方と規則の正は manual 第6章 §6.18「一度だけ走る pass と、frame をまたぐ image」。
+
+**ループとの関係**
+
+- body の pass / task に `schedule: "once"` を書くと、展開した**全回**が once になる(test は 2 回の body の `steps/0/seed`・`steps/1/seed` が両方 `schedule: "once"`、回の image が `lifetime: "persistent"`。[test](../test/featurecompose_test.cpp#L9593))。
+- `rerun_once {node: <graph.loop の id>}` は、その loop の全回のうち once のものを走らせる(frame plan の node の出所の `loop_origin.loop` で集める。[`Renderer::requestOnceRerun()`](../src/core/vkcore/renderer.cpp#L4075))。回が 0 の loop も知っている node で、`{scheduled: []}`。
+- once の node が once の node の出力を読む連鎖(h0 → twiddle)は、同じ frame の plan の順で上流が走れば下流も走る(`upstream`)。回の間の順は §5.2 の明示の `after` のまま。
+- **判定しないもの**: once の node がループの出力(`p` / `p[]`)や carry の値を読むときは、読む resource を辿るのがループの出力と carry の印で止まるので、`graph.once_reads_per_frame@1` の判定をしない([検査](../src/project/rendergraphcomposition.cpp#L405))。
+- 拒否は 2 つ(§10): `graph.once_writes_transient@1 {node, resource}`(書く port が中身を保たない resource に届く)、`graph.once_reads_per_frame@1 {node, input}`(per_frame の pass の出力、history の読み、transient の resource、once でない node が書く resource、`time` / `delta_time` / `scene_time` 由来の value graph の buffer)。`render.target_ref` の先は解決の段で合成後の宣言の `lifetime` を見る。
+
 ## 3. 実行の段(engine が決めるもの)
 
 | `over` の種類 | body の中身 | 段 | 実行 |
@@ -802,7 +814,16 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `graph.target_ref_unknown@1` | 組み直し | `{node, name}` |
 | `graph.input_index_invalid@1` | 編集・読み込み | `{node, input_index, reason: missing｜duplicate, ports}`(LP-1d) |
 | `graph.render_node_parameters_missing@1` | 編集・読み込み | `{node, op, missing}`(render の node の `parameters` に op が要るものが無い。`missing` は欠けた名前を表の順に。`parameters` が無い・null の node は空として扱う。op ごとの表は [`renderNodeRequiredParameters()`](../src/project/graphmodule.cpp#L259)。RS-9。RS-15 から `render.scalar` / `value.*` / `audio.*` / `ui.*` にも広げ、検査は `resolveOperation()` の 1 か所、名前は同名の入力 edge でも満たせる。CT-1 から同じ表を catalog の `required_parameters` が出す) |
-| `graph.target_ref_type_mismatch@1` | 組み直し | `{node, name, field, declared, actual}`(field: `kind` / `topology`。LP-0a) |
+| `graph.render_node_parameter_invalid@1` | 編集・読み込み | `{node, op, parameter, expected, reason: type｜enum｜range}`、`enum` では `allowed`、`range` では `min` / `max`(node の parameter の値が、catalog の `parameters` の kind・enum・範囲に合わない。`parameter` は入れ子なら道筋で `keys[0].interpolation`。`null`・`$expr` / `$format`・表に無い鍵は断らない。表は [`graphparameterschema.cpp`](../src/project/graphparameterschema.cpp#L211) の 1 つで、RS-9 の必須もここから作る。検査は `resolveOperation()` の RS-9 の直後。CT-3、`0d215a68`) |
+| `graph.op_requires_owned_instance@1` | 編集・読み込み(graph の partition) | `{node, op}`(catalog の `placement` が `owned_instance` の op —— `pose.*` の 6 つと `value.morph_weight` —— を `owner` 付きの `graph.instance` の外に置いた。`node` は展開名。表は `src/project/graphparameterschema.cpp` の `add()` の placement、検査は `checkGraphOperationPlacement()`。CT-4、`4d682338`) |
+| `graph.render_scalar_target_incompatible@1` | 編集・読み込み(graph の中の buffer は graph の partition)/ 組み直し(graph の外で宣言された buffer は登録の段) | `{node?, target, expected: {host_source: "runtime_f32", size?}, actual: {host_source, size?}}`(`render.scalar` の書き込み先が `runtime_f32` でない、または `size` が書く sink の合計と違う。`node` は書く最初の sink で、登録の段では付かない。`expected.size` は合計が数えられるときだけ。`value` の線で繋いだ buffer は partition が `size: 4` と `runtime_f32` を補う。element が float 系でない buffer は `graph.render_scalar_type_mismatch@1` の側。前は名前の無い `incompatible frame graph output buffer`。検査は `checkRenderScalarTargets()`(`src/project/graphpartition.cpp`)と `attachProgramGraphState()`。CT-5、`65f3a8a3`) |
+| `preview.unsupported_authoring@1` | 組み直し(preview の変種を組む段)。拒否ではなく状態の理由 | `{feature, target?, graph?, pass?, cause?, message}`(`feature` は `history`・`projection_jitter`・`unsafe_target_name`・`unsafe_pass`・`history_read`・`history_write`・`composition`。preview の変種が組めない構成でも flat / xr は公開し、`get_status` / `get_frame_plan` / 編集の committed の `preview: {available: false, reason}` に載る。`composition` で名前付きの拒否なら `cause: {code, ...}`。PV-1、`a173e70c`) |
+| `preview.unavailable@1` | `render_preview` | `{method, reason}`(preview が利用できない世代の `render_preview`。JSON-RPC の error の `data`。`reason` は上の `preview.unsupported_authoring@1` の object。PV-1、`a173e70c`) |
+| `graph.target_ref_type_mismatch@1` | 組み直し | `{node, name, field, declared, actual, expected}`(field: `kind` / `topology`。LP-0a。`expected: {type, layers?}` は FR-1 `45ca769b` で足した、書き直せば通る型と配列の層の数) |
+| `feature.required_target_missing@1` | 組み直し(合成で feature を当てる前) | `{feature, target, type, document}`(feature が読み書きする target を pipeline・feature・snapshot のどれも宣言していない。`type` は `render.target_ref` に書く型、`document` は feature 文書の参照。`list_render_features` の `required_targets` が同じ一覧。FR-1、`45ca769b`) |
+| `feature.required_target_unwritten@1` | 組み直し(合成の終わり。全 feature と fold group を当てた後) | `{feature, target, type, writer_candidates: [{node?, pass, port, resource}], document}`(feature が読むだけの target(`list_render_features` の `required_targets` の `needs_writer: true`)が宣言されているのに、pipeline の pass・compute task の誰も書いていない。`initial` を持つ target と buffer は除く。`writer_candidates` は読む pass と同じ family でその前にあり、同じ種類(depth / color)の target を書く出力で、`view_family` を書いた pass と feature の pass は除く。root の graph の node が作った pass なら `node` とその graph の port。前は frame planner の `Pass input target is not produced as an earlier output`。FR-3、`55390f4b`) |
+| `feature.insertion_anchor_missing@1` | 組み直し(feature の pass の挿入) | `{feature, anchor, candidates, document}`(`after:` / `before:` の名前が pipeline に無い。`candidates` はその pipeline でちょうど 1 つの frame node に解決する名前を pipeline の順に。同じ feature では `feature.required_target_missing@1` が先。`list_render_features` の `insertion` が挿入先。FR-2、`0b15fb62`) |
+| `snapshot.after_unknown@1` | 組み直し(snapshot の展開) | `{snapshot, after, resolved?, candidates}`(`after` が pipeline に無い。`resolved` は anchor 名のときの `__anchor_<anchor>`、`candidates` は `get_render_authoring_context` の `snapshot_after_candidates` と同じ。FR-1、`45ca769b`) |
 | `graph.history_write@1` | 編集・読み込み・組み直し | `{node, port}`(`X@history` へ書く port。LP-0a) |
 | `graph.history_unavailable@1` | 組み直し | `{node, port, target}`(history を持たない target の `@history` を読む。LP-0a) |
 | `graph.insert_on_compute@1` | 編集・読み込み | `{node}` |
@@ -816,6 +837,11 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 | `view_axis` の拒否(LP-Vb) | 組み直し / 編集 | 実行時の軸は `graph.loop_tier_unsupported@1 {node, reason: set_unsupported}`、無い軸は `graph.view_select_axis_unknown@1 {pass: <loop id>, family, axis}`、body に value node があれば `graph.loop_expression_invalid@1 {reason: not_static}` |
 | `render_feature.pass_replacement_unknown@1` | 組み直し | `{feature, pass}` |
 | `graph.node_missing@1`(置き換え先) | 組み直し | `{node, feature, pass}`(LP-0d) |
+| `graph.once_writes_transient@1` | 組み直し(graph の lowering。`render.target_ref` の先は解決の段) | `{node, resource}`(`schedule: "once"` の node の書く port が、`lifetime` を書かない・`transient` の `render.image`、`transient` の buffer、persistent でない target に届く。`resource` は resource の node の id、`render.target_ref` なら target 名。PS-1。決定 5 の後の「body の once」) |
+| `graph.once_reads_per_frame@1` | 組み直し(graph の lowering。`render.target_ref` の先は解決の段) | `{node, input}`(once の node の読む port が、per_frame の pass の出力・`history: true`・transient の resource・once でない node が書く resource・`time` / `delta_time` / `scene_time` 由来の value graph の buffer に届く。`input` は port 名。PS-1) |
+| `graph.image_initial_requires_persistent@1` | 組み直し(graph の lowering と、asset を読む段) | `{node}`(`render.image` の `initial: {asset}` を、`lifetime` を書かない・`transient` の image に書いた。IA-1) |
+| `graph.image_initial_extent_conflict@1` | 組み直し(graph の lowering と、asset を読む段) | `{node}`(`width` / `height` を省いて asset の大きさを採る image に `extent_scale` を書いた。IA-1) |
+| `graph.image_initial_mismatch@1` | 組み直し(asset を読む段。公開の前) | `{node, asset, what: extent｜format｜color_space, expected: {width, height, format}, actual: {width, height, format}}`(拡大縮小・format の変換はしない。`format` は sRGB を UNORM と同じに見た形の違い、`color_space` は形が同じで KTX2 の sRGB / UNORM が image と食い違う。PNG は色空間を宣言しない扱いで `color_space` にならない。IA-1) |
 | `shader.loop_push_overlap@1` | 組み直し(graphics / compute の pipeline を作る時) | `{shader, stage, range: {offset, size}}`(push constant の range が回の番号の `[112, 120)` に一部だけ重なる。編集の結果には code のまま fields が並ぶ。LC-1) |
 
 **既存の code に寄せるもの**
@@ -832,6 +858,8 @@ view family の view に、名前の付いた**整数の軸の座標**を持た�
 
 - 組み直しで、ループの回ごとの node(`<loop>/<element>/<node>`)が名前付きで断られたときは、error_fields に `loop_origin: {loop, element, node}` が付く(LP-1b)。`graph.loop_expression_invalid@1` の `pointer` は常に authoring 文書の JSON pointer。
 - 各 code の JSON pointer と message の形は、実装の WP の報告で表にし、manual に載せる。
+- `graph.` で始まる code の拒否の全部に、node を書いた文書 `document`(`project://<path>`)と、definition の body の node なら `definition`(その definition の名前)が付く(CT-2、`51d1c2d8`)。既存の field はそのままで、同じ名前の field を code がもう持つときはその値を残す。分からない field は出さない(null にしない)。載る所は起動時の致命の行、編集の ticket の rejected の error、`reload_render_documents` の message。`edit_graph_instances` の `invalid_graph_attachment`、scene の読み直しでの graph の拒否、`pelican_cli` の出力には付かない(CT-5、`65f3a8a3` から、`edit_graph_instances` は graph の名前付きの拒否を `invalid_graph_attachment` に畳まず code と `document` のまま返す。`invalid_graph_attachment` に残るのは名前の無い拒否だけ)。`get_frame_plan` の `origin.graph`(GL-2a)は `project://` の付かない形のままで、書き方が揃っていない。
+- **graph の node を持つのは rendering の root 文書だけ**。preset と authored pass は pass だけを持つ feature で、graph の template は root に写される。なので `document` はいつも root 文書([`graphcomposition.hpp` の CT-2 の注記](../src/project/graphcomposition.hpp#L38))。
 
 ## 11. WP の分け方
 

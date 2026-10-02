@@ -409,4 +409,43 @@ TEST_CASE("WP172 preview insertion leaves the next flat and XR normal capture id
     }
 }
 
+
+// PV-1: a preview the published configuration could not compose is refused by
+// name before anything else of the request is read or run.
+TEST_CASE("PV-1 render_preview refuses an unavailable preview as preview.unavailable@1 with its reason",
+          "[pv1][render-preview]") {
+    const auto base = AuthoringSceneDocument::load(sceneFixture().dump(), SceneRevision{72});
+    const Json reason{{"code", "preview.unsupported_authoring@1"},
+                      {"feature", "history"},
+                      {"target", "accum"},
+                      {"message", "preview graph '<config>' rejects authored history target 'accum'"}};
+    const auto graph = unavailablePreviewGraphProgram(reason);
+    REQUIRE_FALSE(graph.available);
+    CHECK(previewGraphStatusJson(graph) == Json{{"available", false}, {"reason", reason}});
+    CHECK(previewGraphStatusJson(graphFixture()) == Json{{"available", true}});
+    auto shared = exactSharedStateFixture();
+    std::size_t executor_invocations = 0;
+    EditorPreviewService service{{
+        .document = [&]() -> const AuthoringSceneDocument & { return base; },
+        .preview_graph = [&]() -> const PreviewGraphProgram & { return graph; },
+        .xr_active = [] { return false; },
+        .engine_time = [] { return PreviewEngineTimeSnapshot{2.5, 0.016, 90}; },
+        .shared_state_snapshot = [&] { return shared; },
+        .execution_fault_hook = [&](std::string_view) { ++executor_invocations; },
+    }};
+    // Whatever the capture says: there is no program to run it with.
+    for (auto params : {renderParams(graph), Json{{"capture", Json::object()}}}) {
+        try {
+            (void)service.renderPreview(params, [] { return openGate(); });
+            FAIL("an unavailable preview rendered");
+        } catch (const EditorPreviewError &error) {
+            CHECK(error.code() == EditorPreviewErrorCode::preview_unavailable);
+            CHECK(std::string{editorPreviewErrorCodeName(error.code())} == "preview.unavailable@1");
+            CHECK(error.payload().at("method") == "render_preview");
+            CHECK(Json(error.payload().at("reason")) == reason);
+        }
+    }
+    CHECK(executor_invocations == 0);
+}
+
 } // namespace Pelican

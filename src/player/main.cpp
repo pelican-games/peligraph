@@ -774,9 +774,12 @@ int main(int argc, char *argv[]) {
     } else {
         path_resolver.setup(parsed_launch_config.project_root, launch_config.allow_absolute_paths);
     }
-    const auto assets_summary = Pelican::verifyAssetsAtStartup(
-        path_resolver.stores(), parsed_launch_config.project_root / ".pelican" / "assets-hash-cache.json",
-        launch_config.strict_assets);
+    // AV-1: the result is kept for get_status / get_assets_verification.
+    const auto assets_summary =
+        Pelican::FastModuleContainer::get<Pelican::AssetsVerification>().verifyAtStartup(
+            path_resolver.stores(),
+            parsed_launch_config.project_root / ".pelican" / "assets-hash-cache.json",
+            launch_config.strict_assets);
     if (!assets_summary.shouldContinueLoading()) {
         return 1;
     }

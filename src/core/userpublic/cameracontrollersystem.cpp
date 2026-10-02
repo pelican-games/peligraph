@@ -25,7 +25,7 @@ using ControllerType = Camera::SceneCameraControllerType;
 
 struct CameraPose {
     glm::vec3 pos{0.0f, 0.0f, 0.0f};
-    glm::vec3 dir{0.0f, 0.0f, 1.0f};
+    glm::vec3 dir{0.0f, 0.0f, -1.0f};
     glm::vec3 up{0.0f, 1.0f, 0.0f};
 };
 
@@ -65,9 +65,10 @@ glm::vec3 normalizeOr(glm::vec3 value, glm::vec3 fallback) {
     return value * glm::inversesqrt(len2);
 }
 
+// CC-1a: the world's up is +Y (docs/design_coordinate_convention.md).
+// basic_config.camera.up was removed in CC-1b.
 glm::vec3 projectWorldUp() {
-    return normalizeOr(GET_MODULE(ProjectBasicConfig).initailCameraProperty().up,
-                       glm::vec3{0.0f, 1.0f, 0.0f});
+    return glm::vec3{0.0f, 1.0f, 0.0f};
 }
 
 glm::vec3 leastAlignedCanonicalAxis(glm::vec3 axis) {
@@ -98,6 +99,8 @@ struct YawPitchBasis {
     glm::vec3 right;
 };
 
+// CC-1a: yaw 0 / pitch 0 is +Z, yaw turns it toward right = cross(+Z, +Y)
+// = -X (a camera looking along +Z sees -X on its right), pitch toward +Y.
 YawPitchBasis yawPitchBasis() {
     const auto up = projectWorldUp();
     constexpr glm::vec3 canonical_forward{0.0f, 0.0f, 1.0f};
@@ -106,17 +109,18 @@ YawPitchBasis yawPitchBasis() {
     return YawPitchBasis{
         .up = up,
         .forward = forward,
-        .right = normalizeOr(glm::cross(up, forward), glm::vec3{1.0f, 0.0f, 0.0f}),
+        .right = normalizeOr(glm::cross(forward, up), glm::vec3{-1.0f, 0.0f, 0.0f}),
     };
 }
 
+// right = cross(forward, up) is the screen's right, and up the screen's up.
 CameraPose makePose(glm::vec3 pos, glm::vec3 dir_hint) {
     CameraPose pose;
     pose.pos = pos;
-    pose.dir = normalizeOr(dir_hint, glm::vec3{0.0f, 0.0f, 1.0f});
+    pose.dir = normalizeOr(dir_hint, glm::vec3{0.0f, 0.0f, -1.0f});
     const auto up_hint = worldUpFor(pose.dir);
-    const auto right = normalizeOr(glm::cross(up_hint, pose.dir), glm::vec3{1.0f, 0.0f, 0.0f});
-    pose.up = normalizeOr(glm::cross(pose.dir, right), up_hint);
+    const auto right = normalizeOr(glm::cross(pose.dir, up_hint), glm::vec3{1.0f, 0.0f, 0.0f});
+    pose.up = normalizeOr(glm::cross(right, pose.dir), up_hint);
     return pose;
 }
 
@@ -172,13 +176,14 @@ CameraPose blendPose(CameraPose current, CameraPose desired, float weight) {
     };
 }
 
+// The transform rotation whose cameraBasis is the pose (forward -Z).
 glm::quat rotationFromPose(const CameraPose &pose) {
-    const auto dir = normalizeOr(pose.dir, glm::vec3{0.0f, 0.0f, 1.0f});
+    const auto dir = normalizeOr(pose.dir, glm::vec3{0.0f, 0.0f, -1.0f});
     const auto up_hint = worldUpFor(dir);
-    const auto right_hint = normalizeOr(glm::cross(up_hint, dir), glm::vec3{1.0f, 0.0f, 0.0f});
-    const auto right = normalizeOr(glm::cross(pose.up, dir), right_hint);
-    const auto up = normalizeOr(glm::cross(dir, right), up_hint);
-    return glm::quat_cast(glm::mat3{right, up, dir});
+    const auto right_hint = normalizeOr(glm::cross(dir, up_hint), glm::vec3{1.0f, 0.0f, 0.0f});
+    const auto right = normalizeOr(glm::cross(dir, pose.up), right_hint);
+    const auto up = normalizeOr(glm::cross(right, dir), up_hint);
+    return cameraRotation(dir, up);
 }
 
 struct OrbitInput {
@@ -207,10 +212,12 @@ OrbitInput readRuntimeFreeCameraInput(GameContext &ctx) {
 
     // A chord such as Shift+MMB also satisfies the unmodified MMB binding.
     // Resolve that deliberate input-profile overlap by operation priority.
+    // Pointer axes are the screen's (x right, y down), as pan, look and the
+    // controllers below read them.
     if (ctx.actionHeld("pelican_view_zoom_drag")) {
         result.zoom -= pointer_y;
     } else if (ctx.actionHeld("pelican_view_pan")) {
-        result.pan.x -= pointer_x;
+        result.pan.x += pointer_x;
         result.pan.y += pointer_y;
     } else if (ctx.actionHeld("pelican_view_orbit")) {
         result.look.x += pointer_x;
@@ -270,8 +277,11 @@ CameraPose updateOrbit(GameContext &ctx, std::string_view camera_name, const Con
     const auto input = runtime_free_camera
                            ? readRuntimeFreeCameraInput(ctx)
                            : readAuthoredOrbitInput(ctx);
-    state.yaw += input.look.x * controller.sensitivity * static_cast<float>(dt);
-    state.pitch = clampPitch(state.pitch + input.look.y * controller.sensitivity * static_cast<float>(dt));
+    // CC-1a: look x moves the camera toward the screen's right (yaw grows
+    // toward the left of a camera facing the target) and look y toward the
+    // screen's bottom (pitch grows upward), as they did before the y flip.
+    state.yaw -= input.look.x * controller.sensitivity * static_cast<float>(dt);
+    state.pitch = clampPitch(state.pitch - input.look.y * controller.sensitivity * static_cast<float>(dt));
     state.distance =
         std::max(0.001f, state.distance - input.zoom * controller.sensitivity *
                               std::max(1.0f, state.distance) * static_cast<float>(dt));
@@ -302,12 +312,11 @@ CameraPose initialFlyPose(std::string_view camera_name) {
     auto &scene = GET_MODULE(SceneLoader);
     if (scene.hasObjectTransform(camera_name)) {
         const auto transform = scene.objectTransform(camera_name);
+        const auto basis = cameraBasis(transform.rotation);
         return CameraPose{
             .pos = transform.pos,
-            .dir = normalizeOr(transform.rotation * glm::vec3{0.0f, 0.0f, 1.0f},
-                               glm::vec3{0.0f, 0.0f, 1.0f}),
-            .up = normalizeOr(transform.rotation * glm::vec3{0.0f, 1.0f, 0.0f},
-                              projectWorldUp()),
+            .dir = normalizeOr(basis.forward, glm::vec3{0.0f, 0.0f, -1.0f}),
+            .up = normalizeOr(basis.up, projectWorldUp()),
         };
     }
 
@@ -330,13 +339,15 @@ CameraPose updateFly(GameContext &ctx, std::string_view camera_name, const Contr
     const auto dt = static_cast<float>(std::max(ctx.deltaTime(), 0.0));
     const auto look = ctx.actionAxis2("look");
     const auto move = ctx.actionAxis2("move");
+    // CC-1a: look x turns the view toward the screen's right and look y
+    // toward its bottom; move x goes to the screen's right.
     state.yaw += look.x * controller.sensitivity * dt;
-    state.pitch = clampPitch(state.pitch + look.y * controller.sensitivity * dt);
+    state.pitch = clampPitch(state.pitch - look.y * controller.sensitivity * dt);
 
     const auto dir = directionFromYawPitch(state.yaw, state.pitch);
     const auto up_hint = worldUpFor(dir);
-    const auto right = normalizeOr(glm::cross(up_hint, dir), glm::vec3{1.0f, 0.0f, 0.0f});
-    const auto up = normalizeOr(glm::cross(dir, right), up_hint);
+    const auto right = normalizeOr(glm::cross(dir, up_hint), glm::vec3{1.0f, 0.0f, 0.0f});
+    const auto up = normalizeOr(glm::cross(right, dir), up_hint);
     state.pose.pos += (right * move.x + dir * move.y) * controller.speed * dt;
     state.pose.dir = dir;
     state.pose.up = up;
@@ -458,9 +469,11 @@ glm::vec3 panOrbitTarget(glm::vec3 target, glm::vec3 camera_offset, ActionAxis2 
         return target;
     }
 
+    // Pan is in screen axes: x toward the screen's right, y toward its
+    // bottom.
     const auto pose = lookAtPose(target + camera_offset, target);
-    const auto right = normalizeOr(glm::cross(pose.up, pose.dir), yawPitchBasis().right);
-    const auto delta = (right * pan.x + pose.up * pan.y) * scale;
+    const auto right = normalizeOr(glm::cross(pose.dir, pose.up), glm::vec3{1.0f, 0.0f, 0.0f});
+    const auto delta = (right * pan.x - pose.up * pan.y) * scale;
     state.pan_offset += delta;
     return target + delta;
 }

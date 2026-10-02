@@ -96,6 +96,24 @@ void validateVariantOutput(
             "Render compiler program returned variants "
             "out of order");
     }
+    // PV-1: an artifact the program could not compose carries nothing else.
+    if (variant.unavailable) {
+        if (request.artifact !=
+            RenderCompilerProgramArtifact::data_only) {
+            throw std::runtime_error(
+                "Render compiler runtime artifact cannot be "
+                "unavailable");
+        }
+        if (variant.compiled_pipeline != nullptr ||
+            variant.physical_package != nullptr ||
+            !variant.frame_plans.empty() ||
+            !variant.execution_plans.empty()) {
+            throw std::runtime_error(
+                "Render compiler unavailable data-only artifact "
+                "returned compiled output");
+        }
+        return;
+    }
     if (variant.compiled_pipeline == nullptr) {
         throw std::runtime_error(
             "Render compiler program returned a null "

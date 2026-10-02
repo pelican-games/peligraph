@@ -119,6 +119,10 @@ struct FrameGraphNodeDefinition {
     // preserves the legacy kind-based compatibility mapping.
     std::string semantic_dialect;
     std::string execution_implementation;
+    // PS-1: `schedule: "once"` (a fullscreen / raster pass, a compute task).
+    // Target planning isolates the node in its own physical scope; the
+    // renderer records it only on a frame it is due.
+    bool once = false;
 };
 
 struct FrameGraphDefinition {
@@ -150,6 +154,8 @@ struct FramePlanNode {
     std::string view_family{
         mainRenderViewFamilyId};
     RenderViewSelect view_select;
+    // PS-1: FrameGraphNodeDefinition::once.
+    bool once = false;
 };
 
 struct FramePlanBarrier {

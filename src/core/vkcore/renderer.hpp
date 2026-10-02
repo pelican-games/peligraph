@@ -2,6 +2,7 @@
 
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
+#include "../renderingpass/oncescheduler.hpp"
 #include "../renderingpass/previewgraph.hpp"
 #include "../renderer/viewfamily.hpp"
 #include "render_target_layout_tracker.hpp"
@@ -29,6 +30,7 @@ namespace Pelican {
 
 struct RenderPipelineReloadState;
 struct RenderPipelinePublicationTransaction;
+struct RenderImageInitialAsset;
 struct RenderPipelineAuthoringApplyResult {
     bool committed = false;
     bool staged = false;
@@ -56,6 +58,10 @@ enum class RenderGraphVariant {
     flat,
     xr,
 };
+
+// MP-1: the most materials a material node's drawn_materials lists; past it
+// the first ones are kept and drawn_materials_truncated is true.
+inline constexpr std::size_t drawnMaterialsListLimit = 256;
 
 // CPU-only construction seam for exercising the production
 // currentFramePlanJson() path against an already-published runtime program.
@@ -204,6 +210,64 @@ DECLARE_MODULE(Renderer) {
     RenderingPassId last_no_selected_view_rendering_pass_id =
         invalidRenderingPassId();
     std::uint64_t last_no_selected_view_runtime_generation = 0;
+    // MP-1: what each material pass drew in the last published logical
+    // frame, by pass name, and the program, generation and frame
+    // (EngineTime::evaluationIndex) it was. get_frame_plan copies it as the
+    // material nodes' drawn_materials.
+    struct DrawnMaterial {
+        int material = -1;
+        std::string name;
+        std::uint64_t draws = 0;
+    };
+    struct DrawnMaterialsOfPass {
+        std::vector<DrawnMaterial> materials;
+        bool truncated = false;
+    };
+    struct LastDrawnMaterials {
+        bool recorded = false;
+        RenderingPassId rendering_pass_id = invalidRenderingPassId();
+        std::uint64_t runtime_generation = 0;
+        std::uint64_t frame = 0;
+        std::map<std::string, DrawnMaterialsOfPass, std::less<>> passes;
+    };
+    LastDrawnMaterials last_drawn_materials;
+    // PS-1: what each `schedule: "once"` node last ran with, by program
+    // (RenderingPassId value) and node name, and the names rerun_once asked
+    // to run on the next frame. A record is written when the frame that ran
+    // the node is published.
+    std::map<int, std::map<std::string, OnceRunRecord, std::less<>>>
+        once_runs;
+    std::set<std::string, std::less<>> once_rerun_requests;
+    // IA-1: what each persistent image with an initial asset was last filled
+    // from, by program (RenderingPassId value) and target name: the VkImage,
+    // the runtime generation and the asset read for it. Another of any of
+    // the three fills it again before the frame records.
+    struct ImageInitialUpload {
+        std::uint64_t image = 0;
+        std::uint64_t generation = 0;
+        std::shared_ptr<const RenderImageInitialAsset> asset;
+    };
+    std::map<int, std::map<std::string, ImageInitialUpload, std::less<>>>
+        image_initial_uploads;
+    // FP-1: the part of get_frame_plan the published generation and its
+    // program decide (the plan, execution plan, physical target plan and
+    // the rest that only read them), built the first time the frame plan is
+    // asked for in that generation and copied into every answer until
+    // another generation, program or rendering root document is current.
+    // What a frame, the scene, a file or a runtime setting changes is added
+    // to the copy on each call. currentFramePlanJson runs on the frame
+    // thread only (RPC at the frame boundary, the plan viewer), so this
+    // takes no lock.
+    struct FramePlanGenerationPart {
+        std::weak_ptr<const RendererRuntimeGeneration> generation;
+        std::uint64_t runtime_generation = 0;
+        RenderingPassId rendering_pass_id = invalidRenderingPassId();
+        std::string graph_reference;
+        nlohmann::json plan;
+        // How many times a generation's part was built (tests read it).
+        std::uint64_t builds = 0;
+    };
+    mutable FramePlanGenerationPart frame_plan_generation_part;
     std::uint64_t next_ray_scene_generation = 1;
 
     TemporalViewFamilyHistory &activeTemporalHistory();
@@ -234,6 +298,13 @@ DECLARE_MODULE(Renderer) {
              RenderingPassId rendering_pass_id);
     ~Renderer();
     nlohmann::json currentFramePlanJson() const;
+    // PS-1: rerun_once. Asks the next frame to run the once nodes `node`
+    // made (a pass or task's graph node; a graph.loop runs all its copies'),
+    // or every once node when `node` is empty. Returns the names asked for,
+    // in plan order. std::invalid_argument when the current frame plan has
+    // no node of that name.
+    std::vector<std::string> requestOnceRerun(
+        const std::optional<std::string> &node);
     bool hasPendingRenderPipelinePublication() const noexcept;
     // Logical frames this renderer has published since it was created. The
     // engine answers RPC before its first frame; a client that needs a drawn

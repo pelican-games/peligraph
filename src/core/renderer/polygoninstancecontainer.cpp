@@ -25,7 +25,10 @@ namespace Pelican {
 
 namespace {
 
-constexpr size_t maxModelInstances = 1024;
+constexpr size_t maxActiveModelInstances = 1024;
+// The published scene must survive preparation/rollback of its replacement.
+// Physical slots cover both generations; the public live limit stays 1024.
+constexpr size_t maxModelInstances = 2 * maxActiveModelInstances;
 constexpr size_t maxRenderCommands = 1024;
 constexpr size_t maxDrawSortViews = 2;
 constexpr size_t maxPreparedSecondaryViewFamilyViews = 32;
@@ -570,6 +573,14 @@ PolygonInstanceContainer::snapshotPreparedScene() const {
 PolygonInstanceContainer::PreparedSceneState
 PolygonInstanceContainer::prepareSceneReplacement(
     std::vector<std::uint32_t> &retire_indices) {
+    // Repeated RPC loads need not render a frame between cutovers. Reclaim
+    // previously committed generations before reserving the next pair, but
+    // only after their GPU readers have completed. Never release the live
+    // generation: it remains available until the replacement commits.
+    if (!scene_retirement_queue.empty()) {
+        GET_MODULE(VulkanManageCore).waitIdle();
+        drainSceneRetirements();
+    }
     auto candidate = snapshotPreparedScene();
     candidate.slots.instance_slots =
         slots.instance_slots.prepareSceneReplacement(retire_indices);
@@ -623,8 +634,9 @@ void PolygonInstanceContainer::publishPreparedScene(
 StagedModelInstance PolygonInstanceContainer::stagePreparedSceneModel(
     PreparedSceneState &prepared, const ModelTemplate &model) {
     const auto primitive_count = primitiveCount(model);
-    if (!prepared.slots.instance_slots.hasReusableSlot() &&
-        prepared.slots.slotCount() >= maxModelInstances) {
+    if (prepared.slots.instance_slots.liveCount() >= maxActiveModelInstances ||
+        (!prepared.slots.instance_slots.hasReusableSlot() &&
+         prepared.slots.slotCount() >= maxModelInstances)) {
         throw std::runtime_error("Model instance capacity exceeded");
     }
     if (prepared.draw_inventory.size() > maxRenderCommands ||
@@ -775,8 +787,9 @@ std::uint32_t PolygonInstanceContainer::requireLive(ModelInstanceId id,
 }
 
 void PolygonInstanceContainer::preflightModelInstance(const ModelTemplate &model) const {
-    if (!slots.instance_slots.hasReusableSlot() &&
-        slots.slotCount() >= maxModelInstances) {
+    if (slots.instance_slots.liveCount() >= maxActiveModelInstances ||
+        (!slots.instance_slots.hasReusableSlot() &&
+         slots.slotCount() >= maxModelInstances)) {
         throw std::runtime_error("Model instance capacity exceeded");
     }
 

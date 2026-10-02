@@ -179,7 +179,11 @@ double resolvePod(bool hit) {
 }
 
 #if PELICAN_WITH_PHYSICS
-double physWorldQuery() {
+enum class PhysicsBenchmarkMode { world, collect, prebuilt };
+
+double physWorldQuery(std::size_t collider_count = 512,
+                     PhysicsBenchmarkMode mode = PhysicsBenchmarkMode::world,
+                     bool miss = false) {
     auto &ecs = GET_MODULE(ECSCore);
     auto &world = GET_MODULE(PhysWorld);
     world.clear();
@@ -187,7 +191,7 @@ double physWorldQuery() {
 
     constexpr std::array component_ids{ComponentIdByType<TransformComponent>::value};
     const auto ids = ecs.createEntities(
-        component_ids, 512,
+        component_ids, collider_count,
         [](std::span<const EntityId>, std::span<void *> ptrs, size_t count) {
             auto *transforms = static_cast<TransformComponent *>(ptrs[0]);
             for (size_t i = 0; i < count; ++i) {
@@ -203,11 +207,23 @@ double physWorldQuery() {
         world.bindCollider("benchmark-" + std::to_string(i), collider, ids[i]);
     }
 
+    // Prepare the immutable snapshot outside the timed region. Comparing
+    // this lower-level query with PhysWorld includes provider/bridge costs
+    // as well as rebuilding the colliders; it is not an exact subtraction.
+    const auto prebuilt = mode == PhysicsBenchmarkMode::prebuilt
+                              ? world.collectColliders() : std::vector<phys::Collider>{};
+    const phys::Ray ray{{0.0F, miss ? 5.0F : 0.0F, 0.0F},
+                       {1.0F, 0.0F, 0.0F}, 16384.0F};
     const auto elapsed = elapsedMilliseconds([&] {
         for (size_t i = 0; i < 200; ++i) {
-            const auto hit = world.raycastClosest(
-                phys::Ray{{0.0F, 0.0F, 0.0F}, {1.0F, 0.0F, 0.0F}, 2048.0F},
-                phys::every_collider_filter);
+            if (mode == PhysicsBenchmarkMode::collect) {
+                const auto colliders = world.collectColliders();
+                benchmark_sink = benchmark_sink ^ colliders.size();
+                continue;
+            }
+            const auto hit = mode == PhysicsBenchmarkMode::prebuilt
+                ? phys::raycastClosest(ray, prebuilt, phys::every_collider_filter)
+                : world.raycastClosest(ray, phys::every_collider_filter);
             benchmark_sink = benchmark_sink ^ static_cast<std::uint64_t>(hit ? hit->distance * 1000.0F : 0.0F);
         }
     });
@@ -248,7 +264,23 @@ int main() {
     reportCase("resolve_hit_pod_1m", [] { return resolvePod(true); });
     reportCase("resolve_miss_pod_1m", [] { return resolvePod(false); });
 #if PELICAN_WITH_PHYSICS
-    reportCase("physworld_query_512x200", physWorldQuery);
+    reportCase("physworld_query_512x200", [] { return physWorldQuery(); });
+    for (const auto count : {std::size_t{64}, std::size_t{4096}}) {
+        reportCase("physworld_query_" + std::to_string(count) + "x200",
+                   [=] { return physWorldQuery(count); });
+    }
+    reportCase("physworld_collect_512x200", [] {
+        return physWorldQuery(512, PhysicsBenchmarkMode::collect);
+    });
+    reportCase("phys_prebuilt_query_512x200", [] {
+        return physWorldQuery(512, PhysicsBenchmarkMode::prebuilt);
+    });
+    reportCase("physworld_miss_512x200", [] {
+        return physWorldQuery(512, PhysicsBenchmarkMode::world, true);
+    });
+    reportCase("phys_prebuilt_miss_512x200", [] {
+        return physWorldQuery(512, PhysicsBenchmarkMode::prebuilt, true);
+    });
 #endif
     return benchmark_sink == std::numeric_limits<std::uint64_t>::max() ? 1 : 0;
 }

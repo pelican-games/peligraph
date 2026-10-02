@@ -34,6 +34,7 @@
 #include <QCursor>
 #include <QElapsedTimer>
 #include <QHash>
+#include <QJsonValue>
 #include <QLabel>
 #include <QMainWindow>
 #include <QMessageBox>
@@ -59,6 +60,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iostream>
 #include <map>
 #include <optional>
 #include <string>
@@ -108,6 +110,13 @@ class FakeEngine {
     std::uint64_t next_id = 100;
     // Every operation an `edit` carried, in order.
     std::vector<Json> operations;
+    // UX-13c: false is an engine from before scene_outline, which refuses it
+    // as an unknown method (-32601).
+    bool knows_scene_outline = true;
+    // Every request the window sent, in order, and the size in bytes of each
+    // scene_outline / scene_tree answer.
+    std::vector<std::pair<std::string, Json>> asked;
+    std::vector<std::pair<std::string, std::size_t>> list_replies;
 
     void pump() {
         QApplication::processEvents();
@@ -117,14 +126,31 @@ class FakeEngine {
             const auto id = request.at("id").get<qint64>();
             const auto method = request.at("method").get<std::string>();
             const Json params = request.value("params", Json::object());
+            asked.emplace_back(method, params);
+            if (method == "scene_outline" && !knows_scene_outline) {
+                // As the viewport reports a JSON-RPC error: the code, then
+                // the one-line failure.
+                emit viewport_.engineRpcRefused(id, -32601, QStringLiteral("Method not found"),
+                                                QJsonValue{});
+                emit viewport_.inspectorRpcFailed(id, QStringLiteral("RPC -32601: Method not found"));
+                QApplication::processEvents();
+                continue;
+            }
             std::optional<Json> result = answer(method, params);
-            if (result)
-                emit viewport_.inspectorRpcSucceeded(id, QByteArray::fromStdString(result->dump()));
-            else
+            if (result) {
+                const std::string reply = result->dump();
+                if (method == "scene_outline" || method == "scene_tree")
+                    list_replies.emplace_back(method, reply.size());
+                emit viewport_.inspectorRpcSucceeded(id, QByteArray::fromStdString(reply));
+            } else {
                 emit viewport_.inspectorRpcFailed(id, QStringLiteral("not in this fake engine"));
+            }
             QApplication::processEvents();
         }
     }
+
+    // UX-13c: what scene_tree would answer now, in bytes.
+    std::size_t sceneTreeBytes() const { return sceneTree().dump().size(); }
 
     std::vector<std::string> names() const {
         std::vector<std::string> result;
@@ -230,10 +256,34 @@ class FakeEngine {
         return {{"scene_revision", revision}, {"scene_id", "main"}, {"objects", listed}};
     }
 
+    // UX-13c: the engine's scene_outline -- parents by authoring id, and
+    // not_modified, without the list, for the revision the caller holds.
+    Json sceneOutline(const Json &params) const {
+        if (params.contains("if_scene_revision") && params.at("if_scene_revision") == revision)
+            return {{"scene_id", "main"}, {"scene_revision", revision}, {"not_modified", true}};
+        std::map<std::string, std::uint64_t> ids;
+        for (const auto &object : objects) ids[object.name] = object.id;
+        Json listed = Json::array();
+        for (std::size_t index = 0; index < objects.size(); ++index) {
+            Json object{{"authoring_object_id", objects[index].id},
+                        {"declaration_index", index},
+                        {"name", objects[index].name},
+                        {"parent_authoring_object_id", nullptr}};
+            if (!objects[index].parent.empty())
+                object["parent_authoring_object_id"] = ids.at(objects[index].parent);
+            listed.push_back(std::move(object));
+        }
+        return {{"scene_id", "main"},
+                {"scene_revision", revision},
+                {"not_modified", false},
+                {"objects", listed}};
+    }
+
     std::optional<Json> answer(const std::string &method, const Json &params) {
         if (method == "open_editor_session")
             return Json{{"actor_id", 9}, {"display_name", "Pelican Studio Inspector"}};
         if (method == "scene_tree") return sceneTree();
+        if (method == "scene_outline") return sceneOutline(params);
         if (method == "get_scene_revision")
             return Json{{"scene_revision", revision}, {"preview_epoch", 0}};
         if (method == "list_assets") return Json{{"assets", Json::array()}};
@@ -314,10 +364,18 @@ struct Rig {
     EmbeddedViewport &viewport = *window.viewport_;
     FakeEngine engine{viewport};
     OutlinerTree &outliner = *window.outliner_;
+    // UX-13c: from the engine becoming available to the Outliner showing the
+    // last object.
+    qint64 opened_ms = 0;
 
-    Rig() {
-        // Camera, Cube, and Floor with Leg under it.
-        engine.objects = {{1, "Camera", ""}, {2, "Cube", ""}, {3, "Floor", ""}, {4, "Leg", "Floor"}};
+    // Camera, Cube, and Floor with Leg under it.
+    explicit Rig(std::vector<FakeEngine::Object> objects = {{1, "Camera", ""},
+                                                            {2, "Cube", ""},
+                                                            {3, "Floor", ""},
+                                                            {4, "Leg", "Floor"}},
+                 bool knows_scene_outline = true) {
+        engine.objects = std::move(objects);
+        engine.knows_scene_outline = knows_scene_outline;
         QString error;
         REQUIRE(viewport.process_.start(
             {QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH), {QStringLiteral("rpc-hold")}, {}},
@@ -331,8 +389,21 @@ struct Rig {
         window.activateWindow();
         REQUIRE(QTest::qWaitForWindowActive(&window));
         viewport.rpc_ready_ = true;
+        QElapsedTimer clock;
+        clock.start();
         emit viewport.engineRpcBecameAvailable();
-        REQUIRE(pumpUntil([&] { return row("Leg") != nullptr; }));
+        const QString last = QString::fromStdString(engine.objects.back().name);
+        REQUIRE(pumpUntil([&] { return row(last) != nullptr; }));
+        opened_ms = clock.elapsed();
+    }
+
+    // How many requests of `method` were sent, with exactly `params` when
+    // given.
+    std::size_t asked(const std::string &method, const std::optional<Json> &params = {}) const {
+        return static_cast<std::size_t>(std::count_if(
+            engine.asked.begin(), engine.asked.end(), [&](const auto &request) {
+                return request.first == method && (!params || request.second == *params);
+            }));
     }
 
     void pumpFor(int milliseconds) {
@@ -567,6 +638,67 @@ TEST_CASE("OL-1 a row cannot be dropped under its own child",
     rig.release(rig.middleOf("Cube"));
     REQUIRE(rig.pumpUntil([&] { return rig.engine.operations.size() == 1; }));
     CHECK(rig.engine.operations.back().at("new_parent_id") == 2);
+}
+
+TEST_CASE("UX-13c the Outliner polls scene_outline with the revision it holds",
+          "[devstudio][outliner][ux13c][negative-contrast]") {
+    // A thousand objects: a root every tenth, the nine after it its children.
+    std::vector<FakeEngine::Object> objects;
+    for (std::uint64_t index = 0; index < 1000; ++index)
+        objects.push_back({100 + index, "Object" + std::to_string(index),
+                           index % 10 == 0 ? std::string{}
+                                           : "Object" + std::to_string(index - index % 10)});
+    Rig rig{objects};
+    // The first read names no scene: Studio does not know it yet.
+    CHECK(rig.asked("scene_outline", Json::object()) == 1);
+    CHECK(rig.asked("scene_tree") == 0);
+    QTreeWidgetItem *shown = rig.row("Object999");
+    REQUIRE(shown != nullptr);
+    CHECK(shown->parent() == rig.row("Object990"));
+
+    // While nothing changes, every poll names the scene and the revision
+    // held, and its not_modified answer rebuilds no row.
+    const Json held{{"scene_id", "main"}, {"if_scene_revision", 1}};
+    REQUIRE(rig.pumpUntil([&] { return rig.asked("scene_outline", held) >= 2; }, 4000));
+    CHECK(rig.row("Object999") == shown);
+    CHECK(rig.asked("scene_tree") == 0);
+
+    // A change elsewhere moves the revision: the next poll is answered with
+    // the whole list, and the Outliner shows it.
+    rig.engine.objects[1].name = "Renamed";
+    ++rig.engine.revision;
+    REQUIRE(rig.pumpUntil([&] { return rig.row("Renamed") != nullptr; }, 4000));
+    const Json moved{{"scene_id", "main"}, {"if_scene_revision", 2}};
+    REQUIRE(rig.pumpUntil([&] { return rig.asked("scene_outline", moved) >= 1; }, 4000));
+
+    // Decision 6: the numbers for the report, not a pass condition.
+    REQUIRE(rig.engine.list_replies.size() >= 3);
+    const auto full = rig.engine.list_replies.front().second;
+    const auto unchanged = rig.engine.list_replies[1].second;
+    std::cout << "UX-13c Outliner, 1000 objects: shown in " << rig.opened_ms
+              << " ms; scene_outline " << full << " bytes, not_modified poll " << unchanged
+              << " bytes, scene_tree (this fake, components empty) "
+              << rig.engine.sceneTreeBytes() << " bytes\n";
+    CHECK(unchanged < 100);
+}
+
+TEST_CASE("UX-13c an engine without scene_outline is read with scene_tree, asked once",
+          "[devstudio][outliner][inspector][ux13c]") {
+    Rig rig{{{1, "Camera", ""}, {2, "Cube", ""}, {3, "Floor", ""}, {4, "Leg", "Floor"}}, false};
+    // The Outliner asked once, was refused, and read the tree with its named
+    // parents.
+    CHECK(rig.row("Leg")->parent() == rig.row("Floor"));
+    // The Inspector, asked about Cube, does the same and reads its components.
+    rig.select("Cube");
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.asked("get_components", Json{{"scene_id", "main"}, {"authoring_object_id", 2}}) >= 1;
+    }));
+    rig.pumpFor(1200);
+    CHECK(rig.asked("scene_tree") >= 3);
+    // Each asked once and remembered; nothing more went out as scene_outline.
+    CHECK(rig.asked("scene_outline") == 2);
+    CHECK(rig.asked("scene_outline", Json::object()) == 1);
+    CHECK(rig.asked("scene_outline", Json{{"scene_id", "main"}}) == 1);
 }
 
 } // namespace PelicanStudio

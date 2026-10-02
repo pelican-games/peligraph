@@ -1,3 +1,4 @@
+#include "audioanalysistables.hpp"
 #include "graphcanvasmodel.hpp"
 #include "graphcomposition.hpp"
 #include "graphmodule.hpp"
@@ -3793,7 +3794,10 @@ TEST_CASE("UX-8 decisions 7 and 13: a sound sink is placed driving the voice the
             result.push_back(each.name + ":" + each.kind);
         return result;
     };
-    CHECK(kinds("audio.volume") == std::vector<std::string>{"voice:voice"});
+    // UX-12a, decision 2: the table's entry -- a target, or the voice edge.
+    CHECK(kinds("audio.volume") == std::vector<std::string>{"target:string"});
+    CHECK(h.client.model.requiredParametersFor("audio.volume").front().edge_alternatives ==
+          std::vector<std::string>{"voice"});
     CHECK(kinds("value.curve").empty());
     CHECK(kinds("render.scalar") == std::vector<std::string>{"target:buffer"});
     CHECK(kinds("value.input") == std::vector<std::string>{"name:input"});
@@ -3840,8 +3844,11 @@ TEST_CASE("UX-8 decision 12: render.scalar's numbers are packed with the other s
           "buffer, and the engine's layout and port refusals read as sentences",
           "[studio][graph-canvas][ux8]") {
     Ux8Harness h;
+    // CT-5: what a render.scalar writes is a runtime_f32 buffer as large as
+    // its sinks (a's vec4 and b's vec2 once a grows: 24 bytes).
     h.document["nodes"].push_back({{"id", "params"}, {"op", "render.buffer"},
-                                   {"parameters", {{"element", "vec4"}, {"size", 32}}},
+                                   {"parameters", {{"element", "vec4"}, {"size", 24},
+                                                   {"host_source", "runtime_f32"}}},
                                    {"outputs", Json::array({"resource"})}});
     for (const char *id : {"a", "b"})
         h.document["nodes"].push_back(
@@ -3897,6 +3904,123 @@ TEST_CASE("UX-8 decision 12: render.scalar's numbers are packed with the other s
           "The engine stopped: Port level of shade needs element (graph.port_field_missing@1) "
           "in C:/project/passes/main.json. Fix the file (or Reload from disk) to start it again.");
     CHECK(PelicanStudio::engineStoppedSentence("Pelican fatal error : out of memory").empty());
+    // UX-9, decision 5: the line the running engine writes (CT-1) names no
+    // file; the render document the project names stands in.
+    CHECK(PelicanStudio::engineStoppedSentence(
+              "13:59:17.707507130 [76388] pelican_core.cpp:166 LOG_ERROR pelican Pelican fatal "
+              "error : graph.port_field_missing@1 {\"field\":\"element\",\"node\":\"sim\",\"port\":\"data\"}",
+              "passes/main.json") ==
+          "The engine stopped: Port data of sim needs element (graph.port_field_missing@1) in "
+          "passes/main.json. Fix the file (or Reload from disk) to start it again.");
+}
+
+// --- UX-13b (engine CT-5): a render.scalar's buffer made one it can write.
+
+TEST_CASE("UX-13b decision 2: a render.scalar's target offers the buffers it can write once the same "
+          "edit makes them runtime_f32 and as large as their sinks, and each edit of the sinks keeps "
+          "them so",
+          "[studio][graph-canvas][ux13b]") {
+    Ux8Harness h;
+    // level (ux8Document's): a float buffer nothing writes from the host;
+    // counts: uint elements, which no edit of it makes one; params: one
+    // already.
+    h.document["nodes"].push_back({{"id", "counts"}, {"op", "render.buffer"},
+                                   {"parameters", {{"element", "uint"}, {"size", 4}}},
+                                   {"outputs", Json::array({"resource"})}});
+    h.document["nodes"].push_back({{"id", "params"}, {"op", "render.buffer"},
+                                   {"parameters", {{"element", "float"}, {"size", 4},
+                                                   {"host_source", "runtime_f32"}}},
+                                   {"outputs", Json::array({"resource"})}});
+    h.open();
+    h.report();
+    using PelicanStudio::GraphCanvasScalarTarget;
+    CHECK(h.client.model.scalarTargetChoices({}) ==
+          std::vector<GraphCanvasScalarTarget>{{"level", "runtime_f32"}, {"params", ""}});
+    CHECK(GraphCanvasModel::scalarTargetLabel({"level", "runtime_f32"}) == "level (will be set to runtime_f32)");
+    CHECK(GraphCanvasModel::scalarTargetLabel({"params", ""}) == "params");
+    // Placed on level: the buffer is made one it can write, in the same list.
+    const Json seed{{"parameters", {{"target", "level"}}}};
+    const auto ops = h.client.model.addNodeOpsIn({}, "render.scalar", {}, seed);
+    REQUIRE(ops.size() >= 2);
+    CHECK(ops[ops.size() - 2].at("node").at("op") == "render.scalar");
+    CHECK(ops.back() == Json{{"op", "set_node_parameters"}, {"scope", "root"}, {"node", "level"},
+                             {"parameters", {{"element", "float"}, {"size", 4}, {"host_source", "runtime_f32"}}}});
+    REQUIRE(h.client.model.addNodeIn({}, "render.scalar", {}, seed));
+    h.commitAndReport();
+    h.partitions();
+    // It writes a vec3: level grows to 12 bytes in the same edit.
+    REQUIRE(h.client.model.setScalarValue({}, "render_scalar", {1.0, 2.0, 3.0}));
+    h.commitAndReport();
+    CHECK(h.node("level").at("parameters").at("size") == 12);
+    h.partitions();
+    // A second sink on it joins after the first; level takes both.
+    CHECK(h.client.model.scalarTargetChoices({}) ==
+          std::vector<GraphCanvasScalarTarget>{{"level", "16 bytes"}, {"params", ""}});
+    REQUIRE(h.client.model.addNodeIn({}, "render.scalar", {}, seed));
+    h.commitAndReport();
+    CHECK(h.node("render_scalar_2").at("parameters").at("offset") == 12);
+    CHECK(h.node("level").at("parameters").at("size") == 16);
+    h.partitions();
+    // Moved to params: level is left as large as the sink still on it.
+    REQUIRE(h.client.model.setScalarTarget({}, "render_scalar_2", "params"));
+    h.commitAndReport();
+    CHECK(h.node("render_scalar_2").at("parameters").at("target") == "params");
+    CHECK(h.node("params").at("parameters").at("size") == 4);
+    CHECK(h.node("level").at("parameters").at("size") == 12);
+    h.partitions();
+}
+
+TEST_CASE("UX-13b decision 3: graph.render_scalar_target_incompatible@1 reads as one sentence with its "
+          "Fix; a graph's buffer is fixed in one edit, one declared outside the graph is only said",
+          "[studio][graph-canvas][ux13b]") {
+    using PelicanStudio::graphLoopRefusalDescription;
+    const Json in_graph{{"code", "graph.render_scalar_target_incompatible@1"},
+                        {"node", "render_scalar"},
+                        {"target", "level"},
+                        {"expected", {{"host_source", "runtime_f32"}, {"size", 16}}},
+                        {"actual", {{"host_source", nullptr}, {"size", 4}}},
+                        {"document", "project://passes/main.json"}};
+    CHECK(graphLoopRefusalDescription(in_graph) ==
+          "The render.scalar render_scalar writes level (no host_source, 4 bytes), which must be "
+          "runtime_f32, 16 bytes \xE2\x80\x94 Fix: make level runtime_f32, 16 bytes (in passes/main.json, "
+          "graph.render_scalar_target_incompatible@1).");
+    const Json outside{{"code", "graph.render_scalar_target_incompatible@1"},
+                       {"target", "bloom.intensity"},
+                       {"expected", {{"host_source", "runtime_f32"}, {"size", 4}}},
+                       {"actual", {{"host_source", "runtime_f32"}, {"size", 8}}}};
+    CHECK(graphLoopRefusalDescription(outside) ==
+          "A render.scalar writes bloom.intensity (runtime_f32, 8 bytes), declared outside the graph, "
+          "which must be runtime_f32, 4 bytes \xE2\x80\x94 Fix: make bloom.intensity runtime_f32, 4 bytes "
+          "where it is declared (graph.render_scalar_target_incompatible@1).");
+
+    Ux8Harness h;
+    h.open();
+    h.report();
+    const auto refuse = [&](const Json &error) {
+        REQUIRE(h.client.model.setNodeParameter({}, "level", "size", 8));
+        const auto submit = h.client.take("edit_graph_document");
+        h.client.reply(submit, {{"status", "rejected"}, {"committed", false}, {"error", error}});
+        h.refresh();
+    };
+    refuse(in_graph);
+    REQUIRE(h.client.model.scalarTargetFix().has_value());
+    CHECK(h.client.model.scalarTargetFix()->in_graph);
+    CHECK(GraphCanvasModel::scalarTargetFixLabel(*h.client.model.scalarTargetFix()) ==
+          "Fix: make level runtime_f32, 16 bytes");
+    CHECK(h.client.model.notice().message.find("Fix: make level runtime_f32, 16 bytes") != std::string::npos);
+    // The Fix: one edit of the buffer, as the engine asked.
+    REQUIRE(h.client.model.fixScalarTarget());
+    h.commitAndReport();
+    CHECK(h.last_ops == Json::array({{{"op", "set_node_parameters"}, {"scope", "root"}, {"node", "level"},
+                                      {"parameters", {{"element", "float"}, {"size", 16},
+                                                      {"host_source", "runtime_f32"}}}}}));
+    CHECK_FALSE(h.client.model.scalarTargetFix().has_value());
+    // Declared outside the graph: said, nothing to apply here.
+    refuse(outside);
+    REQUIRE(h.client.model.scalarTargetFix().has_value());
+    CHECK_FALSE(h.client.model.scalarTargetFix()->in_graph);
+    CHECK_FALSE(h.client.model.fixScalarTarget());
+    CHECK(h.client.model.notice().message.find("where it is declared") != std::string::npos);
 }
 
 TEST_CASE("UX-8 decision 9: sounds are copied into assets/audio, _2 beside a name already there",
@@ -3923,4 +4047,621 @@ TEST_CASE("UX-8 decision 9: sounds are copied into assets/audio, _2 beside a nam
     CHECK(listed.assets == std::vector<std::string>{"project://assets/audio/pulse.wav",
                                                     "project://assets/audio/pulse_2.wav"});
     std::filesystem::remove_all(root);
+}
+
+// --- PS-1s (engine PS-1): passes that run once, images that are kept.
+
+namespace {
+
+// A loop over a body whose one pass draws into an image of the body's own.
+struct Ps1sLoopHarness : GraphHistoryHarness {
+    Ps1sLoopHarness() {
+        client.catalog_reply = ux8Catalog();
+        auto image = ux8Document().at("nodes").at(1);
+        image["id"] = "blur__color";
+        auto pass = ux8Document().at("nodes").at(2);
+        pass["id"] = "blur";
+        pass["inputs"]["color"]["node"] = "blur__color";
+        document = {{"schema", "pelican.graph"},
+                    {"version", 1},
+                    {"outputs", Json::object()},
+                    {"nodes", Json::array({{{"id", "blur_loop"},
+                                            {"op", "graph.loop"},
+                                            {"parameters",
+                                             {{"over", {{"range", {{"count", 2}}}}},
+                                              {"branches", Json::array({{{"body", "blur_body"}}})}}},
+                                            {"outputs", Json::array()}}})},
+                    {"definitions",
+                     {{"blur_body",
+                       {{"nodes", Json::array({image, pass})}, {"outputs", Json::object()}}}}}};
+    }
+};
+
+} // namespace
+
+// Decisions 1 and 2: Schedule = Once is one edit with the images the pass
+// writes made Persistent, said in one line; back to Every frame takes only
+// the schedule out. A loop's "Run the body once" is the same over its body.
+TEST_CASE("PS-1s Once keeps what the pass writes in the same edit, for a pass and a loop's body",
+          "[studio][graph-canvas][ps1s]") {
+    SECTION("a pass") {
+        Ux8Harness h;
+        h.open();
+        h.report();
+        auto &model = h.client.model;
+        CHECK(model.nodeSchedule({}, "shade") == "per_frame");
+        CHECK(model.nodeSchedule({}, "shade__color").empty());
+        CHECK(model.transientImagesWrittenBy({}, "shade") == std::vector<std::string>{"shade__color"});
+        // Every view is a task's.
+        CHECK_FALSE(model.setNodeSchedule({}, "shade", "per_view"));
+        REQUIRE(model.setNodeSchedule({}, "shade", "once"));
+        h.commitAndReport();
+        REQUIRE(h.last_ops.size() == 2);
+        CHECK(h.last_ops[0].at("node") == "shade");
+        CHECK(h.last_ops[0].at("parameters").at("schedule") == "once");
+        CHECK(h.last_ops[1].at("node") == "shade__color");
+        CHECK(h.last_ops[1].at("parameters").at("lifetime") == "persistent");
+        CHECK(model.notice().message ==
+              "Saved; shade__color made Persistent: what a once pass writes is kept.");
+        CHECK(model.persistentImage({}, "shade__color"));
+        CHECK(model.transientImagesWrittenBy({}, "shade").empty());
+        h.partitions();
+        // Every frame again: the schedule goes, the image stays as it is.
+        REQUIRE(model.setNodeSchedule({}, "shade", "per_frame"));
+        h.commitAndReport();
+        REQUIRE(h.last_ops.size() == 1);
+        CHECK_FALSE(h.last_ops[0].at("parameters").contains("schedule"));
+        CHECK(model.notice().message == "Graph change saved.");
+        CHECK(model.persistentImage({}, "shade__color"));
+    }
+    SECTION("a loop's body") {
+        Ps1sLoopHarness h;
+        h.open();
+        auto &model = h.client.model;
+        CHECK(model.loopBodyOnce("blur_loop") == std::optional<bool>{false});
+        REQUIRE(model.setLoopBodyOnce("blur_loop", true));
+        h.commit();
+        REQUIRE(h.last_ops.size() == 2);
+        CHECK(h.last_ops[0].at("scope") == "blur_body");
+        CHECK(h.last_ops[0].at("parameters").at("schedule") == "once");
+        CHECK(h.last_ops[1].at("node") == "blur__color");
+        CHECK(h.last_ops[1].at("parameters").at("lifetime") == "persistent");
+        CHECK(model.loopBodyOnce("blur_loop") == std::optional<bool>{true});
+        CHECK(model.persistentImage("blur_body", "blur__color"));
+        REQUIRE(model.setLoopBodyOnce("blur_loop", false));
+        h.commit();
+        REQUIRE(h.last_ops.size() == 1);
+        CHECK_FALSE(h.last_ops[0].at("parameters").contains("schedule"));
+        CHECK(model.loopBodyOnce("blur_loop") == std::optional<bool>{false});
+    }
+}
+
+// Decisions 3 and 4: a once node's band says the generation it last ran in
+// (a body node's: its copies'), Recompute asks rerun_once for it (a body
+// node: for its loop; nothing named: every once node), and the plan is read
+// again until it says the pass ran after the press.
+TEST_CASE("PS-1s a once node says when it last ran, and Recompute asks rerun_once and follows it",
+          "[studio][graph-canvas][ps1s]") {
+    Harness h;
+    auto document = gl2bDocument();
+    document["nodes"][0]["parameters"]["schedule"] = "once";
+    // Every render node has its pass in the plan (sky is switched off): the
+    // plan is not read again for one missing.
+    document["nodes"].erase(1);
+    document["definitions"]["cascade"]["nodes"][0] = {
+        {"id", "depth"}, {"op", "render.fullscreen"},
+        {"parameters", {{"schedule", "once"}}}, {"outputs", Json::array({"color"})}};
+    h.open(document);
+    const auto ran = [](Json plan, const std::string &name, Json generation, Json frame) {
+        for (auto &node : plan["nodes"])
+            if (node.at("name") == name) {
+                node["schedule"] = "once";
+                node["last_run_generation"] = generation;
+                node["last_run_frame"] = frame;
+            }
+        return plan;
+    };
+    auto plan = ran(gl2bPlan(), "tint", nullptr, nullptr);
+    plan = ran(plan, "cascades/1/depth", 3, 118);
+    plan = ran(plan, "cascades/2/depth", 3, 119);
+    // Every pass says what its shader declares: the plan is not read again
+    // for a pass that has not said it yet.
+    for (auto &node : plan["nodes"])
+        node["pass_inputs"] = {{"state", "declared"}, {"declarations", Json::array()}};
+    h.reply(h.take("get_frame_plan"), plan);
+    auto &model = h.model;
+    CHECK(model.onceBand({}, "tint") == "once \xC2\xB7 not run yet");
+    CHECK(model.onceBand({}, "left").empty());
+    const auto body = model.onceRun("cascade", "depth");
+    REQUIRE(body);
+    CHECK(body->passes == 2);
+    CHECK(body->generation == std::optional<std::uint64_t>{3});
+    CHECK(body->frame == std::optional<std::uint64_t>{119});
+    CHECK(model.planHasOncePasses());
+    plan = ran(plan, "tint", 3, 120);
+    model.refresh();
+    h.reply(h.take("get_graph_instances"), document);
+    h.reply(h.take("get_frame_plan"), plan);
+    CHECK(model.onceBand({}, "tint") == "once \xC2\xB7 ran gen 3");
+    CHECK(model.onceRun({}, "tint")->frame == std::optional<std::uint64_t>{120});
+
+    REQUIRE(model.rerunOnce({}, "tint"));
+    auto rerun = h.take("rerun_once");
+    CHECK(rerun.params == Json{{"node", "tint"}});
+    h.reply(rerun, {{"scheduled", Json::array({"tint"})}});
+    CHECK(model.notice().message == "Recompute: 1 once pass runs again on the next frame.");
+    // The plan is read on the clock; one that has not run it yet is read
+    // again, one that has ends it.
+    REQUIRE(model.pollWanted());
+    model.poll();
+    h.reply(h.take("get_frame_plan"), plan);
+    model.poll();
+    h.reply(h.take("get_frame_plan"), ran(plan, "tint", 3, 124));
+    CHECK(model.onceRun({}, "tint")->frame == std::optional<std::uint64_t>{124});
+    CHECK_FALSE(model.pollWanted());
+
+    // A body node is no node of the plan: its loop is asked for.
+    REQUIRE(model.rerunOnce("cascade", "depth"));
+    CHECK(h.take("rerun_once").params == Json{{"node", "cascades"}});
+    REQUIRE(model.rerunOnce({}, {}));
+    CHECK(h.take("rerun_once").params == Json::object());
+    // A node the plan does not have: the engine's invalid params, said as a
+    // sentence.
+    REQUIRE(model.rerunOnce({}, "ghost"));
+    model.receiveRpcFailure(
+        h.take("rerun_once").request_id,
+        "RPC -32602: rerun_once node names no node of the frame plan: ghost");
+    CHECK(model.notice().kind == InspectorNoticeKind::Error);
+    CHECK(model.notice().message ==
+          "ghost is not in the frame plan: there is nothing of it to recompute (node_unknown).");
+}
+
+// Decision 5: the engine's two refusals of a once pass, as sentences.
+TEST_CASE("PS-1s a once pass's refusals read as sentences", "[studio][graph-canvas][ps1s][refusal]") {
+    using PelicanStudio::graphLoopRefusalDescription;
+    using PelicanStudio::knownRefusalDescription;
+    const std::string writes =
+        "h0 runs once but writes h0__color, which is not kept between frames \xE2\x80\x94 make it "
+        "Persistent (graph.once_writes_transient@1).";
+    CHECK(graphLoopRefusalDescription({{"code", "graph.once_writes_transient@1"},
+                                       {"node", "h0"}, {"resource", "h0__color"}}) == writes);
+    CHECK(knownRefusalDescription("invalid_graph_document",
+                                  "graph.once_writes_transient@1 {\"node\":\"h0\",\"resource\":"
+                                  "\"h0__color\"}") == writes);
+    CHECK(graphLoopRefusalDescription({{"code", "graph.once_reads_per_frame@1"},
+                                       {"node", "h0"}, {"input", "input0"}}) ==
+          "h0 runs once but reads input0, which changes every frame \xE2\x80\x94 it would freeze "
+          "at the first value (graph.once_reads_per_frame@1).");
+}
+
+// --- IA-1s.
+
+namespace {
+
+// The start of a KTX2 file: its identifier, vkFormat (109,
+// R32G32B32A32_SFLOAT), typeSize, pixelWidth and pixelHeight -- what
+// readImageAssetExtent reads -- and zeros.
+void ia1sWriteKtx2Header(const std::filesystem::path &path, std::uint32_t width,
+                         std::uint32_t height) {
+    std::filesystem::create_directories(path.parent_path());
+    std::string bytes{"\xABKTX 20\xBB\r\n\x1A\n", 12};
+    const auto word = [&](std::uint32_t value) {
+        for (int shift = 0; shift < 32; shift += 8) bytes.push_back(static_cast<char>((value >> shift) & 0xFF));
+    };
+    word(109);
+    word(4);
+    word(width);
+    word(height);
+    bytes.resize(64, '\0');
+    std::ofstream{path, std::ios::binary} << bytes;
+}
+
+} // namespace
+
+TEST_CASE("IA-1s decision 2: an image's initial-contents refusals read as sentences, a mismatch "
+          "in the words of what differs",
+          "[studio][graph-canvas][ia1s][refusal]") {
+    using PelicanStudio::graphLoopRefusalDescription;
+    using PelicanStudio::knownRefusalDescription;
+    CHECK(graphLoopRefusalDescription({{"code", "graph.image_initial_requires_persistent@1"},
+                                       {"node", "ltc_1"}}) ==
+          "ltc_1 starts from an image but is not kept between frames \xE2\x80\x94 make it "
+          "Persistent (graph.image_initial_requires_persistent@1).");
+    CHECK(graphLoopRefusalDescription({{"code", "graph.image_initial_extent_conflict@1"},
+                                       {"node", "ltc_1"}}) ==
+          "ltc_1 takes its size from its image and from the screen at once \xE2\x80\x94 check From "
+          "the image, or give it a fixed size (graph.image_initial_extent_conflict@1).");
+    const auto mismatch = [](const char *what, const nlohmann::json &expected,
+                             const nlohmann::json &actual) {
+        return nlohmann::json{{"node", "ltc_1"},
+                              {"asset", "assets/images/ltc_1.ktx2"},
+                              {"what", what},
+                              {"expected", expected},
+                              {"actual", actual}};
+    };
+    const nlohmann::json lut{{"width", 64}, {"height", 64}, {"format", "R32G32B32A32_SFLOAT"}};
+    auto extent = mismatch("extent", {{"width", 256}, {"height", 256}, {"format", "R32G32B32A32_SFLOAT"}}, lut);
+    extent["code"] = "graph.image_initial_mismatch@1";
+    CHECK(graphLoopRefusalDescription(extent) ==
+          "assets/images/ltc_1.ktx2 is 64×64 but ltc_1 is 256×256 \xE2\x80\x94 bake the image to "
+          "match (pelican_cli image ktx2) or change the image's size "
+          "(graph.image_initial_mismatch@1).");
+    // As a broader refusal's message carries it.
+    const auto format = mismatch("format", {{"width", 64}, {"height", 64}, {"format", "R16G16B16A16_SFLOAT"}}, lut);
+    CHECK(knownRefusalDescription("render_pipeline_preflight_failed",
+                                  "graph.image_initial_mismatch@1 " + format.dump()) ==
+          "assets/images/ltc_1.ktx2 is R32G32B32A32_SFLOAT but ltc_1 is R16G16B16A16_SFLOAT "
+          "\xE2\x80\x94 bake the image to match (pelican_cli image ktx2) or change the image's "
+          "format (graph.image_initial_mismatch@1).");
+    auto space = mismatch("color_space", {{"width", 4}, {"height", 4}, {"format", "R8G8B8A8_UNORM"}},
+                          {{"width", 4}, {"height", 4}, {"format", "R8G8B8A8_SRGB"}});
+    space["code"] = "graph.image_initial_mismatch@1";
+    CHECK(graphLoopRefusalDescription(space) ==
+          "assets/images/ltc_1.ktx2 is sRGB (R8G8B8A8_SRGB) but ltc_1 is linear (R8G8B8A8_UNORM) "
+          "\xE2\x80\x94 bake the image to match (pelican_cli image ktx2) or change the image's "
+          "format to the other color space (graph.image_initial_mismatch@1).");
+}
+
+TEST_CASE("IA-1s decision 4: images are copied into assets/images, a .hdr to be baked into a "
+          ".ktx2 beside it, and the .ktx2 and .png are what Initial contents lists",
+          "[studio][graph-canvas][ia1s]") {
+    const auto root = std::filesystem::temp_directory_path() / "pelican_ia1s_import";
+    std::filesystem::remove_all(root);
+    ia1sWriteKtx2Header(root / "outside" / "ltc_1.ktx2", 64, 32);
+    for (const char *name : {"sky.hdr", "notes.txt"})
+        std::ofstream{root / "outside" / name, std::ios::binary} << "#?RADIANCE\n";
+    const auto project = root / "project";
+    const auto first = PelicanStudio::importProjectImage(project, root / "outside" / "ltc_1.ktx2");
+    CHECK(first.error.empty());
+    CHECK(first.reference == "assets/images/ltc_1.ktx2");
+    CHECK_FALSE(first.convert.has_value());
+    const auto again = PelicanStudio::importProjectImage(project, root / "outside" / "ltc_1.ktx2");
+    CHECK(again.reference == "assets/images/ltc_1_2.ktx2");
+    // A .hdr is copied, and its .ktx2 is the one to pick once it is baked.
+    const auto sky = PelicanStudio::importProjectImage(project, root / "outside" / "sky.hdr");
+    CHECK(sky.error.empty());
+    CHECK(sky.reference == "assets/images/sky.ktx2");
+    REQUIRE(sky.convert.has_value());
+    CHECK(sky.convert->hdr == project / "assets" / "images" / "sky.hdr");
+    CHECK(sky.convert->ktx2 == project / "assets" / "images" / "sky.ktx2");
+    CHECK(std::filesystem::exists(sky.convert->hdr));
+    const auto text = PelicanStudio::importProjectImage(project, root / "outside" / "notes.txt");
+    CHECK(text.error == "notes.txt is not a .ktx2, .png or .hdr file.");
+    CHECK(text.reference.empty());
+    const auto listed = PelicanStudio::readProjectImageAssets(project);
+    CHECK(listed.assets == std::vector<std::string>{"assets/images/ltc_1.ktx2",
+                                                    "assets/images/ltc_1_2.ktx2"});
+    CHECK(PelicanStudio::readImageAssetExtent(project / "assets" / "images" / "ltc_1.ktx2") ==
+          PelicanStudio::GraphCanvasImageExtent{64, 32});
+    CHECK_FALSE(PelicanStudio::readImageAssetExtent(sky.convert->hdr).has_value());
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("IA-1s decision 6: a graph refusal names the document and the definition the engine "
+          "says its node was written in (CT-2), Studio's guess only without them",
+          "[studio][graph-canvas][ia1s][refusal]") {
+    using PelicanStudio::engineStoppedSentence;
+    using PelicanStudio::graphLoopRefusalDescription;
+    const nlohmann::json root_node{{"code", "graph.port_field_missing@1"},
+                                   {"node", "shade"},
+                                   {"port", "level"},
+                                   {"field", "element"},
+                                   {"document", "project://passes/main.json"}};
+    CHECK(graphLoopRefusalDescription(root_node) ==
+          "Port level of shade needs element (in passes/main.json, "
+          "graph.port_field_missing@1).");
+    auto body_node = root_node;
+    body_node["definition"] = "blur_step";
+    CHECK(graphLoopRefusalDescription(body_node) ==
+          "Port level of shade needs element (in definition blur_step of "
+          "passes/main.json, graph.port_field_missing@1).");
+    // A sentence about a definition keeps its own.
+    CHECK(graphLoopRefusalDescription({{"code", "graph.definition_referenced@1"},
+                                       {"definition", "blur_step"},
+                                       {"referenced_by", nlohmann::json::array({"blur"})},
+                                       {"document", "project://passes/main.json"}}) ==
+          "Definition blur_step is still used by blur (in passes/main.json, "
+          "graph.definition_referenced@1).");
+    // The engine's fatal line: its document, not the project's guess.
+    CHECK(engineStoppedSentence(
+              "13:59:17.707507130 [76388] pelican_core.cpp:181 LOG_ERROR pelican Pelican fatal "
+              "error : graph.port_field_missing@1 {\"definition\":\"blur_step\",\"document\":"
+              "\"project://passes/graph.json\",\"field\":\"element\",\"node\":\"sim\",\"port\":"
+              "\"data\"}",
+              "passes/main.json") ==
+          "The engine stopped: Port data of sim needs element (graph.port_field_missing@1) in "
+          "definition blur_step of passes/graph.json. Fix the file (or Reload from "
+          "disk) to start it again.");
+    CHECK(engineStoppedSentence(
+              "Pelican fatal error : graph.port_field_missing@1 {\"field\":\"element\",\"node\":"
+              "\"sim\",\"port\":\"data\"}",
+              "passes/main.json") ==
+          "The engine stopped: Port data of sim needs element (graph.port_field_missing@1) in "
+          "passes/main.json. Fix the file (or Reload from disk) to start it again.");
+}
+
+// --- AB-1s: a sound's analysis baked into a table (engine AB-1).
+
+namespace {
+
+// ux8Document's pass, whose shader the plan says declares a sampled image at
+// binding 0 and the layout's buffer at binding 1.
+Json ab1sPlan(bool image = true) {
+    auto declarations = Json::array();
+    if (image)
+        declarations.push_back(
+            {{"binding", 0}, {"type", "sampled_image"}, {"name", "tone_table"}, {"variadic", false}});
+    declarations.push_back({{"binding", image ? 1 : 0},
+                            {"type", "storage_buffer"},
+                            {"name", "pelican_resource_tone_layout"},
+                            {"variadic", false}});
+    return {{"schema", "pelican.frame_plan"},
+            {"version", 1},
+            {"nodes", Json::array({{{"name", "shade"},
+                                    {"kind", "fullscreen"},
+                                    {"pass_inputs",
+                                     {{"state", "declared"},
+                                      {"fragment", "project://shaders/level"},
+                                      {"declarations", declarations},
+                                      {"variadic_range", nullptr}}}}})}};
+}
+
+// A bake's manifest as the engine writes it (audioanalysisformat.cpp), and
+// one of another tool's beside it.
+std::filesystem::path ab1sProject() {
+    const auto root = std::filesystem::temp_directory_path() / "pelican_ab1s_tables";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "assets" / "analysis");
+    std::filesystem::create_directories(root / "assets" / "audio");
+    std::ofstream{root / "assets" / "analysis" / "tone.ktx2.import.json"}
+        << Json{{"schema", "pelican.import"},
+                {"version", 1},
+                {"tool", {{"name", "pelican.audio_analysis"}, {"version", "1"}}},
+                {"source",
+                 {{"file", "../audio/tone.wav"},
+                  {"metadata",
+                   {{"sha256", "0"},
+                    {"settings", {{"features", {"rms", "bands"}}, {"bands", 2}, {"hop_ms", 10.0},
+                                  {"window_ms", 20.0},
+                                  {"smoothing", {{"attack_ms", 0.0}, {"release_ms", 0.0}}},
+                                  {"channels", "mix"}}},
+                    {"settings_sha256", "0"},
+                    {"layout", {{"width", 4096}, {"rows_per_feature", 1}, {"sample_count", 101},
+                                {"hop_seconds", 0.01}, {"features", {"rms", "band:0", "band:1"}}}}}}}},
+                {"outputs", Json::array({{{"file", "tone.ktx2"},
+                                          {"schema", "pelican.audio_analysis_table"},
+                                          {"version", 1},
+                                          {"sha256", "0"}}})}}
+               .dump(2);
+    std::ofstream{root / "assets" / "analysis" / "other.png.import.json"}
+        << Json{{"schema", "pelican.import"},
+                {"version", 1},
+                {"tool", {{"name", "someone.else"}, {"version", "1"}}},
+                {"source", {{"file", "x.psd"}}},
+                {"outputs", Json::array({{{"file", "other.png"}}})}}
+               .dump();
+    return root;
+}
+
+} // namespace
+
+TEST_CASE("AB-1s decision 3: Use in a shader places the table's image, its layout buffer and the "
+          "two sinks that fill it in one edit, on the pass's sampled image and its "
+          "pelican_resource_ buffer",
+          "[studio][graph-canvas][ab1s]") {
+    Ux8Harness h;
+    h.open();
+    h.report(ab1sPlan());
+    GraphCanvasModel::SampleTableShaderPlacement placed;
+    REQUIRE(h.client.model.addSampleTableShader({}, "project://assets/analysis/tone.ktx2", 1, 101, 0.01,
+                                                "shade", &placed));
+    h.commit();
+    CHECK(placed.image == "tone_table");
+    CHECK(placed.buffer == "tone_layout");
+    CHECK(placed.values == "tone_layout_values");
+    CHECK(placed.time == "tone_layout_time");
+    CHECK(placed.image_port == "tone_table");
+    CHECK(placed.buffer_port == "tone_layout");
+    CHECK(placed.note.empty());
+    const auto &ops = h.last_ops;
+    REQUIRE(ops.size() == 8);
+    // The table: persistent, from the file (its size the file's), read only.
+    CHECK(ops[0].at("node").at("parameters") ==
+          Json{{"type", ux8ColorType()},
+               {"format", "R32_SFLOAT"},
+               {"usage", Json::array({"SAMPLED"})},
+               {"lifetime", "persistent"},
+               {"initial", {{"asset", "assets/analysis/tone.ktx2"}}}});
+    CHECK(ops[1].at("node").at("parameters") ==
+          Json{{"element", "vec4"}, {"size", 16}, {"host_source", "runtime_f32"}});
+    CHECK(ops[2].at("node").at("parameters") ==
+          Json{{"target", "tone_layout"}, {"value", {1.0, 101.0, 0.01}}, {"offset", 0}});
+    // The document had no scene clock: one arrives with them.
+    CHECK(ops[3].at("node").at("op") == "value.input");
+    CHECK(ops[4].at("node").at("parameters") == Json{{"target", "tone_layout"}, {"offset", 12}});
+    CHECK(ops[4].at("node").at("inputs").at("value") == Json{{"node", "scene_time"}, {"port", "value"}});
+    const auto ports = h.node("shade").at("parameters").at("ports");
+    CHECK(ports.at("tone_table").at("input_index") == 0);
+    CHECK(ports.at("tone_table").at("binding") == "input");
+    CHECK(ports.at("tone_layout") == Json{{"kind", "buffer"}, {"access", "read"}, {"element", "vec4"}});
+    CHECK(h.node("shade").at("inputs").at("tone_table") == Json{{"node", "tone_table"}, {"port", "resource"}});
+    CHECK(h.node("shade").at("inputs").at("tone_layout") == Json{{"node", "tone_layout"}, {"port", "resource"}});
+    h.partitions();
+
+    // Again, with no pass picked: new names, the same clock, no lines.
+    h.report(ab1sPlan());
+    REQUIRE(h.client.model.addSampleTableShader({}, "assets/analysis/tone.ktx2", 1, 101, 0.01, {}, &placed));
+    h.commit();
+    CHECK(placed.image == "tone_table_2");
+    CHECK(placed.image_port.empty());
+    REQUIRE(h.last_ops.size() == 4);
+    CHECK(h.last_ops[3].at("node").at("inputs").at("value").at("node") == "scene_time");
+
+    // A shader with no image binding after the one the pass reads: the
+    // buffer's line only, and why.
+    h.report(ab1sPlan(false));
+    REQUIRE(h.client.model.addSampleTableShader({}, "assets/analysis/tone.ktx2", 1, 101, 0.01, "shade",
+                                                &placed));
+    h.commit();
+    CHECK(placed.image_port.empty());
+    CHECK(placed.buffer_port == "tone_layout");
+    CHECK(placed.note == "shade's shader declares no image binding 1; connect it by hand.");
+    CHECK(h.node("shade").at("inputs").at("tone_layout").at("node") == "tone_layout_3");
+}
+
+TEST_CASE("AB-1s decision 4: list_derived_assets reads as the stale band; Re-bake asks for the "
+          "manifest's own sound and settings (UX-13a: and edits nothing after it)",
+          "[studio][graph-canvas][ab1s]") {
+    const auto root = ab1sProject();
+    // The tables Studio finds: the bake's, not another tool's.
+    const auto tables = PelicanStudio::readProjectAnalysisTables(root);
+    REQUIRE(tables.size() == 1);
+    CHECK(tables[0].asset == "assets/analysis/tone.ktx2");
+    CHECK(tables[0].source == "assets/audio/tone.wav");
+    CHECK(tables[0].layout.features == std::vector<std::string>{"rms", "band:0", "band:1"});
+    CHECK(PelicanStudio::defaultAnalysisOut("project://assets/audio/tone.wav") == "assets/analysis/tone.ktx2");
+    CHECK(PelicanStudio::rebakeParams(root, "project://assets/analysis/tone.ktx2") ==
+          Json{{"asset", "project://assets/audio/tone.wav"},
+               {"out", "assets/analysis/tone.ktx2"},
+               {"settings", tables[0].settings}});
+    CHECK(PelicanStudio::rebakeParams(root, "assets/analysis/none.ktx2").is_null());
+
+    const auto derived = PelicanStudio::parseDerivedAssets(Json::array(
+        {{{"asset", "assets/analysis/tone.ktx2"},
+          {"manifest", "assets/analysis/tone.ktx2.import.json"},
+          {"tool", {{"name", "pelican.audio_analysis"}, {"version", "1"}}},
+          {"source", "assets/audio/tone.wav"},
+          {"stale", true},
+          {"stale_reasons", {"source_changed", "settings_changed"}}},
+         "not an entry"}));
+    REQUIRE(derived.size() == 1);
+    CHECK(derived[0].stale);
+    CHECK(PelicanStudio::staleBandText(derived[0]) == "stale: source_changed, settings_changed");
+
+    Ux8Harness h;
+    auto &nodes = h.document.at("nodes");
+    nodes.push_back({{"id", "loudness"}, {"op", "value.sample_table"},
+                     {"parameters", {{"asset", "project://assets/analysis/tone.ktx2"}, {"row", "rms"}}},
+                     {"outputs", Json::array({"value"})}});
+    nodes.push_back({{"id", "other"}, {"op", "value.sample_table"},
+                     {"parameters", {{"asset", "project://assets/analysis/kick.ktx2"}, {"row", 0}}},
+                     {"outputs", Json::array({"value"})}});
+    h.open();
+    h.report();
+    auto &model = h.client.model;
+    CHECK(model.sampleTableAssetOf({}, "loudness") == "assets/analysis/tone.ktx2");
+    CHECK(model.sampleTableAssetOf({}, "shade").empty());
+    CHECK(model.sampleTableReaders("assets/analysis/tone.ktx2") == std::vector<std::string>{"loudness"});
+    std::filesystem::remove_all(root);
+}
+
+// --- UX-13a: buffer bindings by the engine's rule, the include form, and no
+// edit after a Re-bake (engine IA-3).
+
+namespace {
+
+// `shade`'s shader: `declarations` at set 1, its buffers from `base` on.
+Json ux13aPlan(const Json &declarations, std::size_t base) {
+    return {{"schema", "pelican.frame_plan"},
+            {"version", 1},
+            {"nodes", Json::array({{{"name", "shade"},
+                                    {"kind", "fullscreen"},
+                                    {"pass_inputs",
+                                     {{"state", "declared"},
+                                      {"fragment", "project://shaders/level"},
+                                      {"declarations", declarations},
+                                      {"variadic_range", nullptr},
+                                      {"buffer_binding_base", base}}}}})}};
+}
+
+Json ux13aBuffer(std::size_t binding, const char *name) {
+    return {{"binding", binding}, {"type", "storage_buffer"}, {"name", name}, {"variadic", false}};
+}
+
+} // namespace
+
+TEST_CASE("UX-13a decision 1: a buffer binding is the read the engine binds there -- after the "
+          "images, in the order of the buffers the ports read, not of the ports' names; a "
+          "pelican_resource_<port> block is its port's wherever it sits",
+          "[studio][graph-canvas][ux13a]") {
+    Ux8Harness h;
+    auto &nodes = h.document.at("nodes");
+    // a_buf sorts before level; the ports read them the other way round by
+    // their own names (a_second reads level, z_first reads a_buf).
+    nodes.push_back({{"id", "a_buf"}, {"op", "render.buffer"},
+                     {"parameters", {{"element", "float"}, {"size", 4}}},
+                     {"outputs", Json::array({"resource"})}});
+    auto &shade = h.node("shade");
+    shade["parameters"]["ports"]["z_first"] = {{"kind", "buffer"}, {"access", "read"}, {"element", "float"}};
+    shade["parameters"]["ports"]["a_second"] = {{"kind", "buffer"}, {"access", "read"}, {"element", "float"}};
+    shade["inputs"]["z_first"] = {{"node", "a_buf"}, {"port", "resource"}};
+    shade["inputs"]["a_second"] = {{"node", "level"}, {"port", "resource"}};
+    h.open();
+    CHECK(h.client.model.bufferPorts({}, "shade") == std::vector<std::string>{"z_first", "a_second"});
+    const auto reads = h.client.model.bufferPortReads({}, "shade");
+    REQUIRE(reads.size() == 2);
+    CHECK(reads[0].resource == "a_buf");
+    CHECK(reads[1].resource == "level");
+
+    // One image at 0, so the buffers from 1: binding 1 reads a_buf, 2 level.
+    h.report(ux13aPlan(Json::array({{{"binding", 0}, {"type", "sampled_image"}, {"name", "tint"},
+                                     {"variadic", false}},
+                                    ux13aBuffer(1, "First"), ux13aBuffer(2, "Second")}),
+                       1));
+    auto sockets = h.client.node("shade").input_sockets;
+    REQUIRE(sockets.size() == 3);
+    CHECK(sockets[1].key() == "in@1");
+    CHECK(sockets[1].port == "z_first");
+    CHECK(sockets[1].source_node == "a_buf");
+    CHECK(sockets[2].port == "a_second");
+    CHECK(sockets[2].source_node == "level");
+
+    // Named blocks bind by name, wherever they sit; one no port is named
+    // for reads nothing yet.
+    h.client.model.refresh();
+    h.refresh();
+    h.report(ux13aPlan(Json::array({ux13aBuffer(0, "pelican_resource_a_second"),
+                                    ux13aBuffer(1, "pelican_resource_nobody")}),
+                       0));
+    sockets = h.client.node("shade").input_sockets;
+    REQUIRE(sockets.size() == 2);
+    CHECK(sockets[0].port == "a_second");
+    CHECK_FALSE(sockets[1].connected());
+}
+
+TEST_CASE("UX-13a decision 2: Use in a shader connects the layout by the name the shader reads "
+          "through pelican_resource_ports.glsl, which no reflection shows before the port is "
+          "there; the line to copy reads it through the include",
+          "[studio][graph-canvas][ux13a]") {
+    Ux8Harness h;
+    h.open();
+    // The image is declared; the buffers are read through the include only.
+    h.report(ux13aPlan(Json::array({{{"binding", 0}, {"type", "sampled_image"}, {"name", "tone_table"},
+                                     {"variadic", false}}}),
+                       1));
+    GraphCanvasModel::SampleTableShaderPlacement placed;
+    REQUIRE(h.client.model.addSampleTableShader({}, "project://assets/analysis/tone.ktx2", 1, 101, 0.01,
+                                                "shade", &placed, {"value_level", "tone_layout"}));
+    h.commit();
+    CHECK(placed.image_port == "tone_table");
+    // Named as the layout's buffer, before the first name the text reads.
+    CHECK(placed.buffer_port == "tone_layout");
+    CHECK(placed.note.empty());
+    const auto ports = h.node("shade").at("parameters").at("ports");
+    CHECK(ports.at("tone_layout") == Json{{"kind", "buffer"}, {"access", "read"}, {"element", "vec4"}});
+    CHECK_FALSE(ports.contains("value_level"));
+    CHECK(h.node("shade").at("inputs").at("tone_layout") == Json{{"node", "tone_layout"}, {"port", "resource"}});
+    h.partitions();
+
+    // Nothing named so: the first name no port takes.
+    h.report(ux13aPlan(Json::array(), 0));
+    REQUIRE(h.client.model.addSampleTableShader({}, "assets/analysis/tone.ktx2", 1, 101, 0.01, "shade",
+                                                &placed, {"tone_layout", "gain"}));
+    h.commit();
+    CHECK(placed.buffer_port == "gain");
+
+    const auto line = PelicanStudio::sampleTableShaderLine("tone_table", "tone_layout", 1);
+    CHECK(line.find("#include \"pelican_resource_ports.glsl\"") != std::string::npos);
+    CHECK(line.find("pelican_resource_tone_layout.values[0]") != std::string::npos);
+    CHECK(line.find("binding") == std::string::npos);
 }

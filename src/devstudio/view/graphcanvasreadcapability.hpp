@@ -97,6 +97,10 @@ struct GraphCanvasReadCapability {
     // GL-4a: verify_fold, a ticket get_edit_result polls (running for as
     // long as the engine's child runs draw).
     std::function<qint64(const QJsonObject &params, QString *error)> requestVerifyFold;
+    // PS-1s, decision 4: rerun_once {node?} (engine PS-1), the passes that
+    // run once run again on the next frame -- a node's (an empty node: every
+    // one). It changes no document. Left empty: Recompute is not offered.
+    std::function<qint64(const QString &node, QString *error)> requestRerunOnce;
     std::function<void(QObject *context, ResultHandler handler)> result;
     std::function<void(QObject *context, FailureHandler handler)> failure;
     // EL-5s: get_shader_interface {reference, refresh?} (EL-5), what a
@@ -104,6 +108,13 @@ struct GraphCanvasReadCapability {
     // from. Left empty: compute nodes are placed as before.
     std::function<qint64(const QString &reference, bool refresh, QString *error)>
         requestShaderInterface;
+    // AB-1s (engine AB-1): bake_audio_analysis {asset, out, settings}, a
+    // ticket get_edit_result polls (running while the worker decodes and
+    // writes); list_derived_assets {}, the files a tool derived and whether
+    // each is stale. It changes no document. Left empty: Bake analysis is
+    // not offered / no table is marked stale.
+    std::function<qint64(const QJsonObject &params, QString *error)> requestBakeAudioAnalysis;
+    std::function<qint64(QString *error)> requestDerivedAssets;
 };
 
 // Production adapter. MainWindow is the composition root that converts its

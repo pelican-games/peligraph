@@ -50,7 +50,7 @@
 - `schema: "pelican.asset_data"` と `version: 2` は必須です。`2` 以外は `pelican.asset_data.version_unsupported@1` で拒否します(✅MG-2b。[assetdataformat.cpp](../../src/project/assetdataformat.cpp#L110))。MG-2b より前にあった version `1` は「`procedural_geometry` を受けない」ことだけが違う版で、今は読めません。手元に `1` のファイルがあれば `version` を `2` に書き換えるだけで読めます。旧い未版形式も受理しません。
 - `models` 配列は必須、各要素は `name` と `path`(プロジェクトルート基準)の両方が必須です。`path` には `#` フラグメント(§5.6)も書けます: `{"name":"selected","path":"assets/models/city.glb#mesh/LampPost"}`。任意キー `material_bindings`(`pelican.material_bindings` v1 への参照 — プリミティブ → マテリアルの whole-model 契約。✅WP116、fragment モデルには不可)も書けます。
 - **起動時に全件ロード**されます(✅WP82 で CPU 側は並列化・GPU 登録は宣言順直列 = 決定的)。ここでいう**宣言順**は上の `models` 配列に書いた順のことです。パース(CPU)は複数スレッドで走りますが、結果は添字順の配列に置かれ、GPU への登録は全ジョブの合流後にこの順で 1 件ずつ行われます([parallel_prepare.hpp](../../src/core/parallel_prepare.hpp#L20))。スレッドの完了順が実行ごとに揺れても GPU に載る順序は変わらない、というのが「決定的」の中身です([用語集](14_glossary.md))。ファイルが無ければ解決後の絶対パス入りで fail-fast。
-- **rendering config が壊れているとモデルは 1 件も upload されません(✅WP380a-fix)**: 起動時、レンダーグラフの検証と publish は scene の prepare より**前**に走ります([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp#L127))。マテリアル経路の誤りのような config の失敗が常に最初の起動エラーになり、頂点プールを消費しません。
+- **rendering config が壊れているとモデルは 1 件も upload されません(✅WP380a-fix)**: 起動時、レンダーグラフの検証と publish は scene の prepare より**前**に走ります([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp#L142))。マテリアル経路の誤りのような config の失敗が常に最初の起動エラーになり、頂点プールを消費しません。
 - **失敗した load は GPU 資源を返します**: ロード途中で例外が出ると、その候補モデル(と登録済みモデル)の index / vertex / skinned vertex / morph delta / material / texture が解放されます([model.cpp](../../src/core/asset/model.cpp#L551))。**失敗した候補を warm cache として残さない**ので、同じプロセスで再試行しても頂点プールの使用量は増えません。解放そのものに失敗した分は固定容量 8 の報告([modelresourcerelease.hpp](../../src/core/model/modelresourcerelease.hpp#L36))へ畳まれ、scene load 失敗の結果に `release_errors`(stage 名の列。溢れた分は `overflow:N`)として現れます([sceneload.hpp](../../src/core/loader/sceneload.hpp#L142))。呼び元へ返せないデストラクタ経路の分は `ReleaseErrorSink` の累積カウンタに積まれます。
 - 静的メッシュはノード階層の変換が**頂点に焼き込まれて平坦化**されます。glTF は「親ノードの行列 × 子ノードの行列 × …」の木で頂点位置を決めますが、ロード時にその積を頂点座標そのものへ掛けてしまい、ランタイムには親子関係のない 1 枚の頂点列だけが残る、という意味です(親を動かして子が付いてくる、という表現はできません。動かしたい単位はシーン側のオブジェクトに分けます)。マテリアルは 5 テクスチャ(baseColor / metallicRoughness / normal / emissive / occlusion)として登録されます。occlusion は metallicRoughness の R から推測せず、glTF の独立した `occlusionTexture` を使います(色テクスチャは SRGB view、metallicRoughness / normal / occlusion は UNORM view — [第6章](06_rendering.md) §6.3)。
 - **スケルタルアニメーションは ✅WP38 で実装済み**: glTF の `skins` + `animations` を読み、シーンの `animation` コンポーネント([第4章](04_scene_ecs.md))で再生します。skinned プリミティブはスケルトンを保持します(焼き込まない)。制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128、クリップはモデルと同一 glb のみ。※この 3 つの制限は **glb 内蔵クリップ + `animation` コンポーネントの経路に限った話**です。`.vrma` は別経路で、CUBICSPLINE も受理します(後述)。
@@ -87,7 +87,12 @@
 `rect` は [left, top, right, bottom] px。個々のスプライトは `"demo_atlas#sprite/left"` の形で `sprite_view` / UI から参照します(この `#sprite/` は atlas 側の解釈で、glb フラグメントとは別系統)。
 
 - 画像デコーダ: PNG/JPG = stb_image、`.exr` = tinyexr(✅WP26。single-part・scanline・half/float 限定)、**`.ktx2` = 自前パーサ(✅WP92)**。
-- KTX2 の対応範囲(制限サブセット): **RGBA8 UNORM/SRGB・BC7・BC5** の 2D テクスチャ、全ミップ必須。supercompression(Basis/zstd)・cubemap/array は名指しで拒否。glb 内蔵の `KHR_texture_basisu` は対象外です。専用ビルドフラグはなく常時有効。
+- KTX2 の対応範囲(制限サブセット): **RGBA8 UNORM/SRGB・BC7・BC5** の 2D テクスチャ。supercompression(Basis/zstd)・cubemap/array は名指しで拒否。glb 内蔵の `KHR_texture_basisu` は対象外です。専用ビルドフラグはなく常時有効。
+  - ✅IA-1(`c6690eba`)から、非圧縮の float の 6 つも読みます: `R16_SFLOAT` / `R16G16_SFLOAT` / `R16G16B16A16_SFLOAT` / `R32_SFLOAT` / `R32G32_SFLOAT` / `R32G32B32A32_SFLOAT`(VkFormat の番号は 76 / 83 / 97 / 100 / 103 / 109。[IA-1 で広げた KTX2 の format の表](../../src/core/loader/ktx2.cpp#L71))。KTX2 の `typeSize` は 16 bit の format で 2、32 bit で 4 でなければ断ります。
+  - **mip は 1 段か全段**です。IA-1 の前は全段が必須でしたが、IA-1 から 1 段だけの file も受けます(RGBA8 / BC の 1 段も)。途中までの段は今も `incomplete mip chain: expected 1 or <全段の数> levels ...` で断ります([段の数を見る所](../../src/core/loader/ktx2.cpp#L260))。
+  - KTX2 は format で色空間(sRGB か UNORM か)を宣言する扱いで、PNG / JPG は宣言しない扱いです(`LoadedImage::color_space_declared`)。これを使うのは graph の `render.image` の `initial` の照合だけです([第6章](06_rendering.md) §6.18「persistent の image を画像資産から始める」)。
+  - float の KTX2 を作る道具として `pelican_cli image ktx2`(raw の bytes か `.hdr` から書く。[第10章](10_tools.md) §10.4)と、engine の関数 [`writeKtx2()`](../../src/core/loader/ktx2.cpp#L393) があります。
+  - float の KTX2 を IA-1 の test が通しているのは、`render.image` の `initial` と、読み込み・書き出しの道だけです。material の texture として使えるかは確かめていません(未確認)。
 
 ### プロジェクトマテリアル(`materials` セクション ✅WP240c)
 
@@ -220,9 +225,9 @@ pelican_player --headless --project <dir> --frames 3 --size 160x90 --fps 30 \
 外部ツール(Houdini アダプタ・Blender スクリプト等)は、変換結果を `imports/<tool>/<納品名>/` に **manifest.json(`pelican.import` v1)付き**で書き出します。manifest の実例とスキーマは [第10章](10_tools.md) §10.4 を参照してください。要点:
 
 - `outputs[]` の各ファイルに **sha256 必須**。`pelican_cli import` が全数照合し、不一致は即エラー。
-- 出力の `schema` は 8 種のみ受理されます([importmanifest.cpp](../../src/project/importmanifest.cpp) の `validateOutputSchema`)。それ以外は `import manifest output schema is not supported` で拒否です。
+- 出力の `schema` は 9 種のみ受理されます([importmanifest.cpp](../../src/project/importmanifest.cpp) の `validateOutputSchema`)。それ以外は `import manifest output schema is not supported` で拒否です。
   - `gltf` / `png` — `version` を**書いてはいけません**(書くとエラー)
-  - `pelican.transform_seq` / `pelican.layout` / `pelican.atlas` / `pelican.material` — `version: 1` が**必須**(欠落も `requires version 1` で拒否)
+  - `pelican.transform_seq` / `pelican.layout` / `pelican.atlas` / `pelican.material` / `pelican.audio_analysis_table`(✅AB-1。音の解析を焼いた表。§5.8 の「音の解析を焼いた表」)— `version: 1` が**必須**(欠落も `requires version 1` で拒否)
   - `pelican.scene` — `version: 2` が**必須**(✅MG-2b。エンジンが scene v2 しか読まないため、`1` を名乗る納品は `expected=2, actual=1` で拒否)
   - `khronos.ktx2` — `version: 2` が**必須**
 - glb だけが `asset_data.json` に自動登録されます(それ以外の schema は検証のみ)。
@@ -287,7 +292,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 
 - バイナリの sha256 台帳は **assets manifest(✅WP66)** です: `pelican_cli assets manifest / verify / status` で生成・照合し、起動時にも検証されます([第3章](03_project_format.md) §3.4)。example の README にあった手書き表はこれに置き換わりました。
 - 置き場所を外部化したい場合は asset store([第3章](03_project_format.md) §3.4)を使います。
-- `pelican_cli project init` が生成する `.gitattributes` は `*.glb -text` 等の改行変換防止(CRLF 事故防止)+ LFS 行のコメントアウトを含みます。⚠️ 並ぶのは `*.glb` / `*.vrm` / `*.png` / `*.wav` / `*.spv` で、**`*.ogg` はまだありません**(AU-2 で Ogg Vorbis を足したときに雛形を直していない)。Ogg を置く project は `*.ogg -text` を自分で足してください([雛形](../../src/project/projecttemplate.cpp#L294))。
+- `pelican_cli project init` が生成する `.gitattributes` は `*.glb -text` 等の改行変換防止(CRLF 事故防止)+ LFS 行のコメントアウトを含みます。⚠️ 並ぶのは `*.glb` / `*.vrm` / `*.png` / `*.wav` / `*.spv` で、**`*.ogg` はまだありません**(AU-2 で Ogg Vorbis を足したときに雛形を直していない)。Ogg を置く project は `*.ogg -text` を自分で足してください([雛形](../../src/project/projecttemplate.cpp#L293))。
 
 ## 5.8 対応形式の一覧(実装状況付き)
 
@@ -297,7 +302,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 | `.vrma`(VRM Animation / glb alias) | ヒューマノイドのモーション単体コンテナ | 🚧 decode + typed チャネル ✅WP176 / retarget profile v1 ✅WP177 / AnimationSource + anim_graph 統合 ✅WP178。**ただし `asset_data.json`・CLI・ファイル監視からは未接続**(エンジン内部の C++ API のみ — §5.2) |
 | PNG / JPG | テクスチャ・UI 画像 | ✅ |
 | EXR(限定スコープ) | HDR テクスチャ | ✅ WP26(`PELICAN_WITH_EXR`) |
-| KTX2(制限サブセット) | 圧縮テクスチャ(RGBA8/BC7/BC5) | ✅ WP92 |
+| KTX2(制限サブセット) | 圧縮テクスチャ(RGBA8/BC7/BC5)、float のデータ(R16 / R32 SFLOAT の 1・2・4 成分。graph の image の初期内容) | ✅ WP92 / IA-1 |
 | WAV(PCM / IEEE float) | 音(SE・BGM。[第8章](08_gameplay.md) §8.11) | ✅ WP51(`PELICAN_WITH_AUDIO`) |
 | Ogg Vorbis | 音(SE・BGM。[第8章](08_gameplay.md) §8.11) | ✅ AU-2(`PELICAN_WITH_AUDIO`)。Opus / FLAC を入れた Ogg は不可。判定は下の「音声形式」 |
 | pelican.atlas | スプライト/UI のアトラス | ✅ WP103 |
@@ -305,6 +310,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 | pelican.vat(glb extras) | 頂点アニメ | ✅ WP20(`PELICAN_WITH_VAT`) |
 | pelican.anim_graph | アニメーショングラフ([第8章](08_gameplay.md)) | ✅ WP101 |
 | pelican.import(manifest) | 納品の検証・登録 | ✅ WP21 |
+| 音の解析の表(R32_SFLOAT の KTX2 + `<表>.import.json`) | 音から焼いた rms / peak / 帯域の値の表。`value.sample_table` と `pelican_sample_table.glsl` で読む | ✅ AB-1(焼くのは `PELICAN_WITH_AUDIO` の build だけ。下の「音の解析を焼いた表」) |
 | pelican.import_rules | 一括取り込みのルール表 | ✅ WP84 |
 | pelican.assets(manifest) | バイナリの sha256 台帳 | ✅ WP66 |
 | pelican.input_seq(JSONL) | 入力収録([第7章](07_input_ui.md)) | ✅ WP89 |
@@ -318,7 +324,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 
 ### 音声形式(✅AU-2)
 
-エンジンが鳴らせる音は **WAV と Ogg Vorbis** の 2 つです(2026-09-24 利用者裁定。MP3 / FLAC は需要が出てから)。`playSound` でもグラフの `audio.playback` の `asset` でも同じ規則で、**拡張子と先頭 bytes が同じ形式を指すときだけ**受け付けます([`detectSoundFormat`](../../src/core/audio/audio.cpp#L318))。
+エンジンが鳴らせる音は **WAV と Ogg Vorbis** の 2 つです(2026-09-24 利用者裁定。MP3 / FLAC は需要が出てから)。`playSound` でもグラフの `audio.playback` の `asset` でも同じ規則で、**拡張子と先頭 bytes が同じ形式を指すときだけ**受け付けます([`detectSoundFormat`](../../src/core/audio/sounddecode.cpp#L263)。✅AB-1 で decode は `audio.cpp` から `sounddecode.cpp` に移りました)。
 
 | 形式 | 拡張子(大文字小文字は区別しない) | 先頭 bytes |
 |---|---|---|
@@ -328,6 +334,87 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 - それ以外は decode の前に `audio.format_unsupported@1` `{asset, extension, signature, supported}` で拒否されます。拡張子と中身が食い違うもの(中身が WAV の `.ogg` など)や、Opus / FLAC を入れた `.ogg` もここで止まります。
 - 10 秒を超える音は全体を decode せず streaming で鳴ります(第8章 §8.11「長い音の streaming」)。
 - 方針の正は [資産形式の方針](../design_asset_format_policy.md) §1.1 です。
+
+### 音の解析を焼いた表(✅AB-1)
+
+音の大きさや帯域ごとの強さで絵を動かすときは、音を**先に解析して表に焼き**、その表を読みます(`892a1455`)。解析は取り込みのたびには走らず、明示の Bake(RPC `bake_audio_analysis` か `pelican_cli audio analyze`)だけが表を書きます。方針と設計は [design_audio.md](../design_audio.md) §6 です。
+
+**焼く口は 2 つで、中身は同じ関数です**([`bakeAudioAnalysis()`](../../src/core/audio/audioanalysis.cpp#L182))。
+
+- RPC `bake_audio_analysis {asset, out, settings?}`: render config の ticket で、worker の thread で焼きます([第13章](13_editor.md) §13.5「音の解析を焼く」)。
+- CLI `pelican_cli audio analyze --asset <file> --out <file.ktx2> [...]`([第10章](10_tools.md) §10.4)。
+- 音の decode は engine の音の再生と同じ関数の集まり([`decodeWholeSound()`](../../src/core/audio/sounddecode.cpp#L345))で、上の「音声形式」と同じ規則で WAV / Ogg Vorbis だけを受けます。10 秒を超える音も streaming にせず全体を decode します。
+
+**settings**([`parseAudioAnalysisSettings()`](../../src/project/audioanalysisformat.cpp#L91))。どれも省けます。`settings` を省くか `null` なら全部が既定です。
+
+| 鍵 | 既定 | 受ける値 |
+|---|---|---|
+| `features` | `["rms", "peak", "bands"]`(全部) | この 3 つの名前の、空でない配列(同じ名前を 2 度書くと断る) |
+| `bands` | `8` | 整数 1〜128 |
+| `hop_ms` | `10` | 数 1〜1000(標本の間隔) |
+| `window_ms` | `hop_ms` の 2 倍 | 数 1〜4000(1 標本が見る幅) |
+| `smoothing.attack_ms` / `smoothing.release_ms` | `0`(なし) | 数 0〜60000 |
+| `channels` | `"mix"` | `"mix"` / `"left"` / `"right"` |
+
+ほかの鍵・型の違い・範囲の外は `audio.analysis_settings_invalid@1` `{field, reason, value?}` で断られ、何も書きません(`field` は `smoothing.attack_ms` のように道筋で)。
+
+**計算**([`analyzeAudio()`](../../src/core/audio/audioanalysis.cpp#L74))
+
+- 標本 i は時刻 `i × hop` を中心にした `window_ms` の窓で、標本の数は `floor(frame の数 / hop) + 1` です。窓が音の外にはみ出した所は 0 として数えます。
+- `channels` の `mix` はチャンネルの平均、`left` は 1 本目、`right` は 2 本目(モノラルなら 1 本目)です。
+- `rms` と `peak` は窓の中の値そのものから取ります。
+- 帯域は Hann 窓をかけた FFT(自前の radix-2。大きさは窓の幅以上の 2 の冪)で、帯 b は `[20 × (nyquist/20)^(b/N), 20 × (nyquist/20)^((b+1)/N))` Hz に入る bin の振幅(`2|X| / 窓の和`)の二乗和の平方根です(20 Hz から Nyquist までの対数間隔。最後の帯は Nyquist の bin まで)。コードの注記では、振幅 1 の正弦は rms 約 0.71、peak 1、自分の帯で約 1.2 です。
+- `smoothing` は行ごとの 1 次の追従で、値が上がる時は `attack_ms`、下がる時は `release_ms` の時定数です(0 はその向きの追従なし)。
+- 同じ bytes と同じ settings からは同じ file が書かれます(test で 2 回焼いて bytes を比べています)。
+
+**表の形**(`R32_SFLOAT` の 2D の KTX2。mip 1 段)
+
+- 幅は 4096 で固定です。行の並び(feature)は `rms`、`peak`、`band:0` 〜 `band:<N-1>` の順で、`features` で省いたものは入りません。
+- 各 feature は `rows_per_feature = ceil(標本の数 / 4096)` 行を縦に使います。feature f の標本 i は texel `(i % 4096, f × rows_per_feature + i / 4096)` で、余りは 0 です。
+- 例(test): 48 kHz・1 秒の WAV を既定の settings で焼くと、`width` 4096・`rows_per_feature` 1・`sample_count` 101・`hop_seconds` 0.01、`features` は `rms` / `peak` / `band:0` 〜 `band:7` の 10 行です。
+
+**manifest**(表の隣の `<out>.import.json`。既存の `pelican.import` v1 の形。[`audioAnalysisManifest()`](../../src/project/audioanalysisformat.cpp#L230))。test の 1 回目の bake の形です(音と表が同じ dir):
+
+```json
+{"schema": "pelican.import", "version": 1,
+ "tool": {"name": "pelican.audio_analysis", "version": "1"},
+ "source": {"file": "tone.wav",
+            "metadata": {"sha256": "<音の sha256>",
+                         "settings": {"features": ["rms", "peak", "bands"], "bands": 8, "hop_ms": 10.0,
+                                      "window_ms": 20.0, "smoothing": {"attack_ms": 0.0, "release_ms": 0.0},
+                                      "channels": "mix"},
+                         "settings_sha256": "<settings の sha256>",
+                         "layout": {"width": 4096, "rows_per_feature": 1, "sample_count": 101,
+                                    "hop_seconds": 0.01, "features": ["rms", "peak", "band:0", "...", "band:7"]}}},
+ "outputs": [{"file": "tone.ktx2", "schema": "pelican.audio_analysis_table", "version": 1, "sha256": "<表の sha256>"}]}
+```
+
+- `source.file` は manifest の置き場所からの相対です。`settings` は既定を埋めた全部の鍵で、`settings_sha256` はその JSON の sha256 です。
+- `created` は書きません。同じ bytes と settings からは同じ manifest になります。
+- 表と manifest は、隣の一時 file に書いてから名前を付け替えます(コードの注記: 読む側が書きかけを見ないため)。
+- **読む側が開いている間の置き換え(✅AB-2、`b3003b2a`)**: 一時 file は `<out>.tmp` / `<out>.import.json.tmp` で、書いて閉じてから置き換えます([`writeFileReplacing()`](../../src/project/filereplace.cpp#L169))。Windows では、置き換えが共有違反・access denied・lock violation で失敗すると、50 ms から倍々に待って、待ちの合計 2 秒まで(最後にもう 1 回)やり直します([AB-2 のやり直しの間隔](../../src/project/filereplace.hpp#L31))。
+  - AB-2 の前は、file の見張り・hash・表や texture の読み込みが表を開いている瞬間に Re-bake が当たると、1 回で `audio.analysis_failed@1`(`cannot replace …`)になっていました(GUI session の間欠の症状。仕様書の記述)。
+  - 置き換えは POSIX の意味の rename(`FileRenameInfoEx`。使えない Windows・file system では `MoveFileExW`)です。delete も共有して開いている handle(test は file の見張りの開き方)なら待たずに置き換わり、開いている側は古い中身を読み続けます。`std::ifstream` のように delete を共有しない開き方では、閉じるまでやり直しで待ちます(test: 300 ms 後に閉じると committed)。
+  - 2 秒の間ずっと開かれたままなら、下の表の `audio.analysis_failed@1` に `reason: "output_locked"` と `path` が付きます。一時 file は消え、元の表と manifest は書き換わりません(test)。
+  - Windows 以外は rename を 1 回だけ試します(やり直しはしません)。
+  - 読む側も開いている時間を短くしました。KTX2 の読み込み([`loadKtx2File()`](../../src/core/loader/imageloader.cpp#L102))は全部読んで閉じてから parse し、古さの判定([AB-2 で manifest を先に閉じる `readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250))は manifest を閉じてから元の音と出力を hash します。読む側の開き方(共有のモード)は変えていません。
+  - test: `ab1_audio_analysis_test` の [「AB-2 bake_audio_analysis replaces a table a reader held open once it closes, and refuses with output_locked when it never does」](../../test/ab1_audio_analysis_test.cpp#L363)(非 GPU。閉じれば committed。ここから先は Windows だけ: 閉じなければ `output_locked` で 1.9 秒以上待ち、一時 file が残らず元が無傷、delete も共有する handle なら 1.5 秒未満で committed)。
+
+**読む**: CPU は graph の op `value.sample_table {asset, row, time?}`、GPU は engine の include `pelican_sample_table.glsl` です([第6章](06_rendering.md) §6.18「焼いた音の解析の表を読む」)。
+
+**古いかどうか**: RPC `list_derived_assets {}` と、`get_frame_plan` の `initial_asset` が、manifest を持つ file について `stale` と `stale_reasons` を返します([第13章](13_editor.md) §13.5)。理由は `source_missing` / `source_changed`(元の音が無い・sha256 が違う)、`output_missing` / `output_changed`(表が無い・sha256 が違う)、`settings_changed`(manifest の `settings` が `settings_sha256` と合わない)、`tool_version`(版が `"1"` でない)です([`readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250))。古くなっても自動では焼き直しません。
+
+**拒否**(RPC では rejected、CLI では stderr に `<code> <fields の JSON>` と終了コード -1)
+
+| code | いつ | fields |
+|---|---|---|
+| `audio.analysis_settings_invalid@1` | settings が読めない(RPC ではすぐ断る) | `{field, reason, value?}` |
+| `audio.format_unsupported@1` | 音が WAV / Ogg Vorbis でない(上の「音声形式」と同じ判定) | AU-2 と同じ(RPC では `asset` / `out` が要求の値) |
+| `audio.analysis_failed@1` | settings の後の失敗(音が読めない・decode できない・`hop_ms` が音の 1 標本より短い・file が書けない) | `{asset, out, message}`。✅AB-2 から、表か manifest が開かれたままでやり直しの 2 秒を越えたときは `{asset, out, message, reason: "output_locked", path}`(`path` は開かれていた方。RPC では要求の `out` か `<out>.import.json` の綴り) |
+| `audio.analysis_busy@1` | 同じ `out` を焼いている途中(RPC だけ) | `{out, ticket}` |
+| `audio.analysis_unavailable@1` | `PELICAN_WITH_AUDIO=OFF` の build | `{reason: "built_without_audio"}` |
+
+test: `ab1_audio_analysis_test` の [「AB-1 a bake of 440 Hz then silence: rms and peak follow the tone and the band holding 440 Hz leads」](../../test/ab1_audio_analysis_test.cpp#L156)(CLI で焼く。前半 440 Hz・後半無音の 1 秒の WAV で、前半の rms と peak、440 Hz を含む `band:3` が他の帯より大きいこと、後半がほぼ 0、2 回焼いて同じ bytes、option の組、範囲外の `--bands 0` で何も書かないこと)。
 
 ## 関連文書
 

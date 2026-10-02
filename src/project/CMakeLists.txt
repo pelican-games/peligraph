@@ -1,16 +1,20 @@
 add_library(pelican_project
     assetdataformat.cpp
+    audioanalysisformat.cpp
     assetsmanifest.cpp
+    authoringlowering.cpp
     executionplan.cpp
     executionplanwire.cpp
     featurecompose.cpp
     featurejitter.cpp
+    filereplace.cpp
     frameresolutionwire.cpp
     graphvariantpolicy.cpp
     graphcomposition.cpp
     graphfold.cpp
     graphloopexpression.cpp
     graphmodule.cpp
+    graphparameterschema.cpp
     graphpartition.cpp
     graphtemplate.cpp
     rendergraphcomposition.cpp
@@ -49,6 +53,7 @@ add_library(pelican_project
     schemawire.cpp
     schemawire.hpp
     sceneformat.cpp
+    sha256stream.cpp
     shadersourceresolver.cpp
     shaderresourceport.cpp
     surfaceformat.cpp
@@ -72,13 +77,32 @@ target_compile_definitions(pelican_project PUBLIC
     PELICAN_WITH_PHYSICS=$<BOOL:${PELICAN_WITH_PHYSICS}>
     PELICAN_WITH_VAT=$<BOOL:${PELICAN_WITH_VAT}>
     PELICAN_WITH_SEQPLAYER=$<BOOL:${PELICAN_WITH_SEQPLAYER}>
+    PELICAN_WITH_CANVAS=$<BOOL:${PELICAN_WITH_CANVAS}>
 )
 if(PELICAN_WITH_ANIMATION)
 target_sources(pelican_project PRIVATE posegraphmodule.cpp)
 endif()
+# The canvas module and its lowering; an OFF build compiles none of it.
+if(PELICAN_WITH_CANVAS)
+target_sources(pelican_project PRIVATE
+    canvas/canvasmodule.cpp
+    canvas/canvaslowering.cpp
+    canvas/canvasreference.cpp
+    # CV-2b: blend modes and colour filters, shared by the shader and the reference.
+    canvas/canvasblend.cpp
+    # CV-6a: a placed stack's corners on the screen.
+    canvas/canvasplace.cpp
+    # CV-4: shape.text -- the font file, the distance fields and the atlas.
+    canvas/canvastext.cpp
+    canvas/distancefield.cpp
+    canvas/fontfile.cpp
+)
+# stb_truetype reads the fonts, stb_image_write encodes the atlas.
+target_link_libraries(pelican_project PRIVATE stb)
+endif()
 target_include_directories(pelican_project PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)
 if(WIN32)
-    # assetFileSha256 hashes with CNG (BCrypt) on Windows.
+    # Sha256Stream (assetFileSha256, the file watcher) hashes with CNG (BCrypt) on Windows.
     target_link_libraries(pelican_project PRIVATE bcrypt)
 endif()

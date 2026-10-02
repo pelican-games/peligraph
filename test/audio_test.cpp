@@ -797,7 +797,8 @@ TEST_CASE("AU-1 a document that mixes the two forms or two clocks is refused by 
         voice({{"wrap", "repeat"}}, {{"time", edge("now")}})}).dump()});
     REQUIRE_THROWS_WITH(ValueGraph::Graph{graphDocument({inputNode("now", "scene_time"), eventsNode("cue"),
         voice({{"bus", "master"}}, {{"time", edge("now")}, {"events", edge("cue", "events")}})}).dump()},
-        Catch::Matchers::ContainsSubstring("unknown audio bus"));
+        Catch::Matchers::ContainsSubstring("graph.render_node_parameter_invalid@1") &&
+            Catch::Matchers::ContainsSubstring("\"parameter\":\"bus\""));
 }
 
 TEST_CASE("AU-1 a player with a window opens the audio device, a headless one the device-less engine",
@@ -828,7 +829,7 @@ TEST_CASE("AU-1 a scene change stops the graph's voices and a time-clocked BGM c
     GET_MODULE(ProjectSource).setProjectData(nlohmann::json{{"schema", "pelican.project"}, {"version", 1},
         {"name", "au1-scene"}, {"engine_min_version", "0.1.0"},
         {"basic_config", {{"window_size", {{"width", 64}, {"height", 64}}},
-            {"camera", {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 100.0}, {"up", {0.0, 1.0, 0.0}}}},
+            {"camera", {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 100.0}}},
             {"default_scene_id", "first"}, {"scene_data_json", "scene.json"}}}}.dump());
     GET_MODULE(ECSPredefinedRegistration).reg();
     auto &scene = rig.scene();
@@ -917,7 +918,7 @@ TEST_CASE("CT-1 get_status lists each graph voice's state and position, the same
     GET_MODULE(ProjectSource).setProjectData(nlohmann::json{{"schema", "pelican.project"}, {"version", 1},
         {"name", "ct1-voices"}, {"engine_min_version", "0.1.0"},
         {"basic_config", {{"window_size", {{"width", 64}, {"height", 64}}},
-            {"camera", {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 100.0}, {"up", {0.0, 1.0, 0.0}}}},
+            {"camera", {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 100.0}}},
             {"default_scene_id", "first"}, {"scene_data_json", "scene.json"}}}}.dump());
     GET_MODULE(ECSPredefinedRegistration).reg();
     auto &scene = rig.scene();

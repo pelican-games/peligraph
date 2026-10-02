@@ -1,0 +1,469 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {
+    "render_material_pass_draw": {
+      "nodes": [
+        {
+          "id": "step",
+          "op": "draw.material",
+          "outputs": [
+            "draws"
+          ],
+          "parameters": {}
+        }
+      ],
+      "outputs": {
+        "draws": {
+          "node": "step",
+          "port": "draws"
+        }
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "render_material_pass_draws",
+      "op": "graph.loop",
+      "outputs": [
+        "draws"
+      ],
+      "parameters": {
+        "branches": [
+          {
+            "body": "render_material_pass_draw"
+          }
+        ],
+        "order": {
+          "by": "phase_default"
+        },
+        "over": {
+          "draw_items": {
+            "contract": "deferred_geometry_v1"
+          }
+        },
+        "tier": "draw_loop"
+      }
+    },
+    {
+      "id": "render_material_pass__albedo",
+      "op": "render.image",
+      "outputs": [
+        "resource"
+      ],
+      "parameters": {
+        "extent_scale": 1,
+        "format": "R16G16B16A16_SFLOAT",
+        "type": {
+          "arguments": {
+            "range": "extended",
+            "reference": "scene",
+            "transfer": "linear"
+          },
+          "semantic": "pelican.render.color_signal@1"
+        },
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      }
+    },
+    {
+      "id": "render_material_pass__normal",
+      "op": "render.image",
+      "outputs": [
+        "resource"
+      ],
+      "parameters": {
+        "extent_scale": 1,
+        "format": "R16G16B16A16_SFLOAT",
+        "type": {
+          "arguments": {
+            "range": "extended",
+            "reference": "scene",
+            "transfer": "linear"
+          },
+          "semantic": "pelican.render.color_signal@1"
+        },
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      }
+    },
+    {
+      "id": "render_material_pass__material",
+      "op": "render.image",
+      "outputs": [
+        "resource"
+      ],
+      "parameters": {
+        "extent_scale": 1,
+        "format": "R8G8B8A8_UNORM",
+        "type": {
+          "arguments": {
+            "range": "extended",
+            "reference": "scene",
+            "transfer": "linear"
+          },
+          "semantic": "pelican.render.color_signal@1"
+        },
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      }
+    },
+    {
+      "id": "render_material_pass__worldpos",
+      "op": "render.image",
+      "outputs": [
+        "resource"
+      ],
+      "parameters": {
+        "extent_scale": 1,
+        "format": "R16G16B16A16_SFLOAT",
+        "type": {
+          "arguments": {
+            "range": "extended",
+            "reference": "scene",
+            "transfer": "linear"
+          },
+          "semantic": "pelican.render.color_signal@1"
+        },
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      }
+    },
+    {
+      "id": "render_material_pass__emissive",
+      "op": "render.image",
+      "outputs": [
+        "resource"
+      ],
+      "parameters": {
+        "extent_scale": 1,
+        "format": "R16G16B16A16_SFLOAT",
+        "type": {
+          "arguments": {
+            "range": "extended",
+            "reference": "scene",
+            "transfer": "linear"
+          },
+          "semantic": "pelican.render.color_signal@1"
+        },
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      }
+    },
+    {
+      "id": "render_material_pass__depth",
+      "op": "render.image",
+      "outputs": [
+        "resource"
+      ],
+      "parameters": {
+        "extent_scale": 1,
+        "format": "D32_SFLOAT",
+        "type": {
+          "arguments": {
+            "representation": "device",
+            "space": "projection"
+          },
+          "semantic": "pelican.render.depth@1"
+        },
+        "usage": [
+          "DEPTH_STENCIL_ATTACHMENT",
+          "SAMPLED"
+        ]
+      }
+    },
+    {
+      "id": "render_material_pass",
+      "inputs": {
+        "albedo": {
+          "node": "render_material_pass__albedo",
+          "port": "resource"
+        },
+        "depth": {
+          "node": "render_material_pass__depth",
+          "port": "resource"
+        },
+        "draws": {
+          "node": "render_material_pass_draws",
+          "port": "draws"
+        },
+        "emissive": {
+          "node": "render_material_pass__emissive",
+          "port": "resource"
+        },
+        "material": {
+          "node": "render_material_pass__material",
+          "port": "resource"
+        },
+        "normal": {
+          "node": "render_material_pass__normal",
+          "port": "resource"
+        },
+        "worldpos": {
+          "node": "render_material_pass__worldpos",
+          "port": "resource"
+        }
+      },
+      "op": "render.material_pass",
+      "outputs": [
+        "albedo",
+        "normal",
+        "material",
+        "worldpos",
+        "emissive"
+      ],
+      "parameters": {
+        "material_contract": "deferred_geometry_v1",
+        "pass_set": "main_render"
+      }
+    },
+    {
+      "id": "shadow_map_ref",
+      "op": "render.target_ref",
+      "outputs": [
+        "resource"
+      ],
+      "parameters": {
+        "name": "shadow_map",
+        "type": {
+          "arguments": {
+            "representation": "device",
+            "space": "projection"
+          },
+          "semantic": "pelican.render.depth@1"
+        }
+      }
+    },
+    {
+      "id": "deferred_lighting__color",
+      "op": "render.image",
+      "outputs": [
+        "resource"
+      ],
+      "parameters": {
+        "extent_scale": 1,
+        "format": "R16G16B16A16_SFLOAT",
+        "type": {
+          "arguments": {
+            "range": "extended",
+            "reference": "scene",
+            "transfer": "linear"
+          },
+          "semantic": "pelican.render.color_signal@1"
+        },
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      }
+    },
+    {
+      "id": "deferred_lighting",
+      "inputs": {
+        "albedo": {
+          "node": "render_material_pass",
+          "port": "albedo"
+        },
+        "color": {
+          "node": "deferred_lighting__color",
+          "port": "resource"
+        },
+        "emissive": {
+          "node": "render_material_pass",
+          "port": "emissive"
+        },
+        "material": {
+          "node": "render_material_pass",
+          "port": "material"
+        },
+        "normal": {
+          "node": "render_material_pass",
+          "port": "normal"
+        },
+        "shadow_map": {
+          "node": "shadow_map_ref",
+          "port": "resource"
+        },
+        "worldpos": {
+          "node": "render_material_pass",
+          "port": "worldpos"
+        }
+      },
+      "op": "render.fullscreen",
+      "outputs": [
+        "color"
+      ],
+      "parameters": {
+        "ports": {
+          "albedo": {
+            "access": "read",
+            "binding": "input",
+            "input_index": 0,
+            "kind": "image",
+            "sampling": {
+              "address": "clamp_to_edge"
+            },
+            "type": {
+              "arguments": {
+                "range": "extended",
+                "reference": "scene",
+                "transfer": "linear"
+              },
+              "semantic": "pelican.render.color_signal@1"
+            }
+          },
+          "color": {
+            "access": "write",
+            "attachment": "color",
+            "kind": "image",
+            "location": 0,
+            "type": {
+              "arguments": {
+                "range": "extended",
+                "reference": "scene",
+                "transfer": "linear"
+              },
+              "semantic": "pelican.render.color_signal@1"
+            }
+          },
+          "emissive": {
+            "access": "read",
+            "binding": "input",
+            "input_index": 4,
+            "kind": "image",
+            "sampling": {
+              "address": "clamp_to_edge"
+            },
+            "type": {
+              "arguments": {
+                "range": "extended",
+                "reference": "scene",
+                "transfer": "linear"
+              },
+              "semantic": "pelican.render.color_signal@1"
+            }
+          },
+          "material": {
+            "access": "read",
+            "binding": "input",
+            "input_index": 2,
+            "kind": "image",
+            "sampling": {
+              "address": "clamp_to_edge"
+            },
+            "type": {
+              "arguments": {
+                "range": "extended",
+                "reference": "scene",
+                "transfer": "linear"
+              },
+              "semantic": "pelican.render.color_signal@1"
+            }
+          },
+          "normal": {
+            "access": "read",
+            "binding": "input",
+            "input_index": 1,
+            "kind": "image",
+            "sampling": {
+              "address": "clamp_to_edge"
+            },
+            "type": {
+              "arguments": {
+                "range": "extended",
+                "reference": "scene",
+                "transfer": "linear"
+              },
+              "semantic": "pelican.render.color_signal@1"
+            }
+          },
+          "shadow_map": {
+            "access": "read",
+            "binding": "input",
+            "input_index": 5,
+            "kind": "image",
+            "sampling": {
+              "address": "clamp_to_edge"
+            },
+            "type": {
+              "arguments": {
+                "representation": "device",
+                "space": "projection"
+              },
+              "semantic": "pelican.render.depth@1"
+            }
+          },
+          "worldpos": {
+            "access": "read",
+            "binding": "input",
+            "input_index": 3,
+            "kind": "image",
+            "sampling": {
+              "address": "clamp_to_edge"
+            },
+            "type": {
+              "arguments": {
+                "range": "extended",
+                "reference": "scene",
+                "transfer": "linear"
+              },
+              "semantic": "pelican.render.color_signal@1"
+            }
+          }
+        },
+        "push_constants": "camera_position",
+        "shader": {
+          "fragment": "project://shaders/deferred_lighting",
+          "vertex": "engine://fullscreen"
+        },
+        "uses_light_data": true
+      }
+    }
+  ],
+  "outputs": {},
+  "rendering": {
+    "rendering_passes": [
+      {
+        "name": "main_render",
+        "passes": [
+          {
+            "name": "present",
+            "type": "fullscreen",
+            "input": [
+              "deferred_lighting__color"
+            ],
+            "output": {
+              "color": [
+                "display"
+              ],
+              "depth": null
+            },
+            "shader": {
+              "fragment": "engine://passthrough",
+              "vertex": "engine://fullscreen"
+            }
+          }
+        ]
+      }
+    ],
+    "features": [
+      {
+        "ref": "engine://features/shadow_directional.json",
+        "parameters": {
+          "pcf_radius": 2,
+          "strength": 1
+        }
+      }
+    ]
+  }
+}

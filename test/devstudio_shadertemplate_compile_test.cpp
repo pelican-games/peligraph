@@ -126,6 +126,11 @@ TEST_CASE("F-3 the shader template declares each input with the engine's "
         CHECK(text.find("PELICAN_DECLARE_INPUT_1(in_lit_color);") !=
               std::string::npos);
         CHECK(text.find("light_list) is a buffer") != std::string::npos);
+        // UX-13a, decision 2: read through the include the pass's ports
+        // generate, never at a binding written by hand.
+        CHECK(occurrences(text, "#include \"pelican_resource_ports.glsl\"") == 1);
+        CHECK(text.find("pelican_resource_<port>") != std::string::npos);
+        CHECK(text.find("binding 0") == std::string::npos);
         CHECK(text.find("outColor = value1;") != std::string::npos);
         const auto compiled = compileFragment(text, "f3_template_buffer.frag");
         INFO(compiled.log);

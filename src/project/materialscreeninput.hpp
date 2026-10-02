@@ -2,6 +2,7 @@
 
 #include "logicalrendergraph.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -86,6 +87,15 @@ inline constexpr std::string_view pointShadowInputContractName = "point_shadow";
 inline constexpr std::string_view spotShadowInputContractName = "spot_shadow";
 inline constexpr std::string_view pointShadowSamplerName = "pelican_point_shadow_texture";
 inline constexpr std::string_view spotShadowSamplerName = "pelican_spot_shadow_texture";
+
+// MP-1: every name makeBuiltinMaterialPassInputContract accepts, by where a
+// material pass binds it: a pass's (and a .surface's) screen_inputs, and the
+// feature-owned contracts a pass takes as surface_resources. The constructor
+// refuses a name in neither list; get_graph_catalog lists both.
+inline constexpr std::array<std::string_view, 4> builtinMaterialScreenInputContractNames{
+    "opaque_color", "opaque_depth", "scene_depth", "linear_view_depth"};
+inline constexpr std::array<std::string_view, 3> featureOwnedMaterialPassInputContractNames{
+    directionalShadowInputContractName, pointShadowInputContractName, spotShadowInputContractName};
 
 bool isFeatureOwnedMaterialPassInputContract(std::string_view name) noexcept;
 

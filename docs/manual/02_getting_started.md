@@ -19,11 +19,11 @@
 | Qt6 | Pelican Studio(エディタ)用。6.10 以上。**player だけなら不要** |
 | CMake | ルートの [CMakeLists.txt](../../CMakeLists.txt) が全体を構成 |
 
-この表とこの下に出る外部名を 1 行ずつ: **GLSL**(OpenGL Shading Language)は本リポジトリでシェーダを書くソース言語、**SPIR-V** は Vulkan が実際に読むシェーダの中間バイナリ形式([用語集](14_glossary.md))、**shaderc** はその GLSL を SPIR-V へ変換するコンパイラライブラリ([shadercompiler.cpp](../../src/core/shader/shadercompiler.cpp#L22))、**vma-hpp** は GPU メモリ確保ライブラリ VulkanMemoryAllocator の C++ バインディング([VulkanMemoryAllocator-Hpp](../../src/core/CMakeLists.txt#L74))です。
+この表とこの下に出る外部名を 1 行ずつ: **GLSL**(OpenGL Shading Language)は本リポジトリでシェーダを書くソース言語、**SPIR-V** は Vulkan が実際に読むシェーダの中間バイナリ形式([用語集](14_glossary.md))、**shaderc** はその GLSL を SPIR-V へ変換するコンパイラライブラリ([shadercompiler.cpp](../../src/core/shader/shadercompiler.cpp#L25))、**vma-hpp** は GPU メモリ確保ライブラリ VulkanMemoryAllocator の C++ バインディング([VulkanMemoryAllocator-Hpp](../../src/core/CMakeLists.txt#L75))です。
 
 vma-hpp が v3.3.0 以降でなければならないのは、SDK 1.4 系で vulkan.hpp の例外クラスが
 改名され(`ValidationFailedEXTError` → `ValidationFailedError`)、その版から vma-hpp が例外送出を
-vulkan.hpp 側へ委譲して改名の影響を受けなくなったためです([src/core/CMakeLists.txt](../../src/core/CMakeLists.txt#L68) のコメントが理由の正)。
+vulkan.hpp 側へ委譲して改名の影響を受けなくなったためです([src/core/CMakeLists.txt](../../src/core/CMakeLists.txt#L69) のコメントが理由の正)。
 
 quill / glm / nlohmann_json / argparse / tinyexr / miniaudio などは CMake の
 FetchContent で自動取得されます。shaderc は例外で、Vulkan SDK 同梱版を使います。
@@ -124,7 +124,7 @@ resolver、graph compiler、scheduler、backendは残ります。
 
 ビルドユニットの「消え方」を 1 つ具体的に見ておきます。`-DPELICAN_WITH_ANIMATION=OFF` にすると:
 
-- **消えるもの**: `src/core/animation/*` のソース一式(clip サンプラ・state machine 評価器 `EvaluatorV1`・`AnimationSystem`・pose graph の runtime。[src/core/animation/CMakeLists.txt:1](../../src/core/animation/CMakeLists.txt#L1))と、共通グラフの `pelican.pose` module(登録呼び出し自体が `#if` の中 — [makeBuiltinGraphModuleRegistry()](../../src/project/graphmodule.cpp#L724))。`pelican_cli graph-catalog` は 4 module 27 op ではなく **3 module 21 op** を返します(`PELICAN_WITH_AUDIO=ON` のとき。`PELICAN_WITH_AUDIO=OFF` では `pelican.audio` module も登録されません。[../v0_freeze.md](../v0_freeze.md) §1.3)。
+- **消えるもの**: `src/core/animation/*` のソース一式(clip サンプラ・state machine 評価器 `EvaluatorV1`・`AnimationSystem`・pose graph の runtime。[src/core/animation/CMakeLists.txt:1](../../src/core/animation/CMakeLists.txt#L1))と、共通グラフの `pelican.pose` module(登録呼び出し自体が `#if` の中 — [makeBuiltinGraphModuleRegistry()](../../src/project/graphmodule.cpp#L739))。`pelican_cli graph-catalog` は 4 module 27 op ではなく **3 module 21 op** を返します(`PELICAN_WITH_AUDIO=ON` のとき。`PELICAN_WITH_AUDIO=OFF` では `pelican.audio` module も登録されません。[../v0_freeze.md](../v0_freeze.md) §1.3)。
 - **残るもの**: 凍結ヘッダ(`abi_v1.hpp` / `pose_staging_v1.hpp`)と、その**交渉入口**(`getApiV1` / `getPoseStagingServiceV1` / `Vrm::getApplicationServiceV1`)。ゲーム DLL はこれらをリンクするので、入口は残したまま **`unsupported_version` を返す stub** に差し替わります([animation_disabled.cpp:13](../../src/core/animation/animation_disabled.cpp#L13))。「関数が無くてロードできない」ではなく「名前で『この build には無い』と答える」形です。**skinning の compute 側(palette / `skinned.vert` / `ray_deform.comp`)も残ります** —— 姿勢を受け取る側であって、姿勢を作る側ではないからです。
 - **使おうとしたときの見え方**: `animation` コンポーネントを持つシーンは scene load の prepare で `animation.module_unavailable@1`(→ トランザクションなので旧シーンが保たれます。検査は [`resolvedObjectFeatureRefusal()`](../../src/core/loader/resolvedscene.cpp#L78)・[第4章 §4.3](04_scene_ecs.md))。エディタでこのコンポーネントを足す(`add_component` / `spawn`)ときも同じ関数・同じ名前で拒否されます(✅PG-1)。`pose.*` を書いた共通グラフ文書は `graph.operation_unregistered@1`。`project.json` に `requires: ["animation"]` を書いてあるプロジェクトは、**そこまで行く前に** project の parse で止まります(下記)。
 
@@ -242,8 +242,8 @@ mygame/
 
 生成されるファイルは全 16 エントリで、一覧は [projecttemplate.cpp](../../src/project/projecttemplate.cpp) の `templateFiles()` が正本です(F-2 で `pelican_cli` から `pelican_project` へ移り、Studio の File > New Project... も同じ関数で書きます)。2 点だけ、生成物の形に約束があります(✅P-2a-4b / X-1):
 
-- **`passes/main_rendering_config.json` は `pelican.graph` root で生成されます** —— 最上位が `{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": { … }}` で、pipeline preset と features は `rendering` 節の中です([renderingConfigJson()](../../src/project/projecttemplate.cpp#L262) は graph root をそのまま書いた文字列を返します。包み関数 `wrapLegacyRenderingConfig` は MG-2b で撤去されました)。rendering config の root はこの形だけで、rendering のキーを最上位に直接並べた旧い形は `render_config.legacy_root@1` で拒否されます([第3章 §3.2](03_project_format.md))。
-- **`code/CMakeLists.txt` は 2 行**です —— `pelican_game_sources(game.cpp)` の**後に** `pelican_packages()`([projecttemplate.cpp:276](../../src/project/projecttemplate.cpp#L276))。`pelican_packages()` は `packages/*/` に複製済みで code を持つ package を build してゲームロジック DLL に合流させるので、**順序が意味を持ちます**(合流先の DLL が先に定義されている必要があります)。package を使わないうちは何もしません。
+- **`passes/main_rendering_config.json` は `pelican.graph` root で生成されます** —— 最上位が `{"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}, "rendering": { … }}` で、pipeline preset と features は `rendering` 節の中です([renderingConfigJson()](../../src/project/projecttemplate.cpp#L261) は graph root をそのまま書いた文字列を返します。包み関数 `wrapLegacyRenderingConfig` は MG-2b で撤去されました)。rendering config の root はこの形だけで、rendering のキーを最上位に直接並べた旧い形は `render_config.legacy_root@1` で拒否されます([第3章 §3.2](03_project_format.md))。
+- **`code/CMakeLists.txt` は 2 行**です —— `pelican_game_sources(game.cpp)` の**後に** `pelican_packages()`([projecttemplate.cpp:276](../../src/project/projecttemplate.cpp#L275))。`pelican_packages()` は `packages/*/` に複製済みで code を持つ package を build してゲームロジック DLL に合流させるので、**順序が意味を持ちます**(合流先の DLL が先に定義されている必要があります)。package を使わないうちは何もしません。
 
 生成される `project.json`(実物・`src/project/projecttemplate.cpp` が出力):
 
@@ -260,7 +260,7 @@ mygame/
     "window_size": { "width": 1280, "height": 720 },
     "fullscreen": false,
     "framerate": 60,
-    "camera": { "yfov": 0.7853981633974483, "znear": 0.1, "zfar": 1000, "up": [0.0, -1.0, 0.0] },
+    "camera": { "yfov": 0.7853981633974483, "znear": 0.1, "zfar": 1000 },
     "default_scene_id": "default_scene",
     "scene_data_json": "scenes/main.scene.json",
     "asset_data_json": "assets/asset_data.json",
@@ -275,6 +275,8 @@ mygame/
 ```
 
 各フィールドの意味は [第3章](03_project_format.md) で詳しく説明します。
+
+`camera` に `up` はありません。✅CC-1(`c8367b87`)で camera の up は transform の回転から取るようになり、`basic_config.camera.up` は撤去されました(書いてあると `project.camera_up_removed@1` で開けません。前に作った project の直し方は [第3章 §3.13](03_project_format.md) の「camera の向きの規約の変換」)。雛形の `scenes/main.scene.json` の `MainCamera` は `pos` が `(0, 0, 3)`・回転なしで、回転なしの camera は −Z を向くので原点を見ます([雛形の scene](../../src/project/projecttemplate.cpp#L133))。座標の規約は [第6章 §6.1](06_rendering.md) の「座標の規約」です。
 
 **描画パイプラインを 0 から組みたいときは `--template blank`** です(✅F-2。既定は上の `standard`)。
 `pelican_cli project init mygame --template blank` は上と同じ 16 エントリを書きますが、

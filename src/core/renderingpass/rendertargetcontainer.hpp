@@ -96,8 +96,16 @@ DECLARE_MODULE(RenderTargetContainer) {
         RenderTargetStorageMode storage_mode;
         std::optional<std::string> alias_group;
         std::optional<std::uint64_t> alias_group_token;
+        // PS-1: RenderTargetDefinition::persistent of the latest
+        // registration (a lifetime edit keeps the image).
+        bool persistent = false;
         std::unique_ptr<RenderTargetResourceSet>
             resources;
+        // EN-2: a file image's pixels, uploaded whenever its image is
+        // created. Such a target is read only and starts each frame in
+        // SHADER_READ_ONLY_OPTIMAL.
+        std::shared_ptr<const RenderTargetSourcePixels>
+            source_pixels;
     };
     ResourceContainer<GlobalRenderTargetId, InternalRenderTarget> render_targets;
 
@@ -183,6 +191,9 @@ DECLARE_MODULE(RenderTargetContainer) {
     vk::ResolveModeFlagBits resolveMode(GlobalRenderTargetId id) const;
     vk::ImageLayout initialLayout(GlobalRenderTargetId id,
                                   bool attachment = false) const;
+    // PS-1: the target keeps its contents across frames (lifetime:
+    // persistent), so a layout tracker reset must not forget its layout.
+    bool persistent(GlobalRenderTargetId id) const;
     std::optional<std::uint64_t>
     aliasGroup(GlobalRenderTargetId id) const;
     bool sharesAllocation(GlobalRenderTargetId left,

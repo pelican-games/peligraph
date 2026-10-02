@@ -734,6 +734,11 @@ RenderStrategyRegistry::snapshot() const {
             std::move(lock), impl_.get())};
 }
 
+std::vector<RenderProviderListing>
+RenderStrategyRegistry::providerListing() const {
+    return impl_->listing();
+}
+
 void RenderStrategyRegistry::activateOwner(
     internal::RegistrationOwner owner) noexcept {
     impl_->activateOwner(owner);

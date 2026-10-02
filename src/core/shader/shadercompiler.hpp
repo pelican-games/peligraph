@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../container.hpp"
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -36,11 +37,46 @@ struct ShaderCompileOptions {
 
 std::optional<vk::ShaderStageFlagBits> inferShaderStageFromPath(const std::filesystem::path &path);
 
+// TS-1: names the shader disk cache directory for every compiler that would
+// otherwise keep it under its project (`<project>/.pelican/shader_cache`).
+// The cache key is built from content (see shadercompiler.cpp), so projects
+// and engine builds may share one directory.
+inline constexpr char shaderCacheDirectoryEnvironment[] = "PELICAN_SHADER_CACHE_DIR";
+
+// TS-2: what a cache key holds besides the shader's own sources, defines,
+// stage and entry point: the digest of the embedded engine shader sources and
+// the compiler, target and options of this build. A test pins the key's
+// layout and hash against these, so it holds across engine shader edits and
+// SDK updates. Defined only with the runtime shader compiler.
+struct ShaderCacheKeyBuildInputs {
+    std::string engine_universe_sha256;
+    std::string shaderc_version;
+    std::uint32_t spirv_version = 0;
+    std::uint32_t spirv_revision = 0;
+    std::string target_environment;
+    std::string compile_options;
+    std::string contract_salt;
+};
+ShaderCacheKeyBuildInputs shaderCacheKeyBuildInputs();
+
+// A physical file read while building a cache key, kept while its size and
+// write time are unchanged.
+struct ShaderKeyFileMemo {
+    std::uintmax_t size = 0;
+    std::filesystem::file_time_type write_time;
+    std::string content;
+};
+
+struct ShaderKeyMemory {
+    std::unordered_map<std::string, ShaderKeyFileMemo> files;
+    std::size_t file_reads = 0;
+};
+
 DECLARE_MODULE(ShaderCompiler) {
     std::vector<std::filesystem::path> include_dirs;
     std::optional<std::filesystem::path> cache_directory;
     std::unordered_map<std::string, ShaderCompileResult> memory_cache;
-    std::unordered_map<std::string, std::string> source_graph_memory;
+    ShaderKeyMemory key_memory;
     bool records_startup_metrics = true;
 
     struct DetachedTag {};
@@ -58,6 +94,9 @@ DECLARE_MODULE(ShaderCompiler) {
                                       std::string_view name, const ShaderCompileOptions &opts = {});
     void addIncludeDir(const std::filesystem::path &dir);
     void setCacheDirectory(std::filesystem::path dir);
+    const std::optional<std::filesystem::path> &cacheDirectory() const noexcept { return cache_directory; }
+    // How many physical files the cache keys of this compiler have read.
+    std::size_t keyFileReadCount() const noexcept { return key_memory.file_reads; }
 };
 
 } // namespace Pelican

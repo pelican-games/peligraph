@@ -46,7 +46,7 @@
 
 ## 14.2 形式(JSON)とプロジェクトの語
 
-**エンベロープ** — JSON の先頭に置く `{"schema": "pelican.scene", "version": 2, ...}` の 2 キーのこと。封筒の中身(本体)を読む前に、**形式名と版が一致するかだけ**を先に見ます。不一致は hard error です。初出: [第4章 エンベロープの規則](04_scene_ecs.md#エンベロープの規則)。([projectformat.hpp:14](../../src/project/projectformat.hpp#L22))
+**エンベロープ** — JSON の先頭に置く `{"schema": "pelican.scene", "version": 2, ...}` の 2 キーのこと。封筒の中身(本体)を読む前に、**形式名と版が一致するかだけ**を先に見ます。不一致は hard error です。初出: [第4章 エンベロープの規則](04_scene_ecs.md#エンベロープの規則)。([projectformat.hpp:14](../../src/project/projectformat.hpp#L39))
 
 **closed schema / open schema** — closed schema は「宣言されたキー以外が来たら拒否する」受理仕様、open schema は「知らないキーは無視して通す」受理仕様です。エンジンの組み込みコンポーネントは closed schema(未知キーを拒否)で、ユーザー定義コンポーネントは codec を持たないため扱いが変わります。初出: [第12章 §12.5](12_codemap.md#125-データ--コード対応表json-はどこで読まれるか)。
 
@@ -72,7 +72,7 @@
 
 **3 段合成** — `basic_config` の値を「エンジン既定 → `project.json` → `.pelican/local.json`」の 3 段で重ねて決めること。deep merge ではなく**パス単位で問い合わせる**方式なので、どの段が勝ったかを後から言えます。初出: [第3章 basic_config と「3 段合成」](03_project_format.md#basic_config-と3-段合成)。
 
-**`requires`(project.json の)** — **このプロジェクトが動くために必要なビルド機能ユニットの名前**の配列。今日の語彙は `animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の 6 語(それぞれ `PELICAN_WITH_ANIMATION` / `_AUDIO` / `_PHYSICS` / `_OPENXR` / `_VAT` / `_SEQPLAYER`。✅PG-1)で、未知の名前は `project.requires_unknown@1`、満たせないビルドで開くと `<語>.module_unavailable@1`(例: `animation.module_unavailable@1`)になります。**同じ綴りの `requires` が 3 か所にあり、それぞれ別物です**: (1) project.json = ビルド機能ユニット名の配列、(2) package manifest = `{engine_min_version, sdk_abi, capabilities}` の object(`capabilities` だけは (1) と同じ語彙で検査)、(3) feature の `integrations[].requires` = 他の feature の名前。初出: [第3章 §3.2](03_project_format.md#機能ユニットの要求requiresp-2b)。([projectformat.cpp:80](../../src/project/projectformat.cpp#L80))
+**`requires`(project.json の)** — **このプロジェクトが動くために必要なビルド機能ユニットの名前**の配列。今日の語彙は `animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の 6 語(それぞれ `PELICAN_WITH_ANIMATION` / `_AUDIO` / `_PHYSICS` / `_OPENXR` / `_VAT` / `_SEQPLAYER`。✅PG-1)で、未知の名前は `project.requires_unknown@1`、満たせないビルドで開くと `<語>.module_unavailable@1`(例: `animation.module_unavailable@1`)になります。**同じ綴りの `requires` が 3 か所にあり、それぞれ別物です**: (1) project.json = ビルド機能ユニット名の配列、(2) package manifest = `{engine_min_version, sdk_abi, capabilities}` の object(`capabilities` だけは (1) と同じ語彙で検査)、(3) feature の `integrations[].requires` = 他の feature の名前。初出: [第3章 §3.2](03_project_format.md#機能ユニットの要求requiresp-2b)。([projectformat.cpp:80](../../src/project/projectformat.cpp#L81))
 
 **component(3 つの別の語)** — 綴りが同じで中身が違う語が 3 つあります。**(1) ECS のコンポーネント** = シーン JSON の `{"name": "transform", …}` 1 レコード([第4章](04_scene_ecs.md))。**(2) render component**(`pelican.render_component` v1)= materialize 済みの feature 1 本 + その宿主への要求を 1 ディレクトリにまとめた**共有部品**([第3章 §3.12](03_project_format.md#312-共有部品render-component-feature-1-本を持ち出して別-project-へ入れるp-2a-3))。**(3) package manifest の `provides.components`** = (2) のディレクトリを指すパスの配列([第3章 §3.11](03_project_format.md#311-package--本体ツリーの外から持ち込むx-1))。文脈で読み分けてください。([rendercomponent.hpp:16](../../src/project/rendercomponent.hpp#L16))
 
@@ -162,7 +162,7 @@
 
 **stem(ステム)** — シェーダを**拡張子なしの名前**で参照する規約(`"shaders/lava"`、`"engine://ssao"`)。解決順は `<stem>.vert`(GLSL ソース → 実行時コンパイル)→ `<stem>.vert.spv`(ビルド済み SPIR-V)で、拡張子を書くとエラーです。この規約は web プロファイルと共有される可搬形式です。初出: [第6章 stem 参照](06_rendering.md#stem-参照)、web 側は [第9章 §9.4](09_web.md#94-シェーダ-stem-規約--可搬シェーダの書き方)。
 
-**SPIR-V / SPIR-V reflection** — SPIR-V は Vulkan が読むシェーダの中間バイナリ形式。**reflection**(リフレクション)は、そのバイナリを解析して「どの set / binding に何型のリソースが要るか」を取り出すことです。pelican2 は spirv-reflect で解析し、descriptor set layout・pipeline layout・push constant range を**全自動生成**します。初出: [第6章 自動リフレクションとキャッシュ](06_rendering.md#自動リフレクションとキャッシュ)。([ShaderCompiler](../../src/core/shader/shadercompiler.hpp#L39))
+**SPIR-V / SPIR-V reflection** — SPIR-V は Vulkan が読むシェーダの中間バイナリ形式。**reflection**(リフレクション)は、そのバイナリを解析して「どの set / binding に何型のリソースが要るか」を取り出すことです。pelican2 は spirv-reflect で解析し、descriptor set layout・pipeline layout・push constant range を**全自動生成**します。初出: [第6章 自動リフレクションとキャッシュ](06_rendering.md#自動リフレクションとキャッシュ)。([ShaderCompiler](../../src/core/shader/shadercompiler.hpp#L75))
 
 **descriptor set** — シェーダが使うリソース(テクスチャ・バッファ)をまとめて束ねた単位で、番号(set 0, 1, …)で区別します。pelican2 は set の役割を規約で固定しており(フレーム共通・パス・マテリアルなど)、シェーダ側は番号を直接書かずに規約の定数を使います。初出: [第6章 descriptor set 規約](06_rendering.md#descriptor-set-規約shader_contractmd-が正)。([pelican_sets.hpp:7](../../src/core/shader/pelican_sets.hpp#L15))
 
@@ -170,9 +170,9 @@
 
 **canonical anchor(標準アンカー)** — feature がパスを差し込む先として、常に実体化される 8 つの目印ノード(`sprite → post_main → tonemap → post_ldr → pelican_ui → debug_draw → debug_text → imgui`)。この**全順序はエンジンの契約**で並べ替えられませんが、あいだに挿すのは自由です。初出: [第6章 canonical anchor](06_rendering.md#canonical-anchorwp73)。
 
-**frame graph(フレームグラフ)** — パスの `input` / `output` から依存を自動で導き、実行順・並び・barrier をエンジンが決める仕組み。手書きの barrier は禁止で、JSON の宣言順は依存が許す範囲での**安定タイブレーク**にすぎません。「グラフ」の中身は、**ノード** = パスや compute タスク、**辺** = 「ある RT を書く側 → それを読む側」の依存で、プランナはこれをトポロジカルに並べて `nodes`(実行順)・`levels`(依存が無く同じ段に置けるノードの束)・`barriers` を出します([FramePlan](../../src/core/renderingpass/frameplanner.hpp#L162))。初出: [第6章 §6.6](06_rendering.md#66-フレームグラフf0f2--wp3335--wp64)。
+**frame graph(フレームグラフ)** — パスの `input` / `output` から依存を自動で導き、実行順・並び・barrier をエンジンが決める仕組み。手書きの barrier は禁止で、JSON の宣言順は依存が許す範囲での**安定タイブレーク**にすぎません。「グラフ」の中身は、**ノード** = パスや compute タスク、**辺** = 「ある RT を書く側 → それを読む側」の依存で、プランナはこれをトポロジカルに並べて `nodes`(実行順)・`levels`(依存が無く同じ段に置けるノードの束)・`barriers` を出します([FramePlan](../../src/core/renderingpass/frameplanner.hpp#L168))。初出: [第6章 §6.6](06_rendering.md#66-フレームグラフf0f2--wp3335--wp64)。
 
-**FramePlan** — フレームグラフを解決した結果の**実行計画**。ノード種別は `render` / `compute` / `anchor` / `snapshot_copy` / `output_transform` で、全構成がこの順序で実行されます(旧来の「JSON 宣言順で実行」経路は撤去済み)。RPC の `get_frame_plan` や ImGui の plan viewer で中身を見られます。初出: [第6章 §6.6](06_rendering.md#66-フレームグラフf0f2--wp3335--wp64)。([FramePlan](../../src/core/renderingpass/frameplanner.hpp#L162) / [FramePlanNodeKind](../../src/core/renderingpass/frameplanner.hpp#L16))
+**FramePlan** — フレームグラフを解決した結果の**実行計画**。ノード種別は `render` / `compute` / `anchor` / `snapshot_copy` / `output_transform` で、全構成がこの順序で実行されます(旧来の「JSON 宣言順で実行」経路は撤去済み)。RPC の `get_frame_plan` や ImGui の plan viewer で中身を見られます。初出: [第6章 §6.6](06_rendering.md#66-フレームグラフf0f2--wp3335--wp64)。([FramePlan](../../src/core/renderingpass/frameplanner.hpp#L168) / [FramePlanNodeKind](../../src/core/renderingpass/frameplanner.hpp#L16))
 
 **logical plan / physical plan(論理プラン / 物理プラン)** — **論理プラン**はリソースを「値と読み取り範囲」だけで表したデバイス非依存の表現、**物理プラン**はそこへ実フォーマット・サンプル数・scope・view 実行を載せたデバイス依存の表現です。「何を計算するか」と「Vulkan でどう置くか」を分ける層で、物理プランは丸ごと差し替え可能なパッケージとして eject できます。違いは型の欄で見るのが早く、論理側の 1 リソースは `name` / `type` / materialization の 3 項だけ([LogicalResourceDesc](../../src/project/logicalrendergraph.hpp#L60))、物理側の同じリソースにはそこへ `format` / `rasterization_samples` / `view_layout` / `mip_levels` / `array_layers` / alias 可否が付きます([VulkanPhysicalResourcePlan](../../src/project/targetrenderplanning.hpp#L208))。例えば `format_class: "scene"` は論理側では文字どおり「scene 用の色」でしかなく、実 format(HDR なら `R16G16B16A16_SFLOAT`、SDR なら `B8G8R8A8_SRGB`)を欄として持つのは物理側です([第6章 §6.3](06_rendering.md))。初出: [第6章 target planning と Vulkan plan pin](06_rendering.md#target-planning-と-vulkan-plan-pin)。([CompiledLogicalRenderGraph](../../src/project/logicalrendergraph.hpp#L258) / [VulkanTargetPlan](../../src/project/targetrenderplanning.hpp#L488))
 
@@ -186,7 +186,7 @@
 
 **bloom(ブルーム)** — 明るい部分をにじませて眩しさを表現する後処理。P-2a-1b(`6e04c7c8`)から同梱 feature `engine://features/bloom.json`(13 pass + 9 RT を `post_ldr` の後に挿入。shader は `bloom_highpass` / `bloom_blur_h` / `bloom_blur_v` / `bloom_upsample` / `bloom_composite`)。しきい値・膝・強度は feature の parameter(`threshold` / `knee` / `intensity`、P-2a-1c)ですが、**供給のされ方が 2 通りある**点に注意してください: `threshold` と `knee` は shader の define(`PELICAN_FEATURE_BLOOM_*`)として焼かれ、**`intensity` だけは `binding: "buffer"`**(P-2a-2、`bloom.json:26`)—— feature 自身が持つ `bloom.intensity` バッファ(`size: 4` / `host_source: runtime_f32`)を通る**実行時の値**で、`set_parameters` でも共通グラフの `render.scalar` sink でも毎フレーム書き換えられます。初出: [第6章 §6.4](06_rendering.md#64-シェーダ基盤shader-freedom-kit-wp101519--m2bwp70)。([bloom_highpass.frag](../../src/core/resources/bloom_highpass.frag))
 
-**materialize(マテリアライズ)** — エンジン同梱の feature(`engine://features/*.json`)を**プロジェクト側の派生としてファイルに保存し、以後そちらを参照する**操作。以後は自分のものなので自由に編集できます([第1章](01_overview.md) 設計決定 11)。`parameters` の宣言は**残したまま**、確定した値が `bound_parameters` として書かれます —— **宣言は消えません**。`$name` の置換とスカラーの define は合成のたびに再生成されるので、古い値の define が残ることもありません([featurecompose.cpp:2850](../../src/project/featurecompose.cpp#L3027) のコメントが理由の正本)。値の優先順位は **instance の上書き > `bound_parameters` > 宣言の既定値**([featurecompose.cpp:1393](../../src/project/featurecompose.cpp#L1429))。同じ feature を 2 度 materialize することはできません(`is already materialized`)。初出: [第6章 §6.5](06_rendering.md#65-feature--パージ可能な-gpu-機能wp2831548788104226)。
+**materialize(マテリアライズ)** — エンジン同梱の feature(`engine://features/*.json`)を**プロジェクト側の派生としてファイルに保存し、以後そちらを参照する**操作。以後は自分のものなので自由に編集できます([第1章](01_overview.md) 設計決定 11)。`parameters` の宣言は**残したまま**、確定した値が `bound_parameters` として書かれます —— **宣言は消えません**。`$name` の置換とスカラーの define は合成のたびに再生成されるので、古い値の define が残ることもありません([featurecompose.cpp:2850](../../src/project/featurecompose.cpp#L3334) のコメントが理由の正本)。値の優先順位は **instance の上書き > `bound_parameters` > 宣言の既定値**([featurecompose.cpp:1393](../../src/project/featurecompose.cpp#L1478))。同じ feature を 2 度 materialize することはできません(`is already materialized`)。初出: [第6章 §6.5](06_rendering.md#65-feature--パージ可能な-gpu-機能wp2831548788104226)。
 
 **TAA(temporal anti-aliasing)** — 毎フレーム少しずらして描いた結果を、前フレームの履歴と混ぜてジャギーを消す手法。pelican2 では `taa.json` feature が resolve + composite の 2 パスと jitter provider を持ちます。履歴・速度・jitter はユーザー空間側の道具立てで、エンジンは機構だけを持ちます。初出: [第6章 標準 TAA](06_rendering.md#標準-taawp113)。
 
@@ -198,7 +198,7 @@
 
 **AS / BLAS / TLAS(加速構造)** — レイと形状の交差候補を高速に絞り込むためのデータ構造の総称が **AS** です。**BLAS**（bottom-level acceleration structure）は三角形群や手続き形状の境界ボックスをまとめた下位構造、**TLAS**（top-level acceleration structure）は BLAS の配置・変換行列などを持つ上位構造です。現在は**静的形状に加え、スキン・モーフ・VAT による変形形状にも対応**します。変形後の頂点を計算し、条件が合えば前回の BLAS を基に更新（refit）します。配置の transform だけが変わる場合は BLAS を再利用し、TLAS の行列へ反映します。詳しくは [加速構造の解説](../source-code-guide/11_ray_query_acceleration_structures.md)。 初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([accelerationstructure.hpp:69](../../src/core/vkcore/accelerationstructure.hpp#L125))
 
-**SBT(shader binding table)** — レイトレーシングパイプラインで、「どのレイがどのシェーダ(raygen / miss / closest-hit)に当たるか」を引くための表。`ray_group_layout` の `ray_types` / `groups` / `misses` / `record` がこの表の形を決めます。`acceleration_structure` は SBT の入力ではないので、layout の digest からは取り除いて計算されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayTracingSceneShaderBindingTables](../../src/core/shader/pipelinefactory.hpp#L187))
+**SBT(shader binding table)** — レイトレーシングパイプラインで、「どのレイがどのシェーダ(raygen / miss / closest-hit)に当たるか」を引くための表。`ray_group_layout` の `ray_types` / `groups` / `misses` / `record` がこの表の形を決めます。`acceleration_structure` は SBT の入力ではないので、layout の digest からは取り除いて計算されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayTracingSceneShaderBindingTables](../../src/core/shader/pipelinefactory.hpp#L190))
 
 **`ray_group_layout`(ray layout)** — レイトレの宣言層の入口となる JSON。version は 3 だけを受理し(1 / 2 は MG-2a から `pelican.ray_group_layout.version_unsupported@1`)、**プロセスの実行中は変更できない 2 状態**(layout 無し / 有り)として起動時に確定します。layout があるときだけ `acceleration_structure` 宣言と `pelican_ray_instance` コンポーネントが使えます。プロセス途中でのモード変更は拒否されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayLayoutRuntimeState](../../src/core/shader/raygrouplayout.hpp#L168))
 
@@ -206,17 +206,17 @@
 
 ## 14.6 テスト・運用・ツールの語
 
-**JSON-RPC(stdio)** — 外部プロセスからエンジンを操作するためのプロトコル。1 行 1 メッセージの JSON を stdin / stdout でやり取りし(改行区切り JSON)、`--rpc` 中は **stdout がプロトコル専用**になります(ログは stderr へ)。エラーコードは JSON-RPC 2.0 の規約(`-32700` parse error など)に従います。初出: [第10章 §10.3](10_tools.md#103-json-rpcstdio-外部制御プロトコル実装済み)。([RpcServer](../../src/core/communication/rpcserver.hpp#L55))
+**JSON-RPC(stdio)** — 外部プロセスからエンジンを操作するためのプロトコル。1 行 1 メッセージの JSON を stdin / stdout でやり取りし(改行区切り JSON)、`--rpc` 中は **stdout がプロトコル専用**になります(ログは stderr へ)。エラーコードは JSON-RPC 2.0 の規約(`-32700` parse error など)に従います。初出: [第10章 §10.3](10_tools.md#103-json-rpcstdio-外部制御プロトコル実装済み)。([RpcServer](../../src/core/communication/rpcserver.hpp#L56))
 
 **ホットリロード(hot reload)** — 実行を止めずに、保存されたファイルを反映すること。対象はシェーダ・`.surface`・テクスチャ・マテリアル値・モデルコンテナ・ゲームロジック DLL で、**シーンは対象外**です。1 つの変更に影響する全バリアントを準備してからフレーム境界で一括公開し、どれか 1 つでも失敗すれば全体を破棄して旧世代を維持します(fail-soft)。初出: [第10章 §10.5](10_tools.md#105-ホットリロードwp9096110147162178)。
 
-**チケット(ticket)** — エディタの編集操作を**フレーム境界で適用する**ための受付票。受付時に前提条件を検査し、コミット時にもう一度検査します(受付から適用までの間に世界が動くため)。「トランザクション」という語がシーンロード・作用・編集の 3 か所で使われるので、編集の文脈ではチケットと呼び分けます。初出: [第13章 §13.3](13_editor.md#133-編集の実行モデル--チケットとフレーム境界)。([EditorCommandService](../../src/core/communication/editorcommandservice.hpp#L258))
+**チケット(ticket)** — エディタの編集操作を**フレーム境界で適用する**ための受付票。受付時に前提条件を検査し、コミット時にもう一度検査します(受付から適用までの間に世界が動くため)。「トランザクション」という語がシーンロード・作用・編集の 3 か所で使われるので、編集の文脈ではチケットと呼び分けます。初出: [第13章 §13.3](13_editor.md#133-編集の実行モデル--チケットとフレーム境界)。([EditorCommandService](../../src/core/communication/editorcommandservice.hpp#L278))
 
 **headless(ヘッドレス)** — ウィンドウを開かずに描画・実行するモード。時刻が固定ステップ(dt = 1/fps)になるためリプレイと golden テストの土台になり、CI から PNG を取り出せます。初出: [第2章 §2.5](02_getting_started.md#25-ヘッドレス実行ウィンドウなしで-png-を出す)。
 
 **Job オブジェクト(Windows)** — 子プロセスを束ねて**まとめて終了させる**ための Windows のカーネルオブジェクト(POSIX のプロセスグループに相当)。pelican2 ではツールが起動した子プロセス(と孫)を取り残さないために使います。初出: [source-code-guide 第10章 §10.4](../source-code-guide/10_background_knowledge.md#windows-の-job-オブジェクトプロセスグループの対応物)。([processrunner.cpp:171](../../src/devcli/processrunner.cpp#L171))
 
-**名前付き mutex(named mutex)** — 名前でプロセスをまたいで待ち合わせられる排他オブジェクト。`Global\` を付けるとマシン全体が範囲になります。pelican2 では GPU を使うテストを 1 本ずつ走らせる lease に使い、前の保持者が異常終了した場合(`WAIT_ABANDONED`)も取得成功として扱います(GPU が永久にロックされないため)。初出: [source-code-guide 第10章 §10.4](../source-code-guide/10_background_knowledge.md#windows-の名前付き-mutex-と-global-名前空間machine-wide-の相互排他)。([gpu_lease_run.cpp:157](../../test/gpu_lease_run.cpp#L157))
+**名前付き mutex(named mutex)** — 名前でプロセスをまたいで待ち合わせられる排他オブジェクト。`Global\` を付けるとマシン全体が範囲になります。pelican2 では GPU を使うテストを 1 本ずつ走らせる lease に使い、前の保持者が異常終了した場合(`WAIT_ABANDONED`)も取得成功として扱います(GPU が永久にロックされないため)。初出: [source-code-guide 第10章 §10.4](../source-code-guide/10_background_knowledge.md#windows-の名前付き-mutex-と-global-名前空間machine-wide-の相互排他)。([gpu_lease_run.cpp:157](../../test/gpu_lease_run.cpp#L229))
 
 **doclink** — 文書中の `#L<行番号>` リンクが指す先を追跡し続けるためのツール(`tools/doclink.py`)。`update` で行番号を貼り直し、`check` で古くなったリンクを検出します。行番号はキャッシュで、本体は「その行に何が書いてあったか」というアンカーです。初出: [第10章 §10.10](10_tools.md#1010-リポジトリ保守スクリプトtools)。
 

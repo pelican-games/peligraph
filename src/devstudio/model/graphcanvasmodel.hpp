@@ -602,6 +602,43 @@ struct GraphCanvasRefusalMark {
     bool operator==(const GraphCanvasRefusalMark &) const = default;
 };
 
+// UX-12a, decision 4: graph.render_node_parameter_invalid@1 (engine CT-3) --
+// which node's which parameter the engine refused, and the sentence it reads
+// as. `scope` is the scope the refused edit was made in; `parameter` is the
+// engine's path ("size", "size_from_extent.tile_width", "keys[0].time").
+struct GraphCanvasParameterRefusal {
+    std::string scope;
+    std::string node;
+    std::string parameter;
+    std::string sentence;
+
+    bool operator==(const GraphCanvasParameterRefusal &) const = default;
+};
+
+// UX-13b, decision 2 (engine CT-5): a buffer a render.scalar can write, and
+// what the edit that picks it changes on it so that it can be written --
+// "runtime_f32" (its host_source, and its size with it), "<n> bytes" (its
+// size alone), or nothing.
+struct GraphCanvasScalarTarget {
+    std::string buffer;
+    std::string fix;
+
+    bool operator==(const GraphCanvasScalarTarget &) const = default;
+};
+
+// UX-13b, decision 3: graph.render_scalar_target_incompatible@1 -- the buffer
+// a render.scalar cannot write and what it has to be. `in_graph`: a buffer of
+// the graph (the refusal names a node), which one edit makes so, in `scope`;
+// else one declared outside the graph, which only a sentence can point at.
+struct GraphCanvasScalarTargetFix {
+    std::string scope;
+    std::string target;
+    std::optional<std::uint64_t> size;
+    bool in_graph = false;
+
+    bool operator==(const GraphCanvasScalarTargetFix &) const = default;
+};
+
 // GL-2b (design_graph_layers 5.1). Where the graph node that made a pass is
 // authored: get_frame_plan's `origin`. `definition` and `instance_path` are
 // empty for a root node; `loop` is set for one copy of a graph.loop.
@@ -664,11 +701,37 @@ struct GraphCanvasPlanPass {
     std::string contract;
     // material_filter.resolved_draw_count, when the engine resolved it.
     std::optional<std::size_t> draw_count;
+    // UX-11, decision 4: the material_routing routes that name it (the
+    // Frame Plan's Materials rows), and the tags its material_filter takes
+    // and leaves out, as the plan says.
+    std::vector<std::string> routes;
+    std::vector<std::string> material_include;
+    std::vector<std::string> material_exclude;
     // LC-1: its shader reads pelican_loop_element() / _count()
     // (get_frame_plan's reads_loop_index).
     bool reads_loop_index = false;
+    // PS-1s (engine PS-1): `schedule: "once"`, and when it last ran -- the
+    // runtime generation and the logical frame; empty before it has.
+    bool once = false;
+    std::optional<std::uint64_t> last_run_generation;
+    std::optional<std::uint64_t> last_run_frame;
+    // UX-12c (engine MP-1): the materials it drew in the last published
+    // frame; none before one was, or from an engine that predates MP-1.
+    std::optional<FramePlanDrawnMaterials> drawn_materials;
 
     bool operator==(const GraphCanvasPlanPass &) const = default;
+};
+
+// PS-1s, decision 3: what the plan says of a once node's passes (all of a
+// loop body node's copies): the latest generation and frame any of them ran
+// in, empty while none has run.
+struct GraphCanvasOnceRun {
+    std::optional<std::uint64_t> generation;
+    std::optional<std::uint64_t> frame;
+    // How many of the plan's passes the node made run once.
+    std::size_t passes = 0;
+
+    bool operator==(const GraphCanvasOnceRun &) const = default;
 };
 
 // LC-1s, decision 2: whether a pass node's shader reads the loop element, as
@@ -931,6 +994,8 @@ class GraphCanvasModel {
         // UX-5b: get_engine_shaders (EL-4b), asked only when a shader list
         // is opened -- the engine compiles its shaders to answer it.
         EngineShaders,
+        // PS-1s, decision 4: rerun_once {node?}.
+        RerunOnce,
     };
     struct PendingRequest {
         std::uint64_t id = 0;
@@ -958,6 +1023,9 @@ class GraphCanvasModel {
     std::string source_reference_;
     nlohmann::json nodes_ = nlohmann::json::array();
     nlohmann::json definitions_ = nlohmann::json::object();
+    // UX-13b, decision 4 (engine CT-5): get_graph_instances'
+    // definition_instances, as it came.
+    nlohmann::json definition_instances_ = nlohmann::json::object();
     // N-6: the root scope's own placement, as the document carries it. A
     // definition's travels inside its body, so only this one needs a field.
     nlohmann::json layout_ = nlohmann::json::object();
@@ -1150,6 +1218,22 @@ class GraphCanvasModel {
     int plan_retry_budget_ = 0;
     bool plan_retry_wanted_ = false;
     static constexpr int planRetryLimit = 40;
+    // PS-1s, decision 4: after rerun_once, the plan is read again on the
+    // clock until a pass it scheduled says it ran later than it had (by name:
+    // the frame it had last run in, 0 for never), at most this many times.
+    int once_follow_reads_ = 0;
+    std::map<std::string, std::uint64_t, std::less<>> once_follow_from_;
+    static constexpr int onceFollowLimit = 40;
+    // UX-12c, decision 1: followDrawnMaterials's reads left.
+    int drawn_follow_reads_ = 0;
+    static constexpr int drawnFollowLimit = 12;
+    // The node the rerun_once in flight was about ("" for every once node).
+    std::string once_rerun_node_;
+    // Decision 2: what the next commit says in place of "Graph change saved."
+    // (one sentence: the notice shows its first).
+    std::string saved_note_;
+    void receiveRerunOnce(const nlohmann::json &response);
+    void receiveRerunOnceRefusal(const std::string &message);
     // GL-1: how many more times a plan that failed, while none has arrived
     // yet, is asked for -- two minutes of polls.
     int plan_wait_budget_ = 0;
@@ -1200,6 +1284,9 @@ class GraphCanvasModel {
     // UX-2: the context was asked for once for its render_target_vocabulary
     // (askRenderTargetVocabulary), on this connection.
     bool vocabulary_asked_ = false;
+    // UX-12e, decision 1: the document digest the context was last asked
+    // for by a parameter field (askRenderAuthoringForChoices).
+    std::string authoring_choices_digest_;
     // UX-2: the shaders a render pass's `shader` is picked from, handed over
     // by the canvas's owner (the Pass Editor's list: the project's and the
     // engine's).
@@ -1272,7 +1359,8 @@ class GraphCanvasModel {
     bool templates_requested_ = false;
     nlohmann::json templates_ = nlohmann::json::object();
     // Decision 5: the domains the root canvas shows (session state).
-    std::set<std::string, std::less<>> domains_shown_{"render", "pose", "value", "audio", "ui"};
+    std::set<std::string, std::less<>> domains_shown_{"render", "pose", "value", "audio", "ui",
+                                                      "canvas"};
     // Decision 3. A folded view is a document Studio builds and draws in
     // place of the real one, read only: the real one waits in the stash,
     // and every reply is read against it (FoldedSuspend) before the view
@@ -1302,6 +1390,10 @@ class GraphCanvasModel {
     [[nodiscard]] std::vector<GraphCanvasFoldedNode> rootFoldedNodes() const;
     [[nodiscard]] std::vector<GraphCanvasFoldedNode> featurePassNodes(std::string_view feature) const;
     [[nodiscard]] const GraphCanvasPlanPass *planPass(std::string_view name) const;
+    // The plan's passes a node of `scope` made: a root node's, or a body
+    // node's copies (as loopElementRead finds them).
+    [[nodiscard]] std::vector<const GraphCanvasPlanPass *>
+    planPassesMadeBy(std::string_view scope, std::string_view node) const;
     // The document a step shows; false when the plan (or the templates) no
     // longer holds what it names.
     [[nodiscard]] bool foldedDocument(const GraphCanvasFoldedStep &step, nlohmann::json &nodes,
@@ -1316,7 +1408,14 @@ class GraphCanvasModel {
 
     // Decision 9: what the last refusal pointed at.
     std::vector<GraphCanvasRefusalMark> refusal_marks_;
-    void markRefusal(const nlohmann::json &error, const std::string &reason);
+    // `scope`: where the refused edit was made (UX-12a: a node the engine
+    // names by its parameter is marked there).
+    void markRefusal(const nlohmann::json &error, const std::string &reason,
+                     const std::string &scope = {});
+    // UX-12a, decision 4.
+    std::optional<GraphCanvasParameterRefusal> parameter_refusal_;
+    // UX-13b, decision 3.
+    std::optional<GraphCanvasScalarTargetFix> scalar_target_fix_;
     // The branch a loop runs for one element: the report's answer when there
     // is one, else the first branch whose integer condition holds.
     std::optional<std::size_t> branchForElement(std::string_view loop,
@@ -1413,7 +1512,7 @@ class GraphCanvasModel {
     [[nodiscard]] bool pollWanted() const noexcept {
         if (!connected_) return false;
         return !catalog_requested_ || live_ || (!pending_ && !ticket_.empty()) ||
-               plan_retry_wanted_;
+               plan_retry_wanted_ || once_follow_reads_ > 0 || drawn_follow_reads_ > 0;
     }
 
     std::vector<InspectorRpcRequest> takeRpcRequests();
@@ -2105,6 +2204,50 @@ class GraphCanvasModel {
     // travel as they were. False when nothing changed or no edit can go out.
     bool setNodeParameters(std::string_view scope, const std::string &node,
                            const nlohmann::json &parameters);
+
+    // --- AB-1s: a sound's analysis baked into a table (engine AB-1).
+
+    // Decision 3: what Use in a shader placed -- the persistent image the
+    // table starts (initial.asset), the vec4 buffer of its layout, the two
+    // render.scalar sinks that fill it (rows_per_feature, sample_count,
+    // hop_seconds from the layout; scene_time from the scope's clock), and,
+    // when `pass` was given, the pass ports they were connected to (empty
+    // when its shader declares no binding for one; `note` says which).
+    struct SampleTableShaderPlacement {
+        std::string image;
+        std::string buffer;
+        std::string values;
+        std::string time;
+        std::string image_port;
+        std::string buffer_port;
+        std::string note;
+    };
+    // The one edit: the nodes, and the pass's two ports and lines. Empty
+    // when the table's asset is empty or the scope cannot take nodes.
+    // UX-13a, decision 1: the layout's port is chosen by the name the shader
+    // reads it as (pelican_resource_<port>), never by a binding number: the
+    // reflected pelican_resource_ buffers, then `shader_ports`, the names the
+    // shader's text reads through pelican_resource_ports.glsl
+    // (shaderResourcePortNames), which no reflection shows before the port
+    // is there. The one named <stem>_layout first, else the first no port
+    // takes yet.
+    [[nodiscard]] nlohmann::json sampleTableShaderOps(std::string_view scope, const std::string &asset,
+                                                      std::uint32_t rows_per_feature,
+                                                      std::uint32_t sample_count, double hop_seconds,
+                                                      const std::string &pass,
+                                                      SampleTableShaderPlacement *placed,
+                                                      const std::vector<std::string> &shader_ports = {}) const;
+    bool addSampleTableShader(std::string_view scope, const std::string &asset,
+                              std::uint32_t rows_per_feature, std::uint32_t sample_count,
+                              double hop_seconds, const std::string &pass,
+                              SampleTableShaderPlacement *placed,
+                              const std::vector<std::string> &shader_ports = {});
+    // Decision 4: the table a node reads -- a value.sample_table's asset or
+    // a render.image's initial.asset -- without its project://; empty for
+    // any other node.
+    [[nodiscard]] std::string sampleTableAssetOf(std::string_view scope, std::string_view node) const;
+    // The root's value.sample_table nodes reading `asset`.
+    [[nodiscard]] std::vector<std::string> sampleTableReaders(std::string_view asset) const;
     // get_render_authoring_context's render_target_vocabulary: the image
     // formats and usage flags the engine's parser accepts. Known once a
     // context carrying it arrived; an engine without it leaves both empty.
@@ -2211,19 +2354,25 @@ class GraphCanvasModel {
     [[nodiscard]] std::vector<std::string> rasterDepthChoices(std::string_view scope) const;
     bool setRasterDepth(std::string_view scope, const std::string &node, const std::string &depth);
 
-    // UX-7, decision 5. The parameters an op cannot be placed without, the
-    // engine checks by name (graph.render_node_parameters_missing@1, RS-15)
-    // but its catalog does not list: render.scalar's `target` (a buffer),
-    // value.constant's `value`, value.input's `name`. The palette asks for
-    // them in a small dialog and hands them over as the seed's
-    // `parameters`. Empty for any other op.
+    // UX-7, decision 5 / UX-12a, decision 2. A parameter an op cannot be
+    // placed without (graph.render_node_parameters_missing@1, RS-9): one
+    // `required` entry of the catalog's `parameters` (engine CT-3). The
+    // palette asks for them in a small dialog and hands them over as the
+    // seed's `parameters` (and an edge's `inputs`).
     struct RequiredParameter {
         std::string name;
-        // "buffer": a buffer's name, picked or new; "number"; "input": one
-        // of valueInputNames().
+        // The table's kind (number, integer, bool, string, enum, asset,
+        // json...), or what Studio knows the string names: "buffer" (a
+        // render.scalar's target: a buffer's name, picked or new), "input"
+        // (value.input's name: one of valueInputNamesFor()).
         std::string kind;
+        // The table's entry as the catalog gives it.
+        nlohmann::json schema = nlohmann::json::object();
+        // `alternatives`: one of these instead does; one that is an input
+        // port of the op (audio.volume's `voice`) is met by an edge too.
+        std::vector<std::string> alternatives;
+        std::vector<std::string> edge_alternatives;
     };
-    [[nodiscard]] static std::vector<RequiredParameter> requiredParameters(std::string_view op);
     // The clocks the engine hands a value graph (graphinputs.cpp).
     [[nodiscard]] static std::vector<std::string> valueInputNames();
     // The buffers a render.scalar in `scope` can write: the render.buffer
@@ -2244,6 +2393,24 @@ class GraphCanvasModel {
     [[nodiscard]] std::vector<std::string> materialVariants() const;
     // A root render.material_pass's material_variant; empty takes it out.
     bool setMaterialPassVariant(const std::string &node, const std::string &variant);
+
+    // UX-12c, decision 3 (engine MP-1). The names a material pass binds as
+    // `kind` ("screen_inputs" or "surface_resources"), with the semantic
+    // type the target it reads must carry, as the catalog's
+    // material_pass_contracts list them (every contract lists the same; each
+    // name once, in the catalog's order): {name, source_type}. Empty before
+    // the catalog arrives or from an engine that predates MP-1.
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>>
+    materialPassInputs(std::string_view kind) const;
+    // UX-12c, decision 1: a plan read before the first frame after a publish
+    // does not say what the material passes drew. The plan is read again on
+    // the clock (one read at a time, a bounded number of them) until one of
+    // its passes says.
+    void followDrawnMaterials();
+    // The semantic type id of the render target `target` names, as Studio
+    // knows it: a root render.image's or render.target_ref's type, else the
+    // authoring context's declaration; empty when none says.
+    [[nodiscard]] std::string targetSemantic(std::string_view target) const;
 
     // --- UX-5b: the Graph's fullscreen pass used as the Pass Editor's is.
 
@@ -2357,6 +2524,55 @@ class GraphCanvasModel {
     // contract's combination that holds the new one. False when nothing
     // changed or no edit can go out.
     bool setImageFormat(std::string_view scope, const std::string &node, const std::string &format);
+
+    // --- PS-1s (engine PS-1): passes that run once, images that are kept.
+
+    // Decision 1. A pass's or task's `schedule`: "per_frame" (also when the
+    // key is absent), "once", or -- a render.compute only -- "per_view".
+    // Empty for a node that has none to choose.
+    [[nodiscard]] std::string nodeSchedule(std::string_view scope, std::string_view node) const;
+    // The images the pass writes (a port with access write / read_write or an
+    // attachment, followed through the passes that hand them on) that are
+    // render.image nodes of `scope` without `lifetime: "persistent"`.
+    [[nodiscard]] std::vector<std::string> transientImagesWrittenBy(std::string_view scope,
+                                                                    std::string_view node) const;
+    // One edit (one Undo step): the schedule ("per_frame" leaves the key
+    // out), and -- decision 2 -- for "once" every transient image it writes
+    // made Persistent, which the saved notice then says in one line.
+    bool setNodeSchedule(std::string_view scope, const std::string &node,
+                         const std::string &schedule);
+    // The loop's "Run the body once": true when every pass and task of its
+    // bodies runs once, false when one does not; empty for bodies with none.
+    [[nodiscard]] std::optional<bool> loopBodyOnce(std::string_view loop) const;
+    // One edit over every pass and task of the loop's bodies, as
+    // setNodeSchedule for each.
+    bool setLoopBodyOnce(const std::string &loop, bool once);
+    // Decision 3. What the plan says of a once node's passes; empty when the
+    // document does not run it once.
+    [[nodiscard]] std::optional<GraphCanvasOnceRun> onceRun(std::string_view scope,
+                                                            std::string_view node) const;
+    // Its band: `once · ran gen N`, `once · not run yet`; empty for a node
+    // that runs every frame.
+    [[nodiscard]] std::string onceBand(std::string_view scope, std::string_view node) const;
+    // Decision 2: a render.image with `lifetime: "persistent"` (its band
+    // says `persistent`).
+    [[nodiscard]] bool persistentImage(std::string_view scope, std::string_view node) const;
+    // IA-1s, decision 1: the asset a render.image starts from
+    // (`initial: {asset}`), empty for none.
+    [[nodiscard]] std::string imageInitialAsset(std::string_view scope, std::string_view node) const;
+    // IA-1s, decision 5: every initial asset the document's images start
+    // from, in the root and in each definition body, as written; sorted, once
+    // each. UX-13a, decision 3: and every table a value.sample_table reads
+    // (without its project://), which the engine reads again on a reload
+    // when it changed (IA-3).
+    [[nodiscard]] std::vector<std::string> initialAssets() const;
+    // Decision 4. rerun_once {node} (empty: every once node); a node of a
+    // loop's body asks for its loop, whose copies the plan has. The plan is
+    // read again until the scheduled passes say they ran.
+    bool rerunOnce(std::string_view scope, const std::string &node);
+    // Whether the plan has a once pass at all (Recompute all once passes).
+    [[nodiscard]] bool planHasOncePasses() const;
+
     // Decision 2. The images a fullscreen template's inputs are filled
     // from, in `scope`, `node` itself left out: each image by its id, with
     // the end of the pass that writes it (its output of the socket's name)
@@ -2502,8 +2718,21 @@ class GraphCanvasModel {
     bool setPlaybackField(std::string_view scope, const std::string &node, const std::string &key,
                           const nlohmann::json &value);
 
-    // Decision 2: a pass's named buffer ports (kind buffer), in name order,
-    // which is the order the engine binds them after the images.
+    // Decision 2 (UX-13a, decision 1): a pass's named buffer ports (kind
+    // buffer) in the order the engine binds a graph pass's buffer reads: by
+    // the name of the buffer each reads (the render.buffer's id; the graph's
+    // lowering keeps a pass's reads in a set), after the images -- read i at
+    // the pass's buffer_binding_base + i. Two ports reading one buffer are one
+    // read. A port with no line (`resource` empty) is none the engine binds;
+    // those follow, by name.
+    struct BufferPortRead {
+        std::string port;
+        std::string resource;
+        bool operator==(const BufferPortRead &) const = default;
+    };
+    [[nodiscard]] std::vector<BufferPortRead> bufferPortReads(std::string_view scope,
+                                                              std::string_view node) const;
+    // Their ports alone, in that order.
     [[nodiscard]] std::vector<std::string> bufferPorts(std::string_view scope,
                                                        std::string_view node) const;
     // The element of the buffer a node hands on (a render.buffer's or
@@ -2564,13 +2793,85 @@ class GraphCanvasModel {
     // and the frame plan's other buffers (a feature's runtime buffer, as
     // bloom.intensity).
     [[nodiscard]] std::vector<std::string> scalarTargets(std::string_view scope) const;
+    // UX-13b, decision 2 (engine CT-5): what the picker of a render.scalar's
+    // target offers -- the graph's buffers it can write once the same edit
+    // makes them so (float elements, no value line on them, a size the edit
+    // can set), each with what the edit changes, then the frame plan's
+    // other buffers as they are. `node` is the sink (none: a new one) and
+    // `components` the floats it writes.
+    [[nodiscard]] std::vector<GraphCanvasScalarTarget>
+    scalarTargetChoices(std::string_view scope, std::string_view node = {},
+                        std::size_t components = 1) const;
+    // "<buffer>", or "<buffer> (will be set to <fix>)".
+    [[nodiscard]] static std::string scalarTargetLabel(const GraphCanvasScalarTarget &target);
+    // The set_node_parameters that make the graph's buffer `target` one the
+    // render.scalar sinks writing it can write: host_source runtime_f32 and
+    // `bytes` large (a render.attribute's count); none when it already is,
+    // when it is not the graph's, or when no edit makes it so.
+    [[nodiscard]] nlohmann::json scalarTargetFixOps(std::string_view scope, const std::string &target,
+                                                    std::uint64_t bytes) const;
+    // The bytes the render.scalar sinks of `scope` write into `target`,
+    // `except` one of them, a sink's own count of floats taken from
+    // `components` when it is there.
+    [[nodiscard]] std::uint64_t scalarTargetBytes(std::string_view scope, const std::string &target,
+                                                  std::string_view except = {},
+                                                  const std::map<std::string, std::size_t> &components = {}) const;
+    // UX-13b, decision 3: the last edit refused as
+    // graph.render_scalar_target_incompatible@1; reset by the next commit.
+    [[nodiscard]] const std::optional<GraphCanvasScalarTargetFix> &scalarTargetFix() const noexcept {
+        return scalar_target_fix_;
+    }
+    // "Fix: make <target> runtime_f32, <size> bytes".
+    [[nodiscard]] static std::string scalarTargetFixLabel(const GraphCanvasScalarTargetFix &fix);
+    // The Fix of a graph buffer: one set_node_parameters on it.
+    bool fixScalarTarget();
+    // UX-13b, decision 4 (engine CT-5): whether every root node that runs
+    // `definition` is an instance with an owner (or none runs it) --
+    // get_graph_instances' definition_instances. True when the engine does
+    // not say.
+    [[nodiscard]] bool definitionOwnedInstancesOnly(std::string_view definition) const;
+    // UX-13b, decision 1: get_graph_catalog as the choices of a parameter
+    // read it -- {"modules": [{"types": [...], "operations": [...]}]}.
+    [[nodiscard]] nlohmann::json catalogChoices() const;
 
-    // Decision 13 (a) (engine CT-1): the parameters the palette asks for,
-    // from the catalog's `required_parameters` when the engine lists them
-    // (the ones Studio seeds itself left out), else requiredParameters();
-    // and the names value.input takes, from the catalog's `input_names`.
+    // Decision 13 (a) (engine CT-1) / UX-12a, decision 2 (engine CT-3): the
+    // parameters the palette asks for -- the `required` entries of the
+    // catalog's `parameters`, less the ones the palette seeds itself (a
+    // curve's keys, a voice's sound, a UI sink's node, a render node's row
+    // beside the op, a draw step's); none before the catalog -- and the
+    // names value.input takes, from the catalog's `input_names`.
     [[nodiscard]] std::vector<RequiredParameter> requiredParametersFor(std::string_view op) const;
     [[nodiscard]] std::vector<std::string> valueInputNamesFor() const;
+
+    // --- UX-12a (engine CT-3): a node's fields from the catalog's table.
+
+    // The op's `parameters` ([{name, kind, required?, alternatives?,
+    // default?, enum?, min?, max?, items?, fields?, expression?,
+    // description?}]); an empty array when the catalog gives none.
+    [[nodiscard]] nlohmann::json operationParameters(std::string_view op) const;
+    // `parameters_complete`: false when the op's parser reads more keys than
+    // the table lists (render.image, the passes, render.compute).
+    [[nodiscard]] bool operationParametersComplete(std::string_view op) const;
+    // UX-12e, decision 5 (engine CT-4): where a node of the op may stand --
+    // "anywhere", or "owned_instance" (only inside a definition an object's
+    // instance runs: pose.*, value.morph_weight). "anywhere" when the
+    // catalog does not say.
+    [[nodiscard]] std::string operationPlacement(std::string_view op) const;
+    // UX-12e, decision 1: get_render_authoring_context, asked for once per
+    // reading of the document by the fields whose choices it lists (its
+    // passes and targets move with the document), not once per field.
+    void askRenderAuthoringForChoices();
+    // One top-level entry by name, or nullopt.
+    [[nodiscard]] std::optional<nlohmann::json> parameterSchema(std::string_view op,
+                                                                std::string_view name) const;
+    // The input ports the catalog declares for the op.
+    [[nodiscard]] std::vector<std::string> operationInputPorts(std::string_view op) const;
+    // Decision 4: the last edit refused as graph.render_node_parameter_invalid@1
+    // -- the node, its parameter as the engine names it (`size`,
+    // `keys[0].interpolation`), and the sentence; reset by the next commit.
+    [[nodiscard]] const std::optional<GraphCanvasParameterRefusal> &parameterRefusal() const noexcept {
+        return parameter_refusal_;
+    }
 };
 
 // UX-8, decision 9: sound files copied into a project's assets/audio. Each
@@ -2584,5 +2885,42 @@ struct GraphCanvasAudioImport {
 };
 GraphCanvasAudioImport importProjectAudio(const std::filesystem::path &project_root,
                                           const std::vector<std::filesystem::path> &files);
+
+// IA-1s, decision 1: the images a render.image can start from -- the
+// project's .ktx2 and .png files (any case), named as `initial.asset` names
+// them: relative to the project root ("assets/images/ltc.ktx2"). Dot
+// directories are skipped. Sorted; `error` says why there are none.
+struct GraphCanvasImageAssetsRead {
+    std::vector<std::string> assets;
+    std::string error;
+};
+GraphCanvasImageAssetsRead readProjectImageAssets(const std::filesystem::path &project_root);
+
+// The width and height a KTX2 or PNG file declares in its header; nullopt for
+// another file or one that cannot be read.
+struct GraphCanvasImageExtent {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    bool operator==(const GraphCanvasImageExtent &) const = default;
+};
+std::optional<GraphCanvasImageExtent> readImageAssetExtent(const std::filesystem::path &file);
+
+// IA-1s, decision 4: an image file copied into the project's assets/images,
+// under its own name or `_2`, `_3`... when that is taken (nothing is
+// overwritten). A .ktx2 or .png is `reference` itself; a .hdr is copied and
+// `convert` says what to run: `pelican_cli image ktx2 --hdr <hdr> --out
+// <ktx2>`, the .ktx2 being `reference` (a free name too). `error` says why
+// nothing was copied.
+struct GraphCanvasImageImport {
+    std::string reference;
+    struct Conversion {
+        std::filesystem::path hdr;
+        std::filesystem::path ktx2;
+    };
+    std::optional<Conversion> convert;
+    std::string error;
+};
+GraphCanvasImageImport importProjectImage(const std::filesystem::path &project_root,
+                                          const std::filesystem::path &file);
 
 } // namespace PelicanStudio

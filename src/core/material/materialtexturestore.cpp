@@ -226,6 +226,10 @@ vk::Format vkFormatForLoadedImage(ImagePixelFormat format) {
     case ImagePixelFormat::Bc5Unorm: return vk::Format::eBc5UnormBlock;
     case ImagePixelFormat::Bc7Unorm: return vk::Format::eBc7UnormBlock;
     case ImagePixelFormat::Bc7Srgb: return vk::Format::eBc7SrgbBlock;
+    case ImagePixelFormat::R16Sfloat: return vk::Format::eR16Sfloat;
+    case ImagePixelFormat::R16G16Sfloat: return vk::Format::eR16G16Sfloat;
+    case ImagePixelFormat::R32Sfloat: return vk::Format::eR32Sfloat;
+    case ImagePixelFormat::R32G32Sfloat: return vk::Format::eR32G32Sfloat;
     }
     throw std::runtime_error("Unknown loaded image format");
 }

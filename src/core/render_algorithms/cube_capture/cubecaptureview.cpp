@@ -76,6 +76,10 @@ RenderViewFamily buildCubeCaptureViewFamily(
             "0 < near_distance < far_distance");
     }
 
+    // CC-1a: Vulkan's cube-face convention, deliberately not the shared
+    // camera projection (clipspace.hpp): without a clip-y flip each face is
+    // laid out the way samplerCube reads it, which is the mirror image of
+    // the world, so viewIsMirrored() selects clockwise front faces.
     const auto projection =
         glm::perspectiveRH_ZO(
             glm::radians(90.0f), 1.0f,

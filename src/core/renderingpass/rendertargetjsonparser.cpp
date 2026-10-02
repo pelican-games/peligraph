@@ -4,8 +4,11 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <initializer_list>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 #include <vector>
 
@@ -186,6 +189,53 @@ std::uint32_t parseArrayLayers(
     return count;
 }
 
+// EN-2: the lowered form of a render.image's file source. The graph module
+// checked the authored values; the lowering wrote the extent, format and
+// usage the file decides, so only the source's own settings are read here.
+std::optional<RenderTargetSource> parseSource(
+    const nlohmann::json &rt_json,
+    const std::string &name) {
+    const auto found = rt_json.find("source");
+    if (found == rt_json.end()) return std::nullopt;
+    if (!found->is_object() || !found->contains("asset") ||
+        !found->at("asset").is_string() ||
+        found->at("asset").get_ref<const std::string &>().empty()) {
+        throw std::runtime_error(
+            "Render target source requires a non-empty asset: " +
+            name);
+    }
+    RenderTargetSource source;
+    source.asset = found->at("asset").get<std::string>();
+    const auto choice = [&](const char *key, std::string &value,
+                            std::initializer_list<std::string_view> allowed) {
+        const auto field = found->find(key);
+        if (field == found->end()) return;
+        if (!field->is_string() ||
+            std::find(allowed.begin(), allowed.end(),
+                      field->get_ref<const std::string &>()) ==
+                allowed.end()) {
+            throw std::runtime_error(
+                "Render target source " + std::string{key} +
+                " is not one of its values: " + name);
+        }
+        value = field->get<std::string>();
+    };
+    choice("color_space", source.color_space, {"srgb", "linear"});
+    choice("alpha", source.alpha, {"straight", "premultiply"});
+    choice("mips", source.mips, {"none", "full"});
+    if (!rt_json.contains("width") || !rt_json.contains("height")) {
+        throw std::runtime_error(
+            "Render target source requires the file's width and height: " +
+            name);
+    }
+    if (rt_json.value("history", false)) {
+        throw std::runtime_error(
+            "Render target source is read only and cannot keep history: " +
+            name);
+    }
+    return source;
+}
+
 } // namespace
 
 nlohmann::json resolveRenderTargetFormatClassesV2(const nlohmann::json &data,
@@ -267,6 +317,16 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
             throw std::runtime_error("Render target history must be a boolean: " + name);
         }
         const bool history = rt_json.value("history", false);
+        // PS-1: a graph render.image's lifetime (absent: transient).
+        bool persistent = false;
+        if (const auto lifetime = rt_json.find("lifetime"); lifetime != rt_json.end()) {
+            if (!lifetime->is_string() ||
+                (*lifetime != "persistent" && *lifetime != "transient")) {
+                throw std::runtime_error(
+                    "Render target lifetime must be persistent or transient: " + name);
+            }
+            persistent = *lifetime == "persistent";
+        }
         const auto history_clear_color = parseHistoryClearColor(rt_json, name);
         const auto format =
             stringToFormat(format_str);
@@ -318,6 +378,8 @@ std::vector<RenderTargetDefinition> parseRenderTargetDefinitionsFromJson(const n
             .mip_levels = mip_levels,
             .array_layers = array_layers,
             .dimension = dimension,
+            .source = parseSource(rt_json, name),
+            .persistent = persistent,
         });
     }
 

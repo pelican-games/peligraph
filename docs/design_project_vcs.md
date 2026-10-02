@@ -90,8 +90,16 @@
     **存在しない**(欠落)/ 参照が解決できない / 大文字小文字の不一致
     (Linux CI で死ぬ予兆)/ 階層のズレ。「更新した」では説明がつかない
     状態だけを警告にする(警告 = 本当に何かおかしい、を維持し警告疲れを防ぐ)
-  - **ERROR**: `--strict-assets` 明示時(CI 用)と dist ビルド
-    (dist-config が導出)のみ
+  - **ERROR**: `--strict-assets` 明示時(CI 用)のみ
+  - **dist ビルド(dist-config が `PELICAN_WITH_HOT_RELOAD=OFF` を導出)は
+    起動時に照合しない**。起動時は `--strict-assets` を付けたときだけ照合して
+    ERROR にする(2026-10-02 利用者決定、✅AV-1。dist-config の根拠コメントは
+    「資産は焼く時に確かめる」で、焼く段の照合が実装されているかは未確認。
+    照合しなかったことは `get_status.assets_verification` が `not_run` と
+    理由 `"PELICAN_WITH_HOT_RELOAD=OFF"` で言う)
+  - 照合の結果は store ごとに残り、RPC で読める(`get_status.assets_verification`
+    の件数、`get_assets_verification` の全件、`verify_assets` の再検証、
+    `update_assets_manifest` の追認。✅AV-1、manual 第10章 §10.3)
 - **manifest なし = 検証なし**: manifest を作らなければ何も起きない
   (ハッカソン既定)。検証が欲しくなった日に 1 コマンドで始められる
 - 更新の上位経路(将来): devstudio のアセットブラウザ操作時に自動再生成 /
@@ -180,6 +188,8 @@ pelican_cli の lint に置く:
 
 1. ~~起動前検証の既定~~ → **決定(2026-07-08 ユーザー)**: 開発 = 警告 +
    ロード続行(置換は開発の日常操作)、strict は明示フラグと dist のみ
+   → 2026-10-02 利用者決定で dist の分は変わった: dist ビルドは起動時に
+   照合せず、明示の `--strict-assets` のときだけ照合する(§2、✅AV-1)
 2. LFS を雛形の既定で有効にするか。推奨: コメントアウト同梱(GitHub 無料枠
    1GB/月帯域の事情はプロジェクト次第)
 3. store の read-only 保証(プロジェクト読み取り専有の原則を外部 store にも

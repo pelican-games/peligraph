@@ -224,6 +224,22 @@ class FakeEngine {
             result(id, sceneTree());
             return;
         }
+        if (method == "scene_outline") {
+            // UX-13c: the same two objects, as scene_outline lists them.
+            result(id, {{"scene_id", "main"},
+                        {"scene_revision", 1},
+                        {"not_modified", false},
+                        {"objects",
+                         Json::array({{{"authoring_object_id", 1},
+                                       {"declaration_index", 0},
+                                       {"name", "Camera"},
+                                       {"parent_authoring_object_id", nullptr}},
+                                      {{"authoring_object_id", 2},
+                                       {"declaration_index", 1},
+                                       {"name", "Cube"},
+                                       {"parent_authoring_object_id", nullptr}}})}});
+            return;
+        }
         if (method == "get_scene_revision") {
             result(id, {{"scene_revision", 1}, {"preview_epoch", 0}});
             return;

@@ -34,7 +34,7 @@ file(WRITE "${OUT_DIR}/project/project.json" [=[
     "window_size": {"width": 160, "height": 90},
     "fullscreen": false,
     "framerate": 30,
-    "camera": {"yfov": 0.7853981633974483, "znear": 0.1, "zfar": 1000.0, "up": [0.0, 1.0, 0.0]},
+    "camera": {"yfov": 0.7853981633974483, "znear": 0.1, "zfar": 1000.0},
     "default_scene_id": "default_scene",
     "scene_data_json": "scenes/main.scene.json",
     "asset_data_json": "assets/asset_data.json",
@@ -71,7 +71,7 @@ file(WRITE "${OUT_DIR}/project/scenes/main.scene.json" [=[
         {
           "name": "SceneFlowCamera",
           "components": [
-            {"name": "transform", "pos": [0.0, 1.0, -4.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]},
+            {"name": "transform", "pos": [0.0, 1.0, -4.0], "rotation": [0.0, 1.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0]},
             {"name": "camera", "type": "perspective", "yfov": 0.78539816339, "znear": 0.1, "zfar": 1000.0}
           ]
         },
@@ -105,14 +105,14 @@ set(second_capture_path "${OUT_DIR}/scene_second.png")
 file(WRITE "${script_path}"
 "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"get_status\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"load_gltf\",\"params\":{\"path\":\"assets/ground.glb\",\"name\":\"transient\"}}\n"
-"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"transient\"],\"transforms\":[{\"pos\":[3.0,0.0,0.0],\"rotation\":[0.0,0.0,0.0,1.0],\"scale\":[0.7,0.7,0.7]}]}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"transient\"],\"transforms\":[{\"pos\":[0.0,0.0,-3.0],\"rotation\":[0.0,0.0,0.0,1.0],\"scale\":[0.7,0.7,0.7]}]}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"step_frame\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"capture\",\"params\":{\"path\":\"${default_capture_path}\"}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"load_scene\",\"params\":{\"name\":\"scene_flow_second\"}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"get_status\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"render_frame\",\"params\":{}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"capture\",\"params\":{\"path\":\"${second_capture_path}\"}}\n"
-"{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"transient\"],\"transforms\":[{\"pos\":[3.0,0.0,0.0],\"rotation\":[0.0,0.0,0.0,1.0],\"scale\":[0.7,0.7,0.7]}]}}\n"
+"{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"update_transforms\",\"params\":{\"objects\":[\"transient\"],\"transforms\":[{\"pos\":[0.0,0.0,-3.0],\"rotation\":[0.0,0.0,0.0,1.0],\"scale\":[0.7,0.7,0.7]}]}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"load_scene\",\"params\":{\"name\":\"missing_scene\"}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"load_scene\",\"params\":{\"name\":\"default_scene\"}}\n"
 "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"load_scene\",\"params\":{\"name\":\"scene_flow_second\"}}\n"

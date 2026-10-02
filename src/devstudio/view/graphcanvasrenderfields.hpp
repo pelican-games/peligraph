@@ -5,8 +5,10 @@
 #include <QDialog>
 #include <QWidget>
 
+#include <deque>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -31,6 +33,74 @@ class FullscreenPassInterfaceRow;
 class RasterStateForm;
 class ShaderDefinesForm;
 
+// UX-9, decision 2: the edits a node's side fields could not send because
+// the model was busy -- a save or a read in flight, a placement's say --
+// held for the node they were given for and sent, oldest first, once the
+// model takes edits again. The fields may have let go of that node by then:
+// each held edit is a call naming its own scope and node, answering whether
+// it went. Meanwhile the Graph's notice says "Saving the graph change...".
+class GraphCanvasHeldEdits {
+  public:
+    GraphCanvasHeldEdits(GraphCanvasModel &model, QObject *owner);
+    // Sent now when the model takes edits and nothing is held before it;
+    // held otherwise. False only when it was tried and refused (nothing
+    // changed, or the model turned it down).
+    bool sendOrHold(std::function<bool()> send);
+    [[nodiscard]] bool pending() const noexcept { return !held_.empty(); }
+    // A held edit went: the owner dispatches it.
+    void setSent(std::function<void()> sent) { sent_ = std::move(sent); }
+    // What is held changed: the owner's notice follows.
+    void setChanged(std::function<void()> changed) { changed_ = std::move(changed); }
+    // Sends what it holds while the model takes edits (also on its clock).
+    void follow();
+
+  private:
+    GraphCanvasModel &model_;
+    QTimer *timer_ = nullptr;
+    std::deque<std::function<bool()>> held_;
+    std::function<void()> sent_;
+    std::function<void()> changed_;
+};
+
+// The whole-parameters edit of one node, made on what the document holds
+// when it goes: what changed from `base` to `changed` (as a JSON patch), so
+// an edit that landed on another key meanwhile is kept. Refused when the
+// patch no longer applies or changes nothing.
+[[nodiscard]] std::function<bool()> heldParametersEdit(GraphCanvasModel &model, std::string scope,
+                                                       std::string node, nlohmann::json base,
+                                                       nlohmann::json changed);
+
+// PS-1s, decisions 1, 3 and 4 (engine PS-1): when a fullscreen / raster pass
+// or a compute task runs -- Every frame, Once (and a task's Every view) --
+// with, for one that runs once, when it last ran (the frame plan's
+// last_run_generation / last_run_frame) and Recompute (rerun_once). Named
+// `<prefix>.schedule` / `.onceRun` / `.recompute`. Once is one edit that
+// also makes Persistent each transient image the pass writes.
+class GraphCanvasScheduleRow final : public QWidget {
+  public:
+    GraphCanvasScheduleRow(GraphCanvasModel &model, const QString &prefix,
+                           std::function<void()> submitted, QWidget *parent = nullptr);
+    void showNode(const std::string &scope, const std::string &node);
+    void followEditable();
+    [[nodiscard]] bool valuePending() const noexcept { return held_->pending(); }
+    void setPendingChanged(std::function<void()> changed) {
+        held_->setChanged(std::move(changed));
+    }
+
+  private:
+    void commit();
+    void recompute();
+
+    GraphCanvasModel &model_;
+    std::function<void()> submitted_;
+    std::string scope_;
+    std::string node_;
+    QComboBox *schedule_ = nullptr;
+    QLabel *run_ = nullptr;
+    QPushButton *recompute_ = nullptr;
+    std::unique_ptr<GraphCanvasHeldEdits> held_;
+};
+
 // UX-2, decision 1: the fields of the selected render.image, beside the Graph
 // tab's canvas above the details (as the Loop, Draw and View fields). Every
 // value is picked, none typed as JSON:
@@ -52,8 +122,40 @@ class GraphCanvasImageFields final : public QWidget {
     void showNode(const GraphCanvasNode *node, const std::string &scope);
     // Off while the model cannot take an edit, as the Draw fields (Q-18).
     void followEditable();
+    // UX-9, decision 2: whether a value given while the model was busy waits
+    // to be sent (the owner's notice says "Saving" meanwhile), and the call
+    // made when that changes.
+    [[nodiscard]] bool valuePending() const noexcept { return held_->pending(); }
+    void setPendingChanged(std::function<void()> changed) { held_->setChanged(std::move(changed)); }
+    // IA-1s, decisions 1 and 4: the project whose images Initial contents
+    // lists, and where Import... copies to.
+    void setProjectRoot(const std::filesystem::path &project_root);
+    // IA-1s, decision 4: what Import... does with the files picked: each is
+    // copied into the project's assets/images (a .hdr is baked into a .ktx2
+    // by `pelican_cli image ktx2 --hdr`, run as a child process), and the
+    // first is the selected image's Initial contents. A failure is the
+    // Graph's notice.
+    void importImages(const std::vector<std::filesystem::path> &files);
 
   private:
+    // IA-1s, decision 1: the image's `initial`, and its size taken from it.
+    void loadInitial(const nlohmann::json &parameters);
+    void commitInitial(const std::string &asset);
+    void commitFromImage(bool from_image);
+    void chooseImages();
+    void bakeHdr(const GraphCanvasImageImport &imported);
+    void importNotice(InspectorNoticeKind kind, const std::string &line);
+    [[nodiscard]] std::optional<GraphCanvasImageExtent> assetExtent(const std::string &asset) const;
+    std::filesystem::path project_root_;
+    QComboBox *initial_ = nullptr;
+    QPushButton *import_ = nullptr;
+    QCheckBox *from_image_ = nullptr;
+    QWidget *initial_row_ = nullptr;
+    // UX-9, decision 2: before the fields let go of the node, a size, a
+    // layer or mip count, an expression, a format or usage typed and not yet
+    // confirmed is sent for it (or held while the model is busy).
+    void release();
+    std::unique_ptr<GraphCanvasHeldEdits> held_;
     void load(const nlohmann::json &parameters);
     void loadArguments(const nlohmann::json &parameters);
     void loadUsage(const nlohmann::json &parameters);
@@ -88,14 +190,24 @@ class GraphCanvasImageFields final : public QWidget {
     QSpinBox *width_ = nullptr;
     QSpinBox *height_ = nullptr;
     QSpinBox *layers_ = nullptr;
-    // UX-8, decision 12 (a) (RS-15): the mip count (0 reads "full"), and
+    // UX-8, decision 12 (a) (RS-15): the mip count (Full chain beside it), and
     // behind the f button the layer and mip counts as integer expressions
     // too (a body's image: `6 - element`).
     QSpinBox *mip_levels_ = nullptr;
     QLineEdit *layers_expression_ = nullptr;
     QLineEdit *mip_levels_expression_ = nullptr;
+    // UX-12e, decision 3 (engine CT-4: mip_levels is integer | "full"): Count
+    // or Full chain (`pelican.graphCanvasImage.mipLevelsShape`), the count's
+    // spin shown for Count only. Decision 4: a width or height above the
+    // table's soft_max is marked (`pelican.graphCanvasImage.sizeUnusual`).
+    QComboBox *mip_shape_ = nullptr;
+    QLabel *size_unusual_ = nullptr;
+    void showMipShape();
     // UX-7, decision 6: `history: true`, named `pelican.graphCanvasImage.history`.
-    QCheckBox *history_ = nullptr;
+    QCheckBox *history_ = nullptr;    // PS-1s, decision 2: `lifetime` -- Per frame (the key left out) or
+    // Persistent, named `pelican.graphCanvasImage.lifetime`.
+    QComboBox *lifetime_ = nullptr;
+
     QLabel *note_ = nullptr;
     // UX-5d, decision 1: the size as an expression ({"$expr": ...}), behind
     // the f button as the loop's Count is -- extent_scale for a screen-sized
@@ -142,6 +254,10 @@ class GraphCanvasPassFields final : public QWidget {
     void setProjectRoot(const std::filesystem::path &root);
     // Called after New... wrote a shader, so the lists hold it.
     void setShadersChanged(std::function<void()> changed);
+    // UX-12b, decision 2: New... opened on the fullscreen pass `node` shows,
+    // with the template named `kind` (fullscreenShaderTemplateKindName)
+    // picked. False when the fields show another node or no fullscreen pass.
+    bool offerTemplate(const std::string &node, const std::string &kind);
 
   private:
     void load(const nlohmann::json &parameters);
@@ -185,7 +301,9 @@ class GraphCanvasPassFields final : public QWidget {
     QLabel *ports_ = nullptr;
     // LC-1s, decision 2: one line when the frame plan says the pass's shader
     // reads the loop element (`pelican.graphCanvasPass.loopElement`).
-    QLabel *loop_element_ = nullptr;
+    QLabel *loop_element_ = nullptr;    // PS-1s, decisions 1, 3 and 4: the pass's Schedule.
+    GraphCanvasScheduleRow *schedule_ = nullptr;
+
     void showLoopElementRead();
     // Named `pelican.graphCanvasPass.input.<port>.filter` / `.address` /
     // `.mip`; a setting the socket cannot take is there, off, saying why.
@@ -231,19 +349,30 @@ class GraphCanvasPassFields final : public QWidget {
     // back to the document's value under the hand that typed it.
     std::function<void()> retry_;
     QTimer *retry_timer_ = nullptr;
-    bool deferWhileBusy(std::function<void()> again);
+    // `held`: the same edit naming this pass, sent in place of `again` while
+    // the fields are letting go of the pass (UX-9, decision 2).
+    bool deferWhileBusy(std::function<void()> again, std::function<bool()> held = {});
     void retryWhenEditable();
     // A count typed into a draw spin and not yet confirmed (no Return, no
     // focus out) is confirmed before the fields let go of the pass: a redraw
     // that shows no node for a moment hides them, and the hidden spin's
-    // focus out found no pass to send it to.
-    void flushDraw();
+    // focus out found no pass to send it to. UX-9, decision 2: and so are a
+    // define's cell being typed in and a clear colour waiting for its pause;
+    // a value already waiting for the model goes for this pass too, held for
+    // it while the model is busy.
+    void release();
+    void flushTyped();
+    bool releasing_ = false;
+    std::unique_ptr<GraphCanvasHeldEdits> held_;
     std::function<void()> pending_changed_;
 
   public:
     // Whether a value given while the model was busy waits to be sent; the
     // owner's notice says "Saving" meanwhile, not the last save's words.
-    [[nodiscard]] bool valuePending() const noexcept { return static_cast<bool>(retry_); }
+    [[nodiscard]] bool valuePending() const noexcept {
+        return static_cast<bool>(retry_) || held_->pending() ||
+               (schedule_ != nullptr && schedule_->valuePending());
+    }
     // Called when that changes.
     void setPendingChanged(std::function<void()> changed) {
         pending_changed_ = std::move(changed);
@@ -265,10 +394,15 @@ class GraphCanvasPlaceFields final : public QWidget {
     // "before|<pass>", "after|<pass>", "anchor|<anchor>", "automatic|": the
     // data a Place item carries.
     [[nodiscard]] static QString placeData(const GraphCanvasPlace &place);
+    // UX-9, decision 2: a pick made while the model was busy waits for it,
+    // for this node (the owner's notice says "Saving" meanwhile).
+    [[nodiscard]] bool valuePending() const noexcept { return held_->pending(); }
+    void setPendingChanged(std::function<void()> changed) { held_->setChanged(std::move(changed)); }
 
   private:
     void load();
     void commit();
+    std::unique_ptr<GraphCanvasHeldEdits> held_;
 
     GraphCanvasModel &model_;
     std::function<void()> submitted_;
@@ -282,17 +416,27 @@ class GraphCanvasPlaceFields final : public QWidget {
     QLabel *note_ = nullptr;
 };
 
-// UX-7, decision 5: the small dialog the palette shows before it places an
-// op the engine refuses without a parameter its catalog does not list
-// (GraphCanvasModel::requiredParameters): one field each -- a buffer picked
-// from the graph's or named anew, a number, one of the engine's clocks --
-// and OK / Cancel. Named `pelican.graphCanvasRequired` and
-// `pelican.graphCanvasRequired.<parameter>` (`.ok`, `.cancel`). What is
-// written here can be changed afterwards in the node's details.
+// UX-7, decision 5 / UX-12a, decision 2: the small dialog the palette shows
+// before it places an op the engine refuses without a parameter
+// (GraphCanvasModel::requiredParametersFor, the `required` entries of the
+// catalog's table, engine CT-3): one field each, made by its kind as the
+// node's parameter fields are (GraphParameterEditor) -- with what Studio
+// knows the table does not: a render.scalar's buffer (picked from the
+// graph's or named anew), value.input's clocks, pose.clip_sample's clips
+// (the animations of the rig picked above it). A parameter with
+// alternatives is "one of": a radio each, and one an edge meets (a sound
+// sink's voice) says "or connect a line". OK / Cancel. Named
+// `pelican.graphCanvasRequired` and `pelican.graphCanvasRequired.<parameter>`
+// (`.<parameter>.choose` for a radio, `.ok`, `.cancel`). What is written here
+// can be changed afterwards in the node's fields. UX-13b (engine CT-5): the
+// buffers a render.scalar's target offers are those it can write once the
+// placing edit makes them so ("(will be set to runtime_f32)"), and
+// value.sample_table's table and row are its table's own fields.
 class GraphCanvasRequiredDialog final : public QDialog {
   public:
     GraphCanvasRequiredDialog(const GraphCanvasModel &model, const std::string &scope,
-                              const std::string &op, QWidget *parent = nullptr);
+                              const std::string &op, QWidget *parent = nullptr,
+                              const std::filesystem::path &project_root = {});
     // Whether the op asks for anything at all.
     [[nodiscard]] bool asks() const noexcept { return !fields_.empty(); }
     // The parameters as the fields hold them now.
@@ -303,8 +447,17 @@ class GraphCanvasRequiredDialog final : public QDialog {
     [[nodiscard]] nlohmann::json seed() const;
 
   private:
+    struct Field {
+        std::string name;
+        // "buffer", "input", "voice" (an edge), or the table's kind (the
+        // editor's).
+        std::string kind;
+        QWidget *widget = nullptr;
+        QRadioButton *choose = nullptr;
+    };
     void follow();
-    std::vector<std::pair<GraphCanvasModel::RequiredParameter, QWidget *>> fields_;
+    [[nodiscard]] bool chosen(const Field &field) const;
+    std::vector<Field> fields_;
     QPushButton *ok_ = nullptr;
 };
 

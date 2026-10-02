@@ -204,6 +204,19 @@ struct FramePlanLoopOrigin {
     bool operator==(const FramePlanLoopOrigin &) const = default;
 };
 
+// IA-1s, decision 3 (engine IA-1): the asset a persistent image starts from,
+// as physical_target_plan.resources[].initial_asset names it, and its sha256
+// in the asset store's manifest (nullopt when the manifest does not list it).
+struct FramePlanInitialAsset {
+    std::string asset;
+    std::optional<std::string> sha256;
+
+    bool operator==(const FramePlanInitialAsset &) const = default;
+};
+// "initial: <asset> - sha256 <first 8>" or "initial: <asset> - not in the
+// manifest", as the Resources row says it.
+[[nodiscard]] std::string framePlanInitialAssetLine(const FramePlanInitialAsset &initial);
+
 // UX-5c: a loop's output a pass of the rendering section names as
 // `<loop>.<output>` (RS-13), and the resource it read this frame: the last
 // element's (`loop/3/...`).
@@ -271,6 +284,49 @@ struct FramePlanFamilyExtent {
 [[nodiscard]] std::optional<FramePlanFamilyExtent> framePlanFamilyExtent(
     const nlohmann::json &node, std::string_view context);
 
+// UX-12c (engine MP-1): one material a material pass drew in the last
+// published frame -- the effective material, after variants and draw_loop
+// steps. `name` is empty when the engine gave none; `id` is the engine's
+// material id (its runtime number, written out); `draws` is the indirect
+// draw commands, summed over the pass's views (a GPU-counted draw counts its
+// upper bound).
+struct FramePlanDrawnMaterial {
+    std::string name;
+    std::string id;
+    std::uint64_t draws = 0;
+
+    bool operator==(const FramePlanDrawnMaterial &) const = default;
+};
+
+// A material pass node's drawn_materials, drawn_materials_frame and
+// drawn_materials_truncated (only the first 256 listed). Absent before a
+// frame was published, and from an engine that predates MP-1.
+struct FramePlanDrawnMaterials {
+    std::vector<FramePlanDrawnMaterial> materials;
+    std::uint64_t frame = 0;
+    bool truncated = false;
+
+    [[nodiscard]] std::uint64_t draws() const noexcept {
+        std::uint64_t total = 0;
+        for (const auto &material : materials) total += material.draws;
+        return total;
+    }
+
+    bool operator==(const FramePlanDrawnMaterials &) const = default;
+};
+
+// Reads those keys off one get_frame_plan node (`context` names it in the
+// error). Nothing when the node carries no drawn_materials; throws
+// std::runtime_error when it carries one Studio cannot read.
+[[nodiscard]] std::optional<FramePlanDrawnMaterials> framePlanDrawnMaterials(
+    const nlohmann::json &node, std::string_view context);
+
+// How a row names the `index`-th material drawn: its name; "<name> (material
+// <id>)" when another material drawn has the same name (two primitives'
+// default materials); with no name, its id ("material <id>" for a number).
+[[nodiscard]] std::string framePlanDrawnMaterialLabel(const FramePlanDrawnMaterials &drawn,
+                                                      std::size_t index);
+
 // Q-19: reads one get_frame_plan node's pass_inputs, as the Frame Plan does
 // (`context` names it in the error). Nothing when the node carries none;
 // throws std::runtime_error when it carries one Studio cannot read.
@@ -315,6 +371,8 @@ struct FramePlanNode {
     // VI-3a: absent for a compute task, and for a pass the engine published
     // no pipeline declaration for.
     std::optional<FramePlanPassInputs> pass_inputs;
+    // UX-12c (engine MP-1): what a material pass drew in the last frame.
+    std::optional<FramePlanDrawnMaterials> drawn_materials;
 
     // The public response may publish these directly. Current runtime output
     // carries the same high-level facts in physical_target_plan.attachments;
@@ -417,6 +475,8 @@ struct FramePlanResource {
     // GL-2a: the frame plan nodes physical_target_plan.resources[] names
     // for it (its readers, writers and attachments), in the plan's order.
     std::vector<std::string> from_nodes;
+    // IA-1s, decision 3: the asset it starts from; nullopt for none.
+    std::optional<FramePlanInitialAsset> initial_asset;
 
     bool operator==(const FramePlanResource &) const = default;
 };

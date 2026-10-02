@@ -841,16 +841,19 @@ class Inspector {
         RayTracingModuleReflection result;
         for (const auto &raw_entry : entries_) {
             RayTracingEntryPointReflection entry{.key = raw_entry.key};
-            std::vector<unsigned char> digest_bytes;
-            const auto append_word = [&](std::uint32_t word) {
-                for (unsigned shift = 0; shift < 32; shift += 8)
-                    digest_bytes.push_back(static_cast<unsigned char>(word >> shift));
-            };
-            for (const auto word : words_) append_word(word);
-            append_word(raw_entry.key.execution_model);
-            digest_bytes.insert(digest_bytes.end(), raw_entry.key.name.begin(), raw_entry.key.name.end());
-            entry.entry_digest = picosha2::hash256_hex_string(digest_bytes);
             if (raw_entry.key.execution_model == SpvExecutionModelIntersectionKHR) {
+                // TS-1: only the procedural oracle status reads the digest,
+                // and only for intersection entries; hashing the module for
+                // every entry of every shader cost each load.
+                std::vector<unsigned char> digest_bytes;
+                const auto append_word = [&](std::uint32_t word) {
+                    for (unsigned shift = 0; shift < 32; shift += 8)
+                        digest_bytes.push_back(static_cast<unsigned char>(word >> shift));
+                };
+                for (const auto word : words_) append_word(word);
+                append_word(raw_entry.key.execution_model);
+                digest_bytes.insert(digest_bytes.end(), raw_entry.key.name.begin(), raw_entry.key.name.end());
+                entry.entry_digest = picosha2::hash256_hex_string(digest_bytes);
                 const auto &body = function_bodies_[raw_entry.function_id];
                 for (const auto &instruction : body)
                     entry.entry_body_opcodes.push_back(instruction[0] & 0xffffu);

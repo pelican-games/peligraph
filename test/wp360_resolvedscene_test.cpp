@@ -103,7 +103,7 @@ void ensureWp360aLogger() {
     (void)initialized;
 }
 
-Json wp360aProjectJson(float up_y = 1.0f, float zfar = 1000.0f,
+Json wp360aProjectJson(float zfar = 1000.0f,
                        std::string_view default_scene = "default_scene") {
     return Json{
         {"schema", "pelican.project"},
@@ -115,8 +115,7 @@ Json wp360aProjectJson(float up_y = 1.0f, float zfar = 1000.0f,
           {"camera",
            {{"yfov", 0.5},
             {"znear", 0.1},
-            {"zfar", zfar},
-            {"up", {0.0, up_y, 0.0}}}},
+            {"zfar", zfar}}},
           {"default_scene_id", default_scene},
           {"scene_data_json", "scene.json"}}}};
 }
@@ -364,7 +363,9 @@ TEST_CASE("WP360a case 1 accepts a target-less orbit through codec and Camera",
               << controller->distance << '\n';
 }
 
-TEST_CASE("WP360a case 2 preserves nondefault project up only when rotation is omitted",
+// CC-1b: basic_config.camera.up was removed; a camera's up is its rotation's
+// +Y whether the rotation is written or omitted (the identity).
+TEST_CASE("WP360a case 2 takes the camera up from the rotation, written or omitted",
           "[wp360a][harm-2]") {
     ensureWp360aLogger();
     Wp360aSandbox sandbox{"up"};
@@ -381,11 +382,11 @@ TEST_CASE("WP360a case 2 preserves nondefault project up only when rotation is o
       ]}}
     })json");
     FastModuleContainer modules;
-    setupWp360aProject(sandbox, wp360aProjectJson(-1.0f), scene);
+    setupWp360aProject(sandbox, wp360aProjectJson(), scene);
     auto &camera = GET_MODULE(Camera);
     camera.setActiveCamera("NoRotation");
     REQUIRE(camera.getPos() == glm::vec3{1, 2, 3});
-    REQUIRE(camera.getUp() == glm::vec3{0, -1, 0});
+    REQUIRE(camera.getUp() == glm::vec3{0, 1, 0});
     const auto omitted_up = camera.getUp();
     camera.setActiveCamera("IdentityRotation");
     REQUIRE(camera.getUp() == glm::vec3{0, 1, 0});
@@ -470,7 +471,7 @@ TEST_CASE("WP360a case 5 compares znear with the resolved project zfar once",
       ]}}
     })json");
     FastModuleContainer modules;
-    setupWp360aProject(sandbox, wp360aProjectJson(1.0f, 10000.0f), scene);
+    setupWp360aProject(sandbox, wp360aProjectJson(10000.0f), scene);
     auto &camera = GET_MODULE(Camera);
     camera.setActiveCamera("LongRange");
     const auto projection = camera.getProjectionSpec();
@@ -497,7 +498,7 @@ TEST_CASE("WP360a case 6 stores inactive behavior errors and names active bind f
     })json");
     FastModuleContainer modules;
     setupWp360aProject(
-        sandbox, wp360aProjectJson(1.0f, 1000.0f, "active"), scene);
+        sandbox, wp360aProjectJson(1000.0f, "active"), scene);
     GET_MODULE(ECSPredefinedRegistration).reg();
     REQUIRE_NOTHROW(test_support::loadScene(GET_MODULE(SceneLoader), SceneId{"active"}));
     const auto &resolved = GET_MODULE(ProjectBasicConfig).resolvedScene();
@@ -534,7 +535,7 @@ TEST_CASE("WP378 inactive scene retains typed and legacy failures until two acti
     })json");
     FastModuleContainer modules;
     setupWp360aProject(
-        sandbox, wp360aProjectJson(1.0f, 1000.0f, "active"), scene);
+        sandbox, wp360aProjectJson(1000.0f, "active"), scene);
     GET_MODULE(ECSPredefinedRegistration).reg();
     auto &loader = GET_MODULE(SceneLoader);
     REQUIRE_NOTHROW(test_support::loadScene(loader, SceneId{"active"}));

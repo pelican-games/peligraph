@@ -95,7 +95,7 @@ web ランタイムが読むキーと無視するキーを固定する。
 | `schema` / `version` | **ネイティブと同じ hard error 意味論**。`"pelican.project"` 以外・対応範囲超過は読まない(読めるふりをしない) |
 | `engine_min_version` | **無視**(これはネイティブエンジンのバージョンゲート)。web 互換層は `schema`/`version` でゲートする |
 | `name` / `generator` | 表示用に読む |
-| `basic_config.camera` | 使う(fov / near / far / up) |
+| `basic_config.camera` | 使う(fov / near / far)。`up` は 2026-10-03 に native で撤去(CC-1 `c8367b87`。書くと `project.camera_up_removed@1`)。**web の viewer も同じ規約(camera は回転の −Z を向き、up は回転の +Y、world の上は +Y、射影が clip の y を反転して画面は鏡像でない)に追随する必要がある**(web は別 repo で、追随の状況は pelican2 からは確かめていない。[design_coordinate_convention.md](design_coordinate_convention.md)) |
 | `basic_config.scene_data_json` / `asset_data_json` / `rendering_config_json` / `ui_config_json` / `default_rendering_pass` / `default_scene_id` | 使う(§2 の規則で解決。scene/asset は WW3 まで任意対応) |
 | `basic_config.window_title` / `window_size` / `fullscreen` / `framerate` | **無視**(canvas 側が決める)。debug ログにのみ出す |
 | 未知キー | 無視(将来の前方互換) |

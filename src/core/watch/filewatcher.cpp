@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cstddef>
 #include <map>
 #include <set>
 #include <system_error>
@@ -23,17 +24,29 @@ std::string pathUtf8(const std::filesystem::path &path) {
     return {reinterpret_cast<const char *>(value.data()), value.size()};
 }
 
+std::string keyCase(std::string value) {
+#ifdef _WIN32
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+#endif
+    return value;
+}
+
 std::string physicalKey(const std::filesystem::path &path) {
     std::error_code ec;
     auto canonical = std::filesystem::weakly_canonical(path, ec);
     if (ec) canonical = std::filesystem::absolute(path, ec).lexically_normal();
-    auto result = pathUtf8(canonical);
-#ifdef _WIN32
-    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-#endif
-    return result;
+    return keyCase(pathUtf8(canonical));
+}
+
+// FW-1: the physical key of a file reached from the store root through
+// plain directories only, without resolving it again: the root's canonical
+// key plus the listed names (what physicalKey would return, per file).
+std::string physicalKeyUnderRoot(const std::string &root_key, const std::filesystem::path &relative) {
+    auto result = root_key;
+    if (result.empty() || result.back() != '/') result += '/';
+    return result + keyCase(pathUtf8(relative));
 }
 
 bool withinRoot(const std::filesystem::path &root, const std::filesystem::path &candidate) {
@@ -42,6 +55,56 @@ bool withinRoot(const std::filesystem::path &root, const std::filesystem::path &
     if (candidate_key == root_key) return true;
     if (!candidate_key.starts_with(root_key)) return false;
     return candidate_key.size() > root_key.size() && candidate_key[root_key.size()] == '/';
+}
+
+// FW-1: the first component of a store-relative name is the project's own
+// `.pelican` directory (shader cache, asset hash cache, transactions). No
+// reload participant claims a source there; the engine writes it constantly.
+bool isProjectMetadataName(std::wstring_view name) {
+    constexpr std::wstring_view metadata = L".pelican";
+    const auto first = name.substr(0, name.find_first_of(L"\\/"));
+    if (first.size() != metadata.size()) return false;
+    for (std::size_t index = 0; index < first.size(); ++index) {
+        auto c = first[index];
+        if (c >= L'A' && c <= L'Z') c = static_cast<wchar_t>(c - L'A' + L'a');
+        if (c != metadata[index]) return false;
+    }
+    return true;
+}
+
+// `path` equals `prefix` or lies under it, component-wise.
+bool logicalWithin(std::string_view prefix, std::string_view path) {
+    return path == prefix ||
+           (path.size() > prefix.size() && path.starts_with(prefix) && path[prefix.size()] == '/');
+}
+
+// HW-1: a logical folder worth entering (or a notification worth a scan):
+// it is covered by an entry, or an entry lies under it.
+bool watchPathReaches(const std::vector<std::string> &entries, std::string_view logical_path) {
+    return std::any_of(entries.begin(), entries.end(), [&](const std::string &entry) {
+        return logicalWithin(entry, logical_path) || logicalWithin(logical_path, entry);
+    });
+}
+
+// The logical path of a name relative to a store's root.
+std::string logicalPathUnder(std::string_view logical_mount, const std::filesystem::path &relative) {
+    auto name = pathUtf8(relative);
+    while (name.starts_with("./")) name.erase(0, 2);
+    if (logical_mount.empty()) return name;
+    if (name.empty() || name == ".") return std::string{logical_mount};
+    return std::string{logical_mount} + "/" + name;
+}
+
+// A file whose mtime is this close to the scan may be written again within
+// the same timestamp tick without changing size or mtime. Its size and mtime
+// are not trusted: the next scan hashes it again. This covers NTFS (ticks of
+// at most 15.6 ms) and stays under the 200 ms debounce, so a save picked up by
+// the native watch is hashed once. Coarser stores (FAT's 2 s, a network share
+// with another clock) can miss a same-size save within one tick.
+constexpr auto settled_after = std::chrono::milliseconds{100};
+
+bool settled(std::filesystem::file_time_type mtime, std::filesystem::file_time_type scan_start) {
+    return mtime + settled_after <= scan_start;
 }
 
 #ifdef _WIN32
@@ -69,7 +132,11 @@ class NativeWatch {
   public:
     using Notify = std::function<void(bool)>;
 
-    NativeWatch(WatchStore store, Notify notify) : store_(std::move(store)), notify_(std::move(notify)) {}
+    NativeWatch(WatchStore store, Notify notify,
+                std::optional<std::vector<std::string>> watch_paths)
+        : store_(std::move(store)), notify_(std::move(notify)),
+          skip_project_metadata_(store_.logical_mount.empty()),
+          watch_paths_(std::move(watch_paths)) {}
     ~NativeWatch() { stop(); }
 
     bool start(std::string &error) {
@@ -150,6 +217,31 @@ class NativeWatch {
                                      nullptr, &overlapped_, nullptr) != FALSE;
     }
 
+    // FW-1: a record naming the project's `.pelican` tree, which the scan
+    // skips. HW-1: or a name outside the declared `hot_reload` paths.
+    bool ignoredRecord(std::wstring_view name) const {
+        if (skip_project_metadata_ && isProjectMetadataName(name)) return true;
+        if (!watch_paths_) return false;
+        const auto logical = logicalPathUnder(
+            store_.logical_mount, std::filesystem::path{name}.lexically_normal());
+        return !watchPathReaches(*watch_paths_, logical);
+    }
+
+    // Every record of a completed read is ignored: the batch is not a
+    // reason to scan.
+    bool onlyIgnoredRecords(DWORD bytes) const {
+        if ((!skip_project_metadata_ && !watch_paths_) || bytes == 0) return false;
+        std::size_t offset = 0;
+        for (;;) {
+            if (offset + offsetof(FILE_NOTIFY_INFORMATION, FileName) > bytes) return false;
+            const auto *record = reinterpret_cast<const FILE_NOTIFY_INFORMATION *>(buffer_.data() + offset);
+            if (offset + offsetof(FILE_NOTIFY_INFORMATION, FileName) + record->FileNameLength > bytes) return false;
+            if (!ignoredRecord({record->FileName, record->FileNameLength / sizeof(wchar_t)})) return false;
+            if (record->NextEntryOffset == 0) return true;
+            offset += record->NextEntryOffset;
+        }
+    }
+
     void signalCollectedAndAwaitRelease() {
         {
             std::scoped_lock lock{stop_mutex_};
@@ -171,6 +263,8 @@ class NativeWatch {
                 return;
             }
             const bool overflow = (ok && bytes == 0) || error == ERROR_NOTIFY_ENUM_DIR;
+            // Read the records before re-arming reuses the buffer.
+            const bool ignorable = ok && !overflow && onlyIgnoredRecords(bytes);
             // Re-arm before handing work to the hash/reconcile worker.
             bool stop_now = false;
             bool armed = false;
@@ -188,7 +282,7 @@ class NativeWatch {
                 signalCollectedAndAwaitRelease();
                 return;
             }
-            notify_(overflow || !ok);
+            if (!ignorable) notify_(overflow || !ok);
         }
     }
 
@@ -216,6 +310,8 @@ class NativeWatch {
 
     WatchStore store_;
     Notify notify_;
+    bool skip_project_metadata_ = false;
+    std::optional<std::vector<std::string>> watch_paths_;
     HANDLE directory_ = INVALID_HANDLE_VALUE;
     HANDLE event_ = nullptr;
     OVERLAPPED overlapped_{};
@@ -233,7 +329,7 @@ class NativeWatch {
 class NativeWatch {
   public:
     using Notify = std::function<void(bool)>;
-    NativeWatch(WatchStore, Notify) {}
+    NativeWatch(WatchStore, Notify, std::optional<std::vector<std::string>>) {}
     bool start(std::string &error) { error = "native watcher unavailable"; return false; }
     void stop() {}
 };
@@ -242,7 +338,17 @@ class NativeWatch {
 struct InventoryEntry {
     AssetKey key;
     std::filesystem::path path;
+    // Empty: not hashed since start-up (the live state is unknown).
     std::string digest;
+    // Size and mtime from the directory listing of the scan that recorded
+    // the entry. A later scan reuses the entry without hashing when they are
+    // unchanged and `stat_trusted` (settled, and the hash read those bytes).
+    std::uint64_t size = 0;
+    std::filesystem::file_time_type mtime{};
+    bool stat_trusted = false;
+    // Dedupe key: volume:file id from the hash's handle, else the physical
+    // path (an entry recorded without hashing).
+    std::string identity_key;
 };
 
 bool keyWithinRoot(std::string_view root, std::string_view candidate) {
@@ -255,6 +361,8 @@ struct InventoryScan {
     std::map<std::string, InventoryEntry> entries;
     std::set<std::string> unreadable_paths;
     std::set<std::string> unreadable_roots;
+    std::uint64_t hashed_files = 0;
+    std::uint64_t hashed_bytes = 0;
 
     bool incomplete() const noexcept {
         return !unreadable_paths.empty() || !unreadable_roots.empty();
@@ -271,6 +379,12 @@ struct InventoryScan {
 };
 
 } // namespace
+
+bool watchPathCovers(const std::vector<std::string> &entries, std::string_view logical_path) {
+    return std::any_of(entries.begin(), entries.end(), [&](const std::string &entry) {
+        return logicalWithin(entry, logical_path);
+    });
+}
 
 std::string_view watcherStateName(WatcherState state) noexcept {
     switch (state) {
@@ -306,9 +420,25 @@ struct FileWatcher::Impl {
     ContentDigestState digests;
     ReloadQueue queue;
     BeforeScanHook before_scan;
+    // Totals reported through status(); guarded by `mutex`.
+    std::uint64_t total_scans = 0;
+    std::uint64_t total_hashed_files = 0;
+    std::uint64_t total_hashed_bytes = 0;
+    bool reported_first_reconcile = false;
 
     Impl(std::vector<WatchStore> input, GateProvider provider, FileWatcherOptions opts)
         : stores(std::move(input)), gate(std::move(provider)), options(std::move(opts)) {
+        if (options.watch_paths) {
+            // HW-1: a store none of whose files can be covered is neither
+            // scanned nor natively watched. The project root (no mount)
+            // holds every declared path.
+            const auto &entries = *options.watch_paths;
+            std::erase_if(stores, [&](const WatchStore &store) {
+                if (entries.empty()) return true;
+                return !store.logical_mount.empty() &&
+                       !watchPathReaches(entries, store.logical_mount);
+            });
+        }
         std::sort(stores.begin(), stores.end(), [](const auto &a, const auto &b) {
             // A declared mount shadows bytes at the same logical location in
             // the project tree. This also makes local override roots identity-
@@ -345,7 +475,8 @@ struct FileWatcher::Impl {
                 error = "watch start rejected by fixture for " + store.name;
                 continue;
             }
-            auto watch = std::make_unique<NativeWatch>(store, [this](bool ov) { notify(ov); });
+            auto watch = std::make_unique<NativeWatch>(
+                store, [this](bool ov) { notify(ov); }, options.watch_paths);
             if (!watch->start(error)) continue;
             armed.push_back(std::move(watch));
         }
@@ -371,7 +502,10 @@ struct FileWatcher::Impl {
         for (auto &watch : watches) watch->stop();
     }
 
-    InventoryScan scan(std::uint64_t epoch) {
+    // FW-1: a file whose listed size and mtime match its trusted inventory
+    // entry keeps its digest without being read. At start-up (`seed`) a
+    // settled file is recorded without hashing; its digest stays unknown.
+    InventoryScan scan(std::uint64_t epoch, bool seed) {
         BeforeScanHook hook;
         {
             std::scoped_lock lock{mutex};
@@ -381,6 +515,7 @@ struct FileWatcher::Impl {
         InventoryScan result;
         std::set<std::string> seen_identities;
         std::set<AssetKey> seen_logical_keys;
+        const auto scan_start = std::filesystem::file_time_type::clock::now();
         for (const auto &store : stores) {
             std::error_code ec;
             const auto root_key = physicalKey(store.root);
@@ -391,8 +526,22 @@ struct FileWatcher::Impl {
                 result.unreadable_roots.insert(root_key);
                 continue;
             }
+            // Entries deeper than this lie under a symlink or junction and are
+            // resolved one by one (a reparse point may lead out of the store).
+            int link_depth = -1;
             while (it != end) {
                 const auto path = it->path();
+                const int depth = it.depth();
+                if (link_depth >= 0 && depth <= link_depth) link_depth = -1;
+                {
+                    std::error_code link_error;
+                    const auto own_type = it->symlink_status(link_error).type();
+                    if (link_depth < 0 &&
+                        (link_error || (own_type != std::filesystem::file_type::regular &&
+                                        own_type != std::filesystem::file_type::directory))) {
+                        link_depth = depth;
+                    }
+                }
                 std::error_code metadata_error;
                 const bool symlink = it->is_symlink(metadata_error);
                 bool directory = false;
@@ -404,12 +553,29 @@ struct FileWatcher::Impl {
                 }
                 const bool regular = !metadata_error &&
                                      it->is_regular_file(metadata_error);
-                if (metadata_error) {
+                if (!metadata_error && it.depth() == 0 && store.logical_mount.empty() &&
+                    isProjectMetadataName(path.filename().wstring())) {
+                    // The project's own `.pelican` tree is not watched.
+                    it.disable_recursion_pending();
+                } else if (!metadata_error && !regular && !symlink && options.watch_paths &&
+                           !watchPathReaches(*options.watch_paths,
+                                             logicalPathUnder(store.logical_mount,
+                                                              path.lexically_relative(store.root)))) {
+                    // HW-1: a folder outside the declared paths that leads
+                    // to none of them is not entered.
+                    it.disable_recursion_pending();
+                } else if (metadata_error) {
                     result.unreadable_roots.insert(root_key);
-                } else if (regular && withinRoot(store.root, path)) {
-                    const auto physical = physicalKey(path);
-                    const auto relative =
-                        std::filesystem::relative(path, store.root, ec);
+                } else if (regular && (link_depth < 0 || withinRoot(store.root, path))) {
+                    // FW-1: a plain path is keyed from the listing; resolving
+                    // every file (five weakly_canonical calls) cost 0.44 ms
+                    // per file in Debug.
+                    auto relative = path.lexically_relative(store.root);
+                    const bool plain = link_depth < 0 && !relative.empty() &&
+                                       !relative.native().starts_with(L"..");
+                    if (!plain) relative = std::filesystem::relative(path, store.root, ec);
+                    const auto physical = plain ? physicalKeyUnderRoot(root_key, relative)
+                                                : physicalKey(path);
                     if (ec || relative.empty() ||
                         relative.native().starts_with(L"..")) {
                         result.unreadable_paths.insert(physical);
@@ -417,43 +583,13 @@ struct FileWatcher::Impl {
                     } else {
                         const auto key =
                             makeAssetKey(store.logical_mount, relative);
-                        if (seen_logical_keys.insert(key).second) {
-                            ContentDigestResult digest;
-                            for (unsigned retry = 0; retry < 20; ++retry) {
-                                digest = readStableContentDigest(
-                                    path, [this, epoch] {
-                                        const auto gate_now = gate();
-                                        std::scoped_lock lock{mutex};
-                                        return stopping || !gate_now.enabled ||
-                                               gate_now.epoch != epoch;
-                                    });
-                                if (digest.status != DigestReadStatus::retry)
-                                    break;
-                                std::this_thread::sleep_for(
-                                    std::chrono::milliseconds{25});
-                            }
-                            if (digest.status == DigestReadStatus::stable) {
-                                std::string identity_key = physical;
-                                if (digest.identity &&
-                                    (digest.identity->volume != 0 ||
-                                     digest.identity->file != 0)) {
-                                    identity_key =
-                                        "id:" +
-                                        std::to_string(
-                                            digest.identity->volume) +
-                                        ":" +
-                                        std::to_string(digest.identity->file);
-                                }
-                                if (seen_identities.insert(identity_key).second) {
-                                    result.entries.emplace(
-                                        physical,
-                                        InventoryEntry{key, path,
-                                                       std::move(digest.sha256)});
-                                }
-                            } else if (digest.status !=
-                                       DigestReadStatus::cancelled) {
-                                result.unreadable_paths.insert(physical);
-                            }
+                        // HW-1: a file outside the declared paths is not
+                        // recorded, so it is never hashed or queued.
+                        const bool covered = !options.watch_paths ||
+                                             watchPathCovers(*options.watch_paths, key.path);
+                        if (covered && seen_logical_keys.insert(key).second) {
+                            recordFile(result, seen_identities, epoch, seed, scan_start,
+                                       *it, path, physical, key);
                         }
                     }
                 }
@@ -469,14 +605,102 @@ struct FileWatcher::Impl {
         return result;
     }
 
+    void recordFile(InventoryScan &result, std::set<std::string> &seen_identities,
+                    std::uint64_t epoch, bool seed,
+                    std::filesystem::file_time_type scan_start,
+                    const std::filesystem::directory_entry &listed,
+                    const std::filesystem::path &path, const std::string &physical,
+                    const AssetKey &key) {
+        // The listing's cached size and mtime: no file is opened here.
+        std::error_code stat_error;
+        const auto size = listed.file_size(stat_error);
+        const auto mtime = stat_error ? std::filesystem::file_time_type{}
+                                      : listed.last_write_time(stat_error);
+        const bool stat_known = !stat_error;
+
+        const auto previous = inventory.find(physical);
+        if (stat_known && previous != inventory.end() && previous->second.stat_trusted &&
+            previous->second.key == key && previous->second.size == size &&
+            previous->second.mtime == mtime) {
+            if (seen_identities.insert(previous->second.identity_key).second) {
+                auto entry = previous->second;
+                entry.path = path;
+                result.entries.emplace(physical, std::move(entry));
+            }
+            return;
+        }
+        if (seed && stat_known && settled(mtime, scan_start)) {
+            if (seen_identities.insert(physical).second) {
+                result.entries.emplace(
+                    physical, InventoryEntry{key, path, {}, size, mtime, true, physical});
+            }
+            return;
+        }
+
+        ContentDigestResult digest;
+        for (unsigned retry = 0; retry < 20; ++retry) {
+            digest = readStableContentDigest(
+                path, [this, epoch] {
+                    const auto gate_now = gate();
+                    std::scoped_lock lock{mutex};
+                    return stopping || !gate_now.enabled ||
+                           gate_now.epoch != epoch;
+                });
+            if (digest.status != DigestReadStatus::retry)
+                break;
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds{25});
+        }
+        if (digest.status == DigestReadStatus::stable) {
+            ++result.hashed_files;
+            result.hashed_bytes += digest.byte_count;
+            std::string identity_key = physical;
+            if (digest.identity &&
+                (digest.identity->volume != 0 ||
+                 digest.identity->file != 0)) {
+                identity_key =
+                    "id:" +
+                    std::to_string(
+                        digest.identity->volume) +
+                    ":" +
+                    std::to_string(digest.identity->file);
+            }
+            // Trust the listed size and mtime only when the hash read exactly
+            // that version of the file and it has settled.
+            const bool trusted = stat_known && settled(mtime, scan_start) &&
+                                 digest.identity && digest.identity->size == size &&
+                                 digest.identity->mtime == mtime;
+            if (seen_identities.insert(identity_key).second) {
+                result.entries.emplace(
+                    physical,
+                    InventoryEntry{key, path, std::move(digest.sha256), size, mtime,
+                                   trusted, std::move(identity_key)});
+            }
+        } else if (digest.status !=
+                   DigestReadStatus::cancelled) {
+            result.unreadable_paths.insert(physical);
+        }
+    }
+
     bool reconcile(std::uint64_t epoch, bool seed_live) {
+        const auto started = std::chrono::steady_clock::now();
+        std::uint64_t hashed_files = 0;
+        std::uint64_t hashed_bytes = 0;
         for (;;) {
             std::uint64_t generation = 0;
             {
                 std::scoped_lock lock{mutex};
                 generation = notification_generation;
             }
-            auto scanned = scan(epoch);
+            auto scanned = scan(epoch, seed_live);
+            hashed_files += scanned.hashed_files;
+            hashed_bytes += scanned.hashed_bytes;
+            {
+                std::scoped_lock lock{mutex};
+                ++total_scans;
+                total_hashed_files += scanned.hashed_files;
+                total_hashed_bytes += scanned.hashed_bytes;
+            }
             auto current = std::move(scanned.entries);
             const auto gate_now = gate();
             {
@@ -484,10 +708,16 @@ struct FileWatcher::Impl {
                 if (stopping || !gate_now.enabled || gate_now.epoch != epoch) return false;
             }
             if (seed_live) {
-                for (const auto &[_, entry] : current) digests.seedLive(entry.key, entry.digest);
+                for (const auto &[_, entry] : current) {
+                    if (entry.digest.empty()) digests.seedLiveUnknown(entry.key);
+                    else digests.seedLive(entry.key, entry.digest);
+                }
             } else {
                 for (const auto &[physical, entry] : current) {
                     (void)physical;
+                    // Not hashed since start-up and unchanged since: there is
+                    // no digest to observe.
+                    if (entry.digest.empty()) continue;
                     // Compare against live_digest, not just the previous disk
                     // inventory. A failed candidate must be eligible again on
                     // the next save/reconcile even when its bytes are equal.
@@ -520,10 +750,18 @@ struct FileWatcher::Impl {
                     status.error.clear();
                 }
                 overflow = false;
+                if ((hashed_files > 0 || !reported_first_reconcile) && logger) {
+                    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - started);
+                    LOG_INFO(logger, "file watcher: scanned {} files, hashed {} ({:.1f} MB) in {} ms",
+                             inventory.size(), hashed_files,
+                             static_cast<double>(hashed_bytes) / 1e6, elapsed.count());
+                }
+                reported_first_reconcile = true;
                 return true;
             }
             // Events (including another overflow) arrived during scan: one
-            // more complete hash pass closes the arm/scan race.
+            // more complete pass closes the arm/scan race.
         }
     }
 
@@ -680,7 +918,11 @@ void FileWatcher::stop() {
 
 WatcherStatus FileWatcher::status() const {
     std::scoped_lock lock{impl_->mutex};
-    return impl_->status;
+    auto result = impl_->status;
+    result.scans = impl_->total_scans;
+    result.hashed_files = impl_->total_hashed_files;
+    result.hashed_bytes = impl_->total_hashed_bytes;
+    return result;
 }
 
 std::size_t FileWatcher::pendingCount() const { return impl_->queue.size(); }

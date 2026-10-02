@@ -23,13 +23,34 @@ void ReloadGate::setReason(ReloadGateReason reason, bool active) {
     updateLocked();
 }
 
+void ReloadGate::setWatchDeclaration(WatchDeclaration declaration) {
+    std::scoped_lock lock{mutex_};
+    watch_ = declaration;
+    updateLocked();
+}
+
+bool ReloadGate::rpcDriven() const {
+    std::scoped_lock lock{mutex_};
+    return rpc_;
+}
+
 void ReloadGate::updateLocked() {
-    const bool next = requested_ && !replay_ && !strict_ && !rpc_;
+    // AV-1: a PELICAN_WITH_HOT_RELOAD=OFF build (a distribution build) has
+    // no file watch at all, whatever else asks.
+    constexpr bool build_disabled = !PELICAN_WITH_HOT_RELOAD;
+    // HW-1: an RPC driver shuts the watch only when the project declares
+    // nothing; a declared list is watched under it as well.
+    const bool rpc_shuts = rpc_ && watch_ == WatchDeclaration::undeclared;
+    const bool declared_empty = watch_ == WatchDeclaration::empty;
+    const bool next =
+        !build_disabled && requested_ && !replay_ && !strict_ && !rpc_shuts && !declared_empty;
     if (next != enabled_) ++epoch_;
     enabled_ = next;
-    if (replay_) reason_ = "replay";
+    if (build_disabled) reason_ = "hot reload build disabled";
+    else if (replay_) reason_ = "replay";
     else if (strict_) reason_ = "strict assets";
-    else if (rpc_) reason_ = "rpc driver";
+    else if (rpc_shuts) reason_ = "rpc driver";
+    else if (declared_empty) reason_ = "hot_reload empty";
     else if (!requested_) reason_ = "shader_hot_reload disabled";
     else reason_.clear();
 }

@@ -759,6 +759,12 @@ def run_file_step(
         {"file": "replace",  "path": "{project}/x", "old": "...", "new": "..."}
         {"file": "contains", "path": "{project}/x", "text": "...", "value": true}
         {"file": "exists",   "path": "{project}/x", "value": true}
+        {"file": "copy",     "path": "{project}/x", "from": "{artifacts}/y"}
+
+    `copy` (IA-1s) replaces a file with another byte for byte -- a binary one
+    a person bakes outside Studio and copies over the one the project reads,
+    which `write` cannot make. Both ends are inside the directories this run
+    owns.
     """
 
     started = time.monotonic()
@@ -792,6 +798,15 @@ def run_file_step(
                     f"{path.name} {'holds' if found else 'does not hold'} {step['text']!r}"
                 )
             detail = f"{path.name} {'holds' if found else 'does not hold'} the text"
+        elif action == "copy":
+            source = Path(str(step["from"])).resolve()
+            if not any(source == root or root in source.parents for root in owned):
+                raise ValueError(
+                    f"{source} is outside the project copy and the run's artifacts"
+                )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, path)
+            detail = f"copied {source.name} over {path.name}"
         elif action == "exists":
             present = path.is_file()
             if present != bool(step.get("value", True)):

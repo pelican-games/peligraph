@@ -103,6 +103,8 @@ std::vector<std::string> renderFeatureRequiredCapabilities(
 // color pipeline's anchors. Composition resolves such an insert to the anchor
 // before any pass that happens to share the name.
 bool isCanonicalRenderPassAnchor(std::string_view name);
+// CT-4: every name isCanonicalRenderPassAnchor takes, in pipeline order.
+std::vector<std::string> canonicalRenderPassAnchors();
 
 // The pass an insert names, in the pass family that holds it. A canonical
 // anchor is found (in every family) before any pass that shares its name;
@@ -126,5 +128,84 @@ std::vector<RenderPassAnchorMatch> findRenderPassAnchorMatches(
 void insertRenderPassRunAtAnchor(nlohmann::json &passes,
                                  std::size_t anchor_index, bool after,
                                  std::vector<nlohmann::json> run);
+
+// FR-1: the render targets a feature document's own declaration reads or
+// writes and leaves to the pipeline to declare -- its passes' color / depth
+// outputs and inputs and its render_target_overrides, a `$parameter` name by
+// that parameter's default -- as [{name, type, usage?}], in the order they are
+// first named. A target the feature declares itself, `swapchain`, `display`,
+// an integration's fragment and a parameter with no default are left out; an
+// `@history` read names its target. `type` is the logical image type a
+// render.target_ref naming it declares: the one the feature's
+// `required_targets` entry of that name gives, else pelican.render.depth@1
+// (device, projection) for a depth attachment, else
+// pelican.render.legacy_opaque_image@1. `usage` is what the feature uses it
+// for (COLOR_ATTACHMENT / DEPTH_STENCIL_ATTACHMENT / SAMPLED, and the override's
+// and the parameter's usage). Never throws on a malformed document; the
+// composer refuses that.
+// FR-3: `with_needs_writer` adds `needs_writer` to each entry: true when a
+// pass of the feature reads the target this frame (an input that is not an
+// `@history` read) and none of its passes writes it (a color or depth
+// output) -- a target the pipeline has to have drawn by someone else
+// (feature.required_target_unwritten@1 otherwise).
+nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature, bool with_needs_writer = false);
+
+// FR-3: a feature reads a target (renderFeatureRequiredTargets'
+// needs_writer) that no pass or compute task of the composed pipeline
+// writes: no declaration names it except as something it reads, and it has
+// no initial contents. Fields: {feature, target, type, writer_candidates:
+// [{node?, pass, port, resource}], document} -- `type` as
+// renderFeatureRequiredTargets gives it, and `writer_candidates` the outputs
+// that, in the family of the feature's pass that reads it and before that
+// pass, write a target of the same kind (depth for a pelican.render.depth@1
+// type, color otherwise; judged by the target's format) -- a pass that draws
+// another view (`view_family`, a shadow map's) and a feature's own pass are
+// not among them: `pass` the frame
+// pass, `resource` the target it writes now, `port` the graph port that
+// writes it when a root node of the rendering graph made the pass (`node`
+// is then that node's id), else "depth" or "color" (with `.<index>` past the
+// first color output). Writing the required target from one of them (for a
+// graph node: connecting that port to a render.target_ref of the target)
+// lets the feature compose. Raised as GraphRegistryError.
+inline constexpr std::string_view featureRequiredTargetUnwrittenCode =
+    "feature.required_target_unwritten@1";
+
+// FR-1: a feature composed into a pipeline that declares none of a target it
+// needs. Fields: {feature, target, type, document} -- the feature's name, the
+// target, its renderFeatureRequiredTargets type, and the feature document's
+// reference. Raised as GraphRegistryError.
+inline constexpr std::string_view featureRequiredTargetMissingCode =
+    "feature.required_target_missing@1";
+
+// FR-2: where a feature document's passes go: one {pass, anchor, position}
+// per passes entry inserted `after:<anchor>` or `before:<anchor>` (position
+// "after" / "before"), in document order. `begin` / `end` entries are left
+// out. Never throws on a malformed document; the composer refuses that.
+nlohmann::json renderFeatureInsertions(const nlohmann::json &feature);
+
+// FR-2: a feature pass inserted after: / before: a name that no anchor and no
+// pass of the pipeline carries. Fields: {feature, anchor, candidates,
+// document} -- the feature's name (an integration's as provider/integration),
+// the name it pointed at, the names after: / before: resolves to exactly one
+// frame node in the pipeline as composed so far (an anchor by its anchor name,
+// a pass by its name, in pipeline order), and the feature document's
+// reference. Raised as GraphRegistryError.
+inline constexpr std::string_view featureInsertionAnchorMissingCode =
+    "feature.insertion_anchor_missing@1";
+
+// FR-1: a rendering.snapshots entry whose `after` names no pass or anchor in
+// some pass family. Fields: {snapshot, after, resolved?, candidates} --
+// `resolved` is the frame node an anchor name stands for
+// (`__anchor_<anchor>`), `candidates` renderSnapshotAfterCandidates of the
+// pipeline. Raised as GraphRegistryError.
+inline constexpr std::string_view snapshotAfterUnknownCode =
+    "snapshot.after_unknown@1";
+
+// FR-1: the names a rendering.snapshots entry's `after` may take in a composed
+// (or canonicalized) config: in every pass family, the frame nodes from the
+// post_ldr anchor up to the pelican_ui anchor -- an anchor by its anchor name
+// (`post_ldr`), a pass by its name -- that every family has, in the first
+// family's order. Snapshot copies are not among them.
+std::vector<std::string> renderSnapshotAfterCandidates(const nlohmann::json &config);
 
 } // namespace Pelican

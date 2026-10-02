@@ -4,13 +4,16 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/render_algorithms/cube_capture/cubecaptureview.hpp"
 #include "../src/core/renderer/camera.hpp"
+#include "../src/core/renderer/clipspace.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -71,7 +74,7 @@ nlohmann::json projectJson() {
         {"basic_config",
          {
              {"window_size", {{"width", 100}, {"height", 100}}},
-             {"camera", {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 100.0}, {"up", {0.0, 1.0, 0.0}}}},
+             {"camera", {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 100.0}}},
              {"default_scene_id", "default_scene"},
              {"scene_data_json", "scene.json"},
          }},
@@ -255,7 +258,8 @@ TEST_CASE("Camera parses v1 perspective and orthographic projection parameters",
     REQUIRE(spec.znear == Catch::Approx(0.5f));
     REQUIRE(spec.zfar == Catch::Approx(50.0f));
     REQUIRE(camera.getProjectionMatrix()[0][0] == Catch::Approx(0.5f));
-    REQUIRE(camera.getProjectionMatrix()[1][1] == Catch::Approx(1.0f / 3.0f));
+    // CC-1a: the projection flips clip y.
+    REQUIRE(camera.getProjectionMatrix()[1][1] == Catch::Approx(-1.0f / 3.0f));
     const auto ortho_projection = camera.getProjectionMatrix();
     const auto ortho_near = ortho_projection * glm::vec4{0.0f, 0.0f, -spec.znear, 1.0f};
     const auto ortho_far = ortho_projection * glm::vec4{0.0f, 0.0f, -spec.zfar, 1.0f};
@@ -330,36 +334,30 @@ TEST_CASE("WP378 basic camera cross-field boundary returns the shared typed fail
     }
 }
 
-TEST_CASE("Project camera up is a finite non-zero vec3", "[camera][config]") {
+// CC-1b: basic_config.camera.up was removed in project version 2 (a camera's
+// up is its rotation's +Y and the world's up is +Y). Any value is refused by
+// name, the old default included.
+TEST_CASE("Project camera up was removed and is refused by name", "[camera][config]") {
     ensureLogger();
 
-    struct InvalidUp {
-        const char *name;
-        nlohmann::json value;
-        const char *message;
-    };
-    const InvalidUp invalid_values[] = {
-        {"too short", nlohmann::json::array({0.0, 1.0}), "exactly 3 numbers"},
-        {"too long", nlohmann::json::array({0.0, 1.0, 0.0, 0.0}),
-         "exactly 3 numbers"},
-        {"not an array", "up", "exactly 3 numbers"},
-        {"non-numeric component", nlohmann::json::array({0.0, "up", 0.0}),
-         "exactly 3 numbers"},
-        {"zero vector", nlohmann::json::array({0.0, 0.0, 0.0}), "non-zero"},
+    const std::pair<const char *, nlohmann::json> values[] = {
+        {"plus y", nlohmann::json::array({0.0, 1.0, 0.0})},
+        {"minus y", nlohmann::json::array({0.0, -1.0, 0.0})},
+        {"not an array", "up"},
     };
 
-    for (const auto &invalid : invalid_values) {
-        DYNAMIC_SECTION(invalid.name) {
+    for (const auto &[name, value] : values) {
+        DYNAMIC_SECTION(name) {
             Sandbox sandbox;
             auto project = projectJson();
-            project["basic_config"]["camera"]["up"] = invalid.value;
+            project["basic_config"]["camera"]["up"] = value;
 
             FastModuleContainer modules;
             GET_MODULE(PathResolver).setup(sandbox.root, false);
             GET_MODULE(ProjectSource).setProjectData(project.dump());
             REQUIRE_THROWS_WITH(
                 GET_MODULE(ProjectBasicConfig),
-                Catch::Matchers::ContainsSubstring(invalid.message));
+                Catch::Matchers::StartsWith("project.camera_up_removed@1: "));
         }
     }
 }
@@ -611,13 +609,200 @@ TEST_CASE("Scene camera load keeps the published viewport instead of the project
     camera.loadSceneCameras("default_scene");
     camera.setActiveCamera("ViewportCam");
     const auto projection = camera.getProjectionMatrix();
-    REQUIRE(projection[0][0] * 2.0f == Catch::Approx(projection[1][1]));
+    REQUIRE(projection[0][0] * 2.0f == Catch::Approx(-projection[1][1]));
 
     camera.setScreenSize(100, 100);
     camera.loadSceneCameras("default_scene");
     camera.setActiveCamera("ViewportCam");
     const auto square = camera.getProjectionMatrix();
-    REQUIRE(square[0][0] == Catch::Approx(square[1][1]));
+    REQUIRE(square[0][0] == Catch::Approx(-square[1][1]));
+}
+
+namespace {
+
+glm::vec3 ndcOf(const glm::mat4 &view_projection, glm::vec3 world) {
+    const auto clip = view_projection * glm::vec4{world, 1.0f};
+    return glm::vec3{clip} / clip.w;
+}
+
+// A camera at +Z with no rotation, one rolled 90 degrees about Z, and one
+// turned 90 degrees about Y (it looks down -X from +X).
+const char *basisSceneJson() {
+    return R"json({
+  "schema": "pelican.scene",
+  "version": 2,
+  "scenes": {
+    "default_scene": {
+      "objects": [
+        {
+          "name": "FrontCam",
+          "components": [
+            {"name": "transform", "pos": [0.0, 0.0, 3.0], "rotation": [0.0, 0.0, 0.0, 1.0], "scale": [1.0, 1.0, 1.0]},
+            {"name": "camera", "type": "perspective", "yfov": 0.7853981633974483, "znear": 0.1, "zfar": 100.0}
+          ]
+        },
+        {
+          "name": "RolledCam",
+          "components": [
+            {"name": "transform", "pos": [0.0, 0.0, 3.0], "rotation": [0.0, 0.0, 0.7071067811865476, 0.7071067811865476], "scale": [1.0, 1.0, 1.0]},
+            {"name": "camera", "type": "perspective", "yfov": 0.7853981633974483, "znear": 0.1, "zfar": 100.0}
+          ]
+        },
+        {
+          "name": "SideCam",
+          "components": [
+            {"name": "transform", "pos": [3.0, 0.0, 0.0], "rotation": [0.0, 0.7071067811865476, 0.0, 0.7071067811865476], "scale": [1.0, 1.0, 1.0]},
+            {"name": "camera", "type": "perspective", "yfov": 0.7853981633974483, "znear": 0.1, "zfar": 100.0}
+          ]
+        }
+      ]
+    }
+  }
+})json";
+}
+
+void requireVec3(glm::vec3 actual, glm::vec3 expected) {
+    REQUIRE(actual.x == Catch::Approx(expected.x).margin(1.0e-5f));
+    REQUIRE(actual.y == Catch::Approx(expected.y).margin(1.0e-5f));
+    REQUIRE(actual.z == Catch::Approx(expected.z).margin(1.0e-5f));
+}
+
+} // namespace
+
+TEST_CASE("clipspace camera without rotation looks down -Z and is not mirrored",
+          "[camera][clipspace]") {
+    const auto basis = cameraBasis(glm::quat{1.0f, 0.0f, 0.0f, 0.0f});
+    requireVec3(basis.forward, {0.0f, 0.0f, -1.0f});
+    requireVec3(basis.up, {0.0f, 1.0f, 0.0f});
+    requireVec3(basis.right, glm::cross(basis.forward, basis.up));
+
+    const auto view = viewFromWorld({0.0f, 0.0f, 3.0f},
+                                    glm::quat{1.0f, 0.0f, 0.0f, 0.0f});
+    for (const auto &projection :
+         {vulkanPerspective(0.7853981633974483f, 1.0f, 0.1f, 100.0f),
+          vulkanOrtho(-2.0f, 2.0f, -2.0f, 2.0f, 0.1f, 100.0f),
+          vulkanAsymmetric(-0.4f, 0.5f, -0.45f, 0.35f, 0.1f, 100.0f)}) {
+        const auto view_projection = projection * view;
+        // +X is the screen's right (NDC +x); +Y is its top (Vulkan NDC -y).
+        REQUIRE(ndcOf(view_projection, {1.0f, 0.0f, 0.0f}).x > 0.1f);
+        REQUIRE(ndcOf(view_projection, {0.0f, 1.0f, 0.0f}).y < -0.1f);
+        const auto near_point = ndcOf(view_projection, {0.0f, 0.0f, 2.0f});
+        const auto far_point = ndcOf(view_projection, {0.0f, 0.0f, -5.0f});
+        REQUIRE(near_point.z >= 0.0f);
+        REQUIRE(far_point.z <= 1.0f);
+        REQUIRE(near_point.z < far_point.z);
+        REQUIRE(projection[1][1] < 0.0f);
+        REQUIRE_FALSE(viewIsMirrored(projection, view));
+    }
+    // The projection without the flip (the engine before CC-1a) mirrors.
+    REQUIRE(viewIsMirrored(
+        glm::perspectiveRH_ZO(0.7853981633974483f, 1.0f, 0.1f, 100.0f), view));
+}
+
+TEST_CASE("clipspace symmetric asymmetric projection equals the perspective",
+          "[camera][clipspace]") {
+    const float yfov = 0.9f;
+    const float aspect = 1.5f;
+    const float tangent_y = std::tan(yfov * 0.5f);
+    const float tangent_x = tangent_y * aspect;
+    const auto asymmetric = vulkanAsymmetric(-tangent_x, tangent_x, -tangent_y,
+                                             tangent_y, 0.2f, 40.0f);
+    const auto perspective = vulkanPerspective(yfov, aspect, 0.2f, 40.0f);
+    for (glm::length_t column = 0; column < 4; ++column) {
+        for (glm::length_t row = 0; row < 4; ++row) {
+            REQUIRE(asymmetric[column][row] ==
+                    Catch::Approx(perspective[column][row]).margin(1.0e-5f));
+        }
+    }
+}
+
+TEST_CASE("clipspace cameraRotation inverts cameraBasis",
+          "[camera][clipspace]") {
+    const auto rotation = glm::normalize(
+        glm::angleAxis(0.7f, glm::normalize(glm::vec3{0.3f, -1.0f, 0.2f})) *
+        glm::angleAxis(0.4f, glm::vec3{0.0f, 0.0f, 1.0f}));
+    const auto basis = cameraBasis(rotation);
+    const auto rebuilt = cameraBasis(cameraRotation(basis.forward, basis.up));
+    requireVec3(rebuilt.forward, basis.forward);
+    requireVec3(rebuilt.up, basis.up);
+    requireVec3(rebuilt.right, basis.right);
+    // viewFromWorld is the inverse of the camera's transform.
+    const auto transform =
+        glm::translate(glm::mat4{1.0f}, glm::vec3{1.0f, -2.0f, 3.0f}) *
+        glm::mat4_cast(rotation);
+    const auto view = viewFromWorld({1.0f, -2.0f, 3.0f}, rotation);
+    const auto identity = view * transform;
+    for (glm::length_t column = 0; column < 4; ++column) {
+        for (glm::length_t row = 0; row < 4; ++row) {
+            REQUIRE(identity[column][row] ==
+                    Catch::Approx(column == row ? 1.0f : 0.0f).margin(1.0e-5f));
+        }
+    }
+}
+
+TEST_CASE("clipspace cube faces are mirrored views and flat cameras are not",
+          "[camera][clipspace][cube]") {
+    const auto cube = buildCubeCaptureViewFamily({{0.5f, 1.0f, -2.0f}, 0.1f, 50.0f});
+    REQUIRE(cube.views.size() == 6);
+    for (const auto &face : cube.views) {
+        CAPTURE(face.view_id);
+        REQUIRE(viewIsMirrored(face.projection, face.view));
+    }
+    // A reflected view with the clip-x flip keeps the source's winding; the
+    // reflection alone mirrors.
+    glm::mat4 reflect_y{1.0f};
+    reflect_y[1][1] = -1.0f;
+    glm::mat4 flip_x{1.0f};
+    flip_x[0][0] = -1.0f;
+    const auto projection =
+        vulkanPerspective(0.7853981633974483f, 1.0f, 0.1f, 100.0f);
+    const auto view = viewFromWorld({0.0f, 1.0f, 3.0f},
+                                    glm::quat{1.0f, 0.0f, 0.0f, 0.0f});
+    REQUIRE(viewIsMirrored(projection, view * reflect_y));
+    REQUIRE_FALSE(viewIsMirrored(flip_x * projection, view * reflect_y));
+}
+
+TEST_CASE("Scene camera basis comes from its rotation and pixel rays follow the screen",
+          "[camera][clipspace][headless]") {
+    ensureLogger();
+    Sandbox sandbox;
+    writeText(sandbox.root / "scene.json", basisSceneJson());
+
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    GET_MODULE(ProjectSource).setProjectData(projectJson().dump());
+
+    auto &camera = GET_MODULE(Camera);
+    camera.setScreenSize(100, 100);
+
+    camera.setActiveCamera("FrontCam");
+    requireVec3(camera.getDir(), {0.0f, 0.0f, -1.0f});
+    requireVec3(camera.getUp(), {0.0f, 1.0f, 0.0f});
+    // The right half of the screen is the camera's +X, the top half its +Y.
+    const auto right_ray = camera.rayThroughPixel({75.0f, 50.0f});
+    REQUIRE(right_ray.direction.x > 0.1f);
+    REQUIRE(right_ray.direction.z < 0.0f);
+    const auto top_ray = camera.rayThroughPixel({50.0f, 25.0f});
+    REQUIRE(top_ray.direction.y > 0.1f);
+    const auto view_projection = camera.getVPMatrix();
+    REQUIRE(ndcOf(view_projection, {1.0f, 0.0f, 0.0f}).x > 0.1f);
+    REQUIRE(ndcOf(view_projection, {0.0f, 1.0f, 0.0f}).y < -0.1f);
+
+    // The project's up is +Y here; a roll in the rotation turns the image.
+    camera.setActiveCamera("RolledCam");
+    requireVec3(camera.getDir(), {0.0f, 0.0f, -1.0f});
+    requireVec3(camera.getUp(), {-1.0f, 0.0f, 0.0f});
+    const auto rolled = camera.getVPMatrix();
+    REQUIRE(ndcOf(rolled, {0.0f, 1.0f, 0.0f}).x > 0.1f);
+    REQUIRE(ndcOf(rolled, {-1.0f, 0.0f, 0.0f}).y < -0.1f);
+
+    camera.setActiveCamera("SideCam");
+    requireVec3(camera.getDir(), {-1.0f, 0.0f, 0.0f});
+    const auto side = camera.getVPMatrix();
+    REQUIRE(ndcOf(side, {0.0f, 0.0f, -1.0f}).x > 0.1f);
+    REQUIRE(ndcOf(side, {0.0f, 1.0f, 0.0f}).y < -0.1f);
+    const auto side_right_ray = camera.rayThroughPixel({75.0f, 50.0f});
+    REQUIRE(side_right_ray.direction.z < -0.1f);
 }
 
 } // namespace Pelican

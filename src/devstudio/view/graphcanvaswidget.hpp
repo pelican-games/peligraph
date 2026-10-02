@@ -269,6 +269,14 @@ struct GraphCanvasLayout {
 GraphCanvasLayout graphCanvasLayoutFromJson(const nlohmann::json &layout);
 nlohmann::json graphCanvasLayoutToJson(const GraphCanvasLayout &layout);
 
+// UX-9, decision 4 (engine CT-1): what get_status.audio.voices says of each
+// audio.playback, by node id, as its band says it: `playing · 1.2 s`,
+// `paused · 1.2 s`, and `idle` in a play session. Outside one (the edit
+// state, or a status with no play member) every voice is idle and none is
+// named. Empty for a status with no voices.
+[[nodiscard]] std::map<std::string, std::string, std::less<>> graphCanvasVoiceBands(
+    const nlohmann::json &status);
+
 const NodeGraphKinds &graphCanvasKinds();
 
 // What the socket resolver is told about one port's type, read off the
@@ -300,8 +308,16 @@ class GraphCanvasScene final : public QGraphicsScene {
     // by plan node name). A root node's band says the sum of its passes';
     // the bands on screen change in place, nothing else is drawn again.
     void setPlanNodeTimes(std::map<std::string, double, std::less<>> times);
+    // UX-9, decision 4 (engine CT-1): each audio.playback's voice as the band
+    // under it says it (`playing · 1.2 s`), by root node id
+    // (graphCanvasVoiceBands); changed in place as the plan times are.
+    void setVoiceBands(std::map<std::string, std::string, std::less<>> bands);
+    // AB-1s, decision 4: a root node that reads a stale baked table (a
+    // value.sample_table's asset, a render.image's initial.asset) says
+    // `stale: <reason>` in its band, drawn orange; by root node id.
+    void setStaleBands(std::map<std::string, std::string, std::less<>> bands);
     // GL-2b's band under a root node, with UX-6b's words after it: what the
-    // plan says its passes do for nothing, then its GPU time.
+    // plan says its passes do for nothing, then its GPU time; a voice's state.
     [[nodiscard]] QString layerBandText(const std::string &id) const;
 
     // The scene changed which scope is shown (a double-click descended into a
@@ -767,6 +783,11 @@ class GraphCanvasScene final : public QGraphicsScene {
     std::uint64_t rebuild_generation_ = 0;
     // UX-6b, decision 2.
     std::map<std::string, double, std::less<>> plan_node_times_;
+    std::map<std::string, std::string, std::less<>> voice_bands_;
+    std::map<std::string, std::string, std::less<>> stale_bands_;
+    // The bands on screen take their words again where they stand; a root
+    // node that had none gets one.
+    void refreshLayerBands();
     // The theme table's registration, dropped in the destructor: a listener
     // that outlived its scene would repopulate a deleted one.
     int theme_listener_ = 0;
@@ -922,6 +943,12 @@ class GraphCanvasWidget final : public QWidget {
     // document the running engine now has.
     void setEngineRestartAction(std::function<void(const QString &reason)> action);
     void engineRestartDeclined(const QString &message);
+    // UX-12b, decision 2. A feature that goes after a pass the pipeline does
+    // not have ("Place Deferred lighting first"): a fullscreen pass named
+    // `name` is added to the root (or, when there is one, picked), and its
+    // Pass fields open New... on the shader template of that name (UX-5b),
+    // for Create. False when the tab cannot edit now.
+    bool placeNamedFullscreenPass(const QString &name);
     // LP-4e. Show a root node another panel's edit just made (Decompose into
     // loop's graph.loop): the document is read again, and the node is
     // selected as soon as a document that holds it arrives -- at once when
@@ -939,6 +966,10 @@ class GraphCanvasWidget final : public QWidget {
     // GL-2b, decision 3: what a click on an L1 row of the Layers section does
     // -- the owner brings the Frame Plan forward with that plan node picked.
     void setFramePlanNodeAction(std::function<void(const QString &node)> action);
+    // UX-11, decision 4: what a press on a material pass's Materials drawn
+    // row does -- the owner brings the Frame Plan forward with its Materials
+    // rows of that pass (the plan's name) picked.
+    void setFramePlanMaterialsAction(std::function<void(const QString &pass)> action);
     // GL-1, decision 4: what "Expand to edit…" runs -- the Frame Plan's
     // Decompose into loop on a material pass (`graph` is the plan's), the
     // Features tab's Replace with loop version on a feature.
@@ -977,6 +1008,10 @@ class GraphCanvasWidget final : public QWidget {
         std::function<void(std::map<std::string, std::vector<std::filesystem::path>, std::less<>>)>
             action);
     void shadersReloaded();
+    // IA-1s, decision 5: the assets the document's render.image nodes start
+    // from (`initial.asset`, GraphCanvasModel::initialAssets), handed to
+    // `action` each time the document changes them.
+    void setInitialAssetsAction(std::function<void(std::vector<std::string>)> action);
     // RL-1s. The render documents were read again from disk: the Graph's
     // own Undo history ends here (what it holds inverts a document that is
     // no longer the one on disk), and the document is read again.
@@ -999,9 +1034,15 @@ class GraphCanvasWidget final : public QWidget {
     // the bands. The window's PlanPerfHub reads them; the tab reads nothing.
     void setPerfLines(const QString &summary, const QString &delta);
     void setPlanNodeTimes(std::map<std::string, double, std::less<>> times);
+    // UX-9, decision 4: a get_status result, whoever asked for it (the
+    // viewport's one parse, UX-7 decision 10): its audio.voices go on the
+    // bands of the audio.playback nodes.
+    void observeStatus(const nlohmann::json &status);
 
     GraphCanvasModel &model();
     GraphCanvasScene &scene();
+    // SG-2: the Layers dock's contents (the window docks it).
+    QWidget *canvasLayersPanel();
 };
 
 // How the Graph tab's view is set up: a press on empty canvas draws a

@@ -24,6 +24,7 @@
 #include "../watch/reloadservice.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../communication/renderconfigtransaction.hpp"
+#include "../../project/graphcomposition.hpp"
 #include <components/spriteview.hpp>
 #if PELICAN_WITH_AUDIO
 #include "../audio/audio.hpp"
@@ -54,6 +55,20 @@ void configureRayLayoutModeBeforeComponentRegistration() {
         runtime_shader_compiler_enabled);
     Pelican::GET_MODULE(Pelican::RayLayoutRuntimeState)
         .configure(Pelican::rayLayoutSemanticMode(ray_project.get()));
+}
+
+// CT-2: the startup fatal line's graph refusal with the rendering root's
+// reference as `document` (and the definition of its node).
+Pelican::GraphRegistryError startupGraphRefusal(const Pelican::GraphRegistryError &refusal) {
+    const auto *config = Pelican::FastModuleContainer::tryGet<Pelican::ProjectBasicConfig>();
+    if (config == nullptr) return refusal;
+    try {
+        return Pelican::graphRefusalInDocument(
+            refusal, nlohmann::json::parse(config->renderingConfigJson(), nullptr, false),
+            config->renderingConfigReference());
+    } catch (const std::exception &) {
+        return refusal;
+    }
 }
 
 } // namespace
@@ -162,6 +177,11 @@ bool PelicanCore::run() {
         // wait ongoing tasks
         GET_MODULE(VulkanManageCore).waitIdle();
 
+    } catch (const GraphRegistryError &e) {
+        // CT-2: a graph refusal raised anywhere in startup names the
+        // rendering root its node was written in (kept when it already does).
+        LOG_ERROR(logger, "Pelican fatal error : {}", startupGraphRefusal(e).what());
+        succeeded = false;
     } catch (std::exception &e) {
         LOG_ERROR(logger, "Pelican fatal error : {}", e.what());
         succeeded = false;

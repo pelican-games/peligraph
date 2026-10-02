@@ -8,8 +8,8 @@
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../../project/materiallowering.hpp"
+#include "../../project/sha256stream.hpp"
 #include "../../project/shadersourceresolver.hpp"
-#include <picosha2.h>
 
 #include <algorithm>
 #include <cctype>
@@ -396,11 +396,8 @@ ShaderBundle ShaderLibrary::buildFromSpirv(
     auto rt_module = inspectRayTracingSpirv(spirv, diagnostic_uri);
     const auto &selected = selectRayTracingEntryPoint(
         rt_module, expected_stage, "main", diagnostic_uri);
-    {
-        const auto *bytes = reinterpret_cast<const unsigned char *>(spirv.data());
-        bundle.spirv_sha256 = picosha2::hash256_hex_string(
-            bytes, bytes + spirv.size_bytes());
-    }
+    bundle.spirv_sha256 = sha256Hex(std::string_view{
+        reinterpret_cast<const char *>(spirv.data()), spirv.size_bytes()});
     bundle.reflection = reflect(spirv);
     bundle.reflection.selected_entry_point = selected.key;
     bundle.reflection.ray_tracing_module = std::move(rt_module);

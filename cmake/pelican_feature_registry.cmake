@@ -153,6 +153,13 @@ pelican_register_feature(
   SMOKE_ID animation
 )
 pelican_register_feature(
+  NAME PELICAN_WITH_CANVAS
+  DESCRIPTION "Enable the pelican.canvas graph module and its lowering to render nodes"
+  BASELINE ON
+  CONTRAST OFF
+  SMOKE_ID canvas
+)
+pelican_register_feature(
   NAME PELICAN_WITH_SEQPLAYER
   DESCRIPTION "Enable transform sequence playback"
   BASELINE ON
@@ -186,6 +193,13 @@ pelican_register_feature(
   BASELINE ON
   CONTRAST OFF
   SMOKE_ID renderdoc
+)
+pelican_register_feature(
+  NAME PELICAN_WITH_HOT_RELOAD
+  DESCRIPTION "Enable development file care: the file watch's hot reload and the startup asset manifest check"
+  BASELINE ON
+  CONTRAST OFF
+  SMOKE_ID hot-reload
 )
 pelican_register_feature(
   NAME PELICAN_WITH_STANDARD_RENDER_ALGORITHMS

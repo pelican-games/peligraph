@@ -354,6 +354,37 @@ void clearHistoryImages(const std::array<ImageWrapper, 2> &images,
         true);
 }
 
+// EN-2: writes a file image's pixels into a newly created image (every mip
+// when it has a chain) and leaves it SHADER_READ_ONLY_OPTIMAL, the layout the
+// layout tracker assumes for it.
+void uploadSourcePixels(const ImageWrapper &image,
+                        const RenderTargetSourcePixels &pixels,
+                        const std::string &name) {
+    if (image.extent.width != pixels.width ||
+        image.extent.height != pixels.height ||
+        pixels.rgba8.size() !=
+            static_cast<std::size_t>(pixels.width) *
+                pixels.height * 4u) {
+        throw std::runtime_error(
+            "render target source pixels do not match its image: " +
+            name);
+    }
+    const VulkanUtils::ImageTransferInfo info{
+        .old_layout = vk::ImageLayout::eUndefined,
+        .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
+        .dst_stage = vk::PipelineStageFlagBits::eAllCommands,
+        .dst_access = vk::AccessFlagBits::eShaderRead,
+    };
+    auto &utils = GET_MODULE(VulkanUtils);
+    if (image.mip_levels > 1) {
+        utils.safeTransferMemoryToImageAndGenerateMipmaps(
+            image, pixels.rgba8.data(), pixels.rgba8.size(), info);
+    } else {
+        utils.safeTransferMemoryToImage(
+            image, pixels.rgba8.data(), pixels.rgba8.size(), info);
+    }
+}
+
 } // namespace
 
 struct PreparedRenderTargetExtent::Impl {
@@ -652,6 +683,34 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
             "aliased render target must be materialized, non-history, and single-sample: " +
             name);
     }
+    const auto &source_pixels = definition.source_pixels;
+    if (definition.source.has_value() != (source_pixels != nullptr)) {
+        throw std::runtime_error(
+            "render target source and its pixels must be provided together: " +
+            name);
+    }
+    if (source_pixels) {
+        const auto attachment_or_storage =
+            vk::ImageUsageFlagBits::eColorAttachment |
+            vk::ImageUsageFlagBits::eDepthStencilAttachment |
+            vk::ImageUsageFlagBits::eStorage;
+        if (history || samples != 1 || alias_group ||
+            storage_mode != RenderTargetStorageMode::materialized ||
+            dimension != ImageResourceDimension::two_d ||
+            array_layers != 1 ||
+            !(usage & vk::ImageUsageFlagBits::eSampled) ||
+            !(usage & vk::ImageUsageFlagBits::eTransferDst) ||
+            bool(usage & attachment_or_storage) ||
+            fixed_extent !=
+                vk::Extent2D{source_pixels->width,
+                             source_pixels->height}) {
+            throw std::runtime_error(
+                "render target read from a file must be a single 2D, "
+                "sampled, transfer-destination image of the file's "
+                "size, never written, aliased or kept as history: " +
+                name);
+        }
+    }
 
     // Reuse an existing target when config registration is called more than once.
     if (auto it = name_to_id.find(name); it != name_to_id.end()) {
@@ -679,6 +738,8 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
             note("storage_mode");
         if (existing.alias_group != alias_group)
             note("alias_group");
+        if (existing.source_pixels != source_pixels)
+            note("source");
         // A previously allocated array image is a safe physical superset for
         // a sequential/flat registration. Expanding a live image during a
         // candidate transaction is not failure-atomic, so it remains an
@@ -690,6 +751,12 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
                 "Render target re-registration changed its physical contract: " +
                 name + " (" + changed + ")");
         }
+        // PS-1: a lifetime is not part of the image. Once some registration
+        // keeps the contents, the layout tracker keeps tracking them: that
+        // is harmless for a transient user and survives a rolled-back
+        // candidate, so the flag only ever turns on.
+        if (definition.persistent)
+            render_targets.get(it->second).persistent = true;
         return it->second;
     }
 
@@ -793,6 +860,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
             layered_attachment_image_views, surface_count);
     }
     if (history) clearHistoryImages(images, history_clear_color);
+    if (source_pixels) uploadSourcePixels(images[0], *source_pixels, name);
 
     GlobalRenderTargetId id = render_targets.reg(InternalRenderTarget{
         .name = name,
@@ -812,6 +880,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
         .storage_mode = storage_mode,
         .alias_group = alias_group,
         .alias_group_token = alias_group_token,
+        .persistent = definition.persistent,
         .resources =
             std::make_unique<RenderTargetResourceSet>(
                 RenderTargetResourceSet{
@@ -829,6 +898,7 @@ GlobalRenderTargetId RenderTargetContainer::registerRenderTarget(
                         std::move(
                             layered_attachment_image_views),
                 }),
+        .source_pixels = source_pixels,
     });
 
     try {
@@ -971,6 +1041,10 @@ RenderTargetContainer::prepareForExtent(
                 next->images,
                 rt.history_clear_color);
         }
+        if (rt.source_pixels) {
+            uploadSourcePixels(next->images[0],
+                               *rt.source_pixels, rt.name);
+        }
         prepared_by_id.emplace(
             id.value, prepared->entries.size());
         prepared->entries.push_back(
@@ -993,12 +1067,12 @@ bool RenderTargetContainer::setRuntimeArrayLayers(
         return false;
     }
     if (target.history || target.alias_group ||
-        target.alias_group_token ||
+        target.alias_group_token || target.source_pixels ||
         target.dimension !=
             ImageResourceDimension::two_d) {
         throw std::runtime_error(
             "runtime array-layer resizing requires a non-history, "
-            "non-aliased 2D render target: " +
+            "non-aliased 2D render target not read from a file: " +
             target.name);
     }
     const auto maximum_layers =
@@ -1483,8 +1557,15 @@ vk::ImageLayout RenderTargetContainer::initialLayout(
     if (attachment && rt.samples > 1) {
         return vk::ImageLayout::eUndefined;
     }
-    return rt.history ? vk::ImageLayout::eShaderReadOnlyOptimal
-                      : vk::ImageLayout::eUndefined;
+    // EN-2: a file image was left readable by its upload and is only read.
+    return rt.history || rt.source_pixels
+               ? vk::ImageLayout::eShaderReadOnlyOptimal
+               : vk::ImageLayout::eUndefined;
+}
+
+bool RenderTargetContainer::persistent(
+    GlobalRenderTargetId id) const {
+    return render_targets.get(id).persistent;
 }
 
 std::optional<std::uint64_t>

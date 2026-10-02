@@ -116,6 +116,7 @@ void SceneProjectionState::swap(SceneProjectionState &other) noexcept {
     authoring_.swap(other.authoring_);
     using std::swap;
     swap(resolved_, other.resolved_);
+    snapshot_identity_.swap(other.snapshot_identity_);
 }
 
 namespace {

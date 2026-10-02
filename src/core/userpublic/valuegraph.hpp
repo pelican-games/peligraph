@@ -15,8 +15,15 @@
 #include <string_view>
 #include <vector>
 
-namespace Pelican { class GameContext; class GraphModuleRegistry; }
+namespace Pelican { class GameContext; class GraphModuleRegistry; struct SampleTable; }
 namespace Pelican::ValueGraph {
+
+// AB-1: value.sample_table's table could not be read when the graph was
+// built: {node, asset, reason} (the file, the manifest beside it, its layout,
+// or a table of that layout is missing).
+inline constexpr std::string_view sampleTableUnreadableCode = "value.sample_table_unreadable@1";
+// AB-1: the table has no such row: {node, asset, row, rows: [its names]}.
+inline constexpr std::string_view sampleTableRowUnknownCode = "value.sample_table_row_unknown@1";
 
 using Inputs = std::map<std::string, double, std::less<>>;
 using ParameterValues = Inputs;
@@ -250,6 +257,15 @@ class PELICAN_API Graph {
     const std::map<std::string, std::vector<std::size_t>, std::less<>> &outputNodes() const noexcept {
         return outputs_;
     }
+    // IA-3: each value.sample_table node and the table it read when this
+    // graph was built (its files and their sha256 are in the table), in node
+    // order. A generation whose tables differ on disk is out of date.
+    struct SampleTableRead {
+        std::string node;
+        std::string asset;
+        std::shared_ptr<const SampleTable> table;
+    };
+    std::vector<SampleTableRead> sampleTables() const;
 
   private:
     Outputs evaluateInternal(const Inputs &inputs, const ParameterValues &parameters,
@@ -265,7 +281,7 @@ class PELICAN_API Graph {
     std::vector<std::string> lowered_outputs_;
     std::vector<InstanceInputBinding> instance_inputs_;
     std::set<std::string, std::less<>> shadowed_parameters_;
-    enum class Op { input, parameter, constant, add, multiply, curve, playback, trigger_clock, event_input, event_clock, audio_playback };
+    enum class Op { input, parameter, constant, add, multiply, curve, playback, trigger_clock, event_input, event_clock, audio_playback, sample_table };
     std::map<std::string, std::string> audio_sources_;
     std::map<std::string, MorphWeightSource> morph_sources_;
     std::vector<std::size_t> audio_nodes_;
@@ -277,6 +293,11 @@ class PELICAN_API Graph {
         double constant{};
         std::vector<std::size_t> dependencies;
         std::optional<Animation::ScalarCurve> curve;
+        // sample_table (AB-1): the table, read when the graph was built, and
+        // the feature row.
+        std::shared_ptr<const SampleTable> table;
+        std::string table_asset;
+        std::uint32_t table_row{};
         Animation::CurvePlaybackSettings playback;
         std::vector<double Animation::CurvePlaybackSettings::*> playback_inputs;
         bool has_pause{};

@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <map>
@@ -1142,6 +1143,53 @@ std::optional<FramePlanFamilyExtent> framePlanFamilyExtent(const Json &node,
     return extent;
 }
 
+std::optional<FramePlanDrawnMaterials> framePlanDrawnMaterials(const Json &node,
+                                                               std::string_view context) {
+    const auto found = node.find("drawn_materials");
+    if (found == node.end() || found->is_null()) return std::nullopt;
+    const std::string where = std::string{context} + ".drawn_materials";
+    if (!found->is_array()) throw invalid(where + " must be an array");
+    FramePlanDrawnMaterials drawn;
+    for (std::size_t index = 0; index < found->size(); ++index) {
+        const auto &entry = found->at(index);
+        const std::string at = where + "[" + std::to_string(index) + "]";
+        if (!entry.is_object()) throw invalid(at + " must be an object");
+        FramePlanDrawnMaterial material;
+        material.name = optionalStringField(entry, "material", at);
+        // The engine's material id: a number (its runtime id), or a string.
+        const auto id = entry.find("id");
+        if (id != entry.end() && id->is_number_unsigned())
+            material.id = std::to_string(id->get<std::uint64_t>());
+        else
+            material.id = requireStringField(entry, "id", at);
+        const auto draws = entry.find("draws");
+        if (draws == entry.end()) throw invalid(at + ".draws is required");
+        material.draws = unsignedInteger(*draws, at + ".draws");
+        drawn.materials.push_back(std::move(material));
+    }
+    if (const auto frame = node.find("drawn_materials_frame");
+        frame != node.end() && !frame->is_null())
+        drawn.frame = unsignedInteger(*frame, std::string{context} + ".drawn_materials_frame");
+    drawn.truncated =
+        optionalBoolField(node, "drawn_materials_truncated", context).value_or(false);
+    return drawn;
+}
+
+std::string framePlanDrawnMaterialLabel(const FramePlanDrawnMaterials &drawn,
+                                        std::size_t index) {
+    const auto &material = drawn.materials.at(index);
+    if (material.name.empty())
+        return std::all_of(material.id.begin(), material.id.end(),
+                           [](unsigned char c) { return std::isdigit(c) != 0; })
+                   ? "material " + material.id
+                   : material.id;
+    const auto same = std::count_if(drawn.materials.begin(), drawn.materials.end(),
+                                    [&](const FramePlanDrawnMaterial &other) {
+                                        return other.name == material.name;
+                                    });
+    return same > 1 ? material.name + " (material " + material.id + ")" : material.name;
+}
+
 FramePlanModel buildFramePlanModel(std::string_view response_json) {
     Json root;
     try {
@@ -1254,6 +1302,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
             node.pass_inputs =
                 parsePassInputs(*pass_inputs, context + ".pass_inputs");
         }
+        node.drawn_materials = framePlanDrawnMaterials(value, context);
         node.color_load_op =
             optionalStringField(value, "color_load_op", context);
         node.color_store_op =
@@ -1756,6 +1805,20 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
             resource.resolve_required =
                 optionalBoolField(value, "resolve_required", context);
             resource.from_nodes = stringArray(value, "from_nodes", context);
+            // IA-1s, decision 3: absent or null for an image that starts
+            // from nothing (and in a plan from before IA-1).
+            if (const auto initial = value.find("initial_asset");
+                initial != value.end() && !initial->is_null()) {
+                if (!initial->is_object())
+                    throw invalid(context + ".initial_asset must be an object or null");
+                FramePlanInitialAsset asset;
+                asset.asset = requireStringField(*initial, "asset",
+                                                 context + ".initial_asset");
+                if (const auto sha = initial->find("sha256");
+                    sha != initial->end() && sha->is_string())
+                    asset.sha256 = sha->get<std::string>();
+                resource.initial_asset = std::move(asset);
+            }
             if (const auto extent = value.find("extent");
                 extent != value.end() && !extent->is_null()) {
                 resource.extent = parseExtent(*extent, context + ".extent");
@@ -2038,6 +2101,12 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
 bool materialContractTakesDeferredRoute(std::string_view contract) {
     return contract.empty() || contract == "deferred_geometry_v1" ||
            contract == "legacy_gbuffer_v1";
+}
+
+std::string framePlanInitialAssetLine(const FramePlanInitialAsset &initial) {
+    return "initial: " + initial.asset + " \xC2\xB7 " +
+           (initial.sha256 ? "sha256 " + initial.sha256->substr(0, 8)
+                           : std::string{"not in the manifest"});
 }
 
 bool materialRouteOffersForwardDefault(std::string_view contract,

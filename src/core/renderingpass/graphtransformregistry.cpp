@@ -1181,6 +1181,11 @@ GraphTransformRegistry::snapshot() const {
             std::move(lock), impl_.get())};
 }
 
+std::vector<RenderProviderListing>
+GraphTransformRegistry::providerListing() const {
+    return impl_->listing();
+}
+
 void GraphTransformRegistry::activateOwner(
     internal::RegistrationOwner owner) noexcept {
     impl_->activateOwner(owner);

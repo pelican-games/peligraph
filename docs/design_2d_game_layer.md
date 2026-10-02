@@ -100,6 +100,13 @@ declaration ID + フラグメント**で指す:
   degradation 禁止)
 - スプライト = object transform で置かれる world-space quad(XY 平面・
   +Z 法線)。回転・スケール・親子は Transform がそのまま効く
+  - (2026-10-03 追記、CC-1 `c8367b87`、[design_coordinate_convention.md](design_coordinate_convention.md))
+    画像の上の行は sprite の local +Y 側(上)に置く。`pivot` と画像の角は画像の空間
+    (左上原点・y 下・0..1)なので、`pivot` の y は 0 が画像の上端、1 が下端
+    (`src/core/renderer/spriterenderer.cpp` の quad、`spritescene.cpp` の bounds)。それまでは
+    画像の上の行が local −Y 側に置かれ、上下が逆の画面と合わせ込まれていた(設計 §3.4 の見立て)。
+    上の例の `"pivot": [0.5, 0.0]` は画像の上端の中央を指す(CC-1 の前後で同じ。例を書いた時の
+    意図は未確認)
 - flipbook はエンジン機構にしない(frame 差し替えはユーザー空間
   システム。同梱 flipbook = 特権なし標準ライブラリ)
 

@@ -1,0 +1,392 @@
+{
+  "definitions": {
+    "psd_fixture": {
+      "nodes": [
+        {
+          "id": "l0000_background",
+          "op": "canvas.image",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "asset": "project://imports/psd_fixture/layers/0000_Background.png",
+            "offset": [
+              0,
+              0
+            ],
+            "size": [
+              64,
+              32
+            ]
+          }
+        },
+        {
+          "id": "l0000_background_mask",
+          "op": "canvas.image",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "asset": "project://imports/psd_fixture/masks/0000_Background.png",
+            "channel": "luminance",
+            "offset": [
+              0,
+              0
+            ],
+            "outside": 0.0,
+            "size": [
+              64,
+              32
+            ]
+          }
+        },
+        {
+          "id": "l0002_card",
+          "op": "canvas.image",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "asset": "project://imports/psd_fixture/layers/0002_Card.png",
+            "offset": [
+              12,
+              8
+            ],
+            "size": [
+              40,
+              16
+            ]
+          }
+        },
+        {
+          "id": "l0002_card_mask",
+          "op": "canvas.image",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "asset": "project://imports/psd_fixture/masks/0002_Card.png",
+            "channel": "luminance",
+            "offset": [
+              12,
+              8
+            ],
+            "outside": 0.0,
+            "size": [
+              30,
+              16
+            ]
+          }
+        },
+        {
+          "id": "l0003_shine",
+          "op": "canvas.image",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "asset": "project://imports/psd_fixture/layers/0003_Shine.png",
+            "offset": [
+              12,
+              8
+            ],
+            "size": [
+              40,
+              6
+            ]
+          }
+        },
+        {
+          "id": "l0003_shine_mask",
+          "op": "canvas.image",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "asset": "project://imports/psd_fixture/masks/0003_Shine.png",
+            "channel": "luminance",
+            "offset": [
+              12,
+              8
+            ],
+            "outside": 0.0,
+            "size": [
+              40,
+              6
+            ]
+          }
+        },
+        {
+          "id": "l0001_panel",
+          "inputs": {
+            "l0002_card": {
+              "node": "l0002_card",
+              "port": "layer"
+            },
+            "l0002_card_mask": {
+              "node": "l0002_card_mask",
+              "port": "layer"
+            },
+            "l0003_shine": {
+              "node": "l0003_shine",
+              "port": "layer"
+            },
+            "l0003_shine_mask": {
+              "node": "l0003_shine_mask",
+              "port": "layer"
+            }
+          },
+          "op": "canvas.stack",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "blend_space": "srgb",
+            "layers": [
+              {
+                "input": "l0002_card",
+                "mask": "l0002_card_mask",
+                "name": "Card",
+                "opacity": 0.8
+              },
+              {
+                "clip": true,
+                "input": "l0003_shine",
+                "mask": "l0003_shine_mask",
+                "name": "Shine",
+                "opacity": 0.501961
+              }
+            ]
+          }
+        },
+        {
+          "id": "l0005_a",
+          "op": "canvas.image",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "asset": "project://imports/psd_fixture/layers/0005_A.png",
+            "offset": [
+              44,
+              14
+            ],
+            "size": [
+              12,
+              12
+            ]
+          }
+        },
+        {
+          "id": "l0005_a_mask",
+          "op": "canvas.image",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "asset": "project://imports/psd_fixture/masks/0005_A.png",
+            "channel": "luminance",
+            "offset": [
+              44,
+              14
+            ],
+            "outside": 0.0,
+            "size": [
+              12,
+              12
+            ]
+          }
+        },
+        {
+          "id": "l0006_b",
+          "op": "canvas.image",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "asset": "project://imports/psd_fixture/layers/0006_B.png",
+            "offset": [
+              50,
+              18
+            ],
+            "size": [
+              12,
+              12
+            ]
+          }
+        },
+        {
+          "id": "l0006_b_mask",
+          "op": "canvas.image",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "asset": "project://imports/psd_fixture/masks/0006_B.png",
+            "channel": "luminance",
+            "offset": [
+              50,
+              18
+            ],
+            "outside": 0.0,
+            "size": [
+              12,
+              12
+            ]
+          }
+        },
+        {
+          "id": "l0004_isolated",
+          "inputs": {
+            "l0005_a": {
+              "node": "l0005_a",
+              "port": "layer"
+            },
+            "l0005_a_mask": {
+              "node": "l0005_a_mask",
+              "port": "layer"
+            },
+            "l0006_b": {
+              "node": "l0006_b",
+              "port": "layer"
+            },
+            "l0006_b_mask": {
+              "node": "l0006_b_mask",
+              "port": "layer"
+            }
+          },
+          "op": "canvas.stack",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "blend_space": "srgb",
+            "layers": [
+              {
+                "input": "l0005_a",
+                "mask": "l0005_a_mask",
+                "name": "A"
+              },
+              {
+                "input": "l0006_b",
+                "mask": "l0006_b_mask",
+                "name": "B"
+              }
+            ]
+          }
+        },
+        {
+          "id": "l0007_dot",
+          "op": "canvas.image",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "asset": "project://imports/psd_fixture/layers/0007_Dot.png",
+            "offset": [
+              2,
+              2
+            ],
+            "size": [
+              6,
+              6
+            ]
+          }
+        },
+        {
+          "id": "l0007_dot_mask",
+          "op": "canvas.image",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "asset": "project://imports/psd_fixture/masks/0007_Dot.png",
+            "channel": "luminance",
+            "offset": [
+              2,
+              2
+            ],
+            "outside": 0.0,
+            "size": [
+              6,
+              6
+            ]
+          }
+        },
+        {
+          "id": "root",
+          "inputs": {
+            "l0000_background": {
+              "node": "l0000_background",
+              "port": "layer"
+            },
+            "l0000_background_mask": {
+              "node": "l0000_background_mask",
+              "port": "layer"
+            },
+            "l0001_panel": {
+              "node": "l0001_panel",
+              "port": "layer"
+            },
+            "l0004_isolated": {
+              "node": "l0004_isolated",
+              "port": "layer"
+            },
+            "l0007_dot": {
+              "node": "l0007_dot",
+              "port": "layer"
+            },
+            "l0007_dot_mask": {
+              "node": "l0007_dot_mask",
+              "port": "layer"
+            }
+          },
+          "op": "canvas.stack",
+          "outputs": [
+            "layer"
+          ],
+          "parameters": {
+            "blend_space": "srgb",
+            "layers": [
+              {
+                "input": "l0000_background",
+                "mask": "l0000_background_mask",
+                "name": "Background"
+              },
+              {
+                "input": "l0001_panel",
+                "name": "Panel",
+                "opacity": 0.901961,
+                "pass_through": true
+              },
+              {
+                "input": "l0004_isolated",
+                "name": "Isolated",
+                "opacity": 0.705882
+              },
+              {
+                "input": "l0007_dot",
+                "mask": "l0007_dot_mask",
+                "name": "Dot"
+              }
+            ],
+            "size": [
+              64,
+              32
+            ]
+          }
+        }
+      ],
+      "outputs": {
+        "layer": {
+          "node": "root",
+          "port": "layer"
+        }
+      }
+    }
+  },
+  "nodes": [],
+  "outputs": {},
+  "schema": "pelican.graph",
+  "version": 1
+}

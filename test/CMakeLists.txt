@@ -399,6 +399,9 @@ if(TARGET pelican_studio_inspector_model)
   # GL-3a: fold groups as the Graph tab and the Frame Plan read and write
   # them, without Qt.
   pelican_define_test(devstudio_graph_fold_test pelican_studio_inspector_model)
+  # SG-1: pelican.canvas in the Graph tab -- a stack's sockets, the Layers
+  # panel's rows and the op lists its gestures send, without Qt.
+  pelican_define_test(devstudio_canvas_layers_test pelican_studio_inspector_model)
   target_compile_definitions(pelican_test_devstudio_graph_fold_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
   target_compile_definitions(pelican_test_devstudio_graphcanvas_test PRIVATE
@@ -515,6 +518,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_WP298_PLAYER="$<TARGET_FILE:pelican_player>"
     PELICAN_WP298_EXAMPLE_PROJECT="${pelican_wp298_example_project}"
     PELICAN_WP351B_LIVE_CHILD="$<TARGET_FILE:pelican_test_wp351b_live_child>"
+    # UX-9, decision 5: the project a broken buffer port is written into.
+    PELICAN_UX9_FIXTURE_PROJECT="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_automation_graph"
   )
   add_dependencies(pelican_test_devstudio_engine_failure_test
     pelican_player
@@ -579,10 +584,23 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasdrawing.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasloopfields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasrenderfields.cpp
+    # UX-11: the tag picker and a material pass's settings (UX-4a's form).
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvastagpicker.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasmaterialfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/materialsettingsform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasvaluefields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascomputefields.cpp
+    # UX-10: a pose.clip_sample's fields.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasposefields.cpp
+    # UX-12a: a node's parameters from the catalog's table (UX-10's spins).
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasparameterfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/featureparameterform.cpp
     # GL-3a: the fold groups the Graph tab draws and writes.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
+    # SG-1: a canvas.stack's Layers panel.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaslayerspanel.cpp
+    # AB-1s: Bake analysis, Use in Graph / in a shader, Re-bake.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasaudioanalysis.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
@@ -626,9 +644,20 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasdrawing.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasloopfields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasrenderfields.cpp
+    # UX-11: the tag picker and a material pass's settings (UX-4a's form).
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvastagpicker.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasmaterialfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/materialsettingsform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasvaluefields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascomputefields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasposefields.cpp
+    # UX-12a: a node's parameters from the catalog's table (UX-10's spins).
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasparameterfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/featureparameterform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaslayerspanel.cpp
+    # AB-1s: Bake analysis, Use in Graph / in a shader, Re-bake.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasaudioanalysis.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
@@ -1666,6 +1695,9 @@ else()
 pelican_define_test(animation_off_scene_test GROUP core_foundation pelican_core)
 endif()
 pelican_define_test(curve_test GROUP core_foundation pelican_core)
+# CV-1: the catalog lists pelican.canvas in the builds that carry it.
+target_compile_definitions(pelican_test_curve_test PRIVATE
+    PELICAN_WITH_CANVAS=$<BOOL:${PELICAN_WITH_CANVAS}>)
 # PG-1: the scene-load half of the build-feature gate, measured in every
 # build (run_build_units_smoke.cmake runs its [pg1] tag in the OFF builds).
 pelican_define_test(pg1_feature_gate_test GROUP core_foundation pelican_core)
@@ -2145,6 +2177,9 @@ endif()
 pelican_define_test(engine_primitives_test MIXED_GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
 target_include_directories(pelican_test_engine_primitives_test PRIVATE ${stb_SOURCE_DIR})
 target_link_libraries(pelican_test_engine_primitives_test PRIVATE pelican_shaderc)
+# FR-3: the Blank-built deferred pipeline under test/fixtures/fr3_blank_graph.
+target_compile_definitions(pelican_test_engine_primitives_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 if(COMMAND pelican_copy_shaderc_runtime)
     pelican_copy_test_shaderc_runtime(pelican_test_engine_primitives_test)
 endif()
@@ -2155,6 +2190,14 @@ target_include_directories(pelican_test_vi1_variadic_inputs_test PRIVATE ${stb_S
 target_link_libraries(pelican_test_vi1_variadic_inputs_test PRIVATE pelican_shaderc)
 if(COMMAND pelican_copy_shaderc_runtime)
     pelican_copy_test_shaderc_runtime(pelican_test_vi1_variadic_inputs_test)
+endif()
+# EN-2: a render.image read from a project image file. The loader case is
+# CPU-only; the other draws the file through a graph fullscreen pass.
+pelican_define_test(en2_image_source_test MIXED_GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp stb glm)
+target_include_directories(pelican_test_en2_image_source_test PRIVATE ${stb_SOURCE_DIR})
+target_link_libraries(pelican_test_en2_image_source_test PRIVATE pelican_shaderc)
+if(COMMAND pelican_copy_shaderc_runtime)
+    pelican_copy_test_shaderc_runtime(pelican_test_en2_image_source_test)
 endif()
 # PM-1a: playing <-> paused, advance_frames and the evaluation index over the
 # headless RPC, with the shipped posegraph_demo as the animated scene.
@@ -2855,6 +2898,19 @@ if(PELICAN_WITH_RPC)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_headless.cmake
     )
     pelican_gpu_test_properties(rpc_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+    # PV-1: a project authoring a history target starts and plays in the
+    # headless player with the one-shot preview unavailable (get_status,
+    # get_frame_plan, render_preview's preview.unavailable@1, one log warning).
+    add_test(
+        NAME pv1_preview_unavailable_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DFIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/pv1_history_accum
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/pv1_preview_unavailable_player
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_pv1_preview_unavailable_player.cmake
+    )
+    pelican_gpu_test_properties(pv1_preview_unavailable_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
     # AU-3: the audio backend named at launch -- --audio-backend over
     # PELICAN_AUDIO_BACKEND over the window's default -- is what get_status
     # reports, and a name none of the three stops the launch by name. The
@@ -3074,6 +3130,24 @@ target_compile_definitions(pelican_test_packagemanifest_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+# IA-1: the KTX2 writer, the float formats the loader reads, and
+# `pelican_cli image ktx2` (its source is compiled in, as projectmigration_test
+# compiles `project migrate`).
+pelican_define_test(ia1_ktx2_cli_test pelican_core argparse stb)
+target_sources(pelican_test_ia1_ktx2_cli_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devcli/imagecommand.cpp
+)
+
+# AB-1: `pelican_cli audio analyze` (its source compiled in, as IA-1's is),
+# value.sample_table, and bake_audio_analysis / list_derived_assets on the
+# render config editor.
+if(PELICAN_WITH_AUDIO)
+pelican_define_test(ab1_audio_analysis_test pelican_core argparse)
+target_sources(pelican_test_ab1_audio_analysis_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devcli/audiocommand.cpp
+)
+endif()
+
 # MG-1: the document migration registry, the raw-envelope gate, plan/apply on
 # the project document transaction, and `project migrate` itself (its source is
 # compiled in so the test-only step reaches it). The step lives in
@@ -3148,6 +3222,7 @@ add_test(
         -DCLI=$<TARGET_FILE:pelican_cli>
         -DWITH_ANIMATION=$<BOOL:${PELICAN_WITH_ANIMATION}>
         -DWITH_AUDIO=$<BOOL:${PELICAN_WITH_AUDIO}>
+        -DWITH_CANVAS=$<BOOL:${PELICAN_WITH_CANVAS}>
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_graph_catalog.cmake
 )
 
@@ -3234,6 +3309,7 @@ endif()
 target_compile_definitions(pelican_test_renderconfigeditor_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+    PELICAN_WITH_CANVAS=$<BOOL:${PELICAN_WITH_CANVAS}>
 )
 
 pelican_define_test(renderconfigtransactionreplace_test GROUP render_pipeline
@@ -3504,6 +3580,12 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
                 set(pelican_studio_scenario_game_logic
                     "-DGAME_LOGIC=$<TARGET_FILE:pelican_studio_${pelican_studio_scenario_name}_game_logic>")
             endif()
+            # IA-1s: a scenario's <name>.prepare.py makes, with the CLI, what
+            # a person makes outside Studio before opening it.
+            set(pelican_studio_scenario_cli)
+            if(TARGET pelican_cli)
+                set(pelican_studio_scenario_cli "-DCLI=$<TARGET_FILE:pelican_cli>")
+            endif()
             add_test(
                 NAME studio_scenario_${pelican_studio_scenario_name}
                 COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
@@ -3516,6 +3598,7 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
                     -DPYTHON=${Python3_EXECUTABLE}
                     -DQT_BIN_DIR=$<TARGET_FILE_DIR:Qt6::Core>
                     ${pelican_studio_scenario_game_logic}
+                    ${pelican_studio_scenario_cli}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_studio_scenario.cmake
             )
             set_property(TEST studio_scenario_${pelican_studio_scenario_name}
@@ -3534,6 +3617,122 @@ endif()
 add_executable(pelican_test_png_nonuniform_check png_nonuniform_check.cpp)
 set_target_properties(pelican_test_png_nonuniform_check PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_png_nonuniform_check PRIVATE stb)
+
+# CV-1: the pelican.canvas lowering (non-GPU), and a lowered blank project run
+# by the player, its frames held against the CPU reference.
+if(PELICAN_WITH_CANVAS)
+    pelican_define_test(canvas_lowering_test pelican_project)
+    # CV-2a: image layers, masks, clips, groups and blend spaces.
+    pelican_define_test(canvas_layers_test pelican_project)
+    # CV-4: shape.text -- distance fields, the font reader, layout and atlas.
+    pelican_define_test(canvas_text_test pelican_project)
+    # CV-2b: blend modes, canvas.backdrop and the colour filters.
+    pelican_define_test(canvas_blend_test pelican_project)
+    add_executable(pelican_test_canvas_png_compare canvas_png_compare.cpp)
+    set_target_properties(pelican_test_canvas_png_compare PROPERTIES CXX_STANDARD 20)
+    target_link_libraries(pelican_test_canvas_png_compare PRIVATE stb pelican_project nlohmann_json)
+    add_test(
+        NAME canvas_lower_headless_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DCOMPARE=$<TARGET_FILE:pelican_test_canvas_png_compare>
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/canvas_lower_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_headless.cmake
+    )
+    pelican_gpu_test_properties(canvas_lower_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+    # CV-2a: a PSD layer stack (fixtures/canvas_psd) against its reference.png,
+    # and a canvas.from_image of a graph pass's image.
+    add_test(
+        NAME canvas_psd_headless_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DCOMPARE=$<TARGET_FILE:pelican_test_canvas_png_compare>
+            -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/canvas_psd
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/canvas_psd_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_psd_headless.cmake
+    )
+    pelican_gpu_test_properties(canvas_psd_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+    # CV-2b: a PSD with blend modes and adjustment layers (fixtures/canvas_psd_blend)
+    # against its reference.png, and every blend mode and colour filter against
+    # the CPU reference.
+    add_test(
+        NAME canvas_blend_headless_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DCOMPARE=$<TARGET_FILE:pelican_test_canvas_png_compare>
+            -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/canvas_psd_blend
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/canvas_blend_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_blend_headless.cmake
+    )
+    pelican_gpu_test_properties(canvas_blend_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+    # CV-1b: the same document run as written, lowered by the engine itself.
+    add_test(
+        NAME canvas_live_headless_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DCOMPARE=$<TARGET_FILE:pelican_test_canvas_png_compare>
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/canvas_live_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_live_headless.cmake
+    )
+    pelican_gpu_test_properties(canvas_live_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+    # CV-4: shape.text from a system font, lowered by the engine, against the
+    # CPU reference (skipped where the font is not installed).
+    add_test(
+        NAME canvas_text_headless_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DCOMPARE=$<TARGET_FILE:pelican_test_canvas_png_compare>
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/canvas_text_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_text_headless.cmake
+    )
+    pelican_gpu_test_properties(canvas_text_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+    set_tests_properties(canvas_text_headless_player PROPERTIES
+        SKIP_REGULAR_EXPRESSION PELICAN_CANVAS_TEXT_SKIP_NO_FONT)
+    # CV-6a: canvas.place and layer depths -- the lowering and the placement's
+    # arithmetic, then a stack placed in a 3D scene, its frames held against
+    # where the arithmetic puts the items.
+    pelican_define_test(canvas_place_test pelican_project)
+    add_executable(pelican_test_canvas_place_probe canvas_place_probe.cpp)
+    set_target_properties(pelican_test_canvas_place_probe PROPERTIES CXX_STANDARD 20)
+    target_link_libraries(pelican_test_canvas_place_probe PRIVATE stb pelican_project nlohmann_json)
+    add_test(
+        NAME canvas_place_headless_player
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DPROBE=$<TARGET_FILE:pelican_test_canvas_place_probe>
+            -DFIXTURE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_material_pass_authoring
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/canvas_place_headless
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_canvas_place_headless.cmake
+    )
+    pelican_gpu_test_properties(canvas_place_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+endif()
+# CC-1a: the 3D screen is the world as seen, not its mirror
+# (docs/design_coordinate_convention.md section 5).
+add_executable(pelican_test_coordinate_mirror_check coordinate_mirror_check.cpp)
+set_target_properties(pelican_test_coordinate_mirror_check PROPERTIES CXX_STANDARD 20)
+target_link_libraries(pelican_test_coordinate_mirror_check PRIVATE stb nlohmann_json)
+add_test(
+    NAME coordinate_mirror_headless
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DMIRROR_CHECK=$<TARGET_FILE:pelican_test_coordinate_mirror_check>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/coordinate_mirror
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_coordinate_mirror_headless.cmake
+)
+pelican_gpu_test_properties(coordinate_mirror_headless ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 
 set(PELICAN_TEST_PROJECTS_DIR "" CACHE PATH
     "Project corpus scanned by project_catalog_headless_smoke; empty skips the test")
@@ -3719,6 +3918,7 @@ set(PELICAN_RUNTIME_SHADER_PROCESS_TESTS
     free_camera_runtime_overlay_player
     vrm_xr_demo_rpc_player
     rpc_headless_player
+    pv1_preview_unavailable_player
     audio_backend_selection_player
     rpc_set_camera_headless_player
     rpc_scene_flow_headless_player
@@ -3806,6 +4006,12 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
         studio_drive_shutdown_unit
         ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_studio_drive.py
     )
+    # CC-1b: tools/convert_camera_convention.py, the conversion of a project
+    # written before the camera convention changed.
+    pelican_define_python_test(
+        convert_camera_convention_unit
+        ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_convert_camera_convention.py
+    )
     pelican_define_python_test(
         gpu_lease_inventory
         ${CMAKE_CURRENT_SOURCE_DIR}/ci/verify_gpu_lease_inventory.py
@@ -3834,6 +4040,18 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
             --repo-root ${CMAKE_SOURCE_DIR}
             --player $<TARGET_FILE:pelican_player>
         )
+        if(PELICAN_WITH_CANVAS)
+            # CV-1b: a canvas document edited over RPC in a headless engine;
+            # the frame plan and get_authoring_lowering name the author's
+            # nodes.
+            pelican_define_gpu_python_test(
+                canvas_live_edit_rpc
+                ${CMAKE_CURRENT_SOURCE_DIR}/canvas_live_edit_rpc.py
+                --repo-root ${CMAKE_SOURCE_DIR}
+                --player $<TARGET_FILE:pelican_player>
+                --cli $<TARGET_FILE:pelican_cli>
+            )
+        endif()
         if(WIN32)
             # EW-1: --embedded creates the render window hidden and marked
             # with the PelicanEngineRenderWindow property.

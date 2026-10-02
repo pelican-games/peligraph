@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <optional>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <utility>
@@ -71,6 +72,14 @@ DECLARE_MODULE(PhysWorld) {
     std::vector<TriggerPair> active_trigger_pairs;
     std::uint64_t next_collider_id_value = 1;
 
+    // ECS clients may write TransformComponent directly, including between two
+    // queries in one frame. Validate the live transform values on every read.
+    mutable std::mutex collider_snapshot_mutex_;
+    mutable std::shared_ptr<const std::vector<phys::Collider>> collider_snapshot_;
+    mutable std::vector<std::optional<PhysWorldTransform>> collider_transforms_;
+    mutable std::uint64_t collider_snapshot_builds_ = 0;
+    std::shared_ptr<const std::vector<phys::Collider>> colliderSnapshot() const;
+    void invalidateColliderSnapshot() noexcept { collider_snapshot_.reset(); }
     phys::ColliderId allocateColliderId();
 
   public:
@@ -119,6 +128,9 @@ DECLARE_MODULE(PhysWorld) {
     void updateTriggers(GameContext &ctx);
     void enqueueDebugDraw(DebugDraw &debug_draw, const glm::mat4 &view_projection) const;
 
+    std::uint64_t colliderSnapshotBuildCountForTesting() const noexcept {
+        return collider_snapshot_builds_;
+    }
     size_t colliderCountForTesting() const { return bindings.size(); }
     size_t activeTriggerPairCountForTesting() const noexcept {
         return active_trigger_pairs.size();

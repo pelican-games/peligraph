@@ -2,6 +2,8 @@
 
 #include "fullscreenpasssettings.hpp"
 #include "fullscreenshadertemplate.hpp"
+#include "graphcanvasparameterfields.hpp"
+#include "graphcanvasposefields.hpp"
 #include "passforms/attachmentopsform.hpp"
 #include "passforms/rasterstateform.hpp"
 #include "passforms/shaderdefinesform.hpp"
@@ -11,6 +13,9 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
+#include <QDir>
+#include <QFileDialog>
+#include <QProcess>
 #include <QDialogButtonBox>
 #include <QEvent>
 #include <QDoubleSpinBox>
@@ -37,6 +42,7 @@
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <memory>
 #include <tuple>
 
 namespace PelicanStudio {
@@ -96,12 +102,171 @@ void retire(QWidget *widget) {
 
 } // namespace
 
+// --- UX-9, decision 2: edits held for a busy model.
+
+GraphCanvasHeldEdits::GraphCanvasHeldEdits(GraphCanvasModel &model, QObject *owner)
+    : model_{model}, timer_{new QTimer(owner)} {
+    // The model says nothing when it becomes editable; it is asked.
+    timer_->setInterval(100);
+    QObject::connect(timer_, &QTimer::timeout, timer_, [this] { follow(); });
+}
+
+bool GraphCanvasHeldEdits::sendOrHold(std::function<bool()> send) {
+    if (!send) return false;
+    follow();
+    if (held_.empty() && model_.canEdit()) return send();
+    held_.push_back(std::move(send));
+    timer_->start();
+    if (changed_) changed_();
+    return true;
+}
+
+void GraphCanvasHeldEdits::follow() {
+    bool tried = false;
+    // One goes at a time: a sent edit makes the model busy until it lands.
+    while (!held_.empty() && model_.canEdit()) {
+        auto send = std::move(held_.front());
+        held_.pop_front();
+        tried = true;
+        // Refused (nothing to change any more): it is let go.
+        send();
+    }
+    if (held_.empty()) timer_->stop();
+    if (!tried) return;
+    if (sent_) sent_();
+    if (changed_) changed_();
+}
+
+std::function<bool()> heldParametersEdit(GraphCanvasModel &model, std::string scope,
+                                         std::string node, Json base, Json changed) {
+    return [&model, scope = std::move(scope), node = std::move(node), base = std::move(base),
+            changed = std::move(changed)] {
+        const auto now = model.nodeParameters(scope, node);
+        if (!now.is_object()) return false;
+        auto next = changed;
+        if (now != base) {
+            try {
+                next = now.patch(Json::diff(base, changed));
+            } catch (const std::exception &) {
+                return false;
+            }
+        }
+        if (next == now) return false;
+        return model.setNodeParameters(scope, node, next);
+    };
+}
+
+// --- PS-1s, decisions 1, 3 and 4: a pass's or task's Schedule.
+
+GraphCanvasScheduleRow::GraphCanvasScheduleRow(GraphCanvasModel &model, const QString &prefix,
+                                               std::function<void()> submitted, QWidget *parent)
+    : QWidget{parent}, model_{model}, submitted_{std::move(submitted)} {
+    setObjectName(prefix + QStringLiteral(".scheduleRow"));
+    held_ = std::make_unique<GraphCanvasHeldEdits>(model_, this);
+    held_->setSent([this] {
+        if (submitted_) submitted_();
+    });
+    auto *grid = new QGridLayout(this);
+    grid->setContentsMargins(0, 0, 0, 0);
+    schedule_ = new QComboBox(this);
+    schedule_->setObjectName(prefix + QStringLiteral(".schedule"));
+    schedule_->setToolTip(tr("When it runs. Once: on the first frame of a generation, then again "
+                             "only when what it reads changes, its output is made anew, or "
+                             "Recompute is pressed. What it writes is kept between frames "
+                             "(Persistent)."));
+    schedule_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    schedule_->setMinimumContentsLength(8);
+    recompute_ = new QPushButton(tr("Recompute"), this);
+    recompute_->setObjectName(prefix + QStringLiteral(".recompute"));
+    recompute_->setToolTip(tr("Run it again on the next frame (rerun_once)."));
+    run_ = new QLabel(this);
+    run_->setObjectName(prefix + QStringLiteral(".onceRun"));
+    run_->setFont(studioSmallFont());
+    run_->setWordWrap(true);
+    grid->addWidget(schedule_, 0, 0);
+    grid->addWidget(recompute_, 0, 1);
+    grid->addWidget(run_, 1, 0, 1, 2);
+    grid->setColumnStretch(0, 1);
+    connect(schedule_, &QComboBox::currentIndexChanged, this, [this] { commit(); });
+    connect(recompute_, &QPushButton::clicked, this, [this] { recompute(); });
+}
+
+void GraphCanvasScheduleRow::showNode(const std::string &scope, const std::string &node) {
+    scope_ = scope;
+    node_ = node;
+    const auto current = model_.nodeSchedule(scope_, node_);
+    // A task also runs once per view.
+    const bool compute = std::ranges::any_of(model_.nodes(scope_), [&](const GraphCanvasNode &each) {
+        return each.id == node_ && each.op == "render.compute";
+    });
+    QStringList wanted{QStringLiteral("per_frame")};
+    if (compute) wanted << QStringLiteral("per_view");
+    wanted << QStringLiteral("once");
+    QStringList held;
+    for (int index = 0; index < schedule_->count(); ++index)
+        held << schedule_->itemData(index).toString();
+    {
+        const QSignalBlocker block{schedule_};
+        // Built again only when the choices differ: an open list is not
+        // taken from under the hand by a plan arriving.
+        if (held != wanted) {
+            schedule_->clear();
+            for (const auto &value : wanted)
+                schedule_->addItem(value == QLatin1String{"per_frame"}  ? tr("Every frame")
+                                   : value == QLatin1String{"per_view"} ? tr("Every view")
+                                                                        : tr("Once"),
+                                   value);
+        }
+        selectOrAdd(*schedule_, qtext(current));
+    }
+    const auto run = model_.onceRun(scope_, node_);
+    recompute_->setVisible(run.has_value());
+    run_->setVisible(run.has_value());
+    if (!run) {
+        run_->clear();
+    } else if (!run->generation) {
+        run_->setText(tr("Not run yet"));
+    } else {
+        run_->setText(tr("Ran in generation %1, frame %2")
+                          .arg(*run->generation)
+                          .arg(run->frame ? QString::number(*run->frame) : QStringLiteral("?")));
+    }
+}
+
+void GraphCanvasScheduleRow::followEditable() {
+    held_->follow();
+    schedule_->setEnabled(model_.canEdit());
+    recompute_->setEnabled(model_.connected());
+}
+
+void GraphCanvasScheduleRow::commit() {
+    const auto picked = schedule_->currentData().toString().toStdString();
+    if (picked.empty() || node_.empty() || picked == model_.nodeSchedule(scope_, node_)) return;
+    // Decision 2: Once also keeps what the pass writes, in the same edit.
+    if (held_->sendOrHold([&model = model_, scope = scope_, node = node_, picked] {
+            return model.setNodeSchedule(scope, node, picked);
+        })) {
+        if (submitted_) submitted_();
+        return;
+    }
+    showNode(scope_, node_);
+}
+
+void GraphCanvasScheduleRow::recompute() {
+    if (node_.empty()) return;
+    if (model_.rerunOnce(scope_, node_) && submitted_) submitted_();
+}
+
 // --- Decision 1: render.image.
 
 GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
                                                std::function<void()> submitted, QWidget *parent)
     : QWidget{parent}, model_{model}, submitted_{std::move(submitted)} {
     setObjectName(QStringLiteral("pelican.graphCanvasImage"));
+    held_ = std::make_unique<GraphCanvasHeldEdits>(model_, this);
+    held_->setSent([this] {
+        if (submitted_) submitted_();
+    });
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 4, 0, 4);
     heading_ = new QLabel(this);
@@ -220,7 +385,22 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
     fixed_layout->addWidget(new QLabel(QStringLiteral("×"), fixed_row));
     fixed_layout->addWidget(height_, 1);
     fixed_layout->addWidget(height_expression_, 1);
+    // UX-12e, decision 4: kept, and marked, above the usual range.
+    size_unusual_ = new QLabel(tr("above the usual range"), fixed_row);
+    size_unusual_->setObjectName(imageFieldName(QStringLiteral("sizeUnusual")));
+    size_unusual_->setFont(studioSmallFont());
+    size_unusual_->setStyleSheet(QStringLiteral("color: #8a8a8a; font-style: italic;"));
+    size_unusual_->hide();
+    fixed_layout->addWidget(size_unusual_);
     form->addRow(QString{}, fixed_row);
+    // IA-1s, decision 1: an image that starts from an image file can take
+    // its size from it (no width, height or extent_scale).
+    from_image_ = new QCheckBox(tr("Size from the image"), fields_);
+    from_image_->setObjectName(imageFieldName(QStringLiteral("fromImage")));
+    from_image_->setToolTip(tr("The image is as large as its Initial contents (width, height "
+                               "and the screen scale left out)."));
+    form->addRow(QString{}, from_image_);
+    connect(from_image_, &QCheckBox::clicked, this, [this](bool checked) { commitFromImage(checked); });
     // The forms a body's image is usually given, one press each.
     size_expression_row_ = new QWidget(fields_);
     auto *forms_layout = new QHBoxLayout(size_expression_row_);
@@ -262,11 +442,10 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
     form->addRow(caption(tr("Layers"), fields_), layers_row);
     mip_levels_ = new QSpinBox(fields_);
     mip_levels_->setObjectName(imageFieldName(QStringLiteral("mipLevels")));
-    mip_levels_->setRange(0, 16);
-    mip_levels_->setSpecialValueText(QStringLiteral("full"));
+    mip_levels_->setRange(1, 16);
     mip_levels_->setValue(1);
     mip_levels_->setKeyboardTracking(false);
-    mip_levels_->setToolTip(tr("Mip levels: 1 for none, \"full\" for the whole chain."));
+    mip_levels_->setToolTip(tr("Mip levels: 1 for none."));
     mip_levels_expression_ = new QLineEdit(fields_);
     mip_levels_expression_->setObjectName(imageFieldName(QStringLiteral("mipLevelsExpression")));
     mip_levels_expression_->setPlaceholderText(QStringLiteral("log2(256) + 1"));
@@ -276,6 +455,23 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
     auto *mips_row = new QWidget(fields_);
     auto *mips_layout = new QHBoxLayout(mips_row);
     mips_layout->setContentsMargins(0, 0, 0, 0);
+    // UX-12e, decision 3: the shape first -- a count, or the whole chain.
+    mip_shape_ = new QComboBox(mips_row);
+    mip_shape_->setObjectName(imageFieldName(QStringLiteral("mipLevelsShape")));
+    mip_shape_->addItem(tr("Count"), QStringLiteral("count"));
+    mip_shape_->addItem(tr("Full chain"), QStringLiteral("full"));
+    mip_shape_->setToolTip(tr("A number of mip levels, or the whole chain down to 1 × 1 "
+                              "(\"full\")."));
+    mips_layout->addWidget(mip_shape_);
+    connect(mip_shape_, &QComboBox::currentIndexChanged, this, [this] {
+        const bool full = mip_shape_->currentData().toString() == QLatin1String{"full"};
+        {
+            const QSignalBlocker block{mip_levels_};
+            if (full) mip_levels_->setValue(1);
+        }
+        showMipShape();
+        commitSize();
+    });
     mips_layout->addWidget(mip_levels_, 1);
     mips_layout->addWidget(mip_levels_expression_, 1);
     form->addRow(caption(tr("Mip levels"), fields_), mips_row);
@@ -299,6 +495,46 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
         if (changed == parameters()) return;
         commit(changed);
     });
+    // PS-1s, decision 2: whether the image keeps its contents from one frame
+    // to the next (lifetime: persistent) -- what a pass that runs once
+    // writes has to.
+    lifetime_ = new QComboBox(fields_);
+    lifetime_->setObjectName(imageFieldName(QStringLiteral("lifetime")));
+    lifetime_->addItem(tr("Per frame"), QString{});
+    lifetime_->addItem(tr("Persistent"), QStringLiteral("persistent"));
+    lifetime_->setToolTip(tr("Per frame: the engine may share the memory with other images "
+                             "(aliasing). Persistent: one image kept from frame to frame, as a "
+                             "pass that runs once needs for what it writes."));
+    form->addRow(caption(tr("Lifetime"), fields_), lifetime_);
+    connect(lifetime_, &QComboBox::currentIndexChanged, this, [this] {
+        auto changed = parameters();
+        if (!changed.is_object()) return;
+        const auto lifetime = lifetime_->currentData().toString().toStdString();
+        if (lifetime.empty()) changed.erase("lifetime");
+        else changed["lifetime"] = lifetime;
+        if (changed == parameters()) return;
+        commit(changed);
+    });
+    // IA-1s, decisions 1 and 4: the image file a persistent image starts
+    // from (initial.asset), picked from the project's, and Import....
+    initial_row_ = new QWidget(fields_);
+    auto *initial_layout = new QHBoxLayout(initial_row_);
+    initial_layout->setContentsMargins(0, 0, 0, 0);
+    initial_ = new QComboBox(initial_row_);
+    initial_->setObjectName(imageFieldName(QStringLiteral("initial")));
+    initial_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    initial_->setMinimumContentsLength(10);
+    import_ = new QPushButton(tr("Import…"), initial_row_);
+    import_->setObjectName(imageFieldName(QStringLiteral("import")));
+    initial_layout->addWidget(initial_, 1);
+    initial_layout->addWidget(import_);
+    form->addRow(caption(tr("Initial contents"), fields_), initial_row_);
+    connect(initial_, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (index < 0) return;
+        commitInitial(initial_->itemData(index).toString().toStdString());
+    });
+    connect(import_, &QPushButton::clicked, this, [this] { chooseImages(); });
+
 
     connect(size_scale_, &QRadioButton::clicked, this, [this] { commitSize(); });
     connect(size_fixed_, &QRadioButton::clicked, this, [this] { commitSize(); });
@@ -329,6 +565,8 @@ nlohmann::json GraphCanvasImageFields::parameters() const {
 }
 
 void GraphCanvasImageFields::showNode(const GraphCanvasNode *node, const std::string &scope) {
+    if (node == nullptr || node->op != "render.image" || node->id != node_ || scope != scope_)
+        release();
     if (node == nullptr || node->op != "render.image") {
         node_.clear();
         scope_.clear();
@@ -363,7 +601,29 @@ void GraphCanvasImageFields::showNode(const GraphCanvasNode *node, const std::st
     show();
 }
 
-void GraphCanvasImageFields::followEditable() { fields_->setEnabled(model_.canEdit()); }
+void GraphCanvasImageFields::followEditable() {
+    fields_->setEnabled(model_.canEdit());
+    held_->follow();
+}
+
+void GraphCanvasImageFields::release() {
+    if (node_.empty()) return;
+    QWidget *focus = QApplication::focusWidget();
+    if (focus == nullptr || !fields_->isAncestorOf(focus)) return;
+    // A spin box holds what was typed until it is asked to read it.
+    if (auto *spin = qobject_cast<QAbstractSpinBox *>(focus)) spin->interpretText();
+    const std::initializer_list<QWidget *> size{extent_scale_,      width_,  height_,
+                                                layers_,            mip_levels_,
+                                                extent_expression_, width_expression_,
+                                                height_expression_, layers_expression_,
+                                                mip_levels_expression_};
+    if (std::ranges::find(size, focus) != size.end())
+        commitSize();
+    else if (focus == usage_text_)
+        commitUsage();
+    else if (format_line_ != nullptr && focus == format_line_)
+        commitFormat(format_->currentText().trimmed());
+}
 
 void GraphCanvasImageFields::load(const Json &parameters) {
     QStringList missing;
@@ -434,7 +694,28 @@ void GraphCanvasImageFields::load(const Json &parameters) {
         const QSignalBlocker block{mip_levels_};
         const bool full = parameters.is_object() && parameters.contains("mip_levels") &&
                           parameters.at("mip_levels") == "full";
-        mip_levels_->setValue(full ? 0 : static_cast<int>(number("mip_levels", 1.0)));
+        mip_levels_->setValue(full ? 1 : static_cast<int>(number("mip_levels", 1.0)));
+        const QSignalBlocker block_shape{mip_shape_};
+        mip_shape_->setCurrentIndex(full ? 1 : 0);
+    }
+    {
+        // UX-12e, decision 4: the table's usual range for the size.
+        const auto soft_max = [&](const char *key) -> std::optional<double> {
+            const auto schema = model_.parameterSchema("render.image", key);
+            if (!schema || !schema->contains("soft_max") || !schema->at("soft_max").is_number())
+                return std::nullopt;
+            return schema->at("soft_max").get<double>();
+        };
+        const auto above = [&](const char *key) {
+            const auto limit = soft_max(key);
+            return fixed && limit && number(key, 0.0) > *limit;
+        };
+        const bool unusual = above("width") || above("height");
+        size_unusual_->setVisible(unusual);
+        if (const auto limit = soft_max("width"))
+            size_unusual_->setToolTip(tr("above the usual range (up to %1): the engine takes it, "
+                                         "but its own features stay within it")
+                                          .arg(*limit, 0, 'g', 10));
     }
     // UX-5d, decision 1: a size the document writes as {"$expr": ...}.
     const auto expression = [&](const char *key) -> std::optional<QString> {
@@ -469,12 +750,277 @@ void GraphCanvasImageFields::load(const Json &parameters) {
         history_->setChecked(parameters.is_object() && history != parameters.end() &&
                              history->is_boolean() && history->get<bool>());
     }
+    {
+        const QSignalBlocker block{lifetime_};
+        selectOrAdd(*lifetime_, qtext(stringOf(parameters, "lifetime")) ==
+                                        QLatin1String{"transient"}
+                                    ? QString{}
+                                    : qtext(stringOf(parameters, "lifetime")));
+    }
+    loadInitial(parameters);
 
     note_->setVisible(!missing.isEmpty());
     if (!missing.isEmpty())
         note_->setText(tr("The engine did not list %1: those fields take what is typed, or "
                           "show the document's value.")
                            .arg(missing.join(QStringLiteral(", "))));
+}
+
+// --- IA-1s, decisions 1 and 4: Initial contents.
+
+namespace {
+
+std::string initialAssetOf(const Json &parameters) {
+    if (!parameters.is_object()) return {};
+    const auto initial = parameters.find("initial");
+    return initial != parameters.end() && initial->is_object() ? stringOf(*initial, "asset")
+                                                               : std::string{};
+}
+
+// Where the CLI is: PELICAN_STUDIO_CLI, or beside Studio (the build and an
+// install put them in one directory).
+QString cliPath() {
+    const QString configured = qEnvironmentVariable("PELICAN_STUDIO_CLI").trimmed();
+    if (!configured.isEmpty()) return configured;
+#ifdef Q_OS_WIN
+    const QString name = QStringLiteral("pelican_cli.exe");
+#else
+    const QString name = QStringLiteral("pelican_cli");
+#endif
+    return QDir{QCoreApplication::applicationDirPath()}.absoluteFilePath(name);
+}
+
+} // namespace
+
+void GraphCanvasImageFields::setProjectRoot(const std::filesystem::path &project_root) {
+    if (project_root_ == project_root) return;
+    project_root_ = project_root;
+    // The list is read again on the next show.
+    shown_.clear();
+}
+
+std::optional<GraphCanvasImageExtent>
+GraphCanvasImageFields::assetExtent(const std::string &asset) const {
+    if (asset.empty() || project_root_.empty()) return std::nullopt;
+    std::string_view relative{asset};
+    constexpr std::string_view scheme = "project://";
+    if (relative.starts_with(scheme)) relative.remove_prefix(scheme.size());
+    return readImageAssetExtent(project_root_ / std::filesystem::path{std::u8string{
+                                                    reinterpret_cast<const char8_t *>(relative.data()),
+                                                    relative.size()}});
+}
+
+void GraphCanvasImageFields::loadInitial(const Json &parameters) {
+    const auto asset = initialAssetOf(parameters);
+    const bool persistent = stringOf(parameters, "lifetime") == "persistent";
+    {
+        const QSignalBlocker block{initial_};
+        initial_->clear();
+        initial_->addItem(tr("None"), QString{});
+        if (!project_root_.empty())
+            for (const auto &choice : readProjectImageAssets(project_root_).assets)
+                initial_->addItem(qtext(choice), qtext(choice));
+        selectOrAdd(*initial_, qtext(asset));
+    }
+    // Decision 1: a per-frame image starts from nothing (the engine refuses
+    // it: graph.image_initial_requires_persistent@1).
+    initial_->setEnabled(persistent);
+    import_->setEnabled(persistent && !project_root_.empty());
+    initial_->setToolTip(persistent ? tr("The image file the image's contents start from: copied "
+                                         "in when the image is made and on the first frame of a "
+                                         "generation (a .ktx2 or .png of the project).")
+                                    : tr("Make it Persistent to start from an image"));
+    import_->setToolTip(persistent ? tr("Copy .ktx2, .png or .hdr files into the project's "
+                                        "assets/images and start from the first (a .hdr is baked "
+                                        "into a .ktx2 by pelican_cli image ktx2 --hdr; a name "
+                                        "already there gets _2).")
+                                   : tr("Make it Persistent to start from an image"));
+    // The size from the image: no width, height or screen scale.
+    const bool given = parameters.is_object() &&
+                       (parameters.contains("width") || parameters.contains("height") ||
+                        parameters.contains("extent_scale"));
+    const bool from_image = !asset.empty() && !given;
+    const auto extent = assetExtent(asset);
+    {
+        const QSignalBlocker block{from_image_};
+        from_image_->setChecked(from_image);
+        from_image_->setText(extent ? tr("Size from the image (%1 × %2)")
+                                          .arg(extent->width)
+                                          .arg(extent->height)
+                                    : tr("Size from the image"));
+    }
+    from_image_->setEnabled(!asset.empty());
+    if (from_image)
+        for (QWidget *size : std::initializer_list<QWidget *>{
+                 size_scale_, size_fixed_, extent_scale_, width_, height_, extent_expression_,
+                 width_expression_, height_expression_, size_expression_toggle_})
+            size->setEnabled(false);
+    else
+        for (QWidget *choice : std::initializer_list<QWidget *>{size_scale_, size_fixed_,
+                                                                 size_expression_toggle_})
+            choice->setEnabled(true);
+}
+
+void GraphCanvasImageFields::commitInitial(const std::string &asset) {
+    if (node_.empty()) return;
+    auto changed = parameters();
+    if (!changed.is_object()) return;
+    const auto current = initialAssetOf(changed);
+    if (asset == current) return;
+    const bool sized = changed.contains("width") || changed.contains("height");
+    if (asset.empty()) {
+        changed.erase("initial");
+        // The size came from the image: it keeps that size.
+        if (!sized && !changed.contains("extent_scale")) {
+            changed["extent_scale"] = 1.0;
+            if (const auto extent = assetExtent(current)) {
+                changed["width"] = extent->width;
+                changed["height"] = extent->height;
+            }
+        }
+    } else {
+        changed["initial"] = Json{{"asset", asset}};
+        // A screen-sized image cannot start from a file
+        // (graph.image_initial_extent_conflict@1): it takes the file's size.
+        if (!sized) changed.erase("extent_scale");
+    }
+    commit(changed);
+}
+
+void GraphCanvasImageFields::commitFromImage(bool from_image) {
+    if (node_.empty()) return;
+    auto changed = parameters();
+    if (!changed.is_object()) return;
+    if (from_image) {
+        changed.erase("width");
+        changed.erase("height");
+        changed.erase("extent_scale");
+    } else {
+        // A fixed size: the image's own, else what the spins hold.
+        const auto extent = assetExtent(initialAssetOf(changed));
+        changed["extent_scale"] = 1.0;
+        changed["width"] = extent ? static_cast<int>(extent->width) : width_->value();
+        changed["height"] = extent ? static_cast<int>(extent->height) : height_->value();
+    }
+    if (changed == parameters()) return;
+    commit(changed);
+}
+
+void GraphCanvasImageFields::importNotice(InspectorNoticeKind kind, const std::string &line) {
+    model_.setEditNotice({kind, line});
+    if (submitted_) submitted_();
+}
+
+void GraphCanvasImageFields::chooseImages() {
+    if (project_root_.empty()) {
+        importNotice(InspectorNoticeKind::Error, "Open a project to import images into.");
+        return;
+    }
+    // As the Sound list's Import...: Qt's own dialog, so a scenario can name
+    // its file field, opened window-modal and answered when it closes.
+    auto *dialog = new QFileDialog{this, tr("Import images")};
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName(QStringLiteral("pelican.imageImportDialog"));
+    dialog->setOption(QFileDialog::DontUseNativeDialog, true);
+    dialog->setFileMode(QFileDialog::ExistingFiles);
+    dialog->setNameFilter(tr("Images (*.ktx2 *.png *.hdr *.KTX2 *.PNG *.HDR)"));
+    if (auto *name = dialog->findChild<QLineEdit *>(QStringLiteral("fileNameEdit")))
+        name->setObjectName(QStringLiteral("pelican.imageImportDialog.fileName"));
+    connect(dialog, &QFileDialog::filesSelected, this, [this](const QStringList &picked) {
+        std::vector<std::filesystem::path> files;
+        for (const auto &file : picked) files.emplace_back(file.toStdWString());
+        importImages(files);
+    });
+    dialog->open();
+}
+
+void GraphCanvasImageFields::importImages(const std::vector<std::filesystem::path> &files) {
+    if (files.empty()) return;
+    if (project_root_.empty()) {
+        importNotice(InspectorNoticeKind::Error, "Open a project to import images into.");
+        return;
+    }
+    std::string first;
+    std::string error;
+    int imported = 0;
+    for (const auto &file : files) {
+        auto copied = importProjectImage(project_root_, file);
+        if (!copied.error.empty()) {
+            error = copied.error;
+            continue;
+        }
+        ++imported;
+        // A .hdr is baked first; it is picked when the bake is done.
+        if (copied.convert) {
+            bakeHdr(copied);
+            continue;
+        }
+        if (first.empty()) first = copied.reference;
+    }
+    // The list holds what was copied.
+    load(parameters());
+    if (!error.empty()) {
+        importNotice(InspectorNoticeKind::Error, error);
+        return;
+    }
+    if (first.empty()) return;
+    const bool persistent = stringOf(parameters(), "lifetime") == "persistent";
+    importNotice(InspectorNoticeKind::Information,
+                 "Imported " + first +
+                     (imported > 1 ? " and " + std::to_string(imported - 1) + " more" : std::string{}) +
+                     (persistent || node_.empty() ? "."
+                                                  : "; make the image Persistent to start from it."));
+    if (persistent && !node_.empty()) commitInitial(first);
+}
+
+void GraphCanvasImageFields::bakeHdr(const GraphCanvasImageImport &imported) {
+    auto *process = new QProcess(this);
+    const auto program = cliPath();
+    const auto reference = imported.reference;
+    const auto ktx2 = imported.convert->ktx2;
+    const auto hdr_name = imported.convert->hdr.filename().string();
+    // The image it was asked for: a bake that ends after another was picked
+    // only says it is there.
+    const auto scope = scope_;
+    const auto node = node_;
+    process->setProgram(program);
+    process->setArguments({QStringLiteral("image"), QStringLiteral("ktx2"), QStringLiteral("--out"),
+                           QString::fromStdWString(ktx2.wstring()), QStringLiteral("--hdr"),
+                           QString::fromStdWString(imported.convert->hdr.wstring())});
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, program](QProcess::ProcessError failure) {
+                if (failure != QProcess::FailedToStart) return;
+                importNotice(InspectorNoticeKind::Error,
+                             "Could not start pelican_cli (" + program.toStdString() +
+                                 ") to bake the .hdr into a .ktx2.");
+                process->deleteLater();
+            });
+    connect(process, &QProcess::finished, this,
+            [this, process, reference, ktx2, hdr_name, scope, node](int exit_code,
+                                                                    QProcess::ExitStatus status) {
+                process->deleteLater();
+                std::error_code error;
+                if (status != QProcess::NormalExit || exit_code != 0 ||
+                    !std::filesystem::is_regular_file(ktx2, error)) {
+                    const auto said = QString::fromLocal8Bit(process->readAll()).trimmed();
+                    importNotice(InspectorNoticeKind::Error,
+                                 "Could not bake " + hdr_name + " into a .ktx2" +
+                                     (said.isEmpty() ? std::string{"."}
+                                                     : ": " + said.toStdString()));
+                    return;
+                }
+                load(parameters());
+                const bool here = node == node_ && scope == scope_;
+                const bool persistent = here && stringOf(parameters(), "lifetime") == "persistent";
+                importNotice(InspectorNoticeKind::Information,
+                             "Imported " + reference + " (baked from " + hdr_name + ")" +
+                                 (persistent || !here
+                                      ? "."
+                                      : "; make the image Persistent to start from it."));
+                if (persistent) commitInitial(reference);
+            });
+    process->start();
 }
 
 void GraphCanvasImageFields::loadArguments(const Json &parameters) {
@@ -564,12 +1110,14 @@ void GraphCanvasImageFields::loadUsage(const Json &parameters) {
 
 void GraphCanvasImageFields::commit(const Json &parameters) {
     if (node_.empty()) return;
-    if (model_.setNodeParameters(scope_, node_, parameters)) {
+    // UX-9, decision 2: while a save is in flight the value waits for it,
+    // for this image, rather than the field going back under the hand.
+    if (held_->sendOrHold(heldParametersEdit(model_, scope_, node_, this->parameters(), parameters))) {
         if (submitted_) submitted_();
         return;
     }
-    // Refused (an edit in flight, or nothing changed): the fields say what
-    // the document says, not the choice that was not sent.
+    // Refused (nothing changed, or the model turned it down): the fields say
+    // what the document says, not the choice that was not sent.
     load(this->parameters());
 }
 
@@ -577,7 +1125,10 @@ void GraphCanvasImageFields::commitFormat(const QString &format) {
     if (format.isEmpty() || node_.empty()) return;
     // UX-5b, decision 4: one edit, which for a material pass's image moves
     // its other sockets' images to the combination the format belongs to.
-    if (model_.setImageFormat(scope_, node_, format.toStdString())) {
+    if (held_->sendOrHold([&model = model_, scope = scope_, node = node_,
+                           format = format.toStdString()] {
+            return model.setImageFormat(scope, node, format);
+        })) {
         if (submitted_) submitted_();
         return;
     }
@@ -655,10 +1206,10 @@ void GraphCanvasImageFields::commitSize() {
     else if (layers_->value() > 1 || changed.contains("layers"))
         changed["layers"] = layers_->value();
     // UX-8, decision 12 (a): one mip level is what an image without the key
-    // has; 0 in the spin is the whole chain.
+    // has; Full chain (UX-12e) is "full".
     if (expression && !mip_levels_expression_->text().trimmed().isEmpty())
         changed["mip_levels"] = written(mip_levels_expression_, mip_levels_->value());
-    else if (mip_levels_->value() == 0)
+    else if (mip_shape_->currentData().toString() == QLatin1String{"full"})
         changed["mip_levels"] = "full";
     else if (mip_levels_->value() > 1 || changed.contains("mip_levels"))
         changed["mip_levels"] = mip_levels_->value();
@@ -686,6 +1237,15 @@ void GraphCanvasImageFields::showSizeExpression(bool expression) {
     width_expression_->setEnabled(fixed);
     height_expression_->setEnabled(fixed);
     if (size_form_ != nullptr) size_form_->setRowVisible(size_expression_row_, expression);
+    showMipShape();
+}
+
+void GraphCanvasImageFields::showMipShape() {
+    // UX-12e, decision 3: the count's spin for Count only; neither behind f.
+    const bool expression = size_expression_toggle_->isChecked();
+    const bool full = mip_shape_->currentData().toString() == QLatin1String{"full"};
+    mip_shape_->setVisible(!expression);
+    mip_levels_->setVisible(!expression && !full);
 }
 
 void GraphCanvasImageFields::putSizeExpression(bool half) {
@@ -742,6 +1302,13 @@ GraphCanvasPassFields::GraphCanvasPassFields(GraphCanvasModel &model,
                                              std::function<void()> submitted, QWidget *parent)
     : QWidget{parent}, model_{model}, submitted_{std::move(submitted)} {
     setObjectName(QStringLiteral("pelican.graphCanvasPass"));
+    held_ = std::make_unique<GraphCanvasHeldEdits>(model_, this);
+    held_->setSent([this] {
+        if (submitted_) submitted_();
+    });
+    held_->setChanged([this] {
+        if (pending_changed_) pending_changed_();
+    });
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 4, 0, 4);
     heading_ = new QLabel(this);
@@ -827,6 +1394,18 @@ GraphCanvasPassFields::GraphCanvasPassFields(GraphCanvasModel &model,
     loop_element_->setWordWrap(true);
     form_->addRow(QString{}, loop_element_);
     form_->setRowVisible(loop_element_, false);
+    // PS-1s, decisions 1, 3 and 4: when the pass runs, and Recompute.
+    schedule_ = new GraphCanvasScheduleRow(
+        model_, QStringLiteral("pelican.graphCanvasPass"),
+        [this] {
+            if (submitted_) submitted_();
+        },
+        fields_);
+    schedule_->setPendingChanged([this] {
+        if (pending_changed_) pending_changed_();
+    });
+    form_->addRow(caption(tr("Schedule"), fields_), schedule_);
+
 
     // UX-6a, decision 5: the sampling of each image the pass reads, beside
     // the canvas -- the right-click entries were the only place, and a
@@ -966,8 +1545,10 @@ void GraphCanvasPassFields::setShadersChanged(std::function<void()> changed) {
 }
 
 void GraphCanvasPassFields::showNode(const GraphCanvasNode *node, const std::string &scope) {
+    // UX-9, decision 2: what the fields hold for the pass they are letting
+    // go of goes to that pass first.
+    if (node == nullptr || node->id != node_ || scope != scope_) release();
     if (node == nullptr || (node->op != "render.fullscreen" && node->op != "render.raster")) {
-        flushDraw();
         node_.clear();
         scope_.clear();
         op_.clear();
@@ -1006,7 +1587,9 @@ void GraphCanvasPassFields::showNode(const GraphCanvasNode *node, const std::str
         load(current);
     }
     // The plan may say it later than the document: asked on every show.
-    showLoopElementRead();
+    showLoopElementRead();    // PS-1s: the plan may say when it ran later than the document changed.
+    schedule_->showNode(scope_, node_);
+
     if (other) {
         // Another pass: New... starts closed, its name proposed afresh.
         const QSignalBlocker block{new_shader_};
@@ -1046,12 +1629,20 @@ void GraphCanvasPassFields::showLoopElementRead() {
 }
 
 void GraphCanvasPassFields::followEditable() {
-    fields_->setEnabled(model_.canEdit());
+    fields_->setEnabled(model_.canEdit());    schedule_->followEditable();
+
     retryWhenEditable();
+    held_->follow();
 }
 
-bool GraphCanvasPassFields::deferWhileBusy(std::function<void()> again) {
+bool GraphCanvasPassFields::deferWhileBusy(std::function<void()> again,
+                                           std::function<bool()> held) {
     if (model_.canEdit()) return false;
+    // UX-9, decision 2: letting go of the pass, the value is held for it.
+    if (releasing_ && held) {
+        held_->sendOrHold(std::move(held));
+        return true;
+    }
     retry_ = std::move(again);
     // The model says nothing when it becomes editable; it is asked.
     retry_timer_->start();
@@ -1071,15 +1662,37 @@ void GraphCanvasPassFields::retryWhenEditable() {
     if (pending_changed_) pending_changed_();
 }
 
-void GraphCanvasPassFields::flushDraw() {
-    if (node_.empty() || op_ != "render.raster") return;
-    bool typed = false;
-    for (QSpinBox *spin : {vertex_count_, instance_count_})
-        if (spin->hasFocus()) {
-            spin->interpretText();
-            typed = true;
-        }
-    if (typed) commitDraw();
+void GraphCanvasPassFields::release() {
+    if (node_.empty()) return;
+    releasing_ = true;
+    // A value already waiting for the model goes for this pass now, or is
+    // held for it.
+    if (retry_) {
+        retry_timer_->stop();
+        auto again = std::exchange(retry_, {});
+        again();
+    }
+    flushTyped();
+    releasing_ = false;
+    if (pending_changed_) pending_changed_();
+}
+
+void GraphCanvasPassFields::flushTyped() {
+    // LC-1s: the draw counts.
+    if (op_ == "render.raster") {
+        bool typed = false;
+        for (QSpinBox *spin : {vertex_count_, instance_count_})
+            if (spin->hasFocus()) {
+                spin->interpretText();
+                typed = true;
+            }
+        if (typed) commitDraw();
+    }
+    // A define's cell being typed in: the row takes it, and its change is
+    // sent as any row's is.
+    defines_->finishEditing();
+    // A clear colour typed and waiting for the pause after it.
+    if (settings_timer_->isActive()) commitSettings();
 }
 
 void GraphCanvasPassFields::load(const Json &parameters) {
@@ -1164,7 +1777,7 @@ void GraphCanvasPassFields::commitDefines() {
             defines_->load(defines);
             loading_ = previous;
             commitDefines();
-        }))
+        }, heldParametersEdit(model_, scope_, node_, model_.nodeParameters(scope_, node_), changed)))
         return;
     // Refused: the rows show the document again, from the event loop (the
     // table whose signal is handled is the one a load refills).
@@ -1198,6 +1811,8 @@ void GraphCanvasPassFields::commitDepth() {
             const QSignalBlocker block{depth_};
             selectOrAdd(*depth_, qtext(picked));
             commitDepth();
+        }, [&model = model_, scope = scope_, node = node_, picked] {
+            return model.setRasterDepth(scope, node, picked);
         }))
         return;
     QMetaObject::invokeMethod(this, [this] { loadDepth(); }, Qt::QueuedConnection);
@@ -1264,7 +1879,7 @@ void GraphCanvasPassFields::commitDraw() {
                 instance_count_->setValue(instances);
             }
             commitDraw();
-        }))
+        }, heldParametersEdit(model_, scope_, node_, model_.nodeParameters(scope_, node_), changed)))
         return;
     loadDraw(model_.nodeParameters(scope_, node_));
 }
@@ -1444,7 +2059,8 @@ void GraphCanvasPassFields::commitSettings() {
                 raster_->load(state, Json(nullptr));
                 loading_ = false;
                 commitSettings();
-            }))
+            }, heldParametersEdit(model_, scope_, node_, model_.nodeParameters(scope_, node_),
+                                  changed)))
             return;
         QMetaObject::invokeMethod(
             this, [this] { loadPassSettings(model_.nodeParameters(scope_, node_)); },
@@ -1490,7 +2106,10 @@ void GraphCanvasPassFields::commitSettings() {
     if (clear.is_null()) changed.erase("clear_color");
     else changed["clear_color"] = clear;
     if (changed == model_.nodeParameters(scope_, node_)) return;
-    if (model_.setNodeParameters(scope_, node_, changed)) {
+    // UX-9, decision 2: a clear colour given while a save is in flight
+    // waits for it, for this pass.
+    if (held_->sendOrHold(heldParametersEdit(model_, scope_, node_,
+                                             model_.nodeParameters(scope_, node_), changed))) {
         if (submitted_) submitted_();
         return;
     }
@@ -1515,6 +2134,17 @@ void GraphCanvasPassFields::commit(const char *stage, QComboBox *combo) {
         return;
     }
     load(model_.nodeParameters(scope_, node_));
+}
+
+bool GraphCanvasPassFields::offerTemplate(const std::string &node, const std::string &kind) {
+    if (node.empty() || node != node_ || op_ != "render.fullscreen") return false;
+    const auto index = template_kind_->findData(qtext(kind));
+    if (index >= 0) template_kind_->setCurrentIndex(index);
+    if (new_shader_->isChecked())
+        showTemplateRow(true);
+    else
+        new_shader_->setChecked(true);
+    return true;
 }
 
 void GraphCanvasPassFields::showTemplateRow(bool shown) {
@@ -1641,6 +2271,10 @@ GraphCanvasPlaceFields::GraphCanvasPlaceFields(GraphCanvasModel &model,
                                                std::function<void()> submitted, QWidget *parent)
     : QWidget{parent}, model_{model}, submitted_{std::move(submitted)} {
     setObjectName(QStringLiteral("pelican.graphCanvasPlace"));
+    held_ = std::make_unique<GraphCanvasHeldEdits>(model_, this);
+    held_->setSent([this] {
+        if (submitted_) submitted_();
+    });
     auto *layout = new QVBoxLayout(this);
     layout->setContentsMargins(0, 2, 0, 2);
     fields_ = new QWidget(this);
@@ -1697,6 +2331,7 @@ void GraphCanvasPlaceFields::showNode(const GraphCanvasNode *node, const std::st
 
 void GraphCanvasPlaceFields::followEditable() {
     fields_->setEnabled(model_.canEdit() && GraphCanvasModel::takesPlace(op_));
+    held_->follow();
 }
 
 void GraphCanvasPlaceFields::load() {
@@ -1753,7 +2388,11 @@ void GraphCanvasPlaceFields::commit() {
         current.declared && current.kind == place.kind && current.target == place.target;
     place.pass_set = pass_set_->currentData().toString().toStdString();
     if (place.kind == "other") return;
-    if (model_.setPlace(scope_, node_, place)) {
+    // UX-9, decision 2: a pick made while a save is in flight waits for it,
+    // for this node.
+    if (held_->sendOrHold([&model = model_, scope = scope_, node = node_, place] {
+            return model.setPlace(scope, node, place);
+        })) {
         if (submitted_) submitted_();
         return;
     }
@@ -1761,77 +2400,159 @@ void GraphCanvasPlaceFields::commit() {
     load();
 }
 
-// --- UX-7, decision 5: the parameters an op cannot be placed without.
+// --- UX-7, decision 5 / UX-12a, decision 2: the parameters an op cannot be
+// placed without, from the catalog's table.
 
 GraphCanvasRequiredDialog::GraphCanvasRequiredDialog(const GraphCanvasModel &model,
                                                      const std::string &scope,
-                                                     const std::string &op, QWidget *parent)
+                                                     const std::string &op, QWidget *parent,
+                                                     const std::filesystem::path &project_root)
     : QDialog{parent} {
     setObjectName(QStringLiteral("pelican.graphCanvasRequired"));
     setWindowTitle(tr("%1 needs").arg(qtext(op)));
     auto *layout = new QVBoxLayout(this);
     auto *intro = new QLabel(
         tr("The engine does not take %1 without these. They can be changed afterwards in the "
-           "node's details.")
+           "node's fields.")
             .arg(qtext(op)),
         this);
     intro->setWordWrap(true);
     intro->setFont(studioSmallFont());
     layout->addWidget(intro);
     auto *form = new QFormLayout;
+    form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
     layout->addLayout(form);
     const auto fieldName = [](const std::string &parameter) {
         return QStringLiteral("pelican.graphCanvasRequired.") + qtext(parameter);
     };
-    // UX-8, decision 13 (a): what the engine's catalog lists, when it does.
+    // The editors read the scope's nodes and the project's files; a clip is
+    // one of its rig's animations (UX-12a, decision 5).
+    auto choices = std::make_shared<GraphParameterChoices>();
+    choices->model = &model;
+    choices->scope = scope;
+    choices->op = op;
+    choices->project_root = project_root;
+    choices->strings = [op, project_root](const std::string &name, const Json &around)
+        -> std::optional<std::vector<std::string>> {
+        if (op != "pose.clip_sample" || name != "clip") return std::nullopt;
+        const auto rig = around.is_object() ? around.value("rig", std::string{}) : std::string{};
+        return gltfAnimationNames(projectReferenceFile(project_root, rig));
+    };
+    std::vector<GraphParameterEditor *> editors;
+    const auto editorFor = [&](const Json &schema, const std::string &name) {
+        auto *editor = new GraphParameterEditor(schema, choices, fieldName(name), {}, this);
+        // A number starts written (0, or its least), so OK places it as shown.
+        const auto kind = schema.value("kind", std::string{});
+        if (!schema.contains("default")) {
+            if (kind == "number") editor->setValue(0.0);
+            else if (kind == "integer")
+                editor->setValue(static_cast<std::int64_t>(schema.value("min", 0.0)));
+            else if (kind == "bool") editor->setValue(false);
+            else if (kind == "string" && op == "value.parameter" && name == "name")
+                editor->setValue(model.suggestNodeId(scope, name));
+        }
+        editors.push_back(editor);
+        return editor;
+    };
+    auto *group = new QButtonGroup(this);
+    // UX-13b, decision 5: value.sample_table's table and row are the table's
+    // own fields (an asset of the analysis tables, a row the manifest beside
+    // it lists), as every other op's are.
     for (const auto &required : model.requiredParametersFor(op)) {
         QWidget *field = nullptr;
-        if (required.kind == "number") {
-            auto *spin = new QDoubleSpinBox(this);
-            spin->setRange(-1.0e9, 1.0e9);
-            spin->setDecimals(4);
-            spin->setValue(0.0);
-            spin->setToolTip(tr("The constant's value."));
-            field = spin;
-        } else if (required.kind == "text") {
-            auto *line = new QLineEdit(this);
-            line->setText(qtext(model.suggestNodeId(scope, required.name)));
-            line->setToolTip(tr("The name the value is set by from outside."));
-            connect(line, &QLineEdit::textChanged, this, [this] { follow(); });
-            field = line;
-        } else {
+        if (required.kind == "input") {
             auto *combo = new QComboBox(this);
-            if (required.kind == "voice") {
+            for (const auto &name : model.valueInputNamesFor())
+                combo->addItem(qtext(name), qtext(name));
+            combo->setToolTip(tr("The value the engine hands the graph each frame: "
+                                 "scene_time from the scene's start, time, delta_time."));
+            field = combo;
+        } else if (required.kind == "buffer") {
+            // A buffer of the graph's, or a new name typed in.
+            auto *combo = new QComboBox(this);
+            combo->setEditable(true);
+            combo->setInsertPolicy(QComboBox::NoInsert);
+            // UX-8, decision 3: the graph's buffers and the plan's (a
+            // feature's, as bloom.intensity). UX-13b, decision 2 (engine
+            // CT-5): only those it can write once the placing edit makes them
+            // so, each saying what that edit changes.
+            for (const auto &buffer : model.scalarTargetChoices(scope))
+                combo->addItem(qtext(GraphCanvasModel::scalarTargetLabel(buffer)), qtext(buffer.buffer));
+            if (combo->count() == 0) combo->setEditText(QStringLiteral("value_buffer"));
+            combo->setToolTip(tr("The buffer the value is written into: one of the graph's "
+                                 "render.buffer nodes, or a new name. One that is not a runtime_f32 "
+                                 "buffer as large as its sinks is made one in the same edit."));
+            connect(combo, &QComboBox::editTextChanged, this, [this] { follow(); });
+            field = combo;
+        } else {
+            field = editorFor(required.schema, required.name);
+        }
+        // An editor names its own fields (`.<parameter>` is its main one).
+        if (dynamic_cast<GraphParameterEditor *>(field) == nullptr)
+            field->setObjectName(fieldName(required.name));
+        Field entry{required.name, required.kind, field, nullptr};
+        if (required.alternatives.empty()) {
+            auto *label = new QLabel(qtext(required.name) + QStringLiteral(" *"), this);
+            label->setToolTip(field->toolTip());
+            form->addRow(label, field);
+            fields_.push_back(entry);
+            continue;
+        }
+        // "One of": a radio each.
+        const auto first = fields_.size();
+        entry.choose = new QRadioButton(qtext(required.name), this);
+        entry.choose->setObjectName(fieldName(required.name) + QStringLiteral(".choose"));
+        group->addButton(entry.choose);
+        form->addRow(entry.choose, field);
+        fields_.push_back(entry);
+        for (const auto &alternative : required.alternatives) {
+            const bool edge = std::ranges::find(required.edge_alternatives, alternative) !=
+                              required.edge_alternatives.end();
+            Field other{alternative, edge ? std::string{"voice"} : std::string{}, nullptr, nullptr};
+            other.choose = new QRadioButton(qtext(alternative), this);
+            other.choose->setObjectName(fieldName(alternative) + QStringLiteral(".choose"));
+            group->addButton(other.choose);
+            if (edge) {
                 // UX-8, decision 7: the voice the sink drives, one of the
-                // scope's audio.playback nodes.
+                // scope's audio.playback nodes -- an edge.
+                auto *combo = new QComboBox(this);
                 for (const auto &voice : model.voiceChoices(scope))
                     combo->addItem(qtext(voice), qtext(voice));
                 combo->setToolTip(tr("The voice whose sound this changes: an audio.playback of "
                                      "this scope."));
-            } else if (required.kind == "input") {
-                for (const auto &name : model.valueInputNamesFor())
-                    combo->addItem(qtext(name), qtext(name));
-                combo->setToolTip(tr("The value the engine hands the graph each frame: "
-                                     "scene_time from the scene's start, time, delta_time."));
+                other.widget = combo;
+            } else if (const auto schema = model.parameterSchema(op, alternative)) {
+                other.kind = schema->value("kind", std::string{});
+                other.widget = editorFor(*schema, alternative);
             } else {
-                // A buffer of the graph's, or a new name typed in.
-                combo->setEditable(true);
-                combo->setInsertPolicy(QComboBox::NoInsert);
-                // UX-8, decision 3: the graph's buffers and the plan's (a
-                // feature's, as bloom.intensity).
-                for (const auto &buffer : model.scalarTargets(scope))
-                    combo->addItem(qtext(buffer), qtext(buffer));
-                if (combo->count() == 0) combo->setEditText(QStringLiteral("value_buffer"));
-                combo->setToolTip(tr("The buffer the value is written into: one of the graph's "
-                                     "render.buffer nodes, or a new name."));
-                connect(combo, &QComboBox::editTextChanged, this, [this] { follow(); });
+                other.widget = new QLabel(tr("(set it in the node's fields)"), this);
             }
-            field = combo;
+            if (dynamic_cast<GraphParameterEditor *>(other.widget) == nullptr)
+                other.widget->setObjectName(fieldName(alternative));
+            auto *cell = new QWidget(this);
+            auto *column = new QVBoxLayout(cell);
+            column->setContentsMargins(0, 0, 0, 0);
+            column->addWidget(other.widget);
+            if (edge) {
+                auto *hint = new QLabel(tr("or connect a line to %1 after placing").arg(qtext(alternative)),
+                                        cell);
+                hint->setFont(studioSmallFont());
+                column->addWidget(hint);
+            }
+            form->addRow(other.choose, cell);
+            fields_.push_back(other);
         }
-        field->setObjectName(fieldName(required.name));
-        form->addRow(qtext(required.name), field);
-        fields_.emplace_back(required, field);
+        // An edge with something to take it from is the one picked first.
+        QRadioButton *picked = fields_[first].choose;
+        for (auto index = first; index < fields_.size(); ++index)
+            if (const auto *combo = qobject_cast<const QComboBox *>(fields_[index].widget);
+                fields_[index].kind == "voice" && combo != nullptr && combo->count() > 0) {
+                picked = fields_[index].choose;
+                break;
+            }
+        picked->setChecked(true);
     }
+    connect(group, &QButtonGroup::buttonToggled, this, [this] { follow(); });
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     ok_ = buttons->button(QDialogButtonBox::Ok);
     ok_->setObjectName(QStringLiteral("pelican.graphCanvasRequired.ok"));
@@ -1840,20 +2561,38 @@ GraphCanvasRequiredDialog::GraphCanvasRequiredDialog(const GraphCanvasModel &mod
     connect(buttons, &QDialogButtonBox::accepted, this, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
+    // An editor's change reads the others again (a clip after its rig).
+    const auto refresh = [this, editors] {
+        const auto now = parameters();
+        for (auto *each : editors) each->refreshChoices(now);
+    };
+    for (auto *editor : editors)
+        editor->setEdited([this, refresh](bool) {
+            refresh();
+            follow();
+        });
+    refresh();
     follow();
 }
 
+bool GraphCanvasRequiredDialog::chosen(const Field &field) const {
+    return field.choose == nullptr || field.choose->isChecked();
+}
+
 void GraphCanvasRequiredDialog::follow() {
-    // A buffer needs a name.
     const auto json = parameters();
     bool ready = true;
-    for (const auto &[required, field] : fields_) {
-        if ((required.kind == "buffer" || required.kind == "text") &&
-            (!json.contains(required.name) || json.at(required.name).get<std::string>().empty()))
-            ready = false;
-        // A sound sink drives a voice: none to drive, nothing to place.
-        if (const auto *combo = qobject_cast<const QComboBox *>(field);
-            required.kind == "voice" && combo != nullptr && combo->count() == 0)
+    for (const auto &field : fields_) {
+        if (!chosen(field)) continue;
+        if (field.kind == "voice") {
+            // A sound sink drives a voice: none to drive, nothing to place.
+            const auto *combo = qobject_cast<const QComboBox *>(field.widget);
+            if (combo == nullptr || combo->count() == 0) ready = false;
+            continue;
+        }
+        const auto found = json.find(field.name);
+        if (found == json.end() || found->is_null() ||
+            (found->is_string() && found->get<std::string>().empty()))
             ready = false;
     }
     if (ok_ != nullptr) ok_->setEnabled(ready);
@@ -1861,28 +2600,32 @@ void GraphCanvasRequiredDialog::follow() {
 
 nlohmann::json GraphCanvasRequiredDialog::seed() const {
     Json result{{"parameters", parameters()}};
-    for (const auto &[required, field] : fields_)
-        if (const auto *combo = qobject_cast<const QComboBox *>(field);
-            required.kind == "voice" && combo != nullptr && combo->count() > 0)
-            result["inputs"][required.name] =
+    for (const auto &field : fields_)
+        if (const auto *combo = qobject_cast<const QComboBox *>(field.widget);
+            field.kind == "voice" && chosen(field) && combo != nullptr && combo->count() > 0)
+            result["inputs"][field.name] =
                 Json{{"node", combo->currentData().toString().toStdString()}, {"port", "voice"}};
     return result;
 }
 
 nlohmann::json GraphCanvasRequiredDialog::parameters() const {
     Json result = Json::object();
-    for (const auto &[required, field] : fields_) {
-        // UX-8: a voice is an edge (seed()), not a parameter.
-        if (required.kind == "voice") continue;
-        if (const auto *spin = qobject_cast<const QDoubleSpinBox *>(field)) {
-            result[required.name] = spin->value();
-        } else if (const auto *line = qobject_cast<const QLineEdit *>(field)) {
-            result[required.name] = line->text().trimmed().toStdString();
-        } else if (const auto *combo = qobject_cast<const QComboBox *>(field)) {
-            const auto text = (combo->isEditable() ? combo->currentText() : combo->currentData().toString())
+    for (const auto &field : fields_) {
+        // UX-8: a voice is an edge (seed()), not a parameter; an alternative
+        // not picked is not written.
+        if (field.kind == "voice" || !chosen(field)) continue;
+        if (const auto *editor = dynamic_cast<const GraphParameterEditor *>(field.widget)) {
+            if (auto value = editor->value(); !value.is_null()) result[field.name] = std::move(value);
+        } else if (const auto *combo = qobject_cast<const QComboBox *>(field.widget)) {
+            // UX-13b, decision 2: an entry picked is its value (its words
+            // may say what the edit changes); a name typed is itself.
+            const auto index = combo->currentIndex();
+            const bool picked = !combo->isEditable() ||
+                                (index >= 0 && combo->itemText(index) == combo->currentText());
+            const auto text = (picked ? combo->itemData(index).toString() : combo->currentText())
                                   .trimmed()
                                   .toStdString();
-            result[required.name] = text;
+            result[field.name] = text;
         }
     }
     return result;

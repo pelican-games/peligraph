@@ -19,7 +19,8 @@ void CameraSystem::process(QueryComponents components, size_t count) {
 
     for (int i = 0; i < 1; i++) {
         camera->setPos(transforms[i].pos);
-        camera->setDir(transforms[i].rotation * glm::vec3{0.0, 0.0, 1.0});
+        // CC-1a: -Z forward, up from the rotation.
+        camera->setRotation(transforms[i].rotation);
     }
 }
 

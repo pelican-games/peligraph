@@ -150,7 +150,8 @@ Bytes raster(const PreparedProjection &prepared, const PreviewCaptureRequest &re
                 continue;
             }
             const auto x = static_cast<int>((ndc.x * 0.5f + 0.5f) * request.width);
-            const auto y = static_cast<int>((1.0f - (ndc.y * 0.5f + 0.5f)) * request.height);
+            // NDC +y is the image's bottom (Vulkan; the projection flips y).
+            const auto y = static_cast<int>((ndc.y * 0.5f + 0.5f) * request.height);
             std::array<std::uint8_t, 4> color{96, 188, 255, 255};
             if (hasComponent(object, "light")) color = {255, 213, 96, 255};
             if (hasComponent(object, "camera")) color = {133, 255, 170, 255};

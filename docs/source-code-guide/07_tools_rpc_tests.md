@@ -10,13 +10,15 @@
 
 ## 7.1 `pelican_cli` の全体像
 
-[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L15) は第1引数を見て9系統へそのまま dispatch します。dispatch の順が
-[usage 行](../../src/devcli/main.cpp#L43)の順です。
+[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L17) は第1引数を見て11系統へそのまま dispatch します。dispatch の順が
+[usage 行](../../src/devcli/main.cpp#L51)の順です。
 
 ```text
 pelican_cli
 ├─ assets <manifest|verify|status>
+├─ audio analyze --asset <file> --out <file.ktx2> [...]   # AB-1: 音の解析の表を焼く
 ├─ bake-camera ...                       # replayからcameraパスをbake
+├─ image ktx2 --out <file> --format <VK名> (--raw <file> --width W --height H | --hdr <file>)   # IA-1: 非圧縮のKTX2を書く
 ├─ import <delivery_dir> --project <dir|project.json>   # --rulesサブモード付き
 ├─ dist-config <project> [--with rpc,seqplayer] [--out file]
 ├─ package <install|list|inspect>        # X-1: packageのvendoringと検査(§7.5b)
@@ -26,12 +28,14 @@ pelican_cli
 └─ graph-catalog                         # 登録済みgraph moduleのcatalogをJSONで(§7.5c)
 ```
 
-執筆時点から5系統増えました。
+執筆時点から7系統増えました。
 
 - `bake-camera`([`bakecameracommand.cpp`](../../src/devcli/bakecameracommand.cpp))は入力 replay から camera パスを bake します(player の `--bake-camera-output` と対。テスト: [`run_devcli_bake_camera.cmake`](../../test/run_devcli_bake_camera.cmake))。
+- `image`(✅IA-1。[`imagecommand.cpp` の `runImageCommand()`](../../src/devcli/imagecommand.cpp#L118))は今は `ktx2` だけで、raw の texel か Radiance の `.hdr`(stb_image の `stbi_loadf_from_memory` で RGBA32F)から、engine の [`writeKtx2()`](../../src/core/loader/ktx2.cpp#L393) で非圧縮・mip 1 段の KTX2 を書きます(第6章「persistent の image の初期内容と KTX2 の float」。使い方は manual 第10章 §10.4)。このために `pelican_cli` は `src/core/loader/ktx2.cpp` を自分の source に加え、`stb` を link します。テスト: `ia1_ktx2_cli_test` の [「IA-1 pelican_cli image ktx2 writes --raw and --hdr files the loader reads」](../../test/ia1_ktx2_cli_test.cpp#L97)。
+- `audio`(✅AB-1。[`runAudioCommand()`](../../src/devcli/audiocommand.cpp#L84))は今は `analyze` だけで、音の rms・peak・帯域を `R32_SFLOAT` の KTX2 と `<out>.import.json` に焼きます(RPC `bake_audio_analysis` と同じ `bakeAudioAnalysis()`。使い方は manual 第10章 §10.4、仕組みは第5章 §5.9「音の解析を焼く」)。CLI は engine を link しないので、`PELICAN_WITH_AUDIO` の build では `src/core/audio/sounddecode.cpp` と `audioanalysis.cpp` を自分の source に入れ、miniaudio の実装を [`miniaudioimpl.cpp`](../../src/devcli/miniaudioimpl.cpp#L1) に持ち、`miniaudio` を link します。OFF では `audio.analysis_unavailable@1` で断ります。テスト: `ab1_audio_analysis_test`(`audiocommand.cpp` を test の source に入れて `runAudioCommand()` を直接呼ぶ)。
 - `dump-lowered-material`([`materialcommand.cpp`](../../src/devcli/materialcommand.cpp))は material lowering 結果をダンプします(テスト: [`run_dump_lowered_material.cmake`](../../test/run_dump_lowered_material.cmake))。
 - `vrm`([`vrmcommand.cpp`](../../src/devcli/vrmcommand.cpp))は VRM semantic のダンプ/検査です(テスト: [`run_devcli_vrm_dump.cmake`](../../test/run_devcli_vrm_dump.cmake))。
-- `package`([`packagecommand.cpp`](../../src/devcli/packagecommand.cpp#L193))は package ディレクトリを project へ vendoring し、install 済みの digest を照合し、install せずに manifest を読みます(§7.5b。テスト: `package_install_smoke` —— [`package_install_smoke` の登録は `if(PELICAN_WITH_RPC)` の中](../../test/CMakeLists.txt#L3359)で登録され、GPU lease と 300 秒の intrinsic timeout が付きます —— と ctest 未登録の [`run_package_template_smoke.cmake`](../../test/run_package_template_smoke.cmake))。
+- `package`([`packagecommand.cpp`](../../src/devcli/packagecommand.cpp#L193))は package ディレクトリを project へ vendoring し、install 済みの digest を照合し、install せずに manifest を読みます(§7.5b。テスト: `package_install_smoke` —— [`package_install_smoke` の登録は `if(PELICAN_WITH_RPC)` の中](../../test/CMakeLists.txt#L3420)で登録され、GPU lease と 300 秒の intrinsic timeout が付きます —— と ctest 未登録の [`run_package_template_smoke.cmake`](../../test/run_package_template_smoke.cmake))。
 - `graph-catalog`([`graphcatalogcommand.cpp`](../../src/devcli/graphcatalogcommand.cpp#L10))は `builtinGraphModuleRegistry().catalog()` をそのまま印字します(§7.5c。テスト: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake))。
 - 既存の `import` には `--rules` サブモード(ルールベース import、[`rulesimport.cpp`](../../src/devcli/rulesimport.cpp) + [`importrules.hpp`](../../src/project/importrules.hpp)、テスト: [`run_devcli_rules_import.cmake`](../../test/run_devcli_rules_import.cmake))と glTF scene 抽出([`gltfsceneextract.cpp`](../../src/devcli/gltfsceneextract.cpp)、テスト: [`run_devcli_gltf_extract.cmake`](../../test/run_devcli_gltf_extract.cmake))が加わりました。
 
@@ -47,7 +51,7 @@ command ごとに独立した `run...Command(argc, argv)` を持つ構成で、�
 
 ## 7.2 `project init`: 実行可能な最小 project の生成器
 
-[`runProjectInitCommand()`](../../src/devcli/projectinit.cpp#L30) は `--template standard|blank`(既定 `standard`)を読んで [`initializeProjectTemplate()`](../../src/project/projecttemplate.cpp#L401) を呼ぶだけで、空であることを確認した directory に template file 群を書くのはこちらです。F-2 で雛形は `pelican_cli` から `pelican_project` の [`projecttemplate.{hpp,cpp}`](../../src/project/projecttemplate.hpp) へ移り、Studio の File > New Project... も同じ関数を呼びます。template の一覧は [`templateFiles()`](../../src/project/projecttemplate.cpp#L351) にあります。
+[`runProjectInitCommand()`](../../src/devcli/projectinit.cpp#L30) は `--template standard|blank`(既定 `standard`)を読んで [`initializeProjectTemplate()`](../../src/project/projecttemplate.cpp#L400) を呼ぶだけで、空であることを確認した directory に template file 群を書くのはこちらです。F-2 で雛形は `pelican_cli` から `pelican_project` の [`projecttemplate.{hpp,cpp}`](../../src/project/projecttemplate.hpp) へ移り、Studio の File > New Project... も同じ関数を呼びます。template の一覧は [`templateFiles()`](../../src/project/projecttemplate.cpp#L350) にあります。
 
 主な生成物は次です。
 
@@ -60,20 +64,20 @@ command ごとに独立した `run...Command(argc, argv)` を持つ構成で、�
 | `input/profiles/keyboard.json` | input profile |
 | `passes/main_rendering_config.json` | 描画 pipeline preset と feature の選択(次項) |
 | `ui/ui_overlay.json` | 2D UI overlay |
-| `code/CMakeLists.txt`, `code/game.cpp` | game system を組み込む project code。生成される CMakeLists.txt は `pelican_game_sources()` を呼ぶため、game code は **DLL**(`pelican_game_logic`)としてビルドされます。X-1 以降は `pelican_packages()` の 1 行が**その後ろに**続きます([template](../../src/project/projecttemplate.cpp#L275)) —— package の object は、先に作られた game logic DLL へ合流するので順序が効きます |
+| `code/CMakeLists.txt`, `code/game.cpp` | game system を組み込む project code。生成される CMakeLists.txt は `pelican_game_sources()` を呼ぶため、game code は **DLL**(`pelican_game_logic`)としてビルドされます。X-1 以降は `pelican_packages()` の 1 行が**その後ろに**続きます([template](../../src/project/projecttemplate.cpp#L274)) —— package の object は、先に作られた game logic DLL へ合流するので順序が効きます |
 | `.gitattributes`, `.gitignore`, `README.md` | asset/LFS と利用案内 |
 
 template は外部 resource file ではなく、[`projecttemplate.cpp` 内の raw string](../../src/project/projecttemplate.cpp#L89) です。schema を変更した場合、example project だけでなくここも更新しないと、新規 project が古い形式で生成されます。
 
 この command の end-to-end 仕様は [`run_devcli_project_init.cmake`](../../test/run_devcli_project_init.cmake) です。file が揃っているかの確認だけでなく、生成した project directory を **prebuilt の `pelican_player`** に `--headless --frames 2 --render-out` で食わせ、exit 0・出力に `Validation Error` / `VUID-` が出ないこと・PNG が空でないことまで見ます(生成された `code/game.cpp` を build する経路ではありません)。空でない directory を拒否し、そのエラーが directory 名を含むことも同じ script が固定しています。実 device を要するので CTest では `gpu` label 付きです([`test/CMakeLists.txt`](../../test/CMakeLists.txt) の `devcli_project_init_command`)。
 
-**`blank` 雛形(F-2)。**`--template blank` は上の 16 エントリと同じファイルの組を書き、`passes/main_rendering_config.json` の `rendering` 節だけを差し替えます(VI-2 までは `shaders/present.frag` も足していました)。中身は `pipeline` キーの無い direct config で、preset・`features`・`render_targets` を持たず、fullscreen pass `present` 1 本が `display` へ UV の gradient を書きます([`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L229))。`present` の fragment は engine 同梱の `engine://passthrough` で、入力がすべて可変です —— 入力が 0 本なら gradient、入力があれば入力 0 をそのまま出します([shader](../../src/core/resources/passthrough.frag))。同じ `run_devcli_project_init.cmake` がこの project を headless で 2 frame 描かせ、PNG が 100 色以上で、最も多い 1 色以外の画素が 9 割以上(最多色が 1 割以下)であることを `pelican_test_png_nonuniform_check` で見ます([検査](../../test/run_devcli_project_init.cmake#L232))。描く前に、`present` の fragment が `engine://passthrough` で `shaders/` が無いことも確かめます(描かれた frame が雛形の書いた shader のものでないこと)。ファイルの形は GPU 無しの `devcli_project_templates`([`run_devcli_project_templates.cmake`](../../test/run_devcli_project_templates.cmake))が見ます —— 既定と `--template standard` の 16 ファイルが F-2 前の出力と SHA-256 で一致すること(MG-2b が `"version": 2` に変えた `scenes/main.scene.json` と `assets/asset_data.json` の 2 行だけは取り直し。`passes/main_rendering_config.json` の digest は変わっていません)、blank の形(`passes/main_rendering_config.json` 以外の 15 ファイルが standard と同じ digest で、`shaders/` が無く、`present` の fragment が `engine://passthrough` で `shader.defines` を持たないこと)、知らない template 名の拒否です。
+**`blank` 雛形(F-2)。**`--template blank` は上の 16 エントリと同じファイルの組を書き、`passes/main_rendering_config.json` の `rendering` 節だけを差し替えます(VI-2 までは `shaders/present.frag` も足していました)。中身は `pipeline` キーの無い direct config で、preset・`features`・`render_targets` を持たず、fullscreen pass `present` 1 本が `display` へ UV の gradient を書きます([`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L228))。`present` の fragment は engine 同梱の `engine://passthrough` で、入力がすべて可変です —— 入力が 0 本なら gradient、入力があれば入力 0 をそのまま出します([shader](../../src/core/resources/passthrough.frag))。同じ `run_devcli_project_init.cmake` がこの project を headless で 2 frame 描かせ、PNG が 100 色以上で、最も多い 1 色以外の画素が 9 割以上(最多色が 1 割以下)であることを `pelican_test_png_nonuniform_check` で見ます([検査](../../test/run_devcli_project_init.cmake#L232))。描く前に、`present` の fragment が `engine://passthrough` で `shaders/` が無いことも確かめます(描かれた frame が雛形の書いた shader のものでないこと)。ファイルの形は GPU 無しの `devcli_project_templates`([`run_devcli_project_templates.cmake`](../../test/run_devcli_project_templates.cmake))が見ます —— 既定と `--template standard` の 16 ファイルが F-2 前の出力と SHA-256 で一致すること(MG-2b が `"version": 2` に変えた `scenes/main.scene.json` と `assets/asset_data.json` の 2 行だけは取り直し。`passes/main_rendering_config.json` の digest は変わっていません)、blank の形(`passes/main_rendering_config.json` 以外の 15 ファイルが standard と同じ digest で、`shaders/` が無く、`present` の fragment が `engine://passthrough` で `shader.defines` を持たないこと)、知らない template 名の拒否です。
 
 ### 生成される rendering config は preset 参照の `pelican.graph` root(WP240a → P-2a-4b)
 
 `passes/main_rendering_config.json` の template は 111 行の手書き設定から数行になり、さらに
 **`pelican.graph` root** になりました。MG-2b からはソースのリテラルがファイルの全文です
-([`rendering_config_json`](../../src/project/projecttemplate.cpp#L200))。
+([`rendering_config_json`](../../src/project/projecttemplate.cpp#L199))。
 
 ```json
 {
@@ -96,14 +100,14 @@ template は外部 resource file ではなく、[`projecttemplate.cpp` 内の ra
 
 P-2a-4b から MG-2b までは、ソースに `rendering` 節の中身だけを置き、`wrapLegacyRenderingConfig()` で包んでいました。
 MG-2b でエンジンが graph root しか読まなくなったので包み関数は撤去され、リテラルは包んだ結果のバイト列をそのまま書いたものに
-なりました([選ぶ関数](../../src/project/projecttemplate.cpp#L262))。
+なりました([選ぶ関数](../../src/project/projecttemplate.cpp#L261))。
 どのキーがどちらの層に属するかは [`isGraphRootKey()`](../../src/project/renderconfigdocument.hpp#L17) が決めます。
 
 旧 template は `render_targets` 8 本(gbuffer 5 枚 + depth + ssao 2 枚)と `rendering_passes` を自分で書き下し、pass は gbuffer_pass / ssao_pass / ssao_blur_pass / present の 4 つでした。末尾の `present` が `uses_light_data: true` を持ち、ライティングと present を兼ねていました。新 template はこの 2 つの member を **持ちません**。
 
 読む位置が一段動いたのがこの変更の要点です。
 
-- `project init` が **何を書くか** → [`rendering_config_json`](../../src/project/projecttemplate.cpp#L200) の `pelican.graph` root(上の block がファイルの全文です)
+- `project init` が **何を書くか** → [`rendering_config_json`](../../src/project/projecttemplate.cpp#L199) の `pelican.graph` root(上の block がファイルの全文です)
 - 生成された project が **実際にどの pass を回すか** → [`src/core/resources/render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json) と [`src/core/resources/features/shadow_directional.json`](../../src/core/resources/features/shadow_directional.json)
 
 preset 側の `main_render` グラフは deferred_geometry / ssao_pass / ssao_blur_pass / deferred_lighting / forward_opaque / `__snapshot_opaque_color` / `__snapshot_opaque_depth` / forward_transparent / scene_present で、`shadow_depth` は preset ではなく feature 側が足します。つまり新規 project は最初から forward・半透明・opaque snapshot・directional shadow を持ちます。preset と feature をどう解決して 1 本のグラフにするかは[第6章](06_rendering_vulkan_shader.md)の担当です。
@@ -129,9 +133,9 @@ preset 側の `main_render` グラフは deferred_geometry / ssao_pass / ssao_bl
 
 hash と path の純粋ロジックは [`src/project/assetsmanifest.cpp`](../../src/project/assetsmanifest.cpp#L1)、起動時の runtime 検証は [`src/core/loader/assetsverification.cpp`](../../src/core/loader/assetsverification.cpp#L1) に分かれます。CLI は manifest を「作る・事前確認する」側、core は project 起動時に「利用可能か確認する」側です。
 
-`--full` でない manifest/verify は `.pelican/assets-hash-cache.json` を利用します。file metadata で cache hit できる場合は内容全体を読み直さず、大規模 store の反復確認を軽くします。厳密な配布前確認では `--full` を使う前提です。
+`--full` でない manifest/verify は `.pelican/assets-hash-cache.json` を利用します。file metadata で cache hit できる場合は内容全体を読み直さず、大規模 store の反復確認を軽くします。厳密な配布前確認では `--full` を使う前提です。cache が外れた file の hash は、CLI も起動時の検証も同じ [`assetFileSha256()`](../../src/project/assetsmanifest.cpp#L162) です(✅AH-1。1 MiB ずつ読み、Windows では BCrypt。[第3章](03_project_and_loading.md) §3.4)。
 
-仕様テストは [`assetsmanifest_test.cpp`](../../test/assetsmanifest_test.cpp#L1)、[`assetsverification_test.cpp`](../../test/assetsverification_test.cpp#L1)、CLI 結合テストは [`run_devcli_assets.cmake`](../../test/run_devcli_assets.cmake#L1) です。
+仕様テストは [`assetsmanifest_test.cpp`](../../test/assetsmanifest_test.cpp#L1)、[`assetsverification_test.cpp`](../../test/assetsverification_test.cpp#L2)、CLI 結合テストは [`run_devcli_assets.cmake`](../../test/run_devcli_assets.cmake#L1) です。
 
 ## 7.4 `import`: 外部 delivery を安全に project catalog へ登録
 
@@ -169,11 +173,13 @@ manifest の純粋 parser は [`src/project/importmanifest.cpp`](../../src/proje
 | `PELICAN_WITH_RPC` | 自動推測せず `--with rpc` で明示 |
 | `PELICAN_WITH_SEQPLAYER` | 自動推測せず `--with seqplayer` で明示 |
 
+このほか `PELICAN_WITH_IMGUI` / `PELICAN_WITH_RENDERDOC` / `PELICAN_WITH_HOT_RELOAD`(✅AV-1)/ `PELICAN_WITH_SPIRV_LINK` / `BUILD_TESTING` は導出せず、project に関係なく常に OFF を出します([固定の OFF の行](../../src/devcli/distconfig.cpp#L882))。
+
 GLB 候補は asset catalog と project 以下の import manifest の両方から集めます。入口は [`collectAssetDataGlbs()`](../../src/devcli/distconfig.cpp#L370) と [`collectImportManifestGlbs()`](../../src/devcli/distconfig.cpp#L403) です。単に拡張子を見るだけでなく、GLB JSON chunk と VAT primitive metadata を読み、壊れた VAT declaration を「feature なし」として黙殺しない設計です。
 
 結果は [`renderDistConfigPreset()`](../../src/devcli/distconfig.cpp#L867) が `set(PELICAN_WITH_... CACHE BOOL ... FORCE)` 形式の CMake include file にします。各判定の理由も comment へ出るため、「なぜこの依存が配布物に入ったか」を追跡できます。
 
-command line は [`runDistConfigCommand()`](../../src/devcli/distconfig.cpp#L900)、結合仕様は [`run_devcli_dist_config.cmake`](../../test/run_devcli_dist_config.cmake#L1) です。
+command line は [`runDistConfigCommand()`](../../src/devcli/distconfig.cpp#L903)、結合仕様は [`run_devcli_dist_config.cmake`](../../test/run_devcli_dist_config.cmake#L1) です。
 
 > 🧩 **難所 — 前方一致では判定しない**([`isWithinRoot()`](../../src/devcli/distconfig.cpp#L121) / [`pathComponents()`](../../src/devcli/distconfig.cpp#L113))
 >
@@ -233,7 +239,7 @@ header の冒頭コメントが規範です。
 
 [`runGraphCatalogCommand()`](../../src/devcli/graphcatalogcommand.cpp#L10) は引数を取らず、
 `builtinGraphModuleRegistry().catalog()` を印字するだけの 9 行です。出力は
-[`GraphModuleRegistry::catalog()`](../../src/project/graphmodule.cpp#L698) が組み立てる `pelican.graph_catalog` v1 で、
+[`GraphModuleRegistry::catalog()`](../../src/project/graphmodule.cpp#L713) が組み立てる `pelican.graph_catalog` v1 で、
 module → types / operations / sinks の順に並びます。**並びは名前順**です(module と operation は名前を鍵にした
 `std::map`、types と sinks は明示的に sort)。登録順に依存しないので、module を足しても既存の行は動きません。RPC の `get_graph_catalog` は ✅EL-4 からこの値に 2 つの鍵(material pass の format の表から作る一覧。§7 の RPC 表)を足して返すので、CLI の出力とは同じではありません。engine の shader の反映から作る一覧は、✅EL-4b から別の RPC `get_engine_shaders` です。
 
@@ -322,7 +328,7 @@ Inspector / Output / Engine Log / Frame Plan / Pass Editor の7パネルを stab
 同じレンダー設定を別の角度から見ているだけだからです。
 
 tab は CLI から選べます。`pelican_studio --project <dir> --tab frame_plan|render_features|graph` で、
-[名前の一覧](../../src/devstudio/view/mainwindow.cpp#L1572)は `MainWindow` の static 関数にあり、
+[名前の一覧](../../src/devstudio/view/mainwindow.cpp#L1608)は `MainWindow` の static 関数にあり、
 **window を作る前**に [`main.cpp`](../../src/devstudio/main.cpp#L36) が綴りを検査して、未知なら console に
 理由を出して **exit 2** します。適用は `openProject()` の**後**です([順序](../../src/devstudio/view/uimain.cpp#L78))
 —— project を開くとその project の tool layout が復元され、前面の tab が変わるためです。
@@ -352,7 +358,7 @@ process 終了時も pending request を失敗にするため、入力 pipe や 
 到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L112) が view 表示なしで検査します。
 
 読む前に、応答の階層だけ掴んでおきます。`get_frame_plan` の 1 応答の中に、名前の層と物理の層が入れ子で
-入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L4046))。
+入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L4328))。
 
 ```text
 get_frame_plan 応答 = pelican.frame_plan v1
@@ -362,15 +368,15 @@ get_frame_plan 応答 = pelican.frame_plan v1
 
 2 つの層は互いに引けます(✅GL-2a)。名前の層の node の出所の鍵(`source` / `provider_*` / `authored_name` / `loop_origin` と、GL-2a の
 `origin` / `replaces`、✅RS-6 の `added_after`)は、`framePlanToJson()` が compiled pipeline の `RenderPassProvenance` から写します
-([写す所](../../src/core/renderingpass/frameplanner.cpp#L1987))。resource の側の ✅RS-6b の `added_usage`(engine が宣言の `usage` に足した `SAMPLED`)も、`RenderResourceProvenance` から `resources[]` へ写します([`added_usage` を写す所](../../src/core/renderingpass/frameplanner.cpp#L2145))。`origin` の `graph`(rendering root 文書の参照)は raw の planner が知らないので、
-renderer が `framePlanToJson()` に渡します。物理の層は、`physical_target_plan` を足した直後に renderer が
-[`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2293) を呼び
-([呼ぶ所](../../src/core/vkcore/renderer.cpp#L4318))、resources / alias_groups / decisions / backend の候補に、関わる node 名の
+([写す所](../../src/core/renderingpass/frameplanner.cpp#L1995))。resource の側の ✅RS-6b の `added_usage`(engine が宣言の `usage` に足した `SAMPLED`)も、`RenderResourceProvenance` から `resources[]` へ写します([`added_usage` を写す所](../../src/core/renderingpass/frameplanner.cpp#L2159))。`origin` の `graph`(rendering root 文書の参照)は raw の planner が知らないので、
+renderer が `framePlanToJson()` に渡します。✅PS-1 の once の node は、`framePlanToJson()` が `FramePlanNode::once` から `schedule: "once"` を書き([書く所](../../src/core/renderingpass/frameplanner.cpp#L2082))、`currentFramePlanJson()` がその node にだけ `Renderer::once_runs` の記録から `last_run_generation` / `last_run_frame`(無ければ `null`)を足します([足す所](../../src/core/vkcore/renderer.cpp#L4396))。✅IA-1 の `initial_asset: {asset, sha256}` も `currentFramePlanJson()` が最後に、`physical_target_plan.resources[]` の `logical_resource` を世代の `image_initial_assets` で引いて足します([IA-1 の `initial_asset` を足す所](../../src/core/vkcore/renderer.cpp#L4806))。物理の層は、`physical_target_plan` を足した直後に renderer が
+[`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2307) を呼び
+([呼ぶ所](../../src/core/vkcore/renderer.cpp#L4246))、resources / alias_groups / decisions / backend の候補に、関わる node 名の
 `from_nodes[]` を書き込みます。物理の要素 → node 名 → `origin` → graph の文書、の順に辿れます(形は manual 第13章「`get_frame_plan` に足されたもの」)。
-✅FG-1 から、`framePlanToJson()` は compiled pipeline の `fold_planning` のうちその frame graph の分を最上位の `fold_decisions` に出し([出す所](../../src/core/renderingpass/frameplanner.cpp#L2197))、`appendFramePlanPhysicalNodeReferences()` がその 1 件ごとに `decisions[]` へ `pelican.plan.fold_decision_applied@1` の要素を足して、`from_nodes` を付けた後に `from_fold` を書きます([足す所](../../src/core/renderingpass/frameplanner.cpp#L2413))。✅PO-1 から、`framePlanToJson()` は compiled pipeline の resource の宣言の usage で [`findFramePlanUnreadOutputs()`](../../src/core/renderingpass/frameplanner.cpp#L1682) を回して `unread_output` を、renderer は `currentFramePlanJson()` の中で fullscreen / raster の pass ごとに [`appendUnusedBindingDiagnostics()`](../../src/core/vkcore/renderer.cpp#L4000) を回して `unused_binding` を `diagnostics` に足します。後者が見るのは reflection の [`ReflectedBinding::accessed`](../../src/core/shader/shaderreflection.hpp#L48)(spirv-reflect の静的な使用。stage を merge するときは OR)です。
+✅FG-1 から、`framePlanToJson()` は compiled pipeline の `fold_planning` のうちその frame graph の分を最上位の `fold_decisions` に出し([出す所](../../src/core/renderingpass/frameplanner.cpp#L2211))、`appendFramePlanPhysicalNodeReferences()` がその 1 件ごとに `decisions[]` へ `pelican.plan.fold_decision_applied@1` の要素を足して、`from_nodes` を付けた後に `from_fold` を書きます([足す所](../../src/core/renderingpass/frameplanner.cpp#L2427))。✅PO-1 から、`framePlanToJson()` は compiled pipeline の resource の宣言の usage で [`findFramePlanUnreadOutputs()`](../../src/core/renderingpass/frameplanner.cpp#L1689) を回して `unread_output` を、renderer は `currentFramePlanJson()` の中で fullscreen / raster の pass ごとに [`appendUnusedBindingDiagnostics()`](../../src/core/vkcore/renderer.cpp#L4057) を回して `unused_binding` を `diagnostics` に足します。後者が見るのは reflection の [`ReflectedBinding::accessed`](../../src/core/shader/shaderreflection.hpp#L48)(spirv-reflect の静的な使用。stage を merge するときは OR)です。✅MP-1 から、`currentFramePlanJson()` は material pass の node に、最後に公開した frame でその pass が描いた material を `drawn_materials` / `drawn_materials_frame` として足します([MP-1 の `drawn_materials` を足す所](../../src/core/vkcore/renderer.cpp#L4541))。planner の値ではなく、renderer が描くときに数えて公開の後に残した記録で、記録の program と世代が今のものと違えば足しません(数え方は第6章 §6.5「pass ごとに描いた material の数え方」)。
 
 Graph タブが読む応答も同じ読み方をします。1 応答に「今の版」と「文書の 2 つの層」が入っています
-([組み立ては `getGraphInstances()`](../../src/core/communication/renderconfigeditor.cpp#L2413))。
+([組み立ては `getGraphInstances()`](../../src/core/communication/renderconfigeditor.cpp#L2860))。
 
 ```text
 get_graph_instances 応答
@@ -399,24 +405,24 @@ attachment load/store、material route、backend 非依存 execution facts へ�
 ✅UX-4a で 6 つ目の `get_scene_acceleration_structures`(`requestSceneAccelerationStructures`。Ray scene の combo の一覧。任意で、答えは同じ `result` / `failure` に来ます)が足されました([scene AS の読みの結線](../../src/devstudio/view/renderpassauthoringcapability.cpp#L77))。
 フォームは `fullscreen` 固定でもありません —— material の契約・設定・routing、raster の draw と raster state の欄を持ちます。
 ✅UX-4a(`ad1e0771`)から、これらは JSON の欄ではなく `src/devstudio/view/passforms/` の部品(`RasterStateForm` / `ShaderDefinesForm` /
-`MaterialSettingsForm` / `MaterialRoutingForm`、出力の行は `AttachmentOpsForm`)で、Graph の詳細欄にも埋め込める形です([部品を並べる所](../../src/devstudio/view/fullscreenpasswidget.cpp#L531))。
+`MaterialSettingsForm` / `MaterialRoutingForm`、出力の行は `AttachmentOpsForm`)で、Graph の詳細欄にも埋め込める形です([部品を並べる所](../../src/devstudio/view/fullscreenpasswidget.cpp#L533))。
 部品の共通の形は [`PassForm`](../../src/devstudio/view/passforms/passform.hpp#L28) です: 宣言の今の値(JSON)を受け、変えた後の値(JSON)を返し、`changed` を出し、知らない鍵は受けたまま返します。子の objectName は `<prefix>.<field>` で、prefix は使う側が渡します(Pass Editor は `pelican.fullscreenPass`、✅RSX の Rendering settings タブは `ShaderDefinesForm` を `pelican.renderingSettings` で使います)。`src/devstudio/view/passforms/` の部品は `pelican_studio_view` の lib に入ります(`src/devstudio/view/CMakeLists.txt`。Graph タブへの埋め込みは UX-4b で、まだありません)。
 
 render の編集の完了の読みは ✅RSX から 1 か所です: [`readRenderEditCompletion()` / `completeRenderEdit()`](../../src/devstudio/model/rendereditcompletion.hpp#L52)(`src/devstudio/model/rendereditcompletion.*`。Qt に依存しない model で、`pelican_studio_inspector_model` の lib に入ります)。Graph タブ・Frame Plan・Pass Editor・Render Features と dialog・Inspector のグラフ装着・Rendering settings・render の編集の履歴が、ticket の最後の答えをこれで読み、`restart_required` なら MainWindow の `requestEngineRestart()` に渡します。見え方は [第13章](../manual/13_editor.md) の「どのパネルの render の編集も、再起動が要れば同じ形で起動し直します(✅RSX)」です。
 ボタンは **Save authored pass** / **Remove authored pass** / **New pass**
-([構築](../../src/devstudio/view/fullscreenpasswidget.cpp#L720))で、preset 由来の pass を開いているときは
+([構築](../../src/devstudio/view/fullscreenpasswidget.cpp#L722))で、preset 由来の pass を開いているときは
 save の文言が **Save preset**(feature 由来なら **Save feature**)に変わります(N-7 で短くなった)
-([切り替え](../../src/devstudio/view/fullscreenpasswidget.cpp#L2686))。
+([切り替え](../../src/devstudio/view/fullscreenpasswidget.cpp#L2689))。
 変わっていないのは所有の向きです: 対象候補は `get_frame_plan` の `resources[]` から作り、フィールド所有・
 同一 graph の名前衝突・target 名／`frame_target` を Studio 単独で検査し、target usage や shader stem 解決は
 軸名付きの `Not checked` として残します。**ファイルは engine が書きます。**
 
 [`FramePlanWidget`](../../src/devstudio/view/frameplanwidget.hpp#L28) はその model を **9 枚の tool tab** に投影します ——
 Logical graph / Passes / Resources / Physical plan / Decisions / Backends / Barriers / Materials / Raw JSON
-([登録](../../src/devstudio/view/frameplanwidget.cpp#L1229))。tab は掴んで並べ替えられ、その順序は保存されます。
+([登録](../../src/devstudio/view/frameplanwidget.cpp#L1251))。tab は掴んで並べ替えられ、その順序は保存されます。
 **読み取り専用でもありません**: toolbar に **Order nodes...** / **Edit task...** / **Edit pass...** があり、
 `Shift-drag: connect resources` のラベルどおり **Shift + 左ドラッグ**で出力元から task / preset pass へ線を引くと、
-その編集画面が開きます([toolbar](../../src/devstudio/view/frameplanwidget.cpp#L681))。保存自体は
+その編集画面が開きます([toolbar](../../src/devstudio/view/frameplanwidget.cpp#L701))。保存自体は
 `RenderFeaturesWidget` と `FullscreenPassWidget` が持つ編集 RPC を通ります。
 初期状態は順序、名前、種別、入力、出力の pass 行だけで、
 attachment ops、resource use、material filter、前後 barrier は折りたたみ配下です。filter も全 tree の
@@ -429,17 +435,17 @@ attachment ops、resource use、material filter、前後 barrier は折りたた
 
 ### 共通グラフの 3 層(N-1 / N-1b / N-2)
 
-[`GraphCanvasModel`](../../src/devstudio/model/graphcanvasmodel.hpp#L853) は **Qt に依存しません**。
+[`GraphCanvasModel`](../../src/devstudio/model/graphcanvasmodel.hpp#L974) は **Qt に依存しません**。
 `GraphAttachmentModel` と同じ「request / read の 2 slot」形で、呼び手が `takeRpcRequests()` を drain し、
 好きな transport で送り、`receiveRpcResult()` / `receiveRpcFailure()` で答えを戻します。slot が 2 つあるのは、
 **値の問い合わせが次の文書再取得を待たせないため**で、遅れて届いた古い答えは捨てられます。
 提供するのは scope 一覧(`root` + definition 名)、scope ごとの node と edge、root scope の `graph.instance` へ
 重ねる値の overlay、そして `contentRevision()` / `reportRevision()` の 2 つの世代です
-([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L1504))。編集側は 6 つの操作
+([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L1681))。編集側は 6 つの操作
 (`connectInput` / `disconnectInput` / `setNodeParameter` / `removeNode` / `setNodeLabel` / `addNode`)で、
-**どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L2145))。
+**どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L2306))。
 `addNodeOps()` だけは複数 op を返します —— 必須の scalar 入力を持つ操作は、未接続のままでは engine が受け取らないので、
-**同じ ops 列で `value.constant` を先に足して**そこへ繋ぎます([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L2810))。
+**同じ ops 列で `value.constant` を先に足して**そこへ繋ぎます([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L3023))。
 種の定数は後で本物の producer を繋いでも自動では消えません(記録された穴)。
 
 [`view/nodegraphics.{hpp,cpp}`](../../src/devstudio/view/nodegraphics.hpp#L36) は
@@ -459,7 +465,7 @@ proxy target を作ります —— view の `.cpp` を直接 compile する sce
 ✅VI-3b から、同じ target に engine の `src/core/resources/passthrough.frag` の byte も入ります。`b_embed` はこの directory の下の
 file しか取らないので、[custom command](../../src/devstudio/resources/CMakeLists.txt#L23) が自前の script
 [`embed_engine_shader.cmake`](../../src/devstudio/resources/embed_engine_shader.cmake) で C++ の配列を生成し(engine の file が変われば作り直す)、
-Studio は [`engineFragmentSource()`](../../src/devstudio/view/fullscreenshadertemplate.cpp#L765) で引きます。Fix sockets と Open the shader が
+Studio は [`engineFragmentSource()`](../../src/devstudio/view/fullscreenshadertemplate.cpp#L776) で引きます。Fix sockets と Open the shader が
 `engine://passthrough` を project に複製するときの中身で、repo に写しは置きません(利用者向けは [manual 第13章](../manual/13_editor.md) の「engine://passthrough は project に複製してから直します」)。
 抽出が Frame Plan の挙動を変えていないことは、`devstudio_frameplan_graph_test`(2,133 assertion)と
 `devstudio_fullscreen_pass_test`(803 assertion)が**全数不変**であることで押さえました
@@ -473,7 +479,7 @@ heading_text, dim_text, pill_bg}, domain_tint, source_tint}` で、描画側は�
 (`pelican.studio.themes` v1、`light` / `dark` の 2 preset で既定は `dark`)なので、3 つ目のテーマを足すのに
 C++ は要りません。切り替えの通知は Qt signal ではなく**素の関数リスト**
 ([理由はヘッダのコメント](../../src/devstudio/view/studiotheme.hpp#L110)) —— scene test が view の `.cpp` を
-moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L1388)、
+moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L1479)、
 Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphics.cpp#L2300) で追随します
 (item は作られた時の色を抱えるので、描き直す以外に追随する道がありません)。**ソケットの型別の fill だけは
 テーマから引きません** —— 型の識別色は `graph_socket_styles.json` のままで、テーマが決めるのは縁と
@@ -481,7 +487,7 @@ Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphic
 
 [`GraphCanvasWidget`](../../src/devstudio/view/graphcanvaswidget.hpp) と `GraphCanvasScene` が view です。
 上段は `Scope:` の combo とパンくず、`Values from:` の combo、`Refresh`
-([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L4681))、本体は左がキャンバス、右が
+([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L5082))、本体は左がキャンバス、右が
 `Field` / `Value` の詳細表です。node は見出し帯 + 出力欄 + 入力欄の 3 段で、見出しの三角はソケット欄を
 折り畳みます(折り畳むと辺は見出し帯の左右中央 1 点へ集まります)。編集はすべて**即時**で Apply ボタンがなく、
 ソケット間ドラッグ = `set_input`、辺の `Delete` = `set_input{null}`、値の帯のその場編集 =
@@ -491,7 +497,7 @@ node の `Delete` = `remove_node` です。位置と折り畳みは `(scope, nod
 engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L34) が
 名前で持つ 5 つ(`get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` /
 `get_edit_result`)だけで、それ以外は `The graph canvas cannot issue %1.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L5722))。規範は struct の宣言そのもの
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L6344))。規範は struct の宣言そのもの
 ([メンバ 5 本](../../src/devstudio/view/graphcanvasreadcapability.hpp#L43))で、その上の宣言コメントは
 **読みを 3 つと数えたまま**です —— メンバは `requestGraphInstances` / `requestGraphCatalog` /
 `requestGraphValues` / `requestEditResult` の 4 読み + `requestEditGraphDocument` の 1 編集なので、
@@ -505,7 +511,7 @@ engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view
 `EmbeddedViewport *` を直接受け取る(capability struct を通さない)側です。扱うのは feature の追加・削除、
 feature パラメータ(**Parameters...**)、materialize(**Make editable...**)、preset の fork、region replacement、
 compute / RT task、callable record、scene acceleration structure、frame node order、procedural asset で、
-ボタンの構築は [1 箇所](../../src/devstudio/view/renderfeatureswidget.cpp#L2290)に並んでいます。
+ボタンの構築は [1 箇所](../../src/devstudio/view/renderfeatureswidget.cpp#L2389)に並んでいます。
 dialog は `pelican.featureMaterialize`(+ `.destination`)と `pelican.featureParameters`(+ `.<name>`)です。
 **export / import と package の UI はここにありません** —— 対応する RPC(§7.7)は engine 側にだけあります。
 
@@ -526,18 +532,28 @@ stable object name は Qt が既存 dock の復元とは独立に扱い、既定
 は wrapper target 経由の `pelican_core` も拒否されることを固定します。これは「Studio だけが使える
 engine 内部面」を偶然持ち込めないようにする D0 の build-level gate です。
 
-[`ProjectOutlinerModel`](../../src/devstudio/model/project.hpp#L78) は view と Qt から独立した読み取り専用
+[`ProjectOutlinerModel`](../../src/devstudio/model/project.hpp#L79) は view と Qt から独立した読み取り専用
 model です。`pelican_project` の project envelope、純粋 path resolver、sceneformat 検証を使って
 project と scene 文書を開き、scene と object の木を作ります。object の同一性は名前ではなく
 `(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
 `pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
 
-[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L1931) は model の索引を Qt item の
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L1967) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
 object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L123) が
 GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始まりの
 `declaration_index` を返すため、直リンク木と RPC 木は `(scene_id, declaration_index)` で
 対応付けられます。
+
+✅UX-13c(`4405641a`)から、engine に繋いだ Outliner の木は `scene_tree` ではなく `scene_outline` の答えから作ります
+([`ProjectOutlinerModel::updateSceneOutline()`](../../src/devstudio/model/project.cpp#L219)。`scene_tree` の答えは
+`updateSceneTree()` が同じ [`updateScene()`](../../src/devstudio/model/project.cpp#L229) で読む)。違いは親の引き方で、
+`scene_outline` は `parent_authoring_object_id`、`scene_tree` は親の名前です。`not_modified: true` の答えは持っている revision の
+ときだけ受け、何も作り直さず false を返します(持っていない revision なら例外)。問いを出すのは
+[`MainWindow::requestOutlinerRefresh()`](../../src/devstudio/view/mainwindow.cpp#L2359) で、scene を 1 つ持った後は
+`{scene_id, if_scene_revision}` の条件付きの poll、失敗や読めない答えの次は条件無し、`-32601` で断る engine にはその engine の間
+`scene_tree` を使います([失敗の扱い](../../src/devstudio/view/mainwindow.cpp#L2433))。使い方は
+[第13章](../manual/13_editor.md)の「Studio の Outliner と Inspector が読む一覧(✅UX-13c)」。
 
 [`SelectionModel`](../../src/devstudio/model/selection.hpp) は view/Qt から独立し、選択をこの公開
 identity 1 個だけで保持します。viewport pick と Outliner のどちらも同じ instance を更新し、
@@ -547,7 +563,10 @@ revision、背景での解除、feature/RPC 失敗時の選択維持を純粋 mo
 `pick_object` と同じ identity だけで同じ意味論を実装できます。
 
 [`InspectorModel`](../../src/devstudio/model/inspectormodel.hpp) も view/Qt から独立した公開 RPC client
-です。選択の `(scene_id, declaration_index)` を `scene_tree` の `authoring_object_id` へ解決してから
+です。選択の object を一覧の `authoring_object_id` で確かめてから(選択が id を持てば id で、持たなければ
+`declaration_index` で引く。一覧は ✅UX-13c から `scene_outline {scene_id}`、`-32601` で断る engine にはその session の間
+`scene_tree`。[問いを積む所](../../src/devstudio/model/inspectormodel.cpp#L2033)、[`-32601` を覚える所](../../src/devstudio/model/inspectormodel.cpp#L3025)。
+`-32601` は `InspectorWidget` が `EmbeddedViewport::engineRpcRefused` から拾って `receiveRpcFailure(..., unknown_method)` で渡す)
 `get_components` を読み、component 応答の `schema.fields` だけから整数、浮動小数、真偽、列挙、文字列、
 vector、quaternion の [`InspectorWidgetDescriptor`](../../src/devstudio/model/inspectormodel.hpp) を作ります。
 component 名や transform の field 名を view 側で型判定しません。
@@ -567,16 +586,18 @@ component 名や transform の field 名を view 側で型判定しません。
 viewport の描画へ到達します。
 
 Inspector の properties の下には [`GraphAttachmentWidget`](../../src/devstudio/view/graphattachmentwidget.hpp) が
-載ります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L271))。`Attached graphs` グループ
+載ります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L288))。`Attached graphs` グループ
 (list + **Attach...** / **Detach** / **Refresh**)と `Instance inputs` グループ(port ごとに mode / 著作値 /
 実測値と 4 つのボタン)で、object name は `pelican.graphAttachments` /
 `pelican.graphPort.<kind>.<port>` の規則です([構築](../../src/devstudio/view/graphattachmentwidget.cpp#L54))。
 [`GraphAttachmentModel`](../../src/devstudio/model/graphattachmentmodel.hpp) が Qt 非依存の相方で、
 mode は**文書から**決めます(edge があれば `connected`、なければ `parameter` か `default`)
-([判定](../../src/devstudio/model/graphattachmentmodel.cpp#L337)) —— 展開結果から読まないのは、
+([判定](../../src/devstudio/model/graphattachmentmodel.cpp#L344)) —— 展開結果から読まないのは、
 接続された port には読み取れる node が残らないからです。
-GUI の 1 操作は必ず 1 つの op 列 + 1 ticket + 1 CAS です([submitOps](../../src/devstudio/model/graphattachmentmodel.cpp#L474))。
-「曲線で制御」が作る node の集合は [`curveControlOps()`](../../src/devstudio/model/graphattachmentmodel.cpp#L402) に
+GUI の 1 操作は必ず 1 つの op 列 + 1 ticket + 1 CAS です([submitOps](../../src/devstudio/model/graphattachmentmodel.cpp#L481))。
+拒否の文は ✅UX-13b から、graph の名前付きの code なら Graph タブと同じ `graphLoopRefusalDescription()`、ほかの既知の code なら
+`knownRefusalDescription()`、どちらでもなければ message に code を添えたものです([`diagnostic()`](../../src/devstudio/model/graphattachmentmodel.cpp#L16))。
+「曲線で制御」が作る node の集合は [`curveControlOps()`](../../src/devstudio/model/graphattachmentmodel.cpp#L409) に
 固定されていて、id は呼び手側で決まります —— **同じ ops を script が送れば同じ文書バイト列になる**ようにするためです。
 ticket と generation の規律は [`design_graph_composition.md`](../design_graph_composition.md) が正です。
 
@@ -629,9 +650,9 @@ protocol は**改行区切り JSON 1 行 = 1 命令**で、`{id, cmd, ...}` に 
 `text` は描かれた字ではなく item が data role に入れた値を優先します
 ([優先](../../src/devstudio/automation/automationcommands.cpp#L552))。
 
-driver は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1253)(stdlib のみ)。シナリオ JSON の step を順に送り、
+driver は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1268)(stdlib のみ)。シナリオ JSON の step を順に送り、
 `rpc_equals` / `text_equals` / `visible` / `list_count` / `screenshot` の期待を検査し、`verdict` / `summary` /
-`failures` / `steps` / `studio_log` を持つ `report.json` を書きます([組み立て](../../tools/studio_drive.py#L1422))。
+`failures` / `steps` / `studio_log` を持つ `report.json` を書きます([組み立て](../../tools/studio_drive.py#L1437))。
 最後の `shutdown` step で終了コード 0 と強制終了されていないことを検査します。異常終了や終了待ちのタイムアウトは
 失敗になり、`studio_exit_code` / `studio_shutdown_forced` と `failures` に結果を記録します。
 書式の正本は [`test/studio_scenarios/README.md`](../../test/studio_scenarios/README.md#L1) です。
@@ -653,7 +674,7 @@ modal ループに入りません。メニュー・dock・gizmo の action は `
 ([layout](../../test/CMakeLists.txt#L329) / [outliner](../../test/CMakeLists.txt#L352) /
 [inspector model](../../test/CMakeLists.txt#L388) / [gizmo model](../../test/CMakeLists.txt#L414) /
 [frame plan](../../test/CMakeLists.txt#L462) / [viewport + frame plan](../../test/CMakeLists.txt#L472) /
-[viewport](../../test/CMakeLists.txt#L2729))。`SKIP_DEVSTUDIO=ON` の build ではこれらの lib が作られないので、
+[viewport](../../test/CMakeLists.txt#L2759))。`SKIP_DEVSTUDIO=ON` の build ではこれらの lib が作られないので、
 **そのどれも登録されません** —— 緑でも走っていない、という形になるので、Studio を触った変更は
 Studio 入りの build で全数を見ます。**例外が 1 つ**あります: `devstudio_d0_boundary_negative` は
 どの囲いの中にもいない素の [`add_test()`](../../test/CMakeLists.txt#L263) なので、`SKIP_DEVSTUDIO=ON` でも
@@ -673,7 +694,7 @@ Studio の target を必要としません)。
 | `devstudio_graphattachment_test` | 装着・instance 入力の mode・4 導線が作る op 列 |
 | `devstudio_graphcanvas_test`(139 assertion) | `GraphCanvasModel`。**対照**は「reply から `definitions` を落とす」「catalog を返さない」「値の overlay を撤去する」の 3 変異 |
 | `devstudio_graphcanvas_scene_test`(62 assertion、`QT_OFFSCREEN`) | `GraphCanvasScene`。**対照**は「column を固定にする」「位置保持を撤去」「消えた node の位置を prune しない」「double-click を撤去」。N-2 で 8 case が加わり、その対照は「`canConnect` を常に true」「折り畳みを無効化」「parameters の全 key を送る」 |
-| `devstudio_engine_failure_test`(`GPU` + `GOLDEN` フラグ。ctest の label は `gpu` **だけ**で、`GOLDEN` が足すのは [`RESOURCE_LOCK pelican_gpu`](../../test/CMakeLists.txt#L177) です) | **失敗経路で実 `pelican_player` を起動する Studio テスト**。sandbox に複製した `projects/example` を壊して起動し、fatal 行が Studio に届くこと・RPC の stdout が枠を保つことを見ます。**実 player を起こす唯一のテストではありません** —— Q-1 のシナリオ群のほか、`if(NOT SKIP_DEVSTUDIO)` の中で Studio の引数 probe と実 player を回す [`vulkan_validation_runtime_player`](../../test/CMakeLists.txt#L3400) が Q-1 以前からいます |
+| `devstudio_engine_failure_test`(`GPU` + `GOLDEN` フラグ。ctest の label は `gpu` **だけ**で、`GOLDEN` が足すのは [`RESOURCE_LOCK pelican_gpu`](../../test/CMakeLists.txt#L177) です) | **失敗経路で実 `pelican_player` を起動する Studio テスト**。sandbox に複製した `projects/example` を壊して起動し、fatal 行が Studio に届くこと・RPC の stdout が枠を保つことを見ます。**実 player を起こす唯一のテストではありません** —— Q-1 のシナリオ群のほか、`if(NOT SKIP_DEVSTUDIO)` の中で Studio の引数 probe と実 player を回す [`vulkan_validation_runtime_player`](../../test/CMakeLists.txt#L3461) が Q-1 以前からいます |
 | `devstudio_d0_boundary_negative` | link boundary(下記) |
 | `studio_scenario_*`(`gpu`、Q-1 / Q-1b / N-5。**10 本**: `graph_read` / `graph_edit_roundtrip` / `canvas_zoom_pan` / `menu_actions` / `graph_canvas_zoom_pan` / `theme_switch` / `graph_auto_layout` / `graph_reroute_tie` / `graph_observe_roundtrip` / `frameplan_edit_roundtrip`) | **実物の窓 + 実物の engine の e2e**。`--automation` 無しで socket が無いこと、`list` が objectName を返すこと、無い名前が `automation.widget_missing@1` になること、キャンバスが描いたものと `get_graph_instances` の一致、値の帯の click → type → Enter が engine に届き、**ディスク経由で再読込しても残る**こと。**対照**は「期待するノード数を 1 ずらす」と「`setNodeParameter` を止める」(後者は `wait_timeout`)。Q-1b の 3 本は gesture(wheel / 押したままの move / 中ボタン drag)を `view_state` の数値の**向き**で、メニューを `menu_list` / `action` で確かめます。N-5 の `theme_switch` は View ▸ Theme で light / dark を切り替えて両方を撮ります |
 
@@ -691,11 +712,12 @@ Studio の target を必要としません)。
   click → type → Enter して engine に届かせ、別 project へ切り替えて戻る(= engine がディスクから読み直す)ところまで
   1 本で通します。**それ以外の authoring 側 Studio テストは今も canned reply のハーネスと mock の往復**で、
   装着(Inspector)側の e2e はまだありません。
-- **シナリオは GPU lane に登録します。**[scenario の登録条件](../../test/CMakeLists.txt#L3474)は
+- **シナリオは GPU lane に登録します。**[scenario の登録条件](../../test/CMakeLists.txt#L3535)は
   Studio target と `PELICAN_PYTHON_TESTS=ON`、またはPython 3.11以上が見つかった `AUTO` です。
   `uv` は不要です。`test/studio_scenarios/*.json` から CTest を作り、完全な `run_gpu_gate.py` は
   全scenarioの正確な名前を必須にします。未登録・未実行・skipを成功とは扱いません。
   Studio無しの限定確認には `--engine-only` があり、release判定とは区別します。
+  ✅IA-1s から、シナリオの隣に `<名前>.prepare.py` があれば `run_studio_scenario.cmake` が driver の前にそれを走らせ(`pelican_cli` は登録が `-DCLI=` で渡す)、`file` step に byte のまま写す `copy` が増えました([第10章](../manual/10_tools.md) §10.7)。今 prepare を持つのは `gui_build_ltc` と、✅AB-1s の `gui_build_audio_reactive`(音量が時間で変わる 2 つの小さな WAV を project の外に書く。`--cli` は受けるが使わない)の 2 本です。
 - **絵は比較していません。**スクリーンショットは保存と目視(AI と人)のためで、hash 比較はありません。
   `widget` モードの絵に埋め込み engine の窓は写らず、`mode: screen` は記録上**未検証**です。
 
@@ -716,7 +738,7 @@ Studio の target を必要としません)。
   **読みだけで編集され、実行されていない**ことも同じ完了記録 `e1c326c1` の申告で(Studio 無しの
   worktree では走らないため、primary の全数で見る、という運用です)、本章で実行を確かめてはいません。
 
-> **設計決定:** **エンジン側の編集面 — 編集系 RPC 60 メソッド(§7.7)と ImGui inspector / asset browser(§7.12) — が正準です**。Qt Inspector も別の編集実装を持たず、その RPC を呼ぶ公開 client です。ImGui は同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L258) を process 内 adapter から呼びますが、Studio は `pelican_project` と JSON-RPC だけへリンクする D0 境界を保ちます。
+> **設計決定:** **エンジン側の編集面 — 編集系 RPC 60 メソッド(§7.7)と ImGui inspector / asset browser(§7.12) — が正準です**。Qt Inspector も別の編集実装を持たず、その RPC を呼ぶ公開 client です。ImGui は同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L278) を process 内 adapter から呼びますが、Studio は `pelican_project` と JSON-RPC だけへリンクする D0 境界を保ちます。
 
 ## 7.7 JSON-RPC を2層に分けて読む
 
@@ -726,8 +748,8 @@ RPC は build option `PELICAN_WITH_RPC` で切り替わります。無効時は 
 
 | 形態 | 起動 | 動作 |
 |---|---|---|
-| headless RPC | `--rpc --headless` | `Loop` が通常 loop の代わりに [`runEngineRpcServer(std::cin, std::cout)`](../../src/core/communication/rpcserver.hpp#L181) を実行し、EOF までブロックする |
-| windowed RPC | `--rpc`(headless なし) | 通常の描画 loop を回しつつ、[`WindowedRpcHost`](../../src/core/communication/rpcserver.hpp#L158) が **フレーム境界でのみ** リクエストを処理する |
+| headless RPC | `--rpc --headless` | `Loop` が通常 loop の代わりに [`runEngineRpcServer(std::cin, std::cout)`](../../src/core/communication/rpcserver.hpp#L189) を実行し、EOF までブロックする |
+| windowed RPC | `--rpc`(headless なし) | 通常の描画 loop を回しつつ、[`WindowedRpcHost`](../../src/core/communication/rpcserver.hpp#L166) が **フレーム境界でのみ** リクエストを処理する |
 
 詳細な frame 境界の位置は [第2章](02_runtime_lifecycle.md)を参照してください。windowed RPC では ImGui UI が無効になる点は §7.12 と [第9章](09_black_magic_and_gotchas.md)で扱います。
 
@@ -740,11 +762,17 @@ RPC は build option `PELICAN_WITH_RPC` で切り替わります。無効時は 
 - success/error response の serialize。
 - injected input/event parameter の純粋 parse。
 
-この層は Vulkan なしで [`jsonrpc_test.cpp`](../../test/jsonrpc_test.cpp#L33) から直接テストできます。
+この層は Vulkan なしで [`jsonrpc_test.cpp`](../../test/jsonrpc_test.cpp#L38) から直接テストできます。
+
+**応答の直列化は文字列をつなぐ(✅FP-2、`0efa856c`)。**[`serializeJsonRpcResult()`](../../src/project/jsonrpc.cpp#L221) は `{"jsonrpc":"2.0","id":` に `id.dump()`、`,"result":` に `result.dump()` をつないで `}` で閉じます。[`serializeJsonRpcError()`](../../src/project/jsonrpc.cpp#L231) も同じ envelope で、error の object は `code`・`message`・(あれば)`data` の順です。FP-2 の前は、result を `nlohmann::ordered_json` の envelope に写してから dump していて、応答のたびに result の深い写しが 1 回ありました。
+
+- bytes は前と同じです。`nlohmann::json` の object は鍵を整列して dump し、`ordered_json` への写しも同じ整列した鍵の順で作られていたためです(コードの注記)。test は FP-2 の前の 2 つの関数を test の中に残して、plan に似た入れ子の payload(`ordered_json` の handler の結果を変換したものを含む)・空の object と配列・`null`・unicode を含む文字列・数と、`id` の数・負数・`uint64` の最大・文字列・`null` の組で bytes を比べ、error も `data` の有無・配列・`null`・大きな payload で比べます。UTF-8 でない文字列は、前と同じく `nlohmann::json::type_error` で投げます。commit の記録では、動いている engine の 16 の応答も生の bytes で比べています。
+- commit の記録の計測: Debug の `get_frame_plan` の往復 55 → 37 ms。
+- test: `jsonrpc_test` の [「JSON-RPC FP-2 responses are the same bytes as the ordered_json envelope they replace」](../../test/jsonrpc_test.cpp#L231)。
 
 ### engine binding 層: `pelican_core`
 
-[`RpcServer`](../../src/core/communication/rpcserver.hpp#L55) は `istream` / `ostream` と method handler map を持ちます。1行を1 request とし、[`handleLine()`](../../src/core/communication/rpcserver.cpp#L1156) で parse → handler → response serialize を行います。[`run()`](../../src/core/communication/rpcserver.cpp#L1221) は EOF まで1行ずつ読み、必ず1行の response を flush します。1行だけを処理する [`processLine()`](../../src/core/communication/rpcserver.cpp#L1152) が公開されているのが windowed 経路の土台です。
+[`RpcServer`](../../src/core/communication/rpcserver.hpp#L56) は `istream` / `ostream` と method handler map を持ちます。1行を1 request とし、[`handleLine()`](../../src/core/communication/rpcserver.cpp#L1161) で parse → handler → response serialize を行います。[`run()`](../../src/core/communication/rpcserver.cpp#L1226) は EOF まで1行ずつ読み、必ず1行の response を flush します。1行だけを処理する [`processLine()`](../../src/core/communication/rpcserver.cpp#L1157) が公開されているのが windowed 経路の土台です。
 
 transport が socket ではなく stream interface なのがポイントです。production 起動では stdin/stdout、unit test では stringstream を差し替えられます。
 
@@ -752,12 +780,12 @@ transport が socket ではなく stream interface なのがポイントです�
 
 | class | 役割 |
 |---|---|
-| [`EngineRpcEndpoint`](../../src/core/communication/rpcserver.hpp#L140) | 「1 個の状態付きエンジン RPC ディスパッチャを所有」。headless は `run()`、windowed host は frame 境界でだけ `processLine()` を呼ぶ |
-| [`WindowedRpcHost`](../../src/core/communication/rpcserver.hpp#L158) | `processFrameBoundary()` / `queuedRequestCount()` / `readerFinished()`。reader スレッドは行を **queue へ積むだけ**で、dispatch は engine スレッドが行う |
+| [`EngineRpcEndpoint`](../../src/core/communication/rpcserver.hpp#L148) | 「1 個の状態付きエンジン RPC ディスパッチャを所有」。headless は `run()`、windowed host は frame 境界でだけ `processLine()` を呼ぶ |
+| [`WindowedRpcHost`](../../src/core/communication/rpcserver.hpp#L166) | `processFrameBoundary()` / `queuedRequestCount()` / `readerFinished()`。reader スレッドは行を **queue へ積むだけ**で、dispatch は engine スレッドが行う |
 
-キュー容量は [`defaultWindowedRpcQueueCapacity = 64`](../../src/core/communication/rpcserver.hpp#L179) です。溢れたリクエストには reader スレッドが即座に `-32000` を返します(`data.reason == "busy"`)。
+キュー容量は [`defaultWindowedRpcQueueCapacity = 64`](../../src/core/communication/rpcserver.hpp#L187) です。溢れたリクエストには reader スレッドが即座に `-32000` を返します(`data.reason == "busy"`)。
 
-[`JsonRpcHandlerError`](../../src/core/communication/rpcserver.hpp#L37) には構造化 `data` が付きました([3 引数コンストラクタ](../../src/core/communication/rpcserver.hpp#L44)、取得は [`data()`](../../src/core/communication/rpcserver.hpp#L49))。`capture_gpu` 失敗時の実例です([`EngineRpcEndpoint::EngineRpcEndpoint()`](../../src/core/communication/rpcserver.cpp#L2690))。
+[`JsonRpcHandlerError`](../../src/core/communication/rpcserver.hpp#L38) には構造化 `data` が付きました([3 引数コンストラクタ](../../src/core/communication/rpcserver.hpp#L45)、取得は [`data()`](../../src/core/communication/rpcserver.hpp#L50))。`capture_gpu` 失敗時の実例です([`EngineRpcEndpoint::EngineRpcEndpoint()`](../../src/core/communication/rpcserver.cpp#L2803))。
 
 ```cpp
 throw JsonRpcHandlerError{
@@ -768,40 +796,44 @@ throw JsonRpcHandlerError{
      {"source", "rpc"}}};
 ```
 
-engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1476) と、そこから呼ぶ [`configureEditorRpcHandlers()`](../../src/core/communication/editorrpchandlers.cpp#L66) に集約されています。現在 **89 メソッド**で、実行制御・診断系が 29、編集系が 60 です。数え方は、両関数(および前者が呼ぶ 2 つの補助関数 [`configureGameLogicReloadRpcHandler()`](../../src/core/communication/rpcserver.cpp#L1303) と [`configurePhysicsRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1234))の中で `server.setHandler()` **または `server.setOrderedHandler()`** に渡す一意な公開 method 文字列を 1 メソッドとします。後者は `nlohmann::ordered_json` を返す版([宣言](../../src/core/communication/rpcserver.hpp#L97))で、使っているのは編集系の 3 つ(`get_components` / `get_ray_occurrences` / `resolve_ray_occurrence`)だけです —— **`setHandler` だけを数えると 86 本にしかなりません**。表で `start` / `stop` のように同じ行へ併記した名前も、それぞれ 1 メソッドです。条件コンパイルでの出し分けはこの 2 関数の中にはありません。
+engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1548) と、そこから呼ぶ [`configureEditorRpcHandlers()`](../../src/core/communication/editorrpchandlers.cpp#L66) に集約されています。現在 **90 メソッド**で、実行制御・診断系が 29、編集系が 61 です。数え方は、両関数(および前者が呼ぶ 2 つの補助関数 [`configureGameLogicReloadRpcHandler()`](../../src/core/communication/rpcserver.cpp#L1308) と [`configurePhysicsRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1239))の中で `server.setHandler()` **または `server.setOrderedHandler()`** に渡す一意な公開 method 文字列を 1 メソッドとします。後者は `nlohmann::ordered_json` を返す版([宣言](../../src/core/communication/rpcserver.hpp#L98))で、使っているのは編集系の 3 つ(`get_components` / `get_ray_occurrences` / `resolve_ray_occurrence`)だけです —— **`setHandler` だけを数えると 87 本にしかなりません**。表で `start` / `stop` のように同じ行へ併記した名前も、それぞれ 1 メソッドです。条件コンパイルでの出し分けはこの 2 関数の中にはありません。
 
-#### 実行制御・診断系(29)
+#### 実行制御・診断系(表は 32 行・34 メソッド)
 
 | method | 実装行 | 状態変更 |
 |---|---|---|
-| `reload_game_logic` | [再ロード](../../src/core/communication/rpcserver.cpp#L1307) | game DLL(`pelican_game_logic`)を再ロード |
-| `get_status` | [状態取得](../../src/core/communication/rpcserver.cpp#L1548) | instance、project、scene、frame/time、seed、store 状態と各種診断を返す |
-| `get_runtime_objects` | [spawn された object の一覧](../../src/core/communication/rpcserver.cpp#L1709) | 今の scene で spawn された生きている object を spawn 順に返す(RO-1。`name`、`entity`、`parent`、`spawned_by`、`transform`) |
-| `get_gpu_timing` | [GPU 時間平均](../../src/core/communication/rpcserver.cpp#L1766) | 直近 30 フレームの node 別 `body_ms` / `barriers_ms` 平均と対応状況を軽量に返す |
-| `set_seed` | [seed 設定](../../src/core/communication/rpcserver.cpp#L1851) | deterministic RNG を reseed |
-| `set_input_profile` | [profile 切替](../../src/core/communication/rpcserver.cpp#L1846) | input profile を切替 |
+| `reload_game_logic` | [再ロード](../../src/core/communication/rpcserver.cpp#L1312) | game DLL(`pelican_game_logic`)を再ロード |
+| `get_status` | [状態取得](../../src/core/communication/rpcserver.cpp#L1621) | instance、project、scene、frame/time、seed、store 状態と各種診断を返す。✅PV-1 から単発 preview の状態 `preview: {available, reason?}`([`get_status` の preview の鍵 PV-1](../../src/core/communication/rpcserver.cpp#L1649)) |
+| `get_assets_verification` | [検証の全件](../../src/core/communication/rpcserver.cpp#L1496) | ✅AV-1。状態変更なし。起動時(または最後の再検証)の asset 検証の全件を `AssetsVerification::detailJson()` から返す。module の無い host は `not_run` |
+| `verify_assets` | [再検証](../../src/core/communication/rpcserver.cpp#L1506) | ✅AV-1。`AssetsVerification::verify()` が module 専用の worker で照合し直す(走っていれば合流)。すぐ `{state: "running"}` |
+| `update_assets_manifest` | [manifest の書き直し](../../src/core/communication/rpcserver.cpp#L1516) | ✅AV-1。`{store}` の manifest を `generateAssetsManifest()` で書き、再検証を始める。拒否は `assets_store_unknown@1` / `assets_manifest_undeclared@1` / `assets_manifest_write_failed@1` / `assets_verification_unavailable@1`(`data: {error_code, error_fields}`) |
+| `get_runtime_objects` | [spawn された object の一覧](../../src/core/communication/rpcserver.cpp#L1788) | 今の scene で spawn された生きている object を spawn 順に返す(RO-1。`name`、`entity`、`parent`、`spawned_by`、`transform`) |
+| `get_gpu_timing` | [GPU 時間平均](../../src/core/communication/rpcserver.cpp#L1845) | 直近 30 フレームの node 別 `body_ms` / `barriers_ms` 平均と対応状況を軽量に返す |
+| `set_seed` | [seed 設定](../../src/core/communication/rpcserver.cpp#L1917) | deterministic RNG を reseed |
+| `set_input_profile` | [profile 切替](../../src/core/communication/rpcserver.cpp#L1925) | input profile を切替 |
 | `inject_input` | [入力注入](../../src/core/communication/rpcserver.cpp) | canonical input queue へ key/mouse/axis event を積む |
-| `start_input_record` / `stop_input_record` | [記録開始](../../src/core/communication/rpcserver.cpp#L1871) / [記録終了](../../src/core/communication/rpcserver.cpp#L1883) | 入力記録の開始/終了 |
-| `start_input_replay` / `stop_input_replay` | [再生開始](../../src/core/communication/rpcserver.cpp#L1895) / [再生終了](../../src/core/communication/rpcserver.cpp#L1919) | 入力再生の開始/終了。開始側は再生だけでなく `EngineTime` を記録時 fps の fixed step へ切り替え、reload gate を閉じ、preview lease を強制 abort します |
+| `start_input_record` / `stop_input_record` | [記録開始](../../src/core/communication/rpcserver.cpp#L1950) / [記録終了](../../src/core/communication/rpcserver.cpp#L1962) | 入力記録の開始/終了 |
+| `start_input_replay` / `stop_input_replay` | [再生開始](../../src/core/communication/rpcserver.cpp#L1974) / [再生終了](../../src/core/communication/rpcserver.cpp#L1998) | 入力再生の開始/終了。開始側は再生だけでなく `EngineTime` を記録時 fps の fixed step へ切り替え、reload gate を閉じ、preview lease を強制 abort します |
 | `inject_event` | [event 注入](../../src/core/communication/rpcserver.cpp) | 名前から登録済み event layer へ JSON payload を積む |
-| `set_time` | [時刻設定](../../src/core/communication/rpcserver.cpp#L1907) | time を直接設定。frame index は進めない |
-| `update_transforms` | [pending 積み](../../src/core/communication/rpcserver.cpp#L1980) | update を pending queue へ積む |
+| `set_time` | [時刻設定](../../src/core/communication/rpcserver.cpp#L1986) | time を直接設定。frame index は進めない |
+| `update_transforms` | [pending 積み](../../src/core/communication/rpcserver.cpp#L2059) | update を pending queue へ積む |
 | `load_gltf` | [glTF 追加](../../src/core/communication/rpcserver.cpp) | transient glTF を scene に追加 |
-| `load_scene` | [scene 差替](../../src/core/communication/rpcserver.cpp#L2315) | scene を clear/load、pending transforms を破棄 |
-| `set_camera` | [camera 指定](../../src/core/communication/rpcserver.cpp#L2325) | 名前付き object を active camera にする |
-| `step_frame` | [1 tick 進行](../../src/core/communication/rpcserver.cpp#L1979) | pending flush → time advance → 5 phase update → render |
-| `render_frame` | [再描画](../../src/core/communication/rpcserver.cpp#L2345) | time/frame を進めず、pending flush → seq update → render |
+| `load_scene` | [scene 差替](../../src/core/communication/rpcserver.cpp#L2394) | scene を clear/load、pending transforms を破棄 |
+| `set_camera` | [camera 指定](../../src/core/communication/rpcserver.cpp#L2388) | 名前付き object を active camera にする |
+| `step_frame` | [1 tick 進行](../../src/core/communication/rpcserver.cpp#L2058) | pending flush → time advance → 5 phase update → render |
+| `render_frame` | [再描画](../../src/core/communication/rpcserver.cpp#L2424) | time/frame を進めず、pending flush → seq update → render |
 | `capture_gpu` | [GPU 捕捉](../../src/core/communication/rpcserver.cpp) | `render_frame` と同型の1回描画を明示 Start/End で capture し、新規 index の `.rdc` path を返す |
-| `get_frame_plan` | [plan 取得](../../src/core/communication/rpcserver.cpp#L2345) | planner の JSON を返す |
+| `get_frame_plan` | [plan 取得](../../src/core/communication/rpcserver.cpp#L2424) | planner の JSON を返す。✅PV-1 から最上位に `preview`(`get_status` と同じ形) |
+| `rerun_once` | [once の走り直し](../../src/core/communication/rpcserver.cpp#L2449) | ✅PS-1。`{node?}` → `{scheduled: [...]}`。[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4103) が今の program の frame plan から、名前がその node か、出所の `loop_origin.loop` がその node の once の plan node を集め、`Renderer::once_rerun_requests` に入れる(次の frame の [`planOnceRuns()`](../../src/core/renderingpass/oncescheduler.cpp#L5) が `requested` で走らせ、走った frame の publish の後に消す)。`node` の無い呼び出しは全部の once。plan にも `graph_loops` にも無い名前は `std::invalid_argument` で、handler が `-32602` と `data: {code: "node_unknown", node}` にする |
 | `pick_object` | [ID 読み出し](../../src/core/communication/rpcserver.cpp) | feature が作った `picking_id` の左上原点座標を同期読み出しし、同一フレーム token を WP258 の宣言 identity へ解決 |
 | `set_gizmo` | [表示要求](../../src/core/communication/rpcserver.cpp) | 宣言または runtime object のタグ付き selection と mode をギズモ表示へ設定。`selection:null` で解除 |
-| `query_gizmo_drag_basis` | [ドラッグ基底](../../src/core/communication/rpcserver.cpp#L2433) | selection / mode / axis から、軸または view-plane の論理 pixel 当たりドラッグ基底を状態変更なしで返す |
-| `get_modal_transform` | [modal 状態](../../src/core/communication/rpcserver.cpp#L2519) | player 側 modal transform の現在 snapshot を返す |
-| `cancel_modal_transform` | [modal cancel](../../src/core/communication/rpcserver.cpp#L2531) | player 側 modal transform に cancel を要求する |
-| `ack_modal_transform` | [modal ack](../../src/core/communication/rpcserver.cpp#L2555) | operation / revision が一致する modal transform snapshot を acknowledge する |
+| `query_gizmo_drag_basis` | [ドラッグ基底](../../src/core/communication/rpcserver.cpp#L2546) | selection / mode / axis から、軸または view-plane の論理 pixel 当たりドラッグ基底を状態変更なしで返す |
+| `get_modal_transform` | [modal 状態](../../src/core/communication/rpcserver.cpp#L2632) | player 側 modal transform の現在 snapshot を返す |
+| `cancel_modal_transform` | [modal cancel](../../src/core/communication/rpcserver.cpp#L2644) | player 側 modal transform に cancel を要求する |
+| `ack_modal_transform` | [modal ack](../../src/core/communication/rpcserver.cpp#L2668) | operation / revision が一致する modal transform snapshot を acknowledge する |
 | `query_gizmo_handle` | [状態なし hit query](../../src/core/communication/rpcserver.cpp) | リクエスト自身の selection/mode/物理 pixel を共通投影幾何へ渡し、contract 2 の `content_scale` と、handle に ID/axis/射影方向/論理 px 当たり変化量または `null` を返す |
-| `raycast` | [ray 問い合わせ](../../src/core/communication/rpcserver.cpp#L1235) | `origin` / `direction` / `max_distance` の 3 鍵ちょうどで `PhysWorld` に問い合わせる。登録は `configureEngineRpcHandlers()` が呼ぶ `configurePhysicsRpcHandlers()` の側。`PELICAN_WITH_PHYSICS=OFF` の build では params を見る前に `-32000`・`data.code` = `physics.module_unavailable@1` で断る(PG-2b。stub の `hit: null` を「外れ」と読ませないため) |
-| `capture` | [`EngineRpcEndpoint::run()`](../../src/core/communication/rpcserver.cpp#L2700) | 最後の frame を PNG 保存 |
+| `raycast` | [ray 問い合わせ](../../src/core/communication/rpcserver.cpp#L1240) | `origin` / `direction` / `max_distance` の 3 鍵ちょうどで `PhysWorld` に問い合わせる。登録は `configureEngineRpcHandlers()` が呼ぶ `configurePhysicsRpcHandlers()` の側。`PELICAN_WITH_PHYSICS=OFF` の build では params を見る前に `-32000`・`data.code` = `physics.module_unavailable@1` で断る(PG-2b。stub の `hit: null` を「外れ」と読ませないため) |
+| `capture` | [`EngineRpcEndpoint::run()`](../../src/core/communication/rpcserver.cpp#L2813) | 最後の frame を PNG 保存 |
 
 二つのギズモ RPC は [`engine://features/gizmo.json`](../../src/core/resources/features/gizmo.json) が
 active graph に無ければ application error です。`parseGizmoSelection()` は object のキーを
@@ -816,69 +848,82 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 
 `set_seed` と replay は役割が別です。`set_seed` は `DeterministicRng` の種を撒き直すだけで、時間の刻みも入力も固定しません。再現可能な実行は「seed」「fixed step の時間」「記録済み入力」の3つが揃って初めて成立し、後ろ2つを与えるのが `start_input_replay` です。
 
-#### 編集系(表は 49 行・71 メソッド) ✅実装済み(WP153〜WP172 で始まり、range はそこを大きく越えます)
+#### 編集系(表は 53 行・76 メソッド) ✅実装済み(WP153〜WP172 で始まり、range はそこを大きく越えます)
 
-すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L388) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L258) です。
+すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L415) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L278) です。
 
 | method | 実装行 | 概要 |
 |---|---|---|
 | `scene_tree` | [登録 `scene_tree`](../../src/core/communication/editorrpchandlers.cpp#L74) | オブジェクト木(`authoring_object_id` + 0 始まりの `declaration_index`)と component メタデータ |
-| `get_scene_revision` | [登録 `get_scene_revision`](../../src/core/communication/editorrpchandlers.cpp#L77) | `EditorWatchToken{scene_revision, preview_epoch}` + 最終トランザクション + preview lease |
-| `get_components` | [登録 `get_components`](../../src/core/communication/editorrpchandlers.cpp#L83) | 1 オブジェクトの `declaration_index` + authored / runtime JSON + schema |
-| `list_assets` | [登録 `list_assets`](../../src/core/communication/editorrpchandlers.cpp#L92) | asset カタログ(`id` / `kind` / `path` / `store` / `status`) |
-| `export_scene_snapshot` | [登録 `export_scene_snapshot`](../../src/core/communication/editorrpchandlers.cpp#L95) | semantic scene bytes + sha256 digest + prefab closure。`schema_version` は 2 だけ(SnapshotV1 は MG-2b で撤去) |
-| `import_scene_snapshot` | [登録 `import_scene_snapshot`](../../src/core/communication/editorrpchandlers.cpp#L103) | digest 検証つき置換 |
-| `save_scene` | [登録 `save_scene`](../../src/core/communication/editorrpchandlers.cpp#L116) | 原子的な全文書保存 |
-| `open_editor_session` / `resume_editor_session` | [登録 `open_editor_session`](../../src/core/communication/editorrpchandlers.cpp#L133) / [登録 `resume_editor_session`](../../src/core/communication/editorrpchandlers.cpp#L136) | actor 登録・再接続 |
-| `can_edit` / `can_preview` | [登録 `can_edit`](../../src/core/communication/editorrpchandlers.cpp#L139) / [preview 可否](../../src/core/communication/editorrpchandlers.cpp#L142) | 編集ゲート判定 |
-| `eval_preview` | [登録 `eval_preview`](../../src/core/communication/editorrpchandlers.cpp#L145) | 公開せずリクエストローカルに評価 |
-| `render_preview` | [preview 描画](../../src/core/communication/editorrpchandlers.cpp#L148) | preview グラフでキャプチャ(第6章 §6.19) |
-| `edit` | [登録 `edit`](../../src/core/communication/editorrpchandlers.cpp#L151) | 正準コマンド列の適用(`base_revision` による CAS。ズレていれば `stale_revision` で弾きます) |
-| `undo` / `redo` | [登録 `undo`](../../src/core/communication/editorrpchandlers.cpp#L169) / [登録 `redo`](../../src/core/communication/editorrpchandlers.cpp#L172) | actor 単位 |
-| `open_preview` / `update_preview` / `commit_preview` / `abort_preview` | [lease 発行](../../src/core/communication/editorrpchandlers.cpp#L175) 〜 [lease 破棄](../../src/core/communication/editorrpchandlers.cpp#L184) | preview ticket(lease)の発行・更新・確定・破棄 |
-| `get_render_features` | [feature 構成取得](../../src/core/communication/editorrpchandlers.cpp#L187) | authored feature 構成と編集 token を返す |
-| `list_render_features` | [feature catalog](../../src/core/communication/editorrpchandlers.cpp#L190) | 追加可能な render feature の catalog を返す |
-| `edit_render_features` | [feature 編集](../../src/core/communication/editorrpchandlers.cpp#L205) | render feature 構成を編集する |
+| `scene_outline` | [登録 `scene_outline`](../../src/core/communication/editorrpchandlers.cpp#L77) | authoringの軽い一覧(安定ID・親のID・宣言順)。revision一致時は一覧を省略可能 |
+| `get_scene_revision` | [登録 `get_scene_revision`](../../src/core/communication/editorrpchandlers.cpp#L80) | `EditorWatchToken{scene_revision, preview_epoch}` + 最終トランザクション + preview lease |
+| `get_components` | [登録 `get_components`](../../src/core/communication/editorrpchandlers.cpp#L86) | 1 オブジェクトの `declaration_index` + authored / runtime JSON + schema |
+| `list_assets` | [登録 `list_assets`](../../src/core/communication/editorrpchandlers.cpp#L95) | asset カタログ(`id` / `kind` / `path` / `store` / `status`) |
+| `export_scene_snapshot` | [登録 `export_scene_snapshot`](../../src/core/communication/editorrpchandlers.cpp#L98) | semantic scene bytes + sha256 digest + prefab closure。`schema_version` は 2 だけ(SnapshotV1 は MG-2b で撤去) |
+| `import_scene_snapshot` | [登録 `import_scene_snapshot`](../../src/core/communication/editorrpchandlers.cpp#L106) | digest 検証つき置換 |
+| `save_scene` | [登録 `save_scene`](../../src/core/communication/editorrpchandlers.cpp#L119) | 原子的な全文書保存 |
+| `open_editor_session` / `resume_editor_session` | [登録 `open_editor_session`](../../src/core/communication/editorrpchandlers.cpp#L136) / [登録 `resume_editor_session`](../../src/core/communication/editorrpchandlers.cpp#L139) | actor 登録・再接続 |
+| `can_edit` / `can_preview` | [登録 `can_edit`](../../src/core/communication/editorrpchandlers.cpp#L142) / [preview 可否](../../src/core/communication/editorrpchandlers.cpp#L145) | 編集ゲート判定 |
+| `eval_preview` | [登録 `eval_preview`](../../src/core/communication/editorrpchandlers.cpp#L148) | 公開せずリクエストローカルに評価 |
+| `render_preview` | [preview 描画](../../src/core/communication/editorrpchandlers.cpp#L151) | preview グラフでキャプチャ(第6章 §6.19)。✅PV-1 から、preview が組めない世代では `preview.unavailable@1 {method, reason}` |
+| `edit` | [登録 `edit`](../../src/core/communication/editorrpchandlers.cpp#L154) | 正準コマンド列の適用(`base_revision` による CAS。ズレていれば `stale_revision` で弾きます) |
+| `undo` / `redo` | [登録 `undo`](../../src/core/communication/editorrpchandlers.cpp#L172) / [登録 `redo`](../../src/core/communication/editorrpchandlers.cpp#L175) | actor 単位 |
+| `open_preview` / `update_preview` / `commit_preview` / `abort_preview` | [lease 発行](../../src/core/communication/editorrpchandlers.cpp#L178) 〜 [lease 破棄](../../src/core/communication/editorrpchandlers.cpp#L187) | preview ticket(lease)の発行・更新・確定・破棄 |
+| `get_render_features` | [feature 構成取得](../../src/core/communication/editorrpchandlers.cpp#L190) | authored feature 構成と編集 token を返す |
+| `list_render_features` | [feature catalog](../../src/core/communication/editorrpchandlers.cpp#L193) | 追加可能な render feature の catalog を返す。✅FR-1 / FR-2 から各 entry に `required_targets` / `insertion`(`renderFeatureRequiredTargets()` / `renderFeatureInsertions()` の結果。第3章「feature の要る target・挿入先・snapshot の `after`」)。✅FR-3 から `required_targets` の各要素に `needs_writer`(第3章の同じ節の「書き手の無い target」) |
+| `edit_render_features` | [feature 編集](../../src/core/communication/editorrpchandlers.cpp#L208) | render feature 構成を編集する |
 | `get_scene_acceleration_structures` / `edit_scene_acceleration_structures` | 名前付きASの取得・編集 | AS定義とdigestを取得し、既存render config ticketで変更・保存する |
-| `get_render_authoring_context` | [authoring context](../../src/core/communication/editorrpchandlers.cpp#L208) | authored pass 編集に必要な target / resource context を返す |
-| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L316) | authored pass を追加する |
-| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L319) | authored pass を削除する |
-| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L338) / [登録 `get_preview_result`](../../src/core/communication/editorrpchandlers.cpp#L341) | 非同期結果取得 |
-| `query_journal` | [登録 `query_journal`](../../src/core/communication/editorrpchandlers.cpp#L344) | ジャーナル照会 |
-| `get_graph_instances` | [instance 一覧](../../src/core/communication/editorrpchandlers.cpp#L256) | 共通グラフ文書の `source_digest` / `instances[]` / root の `nodes[]` / `definitions` 本体 |
-| `edit_graph_instances` | [装着編集](../../src/core/communication/editorrpchandlers.cpp#L259) | owner 付き root instance の attach / detach。中では `editGraphDocument()` の ops へ翻訳 |
-| `edit_graph_document` | [文書編集](../../src/core/communication/editorrpchandlers.cpp#L262) | `ops[]` を順に当てて最後に 1 回展開。全部通るか文書ごと拒否か |
-| `get_graph_values` | [instance 入力の値](../../src/core/communication/editorrpchandlers.cpp#L274) | publish 済み snapshot の読み。再評価しない |
-| `get_graph_node_values` | [node 出力の値](../../src/core/communication/editorrpchandlers.cpp#L277) | 展開木の node ごとの出力。`source: "rendering"` |
-| `get_graph_catalog` | [module catalog](../../src/core/communication/editorrpchandlers.cpp#L280) | `builtinGraphModuleRegistry().catalog()` に、✅EL-4 から `material_pass_contracts` / `material_output_formats` を足したもの([`RenderConfigEditorService::getGraphCatalog()`](../../src/core/communication/renderconfigeditor.cpp#L3271)、一覧は [`engineauthoringlists.hpp`](../../src/core/communication/engineauthoringlists.hpp#L13))。2 つは §7.5c の CLI には出ない。✅EL-4b から shader の反映はしない(EL-4 では `engine_shaders` もここで作っていた)。✅CT-1 から op ごとの `required_parameters` と `value.input` の `input_names` は catalog 本体([`operationJson()`](../../src/project/graphmodule.cpp#L549))が出すので、CLI にも出る |
-| `get_engine_shaders` | [engine の shader の一覧](../../src/core/communication/editorrpchandlers.cpp#L283) | ✅EL-4b。`{}` → ✅EL-4c から `{status: "building"}` / `{status: "ready", engine_shaders: [...]}` / `{status: "failed", error}` のどれかをすぐ返す([`RenderConfigEditorService::getEngineShaders()`](../../src/core/communication/renderconfigeditor.cpp#L3283) が [`engineShadersStatusJson()`](../../src/core/communication/engineauthoringlists.hpp#L47) を返す。field を足すと `requireOnly()` の `std::invalid_argument` で `-32602`)。反映は [`EngineShadersReflection`](../../src/core/communication/engineauthoringlists.cpp#L322) の worker thread が process に 1 回行い、`ready` / `failed` の答えを process の終わりまで持つ。`EngineRpcEndpoint::Impl` の [constructor](../../src/core/communication/rpcserver.cpp#L2667) が [`startEngineShadersReflection()`](../../src/core/communication/rpcserver.cpp#L2679) で始め、destructor が [`stopEngineShadersReflection()`](../../src/core/communication/rpcserver.cpp#L2685) で止めて join する(止めは shader 1 本ごとの区切りで見て、作りかけの一覧は捨てる。[区切り](../../src/core/communication/engineauthoringlists.cpp#L310))。動いていないときは `get_engine_shaders` の呼び出しが始める。worker の compiler は [`ShaderCompiler::detached()`](../../src/core/shader/shadercompiler.hpp#L55)(module を読まない・disk cache 無し・`StartupMetrics` に記録しない。[第6章](06_rendering_vulkan_shader.md) §6.9)。test が catalog から届かないことを見るために、呼ばれた回数(始めた回数を含む)[`engineShadersRequestCount()`](../../src/core/communication/engineauthoringlists.cpp#L581) を数える。test は [`resetEngineShadersReflectionForTesting()` / `holdEngineShadersReflectionForTesting()`](../../src/core/communication/engineauthoringlists.hpp#L61) で worker を最初の shader の前で止め、`building` の答えを見る |
-| `export_render_feature` | [部品の書き出し](../../src/core/communication/editorrpchandlers.cpp#L193) | feature 1 つを `user://components/<name>/` へ |
-| `import_render_feature` | [部品の取り込み](../../src/core/communication/editorrpchandlers.cpp#L196) | project 外の component ディレクトリを未作成の `project://` feature として取り込む |
-| `install_package` | [package の vendoring](../../src/core/communication/editorrpchandlers.cpp#L199) | `<project>/packages/<ns>/` へ複製し catalog を作り直す |
-| `uninstall_package` | [package の削除](../../src/core/communication/editorrpchandlers.cpp#L202) | 参照が残っていれば `package_in_use` で何も消さない |
-| `get_component_add_candidates` | [追加候補](../../src/core/communication/editorrpchandlers.cpp#L80) | `get_components` と同じ object 指定で、足せる component の候補を返す(manual §13.2) |
-| `get_ray_occurrences` / `resolve_ray_occurrence` | [occurrence 一覧](../../src/core/communication/editorrpchandlers.cpp#L86) / [1 件の解決](../../src/core/communication/editorrpchandlers.cpp#L89) | RT の occurrence(行)の読み。どちらも `setOrderedHandler` 側 |
-| `set_prefab_parameter` / `unset_prefab_parameter` / `unpack_prefab` | [上書き](../../src/core/communication/editorrpchandlers.cpp#L154) / [上書き解除](../../src/core/communication/editorrpchandlers.cpp#L159) / [展開](../../src/core/communication/editorrpchandlers.cpp#L164) | prefab インスタンスのパラメータ上書き・解除と、素のオブジェクトへの展開 |
-| `fork_render_pipeline` | [preset の fork](../../src/core/communication/editorrpchandlers.cpp#L211) | 選択中 preset を project ファイルへ複製し、root の参照も切り替える |
-| `edit_preset_pass` | [preset pass 編集](../../src/core/communication/editorrpchandlers.cpp#L214) | project preset の pass(fullscreen / material / raster)を部分編集する |
-| `edit_region_replacement` | [領域の差し替え](../../src/core/communication/editorrpchandlers.cpp#L217) | project preset のタグ付き領域に provider を指定 / 解除する |
-| `get_compute_task_authoring` / `edit_compute_task` / `add_compute_task` / `remove_compute_task` | [取得](../../src/core/communication/editorrpchandlers.cpp#L220) / [置換](../../src/core/communication/editorrpchandlers.cpp#L289) / [追加](../../src/core/communication/editorrpchandlers.cpp#L298) / [削除](../../src/core/communication/editorrpchandlers.cpp#L301) | compute / RT task 宣言の著作面 |
-| `get_frame_node_order` / `edit_frame_node_order` | [順序の取得](../../src/core/communication/editorrpchandlers.cpp#L223) / [順序の保存](../../src/core/communication/editorrpchandlers.cpp#L226) | root の `frame_node_order`(手で決めた node 順)の読みと保存 |
-| `get_procedural_assets` / `edit_procedural_asset` | [一覧](../../src/core/communication/editorrpchandlers.cpp#L292) / [編集](../../src/core/communication/editorrpchandlers.cpp#L295) | procedural asset の宣言。`edit` の op ではなく独立した RPC です |
-| `get_ray_callable_records` / `edit_ray_callable_records` | [callable の読み](../../src/core/communication/editorrpchandlers.cpp#L304) / [初期値の置換](../../src/core/communication/editorrpchandlers.cpp#L307) | task ごとの callable record schema と初期値上書き |
-| `decompose_material_pass` | [一体版の分解](../../src/core/communication/editorrpchandlers.cpp#L265) | ✅LP-3b。rendering 節か fork 済み preset の material pass を、graph の `render.material_pass` + draw_loop に 1 ticket で書き換える |
-| `get_render_documents` / `restore_render_documents` | [丸ごとの読み](../../src/core/communication/editorrpchandlers.cpp#L327) / [CAS の書き戻し](../../src/core/communication/editorrpchandlers.cpp#L330) | ✅RD-1 / RD-1b。render の編集の undo の土台。作る・置き換える・消すを 1 つの transaction で |
-| `edit_target_planning` / `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment` | [計画の決定](../../src/core/communication/editorrpchandlers.cpp#L236) / [pin](../../src/core/communication/editorrpchandlers.cpp#L239) / [physical fragment](../../src/core/communication/editorrpchandlers.cpp#L242) | ✅EL-2。root の rendering 節の `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` を 1 ticket で書く。3 本とも [`RenderConfigEditorService::queuePlanningKeyEdit()`](../../src/core/communication/renderconfigeditor.cpp#L3697)(gate と CAS、preset が同じキーを持てば `rendering_key_not_allowed_here`、今の値を変換する関数、`enqueueAuthoredPassTicket`)を通る。名前の判定は [`planningNamesOf()`](../../src/core/communication/renderconfigeditor.cpp#L3585)(合成した config を `parseFrameGraphDefinitionsFromConfigJson()` で読んだ段の node と資源)。stale な fragment は commit の組み直しで linker が投げる `VulkanPhysicalFragmentStale` を [`physicalFragmentStaleRefusal()`](../../src/core/communication/renderconfigeditor.cpp#L3773) が `physical_fragment_stale` に直す |
-| `get_fold_groups` / `fold_nodes` / `verify_fold` | [読み](../../src/core/communication/editorrpchandlers.cpp#L246) / [宣言](../../src/core/communication/editorrpchandlers.cpp#L249) / [検査](../../src/core/communication/editorrpchandlers.cpp#L253) | ✅FG-1 / FG-2。root の graph 文書の `fold_groups` の読み、group 1 つの宣言(root 編集の ticket。[`RenderConfigEditorService::queueFoldGroupEdit()`](../../src/core/communication/renderconfigeditor.cpp#L2530) を通る)、開いた形と決定ありの形を子 process で描き比べて印を書く非同期の ticket(下の「`verify_fold` の子 process」) |
-| `reload_render_documents` | [読み直し](../../src/core/communication/editorrpchandlers.cpp#L335) | ✅RL-1。ディスクの render 文書を読み直して 1 つの ticket で組み直し・公開する。ディスクは書かない(下の「`reload_render_documents` の ticket」) |
+| `get_render_authoring_context` | [authoring context](../../src/core/communication/editorrpchandlers.cpp#L211) | authored pass 編集に必要な target / resource context を返す。✅FR-1 から `snapshot_after_candidates`(`renderSnapshotAfterCandidates()`)。✅CT-4 から `view_families` / `canonical_anchors`(catalog の parameter の `choices_from` が指す一覧。第3章「parameter の表の CT-4 の鍵と、op の置き場所」) |
+| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L332) | authored pass を追加する |
+| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L335) | authored pass を削除する |
+| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L359) / [登録 `get_preview_result`](../../src/core/communication/editorrpchandlers.cpp#L362) | 非同期結果取得 |
+| `query_journal` | [登録 `query_journal`](../../src/core/communication/editorrpchandlers.cpp#L365) | ジャーナル照会 |
+| `get_graph_instances` | [instance 一覧](../../src/core/communication/editorrpchandlers.cpp#L267) | 共通グラフ文書の `source_digest` / `instances[]` / root の `nodes[]` / `definitions` 本体。✅CT-5 から `definition_instances`(definition ごとに使う root の node と `owned_instances_only`) |
+| `edit_graph_instances` | [装着編集](../../src/core/communication/editorrpchandlers.cpp#L270) | owner 付き root instance の attach / detach。中では `editGraphDocument()` の ops へ翻訳。✅CT-5 から graph の名前付きの拒否は code と CT-2 の `document` を保って返す(前は `invalid_graph_attachment`) |
+| `edit_graph_document` | [文書編集](../../src/core/communication/editorrpchandlers.cpp#L273) | `ops[]` を順に当てて最後に 1 回展開。全部通るか文書ごと拒否か |
+| `get_graph_values` | [instance 入力の値](../../src/core/communication/editorrpchandlers.cpp#L285) | publish 済み snapshot の読み。再評価しない |
+| `get_graph_node_values` | [node 出力の値](../../src/core/communication/editorrpchandlers.cpp#L288) | 展開木の node ごとの出力。`source: "rendering"` |
+| `get_graph_catalog` | [module catalog](../../src/core/communication/editorrpchandlers.cpp#L291) | `builtinGraphModuleRegistry().catalog()` に、✅EL-4 から `material_pass_contracts` / `material_output_formats` を足したもの([`RenderConfigEditorService::getGraphCatalog()`](../../src/core/communication/renderconfigeditor.cpp#L3737)、一覧は [`engineauthoringlists.hpp`](../../src/core/communication/engineauthoringlists.hpp#L13))。2 つは §7.5c の CLI には出ない。✅EL-4b から shader の反映はしない(EL-4 では `engine_shaders` もここで作っていた)。✅CT-1 から op ごとの `required_parameters` と `value.input` の `input_names` は catalog 本体([`operationJson()`](../../src/project/graphmodule.cpp#L550))が出すので、CLI にも出る。✅CT-3 の op ごとの `parameters` / `parameters_complete` も catalog 本体が [`graphparameterschema.cpp` の表](../../src/project/graphparameterschema.cpp#L294) から出す(第3章 §3.15)。✅MP-1 から `material_pass_contracts` の各 contract に `screen_inputs` / `surface_resources` `[{name, source_type}]`。[`materialPassContractsJson()`](../../src/core/communication/engineauthoringlists.cpp#L49) が `materialscreeninput.hpp` の 2 つの一覧を 1 回だけ JSON にし(各名前を `makeBuiltinMaterialPassInputContract()` で契約にして、`source_type` の semantic の名前を取る)、4 つの contract に同じものを付ける |
+| `get_engine_shaders` | [engine の shader の一覧](../../src/core/communication/editorrpchandlers.cpp#L294) | ✅EL-4b。`{}` → ✅EL-4c から `{status: "building"}` / `{status: "ready", engine_shaders: [...]}` / `{status: "failed", error}` のどれかをすぐ返す([`RenderConfigEditorService::getEngineShaders()`](../../src/core/communication/renderconfigeditor.cpp#L3749) が [`engineShadersStatusJson()`](../../src/core/communication/engineauthoringlists.hpp#L47) を返す。field を足すと `requireOnly()` の `std::invalid_argument` で `-32602`)。反映は [`EngineShadersReflection`](../../src/core/communication/engineauthoringlists.cpp#L346) の worker thread が process に 1 回行い、`ready` / `failed` の答えを process の終わりまで持つ。`EngineRpcEndpoint::Impl` の [constructor](../../src/core/communication/rpcserver.cpp#L2780) が [`startEngineShadersReflection()`](../../src/core/communication/rpcserver.cpp#L2792) で始め、destructor が [`stopEngineShadersReflection()`](../../src/core/communication/rpcserver.cpp#L2798) で止めて join する(止めは shader 1 本ごとの区切りで見て、作りかけの一覧は捨てる。[区切り](../../src/core/communication/engineauthoringlists.cpp#L334))。動いていないときは `get_engine_shaders` の呼び出しが始める。worker の compiler は [`ShaderCompiler::detached()`](../../src/core/shader/shadercompiler.hpp#L91)(module を読まない・disk cache 無し・`StartupMetrics` に記録しない。[第6章](06_rendering_vulkan_shader.md) §6.9)。test が catalog から届かないことを見るために、呼ばれた回数(始めた回数を含む)[`engineShadersRequestCount()`](../../src/core/communication/engineauthoringlists.cpp#L605) を数える。test は [`resetEngineShadersReflectionForTesting()` / `holdEngineShadersReflectionForTesting()`](../../src/core/communication/engineauthoringlists.hpp#L61) で worker を最初の shader の前で止め、`building` の答えを見る |
+| `get_shader_interface` | [project の shader の入出力](../../src/core/communication/editorrpchandlers.cpp#L297) | ✅EL-5。`{reference, refresh?}` → `{status: "building"}` / `{status: "ready", reference, stages: [...]}` / `{status: "failed", reference, error}` をすぐ返す。[`RenderConfigEditorService::getShaderInterface()`](../../src/core/communication/renderconfigeditor.cpp#L3765) が引数を見て(`requireOnly()` の外の鍵と、真偽でない `refresh` は `std::invalid_argument` で `-32602`)、[`shaderInterfaceStatusJson()`](../../src/core/communication/engineauthoringlists.cpp#L609) に `RenderConfigEditorDependencies::resolve_shader_reference`([渡す所](../../src/core/communication/editorruntimefactory.cpp#L2047)。`PathResolver::resolveProjectRef()`)を渡す。`engine://` は `get_engine_shaders` の答えからその stem の要素を抜くだけ。project の stem は RPC の thread で stage ごとの候補を解決して file を読み、その SHA-256 から key を作り、[`ShaderInterfaceReflection::status()`](../../src/core/communication/engineauthoringlists.cpp#L520) に渡す。反映は [`ShaderInterfaceReflection`](../../src/core/communication/engineauthoringlists.cpp#L461) の 1 本の worker thread が待ち行列で行い、要素は `get_engine_shaders` と同じ [`shaderStageJson()`](../../src/core/communication/engineauthoringlists.cpp#L236) で作る。`EngineRpcEndpoint::Impl` の destructor が [`stopShaderInterfaceReflection()`](../../src/core/communication/rpcserver.cpp#L2799) で止めて join する。仕組みは [第6章](06_rendering_vulkan_shader.md) §6.9 |
+| `get_registered_providers` | [登録済みの provider の一覧](../../src/core/communication/editorrpchandlers.cpp#L302) | ✅EL-6。`{}` → `{draw_sort, pass_implementation, region_replacements, graph_transforms, render_strategy}`。[`RenderConfigEditorService::getRegisteredProviders()`](../../src/core/communication/renderconfigeditor.cpp#L3758) が `requireOnly()` で引数を見て(外の鍵は `std::invalid_argument` で `-32602`)、[`registeredProvidersJson()`](../../src/core/communication/engineauthoringlists.cpp#L668) を返す。5 つの registry の listing を呼ぶたびに読み、cache しない(第6章 §6.1 の「provider registry の一覧(EL-6)」) |
+| `export_render_feature` | [部品の書き出し](../../src/core/communication/editorrpchandlers.cpp#L196) | feature 1 つを `user://components/<name>/` へ |
+| `import_render_feature` | [部品の取り込み](../../src/core/communication/editorrpchandlers.cpp#L199) | project 外の component ディレクトリを未作成の `project://` feature として取り込む |
+| `install_package` | [package の vendoring](../../src/core/communication/editorrpchandlers.cpp#L202) | `<project>/packages/<ns>/` へ複製し catalog を作り直す |
+| `uninstall_package` | [package の削除](../../src/core/communication/editorrpchandlers.cpp#L205) | 参照が残っていれば `package_in_use` で何も消さない |
+| `get_component_add_candidates` | [追加候補](../../src/core/communication/editorrpchandlers.cpp#L83) | `get_components` と同じ object 指定で、足せる component の候補を返す(manual §13.2) |
+| `get_ray_occurrences` / `resolve_ray_occurrence` | [occurrence 一覧](../../src/core/communication/editorrpchandlers.cpp#L89) / [1 件の解決](../../src/core/communication/editorrpchandlers.cpp#L92) | RT の occurrence(行)の読み。どちらも `setOrderedHandler` 側 |
+| `set_prefab_parameter` / `unset_prefab_parameter` / `unpack_prefab` | [上書き](../../src/core/communication/editorrpchandlers.cpp#L157) / [上書き解除](../../src/core/communication/editorrpchandlers.cpp#L162) / [展開](../../src/core/communication/editorrpchandlers.cpp#L167) | prefab インスタンスのパラメータ上書き・解除と、素のオブジェクトへの展開 |
+| `fork_render_pipeline` | [preset の fork](../../src/core/communication/editorrpchandlers.cpp#L214) | 選択中 preset を project ファイルへ複製し、root の参照も切り替える |
+| `edit_preset_pass` | [preset pass 編集](../../src/core/communication/editorrpchandlers.cpp#L217) | project preset の pass(fullscreen / material / raster)を部分編集する |
+| `edit_region_replacement` | [領域の差し替え](../../src/core/communication/editorrpchandlers.cpp#L220) | project preset のタグ付き領域に provider を指定 / 解除する |
+| `get_compute_task_authoring` / `edit_compute_task` / `add_compute_task` / `remove_compute_task` | [取得](../../src/core/communication/editorrpchandlers.cpp#L223) / [置換](../../src/core/communication/editorrpchandlers.cpp#L305) / [追加](../../src/core/communication/editorrpchandlers.cpp#L314) / [削除](../../src/core/communication/editorrpchandlers.cpp#L317) | compute / RT task 宣言の著作面 |
+| `get_frame_node_order` / `edit_frame_node_order` | [順序の取得](../../src/core/communication/editorrpchandlers.cpp#L226) / [順序の保存](../../src/core/communication/editorrpchandlers.cpp#L229) | root の `frame_node_order`(手で決めた node 順)の読みと保存 |
+| `get_procedural_assets` / `edit_procedural_asset` | [一覧](../../src/core/communication/editorrpchandlers.cpp#L308) / [編集](../../src/core/communication/editorrpchandlers.cpp#L311) | procedural asset の宣言。`edit` の op ではなく独立した RPC です |
+| `get_ray_callable_records` / `edit_ray_callable_records` | [callable の読み](../../src/core/communication/editorrpchandlers.cpp#L320) / [初期値の置換](../../src/core/communication/editorrpchandlers.cpp#L323) | task ごとの callable record schema と初期値上書き |
+| `decompose_material_pass` | [一体版の分解](../../src/core/communication/editorrpchandlers.cpp#L276) | ✅LP-3b。rendering 節か fork 済み preset の material pass を、graph の `render.material_pass` + draw_loop に 1 ticket で書き換える |
+| `get_render_documents` / `restore_render_documents` | [丸ごとの読み](../../src/core/communication/editorrpchandlers.cpp#L348) / [CAS の書き戻し](../../src/core/communication/editorrpchandlers.cpp#L351) | ✅RD-1 / RD-1b。render の編集の undo の土台。作る・置き換える・消すを 1 つの transaction で |
+| `edit_target_planning` / `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment` | [計画の決定](../../src/core/communication/editorrpchandlers.cpp#L239) / [pin](../../src/core/communication/editorrpchandlers.cpp#L242) / [physical fragment](../../src/core/communication/editorrpchandlers.cpp#L245) | ✅EL-2。root の rendering 節の `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` を 1 ticket で書く。3 本とも [`RenderConfigEditorService::queuePlanningKeyEdit()`](../../src/core/communication/renderconfigeditor.cpp#L4170)(gate と CAS、preset が同じキーを持てば `rendering_key_not_allowed_here`、今の値を変換する関数、`enqueueAuthoredPassTicket`)を通る。名前の判定は [`planningNamesOf()`](../../src/core/communication/renderconfigeditor.cpp#L4058)(合成した config を `parseFrameGraphDefinitionsFromConfigJson()` で読んだ段の node と資源)。stale な fragment は commit の組み直しで linker が投げる `VulkanPhysicalFragmentStale` を [`physicalFragmentStaleRefusal()`](../../src/core/communication/renderconfigeditor.cpp#L4246) が `physical_fragment_stale` に直す |
+| `get_fold_groups` / `fold_nodes` / `verify_fold` | [読み](../../src/core/communication/editorrpchandlers.cpp#L249) / [宣言](../../src/core/communication/editorrpchandlers.cpp#L252) / [検査](../../src/core/communication/editorrpchandlers.cpp#L256) | ✅FG-1 / FG-2。root の graph 文書の `fold_groups` の読み、group 1 つの宣言(root 編集の ticket。[`RenderConfigEditorService::queueFoldGroupEdit()`](../../src/core/communication/renderconfigeditor.cpp#L2996) を通る)、開いた形と決定ありの形を子 process で描き比べて印を書く非同期の ticket(下の「`verify_fold` の子 process」) |
+| `reload_render_documents` | [読み直し](../../src/core/communication/editorrpchandlers.cpp#L356) | ✅RL-1。ディスクの render 文書を読み直して 1 つの ticket で組み直し・公開する。ディスクは書かない(下の「`reload_render_documents` の ticket」) |
+| `bake_audio_analysis` / `list_derived_assets` | [音の解析を焼く](../../src/core/communication/editorrpchandlers.cpp#L261) / [派生 asset の一覧](../../src/core/communication/editorrpchandlers.cpp#L264) | ✅AB-1。音の解析を worker で焼く非同期の ticket(render 文書は書かない)と、asset store の `*.import.json` の読み。実体は [`renderconfigaudioanalysis.cpp`](../../src/core/communication/renderconfigaudioanalysis.cpp#L36)(第5章 §5.9「音の解析を焼く」)。`list_derived_assets` は `service_` 側、`bake_audio_analysis` は `mutable_service_` が要る |
+| `edit_batch` | [登録 `edit_batch`](../../src/core/communication/editorrpchandlers.cpp#L343) | ✅FR-3。`{base_source_digest, edits: [{method, params}]}`。[`RenderConfigEditorService::editBatch()`](../../src/core/communication/renderconfigeditor.cpp#L2000) が、[edit_batch が受ける 20 の method の表 `batchEdits()`](../../src/core/communication/renderconfigeditor.cpp#L1959) の method(✅FR-4 で `edit_preset_pass` / `edit_compute_task` / `remove_compute_task` が加わって 23)を、editor の `document_` / `managed_documents_` を候補に置き換えながら順に呼びます。呼ばれた側は `batch_`([`BatchOverlay`](../../src/core/communication/renderconfigeditor.hpp#L421))が立っている間、ディスクとの比べ直しと各自の preflight を飛ばし、`add_authored_pass` の検査は `batch_->checks` に積みます。各 edit の ticket は pending から外して 1 つにまとめ、最後の候補を 1 回組み立てて(積んだ検査も当てる)変種の preflight を通し、1 つの ticket(`operation: "edit_batch"`、`methods`)を積みます。当てられない edit の拒否には `batch_index` を足して返し([batch_index を足す所](../../src/core/communication/renderconfigeditor.cpp#L2088))、editor の状態と途中の ticket はスコープの終わりの `Restore` が戻します。外した method と理由はヘッダの `editBatchMethods()` の注記(manual §13.5「複数の編集を 1 つの ticket で —— `edit_batch`」)。FR-4 の 3 つが書き換える文書を読む所は下の「`edit_batch` の中の `heldDocument()`」 |
 
 上 11 行(19 メソッド)は P-2a 系・RT 系・prefab 系で足された分で、params と戻り値の正本は
 [manual 第13章](../manual/13_editor.md)です。この表と `editorrpchandlers.cpp` の登録を突き合わせるときは、
-行ではなくメソッド名を数えてください(併記した行が 1 行 2〜4 メソッドあります)。最後の EL-2 の行(3 メソッド)は、この 11 行の後に足したものです。その後に FG-1 / FG-2 と RL-1 の 2 行(4 メソッド)を足しました。
+行ではなくメソッド名を数えてください(併記した行が 1 行 2〜4 メソッドあります)。最後の EL-2 の行(3 メソッド)は、この 11 行の後に足したものです。その後に FG-1 / FG-2 と RL-1 の 2 行(4 メソッド)を足しました。✅EL-6 の `get_registered_providers` の 1 行(1 メソッド)は、同じ読みの仲間として `get_shader_interface` の行の後に置きました。✅AB-1 の `bake_audio_analysis` / `list_derived_assets` の 1 行(2 メソッド)は最後に足しました。✅FR-3 の `edit_batch` の 1 行(1 メソッド)は、その後に足しました。
 
-**`verify_fold` の子 process(✅FG-2)。**[`verifyFold()`](../../src/core/communication/renderconfigeditor.cpp#L2616) は、受けた時に engine の thread で [`FoldVerifyJob`](../../src/core/communication/graphfoldverify.hpp#L53)(開いた形と決定ありの形の root の bytes、managed fragment、数)を作り切り、worker は editor の状態を読みません。子を起こす口は依存として差し込まれる [`FoldVerifyRunner`](../../src/core/communication/renderconfigeditor.hpp#L187) で、本番は [`runFoldVerifyProcesses()`](../../src/core/communication/graphfoldverify.cpp#L438)(factory が親の起動引数から [`foldVerifyProcessOptions()`](../../src/core/communication/editorruntimefactory.cpp#L1967) を 1 度だけ読んで包む)、test は偽の runner です。worker は `std::async` の thread で走り([始める所](../../src/core/communication/renderconfigeditor.cpp#L2697))、frame と RPC は待ちません。`commitPending()` は frame の境界ごとに最初に [`harvestFoldVerifies()`](../../src/core/communication/renderconfigeditor.cpp#L2705) を呼び、終わった run を [`judgeFoldVerifyRuns()`](../../src/core/communication/graphfoldverify.cpp#L388)(純関数)で判定し、通れば `queueFoldGroupEdit()` で印を書く ticket を同じ ticket の番号で作って待ち行列の先頭に置きます。CAS は受けた時の `base_source_digest` なので、間に root が変われば `external_modification` です。子は [`runChild()`](../../src/core/communication/graphfoldverify.cpp#L157) が `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` の job object に入れ、時間切れと終了は job の handle を閉じて終わらせます(名前や pid で探しません)。editor の destructor は止めの flag を立てて全部の worker を待ちます。
+**`edit_batch` の中の `heldDocument()`(✅FR-4、`2eb08d21`)。**FR-3 の batch は、各 edit が書き換える文書を editor の持つもの(`document_`、managed fragment、`currentDocumentSet()` の authoring context)から読むことを前提にしていました。`edit_preset_pass` の feature の分岐と preset の分岐、`edit_compute_task` / `remove_compute_task`(`changeComputeTask()`)は project の preset / feature をディスクから読んでいたので、外していました。FR-4 はこの読みを [`RenderConfigEditorService::heldDocument()`](../../src/core/communication/renderconfigeditor.cpp#L1055) に替えて、3 つを `batchEdits()` に足しました。
 
-**`reload_render_documents` の ticket(✅RL-1)。**[`reloadRenderDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L5775) は、ディスクの root と managed fragment を読み、`renderDocumentsOf()`(`get_render_documents` と同じ範囲)で残りの render 文書を足し、各文書の今の bytes を `expected` の digest にした候補を作ります。`changed` は editor が書いた digest(`known_document_digests_`)・managed fragment の基準・live の世代の文書(依存の `published_documents`。[作る所](../../src/core/communication/editorruntimefactory.cpp#L2279))の順に引いた前の digest と比べます。ticket(`render-config-reload-<N>`)は `reload` の印を持ち、commit の時の source commit は書く代わりに [`verifyReloadedDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L5756) で読んだ bytes がまだディスクに在るかを照らします。何も違わなければ runtime に渡さず `no_change` で終えます。待っている・処理中の ticket が在るか scene の preview が開いていれば `reload_busy` です([断る所](../../src/core/communication/renderconfigeditor.cpp#L5781)。preview の判定は `EditorCommandService::reloadRenderDocuments()`)。
+- `heldDocument(reference)` は [`HeldDocument {bytes, base_digest}`](../../src/core/communication/renderconfigeditor.hpp#L372) を返します。`batch_` が立っていて、`batch_->documents` に同じ正規化した参照の文書(消すものでない)があれば、その `bytes` と、その文書の `expected.digest`(batch の前の digest)を返します。無ければディスクの bytes とその digest です。
+- 呼び手の digest(`base_preset_digest` / `base_feature_digest` / `base_task_source_digest`)は `base_digest` と比べます([`edit_preset_pass` の FR-4 の読み](../../src/core/communication/renderconfigeditor.cpp#L4721)、[`changeComputeTask()` の FR-4 の読み](../../src/core/communication/renderconfigeditor.cpp#L4469))。なので batch の中でも、呼び手は batch の前に読んだ digest を送ります。違えば今までどおり `external_modification` です。`changeComputeTask()` は FR-4 の前、catalog の `source_digest` との比べとディスクの bytes の digest との比べの 2 回を持っていましたが、`base_digest` との 1 回になりました。
+- `edit_preset_pass` の preset の分岐は、前は authoring context の `pipeline_preset_bytes` を読んでいました。今は preset の参照で `heldDocument()` を引きます。
+- 残る穴: `edit_region_replacement` / `decompose_material_pass` / `apply_graph_template` は、今も `currentDocumentSet()` の authoring context の `pipeline_preset_bytes` の digest を呼び手の `base_preset_digest` と比べます。`currentDocumentSet()` は batch の中では `batch_->documents` を含むので、同じ batch の前の edit が preset を書いた後にこの 3 つを送ると `external_modification` です(コードの読み。この組み合わせの test はありません)。
+- test: `renderconfigeditor_test` の「FR-4 edit_batch takes edit_graph_document and edit_preset_pass as one ticket, and RD-1 undoes both」と「FR-4 edit_batch takes edit_preset_pass with a compute task edit on one project preset or feature, each on what the edit before it made」、`engine_primitives_test` の「FR-4 edit_batch puts the sky on present with edit_graph_document and edit_preset_pass in one ticket, through the running renderer」(GPU)。FR-3 の test の外した method の一覧から 3 つを除き、入っていることを確かめる形にしました。
+
+**`verify_fold` の子 process(✅FG-2)。**[`verifyFold()`](../../src/core/communication/renderconfigeditor.cpp#L3082) は、受けた時に engine の thread で [`FoldVerifyJob`](../../src/core/communication/graphfoldverify.hpp#L53)(開いた形と決定ありの形の root の bytes、managed fragment、数)を作り切り、worker は editor の状態を読みません。子を起こす口は依存として差し込まれる [`FoldVerifyRunner`](../../src/core/communication/renderconfigeditor.hpp#L210) で、本番は [`runFoldVerifyProcesses()`](../../src/core/communication/graphfoldverify.cpp#L438)(factory が親の起動引数から [`foldVerifyProcessOptions()`](../../src/core/communication/editorruntimefactory.cpp#L1969) を 1 度だけ読んで包む)、test は偽の runner です。worker は `std::async` の thread で走り([始める所](../../src/core/communication/renderconfigeditor.cpp#L3163))、frame と RPC は待ちません。`commitPending()` は frame の境界ごとに最初に [`harvestFoldVerifies()`](../../src/core/communication/renderconfigeditor.cpp#L3171) を呼び、終わった run を [`judgeFoldVerifyRuns()`](../../src/core/communication/graphfoldverify.cpp#L388)(純関数)で判定し、通れば `queueFoldGroupEdit()` で印を書く ticket を同じ ticket の番号で作って待ち行列の先頭に置きます。CAS は受けた時の `base_source_digest` なので、間に root が変われば `external_modification` です。子は [`runChild()`](../../src/core/communication/graphfoldverify.cpp#L157) が `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` の job object に入れ、時間切れと終了は job の handle を閉じて終わらせます(名前や pid で探しません)。editor の destructor は止めの flag を立てて全部の worker を待ちます。
+
+**`reload_render_documents` の ticket(✅RL-1)。**[`reloadRenderDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L6258) は、ディスクの root と managed fragment を読み、`renderDocumentsOf()`(`get_render_documents` と同じ範囲)で残りの render 文書を足し、各文書の今の bytes を `expected` の digest にした候補を作ります。`changed` は editor が書いた digest(`known_document_digests_`)・managed fragment の基準・live の世代の文書(依存の `published_documents`。[作る所](../../src/core/communication/editorruntimefactory.cpp#L2284))の順に引いた前の digest と比べます。ticket(`render-config-reload-<N>`)は `reload` の印を持ち、commit の時の source commit は書く代わりに [`verifyReloadedDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L6239) で読んだ bytes がまだディスクに在るかを照らします。何も違わなければ runtime に渡さず `no_change` で終えます。✅IA-2(`cdcdebc1`)から、文書の比較の後に、依存の `published_assets`(IA-2 の時の名前は `published_initial_assets`、要素の型は `RenderConfigPublishedAsset`。[作る所 IA-2](../../src/core/communication/editorruntimefactory.cpp#L2306)。live の世代の各 program の `frame_graph.image_initial_assets` を `{asset, file, sha256}` にしたもの。✅IA-3 からその後に値の graph の表と manifest も)の各 file を `assetFileSha256()` で読み直して比べ、違うか読めない asset を `changed_assets` にします([比べる所 IA-2](../../src/core/communication/renderconfigeditor.cpp#L6424))。`std::map` で asset ごとにまとめるので辞書順・重複なしです。`no_change` は `changed` と `changed_assets` の両方が空のときだけで、`changed_assets` は ticket の `reload_changed_assets` に載って committed の結果に入ります(`no_change` の道では空の配列)。比べる相手の sha256 は、世代を組む段で decode の前に取った [`RenderImageInitialAsset::content_sha256`](../../src/core/renderingpass/framegraphruntime.hpp#L53) です(manifest の値の `sha256` とは別)。待っている・処理中の ticket が在るか scene の preview が開いていれば `reload_busy` です([断る所](../../src/core/communication/renderconfigeditor.cpp#L6264)。preview の判定は `EditorCommandService::reloadRenderDocuments()`)。✅IA-3(`26473e75`)から、`published_assets` には live の世代の各 program の `frame_graph.value_graph->sampleTables()` の表が、表の KTX2 と隣の `.import.json` の 2 行ずつ、どちらも表の参照(`asset`)の名前で入ります。`asset` ごとにまとめる比較はそのままなので、manifest だけが違っても `changed_assets` には表の名前が出ます。✅PV-1(`a173e70c`)から、reload を含む render の編集の committed の結果に、公開した世代の `preview`(`RenderConfigRuntimeSnapshot::preview`)が付きます(`commitPending()` の 3 つの committed の道と `completeCommitTransaction()`)。
 
 #### 共通グラフの編集面(P-1 / N-2)
 
@@ -886,7 +931,7 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 config そのもので、CAS は `SceneRevision` ではなく **文書全体の sha256**(`base_source_digest`)、
 `actor_id` もセッションも journal も undo もありません。1 回の呼び出しが 1 つの op 列・1 チケット・1 CAS です。
 
-`ops[]` は 5 種で、正は [`editGraphDocument()`](../../src/project/graphcomposition.cpp#L2362) です。
+`ops[]` は 5 種で、正は [`editGraphDocument()`](../../src/project/graphcomposition.cpp#L2496) です。
 
 | op | 形 |
 |---|---|
@@ -898,10 +943,10 @@ config そのもので、CAS は `SceneRevision` ではなく **文書全体の 
 | `set_layout` | `{layout: {nodes, reroutes, ties}}` か `{layout: null}`(scope の置き場所を丸ごと置換。再 compose 無し。N-6) |
 
 N-2 で **全 op が任意の `scope` を取る**ようになりました
-([解決](../../src/project/graphcomposition.cpp#L1390))。既定は `"root"`、definition 名を書くとその本体が対象で、
+([解決](../../src/project/graphcomposition.cpp#L1524))。既定は `"root"`、definition 名を書くとその本体が対象で、
 `root` は予約語なので同名の definition は指せません。これに合わせて
 `edit_graph_document` の書き戻しも 2 段になり、root の `nodes` は常に、`definitions` は
-**変化したときだけ**書き戻します([判定](../../src/core/communication/renderconfigeditor.cpp#L2495)) ——
+**変化したときだけ**書き戻します([判定](../../src/core/communication/renderconfigeditor.cpp#L2959)) ——
 root だけの編集が definition のバイト列を動かさないようにするためです。
 
 名前付きの拒否は `GraphRegistryError` が運びます: `graph.node_duplicate@1` / `graph.node_missing@1` /
@@ -910,12 +955,14 @@ root だけの編集が definition のバイト列を動かさないようにす
 **この並びの 5〜7 番目**、つまり `graph.input_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` で、
 末尾の `graph.definition_immutable@1` はそれより前(`3611e390`)からあります。N-2 の 3 つは
 「instance は root に立ち、境界 port は definition の中にある」という片側ずつの所属を名前で言うためのものです
-([分岐](../../src/project/graphcomposition.cpp#L2169))。形が壊れているだけのものは名前を持たず
+([分岐](../../src/project/graphcomposition.cpp#L2303))。形が壊れているだけのものは名前を持たず
 `invalid_graph_document` に落ちます。
 
-✅RS-9 から、render の node の `parameters` の欠落も `graph.render_node_parameters_missing@1` `{node, op, missing}` で名前付きになりました。op ごとの必須は [`renderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L259) の表で、[`checkRenderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L284) が検査します。RS-9 では render の op の契約を作る `renderPorts()` の頭で呼んでいましたが、✅RS-15 から [`GraphModuleRegistry::resolveOperation()`](../../src/project/graphmodule.cpp#L663) が factory を呼ぶ前の 1 か所で呼び([呼ぶ所](../../src/project/graphmodule.cpp#L672))、宣言だけの契約の op(`render.scalar`、`value.*`、`audio.*`、`ui.*`)にも同じに効きます。`parameters` が無い・`null` の node は空の object として通し、op が要るものが無ければここで断ります。✅RS-15 から、表の名前は node の `inputs` に同名の edge があっても満たされます。
+✅RS-9 から、render の node の `parameters` の欠落も `graph.render_node_parameters_missing@1` `{node, op, missing}` で名前付きになりました。op ごとの必須は [`renderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L262) の表で、[`checkRenderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L269) が検査します。RS-9 では render の op の契約を作る `renderPorts()` の頭で呼んでいましたが、✅RS-15 から [`GraphModuleRegistry::resolveOperation()`](../../src/project/graphmodule.cpp#L676) が factory を呼ぶ前の 1 か所で呼び([呼ぶ所](../../src/project/graphmodule.cpp#L685))、宣言だけの契約の op(`render.scalar`、`value.*`、`audio.*`、`ui.*`)にも同じに効きます。`parameters` が無い・`null` の node は空の object として通し、op が要るものが無ければここで断ります。✅RS-15 から、表の名前は node の `inputs` に同名の edge があっても満たされます。
 
-✅CT-1 から、同じ表を [`operationJson()`](../../src/project/graphmodule.cpp#L549) が catalog の `required_parameters` に写し(表は 1 つ)、`value.input` の `input_names` は [`graphFrameInputNames()`](../../src/project/graphmodule.cpp#L903) の表を、catalog と frame の検査 [`validateGraphInputs()`](../../src/core/renderingpass/graphinputs.cpp#L13) の両方が読みます。render の pass の port の欠けは [`checkRenderPortDeclaration()`](../../src/project/graphmodule.cpp#L328) が `graph.port_field_missing@1` `{node, port, field}` で、resource の型の中の欠け(`element`、`type.semantic` など)は呼び手が渡す `MissingField` で port なら同じ code、node の parameters なら `graph.render_node_parameters_missing@1` で断ります。graph の展開器の欠けた鍵は [`member()`](../../src/project/graphcomposition.cpp#L31) が場所を名指す `std::invalid_argument` にします。
+✅CT-1 から、同じ表を [`operationJson()`](../../src/project/graphmodule.cpp#L550) が catalog の `required_parameters` に写し(表は 1 つ)、`value.input` の `input_names` は [`graphFrameInputNames()`](../../src/project/graphmodule.cpp#L927) の表を、catalog と frame の検査 [`validateGraphInputs()`](../../src/core/renderingpass/graphinputs.cpp#L13) の両方が読みます。render の pass の port の欠けは [`checkRenderPortDeclaration()`](../../src/project/graphmodule.cpp#L313) が `graph.port_field_missing@1` `{node, port, field}` で、resource の型の中の欠け(`element`、`type.semantic` など)は呼び手が渡す `MissingField` で port なら同じ code、node の parameters なら `graph.render_node_parameters_missing@1` で断ります。graph の展開器の欠けた鍵は [`member()`](../../src/project/graphcomposition.cpp#L32) が場所を名指す `std::invalid_argument` にします。
+
+✅CT-3 から、`renderNodeRequiredParameters()` の表は [`graphparameterschema.cpp` の CT-3 の parameter の表](../../src/project/graphparameterschema.cpp#L294) に置き換わり、RS-9 の必須はその `required` の entry から作ります(新しく必須になったのは `pose.clip_sample` の `rig` / `clip`、`pose.state_machine` の `rig` / `graph`、`pose.retarget` の `profile`、`draw.variant` の `variant`)。同じ表が値の kind・enum・範囲も持ち、`resolveOperation()` が RS-9 の検査の直後に [`checkGraphNodeParameterTypes()`](../../src/project/graphparameterschema.cpp#L766) を呼んで、合わない値を `graph.render_node_parameter_invalid@1` `{node, op, parameter, expected, reason: type | enum | range, allowed? | min? / max?}` で断ります。`GraphRegistryError` なので、編集の ticket では CT-2 の `rejection()` が `document` を足して rejected にします(test: `renderconfigeditor_test` の「CT-3 an edit with a parameter of the wrong kind, enum or range is refused by name」)。表の形と検査の規則は第3章 §3.15「op の parameter の表」です。
 
 利用者向けの手順と GUI の対応は [manual 第13章](../manual/13_editor.md) §13.5 が正です。
 
@@ -924,11 +971,11 @@ root だけの編集が definition のバイト列を動かさないようにす
 `list_render_features` が返す各 entry には `source` が付きます。値は **`"engine"` と `"package"` の 2 つだけ**で、
 `project://features/*.json` に手で置いた文書は catalog に載りません
 ([entry の定義](../../src/core/communication/renderconfigeditor.hpp#L58))。package 側の列挙は
-[`enumeratePackageRenderFeatureDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L777) で、
+[`enumeratePackageRenderFeatureDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L836) で、
 **`noexcept` で、`std::exception` の失敗を entry として報告します** —— `project.json` が読めなければ package は 0 個、
 package の文書が壊れていれば `available: false` + `unavailable_reason` の行として並びます。ただし
 **「全部の失敗が行になる」わけではありません**: `std::exception` を継承しない例外を捕まえる
-[package の文書を読む `readPackageFeatureDocuments` の呼び出しを包む `catch (...)`](../../src/core/communication/renderconfigeditor.cpp#L794) は `continue` するだけなので、
+[package の文書を読む `readPackageFeatureDocuments` の呼び出しを包む `catch (...)`](../../src/core/communication/renderconfigeditor.cpp#L853) は `continue` するだけなので、
 その package は entry を 1 つも残さずに catalog から落ちます(記録した穴)。
 
 これは行儀の問題ではありません。catalog は **editor service の構築時**に作られるので、ここで例外が抜けると
@@ -953,7 +1000,7 @@ package の文書が壊れていれば `available: false` + `unavailable_reason`
 >   両方が component_slot|value_field で object と slot が同じ -> 真
 > ```
 >
-> **手がかり**: [`domainObjects()`](../../src/core/communication/editorjournal.cpp#L2688) が拾うキー名の一覧は、**op の `kind` ごとに違うフィールド名の総和**です — `value_field` / `component_slot` は `object`、`object_existence`(spawn)はプリフライト後に埋め戻される `object`、`object_subtree`(destroy)は `root` と配列 `objects`、`parent_edge`(reparent)は `child` / `old_parent` / `new_parent` と配列 `descendants`。単数フィールドと配列フィールドを別扱いで読むので、新しいopを足すときにここへ追記するのは、**そのopが既存にない名前でobject IDを持つ場合だけ**です。粒度が意図的に不揃いな例として、spawnの `write_set` は `/scenes/<id>/objects` という**粗い**パス、`read_set` は `/scenes/<id>/name_reservations/<name>` という細かいパスです。behaviorは [`stableBehaviorTarget()`](../../src/core/communication/editorjournal.cpp#L526) がhandleがあれば `handles/<h>`、無ければ `indices/<i>` を使い分けます(indexは他の編集でずれるのでhandle優先)。テストは `test/editorjournal_test.cpp` の [`WP161 writer history supports multi-level undo and redo on one path`](../../test/editorjournal_test.cpp#L1054) と、TEST_CASE `WP161 two-actor structural overlap makes the whole undo a no-op` の中の [二アクター重なりの事例](../../test/editorjournal_test.cpp#L1158)。
+> **手がかり**: [`domainObjects()`](../../src/core/communication/editorjournal.cpp#L2688) が拾うキー名の一覧は、**op の `kind` ごとに違うフィールド名の総和**です — `value_field` / `component_slot` は `object`、`object_existence`(spawn)はプリフライト後に埋め戻される `object`、`object_subtree`(destroy)は `root` と配列 `objects`、`parent_edge`(reparent)は `child` / `old_parent` / `new_parent` と配列 `descendants`。単数フィールドと配列フィールドを別扱いで読むので、新しいopを足すときにここへ追記するのは、**そのopが既存にない名前でobject IDを持つ場合だけ**です。粒度が意図的に不揃いな例として、spawnの `write_set` は `/scenes/<id>/objects` という**粗い**パス、`read_set` は `/scenes/<id>/name_reservations/<name>` という細かいパスです。behaviorは [`stableBehaviorTarget()`](../../src/core/communication/editorjournal.cpp#L526) がhandleがあれば `handles/<h>`、無ければ `indices/<i>` を使い分けます(indexは他の編集でずれるのでhandle優先)。テストは `test/editorjournal_test.cpp` の [`WP161 writer history supports multi-level undo and redo on one path`](../../test/editorjournal_test.cpp#L1059) と、TEST_CASE `WP161 two-actor structural overlap makes the whole undo a no-op` の中の [二アクター重なりの事例](../../test/editorjournal_test.cpp#L1163)。
 >
 > **不変条件**: 判定は保守側へ倒す(検出漏れは静かなロストアップデート、過検出は明示的な `undo_conflict` / `preview_lease_conflict` で済む)。パス比較は必ず `/` 境界を見る。
 
@@ -977,11 +1024,13 @@ package の文書が壊れていれば `available: false` + `unavailable_reason`
 > batch.inverse = reverse(各 prepared.inverse)
 > ```
 >
-> **手がかり**: 並び順が2つ出てきますが、向きが違うのは**対象が forward と inverse で別だから**です。[`subtreeObjects()`](../../src/core/communication/editorjournalops.cpp#L1112) が並べるのは forward の削除命令列で、`object_index`(scene内の宣言index)の**降順** — 後ろから消さないと残りのindexがずれます。closuresが並ぶのは inverse(`restore_objects`)の再生順で、`declaration_index` の**昇順** — 前から挿し戻さないと同じ理由でずれます。「indexで位置を指すリストは末尾から消し、先頭から挿す」という一つの規則の表と裏で、逆向きに見えるのはそのためです。`normalizeBehaviorAttachmentIdentities()` は `prepareBatch` の**前**に走り、`base_revision+1` とcommand index / attachment index の三つ組からhandleとseqを採番します(同じ入力なら同じidentity)。テストは [`editorjournal_test.cpp` 内](../../test/editorjournal_test.cpp#L947)「JOURNAL0 is complete and mechanical replay is three-way equivalent」。
+> **手がかり**: 並び順が2つ出てきますが、向きが違うのは**対象が forward と inverse で別だから**です。[`subtreeObjects()`](../../src/core/communication/editorjournalops.cpp#L1112) が並べるのは forward の削除命令列で、`object_index`(scene内の宣言index)の**降順** — 後ろから消さないと残りのindexがずれます。closuresが並ぶのは inverse(`restore_objects`)の再生順で、`declaration_index` の**昇順** — 前から挿し戻さないと同じ理由でずれます。「indexで位置を指すリストは末尾から消し、先頭から挿す」という一つの規則の表と裏で、逆向きに見えるのはそのためです。`normalizeBehaviorAttachmentIdentities()` は `prepareBatch` の**前**に走り、`base_revision+1` とcommand index / attachment index の三つ組からhandleとseqを採番します(同じ入力なら同じidentity)。テストは [`editorjournal_test.cpp` 内](../../test/editorjournal_test.cpp#L952)「JOURNAL0 is complete and mechanical replay is three-way equivalent」。
 >
 > **不変条件**: プリフライトはlive文書とliveランタイムに副作用を持たない。inverseは必ずforwardの逆順。spawnの `object_id` は必ずプリフライト結果から取る(自前で採番しない)。
 
-> 🧩 **難所 — undo前提の三段検証**([`requireRevertPreconditions()`](../../src/core/communication/editorjournal.cpp#L3539))
+**受付のプリフライトを実行時に使い回す道(`8bde3c2f`。利用者の codex の変更、handoff 01)。**`prepareBatch()` は受付([`enqueue()`](../../src/core/communication/editorjournal.cpp#L4410) の中)と、フレーム境界の実行(`commitPending()` の中)の 2 回走っていました。今は、受付で作った `PreparedBatch` を ticket の `accepted_batch` に、その時の `SceneProjectionState::snapshotIdentity()` を `accepted_snapshot` に残し、実行時に今の projection state の識別子が同じで authoring の文書もその state のものなら、`prepareBatch()` を呼ばずにそれを使います([実行時に使い回す分岐](../../src/core/communication/editorjournal.cpp#L4181))。残すのは、操作が 1 つで `set_component_value`・`component_slot: "transform"`・`object_id` で指し(`address` 無し)、文書が prefab を使わず、受付の前後で識別子が変わらなかった編集だけです(構造・behavior・prefab・生成物・list の編集は、プリフライトが変わりうる registry や runtime の identity も見るので残さない、とコードの注記)。識別子は [`SceneProjectionState::snapshot_identity_`](../../src/core/loader/resolvedscene.hpp#L331)(組を作るたびに新しい `shared_ptr`)で、revision や resolver の世代の番号が同じ別の組とは一致しません。`swap()` は識別子も入れ替え、fault injection の `publishDocumentOnlyForFaultInjection()` は両方の識別子を捨てます。gate・scene・revision・CAS の検査、preview lease の重なりの検査、実際の projection の commit は使い回しても走ります。使い回した回数は `reusedPreflightCountForTesting()` で test が読みます。test: `editorjournal_test` の `Transform preflight` で始まる 5 本([「Transform preflight reuse preserves commit journal undo and redo」](../../test/editorjournal_test.cpp#L2454) から)。codex の報告と commit の説明では、10,000 object の transform の編集 1 回が 1,102 → 751 ms(Release、前後 3 組の中央値)です。
+
+> 🧩 **難所 — undo前提の三段検証**([`requireRevertPreconditions()`](../../src/core/communication/editorjournal.cpp#L3542))
 >
 > **何をする所か**: `undo` / `redo` を「逆命令の普通のトランザクション」として実行してよいかを、実行前に3つの独立した条件で検査します。
 >
@@ -997,15 +1046,15 @@ package の文書が壊れていれば `available: false` + `unavailable_reason`
 > postconditionsHold(source, document()) が偽 -> undo_conflict
 > ```
 >
-> **手がかり**: `throwUndoConflict()` のpayloadは `{domain, owner_txn, revision}` で、`domain` は「衝突した領域」を人が読める形で示すための欄です。渡す値は呼び出し側ごとに違い、(1)(3)は record 全体を代表させて `structural_domain` の**先頭要素**(空なら `write_set` 全体)、(2)は落ちた command 自身の `structural_domain` です。どれも「誰が何を触ったせいでundoできないか」をクライアントが出すための材料です。undo / redo スタックの先頭が対象トランザクションと一致するかの検査は別にあり、受理時([`enqueueRevert`](../../src/core/communication/editorjournal.cpp#L4519))と実行時([`commitPending`](../../src/core/communication/editorjournal.cpp#L4938))の**二重**になっています。テストはいずれも `test/editorjournal_test.cpp` で、[`WP161 actor undo and redo are ordinary atomic transactions`](../../test/editorjournal_test.cpp#L1015) / [`WP161 writer history supports multi-level undo and redo on one path`](../../test/editorjournal_test.cpp#L1054) / TEST_CASE `WP161 two-actor structural overlap makes the whole undo a no-op` の中の [二アクター重なりの事例](../../test/editorjournal_test.cpp#L1158)。
+> **手がかり**: `throwUndoConflict()` のpayloadは `{domain, owner_txn, revision}` で、`domain` は「衝突した領域」を人が読める形で示すための欄です。渡す値は呼び出し側ごとに違い、(1)(3)は record 全体を代表させて `structural_domain` の**先頭要素**(空なら `write_set` 全体)、(2)は落ちた command 自身の `structural_domain` です。どれも「誰が何を触ったせいでundoできないか」をクライアントが出すための材料です。undo / redo スタックの先頭が対象トランザクションと一致するかの検査は別にあり、受理時([`enqueueRevert`](../../src/core/communication/editorjournal.cpp#L4558))と実行時([`commitPending`](../../src/core/communication/editorjournal.cpp#L4977))の**二重**になっています。テストはいずれも `test/editorjournal_test.cpp` で、[`WP161 actor undo and redo are ordinary atomic transactions`](../../test/editorjournal_test.cpp#L1020) / [`WP161 writer history supports multi-level undo and redo on one path`](../../test/editorjournal_test.cpp#L1059) / TEST_CASE `WP161 two-actor structural overlap makes the whole undo a no-op` の中の [二アクター重なりの事例](../../test/editorjournal_test.cpp#L1163)。
 >
 > **不変条件**: 3検査はAND。順番は変えてよいが、どれも消してはいけない。undoが成功したら `undo_stack.pop_back()` と `redo_stack.push_back()` は必ず対で動かす(片方だけだとredoが別トランザクションを指します)。
 
-> 🧩 **難所 — preview leaseの状態機械**([`commitPendingPreview()`](../../src/core/communication/editorjournal.cpp#L3816) / [`forceAbort()`](../../src/core/communication/editorjournal.cpp#L3771))
+> 🧩 **難所 — preview leaseの状態機械**([`commitPendingPreview()`](../../src/core/communication/editorjournal.cpp#L3819) / [`forceAbort()`](../../src/core/communication/editorjournal.cpp#L3774))
 >
 > **何をする所か**: `open_preview` / `update_preview` / `commit_preview` / `abort_preview` をフレーム境界でまとめて処理し、lease(排他権)の取得・維持・破棄と、外部要因による強制破棄を行います。
 >
-> **素朴に読むと**: 状態が `preview_reservation`(受理済み・未開通) / `preview_lease`(開通中) / `preview_tombstones`(終了済み)の3つに分かれ、遷移が「受理時」と「フレーム境界」の2箇所にまたがっています。予約が要るのは、`open_preview` を受理してから実際に開くまでの間に別actorの `open_preview` や重なる `edit` を通してはいけないからで、`conflictingLease()` はleaseとreservationの**両方**を見ます。失敗経路で予約を消し忘れるとpreviewが永久に開けなくなるため、明示的な `reset()` が各失敗経路に置かれています。tombstone(実体を消しても「このticketは確かに存在して終了した」という痕跡だけを残すレコード)は `abort_preview` の冪等性 — 同じ操作を何度行っても結果が変わらない性質 — のためで、既に終了したticketへのabortは「成功 + `final_status`」を返します。`forceAbort()` が `noexcept` で、leaseが無いときも失敗したときも `false` を返すだけなのは、ゲート閉鎖・シーン遷移・base revision陳腐化のいずれからも呼ばれるからです。呼び出し元の [`commitPending()`](../../src/core/communication/editorjournal.cpp#L4938) 自体が `noexcept` のフレーム境界フックとして登録されていて、ここから例外が漏れれば `std::terminate` でプロセスごと落ちます(「フレームの一部だけ失敗する」ではありません)。だから `forceAbort()` の唯一の逃げ道は `false` を返して次のフレーム境界に委ねることです。
+> **素朴に読むと**: 状態が `preview_reservation`(受理済み・未開通) / `preview_lease`(開通中) / `preview_tombstones`(終了済み)の3つに分かれ、遷移が「受理時」と「フレーム境界」の2箇所にまたがっています。予約が要るのは、`open_preview` を受理してから実際に開くまでの間に別actorの `open_preview` や重なる `edit` を通してはいけないからで、`conflictingLease()` はleaseとreservationの**両方**を見ます。失敗経路で予約を消し忘れるとpreviewが永久に開けなくなるため、明示的な `reset()` が各失敗経路に置かれています。tombstone(実体を消しても「このticketは確かに存在して終了した」という痕跡だけを残すレコード)は `abort_preview` の冪等性 — 同じ操作を何度行っても結果が変わらない性質 — のためで、既に終了したticketへのabortは「成功 + `final_status`」を返します。`forceAbort()` が `noexcept` で、leaseが無いときも失敗したときも `false` を返すだけなのは、ゲート閉鎖・シーン遷移・base revision陳腐化のいずれからも呼ばれるからです。呼び出し元の [`commitPending()`](../../src/core/communication/editorjournal.cpp#L4977) 自体が `noexcept` のフレーム境界フックとして登録されていて、ここから例外が漏れれば `std::terminate` でプロセスごと落ちます(「フレームの一部だけ失敗する」ではありません)。だから `forceAbort()` の唯一の逃げ道は `false` を返して次のフレーム境界に委ねることです。
 >
 > **骨子**:
 > ```text
@@ -1022,15 +1071,15 @@ package の文書が壊れていれば `available: false` + `unavailable_reason`
 >   abort  : ライブ状態を committed へ復元し、tombstone を置いて lease を落とす
 > ```
 >
-> **手がかり**: [`gateSnapshot()`](../../src/core/communication/editorjournal.cpp#L3393) は観測値が変わったときだけ `gate_epoch` を進めます。つまりepochは「ゲートの状態が変わった回数」であって時刻ではなく、受理時epochと実行時epochの比較が「閉じて開き直した」ケースも捕まえます。[`sameStableSet()`](../../src/core/communication/editorjournal.cpp#L2930) が完全一致を要求するのでupdateでleaseの範囲を広げられません(広げられると、受理時に通した衝突判定の結論が後から嘘になります)。[`requireLivePreviewCapability()`](../../src/core/communication/editorjournal.cpp#L2914) は transform / light の `set_component_value` 以外を全部弾きます。テストは [`editorjournal_test.cpp` 内](../../test/editorjournal_test.cpp#L1187)(lease matrix)と [開通後の runtime 検証](../../test/editorjournal_test.cpp#L1262)。
+> **手がかり**: [`gateSnapshot()`](../../src/core/communication/editorjournal.cpp#L3396) は観測値が変わったときだけ `gate_epoch` を進めます。つまりepochは「ゲートの状態が変わった回数」であって時刻ではなく、受理時epochと実行時epochの比較が「閉じて開き直した」ケースも捕まえます。[`sameStableSet()`](../../src/core/communication/editorjournal.cpp#L2930) が完全一致を要求するのでupdateでleaseの範囲を広げられません(広げられると、受理時に通した衝突判定の結論が後から嘘になります)。[`requireLivePreviewCapability()`](../../src/core/communication/editorjournal.cpp#L2914) は transform / light の `set_component_value` 以外を全部弾きます。テストは [`editorjournal_test.cpp` 内](../../test/editorjournal_test.cpp#L1192)(lease matrix)と [開通後の runtime 検証](../../test/editorjournal_test.cpp#L1267)。
 >
 > **不変条件**: `forceAbort()` の内部でthrowさせない。予約は成功でも失敗でも必ず落とす。leaseの `write_set` はopenで確定しupdateで変えない。editがcommitしたらpreview leaseは必ず落とす。
 
-> 🧩 **難所 — previewの状態不変性検証**([`isolated()`](../../src/core/communication/editorpreviewservice.cpp#L144) / [`requireStateUnchanged()`](../../src/core/communication/editorpreviewservice.cpp#L131))
+> 🧩 **難所 — previewの状態不変性検証**([`isolated()`](../../src/core/communication/editorpreviewservice.cpp#L158) / [`requireStateUnchanged()`](../../src/core/communication/editorpreviewservice.cpp#L145))
 >
 > **何をする所か**: `eval_preview` / `render_preview` の前後で共有エンジン状態のスナップショットを取り、**厳密一致**しなければ `state_changed` を投げます。成功時も例外時も検査します。
 >
-> **素朴に読むと**: `before != after` の一行に見えますが、二点が効いています。第一に、catch側でも検査してから元の例外を再送出します。検査が落ちれば元の例外は**捨てられ** `state_changed` に置き換わります。これは意図的で、「リクエストが失敗した」より「エンジン状態を汚した」の方が重い障害だからです。ここを「元の例外を優先」に直すと、状態漏れが失敗の陰に隠れます。第二に、比較が寛容な近似ではなく `OrderedJson` の完全一致であることです。previewは [`prepareEditorPreviewProjection()`](../../src/core/loader/editorpreviewprojection.cpp#L753) が `stage()` した文書を**公開しない**ことで成立していて、浮動小数1ビットの差でも「どこかで公開してしまった」の証拠になります。
+> **素朴に読むと**: `before != after` の一行に見えますが、二点が効いています。第一に、catch側でも検査してから元の例外を再送出します。検査が落ちれば元の例外は**捨てられ** `state_changed` に置き換わります。これは意図的で、「リクエストが失敗した」より「エンジン状態を汚した」の方が重い障害だからです。ここを「元の例外を優先」に直すと、状態漏れが失敗の陰に隠れます。第二に、比較が寛容な近似ではなく `OrderedJson` の完全一致であることです。previewは [`prepareEditorPreviewProjection()`](../../src/core/loader/editorpreviewprojection.cpp#L756) が `stage()` した文書を**公開しない**ことで成立していて、浮動小数1ビットの差でも「どこかで公開してしまった」の証拠になります。
 >
 > **骨子**:
 > ```text
@@ -1048,7 +1097,7 @@ package の文書が壊れていれば `available: false` + `unavailable_reason`
 
 ### `get_status` の応答
 
-[`get_status`](../../src/core/communication/rpcserver.cpp#L1511) は診断のハブです。既存の `reload.runtime.pelican.shaders.details`(第6章 6.10)に加え、次が載ります。
+[`get_status`](../../src/core/communication/rpcserver.cpp#L1584) は診断のハブです。既存の `reload.runtime.pelican.shaders.details`(第6章 6.10)に加え、次が載ります。
 
 | キー | 内容 |
 |---|---|
@@ -1060,6 +1109,8 @@ package の文書が壊れていれば `available: false` + `unavailable_reason`
 | `modules` | `{phase, creation_frozen, initialized, dependencies, initialized_after_runtime_start}` |
 | `color` | `{contract: 2, swapchain_format, path, readback_encoding, capture}` |
 | `startup` | 起動フェーズごとの所要 ms と shader cache hit 率 |
+| `reload` | 既存の field に加えて、✅HW-1 の `watch`(`project.json` の `hot_reload` を正規化した配列。宣言が無ければ `null`)と、✅FW-1 の累計 `scans` / `hashed_files` / `hashed_bytes`([status を組む所](../../src/core/watch/reloadservice.cpp#L1437))。`hashed_files` が増えていなければ、走査は size と更新時刻を比べただけで終わっています(manual 第10章 §10.5)。✅AV-1 の `PELICAN_WITH_HOT_RELOAD=OFF` の build では watcher が無く、`state: "disabled"`・`error: "hot reload build disabled"` |
+| `assets_verification` | ✅AV-1。起動時の asset 検証の要約 `{state: "verified", stores, matched, info, warnings, errors}` / `{state: "not_run", reason}` / `{state: "running"}`([`internal::assetsVerificationStatusJson()`](../../src/core/communication/rpcserver.cpp#L1470) → [`AssetsVerification::statusJson()`](../../src/core/loader/assetsverification.cpp#L204))。`not_run` の理由は `"no asset store declares a manifest"` / `"PELICAN_WITH_HOT_RELOAD=OFF"` / `"this host does not verify assets"`(module の無い host)。全件は `get_assets_verification`(manual 第10章 §10.3、[第3章](03_project_and_loading.md) §3.4) |
 
 ### `step_frame` と `render_frame` の違い
 
@@ -1070,14 +1121,14 @@ package の文書が壊れていれば `available: false` + `unavailable_reason`
 - `set_time` → `render_frame` は、任意時刻を sampling/capture する用途です。
 - `inject_input` → `step_frame` は、入力がその frame の game system へ届く標準経路です。
 
-transform update も即適用ではなく pending です。複数 update をまとめてから `step_frame` / `render_frame` の境界で [`flushPendingTransforms()`](../../src/core/communication/rpcserver.cpp#L770) します。
+transform update も即適用ではなく pending です。複数 update をまとめてから `step_frame` / `render_frame` の境界で [`flushPendingTransforms()`](../../src/core/communication/rpcserver.cpp#L775) します。
 
 ### protocol 上の注意
 
 - stdout は JSON-RPC 専用です。通常 log を stdout へ混ぜると client の1行 protocol を壊します。
 - `capture` は headless の `OffscreenFrameTarget` に加え、windowed でも surface が TRANSFER_SRC を持てば readback 可能です([`swapchainframetarget.cpp` 内](../../src/core/vkcore/swapchainframetarget.cpp#L449))。不可の場合は `capture unavailable_windowed` エラーになります。
 - `inject_event` は名前で登録された event type にだけ届きます。payload は登録型の binder が解釈します。
-- method handler の通常例外は application error `-32000` に正規化されます。[`RpcServer::handleLine()` の `std::exception` catch](../../src/core/communication/rpcserver.cpp#L1211) を参照してください。`JsonRpcHandlerError` を投げれば code と構造化 `data` を指定できます。
+- method handler の通常例外は application error `-32000` に正規化されます。[`RpcServer::handleLine()` の `std::exception` catch](../../src/core/communication/rpcserver.cpp#L1216) を参照してください。`JsonRpcHandlerError` を投げれば code と構造化 `data` を指定できます。
 - windowed RPC ではリクエストが **フレーム境界でしか処理されません**。queue 容量 64 を超えた分は reader スレッドが `-32000` / `data.reason == "busy"` で即答します。落とし穴は [第9章](09_black_magic_and_gotchas.md)にまとめてあります。
 
 ## 7.8 テスト構成: test を実装の仕様書として読む
@@ -1099,7 +1150,9 @@ cmake_parse_arguments(PELICAN_TEST
 
 > Golden GPU fixtures are part of the one GPU serialization domain.
 
-`RESOURCE_LOCK` が直列化するのは 1 つの `ctest` 実行の中だけなので、process を跨ぐ側は launcher が持ちます。`gpu` label の付いた CTest は [`pelican_gpu_lease_run`](../../test/CMakeLists.txt#L27) 経由で起動され(Catch2 が discover した分は build 後に [`add_test()` 行を書き換える](../../test/patch_catch_gpu_lease_tests.cmake#L89)、手書き `add_test()` は `COMMAND` に直接書く — [launcher を渡す箇所](../../test/CMakeLists.txt#L241))、この launcher が Windows では `Global\` 名前空間の machine-wide mutex を取ります([lease 本体](../../test/gpu_lease_run.cpp#L157))。待ち時間が締め切りを越えたら skip ではなく `gpu_lease_timeout@1{holder_pid=...}` / exit 124 の失敗で、CTest の `TIMEOUT` は `lease_timeout_max + intrinsic + grace` で生成されます(数値の出所は [`gpu_lease_config.cmake`](../../test/gpu_lease_config.cmake#L3) の 1 箇所)。この lease があるので、別 worktree の `ctest` を同時に走らせても GPU は 1 プロセスずつ使われます([`tools/worktree.sh`](../../tools/worktree.sh#L2) が worktree ごとの build と manifest 検査を担当します)。
+`RESOURCE_LOCK` が直列化するのは 1 つの `ctest` 実行の中だけなので、process を跨ぐ側は launcher が持ちます。`gpu` label の付いた CTest は [`pelican_gpu_lease_run`](../../test/CMakeLists.txt#L27) 経由で起動され(Catch2 が discover した分は build 後に [`add_test()` 行を書き換える](../../test/patch_catch_gpu_lease_tests.cmake#L89)、手書き `add_test()` は `COMMAND` に直接書く — [launcher を渡す箇所](../../test/CMakeLists.txt#L241))、この launcher が Windows では `Global\` 名前空間の machine-wide mutex を取ります([lease 本体](../../test/gpu_lease_run.cpp#L229))。待ち時間が締め切りを越えたら skip ではなく `gpu_lease_timeout@1{holder_pid=...}` / exit 124 の失敗で、CTest の `TIMEOUT` は `lease_timeout_max + intrinsic + grace` で生成されます(数値の出所は [`gpu_lease_config.cmake`](../../test/gpu_lease_config.cmake#L3) の 1 箇所)。この lease があるので、別 worktree の `ctest` を同時に走らせても GPU は 1 プロセスずつ使われます([`tools/worktree.sh`](../../tools/worktree.sh#L2) が worktree ごとの build と manifest 検査を担当します)。
+
+✅TS-1 から、この launcher は子を起こす前に shader の disk cache の置き場も決めます。[`prepare_shader_cache_directory()`](../../test/gpu_lease_run.cpp#L136) は、`PELICAN_SHADER_CACHE_DIR` が未設定なら `%LOCALAPPDATA%/pelican/test_shader_cache` を作って設定します(既に設定されていれば触らず、作れなければ設定しません)。GPU テストは毎回新しい temp project を作るので、それまでは `.pelican/shader_cache` が毎回空から始まっていました。環境変数は子へ継承されるので、`test/CMakeLists.txt` を変えずに、全 GPU テストと Studio のシナリオが起こす player が 1 つの cache を共有します。cache そのものを数えるテスト(`WP366 renderer A B recovers q r group miss…`)は、テストの中でこの変数を外します。✅TS-2 から、自分で directory を決めて設定したときだけ、続けて [`sweep_shader_cache_directory()`](../../test/gpu_lease_run.cpp#L101) が 1 日 1 回(印のファイル `last_sweep.stamp` の更新時刻で判定)、直下の regular file のうち 14 日書かれていないものを消します(失敗は例外も含めて全部無視。cache の hit は更新時刻を変えないので、使っている entry も 14 日ごとに compile し直されます。test は `gpu_lease_runtime` の case `shader_cache_sweep`)。鍵の作りは第6章の disk cache の節、置き場の説明は manual 第10章にあります。
 
 登録経路は 3 本あり、label が違います。
 
@@ -1107,7 +1160,7 @@ cmake_parse_arguments(PELICAN_TEST
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L3749) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L3834) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 
@@ -1115,7 +1168,7 @@ cmake_parse_arguments(PELICAN_TEST
 
 | 段階 | 例 | 何を保証するか |
 |---|---|---|
-| pure parser/value | [`sceneformat_test.cpp`](../../test/sceneformat_test.cpp#L121)、[`materialformat_test.cpp`](../../test/materialformat_test.cpp#L104)、[`jsonrpc_test.cpp`](../../test/jsonrpc_test.cpp#L33) | schema、型変換、error 文言。GPU 不要 |
+| pure parser/value | [`sceneformat_test.cpp`](../../test/sceneformat_test.cpp#L121)、[`materialformat_test.cpp`](../../test/materialformat_test.cpp#L104)、[`jsonrpc_test.cpp`](../../test/jsonrpc_test.cpp#L38) | schema、型変換、error 文言。GPU 不要 |
 | subsystem unit | [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L204)、[`inputstate_test.cpp`](../../test/inputstate_test.cpp#L9)、[`deletionqueue_test.cpp`](../../test/deletionqueue_test.cpp#L30) | lifecycle、generation、frame 境界、遅延破棄 |
 | headless runtime | [`headless_render_test.cpp`](../../test/headless_render_test.cpp#L100)、[`vulkan_headless_test.cpp`](../../test/vulkan_headless_test.cpp#L13) | window なし Vulkan、render/readback |
 | process integration | [`run_rpc_headless.cmake`](../../test/run_rpc_headless.cmake#L1)、[`run_compute_headless.cmake`](../../test/run_compute_headless.cmake#L1)、devcli scripts | 実 executable、stdin/stdout、filesystem、終了 code |
@@ -1128,11 +1181,12 @@ cmake_parse_arguments(PELICAN_TEST
 | VRM | `vrmsemantic_test` / `vrmapplication_test` / `vrmfirstperson_test` / `vrm_xr_demo_test` |
 | animation | `animgraph_test` / `skeletalanimation_test` / `animation_abi_dll_test`(DLL ABI fixture) |
 | temporal / 描画 | `temporal_test` / `taa_resolve_test` / `color_pipeline_test` / `shader_cache_test` / `texturereload_test` / `surfacecompiler_test` / `spvlink_test` |
+| ファイル監視 | `filewatcher_test`(`[wp96]` の状態機械に加えて、✅FW-1 の「起動時は hash しない」「書き換えた 1 個だけ hash する」「`.pelican` は走査しない」、✅HW-1 の「宣言した folder と file だけを成分ごとに当てる」「宣言があれば RPC 駆動でも監視が開く」)/ `reloadtransaction_test`(RPC 駆動中は監視の変更が render pipeline の participant に届かない)/ `texturereload_test`(GPU。宣言の中の texture は反映され、外は反映されない)/ `shader_cache_test`(✅TS-1 の共有 cache と、project の場所に依らない鍵) |
 | render target / plan | `targetplanning_test` / `renderingsamplecount_test`(いずれも GPU 不要)。WP238e の実 Vulkan command 記録は [`headless_native_scope_test.cpp`](../../test/headless_native_scope_test.cpp) だが、実行体は `headless_render_test` に混ざる(CTest 名は TEST_CASE 名 `WP238e NativeScope records Vulkan commands and rebuilds through renderer generations`。下記) |
 | 2D / UI | `sprite_foundation_test` / `ui_foundation_test` |
 | event | `eventpayloadschema_test` + compile-time fixture([`run_event_schema_compile.cmake`](../../test/run_event_schema_compile.cmake)) |
 | process integration | [`run_game_logic_reload.ps1`](../../test/run_game_logic_reload.ps1) / [`run_input_record_replay_headless.cmake`](../../test/run_input_record_replay_headless.cmake) / [`run_vrm_xr_demo_rpc.cmake`](../../test/run_vrm_xr_demo_rpc.cmake) / [`run_spvlink_golden.cmake`](../../test/run_spvlink_golden.cmake) / run_devcli_{bake_camera, vrm_dump, rules_import, gltf_extract}.cmake |
-| editor RPC | `editorcommandservice_test` / `editorjournal_test` / `editorpreview_test` / `editorpreviewprojection_test` / `editorprojectiontransaction_test` / `componentcodec_test` / `windowedrpchost_test` / `renderconfigeditor_test`(render config・graph・共有部品の RPC。N-2 の定義 scope 編集と P-2a-4a の節 locator もここ。**package は入っていません** —— このファイルに `package` の語は 1 つもなく、manifest 側は [`packagemanifest_test`](../../test/CMakeLists.txt#L3064)、install の e2e は `package_install_smoke` が持ちます) |
+| editor RPC | `editorcommandservice_test` / `editorjournal_test` / `editorpreview_test` / `editorpreviewprojection_test` / `editorprojectiontransaction_test` / `componentcodec_test` / `windowedrpchost_test` / `renderconfigeditor_test`(render config・graph・共有部品の RPC。N-2 の定義 scope 編集と P-2a-4a の節 locator もここ。**package は入っていません** —— このファイルに `package` の語は 1 つもなく、manifest 側は [`packagemanifest_test`](../../test/CMakeLists.txt#L3107)、install の e2e は `package_install_smoke` が持ちます) |
 | Studio(Studio の target がある build にだけ登録。`SKIP_DEVSTUDIO=ON` では**存在しません**) | `devstudio_viewport_test` / `devstudio_outliner_test` / `devstudio_inspector_test` / `devstudio_gizmo_test` / `devstudio_layoutpreset_test` / `devstudio_frameplan_test` / `devstudio_frameplan_graph_test` / `devstudio_fullscreen_pass_test` / `devstudio_pass_forms_test`(✅UX-4a)/ `devstudio_rendering_settings_test`(✅RSX)/ `devstudio_graphattachment_test` / `devstudio_graphcanvas_test` / `devstudio_graphcanvas_scene_test` / `devstudio_nodelayout_test` / `devstudio_automation_input_test` / `devstudio_engine_failure_test`(GPU)/ `studio_scenario_*`(GPU。`test/studio_scenarios/*.json` 1 本ごとに 1 つで、2026-10-02 の develop では 49 本。Studio targetとPython製テスト有効時だけ)。何を固定するかは §7.6 の表。**`devstudio_d0_boundary_negative` だけは Studio の target 無しでも登録されます**(§7.6) |
 | ImGui panel | `assetbrowser_test` / `inspector_test`(`PELICAN_WITH_IMGUI` 時のみ) |
 | behavior | `behaviorarena_test` / `behavior_determinism_four_processes`(4 プロセス) / [`run_behavior_dll_reload.ps1`](../../test/run_behavior_dll_reload.ps1)(9 ケース) / [`run_behavior_project.ps1`](../../test/run_behavior_project.ps1) |
@@ -1145,7 +1199,7 @@ cmake_parse_arguments(PELICAN_TEST
 | 物理 | [`run_physics_trigger_behavior.ps1`](../../test/run_physics_trigger_behavior.ps1)(`physics_trigger_behavior_e2e`、GPU ラベル) |
 | CLI | `processrunner_test` / [`run_devcli_import_process.cmake`](../../test/run_devcli_import_process.cmake) / [`run_preset_project_headless.cmake`](../../test/run_preset_project_headless.cmake)(§7.2) / [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(§7.5c。catalog と `docs/v0_freeze.md` の表の照合を含む) |
 | package(X-1) | `packagemanifest_test`(manifest の純粋 parser と digest)/ `package_install_smoke`(**`PELICAN_WITH_RPC` のときだけ登録**。GPU lease + 300 秒。install → catalog → `edit_render_features` → 描画 → uninstall を実 player で)/ ctest 未登録の [`run_package_template_smoke.cmake`](../../test/run_package_template_smoke.cmake)(package の code を含む一時 project を configure から build。`-DPELICAN_PACKAGE_TEMPLATE_SMOKE_DEPS=<primary>/build/_deps` で primary の依存ソースを借ります) |
-| project corpus | ctest 名 [`project_catalog_headless_smoke`](../../test/CMakeLists.txt#L3571)、実装は [`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(登録は `if(TARGET pelican_test_studio_player_arguments)` の中 = **`SKIP_DEVSTUDIO=ON` では存在しません**。`PELICAN_TEST_PROJECTS_DIR` が空なら skip。出荷 project の走査。`project.json` の `requires` を満たせない project は**名前を出して skip** し、player の中で落ちません) |
+| project corpus | ctest 名 [`project_catalog_headless_smoke`](../../test/CMakeLists.txt#L3655)、実装は [`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(登録は `if(TARGET pelican_test_studio_player_arguments)` の中 = **`SKIP_DEVSTUDIO=ON` では存在しません**。`PELICAN_TEST_PROJECTS_DIR` が空なら skip。出荷 project の走査。`project.json` の `requires` を満たせない project は**名前を出して skip** し、player の中で落ちません) |
 | RPC | [`test/pelican_rpc_smoke.py`](../../test/pelican_rpc_smoke.py) / [`run_rpc_scene_flow_normalization_fixtures.cmake`](../../test/run_rpc_scene_flow_normalization_fixtures.cmake) + `test/fixtures/rpc_scene_flow/*.ndjson` |
 | 契約 gate | [`test/contract_boundary_gate.py`](../../test/contract_boundary_gate.py) + [`test/ci/test_contract_boundary_gate.py`](../../test/ci/test_contract_boundary_gate.py)(fixture: `test/fixtures/contract0/*.json`) |
 | CI gate 自体 | [`test/ci/test_skip_policy.py`](../../test/ci/test_skip_policy.py)(CTest 名 `ci_skip_policy_unit`)/ [`test/ci/test_golden_inventory.py`](../../test/ci/test_golden_inventory.py)(同 `golden_inventory_negative_fixtures`)。§7.9 の gate 自身を検査する |
@@ -1168,10 +1222,10 @@ cmake_parse_arguments(PELICAN_TEST
 | action map と layer consumption | [`inputactions_test.cpp`](../../test/inputactions_test.cpp#L107) |
 | project/path/security | [`projectconfig_test.cpp`](../../test/projectconfig_test.cpp#L188)、[`pathresolver_test.cpp`](../../test/pathresolver_test.cpp#L157) |
 | physics の幾何と world binding | [`physquery_test.cpp`](../../test/physquery_test.cpp#L112)、[`physworld_test.cpp`](../../test/physworld_test.cpp#L55) |
-| frame graph の順序/異常系 | [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp#L278) |
+| frame graph の順序/異常系 | [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp#L279) |
 | rendering JSON | [`renderingpass_helpers_test.cpp`](../../test/renderingpass_helpers_test.cpp#L21) |
 | shader compile/reflection/reload | [`shader_compiler_reflection_test.cpp`](../../test/shader_compiler_reflection_test.cpp#L34)、[`shader_library_test.cpp`](../../test/shader_library_test.cpp#L94) |
-| feature composition | [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp#L370) |
+| feature composition | [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp#L372) |
 | persistence の atomic save/path | [`persistence_test.cpp`](../../test/persistence_test.cpp#L81) |
 
 ### Golden image test
@@ -1187,7 +1241,7 @@ WP174 / TEST0 で `golden_image_test.cpp` は **分割・廃止** されまし�
 | [`golden_ssao_test`](../../test/golden_ssao_test.cpp) | [`runSsaoFlatGolden()`](../../test/golden_harness.hpp#L38) 以下、SSAO の flat / XR sequential / XR multiview / cube / planar |
 | [`golden_ssao_blur_test`](../../test/golden_ssao_blur_test.cpp) | [`runSsaoBlurFlatOracle()`](../../test/golden_harness.hpp#L47) 以下、SSAO blur の oracle 比較 |
 
-`test/CMakeLists.txt` の [`pelican_golden_test_sources`](../../test/CMakeLists.txt#L1995) がこの 6 本を列挙し、全て `pelican_define_test(... GROUP golden_runtime GOLDEN GPU RUNTIME_SHADER pelican_golden_harness)` で登録されます。`GOLDEN` は `RESOURCE_LOCK pelican_gpu` を付けます([付与箇所](../../test/CMakeLists.txt#L177)。WP385 の統合前は `pelican_golden_gpu` という別名でした)。なお `golden_bloom_upsample_test` だけは `GROUP golden_bloom_upsample_runtime` の別登録で、このリストには入りません([登録](../../test/CMakeLists.txt#L2010))。
+`test/CMakeLists.txt` の [`pelican_golden_test_sources`](../../test/CMakeLists.txt#L2022) がこの 6 本を列挙し、全て `pelican_define_test(... GROUP golden_runtime GOLDEN GPU RUNTIME_SHADER pelican_golden_harness)` で登録されます。`GOLDEN` は `RESOURCE_LOCK pelican_gpu` を付けます([付与箇所](../../test/CMakeLists.txt#L177)。WP385 の統合前は `pelican_golden_gpu` という別名でした)。なお `golden_bloom_upsample_test` だけは `GROUP golden_bloom_upsample_runtime` の別登録で、このリストには入りません([登録](../../test/CMakeLists.txt#L2037))。
 
 inventory の各 case は labels off / on を 1 回ずつ描き、off の同じ `RenderedCase` から画像・hash・trace を検証します。labels の byte 不変条件は全 case で維持され、TAA と GPU timing の独立した決定性テストは別実行のままです。
 
@@ -1388,7 +1442,7 @@ with PelicanRpc("projects/example") as rpc:
 
 engine 内蔵の開発者 UI に、読み取り専用の [`AssetBrowserPanel`](../../src/core/imgui/assetbrowser.hpp#L36) と schema 駆動の [`InspectorPanel`](../../src/core/imgui/inspector.hpp#L167) が加わりました。表示は `ImGuiSystem` のメニュー `Asset Browser` / `Inspector` から切り替えます([`imguisystem.cpp` 内](../../src/core/imgui/imguisystem.cpp#L373))。
 
-> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L497) が用意されています。コメントが規範です。
+> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L530) が用意されています。コメントが規範です。
 >
 > The ImGui WP consumes the same typed service. This fake is deliberately kept
 > free of ImGui headers so equivalence is testable in the CPU-only suite.
@@ -1406,7 +1460,7 @@ return !config.headless && !config.rpc && !config.input_replay && !config.golden
        !config.xr_active;
 ```
 
-つまり **`--rpc` を付けた windowed セッションでは ImGui UI(したがって inspector)は動きません**。排他の実体は「リクエストを処理する間だけ UI を止める」「stdin 読み取りでブロックする」といった実行時の調停ではなく、**config を見るだけの一枚のゲート**です。同じ述語は frame graph の合成時にも通るため([`renderingpassconfigregistration.cpp` 内](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L213))、`--rpc` のセッションには `imgui_pass` がそもそも合成グラフに入りません。実行時も [`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L80) が毎フレーム同じ述語を評価し、偽なら `ImGuiSystem` を frame state に載せないので、パネルの callback は一度も呼ばれません。ヘッダのコメント「Deterministic drivers therefore skip callbacks, instead of running an invisible ImGui frame.」がこの並び(headless / rpc / replay / golden)の意図です。ゲートが**実行中に**閉じうるのは XR activation と replay 開始で、そのとき開始済みの ImGui フレームは `endFrameIfStarted()` で閉じられます。XR を除外している理由だけは別で、実装側のコメントにあるとおり「XR グラフに ImGui pass が無いので、開始した ImGui フレームに対応する Render/EndFrame が無くなる」ためです。
+つまり **`--rpc` を付けた windowed セッションでは ImGui UI(したがって inspector)は動きません**。排他の実体は「リクエストを処理する間だけ UI を止める」「stdin 読み取りでブロックする」といった実行時の調停ではなく、**config を見るだけの一枚のゲート**です。同じ述語は frame graph の合成時にも通るため([`renderingpassconfigregistration.cpp` 内](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L251))、`--rpc` のセッションには `imgui_pass` がそもそも合成グラフに入りません。実行時も [`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L80) が毎フレーム同じ述語を評価し、偽なら `ImGuiSystem` を frame state に載せないので、パネルの callback は一度も呼ばれません。ヘッダのコメント「Deterministic drivers therefore skip callbacks, instead of running an invisible ImGui frame.」がこの並び(headless / rpc / replay / golden)の意図です。ゲートが**実行中に**閉じうるのは XR activation と replay 開始で、そのとき開始済みの ImGui フレームは `endFrameIfStarted()` で閉じられます。XR を除外している理由だけは別で、実装側のコメントにあるとおり「XR グラフに ImGui pass が無いので、開始した ImGui フレームに対応する Render/EndFrame が無くなる」ためです。
 
 テストは [`test/assetbrowser_test.cpp`](../../test/assetbrowser_test.cpp) と [`test/inspector_test.cpp`](../../test/inspector_test.cpp) です。
 

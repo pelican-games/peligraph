@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "graph_from_blank",
-  "description": "GL-1d: a render pass built in the Graph from nothing. From a Blank project, the Graph tab's Add opens the palette; the filter narrows it to render.material_pass, the contract combo picks deferred_geometry_v1, and Enter adds it. The pass arrives drawing: in the same list, its images, a draw_loop render_material_pass_draws over its draw items and that loop's body render_material_pass_draw, whose one step is draw.material, feeding the pass's draws -- the shape decompose_material_pass writes. After the engine takes it (restarting if it asks to, RS-1), the root canvas draws the pass beside the loop's zone with draw.material inside it, the frame plan runs the loop as a draw_loop, and the Frame Plan tab lists the pass.",
+  "description": "GL-1d: a render pass built in the Graph from nothing. From a Blank project, the Graph tab's Add opens the palette; the filter narrows it to render.material_pass, the contract combo picks deferred_geometry_v1, and Enter adds it. The pass arrives drawing: in the same list, its images, a draw_loop render_material_pass_draws over its draw items and that loop's body render_material_pass_draw, whose one step is draw.material, feeding the pass's draws -- the shape decompose_material_pass writes. After the engine takes it (restarting if it asks to, RS-1), the root canvas draws the pass beside the loop's zone with draw.material inside it, the frame plan runs the loop as a draw_loop, and the Frame Plan tab lists the pass. UX-11: picked, the pass shows the Pass Editor's material settings and attachment rows beside the canvas -- its Tags a picker, albedo's Load set to Clear there writes the pass's color_load_op -- and its Materials drawn list, whose first row brings the Frame Plan's Materials forward.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -220,6 +220,93 @@
       "expect": "screenshot",
       "name": "pelican.graphCanvas",
       "path": "graph_from_blank.png"
+    },
+    {
+      "label": "UX-11: pick the material pass",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#render_material_pass"
+    },
+    {
+      "label": "decision 1: its attachments are the Pass Editor's rows, a colour row per G-buffer socket and depth",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasMaterial.depthLoad",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and its Tags are a picker, no line of names",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasMaterial.materialFilter.include",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "albedo's Load: Clear",
+      "cmd": "select",
+      "name": "pelican.graphCanvasMaterial.outputLoad.0",
+      "text": "Clear"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the pass clears its colour attachments",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[7].parameters.color_load_op",
+      "value": "clear",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and still draws with its contract",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[7].parameters.material_contract",
+      "value": "deferred_geometry_v1"
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "decision 4: Materials drawn is listed beside it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasMaterial.drawn",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "a picture of the material pass's fields",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_from_blank_material_fields.png"
+    },
+    {
+      "label": "its first row opens the Frame Plan's Materials",
+      "cmd": "select",
+      "name": "pelican.graphCanvasMaterial.drawn",
+      "index": 0
+    },
+    {
+      "label": "the Frame Plan's Materials are in front",
+      "cmd": "wait",
+      "name": "pelican.framePlanMaterials",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "back to the Frame Plan's logical graph",
+      "cmd": "action",
+      "name": "pelican.framePlan.tab.logical-graph"
     },
     {
       "label": "the Frame Plan tab is in front",

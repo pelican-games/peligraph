@@ -8,6 +8,7 @@ target_sources(pelican_core PRIVATE
     fileio.cpp
     imageloader.cpp
     ktx2.cpp
+    sampletable.cpp
     pathresolver.cpp
     renderconfigcandidate.cpp
     projectsrc.cpp

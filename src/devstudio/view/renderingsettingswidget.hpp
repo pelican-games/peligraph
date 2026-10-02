@@ -19,10 +19,16 @@ class RenderConfigDigest;
 // root's `rendering` section that no other panel writes, each as a field
 // (EL-3's edit_rendering_keys). draw_sort, render_strategy, resolver_version
 // and multisampling are chosen from a list; shader_defines is a table of
-// names and values (UX-4a's ShaderDefinesForm); snapshots, graph_transforms
-// and xr are JSON for now. A change sends one edit_rendering_keys with the
-// key in `set` (each value whole), or in `remove` when the field goes back to
-// the engine's default.
+// names and values (UX-4a's ShaderDefinesForm); graph_transforms is JSON for
+// now. UX-10: snapshots are rows (a name, where it is taken, x, and + while
+// there is none: v1 takes one), xr's view_execution is a combo with the
+// whole xr as JSON under Advanced, and material_route_default (Auto /
+// Forward) is sent as set_material_route_default. UX-10, decision 7:
+// draw_sort's and render_strategy's entries are made from
+// get_registered_providers (asked with each read; a game's provider is
+// marked), the fixed ones kept for an engine without it. A change sends one
+// edit_rendering_keys with the key in `set` (each value whole), or in
+// `remove` when the field goes back to the engine's default.
 //
 // The values are read from the root itself (get_render_documents, the
 // document whose kind is "root"). A root that selects a preset takes neither

@@ -95,11 +95,13 @@ std::uint64_t exactUnsigned(const nlohmann::json &value,
 }
 
 const std::string &requiredNonemptyString(const nlohmann::json &object,
-                                          std::string_view field) {
+                                          std::string_view field,
+                                          std::string_view label) {
     const auto found = object.find(field);
     if (found == object.end() || !found->is_string() ||
         found->get_ref<const std::string &>().empty()) {
-        throw std::runtime_error("scene_tree requires non-empty string " +
+        throw std::runtime_error(std::string{label} +
+                                 " requires non-empty string " +
                                  std::string{field});
     }
     return found->get_ref<const std::string &>();
@@ -214,59 +216,81 @@ ProjectOutlinerModel::open(const std::filesystem::path &project_path,
     return model;
 }
 
+bool ProjectOutlinerModel::updateSceneOutline(
+    const nlohmann::json &scene_outline) {
+    return updateScene(scene_outline, true);
+}
+
 bool ProjectOutlinerModel::updateSceneTree(
     const nlohmann::json &scene_tree) {
-    if (!scene_tree.is_object()) {
-        throw std::runtime_error("scene_tree result must be an object");
+    return updateScene(scene_tree, false);
+}
+
+bool ProjectOutlinerModel::updateScene(const nlohmann::json &reply,
+                                       bool parents_by_id) {
+    const std::string label = parents_by_id ? "scene_outline" : "scene_tree";
+    if (!reply.is_object()) {
+        throw std::runtime_error(label + " result must be an object");
     }
-    const auto revision_value = scene_tree.find("scene_revision");
-    if (revision_value == scene_tree.end()) {
-        throw std::runtime_error("scene_tree requires scene_revision");
+    const auto revision_value = reply.find("scene_revision");
+    if (revision_value == reply.end()) {
+        throw std::runtime_error(label + " requires scene_revision");
     }
     const auto revision = exactUnsigned(*revision_value, "scene_revision",
                                         true);
-    const auto scene_id = requiredNonemptyString(scene_tree, "scene_id");
-    const auto objects_value = scene_tree.find("objects");
-    if (objects_value == scene_tree.end() || !objects_value->is_array()) {
-        throw std::runtime_error("scene_tree requires objects array");
+    const auto scene_id = requiredNonemptyString(reply, "scene_id", label);
+    const bool held = scene_revision_ && *scene_revision_ == revision &&
+                      findScene(scene_id) != nullptr;
+    if (parents_by_id) {
+        const auto not_modified = reply.find("not_modified");
+        if (not_modified != reply.end() && !not_modified->is_boolean()) {
+            throw std::runtime_error(label + " not_modified must be a boolean");
+        }
+        if (not_modified != reply.end() && not_modified->get<bool>()) {
+            // UX-13c: the poll's answer for the revision Studio asked about.
+            if (!held) {
+                throw std::runtime_error(
+                    label + " is not_modified for a revision Studio does not hold");
+            }
+            return false;
+        }
     }
-
-    if (scene_revision_ && *scene_revision_ == revision &&
-        std::any_of(scenes_.begin(), scenes_.end(),
-                    [&scene_id](const auto &scene) {
-                        return scene.scene_id == scene_id;
-                    })) {
-        return false;
+    const auto objects_value = reply.find("objects");
+    if (objects_value == reply.end() || !objects_value->is_array()) {
+        throw std::runtime_error(label + " requires objects array");
     }
+    if (held) return false;
 
     struct RpcObject {
         std::size_t declaration_index = 0;
         std::uint64_t authoring_object_id = 0;
         std::string name;
         std::optional<std::string> parent;
+        std::optional<std::uint64_t> parent_id;
     };
     std::vector<std::optional<RpcObject>> ordered(objects_value->size());
     std::unordered_map<std::string, std::size_t> named_indices;
+    std::unordered_map<std::uint64_t, std::size_t> id_indices;
     for (const auto &value : *objects_value) {
         if (!value.is_object()) {
-            throw std::runtime_error("scene_tree object entry must be an object");
+            throw std::runtime_error(label + " object entry must be an object");
         }
         const auto index_value = value.find("declaration_index");
         const auto id_value = value.find("authoring_object_id");
         if (index_value == value.end() || id_value == value.end()) {
             throw std::runtime_error(
-                "scene_tree object requires declaration_index and authoring_object_id");
+                label + " object requires declaration_index and authoring_object_id");
         }
         const auto index64 = exactUnsigned(*index_value,
                                            "declaration_index");
         if (index64 >= ordered.size()) {
             throw std::runtime_error(
-                "scene_tree declaration indices must be contiguous");
+                label + " declaration indices must be contiguous");
         }
         const auto index = static_cast<std::size_t>(index64);
         if (ordered[index]) {
             throw std::runtime_error(
-                "scene_tree declaration_index is duplicated");
+                label + " declaration_index is duplicated");
         }
         RpcObject object{
             .declaration_index = index,
@@ -276,19 +300,32 @@ bool ProjectOutlinerModel::updateSceneTree(
         if (const auto name = value.find("name"); name != value.end()) {
             if (!name->is_string() || name->get_ref<const std::string &>().empty()) {
                 throw std::runtime_error(
-                    "scene_tree object name must be a non-empty string");
+                    label + " object name must be a non-empty string");
             }
             object.name = name->get<std::string>();
             if (!named_indices.emplace(object.name, index).second) {
                 throw std::runtime_error(
-                    "scene_tree object name is duplicated");
+                    label + " object name is duplicated");
             }
         }
-        if (const auto parent = value.find("parent"); parent != value.end()) {
+        if (parents_by_id) {
+            if (!id_indices.emplace(object.authoring_object_id, index).second) {
+                throw std::runtime_error(label + " authoring_object_id is duplicated");
+            }
+            const auto parent = value.find("parent_authoring_object_id");
+            if (parent == value.end()) {
+                throw std::runtime_error(
+                    label + " object requires parent_authoring_object_id");
+            }
+            if (!parent->is_null()) {
+                object.parent_id = exactUnsigned(
+                    *parent, "parent_authoring_object_id", true);
+            }
+        } else if (const auto parent = value.find("parent"); parent != value.end()) {
             if (!parent->is_string() ||
                 parent->get_ref<const std::string &>().empty()) {
                 throw std::runtime_error(
-                    "scene_tree object parent must be a non-empty string");
+                    label + " object parent must be a non-empty string");
             }
             object.parent = parent->get<std::string>();
         }
@@ -301,7 +338,7 @@ bool ProjectOutlinerModel::updateSceneTree(
     for (std::size_t index = 0; index < ordered.size(); ++index) {
         if (!ordered[index]) {
             throw std::runtime_error(
-                "scene_tree declaration indices must be contiguous");
+                label + " declaration indices must be contiguous");
         }
         const auto &source = *ordered[index];
         OutlinerObject object{
@@ -310,11 +347,20 @@ bool ProjectOutlinerModel::updateSceneTree(
                 scene_id, source.authoring_object_id, source.name),
             .name = source.name,
         };
-        if (source.parent) {
+        // UX-13c: the parent by its authoring id (scene_outline) or by its
+        // name (scene_tree); either may be declared after the child.
+        if (source.parent_id) {
+            const auto parent = id_indices.find(*source.parent_id);
+            if (parent == id_indices.end()) {
+                throw std::runtime_error(
+                    label + " parent_authoring_object_id does not name an object");
+            }
+            object.parent_declaration_index = parent->second;
+        } else if (source.parent) {
             const auto parent = named_indices.find(*source.parent);
             if (parent == named_indices.end()) {
                 throw std::runtime_error(
-                    "scene_tree parent does not name an object");
+                    label + " parent does not name an object");
             }
             object.parent_declaration_index = parent->second;
         }

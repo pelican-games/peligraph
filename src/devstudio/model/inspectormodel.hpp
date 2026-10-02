@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
@@ -47,7 +48,30 @@ struct InspectorWidgetDescriptor {
     bool value_matches_schema = false;
     bool default_available = false;
     std::optional<std::uint64_t> behavior_attachment_handle;
+    // UX-10, decision 6 (engine SC-1): a field whose meaning depends on
+    // another field's value -- camera.controller's values on controller.type.
+    // `discriminant` names that field, `applies_to` the values it is read
+    // for, `required_for` the values it must be given for; `schema_default`
+    // is the wire's `default`, when it gives one.
+    std::string discriminant;
+    std::vector<std::string> applies_to;
+    std::vector<std::string> required_for;
+    nlohmann::json schema_default;
 };
+
+// UX-10, decision 6. Whether a field is shown among its component's fields:
+// one without a discriminant always is; one with one only while the
+// discriminant's value (authored, else its default) is in applies_to (an
+// empty applies_to: always).
+[[nodiscard]] bool inspectorFieldShown(const InspectorWidgetDescriptor &field,
+                                       const std::vector<InspectorWidgetDescriptor> &fields);
+// Shown, required for the discriminant's value, and not given (not
+// authored, or an empty string): the field is marked red.
+[[nodiscard]] bool inspectorFieldRequiredMissing(
+    const InspectorWidgetDescriptor &field, const std::vector<InspectorWidgetDescriptor> &fields);
+// An angle stored in radians (unit rad / radian, or a controller's yaw and
+// pitch) is shown in degrees: the factor from stored to shown, else 1.
+[[nodiscard]] double inspectorDisplayScale(const InspectorWidgetDescriptor &field);
 
 struct InspectorListDescriptor {
     std::string key;
@@ -160,6 +184,19 @@ quaternionFromEulerDegrees(const std::array<double, 3> &degrees);
 // True for the field whose value is shown as angles: transform.rotation.
 [[nodiscard]] bool isEulerRotationField(const InspectorWidgetDescriptor &descriptor);
 
+// UX-10, decision 2. A component's vec3 named `direction` (light.direction)
+// is shown as two angles in degrees, and its vec3 stays reachable as Raw:
+// the azimuth turns about +Y from +Z towards +X, in (-180, 180]; the
+// elevation is above the horizon, in [-90, 90] (negative points down). A
+// direction straight up or down has azimuth 0; a zero vector reads as
+// (0, 0). The vector made from angles is unit length.
+[[nodiscard]] bool isDirectionField(const InspectorWidgetDescriptor &descriptor);
+[[nodiscard]] std::array<double, 2> directionAnglesDegrees(const std::array<double, 3> &direction);
+[[nodiscard]] std::array<double, 3> directionFromAnglesDegrees(const std::array<double, 2> &angles);
+// And a vec3 (or vec4) named `color` (light.color, sprite_view.color) is a
+// swatch that opens the colour picker, beside its numbers.
+[[nodiscard]] bool isColorField(const InspectorWidgetDescriptor &descriptor);
+
 // How a built-in model reads in a list: "Cube (built-in)". Empty for a
 // reference that is not under engine://primitives/.
 [[nodiscard]] std::string builtinModelLabel(std::string_view reference);
@@ -183,6 +220,17 @@ modelReferenceChoices(std::string_view current,
 // The model ids of a list_assets result, in its order.
 [[nodiscard]] std::vector<std::string> modelAssetIds(const nlohmann::json &list_assets_result);
 
+// UX-10, decision 5: sprite_view.texture is picked from the textures
+// list_assets reports, as simplemodelview.model is from its models.
+[[nodiscard]] bool isTextureReferenceField(const InspectorWidgetDescriptor &descriptor);
+// The ids of one kind in a list_assets result, in its order.
+[[nodiscard]] std::vector<std::string> assetIdsOfKind(const nlohmann::json &list_assets_result,
+                                                      std::string_view kind);
+// What the texture field offers: the reported textures, then the authored
+// value when it is none of them (an atlas frame, "atlas#frame", stays).
+[[nodiscard]] std::vector<std::string> textureReferenceChoices(
+    std::string_view current, const std::vector<std::string> &engine_textures);
+
 // Q-6: a component the engine lists but this build (or this scene) cannot
 // take. get_component_add_candidates names why with a code
 // ("physics.module_unavailable@1"); a candidate whose default merely needs
@@ -202,8 +250,10 @@ modelReferenceChoices(std::string_view current,
 // preparing a graph edit arrives as render_pipeline_preflight_failed with
 // "audio.format_unsupported@1 {...}" as the message. Answers the table's
 // "<sentence> (<code>)", or empty when neither names a code Studio knows.
+// IA-1s, decision 6: `name_document` as for graphLoopRefusalDescription.
 [[nodiscard]] std::string knownRefusalDescription(std::string_view code,
-                                                  std::string_view message);
+                                                  std::string_view message,
+                                                  bool name_document = true);
 // LP-4a: the four view_select refusals (LP-Va) are sentences made from the
 // refusal's own fields -- the pass, the view family, the axis, and for a
 // value past the axis its value and length:
@@ -232,7 +282,34 @@ modelReferenceChoices(std::string_view current,
 // the fields beside the code, in `error_fields`, or in the message after the
 // code ("<code> {...}" as the engine writes it, or "<code>: {...}"). Answers
 // "<sentence> (<code>).", or empty for any other refusal.
-[[nodiscard]] std::string graphLoopRefusalDescription(const nlohmann::json &error);
+// IA-1s, decision 6 (engine CT-2): a graph.* refusal names the document its
+// node was written in (`document`) and, for a node of a definition body, the
+// definition (`definition`); with `name_document` they read as
+// "<sentence> (in definition <d> of <document>, <code>).", or "(in
+// <document>, <code>)." for a root node, the document without project://. A sentence that names a definition
+// of its own (graph.definition_*) is not given the other.
+[[nodiscard]] std::string graphLoopRefusalDescription(const nlohmann::json &error,
+                                                      bool name_document = true);
+// UX-12a: the fields of a refusal of `code` -- beside the code, relayed as
+// error_fields, or quoted after the code in the message of a broader one
+// ("<code> {...}"); nullopt when the error is no such refusal.
+[[nodiscard]] std::optional<nlohmann::json> graphRefusalFields(const nlohmann::json &error,
+                                                               std::string_view code);
+// A string field of a refusal's fields (`document`, `definition`); empty
+// when it has none. A `document` reads without its project:// (as the
+// project names it: "passes/main.json").
+[[nodiscard]] std::string graphRefusalSource(const nlohmann::json &fields,
+                                             std::string_view key);
+// AB-1s, decision 1 (engine AB-1): bake_audio_analysis's five refusals, one
+// sentence each from their fields --
+//   audio.analysis_settings_invalid@1 {field, reason, value}
+//   audio.analysis_busy@1             {out, ticket}
+//   audio.analysis_unavailable@1      {reason}
+//   audio.format_unsupported@1        {asset, out}
+//   audio.analysis_failed@1           {asset, out, message}
+// `error` as for graphLoopRefusalDescription. Answers "<sentence>
+// (<code>).", or empty for any other refusal.
+[[nodiscard]] std::string audioAnalysisRefusalDescription(const nlohmann::json &error);
 // UX-8, decision 13 (c) (engine CT-1): the engine could not read its
 // configuration at start and stopped. Its fatal line ("Pelican fatal error :
 // <message>") reads as "The engine stopped: <the code's sentence> in <file>.
@@ -240,7 +317,18 @@ modelReferenceChoices(std::string_view current,
 // the first known code the message carries, the file the last .json path it
 // names (the project's render documents when it names none). Empty when the
 // line carries no code Studio has a sentence for.
-[[nodiscard]] std::string engineStoppedSentence(std::string_view fatal_line);
+// UX-9, decision 5: the line the running engine writes names no file
+// ("Pelican fatal error : graph.port_field_missing@1 {...}"), so a file
+// the caller knows -- the render document the project names,
+// projectRenderDocument -- stands in for it before the fallback.
+// IA-1s, decision 6 (engine CT-2): a graph.* refusal's own `document` (and
+// `definition`, "in definition <d> of <document>") comes first; the .json
+// path in the message and then `render_document` only when it names none.
+[[nodiscard]] std::string engineStoppedSentence(std::string_view fatal_line,
+                                                std::string_view render_document = {});
+// The render document project.json names (basic_config.rendering_config_json,
+// as written there: "passes/main.json"); empty when it cannot be read.
+[[nodiscard]] std::string projectRenderDocument(const std::filesystem::path &project_root);
 // LP-0d: the graph variant (preview, XR) that refused an edit, named by
 // `variant` beside the code; empty when the main graph did. LP-4d2: always --
 // graph.loop_variant_missing@1 names the material's variant
@@ -328,7 +416,10 @@ class InspectorModel {
     std::vector<InspectorRpcRequest> takeRpcRequests();
     void receiveRpcResult(std::uint64_t request_id,
                           std::string_view result_json);
-    void receiveRpcFailure(std::uint64_t request_id, std::string message);
+    // `unknown_method`: the engine refused the method itself (JSON-RPC
+    // -32601), as one from before scene_outline does (UX-13c).
+    void receiveRpcFailure(std::uint64_t request_id, std::string message,
+                           bool unknown_method = false);
     void pollPendingOperations();
     void pollExternalChanges();
     // Whether either poll has anything to ask. A panel with no edit in flight
@@ -366,6 +457,9 @@ class InspectorModel {
     // with a simplemodelview is loaded); the revision moves with each answer.
     const std::optional<std::vector<std::string>> &modelAssets() const noexcept;
     std::uint64_t modelAssetsRevision() const noexcept;
+    // UX-10: the texture ids of the same answer (asked when an object with a
+    // sprite_view is loaded too); they move with the same revision.
+    const std::optional<std::vector<std::string>> &textureAssets() const noexcept;
     bool addComponent(std::string_view key);
     bool addComponent(std::string_view key, const nlohmann::json &declaration);
     // G-2: one `edit` carrying one `spawn` op, on the scene revision last

@@ -245,7 +245,7 @@ void configureScreenRayProject(const ScreenRaySandbox &sandbox) {
              {"engine_min_version", "0.1.0"},
              {"basic_config",
               {{"window_size", {{"width", 100}, {"height", 100}}},
-               {"camera", {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 1000.0}, {"up", {0.0, 1.0, 0.0}}}},
+               {"camera", {{"yfov", 0.5}, {"znear", 0.1}, {"zfar", 1000.0}}},
                {"default_scene_id", "main"},
                {"scene_data_json", "scene.json"}}}}
             .dump());

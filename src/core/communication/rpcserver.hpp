@@ -17,6 +17,7 @@
 namespace Pelican {
 
 class PhysWorld;
+class AssetsVerification;
 
 namespace watch {
 class ReloadService;
@@ -125,6 +126,13 @@ struct ShaderReloadRpcHooks {
 void configureShaderReloadRpcHandler(
     RpcServer &server, watch::ReloadService *reload_service,
     ShaderReloadRpcHooks hooks = {});
+
+// AV-1. get_status.assets_verification, and get_assets_verification /
+// verify_assets / update_assets_manifest. Shared by the engine endpoint and
+// the non-GPU wire test; a null verification is a host that never ran the
+// startup check.
+nlohmann::json assetsVerificationStatusJson(const AssetsVerification *verification);
+void configureAssetsVerificationRpcHandlers(RpcServer &server, AssetsVerification *verification);
 
 // Shared by the production load_scene handler and the non-GPU wire contract
 // test. The loader callback may throw a type-preserving resolution failure;

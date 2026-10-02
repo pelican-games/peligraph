@@ -12,6 +12,12 @@ namespace Pelican::watch {
 
 enum class ReloadGateReason : std::uint8_t { replay, strict_assets, rpc_driver };
 
+// HW-1: what project.json's `hot_reload` declares. `undeclared` keeps the
+// launch default (the whole project watched, nothing under an RPC driver);
+// `listed` watches the listed paths, under an RPC driver too; `empty`
+// watches nothing.
+enum class WatchDeclaration : std::uint8_t { undeclared, empty, listed };
+
 struct ReloadGateSnapshot {
     bool enabled = false;
     std::uint64_t epoch = 1;
@@ -25,6 +31,11 @@ DECLARE_MODULE(ReloadGate) {
   public:
     void configureFromLaunch(const EngineLaunchConfig &config);
     void setReason(ReloadGateReason reason, bool active);
+    // HW-1. Set when the project is known (ReloadService::setup); a launch
+    // reconfiguration leaves it as it is.
+    void setWatchDeclaration(WatchDeclaration declaration);
+    // True while an RPC client drives the frames (whatever the watch).
+    bool rpcDriven() const;
     ReloadGateSnapshot snapshot() const;
     bool enabled() const;
     bool shaderReloadEnabled() const;
@@ -41,6 +52,7 @@ DECLARE_MODULE(ReloadGate) {
     bool replay_ = false;
     bool strict_ = false;
     bool rpc_ = false;
+    WatchDeclaration watch_ = WatchDeclaration::undeclared;
     bool enabled_ = false;
     std::uint64_t epoch_ = 1;
     std::string reason_ = "not configured";

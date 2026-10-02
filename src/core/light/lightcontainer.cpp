@@ -1,6 +1,7 @@
 #include "lightcontainer.hpp"
 #include "../loader/sceneload.hpp"
 #include "../log.hpp"
+#include "../renderer/clipspace.hpp"
 #include "../userpublic/color.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
@@ -81,17 +82,6 @@ namespace Pelican
 			return glm::normalize(lights[index].direction);
 		}
 
-		glm::mat4 vulkanOrtho(float left, float right, float bottom, float top, float z_near, float z_far)
-		{
-			glm::mat4 projection{1.0f};
-			projection[0][0] = 2.0f / (right - left);
-			projection[1][1] = 2.0f / (top - bottom);
-			projection[2][2] = 1.0f / (z_near - z_far);
-			projection[3][0] = -(right + left) / (right - left);
-			projection[3][1] = -(top + bottom) / (top - bottom);
-			projection[3][2] = z_near / (z_near - z_far);
-			return projection;
-		}
 	}
 
 	std::vector<std::string> collectLightCapWarnings(const std::vector<LightLoadEntry>& lights)

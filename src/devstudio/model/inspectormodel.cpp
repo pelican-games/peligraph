@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cmath>
 #include <concepts>
+#include <fstream>
 #include <sstream>
 #include <stdexcept>
 #include <type_traits>
@@ -395,6 +396,21 @@ makeInspectorWidgetPlan(const Json &component,
             declaration.range);
         descriptor.unit = declaration.unit;
         descriptor.enum_values = declaration.enum_values;
+        // UX-10, decision 6: what SC-1 adds beside a declaration.
+        const auto strings = [&field](const char *key) {
+            std::vector<std::string> values;
+            if (const auto found = field.find(key); found != field.end() && found->is_array())
+                for (const auto &value : *found)
+                    if (value.is_string()) values.push_back(value.get<std::string>());
+            return values;
+        };
+        if (const auto found = field.find("discriminant");
+            found != field.end() && found->is_string())
+            descriptor.discriminant = found->get<std::string>();
+        descriptor.applies_to = strings("applies_to");
+        descriptor.required_for = strings("required_for");
+        if (const auto found = field.find("default"); found != field.end())
+            descriptor.schema_default = *found;
 
         try {
             descriptor.value =
@@ -527,6 +543,102 @@ bool isEulerRotationField(const InspectorWidgetDescriptor &descriptor) {
            descriptor.kind == InspectorWidgetKind::QuaternionDrag;
 }
 
+namespace {
+// The value the discriminant a field names holds now: authored, else its
+// schema default; empty when there is none.
+std::optional<std::string> discriminantValue(const InspectorWidgetDescriptor &field,
+                                             const std::vector<InspectorWidgetDescriptor> &fields) {
+    if (field.discriminant.empty()) return std::nullopt;
+    for (const auto &candidate : fields) {
+        if (candidate.field_name != field.discriminant) continue;
+        if (candidate.authored && candidate.value.is_string())
+            return candidate.value.get<std::string>();
+        if (candidate.schema_default.is_string()) return candidate.schema_default.get<std::string>();
+        return std::string{};
+    }
+    return std::string{};
+}
+
+bool listed(const std::vector<std::string> &values, const std::string &value) {
+    return std::ranges::find(values, value) != values.end();
+}
+} // namespace
+
+bool inspectorFieldShown(const InspectorWidgetDescriptor &field,
+                         const std::vector<InspectorWidgetDescriptor> &fields) {
+    const auto value = discriminantValue(field, fields);
+    if (!value || field.applies_to.empty()) return true;
+    return listed(field.applies_to, *value);
+}
+
+bool inspectorFieldRequiredMissing(const InspectorWidgetDescriptor &field,
+                                   const std::vector<InspectorWidgetDescriptor> &fields) {
+    const auto value = discriminantValue(field, fields);
+    if (!value || !listed(field.required_for, *value) || !inspectorFieldShown(field, fields))
+        return false;
+    return !field.authored || field.value.is_null() ||
+           (field.value.is_string() && field.value.get<std::string>().empty());
+}
+
+double inspectorDisplayScale(const InspectorWidgetDescriptor &field) {
+    const bool radians = field.unit == "rad" || field.unit == "radian" || field.unit == "radians" ||
+                         (field.component_slot == "camera" &&
+                          (field.field_name == "controller.yaw" ||
+                           field.field_name == "controller.pitch"));
+    const bool scalar = field.kind == InspectorWidgetKind::FloatingPointDrag;
+    return radians && scalar ? DegreesPerRadian : 1.0;
+}
+
+bool isDirectionField(const InspectorWidgetDescriptor &descriptor) {
+    return descriptor.field_name == "direction" && descriptor.columns == 3 &&
+           descriptor.kind == InspectorWidgetKind::VectorDrag;
+}
+
+std::array<double, 2> directionAnglesDegrees(const std::array<double, 3> &direction) {
+    const double length = std::sqrt(direction[0] * direction[0] + direction[1] * direction[1] +
+                                    direction[2] * direction[2]);
+    if (!(length > 0.0) || !std::isfinite(length)) return {0.0, 0.0};
+    const double x = direction[0] / length;
+    const double y = std::clamp(direction[1] / length, -1.0, 1.0);
+    const double z = direction[2] / length;
+    const double elevation = std::asin(y) * DegreesPerRadian;
+    if (std::abs(x) < 1.0e-12 && std::abs(z) < 1.0e-12) return {0.0, elevation};
+    return {wrapDegrees(std::atan2(x, z) * DegreesPerRadian), elevation};
+}
+
+std::array<double, 3> directionFromAnglesDegrees(const std::array<double, 2> &angles) {
+    const double azimuth = angles[0] / DegreesPerRadian;
+    const double elevation = angles[1] / DegreesPerRadian;
+    std::array<double, 3> result{std::cos(elevation) * std::sin(azimuth), std::sin(elevation),
+                                 std::cos(elevation) * std::cos(azimuth)};
+    // Straight down is (0, -1, 0), not a rounding away from it.
+    for (double &component : result)
+        if (std::abs(component) < 1.0e-12) component = 0.0;
+    return result;
+}
+
+bool isColorField(const InspectorWidgetDescriptor &descriptor) {
+    return descriptor.field_name == "color" &&
+           (descriptor.columns == 3 || descriptor.columns == 4) &&
+           descriptor.kind == InspectorWidgetKind::VectorDrag;
+}
+
+bool isTextureReferenceField(const InspectorWidgetDescriptor &descriptor) {
+    return descriptor.component_slot == "sprite_view" && descriptor.json_pointer == "/texture" &&
+           descriptor.kind == InspectorWidgetKind::StringInput;
+}
+
+std::vector<std::string> textureReferenceChoices(std::string_view current,
+                                                 const std::vector<std::string> &engine_textures) {
+    std::vector<std::string> choices;
+    for (const auto &texture : engine_textures)
+        if (!texture.empty() && std::ranges::find(choices, texture) == choices.end())
+            choices.push_back(texture);
+    if (!current.empty() && std::ranges::find(choices, current) == choices.end())
+        choices.emplace_back(current);
+    return choices;
+}
+
 bool isModelReferenceField(const InspectorWidgetDescriptor &descriptor) {
     return descriptor.component_slot == "simplemodelview" &&
            descriptor.json_pointer == "/model" &&
@@ -634,7 +746,8 @@ std::string componentUnavailableDescription(std::string_view code) {
     return sentence + " (" + std::string{code} + ")";
 }
 
-std::string knownRefusalDescription(std::string_view code, std::string_view message) {
+std::string knownRefusalDescription(std::string_view code, std::string_view message,
+                                    bool name_document) {
     // RL-1s, decision 5: the render document on disk was rewritten and its
     // reload refused, so every edit meets a file the engine did not load.
     // The engine's own words follow, for the tooltip and Copy message.
@@ -653,7 +766,7 @@ std::string knownRefusalDescription(std::string_view code, std::string_view mess
     // PM-3a: the play refusals (set_play_state, advance_frames, step_frame).
     if (auto play = playRefusalDescription(error); !play.empty()) return play;
     // LP-4c: and so does a loop's or a definition's.
-    return graphLoopRefusalDescription(error);
+    return graphLoopRefusalDescription(error, name_document);
 }
 
 namespace {
@@ -849,7 +962,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 38> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 49> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -904,6 +1017,14 @@ constexpr std::array<GraphLoopRefusalText, 38> GraphLoopRefusalTexts{{
     {"graph.loop_output_reference_unknown@1", "{pass} reads {reference}, which is no loop output"},
     // UX-5c (RS-9): a render node lacks a parameter its op needs.
     {"graph.render_node_parameters_missing@1", "The {op} node {node} needs {missing}"},
+    // UX-12a, decision 4 (CT-3): a value of the wrong kind, outside the
+    // enum or the range; {why} is said from `reason` (see below).
+    {"graph.render_node_parameter_invalid@1", "{node}.{parameter} must be {expected} ({why})"},
+    // UX-12e, decision 5 (CT-4): a pose (or a morph weight) reads the model
+    // of the object whose instance runs it; the root has none.
+    {"graph.op_requires_owned_instance@1",
+     "{op} runs inside a definition attached to an object \xE2\x80\x94 make a definition and "
+     "place it there"},
     // UX-8, decision 12 (c) (RS-15): the render.scalar sinks on one buffer
     // tile it from byte 0; `reason` says which way they do not.
     {"graph.render_scalar_layout_invalid@1",
@@ -912,6 +1033,13 @@ constexpr std::array<GraphLoopRefusalText, 38> GraphLoopRefusalTexts{{
     {"graph.render_scalar_type_mismatch@1",
      "The render.scalar {node} writes {components} float(s) into {target}, whose elements are "
      "{element}"},
+    // UX-13b, decision 3 (engine CT-5): the buffer a render.scalar writes is
+    // not a runtime_f32 one as large as its sinks; `expected` / `actual` are
+    // {host_source, size?}, read as "<host_source>, <size> bytes". One the
+    // graph declares names the sink (`node`); one declared outside it does
+    // not (the sentence then says so).
+    {"graph.render_scalar_target_incompatible@1",
+     "The render.scalar {node} writes {target} ({actual}), which must be {expected} \xE2\x80\x94 {fix}"},
     // UX-8, decision 13 (b) (CT-1): a port declaration lacks a field.
     {"graph.port_field_missing@1", "Port {port} of {node} needs {field}"},
     // GL-3a (FG-1): a fold group's decisions. `subject` is {node, element?,
@@ -933,6 +1061,50 @@ constexpr std::array<GraphLoopRefusalText, 38> GraphLoopRefusalTexts{{
     {"shader.loop_push_overlap@1",
      "{shader} declares a push constant that overlaps the loop element at {range} in the "
      "{stage} stage \xE2\x80\x94 use PELICAN_LOOP_CUSTOM_PUSH and PELICAN_LOOP_PUSH_FIELDS"},
+    // PS-1s, decision 5 (engine PS-1): a pass that runs once and what it
+    // writes or reads; and rerun_once's node the plan does not have.
+    {"graph.once_writes_transient@1",
+     "{node} runs once but writes {resource}, which is not kept between frames \xE2\x80\x94 "
+     "make it Persistent"},
+    {"graph.once_reads_per_frame@1",
+     "{node} runs once but reads {input}, which changes every frame \xE2\x80\x94 it would "
+     "freeze at the first value"},
+    {"node_unknown", "{node} is not in the frame plan: there is nothing of it to recompute"},
+    // IA-1s, decision 2 (engine IA-1): an image that starts from an asset.
+    {"graph.image_initial_requires_persistent@1",
+     "{node} starts from an image but is not kept between frames \xE2\x80\x94 make it "
+     "Persistent"},
+    {"graph.image_initial_extent_conflict@1",
+     "{node} takes its size from its image and from the screen at once \xE2\x80\x94 check From "
+     "the image, or give it a fixed size"},
+    // `what` picks the sentence (GraphImageInitialMismatchTexts); `actual`
+    // and `expected` read as that sentence's words.
+    {"graph.image_initial_mismatch@1",
+     "{asset} is {actual} but {node} is {expected} \xE2\x80\x94 bake the image to match "
+     "(pelican_cli image ktx2) or change the image's format"},
+    // AB-1s, decision 2 (engine AB-1): value.sample_table reads a baked
+    // table when the graph is built.
+    {"value.sample_table_unreadable@1", "{node} cannot read the table {asset}: {reason}"},
+    {"value.sample_table_row_unknown@1", "{asset} has no row {row}; its rows are {rows}"},
+}};
+
+// IA-1s, decision 2: graph.image_initial_mismatch@1, by `what`. extent reads
+// as "64×64", format as the format's name, color_space as "sRGB" or
+// "linear" with the format beside it.
+struct GraphImageInitialMismatchText {
+    std::string_view what;
+    std::string_view sentence;
+};
+constexpr std::array<GraphImageInitialMismatchText, 3> GraphImageInitialMismatchTexts{{
+    {"extent",
+     "{asset} is {actual} but {node} is {expected} \xE2\x80\x94 bake the image to match "
+     "(pelican_cli image ktx2) or change the image's size"},
+    {"format",
+     "{asset} is {actual} but {node} is {expected} \xE2\x80\x94 bake the image to match "
+     "(pelican_cli image ktx2) or change the image's format"},
+    {"color_space",
+     "{asset} is {actual} but {node} is {expected} \xE2\x80\x94 bake the image to match "
+     "(pelican_cli image ktx2) or change the image's format to the other color space"},
 }};
 
 // UX-5c: graph.loop_output_reference_unknown@1's reasons, each a sentence that
@@ -1031,9 +1203,33 @@ std::string graphRefusalFieldText(const nlohmann::json &fields, std::string_view
     return found->dump();
 }
 
+// IA-1s, decision 6: a sentence that names a definition of its own (the one
+// the refusal is about) is not told the definition the node was written in.
+bool graphRefusalSentenceNamesDefinition(std::string_view code) {
+    for (const auto &candidate : GraphLoopRefusalTexts)
+        if (candidate.code == code)
+            return candidate.sentence.find("{definition}") != std::string_view::npos;
+    return false;
+}
+
 } // namespace
 
-std::string graphLoopRefusalDescription(const nlohmann::json &error) {
+std::optional<nlohmann::json> graphRefusalFields(const nlohmann::json &error, std::string_view code) {
+    if (!error.is_object()) return std::nullopt;
+    std::optional<nlohmann::json> fields;
+    if (error.value("code", std::string{}) == code) {
+        const auto relayed = error.find("error_fields");
+        fields = relayed != error.end() && relayed->is_object() ? *relayed : error;
+    }
+    if (auto quoted = graphFieldsAfterCode(error.value("message", std::string{}), code)) {
+        if (!fields) fields = nlohmann::json::object();
+        for (auto member = quoted->begin(); member != quoted->end(); ++member)
+            (*fields)[member.key()] = member.value();
+    }
+    return fields;
+}
+
+std::string graphLoopRefusalDescription(const nlohmann::json &error, bool name_document) {
     if (!error.is_object()) return {};
     const auto own_code = error.value("code", std::string{});
     const auto message = error.value("message", std::string{});
@@ -1088,6 +1284,24 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
                 fields["range"] = std::to_string(from) + ".." + std::to_string(to);
             }
         }
+    // UX-12a, decision 4: why, in the reason's word -- the values an enum
+    // takes, the range a number lies in.
+    if (entry->code == "graph.render_node_parameter_invalid@1") {
+        const auto reason = graphRefusalFieldText(fields, "reason");
+        std::string why = "wrong type";
+        if (reason == "enum") {
+            why = "one of: " + graphRefusalFieldText(fields, "allowed");
+        } else if (reason == "range") {
+            const bool low = fields.contains("min");
+            const bool high = fields.contains("max");
+            const auto min = low ? graphRefusalFieldText(fields, "min") : std::string{};
+            const auto max = high ? graphRefusalFieldText(fields, "max") : std::string{};
+            why = "range: " + (low && high ? min + ".." + max
+                               : low       ? "at least " + min
+                                           : "at most " + max);
+        }
+        fields["why"] = why;
+    }
     std::string sentence;
     std::string_view pattern = entry->sentence;
     if (entry->code == "graph.loop_tier_unsupported@1") {
@@ -1105,11 +1319,152 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
         for (const auto &candidate : GraphScalarLayoutReasonTexts)
             if (candidate.reason == reason) pattern = candidate.sentence;
     }
+    // UX-13b, decision 3 (engine CT-5): what the buffer is and must be, and
+    // the Fix the Graph's button applies -- or, for a buffer declared outside
+    // the graph (no `node`), where to apply it.
+    if (entry->code == "graph.render_scalar_target_incompatible@1") {
+        const auto side = [&](const char *key) {
+            const auto found = fields.find(key);
+            if (found == fields.end() || !found->is_object()) return std::string{"?"};
+            const auto host = found->find("host_source");
+            std::string line = host != found->end() && host->is_string() ? host->get<std::string>()
+                                                                         : std::string{"no host_source"};
+            if (const auto size = found->find("size"); size != found->end() && size->is_number_integer())
+                line += ", " + size->dump() + " bytes";
+            return line;
+        };
+        const auto target = graphRefusalFieldText(fields, "target");
+        std::string fix = "Fix: make " + target + " runtime_f32";
+        if (const auto expected = fields.find("expected"); expected != fields.end() && expected->is_object())
+            if (const auto size = expected->find("size"); size != expected->end() && size->is_number_integer())
+                fix += ", " + size->dump() + " bytes";
+        fields["actual"] = side("actual");
+        fields["expected"] = side("expected");
+        if (!fields.contains("node") || !fields.at("node").is_string()) {
+            pattern = "A render.scalar writes {target} ({actual}), declared outside the graph, which must be "
+                      "{expected} \xE2\x80\x94 {fix} where it is declared";
+        }
+        fields["fix"] = fix;
+    }
+    // UX-13b, decision 6 (engine CT-5): refused inside a definition, it is
+    // the definition's other user that has no owner; the document and the
+    // definition follow in the one sentence.
+    if (entry->code == "graph.op_requires_owned_instance@1" && fields.contains("definition") &&
+        fields.at("definition").is_string())
+        pattern = "{op} runs only in a definition attached to an object; this definition is also used by "
+                  "an instance with no owner";
     if (entry->code == "graph.loop_output_reference_unknown@1") {
         const auto reason = graphRefusalFieldText(fields, "reason");
         for (const auto &candidate : GraphLoopOutputReferenceReasonTexts)
             if (candidate.reason == reason) pattern = candidate.sentence;
     }
+    // IA-1s, decision 2: what the asset is and what the image is, in the
+    // words of what differs.
+    if (entry->code == "graph.image_initial_mismatch@1") {
+        const auto what = graphRefusalFieldText(fields, "what");
+        for (const auto &candidate : GraphImageInitialMismatchTexts)
+            if (candidate.what == what) pattern = candidate.sentence;
+        const auto side = [&](const char *key) -> std::string {
+            const auto found = fields.find(key);
+            if (found == fields.end() || !found->is_object()) return "?";
+            const auto format = found->find("format");
+            const auto format_text = format != found->end() && format->is_string()
+                                         ? format->get<std::string>()
+                                         : std::string{"?"};
+            if (what == "extent") {
+                const auto number = [&](const char *axis) {
+                    const auto value = found->find(axis);
+                    return value != found->end() &&
+                                   (value->is_number_integer() || value->is_number_unsigned())
+                               ? value->dump()
+                               : std::string{"?"};
+                };
+                return number("width") + "×" + number("height");
+            }
+            if (what == "color_space")
+                return std::string{format_text.find("SRGB") != std::string::npos ? "sRGB"
+                                                                                  : "linear"} +
+                       " (" + format_text + ")";
+            return format_text;
+        };
+        const auto actual = side("actual");
+        const auto expected = side("expected");
+        fields["actual"] = actual;
+        fields["expected"] = expected;
+    }
+    for (std::size_t index = 0; index < pattern.size();) {
+        const auto open = pattern.find('{', index);
+        if (open == std::string_view::npos) {
+            sentence += pattern.substr(index);
+            break;
+        }
+        const auto close = pattern.find('}', open);
+        sentence += pattern.substr(index, open - index);
+        sentence += graphRefusalFieldText(fields, pattern.substr(open + 1, close - open - 1));
+        index = close + 1;
+    }
+    // IA-1s, decision 6 (engine CT-2): the document the node was written in,
+    // and the definition whose body holds it -- unless the sentence names a
+    // definition of its own already (the definition the refusal is about).
+    std::string where;
+    if (name_document) {
+        const auto document = graphRefusalSource(fields, "document");
+        if (!document.empty()) {
+            const auto definition = graphRefusalSentenceNamesDefinition(entry->code)
+                                        ? std::string{}
+                                        : graphRefusalSource(fields, "definition");
+            where = definition.empty() ? "in " + document
+                                       : "in definition " + definition + " of " + document;
+        }
+    }
+    return sentence + " (" + (where.empty() ? std::string{} : where + ", ") +
+           std::string{entry->code} + ").";
+}
+
+std::string graphRefusalSource(const nlohmann::json &fields, std::string_view key) {
+    if (!fields.is_object()) return {};
+    const auto found = fields.find(std::string{key});
+    if (found == fields.end() || !found->is_string()) return {};
+    // A document reads as the project names it: relative to its root.
+    std::string_view value = found->get_ref<const std::string &>();
+    constexpr std::string_view project = "project://";
+    if (key == "document" && value.starts_with(project)) value.remove_prefix(project.size());
+    return std::string{value};
+}
+
+namespace {
+
+// AB-1s, decision 1: bake_audio_analysis's refusals (engine AB-1).
+constexpr std::array<GraphLoopRefusalText, 5> AudioAnalysisRefusalTexts{{
+    {"audio.analysis_settings_invalid@1", "The analysis cannot take {field} = {value} ({reason})"},
+    {"audio.analysis_busy@1", "{out} is being baked already; wait for it to finish"},
+    {"audio.analysis_unavailable@1", "This engine cannot bake a sound's analysis ({reason})"},
+    {"audio.format_unsupported@1",
+     "{asset} is not a sound the analysis reads: its extension and its contents must both say "
+     "WAV, or both Ogg Vorbis"},
+    {"audio.analysis_failed@1", "{asset} could not be baked into {out}: {message}"},
+}};
+
+} // namespace
+
+std::string audioAnalysisRefusalDescription(const nlohmann::json &error) {
+    if (!error.is_object()) return {};
+    const auto code = error.value("code", std::string{});
+    const auto entry = std::ranges::find(AudioAnalysisRefusalTexts, code, &GraphLoopRefusalText::code);
+    if (entry == AudioAnalysisRefusalTexts.end()) return {};
+    auto fields = graphRefusalFields(error, entry->code).value_or(nlohmann::json::object());
+    // A field the refusal leaves out reads as nothing rather than "?".
+    for (const char *key : {"field", "value", "reason", "out", "asset", "message"})
+        if (!fields.contains(key)) fields[key] = key == std::string_view{"message"}
+                                                     ? error.value("message", std::string{})
+                                                     : std::string{};
+    if (const auto value = fields.find("value"); value != fields.end() && !value->is_string())
+        fields["value"] = value->dump();
+    for (const char *key : {"asset", "out"})
+        fields[key] = graphRefusalSource(nlohmann::json{{"document", graphRefusalFieldText(fields, key)}},
+                                         "document");
+    std::string sentence;
+    const std::string_view pattern = entry->sentence;
     for (std::size_t index = 0; index < pattern.size();) {
         const auto open = pattern.find('{', index);
         if (open == std::string_view::npos) {
@@ -1124,7 +1479,20 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error) {
     return sentence + " (" + std::string{entry->code} + ").";
 }
 
-std::string engineStoppedSentence(std::string_view fatal_line) {
+std::string projectRenderDocument(const std::filesystem::path &project_root) {
+    if (project_root.empty()) return {};
+    std::ifstream input{project_root / "project.json", std::ios::binary};
+    if (!input) return {};
+    const auto project = nlohmann::json::parse(input, nullptr, false);
+    if (!project.is_object()) return {};
+    const auto basic = project.find("basic_config");
+    if (basic == project.end() || !basic->is_object()) return {};
+    const auto document = basic->find("rendering_config_json");
+    return document != basic->end() && document->is_string() ? document->get<std::string>()
+                                                              : std::string{};
+}
+
+std::string engineStoppedSentence(std::string_view fatal_line, std::string_view render_document) {
     constexpr std::string_view marker = "Pelican fatal error";
     const auto at = fatal_line.find(marker);
     if (at == std::string_view::npos) return {};
@@ -1149,21 +1517,34 @@ std::string engineStoppedSentence(std::string_view fatal_line) {
         index = version;
     }
     if (code.empty()) return {};
-    auto sentence = knownRefusalDescription(code, message);
+    // The document is said once, after the sentence, not inside it too.
+    auto sentence = knownRefusalDescription(code, message, false);
     if (sentence.empty()) return {};
     // "<sentence> (<code>)." -- the sentence, without its full stop.
     while (!sentence.empty() && (sentence.back() == '.' || sentence.back() == ' ')) sentence.pop_back();
-    // The file: the last path ending in .json the message names.
+    // IA-1s, decision 6 (engine CT-2): the refusal names the document its
+    // node was written in, and the definition whose body holds it.
     std::string file;
-    for (std::size_t end = message.find(".json"); end != std::string_view::npos;
-         end = message.find(".json", end + 1)) {
-        std::size_t begin = end;
-        while (begin > 0 && message[begin - 1] != ' ' && message[begin - 1] != '\'' &&
-               message[begin - 1] != '"' && message[begin - 1] != '(')
-            --begin;
-        file = std::string{message.substr(begin, end + 5 - begin)};
+    std::string definition;
+    if (const auto fields = graphFieldsAfterCode(message, code)) {
+        file = graphRefusalSource(*fields, "document");
+        if (!file.empty() && !graphRefusalSentenceNamesDefinition(code))
+            definition = graphRefusalSource(*fields, "definition");
     }
+    // Before CT-2: the last path ending in .json the message names.
+    if (file.empty())
+        for (std::size_t end = message.find(".json"); end != std::string_view::npos;
+             end = message.find(".json", end + 1)) {
+            std::size_t begin = end;
+            while (begin > 0 && message[begin - 1] != ' ' && message[begin - 1] != '\'' &&
+                   message[begin - 1] != '"' && message[begin - 1] != '(')
+                --begin;
+            file = std::string{message.substr(begin, end + 5 - begin)};
+        }
+    // Studio's guess, only when the engine named none.
+    if (file.empty()) file = std::string{render_document};
     if (file.empty()) file = "the project's render documents";
+    if (!definition.empty()) file = "definition " + definition + " of " + file;
     return "The engine stopped: " + sentence + " in " + file +
            ". Fix the file (or Reload from disk) to start it again.";
 }
@@ -1261,11 +1642,15 @@ std::vector<ComponentAddRow> componentAddRows(const Json &catalog) {
 }
 
 std::vector<std::string> modelAssetIds(const Json &list_assets_result) {
+    return assetIdsOfKind(list_assets_result, "model");
+}
+
+std::vector<std::string> assetIdsOfKind(const Json &list_assets_result, std::string_view kind) {
     const auto &assets = requiredField(list_assets_result, "assets", "list_assets result");
     if (!assets.is_array()) throw std::runtime_error("list_assets assets must be an array");
     std::vector<std::string> ids;
     for (const auto &asset : assets) {
-        if (!asset.is_object() || asset.value("kind", std::string{}) != "model") continue;
+        if (!asset.is_object() || asset.value("kind", std::string{}) != kind) continue;
         const auto id = asset.find("id");
         if (id != asset.end() && id->is_string() && !id->get_ref<const std::string &>().empty())
             ids.push_back(id->get<std::string>());
@@ -1329,6 +1714,8 @@ struct InspectorModel::Impl {
         std::uint64_t own_commit_generation = 0;
         // PM-3b: an edit to mark Keep when it commits (Take from game).
         bool keep = false;
+        // UX-13c: a SceneTree request that went out as scene_outline.
+        bool scene_outline = false;
     };
 
     struct PreviewState {
@@ -1356,6 +1743,8 @@ struct InspectorModel::Impl {
     std::optional<Json> component_add_candidates;
     // G-2: the model ids list_assets reported, for the model field.
     std::optional<std::vector<std::string>> model_assets;
+    // UX-10: the texture ids of the same answer, for sprite_view.texture.
+    std::optional<std::vector<std::string>> texture_assets;
     std::uint64_t model_assets_revision = 0;
     std::optional<Json> ray_occurrences;
     std::uint64_t ray_catalog_epoch = 0;
@@ -1381,6 +1770,10 @@ struct InspectorModel::Impl {
     // preview commits, saves). A watch answer to a request sent before the latest of
     // them says nothing about anyone else.
     std::uint64_t own_commit_generation = 0;
+    // UX-13c: the selected object's id is confirmed with scene_outline; an
+    // engine that does not know it (-32601) is asked with scene_tree for the
+    // rest of its session.
+    bool scene_outline_unknown = false;
     bool refresh_in_flight = false;
     bool refresh_pending = false;
     bool refresh_pending_sync = false;
@@ -1637,10 +2030,12 @@ struct InspectorModel::Impl {
         const bool sync = std::exchange(refresh_pending_sync, false) ||
                           synchronize_watch;
         refresh_pending = false;
-        queue("scene_tree", Json{{"scene_id", selection->scene_id}},
+        queue(scene_outline_unknown ? "scene_tree" : "scene_outline",
+              Json{{"scene_id", selection->scene_id}},
               {.purpose = RequestPurpose::SceneTree,
                .selection_generation = selection_generation,
-               .synchronize_watch = sync});
+               .synchronize_watch = sync,
+               .scene_outline = !scene_outline_unknown});
     }
 
     void flushDeferredRefresh() {
@@ -2265,14 +2660,17 @@ struct InspectorModel::Impl {
                 refresh_pending_sync || state.synchronize_watch;
             return;
         }
+        // UX-13c: scene_outline, or scene_tree from an engine without it;
+        // both list the ids and declaration indices read here.
+        const std::string method = state.scene_outline ? "scene_outline" : "scene_tree";
         const std::string scene_id =
-            requiredString(result, "scene_id", "scene_tree result");
+            requiredString(result, "scene_id", method + " result");
         if (scene_id != selection->scene_id) {
-            throw std::runtime_error("scene_tree returned a different scene_id");
+            throw std::runtime_error(method + " returned a different scene_id");
         }
-        const Json &objects = requiredField(result, "objects", "scene_tree result");
+        const Json &objects = requiredField(result, "objects", method + " result");
         if (!objects.is_array()) {
-            throw std::runtime_error("scene_tree objects must be an array");
+            throw std::runtime_error(method + " objects must be an array");
         }
 
         // OL-1: a selection that knows its object's authoring id is that
@@ -2281,8 +2679,8 @@ struct InspectorModel::Impl {
         std::optional<std::uint64_t> authoring_object_id;
         for (const Json &object : objects) {
             const auto id = unsignedInteger(
-                requiredField(object, "authoring_object_id", "scene_tree object"),
-                "scene_tree authoring_object_id", false);
+                requiredField(object, "authoring_object_id", method + " object"),
+                method + " authoring_object_id", false);
             if (selection->authoring_object_id != 0) {
                 if (id == selection->authoring_object_id) {
                     authoring_object_id = id;
@@ -2291,8 +2689,8 @@ struct InspectorModel::Impl {
                 continue;
             }
             const auto index = sizeValue(
-                requiredField(object, "declaration_index", "scene_tree object"),
-                "scene_tree declaration_index");
+                requiredField(object, "declaration_index", method + " object"),
+                method + " declaration_index");
             if (index == selection->declaration_index) {
                 authoring_object_id = id;
                 break;
@@ -2300,9 +2698,9 @@ struct InspectorModel::Impl {
         }
         if (!authoring_object_id) {
             throw std::runtime_error(
-                selection->authoring_object_id != 0
-                    ? "scene_tree does not contain the selected object"
-                    : "scene_tree does not contain the selected declaration_index");
+                method + (selection->authoring_object_id != 0
+                              ? " does not contain the selected object"
+                              : " does not contain the selected declaration_index"));
         }
         queue("get_components",
               Json{{"scene_id", selection->scene_id},
@@ -2349,7 +2747,8 @@ struct InspectorModel::Impl {
         const bool has_model_view = std::any_of(
             snapshot->components.begin(), snapshot->components.end(),
             [](const InspectorComponentSnapshot &component) {
-                return component.name == "simplemodelview" && !component.generated;
+                return (component.name == "simplemodelview" || component.name == "sprite_view") &&
+                       !component.generated;
             });
         if (!has_model_view) return;
         if (std::any_of(requests.begin(), requests.end(), [](const auto &request) {
@@ -2363,6 +2762,7 @@ struct InspectorModel::Impl {
     void resetModelAssets() {
         if (!model_assets) return;
         model_assets.reset();
+        texture_assets.reset();
         ++model_assets_revision;
     }
 
@@ -2513,6 +2913,7 @@ struct InspectorModel::Impl {
             break;
         case RequestPurpose::ModelAssets:
             model_assets = modelAssetIds(result);
+            texture_assets = assetIdsOfKind(result, "texture");
             ++model_assets_revision;
             break;
         case RequestPurpose::RayOccurrences:
@@ -2617,7 +3018,18 @@ struct InspectorModel::Impl {
         setNotice(InspectorNoticeKind::Information, "Taking the Transform from the game...");
     }
 
-    void handleFailure(const RequestState &state, std::string message) {
+    void handleFailure(const RequestState &state, std::string message,
+                       bool unknown_method = false) {
+        if (state.purpose == RequestPurpose::SceneTree && unknown_method &&
+            state.scene_outline) {
+            // UX-13c, decision 5: an engine from before scene_outline. Ask it
+            // with scene_tree from now on, and ask again now.
+            scene_outline_unknown = true;
+            refresh_in_flight = false;
+            if (state.selection_generation == selection_generation)
+                requestRefresh(state.synchronize_watch);
+            return;
+        }
         if (state.purpose != RequestPurpose::OpenSession &&
             state.purpose != RequestPurpose::Save &&
             state.purpose != RequestPurpose::EditSubmit &&
@@ -2704,6 +3116,7 @@ void InspectorModel::startSession() {
     impl_->abandonSessionOperations();
     impl_->first_session_revision = true;
     impl_->connected = true;
+    impl_->scene_outline_unknown = false;
     impl_->actor_id.reset();
     impl_->requests.clear();
     impl_->outgoing.clear();
@@ -2808,7 +3221,8 @@ void InspectorModel::receiveRpcResult(std::uint64_t request_id,
 }
 
 void InspectorModel::receiveRpcFailure(std::uint64_t request_id,
-                                       std::string message) {
+                                       std::string message,
+                                       bool unknown_method) {
     const auto request = impl_->requests.find(request_id);
     if (request == impl_->requests.end()) {
         return;
@@ -2818,7 +3232,7 @@ void InspectorModel::receiveRpcFailure(std::uint64_t request_id,
     if (message.empty()) {
         message = "Inspector RPC failed without an error message.";
     }
-    impl_->handleFailure(state, std::move(message));
+    impl_->handleFailure(state, std::move(message), unknown_method);
 }
 
 bool InspectorModel::pendingPollWanted() const noexcept {
@@ -3200,6 +3614,10 @@ const std::optional<std::vector<std::string>> &InspectorModel::modelAssets() con
 
 std::uint64_t InspectorModel::modelAssetsRevision() const noexcept {
     return impl_->model_assets_revision;
+}
+
+const std::optional<std::vector<std::string>> &InspectorModel::textureAssets() const noexcept {
+    return impl_->texture_assets;
 }
 
 bool InspectorModel::addComponent(std::string_view key) {

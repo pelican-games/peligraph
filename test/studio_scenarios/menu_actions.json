@@ -14,11 +14,11 @@
       "timeout_ms": 60000
     },
     {
-      "label": "the File menu holds the four entries the source puts there",
+      "label": "the File menu holds the five entries the source puts there (New Project, Open Project, Save Scene, Import Sound, Exit)",
       "expect": "result",
       "command": {"cmd": "menu_list", "pattern": "pelican.file."},
       "path": "count",
-      "value": 4
+      "value": 5
     },
     {
       "label": "Save Scene is listed under File, by the path a person reads",

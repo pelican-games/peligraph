@@ -59,8 +59,7 @@ const ResolvedComponent *findResolvedComponent(
     return found == object.components.end() ? nullptr : &*found;
 }
 
-Camera::SceneCamera parseResolvedSceneCamera(
-    const ResolvedObject &object, glm::vec3 fallback_up) {
+Camera::SceneCamera parseResolvedSceneCamera(const ResolvedObject &object) {
     const auto *component = findResolvedComponent(object, "camera");
     if (component == nullptr || component->runtime_codec == nullptr) {
         throw std::logic_error("resolved camera has no runtime codec");
@@ -102,7 +101,6 @@ Camera::SceneCamera parseResolvedSceneCamera(
         .pixel_perfect = data.pixel_perfect,
         .sort = data.sprite_sort,
     };
-    camera.up = fallback_up;
     if (data.controller) {
         camera.controller = projectSceneCameraController(*data.controller,
                                                          camera.name);
@@ -116,31 +114,33 @@ Camera::SceneCamera parseResolvedSceneCamera(
             transform->requireRuntimeValue());
         camera.pos = glm::vec3{trs.pos.x, trs.pos.y, trs.pos.z};
         if (trs.rotation_specified) {
-            const auto rotation = glm::quat{trs.rotation.w, trs.rotation.x,
-                                            trs.rotation.y, trs.rotation.z};
-            const auto rotation_matrix = glm::mat3_cast(rotation);
-            camera.dir = glm::normalize(rotation_matrix *
-                                        glm::vec3{0.0f, 0.0f, 1.0f});
-            camera.up = glm::normalize(rotation_matrix *
-                                       glm::vec3{0.0f, 1.0f, 0.0f});
+            const auto basis = cameraBasis(glm::quat{
+                trs.rotation.w, trs.rotation.x, trs.rotation.y,
+                trs.rotation.z});
+            camera.dir = basis.forward;
+            camera.up = basis.up;
         }
     }
     return camera;
 }
 
-void rebuildPreparedProjection(Camera::PreparedSceneState &prepared) {
-    if (prepared.projection.kind == CameraProjectionKind::Orthographic) {
-        prepared.projection_matrix = glm::orthoRH_ZO(
-            -prepared.projection.xmag, prepared.projection.xmag,
-            -prepared.projection.ymag, prepared.projection.ymag,
-            prepared.projection.znear, prepared.projection.zfar);
-        return;
+// CC-1a: the one projection of a flat camera, by the shared clip-space
+// functions (y flipped inside the projection; clipspace.hpp).
+glm::mat4 cameraProjectionMatrix(const CameraProjectionSpec &projection,
+                                 float viewport_aspect) {
+    if (projection.kind == CameraProjectionKind::Orthographic) {
+        return vulkanOrtho(-projection.xmag, projection.xmag,
+                           -projection.ymag, projection.ymag,
+                           projection.znear, projection.zfar);
     }
+    return vulkanPerspective(projection.yfov,
+                             projection.aspect.value_or(viewport_aspect),
+                             projection.znear, projection.zfar);
+}
 
-    const auto aspect = prepared.projection.aspect.value_or(prepared.viewport_aspect);
-    prepared.projection_matrix = glm::perspectiveRH_ZO(
-        prepared.projection.yfov, aspect, prepared.projection.znear,
-        prepared.projection.zfar);
+void rebuildPreparedProjection(Camera::PreparedSceneState &prepared) {
+    prepared.projection_matrix = cameraProjectionMatrix(
+        prepared.projection, prepared.viewport_aspect);
 }
 
 std::string runtimeFreeCameraName(
@@ -245,27 +245,19 @@ Camera::Camera() {
 }
 
 void Camera::rebuildProjectionMatrix() {
-    if (projection.kind == CameraProjectionKind::Orthographic) {
-        projection_matrix =
-            glm::orthoRH_ZO(-projection.xmag, projection.xmag,
-                            -projection.ymag, projection.ymag,
-                            projection.znear, projection.zfar);
-        return;
-    }
-
-    const auto aspect = projection.aspect.value_or(viewport_aspect);
-    projection_matrix =
-        glm::perspectiveRH_ZO(projection.yfov, aspect, projection.znear, projection.zfar);
+    projection_matrix = cameraProjectionMatrix(projection, viewport_aspect);
 }
 
 void Camera::resetToConfigDefaults() {
     const auto &config = GET_MODULE(ProjectBasicConfig);
+    // CC-1a: the camera with no rotation looks down -Z with +Y up. The
+    // world's up is +Y (basic_config.camera.up was removed in CC-1b).
     pos = {0.0f, 0.0f, 0.0f};
-    dir = {1.0f, 0.0f, 0.0f};
+    dir = {0.0f, 0.0f, -1.0f};
+    up = {0.0f, 1.0f, 0.0f};
 
     const auto props = config.initailCameraProperty();
     const auto screen = config.initialWindowSize();
-    up = props.up;
     viewport_aspect = static_cast<float>(screen.width) / screen.height;
     viewport_width = static_cast<uint32_t>(screen.width);
     viewport_height = static_cast<uint32_t>(screen.height);
@@ -310,8 +302,8 @@ Camera::makeDefaultPreparedSceneState() const {
     // reverting to the project's initial window size on every scene load.
     PreparedSceneState prepared{
         .pos = {0.0f, 0.0f, 0.0f},
-        .dir = {1.0f, 0.0f, 0.0f},
-        .up = props.up,
+        .dir = {0.0f, 0.0f, -1.0f},
+        .up = {0.0f, 1.0f, 0.0f},
         .viewport_aspect = viewport_aspect,
         .viewport_width = viewport_width,
         .viewport_height = viewport_height,
@@ -351,7 +343,7 @@ Camera::PreparedSceneState Camera::prepareSceneCameras(
             continue;
         }
 
-        auto scene_camera = parseResolvedSceneCamera(object, prepared.up);
+        auto scene_camera = parseResolvedSceneCamera(object);
         if (first_camera) {
             first_scene_camera = scene_camera;
             prepared.projection = scene_camera.projection;
@@ -428,7 +420,16 @@ void Camera::setDir(glm::vec3 new_dir) {
     dir = new_dir;
 }
 
-glm::mat4 Camera::getVPMatrix() const { return projection_matrix * glm::lookAt(pos, pos + dir, up); }
+void Camera::setRotation(const glm::quat &rotation) {
+    if (active_scene_camera_locked) {
+        return;
+    }
+    const auto basis = cameraBasis(rotation);
+    dir = basis.forward;
+    up = basis.up;
+}
+
+glm::mat4 Camera::getVPMatrix() const { return projection_matrix * getViewMatrix(); }
 
 Camera::PixelRay Camera::rayThroughPixel(glm::vec2 position_px) const {
     // Double precision: a far plane a thousand near planes away leaves little

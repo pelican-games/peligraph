@@ -194,8 +194,11 @@ void ModalTransformController::update(
                 const auto scalar =
                     (pointer.x - pointer.y) * diagonal_normalizer *
                     pointer_rotation_radians_per_logical_pixel;
+                // CC-1a: a positive scalar turns the object counter-clockwise
+                // on screen. The view axis points away from the viewer, so
+                // that is a negative angle about it (right-hand rule).
                 snapshot_.delta.rotation =
-                    glm::angleAxis(scalar,
+                    glm::angleAxis(-scalar,
                                    input.view_rotation_axis / length) *
                     snapshot_.delta.rotation;
                 changed = scalar != 0.0f;

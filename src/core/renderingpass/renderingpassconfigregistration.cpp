@@ -1,8 +1,10 @@
 #include "renderingpassconfigregistration.hpp"
+#include "graphimagesource.hpp"
 #include "graphinputs.hpp"
 #include "../userpublic/valuegraph.hpp"
 #include "../model/gltf.hpp"
 #include "../model/skeletalanimation.hpp"
+#include "../../project/authoringlowering.hpp"
 #include "../../project/graphpartition.hpp"
 #include "../loader/scene.hpp"
 #if PELICAN_WITH_AUDIO
@@ -10,6 +12,7 @@
 #endif
 #include "../shader/raygrouplayout.hpp"
 #include "computetask.hpp"
+#include "framegraphbufferdefinition.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/vulkanviewplanning.hpp"
 #include "framegraphruntime.hpp"
@@ -35,6 +38,8 @@
 #include "rendertargetmetadataresolver.hpp"
 #include "rendertargetnameresolver.hpp"
 #include "../loader/pathresolver.hpp"
+#include "../loader/imageloader.hpp"
+#include "../../project/assetsmanifest.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/gizmo.hpp"
 #include "../renderer/velocitypasscontainer.hpp"
@@ -48,7 +53,9 @@
 #include "../launchconfig.hpp"
 #endif
 #include <algorithm>
+#include <fstream>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -62,6 +69,39 @@
 namespace Pelican {
 
 namespace {
+
+// IA-1: a file's sha256 in the assets.manifest of the asset store it lives
+// in; nullopt when no store with a manifest holds it, or the manifest does
+// not list it (or cannot be read: verification reports that, not this).
+std::optional<std::string> assetManifestSha256(
+    const PathResolver &resolver, const std::filesystem::path &file,
+    std::map<std::filesystem::path, std::optional<AssetsManifest>> &manifests) {
+    for (const auto &store : resolver.stores()) {
+        if (!store.manifest) continue;
+        const auto relative = file.lexically_relative(store.root);
+        if (relative.empty() || *relative.begin() == "..") continue;
+        auto found = manifests.find(*store.manifest);
+        if (found == manifests.end()) {
+            std::optional<AssetsManifest> parsed;
+            try {
+                std::ifstream input{*store.manifest, std::ios::binary};
+                if (input) {
+                    const std::string text{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+                    parsed = parseAssetsManifestJson(text);
+                }
+            } catch (const std::exception &) {
+                parsed.reset();
+            }
+            found = manifests.emplace(*store.manifest, std::move(parsed)).first;
+        }
+        if (!found->second) return std::nullopt;
+        const auto name = relative.generic_string();
+        for (const auto &entry : found->second->files)
+            if (entry.file == name) return entry.sha256;
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
 
 // GP-3: a ui.* sink writes a node of the project's UI document. The render
 // config that carries it must reference the ui feature -- that reference is
@@ -858,6 +898,10 @@ class RegistrationStages {
     std::vector<GraphDeformedAttribute> deformed_attributes;
     std::vector<GraphPoseAttribute> pose_attributes;
     std::set<std::filesystem::path> attribute_source_files;
+    // EN-2: the image files the graph's render.image nodes read.
+    std::optional<GraphImageSourceLoader> image_sources;
+    // IA-1: the persistent images' initial assets, by graph image node id.
+    RenderImageInitialAssets image_initial_assets;
     std::shared_ptr<const ValueGraph::Graph> value_graph;
 #if PELICAN_WITH_ANIMATION
     std::shared_ptr<const Animation::PoseGraph> pose_graph;
@@ -1057,6 +1101,48 @@ void RegistrationStages::prepare() {
     }
     validateGraphDeformedAttributes(deformed_attributes);
     validateGraphPoseAttributes(pose_attributes);
+    // EN-2: read the image files render.image nodes name; the compiler takes
+    // each file's size, the render targets its pixels (below), and the files
+    // join the sources this generation watches.
+    image_sources.emplace(dependencies.front().runtime.path_resolver);
+    resolved_rendering_data = resolveGraphImageSources(resolved_rendering_data,
+        [&](std::string_view node, const nlohmann::json &source) { return image_sources->load(node, source); });
+    attribute_source_files.insert(image_sources->files().begin(), image_sources->files().end());
+    // IA-1: each persistent image's initial asset is read here, once per
+    // generation: the image takes the asset's extent when it gives none, and
+    // an asset that does not fit it is refused by name before anything is
+    // published (graph.image_initial_mismatch@1).
+    {
+        std::map<std::filesystem::path, std::optional<AssetsManifest>> manifests;
+        resolved_rendering_data = resolveGraphImageInitialAssets(resolved_rendering_data,
+            [&](std::string_view node, const std::string &asset) {
+                const auto &resolver = dependencies.front().runtime.path_resolver;
+                const auto file = resolver.resolveExistingFile(asset);
+                // IA-2: hashed before it is decoded, so a write in between
+                // reads as a change on the next reload, never as none.
+                auto content_sha256 = assetFileSha256(file);
+                auto loaded = loadImageFile(file);
+                if (loaded.dimension != LoadedImageDimension::TwoD || loaded.array_layers != 1 ||
+                    loaded.depth != 1 || loaded.isBlockCompressed() || loaded.levels.empty())
+                    throw std::invalid_argument(
+                        "render.image initial asset must be one uncompressed 2d image: " + asset);
+                const auto &level = loaded.levels.front();
+                auto entry = std::make_shared<RenderImageInitialAsset>();
+                entry->asset = asset;
+                entry->file = file;
+                entry->sha256 = assetManifestSha256(resolver, file, manifests);
+                entry->content_sha256 = std::move(content_sha256);
+                entry->width = loaded.width;
+                entry->height = loaded.height;
+                entry->format = std::string{imagePixelFormatName(loaded.format)};
+                const auto begin = loaded.pixels.begin() + static_cast<std::ptrdiff_t>(level.offset);
+                entry->texels.assign(begin, begin + static_cast<std::ptrdiff_t>(level.size));
+                const GraphImageInitialAsset facts{loaded.width, loaded.height, entry->format,
+                                                   loaded.color_space_declared};
+                image_initial_assets.insert_or_assign(std::string{node}, std::move(entry));
+                return facts;
+            });
+    }
 
     // Keep common authoring intact through preset/feature validation. Runtime
     // availability filters only its derived GPU declarations during composition.
@@ -1122,14 +1208,31 @@ void RegistrationStages::prepare() {
         auto preview_variant =
             std::move(prepared_variants.back());
         prepared_variants.pop_back();
-        prepared_preview =
-            makePreviewGraphProgram(
-                std::move(
-                    preview_variant
-                        .compiled_pipeline),
-                std::move(
-                    preview_variant
-                        .normalized_config));
+        // PV-1: a preview the program could not compose is recorded as
+        // unavailable, with why; the runtime variants register and publish
+        // as they would without it.
+        std::exception_ptr unavailable =
+            preview_variant.unavailable;
+        if (!unavailable) {
+            try {
+                prepared_preview =
+                    makePreviewGraphProgram(
+                        std::move(
+                            preview_variant
+                                .compiled_pipeline),
+                        std::move(
+                            preview_variant
+                                .normalized_config));
+            } catch (...) {
+                unavailable = std::current_exception();
+            }
+        }
+        if (unavailable) {
+            prepared_preview =
+                unavailablePreviewGraphProgram(
+                    previewUnsupportedAuthoringReason(
+                        unavailable));
+        }
     }
     if (preview_request != variant_requests.end() &&
         !prepared_preview) {
@@ -1154,6 +1257,19 @@ void RegistrationStages::prepare() {
     // expanding live resources inside the transaction.
     mergeVariantRenderTargetPhysicalRequirements(
         prepared_variants);
+    // EN-2: every variant's declaration of a file image shares its pixels.
+    for (auto &variant : prepared_variants) {
+        auto &physical =
+            requireVulkanRenderCompilerPhysicalPackage(
+                *variant.physical_package);
+        for (auto &target :
+             physical.render_target_definitions) {
+            if (target.source) {
+                target.source_pixels =
+                    image_sources->pixels(*target.source);
+            }
+        }
+    }
 }
 
 void RegistrationStages::allocate() {
@@ -1230,6 +1346,8 @@ void RegistrationStages::attachProgramGraphState(
         if (value_graph->nodeActive(attribute.resource, inactive_graph_scopes))
             program.deformed_attributes.push_back(attribute);
     program.attribute_source_files.assign(attribute_source_files.begin(), attribute_source_files.end());
+    for (const auto &[name, asset] : image_initial_assets)
+        if (value_graph->nodeActive(name, inactive_graph_scopes)) program.image_initial_assets.emplace(name, asset);
     if (value_graph) {
         if (program.target_plan) {
             const std::set<std::string> no_scopes;
@@ -1253,8 +1371,18 @@ void RegistrationStages::attachProgramGraphState(
                 throw std::runtime_error("unbound frame graph output: " + binding.target);
             const auto &buffer = dependencies[index].frame_graph_resources.definition(found->second);
             if (buffer.host_source != FrameGraphHostBufferSource::runtime_f32 ||
-                buffer.size != binding.element_count * sizeof(float))
-                throw std::runtime_error("incompatible frame graph output buffer: " + binding.target);
+                buffer.size != binding.element_count * sizeof(float)) {
+                // CT-5: by name, as partitionGraphDocument refuses a buffer of
+                // the graph on every edit. This one may be declared outside
+                // the graph; which sink wrote it is not known here.
+                nlohmann::json actual{{"host_source", buffer.host_source
+                    ? nlohmann::json(std::string{frameGraphHostBufferSourceName(*buffer.host_source)})
+                    : nlohmann::json(nullptr)}, {"size", buffer.size}};
+                throw GraphRegistryError("graph.render_scalar_target_incompatible@1",
+                    {{"target", binding.target},
+                     {"expected", {{"host_source", "runtime_f32"}, {"size", binding.element_count * sizeof(float)}}},
+                     {"actual", std::move(actual)}});
+            }
         }
     }
 }
@@ -1493,8 +1621,29 @@ registerRenderingPassConfigVariantsData(
         dependencies,
     std::vector<RenderCompilerProgramVariantRequest>
         variant_requests) {
+    // CV-1b: every reader below -- the value and pose graphs, the attribute
+    // sources, the composition -- reads the document the authoring lowerings
+    // made, and the shaders they generated are on disk before anything
+    // compiles. A named failure here is this candidate's failure.
+    // CV-4: a lowering reads project files (a shape.text's font) through the
+    // project's paths.
+    const auto &paths = dependencies.front().runtime.path_resolver;
+    const auto lowering = lowerAuthoringDocument(
+        rendering_pass_data,
+        projectFileLoweringContext(
+            [&paths](std::string_view reference) -> std::optional<std::filesystem::path> {
+                try {
+                    return paths.resolveExistingFile(reference);
+                } catch (const std::exception &) {
+                    return std::nullopt;
+                }
+            }));
+    if (!lowering.generated_sources.empty())
+        writeAuthoringGeneratedSources(
+            lowering,
+            dependencies.front().runtime.path_resolver.projectRoot());
     RegistrationStages stages{
-        rendering_pass_data, base_extent, dependencies,
+        lowering.document, base_extent, dependencies,
         variant_requests};
     stages.prepare();
     stages.allocate();

@@ -68,6 +68,12 @@ class RenderFeaturesWidget final : public QWidget {
     // empty string when it can be taken in now, the reason otherwise.
     [[nodiscard]] std::optional<QString> loopVersionOffered(
         const QString &feature_reference) const;
+    // UX-12b, decision 2. A feature refused because the pipeline has no pass
+    // it is inserted after (feature.insertion_anchor_missing@1, or the
+    // composer's sentence) offers "Place <pass> in the Graph": this action
+    // places a pass named `anchor` there (the main window's, the Graph tab's
+    // New… path). False when it could not.
+    void setPlaceInsertionAnchorAction(std::function<bool(const QString &anchor)> action);
     // Who hears the loop an apply_graph_template added, once it committed.
     void setLoopVersionAppliedAction(std::function<void(const QString &loop)> action);
     // RSX, decision 1. A commit -- of this panel or of an editor it opens

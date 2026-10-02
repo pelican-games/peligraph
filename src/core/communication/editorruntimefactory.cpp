@@ -24,11 +24,13 @@
 #include "../loader/editorprojectionadapters.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../loader/renderconfigcandidate.hpp"
+#include "../loader/sampletable.hpp"
 #include "../loader/scene.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../os/inputsequence.hpp"
 #include "../phys/physworld.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
+#include "../renderingpass/graphimagesource.hpp"
 #include "../renderingpass/previewgraph.hpp"
 #include "../renderingpass/subgraphreplacementregistry.hpp"
 #include "../renderer/camera.hpp"
@@ -37,12 +39,14 @@
 #include "../shader/raygrouplayout.hpp"
 #include "../userpublic/components/predefined.hpp"
 #include "../userpublic/details/event/registerer.hpp"
+#include "../userpublic/valuegraph.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/rendertiming.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
+#include "../../project/authoringlowering.hpp"
 #include "../../project/featurecompose.hpp"
 #include "../../project/renderfeatureoverlay.hpp"
 
@@ -1256,6 +1260,19 @@ EditorProjectionContext makeEditorProjectionContext(
 
 namespace {
 
+// CV-4: the authoring lowerings read project files (a shape.text's font)
+// through the project's paths; a reference that names no file reads nothing.
+AuthoringLoweringContext projectLoweringContext(const PathResolver &paths) {
+    return projectFileLoweringContext(
+        [&paths](std::string_view reference) -> std::optional<std::filesystem::path> {
+            try {
+                return paths.resolveExistingFile(reference);
+            } catch (const std::exception &) {
+                return std::nullopt;
+            }
+        });
+}
+
 EditorProjectionResult rejectProjectionPlanFailure(
     ProjectionPlanFailure failure, SceneRevision base_revision,
     SceneRevision committed_revision) {
@@ -2047,9 +2064,15 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         return runtime->modules.path_resolver
                             .resolveProjectRef(reference);
                     },
+                    .resolve_image_sources = [runtime](
+                                                 const nlohmann::json &document) {
+                        return resolveGraphImageSourceExtents(
+                            document, runtime->modules.path_resolver);
+                    },
                     // This is the independent editor query policy.  In
                     // particular, it never calls ReloadGate::enabled(),
-                    // which is intentionally false for --rpc drivers.
+                    // which is intentionally false for --rpc drivers
+                    // (unless project.json declares hot_reload).
                     .gate = [runtime] {
                         const auto observation =
                             editorGateObservation(
@@ -2065,7 +2088,6 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         };
                     },
                     .runtime_snapshot = [runtime] {
-                        (void)runtime;
                         const auto generation =
                             GET_MODULE(FrameGraphRuntimeContainer)
                                 .snapshot();
@@ -2079,6 +2101,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                             .enabled_feature_names =
                                 generation
                                     ->enabled_feature_names,
+                            .preview = previewGraphStatusJson(
+                                runtime->modules.renderer
+                                    .previewGraphProgram()),
                         };
                     },
                     .apply_candidate =
@@ -2142,9 +2167,20 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                         reference);
                                 };
                             std::optional<std::string> preset_bytes;
+                            // CV-1b / EN-2: composed as the registration composes it --
+                            // from the lowered document, with render.image sources
+                            // sized from their files. CV-4: the files the lowering
+                            // generated (a glyph atlas is such a source) are written
+                            // first.
+                            const auto lowering = lowerAuthoringDocument(
+                                nlohmann::json::parse(documents.rootDocument().bytes),
+                                projectLoweringContext(runtime->modules.path_resolver));
+                            writeAuthoringGeneratedSources(
+                                lowering, runtime->modules.path_resolver.projectRoot());
                             auto composed = composeRenderFeatureConfig(
-                                nlohmann::json::parse(
-                                    documents.rootDocument().bytes),
+                                resolveGraphImageSourceExtents(
+                                    lowering.document,
+                                    runtime->modules.path_resolver),
                                 RenderFeatureComposeDependencies{
                                     .load_feature_json = loader,
 #if PELICAN_RUNTIME_SHADER_COMPILER
@@ -2206,6 +2242,32 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                             launch.render_feature_overlays,
                                             loader)
                                             .dump();
+                            }
+                            // CV-1b: the variants are preflighted from the
+                            // lowered document, as they are registered. A
+                            // document a lowering refuses is left to the
+                            // registration, which refuses it by name (as the
+                            // flat variant's own failure is).
+                            try {
+                                auto lowering = lowerAuthoringDocument(
+                                    nlohmann::json::parse(bytes),
+                                    projectLoweringContext(runtime->modules.path_resolver));
+                                // CV-4: an atlas is sized from its file below.
+                                writeAuthoringGeneratedSources(
+                                    lowering, runtime->modules.path_resolver.projectRoot());
+                                if (lowering.changed)
+                                    bytes = lowering.document.dump();
+                            } catch (const std::exception &) {
+                                return;
+                            }
+                            // EN-2: as resolve_authoring_context, after the lowering so the
+                            // images a lowering made are sized too.
+                            if (const auto document = nlohmann::json::parse(bytes, nullptr, false);
+                                !document.is_discarded()) {
+                                if (auto resolved = resolveGraphImageSourceExtents(
+                                        document, runtime->modules.path_resolver);
+                                    resolved != document)
+                                    bytes = resolved.dump();
                             }
                             preflightRenderGraphVariants(
                                 bytes, loader,
@@ -2298,6 +2360,37 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         }
                         return result;
                     },
+                    // IA-2: the initial assets the live generation read, as
+                    // its programs recorded them. IA-3: and the tables its
+                    // value graphs' value.sample_table nodes read, each with
+                    // the manifest beside it, under the table's reference.
+                    .published_assets = [] {
+                        std::vector<RenderConfigPublishedAsset> result;
+                        const auto generation =
+                            GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+                        if (generation == nullptr) return result;
+                        for (const auto &[id, program] : generation->programs) {
+                            (void)id;
+                            for (const auto &[name, asset] :
+                                 program.frame_graph.image_initial_assets) {
+                                (void)name;
+                                result.push_back({.asset = asset->asset,
+                                                  .file = asset->file,
+                                                  .sha256 = asset->content_sha256});
+                            }
+                            if (!program.frame_graph.value_graph) continue;
+                            for (const auto &read :
+                                 program.frame_graph.value_graph->sampleTables()) {
+                                result.push_back({.asset = read.asset,
+                                                  .file = read.table->file,
+                                                  .sha256 = read.table->file_sha256});
+                                result.push_back({.asset = read.asset,
+                                                  .file = read.table->manifest,
+                                                  .sha256 = read.table->manifest_sha256});
+                            }
+                        }
+                        return result;
+                    },
                     // FG-2: verify_fold's runs are this executable, headless,
                     // in a copy of the project (graphfoldverify.hpp). What the
                     // children need of this launch is read once, here: the
@@ -2325,6 +2418,10 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         if (!foldVerifyExecutablePath())
                             return "executable_unknown";
                         return std::nullopt;
+                    },
+                    // AB-1: list_derived_assets walks the asset stores.
+                    .asset_stores = [runtime] {
+                        return runtime->modules.path_resolver.stores();
                     },
                 });
         }
