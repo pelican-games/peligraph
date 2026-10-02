@@ -962,7 +962,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 48> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 49> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -1033,6 +1033,13 @@ constexpr std::array<GraphLoopRefusalText, 48> GraphLoopRefusalTexts{{
     {"graph.render_scalar_type_mismatch@1",
      "The render.scalar {node} writes {components} float(s) into {target}, whose elements are "
      "{element}"},
+    // UX-13b, decision 3 (engine CT-5): the buffer a render.scalar writes is
+    // not a runtime_f32 one as large as its sinks; `expected` / `actual` are
+    // {host_source, size?}, read as "<host_source>, <size> bytes". One the
+    // graph declares names the sink (`node`); one declared outside it does
+    // not (the sentence then says so).
+    {"graph.render_scalar_target_incompatible@1",
+     "The render.scalar {node} writes {target} ({actual}), which must be {expected} \xE2\x80\x94 {fix}"},
     // UX-8, decision 13 (b) (CT-1): a port declaration lacks a field.
     {"graph.port_field_missing@1", "Port {port} of {node} needs {field}"},
     // GL-3a (FG-1): a fold group's decisions. `subject` is {node, element?,
@@ -1312,6 +1319,40 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error, bool name_d
         for (const auto &candidate : GraphScalarLayoutReasonTexts)
             if (candidate.reason == reason) pattern = candidate.sentence;
     }
+    // UX-13b, decision 3 (engine CT-5): what the buffer is and must be, and
+    // the Fix the Graph's button applies -- or, for a buffer declared outside
+    // the graph (no `node`), where to apply it.
+    if (entry->code == "graph.render_scalar_target_incompatible@1") {
+        const auto side = [&](const char *key) {
+            const auto found = fields.find(key);
+            if (found == fields.end() || !found->is_object()) return std::string{"?"};
+            const auto host = found->find("host_source");
+            std::string line = host != found->end() && host->is_string() ? host->get<std::string>()
+                                                                         : std::string{"no host_source"};
+            if (const auto size = found->find("size"); size != found->end() && size->is_number_integer())
+                line += ", " + size->dump() + " bytes";
+            return line;
+        };
+        const auto target = graphRefusalFieldText(fields, "target");
+        std::string fix = "Fix: make " + target + " runtime_f32";
+        if (const auto expected = fields.find("expected"); expected != fields.end() && expected->is_object())
+            if (const auto size = expected->find("size"); size != expected->end() && size->is_number_integer())
+                fix += ", " + size->dump() + " bytes";
+        fields["actual"] = side("actual");
+        fields["expected"] = side("expected");
+        if (!fields.contains("node") || !fields.at("node").is_string()) {
+            pattern = "A render.scalar writes {target} ({actual}), declared outside the graph, which must be "
+                      "{expected} \xE2\x80\x94 {fix} where it is declared";
+        }
+        fields["fix"] = fix;
+    }
+    // UX-13b, decision 6 (engine CT-5): refused inside a definition, it is
+    // the definition's other user that has no owner; the document and the
+    // definition follow in the one sentence.
+    if (entry->code == "graph.op_requires_owned_instance@1" && fields.contains("definition") &&
+        fields.at("definition").is_string())
+        pattern = "{op} runs only in a definition attached to an object; this definition is also used by "
+                  "an instance with no owner";
     if (entry->code == "graph.loop_output_reference_unknown@1") {
         const auto reason = graphRefusalFieldText(fields, "reason");
         for (const auto &candidate : GraphLoopOutputReferenceReasonTexts)

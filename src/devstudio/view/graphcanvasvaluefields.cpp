@@ -638,8 +638,10 @@ void GraphCanvasValueFields::loadScalar(bool force) {
     {
         const QSignalBlocker block{scalar_target_};
         scalar_target_->clear();
-        for (const auto &choice : model_.scalarTargets(scope_))
-            scalar_target_->addItem(qtext(choice), qtext(choice));
+        // UX-13b, decision 2 (engine CT-5): the buffers it can write once the
+        // edit that picks one makes it so, each saying what that changes.
+        for (const auto &choice : model_.scalarTargetChoices(scope_, node_, model_.scalarValue(scope_, node_).size()))
+            scalar_target_->addItem(qtext(GraphCanvasModel::scalarTargetLabel(choice)), qtext(choice.buffer));
         if (!target.empty() && scalar_target_->findData(qtext(target)) < 0)
             scalar_target_->addItem(qtext(target), qtext(target));
         scalar_target_->setCurrentIndex(std::max(0, scalar_target_->findData(qtext(target))));

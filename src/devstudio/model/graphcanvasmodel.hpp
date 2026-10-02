@@ -615,6 +615,30 @@ struct GraphCanvasParameterRefusal {
     bool operator==(const GraphCanvasParameterRefusal &) const = default;
 };
 
+// UX-13b, decision 2 (engine CT-5): a buffer a render.scalar can write, and
+// what the edit that picks it changes on it so that it can be written --
+// "runtime_f32" (its host_source, and its size with it), "<n> bytes" (its
+// size alone), or nothing.
+struct GraphCanvasScalarTarget {
+    std::string buffer;
+    std::string fix;
+
+    bool operator==(const GraphCanvasScalarTarget &) const = default;
+};
+
+// UX-13b, decision 3: graph.render_scalar_target_incompatible@1 -- the buffer
+// a render.scalar cannot write and what it has to be. `in_graph`: a buffer of
+// the graph (the refusal names a node), which one edit makes so, in `scope`;
+// else one declared outside the graph, which only a sentence can point at.
+struct GraphCanvasScalarTargetFix {
+    std::string scope;
+    std::string target;
+    std::optional<std::uint64_t> size;
+    bool in_graph = false;
+
+    bool operator==(const GraphCanvasScalarTargetFix &) const = default;
+};
+
 // GL-2b (design_graph_layers 5.1). Where the graph node that made a pass is
 // authored: get_frame_plan's `origin`. `definition` and `instance_path` are
 // empty for a root node; `loop` is set for one copy of a graph.loop.
@@ -999,6 +1023,9 @@ class GraphCanvasModel {
     std::string source_reference_;
     nlohmann::json nodes_ = nlohmann::json::array();
     nlohmann::json definitions_ = nlohmann::json::object();
+    // UX-13b, decision 4 (engine CT-5): get_graph_instances'
+    // definition_instances, as it came.
+    nlohmann::json definition_instances_ = nlohmann::json::object();
     // N-6: the root scope's own placement, as the document carries it. A
     // definition's travels inside its body, so only this one needs a field.
     nlohmann::json layout_ = nlohmann::json::object();
@@ -1386,6 +1413,8 @@ class GraphCanvasModel {
                      const std::string &scope = {});
     // UX-12a, decision 4.
     std::optional<GraphCanvasParameterRefusal> parameter_refusal_;
+    // UX-13b, decision 3.
+    std::optional<GraphCanvasScalarTargetFix> scalar_target_fix_;
     // The branch a loop runs for one element: the report's answer when there
     // is one, else the first branch whose integer condition holds.
     std::optional<std::size_t> branchForElement(std::string_view loop,
@@ -2763,6 +2792,46 @@ class GraphCanvasModel {
     // and the frame plan's other buffers (a feature's runtime buffer, as
     // bloom.intensity).
     [[nodiscard]] std::vector<std::string> scalarTargets(std::string_view scope) const;
+    // UX-13b, decision 2 (engine CT-5): what the picker of a render.scalar's
+    // target offers -- the graph's buffers it can write once the same edit
+    // makes them so (float elements, no value line on them, a size the edit
+    // can set), each with what the edit changes, then the frame plan's
+    // other buffers as they are. `node` is the sink (none: a new one) and
+    // `components` the floats it writes.
+    [[nodiscard]] std::vector<GraphCanvasScalarTarget>
+    scalarTargetChoices(std::string_view scope, std::string_view node = {},
+                        std::size_t components = 1) const;
+    // "<buffer>", or "<buffer> (will be set to <fix>)".
+    [[nodiscard]] static std::string scalarTargetLabel(const GraphCanvasScalarTarget &target);
+    // The set_node_parameters that make the graph's buffer `target` one the
+    // render.scalar sinks writing it can write: host_source runtime_f32 and
+    // `bytes` large (a render.attribute's count); none when it already is,
+    // when it is not the graph's, or when no edit makes it so.
+    [[nodiscard]] nlohmann::json scalarTargetFixOps(std::string_view scope, const std::string &target,
+                                                    std::uint64_t bytes) const;
+    // The bytes the render.scalar sinks of `scope` write into `target`,
+    // `except` one of them, a sink's own count of floats taken from
+    // `components` when it is there.
+    [[nodiscard]] std::uint64_t scalarTargetBytes(std::string_view scope, const std::string &target,
+                                                  std::string_view except = {},
+                                                  const std::map<std::string, std::size_t> &components = {}) const;
+    // UX-13b, decision 3: the last edit refused as
+    // graph.render_scalar_target_incompatible@1; reset by the next commit.
+    [[nodiscard]] const std::optional<GraphCanvasScalarTargetFix> &scalarTargetFix() const noexcept {
+        return scalar_target_fix_;
+    }
+    // "Fix: make <target> runtime_f32, <size> bytes".
+    [[nodiscard]] static std::string scalarTargetFixLabel(const GraphCanvasScalarTargetFix &fix);
+    // The Fix of a graph buffer: one set_node_parameters on it.
+    bool fixScalarTarget();
+    // UX-13b, decision 4 (engine CT-5): whether every root node that runs
+    // `definition` is an instance with an owner (or none runs it) --
+    // get_graph_instances' definition_instances. True when the engine does
+    // not say.
+    [[nodiscard]] bool definitionOwnedInstancesOnly(std::string_view definition) const;
+    // UX-13b, decision 1: get_graph_catalog as the choices of a parameter
+    // read it -- {"modules": [{"types": [...], "operations": [...]}]}.
+    [[nodiscard]] nlohmann::json catalogChoices() const;
 
     // Decision 13 (a) (engine CT-1) / UX-12a, decision 2 (engine CT-3): the
     // parameters the palette asks for -- the `required` entries of the

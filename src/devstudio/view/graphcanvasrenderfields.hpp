@@ -428,7 +428,10 @@ class GraphCanvasPlaceFields final : public QWidget {
 // sink's voice) says "or connect a line". OK / Cancel. Named
 // `pelican.graphCanvasRequired` and `pelican.graphCanvasRequired.<parameter>`
 // (`.<parameter>.choose` for a radio, `.ok`, `.cancel`). What is written here
-// can be changed afterwards in the node's fields.
+// can be changed afterwards in the node's fields. UX-13b (engine CT-5): the
+// buffers a render.scalar's target offers are those it can write once the
+// placing edit makes them so ("(will be set to runtime_f32)"), and
+// value.sample_table's table and row are its table's own fields.
 class GraphCanvasRequiredDialog final : public QDialog {
   public:
     GraphCanvasRequiredDialog(const GraphCanvasModel &model, const std::string &scope,

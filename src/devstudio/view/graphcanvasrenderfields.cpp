@@ -1,6 +1,5 @@
 #include "graphcanvasrenderfields.hpp"
 
-#include "../model/audioanalysistables.hpp"
 #include "fullscreenpasssettings.hpp"
 #include "fullscreenshadertemplate.hpp"
 #include "graphcanvasparameterfields.hpp"
@@ -2456,12 +2455,9 @@ GraphCanvasRequiredDialog::GraphCanvasRequiredDialog(const GraphCanvasModel &mod
         return editor;
     };
     auto *group = new QButtonGroup(this);
-    // AB-1s, decision 2: value.sample_table's tables, read once.
-    const auto tables = std::make_shared<std::vector<GraphCanvasAnalysisTable>>(
-        op == "value.sample_table" ? readProjectAnalysisTables(project_root)
-                                   : std::vector<GraphCanvasAnalysisTable>{});
-    QComboBox *table_asset = nullptr;
-    QComboBox *table_row = nullptr;
+    // UX-13b, decision 5: value.sample_table's table and row are the table's
+    // own fields (an asset of the analysis tables, a row the manifest beside
+    // it lists), as every other op's are.
     for (const auto &required : model.requiredParametersFor(op)) {
         QWidget *field = nullptr;
         if (required.kind == "input") {
@@ -2477,31 +2473,16 @@ GraphCanvasRequiredDialog::GraphCanvasRequiredDialog(const GraphCanvasModel &mod
             combo->setEditable(true);
             combo->setInsertPolicy(QComboBox::NoInsert);
             // UX-8, decision 3: the graph's buffers and the plan's (a
-            // feature's, as bloom.intensity).
-            for (const auto &buffer : model.scalarTargets(scope))
-                combo->addItem(qtext(buffer), qtext(buffer));
+            // feature's, as bloom.intensity). UX-13b, decision 2 (engine
+            // CT-5): only those it can write once the placing edit makes them
+            // so, each saying what that edit changes.
+            for (const auto &buffer : model.scalarTargetChoices(scope))
+                combo->addItem(qtext(GraphCanvasModel::scalarTargetLabel(buffer)), qtext(buffer.buffer));
             if (combo->count() == 0) combo->setEditText(QStringLiteral("value_buffer"));
             combo->setToolTip(tr("The buffer the value is written into: one of the graph's "
-                                 "render.buffer nodes, or a new name."));
+                                 "render.buffer nodes, or a new name. One that is not a runtime_f32 "
+                                 "buffer as large as its sinks is made one in the same edit."));
             connect(combo, &QComboBox::editTextChanged, this, [this] { follow(); });
-            field = combo;
-        } else if (op == "value.sample_table" && (required.name == "asset" || required.name == "row")) {
-            // AB-1s, decision 2: a baked analysis table of the project, and
-            // one of its rows -- the features its manifest's layout lists.
-            auto *combo = new QComboBox(this);
-            if (required.name == "asset") {
-                for (const auto &table : *tables)
-                    combo->addItem(qtext(table.asset), qtext("project://" + table.asset));
-                combo->setToolTip(tables->empty()
-                                      ? tr("No baked table yet: Bake analysis… on a sound (an "
-                                           "audio.playback's Sound) makes one.")
-                                      : tr("A table baked from a sound (Bake analysis…)."));
-                table_asset = combo;
-            } else {
-                combo->setToolTip(tr("The row read: rms, peak, or one band (band:0 is the lowest)."));
-                table_row = combo;
-            }
-            connect(combo, &QComboBox::currentIndexChanged, this, [this] { follow(); });
             field = combo;
         } else {
             field = editorFor(required.schema, required.name);
@@ -2572,27 +2553,6 @@ GraphCanvasRequiredDialog::GraphCanvasRequiredDialog(const GraphCanvasModel &mod
         picked->setChecked(true);
     }
     connect(group, &QButtonGroup::buttonToggled, this, [this] { follow(); });
-    // A table's rows follow the table picked; rms first when it has one.
-    if (table_asset != nullptr && table_row != nullptr) {
-        const auto fill = [tables, table_asset, table_row] {
-            const QSignalBlocker block{table_row};
-            const auto kept = table_row->currentData().toString();
-            table_row->clear();
-            const auto picked = projectRelativeReference(table_asset->currentData().toString().toStdString());
-            for (const auto &table : *tables)
-                if (table.asset == picked)
-                    for (const auto &feature : table.layout.features)
-                        table_row->addItem(qtext(feature), qtext(feature));
-            const auto again = table_row->findData(kept);
-            const auto rms = table_row->findData(QStringLiteral("rms"));
-            table_row->setCurrentIndex(again >= 0 ? again : rms >= 0 ? rms : 0);
-        };
-        fill();
-        connect(table_asset, &QComboBox::currentIndexChanged, this, [this, fill] {
-            fill();
-            follow();
-        });
-    }
     auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, this);
     ok_ = buttons->button(QDialogButtonBox::Ok);
     ok_->setObjectName(QStringLiteral("pelican.graphCanvasRequired.ok"));
@@ -2657,7 +2617,12 @@ nlohmann::json GraphCanvasRequiredDialog::parameters() const {
         if (const auto *editor = dynamic_cast<const GraphParameterEditor *>(field.widget)) {
             if (auto value = editor->value(); !value.is_null()) result[field.name] = std::move(value);
         } else if (const auto *combo = qobject_cast<const QComboBox *>(field.widget)) {
-            const auto text = (combo->isEditable() ? combo->currentText() : combo->currentData().toString())
+            // UX-13b, decision 2: an entry picked is its value (its words
+            // may say what the edit changes); a name typed is itself.
+            const auto index = combo->currentIndex();
+            const bool picked = !combo->isEditable() ||
+                                (index >= 0 && combo->itemText(index) == combo->currentText());
+            const auto text = (picked ? combo->itemData(index).toString() : combo->currentText())
                                   .trimmed()
                                   .toStdString();
             result[field.name] = text;

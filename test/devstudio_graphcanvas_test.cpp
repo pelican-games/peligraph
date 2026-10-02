@@ -3914,6 +3914,115 @@ TEST_CASE("UX-8 decision 12: render.scalar's numbers are packed with the other s
           "passes/main.json. Fix the file (or Reload from disk) to start it again.");
 }
 
+// --- UX-13b (engine CT-5): a render.scalar's buffer made one it can write.
+
+TEST_CASE("UX-13b decision 2: a render.scalar's target offers the buffers it can write once the same "
+          "edit makes them runtime_f32 and as large as their sinks, and each edit of the sinks keeps "
+          "them so",
+          "[studio][graph-canvas][ux13b]") {
+    Ux8Harness h;
+    // level (ux8Document's): a float buffer nothing writes from the host;
+    // counts: uint elements, which no edit of it makes one; params: one
+    // already.
+    h.document["nodes"].push_back({{"id", "counts"}, {"op", "render.buffer"},
+                                   {"parameters", {{"element", "uint"}, {"size", 4}}},
+                                   {"outputs", Json::array({"resource"})}});
+    h.document["nodes"].push_back({{"id", "params"}, {"op", "render.buffer"},
+                                   {"parameters", {{"element", "float"}, {"size", 4},
+                                                   {"host_source", "runtime_f32"}}},
+                                   {"outputs", Json::array({"resource"})}});
+    h.open();
+    h.report();
+    using PelicanStudio::GraphCanvasScalarTarget;
+    CHECK(h.client.model.scalarTargetChoices({}) ==
+          std::vector<GraphCanvasScalarTarget>{{"level", "runtime_f32"}, {"params", ""}});
+    CHECK(GraphCanvasModel::scalarTargetLabel({"level", "runtime_f32"}) == "level (will be set to runtime_f32)");
+    CHECK(GraphCanvasModel::scalarTargetLabel({"params", ""}) == "params");
+    // Placed on level: the buffer is made one it can write, in the same list.
+    const Json seed{{"parameters", {{"target", "level"}}}};
+    const auto ops = h.client.model.addNodeOpsIn({}, "render.scalar", {}, seed);
+    REQUIRE(ops.size() >= 2);
+    CHECK(ops[ops.size() - 2].at("node").at("op") == "render.scalar");
+    CHECK(ops.back() == Json{{"op", "set_node_parameters"}, {"scope", "root"}, {"node", "level"},
+                             {"parameters", {{"element", "float"}, {"size", 4}, {"host_source", "runtime_f32"}}}});
+    REQUIRE(h.client.model.addNodeIn({}, "render.scalar", {}, seed));
+    h.commitAndReport();
+    h.partitions();
+    // It writes a vec3: level grows to 12 bytes in the same edit.
+    REQUIRE(h.client.model.setScalarValue({}, "render_scalar", {1.0, 2.0, 3.0}));
+    h.commitAndReport();
+    CHECK(h.node("level").at("parameters").at("size") == 12);
+    h.partitions();
+    // A second sink on it joins after the first; level takes both.
+    CHECK(h.client.model.scalarTargetChoices({}) ==
+          std::vector<GraphCanvasScalarTarget>{{"level", "16 bytes"}, {"params", ""}});
+    REQUIRE(h.client.model.addNodeIn({}, "render.scalar", {}, seed));
+    h.commitAndReport();
+    CHECK(h.node("render_scalar_2").at("parameters").at("offset") == 12);
+    CHECK(h.node("level").at("parameters").at("size") == 16);
+    h.partitions();
+    // Moved to params: level is left as large as the sink still on it.
+    REQUIRE(h.client.model.setScalarTarget({}, "render_scalar_2", "params"));
+    h.commitAndReport();
+    CHECK(h.node("render_scalar_2").at("parameters").at("target") == "params");
+    CHECK(h.node("params").at("parameters").at("size") == 4);
+    CHECK(h.node("level").at("parameters").at("size") == 12);
+    h.partitions();
+}
+
+TEST_CASE("UX-13b decision 3: graph.render_scalar_target_incompatible@1 reads as one sentence with its "
+          "Fix; a graph's buffer is fixed in one edit, one declared outside the graph is only said",
+          "[studio][graph-canvas][ux13b]") {
+    using PelicanStudio::graphLoopRefusalDescription;
+    const Json in_graph{{"code", "graph.render_scalar_target_incompatible@1"},
+                        {"node", "render_scalar"},
+                        {"target", "level"},
+                        {"expected", {{"host_source", "runtime_f32"}, {"size", 16}}},
+                        {"actual", {{"host_source", nullptr}, {"size", 4}}},
+                        {"document", "project://passes/main.json"}};
+    CHECK(graphLoopRefusalDescription(in_graph) ==
+          "The render.scalar render_scalar writes level (no host_source, 4 bytes), which must be "
+          "runtime_f32, 16 bytes \xE2\x80\x94 Fix: make level runtime_f32, 16 bytes (in passes/main.json, "
+          "graph.render_scalar_target_incompatible@1).");
+    const Json outside{{"code", "graph.render_scalar_target_incompatible@1"},
+                       {"target", "bloom.intensity"},
+                       {"expected", {{"host_source", "runtime_f32"}, {"size", 4}}},
+                       {"actual", {{"host_source", "runtime_f32"}, {"size", 8}}}};
+    CHECK(graphLoopRefusalDescription(outside) ==
+          "A render.scalar writes bloom.intensity (runtime_f32, 8 bytes), declared outside the graph, "
+          "which must be runtime_f32, 4 bytes \xE2\x80\x94 Fix: make bloom.intensity runtime_f32, 4 bytes "
+          "where it is declared (graph.render_scalar_target_incompatible@1).");
+
+    Ux8Harness h;
+    h.open();
+    h.report();
+    const auto refuse = [&](const Json &error) {
+        REQUIRE(h.client.model.setNodeParameter({}, "level", "size", 8));
+        const auto submit = h.client.take("edit_graph_document");
+        h.client.reply(submit, {{"status", "rejected"}, {"committed", false}, {"error", error}});
+        h.refresh();
+    };
+    refuse(in_graph);
+    REQUIRE(h.client.model.scalarTargetFix().has_value());
+    CHECK(h.client.model.scalarTargetFix()->in_graph);
+    CHECK(GraphCanvasModel::scalarTargetFixLabel(*h.client.model.scalarTargetFix()) ==
+          "Fix: make level runtime_f32, 16 bytes");
+    CHECK(h.client.model.notice().message.find("Fix: make level runtime_f32, 16 bytes") != std::string::npos);
+    // The Fix: one edit of the buffer, as the engine asked.
+    REQUIRE(h.client.model.fixScalarTarget());
+    h.commitAndReport();
+    CHECK(h.last_ops == Json::array({{{"op", "set_node_parameters"}, {"scope", "root"}, {"node", "level"},
+                                      {"parameters", {{"element", "float"}, {"size", 16},
+                                                      {"host_source", "runtime_f32"}}}}}));
+    CHECK_FALSE(h.client.model.scalarTargetFix().has_value());
+    // Declared outside the graph: said, nothing to apply here.
+    refuse(outside);
+    REQUIRE(h.client.model.scalarTargetFix().has_value());
+    CHECK_FALSE(h.client.model.scalarTargetFix()->in_graph);
+    CHECK_FALSE(h.client.model.fixScalarTarget());
+    CHECK(h.client.model.notice().message.find("where it is declared") != std::string::npos);
+}
+
 TEST_CASE("UX-8 decision 9: sounds are copied into assets/audio, _2 beside a name already there",
           "[studio][graph-canvas][ux8]") {
     const auto root = std::filesystem::temp_directory_path() / "pelican_ux8_import";

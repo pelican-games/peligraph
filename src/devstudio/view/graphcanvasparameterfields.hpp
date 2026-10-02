@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 class QCheckBox;
@@ -76,6 +77,18 @@ struct GraphParameterChoices {
 //     own field beside it (`<name>.<kind>`), picked by the value's type;
 //   - decision 4: a number with `soft_max` slides up to it; a value above it
 //     is kept, with a faint `<name>.unusual` ("above the usual range").
+// UX-13b (engine CT-5):
+//   - decision 1: `choices_from` narrowed by `where` (a node's parameter,
+//     or an entry's member, one of the values; a node's parameter it does
+//     not write is its table's default), read from the catalog Studio holds
+//     (`rpc: get_graph_catalog`), or from the import manifest beside the
+//     asset a sibling parameter names (`asset_manifest`: value.sample_table's
+//     rows), read again when that asset changes;
+//   - decision 5: a required union not written starts on its listed shape at
+//     the first name listed (a sample row's rms), once its list has one;
+//   - decision 6: a class with an argument (`format_class_patterns`: the
+//     format_class's explicit) is "Explicit…" in the list and a combo of its
+//     argument beside it (`<name>.argument`), written `explicit(<format>)`.
 class GraphParameterEditor final : public QWidget {
   public:
     GraphParameterEditor(nlohmann::json schema, std::shared_ptr<const GraphParameterChoices> choices,
@@ -107,6 +120,10 @@ class GraphParameterEditor final : public QWidget {
     void buildVector(int count, bool colour);
     void buildCombo();
     void buildChoices();
+    // UX-13b, decision 6: the argument combo of a class with one.
+    void showPattern();
+    [[nodiscard]] std::vector<nlohmann::json> patterns() const;
+    [[nodiscard]] std::optional<nlohmann::json> patternOf(const std::string &value, std::string *argument) const;
     void buildUnion();
     void loadUnion(const nlohmann::json &shown);
     void showUnion();
@@ -123,7 +140,8 @@ class GraphParameterEditor final : public QWidget {
     void importAsset();
     [[nodiscard]] QString child(const QString &suffix) const;
     [[nodiscard]] nlohmann::json widgetValue() const;
-    [[nodiscard]] std::vector<std::string> comboChoices() const;
+    // (value, label): the label is the value unless it says more.
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>> comboChoices() const;
 
     nlohmann::json schema_;
     std::shared_ptr<const GraphParameterChoices> choices_;
@@ -154,9 +172,12 @@ std::vector<std::string> assetParameterExtensions(const nlohmann::json &schema);
 // names joined by '.', an array met on the way walked element by element --
 // each entry itself (a string) or its `field` (a string, or each string of
 // an array). In the reply's order, each once.
+// UX-13b, decision 1 (engine CT-5): only the entries whose member of each
+// name `where` gives is the value, or one of the values, it gives.
 std::vector<std::string> graphParameterChoicesFromReply(const nlohmann::json &reply,
                                                         std::string_view key,
-                                                        std::string_view field);
+                                                        std::string_view field,
+                                                        const nlohmann::json &where = nlohmann::json{});
 // UX-12e, decision 3: what the variant picker of a union says for one of its
 // shapes (the union's `name`): "Count" / "Index" for an integer, "Name" for
 // a string, "Custom" for an object; a one-value enum its value ("Full chain"

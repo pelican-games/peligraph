@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_node_parameters",
-  "description": "UX-12a (engine CT-3): a Graph node's parameters are fields made from the catalog's table. From File > New Project > Blank: the palette's render.buffer is picked and its fields are the table's -- size an integer spin (64 typed goes into the document), lifetime a combo of its enum (transient picked, then Reset takes the key out and the engine's default applies), and -4 typed below the table's 0 is refused by the engine as graph.render_node_parameter_invalid@1, said in one sentence on the Graph's notice and under the size row (decision 4); 128 is taken after. The palette's value.trigger_clock's paused is a number field (1 typed). The palette's pose.clip_sample asks for what the table requires (decision 2): its rig by Import... (a rigged glTF written outside the project is copied into assets/models) and its clip among the rig's animations (Run); its fields are then the table's (decision 5): speed 2, loop off, start time 0.5. Nothing is JSON. Typed: the project folder and name, the palette filters, the glTF's path in the import dialog, and the numbers 64, -4, 128, 1, 2 and 0.5. UX-12e (engine CT-4): the palette's render.scalar picks its target from a combo of the graph's buffers (decision 1); a render.image's mip levels switch from Count to Full chain (decision 3); in the root the palette shows pose.clip_sample grey with New definition... at its row's end, which makes walk_pose, goes into it and opens the palette there on pose.clip_sample (decision 5). Typed besides: the filters render.buffer, render.scalar and render.image.",
+  "description": "UX-12a (engine CT-3): a Graph node's parameters are fields made from the catalog's table. From File > New Project > Blank: the palette's render.buffer is picked and its fields are the table's -- size an integer spin (64 typed goes into the document), lifetime a combo of its enum (transient picked, then Reset takes the key out and the engine's default applies), and -4 typed below the table's 0 is refused by the engine as graph.render_node_parameter_invalid@1, said in one sentence on the Graph's notice and under the size row (decision 4); 128 is taken after. The palette's value.trigger_clock's paused is a number field (1 typed). The palette's pose.clip_sample asks for what the table requires (decision 2): its rig by Import... (a rigged glTF written outside the project is copied into assets/models) and its clip among the rig's animations (Run); its fields are then the table's (decision 5): speed 2, loop off, start time 0.5. Nothing is JSON. Typed: the project folder and name, the palette filters, the glTF's path in the import dialog, and the numbers 64, -4, 128, 1, 2 and 0.5. UX-12e (engine CT-4): the palette's render.scalar picks its target from a combo of the graph's buffers (decision 1); a render.image's mip levels switch from Count to Full chain (decision 3); in the root the palette shows pose.clip_sample grey with New definition... at its row's end, which makes walk_pose, goes into it and opens the palette there on pose.clip_sample (decision 5). Typed besides: the filters render.buffer, render.scalar and render.image. UX-13b (engine CT-5), decision 2: render_buffer_2 is left as the palette makes it (nothing writes it from the host); the render.scalar's target offers it as \"render_buffer_2 (will be set to runtime_f32)\", and the edit that places the sink makes it runtime_f32 too -- the engine, which now refuses a render.scalar target that is not a runtime_f32 buffer as large as its sinks, takes it.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -528,50 +528,13 @@
       "enabled": true
     },
     {
-      "label": "fit",
-      "cmd": "action",
-      "name": "pelican.graphCanvas.fitView"
-    },
-    {
-      "label": "pick it",
-      "cmd": "click",
-      "name": "pelican.graphCanvasView::graph_node_header#render_buffer_2"
-    },
-    {
-      "label": "its host source",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasParameters.host_source",
-      "timeout_ms": 30000,
-      "visible": true
-    },
-    {
-      "label": "filled by the value graph each frame (runtime_f32, what a render.scalar writes)",
-      "cmd": "select",
-      "name": "pelican.graphCanvasParameters.host_source",
-      "text": "runtime_f32"
-    },
-    {
-      "label": "runtime_f32 is in the document",
+      "label": "UX-13b decision 2: nothing writes render_buffer_2 from the host yet",
       "expect": "rpc_equals",
       "method": "get_graph_instances",
       "params": {},
-      "path": "nodes[4].parameters.host_source",
-      "value": "runtime_f32",
+      "path": "nodes[4].parameters",
+      "value": {"element": "float", "size": 4},
       "retry_ms": 60000
-    },
-    {
-      "label": "saved",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasNotice",
-      "timeout_ms": 120000,
-      "text": "Graph change saved."
-    },
-    {
-      "label": "the canvas takes edits",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasAddNode",
-      "timeout_ms": 120000,
-      "enabled": true
     },
     {
       "label": "Add: the palette opens (render.scalar)",
@@ -605,10 +568,10 @@
       "visible": true
     },
     {
-      "label": "UX-12e decision 1: target picked from the graph's buffers, a combo",
+      "label": "UX-12e decision 1 / UX-13b decision 2: target picked from the graph's buffers, a combo; one the edit makes writable says so",
       "cmd": "select",
       "name": "pelican.graphCanvasRequired.target",
-      "text": "render_buffer_2"
+      "text": "render_buffer_2 (will be set to runtime_f32)"
     },
     {
       "label": "OK is offered",
@@ -657,6 +620,14 @@
       "path": "nodes[6].parameters.target",
       "value": "render_buffer_2",
       "retry_ms": 60000
+    },
+    {
+      "label": "UX-13b decision 2: and the same edit made render_buffer_2 one it can write (runtime_f32, the 4 bytes of its one float)",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[4].parameters",
+      "value": {"element": "float", "size": 4, "host_source": "runtime_f32"}
     },
     {
       "label": "the canvas takes edits",

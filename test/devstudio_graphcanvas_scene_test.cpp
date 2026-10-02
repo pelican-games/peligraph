@@ -11315,7 +11315,10 @@ TEST_CASE("UX-12e decision 3: a union is a combo of its shapes picked from the v
     CHECK(ux2Items(*row_shape) == QStringList{"Index", "Name"});
     row.setValue("rms");
     CHECK(row_shape->currentText() == QStringLiteral("Name"));
-    CHECK(row.findChild<QLineEdit *>(QStringLiteral("row.string"))->text() == QStringLiteral("rms"));
+    // UX-13b (engine CT-5): the name is chosen from the table's manifest.
+    auto *row_name = row.findChild<QComboBox *>(QStringLiteral("row.string"));
+    REQUIRE(row_name != nullptr);
+    CHECK(row_name->currentText() == QStringLiteral("rms"));
 }
 
 TEST_CASE("UX-12e decision 4: a number's slider goes up to the table's soft_max, the spin past it, "
@@ -11425,6 +11428,220 @@ TEST_CASE("UX-12e decision 5: in the root the palette greys an op that needs an 
     CHECK(palette->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->isEnabled());
     palette->reject();
     QCoreApplication::processEvents();
+}
+
+// --- UX-13b (engine CT-5): where a value comes from, with conditions.
+
+TEST_CASE("UX-13b decision 1: a list narrowed by where, one read from the catalog Studio holds, and "
+          "one read from the import manifest beside the asset its sibling names, again when it changes",
+          "[devstudio][graph-canvas][scene][ux13b]") {
+    (void)application();
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_ux13b_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "assets" / "analysis");
+    const auto manifest = [&](const char *name, const Json &features) {
+        std::ofstream{root / "assets" / "analysis" / (std::string{name} + ".ktx2.import.json")}
+            << Json{{"source", {{"metadata", {{"layout", {{"features", features}}}}}}}}.dump();
+    };
+    manifest("tone", Json{"rms", "peak"});
+    manifest("kick", Json{"band:0", "band:1"});
+    {
+        auto document = ux3Document();
+        const auto buffer = [&](const char *id, const Json &parameters) {
+            document["nodes"].push_back({{"id", id}, {"op", "render.buffer"}, {"parameters", parameters},
+                                         {"outputs", Json::array({"resource"})}});
+        };
+        buffer("ready", {{"element", "float"}, {"size", 4}, {"host_source", "runtime_f32"}});
+        buffer("plain", {{"element", "vec4"}, {"size", 16}});
+        buffer("counts", {{"element", "uint"}, {"size", 4}, {"host_source", "runtime_f32"}});
+        GraphCanvasModel model;
+        model.setConnected(true);
+        answer(model, document, engineCatalog());
+        auto choices = std::make_shared<PelicanStudio::GraphParameterChoices>();
+        choices->model = &model;
+        choices->project_root = root;
+
+        // where: a runtime_f32 buffer of float elements (a host_source not
+        // written is its table's default: none).
+        choices->op = "render.scalar";
+        PelicanStudio::GraphParameterEditor target{ux12eSchema(model, "render.scalar", "target"), choices,
+                                                   QStringLiteral("target"), {}};
+        auto *buffers = target.findChild<QComboBox *>(QStringLiteral("target"));
+        REQUIRE(buffers != nullptr);
+        CHECK(ux2Items(*buffers) == QStringList{"ready"});
+
+        // get_graph_catalog: the image types of the catalog Studio holds.
+        choices->op = "render.image";
+        PelicanStudio::GraphParameterEditor type{ux12eSchema(model, "render.image", "type"), choices,
+                                                 QStringLiteral("type"), {}};
+        auto *semantic = type.findChild<QComboBox *>(QStringLiteral("type.semantic"));
+        REQUIRE(semantic != nullptr);
+        const auto types = ux2Items(*semantic);
+        CHECK(types.contains(QStringLiteral("pelican.render.color_signal@1")));
+        CHECK(types.contains(QStringLiteral("pelican.render.depth@1")));
+        CHECK_FALSE(types.contains(QStringLiteral("pelican.value.scalar@1")));
+
+        // asset_manifest: the rows the table beside the asset lists.
+        choices->op = "value.sample_table";
+        PelicanStudio::GraphParameterEditor row{ux12eSchema(model, "value.sample_table", "row"), choices,
+                                                QStringLiteral("row"), {}};
+        row.setValue("rms");
+        row.refreshChoices(Json{{"asset", "project://assets/analysis/tone.ktx2"}, {"row", "rms"}});
+        auto *name = row.findChild<QComboBox *>(QStringLiteral("row.string"));
+        REQUIRE(name != nullptr);
+        CHECK(ux2Items(*name) == QStringList{"rms", "peak"});
+        CHECK(row.findChild<QLabel *>(QStringLiteral("row.string.unlisted"))->isHidden());
+        // Another table: its rows; the row kept, marked.
+        row.refreshChoices(Json{{"asset", "project://assets/analysis/kick.ktx2"}, {"row", "rms"}});
+        CHECK(ux2Items(*name) == QStringList{"band:0", "band:1"});
+        CHECK_FALSE(row.findChild<QLabel *>(QStringLiteral("row.string.unlisted"))->isHidden());
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+TEST_CASE("UX-13b decision 4: in a definition an instance with no owner also runs, the palette greys an "
+          "op that needs an owned instance and says why; in one only owned instances run, it does not",
+          "[devstudio][graph-canvas][scene][ux13b]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = ux12aBufferDocument(Json{{"element", "float"}, {"size", 4}});
+    document["definitions"]["walk"] = Json{{"nodes", Json::array()}, {"outputs", Json::object()}};
+    document["nodes"].push_back({{"id", "walker"}, {"op", "graph.instance"}, {"definition", "walk"},
+                                 {"parameters", Json::object()}, {"outputs", Json::array()}});
+    const auto readWith = [&](bool owned_only, const char *digest) {
+        auto reply = context(document);
+        reply["source_digest"]["hex"] = digest;
+        reply["definition_instances"] = {
+            {"walk", {{"owned_instances_only", owned_only},
+                      {"instances", Json::array({{{"id", "walker"}, {"op", "graph.instance"},
+                                                  {"owned", owned_only}}})}}}};
+        tab.answer("get_graph_instances", reply);
+    };
+    readWith(false, "ux13b-d0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    CHECK_FALSE(tab.widget->model().definitionOwnedInstancesOnly("walk"));
+    REQUIRE(tab.widget->model().selectScope("walk"));
+    QCoreApplication::processEvents();
+    const auto openPalette = [&] {
+        tab.field<QPushButton>("pelican.graphCanvasAddNode")->click();
+        QDialog *palette = nullptr;
+        for (int tick = 0; tick < 200 && palette == nullptr; ++tick) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+            palette = paletteOnScreen();
+        }
+        return palette;
+    };
+    auto *palette = openPalette();
+    REQUIRE(palette != nullptr);
+    auto *filter = palette->findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasPaletteFilter"));
+    auto *list = palette->findChild<QListWidget *>(QStringLiteral("pelican.graphCanvasPaletteList"));
+    REQUIRE(filter != nullptr);
+    REQUIRE(list != nullptr);
+    filter->setText(QStringLiteral("pose.clip_sample"));
+    REQUIRE(list->currentItem() != nullptr);
+    CHECK(list->currentItem()->text().contains(QStringLiteral("needs a definition")));
+    CHECK(list->currentItem()->toolTip().contains(
+        QStringLiteral("this definition is also used by an instance with no owner")));
+    CHECK_FALSE(palette->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->isEnabled());
+    palette->reject();
+    QCoreApplication::processEvents();
+
+    // The instance given an owner: every use of walk is owned (read again).
+    const auto read_before = tab.reads("get_graph_instances");
+    tab.field<QPushButton>("pelican.graphCanvasRefresh")->click();
+    QCoreApplication::processEvents();
+    REQUIRE(tab.reads("get_graph_instances") > read_before);
+    readWith(true, "ux13b-d1");
+    CHECK(tab.widget->model().definitionOwnedInstancesOnly("walk"));
+    palette = openPalette();
+    REQUIRE(palette != nullptr);
+    filter = palette->findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasPaletteFilter"));
+    list = palette->findChild<QListWidget *>(QStringLiteral("pelican.graphCanvasPaletteList"));
+    filter->setText(QStringLiteral("pose.clip_sample"));
+    REQUIRE(list->currentItem() != nullptr);
+    CHECK_FALSE(list->currentItem()->text().contains(QStringLiteral("needs a definition")));
+    palette->reject();
+    QCoreApplication::processEvents();
+}
+
+TEST_CASE("UX-13b decision 6: a format class with an argument is Explicit... and a combo of formats "
+          "beside it, written explicit(<format>); a refusal inside a definition an unowned instance "
+          "runs is one sentence",
+          "[devstudio][graph-canvas][scene][ux13b]") {
+    (void)application();
+    CHECK(PelicanStudio::graphLoopRefusalDescription({{"code", "graph.op_requires_owned_instance@1"},
+                                                      {"node", "right/weight"},
+                                                      {"op", "value.morph_weight"},
+                                                      {"document", "project://passes/main.json"},
+                                                      {"definition", "gain_curve"}}) ==
+          "value.morph_weight runs only in a definition attached to an object; this definition is also "
+          "used by an instance with no owner (in definition gain_curve of passes/main.json, "
+          "graph.op_requires_owned_instance@1).");
+
+    Ux2Tab tab{true};
+    const auto image = [](const Json &extra) {
+        Json parameters{{"type", {{"semantic", "pelican.render.color_signal@1"},
+                                  {"arguments", {{"reference", "scene"}, {"transfer", "linear"},
+                                                 {"range", "extended"}}}}},
+                        {"format", "R16G16B16A16_SFLOAT"},
+                        {"extent_scale", 1.0},
+                        {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}};
+        for (const auto &[key, value] : extra.items()) parameters[key] = value;
+        return Json{{"schema", "pelican.graph"},
+                    {"version", 1},
+                    {"definitions", Json::object()},
+                    {"nodes", Json::array({{{"id", "img"}, {"op", "render.image"}, {"parameters", parameters},
+                                            {"outputs", Json::array({"resource"})}}})}};
+    };
+    tab.read(image(Json::object()), "ux13b-f0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    const auto pick = [&] {
+        tab.widget->scene().selectNode("img");
+        QCoreApplication::processEvents();
+    };
+    pick();
+    tab.widget->poll();
+    REQUIRE(tab.reads("get_render_authoring_context") == 1);
+    const Json authoring{
+        {"render_target_vocabulary",
+         {{"formats", Json::array({"R8_UNORM", "R16G16B16A16_SFLOAT"})},
+          {"format_classes", Json::array({"scene", "display", "data", "explicit"})},
+          {"format_class_patterns",
+           Json::array({{{"name", "explicit"},
+                         {"form", "explicit(<format>)"},
+                         {"argument_choices_from",
+                          {{"rpc", "get_render_authoring_context"}, {"key", "render_target_vocabulary.formats"}}}}})}}}};
+    tab.answer("get_render_authoring_context", authoring);
+    tab.widget->poll();
+    QCoreApplication::processEvents();
+    auto *klass = tab.field<QComboBox>("pelican.graphCanvasParameters.format_class");
+    CHECK(ux2Items(*klass) == QStringList{"scene", "display", "data", QStringLiteral("Explicit\u2026")});
+    auto *argument = tab.field<QComboBox>("pelican.graphCanvasParameters.format_class.argument");
+    CHECK(argument->isHidden());
+    // Explicit...: the image's own format first, written with it.
+    klass->setCurrentIndex(3);
+    QCoreApplication::processEvents();
+    CHECK_FALSE(argument->isHidden());
+    CHECK(ux2Items(*argument) == QStringList{"R8_UNORM", "R16G16B16A16_SFLOAT"});
+    CHECK(tab.sent(1).at("parameters").at("format_class") == "explicit(R16G16B16A16_SFLOAT)");
+    tab.commit(image({{"format_class", "explicit(R16G16B16A16_SFLOAT)"}}), "ux13b-f1");
+    pick();
+    tab.widget->poll();
+    tab.answer("get_render_authoring_context", authoring);
+    tab.widget->poll();
+    QCoreApplication::processEvents();
+    // Read back: the class's entry, its argument beside it, not "not listed".
+    klass = tab.field<QComboBox>("pelican.graphCanvasParameters.format_class");
+    argument = tab.field<QComboBox>("pelican.graphCanvasParameters.format_class.argument");
+    CHECK(klass->currentText() == QStringLiteral("Explicit\u2026"));
+    CHECK(argument->currentText() == QStringLiteral("R16G16B16A16_SFLOAT"));
+    CHECK(tab.field<QLabel>("pelican.graphCanvasParameters.format_class.unlisted")->isHidden());
+    // Another format: written with it.
+    argument->setCurrentIndex(argument->findText(QStringLiteral("R8_UNORM")));
+    QCoreApplication::processEvents();
+    CHECK(tab.sent(2).at("parameters").at("format_class") == "explicit(R8_UNORM)");
 }
 
 // --- AB-1s: a sound's analysis baked into a table (engine AB-1).
@@ -11693,19 +11910,21 @@ TEST_CASE("UX-13a decision 3: a Re-bake sends no edit of its own; the table it r
     CHECK_FALSE(widget.model().canUndo());
 }
 
-TEST_CASE("AB-1s decision 2: value.sample_table's dialog offers the project's baked tables and the "
-          "rows of the one picked, rms first, and is placed with them",
-          "[devstudio][graph-canvas][scene][ab1s]") {
+TEST_CASE("AB-1s decision 2 / UX-13b decision 5: value.sample_table's dialog is its table's own "
+          "fields -- the project's analysis tables, and a row the manifest beside the one picked lists, "
+          "its first taken -- and is placed with them",
+          "[devstudio][graph-canvas][scene][ab1s][ux13b]") {
     (void)application();
     const auto root = std::filesystem::temp_directory_path() /
                       ("pelican_ab1s_" +
                        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(root / "assets" / "analysis");
-    const auto manifest = [&](const char *name, const Json &features, const char *tool) {
+    const auto table = [&](const char *name, const Json &features) {
+        std::ofstream{root / "assets" / "analysis" / (std::string{name} + ".ktx2")} << "KTX";
         std::ofstream{root / "assets" / "analysis" / (std::string{name} + ".ktx2.import.json")}
             << Json{{"schema", "pelican.import"},
                     {"version", 1},
-                    {"tool", {{"name", tool}, {"version", "1"}}},
+                    {"tool", {{"name", "pelican.audio_analysis"}, {"version", "1"}}},
                     {"source",
                      {{"file", std::string{"../audio/"} + name + ".wav"},
                       {"metadata",
@@ -11714,10 +11933,8 @@ TEST_CASE("AB-1s decision 2: value.sample_table's dialog offers the project's ba
                     {"outputs", Json::array({{{"file", std::string{name} + ".ktx2"}}})}}
                    .dump();
     };
-    manifest("tone", Json{"peak", "rms", "band:0", "band:1"}, "pelican.audio_analysis");
-    manifest("kick", Json{"band:0", "band:1"}, "pelican.audio_analysis");
-    // Another tool's file is no table.
-    manifest("photo", Json{"rms"}, "someone.else");
+    table("tone", Json{"rms", "peak", "band:0", "band:1"});
+    table("kick", Json{"band:0", "band:1"});
     {
         GraphCanvasModel model;
         model.setConnected(true);
@@ -11726,32 +11943,42 @@ TEST_CASE("AB-1s decision 2: value.sample_table's dialog offers the project's ba
         PelicanStudio::GraphCanvasRequiredDialog ask{model, {}, "value.sample_table", nullptr, root};
         REQUIRE(ask.asks());
         auto *asset = ask.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.asset"));
-        auto *row = ask.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.row"));
-        REQUIRE(asset != nullptr);
-        REQUIRE(row != nullptr);
-        CHECK(ux2Items(*asset) == QStringList{"assets/analysis/kick.ktx2", "assets/analysis/tone.ktx2"});
-        // The first table's rows; no rms there, so its first.
-        CHECK(ux2Items(*row) == QStringList{"band:0", "band:1"});
-        CHECK(row->currentText() == QStringLiteral("band:0"));
-        asset->setCurrentIndex(asset->findData(QStringLiteral("project://assets/analysis/tone.ktx2")));
-        CHECK(ux2Items(*row) == QStringList{"peak", "rms", "band:0", "band:1"});
-        CHECK(row->currentText() == QStringLiteral("band:0"));
-        row->setCurrentIndex(row->findData(QStringLiteral("rms")));
+        auto *shape = ask.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.row"));
+        auto *row = ask.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.row.string"));
         auto *ok = ask.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasRequired.ok"));
+        REQUIRE(asset != nullptr);
+        REQUIRE(shape != nullptr);
+        REQUIRE(row != nullptr);
         REQUIRE(ok != nullptr);
+        CHECK(ux2Items(*asset) == QStringList{"(choose)", "project://assets/analysis/kick.ktx2",
+                                              "project://assets/analysis/tone.ktx2"});
+        // No table picked: no rows, nothing to place.
+        CHECK(row->count() == 0);
+        CHECK_FALSE(ok->isEnabled());
+        asset->setCurrentIndex(asset->findData(QStringLiteral("project://assets/analysis/tone.ktx2")));
+        // Its rows by name, the first taken.
+        CHECK(shape->currentText() == QStringLiteral("Name"));
+        CHECK(ux2Items(*row) == QStringList{"rms", "peak", "band:0", "band:1"});
+        CHECK(row->currentText() == QStringLiteral("rms"));
         CHECK(ok->isEnabled());
-        const Json parameters{{"asset", "project://assets/analysis/tone.ktx2"}, {"row", "rms"}};
+        row->setCurrentIndex(row->findText(QStringLiteral("band:1")));
+        const Json parameters{{"asset", "project://assets/analysis/tone.ktx2"}, {"row", "band:1"}};
         CHECK(ask.parameters() == parameters);
+        // Another table: its rows.
+        asset->setCurrentIndex(asset->findData(QStringLiteral("project://assets/analysis/kick.ktx2")));
+        CHECK(ux2Items(*row) == QStringList{"band:0", "band:1"});
         // Placed with them, at the scene time: no time edge.
         const auto ops = model.addNodeOpsIn({}, "value.sample_table", {}, ask.seed());
         REQUIRE(ops.size() == 1);
-        CHECK(ops.back().at("node").at("parameters") == parameters);
+        CHECK(ops.back().at("node").at("parameters") ==
+              Json{{"asset", "project://assets/analysis/kick.ktx2"}, {"row", "band:1"}});
         CHECK_FALSE(ops.back().at("node").contains("inputs"));
 
         // No table yet: nothing to pick, nothing to place.
         const auto empty = std::filesystem::temp_directory_path() / "pelican_ab1s_none";
         PelicanStudio::GraphCanvasRequiredDialog none{model, {}, "value.sample_table", nullptr, empty};
-        CHECK(none.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.asset"))->count() == 0);
+        CHECK(ux2Items(*none.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRequired.asset"))) ==
+              QStringList{"(choose)"});
         CHECK_FALSE(none.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasRequired.ok"))->isEnabled());
     }
     std::error_code ignored;

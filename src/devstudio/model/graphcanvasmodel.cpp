@@ -1372,6 +1372,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             layout_retrying_ = false;
             refusal_marks_.clear();
             parameter_refusal_.reset();
+            scalar_target_fix_.reset();
             // GL-1b, decision 2: written, but the engine can only run it
             // after a restart (RS-1). The owner restarts it; the document and
             // the plan are read from the engine that comes back. RSX: read
@@ -1450,6 +1451,9 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             withoutPlacement(incoming_definitions) == withoutPlacement(definitions_);
         definitions_reported_ = reported;
         definitions_ = std::move(incoming_definitions);
+        // UX-13b, decision 4 (engine CT-5): who runs each definition.
+        definition_instances_ = response.value("definition_instances", Json::object());
+        if (!definition_instances_.is_object()) definition_instances_ = Json::object();
         layout_ = std::move(layout);
         nodes_ = std::move(nodes);
         root_schema_ = std::move(root_schema);
@@ -3561,7 +3565,25 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
     if (seed.is_object())
         if (const auto given = seed.find("parameters"); given != seed.end() && given->is_object())
             for (const auto &[key, value] : given->items()) node["parameters"][key] = value;
+    // UX-13b, decision 2 (engine CT-5): a render.scalar joins its buffer
+    // after the sinks already on it, and the buffer is made one they can all
+    // write (runtime_f32, as large as they are) in the same edit.
+    Json fix = Json::array();
+    if (op == "render.scalar" && node.contains("parameters") && node.at("parameters").is_object()) {
+        auto &parameters = node.at("parameters");
+        const auto target = text(parameters, "target");
+        if (!target.empty()) {
+            const auto before = scalarTargetBytes(in_scope, target);
+            if (before > 0 && !parameters.contains("offset"))
+                parameters["offset"] = static_cast<std::int64_t>(before);
+            const auto value = parameters.find("value");
+            const std::uint64_t own =
+                (value != parameters.end() && value->is_array() ? value->size() : 1) * sizeof(float);
+            fix = scalarTargetFixOps(in_scope, target, before + own);
+        }
+    }
     ops.push_back(Json{{"op", "add_node"}, {"scope", scope}, {"node", std::move(node)}});
+    for (auto &each : fix) ops.push_back(std::move(each));
     return ops;
 }
 
@@ -4704,6 +4726,7 @@ void GraphCanvasModel::markRefusal(const Json &error, const std::string &reason,
                                    const std::string &scope) {
     refusal_marks_.clear();
     parameter_refusal_.reset();
+    scalar_target_fix_.reset();
     if (!error.is_object()) return;
     // The engine puts a named refusal's fields beside its code; a relayed
     // one may carry them as error_fields.
@@ -4747,6 +4770,30 @@ void GraphCanvasModel::markRefusal(const Json &error, const std::string &reason,
     }
     if (const auto missing = graphRefusalFields(error, "graph.render_node_parameters_missing@1")) {
         mark(scope, text(*missing, "node"));
+        return;
+    }
+    // UX-13b, decision 3 (engine CT-5): a buffer a render.scalar cannot
+    // write. Named with its sink, it is the graph's: one edit makes it what
+    // the engine expects. Without one it was declared outside the graph.
+    if (const auto incompatible = graphRefusalFields(error, "graph.render_scalar_target_incompatible@1")) {
+        GraphCanvasScalarTargetFix fix;
+        fix.target = text(*incompatible, "target");
+        if (const auto expected = incompatible->find("expected");
+            expected != incompatible->end() && expected->is_object())
+            if (const auto size = expected->find("size");
+                size != expected->end() && size->is_number_integer() && size->get<std::int64_t>() >= 0)
+                fix.size = size->get<std::uint64_t>();
+        const auto node = text(*incompatible, "node");
+        if (!node.empty() && !fix.target.empty()) {
+            mark(scope, node);
+            if (findNode(scope, fix.target) != nullptr) {
+                fix.scope = scope;
+                fix.in_graph = true;
+            } else if (findNode({}, fix.target) != nullptr) {
+                fix.in_graph = true;
+            }
+        }
+        if (!fix.target.empty()) scalar_target_fix_ = std::move(fix);
         return;
     }
     // A loop refused by name.

@@ -1,6 +1,7 @@
 #include "graphcanvasparameterfields.hpp"
 
 #include "featureparameterform.hpp"
+#include "graphcanvasposefields.hpp"
 #include "graphcanvasrenderfields.hpp"
 #include "studiotheme.hpp"
 
@@ -26,6 +27,8 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <fstream>
+#include <functional>
 #include <set>
 #include <system_error>
 #include <utility>
@@ -192,8 +195,31 @@ std::vector<std::string> assetParameterExtensions(const Json &schema) {
     return result;
 }
 
+namespace {
+
+// UX-13b, decision 1 (engine CT-5): whether each name `where` gives has the
+// value, or one of the values, it gives -- `value_of(name)` saying what it is.
+bool whereHolds(const Json &where, const std::function<Json(const std::string &)> &value_of) {
+    if (!where.is_object()) return true;
+    for (const auto &[name, wanted] : where.items()) {
+        const auto value = value_of(name);
+        if (!value.is_string()) return false;
+        const auto &text = value.get_ref<const std::string &>();
+        if (wanted.is_string()) {
+            if (wanted.get_ref<const std::string &>() != text) return false;
+        } else if (wanted.is_array()) {
+            if (std::ranges::none_of(wanted, [&](const Json &each) { return each == text; })) return false;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
 std::vector<std::string> graphParameterChoicesFromReply(const Json &reply, std::string_view key,
-                                                        std::string_view field) {
+                                                        std::string_view field, const Json &where) {
     // Down the path; an array met on the way is walked element by element.
     std::vector<const Json *> at{&reply};
     std::size_t begin = 0;
@@ -221,6 +247,10 @@ std::vector<std::string> graphParameterChoicesFromReply(const Json &reply, std::
             result.push_back(value.get<std::string>());
     };
     const auto take = [&](const Json &entry) {
+        if (where.is_object() && !where.empty()) {
+            if (!entry.is_object()) return;
+            if (!whereHolds(where, [&](const std::string &name) { return entry.value(name, Json{}); })) return;
+        }
         if (field.empty()) {
             add(entry);
             return;
@@ -303,6 +333,8 @@ struct GraphParameterEditor::Parts {
     QLabel *unlisted = nullptr;
     QLabel *unusual = nullptr;
     std::vector<std::string> listed;
+    // UX-13b, decision 6: a class's argument (explicit's format).
+    QComboBox *argument = nullptr;
     // UX-12e, decision 3: a union's shapes -- a constant (Off / On, "full";
     // null for "(none)") or a field of its own.
     struct Shape {
@@ -595,16 +627,108 @@ void GraphParameterEditor::buildChoices() {
                                   "typed, and the engine says if it does not know it."));
     parts.unlisted->hide();
     parts.line->addWidget(parts.unlisted);
+    // UX-13b, decision 6: the argument of a class that takes one, beside it.
+    parts.argument = new QComboBox(this);
+    parts.argument->setObjectName(child(QStringLiteral("argument")));
+    parts.argument->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    parts.argument->setMinimumContentsLength(8);
+    parts.argument->hide();
+    parts.line->insertWidget(parts.line->indexOf(parts.combo) + 1, parts.argument, 1);
     parts.plain = parts.combo;
     connect(parts.combo, &QComboBox::currentIndexChanged, this, [this] {
+        if (loading_) return;
+        showPattern();
+        changed(false);
+    });
+    connect(parts.argument, &QComboBox::currentIndexChanged, this, [this] {
         if (!loading_) changed(false);
     });
     connect(parts.combo->lineEdit(), &QLineEdit::editingFinished, this, [this] {
         if (loading_) return;
-        const auto typed = parts_->combo->currentText().trimmed().toStdString();
-        const auto now = value_.is_string() ? value_.get<std::string>() : std::string{};
-        if (typed != (set_ ? now : std::string{})) changed(false);
+        if (widgetValue() != (set_ ? value_ : Json{})) changed(false);
     });
+}
+
+std::vector<Json> GraphParameterEditor::patterns() const {
+    std::vector<Json> result;
+    if (choices_ == nullptr || choices_->model == nullptr) return result;
+    const auto from = schema_.find("choices_from");
+    if (from == schema_.end() || !from->is_object() || textOf(*from, "rpc") != "get_render_authoring_context")
+        return result;
+    // engine CT-5: a list of classes (render_target_vocabulary.format_classes)
+    // says how the ones with an argument are written beside it
+    // (format_class_patterns).
+    const auto key = textOf(*from, "key");
+    constexpr std::string_view classes = "format_classes";
+    if (!key.ends_with(classes)) return result;
+    const auto at = key.substr(0, key.size() - classes.size()) + "format_class_patterns";
+    const Json *node = &choices_->model->renderAuthoringContext();
+    for (std::size_t begin = 0; node != nullptr && begin <= at.size();) {
+        const auto end = std::min(at.find('.', begin), at.size());
+        const auto step = at.substr(begin, end - begin);
+        const auto found = node->is_object() ? node->find(step) : node->end();
+        node = node->is_object() && found != node->end() ? &*found : nullptr;
+        begin = end + 1;
+    }
+    if (node != nullptr && node->is_array())
+        for (const auto &pattern : *node)
+            if (pattern.is_object() && !textOf(pattern, "name").empty() &&
+                textOf(pattern, "form").find('<') != std::string::npos)
+                result.push_back(pattern);
+    return result;
+}
+
+std::optional<Json> GraphParameterEditor::patternOf(const std::string &value, std::string *argument) const {
+    for (const auto &pattern : patterns()) {
+        const auto form = textOf(pattern, "form");
+        const auto open = form.find('<');
+        const auto close = form.find('>', open);
+        if (close == std::string::npos) continue;
+        const auto before = form.substr(0, open);
+        const auto after = form.substr(close + 1);
+        if (value == textOf(pattern, "name") ||
+            (value.size() > before.size() + after.size() && value.starts_with(before) && value.ends_with(after))) {
+            if (argument != nullptr)
+                *argument = value == textOf(pattern, "name")
+                                ? std::string{}
+                                : value.substr(before.size(), value.size() - before.size() - after.size());
+            return pattern;
+        }
+    }
+    return std::nullopt;
+}
+
+void GraphParameterEditor::showPattern() {
+    auto &parts = *parts_;
+    if (parts.argument == nullptr || parts.combo == nullptr) return;
+    const auto index = parts.combo->currentIndex();
+    const auto picked = index >= 0 && parts.combo->itemText(index) == parts.combo->currentText()
+                            ? parts.combo->itemData(index).toString().toStdString()
+                            : std::string{};
+    std::string argument;
+    const auto pattern = picked.empty() ? std::nullopt : patternOf(picked, &argument);
+    if (!pattern) {
+        parts.argument->hide();
+        return;
+    }
+    // The argument written, else the one the value has (the image's own
+    // format), else the first.
+    const QSignalBlocker block{parts.argument};
+    const auto kept = parts.argument->currentData().toString().toStdString();
+    parts.argument->clear();
+    const auto from = pattern->value("argument_choices_from", Json::object());
+    std::vector<std::string> values;
+    if (choices_ != nullptr && choices_->model != nullptr && textOf(from, "rpc") == "get_render_authoring_context")
+        values = graphParameterChoicesFromReply(choices_->model->renderAuthoringContext(), textOf(from, "key"),
+                                                textOf(from, "field"), from.value("where", Json{}));
+    for (const auto &each : values) parts.argument->addItem(qtext(each), qtext(each));
+    std::string current = argument;
+    if (current.empty() && set_ && value_.is_string()) patternOf(value_.get<std::string>(), &current);
+    if (current.empty()) current = kept;
+    if (current.empty() && around_.is_object()) current = textOf(around_, "format");
+    const auto found = parts.argument->findData(qtext(current));
+    parts.argument->setCurrentIndex(found >= 0 ? found : (parts.argument->count() > 0 ? 0 : -1));
+    parts.argument->setVisible(true);
 }
 
 void GraphParameterEditor::buildUnion() {
@@ -712,7 +836,8 @@ void GraphParameterEditor::showMarks() {
     if (parts.unlisted != nullptr) {
         const auto text = set_ && value_.is_string() ? value_.get<std::string>() : std::string{};
         parts.unlisted->setVisible(!text.empty() && !parts.listed.empty() &&
-                                   std::ranges::find(parts.listed, text) == parts.listed.end());
+                                   std::ranges::find(parts.listed, text) == parts.listed.end() &&
+                                   !patternOf(text, nullptr));
     }
 }
 
@@ -838,54 +963,110 @@ void GraphParameterEditor::addRow(const Json &value, const std::string &key) {
     parts.rows.push_back(entry);
 }
 
-std::vector<std::string> GraphParameterEditor::comboChoices() const {
-    std::vector<std::string> result;
+std::vector<std::pair<std::string, std::string>> GraphParameterEditor::comboChoices() const {
+    std::vector<std::pair<std::string, std::string>> result;
+    const auto plain = [&](std::vector<std::string> values) {
+        for (auto &value : values) result.emplace_back(value, value);
+        return result;
+    };
     const auto k = kind();
     if (k == "enum") {
+        std::vector<std::string> values;
         for (const auto &value : schema_.value("enum", Json::array()))
-            if (value.is_string()) result.push_back(value.get<std::string>());
-        return result;
+            if (value.is_string()) values.push_back(value.get<std::string>());
+        return plain(std::move(values));
     }
     if (choices_ == nullptr) return result;
     if (k == "node_ref") {
+        std::vector<std::string> values;
         if (choices_->model != nullptr)
             for (const auto &node : choices_->model->nodes(choices_->scope))
-                if (node.id != choices_->node) result.push_back(node.id);
-        return result;
+                if (node.id != choices_->node) values.push_back(node.id);
+        return plain(std::move(values));
     }
     // UX-12e, decision 2: the files of the kinds the table names.
-    if (k == "asset") return projectAssetReferences(choices_->project_root, assetParameterExtensions(schema_));
+    if (k == "asset") return plain(projectAssetReferences(choices_->project_root, assetParameterExtensions(schema_)));
     // UX-12e, decision 1: where the table says the value is chosen from.
     if (k == "string" && schema_.contains("choices_from")) {
         const auto &from = schema_.at("choices_from");
-        if (!from.is_object() || choices_->model == nullptr) return result;
+        if (!from.is_object()) return result;
+        const auto where = from.value("where", Json{});
+        // UX-13b, decision 1: the names the import manifest beside the asset
+        // a sibling parameter names lists (value.sample_table's rows).
+        if (const auto manifest = from.find("asset_manifest"); manifest != from.end() && manifest->is_object()) {
+            const auto asset = around_.is_object() ? textOf(around_, textOf(*manifest, "parameter").c_str())
+                                                   : std::string{};
+            auto file = asset.empty() ? std::filesystem::path{}
+                                      : projectReferenceFile(choices_->project_root, asset);
+            if (file.empty()) return result;
+            file += ".import.json";
+            std::ifstream input{file, std::ios::binary};
+            if (!input) return result;
+            const auto read = Json::parse(input, nullptr, false);
+            if (read.is_discarded() || !read.is_object()) return result;
+            return plain(graphParameterChoicesFromReply(read, textOf(*manifest, "key"), {}, where));
+        }
+        if (choices_->model == nullptr) return result;
         if (const auto ops = from.find("graph_nodes"); ops != from.end() && ops->is_array()) {
-            for (const auto &node : choices_->model->nodes(choices_->scope))
-                if (node.id != choices_->node &&
-                    std::ranges::any_of(*ops, [&](const Json &op) { return op.is_string() && op.get<std::string>() == node.op; }))
-                    result.push_back(node.id);
-            return result;
+            std::vector<std::string> values;
+            for (const auto &node : choices_->model->nodes(choices_->scope)) {
+                if (node.id == choices_->node ||
+                    std::ranges::none_of(*ops, [&](const Json &op) { return op.is_string() && op.get<std::string>() == node.op; }))
+                    continue;
+                // UX-13b, decision 1: a parameter the node does not write is
+                // its table's default.
+                const auto holds = whereHolds(where, [&](const std::string &name) -> Json {
+                    if (node.parameters.is_object())
+                        if (const auto found = node.parameters.find(name); found != node.parameters.end())
+                            return *found;
+                    const auto entry = choices_->model->parameterSchema(node.op, name);
+                    return entry ? graphParameterDefault(*entry) : Json{};
+                });
+                if (holds) values.push_back(node.id);
+            }
+            return plain(std::move(values));
         }
         // The authoring context is the one reply Studio keeps (read once per
-        // reading of the document); another method lists nothing yet.
-        if (textOf(from, "rpc") == "get_render_authoring_context")
-            return graphParameterChoicesFromReply(choices_->model->renderAuthoringContext(),
-                                                  textOf(from, "key"), textOf(from, "field"));
+        // reading of the document); UX-13b, decision 1: the catalog is the
+        // one it holds. Another method lists nothing yet.
+        std::vector<std::string> values;
+        const auto rpc = textOf(from, "rpc");
+        if (rpc == "get_render_authoring_context")
+            values = graphParameterChoicesFromReply(choices_->model->renderAuthoringContext(), textOf(from, "key"),
+                                                    textOf(from, "field"), where);
+        else if (rpc == "get_graph_catalog")
+            values = graphParameterChoicesFromReply(choices_->model->catalogChoices(), textOf(from, "key"),
+                                                    textOf(from, "field"), where);
+        // UX-13b, decision 6: a class with an argument says so.
+        const auto classes = patterns();
+        for (auto &value : values) {
+            const auto pattern = std::ranges::find_if(classes, [&](const Json &each) {
+                return textOf(each, "name") == value;
+            });
+            if (pattern == classes.end()) {
+                result.emplace_back(value, value);
+                continue;
+            }
+            auto label = value;
+            if (!label.empty()) label.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(label.front())));
+            result.emplace_back(value, label + "\xE2\x80\xA6");
+        }
         return result;
     }
     if (k == "shader" || hint_.starts_with("shader:")) {
         std::string stage = hint_.starts_with("shader:") ? hint_.substr(7) : std::string{};
         if (choices_->op == "render.compute") stage = "compute";
         if (stage != "vertex" && stage != "fragment" && stage != "compute") stage.clear();
+        std::vector<std::string> values;
         if (choices_->model != nullptr)
             for (const auto &shader : choices_->model->engineShaders())
-                if (stage.empty() || shader.stage == stage) result.push_back(shader.reference);
+                if (stage.empty() || shader.stage == stage) values.push_back(shader.reference);
         for (const auto &[reference, shader_stage] : projectShaderReferences(choices_->project_root))
-            if (stage.empty() || shader_stage.toStdString() == stage) result.push_back(reference.toStdString());
-        return result;
+            if (stage.empty() || shader_stage.toStdString() == stage) values.push_back(reference.toStdString());
+        return plain(std::move(values));
     }
     if (k == "string" && choices_->strings)
-        if (auto known = choices_->strings(textOf(schema_, "name"), around_)) return *known;
+        if (auto known = choices_->strings(textOf(schema_, "name"), around_)) return plain(std::move(*known));
     return result;
 }
 
@@ -893,15 +1074,22 @@ void GraphParameterEditor::fillCombo() {
     auto &parts = *parts_;
     if (parts.combo == nullptr) return;
     const QSignalBlocker block{parts.combo};
-    std::vector<std::string> choices = comboChoices();
+    const auto labelled = comboChoices();
+    std::vector<std::string> choices;
+    for (const auto &[value, label] : labelled) choices.push_back(value);
     if (parts.combo->isEditable()) {
         // UX-12e, decision 1: the list, and the value as written (in it or not).
         const auto current = set_ && value_.is_string() ? value_.get<std::string>() : std::string{};
         parts.listed = choices;
         parts.combo->clear();
-        for (const auto &choice : choices) parts.combo->addItem(qtext(choice));
-        parts.combo->setCurrentIndex(parts.combo->findText(qtext(current)));
-        parts.combo->setEditText(qtext(current));
+        for (const auto &[value, label] : labelled) parts.combo->addItem(qtext(label), qtext(value));
+        // UX-13b, decision 6: a value of a class with an argument is that
+        // class's entry, its argument beside it.
+        const auto pattern = current.empty() ? std::nullopt : patternOf(current, nullptr);
+        const auto index = parts.combo->findData(qtext(pattern ? textOf(*pattern, "name") : current));
+        parts.combo->setCurrentIndex(index);
+        parts.combo->setEditText(index >= 0 ? parts.combo->itemText(index) : qtext(current));
+        showPattern();
         showMarks();
         return;
     }
@@ -956,6 +1144,14 @@ void GraphParameterEditor::refreshChoices(const Json &around) {
     for (const auto &row : parts_->rows) row.editor->refreshChoices(around);
     for (const auto &shape : parts_->shapes)
         if (shape.editor != nullptr) shape.editor->refreshChoices(around);
+    // UX-13b, decision 5: a required union not written starts on its listed
+    // shape, at the first name listed (a sample row's rms), once it lists one.
+    if (parts_->shape != nullptr && !set_ && schema_.value("required", false))
+        for (const auto &shape : parts_->shapes) {
+            if (shape.editor == nullptr || shape.editor->parts_->listed.empty()) continue;
+            setValue(shape.editor->parts_->listed.front());
+            break;
+        }
 }
 
 void GraphParameterEditor::setValue(const Json &value) {
@@ -1057,8 +1253,24 @@ Json GraphParameterEditor::widgetValue() const {
     }
     // UX-12e, decision 1: what the line holds, picked or typed.
     if (parts.combo != nullptr && parts.combo->isEditable()) {
-        const auto text = parts.combo->currentText().trimmed().toStdString();
-        return text.empty() ? Json{} : Json(text);
+        const auto text = parts.combo->currentText().trimmed();
+        const auto index = parts.combo->currentIndex();
+        // An entry picked is its value (its words may say more than the
+        // value); a name typed is itself.
+        if (index >= 0 && parts.combo->itemText(index).trimmed() == text) {
+            const auto value = parts.combo->itemData(index).toString().toStdString();
+            // UX-13b, decision 6: a class with an argument, written with it.
+            if (const auto pattern = value.empty() ? std::nullopt : patternOf(value, nullptr);
+                pattern && parts.argument != nullptr && parts.argument->currentIndex() >= 0) {
+                const auto form = textOf(*pattern, "form");
+                const auto open = form.find('<');
+                const auto close = form.find('>', open);
+                return form.substr(0, open) + parts.argument->currentData().toString().toStdString() +
+                       form.substr(close + 1);
+            }
+            if (!value.empty()) return value;
+        }
+        return text.isEmpty() ? Json{} : Json(text.toStdString());
     }
     if (parts.spin != nullptr) {
         if (k == "integer") return static_cast<std::int64_t>(std::llround(parts.spin->value()));
@@ -1295,8 +1507,9 @@ const std::vector<OwnFields> &ownFields() {
 bool listsFromRpc(const Json &entry) {
     if (entry.is_array()) return std::ranges::any_of(entry, [](const Json &each) { return listsFromRpc(each); });
     if (!entry.is_object()) return false;
+    // UX-13b, decision 1: the catalog's are Studio's already.
     if (const auto from = entry.find("choices_from");
-        from != entry.end() && from->is_object() && from->contains("rpc"))
+        from != entry.end() && from->is_object() && textOf(*from, "rpc") == "get_render_authoring_context")
         return true;
     for (const char *under : {"fields", "items", "variants"})
         if (const auto found = entry.find(under); found != entry.end() && listsFromRpc(*found)) return true;

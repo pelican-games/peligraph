@@ -4857,6 +4857,8 @@ struct GraphCanvasWidget::Impl {
     // EL-5s, decision 4: "Update ports" under the notice that a compute
     // node's shader changed its ports.
     QPushButton *update_ports = nullptr;
+    // UX-13b, decision 3: graph.render_scalar_target_incompatible@1's Fix.
+    QPushButton *fix_scalar_target = nullptr;
     // EL-5s, decision 4: the project shader files compute nodes run, watched
     // for a change of their ports (a burst of writes is one refresh).
     QFileSystemWatcher *compute_watch = nullptr;
@@ -5229,6 +5231,19 @@ struct GraphCanvasWidget::Impl {
         layout->addWidget(update_ports, 0, Qt::AlignLeft);
         QObject::connect(update_ports, &QPushButton::clicked, &view, [this] {
             if (model.updateComputePorts()) dispatch();
+            else synchronize();
+        });
+        // UX-13b, decision 3 (engine CT-5): a buffer of the graph a
+        // render.scalar cannot write is made what the engine expects in one
+        // edit; one declared outside the graph is only said.
+        fix_scalar_target = new QPushButton(&view);
+        fix_scalar_target->setObjectName(QStringLiteral("pelican.graphCanvasFixScalarTarget"));
+        fix_scalar_target->setToolTip(QObject::tr(
+            "Make the buffer a runtime_f32 one as large as the render.scalar sinks writing it, in one edit"));
+        fix_scalar_target->hide();
+        layout->addWidget(fix_scalar_target, 0, Qt::AlignLeft);
+        QObject::connect(fix_scalar_target, &QPushButton::clicked, &view, [this] {
+            if (model.fixScalarTarget()) dispatch();
             else synchronize();
         });
         compute_watch = new QFileSystemWatcher(&view);
@@ -7372,18 +7387,30 @@ struct GraphCanvasWidget::Impl {
     std::string definition_then_palette;
     std::optional<std::pair<std::string, std::string>> palette_after_scope;
 
-    [[nodiscard]] bool paletteNeedsDefinition(const std::string &op) const {
-        return model.operationPlacement(op) == "owned_instance";
+    // UX-13b, decision 4 (engine CT-5): and in a definition a root node
+    // without an owner runs too (an instance with no owner, a loop's body).
+    [[nodiscard]] bool paletteNeedsDefinition(const std::string &scope, const std::string &op) const {
+        if (model.operationPlacement(op) != "owned_instance") return false;
+        return scope.empty() || !model.definitionOwnedInstancesOnly(scope);
     }
 
-    void markPaletteNeedsDefinition(QListWidget &list, QListWidgetItem &row, const std::string &op,
-                                    QDialog *dialog) {
+    // Why an op of placement owned_instance cannot stand in `scope`.
+    [[nodiscard]] static QString paletteNeedsDefinitionWhy(const std::string &scope, const std::string &op) {
+        return scope.empty()
+                   ? QObject::tr("%1 runs inside a definition attached to an object, not in the root")
+                         .arg(qtext(op))
+                   : QObject::tr("%1 cannot stand here: this definition is also used by an instance with "
+                                 "no owner")
+                         .arg(qtext(op));
+    }
+
+    void markPaletteNeedsDefinition(QListWidget &list, QListWidgetItem &row, const std::string &scope,
+                                    const std::string &op, QDialog *dialog) {
         row.setData(kPaletteNeedsDefinitionRole, true);
         row.setForeground(list.palette().color(QPalette::Disabled, QPalette::Text));
         row.setText(row.text() + QObject::tr("   needs a definition"));
-        row.setToolTip(QObject::tr("needs a definition \xE2\x80\x94 New definition…: %1 runs inside a "
-                                   "definition attached to an object, not in the root")
-                           .arg(qtext(op)));
+        row.setToolTip(QObject::tr("needs a definition \xE2\x80\x94 New definition…: %1")
+                           .arg(paletteNeedsDefinitionWhy(scope, op)));
         // The row's end: the way there, one press.
         auto *cell = new QWidget(&list);
         auto *cell_layout = new QHBoxLayout(cell);
@@ -7571,15 +7598,15 @@ struct GraphCanvasWidget::Impl {
                 // UX-12e, decision 5: an op that stands only in a definition
                 // an object's instance runs is grey in the root, and offers
                 // the way there.
-                if (scope.empty() && paletteNeedsDefinition(entry.op))
-                    markPaletteNeedsDefinition(*list, *row, entry.op, dialog);
+                if (paletteNeedsDefinition(scope, entry.op))
+                    markPaletteNeedsDefinition(*list, *row, scope, entry.op, dialog);
             }
             if (list->count() > 0) list->setCurrentRow(0);
         };
         const auto syncDefinition = [this, list, definitions, new_definition_data, new_name,
                                      contracts, targets, snapshot_after, compute_shader,
                                      buffer_row, attribute_domain, element, seed_note,
-                                     buttons] {
+                                     buttons, scope] {
             auto *row = list->currentItem();
             const auto op = row != nullptr ? row->data(Qt::UserRole).toString() : QString{};
             const bool loop = op == QLatin1String{"graph.loop"};
@@ -7677,9 +7704,12 @@ struct GraphCanvasWidget::Impl {
             // UX-12e, decision 5: a grey row is not placed here; Enter on it
             // is New definition... (finished, below).
             if (row != nullptr && row->data(kPaletteNeedsDefinitionRole).toBool()) {
-                note = QObject::tr("%1 runs inside a definition attached to an object: New "
-                                   "definition… makes one and opens this list there.")
-                           .arg(op);
+                note = scope.empty()
+                           ? QObject::tr("%1 runs inside a definition attached to an object: New "
+                                         "definition… makes one and opens this list there.")
+                                 .arg(op)
+                           : QObject::tr("%1: New definition… makes one and opens this list there.")
+                                 .arg(paletteNeedsDefinitionWhy(scope, op.toStdString()));
                 ready = false;
             }
             seed_note->setText(note);
@@ -8246,6 +8276,14 @@ struct GraphCanvasWidget::Impl {
         // EL-5s, decision 4.
         update_ports->setVisible(!model.computePortChanges().empty());
         update_ports->setEnabled(model.canEdit());
+        // UX-13b, decision 3.
+        if (const auto &fix = model.scalarTargetFix(); fix && fix->in_graph) {
+            fix_scalar_target->setText(qtext(GraphCanvasModel::scalarTargetFixLabel(*fix)));
+            fix_scalar_target->setEnabled(model.canEdit());
+            fix_scalar_target->show();
+        } else {
+            fix_scalar_target->hide();
+        }
         if (message.kind == InspectorNoticeKind::None) {
             notice->clear();
             notice->hide();

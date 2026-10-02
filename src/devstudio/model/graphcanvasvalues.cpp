@@ -64,6 +64,61 @@ std::int64_t scalarOffset(const Json &parameters) {
         return 0;
     return offset->get<std::int64_t>();
 }
+
+// UX-13b, decision 2 (engine CT-5): a buffer node's parameters once it can
+// take `bytes` from render.scalar sinks -- host_source runtime_f32 and that
+// size (checkRenderScalarTargets, graphpartition.cpp) -- and what changed
+// ("runtime_f32", "<n> bytes" or nothing); nullopt when no edit of its own
+// parameters makes it so: elements that are not floats, a value line on it
+// (its one float is the engine's own sink), a size taken from an extent or
+// from a model's data.
+std::optional<std::pair<Json, std::string>> writableScalarBuffer(const Json &node, std::uint64_t bytes) {
+    const auto op = textOf(node, "op");
+    if (!isBufferOp(op)) return std::nullopt;
+    auto parameters = node.value("parameters", Json::object());
+    if (!parameters.is_object()) parameters = Json::object();
+    static const std::set<std::string, std::less<>> floats{"float", "vec2", "vec3", "vec4", "mat4"};
+    const auto element = textOf(parameters, "element");
+    if (!element.empty() && !floats.contains(element)) return std::nullopt;
+    if (const auto inputs = node.find("inputs");
+        inputs != node.end() && inputs->is_object() && inputs->contains("value"))
+        return std::nullopt;
+    const auto source = parameters.find("source");
+    const bool sourced = source != parameters.end() && source->is_object();
+    // A pose's attribute is written from the host already, at the size of
+    // its model's data.
+    const bool pose = sourced && source->contains("pose_node");
+    if (sourced && !pose) return std::nullopt;
+    std::string fix;
+    if (!pose && textOf(parameters, "host_source") != "runtime_f32") {
+        parameters["host_source"] = "runtime_f32";
+        fix = "runtime_f32";
+    }
+    if (bytes > 0 && !pose) {
+        if (op == "render.buffer") {
+            if (parameters.contains("size_from_extent")) return std::nullopt;
+            const auto size = parameters.find("size");
+            if (size == parameters.end() || !size->is_number_integer() ||
+                size->get<std::int64_t>() != static_cast<std::int64_t>(bytes)) {
+                parameters["size"] = bytes;
+                if (fix.empty()) fix = std::to_string(bytes) + " bytes";
+            }
+        } else {
+            // An attribute's size is its count of elements.
+            const auto stride = GraphCanvasModel::bufferElementSize(element.empty() ? "float" : element);
+            const auto count = parameters.find("count");
+            const bool same = count != parameters.end() && count->is_number_integer() &&
+                              count->get<std::int64_t>() * static_cast<std::int64_t>(stride) ==
+                                  static_cast<std::int64_t>(bytes);
+            if (!same) {
+                if (bytes % stride != 0) return std::nullopt;
+                parameters["count"] = bytes / stride;
+                if (fix.empty()) fix = std::to_string(bytes) + " bytes";
+            }
+        }
+    }
+    return std::pair{std::move(parameters), std::move(fix)};
+}
 } // namespace
 
 // --- Decision 4: a value.curve's keys.
@@ -504,6 +559,10 @@ bool GraphCanvasModel::setScalarValue(std::string_view scope, const std::string 
             ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", token}, {"node", node},
                                {"parameters", after}});
     }
+    // UX-13b, decision 2: the buffer grows or shrinks with what its sinks
+    // write, in the same edit.
+    for (auto &op : scalarTargetFixOps(scope, target, scalarTargetBytes(scope, target, {}, {{node, value.size()}})))
+        ops.push_back(std::move(op));
     // Numbers written on the node take the place of the edge: the engine
     // reads no `value` edge beside them.
     if (value.size() > 1) {
@@ -549,6 +608,15 @@ bool GraphCanvasModel::setScalarTarget(std::string_view scope, const std::string
     ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", token}, {"node", node},
                        {"parameters", moved}});
     if (!old_target.empty()) repack(old_target, nullptr);
+    // UX-13b, decision 2: the buffer picked made one the sinks can write
+    // (runtime_f32, as large as they all are), and the one left as large as
+    // the sinks still on it -- in the same edit.
+    const auto own = static_cast<std::uint64_t>(scalarComponents(parameters) * sizeof(float));
+    for (auto &op : scalarTargetFixOps(scope, target, static_cast<std::uint64_t>(end) + own))
+        ops.push_back(std::move(op));
+    if (!old_target.empty())
+        if (const auto left = scalarTargetBytes(scope, old_target, node); left > 0)
+            for (auto &op : scalarTargetFixOps(scope, old_target, left)) ops.push_back(std::move(op));
     return submitOps(std::move(ops));
 }
 
@@ -562,6 +630,122 @@ std::vector<std::string> GraphCanvasModel::scalarTargets(std::string_view scope)
         if (std::ranges::find(result, buffer) == result.end() && buffer.find('@') == std::string::npos)
             result.push_back(buffer);
     return result;
+}
+
+// --- UX-13b, decisions 2 and 3 (engine CT-5): a render.scalar's buffer made
+// writable in the edit that picks it.
+
+std::uint64_t GraphCanvasModel::scalarTargetBytes(std::string_view scope, const std::string &target,
+                                                  std::string_view except,
+                                                  const std::map<std::string, std::size_t> &components) const {
+    std::uint64_t bytes = 0;
+    const auto *nodes = scopeNodes(scope);
+    if (nodes == nullptr || target.empty()) return 0;
+    for (const auto &node : *nodes) {
+        if (!node.is_object() || textOf(node, "op") != "render.scalar") continue;
+        const auto id = textOf(node, "id");
+        if (id == except) continue;
+        const auto parameters = node.value("parameters", Json::object());
+        if (!parameters.is_object() || textOf(parameters, "target") != target) continue;
+        const auto given = components.find(id);
+        bytes += (given != components.end() ? given->second : scalarComponents(parameters)) * sizeof(float);
+    }
+    return bytes;
+}
+
+std::vector<GraphCanvasScalarTarget> GraphCanvasModel::scalarTargetChoices(std::string_view scope,
+                                                                           std::string_view node,
+                                                                           std::size_t components) const {
+    std::vector<GraphCanvasScalarTarget> result;
+    const auto own = static_cast<std::uint64_t>(std::max<std::size_t>(components, 1) * sizeof(float));
+    // The graph's buffers: the scope's, then the root's.
+    for (const std::string_view each : {scope, std::string_view{}}) {
+        const auto *nodes = scopeNodes(each);
+        if (nodes == nullptr) continue;
+        for (const auto &buffer : *nodes) {
+            if (!buffer.is_object() || !isBufferOp(textOf(buffer, "op"))) continue;
+            const auto id = textOf(buffer, "id");
+            if (id.empty() || std::ranges::find(result, id, &GraphCanvasScalarTarget::buffer) != result.end())
+                continue;
+            const auto judged = writableScalarBuffer(buffer, scalarTargetBytes(scope, id, node) + own);
+            if (judged) result.push_back({id, judged->second});
+        }
+        if (scope.empty()) break;
+    }
+    // A feature's runtime buffer (bloom.intensity) is no node of the graph:
+    // the frame plan lists it, and the engine says what it must be.
+    std::vector<std::string> planned{plan_buffers_.begin(), plan_buffers_.end()};
+    std::ranges::sort(planned);
+    for (const auto &buffer : planned)
+        if (std::ranges::find(result, buffer, &GraphCanvasScalarTarget::buffer) == result.end() &&
+            buffer.find('@') == std::string::npos && findNode(scope, buffer) == nullptr &&
+            findNode({}, buffer) == nullptr)
+            result.push_back({buffer, {}});
+    return result;
+}
+
+std::string GraphCanvasModel::scalarTargetLabel(const GraphCanvasScalarTarget &target) {
+    if (target.fix.empty()) return target.buffer;
+    return target.buffer + " (will be set to " + target.fix + ")";
+}
+
+Json GraphCanvasModel::scalarTargetFixOps(std::string_view scope, const std::string &target,
+                                          std::uint64_t bytes) const {
+    Json ops = Json::array();
+    std::string_view where = scope;
+    const auto *buffer = findNode(scope, target);
+    if ((buffer == nullptr || !isBufferOp(textOf(*buffer, "op"))) && !scope.empty()) {
+        where = {};
+        buffer = findNode({}, target);
+    }
+    if (buffer == nullptr || !isBufferOp(textOf(*buffer, "op"))) return ops;
+    const auto judged = writableScalarBuffer(*buffer, bytes);
+    if (!judged || judged->second.empty()) return ops;
+    ops.push_back(Json{{"op", "set_node_parameters"}, {"scope", tokenOf(where)}, {"node", target},
+                       {"parameters", judged->first}});
+    return ops;
+}
+
+std::string GraphCanvasModel::scalarTargetFixLabel(const GraphCanvasScalarTargetFix &fix) {
+    std::string line = "Fix: make " + fix.target + " runtime_f32";
+    if (fix.size) line += ", " + std::to_string(*fix.size) + " bytes";
+    return line;
+}
+
+bool GraphCanvasModel::fixScalarTarget() {
+    if (!canEdit() || !scalar_target_fix_ || !scalar_target_fix_->in_graph) return false;
+    const auto fix = *scalar_target_fix_;
+    const auto *buffer = findNode(fix.scope, fix.target);
+    if (buffer == nullptr || !isBufferOp(textOf(*buffer, "op"))) return false;
+    // What the engine asked for, as it said it.
+    const auto judged = writableScalarBuffer(*buffer, fix.size.value_or(0));
+    if (!judged) return false;
+    const auto before = buffer->value("parameters", Json::object());
+    if (judged->first == before) return false;
+    return submitOps(Json::array({Json{{"op", "set_node_parameters"}, {"scope", tokenOf(fix.scope)},
+                                       {"node", fix.target}, {"parameters", judged->first}}}));
+}
+
+bool GraphCanvasModel::definitionOwnedInstancesOnly(std::string_view definition) const {
+    if (!definition_instances_.is_object()) return true;
+    const auto found = definition_instances_.find(std::string{definition});
+    if (found == definition_instances_.end() || !found->is_object()) return true;
+    return found->value("owned_instances_only", true);
+}
+
+Json GraphCanvasModel::catalogChoices() const {
+    auto types = Json::array();
+    for (const auto &[id, schema] : types_.items()) {
+        (void)id;
+        types.push_back(schema);
+    }
+    auto operations = Json::array();
+    for (const auto &[op, entry] : operations_.items()) {
+        (void)op;
+        operations.push_back(entry);
+    }
+    return Json{{"modules", Json::array({Json{{"types", std::move(types)},
+                                               {"operations", std::move(operations)}}})}};
 }
 
 // --- Decision 13 (a) / UX-12a: the catalog's required parameters and its table.
