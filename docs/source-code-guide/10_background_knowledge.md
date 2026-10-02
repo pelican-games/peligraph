@@ -363,7 +363,7 @@ Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取�
 
 同じイメージでも、シェーダからの触り方によって descriptor type が変わります。読み取りサンプリングは `COMBINED_IMAGE_SAMPLER`(イメージとサンプラを 1 つの descriptor に束ねる)、計算シェーダからの書き込みは `STORAGE_IMAGE`、そしてイメージとサンプラを別々の descriptor(`SAMPLED_IMAGE` + `SAMPLER`)に分ける形の 3 通りが基本です。分離型は「同じ画像を複数のサンプラで引く」「サンプラだけ差し替える」ときに効き、bindless なテクスチャ配列とサンプラ配列を独立に組める代わりに binding が 1 本増えます。**仕様上の位置**は "Descriptor Types" 節(`VK_DESCRIPTOR_TYPE_*` の列挙)です。
 
-**使用場所**: [MaterialContainer::registerMaterial()](../../src/core/material/materialcontainer.cpp#L795)(`split_custom_samplers` のとき `eSampledImage` + `eSampler` の 2 binding へ割る) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1022)
+**使用場所**: [MaterialContainer::registerMaterial()](../../src/core/material/materialcontainer.cpp#L798)(`split_custom_samplers` のとき `eSampledImage` + `eSampler` の 2 binding へ割る) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1022)
 
 ### pNext チェーンと vulkan-hpp の StructureChain / unlink
 
@@ -389,7 +389,7 @@ VMA は Vulkan のメモリタイプ選択とサブアロケーションを引�
 
 `VkPhysicalDeviceBufferDeviceAddressFeatures::bufferDeviceAddress`(Vulkan 1.2 コア)を有効にすると、`vkGetBufferDeviceAddress` でバッファの GPU 仮想アドレスを 64bit 整数として取得でき、シェーダから `buffer_reference` でポインタのように辿れます。ただし**アドレスを取る予定のバッファは、作成時に `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT` を立てておかなければなりません**(後から取ることはできません)。レイトレーシングの BLAS 入力に使うバッファはさらに `VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR` が要ります。得たアドレスに整列要件があるときは `address % alignment` の余りから前方へ寄せるのが定型です。
 
-**使用場所**: [geometryBuildInputUsage()](../../src/core/model/vertbufcontainer.cpp#L17)(capability があるときだけ 2 つの usage を足す) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L175) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L827)
+**使用場所**: [geometryBuildInputUsage()](../../src/core/model/vertbufcontainer.cpp#L17)(capability があるときだけ 2 つの usage を足す) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L175) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L832)
 
 ### std140 / std430 レイアウト規則
 
@@ -423,7 +423,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VK_KHR_ray_tracing_pipeline` のパイプラインは、ステージ配列(`pStages`)とグループ配列(`pGroups`)の 2 段でできています。グループは `GENERAL`(raygen / miss / callable)と `TRIANGLES_HIT_GROUP`(closest hit + 任意の any hit)などの種類を持ち、各グループは pStages 内の添字を指します。**グループの並び順がそのまま SBT(Shader Binding Table)の並び順**になります。`vkGetRayTracingShaderGroupHandlesKHR` で取れる不透明ハンドルは 1 個あたり `shaderGroupHandleSize` バイト、SBT の 1 レコードは `shaderGroupHandleAlignment` に、raygen / miss / hit / callable の**各領域の先頭アドレスは `shaderGroupBaseAlignment`** に揃える必要があります(いずれも `VkPhysicalDeviceRayTracingPipelinePropertiesKHR`)。`vkCmdTraceRaysKHR` に渡す 4 つの `VkStridedDeviceAddressRegionKHR` はこの stride で読まれます。
 
-**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L713)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L827)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2294)
+**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L718)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L832)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2294)
 
 **このコードベースでの注意**: base alignment を満たすために `total_size + (base_alignment - 1)` を確保し、実アドレスの余りから内部オフセットを決めています。確保したバッファの先頭が揃っている保証は無い、という前提での書き方です。
 
@@ -439,13 +439,13 @@ BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKH
 
 TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE` は「このインスタンスは不透明として扱う」= **any-hit シェーダを呼ばない**、`FORCE_NO_OPAQUE` はその逆です。両方を同時に立てるのは矛盾なので、宣言側で弾く必要があります。any-hit シェーダは交差**候補**ごとに(順不同で、同じ交差に対して複数回)呼ばれ、`ignoreIntersectionEXT` でその候補を棄却します。三角形の hit attribute は組み込みで `vec2` の重心座標(残り 1 成分は `1 - u - v`)、プリミティブ番号は `gl_PrimitiveID` です。したがってアルファ抜きを any-hit で実装している構成で `FORCE_OPAQUE` を立てると、抜きが丸ごと無効になります。
 
-**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1674)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1232)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
+**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1676)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1232)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
 
 ### in-flight フレームと GPU 資源の寿命
 
 GPU に投入したコマンドバッファは、対応する fence が signal されるまで「まだ実行中かもしれない」ものです。そのコマンドバッファが参照している資源(バッファ・イメージ・acceleration structure・SBT・descriptor set)は、その間は破棄も上書きもできません。CPU が先へ進むために同じ資源を N セット用意して添字で回すのが in-flight frame で、この N はスワップチェーンのイメージ枚数とは**別の数**です。破棄を「fence 完了後」まで遅らせる仕組み(遅延解放キュー)と、フレームが掴んだ資源を型を消して握っておく仕組み(lease)を組むのが定型になります。
 
-**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L5204) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
+**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L5258) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
 
 ## 10.2 glTF / 3D アセット形式の仕様
 
@@ -621,7 +621,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「途中で失敗したら、それまでの副作用を取り消す」を例外安全に書く定型です。ローカルなガード型のデストラクタに巻き戻し処理を書き、正常系の最後で「もう巻き戻さない」印(commit / dismiss と呼ばれることが多い)を立ててガードを無効化します。こうすると、途中のどの `throw` からでも巻き戻しが走り、成功経路でだけ走りません(`std::scope_exit` / `scope_fail` は C++ 標準ライブラリ拡張の同種の道具です)。ガードに「そもそも何もしていない」状態を表す番兵(世代番号が 0、ハンドルが無効など)を持たせて、staging 前に抜けたときに巻き戻しを飛ばす形もよく使われます。
 
-**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3126) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3153) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
+**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3135) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3162) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
 
 ### double-checked locking と acquire / release
 
@@ -639,7 +639,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 2 つの 32bit 値を 1 つの 64bit に詰める `(hi << 32) | lo` は、単なる節約ではなく「2 つのキーの辞書順比較を、整数 1 回の比較で行う」ための表現です(上位に来た値が優先される)。復元はシフトとマスクで、詰める前に両方が 32bit に収まることを確かめておかないと静かに桁が落ちます。関連する定型が `(1u << n) - 1u`(下位 n ビットを立てる)で、n がビット幅と同じときは左シフトが未定義になるため別扱いが要ります。フラグ集合では「同時に立ってはいけない組み合わせ」を `(x & A) != 0 && (x & B) != 0` の形で検査するのが定石です。
 
-**使用場所**: [sceneBehaviorAttachmentSeq()](../../src/core/gamelogic/behaviorarena.cpp#L72)(32bit を超える入力を `length_error` で弾いてから詰める) / [refreshSceneAttachmentSequence()](../../src/core/gamelogic/behaviorarena.cpp#L455) / [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L250)(view_count 32 のときだけ `UINT32_MAX` へ分岐) / [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1674)(相反フラグの検査)
+**使用場所**: [sceneBehaviorAttachmentSeq()](../../src/core/gamelogic/behaviorarena.cpp#L72)(32bit を超える入力を `length_error` で弾いてから詰める) / [refreshSceneAttachmentSequence()](../../src/core/gamelogic/behaviorarena.cpp#L455) / [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L250)(view_count 32 のときだけ `UINT32_MAX` へ分岐) / [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1676)(相反フラグの検査)
 
 ### shared_ptr / weak_ptr による寿命の「リース」
 
@@ -657,7 +657,7 @@ GPU 資源のように「今すぐには壊せない」ものを溜める破棄�
 
 C++ のムーブは、移動元を「有効だが未規定の状態」にします。標準ライブラリの型なら破棄と再代入は必ず安全ですが、それ以外に何が保証されるかは型ごとの契約です。自前のトークン型では、この未規定さを**能動的に使う**ことがあります — ムーブされた側を「もう commit してはいけない」印にして、二重コミットを型の側で潰す、という書き方です。読む側から見ると「ムーブしたあとに何もしていないのに状態が変わる」ように見えるので、契約がコメントか名前に書かれていないと読めません。
 
-**使用場所**: [ProjectBasicConfig::importSceneDocument()](../../src/core/loader/basicconfig.cpp#L808)(トークンを move して以降を無効化する)
+**使用場所**: [ProjectBasicConfig::importSceneDocument()](../../src/core/loader/basicconfig.cpp#L793)(トークンを move して以降を無効化する)
 
 ### 型消去: std::any と any_cast
 
@@ -675,7 +675,7 @@ C++ のムーブは、移動元を「有効だが未規定の状態」にしま�
 
 `std::variant` の中身で分岐する定型は、`std::visit` に総称ラムダを渡し、その中で `using T = std::decay_t<decltype(value)>;` として `if constexpr (std::same_as<T, X>)` で枝を書く形です。`std::visit` は全ての候補型を扱えることをコンパイル時に要求するので、型を足したときに「その枝を書き忘れた」がコンパイルエラーになります(`switch` の default と違って取りこぼせません)。`std::monostate` は「値が入っていない」を表すための空の型で、必ず別扱いの枝が要ります。総称ラムダの中で `if constexpr` を使うと、偽の枝は実体化されないので、その型に無いメンバを参照する枝も書けます。これは同じ理由でテンプレート引数ごとのコード生成一般に使われ、依存名の中でメンバーテンプレートを呼ぶときは `obj.template f<...>()` の `.template` 修飾が要ります(パーサに「これはテンプレート」と教えるため)。
 
-**使用場所**: [numericRange()](../../src/core/imgui/inspector.cpp#L38) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L1958) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1901) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
+**使用場所**: [numericRange()](../../src/core/imgui/inspector.cpp#L38) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L1958) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1906) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
 
 ### fold 式と std::apply(タプルライク型の全要素処理)
 
@@ -689,7 +689,7 @@ C++20 の `consteval` 関数は必ず定数評価されます。定数評価の�
 
 **使用場所**: [validateFloatingRange()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L414)(範囲が非有限、または min > max なら文字列を throw) / [field()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L486)(フィールド名が空、または予約接頭辞 `$` で始まるなら throw)
 
-**このコードベースでの注意**: 同じ `consteval` でも、[structFieldType()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L369) と [legacyBranchDescriptorsAreStrictlyOrdered()](../../src/core/loader/componentcodec.cpp#L1992) は `throw` ではなく `static_assert`(前者は `always_false_v` のフォールバック、後者は戻り値を呼び出し側の `static_assert` が見る形)で落とします。「引数の値に対する検査」は throw、「型やテーブル全体に対する検査」は `static_assert`、という使い分けです。
+**このコードベースでの注意**: 同じ `consteval` でも、[structFieldType()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L369) と [legacyBranchDescriptorsAreStrictlyOrdered()](../../src/core/loader/componentcodec.cpp#L1994) は `throw` ではなく `static_assert`(前者は `always_false_v` のフォールバック、後者は戻り値を呼び出し側の `static_assert` が見る形)で落とします。「引数の値に対する検査」は throw、「型やテーブル全体に対する検査」は `static_assert`、という使い分けです。
 
 ### __COUNTER__ と ADL タグディスパッチによる「登録済みの型の列挙」
 
@@ -713,7 +713,7 @@ C++20 の `concept` と `requires` 式は「この型がこう使えるか」を
 
 `std::array<T, N>` は N ごとに別の型なので、そのまま非テンプレートの関数に渡せません。`std::span<const T>`(C++20)はポインタと個数の組を持つ非所有のビューで、`array` でも `vector` でも生配列でも同じ引数型で受けられるようにします。所有しないので**元の配列より長生きしてはいけない**のが唯一にして最大の注意点で、テンポラリから作った span を返すと即座にダングリングになります。
 
-**使用場所**: [fieldSpan()](../../src/core/loader/componentcodec.cpp#L1901) / [ReleaseReport](../../src/core/model/modelresourcerelease.hpp#L36)(`view()` が固定長配列の先頭 N 件を span で返す)
+**使用場所**: [fieldSpan()](../../src/core/loader/componentcodec.cpp#L1903) / [ReleaseReport](../../src/core/model/modelresourcerelease.hpp#L36)(`view()` が固定長配列の先頭 N 件を span で返す)
 
 ### 関数スコープ static の一度きり初期化
 
@@ -1075,7 +1075,7 @@ Vulkan のラスタライズ規則では、整数のフレームバッファ座�
 
 **このリポジトリでは**: `src/core/phys/physquery.cpp` の `normalizedQuat()`(99 行)と `closestPointOnSegment()`(226 行)、`src/core/phys/physworld.cpp` の `normalized()`(65 行)、`src/core/phys/joltphysicsprovider.cpp` の `normalizeOr()`(143 行)が、正規化の割り算前に `len_sq = dot(v,v)` を `kEpsilon * kEpsilon`(kEpsilon=1e-5)と比べ、下回れば単位クォータニオンや端点・フォールバックベクトルを返して割り算を回避します。`normalizedQuat()` はコライダ変換の `rotateVector()` などが通る要所です。ε を二乗するのが要点で、`len_sq <= kEpsilon` のままだと実効の長さ閾値が `sqrt(1e-5)≈3.2e-3` と約 300 倍緩くなり、ほぼ縮退した回転/線分がガードをすり抜けて極小長で割られ、NaN/inf が raycast や overlap の結果に伝播して決定的物理が壊れます。
 
-**長さそのものが要るときは `std::hypot`**(2026-09-04 追記)。比較ではなく実際の長さが必要な場面では、`sqrt(x*x + y*y + z*z)` は途中の二乗でオーバーフロー / アンダーフローしますが、`std::hypot` は内部で桁を揃えるためその範囲で耐えます(C++17 で 3 引数版が入りました)。[parseBasicCameraUp()](../../src/core/loader/basicconfig.cpp#L244) が `basic_config.camera.up` の長さを `std::hypot` で測り、0 なら基底が作れないので設定エラーにします。
+**長さそのものが要るときは `std::hypot`**(2026-09-04 追記)。比較ではなく実際の長さが必要な場面では、`sqrt(x*x + y*y + z*z)` は途中の二乗でオーバーフロー / アンダーフローしますが、`std::hypot` は内部で桁を揃えるためその範囲で耐えます(C++17 で 3 引数版が入りました)。RPC `raycast` の [方向の長さを測る所](../../src/core/communication/rpcserver.cpp#L1264) は `direction` の長さを `std::hypot` で測り、0 か有限でなければ invalid params にします(以前の例の `basic_config.camera.up` は CC-1 で撤去されました)。
 
 ### NaN はあらゆる比較で false — `isfinite` を先に置く
 
@@ -1208,7 +1208,7 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **小さな例**: 「作業が完了した」ことをディレクトリに残したいとします。`state.json` の `status` を `"prepared"` → `"committed"` に書き換える設計は、(a) 書き換えの途中でクラッシュすると状態が読めない、(b) ウイルススキャナがそのファイルを開いていると置き換えに失敗しうる、という 2 つの弱点があります。**別名 `committed` を排他 create する**設計なら、書き換えは一度も起きず、「存在するかどうか」だけが決定になります。掃除の順序だけは考える必要があって、「決定の印」より先に「やることリスト」を消すのが安全側です — 逆順に消して途中で止まると、完了済みの作業が未完了に見えます。
 
-**使用場所**: [`linkExclusive()`](../../src/project/projectdocumenttransaction.cpp#L306)(hard link で名前を公開し、失敗は外部改変として報告)/ [`publishCommittedMarker()`](../../src/project/projectdocumenttransaction.cpp#L463) / [掃除の順序](../../src/project/projectdocumenttransaction.cpp#L680)
+**使用場所**: [`linkExclusive()`](../../src/project/projectdocumenttransaction.cpp#L217)(hard link で名前を公開し、失敗は外部改変として報告)/ [`publishCommittedMarker()`](../../src/project/projectdocumenttransaction.cpp#L374) / [掃除の順序](../../src/project/projectdocumenttransaction.cpp#L591)
 
 ### 内容アドレスによる vendoring(sha256 が同一性、ABI の本当の gate は別)
 

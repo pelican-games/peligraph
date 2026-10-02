@@ -430,7 +430,7 @@ void update(Pelican::GameContext &ctx) {
 
 **`screenRay(position_px)`**
 
-- 今の主 camera の projection と view の逆行列で、framebuffer ピクセルの位置を world の ray にします([`Camera::rayThroughPixel()`](../../src/core/renderer/camera.cpp#L433))。逆行列は double で計算します。
+- 今の主 camera の projection と view の逆行列で、framebuffer ピクセルの位置を world の ray にします([`Camera::rayThroughPixel()`](../../src/core/renderer/camera.cpp#L434))。逆行列は double で計算します。
 - NDC は `2 × px ÷ 幅 − 1`(y も同じ式で、**反転しません**)。平面描画のフレームが NDC を framebuffer へ写す向きに合わせてあります。幅と高さは camera の viewport(出力先の大きさ)です。
 - 起点は near 面上、方向は正規化済み、`max_distance` は `phys::Ray` の既定値です。framebuffer の外の位置にも ray を返します。
 - camera は呼んだ時点のものを読みます。同じ update の中で先に camera を動かしていれば、動かした後の camera の ray です。
@@ -1130,7 +1130,7 @@ auto slots  = ctx.save().listSaves();                         // SaveContext::Sl
 
 > **「姿勢の正本を 1 本にまとめる」は v0 では撤回されました(✅AG-1b)。** 一本化には「シーンが持つ派生プログラムの置き場」と「評価器の状態を写す API」が先に要り、v0 にはどちらもありません。**v0 が約束するのは 2 つの経路の parity**(`loop` / `speed` / `start_time` の意味、位相、パラメータ編集をまたいだ状態の保持)**と owner 単位の排他**の 2 つだけです([docs/v0_freeze.md](../v0_freeze.md) §1.6)。
 
-`animation` コンポーネントの受理キーは `name` / `clip` / `graph` / `parameters` / `speed` / `loop` / `start_time` の 7 つですが、**`graph` を書いた場合 `speed` / `loop` / `start_time` は拒否されます**(`field 'animation.<鍵>' is clip-only; graph states define their playback clocks`)。逆に `parameters`(グラフの初期パラメータ)は `graph` のときだけ書けます([componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1485))。
+`animation` コンポーネントの受理キーは `name` / `clip` / `graph` / `parameters` / `speed` / `loop` / `start_time` の 7 つですが、**`graph` を書いた場合 `speed` / `loop` / `start_time` は拒否されます**(`field 'animation.<鍵>' is clip-only; graph states define their playback clocks`)。逆に `parameters`(グラフの初期パラメータ)は `graph` のときだけ書けます([componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1487))。
 
 ### ゲームコードから見た層
 

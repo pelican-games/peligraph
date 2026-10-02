@@ -16,7 +16,7 @@
 | light（`render().setDirectionalLightDirection` ほか4本） | `LightContainer` | [`RenderContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L289) |
 | physics query（`physics().raycastAll`/`raycastClosest`/`overlapAll`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L78)） | physics service | [`PhysicsContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L402) |
 | camera（`render().setCamera`） | `Camera` | [`RenderContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L471) |
-| 画面の点から ray（`render().screenRay`、GP-4） | `EngineLaunchConfig::xr_active` の検査 → [`Camera::rayThroughPixel()`](../../src/core/renderer/camera.cpp#L433)。戻り値は `Resolved<phys::Ray, RenderError>` | [`RenderContext::screenRay()`](../../src/core/userpublic/gamecontext.cpp#L475) |
+| 画面の点から ray（`render().screenRay`、GP-4） | `EngineLaunchConfig::xr_active` の検査 → [`Camera::rayThroughPixel()`](../../src/core/renderer/camera.cpp#L434)。戻り値は `Resolved<phys::Ray, RenderError>` | [`RenderContext::screenRay()`](../../src/core/userpublic/gamecontext.cpp#L475) |
 | pointer / cursor（`input().pointer` / `setCursorMode`、GP-4） | `InputState::pointer()`（フレーム先頭の `beginFrame()` で換算済みの値）/ `InputState::requestCursorMode()`（窓への適用は次のフレームの [`Window::applyCursorMode()`](../../src/core/os/window.cpp#L343)） | [`InputContext::pointer()`](../../src/core/userpublic/gamecontext.cpp#L489) / [`InputContext::setCursorMode()`](../../src/core/userpublic/gamecontext.cpp#L493) |
 | 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L497) |
 | audio（`audio().playSound` ほか） | `Audio`またはfeature disabled error | [`AudioContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L517) |
@@ -46,7 +46,7 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 [[nodiscard]] bool setSpotLightDirection(std::string_view name, vec3 direction) const;
 ```
 
-setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L380)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L508) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。ここでの shadow 用 view-projection は、directional shadow の view family に属する各 view（ライト × cascade）の `projection * view` 行列を並べたもので、shading 側が world 座標を shadow map の座標へ写すために使います（組み立ては同関数内の [`view_projections.push_back()`](../../src/core/vkcore/renderer.cpp#L558) の周辺）。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
+setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L370)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L509) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。ここでの shadow 用 view-projection は、directional shadow の view family に属する各 view（ライト × cascade）の `projection * view` 行列を並べたもので、shading 側が world 座標を shadow map の座標へ写すために使います（組み立ては同関数内の [`view_projections.push_back()`](../../src/core/vkcore/renderer.cpp#L559) の周辺）。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
 
 > **設計決定:** ライトの時間変化は**ユーザー空間の責務**です。engine側にライト名（`"KeyLight"`など）を見て時刻から値を書き換える経路はありません。[`LightContainer`](../../src/core/light/lightcontainer.hpp) が持つのは現在値の配列と名前→indexのmapだけで、時刻を受け取るAPIも、scene読み込み時の原本値を控える配列もありません。従ってsetterで上書きした値を元へ戻したければ、ユーザーコード側で覚えておく必要があります。実例は [`updateLightAnimation()`](../../projects/example/code/playercontrol.cpp#L31) で、`ctx.time()`から毎フレーム**絶対値を計算して**4本のsetterへ渡しています。移行時の注意は[第9章](09_black_magic_and_gotchas.md)を参照してください。
 
@@ -100,7 +100,7 @@ registryの各登録には [`RegistrationOwner`](../../src/core/userpublic/detai
 
 [`gameSystemInstance<System>()`](../../src/core/userpublic/details/system/registerer.hpp#L53) は関数ローカルstaticのSystem instanceを返します。System objectは毎フレーム作り直されず、メンバ状態を保持できます。
 
-これは`FastModuleContainer`管理ではないため、module cleanupでresetされません。通常プロセスでは問題になりませんが、同一プロセス内でruntimeを作り直すテストやtoolではSystemメンバのreset条件を自分で設計する必要があります。加えて、DLL reloadでは新DLLのfunction-local staticが新規インスタンスになるため、旧状態は引き継がれません。組み込みcamera controllerはframe index逆行と設定signature変更を検知してstateをresetします（[`resetIfNeeded()`](../../src/core/userpublic/cameracontrollersystem.cpp#L231)）。
+これは`FastModuleContainer`管理ではないため、module cleanupでresetされません。通常プロセスでは問題になりませんが、同一プロセス内でruntimeを作り直すテストやtoolではSystemメンバのreset条件を自分で設計する必要があります。加えて、DLL reloadでは新DLLのfunction-local staticが新規インスタンスになるため、旧状態は引き継がれません。組み込みcamera controllerはframe index逆行と設定signature変更を検知してstateをresetします（[`resetIfNeeded()`](../../src/core/userpublic/cameracontrollersystem.cpp#L238)）。
 
 ### 実行順
 
@@ -109,7 +109,7 @@ registry実体は [`getGameSystemRegisterer()`](../../src/core/userpublic/detail
 1. `order`昇順
 2. 同じorderなら登録時の型名文字列昇順
 
-従ってtranslation unitの静的初期化順には依存せず、最終実行順は決定的です。組み込み [`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L417) はorder 10000なので、通常のゲームSystemの後に動きます。
+従ってtranslation unitの静的初期化順には依存せず、最終実行順は決定的です。組み込み [`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L428) はorder 10000なので、通常のゲームSystemの後に動きます。
 
 **一時停止中のフレーム(✅PM-1a)。**[`updateRegisteredGameSystems(ctx, scope)`](../../src/core/userpublic/details/system/registerer.cpp#L80) は、game の 1 歩でないフレームには `GameSystemScope::editor_only` で呼ばれ、[`markEditorGameSystem()`](../../src/core/userpublic/details/system/registerer.cpp#L57) で印の付いた system だけを同じ order 順で呼びます。印を付けるのは engine だけで、camera controller と modal transform の登録がそれぞれ `registerSystem<...>()` の token に付けます(公開の登録の形は変えていない)。印の付いた system を呼ぶ間は `ScopedEditorClock` が立ち、`GameContext::deltaTime()` はそのフレーム自身の `dt` を返します。`frameIndex()` はどちらの場合も評価の番号です。behavior(`BehaviorSystem`)・DLL の system・physics trigger には印が無いので、一時停止中は呼ばれません。
 
@@ -287,7 +287,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 ## 5.6 Camera
 
-[`Camera`](../../src/core/renderer/camera.hpp#L20) は次を一つのmoduleで管理します。
+[`Camera`](../../src/core/renderer/camera.hpp#L21) は次を一つのmoduleで管理します。
 
 - 現在のpos/dir/up
 - perspective/orthographic projection
@@ -295,21 +295,21 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 - active camera名
 - optional orbit/follow/fly controller定義
 
-加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L159) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L164) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1559)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L587)）です。
+加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L166) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L171) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1560)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L587)）です。
 
-GP-4 の [`rayThroughPixel()`](../../src/core/renderer/camera.cpp#L433) は、framebuffer ピクセルの位置を projection と view の逆行列（double で計算）で world の ray にします。NDC は `2 × px ÷ viewport − 1` で y を反転せず（平面描画のフレームが NDC を framebuffer へ写す向き。コメントは gizmo の `projectPoint` を参照）、深度 0（near 面）と 1（far 面）の2点を戻して、起点を near 面上の点、方向をその差の正規化にします。公開面は `RenderContext::screenRay()` で、XR 中の拒否と有限性の検査はそちらが持ちます。
+GP-4 の [`rayThroughPixel()`](../../src/core/renderer/camera.cpp#L434) は、framebuffer ピクセルの位置を projection と view の逆行列（double で計算）で world の ray にします。NDC は `2 × px ÷ viewport − 1` で y を反転せず（平面描画のフレームが NDC を framebuffer へ写す向き。コメントは gizmo の `projectPoint` を参照）、深度 0（near 面）と 1（far 面）の2点を戻して、起点を near 面上の点、方向をその差の正規化にします。公開面は `RenderContext::screenRay()` で、XR 中の拒否と有限性の検査はそちらが持ちます。
 
 ### scene cameraロード
 
-[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L403) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
+[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L395) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
 
-`RenderContext::setCamera(name)`(`ctx.render().setCamera`)は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L533) を呼び、以後そのcameraのpose/projectionをactiveにします。
+`RenderContext::setCamera(name)`(`ctx.render().setCamera`)は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L534) を呼び、以後そのcameraのpose/projectionをactiveにします。
 
-このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L86)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L417) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L327)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L485) を通るため、このフラグの影響を受けません。
+このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L90)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L409) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L330)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L486) を通るため、このフラグの影響を受けません。
 
 ### controller
 
-[`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L417) がゲームSystemとして毎フレーム処理します。
+[`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L428) がゲームSystemとして毎フレーム処理します。
 
 - orbit: target周りのyaw/pitch/distance
 - follow: target + offsetからlook-at
@@ -320,11 +320,11 @@ controllerは名前bindingからtarget transformを毎回resolveし、scene遷�
 
 controller の鍵を読むのは camera codec の `decodeController()` で、どの type がどの鍵を読み、どれが必須かは ✅SC-1 から component の schema にも載ります(§3.11 の「別の field の値で読まれる field」、manual [第4章](../manual/04_scene_ecs.md) §4.2 の camera の項)。damping は codec がどの type でも読みますが、system が使うのは orbit と follow だけです。
 
-> 🧩 **難所 — +Z 前方と project up から基底を作る**([`rotationFromPose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L175))
+> 🧩 **難所 — +Z 前方と project up から基底を作る**([`rotationFromPose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L180))
 >
 > **何をする所か**: controller が作った `CameraPose`(pos / dir / up)を、scene object の transform へ書き戻すための四元数へ変換します。直交化してから `glm::quat_cast`(回転行列から四元数を復元する glm の関数)へ渡す 4 行です。
 >
-> **素朴に読むと**: `right = cross(pose.up, dir)` の順が `glm::lookAt` の慣習と逆で、しかも `up` を `cross(dir, right)` で作り直しています。前提は **このエンジンのカメラは local +Z が前**であること — ECS 側の [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) も `rotation * vec3{0,0,1}` を dir にしています。一方、world の上方向は固定 +Y ではなく `basic_config.camera.up` です。[`directionFromYawPitch()`](../../src/core/userpublic/cameracontrollersystem.cpp#L127) は、宣言 up に直交する面へ canonical +Z を射影して forward を作り、`right = cross(up, forward)` と合わせて yaw/pitch 基底にします。逆変換も固定の `atan2(x,z)` / `asin(y)` ではなく、この基底との内積から求めます。宣言 up が +Y なら従来の +Z forward / +X right と同じ式になります。
+> **素朴に読むと**: `right = cross(pose.up, dir)` の順が `glm::lookAt` の慣習と逆で、しかも `up` を `cross(dir, right)` で作り直しています。前提は **このエンジンのカメラは local +Z が前**であること — ECS 側の [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) も `rotation * vec3{0,0,1}` を dir にしています。一方、world の上方向は固定 +Y ではなく `basic_config.camera.up` です。[`directionFromYawPitch()`](../../src/core/userpublic/cameracontrollersystem.cpp#L131) は、宣言 up に直交する面へ canonical +Z を射影して forward を作り、`right = cross(up, forward)` と合わせて yaw/pitch 基底にします。逆変換も固定の `atan2(x,z)` / `asin(y)` ではなく、この基底との内積から求めます。宣言 up が +Y なら従来の +Z forward / +X right と同じ式になります。
 >
 > 正規直交基底の巡回順は `up × dir = right`、`dir × right = up` です。`glm::lookAt` 系は view 空間の前方が -Z なので `cross(dir, up)` の順で、そこから写すと外積が逆向きになります。厄介なのは**どちらも例外にならず画が出る**ことです。2 本とも反転すれば行列式は +1 のままなので、前方軸まわりに 180° 回った上下逆の回転が返ります。片方だけ直すと行列式 -1 の鏡像行列になり、`quat_cast` は入力が正規直交(各列が長さ 1 で互いに直交)な回転行列である前提で符号を復元するため、返る四元数に意味がなくなります。`up` を作り直すのも同じ系統で、ユーザが与えた `pose.up` が `dir` と直交している保証はなく、そのまま列に置くと非直交な行列を `quat_cast` へ渡して回転が歪みます。
 >
@@ -339,7 +339,7 @@ controller の鍵を読むのは camera codec の `decodeController()` で、ど
 > quat_cast(mat3{right, up, dir})
 > ```
 >
-> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L113) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L485) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
+> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L117) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L486) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
 >
 > **不変条件**: 外積の順は `right = cross(up, dir)` / `up = cross(dir, right)`(+Z 前方の巡回順)を保つ。`quat_cast` へ渡す前に必ず直交化する。project up を固定軸へ読み替えず、極点の fallback も宣言 up に対して非平行な軸を選ぶ。
 
@@ -611,18 +611,18 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 
 | 層 | 置き場所 | 中身 |
 |---|---|---|
-| 形式(純粋) | [`audioanalysisformat.hpp`](../../src/project/audioanalysisformat.hpp#L12) / `.cpp`(`pelican_project`) | settings の解析 [`parseAudioAnalysisSettings()`](../../src/project/audioanalysisformat.cpp#L91)、表の layout と行の名前、補間 [`sampleTableValue()`](../../src/project/audioanalysisformat.cpp#L207)、manifest を作る [`audioAnalysisManifest()`](../../src/project/audioanalysisformat.cpp#L230)、古さの判定 [`readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250) と走査 [`findDerivedAssets()`](../../src/project/audioanalysisformat.cpp#L332) |
-| 焼く | [`audioanalysis.hpp`](../../src/core/audio/audioanalysis.hpp#L10) / `.cpp`(`PELICAN_WITH_AUDIO` の unit) | [`analyzeAudio()`](../../src/core/audio/audioanalysis.cpp#L93)(窓・自前の radix-2 の [`fft()`](../../src/core/audio/audioanalysis.cpp#L23)・帯・追従)と [`bakeAudioAnalysis()`](../../src/core/audio/audioanalysis.cpp#L201)(decode → 解析 → `writeKtx2` → manifest) |
+| 形式(純粋) | [`audioanalysisformat.hpp`](../../src/project/audioanalysisformat.hpp#L12) / `.cpp`(`pelican_project`) | settings の解析 [`parseAudioAnalysisSettings()`](../../src/project/audioanalysisformat.cpp#L91)、表の layout と行の名前、補間 [`sampleTableValue()`](../../src/project/audioanalysisformat.cpp#L207)、manifest を作る [`audioAnalysisManifest()`](../../src/project/audioanalysisformat.cpp#L230)、古さの判定 [`readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250) と走査 [`findDerivedAssets()`](../../src/project/audioanalysisformat.cpp#L336) |
+| 焼く | [`audioanalysis.hpp`](../../src/core/audio/audioanalysis.hpp#L10) / `.cpp`(`PELICAN_WITH_AUDIO` の unit) | [`analyzeAudio()`](../../src/core/audio/audioanalysis.cpp#L74)(窓・自前の radix-2 の [`fft()`](../../src/core/audio/audioanalysis.cpp#L24)・帯・追従)と [`bakeAudioAnalysis()`](../../src/core/audio/audioanalysis.cpp#L182)(decode → 解析 → `writeKtx2` → manifest) |
 | RPC | [`renderconfigaudioanalysis.cpp`](../../src/core/communication/renderconfigaudioanalysis.cpp#L1) | `bake_audio_analysis` / `list_derived_assets`(第7章 §7.7 の表) |
 | CPU で読む | [`sampletable.hpp`](../../src/core/loader/sampletable.hpp#L10) / `.cpp` と `valuegraph.cpp` | [`loadSampleTable()`](../../src/core/loader/sampletable.cpp#L55) と op `value.sample_table` |
 | GPU で読む | [`pelican_sample_table.glsl`](../../src/core/resources/shaders/include/pelican_sample_table.glsl#L4) | `pelican_sample_table(...)` |
 | CLI | [`audiocommand.cpp`](../../src/devcli/audiocommand.cpp#L84) | `pelican_cli audio analyze` |
 
-**決定性の作り。**同じ bytes と settings からは同じ 2 つの file が書かれます。manifest は `created` を持たず、`settings` は既定を埋めた JSON をそのまま書き、`settings_sha256` はその `dump()` の sha256 です([`audioAnalysisSettingsJson()` と sha256 の所](../../src/project/audioanalysisformat.cpp#L132))。2 つの file は隣の `.tmp` に書いてから rename します([`writeReplacing()`](../../src/core/audio/audioanalysis.cpp#L73))。
+**決定性の作り。**同じ bytes と settings からは同じ 2 つの file が書かれます。manifest は `created` を持たず、`settings` は既定を埋めた JSON をそのまま書き、`settings_sha256` はその `dump()` の sha256 です([`audioAnalysisSettingsJson()` と sha256 の所](../../src/project/audioanalysisformat.cpp#L132))。2 つの file は隣の `.tmp` に書いてから rename します。AB-1 のときは `audioanalysis.cpp` の中の `writeReplacing()` が 1 回だけ rename していました。✅AB-2(`b3003b2a`)からは `pelican_project` の共通の [`writeFileReplacing()` を bake が呼ぶ所](../../src/core/audio/audioanalysis.cpp#L206)で、Windows で読む側が出力を開いていれば 50 ms から倍々に合計 2 秒までやり直し、開かれたままなら [`FileReplaceLocked` を `audio.analysis_failed@1` の `reason: "output_locked"` と `path` にする所](../../src/core/audio/audioanalysis.cpp#L214)を通ります。RPC 側は `path` を要求の `out` か `<out>.import.json` の綴りに直します([AB-2 の `path` の直し](../../src/core/communication/renderconfigaudioanalysis.cpp#L90))。置き換えの中身は第3章 §3.9 の「読む側が開いている file の置き換え —— `filereplace`」です。
 
-**bake の ticket の流れ。**[`bakeAudioAnalysis()` の RPC 側](../../src/core/communication/renderconfigaudioanalysis.cpp#L36)は、engine の thread で引数と settings を見て(settings の拒否と `audio.analysis_busy@1` はここですぐ返す)、`asset` / `out` を `resolve_document_path` で解き、`std::async` の thread に bake を渡します。worker は engine の状態を読みません(コードの注記)。結果は `AudioAnalysisBakeOutcome`(committed の fields か、拒否の code・message・fields)で返り、`commitPending()` が frame の境界ごとに最初に呼ぶ [`harvestAudioBakes()`](../../src/core/communication/renderconfigaudioanalysis.cpp#L106) が終わったものを `results_` と `completed_` に移します([呼ぶ所 AB-1](../../src/core/communication/renderconfigeditor.cpp#L6799))。render 文書を書かないので、待っている編集の ticket とは関係なく終わります。editor の destructor は走っている bake を待ちます。この file は audio の有無によらず `pelican_core` に入り、`PELICAN_WITH_AUDIO=OFF` の build では `bake_audio_analysis` が settings を見た後に `audio.analysis_unavailable@1` を返すだけになります(`list_derived_assets` は同じに動きます)。
+**bake の ticket の流れ。**[`bakeAudioAnalysis()` の RPC 側](../../src/core/communication/renderconfigaudioanalysis.cpp#L36)は、engine の thread で引数と settings を見て(settings の拒否と `audio.analysis_busy@1` はここですぐ返す)、`asset` / `out` を `resolve_document_path` で解き、`std::async` の thread に bake を渡します。worker は engine の状態を読みません(コードの注記)。結果は `AudioAnalysisBakeOutcome`(committed の fields か、拒否の code・message・fields)で返り、`commitPending()` が frame の境界ごとに最初に呼ぶ [`harvestAudioBakes()`](../../src/core/communication/renderconfigaudioanalysis.cpp#L113) が終わったものを `results_` と `completed_` に移します([呼ぶ所 AB-1](../../src/core/communication/renderconfigeditor.cpp#L6799))。render 文書を書かないので、待っている編集の ticket とは関係なく終わります。editor の destructor は走っている bake を待ちます。この file は audio の有無によらず `pelican_core` に入り、`PELICAN_WITH_AUDIO=OFF` の build では `bake_audio_analysis` が settings を見た後に `audio.analysis_unavailable@1` を返すだけになります(`list_derived_assets` は同じに動きます)。
 
-**古さの判定。**[`readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250) は manifest の最初の output を asset とし、source と output の file の有無と sha256、`pelican.audio_analysis` の manifest なら版と `settings_sha256` を見ます。sha256 は file の更新時刻と大きさが変わったときだけ計算し直します([`fileSha256()` の cache](../../src/project/audioanalysisformat.cpp#L60)。`get_frame_plan` が呼ばれるたびに派生 asset の全部を見るため、とコードの注記)。`get_frame_plan` 側は `Renderer::currentFramePlanJson()` が `initial_asset` の file に [`derivedAssetStatusOf()`](../../src/core/vkcore/renderer.cpp#L4759) を当てます。
+**古さの判定。**[`readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250) は manifest の最初の output を asset とし、source と output の file の有無と sha256、`pelican.audio_analysis` の manifest なら版と `settings_sha256` を見ます。sha256 は file の更新時刻と大きさが変わったときだけ計算し直します([`fileSha256()` の cache](../../src/project/audioanalysisformat.cpp#L60)。`get_frame_plan` が呼ばれるたびに派生 asset の全部を見るため、とコードの注記)。✅AB-2 から、manifest は読み終えて閉じてから source と output を hash します(bake の置き換えが待つのはこの読みの間だけ、とコードの注記)。`get_frame_plan` 側は `Renderer::currentFramePlanJson()` が `initial_asset` の file に [`derivedAssetStatusOf()`](../../src/core/vkcore/renderer.cpp#L4813) を当てます。
 
 **`value.sample_table` の作り。**lowering は `time` の edge が無ければ `<id>/$scene_time` の input node を足し([lowering の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L216))、`Graph` の構築で `Op::sample_table` の node が表を `loadSampleTable()` で読んで `shared_ptr` で持ちます([構築の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L474))。評価は memory を読むだけです([評価の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L859))。`loadSampleTable()` の cache は `weak_ptr` で、✅IA-3(`26473e75`)から表と manifest の中身の sha256 の 2 つが同じあいだ同じ表を返します(IA-3 の前は更新時刻と大きさの 4 つでした)。毎回 2 つの file を読んで hash し、parse するのも hash したのと同じ bytes です(間の書き込みで、sha256 と中身が食い違う表ができないため。コードの注記)。`SampleTable` は読んだ file の path と 2 つの sha256(`file` / `manifest` / `file_sha256` / `manifest_sha256`)を持ちます。graph が持つのは構築の時の表なので、焼き直しは graph を組み直した新しい世代で届きます。✅IA-3 から [`Graph::sampleTables()`](../../src/core/userpublic/valuegraph.cpp#L813) が node・asset の参照・表を返し、`reload_render_documents` の比較(依存 `published_assets`)と hot reload の監視(`renderPipelineWatchSources()`)がこれを読みます(第6章「persistent の image の初期内容と KTX2 の float(IA-1)」の IA-3 の項、第7章 §7.7 の `reload_render_documents`)。拒否の code は [`valuegraph.hpp` の AB-1 の code](../../src/core/userpublic/valuegraph.hpp#L24) です。
 
@@ -1120,7 +1120,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L170)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L177)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3842)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3858)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 

@@ -51,7 +51,7 @@ command ごとに独立した `run...Command(argc, argv)` を持つ構成で、�
 
 ## 7.2 `project init`: 実行可能な最小 project の生成器
 
-[`runProjectInitCommand()`](../../src/devcli/projectinit.cpp#L30) は `--template standard|blank`(既定 `standard`)を読んで [`initializeProjectTemplate()`](../../src/project/projecttemplate.cpp#L401) を呼ぶだけで、空であることを確認した directory に template file 群を書くのはこちらです。F-2 で雛形は `pelican_cli` から `pelican_project` の [`projecttemplate.{hpp,cpp}`](../../src/project/projecttemplate.hpp) へ移り、Studio の File > New Project... も同じ関数を呼びます。template の一覧は [`templateFiles()`](../../src/project/projecttemplate.cpp#L351) にあります。
+[`runProjectInitCommand()`](../../src/devcli/projectinit.cpp#L30) は `--template standard|blank`(既定 `standard`)を読んで [`initializeProjectTemplate()`](../../src/project/projecttemplate.cpp#L400) を呼ぶだけで、空であることを確認した directory に template file 群を書くのはこちらです。F-2 で雛形は `pelican_cli` から `pelican_project` の [`projecttemplate.{hpp,cpp}`](../../src/project/projecttemplate.hpp) へ移り、Studio の File > New Project... も同じ関数を呼びます。template の一覧は [`templateFiles()`](../../src/project/projecttemplate.cpp#L350) にあります。
 
 主な生成物は次です。
 
@@ -64,20 +64,20 @@ command ごとに独立した `run...Command(argc, argv)` を持つ構成で、�
 | `input/profiles/keyboard.json` | input profile |
 | `passes/main_rendering_config.json` | 描画 pipeline preset と feature の選択(次項) |
 | `ui/ui_overlay.json` | 2D UI overlay |
-| `code/CMakeLists.txt`, `code/game.cpp` | game system を組み込む project code。生成される CMakeLists.txt は `pelican_game_sources()` を呼ぶため、game code は **DLL**(`pelican_game_logic`)としてビルドされます。X-1 以降は `pelican_packages()` の 1 行が**その後ろに**続きます([template](../../src/project/projecttemplate.cpp#L275)) —— package の object は、先に作られた game logic DLL へ合流するので順序が効きます |
+| `code/CMakeLists.txt`, `code/game.cpp` | game system を組み込む project code。生成される CMakeLists.txt は `pelican_game_sources()` を呼ぶため、game code は **DLL**(`pelican_game_logic`)としてビルドされます。X-1 以降は `pelican_packages()` の 1 行が**その後ろに**続きます([template](../../src/project/projecttemplate.cpp#L274)) —— package の object は、先に作られた game logic DLL へ合流するので順序が効きます |
 | `.gitattributes`, `.gitignore`, `README.md` | asset/LFS と利用案内 |
 
 template は外部 resource file ではなく、[`projecttemplate.cpp` 内の raw string](../../src/project/projecttemplate.cpp#L89) です。schema を変更した場合、example project だけでなくここも更新しないと、新規 project が古い形式で生成されます。
 
 この command の end-to-end 仕様は [`run_devcli_project_init.cmake`](../../test/run_devcli_project_init.cmake) です。file が揃っているかの確認だけでなく、生成した project directory を **prebuilt の `pelican_player`** に `--headless --frames 2 --render-out` で食わせ、exit 0・出力に `Validation Error` / `VUID-` が出ないこと・PNG が空でないことまで見ます(生成された `code/game.cpp` を build する経路ではありません)。空でない directory を拒否し、そのエラーが directory 名を含むことも同じ script が固定しています。実 device を要するので CTest では `gpu` label 付きです([`test/CMakeLists.txt`](../../test/CMakeLists.txt) の `devcli_project_init_command`)。
 
-**`blank` 雛形(F-2)。**`--template blank` は上の 16 エントリと同じファイルの組を書き、`passes/main_rendering_config.json` の `rendering` 節だけを差し替えます(VI-2 までは `shaders/present.frag` も足していました)。中身は `pipeline` キーの無い direct config で、preset・`features`・`render_targets` を持たず、fullscreen pass `present` 1 本が `display` へ UV の gradient を書きます([`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L229))。`present` の fragment は engine 同梱の `engine://passthrough` で、入力がすべて可変です —— 入力が 0 本なら gradient、入力があれば入力 0 をそのまま出します([shader](../../src/core/resources/passthrough.frag))。同じ `run_devcli_project_init.cmake` がこの project を headless で 2 frame 描かせ、PNG が 100 色以上で、最も多い 1 色以外の画素が 9 割以上(最多色が 1 割以下)であることを `pelican_test_png_nonuniform_check` で見ます([検査](../../test/run_devcli_project_init.cmake#L232))。描く前に、`present` の fragment が `engine://passthrough` で `shaders/` が無いことも確かめます(描かれた frame が雛形の書いた shader のものでないこと)。ファイルの形は GPU 無しの `devcli_project_templates`([`run_devcli_project_templates.cmake`](../../test/run_devcli_project_templates.cmake))が見ます —— 既定と `--template standard` の 16 ファイルが F-2 前の出力と SHA-256 で一致すること(MG-2b が `"version": 2` に変えた `scenes/main.scene.json` と `assets/asset_data.json` の 2 行だけは取り直し。`passes/main_rendering_config.json` の digest は変わっていません)、blank の形(`passes/main_rendering_config.json` 以外の 15 ファイルが standard と同じ digest で、`shaders/` が無く、`present` の fragment が `engine://passthrough` で `shader.defines` を持たないこと)、知らない template 名の拒否です。
+**`blank` 雛形(F-2)。**`--template blank` は上の 16 エントリと同じファイルの組を書き、`passes/main_rendering_config.json` の `rendering` 節だけを差し替えます(VI-2 までは `shaders/present.frag` も足していました)。中身は `pipeline` キーの無い direct config で、preset・`features`・`render_targets` を持たず、fullscreen pass `present` 1 本が `display` へ UV の gradient を書きます([`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L228))。`present` の fragment は engine 同梱の `engine://passthrough` で、入力がすべて可変です —— 入力が 0 本なら gradient、入力があれば入力 0 をそのまま出します([shader](../../src/core/resources/passthrough.frag))。同じ `run_devcli_project_init.cmake` がこの project を headless で 2 frame 描かせ、PNG が 100 色以上で、最も多い 1 色以外の画素が 9 割以上(最多色が 1 割以下)であることを `pelican_test_png_nonuniform_check` で見ます([検査](../../test/run_devcli_project_init.cmake#L232))。描く前に、`present` の fragment が `engine://passthrough` で `shaders/` が無いことも確かめます(描かれた frame が雛形の書いた shader のものでないこと)。ファイルの形は GPU 無しの `devcli_project_templates`([`run_devcli_project_templates.cmake`](../../test/run_devcli_project_templates.cmake))が見ます —— 既定と `--template standard` の 16 ファイルが F-2 前の出力と SHA-256 で一致すること(MG-2b が `"version": 2` に変えた `scenes/main.scene.json` と `assets/asset_data.json` の 2 行だけは取り直し。`passes/main_rendering_config.json` の digest は変わっていません)、blank の形(`passes/main_rendering_config.json` 以外の 15 ファイルが standard と同じ digest で、`shaders/` が無く、`present` の fragment が `engine://passthrough` で `shader.defines` を持たないこと)、知らない template 名の拒否です。
 
 ### 生成される rendering config は preset 参照の `pelican.graph` root(WP240a → P-2a-4b)
 
 `passes/main_rendering_config.json` の template は 111 行の手書き設定から数行になり、さらに
 **`pelican.graph` root** になりました。MG-2b からはソースのリテラルがファイルの全文です
-([`rendering_config_json`](../../src/project/projecttemplate.cpp#L200))。
+([`rendering_config_json`](../../src/project/projecttemplate.cpp#L199))。
 
 ```json
 {
@@ -100,14 +100,14 @@ template は外部 resource file ではなく、[`projecttemplate.cpp` 内の ra
 
 P-2a-4b から MG-2b までは、ソースに `rendering` 節の中身だけを置き、`wrapLegacyRenderingConfig()` で包んでいました。
 MG-2b でエンジンが graph root しか読まなくなったので包み関数は撤去され、リテラルは包んだ結果のバイト列をそのまま書いたものに
-なりました([選ぶ関数](../../src/project/projecttemplate.cpp#L262))。
+なりました([選ぶ関数](../../src/project/projecttemplate.cpp#L261))。
 どのキーがどちらの層に属するかは [`isGraphRootKey()`](../../src/project/renderconfigdocument.hpp#L17) が決めます。
 
 旧 template は `render_targets` 8 本(gbuffer 5 枚 + depth + ssao 2 枚)と `rendering_passes` を自分で書き下し、pass は gbuffer_pass / ssao_pass / ssao_blur_pass / present の 4 つでした。末尾の `present` が `uses_light_data: true` を持ち、ライティングと present を兼ねていました。新 template はこの 2 つの member を **持ちません**。
 
 読む位置が一段動いたのがこの変更の要点です。
 
-- `project init` が **何を書くか** → [`rendering_config_json`](../../src/project/projecttemplate.cpp#L200) の `pelican.graph` root(上の block がファイルの全文です)
+- `project init` が **何を書くか** → [`rendering_config_json`](../../src/project/projecttemplate.cpp#L199) の `pelican.graph` root(上の block がファイルの全文です)
 - 生成された project が **実際にどの pass を回すか** → [`src/core/resources/render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json) と [`src/core/resources/features/shadow_directional.json`](../../src/core/resources/features/shadow_directional.json)
 
 preset 側の `main_render` グラフは deferred_geometry / ssao_pass / ssao_blur_pass / deferred_lighting / forward_opaque / `__snapshot_opaque_color` / `__snapshot_opaque_depth` / forward_transparent / scene_present で、`shadow_depth` は preset ではなく feature 側が足します。つまり新規 project は最初から forward・半透明・opaque snapshot・directional shadow を持ちます。preset と feature をどう解決して 1 本のグラフにするかは[第6章](06_rendering_vulkan_shader.md)の担当です。
@@ -358,7 +358,7 @@ process 終了時も pending request を失敗にするため、入力 pipe や 
 到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L112) が view 表示なしで検査します。
 
 読む前に、応答の階層だけ掴んでおきます。`get_frame_plan` の 1 応答の中に、名前の層と物理の層が入れ子で
-入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L4137))。
+入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L4328))。
 
 ```text
 get_frame_plan 応答 = pelican.frame_plan v1
@@ -369,11 +369,11 @@ get_frame_plan 応答 = pelican.frame_plan v1
 2 つの層は互いに引けます(✅GL-2a)。名前の層の node の出所の鍵(`source` / `provider_*` / `authored_name` / `loop_origin` と、GL-2a の
 `origin` / `replaces`、✅RS-6 の `added_after`)は、`framePlanToJson()` が compiled pipeline の `RenderPassProvenance` から写します
 ([写す所](../../src/core/renderingpass/frameplanner.cpp#L1995))。resource の側の ✅RS-6b の `added_usage`(engine が宣言の `usage` に足した `SAMPLED`)も、`RenderResourceProvenance` から `resources[]` へ写します([`added_usage` を写す所](../../src/core/renderingpass/frameplanner.cpp#L2159))。`origin` の `graph`(rendering root 文書の参照)は raw の planner が知らないので、
-renderer が `framePlanToJson()` に渡します。✅PS-1 の once の node は、`framePlanToJson()` が `FramePlanNode::once` から `schedule: "once"` を書き([書く所](../../src/core/renderingpass/frameplanner.cpp#L2082))、`currentFramePlanJson()` がその node にだけ `Renderer::once_runs` の記録から `last_run_generation` / `last_run_frame`(無ければ `null`)を足します([足す所](../../src/core/vkcore/renderer.cpp#L4192))。✅IA-1 の `initial_asset: {asset, sha256}` も `currentFramePlanJson()` が最後に、`physical_target_plan.resources[]` の `logical_resource` を世代の `image_initial_assets` で引いて足します([IA-1 の `initial_asset` を足す所](../../src/core/vkcore/renderer.cpp#L4752))。物理の層は、`physical_target_plan` を足した直後に renderer が
+renderer が `framePlanToJson()` に渡します。✅PS-1 の once の node は、`framePlanToJson()` が `FramePlanNode::once` から `schedule: "once"` を書き([書く所](../../src/core/renderingpass/frameplanner.cpp#L2082))、`currentFramePlanJson()` がその node にだけ `Renderer::once_runs` の記録から `last_run_generation` / `last_run_frame`(無ければ `null`)を足します([足す所](../../src/core/vkcore/renderer.cpp#L4396))。✅IA-1 の `initial_asset: {asset, sha256}` も `currentFramePlanJson()` が最後に、`physical_target_plan.resources[]` の `logical_resource` を世代の `image_initial_assets` で引いて足します([IA-1 の `initial_asset` を足す所](../../src/core/vkcore/renderer.cpp#L4806))。物理の層は、`physical_target_plan` を足した直後に renderer が
 [`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2307) を呼び
-([呼ぶ所](../../src/core/vkcore/renderer.cpp#L4469))、resources / alias_groups / decisions / backend の候補に、関わる node 名の
+([呼ぶ所](../../src/core/vkcore/renderer.cpp#L4246))、resources / alias_groups / decisions / backend の候補に、関わる node 名の
 `from_nodes[]` を書き込みます。物理の要素 → node 名 → `origin` → graph の文書、の順に辿れます(形は manual 第13章「`get_frame_plan` に足されたもの」)。
-✅FG-1 から、`framePlanToJson()` は compiled pipeline の `fold_planning` のうちその frame graph の分を最上位の `fold_decisions` に出し([出す所](../../src/core/renderingpass/frameplanner.cpp#L2211))、`appendFramePlanPhysicalNodeReferences()` がその 1 件ごとに `decisions[]` へ `pelican.plan.fold_decision_applied@1` の要素を足して、`from_nodes` を付けた後に `from_fold` を書きます([足す所](../../src/core/renderingpass/frameplanner.cpp#L2427))。✅PO-1 から、`framePlanToJson()` は compiled pipeline の resource の宣言の usage で [`findFramePlanUnreadOutputs()`](../../src/core/renderingpass/frameplanner.cpp#L1689) を回して `unread_output` を、renderer は `currentFramePlanJson()` の中で fullscreen / raster の pass ごとに [`appendUnusedBindingDiagnostics()`](../../src/core/vkcore/renderer.cpp#L4048) を回して `unused_binding` を `diagnostics` に足します。後者が見るのは reflection の [`ReflectedBinding::accessed`](../../src/core/shader/shaderreflection.hpp#L48)(spirv-reflect の静的な使用。stage を merge するときは OR)です。✅MP-1 から、`currentFramePlanJson()` は material pass の node に、最後に公開した frame でその pass が描いた material を `drawn_materials` / `drawn_materials_frame` として足します([MP-1 の `drawn_materials` を足す所](../../src/core/vkcore/renderer.cpp#L4377))。planner の値ではなく、renderer が描くときに数えて公開の後に残した記録で、記録の program と世代が今のものと違えば足しません(数え方は第6章 §6.5「pass ごとに描いた material の数え方」)。
+✅FG-1 から、`framePlanToJson()` は compiled pipeline の `fold_planning` のうちその frame graph の分を最上位の `fold_decisions` に出し([出す所](../../src/core/renderingpass/frameplanner.cpp#L2211))、`appendFramePlanPhysicalNodeReferences()` がその 1 件ごとに `decisions[]` へ `pelican.plan.fold_decision_applied@1` の要素を足して、`from_nodes` を付けた後に `from_fold` を書きます([足す所](../../src/core/renderingpass/frameplanner.cpp#L2427))。✅PO-1 から、`framePlanToJson()` は compiled pipeline の resource の宣言の usage で [`findFramePlanUnreadOutputs()`](../../src/core/renderingpass/frameplanner.cpp#L1689) を回して `unread_output` を、renderer は `currentFramePlanJson()` の中で fullscreen / raster の pass ごとに [`appendUnusedBindingDiagnostics()`](../../src/core/vkcore/renderer.cpp#L4057) を回して `unused_binding` を `diagnostics` に足します。後者が見るのは reflection の [`ReflectedBinding::accessed`](../../src/core/shader/shaderreflection.hpp#L48)(spirv-reflect の静的な使用。stage を merge するときは OR)です。✅MP-1 から、`currentFramePlanJson()` は material pass の node に、最後に公開した frame でその pass が描いた material を `drawn_materials` / `drawn_materials_frame` として足します([MP-1 の `drawn_materials` を足す所](../../src/core/vkcore/renderer.cpp#L4541))。planner の値ではなく、renderer が描くときに数えて公開の後に残した記録で、記録の program と世代が今のものと違えば足しません(数え方は第6章 §6.5「pass ごとに描いた material の数え方」)。
 
 Graph タブが読む応答も同じ読み方をします。1 応答に「今の版」と「文書の 2 つの層」が入っています
 ([組み立ては `getGraphInstances()`](../../src/core/communication/renderconfigeditor.cpp#L2860))。
@@ -511,7 +511,7 @@ engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view
 `EmbeddedViewport *` を直接受け取る(capability struct を通さない)側です。扱うのは feature の追加・削除、
 feature パラメータ(**Parameters...**)、materialize(**Make editable...**)、preset の fork、region replacement、
 compute / RT task、callable record、scene acceleration structure、frame node order、procedural asset で、
-ボタンの構築は [1 箇所](../../src/devstudio/view/renderfeatureswidget.cpp#L2391)に並んでいます。
+ボタンの構築は [1 箇所](../../src/devstudio/view/renderfeatureswidget.cpp#L2389)に並んでいます。
 dialog は `pelican.featureMaterialize`(+ `.destination`)と `pelican.featureParameters`(+ `.<name>`)です。
 **export / import と package の UI はここにありません** —— 対応する RPC(§7.7)は engine 側にだけあります。
 
@@ -762,7 +762,13 @@ RPC は build option `PELICAN_WITH_RPC` で切り替わります。無効時は 
 - success/error response の serialize。
 - injected input/event parameter の純粋 parse。
 
-この層は Vulkan なしで [`jsonrpc_test.cpp`](../../test/jsonrpc_test.cpp#L33) から直接テストできます。
+この層は Vulkan なしで [`jsonrpc_test.cpp`](../../test/jsonrpc_test.cpp#L38) から直接テストできます。
+
+**応答の直列化は文字列をつなぐ(✅FP-2、`0efa856c`)。**[`serializeJsonRpcResult()`](../../src/project/jsonrpc.cpp#L221) は `{"jsonrpc":"2.0","id":` に `id.dump()`、`,"result":` に `result.dump()` をつないで `}` で閉じます。[`serializeJsonRpcError()`](../../src/project/jsonrpc.cpp#L231) も同じ envelope で、error の object は `code`・`message`・(あれば)`data` の順です。FP-2 の前は、result を `nlohmann::ordered_json` の envelope に写してから dump していて、応答のたびに result の深い写しが 1 回ありました。
+
+- bytes は前と同じです。`nlohmann::json` の object は鍵を整列して dump し、`ordered_json` への写しも同じ整列した鍵の順で作られていたためです(コードの注記)。test は FP-2 の前の 2 つの関数を test の中に残して、plan に似た入れ子の payload(`ordered_json` の handler の結果を変換したものを含む)・空の object と配列・`null`・unicode を含む文字列・数と、`id` の数・負数・`uint64` の最大・文字列・`null` の組で bytes を比べ、error も `data` の有無・配列・`null`・大きな payload で比べます。UTF-8 でない文字列は、前と同じく `nlohmann::json::type_error` で投げます。commit の記録では、動いている engine の 16 の応答も生の bytes で比べています。
+- commit の記録の計測: Debug の `get_frame_plan` の往復 55 → 37 ms。
+- test: `jsonrpc_test` の [「JSON-RPC FP-2 responses are the same bytes as the ordered_json envelope they replace」](../../test/jsonrpc_test.cpp#L231)。
 
 ### engine binding 層: `pelican_core`
 
@@ -818,7 +824,7 @@ engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/commu
 | `render_frame` | [再描画](../../src/core/communication/rpcserver.cpp#L2424) | time/frame を進めず、pending flush → seq update → render |
 | `capture_gpu` | [GPU 捕捉](../../src/core/communication/rpcserver.cpp) | `render_frame` と同型の1回描画を明示 Start/End で capture し、新規 index の `.rdc` path を返す |
 | `get_frame_plan` | [plan 取得](../../src/core/communication/rpcserver.cpp#L2424) | planner の JSON を返す。✅PV-1 から最上位に `preview`(`get_status` と同じ形) |
-| `rerun_once` | [once の走り直し](../../src/core/communication/rpcserver.cpp#L2449) | ✅PS-1。`{node?}` → `{scheduled: [...]}`。[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4094) が今の program の frame plan から、名前がその node か、出所の `loop_origin.loop` がその node の once の plan node を集め、`Renderer::once_rerun_requests` に入れる(次の frame の [`planOnceRuns()`](../../src/core/renderingpass/oncescheduler.cpp#L5) が `requested` で走らせ、走った frame の publish の後に消す)。`node` の無い呼び出しは全部の once。plan にも `graph_loops` にも無い名前は `std::invalid_argument` で、handler が `-32602` と `data: {code: "node_unknown", node}` にする |
+| `rerun_once` | [once の走り直し](../../src/core/communication/rpcserver.cpp#L2449) | ✅PS-1。`{node?}` → `{scheduled: [...]}`。[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4103) が今の program の frame plan から、名前がその node か、出所の `loop_origin.loop` がその node の once の plan node を集め、`Renderer::once_rerun_requests` に入れる(次の frame の [`planOnceRuns()`](../../src/core/renderingpass/oncescheduler.cpp#L5) が `requested` で走らせ、走った frame の publish の後に消す)。`node` の無い呼び出しは全部の once。plan にも `graph_loops` にも無い名前は `std::invalid_argument` で、handler が `-32602` と `data: {code: "node_unknown", node}` にする |
 | `pick_object` | [ID 読み出し](../../src/core/communication/rpcserver.cpp) | feature が作った `picking_id` の左上原点座標を同期読み出しし、同一フレーム token を WP258 の宣言 identity へ解決 |
 | `set_gizmo` | [表示要求](../../src/core/communication/rpcserver.cpp) | 宣言または runtime object のタグ付き selection と mode をギズモ表示へ設定。`selection:null` で解除 |
 | `query_gizmo_drag_basis` | [ドラッグ基底](../../src/core/communication/rpcserver.cpp#L2546) | selection / mode / axis から、軸または view-plane の論理 pixel 当たりドラッグ基底を状態変更なしで返す |
@@ -901,11 +907,19 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `get_fold_groups` / `fold_nodes` / `verify_fold` | [読み](../../src/core/communication/editorrpchandlers.cpp#L249) / [宣言](../../src/core/communication/editorrpchandlers.cpp#L252) / [検査](../../src/core/communication/editorrpchandlers.cpp#L256) | ✅FG-1 / FG-2。root の graph 文書の `fold_groups` の読み、group 1 つの宣言(root 編集の ticket。[`RenderConfigEditorService::queueFoldGroupEdit()`](../../src/core/communication/renderconfigeditor.cpp#L2996) を通る)、開いた形と決定ありの形を子 process で描き比べて印を書く非同期の ticket(下の「`verify_fold` の子 process」) |
 | `reload_render_documents` | [読み直し](../../src/core/communication/editorrpchandlers.cpp#L356) | ✅RL-1。ディスクの render 文書を読み直して 1 つの ticket で組み直し・公開する。ディスクは書かない(下の「`reload_render_documents` の ticket」) |
 | `bake_audio_analysis` / `list_derived_assets` | [音の解析を焼く](../../src/core/communication/editorrpchandlers.cpp#L261) / [派生 asset の一覧](../../src/core/communication/editorrpchandlers.cpp#L264) | ✅AB-1。音の解析を worker で焼く非同期の ticket(render 文書は書かない)と、asset store の `*.import.json` の読み。実体は [`renderconfigaudioanalysis.cpp`](../../src/core/communication/renderconfigaudioanalysis.cpp#L36)(第5章 §5.9「音の解析を焼く」)。`list_derived_assets` は `service_` 側、`bake_audio_analysis` は `mutable_service_` が要る |
-| `edit_batch` | [登録 `edit_batch`](../../src/core/communication/editorrpchandlers.cpp#L343) | ✅FR-3。`{base_source_digest, edits: [{method, params}]}`。[`RenderConfigEditorService::editBatch()`](../../src/core/communication/renderconfigeditor.cpp#L2000) が、[edit_batch が受ける 20 の method の表 `batchEdits()`](../../src/core/communication/renderconfigeditor.cpp#L1959) の method を、editor の `document_` / `managed_documents_` を候補に置き換えながら順に呼びます。呼ばれた側は `batch_`([`BatchOverlay`](../../src/core/communication/renderconfigeditor.hpp#L421))が立っている間、ディスクとの比べ直しと各自の preflight を飛ばし、`add_authored_pass` の検査は `batch_->checks` に積みます。各 edit の ticket は pending から外して 1 つにまとめ、最後の候補を 1 回組み立てて(積んだ検査も当てる)変種の preflight を通し、1 つの ticket(`operation: "edit_batch"`、`methods`)を積みます。当てられない edit の拒否には `batch_index` を足して返し([batch_index を足す所](../../src/core/communication/renderconfigeditor.cpp#L2088))、editor の状態と途中の ticket はスコープの終わりの `Restore` が戻します。外した method と理由はヘッダの `editBatchMethods()` の注記(manual §13.5「複数の編集を 1 つの ticket で —— `edit_batch`」) |
+| `edit_batch` | [登録 `edit_batch`](../../src/core/communication/editorrpchandlers.cpp#L343) | ✅FR-3。`{base_source_digest, edits: [{method, params}]}`。[`RenderConfigEditorService::editBatch()`](../../src/core/communication/renderconfigeditor.cpp#L2000) が、[edit_batch が受ける 20 の method の表 `batchEdits()`](../../src/core/communication/renderconfigeditor.cpp#L1959) の method(✅FR-4 で `edit_preset_pass` / `edit_compute_task` / `remove_compute_task` が加わって 23)を、editor の `document_` / `managed_documents_` を候補に置き換えながら順に呼びます。呼ばれた側は `batch_`([`BatchOverlay`](../../src/core/communication/renderconfigeditor.hpp#L421))が立っている間、ディスクとの比べ直しと各自の preflight を飛ばし、`add_authored_pass` の検査は `batch_->checks` に積みます。各 edit の ticket は pending から外して 1 つにまとめ、最後の候補を 1 回組み立てて(積んだ検査も当てる)変種の preflight を通し、1 つの ticket(`operation: "edit_batch"`、`methods`)を積みます。当てられない edit の拒否には `batch_index` を足して返し([batch_index を足す所](../../src/core/communication/renderconfigeditor.cpp#L2088))、editor の状態と途中の ticket はスコープの終わりの `Restore` が戻します。外した method と理由はヘッダの `editBatchMethods()` の注記(manual §13.5「複数の編集を 1 つの ticket で —— `edit_batch`」)。FR-4 の 3 つが書き換える文書を読む所は下の「`edit_batch` の中の `heldDocument()`」 |
 
 上 11 行(19 メソッド)は P-2a 系・RT 系・prefab 系で足された分で、params と戻り値の正本は
 [manual 第13章](../manual/13_editor.md)です。この表と `editorrpchandlers.cpp` の登録を突き合わせるときは、
 行ではなくメソッド名を数えてください(併記した行が 1 行 2〜4 メソッドあります)。最後の EL-2 の行(3 メソッド)は、この 11 行の後に足したものです。その後に FG-1 / FG-2 と RL-1 の 2 行(4 メソッド)を足しました。✅EL-6 の `get_registered_providers` の 1 行(1 メソッド)は、同じ読みの仲間として `get_shader_interface` の行の後に置きました。✅AB-1 の `bake_audio_analysis` / `list_derived_assets` の 1 行(2 メソッド)は最後に足しました。✅FR-3 の `edit_batch` の 1 行(1 メソッド)は、その後に足しました。
+
+**`edit_batch` の中の `heldDocument()`(✅FR-4、`2eb08d21`)。**FR-3 の batch は、各 edit が書き換える文書を editor の持つもの(`document_`、managed fragment、`currentDocumentSet()` の authoring context)から読むことを前提にしていました。`edit_preset_pass` の feature の分岐と preset の分岐、`edit_compute_task` / `remove_compute_task`(`changeComputeTask()`)は project の preset / feature をディスクから読んでいたので、外していました。FR-4 はこの読みを [`RenderConfigEditorService::heldDocument()`](../../src/core/communication/renderconfigeditor.cpp#L1055) に替えて、3 つを `batchEdits()` に足しました。
+
+- `heldDocument(reference)` は [`HeldDocument {bytes, base_digest}`](../../src/core/communication/renderconfigeditor.hpp#L372) を返します。`batch_` が立っていて、`batch_->documents` に同じ正規化した参照の文書(消すものでない)があれば、その `bytes` と、その文書の `expected.digest`(batch の前の digest)を返します。無ければディスクの bytes とその digest です。
+- 呼び手の digest(`base_preset_digest` / `base_feature_digest` / `base_task_source_digest`)は `base_digest` と比べます([`edit_preset_pass` の FR-4 の読み](../../src/core/communication/renderconfigeditor.cpp#L4721)、[`changeComputeTask()` の FR-4 の読み](../../src/core/communication/renderconfigeditor.cpp#L4469))。なので batch の中でも、呼び手は batch の前に読んだ digest を送ります。違えば今までどおり `external_modification` です。`changeComputeTask()` は FR-4 の前、catalog の `source_digest` との比べとディスクの bytes の digest との比べの 2 回を持っていましたが、`base_digest` との 1 回になりました。
+- `edit_preset_pass` の preset の分岐は、前は authoring context の `pipeline_preset_bytes` を読んでいました。今は preset の参照で `heldDocument()` を引きます。
+- 残る穴: `edit_region_replacement` / `decompose_material_pass` / `apply_graph_template` は、今も `currentDocumentSet()` の authoring context の `pipeline_preset_bytes` の digest を呼び手の `base_preset_digest` と比べます。`currentDocumentSet()` は batch の中では `batch_->documents` を含むので、同じ batch の前の edit が preset を書いた後にこの 3 つを送ると `external_modification` です(コードの読み。この組み合わせの test はありません)。
+- test: `renderconfigeditor_test` の「FR-4 edit_batch takes edit_graph_document and edit_preset_pass as one ticket, and RD-1 undoes both」と「FR-4 edit_batch takes edit_preset_pass with a compute task edit on one project preset or feature, each on what the edit before it made」、`engine_primitives_test` の「FR-4 edit_batch puts the sky on present with edit_graph_document and edit_preset_pass in one ticket, through the running renderer」(GPU)。FR-3 の test の外した method の一覧から 3 つを除き、入っていることを確かめる形にしました。
 
 **`verify_fold` の子 process(✅FG-2)。**[`verifyFold()`](../../src/core/communication/renderconfigeditor.cpp#L3082) は、受けた時に engine の thread で [`FoldVerifyJob`](../../src/core/communication/graphfoldverify.hpp#L53)(開いた形と決定ありの形の root の bytes、managed fragment、数)を作り切り、worker は editor の状態を読みません。子を起こす口は依存として差し込まれる [`FoldVerifyRunner`](../../src/core/communication/renderconfigeditor.hpp#L210) で、本番は [`runFoldVerifyProcesses()`](../../src/core/communication/graphfoldverify.cpp#L438)(factory が親の起動引数から [`foldVerifyProcessOptions()`](../../src/core/communication/editorruntimefactory.cpp#L1969) を 1 度だけ読んで包む)、test は偽の runner です。worker は `std::async` の thread で走り([始める所](../../src/core/communication/renderconfigeditor.cpp#L3163))、frame と RPC は待ちません。`commitPending()` は frame の境界ごとに最初に [`harvestFoldVerifies()`](../../src/core/communication/renderconfigeditor.cpp#L3171) を呼び、終わった run を [`judgeFoldVerifyRuns()`](../../src/core/communication/graphfoldverify.cpp#L388)(純関数)で判定し、通れば `queueFoldGroupEdit()` で印を書く ticket を同じ ticket の番号で作って待ち行列の先頭に置きます。CAS は受けた時の `base_source_digest` なので、間に root が変われば `external_modification` です。子は [`runChild()`](../../src/core/communication/graphfoldverify.cpp#L157) が `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` の job object に入れ、時間切れと終了は job の handle を閉じて終わらせます(名前や pid で探しません)。editor の destructor は止めの flag を立てて全部の worker を待ちます。
 
@@ -1061,11 +1075,11 @@ package の文書が壊れていれば `available: false` + `unavailable_reason`
 >
 > **不変条件**: `forceAbort()` の内部でthrowさせない。予約は成功でも失敗でも必ず落とす。leaseの `write_set` はopenで確定しupdateで変えない。editがcommitしたらpreview leaseは必ず落とす。
 
-> 🧩 **難所 — previewの状態不変性検証**([`isolated()`](../../src/core/communication/editorpreviewservice.cpp#L157) / [`requireStateUnchanged()`](../../src/core/communication/editorpreviewservice.cpp#L144))
+> 🧩 **難所 — previewの状態不変性検証**([`isolated()`](../../src/core/communication/editorpreviewservice.cpp#L158) / [`requireStateUnchanged()`](../../src/core/communication/editorpreviewservice.cpp#L145))
 >
 > **何をする所か**: `eval_preview` / `render_preview` の前後で共有エンジン状態のスナップショットを取り、**厳密一致**しなければ `state_changed` を投げます。成功時も例外時も検査します。
 >
-> **素朴に読むと**: `before != after` の一行に見えますが、二点が効いています。第一に、catch側でも検査してから元の例外を再送出します。検査が落ちれば元の例外は**捨てられ** `state_changed` に置き換わります。これは意図的で、「リクエストが失敗した」より「エンジン状態を汚した」の方が重い障害だからです。ここを「元の例外を優先」に直すと、状態漏れが失敗の陰に隠れます。第二に、比較が寛容な近似ではなく `OrderedJson` の完全一致であることです。previewは [`prepareEditorPreviewProjection()`](../../src/core/loader/editorpreviewprojection.cpp#L753) が `stage()` した文書を**公開しない**ことで成立していて、浮動小数1ビットの差でも「どこかで公開してしまった」の証拠になります。
+> **素朴に読むと**: `before != after` の一行に見えますが、二点が効いています。第一に、catch側でも検査してから元の例外を再送出します。検査が落ちれば元の例外は**捨てられ** `state_changed` に置き換わります。これは意図的で、「リクエストが失敗した」より「エンジン状態を汚した」の方が重い障害だからです。ここを「元の例外を優先」に直すと、状態漏れが失敗の陰に隠れます。第二に、比較が寛容な近似ではなく `OrderedJson` の完全一致であることです。previewは [`prepareEditorPreviewProjection()`](../../src/core/loader/editorpreviewprojection.cpp#L756) が `stage()` した文書を**公開しない**ことで成立していて、浮動小数1ビットの差でも「どこかで公開してしまった」の証拠になります。
 >
 > **骨子**:
 > ```text
@@ -1146,7 +1160,7 @@ cmake_parse_arguments(PELICAN_TEST
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L3818) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L3834) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 
@@ -1154,7 +1168,7 @@ cmake_parse_arguments(PELICAN_TEST
 
 | 段階 | 例 | 何を保証するか |
 |---|---|---|
-| pure parser/value | [`sceneformat_test.cpp`](../../test/sceneformat_test.cpp#L121)、[`materialformat_test.cpp`](../../test/materialformat_test.cpp#L104)、[`jsonrpc_test.cpp`](../../test/jsonrpc_test.cpp#L33) | schema、型変換、error 文言。GPU 不要 |
+| pure parser/value | [`sceneformat_test.cpp`](../../test/sceneformat_test.cpp#L121)、[`materialformat_test.cpp`](../../test/materialformat_test.cpp#L104)、[`jsonrpc_test.cpp`](../../test/jsonrpc_test.cpp#L38) | schema、型変換、error 文言。GPU 不要 |
 | subsystem unit | [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L204)、[`inputstate_test.cpp`](../../test/inputstate_test.cpp#L9)、[`deletionqueue_test.cpp`](../../test/deletionqueue_test.cpp#L30) | lifecycle、generation、frame 境界、遅延破棄 |
 | headless runtime | [`headless_render_test.cpp`](../../test/headless_render_test.cpp#L100)、[`vulkan_headless_test.cpp`](../../test/vulkan_headless_test.cpp#L13) | window なし Vulkan、render/readback |
 | process integration | [`run_rpc_headless.cmake`](../../test/run_rpc_headless.cmake#L1)、[`run_compute_headless.cmake`](../../test/run_compute_headless.cmake#L1)、devcli scripts | 実 executable、stdin/stdout、filesystem、終了 code |
@@ -1185,7 +1199,7 @@ cmake_parse_arguments(PELICAN_TEST
 | 物理 | [`run_physics_trigger_behavior.ps1`](../../test/run_physics_trigger_behavior.ps1)(`physics_trigger_behavior_e2e`、GPU ラベル) |
 | CLI | `processrunner_test` / [`run_devcli_import_process.cmake`](../../test/run_devcli_import_process.cmake) / [`run_preset_project_headless.cmake`](../../test/run_preset_project_headless.cmake)(§7.2) / [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(§7.5c。catalog と `docs/v0_freeze.md` の表の照合を含む) |
 | package(X-1) | `packagemanifest_test`(manifest の純粋 parser と digest)/ `package_install_smoke`(**`PELICAN_WITH_RPC` のときだけ登録**。GPU lease + 300 秒。install → catalog → `edit_render_features` → 描画 → uninstall を実 player で)/ ctest 未登録の [`run_package_template_smoke.cmake`](../../test/run_package_template_smoke.cmake)(package の code を含む一時 project を configure から build。`-DPELICAN_PACKAGE_TEMPLATE_SMOKE_DEPS=<primary>/build/_deps` で primary の依存ソースを借ります) |
-| project corpus | ctest 名 [`project_catalog_headless_smoke`](../../test/CMakeLists.txt#L3639)、実装は [`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(登録は `if(TARGET pelican_test_studio_player_arguments)` の中 = **`SKIP_DEVSTUDIO=ON` では存在しません**。`PELICAN_TEST_PROJECTS_DIR` が空なら skip。出荷 project の走査。`project.json` の `requires` を満たせない project は**名前を出して skip** し、player の中で落ちません) |
+| project corpus | ctest 名 [`project_catalog_headless_smoke`](../../test/CMakeLists.txt#L3655)、実装は [`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(登録は `if(TARGET pelican_test_studio_player_arguments)` の中 = **`SKIP_DEVSTUDIO=ON` では存在しません**。`PELICAN_TEST_PROJECTS_DIR` が空なら skip。出荷 project の走査。`project.json` の `requires` を満たせない project は**名前を出して skip** し、player の中で落ちません) |
 | RPC | [`test/pelican_rpc_smoke.py`](../../test/pelican_rpc_smoke.py) / [`run_rpc_scene_flow_normalization_fixtures.cmake`](../../test/run_rpc_scene_flow_normalization_fixtures.cmake) + `test/fixtures/rpc_scene_flow/*.ndjson` |
 | 契約 gate | [`test/contract_boundary_gate.py`](../../test/contract_boundary_gate.py) + [`test/ci/test_contract_boundary_gate.py`](../../test/ci/test_contract_boundary_gate.py)(fixture: `test/fixtures/contract0/*.json`) |
 | CI gate 自体 | [`test/ci/test_skip_policy.py`](../../test/ci/test_skip_policy.py)(CTest 名 `ci_skip_policy_unit`)/ [`test/ci/test_golden_inventory.py`](../../test/ci/test_golden_inventory.py)(同 `golden_inventory_negative_fixtures`)。§7.9 の gate 自身を検査する |

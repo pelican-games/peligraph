@@ -292,7 +292,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 
 - バイナリの sha256 台帳は **assets manifest(✅WP66)** です: `pelican_cli assets manifest / verify / status` で生成・照合し、起動時にも検証されます([第3章](03_project_format.md) §3.4)。example の README にあった手書き表はこれに置き換わりました。
 - 置き場所を外部化したい場合は asset store([第3章](03_project_format.md) §3.4)を使います。
-- `pelican_cli project init` が生成する `.gitattributes` は `*.glb -text` 等の改行変換防止(CRLF 事故防止)+ LFS 行のコメントアウトを含みます。⚠️ 並ぶのは `*.glb` / `*.vrm` / `*.png` / `*.wav` / `*.spv` で、**`*.ogg` はまだありません**(AU-2 で Ogg Vorbis を足したときに雛形を直していない)。Ogg を置く project は `*.ogg -text` を自分で足してください([雛形](../../src/project/projecttemplate.cpp#L294))。
+- `pelican_cli project init` が生成する `.gitattributes` は `*.glb -text` 等の改行変換防止(CRLF 事故防止)+ LFS 行のコメントアウトを含みます。⚠️ 並ぶのは `*.glb` / `*.vrm` / `*.png` / `*.wav` / `*.spv` で、**`*.ogg` はまだありません**(AU-2 で Ogg Vorbis を足したときに雛形を直していない)。Ogg を置く project は `*.ogg -text` を自分で足してください([雛形](../../src/project/projecttemplate.cpp#L293))。
 
 ## 5.8 対応形式の一覧(実装状況付き)
 
@@ -339,7 +339,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 
 音の大きさや帯域ごとの強さで絵を動かすときは、音を**先に解析して表に焼き**、その表を読みます(`892a1455`)。解析は取り込みのたびには走らず、明示の Bake(RPC `bake_audio_analysis` か `pelican_cli audio analyze`)だけが表を書きます。方針と設計は [design_audio.md](../design_audio.md) §6 です。
 
-**焼く口は 2 つで、中身は同じ関数です**([`bakeAudioAnalysis()`](../../src/core/audio/audioanalysis.cpp#L201))。
+**焼く口は 2 つで、中身は同じ関数です**([`bakeAudioAnalysis()`](../../src/core/audio/audioanalysis.cpp#L182))。
 
 - RPC `bake_audio_analysis {asset, out, settings?}`: render config の ticket で、worker の thread で焼きます([第13章](13_editor.md) §13.5「音の解析を焼く」)。
 - CLI `pelican_cli audio analyze --asset <file> --out <file.ktx2> [...]`([第10章](10_tools.md) §10.4)。
@@ -358,7 +358,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 
 ほかの鍵・型の違い・範囲の外は `audio.analysis_settings_invalid@1` `{field, reason, value?}` で断られ、何も書きません(`field` は `smoothing.attack_ms` のように道筋で)。
 
-**計算**([`analyzeAudio()`](../../src/core/audio/audioanalysis.cpp#L93))
+**計算**([`analyzeAudio()`](../../src/core/audio/audioanalysis.cpp#L74))
 
 - 標本 i は時刻 `i × hop` を中心にした `window_ms` の窓で、標本の数は `floor(frame の数 / hop) + 1` です。窓が音の外にはみ出した所は 0 として数えます。
 - `channels` の `mix` はチャンネルの平均、`left` は 1 本目、`right` は 2 本目(モノラルなら 1 本目)です。
@@ -392,6 +392,13 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 - `source.file` は manifest の置き場所からの相対です。`settings` は既定を埋めた全部の鍵で、`settings_sha256` はその JSON の sha256 です。
 - `created` は書きません。同じ bytes と settings からは同じ manifest になります。
 - 表と manifest は、隣の一時 file に書いてから名前を付け替えます(コードの注記: 読む側が書きかけを見ないため)。
+- **読む側が開いている間の置き換え(✅AB-2、`b3003b2a`)**: 一時 file は `<out>.tmp` / `<out>.import.json.tmp` で、書いて閉じてから置き換えます([`writeFileReplacing()`](../../src/project/filereplace.cpp#L169))。Windows では、置き換えが共有違反・access denied・lock violation で失敗すると、50 ms から倍々に待って、待ちの合計 2 秒まで(最後にもう 1 回)やり直します([AB-2 のやり直しの間隔](../../src/project/filereplace.hpp#L31))。
+  - AB-2 の前は、file の見張り・hash・表や texture の読み込みが表を開いている瞬間に Re-bake が当たると、1 回で `audio.analysis_failed@1`(`cannot replace …`)になっていました(GUI session の間欠の症状。仕様書の記述)。
+  - 置き換えは POSIX の意味の rename(`FileRenameInfoEx`。使えない Windows・file system では `MoveFileExW`)です。delete も共有して開いている handle(test は file の見張りの開き方)なら待たずに置き換わり、開いている側は古い中身を読み続けます。`std::ifstream` のように delete を共有しない開き方では、閉じるまでやり直しで待ちます(test: 300 ms 後に閉じると committed)。
+  - 2 秒の間ずっと開かれたままなら、下の表の `audio.analysis_failed@1` に `reason: "output_locked"` と `path` が付きます。一時 file は消え、元の表と manifest は書き換わりません(test)。
+  - Windows 以外は rename を 1 回だけ試します(やり直しはしません)。
+  - 読む側も開いている時間を短くしました。KTX2 の読み込み([`loadKtx2File()`](../../src/core/loader/imageloader.cpp#L102))は全部読んで閉じてから parse し、古さの判定([AB-2 で manifest を先に閉じる `readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250))は manifest を閉じてから元の音と出力を hash します。読む側の開き方(共有のモード)は変えていません。
+  - test: `ab1_audio_analysis_test` の [「AB-2 bake_audio_analysis replaces a table a reader held open once it closes, and refuses with output_locked when it never does」](../../test/ab1_audio_analysis_test.cpp#L363)(非 GPU。閉じれば committed。ここから先は Windows だけ: 閉じなければ `output_locked` で 1.9 秒以上待ち、一時 file が残らず元が無傷、delete も共有する handle なら 1.5 秒未満で committed)。
 
 **読む**: CPU は graph の op `value.sample_table {asset, row, time?}`、GPU は engine の include `pelican_sample_table.glsl` です([第6章](06_rendering.md) §6.18「焼いた音の解析の表を読む」)。
 
@@ -403,11 +410,11 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 |---|---|---|
 | `audio.analysis_settings_invalid@1` | settings が読めない(RPC ではすぐ断る) | `{field, reason, value?}` |
 | `audio.format_unsupported@1` | 音が WAV / Ogg Vorbis でない(上の「音声形式」と同じ判定) | AU-2 と同じ(RPC では `asset` / `out` が要求の値) |
-| `audio.analysis_failed@1` | settings の後の失敗(音が読めない・decode できない・`hop_ms` が音の 1 標本より短い・file が書けない) | `{asset, out, message}` |
+| `audio.analysis_failed@1` | settings の後の失敗(音が読めない・decode できない・`hop_ms` が音の 1 標本より短い・file が書けない) | `{asset, out, message}`。✅AB-2 から、表か manifest が開かれたままでやり直しの 2 秒を越えたときは `{asset, out, message, reason: "output_locked", path}`(`path` は開かれていた方。RPC では要求の `out` か `<out>.import.json` の綴り) |
 | `audio.analysis_busy@1` | 同じ `out` を焼いている途中(RPC だけ) | `{out, ticket}` |
 | `audio.analysis_unavailable@1` | `PELICAN_WITH_AUDIO=OFF` の build | `{reason: "built_without_audio"}` |
 
-test: `ab1_audio_analysis_test` の [「AB-1 a bake of 440 Hz then silence: rms and peak follow the tone and the band holding 440 Hz leads」](../../test/ab1_audio_analysis_test.cpp#L151)(CLI で焼く。前半 440 Hz・後半無音の 1 秒の WAV で、前半の rms と peak、440 Hz を含む `band:3` が他の帯より大きいこと、後半がほぼ 0、2 回焼いて同じ bytes、option の組、範囲外の `--bands 0` で何も書かないこと)。
+test: `ab1_audio_analysis_test` の [「AB-1 a bake of 440 Hz then silence: rms and peak follow the tone and the band holding 440 Hz leads」](../../test/ab1_audio_analysis_test.cpp#L156)(CLI で焼く。前半 440 Hz・後半無音の 1 秒の WAV で、前半の rms と peak、440 Hz を含む `band:3` が他の帯より大きいこと、後半がほぼ 0、2 回焼いて同じ bytes、option の組、範囲外の `--bands 0` で何も書かないこと)。
 
 ## 関連文書
 

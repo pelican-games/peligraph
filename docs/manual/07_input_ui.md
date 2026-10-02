@@ -307,7 +307,7 @@ graph module **`pelican.ui`**(version 1)は常に登録されます(UI にはビ
 ]
 ```
 
-- sink の値は毎フレーム、グラフの publish の時点で UI へ直接入り、そのフレームの UI パスが描きます([renderer.cpp の ui_writer](../../src/core/vkcore/renderer.cpp#L6096))。
+- sink の値は毎フレーム、グラフの publish の時点で UI へ直接入り、そのフレームの UI パスが描きます([renderer.cpp の ui_writer](../../src/core/vkcore/renderer.cpp#L6150))。
 - **単一 writer の単位は `(文書, path, 性質)`** です。`ui.*` の sink は owner に属さないので、`pose.*` の「owner 単位」とは単位が違います。同じ node でも `value` と `visible` は別の単位です。
 - rendering config を準備する時点で、次の理由で名前付きに断ります(準備で断られた config はどのフレームにも届きません。[validateUiSinks()](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L112)、衝突は [Graph の binding 検査](../../src/core/userpublic/valuegraph.cpp#L643)):
   - `ui.feature_unreferenced@1` — `ui.*` sink を持つ config が `engine://features/ui.json` を参照していない

@@ -158,7 +158,7 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 | `capture_gpu` | `{}` | `render_frame` と同じcurrent-time描画を1回だけ**RenderDoc**(GPU に送った描画コマンドを 1 フレーム分丸ごと記録して後から追える外部デバッガ)で captureし、実際に増えたindexのcanonical `.rdc` pathを返す |
 | `capture` | `{path}` | 直近フレームを PNG 保存(sRGB。応答に `encoding:"srgb"`) |
 | `get_frame_plan` | `{}`、または `{loop_elements: {node, offset?, limit?}}`(✅LP-3b。draw_loop の要素の paging) | フレームプラン JSON(fullscreen / raster pass の node には shader の set 1 の宣言 `pass_inputs` が付く。✅VI-1 / VI-1b。LP 系からは最上位の `loops[]`、node と resource の `loop_origin`、node の `view_select` / `view_axes` / `no_selected_view` も。✅LC-1 から、shader が `pelican_loop.glsl` の回の番号を読む pass / task の node に `reads_loop_index: true`。✅PS-1 から、`schedule: "once"` の node に `schedule: "once"`・`last_run_generation`・`last_run_frame`(まだ走っていなければ `null`)。✅IA-1 から、`physical_target_plan.resources[]` の `initial: {asset}` を持つ image の要素に `initial_asset: {asset, sha256}`(`sha256` は `assets.manifest` の値、載っていなければ `null`。✅AB-1 から、asset の隣に `.import.json` があれば `derived_from` / `stale` / `stale_reasons` も)。✅PV-1 から最上位に `preview: {available, reason?}`(`get_status` の `preview` と同じ形)。形は[第 13 章](13_editor.md) §13.5「ループと分解の RPC」) |
-| `rerun_once` | `{node?}`(✅PS-1。`node` は空でない文字列。ほかの鍵は `-32602`) | `{scheduled: [<pass / task の名前>...]}`。`schedule: "once"` の node を次の frame で走らせる。`node` を省くと今の frame plan の once の全部、graph の node の id ならその node が作った once、`graph.loop` の id なら全回の once。per_frame の node は `[]`。frame plan に無い名前は `-32602` で `data` が `{code: "node_unknown", node}`([`rerun_once` の登録](../../src/core/communication/rpcserver.cpp#L2449)、[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4094)。走る条件は[第 6 章](06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」) |
+| `rerun_once` | `{node?}`(✅PS-1。`node` は空でない文字列。ほかの鍵は `-32602`) | `{scheduled: [<pass / task の名前>...]}`。`schedule: "once"` の node を次の frame で走らせる。`node` を省くと今の frame plan の once の全部、graph の node の id ならその node が作った once、`graph.loop` の id なら全回の once。per_frame の node は `[]`。frame plan に無い名前は `-32602` で `data` が `{code: "node_unknown", node}`([`rerun_once` の登録](../../src/core/communication/rpcserver.cpp#L2449)、[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4103)。走る条件は[第 6 章](06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」) |
 | `pick_object` | `{x, y}` | 最後に完了した **ID バッファ**(色ではなく「そのピクセルに写っているオブジェクトの ID」を書き出す描画出力。`picking` feature が宣言する `R32_UINT` のレンダーターゲット `picking_id` — [picking.json](../../src/core/resources/features/picking.json))の 1 ピクセルを同期読み出し。`engine://features/picking.json` が必要 |
 | `set_gizmo` | `{selection:GizmoSelection\|null, mode}` | 選択 transform のギズモ表示を設定/解除。`engine://features/gizmo.json` が必要 |
 | `query_gizmo_handle` | `{selection:GizmoSelection, mode, x, y}` | 指定した選択・mode・物理 pixel にある handle を状態なしで問い合わせ。同 feature が必要 |
@@ -550,7 +550,7 @@ pelican_cli <assets|audio|bake-camera|image|import|dist-config|package|project|d
 空でないディレクトリは `project init target directory is not empty: <dir>` で拒否し、何も書きません。
 
 雛形の中身は [`src/project/projecttemplate.cpp`](../../src/project/projecttemplate.cpp) の 1 箇所にあり(`pelican_project`)、
-CLI は `--template` を読んで [`initializeProjectTemplate()`](../../src/project/projecttemplate.cpp#L401) を呼ぶだけです
+CLI は `--template` を読んで [`initializeProjectTemplate()`](../../src/project/projecttemplate.cpp#L400) を呼ぶだけです
 ([CLI 側](../../src/devcli/projectinit.cpp#L30))。Studio の File > New Project... も同じ関数を呼びます([第13章](13_editor.md))。
 `--template` は 2 つです。
 
@@ -564,7 +564,7 @@ CLI は `--template` を読んで [`initializeProjectTemplate()`](../../src/proj
   雛形は shader を書きません(`shaders/` もありません)。`engine://passthrough` は入力がすべて可変の engine の shader で、
   入力が 0 本なら UV の gradient を、入力があれば入力 0 をそのまま書きます(✅VI-1 / VI-2)。`present` に target を
   読ませるだけなら shader を書かずに済みます
-  ([雛形](../../src/project/projecttemplate.cpp#L229))。engine は direct config にも canonical anchor と
+  ([雛形](../../src/project/projecttemplate.cpp#L228))。engine は direct config にも canonical anchor と
   `display` を読む `output_transform` を足すので、描かれる frame は「project が書いた pass 1 本 + engine の終端」です。
   scene / input / ui / code / asset は `standard` と同じです(3D の model は置きません)。
 
@@ -573,15 +573,15 @@ CLI は `--template` を読んで [`initializeProjectTemplate()`](../../src/proj
 生成される `passes/main_rendering_config.json` は **`pelican.graph` root** です(両方の雛形で同じ)。`standard` で著作した内容
 (`pipeline.preset` = `engine://render_pipelines/hybrid_v1.json`、`features` = `shadow_directional` と
 `sky_ambient` の 2 本)は `rendering` オブジェクトの中に入ります。雛形の文字列は graph root をそのまま書いたもので
-([standard](../../src/project/projecttemplate.cpp#L200) / [blank](../../src/project/projecttemplate.cpp#L229)。
-[選ぶ関数](../../src/project/projecttemplate.cpp#L262))、以前それを包んでいた `wrapLegacyRenderingConfig()` は MG-2b で撤去しました
+([standard](../../src/project/projecttemplate.cpp#L199) / [blank](../../src/project/projecttemplate.cpp#L228)。
+[選ぶ関数](../../src/project/projecttemplate.cpp#L261))、以前それを包んでいた `wrapLegacyRenderingConfig()` は MG-2b で撤去しました
 (`standard` の生成物は撤去の前と同じバイト列で、`run_devcli_project_templates.cmake` の digest も変わっていません)。`render_targets` / `rendering_passes` は preset が持つので
 project は書きません —— `run_devcli_project_init.cmake` は**まず root が `pelican.graph` で `rendering` が
 object であることを確かめてから**、節の中に禁止メンバが無いことを見ます
 ([検査](../../test/run_devcli_project_init.cmake#L48)。順序が逆だと、節ごと消えたときに検査が素通りします)。
 
 生成される `code/CMakeLists.txt` は 2 行で、`pelican_game_sources(game.cpp)` の**後に**
-`pelican_packages()` を呼びます([template](../../src/project/projecttemplate.cpp#L275))。順序が意味を持ちます ——
+`pelican_packages()` を呼びます([template](../../src/project/projecttemplate.cpp#L274))。順序が意味を持ちます ——
 package の object は、その前に作られたゲームロジック DLL へ合流するからです。
 
 ### `pelican_cli project migrate --project <dir|project.json> [--dry-run]`(✅MG-1)
@@ -754,6 +754,7 @@ pelican_cli image ktx2 --out sky.ktx2 --hdr sky.hdr
 - `--hdr` は Radiance の `.hdr` を stb_image で `R32G32B32A32_SFLOAT` に読み、大きさは file から採ります。`--format` は省けて(既定 `R32G32B32A32_SFLOAT`)、ほかの format と `--width` / `--height` は断ります。
 - `--raw` と `--hdr` はどちらか 1 つだけです。
 - 成功すると `ktx2 <format> <W>x<H> -> <out>` の 1 行で終了コード 0、失敗は stderr に理由で -1 です。
+- **書き方(✅AB-2、`b3003b2a`)**: `<out>.tmp` に書いて閉じてから `<out>` へ置き換えます([image ktx2 の AB-2 の書き出し](../../src/devcli/imagecommand.cpp#L110))。動いている engine が古い texture を見張り・読んでいても、書きかけの file は見えません(コードの注記)。Windows で読む側が開いていて置き換えが断られると、50 ms から倍々に合計 2 秒までやり直し、それでも開かれたままなら `cannot replace <out>: another handle held it for <N> ms (...)` の文で -1 です。一時 file は消え、元の file は残ります。やり直しは `bake_audio_analysis` と同じ関数です([第5章](05_assets.md) §5.8 の「読む側が開いている間の置き換え」)。AB-2 の前は `<out>` を直接開いて上書きしていました。
 - 書いた file は engine の KTX2 の読み込みで読めます([第5章](05_assets.md) §5.2「テクスチャ・画像と atlas」の KTX2 の対応範囲)。test: `ia1_ktx2_cli_test` の [「IA-1 pelican_cli image ktx2 writes --raw and --hdr files the loader reads」](../../test/ia1_ktx2_cli_test.cpp#L97)。
 
 ### `pelican_cli audio analyze --asset <file> --out <file.ktx2> [options]`(✅AB-1)
@@ -777,8 +778,9 @@ pelican_cli audio analyze --asset sounds/tone.wav --out tables/few.ktx2 --featur
 - `--out` の拡張子が `.ktx2` でなければ断ります。`--asset` と `--out` は project の参照ではなく file の path です。
 - 成功すると stdout に `{"out", "manifest", "layout"}` の JSON(字下げ 2)を出して終了コード 0。名前付きの拒否は stderr に `<code> <fields の JSON>`(`audio.analysis_settings_invalid@1` など)、ほかの失敗は理由の文で、どちらも -1 です。settings で断ったときは何も書きません。
 - `PELICAN_WITH_AUDIO=OFF` の build の `pelican_cli` は `audio.analysis_unavailable@1 {"reason":"built_without_audio"}` で断ります。
+- ✅AB-2 から、表と manifest の置き換えは上の `image ktx2` と同じやり直しを通ります。表か manifest が開かれたまま 2 秒を越えると、stderr は `audio.analysis_failed@1` の fields に `"reason":"output_locked"` と `"path"`(開かれていた方の path)が付いた形です([第5章](05_assets.md) §5.8 の拒否の表)。
 - `pelican_cli` は engine を link しないので、engine の decode(`src/core/audio/sounddecode.cpp`)と bake(`audioanalysis.cpp`)を自分の source に入れ、miniaudio の実装を自分の unit(`src/devcli/miniaudioimpl.cpp`)で持ちます([`src/devcli/CMakeLists.txt` の AB-1 の部分](../../src/devcli/CMakeLists.txt#L28))。
-- test: `ab1_audio_analysis_test` の [「AB-1 a bake of 440 Hz then silence: rms and peak follow the tone and the band holding 440 Hz leads」](../../test/ab1_audio_analysis_test.cpp#L151)(`runAudioCommand()` を直接呼ぶ)。
+- test: `ab1_audio_analysis_test` の [「AB-1 a bake of 440 Hz then silence: rms and peak follow the tone and the band holding 440 Hz leads」](../../test/ab1_audio_analysis_test.cpp#L156)(`runAudioCommand()` を直接呼ぶ)。
 
 ## 10.5 ホットリロード(✅WP90/96〜110/147/162/178)
 
@@ -1049,7 +1051,7 @@ acceleration structure = 菱形 / swapchain = 六角 / history = 縁の太い丸
 ボタンは 3 段です。著作一覧の下の行が **Remove selected** / **Parameters...** / **Make editable...**、
 カタログの下が **Add selected**、最下段が **Refresh** / **Procedural assets...** / **Tasks...** /
 **Fork preset...** / **Region replacements...** / **Callable Records...** / **Scene AS...** / **Apply**
-([構築](../../src/devstudio/view/renderfeatureswidget.cpp#L2391))。**Parameters...** は選択 feature の
+([構築](../../src/devstudio/view/renderfeatureswidget.cpp#L2389))。**Parameters...** は選択 feature の
 scalar パラメータを編集し、**Make editable...** は materialize(具体値へ展開した派生を新しい
 `project://` ファイルに作り、元の参照をそれに差し替える)です。どちらも詳細は
 [第13章](13_editor.md) §13.5。**この dock に export / import や package の UI はありません** ——

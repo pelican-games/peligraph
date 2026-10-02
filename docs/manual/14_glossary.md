@@ -46,7 +46,7 @@
 
 ## 14.2 形式(JSON)とプロジェクトの語
 
-**エンベロープ** — JSON の先頭に置く `{"schema": "pelican.scene", "version": 2, ...}` の 2 キーのこと。封筒の中身(本体)を読む前に、**形式名と版が一致するかだけ**を先に見ます。不一致は hard error です。初出: [第4章 エンベロープの規則](04_scene_ecs.md#エンベロープの規則)。([projectformat.hpp:14](../../src/project/projectformat.hpp#L28))
+**エンベロープ** — JSON の先頭に置く `{"schema": "pelican.scene", "version": 2, ...}` の 2 キーのこと。封筒の中身(本体)を読む前に、**形式名と版が一致するかだけ**を先に見ます。不一致は hard error です。初出: [第4章 エンベロープの規則](04_scene_ecs.md#エンベロープの規則)。([projectformat.hpp:14](../../src/project/projectformat.hpp#L39))
 
 **closed schema / open schema** — closed schema は「宣言されたキー以外が来たら拒否する」受理仕様、open schema は「知らないキーは無視して通す」受理仕様です。エンジンの組み込みコンポーネントは closed schema(未知キーを拒否)で、ユーザー定義コンポーネントは codec を持たないため扱いが変わります。初出: [第12章 §12.5](12_codemap.md#125-データ--コード対応表json-はどこで読まれるか)。
 
@@ -198,7 +198,7 @@
 
 **AS / BLAS / TLAS(加速構造)** — レイと形状の交差候補を高速に絞り込むためのデータ構造の総称が **AS** です。**BLAS**（bottom-level acceleration structure）は三角形群や手続き形状の境界ボックスをまとめた下位構造、**TLAS**（top-level acceleration structure）は BLAS の配置・変換行列などを持つ上位構造です。現在は**静的形状に加え、スキン・モーフ・VAT による変形形状にも対応**します。変形後の頂点を計算し、条件が合えば前回の BLAS を基に更新（refit）します。配置の transform だけが変わる場合は BLAS を再利用し、TLAS の行列へ反映します。詳しくは [加速構造の解説](../source-code-guide/11_ray_query_acceleration_structures.md)。 初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([accelerationstructure.hpp:69](../../src/core/vkcore/accelerationstructure.hpp#L125))
 
-**SBT(shader binding table)** — レイトレーシングパイプラインで、「どのレイがどのシェーダ(raygen / miss / closest-hit)に当たるか」を引くための表。`ray_group_layout` の `ray_types` / `groups` / `misses` / `record` がこの表の形を決めます。`acceleration_structure` は SBT の入力ではないので、layout の digest からは取り除いて計算されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayTracingSceneShaderBindingTables](../../src/core/shader/pipelinefactory.hpp#L187))
+**SBT(shader binding table)** — レイトレーシングパイプラインで、「どのレイがどのシェーダ(raygen / miss / closest-hit)に当たるか」を引くための表。`ray_group_layout` の `ray_types` / `groups` / `misses` / `record` がこの表の形を決めます。`acceleration_structure` は SBT の入力ではないので、layout の digest からは取り除いて計算されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayTracingSceneShaderBindingTables](../../src/core/shader/pipelinefactory.hpp#L190))
 
 **`ray_group_layout`(ray layout)** — レイトレの宣言層の入口となる JSON。version は 3 だけを受理し(1 / 2 は MG-2a から `pelican.ray_group_layout.version_unsupported@1`)、**プロセスの実行中は変更できない 2 状態**(layout 無し / 有り)として起動時に確定します。layout があるときだけ `acceleration_structure` 宣言と `pelican_ray_instance` コンポーネントが使えます。プロセス途中でのモード変更は拒否されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayLayoutRuntimeState](../../src/core/shader/raygrouplayout.hpp#L168))
 

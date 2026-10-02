@@ -48,7 +48,7 @@
 
 **旧形式の transaction ディレクトリ(`render_config.legacy_transaction_dir@1`)** ✅MG-2a
 
-v0 より前のエンジンは、commit の決定を別ファイル `committed` ではなく `manifest.json` の `"status": "committed"` に書いていました。この形で残ったディレクトリは**もう読みません**。起動時の復旧と、この transaction を使う commit(rendering config の編集と `project migrate` の apply)のどれも `render_config.legacy_transaction_dir@1` で止まり、ディレクトリには手を付けません([判定](../../src/project/projectdocumenttransaction.cpp#L492))。
+v0 より前のエンジンは、commit の決定を別ファイル `committed` ではなく `manifest.json` の `"status": "committed"` に書いていました。この形で残ったディレクトリは**もう読みません**。起動時の復旧と、この transaction を使う commit(rendering config の編集と `project migrate` の apply)のどれも `render_config.legacy_transaction_dir@1` で止まり、ディレクトリには手を付けません([判定](../../src/project/projectdocumenttransaction.cpp#L403))。
 
 - 起動時(`pelican_player` が project.json を持つ project を開くとき): MG-1 から、parser より前の入口(§3.13)が同じ復旧を先に走らせます。stderr に `render_config.legacy_transaction_dir@1: {"message":"…","path":"…"}` が 1 行出て、player は exit 1 で終わります([入口の catch](../../src/player/main.cpp#L753))。この経路はコードを読んで確かめたもので、実行では未確認です。
 - 起動時(入口を通らずに `PelicanCore::run()` の復旧に届いたとき): ログに `Pelican fatal error : render_config.legacy_transaction_dir@1: {"message":"…","path":"…"}` が出て、起動はそこで終わります。
@@ -112,7 +112,7 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 | `name` | 実装上は任意 | `user://` スキームの project_id になる。無いと `user://` が使えない ※設計文書 [PF] §4 では必須と規定されているが、現行実装は検証しない |
 | `generator` | 任意 | パーサは読まない(生成元の記録用メタデータ) |
 | `engine_min_version` | 任意 | `"X.Y.Z"`。エンジン現行版(`0.1.0`。[`pelicanEngineVersion`](../../src/project/projectformat.hpp#L16))より新しければ `project.engine_too_old@1: project.json engine_min_version <値> is newer than this engine (0.1.0)` で起動拒否(名前は MG-1 から)。`--ignore-engine-version` で WARN に降格可 |
-| `saved_by_engine` | 任意 | **記録だけ**(✅MG-1)。最後に project.json を書いたエンジンの版 `"X.Y.Z"`。書くのは `pelican_cli project init`(雛形に入る)と `project migrate` の apply(§3.13)の 2 つだけで、scene の保存などでは書きません。何かを決めるのには使いません(移行するかどうかは各文書の `schema` / `version` で決まります)。文字列でない値は拒否せず無視し、今のエンジンより新しい版が書いてあっても拒否しません([`ProjectEnvelope`](../../src/project/projectformat.hpp#L28) のコメント)。キーを足しただけで `pelican.project` は version 1 のままで、MG-1 より前の player もこのキー入りの project.json を開けます(MG-1 の着地時に実物で確認) |
+| `saved_by_engine` | 任意 | **記録だけ**(✅MG-1)。最後に project.json を書いたエンジンの版 `"X.Y.Z"`。書くのは `pelican_cli project init`(雛形に入る)と `project migrate` の apply(§3.13)の 2 つだけで、scene の保存などでは書きません。何かを決めるのには使いません(移行するかどうかは各文書の `schema` / `version` で決まります)。文字列でない値は拒否せず無視し、今のエンジンより新しい版が書いてあっても拒否しません([`ProjectEnvelope`](../../src/project/projectformat.hpp#L39) のコメント)。キーを足しただけで `pelican.project` は version 1 のままで、MG-1 より前の player もこのキー入りの project.json を開けます(MG-1 の着地時に実物で確認) |
 | `requires` | 任意 | **このプロジェクトが動くために必要なビルド機能ユニットの名前の配列**(下記「機能ユニットの要求」)。語彙は `animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の 6 語(✅PG-1)。未知の名前は `project.requires_unknown@1`、その機能を OFF にしたビルドで開くと `<語>.module_unavailable@1`(例: `animation.module_unavailable@1`) |
 | `basic_config` | 任意 | 省略したキーは既定値で埋まる(次節) |
 | `asset_stores` | 任意 | asset store 宣言(§3.4) |
@@ -148,7 +148,7 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 | 語彙 | **ビルド機能ユニットのレジストリに載っている名前**です。各語が指すオプションは上の表のとおりです([第2章 §2.2](02_getting_started.md))。今日の表は 6 行([projectformat.cpp:80](../../src/project/projectformat.cpp#L81) が `.def` を展開)で、`knownProjectRequirements()` がその一覧を返します |
 | 検証の時 | **parse 時**。[parseProjectRequirements()](../../src/project/projectformat.cpp#L119)が配列であること・非空文字列であること・表にある名前であることを見ます |
 | 未知の名前 | `project.requires_unknown@1: project.json requires 'network', which this engine does not know; known requirements: animation, audio, physics, xr, vat, seqplayer` —— **既知の一覧を添えて**拒否します(一覧の順は `.def` の行の順) |
-| 満たせないビルド | 名前は新設せず、その語の `<語>.module_unavailable@1` を出します([projectformat.cpp:181](../../src/project/projectformat.cpp#L253))。例: `physics.module_unavailable@1: this build has PELICAN_WITH_PHYSICS=OFF, so project.json's requires: ["physics"] cannot be satisfied`。全要素が既知語かを先に確かめてから、最初に満たせない語を報告します。`pelican_player` はこれを捕まえて 1 行表示して exit 1 します |
+| 満たせないビルド | 名前は新設せず、その語の `<語>.module_unavailable@1` を出します([projectformat.cpp:181](../../src/project/projectformat.cpp#L264))。例: `physics.module_unavailable@1: this build has PELICAN_WITH_PHYSICS=OFF, so project.json's requires: ["physics"] cannot be satisfied`。全要素が既知語かを先に確かめてから、最初に満たせない語を報告します。`pelican_player` はこれを捕まえて 1 行表示して exit 1 します |
 | コーパス側 | **プロジェクト群を順に調べるテスト・スモークも同じ値を読みます**。満たせない要求を持つプロジェクトは失敗ではなく**名前付きの skip**(`skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)`)になります。`PELICAN_WITH_ANIMATION=OFF` build では `animation` を宣言した 3 つ分の行と、必要なら `skip editor lane: …`、最後に件数の要約が出ます([第2章 §2.2](02_getting_started.md))。`PELICAN_WITH_PHYSICS=OFF` build では `sprite_demo` が同じ形で飛ばされます |
 | 宣言しなくても止まるもの | `requires` はプロジェクトを開く時点の前倒しです。宣言が無くても、機能を外したビルドでその機能のコンポーネントを持つオブジェクトは、シーンロードの prepare と、エディタの `add_component` / `spawn` で同じ `<語>.module_unavailable@1` になります(今日対応付けがあるのは `collider` → `physics`、`animation` → `animation`。[第4章 §4.3](04_scene_ecs.md)) |
 | 出荷での宣言 | `animation`: `animgraph_demo` / `vrm_xr_demo` / `posegraph_demo`。`physics`: `sprite_demo`(PG-1)。`audio` / `xr` / `vat` / `seqplayer` を宣言した出荷プロジェクトはまだありません |
@@ -456,7 +456,7 @@ codex の報告と commit の説明では、10,000 object のシーンで transf
 
 ## 3.10 コンポーネント宣言スキーマ v3 — `Flags` と `List` の wire(✅WP382a)
 
-§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。ここでの **v3 はスキーマ宣言機構の版番号**で、シーン JSON の `version`(pelican.scene v2)とは別物です([用語集](14_glossary.md))。従来の登録経路が運べたのは平坦なフィールド列だけで、`Flags` / `List` のように**入れ子の語彙を持つ型**を運べるようにしたのが v3 です。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L2007))はこの節の対象外です(平坦なフィールド列のまま)。
+§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。ここでの **v3 はスキーマ宣言機構の版番号**で、シーン JSON の `version`(pelican.scene v2)とは別物です([用語集](14_glossary.md))。従来の登録経路が運べたのは平坦なフィールド列だけで、`Flags` / `List` のように**入れ子の語彙を持つ型**を運べるようにしたのが v3 です。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L2009))はこの節の対象外です(平坦なフィールド列のまま)。
 
 登録側の `schema` に `Flags<E>` か `List<Row>` が 1 つでも含まれると、登録は自動的に **v3 の入口**へ切り替わります([registerer.hpp](../../src/core/userpublic/details/component/registerer.hpp#L188))。判定は `schemaRequiresV3()` のコンパイル時定数なので、含まないコンポーネントの wire は 1 バイトも変わりません。scene JSON からの入口は従来と同じ「コンポーネント JSON をそのまま渡す」経路です([`ComponentInfoManager::loadByJson()`](../../src/core/ecs/componentinfo.cpp#L189))。
 

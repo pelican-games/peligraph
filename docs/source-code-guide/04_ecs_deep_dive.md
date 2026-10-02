@@ -590,7 +590,7 @@ level実行前に、その段に入っている**全System**の`prepare_func`が
 
 model instance の数は、同時に生きているものが 1,024 まで、物理的な slot(index)が 2,048 までです(`8bde3c2f`。利用者の codex の変更、handoff 05。[`maxActiveModelInstances` と `maxModelInstances`](../../src/core/renderer/polygoninstancecontainer.cpp#L28))。scene の置き換えの間は公開中の世代と候補の世代の両方が slot を持つので、slot の数を生きている数の上限の 2 倍にしてあります(コードの注記)。回収の流れは [第3章](03_project_and_loading.md) の scene load の retire の段の後の段落です。
 
-`CameraSystem`は`count == 0`で早期returnするようになりました（[camerasystem.cpp](../../src/core/ecs/predefined/camerasystem.cpp#L14)）。ただし「先頭1件のみ使用」（`i < 1`固定のループ）は変わりません。scene cameraの主経路は別の [`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L403) でも管理されており、camera関連には旧内部ECS経路と新scene camera経路が併存しています。
+`CameraSystem`は`count == 0`で早期returnするようになりました（[camerasystem.cpp](../../src/core/ecs/predefined/camerasystem.cpp#L14)）。ただし「先頭1件のみ使用」（`i < 1`固定のループ）は変わりません。scene cameraの主経路は別の [`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L395) でも管理されており、camera関連には旧内部ECS経路と新scene camera経路が併存しています。
 
 ### `AnimationSystem` はComponent以外も駆動する — `updatePoseGraphs()`
 
