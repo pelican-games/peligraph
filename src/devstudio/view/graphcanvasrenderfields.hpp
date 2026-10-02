@@ -190,12 +190,19 @@ class GraphCanvasImageFields final : public QWidget {
     QSpinBox *width_ = nullptr;
     QSpinBox *height_ = nullptr;
     QSpinBox *layers_ = nullptr;
-    // UX-8, decision 12 (a) (RS-15): the mip count (0 reads "full"), and
+    // UX-8, decision 12 (a) (RS-15): the mip count (Full chain beside it), and
     // behind the f button the layer and mip counts as integer expressions
     // too (a body's image: `6 - element`).
     QSpinBox *mip_levels_ = nullptr;
     QLineEdit *layers_expression_ = nullptr;
     QLineEdit *mip_levels_expression_ = nullptr;
+    // UX-12e, decision 3 (engine CT-4: mip_levels is integer | "full"): Count
+    // or Full chain (`pelican.graphCanvasImage.mipLevelsShape`), the count's
+    // spin shown for Count only. Decision 4: a width or height above the
+    // table's soft_max is marked (`pelican.graphCanvasImage.sizeUnusual`).
+    QComboBox *mip_shape_ = nullptr;
+    QLabel *size_unusual_ = nullptr;
+    void showMipShape();
     // UX-7, decision 6: `history: true`, named `pelican.graphCanvasImage.history`.
     QCheckBox *history_ = nullptr;    // PS-1s, decision 2: `lifetime` -- Per frame (the key left out) or
     // Persistent, named `pelican.graphCanvasImage.lifetime`.

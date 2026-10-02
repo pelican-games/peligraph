@@ -65,6 +65,17 @@ struct GraphParameterChoices {
 // `.reset`, `.import`, `.f`, `.add`, `.<field>` for an object's field and
 // `.<index>` / `.<index>.remove` for an array's or a map's row (the key of a
 // map's row is `.<index>.key`).
+// UX-12e (engine CT-4):
+//   - decision 1: a string with `choices_from` is an editable combo of what
+//     that source lists (the authoring context, read once per reading of the
+//     document; or the scope's nodes of the named ops); a value typed that
+//     is not among them is kept, with a faint `<name>.unlisted`;
+//   - decision 2: an asset lists the project's files of its `extensions`,
+//     and Import... takes only those, into the folder of its `asset_kind`;
+//   - decision 3: a union is a combo of its shapes (`<name>`), the shape's
+//     own field beside it (`<name>.<kind>`), picked by the value's type;
+//   - decision 4: a number with `soft_max` slides up to it; a value above it
+//     is kept, with a faint `<name>.unusual` ("above the usual range").
 class GraphParameterEditor final : public QWidget {
   public:
     GraphParameterEditor(nlohmann::json schema, std::shared_ptr<const GraphParameterChoices> choices,
@@ -95,6 +106,11 @@ class GraphParameterEditor final : public QWidget {
     void buildNumber();
     void buildVector(int count, bool colour);
     void buildCombo();
+    void buildChoices();
+    void buildUnion();
+    void loadUnion(const nlohmann::json &shown);
+    void showUnion();
+    void showMarks();
     void buildObject();
     void buildRows();
     void addRow(const nlohmann::json &value, const std::string &key);
@@ -130,11 +146,22 @@ class GraphParameterEditor final : public QWidget {
 // (lower-case, with the dot), or every file for none.
 std::vector<std::string> projectAssetReferences(const std::filesystem::path &project_root,
                                                 const std::vector<std::string> &extensions);
-// The extensions an asset parameter takes, from the op, its name and what
-// its description (and its parent's) say: a model's (.gltf / .glb / .vrm),
-// a sound's (.wav / .ogg), an image's (.ktx2 / .png); none when nothing says.
-std::vector<std::string> assetParameterExtensions(std::string_view op, std::string_view name,
-                                                  std::string_view hint);
+// UX-12e, decision 2 (engine CT-4): the extensions an asset parameter takes,
+// as its table entry's `extensions` says (lower-case); none when it says
+// nothing (every file is offered).
+std::vector<std::string> assetParameterExtensions(const nlohmann::json &schema);
+// UX-12e, decision 1 (engine CT-4): the names a reply lists at `key` -- member
+// names joined by '.', an array met on the way walked element by element --
+// each entry itself (a string) or its `field` (a string, or each string of
+// an array). In the reply's order, each once.
+std::vector<std::string> graphParameterChoicesFromReply(const nlohmann::json &reply,
+                                                        std::string_view key,
+                                                        std::string_view field);
+// UX-12e, decision 3: what the variant picker of a union says for one of its
+// shapes (the union's `name`): "Count" / "Index" for an integer, "Name" for
+// a string, "Custom" for an object; a one-value enum its value ("Full chain"
+// for mip_levels' "full"). A bool is two entries, Off and On.
+QString graphUnionVariantLabel(std::string_view name, const nlohmann::json &variant);
 
 // UX-12a, decisions 1, 2 and 4: the selected node's fields made from its op's
 // table, beside the Graph tab's canvas. An op with fields of its own

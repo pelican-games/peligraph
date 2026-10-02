@@ -72,6 +72,7 @@
 #include <QTabWidget>
 #include <QStringList>
 #include <QTimer>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QVariant>
@@ -6391,12 +6392,19 @@ struct GraphCanvasWidget::Impl {
         if (std::ranges::none_of(scopes_now,
                                  [&](const auto &scope) { return scope.id == pending_scope; }))
             return false;
-        model.selectScope(std::exchange(pending_scope, {}));
+        const auto entered = std::exchange(pending_scope, {});
+        model.selectScope(entered);
         scene->repopulate();
         syncScopeControls();
         syncValueControls();
         showDetails();
         dispatch();
+        // UX-12e, decision 5: the palette again, inside, on the op it was for.
+        if (palette_after_scope && palette_after_scope->first == entered) {
+            palette_filter_next = palette_after_scope->second;
+            QMetaObject::invokeMethod(&view, [this] { openPalette(); }, Qt::QueuedConnection);
+        }
+        palette_after_scope.reset();
         return true;
     }
 
@@ -6455,7 +6463,12 @@ struct GraphCanvasWidget::Impl {
                 validateDefinitionRow();
                 return;
             }
-            if (model.addDefinition(name)) pending_scope = name;
+            if (model.addDefinition(name)) {
+                pending_scope = name;
+                // UX-12e, decision 5: and the palette opens there again.
+                if (!definition_then_palette.empty())
+                    palette_after_scope = std::pair{name, definition_then_palette};
+            }
             closeDefinitionRow();
             dispatch();
             showNotice();
@@ -6480,6 +6493,7 @@ struct GraphCanvasWidget::Impl {
     }
 
     void closeDefinitionRow() {
+        definition_then_palette.clear();
         definition_creating = false;
         definition_subject.clear();
         definition_line->clear();
@@ -7171,6 +7185,55 @@ struct GraphCanvasWidget::Impl {
         if (model.setNodeParameter(scope, *selected, key, value)) dispatch();
     }
 
+    // --- UX-12e, decision 5 (engine CT-4): an op whose placement is
+    // owned_instance (pose.*, value.morph_weight) stands only in a definition
+    // an object's instance runs. In the root the palette shows it grey, and
+    // its row's New definition… makes a definition, goes into it and opens
+    // the palette there again, on that op.
+    static constexpr int kPaletteNeedsDefinitionRole = Qt::UserRole + 1;
+    std::string palette_filter_next;
+    // The op New definition… was pressed for, until the row is applied or
+    // closed; then the definition the palette opens in once it is on screen.
+    std::string definition_then_palette;
+    std::optional<std::pair<std::string, std::string>> palette_after_scope;
+
+    [[nodiscard]] bool paletteNeedsDefinition(const std::string &op) const {
+        return model.operationPlacement(op) == "owned_instance";
+    }
+
+    void markPaletteNeedsDefinition(QListWidget &list, QListWidgetItem &row, const std::string &op,
+                                    QDialog *dialog) {
+        row.setData(kPaletteNeedsDefinitionRole, true);
+        row.setForeground(list.palette().color(QPalette::Disabled, QPalette::Text));
+        row.setText(row.text() + QObject::tr("   needs a definition"));
+        row.setToolTip(QObject::tr("needs a definition \xE2\x80\x94 New definition…: %1 runs inside a "
+                                   "definition attached to an object, not in the root")
+                           .arg(qtext(op)));
+        // The row's end: the way there, one press.
+        auto *cell = new QWidget(&list);
+        auto *cell_layout = new QHBoxLayout(cell);
+        cell_layout->setContentsMargins(0, 0, 4, 0);
+        cell_layout->addStretch(1);
+        auto *button = new QToolButton(cell);
+        button->setObjectName(QStringLiteral("pelican.graphCanvasPaletteNeedsDefinition.") + qtext(op));
+        button->setText(QObject::tr("New definition…"));
+        button->setToolTip(row.toolTip());
+        button->setAutoRaise(true);
+        cell_layout->addWidget(button);
+        cell->setAttribute(Qt::WA_TranslucentBackground);
+        list.setItemWidget(&row, cell);
+        QObject::connect(button, &QToolButton::clicked, dialog, [this, dialog, op] {
+            dialog->reject();
+            QMetaObject::invokeMethod(&view, [this, op] { newDefinitionFor(op); }, Qt::QueuedConnection);
+        });
+    }
+
+    void newDefinitionFor(const std::string &op) {
+        if (!model.canEdit()) return;
+        openNewDefinitionRow();
+        definition_then_palette = op;
+    }
+
     // The "Add node..." palette: the catalog, narrowed by domain and by what
     // the user types, and an instance also needs the definition it stands on.
     // UX-9, decision 3: it is opened window-modal (open(), not exec()) and
@@ -7188,6 +7251,7 @@ struct GraphCanvasWidget::Impl {
         // of yet can take nothing.
         if (!model.connected() || model.digest().empty()) {
             scene->clearPaletteScope();
+            palette_filter_next.clear();
             return;
         }
         // A new ui.* sink is seeded with a node the UI document has.
@@ -7217,6 +7281,12 @@ struct GraphCanvasWidget::Impl {
         auto *search = new QLineEdit(dialog);
         search->setObjectName(QStringLiteral("pelican.graphCanvasPaletteFilter"));
         search->setPlaceholderText(QObject::tr("filter by name"));
+        // UX-12e, decision 5: opened again inside the definition just made
+        // for an op, on that op (chosen: typing replaces it).
+        if (!palette_filter_next.empty()) {
+            search->setText(qtext(std::exchange(palette_filter_next, {})));
+            search->selectAll();
+        }
         filters->addWidget(search, 1);
         layout->addLayout(filters);
         auto *list = new QListWidget(dialog);
@@ -7311,7 +7381,7 @@ struct GraphCanvasWidget::Impl {
 
         // The widgets are the dialog's children: the lambdas hold them by
         // pointer, and go with the dialog.
-        const auto reload = [this, list, search, domains, scope] {
+        const auto reload = [this, list, search, domains, scope, dialog] {
             list->clear();
             for (const auto &entry : model.paletteOperationsIn(
                      scope, search->text().toStdString(),
@@ -7323,6 +7393,11 @@ struct GraphCanvasWidget::Impl {
                                                           qtext(entry.domain)),
                     list);
                 row->setData(Qt::UserRole, qtext(entry.op));
+                // UX-12e, decision 5: an op that stands only in a definition
+                // an object's instance runs is grey in the root, and offers
+                // the way there.
+                if (scope.empty() && paletteNeedsDefinition(entry.op))
+                    markPaletteNeedsDefinition(*list, *row, entry.op, dialog);
             }
             if (list->count() > 0) list->setCurrentRow(0);
         };
@@ -7424,6 +7499,14 @@ struct GraphCanvasWidget::Impl {
             attribute_domain->setVisible(attribute);
             element->setEnabled(!(attribute && attribute_domain->currentData().toString() ==
                                                    QLatin1String{"index"}));
+            // UX-12e, decision 5: a grey row is not placed here; Enter on it
+            // is New definition... (finished, below).
+            if (row != nullptr && row->data(kPaletteNeedsDefinitionRole).toBool()) {
+                note = QObject::tr("%1 runs inside a definition attached to an object: New "
+                                   "definition… makes one and opens this list there.")
+                           .arg(op);
+                ready = false;
+            }
             seed_note->setText(note);
             seed_note->setVisible(!note.isEmpty());
             if (auto *ok = buttons->button(QDialogButtonBox::Ok)) ok->setEnabled(ready);
@@ -7480,6 +7563,14 @@ struct GraphCanvasWidget::Impl {
                 auto *row = result == QDialog::Accepted ? list->currentItem() : nullptr;
                 if (row == nullptr) {
                     scene->clearPaletteScope();
+                    return;
+                }
+                // UX-12e, decision 5: Enter on a grey row is its New definition….
+                if (row->data(kPaletteNeedsDefinitionRole).toBool()) {
+                    scene->clearPaletteScope();
+                    const auto op = row->data(Qt::UserRole).toString().toStdString();
+                    QMetaObject::invokeMethod(
+                        &view, [this, op] { newDefinitionFor(op); }, Qt::QueuedConnection);
                     return;
                 }
                 PaletteChoice choice;

@@ -38,6 +38,8 @@ using Json = nlohmann::json;
 constexpr auto kInvalidStyle = "QDoubleSpinBox, QLineEdit, QComboBox, QCheckBox, QPushButton "
                                "{ border: 1px solid #d94c3d; }";
 constexpr auto kRedText = "color: #d94c3d;";
+// UX-12e: a mark that tells without refusing.
+constexpr auto kFaintText = "color: #8a8a8a; font-style: italic;";
 
 QString qtext(const std::string &value) { return QString::fromStdString(value); }
 
@@ -112,6 +114,14 @@ std::string toolTipOf(const Json &schema) {
         if (!tip.empty()) tip += "\n";
         tip += "Range: " + (min ? bound(*min) : std::string{}) + ".." + (max ? bound(*max) : std::string{});
     }
+    // UX-12e, decision 4.
+    const auto soft_min = numberOf(schema, "soft_min");
+    const auto soft_max = numberOf(schema, "soft_max");
+    if (soft_min || soft_max) {
+        if (!tip.empty()) tip += "\n";
+        tip += "Usual: " + (soft_min ? bound(*soft_min) : std::string{}) + ".." +
+               (soft_max ? bound(*soft_max) : std::string{});
+    }
     if (const auto found = schema.find("default"); found != schema.end()) {
         if (!tip.empty()) tip += "\n";
         tip += "Default: " + shortJson(*found).toStdString();
@@ -175,16 +185,83 @@ std::vector<std::string> projectAssetReferences(const std::filesystem::path &pro
     return references;
 }
 
-std::vector<std::string> assetParameterExtensions(std::string_view op, std::string_view name,
-                                                  std::string_view hint) {
-    const auto said = lower(hint) + " " + lower(name);
-    const std::vector<std::string> models{".gltf", ".glb", ".vrm"};
-    if (name == "rig" || op.starts_with("pose.")) return models;
-    if (op.starts_with("audio.") || said.find("sound") != std::string::npos) return {".wav", ".ogg"};
-    if (said.find("model") != std::string::npos || said.find("mesh") != std::string::npos) return models;
-    if (said.find("image") != std::string::npos || said.find("texture") != std::string::npos)
-        return {".ktx2", ".png"};
-    return {};
+std::vector<std::string> assetParameterExtensions(const Json &schema) {
+    std::vector<std::string> result;
+    for (const auto &extension : schema.value("extensions", Json::array()))
+        if (extension.is_string()) result.push_back(lower(extension.get<std::string>()));
+    return result;
+}
+
+std::vector<std::string> graphParameterChoicesFromReply(const Json &reply, std::string_view key,
+                                                        std::string_view field) {
+    // Down the path; an array met on the way is walked element by element.
+    std::vector<const Json *> at{&reply};
+    std::size_t begin = 0;
+    while (begin <= key.size() && !key.empty()) {
+        const auto end = std::min(key.find('.', begin), key.size());
+        const std::string step{key.substr(begin, end - begin)};
+        std::vector<const Json *> next;
+        const auto enter = [&](const Json &node) {
+            if (!node.is_object()) return;
+            if (const auto found = node.find(step); found != node.end()) next.push_back(&*found);
+        };
+        for (const auto *node : at) {
+            if (node->is_array())
+                for (const auto &element : *node) enter(element);
+            else
+                enter(*node);
+        }
+        at = std::move(next);
+        begin = end + 1;
+    }
+    std::vector<std::string> result;
+    const auto add = [&](const Json &value) {
+        if (value.is_string() && !value.get<std::string>().empty() &&
+            std::ranges::find(result, value.get<std::string>()) == result.end())
+            result.push_back(value.get<std::string>());
+    };
+    const auto take = [&](const Json &entry) {
+        if (field.empty()) {
+            add(entry);
+            return;
+        }
+        if (!entry.is_object()) return;
+        const auto found = entry.find(std::string{field});
+        if (found == entry.end()) return;
+        if (found->is_array())
+            for (const auto &each : *found) add(each);
+        else
+            add(*found);
+    };
+    for (const auto *node : at) {
+        if (node->is_array())
+            for (const auto &entry : *node) take(entry);
+        else
+            take(*node);
+    }
+    return result;
+}
+
+QString graphUnionVariantLabel(std::string_view name, const Json &variant) {
+    const auto kind = textOf(variant, "kind");
+    if (kind == "enum") {
+        const auto values = variant.value("enum", Json::array());
+        if (values.size() == 1 && values.front().is_string()) {
+            const auto value = values.front().get<std::string>();
+            if (value == "full") return QObject::tr("Full chain");
+            return qtext(value);
+        }
+        return QObject::tr("One of");
+    }
+    if (kind == "integer") {
+        if (name.find("level") != std::string_view::npos || name.find("count") != std::string_view::npos)
+            return QObject::tr("Count");
+        return QObject::tr("Index");
+    }
+    if (kind == "number") return QObject::tr("Number");
+    if (kind == "string") return QObject::tr("Name");
+    if (kind == "object") return QObject::tr("Custom");
+    return qtext(kind);
 }
 
 // --- One parameter's editor.
@@ -221,6 +298,20 @@ struct GraphParameterEditor::Parts {
     std::vector<RowParts> rows;
     QPushButton *add = nullptr;
     int row_serial = 0;
+    // UX-12e, decisions 1 and 4: the faint marks of a value off the list or
+    // above the usual range.
+    QLabel *unlisted = nullptr;
+    QLabel *unusual = nullptr;
+    std::vector<std::string> listed;
+    // UX-12e, decision 3: a union's shapes -- a constant (Off / On, "full";
+    // null for "(none)") or a field of its own.
+    struct Shape {
+        QString label;
+        Json constant;
+        GraphParameterEditor *editor = nullptr;
+    };
+    QComboBox *shape = nullptr;
+    std::vector<Shape> shapes;
 };
 
 GraphParameterEditor::GraphParameterEditor(Json schema, std::shared_ptr<const GraphParameterChoices> choices,
@@ -253,6 +344,10 @@ void GraphParameterEditor::build() {
     const bool has_fields = schema_.contains("fields") && schema_.at("fields").is_array();
     if (k == "number" || k == "integer") {
         buildNumber();
+    } else if (k == "union") {
+        buildUnion();
+    } else if (k == "string" && schema_.contains("choices_from") && !hint_.starts_with("shader:")) {
+        buildChoices();
     } else if (k == "bool") {
         parts.check = new QCheckBox(this);
         parts.check->setObjectName(child({}));
@@ -345,8 +440,13 @@ void GraphParameterEditor::build() {
 void GraphParameterEditor::buildNumber() {
     auto &parts = *parts_;
     const bool integer = kind() == "integer";
-    const auto min = numberOf(schema_, "min");
-    const auto max = numberOf(schema_, "max");
+    // UX-12e, decision 4: the slider goes over the usual range when the
+    // table gives one (soft_min / soft_max inside min / max); the spin takes
+    // anything up to min / max all the same.
+    const auto soft_min = numberOf(schema_, "soft_min");
+    const auto soft_max = numberOf(schema_, "soft_max");
+    const auto min = soft_min ? soft_min : numberOf(schema_, "min");
+    const auto max = soft_max ? soft_max : numberOf(schema_, "max");
     // Not held to the table's range: a value outside it is the engine's to
     // refuse, by name (decision 4).
     parts.spin = makeParameterSpin(this, child({}), integer, std::nullopt);
@@ -383,6 +483,17 @@ void GraphParameterEditor::buildNumber() {
         }
         changed(true);
     });
+    if (soft_max) {
+        parts.unusual = new QLabel(tr("above the usual range"), box);
+        parts.unusual->setObjectName(child(QStringLiteral("unusual")));
+        parts.unusual->setFont(studioSmallFont());
+        parts.unusual->setStyleSheet(QString::fromLatin1(kFaintText));
+        parts.unusual->setToolTip(tr("above the usual range (up to %1); the engine takes it, but "
+                                     "it is more than its own features use")
+                                      .arg(*soft_max, 0, 'g', 10));
+        parts.unusual->hide();
+        line->addWidget(parts.unusual);
+    }
     parts.plain = box;
     parts.line->addWidget(box, 1);
 }
@@ -459,6 +570,149 @@ void GraphParameterEditor::buildCombo() {
                                     "already there gets _2)."));
         parts.line->addWidget(parts.import);
         connect(parts.import, &QPushButton::clicked, this, [this] { importAsset(); });
+    }
+}
+
+void GraphParameterEditor::buildChoices() {
+    auto &parts = *parts_;
+    // UX-12e, decision 1: picked from what the source lists, or typed.
+    parts.combo = new QComboBox(this);
+    parts.combo->setObjectName(child({}));
+    parts.combo->setEditable(true);
+    parts.combo->setInsertPolicy(QComboBox::NoInsert);
+    parts.combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    parts.combo->setMinimumContentsLength(8);
+    parts.combo->setToolTip(qtext(toolTipOf(schema_)));
+    const auto fallback = graphParameterDefault(schema_);
+    parts.combo->lineEdit()->setPlaceholderText(
+        fallback.is_string() ? tr("%1 (default)").arg(qtext(fallback.get<std::string>())) : tr("(none)"));
+    parts.line->addWidget(parts.combo, 1);
+    parts.unlisted = new QLabel(tr("not listed"), this);
+    parts.unlisted->setObjectName(child(QStringLiteral("unlisted")));
+    parts.unlisted->setFont(studioSmallFont());
+    parts.unlisted->setStyleSheet(QString::fromLatin1(kFaintText));
+    parts.unlisted->setToolTip(tr("Not among the names the engine lists here now; it is kept as "
+                                  "typed, and the engine says if it does not know it."));
+    parts.unlisted->hide();
+    parts.line->addWidget(parts.unlisted);
+    parts.plain = parts.combo;
+    connect(parts.combo, &QComboBox::currentIndexChanged, this, [this] {
+        if (!loading_) changed(false);
+    });
+    connect(parts.combo->lineEdit(), &QLineEdit::editingFinished, this, [this] {
+        if (loading_) return;
+        const auto typed = parts_->combo->currentText().trimmed().toStdString();
+        const auto now = value_.is_string() ? value_.get<std::string>() : std::string{};
+        if (typed != (set_ ? now : std::string{})) changed(false);
+    });
+}
+
+void GraphParameterEditor::buildUnion() {
+    auto &parts = *parts_;
+    // UX-12e, decision 3: which shape the value takes, and that shape's field.
+    auto *box = new QWidget(this);
+    auto *line = new QHBoxLayout(box);
+    line->setContentsMargins(0, 0, 0, 0);
+    parts.shape = new QComboBox(box);
+    parts.shape->setObjectName(child({}));
+    parts.shape->setToolTip(qtext(toolTipOf(schema_)));
+    line->addWidget(parts.shape);
+    const auto name = textOf(schema_, "name");
+    if (!schema_.value("required", false) && !schema_.contains("default"))
+        parts.shapes.push_back({tr("(none)"), Json{}, nullptr});
+    for (const auto &variant : schema_.value("variants", Json::array())) {
+        if (!variant.is_object()) continue;
+        const auto variant_kind = textOf(variant, "kind");
+        if (variant_kind == "bool") {
+            parts.shapes.push_back({tr("Off"), false, nullptr});
+            parts.shapes.push_back({tr("On"), true, nullptr});
+            continue;
+        }
+        const auto values = variant.value("enum", Json::array());
+        if (variant_kind == "enum" && values.size() == 1) {
+            parts.shapes.push_back({graphUnionVariantLabel(name, variant), values.front(), nullptr});
+            continue;
+        }
+        auto shape_schema = variant;
+        shape_schema["name"] = name;
+        auto *editor = new GraphParameterEditor(shape_schema, choices_, child(qtext(variant_kind)),
+                                                hint_, box);
+        editor->setEdited([this](bool continuous) { changed(continuous); });
+        editor->hide();
+        line->addWidget(editor, 1);
+        parts.shapes.push_back({graphUnionVariantLabel(name, variant), Json{}, editor});
+    }
+    for (const auto &shape : parts.shapes) parts.shape->addItem(shape.label);
+    line->addStretch(0);
+    connect(parts.shape, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (loading_ || index < 0 || static_cast<std::size_t>(index) >= parts_->shapes.size()) return;
+        // A shape with a field of its own starts from its least value.
+        auto *editor = parts_->shapes[static_cast<std::size_t>(index)].editor;
+        if (editor != nullptr && editor->value().is_null()) {
+            const bool was = loading_;
+            loading_ = true;
+            editor->setValue(itemFallback(editor->schema()));
+            loading_ = was;
+        }
+        showUnion();
+        changed(false);
+    });
+    parts.plain = box;
+    parts.line->addWidget(box, 1);
+}
+
+void GraphParameterEditor::loadUnion(const Json &shown) {
+    auto &parts = *parts_;
+    // The shape is read off the value's type.
+    int picked = -1;
+    for (std::size_t at = 0; at < parts.shapes.size() && picked < 0; ++at) {
+        const auto &shape = parts.shapes[at];
+        if (shape.editor == nullptr) {
+            if (!shape.constant.is_null() && shape.constant == shown) picked = static_cast<int>(at);
+            continue;
+        }
+        const auto variant_kind = shape.editor->kind();
+        const bool fits = (variant_kind == "integer" && shown.is_number_integer()) ||
+                          (variant_kind == "number" && shown.is_number()) ||
+                          (variant_kind == "string" && shown.is_string()) ||
+                          (variant_kind == "object" && shown.is_object() && !isExpressionValue(shown)) ||
+                          (variant_kind == "enum" && shown.is_string());
+        if (fits) picked = static_cast<int>(at);
+    }
+    if (picked < 0 && shown.is_null()) {
+        // Not written and no default: "(none)", else the first shape.
+        picked = 0;
+    }
+    for (std::size_t at = 0; at < parts.shapes.size(); ++at)
+        if (auto *editor = parts.shapes[at].editor)
+            editor->setValue(static_cast<int>(at) == picked ? shown : Json{});
+    const QSignalBlocker block{parts.shape};
+    parts.shape->setCurrentIndex(std::max(0, picked));
+    showUnion();
+}
+
+void GraphParameterEditor::showUnion() {
+    auto &parts = *parts_;
+    const auto index = parts.shape->currentIndex();
+    for (std::size_t at = 0; at < parts.shapes.size(); ++at)
+        if (auto *editor = parts.shapes[at].editor) editor->setVisible(static_cast<int>(at) == index);
+}
+
+void GraphParameterEditor::showMarks() {
+    auto &parts = *parts_;
+    const auto shown = set_ ? value_ : graphParameterDefault(schema_);
+    if (parts.unusual != nullptr) {
+        const auto soft_max = numberOf(schema_, "soft_max");
+        const auto soft_min = numberOf(schema_, "soft_min");
+        const bool above = shown.is_number() && soft_max && shown.get<double>() > *soft_max;
+        const bool below = shown.is_number() && soft_min && shown.get<double>() < *soft_min;
+        parts.unusual->setText(below ? tr("below the usual range") : tr("above the usual range"));
+        parts.unusual->setVisible(above || below);
+    }
+    if (parts.unlisted != nullptr) {
+        const auto text = set_ && value_.is_string() ? value_.get<std::string>() : std::string{};
+        parts.unlisted->setVisible(!text.empty() && !parts.listed.empty() &&
+                                   std::ranges::find(parts.listed, text) == parts.listed.end());
     }
 }
 
@@ -599,10 +853,26 @@ std::vector<std::string> GraphParameterEditor::comboChoices() const {
                 if (node.id != choices_->node) result.push_back(node.id);
         return result;
     }
-    if (k == "asset")
-        return projectAssetReferences(choices_->project_root,
-                                      assetParameterExtensions(choices_->op, textOf(schema_, "name"),
-                                                               hint_ + " " + textOf(schema_, "description")));
+    // UX-12e, decision 2: the files of the kinds the table names.
+    if (k == "asset") return projectAssetReferences(choices_->project_root, assetParameterExtensions(schema_));
+    // UX-12e, decision 1: where the table says the value is chosen from.
+    if (k == "string" && schema_.contains("choices_from")) {
+        const auto &from = schema_.at("choices_from");
+        if (!from.is_object() || choices_->model == nullptr) return result;
+        if (const auto ops = from.find("graph_nodes"); ops != from.end() && ops->is_array()) {
+            for (const auto &node : choices_->model->nodes(choices_->scope))
+                if (node.id != choices_->node &&
+                    std::ranges::any_of(*ops, [&](const Json &op) { return op.is_string() && op.get<std::string>() == node.op; }))
+                    result.push_back(node.id);
+            return result;
+        }
+        // The authoring context is the one reply Studio keeps (read once per
+        // reading of the document); another method lists nothing yet.
+        if (textOf(from, "rpc") == "get_render_authoring_context")
+            return graphParameterChoicesFromReply(choices_->model->renderAuthoringContext(),
+                                                  textOf(from, "key"), textOf(from, "field"));
+        return result;
+    }
     if (k == "shader" || hint_.starts_with("shader:")) {
         std::string stage = hint_.starts_with("shader:") ? hint_.substr(7) : std::string{};
         if (choices_->op == "render.compute") stage = "compute";
@@ -623,8 +893,19 @@ void GraphParameterEditor::fillCombo() {
     auto &parts = *parts_;
     if (parts.combo == nullptr) return;
     const QSignalBlocker block{parts.combo};
-    const bool string_kind = kind() == "string" && !hint_.starts_with("shader:");
     std::vector<std::string> choices = comboChoices();
+    if (parts.combo->isEditable()) {
+        // UX-12e, decision 1: the list, and the value as written (in it or not).
+        const auto current = set_ && value_.is_string() ? value_.get<std::string>() : std::string{};
+        parts.listed = choices;
+        parts.combo->clear();
+        for (const auto &choice : choices) parts.combo->addItem(qtext(choice));
+        parts.combo->setCurrentIndex(parts.combo->findText(qtext(current)));
+        parts.combo->setEditText(qtext(current));
+        showMarks();
+        return;
+    }
+    const bool string_kind = kind() == "string" && !hint_.starts_with("shader:");
     if (string_kind) {
         // A string Studio knows nothing of is typed.
         const bool known = choices_ != nullptr && choices_->strings &&
@@ -662,13 +943,19 @@ void GraphParameterEditor::fillCombo() {
 
 void GraphParameterEditor::refreshChoices(const Json &around) {
     around_ = around.is_object() ? around : Json::object();
-    if (parts_->combo != nullptr && kind() == "string") {
+    // UX-12e: what is being typed into a list's line is not taken from it.
+    if (parts_->combo != nullptr && kind() == "string" && !(parts_->combo->isEditable() && typing())) {
         const bool was = loading_;
         loading_ = true;
         fillCombo();
         loading_ = was;
     }
     for (const auto &[name, editor] : parts_->fields) editor->refreshChoices(around);
+    // UX-12e, decision 1: a list's rows (usage, format_candidates) and a
+    // union's shapes read their lists again too.
+    for (const auto &row : parts_->rows) row.editor->refreshChoices(around);
+    for (const auto &shape : parts_->shapes)
+        if (shape.editor != nullptr) shape.editor->refreshChoices(around);
 }
 
 void GraphParameterEditor::setValue(const Json &value) {
@@ -694,12 +981,14 @@ void GraphParameterEditor::load() {
         showExpression(expression);
     }
     const auto k = kind();
-    if (parts.spin != nullptr) {
+    if (parts.shape != nullptr) {
+        loadUnion(shown);
+    } else if (parts.spin != nullptr) {
         const QSignalBlocker block{parts.spin};
         parts.spin->setValue(shown.is_number() ? shown.get<double>() : 0.0);
         if (parts.slider != nullptr) {
-            const auto min = numberOf(schema_, "min").value_or(0.0);
-            const auto max = numberOf(schema_, "max").value_or(1.0);
+            const auto min = numberOf(schema_, "soft_min").value_or(numberOf(schema_, "min").value_or(0.0));
+            const auto max = numberOf(schema_, "soft_max").value_or(numberOf(schema_, "max").value_or(1.0));
             const QSignalBlocker block_slider{parts.slider};
             parts.slider->setValue(static_cast<int>(
                 std::lround((parts.spin->value() - min) / (max - min) * parts.slider_steps)));
@@ -746,6 +1035,7 @@ void GraphParameterEditor::load() {
             parts.text->setText(shown.is_null() ? QString{} : qtext(shown.dump()));
     }
     showReset();
+    showMarks();
     loading_ = was;
 }
 
@@ -755,6 +1045,20 @@ Json GraphParameterEditor::widgetValue() const {
     if (parts.fx != nullptr && parts.fx->isChecked()) {
         const auto text = parts.expression->text().trimmed().toStdString();
         return text.empty() ? Json{} : Json{{"$expr", text}};
+    }
+    // UX-12e, decision 3: the shape picked -- its constant, or its field.
+    if (parts.shape != nullptr) {
+        const auto index = parts.shape->currentIndex();
+        if (index < 0 || static_cast<std::size_t>(index) >= parts.shapes.size()) return Json{};
+        const auto &shape = parts.shapes[static_cast<std::size_t>(index)];
+        if (shape.editor == nullptr) return shape.constant;
+        auto value = shape.editor->value();
+        return value.is_null() ? itemFallback(shape.editor->schema()) : value;
+    }
+    // UX-12e, decision 1: what the line holds, picked or typed.
+    if (parts.combo != nullptr && parts.combo->isEditable()) {
+        const auto text = parts.combo->currentText().trimmed().toStdString();
+        return text.empty() ? Json{} : Json(text);
     }
     if (parts.spin != nullptr) {
         if (k == "integer") return static_cast<std::int64_t>(std::llround(parts.spin->value()));
@@ -822,6 +1126,7 @@ void GraphParameterEditor::changed(bool continuous) {
     set_ = !value_.is_null();
     picked_ = true;
     showReset();
+    showMarks();
     if (edited_) edited_(continuous);
 }
 
@@ -849,8 +1154,9 @@ void GraphParameterEditor::showExpression(bool expression) {
 
 void GraphParameterEditor::importAsset() {
     if (choices_ == nullptr || choices_->project_root.empty()) return;
-    const auto extensions = assetParameterExtensions(choices_->op, textOf(schema_, "name"),
-                                                     hint_ + " " + textOf(schema_, "description"));
+    // UX-12e, decision 2: only the files the table says the parameter takes.
+    const auto extensions = assetParameterExtensions(schema_);
+    const auto asset_kind = textOf(schema_, "asset_kind");
     QStringList patterns;
     for (const auto &extension : extensions) {
         patterns << QStringLiteral("*") + qtext(extension);
@@ -866,21 +1172,46 @@ void GraphParameterEditor::importAsset() {
     if (!patterns.isEmpty()) dialog->setNameFilter(tr("Files (%1)").arg(patterns.join(QLatin1Char{' '})));
     if (auto *name = dialog->findChild<QLineEdit *>(QStringLiteral("fileNameEdit")))
         name->setObjectName(QStringLiteral("pelican.assetImportDialog.fileName"));
-    connect(dialog, &QFileDialog::fileSelected, this, [this, extensions](const QString &picked) {
+    connect(dialog, &QFileDialog::fileSelected, this, [this, extensions, asset_kind](const QString &picked) {
         const std::filesystem::path file{picked.toStdWString()};
         const auto root = choices_->project_root;
-        const auto folder =
-            root / "assets" /
-            (extensions.empty()                 ? "files"
-             : extensions.front() == ".wav"     ? "audio"
-             : extensions.front() == ".ktx2"    ? "images"
-                                                : "models");
-        std::error_code error;
-        std::filesystem::create_directories(folder, error);
-        const auto target = freeName(folder, file);
-        if (error || !std::filesystem::copy_file(file, target, error) || error) return;
-        const auto relative = target.lexically_relative(root).generic_u8string();
-        const auto reference = "project://" + std::string{relative.begin(), relative.end()};
+        // Only a file of the kinds the parameter takes.
+        if (!extensions.empty() &&
+            std::ranges::find(extensions, PelicanStudio::lower(file.extension().string())) == extensions.end())
+            return;
+        std::string reference;
+        if (asset_kind == "audio") {
+            // As the Sound list's Import... (UX-8): into assets/audio.
+            const auto imported = importProjectAudio(root, {file});
+            if (imported.references.empty()) return;
+            reference = imported.references.front();
+        } else if (asset_kind == "image" && PelicanStudio::lower(file.extension().string()) != ".jpg") {
+            // As the image's Initial contents (IA-1s): into assets/images.
+            const auto imported = importProjectImage(root, file);
+            if (imported.reference.empty() || imported.convert) return;
+            reference = "project://" + imported.reference;
+        } else {
+            const auto folder = root / "assets" /
+                                (asset_kind == "model"            ? "models"
+                                 : asset_kind == "image"          ? "images"
+                                 : asset_kind == "analysis_table" ? "analysis"
+                                                                  : "files");
+            std::error_code error;
+            std::filesystem::create_directories(folder, error);
+            const auto target = freeName(folder, file);
+            if (error || !std::filesystem::copy_file(file, target, error) || error) return;
+            // A baked table reads its record beside it (`<file>.import.json`).
+            if (asset_kind == "analysis_table") {
+                auto record = file;
+                record += ".import.json";
+                auto copied = target;
+                copied += ".import.json";
+                if (std::filesystem::exists(record, error))
+                    std::filesystem::copy_file(record, copied, error);
+            }
+            const auto relative = target.lexically_relative(root).generic_u8string();
+            reference = "project://" + std::string{relative.begin(), relative.end()};
+        }
         set_ = true;
         value_ = reference;
         load();
@@ -957,6 +1288,19 @@ const std::vector<OwnFields> &ownFields() {
         {"ui.visible", {"node"}},
     };
     return all;
+}
+
+// UX-12e, decision 1: whether an entry (or one under it) is chosen from an
+// RPC's reply.
+bool listsFromRpc(const Json &entry) {
+    if (entry.is_array()) return std::ranges::any_of(entry, [](const Json &each) { return listsFromRpc(each); });
+    if (!entry.is_object()) return false;
+    if (const auto from = entry.find("choices_from");
+        from != entry.end() && from->is_object() && from->contains("rpc"))
+        return true;
+    for (const char *under : {"fields", "items", "variants"})
+        if (const auto found = entry.find(under); found != entry.end() && listsFromRpc(*found)) return true;
+    return false;
 }
 
 } // namespace
@@ -1065,6 +1409,10 @@ void GraphCanvasParameterFields::showNode(const GraphCanvasNode *node, const std
         hide();
         return;
     }
+    // UX-12e, decision 1: the lists the authoring context gives, read once
+    // per reading of the document (not per field).
+    if (std::ranges::any_of(rows_, [](const Row &row) { return listsFromRpc(row.editor->schema()); }))
+        model_.askRenderAuthoringForChoices();
     connected_inputs_.clear();
     for (const auto &input : node->inputs)
         if (input.connected) connected_inputs_.push_back(input.port);

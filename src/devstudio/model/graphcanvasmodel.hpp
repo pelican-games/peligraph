@@ -1257,6 +1257,9 @@ class GraphCanvasModel {
     // UX-2: the context was asked for once for its render_target_vocabulary
     // (askRenderTargetVocabulary), on this connection.
     bool vocabulary_asked_ = false;
+    // UX-12e, decision 1: the document digest the context was last asked
+    // for by a parameter field (askRenderAuthoringForChoices).
+    std::string authoring_choices_digest_;
     // UX-2: the shaders a render pass's `shader` is picked from, handed over
     // by the canvas's owner (the Pass Editor's list: the project's and the
     // engine's).
@@ -2720,6 +2723,15 @@ class GraphCanvasModel {
     // `parameters_complete`: false when the op's parser reads more keys than
     // the table lists (render.image, the passes, render.compute).
     [[nodiscard]] bool operationParametersComplete(std::string_view op) const;
+    // UX-12e, decision 5 (engine CT-4): where a node of the op may stand --
+    // "anywhere", or "owned_instance" (only inside a definition an object's
+    // instance runs: pose.*, value.morph_weight). "anywhere" when the
+    // catalog does not say.
+    [[nodiscard]] std::string operationPlacement(std::string_view op) const;
+    // UX-12e, decision 1: get_render_authoring_context, asked for once per
+    // reading of the document by the fields whose choices it lists (its
+    // passes and targets move with the document), not once per field.
+    void askRenderAuthoringForChoices();
     // One top-level entry by name, or nullopt.
     [[nodiscard]] std::optional<nlohmann::json> parameterSchema(std::string_view op,
                                                                 std::string_view name) const;

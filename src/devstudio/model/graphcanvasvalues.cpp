@@ -592,6 +592,24 @@ bool GraphCanvasModel::operationParametersComplete(std::string_view op) const {
     return found != contract->end() && found->is_boolean() && found->get<bool>();
 }
 
+std::string GraphCanvasModel::operationPlacement(std::string_view op) const {
+    const auto *contract = operation(op);
+    if (contract == nullptr) return "anywhere";
+    const auto placement = textOf(*contract, "placement");
+    return placement.empty() ? std::string{"anywhere"} : placement;
+}
+
+void GraphCanvasModel::askRenderAuthoringForChoices() {
+    if (!connected_ || digest().empty() || authoring_choices_digest_ == digest()) return;
+    authoring_choices_digest_ = digest();
+    // The plan's own request (or the vocabulary's) on its way serves it.
+    if (std::ranges::any_of(reads_, [](const PendingRequest &pending) {
+            return pending.kind == RequestKind::Authoring;
+        }))
+        return;
+    read(RequestKind::Authoring, "get_render_authoring_context", Json::object());
+}
+
 std::optional<Json> GraphCanvasModel::parameterSchema(std::string_view op,
                                                       std::string_view name) const {
     const auto *contract = operation(op);

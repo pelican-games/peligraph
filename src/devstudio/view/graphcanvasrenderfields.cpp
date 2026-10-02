@@ -384,6 +384,13 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
     fixed_layout->addWidget(new QLabel(QStringLiteral("×"), fixed_row));
     fixed_layout->addWidget(height_, 1);
     fixed_layout->addWidget(height_expression_, 1);
+    // UX-12e, decision 4: kept, and marked, above the usual range.
+    size_unusual_ = new QLabel(tr("above the usual range"), fixed_row);
+    size_unusual_->setObjectName(imageFieldName(QStringLiteral("sizeUnusual")));
+    size_unusual_->setFont(studioSmallFont());
+    size_unusual_->setStyleSheet(QStringLiteral("color: #8a8a8a; font-style: italic;"));
+    size_unusual_->hide();
+    fixed_layout->addWidget(size_unusual_);
     form->addRow(QString{}, fixed_row);
     // IA-1s, decision 1: an image that starts from an image file can take
     // its size from it (no width, height or extent_scale).
@@ -434,11 +441,10 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
     form->addRow(caption(tr("Layers"), fields_), layers_row);
     mip_levels_ = new QSpinBox(fields_);
     mip_levels_->setObjectName(imageFieldName(QStringLiteral("mipLevels")));
-    mip_levels_->setRange(0, 16);
-    mip_levels_->setSpecialValueText(QStringLiteral("full"));
+    mip_levels_->setRange(1, 16);
     mip_levels_->setValue(1);
     mip_levels_->setKeyboardTracking(false);
-    mip_levels_->setToolTip(tr("Mip levels: 1 for none, \"full\" for the whole chain."));
+    mip_levels_->setToolTip(tr("Mip levels: 1 for none."));
     mip_levels_expression_ = new QLineEdit(fields_);
     mip_levels_expression_->setObjectName(imageFieldName(QStringLiteral("mipLevelsExpression")));
     mip_levels_expression_->setPlaceholderText(QStringLiteral("log2(256) + 1"));
@@ -448,6 +454,23 @@ GraphCanvasImageFields::GraphCanvasImageFields(GraphCanvasModel &model,
     auto *mips_row = new QWidget(fields_);
     auto *mips_layout = new QHBoxLayout(mips_row);
     mips_layout->setContentsMargins(0, 0, 0, 0);
+    // UX-12e, decision 3: the shape first -- a count, or the whole chain.
+    mip_shape_ = new QComboBox(mips_row);
+    mip_shape_->setObjectName(imageFieldName(QStringLiteral("mipLevelsShape")));
+    mip_shape_->addItem(tr("Count"), QStringLiteral("count"));
+    mip_shape_->addItem(tr("Full chain"), QStringLiteral("full"));
+    mip_shape_->setToolTip(tr("A number of mip levels, or the whole chain down to 1 × 1 "
+                              "(\"full\")."));
+    mips_layout->addWidget(mip_shape_);
+    connect(mip_shape_, &QComboBox::currentIndexChanged, this, [this] {
+        const bool full = mip_shape_->currentData().toString() == QLatin1String{"full"};
+        {
+            const QSignalBlocker block{mip_levels_};
+            if (full) mip_levels_->setValue(1);
+        }
+        showMipShape();
+        commitSize();
+    });
     mips_layout->addWidget(mip_levels_, 1);
     mips_layout->addWidget(mip_levels_expression_, 1);
     form->addRow(caption(tr("Mip levels"), fields_), mips_row);
@@ -670,7 +693,28 @@ void GraphCanvasImageFields::load(const Json &parameters) {
         const QSignalBlocker block{mip_levels_};
         const bool full = parameters.is_object() && parameters.contains("mip_levels") &&
                           parameters.at("mip_levels") == "full";
-        mip_levels_->setValue(full ? 0 : static_cast<int>(number("mip_levels", 1.0)));
+        mip_levels_->setValue(full ? 1 : static_cast<int>(number("mip_levels", 1.0)));
+        const QSignalBlocker block_shape{mip_shape_};
+        mip_shape_->setCurrentIndex(full ? 1 : 0);
+    }
+    {
+        // UX-12e, decision 4: the table's usual range for the size.
+        const auto soft_max = [&](const char *key) -> std::optional<double> {
+            const auto schema = model_.parameterSchema("render.image", key);
+            if (!schema || !schema->contains("soft_max") || !schema->at("soft_max").is_number())
+                return std::nullopt;
+            return schema->at("soft_max").get<double>();
+        };
+        const auto above = [&](const char *key) {
+            const auto limit = soft_max(key);
+            return fixed && limit && number(key, 0.0) > *limit;
+        };
+        const bool unusual = above("width") || above("height");
+        size_unusual_->setVisible(unusual);
+        if (const auto limit = soft_max("width"))
+            size_unusual_->setToolTip(tr("above the usual range (up to %1): the engine takes it, "
+                                         "but its own features stay within it")
+                                          .arg(*limit, 0, 'g', 10));
     }
     // UX-5d, decision 1: a size the document writes as {"$expr": ...}.
     const auto expression = [&](const char *key) -> std::optional<QString> {
@@ -1161,10 +1205,10 @@ void GraphCanvasImageFields::commitSize() {
     else if (layers_->value() > 1 || changed.contains("layers"))
         changed["layers"] = layers_->value();
     // UX-8, decision 12 (a): one mip level is what an image without the key
-    // has; 0 in the spin is the whole chain.
+    // has; Full chain (UX-12e) is "full".
     if (expression && !mip_levels_expression_->text().trimmed().isEmpty())
         changed["mip_levels"] = written(mip_levels_expression_, mip_levels_->value());
-    else if (mip_levels_->value() == 0)
+    else if (mip_shape_->currentData().toString() == QLatin1String{"full"})
         changed["mip_levels"] = "full";
     else if (mip_levels_->value() > 1 || changed.contains("mip_levels"))
         changed["mip_levels"] = mip_levels_->value();
@@ -1192,6 +1236,15 @@ void GraphCanvasImageFields::showSizeExpression(bool expression) {
     width_expression_->setEnabled(fixed);
     height_expression_->setEnabled(fixed);
     if (size_form_ != nullptr) size_form_->setRowVisible(size_expression_row_, expression);
+    showMipShape();
+}
+
+void GraphCanvasImageFields::showMipShape() {
+    // UX-12e, decision 3: the count's spin for Count only; neither behind f.
+    const bool expression = size_expression_toggle_->isChecked();
+    const bool full = mip_shape_->currentData().toString() == QLatin1String{"full"};
+    mip_shape_->setVisible(!expression);
+    mip_levels_->setVisible(!expression && !full);
 }
 
 void GraphCanvasImageFields::putSizeExpression(bool half) {

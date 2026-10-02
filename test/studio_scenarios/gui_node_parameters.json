@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_node_parameters",
-  "description": "UX-12a (engine CT-3): a Graph node's parameters are fields made from the catalog's table. From File > New Project > Blank: the palette's render.buffer is picked and its fields are the table's -- size an integer spin (64 typed goes into the document), lifetime a combo of its enum (transient picked, then Reset takes the key out and the engine's default applies), and -4 typed below the table's 0 is refused by the engine as graph.render_node_parameter_invalid@1, said in one sentence on the Graph's notice and under the size row (decision 4); 128 is taken after. The palette's value.trigger_clock's paused is a number field (1 typed). The palette's pose.clip_sample asks for what the table requires (decision 2): its rig by Import... (a rigged glTF written outside the project is copied into assets/models) and its clip among the rig's animations (Run); its fields are then the table's (decision 5): speed 2, loop off, start time 0.5. Nothing is JSON. Typed: the project folder and name, the palette filters, the glTF's path in the import dialog, and the numbers 64, -4, 128, 1, 2 and 0.5.",
+  "description": "UX-12a (engine CT-3): a Graph node's parameters are fields made from the catalog's table. From File > New Project > Blank: the palette's render.buffer is picked and its fields are the table's -- size an integer spin (64 typed goes into the document), lifetime a combo of its enum (transient picked, then Reset takes the key out and the engine's default applies), and -4 typed below the table's 0 is refused by the engine as graph.render_node_parameter_invalid@1, said in one sentence on the Graph's notice and under the size row (decision 4); 128 is taken after. The palette's value.trigger_clock's paused is a number field (1 typed). The palette's pose.clip_sample asks for what the table requires (decision 2): its rig by Import... (a rigged glTF written outside the project is copied into assets/models) and its clip among the rig's animations (Run); its fields are then the table's (decision 5): speed 2, loop off, start time 0.5. Nothing is JSON. Typed: the project folder and name, the palette filters, the glTF's path in the import dialog, and the numbers 64, -4, 128, 1, 2 and 0.5. UX-12e (engine CT-4): the palette's render.scalar picks its target from a combo of the graph's buffers (decision 1); a render.image's mip levels switch from Count to Full chain (decision 3); in the root the palette shows pose.clip_sample grey with New definition... at its row's end, which makes walk_pose, goes into it and opens the palette there on pose.clip_sample (decision 5). Typed besides: the filters render.buffer, render.scalar and render.image.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -483,9 +483,329 @@
       "enabled": true
     },
     {
-      "label": "New definition",
+      "label": "Add: the palette opens (render.buffer)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "timeout_ms": 10000,
+      "visible": true
+    },
+    {
+      "label": "the filter: render.buffer",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "render.buffer"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "render_buffer_2 is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_buffer_2",
+      "timeout_ms": 120000,
+      "visible": true
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "fit",
       "cmd": "action",
-      "name": "pelican.graphCanvas.newDefinition"
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick it",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node_header#render_buffer_2"
+    },
+    {
+      "label": "its host source",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasParameters.host_source",
+      "timeout_ms": 30000,
+      "visible": true
+    },
+    {
+      "label": "filled by the value graph each frame (runtime_f32, what a render.scalar writes)",
+      "cmd": "select",
+      "name": "pelican.graphCanvasParameters.host_source",
+      "text": "runtime_f32"
+    },
+    {
+      "label": "runtime_f32 is in the document",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[4].parameters.host_source",
+      "value": "runtime_f32",
+      "retry_ms": 60000
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "Add: the palette opens (render.scalar)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "timeout_ms": 10000,
+      "visible": true
+    },
+    {
+      "label": "the filter: render.scalar",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "render.scalar"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "UX-12e decision 1: the dialog asks for the target",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRequired",
+      "timeout_ms": 20000,
+      "visible": true
+    },
+    {
+      "label": "UX-12e decision 1: target picked from the graph's buffers, a combo",
+      "cmd": "select",
+      "name": "pelican.graphCanvasRequired.target",
+      "text": "render_buffer_2"
+    },
+    {
+      "label": "OK is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRequired.ok",
+      "timeout_ms": 10000,
+      "enabled": true
+    },
+    {
+      "label": "OK",
+      "cmd": "click",
+      "name": "pelican.graphCanvasRequired.ok"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRequired",
+      "timeout_ms": 20000,
+      "missing": true
+    },
+    {
+      "label": "render_scalar is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_scalar",
+      "timeout_ms": 120000,
+      "visible": true
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "what the root holds now (read in full)",
+      "cmd": "rpc",
+      "method": "get_graph_instances",
+      "params": {}
+    },
+    {
+      "label": "UX-12e decision 1: the scalar writes the buffer picked",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[6].parameters.target",
+      "value": "render_buffer_2",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "Add: the palette opens (render.image)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "timeout_ms": 10000,
+      "visible": true
+    },
+    {
+      "label": "the filter: render.image",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "render.image"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "render_image is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_image",
+      "timeout_ms": 120000,
+      "visible": true
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick the image",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node_header#render_image"
+    },
+    {
+      "label": "UX-12e decision 3: its mip levels are Count or Full chain",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.mipLevelsShape",
+      "timeout_ms": 30000,
+      "visible": true,
+      "text": "Count"
+    },
+    {
+      "label": "UX-12e decision 3: Full chain",
+      "cmd": "select",
+      "name": "pelican.graphCanvasImage.mipLevelsShape",
+      "text": "Full chain"
+    },
+    {
+      "label": "what the root holds now (read in full)",
+      "cmd": "rpc",
+      "method": "get_graph_instances",
+      "params": {}
+    },
+    {
+      "label": "UX-12e decision 3: mip_levels \"full\" is in the document",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[7].parameters.mip_levels",
+      "value": "full",
+      "retry_ms": 60000
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "timeout_ms": 120000,
+      "text": "Graph change saved."
+    },
+    {
+      "label": "the count's spin goes with Full chain",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasImage.mipLevels",
+      "timeout_ms": 30000,
+      "visible": false
+    },
+    {
+      "label": "the canvas takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "Add: the palette opens (pose.clip_sample)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "timeout_ms": 10000,
+      "visible": true
+    },
+    {
+      "label": "the filter: pose.clip_sample",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "pose.clip_sample"
+    },
+    {
+      "label": "UX-12e decision 5: in the root it is grey, with New definition... at its end",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteNeedsDefinition.pose.clip_sample",
+      "timeout_ms": 10000,
+      "visible": true
+    },
+    {
+      "label": "UX-12e decision 5: New definition... on its row",
+      "cmd": "click",
+      "name": "pelican.graphCanvasPaletteNeedsDefinition.pose.clip_sample"
+    },
+    {
+      "label": "the palette closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "timeout_ms": 10000,
+      "missing": true
     },
     {
       "label": "its name is offered",
@@ -521,28 +841,17 @@
       "contains": "walk_pose"
     },
     {
-      "label": "the canvas takes edits",
-      "cmd": "wait",
-      "name": "pelican.graphCanvasAddNode",
-      "timeout_ms": 120000,
-      "enabled": true
-    },
-    {
-      "label": "Add: the palette opens (pose.clip_sample)",
-      "cmd": "click",
-      "name": "pelican.graphCanvasAddNode"
-    },
-    {
-      "label": "the palette is on screen",
+      "label": "UX-12e decision 5: the palette opens again inside it",
       "cmd": "wait",
       "name": "pelican.graphCanvasPalette",
-      "timeout_ms": 10000,
+      "timeout_ms": 60000,
       "visible": true
     },
     {
-      "label": "the filter: pose.clip_sample",
-      "cmd": "type",
+      "label": "on pose.clip_sample",
+      "cmd": "wait",
       "name": "pelican.graphCanvasPaletteFilter",
+      "timeout_ms": 10000,
       "text": "pose.clip_sample"
     },
     {

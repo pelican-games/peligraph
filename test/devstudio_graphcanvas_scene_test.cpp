@@ -46,6 +46,8 @@
 #include <QGuiApplication>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QSlider>
+#include <QDialogButtonBox>
 #include <QRadioButton>
 #include <QTableWidget>
 #include <QTreeWidget>
@@ -11093,4 +11095,305 @@ TEST_CASE("UX-12a decision 4: graph.render_node_parameter_invalid@1 reads as one
     CHECK(tab.field<QLabel>("pelican.graphCanvasParameters.size.label")->styleSheet().contains(
         QStringLiteral("#d94c3d")));
     CHECK_FALSE(tab.field<QLabel>("pelican.graphCanvasParameters.element.problem")->isVisible());
+}
+
+// --- UX-12e (engine CT-4): the generic fields' remaining strings, assets,
+// unions, usual ranges and placement.
+
+namespace {
+
+Json ux12eDocument(const std::string &name) {
+    return Json{{"schema", "pelican.graph"},
+                {"version", 1},
+                {"definitions", Json::object()},
+                {"nodes", Json::array({{{"id", "ref"},
+                                        {"op", "render.target_ref"},
+                                        {"parameters", {{"name", name}}},
+                                        {"outputs", Json::array({"resource"})}},
+                                       {{"id", "voice"},
+                                        {"op", "audio.playback"},
+                                        {"parameters", {{"asset", "project://assets/audio/a.wav"}}},
+                                        {"outputs", Json::array({"voice"})}},
+                                       {{"id", "loud"},
+                                        {"op", "audio.volume"},
+                                        {"parameters", {{"target", "voice"}}},
+                                        {"outputs", Json::array()}}})}};
+}
+
+// The catalog's entry, as the engine's table gives it.
+Json ux12eSchema(const GraphCanvasModel &model, const char *op, const char *name) {
+    const auto schema = model.parameterSchema(op, name);
+    REQUIRE(schema.has_value());
+    return *schema;
+}
+
+} // namespace
+
+TEST_CASE("UX-12e decision 1: a string the table says is chosen from somewhere is an editable "
+          "combo of that list -- the authoring context read once per reading of the document, "
+          "the scope's nodes of the named ops -- and a name typed off the list is kept, marked",
+          "[devstudio][graph-canvas][scene][ux12e]") {
+    (void)application();
+    Ux2Tab tab{true};
+    tab.read(ux12eDocument("scene_color"), "ux12e-0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    const auto pick = [&](const char *id) {
+        tab.widget->scene().selectNode(id);
+        QCoreApplication::processEvents();
+    };
+    pick("ref");
+    tab.widget->poll();
+    REQUIRE(tab.reads("get_render_authoring_context") == 1);
+    tab.answer("get_render_authoring_context",
+               Json{{"render_targets", Json::array({{{"name", "scene_color"}}, {{"name", "scene_depth"}}})}});
+    tab.widget->poll();
+    QCoreApplication::processEvents();
+    auto *name = tab.field<QComboBox>("pelican.graphCanvasParameters.name");
+    CHECK(name->isEditable());
+    CHECK(ux2Items(*name) == QStringList{"scene_color", "scene_depth"});
+    CHECK(name->currentText() == QStringLiteral("scene_color"));
+    CHECK_FALSE(tab.field<QLabel>("pelican.graphCanvasParameters.name.unlisted")->isVisible());
+    // Not asked again for another field or the same one on this reading.
+    pick("voice");
+    pick("ref");
+    tab.widget->poll();
+    CHECK(tab.reads("get_render_authoring_context") == 1);
+
+    // Picked from the list: one set_node_parameters.
+    name = tab.field<QComboBox>("pelican.graphCanvasParameters.name");
+    CHECK(ux2Items(*name) == QStringList{"scene_color", "scene_depth"});
+    name->setCurrentIndex(name->findText(QStringLiteral("scene_depth")));
+    QCoreApplication::processEvents();
+    CHECK(tab.sent(1).at("parameters") == Json{{"name", "scene_depth"}});
+    tab.commit(ux12eDocument("scene_depth"), "ux12e-1");
+    pick("ref");
+    tab.widget->poll();
+    // Another reading of the document: asked once more.
+    CHECK(tab.reads("get_render_authoring_context") == 2);
+
+    // Typed, off the list: kept as typed, and marked.
+    name = tab.field<QComboBox>("pelican.graphCanvasParameters.name");
+    name->lineEdit()->setText(QStringLiteral("my_target"));
+    Q_EMIT name->lineEdit()->editingFinished();
+    QCoreApplication::processEvents();
+    CHECK(tab.sent(2).at("parameters") == Json{{"name", "my_target"}});
+    tab.commit(ux12eDocument("my_target"), "ux12e-2");
+    pick("ref");
+    CHECK(tab.field<QComboBox>("pelican.graphCanvasParameters.name")->currentText() ==
+          QStringLiteral("my_target"));
+    CHECK(tab.field<QLabel>("pelican.graphCanvasParameters.name.unlisted")->isVisible());
+
+    // A sound sink's target: the scope's voices (graph_nodes audio.playback).
+    pick("loud");
+    auto *target = tab.field<QComboBox>("pelican.graphCanvasParameters.target");
+    CHECK(target->isEditable());
+    CHECK(ux2Items(*target) == QStringList{"voice"});
+    CHECK(target->currentText() == QStringLiteral("voice"));
+}
+
+TEST_CASE("UX-12e decision 2: an asset parameter lists the project's files of the kinds its "
+          "table entry names, with Import... beside it",
+          "[devstudio][graph-canvas][scene][ux12e]") {
+    (void)application();
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_ux12e_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "assets");
+    for (const char *file : {"a.wav", "b.ogg", "hero.glb", "pic.png", "bands.ktx2", "notes.txt"})
+        std::ofstream{root / "assets" / file} << "x";
+    {
+        GraphCanvasModel model;
+        model.setConnected(true);
+        answer(model, ux3Document(), engineCatalog());
+        auto choices = std::make_shared<PelicanStudio::GraphParameterChoices>();
+        choices->model = &model;
+        choices->project_root = root;
+        const auto listed = [&](const char *op, const char *name) {
+            choices->op = op;
+            PelicanStudio::GraphParameterEditor editor{ux12eSchema(model, op, name), choices,
+                                                       QStringLiteral("asset"), {}};
+            auto *combo = editor.findChild<QComboBox *>(QStringLiteral("asset"));
+            REQUIRE(combo != nullptr);
+            CHECK(editor.findChild<QPushButton *>(QStringLiteral("asset.import")) != nullptr);
+            return ux2Items(*combo);
+        };
+        CHECK(PelicanStudio::assetParameterExtensions(ux12eSchema(model, "value.sample_table", "asset")) ==
+              std::vector<std::string>{".ktx2"});
+        CHECK(listed("value.sample_table", "asset") ==
+              QStringList{"(choose)", "project://assets/bands.ktx2"});
+        CHECK(listed("audio.playback", "asset") ==
+              QStringList{"(choose)", "project://assets/a.wav", "project://assets/b.ogg"});
+        CHECK(listed("pose.clip_sample", "rig") == QStringList{"(choose)", "project://assets/hero.glb"});
+        // A field of an object: render.image's initial contents, images only.
+        choices->op = "render.image";
+        PelicanStudio::GraphParameterEditor initial{ux12eSchema(model, "render.image", "initial"), choices,
+                                                    QStringLiteral("initial"), {}};
+        auto *asset = initial.findChild<QComboBox *>(QStringLiteral("initial.asset"));
+        REQUIRE(asset != nullptr);
+        CHECK(ux2Items(*asset) ==
+              QStringList{"(choose)", "project://assets/bands.ktx2", "project://assets/pic.png"});
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+TEST_CASE("UX-12e decision 3: a union is a combo of its shapes picked from the value's type -- "
+          "ray_query Off / On / Custom, mip_levels Count / Full chain, a sample row Index / Name",
+          "[devstudio][graph-canvas][scene][ux12e]") {
+    (void)application();
+    GraphCanvasModel model;
+    model.setConnected(true);
+    answer(model, ux3Document(), engineCatalog());
+    auto choices = std::make_shared<PelicanStudio::GraphParameterChoices>();
+    choices->model = &model;
+
+    PelicanStudio::GraphParameterEditor ray{ux12eSchema(model, "render.fullscreen", "ray_query"), choices,
+                                            QStringLiteral("rq"), {}};
+    auto *shape = ray.findChild<QComboBox *>(QStringLiteral("rq"));
+    REQUIRE(shape != nullptr);
+    CHECK(ux2Items(*shape) == QStringList{"Off", "On", "Custom"});
+    // Not written: the engine's default, false.
+    CHECK(shape->currentText() == QStringLiteral("Off"));
+    ray.setValue(Json{{"acceleration_structure", "tlas"}});
+    CHECK(shape->currentText() == QStringLiteral("Custom"));
+    CHECK_FALSE(ray.findChild<QWidget *>(QStringLiteral("rq.object.editor"))->isHidden());
+    int edits = 0;
+    ray.setEdited([&](bool) { ++edits; });
+    shape->setCurrentIndex(shape->findText(QStringLiteral("On")));
+    CHECK(edits == 1);
+    CHECK(ray.value() == true);
+    CHECK(ray.findChild<QWidget *>(QStringLiteral("rq.object.editor"))->isHidden());
+
+    PelicanStudio::GraphParameterEditor mips{ux12eSchema(model, "render.image", "mip_levels"), choices,
+                                             QStringLiteral("mips"), {}};
+    auto *mip_shape = mips.findChild<QComboBox *>(QStringLiteral("mips"));
+    REQUIRE(mip_shape != nullptr);
+    CHECK(ux2Items(*mip_shape) == QStringList{"(none)", "Count", "Full chain"});
+    mips.setValue(4);
+    CHECK(mip_shape->currentText() == QStringLiteral("Count"));
+    CHECK(mips.findChild<QDoubleSpinBox *>(QStringLiteral("mips.integer"))->value() == 4.0);
+    mip_shape->setCurrentIndex(mip_shape->findText(QStringLiteral("Full chain")));
+    CHECK(mips.value() == "full");
+    mips.setValue("full");
+    CHECK(mip_shape->currentText() == QStringLiteral("Full chain"));
+    mip_shape->setCurrentIndex(mip_shape->findText(QStringLiteral("Count")));
+    CHECK(mips.value() == 1);
+
+    PelicanStudio::GraphParameterEditor row{ux12eSchema(model, "value.sample_table", "row"), choices,
+                                            QStringLiteral("row"), {}};
+    auto *row_shape = row.findChild<QComboBox *>(QStringLiteral("row"));
+    REQUIRE(row_shape != nullptr);
+    CHECK(ux2Items(*row_shape) == QStringList{"Index", "Name"});
+    row.setValue("rms");
+    CHECK(row_shape->currentText() == QStringLiteral("Name"));
+    CHECK(row.findChild<QLineEdit *>(QStringLiteral("row.string"))->text() == QStringLiteral("rms"));
+}
+
+TEST_CASE("UX-12e decision 4: a number's slider goes up to the table's soft_max, the spin past it, "
+          "and a value above it is marked",
+          "[devstudio][graph-canvas][scene][ux12e]") {
+    (void)application();
+    GraphCanvasModel model;
+    model.setConnected(true);
+    answer(model, ux3Document(), engineCatalog());
+    auto choices = std::make_shared<PelicanStudio::GraphParameterChoices>();
+    choices->model = &model;
+    PelicanStudio::GraphParameterEditor width{ux12eSchema(model, "render.image", "width"), choices,
+                                              QStringLiteral("w"), {}};
+    auto *slider = width.findChild<QSlider *>(QStringLiteral("w.slider"));
+    REQUIRE(slider != nullptr);
+    auto *spin = width.findChild<QDoubleSpinBox *>(QStringLiteral("w"));
+    REQUIRE(spin != nullptr);
+    auto *unusual = width.findChild<QLabel *>(QStringLiteral("w.unusual"));
+    REQUIRE(unusual != nullptr);
+    width.setValue(8192);
+    CHECK(slider->value() == slider->maximum());
+    CHECK(unusual->isHidden());
+    width.setValue(16384);
+    CHECK(spin->value() == 16384.0);
+    CHECK_FALSE(unusual->isHidden());
+    CHECK(unusual->text() == QStringLiteral("above the usual range"));
+    width.setValue(512);
+    CHECK(unusual->isHidden());
+}
+
+TEST_CASE("UX-12e decision 5: in the root the palette greys an op that needs an owned instance, "
+          "and its New definition... makes one, goes in and opens the palette there on that op",
+          "[devstudio][graph-canvas][scene][ux12e]") {
+    (void)application();
+    CHECK(PelicanStudio::graphLoopRefusalDescription({{"code", "graph.op_requires_owned_instance@1"},
+                                                      {"node", "clip"},
+                                                      {"op", "pose.clip_sample"}}) ==
+          "pose.clip_sample runs inside a definition attached to an object \xE2\x80\x94 make a "
+          "definition and place it there (graph.op_requires_owned_instance@1).");
+
+    Ux2Tab tab{false};
+    auto document = ux12aBufferDocument(Json{{"element", "float"}, {"size", 4}});
+    tab.read(document, "ux12e-p0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    CHECK(tab.widget->model().operationPlacement("pose.clip_sample") == "owned_instance");
+    CHECK(tab.widget->model().operationPlacement("value.add") == "anywhere");
+    const auto openPalette = [&] {
+        tab.field<QPushButton>("pelican.graphCanvasAddNode")->click();
+        QDialog *palette = nullptr;
+        for (int tick = 0; tick < 200 && palette == nullptr; ++tick) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+            palette = paletteOnScreen();
+        }
+        return palette;
+    };
+    auto *palette = openPalette();
+    REQUIRE(palette != nullptr);
+    auto *filter = palette->findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasPaletteFilter"));
+    auto *list = palette->findChild<QListWidget *>(QStringLiteral("pelican.graphCanvasPaletteList"));
+    REQUIRE(filter != nullptr);
+    REQUIRE(list != nullptr);
+    filter->setText(QStringLiteral("pose.clip_sample"));
+    REQUIRE(list->currentItem() != nullptr);
+    CHECK(list->currentItem()->text().contains(QStringLiteral("needs a definition")));
+    CHECK(list->currentItem()->toolTip().contains(QStringLiteral("New definition")));
+    auto *buttons = palette->findChild<QDialogButtonBox *>();
+    REQUIRE(buttons != nullptr);
+    CHECK_FALSE(buttons->button(QDialogButtonBox::Ok)->isEnabled());
+    auto *offer = palette->findChild<QToolButton *>(
+        QStringLiteral("pelican.graphCanvasPaletteNeedsDefinition.pose.clip_sample"));
+    REQUIRE(offer != nullptr);
+    // An op that stands anywhere is not marked.
+    filter->setText(QStringLiteral("value.add"));
+    REQUIRE(list->currentItem() != nullptr);
+    CHECK_FALSE(list->currentItem()->text().contains(QStringLiteral("needs a definition")));
+    filter->setText(QStringLiteral("pose.clip_sample"));
+    offer = palette->findChild<QToolButton *>(
+        QStringLiteral("pelican.graphCanvasPaletteNeedsDefinition.pose.clip_sample"));
+    REQUIRE(offer != nullptr);
+    offer->click();
+    QCoreApplication::processEvents();
+    QCoreApplication::processEvents();
+    CHECK(paletteOnScreen() == nullptr);
+
+    // UX-8's New definition... row, on a name Studio proposes.
+    auto *name = tab.field<QLineEdit>("pelican.graphCanvasDefinitionName");
+    REQUIRE(name->isVisible());
+    name->setText(QStringLiteral("walk"));
+    sendKey(name, Qt::Key_Return);
+    QCoreApplication::processEvents();
+    REQUIRE(tab.reads("edit_graph_document") == 1);
+    document["definitions"]["walk"] = Json{{"nodes", Json::array()}, {"outputs", Json::object()}};
+    tab.commit(document, "ux12e-p1");
+    palette = nullptr;
+    for (int tick = 0; tick < 200 && palette == nullptr; ++tick) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        palette = paletteOnScreen();
+    }
+    REQUIRE(palette != nullptr);
+    CHECK(tab.widget->model().currentScope() == "walk");
+    filter = palette->findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasPaletteFilter"));
+    list = palette->findChild<QListWidget *>(QStringLiteral("pelican.graphCanvasPaletteList"));
+    CHECK(filter->text() == QStringLiteral("pose.clip_sample"));
+    REQUIRE(list->currentItem() != nullptr);
+    CHECK(list->currentItem()->data(Qt::UserRole).toString() == QStringLiteral("pose.clip_sample"));
+    CHECK_FALSE(list->currentItem()->text().contains(QStringLiteral("needs a definition")));
+    CHECK(palette->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->isEnabled());
+    palette->reject();
+    QCoreApplication::processEvents();
 }

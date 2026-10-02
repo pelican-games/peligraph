@@ -962,7 +962,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 45> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 46> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -1020,6 +1020,11 @@ constexpr std::array<GraphLoopRefusalText, 45> GraphLoopRefusalTexts{{
     // UX-12a, decision 4 (CT-3): a value of the wrong kind, outside the
     // enum or the range; {why} is said from `reason` (see below).
     {"graph.render_node_parameter_invalid@1", "{node}.{parameter} must be {expected} ({why})"},
+    // UX-12e, decision 5 (CT-4): a pose (or a morph weight) reads the model
+    // of the object whose instance runs it; the root has none.
+    {"graph.op_requires_owned_instance@1",
+     "{op} runs inside a definition attached to an object \xE2\x80\x94 make a definition and "
+     "place it there"},
     // UX-8, decision 12 (c) (RS-15): the render.scalar sinks on one buffer
     // tile it from byte 0; `reason` says which way they do not.
     {"graph.render_scalar_layout_invalid@1",
