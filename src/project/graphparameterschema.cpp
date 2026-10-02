@@ -89,6 +89,20 @@ class P {
         schema_.choices_from = std::move(choices);
         return *this;
     }
+    // CT-5: the names at `key` in the import manifest of the asset the
+    // sibling parameter `parameter` names.
+    P &choicesFromAssetManifest(std::string parameter, std::string key) {
+        GraphParameterChoices choices;
+        choices.asset_parameter = std::move(parameter);
+        choices.key = std::move(key);
+        schema_.choices_from = std::move(choices);
+        return *this;
+    }
+    // CT-5: keeps only the choices whose `name` is one of `values`.
+    P &where(std::string name, std::vector<std::string> values) {
+        schema_.choices_from->where.emplace_back(std::move(name), std::move(values));
+        return *this;
+    }
     P &variant(const P &shape) {
         schema_.variants.push_back(shape.schema_);
         return *this;
@@ -132,13 +146,20 @@ constexpr const char *authoring_context = "get_render_authoring_context";
 constexpr double image_extent_soft_max = 8192.0;
 constexpr double image_mip_levels_soft_max = 14.0; // floor(log2(8192)) + 1
 
+// CT-5: what a render.scalar may write (renderingpassconfigregistration.cpp
+// publishes float32 values into a runtime_f32 buffer; lowerScalarGraph in
+// valuegraph.cpp refuses a buffer whose elements are not floats).
+const std::vector<std::string> render_scalar_target_elements{"float", "vec2", "vec3", "vec4", "mat4"};
+
 // A scene's model (model.cpp), which a pose's rig is checked against.
 P sceneModel(std::string name) { return asset(std::move(name)).assetOf("model", {".glb", ".gltf", ".vrm"}); }
 
 // pelican.render.*: a logical image type (resourceType in graphmodule.cpp).
 P imageType() {
     return object("type")
-        .field(string("semantic").required().describe("A semantic image type id, e.g. pelican.render.color_signal@1."))
+        .field(string("semantic").required()
+                   .choicesFrom("get_graph_catalog", "modules.types", "id").where("constructor", {"image"})
+                   .describe("A semantic image type id, e.g. pelican.render.color_signal@1."))
         .field(object("arguments").required().item(string("")).describe("The type's arguments, each an enum value "
                                                                           "as a string (the catalog's types list them)."))
         .describe("The image's logical type.");
@@ -188,10 +209,13 @@ P viewSelect() {
         .item(uint32("").expression())
         .describe("One view of the family: axis name to a non-negative index.");
 }
+// CT-5: the region tags the composed passes declare (a new one may be
+// written; the tag is the pass's own).
+P regionTag() { return string("").choicesFrom(authoring_context, "graphs.passes.declaration", "regions"); }
 P regionTags() {
-    return array("region_tags", string("")).describe("Region tags (merged with `regions`).");
+    return array("region_tags", regionTag()).describe("Region tags (merged with `regions`).");
 }
-P regions() { return array("regions", string("")).describe("Region tags, as the pass JSON names them."); }
+P regions() { return array("regions", regionTag()).describe("Region tags, as the pass JSON names them."); }
 P passSet() {
     return string("pass_set").choicesFrom(authoring_context, "graphs", "name")
         .describe("The pass family the pass joins.");
@@ -220,10 +244,15 @@ P resolutionDomain(const char *fallback) {
         .fallback(fallback)
         .describe("The extent domain the pass renders in.");
 }
+// CT-5: "scene" or a composed scene_acceleration_structures name
+// (vulkanrendercompilerprogram.cpp refuses any other).
+P accelerationStructure() {
+    return string("acceleration_structure").required().choicesFrom(authoring_context, "acceleration_structures");
+}
 P rasterRayQuery() {
     return union_("ray_query").fallback(false)
         .variant(boolean(""))
-        .variant(object("").field(string("acceleration_structure").required()))
+        .variant(object("").field(accelerationStructure()))
         .describe("true (the scene's acceleration structure) or {\"acceleration_structure\": \"<name>\"}.");
 }
 P inheritBindingsFrom() {
@@ -292,7 +321,8 @@ Table makeTable() {
     add(table, "value.sample_table", true,
         {asset("asset").required().assetOf("analysis_table", {".ktx2"})
              .describe("The baked table (a KTX2 with its .import.json beside it, e.g. bake_audio_analysis's)."),
-         union_("row").required().variant(uint32("")).variant(string(""))
+         union_("row").required().variant(uint32(""))
+             .variant(string("").choicesFromAssetManifest("asset", "source.metadata.layout.features"))
              .describe("The feature row: its index, or its name (\"rms\", \"peak\", \"band:3\").")});
     add(table, "value.playback", true,
         {mapping("source_begin", 0.0), mapping("source_end", 1.0), mapping("duration", 1.0), mapping("speed", 1.0),
@@ -322,7 +352,9 @@ Table makeTable() {
     // pelican.render: the publication sink (lowerScalarGraph).
     add(table, "render.scalar", true,
         {string("target").required().choicesFromGraph({"render.buffer", "render.attribute"})
-             .describe("The buffer it writes."),
+             .where("host_source", {"runtime_f32"}).where("element", render_scalar_target_elements)
+             .describe("The buffer it writes: a runtime_f32 buffer of float elements, as large as the sinks "
+                       "writing it."),
          array("value", number("")).describe("A vec2 .. vec4 written as 2 to 4 numbers; a scalar comes in on the "
                                              "value edge."),
          integer("offset").range(0.0, std::nullopt).describe("Where the values land in the buffer, in bytes (a "
@@ -431,7 +463,10 @@ Table makeTable() {
              .field(string("fragment").required())
              .field(shaderDefines())
              .required(),
-         passSchedule(), string("push_constants"), boolean("uses_light_data").fallback(false), json("raster_state"),
+         passSchedule(),
+         // CT-5: stringToFullscreenPushConstantData's names.
+         enumeration("push_constants", {"none", "camera_position", "projection_view"}).fallback("none"),
+         boolean("uses_light_data").fallback(false), json("raster_state"),
          rasterRayQuery(), loadOp("color_load_op"), storeOp("color_store_op"), loadOp("depth_load_op"),
          storeOp("depth_store_op"), clearColor(), clearColors(), resolutionDomain("unclassified"),
          inheritBindingsFrom(), viewFamily(), viewSelect(),
@@ -453,7 +488,7 @@ Table makeTable() {
         {object("ports").required().describe("Port name to its declaration."),
          shader("shader").required({"ray_tracing"}).describe("The compute shader's path."),
          json("ray_tracing").describe("A ray tracing pipeline (excludes shader)."),
-         object("ray_query").field(string("acceleration_structure").required()),
+         object("ray_query").field(accelerationStructure()),
          json("dispatch"),
          enumeration("schedule", {"per_frame", "per_view", "once"}).fallback("per_frame")
              .describe("When the task runs."),
@@ -672,13 +707,28 @@ nlohmann::ordered_json graphParameterSchemaJson(const GraphParameterSchema &para
     if (!parameter.asset_kind.empty()) result["asset_kind"] = parameter.asset_kind;
     if (!parameter.extensions.empty()) result["extensions"] = parameter.extensions;
     if (const auto &choices = parameter.choices_from) {
+        OrderedJson from;
         if (!choices->graph_ops.empty()) {
-            result["choices_from"] = OrderedJson{{"graph_nodes", choices->graph_ops}};
+            from = OrderedJson{{"graph_nodes", choices->graph_ops}};
+        } else if (!choices->asset_parameter.empty()) {
+            // CT-5: derivedAssetManifestPath: the manifest beside the asset.
+            from = OrderedJson{{"asset_manifest", {{"parameter", choices->asset_parameter},
+                                                   {"manifest", "<asset>.import.json"},
+                                                   {"key", choices->key}}}};
         } else {
-            OrderedJson from{{"rpc", choices->rpc}, {"key", choices->key}};
+            from = OrderedJson{{"rpc", choices->rpc}, {"key", choices->key}};
             if (!choices->field.empty()) from["field"] = choices->field;
-            result["choices_from"] = std::move(from);
         }
+        // CT-5: one value as a string, several as an array (one of them).
+        if (!choices->where.empty()) {
+            auto where = OrderedJson::object();
+            for (const auto &[name, values] : choices->where) {
+                if (values.size() == 1) where[name] = values.front();
+                else where[name] = values;
+            }
+            from["where"] = std::move(where);
+        }
+        result["choices_from"] = std::move(from);
     }
     if (parameter.items) result["items"] = itemJson(*parameter.items);
     if (!parameter.fields.empty()) {

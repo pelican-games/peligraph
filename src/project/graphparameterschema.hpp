@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Pelican {
@@ -49,11 +50,17 @@ std::string_view graphParameterKindName(GraphParameterKind kind);
 // `field` the member of each entry that holds the name (empty: the entries
 // are the names; an entry's field that is an array gives each of its
 // strings) -- or the ids of the graph's own nodes of the `graph_ops` ops.
+// CT-5: or the names an asset's import manifest lists: `asset_parameter` the
+// sibling parameter naming the asset, `key` the path in `<asset>.import.json`.
 struct GraphParameterChoices {
     std::string rpc;
     std::string key;
     std::string field;
     std::vector<std::string> graph_ops;
+    // CT-5: only the entries (an RPC's) or nodes (graph_ops: their
+    // parameters) whose member is one of the values; the first is the name.
+    std::vector<std::pair<std::string, std::vector<std::string>>> where;
+    std::string asset_parameter;
 };
 
 // CT-4: where a node of the op may stand. owned_instance: only inside a

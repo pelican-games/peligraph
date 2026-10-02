@@ -10,6 +10,7 @@
 #endif
 #include "../shader/raygrouplayout.hpp"
 #include "computetask.hpp"
+#include "framegraphbufferdefinition.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/vulkanviewplanning.hpp"
 #include "framegraphruntime.hpp"
@@ -1329,8 +1330,18 @@ void RegistrationStages::attachProgramGraphState(
                 throw std::runtime_error("unbound frame graph output: " + binding.target);
             const auto &buffer = dependencies[index].frame_graph_resources.definition(found->second);
             if (buffer.host_source != FrameGraphHostBufferSource::runtime_f32 ||
-                buffer.size != binding.element_count * sizeof(float))
-                throw std::runtime_error("incompatible frame graph output buffer: " + binding.target);
+                buffer.size != binding.element_count * sizeof(float)) {
+                // CT-5: by name, as partitionGraphDocument refuses a buffer of
+                // the graph on every edit. This one may be declared outside
+                // the graph; which sink wrote it is not known here.
+                nlohmann::json actual{{"host_source", buffer.host_source
+                    ? nlohmann::json(std::string{frameGraphHostBufferSourceName(*buffer.host_source)})
+                    : nlohmann::json(nullptr)}, {"size", buffer.size}};
+                throw GraphRegistryError("graph.render_scalar_target_incompatible@1",
+                    {{"target", binding.target},
+                     {"expected", {{"host_source", "runtime_f32"}, {"size", binding.element_count * sizeof(float)}}},
+                     {"actual", std::move(actual)}});
+            }
         }
     }
 }

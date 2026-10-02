@@ -117,6 +117,51 @@ OrderedJson withGraphRefusalDocument(OrderedJson details, std::string_view code,
     return details;
 }
 
+// CT-5: for each definition of the root, the root nodes that use it -- a
+// graph.instance (owned when it has an `owner`) or a graph.loop whose branch
+// runs it as a body (never owned: its copies stand in the root) -- and
+// whether every use is owned, so an op whose placement is owned_instance
+// (pose.*, value.morph_weight) may stand in it. A definition nothing uses
+// lists none and is owned_instances_only.
+OrderedJson graphDefinitionInstances(const Json &root) {
+    auto result = OrderedJson::object();
+    const auto definitions = root.find("definitions");
+    if (definitions == root.end() || !definitions->is_object()) return result;
+    for (const auto &[name, body] : definitions->items()) {
+        (void)body;
+        result[name] = {{"owned_instances_only", true}, {"instances", OrderedJson::array()}};
+    }
+    const auto use = [&](const std::string &definition, const Json &id, const char *op, bool owned) {
+        const auto found = result.find(definition);
+        if (found == result.end()) return;
+        (*found)["instances"].push_back({{"id", id}, {"op", op}, {"owned", owned}});
+        if (!owned) (*found)["owned_instances_only"] = false;
+    };
+    const auto nodes = root.find("nodes");
+    if (nodes == root.end() || !nodes->is_array()) return result;
+    for (const auto &node : *nodes) {
+        if (!node.is_object() || !node.contains("id")) continue;
+        const auto op = node.value("op", std::string{});
+        if (op == "graph.instance") {
+            const auto definition = node.find("definition");
+            if (definition != node.end() && definition->is_string())
+                use(definition->get<std::string>(), node.at("id"), "graph.instance", node.contains("owner"));
+        } else if (op == "graph.loop") {
+            const auto parameters = node.find("parameters");
+            if (parameters == node.end() || !parameters->is_object()) continue;
+            const auto branches = parameters->find("branches");
+            if (branches == parameters->end() || !branches->is_array()) continue;
+            std::set<std::string> bodies;
+            for (const auto &branch : *branches) {
+                const auto body = branch.is_object() ? branch.find("body") : branch.end();
+                if (body != branch.end() && body->is_string() && bodies.insert(body->get<std::string>()).second)
+                    use(body->get<std::string>(), node.at("id"), "graph.loop", false);
+            }
+        }
+    }
+    return result;
+}
+
 // Q-14e: the fields a typed render_pipeline_preflight_failed refusal carries,
 // added beside the ones a call site already has. Every refusal with that code
 // that is built from an exception goes through here, whichever way the
@@ -2552,6 +2597,15 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         {"formats", imageFormatNames()},
         {"usage", imageUsageFlagNames()},
         {"format_classes", OrderedJson::array({"scene", "display", "data", "explicit"})},
+        // CT-5: how a class with an argument is written, as
+        // resolveRenderTargetFormatClasses reads it: "explicit(<format>)",
+        // the format one of `formats`.
+        {"format_class_patterns",
+         OrderedJson::array({OrderedJson{
+             {"name", "explicit"},
+             {"form", "explicit(<format>)"},
+             {"argument_choices_from",
+              {{"rpc", "get_render_authoring_context"}, {"key", "render_target_vocabulary.formats"}}}}})},
     };
     // EL-4: each format's aspect, from its Vulkan format traits; `formats`
     // stays the list of names.
@@ -2567,6 +2621,16 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         view_families.push_back(provider.family_id);
     result["view_families"] = std::move(view_families);
     result["canonical_anchors"] = canonicalRenderPassAnchors();
+    // CT-5: the names a ray_query's acceleration_structure takes: "scene" and
+    // each composed scene_acceleration_structures entry
+    // (vulkanrendercompilerprogram.cpp refuses any other).
+    auto acceleration_structures = OrderedJson::array({"scene"});
+    if (const auto declared = resolved.config.find("scene_acceleration_structures");
+        declared != resolved.config.end() && declared->is_array())
+        for (const auto &entry : *declared)
+            if (entry.is_object() && entry.contains("name") && entry.at("name").is_string())
+                acceleration_structures.push_back(entry.at("name"));
+    result["acceleration_structures"] = std::move(acceleration_structures);
     // EL-1: the names a draw_loop branch's `when` and draw.variant take, from
     // what the draw-loop tables judge (MaterialDrawSubject): `id` is the
     // matching key `when.material` compares, `tags` what `when.tags` / `where`
@@ -2784,6 +2848,8 @@ OrderedJson RenderConfigEditorService::getGraphInstances(const Json &params) con
         // is already taken.
         {"nodes", std::move(nodes)},
         {"definitions", root.value("definitions", Json::object())},
+        // CT-5: who uses each definition (graphDefinitionInstances).
+        {"definition_instances", graphDefinitionInstances(root)},
         // N-6: the editor's own placement for the root scope. A definition's
         // travels inside its body, so this is the one that needs naming, and
         // reporting it here is what keeps the canvas from needing a read of
@@ -2801,11 +2867,21 @@ OrderedJson RenderConfigEditorService::editGraphInstances(const Json &params) {
     // edit_graph_document.
     return queueGraphRootEdit(params, digest, method,
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            // CT-5: the root a refusal is judged against, as on
+            // edit_graph_document: the edited one once the edit applied.
+            Json judged;
             try {
-                const auto edited = Pelican::editGraphInstances(Json::parse(candidate.bytes()), attached, detached);
+                judged = Json::parse(candidate.bytes());
+                const auto edited = Pelican::editGraphInstances(judged, attached, detached);
+                judged = edited;
                 (void)partitionGraphDocument(edited);
                 candidate = candidate.withRootValue("nodes", edited.at("nodes").dump(2));
                 return std::nullopt;
+            } catch (const GraphRegistryError &error) {
+                // CT-5: a named graph refusal keeps its code and fields, with
+                // CT-2's document, as edit_graph_document's does.
+                const auto named = graphRefusalInDocument(error, judged, dependencies_.source_reference);
+                return rejection(named.code(), named.what(), OrderedJson::parse(named.detail().dump()));
             } catch (const std::exception &error) {
                 return rejection("invalid_graph_attachment", error.what());
             }

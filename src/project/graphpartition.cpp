@@ -6,7 +6,9 @@
 
 #include <stdexcept>
 #include <algorithm>
+#include <cstdint>
 #include <limits>
+#include <map>
 #include <optional>
 #include <set>
 #include <utility>
@@ -262,6 +264,76 @@ void expandLoopValues(ExpandedGraphDocument &values, const ExpandedGraphDocument
         repoint(endpoint, {});
     }
 }
+
+// CT-5: a render.scalar writes float32 values into its buffer from the host
+// every frame, so a buffer of the graph it names must be host_source
+// runtime_f32 and exactly as large as all the sinks writing it -- what
+// renderingpassconfigregistration.cpp asks of every bound buffer on load,
+// said here by name on every edit. A buffer declared outside the graph is
+// left to that check. A buffer whose elements are not floats is
+// graph.render_scalar_type_mismatch@1's, and the sinks' offsets
+// graph.render_scalar_layout_invalid@1's (lowerScalarGraph, valuegraph.cpp).
+void checkRenderScalarTargets(const ExpandedGraphDocument &values, const ExpandedGraphDocument &rendering) {
+    std::map<std::string, const Json *, std::less<>> buffers;
+    for (const auto &node : rendering.nodes) {
+        const auto op = node.value("op", std::string{});
+        if (op == "render.buffer" || op == "render.attribute") buffers.emplace(node.at("id").get<std::string>(), &node);
+    }
+    struct Writers {
+        // The first authored sink (a `$upload/` one when there is none).
+        std::string node;
+        std::uint64_t bytes = 0;
+        // False when a sink's value is not 2 to 4 numbers, which
+        // lowerScalarGraph refuses: the total is not known.
+        bool counted = true;
+    };
+    std::vector<std::string> order;
+    std::map<std::string, Writers, std::less<>> targets;
+    for (const auto &node : values.nodes) {
+        if (node.value("op", std::string{}) != "render.scalar") continue;
+        const auto parameters = node.value("parameters", Json::object());
+        const auto target = parameters.find("target");
+        if (target == parameters.end() || !target->is_string()) continue;
+        const auto name = target->get<std::string>();
+        if (!buffers.contains(name)) continue;
+        auto [entry, inserted] = targets.try_emplace(name);
+        if (inserted) order.push_back(name);
+        auto &writers = entry->second;
+        const auto id = node.at("id").get<std::string>();
+        if (writers.node.empty() || (writers.node.starts_with('$') && !id.starts_with('$'))) writers.node = id;
+        const auto value = parameters.find("value");
+        if (value == parameters.end()) writers.bytes += sizeof(float); // The value edge's one float.
+        else if (value->is_array() && value->size() >= 2 && value->size() <= 4) writers.bytes += value->size() * sizeof(float);
+        else writers.counted = false;
+    }
+    static const std::set<std::string, std::less<>> floats{"float", "vec2", "vec3", "vec4", "mat4"};
+    for (const auto &name : order) {
+        const auto &writers = targets.at(name);
+        const auto parameters = buffers.at(name)->value("parameters", Json::object());
+        const auto element = parameters.value("element", std::string{});
+        if (!element.empty() && !floats.contains(element)) continue;
+        std::optional<std::string> host_source;
+        if (const auto found = parameters.find("host_source"); found != parameters.end() && found->is_string())
+            host_source = found->get<std::string>();
+        else if (const auto source = parameters.find("source");
+                 source != parameters.end() && source->is_object() && source->contains("pose_node"))
+            host_source = "runtime_f32"; // resolveGraphAttributeSources writes it.
+        std::optional<std::uint64_t> size;
+        if (const auto found = parameters.find("size"); found != parameters.end() && found->is_number_integer() &&
+                                                    found->get<std::int64_t>() >= 0)
+            size = found->get<std::uint64_t>();
+        const bool host_ok = host_source == "runtime_f32";
+        const bool size_ok = !size || !writers.counted || *size == writers.bytes;
+        if (host_ok && size_ok) continue;
+        Json expected{{"host_source", "runtime_f32"}};
+        if (writers.counted) expected["size"] = writers.bytes;
+        Json actual{{"host_source", host_source ? Json(*host_source) : Json(nullptr)}};
+        if (size) actual["size"] = *size;
+        throw GraphRegistryError("graph.render_scalar_target_incompatible@1",
+            {{"node", writers.node}, {"target", name}, {"expected", std::move(expected)},
+             {"actual", std::move(actual)}});
+    }
+}
 }
 
 GraphExecutionPartitions partitionGraphDocument(const Json &document) {
@@ -373,6 +445,7 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document,
         result.values.instance_inputs.emplace(key, input);
     }
     expandLoopValues(result.values, graph);
+    checkRenderScalarTargets(result.values, result.rendering);
     for (const auto &[port, endpoint] : graph.outputs.items()) {
         const auto type = output_types.at(port).constructor;
         const auto producer = domains.at(endpoint.at("node").get<std::string>());

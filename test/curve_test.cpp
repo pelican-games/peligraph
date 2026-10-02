@@ -1453,8 +1453,9 @@ TEST_CASE("CT-4 the catalog says where a value is chosen from, an asset's kind, 
     };
 
     // 1. Where a string's value is chosen from.
-    CHECK(parameter("render.scalar", "target").at("choices_from") ==
-          Json{{"graph_nodes", Json::array({"render.buffer", "render.attribute"})}});
+    // CT-5 adds `where` (the CT-5 case below).
+    CHECK(parameter("render.scalar", "target").at("choices_from").at("graph_nodes") ==
+          Json::array({"render.buffer", "render.attribute"}));
     CHECK(parameter("render.shadow_depth", "view_family").at("choices_from") == from("view_families"));
     CHECK(parameter("render.shadow_depth", "pass_set").at("choices_from") == from("graphs", "name"));
     CHECK(parameter("render.shadow_depth", "canonical_anchor").at("choices_from") == from("canonical_anchors"));
@@ -1489,7 +1490,9 @@ TEST_CASE("CT-4 the catalog says where a value is chosen from, an asset's kind, 
           Json::array({Json{{"kind", "bool"}},
                        Json{{"kind", "object"},
                             {"fields", Json::array({Json{{"name", "acceleration_structure"}, {"kind", "string"},
-                                                         {"required", true}}})}}}));
+                                                         {"required", true},
+                                                         // CT-5.
+                                                         {"choices_from", from("acceleration_structures")}}})}}}));
     const auto mip_levels = parameter("render.image", "mip_levels");
     CHECK(mip_levels.at("kind") == "union");
     CHECK(mip_levels.at("variants").at(0).at("kind") == "integer");
@@ -1571,6 +1574,131 @@ TEST_CASE("CT-4 the catalog says where a value is chosen from, an asset's kind, 
     std::tie(code, detail) = refusal(unowned);
     CHECK(code.empty());
 #endif
+}
+
+// CT-5: the rest of the table's string choices -- a condition on the graph's
+// nodes a render.scalar may write, the names an asset's manifest lists, the
+// catalog's image types, the composed region tags and acceleration
+// structures -- and a fullscreen pass's push_constants as the enum its
+// parser reads. A render.scalar writing a buffer of the graph that is not
+// runtime_f32, or not as large as its sinks, is refused by name when the
+// graph is partitioned (every edit and every load).
+TEST_CASE("CT-5 the catalog's remaining choices and a render.scalar writing an incompatible buffer",
+          "[curve][graph-module][graph-catalog][ct5]") {
+    using namespace Pelican;
+    using Json = nlohmann::json;
+    const auto catalog = Json(builtinGraphModuleRegistry().catalog());
+    const auto parameter = [&](std::string_view op, std::string_view name) {
+        for (const auto &module : catalog.at("modules"))
+            for (const auto &entry : module.at("operations"))
+                if (entry.at("op").get<std::string>() == std::string{op})
+                    for (const auto &listed : entry.at("parameters"))
+                        if (listed.at("name").get<std::string>() == std::string{name}) return listed;
+        FAIL(op << " lists no parameter " << name);
+        return Json{};
+    };
+    const auto context = [](const char *key, const char *field = nullptr) {
+        Json result{{"rpc", "get_render_authoring_context"}, {"key", key}};
+        if (field) result["field"] = field;
+        return result;
+    };
+
+    // 1. The buffers a render.scalar can write.
+    CHECK(parameter("render.scalar", "target").at("choices_from") ==
+          Json{{"graph_nodes", Json::array({"render.buffer", "render.attribute"})},
+               {"where", {{"host_source", "runtime_f32"},
+                          {"element", Json::array({"float", "vec2", "vec3", "vec4", "mat4"})}}}});
+    // 5. Strings whose names a list holds.
+    const auto acceleration_structure =
+        Json{{"name", "acceleration_structure"}, {"kind", "string"}, {"required", true},
+             {"choices_from", context("acceleration_structures")}};
+    CHECK(parameter("render.fullscreen", "ray_query").at("variants").at(1).at("fields") ==
+          Json::array({acceleration_structure}));
+    CHECK(parameter("render.compute", "ray_query").at("fields") == Json::array({acceleration_structure}));
+    CHECK(parameter("value.sample_table", "row").at("variants").at(1) ==
+          Json{{"kind", "string"},
+               {"choices_from", {{"asset_manifest", {{"parameter", "asset"},
+                                                     {"manifest", "<asset>.import.json"},
+                                                     {"key", "source.metadata.layout.features"}}}}}});
+    CHECK(parameter("render.image", "type").at("fields").at(0).at("choices_from") ==
+          Json{{"rpc", "get_graph_catalog"}, {"key", "modules.types"}, {"field", "id"},
+               {"where", {{"constructor", "image"}}}});
+    CHECK(parameter("render.target_ref", "type").at("fields").at(0).at("choices_from").at("key") == "modules.types");
+    for (const auto *op : {"render.fullscreen", "render.raster", "render.material_pass", "render.compute"}) {
+        INFO(op);
+        CHECK(parameter(op, "region_tags").at("items").at("choices_from") ==
+              context("graphs.passes.declaration", "regions"));
+        CHECK(parameter(op, "regions").at("items").at("choices_from") ==
+              context("graphs.passes.declaration", "regions"));
+    }
+    CHECK(parameter("render.shadow_depth", "region_tags").at("items").at("choices_from") ==
+          context("graphs.passes.declaration", "regions"));
+    const auto push_constants = parameter("render.fullscreen", "push_constants");
+    CHECK(push_constants.at("kind") == "enum");
+    CHECK(push_constants.at("enum") == Json::array({"none", "camera_position", "projection_view"}));
+    CHECK(push_constants.at("default") == "none");
+    // Not listed anywhere the engine reads: left a plain string.
+#if PELICAN_WITH_ANIMATION
+    CHECK_FALSE(parameter("pose.retarget", "profile").contains("choices_from"));
+#endif
+    CHECK_FALSE(parameter("draw.override", "defines").at("items").contains("choices_from"));
+    CHECK(parameter("render.attribute", "source").at("fields").at(3).at("name") == "semantic");
+    CHECK_FALSE(parameter("render.attribute", "source").at("fields").at(3).contains("choices_from"));
+    CHECK_THROWS_AS(checkGraphNodeParameterTypes("render.fullscreen",
+                        Json{{"id", "post"}, {"op", "render.fullscreen"},
+                             {"parameters", {{"push_constants", "camera"}}}}),
+                    GraphRegistryError);
+
+    // 1. The refusal: a buffer of the graph a render.scalar writes.
+    const auto document = [](Json buffer, Json value, const char *op = "render.buffer") {
+        return Json{{"schema", "pelican.graph"}, {"version", 1},
+                    {"nodes", Json::array({
+                        Json{{"id", "data"}, {"op", op}, {"parameters", std::move(buffer)},
+                             {"outputs", Json::array({"resource"})}},
+                        Json{{"id", "write"}, {"op", "render.scalar"},
+                             {"parameters", {{"target", "data"}, {"value", std::move(value)}}},
+                             {"outputs", Json::array()}}})},
+                    {"outputs", Json::object()}};
+    };
+    const auto refusal = [](const Json &authored) {
+        try {
+            (void)partitionGraphDocument(authored);
+        } catch (const GraphRegistryError &error) {
+            return std::pair{error.code(), error.detail()};
+        }
+        return std::pair{std::string{}, Json{}};
+    };
+    const Json pair = Json::array({1.0, 2.0});
+    auto [code, detail] = refusal(document({{"element", "float"}, {"size", 8}}, pair));
+    CHECK(code == "graph.render_scalar_target_incompatible@1");
+    CHECK(detail == Json{{"node", "write"}, {"target", "data"},
+                         {"expected", {{"host_source", "runtime_f32"}, {"size", 8}}},
+                         {"actual", {{"host_source", nullptr}, {"size", 8}}}});
+    std::tie(code, detail) =
+        refusal(document({{"element", "float"}, {"size", 8}, {"host_source", "scene_lights_v2"}}, pair));
+    CHECK(detail.at("actual").at("host_source") == "scene_lights_v2");
+    std::tie(code, detail) =
+        refusal(document({{"element", "vec4"}, {"size", 16}, {"host_source", "runtime_f32"}}, pair));
+    CHECK(code == "graph.render_scalar_target_incompatible@1");
+    CHECK(detail.at("expected") == Json{{"host_source", "runtime_f32"}, {"size", 8}});
+    CHECK(detail.at("actual") == Json{{"host_source", "runtime_f32"}, {"size", 16}});
+    // An attribute's size is its count times its element's stride.
+    std::tie(code, detail) = refusal(document(
+        {{"element", "float"}, {"domain", "vertex"}, {"count", 3}, {"host_source", "runtime_f32"}}, pair,
+        "render.attribute"));
+    CHECK(detail.at("actual") == Json{{"host_source", "runtime_f32"}, {"size", 12}});
+    // As large as its sinks: taken.
+    std::tie(code, detail) =
+        refusal(document({{"element", "float"}, {"size", 8}, {"host_source", "runtime_f32"}}, pair));
+    CHECK(code.empty());
+    // An integer buffer stays graph.render_scalar_type_mismatch@1's (the
+    // value graph's), and a buffer declared outside the graph the load's.
+    std::tie(code, detail) = refusal(document({{"element", "uint"}, {"size", 4}}, pair));
+    CHECK(code.empty());
+    auto outside = document({{"element", "float"}, {"size", 8}}, pair);
+    outside["nodes"][1]["parameters"]["target"] = "bloom.intensity";
+    std::tie(code, detail) = refusal(outside);
+    CHECK(code.empty());
 }
 
 TEST_CASE("a build without the animation unit rejects a pose document by name",

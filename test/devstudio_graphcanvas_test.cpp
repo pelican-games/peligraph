@@ -3844,8 +3844,11 @@ TEST_CASE("UX-8 decision 12: render.scalar's numbers are packed with the other s
           "buffer, and the engine's layout and port refusals read as sentences",
           "[studio][graph-canvas][ux8]") {
     Ux8Harness h;
+    // CT-5: what a render.scalar writes is a runtime_f32 buffer as large as
+    // its sinks (a's vec4 and b's vec2 once a grows: 24 bytes).
     h.document["nodes"].push_back({{"id", "params"}, {"op", "render.buffer"},
-                                   {"parameters", {{"element", "vec4"}, {"size", 32}}},
+                                   {"parameters", {{"element", "vec4"}, {"size", 24},
+                                                   {"host_source", "runtime_f32"}}},
                                    {"outputs", Json::array({"resource"})}});
     for (const char *id : {"a", "b"})
         h.document["nodes"].push_back(

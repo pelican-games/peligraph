@@ -547,8 +547,10 @@ void main() {
     invalid_binding["nodes"].push_back({{"id", "missing_buffer"}, {"op", "render.buffer"},
         {"parameters", {{"size", 8}, {"element", "float"}, {"host_source", "runtime_f32"}}},
         {"outputs", {"resource"}}});
+    // CT-5: an 8-byte buffer of the graph one float is written into, by name.
     REQUIRE_THROWS_WITH(loadRenderGraphVariantsFromConfigData(invalid_binding.dump()),
-        Catch::Matchers::ContainsSubstring("incompatible frame graph output buffer: missing_buffer"));
+        Catch::Matchers::ContainsSubstring("graph.render_scalar_target_incompatible@1") &&
+            Catch::Matchers::ContainsSubstring("\"target\":\"missing_buffer\""));
     REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() == generation);
     REQUIRE(std::abs(render() - 0.7f) < 0.00001f);
     weight(initial, 0.75f, 2);

@@ -9711,8 +9711,11 @@ TEST_CASE("UX-7 decision 5: render.scalar, value.constant and value.input ask fo
           "[devstudio][graph-canvas][scene][ux7]") {
     (void)application();
     auto document = ux3Document();
+    // CT-5: what a render.scalar writes is a runtime_f32 buffer as large as
+    // its sinks (the one float its value edge brings).
     document["nodes"].push_back({{"id", "params"}, {"op", "render.buffer"},
-                                 {"parameters", {{"element", "vec4"}, {"size", 16}}},
+                                 {"parameters", {{"element", "float"}, {"size", 4},
+                                                 {"host_source", "runtime_f32"}}},
                                  {"outputs", Json::array({"resource"})}});
     GraphCanvasModel model;
     model.setConnected(true);

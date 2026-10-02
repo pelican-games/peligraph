@@ -1529,6 +1529,163 @@ TEST_CASE("CT-4 an edit placing an owned-instance op at the root is refused by n
 #endif
 }
 
+// CT-5: a render.scalar writing a buffer of the graph that is not
+// runtime_f32, or not as large as the sinks writing it, is refused by name
+// through the editing ticket, with CT-2's document; nothing is written.
+TEST_CASE("CT-5 an edit writing a render.scalar into an incompatible buffer is refused by name",
+          "[render-config-editor][graph-composition][ct5]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    TemporaryConfig source{readBytes(fixture_path)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+    const auto saved = readBytes(source.path);
+    const auto edit = [&](Json buffer) {
+        const auto node = [](Json value) { return Json{{"op", "add_node"}, {"node", std::move(value)}}; };
+        return Json(service->editGraphDocument(
+            {{"base_source_digest", service->getGraphInstances(Json::object()).at("source_digest").at("hex")},
+             {"ops", Json::array({node({{"id", "data"}, {"op", "render.buffer"}, {"parameters", std::move(buffer)},
+                                        {"outputs", Json::array({"resource"})}}),
+                                  node({{"id", "write"}, {"op", "render.scalar"},
+                                        {"parameters", {{"target", "data"}, {"value", Json::array({1.0, 2.0})}}},
+                                        {"outputs", Json::array()}})})}}));
+    };
+    const auto refused = [&](Json buffer) {
+        const auto result = edit(std::move(buffer));
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(readBytes(source.path) == saved);
+        const auto error = result.at("error");
+        CHECK(error.at("code") == "graph.render_scalar_target_incompatible@1");
+        CHECK(error.at("node") == "write");
+        CHECK(error.at("target") == "data");
+        CHECK(error.at("document") == "project://passes/main.json");
+        CHECK_FALSE(error.contains("definition"));
+        return error;
+    };
+
+    // Not written from the host.
+    auto error = refused({{"element", "float"}, {"size", 8}});
+    CHECK(error.at("expected") == Json{{"host_source", "runtime_f32"}, {"size", 8}});
+    CHECK(error.at("actual") == Json{{"host_source", nullptr}, {"size", 8}});
+    // Larger than the vec2 written into it.
+    error = refused({{"element", "float"}, {"size", 16}, {"host_source", "runtime_f32"}});
+    CHECK(error.at("expected") == Json{{"host_source", "runtime_f32"}, {"size", 8}});
+    CHECK(error.at("actual") == Json{{"host_source", "runtime_f32"}, {"size", 16}});
+    // As the catalog's `where` and the sinks say: taken.
+    const auto taken = edit({{"element", "float"}, {"size", 8}, {"host_source", "runtime_f32"}});
+    INFO(taken.dump());
+    CHECK(taken.at("status") == "accepted");
+}
+
+// CT-5: graph.op_requires_owned_instance@1 names its document (and the
+// definition) on every editing path that can raise it: a node added inside a
+// definition an unowned instance runs, the same inside edit_batch; and
+// edit_graph_instances keeps a named graph refusal's code and document
+// (it said invalid_graph_attachment before).
+TEST_CASE("CT-5 an owned-instance op refused inside a definition names its document on every edit path",
+          "[render-config-editor][graph-composition][ct5]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    TemporaryConfig source{readBytes(fixture_path)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+    const auto saved = readBytes(source.path);
+    const auto digest = [&] {
+        return service->getGraphInstances(Json::object()).at("source_digest").at("hex").get<std::string>();
+    };
+    const auto rejected = [&](const Json &result) {
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(readBytes(source.path) == saved);
+        return result.at("error");
+    };
+    const Json unowned{{"id", "right"}, {"op", "graph.instance"}, {"definition", "gain_curve"},
+                       {"parameters", {{"gain", 1}, {"bias", 0}}}};
+    const Json weight{{"id", "weight"}, {"op", "value.morph_weight"}, {"parameters", {{"node", 0}, {"target", 0}}},
+                      {"outputs", Json::array({"value"})}};
+    const Json ops = Json::array({Json{{"op", "add_node"}, {"node", unowned}},
+                                  Json{{"op", "add_node"}, {"scope", "gain_curve"}, {"node", weight}}});
+
+    auto error = rejected(Json(service->editGraphDocument({{"base_source_digest", digest()}, {"ops", ops}})));
+    CHECK(error.at("code") == "graph.op_requires_owned_instance@1");
+    CHECK(error.at("node") == "right/weight");
+    CHECK(error.at("op") == "value.morph_weight");
+    CHECK(error.at("document") == "project://passes/main.json");
+    CHECK(error.at("definition") == "gain_curve");
+
+    error = rejected(Json(service->editBatch(
+        {{"base_source_digest", digest()},
+         {"edits", Json::array({Json{{"method", "edit_graph_document"}, {"params", {{"ops", ops}}}}})}})));
+    CHECK(error.at("code") == "graph.op_requires_owned_instance@1");
+    CHECK(error.at("node") == "right/weight");
+    CHECK(error.at("document") == "project://passes/main.json");
+    CHECK(error.at("definition") == "gain_curve");
+
+    auto again = unowned;
+    again["id"] = "left";
+    again["owner"] = {{"scene", "main"}, {"object", 42}};
+    error = rejected(Json(service->editGraphInstances(
+        {{"base_source_digest", digest()}, {"attach", Json::array({again})}})));
+    CHECK(error.at("code") == "graph.node_duplicate@1");
+    CHECK(error.at("node") == "left");
+    CHECK(error.at("document") == "project://passes/main.json");
+}
+
+// CT-5: get_graph_instances says, for each definition, which root nodes run
+// it and whether every one has an owner -- what an op of placement
+// owned_instance needs to stand in it. One nothing uses lists none.
+TEST_CASE("CT-5 get_graph_instances says which definitions only owned instances run",
+          "[render-config-editor][graph-composition][ct5]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    const auto uses = [](const std::string &bytes) {
+        TemporaryConfig source{bytes};
+        ActualCpuRenderRuntime runtime;
+        runtime.initialize(readBytes(source.path));
+        auto service = makeService(source, runtime);
+        return Json(service->getGraphInstances(Json::object())).at("definition_instances");
+    };
+    const Json left{{"id", "left"}, {"op", "graph.instance"}, {"owned", true}};
+    CHECK(uses(readBytes(fixture_path)) ==
+          Json{{"gain_curve", {{"owned_instances_only", true}, {"instances", Json::array({left})}}}});
+
+    auto document = Json::parse(readBytes(fixture_path));
+    document["nodes"].push_back({{"id", "right"}, {"op", "graph.instance"}, {"definition", "gain_curve"},
+                                 {"parameters", {{"gain", 1}, {"bias", 0}}}});
+    document["definitions"]["spare"] = {{"nodes", Json::array()}, {"outputs", Json::object()}};
+    CHECK(uses(document.dump(2)) ==
+          Json{{"gain_curve",
+                {{"owned_instances_only", false},
+                 {"instances", Json::array({left, Json{{"id", "right"}, {"op", "graph.instance"}, {"owned", false}}})}}},
+               {"spare", {{"owned_instances_only", true}, {"instances", Json::array()}}}});
+}
+
+// CT-5: the authoring context lists the acceleration structures a ray_query
+// may name ("scene" first) and how an explicit format class is written.
+TEST_CASE("CT-5 the authoring context lists acceleration structures and the explicit format class's form",
+          "[render-config-editor][graph-root][ct5]") {
+    TemporaryAnimgraphProject project;
+    writeBytes(project.render_config, graphRootFixture("main"));
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto context = Json(service->getRenderAuthoringContext(Json::object()));
+    REQUIRE(context.at("acceleration_structures").is_array());
+    CHECK(context.at("acceleration_structures").at(0) == "scene");
+    const auto &vocabulary = context.at("render_target_vocabulary");
+    CHECK(vocabulary.at("format_classes") == Json::array({"scene", "display", "data", "explicit"}));
+    CHECK(vocabulary.at("format_class_patterns") ==
+          Json::array({Json{{"name", "explicit"},
+                            {"form", "explicit(<format>)"},
+                            {"argument_choices_from",
+                             {{"rpc", "get_render_authoring_context"},
+                              {"key", "render_target_vocabulary.formats"}}}}}));
+}
+
 // CT-2: how a refused node's id finds its definition, and what a refusal
 // keeps. Only the document's structure is read: an instance's copy, a loop
 // body's template and an element's copy, and a body's own id.
