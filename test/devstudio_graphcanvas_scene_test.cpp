@@ -6802,6 +6802,30 @@ TEST_CASE("GL-1e the Graph tab sends a pass's input edit, its Undo reaches the r
     CHECK(notice->text().endsWith(
         QString::fromUtf8(" \xE2\x80\x94 the graph pass that draws it runs after this pass")));
 
+    // UX-12d, decision 5 (engine FR-3): a feature's target nobody writes is
+    // read by its code -- the outputs that could write it, not the phrase
+    // about the graph pass's order, though the message still says the frame
+    // planner's words and names an image a graph pass writes.
+    drop();
+    answer("get_edit_result",
+           Json{{"status", "rejected"},
+                {"committed", false},
+                {"error",
+                 {{"code", "feature.required_target_unwritten@1"},
+                  {"message", "Pass input target is not produced as an earlier output: shade__color"},
+                  {"feature", "sky_ambient"},
+                  {"target", "scene_depth"},
+                  {"type", {{"semantic", "pelican.render.depth@1"}, {"arguments", Json::object()}}},
+                  {"writer_candidates", Json::array({{{"node", "shade"},
+                                                      {"pass", "shade"},
+                                                      {"port", "depth"},
+                                                      {"resource", "shade__depth"}}})},
+                  {"document", "engine://features/sky_ambient.json"}}}});
+    CHECK(notice->toolTip().startsWith(QStringLiteral(
+        "feature.required_target_unwritten@1: sky_ambient reads scene_depth, which no pass writes "
+        "before it. Write it from shade.depth.")));
+    CHECK_FALSE(notice->toolTip().contains(QStringLiteral("runs after this pass")));
+
     // Committed: the tab says so, reads the document again, and its Undo
     // takes the edit back through the render edit history.
     drop();

@@ -908,37 +908,43 @@ TEST_CASE("UX-12b decision 1: a feature's required targets are offered before it
     REQUIRE(with_targets.isVisibleTo(&features));
     REQUIRE(with_targets.isEnabled());
 
-    // Add with targets: read again, then three edits, each on the revision
-    // the one before wrote.
+    // Add with targets: read again, then (UX-12d, decision 2) the targets,
+    // their references and the feature as one edit_batch.
     with_targets.click();
     ux12bDocumentRead(engine, Json::array({{{"name", "lit_color"}}}),
                       Json::array({{{"id", "scene_depth_ref"}, {"op", "render.image"}}}));
-    const auto targets = ux12bEdit(engine, "edit_render_targets", liveCommit(RootB));
-    CHECK(targets == Json{{"base_source_digest", RootA},
-                          {"ops", Json::array({{{"op", "add"},
-                                                {"target",
-                                                 {{"name", "scene_depth"},
-                                                  {"extent_scale", 1.0},
-                                                  {"format", "D32_SFLOAT"},
-                                                  {"format_class", "data"},
-                                                  {"usage", {"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"}}}}}})}});
-    const auto graph = ux12bEdit(engine, "edit_graph_document", liveCommit(RootC));
-    // Beside a node that already has the plain name.
-    CHECK(graph == Json{{"base_source_digest", RootB},
-                        {"ops", Json::array({{{"op", "add_node"},
+    const std::string RootD(64, 'd');
+    const auto batch = ux12bEdit(engine, "edit_batch", liveCommit(RootD));
+    CHECK(batch ==
+          Json{{"base_source_digest", RootA},
+               {"edits",
+                Json::array(
+                    {{{"method", "edit_render_targets"},
+                      {"params",
+                       {{"ops", Json::array({{{"op", "add"},
+                                              {"target",
+                                               {{"name", "scene_depth"},
+                                                {"extent_scale", 1.0},
+                                                {"format", "D32_SFLOAT"},
+                                                {"format_class", "data"},
+                                                {"usage", {"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"}}}}}})}}}},
+                     // Beside a node that already has the plain name.
+                     {{"method", "edit_graph_document"},
+                      {"params",
+                       {{"ops", Json::array({{{"op", "add_node"},
                                               {"scope", "root"},
                                               {"node",
                                                {{"id", "scene_depth_ref_2"},
                                                 {"op", "render.target_ref"},
                                                 {"parameters", {{"name", "scene_depth"}, {"type", DeviceDepth}}},
-                                                {"outputs", {"resource"}}}}}})}});
-    const std::string RootD(64, 'd');
-    const auto added = ux12bEdit(engine, "edit_render_features", liveCommit(RootD));
-    CHECK(added == Json{{"base_source_digest", RootC},
-                        {"operations", Json::array({{{"op", "add"}, {"feature", SkyFeature}}})}});
+                                                {"outputs", {"resource"}}}}}})}}}},
+                     {{"method", "edit_render_features"},
+                      {"params", {{"operations", Json::array({{{"op", "add"}, {"feature", SkyFeature}}})}}}}})}});
     CHECK(digest->current() == RootD);
     CHECK(notice.text() == QStringLiteral("Added sky_ambient with the render targets it needs."));
     ux12bFeaturesRead(engine, RootD);
+    // UX-12d, decision 4: what it draws is looked at; here nothing to show.
+    ux12bDocumentRead(engine, Json::array({{{"name", "lit_color"}}}), Json::array());
     CHECK(notice.text() == QStringLiteral("Added sky_ambient with the render targets it needs."));
 
     // The refusal of a plain Apply offers the same button.
@@ -959,8 +965,8 @@ TEST_CASE("UX-12b decision 1: a feature's required targets are offered before it
     CHECK(with_targets.isVisibleTo(&features));
 }
 
-TEST_CASE("UX-12b decision 2: a feature with no pass to go after is refused as such, what was "
-          "added for it is taken back, and Place offers the pass on the Graph tab",
+TEST_CASE("UX-12b decision 2: a feature with no pass to go after is refused as such, nothing "
+          "added for it stays, and Place offers the pass on the Graph tab",
           "[devstudio][ux12b][render-features][widget]") {
     // The model: FR-2's named refusal (develop 0b15fb62's shape), and an engine without it.
     const auto named = insertionAnchorMissing({{"code", "feature.insertion_anchor_missing@1"},
@@ -1002,30 +1008,20 @@ TEST_CASE("UX-12b decision 2: a feature with no pass to go after is refused as s
         "sky_ambient goes after deferred_lighting, which this pipeline does not have. "
         "Place Deferred lighting first.");
 
-    SECTION("an engine without FR-2: the composer's sentence, after the targets went in; they come out") {
+    SECTION("an engine without FR-2: the composer's sentence, for the batch that added the targets "
+            "with it; nothing is taken back, since nothing was written (UX-12d, decision 2)") {
         ux12bFeaturesRead(engine, RootA);
         ux12bPickCatalog(features);
         required<QPushButton>(features, "pelican.renderFeatures.add").click();
         ux12bDocumentRead(engine, Json::array(), Json::array());
         required<QPushButton>(features, "pelican.renderFeatures.addWithTargets").click();
         ux12bDocumentRead(engine, Json::array(), Json::array());
-        (void)ux12bEdit(engine, "edit_render_targets", liveCommit(RootB));
-        (void)ux12bEdit(engine, "edit_graph_document", liveCommit(RootC));
-        const std::string RootE(64, 'e'), RootF(64, 'f');
-        (void)ux12bEdit(engine, "edit_render_features",
+        (void)ux12bEdit(engine, "edit_batch",
                         ux12bRejected({{"code", "render_pipeline_preflight_failed"},
                                        {"message", "render feature pass insert anchor was not found: "
                                                    "deferred_lighting"}}));
-        // Taken back: the references, then the targets.
-        const auto references = ux12bEdit(engine, "edit_graph_document", liveCommit(RootE));
-        CHECK(references == Json{{"base_source_digest", RootC},
-                                 {"ops", Json::array({{{"op", "remove_node"}, {"scope", "root"}, {"node", "scene_depth_ref"}},
-                                                      {{"op", "remove_node"}, {"scope", "root"}, {"node", "lit_color_ref"}}})}});
-        const auto removed = ux12bEdit(engine, "edit_render_targets", liveCommit(RootF));
-        CHECK(removed == Json{{"base_source_digest", RootE},
-                              {"ops", Json::array({{{"op", "remove"}, {"name", "lit_color"}},
-                                                   {{"op", "remove"}, {"name", "scene_depth"}}})}});
         CHECK(notice.text().startsWith(line));
+        CHECK_FALSE(engine.next("edit_graph_document", 200));
     }
     SECTION("an engine with FR-2: insertion is looked at before anything is sent") {
         ux12bFeaturesRead(engine, RootA,
@@ -1098,8 +1094,9 @@ TEST_CASE("UX-12b decision 3: a snapshot's after is picked from the places the p
                          "takes it after post_ldr."));
 }
 
-TEST_CASE("UX-12b decision 4: a target_ref the engine expects another type of offers Fix, which "
-          "writes that type in one edit and sends the refused change again",
+TEST_CASE("UX-12b decision 4 / UX-12d decision 3: a target_ref the engine expects another type of "
+          "offers Fix, which writes that type and the reading ports' and sends the refused change "
+          "again, in one edit_batch",
           "[devstudio][ux12b][render-features][widget]") {
     auto array_depth = DeviceDepth;
     array_depth["arguments"]["topology"] = "two_d_array";
@@ -1139,18 +1136,46 @@ TEST_CASE("UX-12b decision 4: a target_ref the engine expects another type of of
                          {"op", "render.target_ref"},
                          {"parameters", {{"name", "shadow_map"}, {"type", DeviceDepth}}},
                          {"outputs", {"resource"}}};
+    // UX-12d, decision 3: the lighting pass reads it through a port that
+    // declares a 2D depth; another port, and a node of no declared ports,
+    // are left as they are.
+    const Json lighting{{"id", "deferred_lighting"},
+                        {"op", "render.fullscreen"},
+                        {"inputs",
+                         {{"shadow_map", {{"node", "shadow_map_ref"}, {"port", "resource"}}},
+                          {"albedo", {{"node", "gbuffer"}, {"port", "albedo"}}}}},
+                        {"parameters",
+                         {{"uses_light_data", true},
+                          {"ports",
+                           {{"shadow_map", {{"access", "read"}, {"type", DeviceDepth}}},
+                            {"albedo", {{"access", "read"}, {"type", OpaqueImage}}}}}}}};
+    const Json plain{{"id", "debug_view"},
+                     {"op", "render.fullscreen"},
+                     {"inputs", {{"image", {{"node", "shadow_map_ref"}, {"port", "resource"}}}}}};
     const auto graph = engine.next("get_graph_instances");
     REQUIRE(graph);
-    engine.answer(*graph, {{"nodes", Json::array({reference})}, {"definitions", Json::object()}});
+    engine.answer(*graph, {{"nodes", Json::array({reference, lighting, plain})}, {"definitions", Json::object()}});
     auto fixed = reference;
     fixed["parameters"]["type"] = array_depth;
-    const auto written = ux12bEdit(engine, "edit_graph_document", liveCommit(RootB));
-    CHECK(written == Json{{"base_source_digest", RootA},
-                          {"ops", Json::array({{{"op", "replace_node"}, {"scope", "root"}, {"node", fixed}}})}});
-    const auto again = ux12bEdit(engine, "edit_render_features", liveCommit(RootC));
-    CHECK(again.at("base_source_digest") == RootB);
-    CHECK(again.at("operations").at(0).at("op") == "set_parameters");
-    CHECK(again.at("operations").at(0).at("parameters") == Json{{"cascade_count", 3}});
+    auto lit = lighting.at("parameters");
+    lit["ports"]["shadow_map"]["type"] = array_depth;
+    // One edit_batch: the refused change first, then the type and the port
+    // in the same graph edit -- in two graph edits, or alone, it is refused.
+    const auto batch = ux12bEdit(engine, "edit_batch", liveCommit(RootB));
+    REQUIRE(batch.at("edits").size() == 2);
+    CHECK(batch.at("base_source_digest") == RootA);
+    const auto &again = batch.at("edits").at(0);
+    CHECK(again.at("method") == "edit_render_features");
+    CHECK(again.at("params").at("operations").at(0).at("op") == "set_parameters");
+    CHECK(again.at("params").at("operations").at(0).at("parameters") == Json{{"cascade_count", 3}});
+    CHECK(batch.at("edits").at(1) ==
+          Json{{"method", "edit_graph_document"},
+               {"params",
+                {{"ops", Json::array({{{"op", "replace_node"}, {"scope", "root"}, {"node", fixed}},
+                                      {{"op", "set_node_parameters"},
+                                       {"scope", "root"},
+                                       {"node", "deferred_lighting"},
+                                       {"parameters", lit}}})}}}});
     CHECK(required<QLabel>(features, "pelican.renderFeatures.notice").text() ==
           QStringLiteral("shadow_map_ref takes the type the engine expects."));
 }
@@ -1171,6 +1196,296 @@ TEST_CASE("UX-12b decision 5: material_route_unserved@1 is one sentence on what 
     CHECK(required<QLabel>(settings, "pelican.renderingSettings.notice").text() ==
           QStringLiteral("No forward material pass serves the route, so it stays on auto — add a "
                          "forward material pass first."));
+}
+
+// --- UX-12d (engine FR-3): a writer for a target no pass draws, edit_batch,
+// and a target the feature draws that nothing reads.
+
+const Json ColorSignal{{"semantic", "pelican.render.color_signal@1"},
+                       {"arguments", {{"range", "extended"}, {"reference", "scene"}, {"transfer", "linear"}}}};
+
+// The Blank-built deferred Graph (FR-3's fixture, cut down): the material
+// pass draws its depth and albedo into render.images of its own; the
+// lighting pass reads the albedo through the pass's port and draws its colour
+// into an image of its own.
+Json ux12dNodes(const Json &extra = Json::array()) {
+    auto nodes = Json::array(
+        {{{"id", "render_material_pass__albedo"}, {"op", "render.image"}, {"parameters", {{"type", ColorSignal}}}},
+         {{"id", "render_material_pass__depth"}, {"op", "render.image"}, {"parameters", {{"type", DeviceDepth}}}},
+         {{"id", "render_material_pass"},
+          {"op", "render.material_pass"},
+          {"inputs",
+           {{"albedo", {{"node", "render_material_pass__albedo"}, {"port", "resource"}}},
+            {"depth", {{"node", "render_material_pass__depth"}, {"port", "resource"}}}}}},
+         {{"id", "deferred_lighting__color"}, {"op", "render.image"}, {"parameters", {{"type", ColorSignal}}}},
+         {{"id", "deferred_lighting"},
+          {"op", "render.fullscreen"},
+          {"inputs",
+           {{"albedo", {{"node", "render_material_pass"}, {"port", "albedo"}}},
+            {"color", {{"node", "deferred_lighting__color"}, {"port", "resource"}}}}},
+          {"parameters",
+           {{"ports",
+             {{"albedo", {{"access", "read"}, {"type", ColorSignal}}},
+              {"color", {{"access", "write"}, {"attachment", "color"}, {"type", ColorSignal}}}}}}}}});
+    for (const auto &node : extra) nodes.push_back(node);
+    return nodes;
+}
+
+// sky_ambient as FR-3's list_render_features gives it.
+Json ux12dSky() {
+    return {{"required_targets",
+             Json::array({{{"name", "lit_color"}, {"type", OpaqueImage}, {"needs_writer", false}},
+                          {{"name", "scene_depth"},
+                           {"type", DeviceDepth},
+                           {"usage", {"SAMPLED"}},
+                           {"needs_writer", true}}})}};
+}
+
+TEST_CASE("UX-12d decision 1: a target no pass would draw is asked about with the output that "
+          "draws it, connected in the same edit; a refusal that names writers offers Write from",
+          "[devstudio][ux12d][render-features][widget]") {
+    // The model: the material pass's depth is the one depth output of the
+    // Graph; the lighting pass's albedo is read through a pass's port.
+    const auto writers = graphWriterCandidates(DeviceDepth, ux12dNodes());
+    REQUIRE(writers.size() == 1);
+    CHECK(writerCandidateLabel(writers[0]) == "render_material_pass.depth");
+    CHECK(writers[0].resource == "render_material_pass__depth");
+    const auto colours = graphWriterCandidates(OpaqueImage, ux12dNodes());
+    REQUIRE(colours.size() == 2);
+    CHECK(writerCandidateLabel(colours[1]) == "deferred_lighting.color");
+    const Json refusal{{"code", "feature.required_target_unwritten@1"},
+                       {"message", "sky_ambient reads scene_depth, which no pass writes"},
+                       {"feature", "sky_ambient"},
+                       {"target", "scene_depth"},
+                       {"type", DeviceDepth},
+                       {"writer_candidates",
+                        Json::array({{{"node", "render_material_pass"},
+                                      {"pass", "render_material_pass"},
+                                      {"port", "depth"},
+                                      {"resource", "render_material_pass__depth"}},
+                                     {{"node", "prepass"}, {"pass", "prepass"}, {"port", "depth"}, {"resource", "pre"}},
+                                     {{"pass", "opaque"}, {"port", "depth"}, {"resource", "opaque_depth"}}})},
+                       {"document", SkyFeature}};
+    const auto unwritten = requiredTargetUnwritten(refusal);
+    REQUIRE(unwritten);
+    REQUIRE(unwritten->candidates.size() == 3);
+    CHECK(writerCandidateLabel(unwritten->candidates[2]) == "opaque.depth");
+    CHECK(requiredTargetUnwrittenLine(*unwritten) ==
+          "sky_ambient reads scene_depth, which no pass writes before it. Write it from one of the "
+          "passes below.");
+
+    Transport engine;
+    RenderFeaturesWidget features{&engine.viewport};
+    features.show();
+    ux12bFeaturesRead(engine, RootA, ux12dSky());
+    auto &notice = required<QLabel>(features, "pelican.renderFeatures.notice");
+    auto &with_targets = required<QPushButton>(features, "pelican.renderFeatures.addWithTargets");
+    auto &writer = required<QComboBox>(features, "pelican.renderFeatures.writer");
+    auto &write_from = required<QPushButton>(features, "pelican.renderFeatures.writeFrom");
+
+    // Add: neither target is declared, and scene_depth needs a writer.
+    ux12bPickCatalog(features);
+    required<QPushButton>(features, "pelican.renderFeatures.add").click();
+    ux12bDocumentRead(engine, Json::array(), ux12dNodes());
+    CHECK(notice.text() == QStringLiteral("sky_ambient needs lit_color (color) and scene_depth (depth). "
+                                          "Add them with the feature, and write scene_depth from "
+                                          "render_material_pass.depth?"));
+    CHECK(with_targets.isVisibleTo(&features));
+    CHECK_FALSE(writer.isVisibleTo(&features)); // one output: nothing to pick
+
+    // Add with targets: the references and the writer's connection are one
+    // graph edit of the batch.
+    with_targets.click();
+    ux12bDocumentRead(engine, Json::array(), ux12dNodes());
+    const auto batch = ux12bEdit(engine, "edit_batch", liveCommit(RootB));
+    REQUIRE(batch.at("edits").size() == 3);
+    CHECK(batch.at("edits").at(0).at("method") == "edit_render_targets");
+    const auto &graph = batch.at("edits").at(1);
+    CHECK(graph.at("method") == "edit_graph_document");
+    const auto &ops = graph.at("params").at("ops");
+    REQUIRE(ops.size() == 3);
+    CHECK(ops.at(0).at("node").at("id") == "lit_color_ref");
+    CHECK(ops.at(1).at("node").at("id") == "scene_depth_ref");
+    CHECK(ops.at(2) == Json{{"op", "set_input"},
+                            {"node", "render_material_pass"},
+                            {"port", "depth"},
+                            {"source", {{"node", "scene_depth_ref"}, {"port", "resource"}}}});
+    CHECK(batch.at("edits").at(2).at("method") == "edit_render_features");
+    CHECK(notice.text() == QStringLiteral("Added sky_ambient with the render targets it needs; "
+                                          "render_material_pass.depth writes scene_depth."));
+    ux12bFeaturesRead(engine, RootB, ux12dSky());
+    ux12bDocumentRead(engine, Json::array(), ux12dNodes());
+
+    // A plain Apply refused with the writers the engine names (a pass of
+    // the rendering section is no graph port, and is not offered).
+    ux12bPickCatalog(features);
+    required<QPushButton>(features, "pelican.renderFeatures.add").click();
+    ux12bDocumentRead(engine, Json::array({{{"name", "lit_color"}}, {{"name", "scene_depth"}}}), ux12dNodes());
+    required<QPushButton>(features, "pelican.renderFeatures.apply").click();
+    (void)ux12bEdit(engine, "edit_render_features", ux12bRejected(refusal));
+    CHECK(notice.text().startsWith(QStringLiteral("sky_ambient reads scene_depth, which no pass writes")));
+    REQUIRE(writer.isVisibleTo(&features));
+    CHECK(writer.count() == 2);
+    REQUIRE(write_from.isVisibleTo(&features));
+    CHECK(write_from.text() == QStringLiteral("Write scene_depth from render_material_pass.depth"));
+    writer.setCurrentIndex(1);
+    CHECK(write_from.text() == QStringLiteral("Write scene_depth from prepass.depth"));
+    write_from.click();
+    const Json reference{{"id", "scene_depth_ref"},
+                         {"op", "render.target_ref"},
+                         {"parameters", {{"name", "scene_depth"}, {"type", DeviceDepth}}}};
+    ux12bDocumentRead(engine, Json::array({{{"name", "lit_color"}}, {{"name", "scene_depth"}}}),
+                      ux12dNodes(Json::array({reference})));
+    const auto again = ux12bEdit(engine, "edit_batch", liveCommit(RootC));
+    CHECK(again == Json{{"base_source_digest", RootB},
+                        {"edits",
+                         Json::array({{{"method", "edit_graph_document"},
+                                       {"params",
+                                        {{"ops", Json::array({{{"op", "set_input"},
+                                                               {"node", "prepass"},
+                                                               {"port", "depth"},
+                                                               {"source",
+                                                                {{"node", "scene_depth_ref"},
+                                                                 {"port", "resource"}}}}})}}}},
+                                      {{"method", "edit_render_features"},
+                                       {"params",
+                                        {{"operations",
+                                          Json::array({{{"op", "add"}, {"feature", SkyFeature}}})}}}}})}});
+}
+
+TEST_CASE("UX-12d decision 2: a refused edit_batch names the edit it met (batch_index), and "
+          "nothing is taken back",
+          "[devstudio][ux12d][render-features][widget]") {
+    CHECK(batchIndexOf({{"code", "x"}, {"batch_index", 1}}) == std::optional<std::size_t>{1});
+    CHECK_FALSE(batchIndexOf({{"code", "x"}}));
+    Transport engine;
+    RenderFeaturesWidget features{&engine.viewport};
+    features.show();
+    ux12bFeaturesRead(engine, RootA);
+    ux12bPickCatalog(features);
+    required<QPushButton>(features, "pelican.renderFeatures.add").click();
+    ux12bDocumentRead(engine, Json::array(), Json::array());
+    required<QPushButton>(features, "pelican.renderFeatures.addWithTargets").click();
+    ux12bDocumentRead(engine, Json::array(), Json::array());
+    const auto sent = engine.next("edit_batch");
+    REQUIRE(sent);
+    CHECK(sent->at("params").at("edits").size() == 3);
+    engine.answer(*sent, ux12bRejected({{"code", "graph.node_duplicate@1"},
+                                        {"message", "graph node already exists"},
+                                        {"node", "scene_depth_ref"},
+                                        {"batch_index", 1}}));
+    CHECK(required<QLabel>(features, "pelican.renderFeatures.notice").toolTip() ==
+          QStringLiteral("sky_ambient was refused at the Graph's target references: graph node "
+                         "already exists (graph.node_duplicate@1)"));
+    // The engine wrote nothing, so nothing is sent to take it back.
+    CHECK_FALSE(engine.next("edit_render_targets", 200));
+    CHECK_FALSE(engine.next("edit_graph_document", 50));
+    CHECK(required<QPushButton>(features, "pelican.renderFeatures.add").isEnabled());
+}
+
+TEST_CASE("UX-12d decision 4: a target the feature draws that nothing reads is offered to "
+          "present, which reads it, and the pass the feature goes after draws into it first",
+          "[devstudio][ux12d][render-features][widget]") {
+    const Json present_declaration{{"type", "fullscreen"},
+                                   {"input", {"deferred_lighting__color"}},
+                                   {"output", {{"color", {"display"}}, {"depth", nullptr}}},
+                                   {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}};
+    const auto context = [&](const std::string &digest) {
+        return Json{{"source_digest", {{"hex", digest}}},
+                    {"config_kind", "direct"},
+                    {"render_targets", Json::array({{{"name", "lit_color"}}, {{"name", "scene_depth"}}})},
+                    {"graphs",
+                     Json::array({{{"name", "main_render"},
+                                   {"passes",
+                                    Json::array({{{"name", "deferred_lighting"},
+                                                  {"declaration",
+                                                   {{"input", {"render_material_pass__albedo"}},
+                                                    {"output", {{"color", {"deferred_lighting__color"}}}}}}},
+                                                 {{"name", "sky_background"},
+                                                  {"declaration",
+                                                   {{"input", {"scene_depth"}},
+                                                    {"output", {{"color", {"lit_color"}}, {"depth", nullptr}}}}},
+                                                  {"provenance",
+                                                   {{"source", "feature"},
+                                                    {"provider_feature", "sky_ambient"},
+                                                    {"provider_reference", SkyFeature}}}},
+                                                 {{"name", "present"},
+                                                  {"declaration", present_declaration},
+                                                  {"editable_root_pass", true},
+                                                  {"root_declaration", present_declaration}}})}}})}};
+    };
+    const Json lit_ref{{"id", "lit_color_ref"},
+                       {"op", "render.target_ref"},
+                       {"parameters", {{"name", "lit_color"}, {"type", OpaqueImage}}}};
+    auto sky = ux12dSky();
+    sky["insertion"] = Json::array({{{"pass", "sky_background"}, {"anchor", "deferred_lighting"}, {"position", "after"}}});
+    sky["name"] = "sky_ambient";
+    const auto plan = showTargetPlan(sky, SkyFeature, context(RootB), ux12dNodes(Json::array({lit_ref})));
+    REQUIRE(plan);
+    CHECK(plan->target == "lit_color");
+    CHECK(plan->present == "present");
+    CHECK(plan->present_inputs == std::vector<std::string>{"lit_color"});
+    // The lighting pass's colour port declares a colour signal: the
+    // target_ref (the catalog's untyped image) takes that type first.
+    const Json writes = Json::array({{{"op", "set_node_parameters"},
+                                      {"scope", "root"},
+                                      {"node", "lit_color_ref"},
+                                      {"parameters", {{"name", "lit_color"}, {"type", ColorSignal}}}},
+                                     {{"op", "set_input"},
+                                      {"node", "deferred_lighting"},
+                                      {"port", "color"},
+                                      {"source", {{"node", "lit_color_ref"}, {"port", "resource"}}}}});
+    CHECK(plan->graph_ops == writes);
+    CHECK(showTargetLine(*plan) == "sky_ambient draws into lit_color, which nothing reads. Connect it to "
+                                   "present to see it.");
+    // Read by present: nothing to offer.
+    auto shown = context(RootB);
+    shown["graphs"][0]["passes"][2]["declaration"]["input"] = Json::array({"lit_color"});
+    CHECK_FALSE(showTargetPlan(sky, SkyFeature, shown, ux12dNodes(Json::array({lit_ref}))));
+
+    Transport engine;
+    RenderFeaturesWidget features{&engine.viewport};
+    features.show();
+    sky.erase("name");
+    ux12bFeaturesRead(engine, RootA, sky);
+    const auto read = [&](const std::string &digest) {
+        const auto asked = engine.next("get_render_authoring_context");
+        REQUIRE(asked);
+        engine.answer(*asked, context(digest));
+        const auto graph = engine.next("get_graph_instances");
+        REQUIRE(graph);
+        engine.answer(*graph, {{"nodes", ux12dNodes(Json::array({lit_ref}))}, {"definitions", Json::object()}});
+    };
+    // The targets are declared and the anchor is there: Add asks nothing, and
+    // Apply adds it.
+    ux12bPickCatalog(features);
+    required<QPushButton>(features, "pelican.renderFeatures.add").click();
+    read(RootA);
+    required<QPushButton>(features, "pelican.renderFeatures.apply").click();
+    (void)ux12bEdit(engine, "edit_render_features", liveCommit(RootB));
+    ux12bFeaturesRead(engine, RootB, sky);
+    read(RootB);
+    auto &notice = required<QLabel>(features, "pelican.renderFeatures.notice");
+    CHECK(notice.toolTip().endsWith(QStringLiteral(
+        "sky_ambient draws into lit_color, which nothing reads. Connect it to present to see it.")));
+    auto &show = required<QPushButton>(features, "pelican.renderFeatures.showTarget");
+    REQUIRE(show.isVisibleTo(&features));
+    CHECK(show.text() == QStringLiteral("Connect lit_color to present"));
+
+    // The press: the anchor's colour into the target (alone it composes),
+    // then present's inputs (the root's pass) on the revision that wrote.
+    show.click();
+    read(RootB);
+    const std::string RootD(64, 'd');
+    const auto writer = ux12bEdit(engine, "edit_graph_document", liveCommit(RootC));
+    CHECK(writer == Json{{"base_source_digest", RootB}, {"ops", writes}});
+    const auto present = ux12bEdit(engine, "edit_preset_pass", liveCommit(RootD));
+    CHECK(present.at("base_source_digest") == RootC);
+    CHECK(present.at("graph") == "main_render");
+    CHECK(present.at("pass_name") == "present");
+    CHECK(present.at("input") == Json::array({"lit_color"}));
+    CHECK(present.at("shader").at("fragment") == "engine://passthrough");
+    CHECK(notice.text() == QStringLiteral("present shows lit_color."));
 }
 
 } // namespace PelicanStudio

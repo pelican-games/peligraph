@@ -22,7 +22,7 @@ constexpr int TicketPollMs = 25;
 // The render edits: the ones that replace what documents hold (RD-1), and
 // the ones that create or remove files (RD-1b), which RU-1 could not take
 // back.
-constexpr std::array<std::string_view, 21> RecordedMethods{
+constexpr std::array<std::string_view, 22> RecordedMethods{
     "edit_preset_pass",
     "decompose_material_pass",
     // LP-4f2: a shipped graph template in place of a feature (GT-1).
@@ -49,6 +49,8 @@ constexpr std::array<std::string_view, 21> RecordedMethods{
     "edit_target_planning",
     // GL-4a: the verified mark verify_fold writes (FG-2), after it runs.
     "verify_fold",
+    // UX-12d: several edits in one ticket (FR-3), taken back as one.
+    "edit_batch",
 };
 
 std::string stringAt(const Json &object, const char *key) {
@@ -308,6 +310,16 @@ std::string RenderEditHistory::labelFor(const std::string &method, const Json &p
     }
     if (method == "edit_target_planning") return "Edit planning decisions";
     if (method == "verify_fold") return named("Verify ", stringAt(params, "group"), "Verify");
+    // UX-12d: a batch is named by its last edit the history names itself
+    // (the feature it adds, the change it sends again).
+    if (method == "edit_batch") {
+        const auto edits = params.is_object() ? params.value("edits", Json::array()) : Json::array();
+        if (edits.is_array())
+            for (auto edit = edits.rbegin(); edit != edits.rend(); ++edit)
+                if (edit->is_object() && recordsMethod(stringAt(*edit, "method")))
+                    return labelFor(stringAt(*edit, "method"), edit->value("params", Json::object()));
+        return "Edit batch";
+    }
     return method;
 }
 

@@ -9,6 +9,7 @@
 #include "graphcanvasvaluefields.hpp"
 #include "graphcanvasparameterfields.hpp"
 #include "graphcanvasposefields.hpp"
+#include "featurerefusalfix.hpp"
 #include "fullscreenshadertemplate.hpp"
 
 #include "inlineediteventfilter.hpp"
@@ -6024,12 +6025,18 @@ struct GraphCanvasWidget::Impl {
         if (auto known = knownRefusalDescription(code, message); !known.empty())
             line = code.empty() || known.find(code) != std::string::npos ? known
                                                                          : code + ": " + known;
+        // UX-12d, decision 5 (engine FR-3): a feature's target that no pass
+        // writes is refused by its code, not the frame planner's sentence,
+        // and names the outputs that could write it.
+        if (const auto unwritten = requiredTargetUnwritten(reason))
+            line = code + ": " + requiredTargetUnwrittenLine(*unwritten);
         // UX-5d, decision 3: only when a graph node's pass writes the image
         // (the frame plan says who does): not for a feature's task or a pass
-        // of the rendering section, which the phrase would misname.
-        if (message.find("Pass input target is not produced as an earlier output") !=
-                std::string::npos &&
-            model.graphWritesResourceNamedIn(message))
+        // of the rendering section, which the phrase would misname. The
+        // frame planner still says it of a graph pass's own input.
+        else if (message.find("Pass input target is not produced as an earlier output") !=
+                     std::string::npos &&
+                 model.graphWritesResourceNamedIn(message))
             line += passRunsAfterHint;
         const auto whole = code.empty() ? message : code + ": " + message;
         if (!message.empty() && line.find(whole) == std::string::npos) line += "\n" + whole;
