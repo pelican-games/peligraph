@@ -64,6 +64,13 @@ namespace Pelican {
 // layer} (a layer's depth ignored: it is composited into a group first).
 // `layer` names the layer by its `name`, or by its index when it has none.
 // Wrong types and unknown ports are the graph's own checks.
+// CV-5 adds what the ship policy writes and reads (canvasship.hpp):
+// canvas.image `alpha` -- "straight" (the default) or "premultiplied", a file
+// whose colour is premultiplied linear, sRGB-encoded (the frame the player
+// writes); a stack's `bake_scale` (a positive number, the pixels per stack
+// unit a static run is folded at) and a layer's `bake: "texture"` (fold the
+// run it is in even when it holds shapes and text only). The edit policy
+// draws them as it draws any image and ignores the other two.
 
 enum class CanvasShape : std::uint8_t { rect, ellipse };
 enum class CanvasPaint : std::uint8_t { fill, stroke };
@@ -342,6 +349,12 @@ struct CanvasGeneratedSource {
     std::string scope;
 };
 
+// CV-5: the lowering's policy (design section 3.3). `edit` keeps every
+// number in the tables, so a value edit does not change the shader's text;
+// `ship` makes the constants literals. Folding the static layers into images
+// is canvasship.hpp's, before the lowering.
+enum class CanvasLoweringPolicy : std::uint8_t { edit, ship };
+
 struct CanvasLoweringOptions {
     // Where an output's shader pair lives, relative to the project:
     // `<shader_directory>/<stem>.<stage>`, or with directory_per_stem
@@ -353,6 +366,11 @@ struct CanvasLoweringOptions {
     // CV-4: where a glyph atlas lives, by the same rule (the shader
     // compiler's cache key never sees it: it is not beside a shader).
     std::string asset_directory = "canvas_generated";
+    // CV-5: `ship` (pelican_cli canvas-lower --policy ship) folds into the
+    // shader each parameter every item of a kind in one draw holds as the
+    // same constant: the shader reads a literal, the bake table keeps only
+    // the rest. canvas.place draws are left as `edit` draws them.
+    CanvasLoweringPolicy policy = CanvasLoweringPolicy::edit;
 };
 
 struct CanvasLowering {
@@ -366,6 +384,8 @@ struct CanvasLowering {
     nlohmann::json items = nlohmann::json::array();
     nlohmann::json diagnostics = nlohmann::json::array();
     CanvasIr ir;
+    // CV-5: how many (draw, kind, parameter) the ship policy made literals.
+    std::size_t folded_constants = 0;
 };
 
 // CV-4: `read_asset` reads the fonts shape.text names (without it a

@@ -152,7 +152,9 @@ void registerCanvasGraphModule(GraphModuleRegistry &registry) {
                                                {"size", GraphParameterChange::rebuild},
                                                {"channel", GraphParameterChange::rebuild},
                                                {"outside", GraphParameterChange::rebuild},
-                                               {"sampler", GraphParameterChange::rebuild}};
+                                               {"sampler", GraphParameterChange::rebuild},
+                                               // CV-5: a folded run, premultiplied.
+                                               {"alpha", GraphParameterChange::rebuild}};
     auto from_image_inputs = ports({"offset.x", "offset.y"});
     from_image_inputs.emplace("image", GraphInputContract{exactLogicalTypePattern(*types, image)});
     auto from_image = declared(from_image_inputs, {{"layer", layer}}, GraphParameterChange::value);
