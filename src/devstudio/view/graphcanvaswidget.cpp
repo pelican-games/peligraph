@@ -4891,6 +4891,9 @@ struct GraphCanvasWidget::Impl {
     // shaders (decision 2), picked rather than typed.
     GraphCanvasImageFields *image_fields = nullptr;
     GraphCanvasPassFields *pass_fields = nullptr;
+    // UX-12b, decision 2: the pass placeNamedFullscreenPass added, whose
+    // New... opens on the template of its name once its fields show it.
+    std::string offer_template_node;
     // EL-5s: a compute node's Shader and what the engine could not read.
     GraphCanvasComputeFields *compute_fields = nullptr;
     // GL-3a: the root's fold groups -- drawn over the canvas, picked by
@@ -6132,6 +6135,7 @@ struct GraphCanvasWidget::Impl {
         dispatch();
         tellPlanCommit();
         revealPending();
+        placePending();
         scopePending();
         // GL-1e: an edit refused for a moved document, once the context
         // read after it has arrived.
@@ -6160,6 +6164,28 @@ struct GraphCanvasWidget::Impl {
         if (plan_commit_action) plan_commit_action();
     }
 
+    // UX-12b, decision 2: a fullscreen pass named `id` in the root (added,
+    // unless there is one), picked, its New... opened on the template of
+    // that name; and one asked for while the tab could not edit.
+    std::string pending_place;
+    bool placeNamed(const std::string &id) {
+        model.selectScope({});
+        const auto nodes = model.nodes({});
+        const bool there = std::ranges::any_of(nodes, [&](const GraphCanvasNode &drawn) {
+            return drawn.id == id && drawn.op == "render.fullscreen";
+        });
+        if (!there && !scene->addFromPalette(std::string{}, "render.fullscreen", std::string{},
+                                             nlohmann::json{{"id", id}}))
+            return false;
+        offer_template_node = id;
+        pending_reveal = id;
+        revealPending();
+        return true;
+    }
+    void placePending() {
+        if (pending_place.empty() || !model.canEdit()) return;
+        (void)placeNamed(std::exchange(pending_place, {}));
+    }
     // LP-4e: a root node another panel made, shown once it is here.
     std::string pending_reveal;
     bool revealPending() {
@@ -7645,6 +7671,9 @@ struct GraphCanvasWidget::Impl {
         if (found->op == "render.fullscreen" || found->op == "render.raster") refreshShaderChoices();
         image_fields->showNode(&*found, scope);
         pass_fields->showNode(&*found, scope);
+        if (!offer_template_node.empty() &&
+            pass_fields->offerTemplate(offer_template_node, offer_template_node))
+            offer_template_node.clear();
         compute_fields->showNode(&*found, scope);
         place_fields->showNode(&*found, scope);
         // UX-8: a curve's keys, a playback's map, a scalar's numbers, a
@@ -8090,6 +8119,18 @@ void GraphCanvasWidget::setFoldedExpandActions(
     std::function<void(const QString &feature)> replace) {
     impl_->decompose_action = std::move(decompose);
     impl_->replace_action = std::move(replace);
+}
+
+bool GraphCanvasWidget::placeNamedFullscreenPass(const QString &name) {
+    const auto id = name.toStdString();
+    if (id.empty()) return false;
+    // The document is being read or an edit is in flight (the Features
+    // panel's own edits move it): placed once the tab can edit again.
+    if (!impl_->model.canEdit()) {
+        impl_->pending_place = id;
+        return true;
+    }
+    return impl_->placeNamed(id);
 }
 
 bool GraphCanvasWidget::revealNode(const QString &node) {

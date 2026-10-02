@@ -2,6 +2,7 @@
 
 #include "panelhelp.hpp"
 #include "renderconfigdigest.hpp"
+#include "featurerefusalfix.hpp"
 #include "rendereditcompletion.hpp"
 #include "studiotheme.hpp"
 #include "passforms/shaderdefinesform.hpp"
@@ -172,7 +173,17 @@ std::optional<QString> presetRootRefusal(const std::string &key) {
     return std::nullopt;
 }
 
+// UX-12b, decisions 3 and 5: refusals said as what to do about them.
+std::optional<QString> refusalSentence(const Json &response) {
+    const auto error = response.is_object() ? response.value("error", Json::object())
+                                            : Json::object();
+    if (const auto line = snapshotAfterUnknownLine(error)) return text(*line);
+    if (const auto line = materialRouteUnservedLine(error)) return text(*line);
+    return std::nullopt;
+}
+
 QString refusalLine(const Json &response) {
+    if (const auto sentence = refusalSentence(response)) return *sentence;
     const auto error = response.is_object() ? response.value("error", Json::object())
                                             : Json::object();
     const auto message = error.is_object() ? error.value("message", std::string{}) : std::string{};
@@ -247,6 +258,11 @@ struct RenderingSettingsWidget::Impl {
     // does not have it (the fixed entries stay).
     qint64 providers_request = 0;
     Json registered = nullptr;
+    // UX-12b, decision 3: get_render_authoring_context's
+    // snapshot_after_candidates, asked on each read like the providers; empty
+    // until answered (the one place v1 took, post_ldr, is offered then).
+    qint64 context_request = 0;
+    std::vector<std::string> snapshot_candidates;
 
     qint64 request_id = 0;
     Request request_kind = Request::None;
@@ -450,6 +466,7 @@ struct RenderingSettingsWidget::Impl {
 
     void forget() {
         providers_request = 0;
+        context_request = 0;
         request_id = 0;
         request_kind = Request::None;
         ticket.clear();
@@ -485,6 +502,26 @@ struct RenderingSettingsWidget::Impl {
         if (send(Request::Read, QStringLiteral("get_render_documents"), Json::object()) && say)
             showInformation(owner.tr("Reading the rendering section..."));
         askProviders();
+        askSnapshotCandidates();
+    }
+
+    // UX-12b, decision 3: where this pipeline takes a snapshot after.
+    void askSnapshotCandidates() {
+        if (context_request != 0) return;
+        QString error;
+        context_request = viewport.requestRpc(QStringLiteral("get_render_authoring_context"),
+                                              QJsonObject{}, &error);
+    }
+
+    // The after entries a row offers: the candidates, else v1's one place.
+    std::vector<std::string> snapshotAfters() const {
+        return snapshot_candidates.empty() ? std::vector<std::string>{SnapshotAfter}
+                                           : snapshot_candidates;
+    }
+
+    QString snapshotAfterLabel(const std::string &after) const {
+        if (after == SnapshotAfter) return owner.tr("After opaque (post_ldr)");
+        return owner.tr("After %1").arg(text(after));
     }
 
     // UX-10, decision 7: the providers the combos offer, read again with the
@@ -654,10 +691,12 @@ struct RenderingSettingsWidget::Impl {
             line->addWidget(row.name, 1);
             row.after = new QComboBox(row.row);
             row.after->setObjectName(prefix + QStringLiteral(".after"));
-            row.after->setToolTip(owner.tr("Where the picture is copied: v1 takes it after the opaque pass"));
-            row.after->addItem(owner.tr("After opaque (post_ldr)"), text(SnapshotAfter));
+            row.after->setToolTip(owner.tr("Where the picture is copied: the passes and anchors "
+                                           "this pipeline takes a snapshot after"));
+            for (const auto &candidate : snapshotAfters())
+                row.after->addItem(snapshotAfterLabel(candidate), text(candidate));
             const auto after = entry.is_object() ? entry.value("after", std::string{}) : std::string{};
-            if (!after.empty() && after != SnapshotAfter)
+            if (!after.empty() && row.after->findData(text(after)) < 0)
                 row.after->addItem(owner.tr("Custom: %1").arg(text(after)), text(after));
             row.after->setCurrentIndex(std::max(0, row.after->findData(text(after))));
             line->addWidget(row.after, 1);
@@ -701,7 +740,7 @@ struct RenderingSettingsWidget::Impl {
 
     void addSnapshot() {
         auto value = snapshotsRead();
-        value.push_back({{"name", SnapshotName}, {"after", SnapshotAfter}});
+        value.push_back({{"name", SnapshotName}, {"after", snapshotAfters().front()}});
         edit("snapshots", std::move(value));
     }
 
@@ -874,7 +913,14 @@ struct RenderingSettingsWidget::Impl {
         }
         submitted.reset();
         retried = false;
-        showError(refusalLine(response));
+        // UX-12b, decisions 3 and 5: those said whole (oneLine would cut
+        // them at their length).
+        if (const auto whole = refusalSentence(response)) {
+            showError(*whole);
+            setPanelNotice(notice, *whole, *whole);
+        } else {
+            showError(refusalLine(response));
+        }
         // The fields go back to what the root holds.
         read(false);
     }
@@ -888,6 +934,21 @@ struct RenderingSettingsWidget::Impl {
             registered = response.is_object() ? response : Json(nullptr);
             // The combos are made again, unless a change of theirs is on its way.
             if (!busy()) fill();
+            return;
+        }
+        if (id != 0 && id == context_request) {
+            context_request = 0;
+            const auto response =
+                Json::parse(bytes.constData(), bytes.constData() + bytes.size(), nullptr, false);
+            std::vector<std::string> candidates;
+            if (response.is_object())
+                for (const auto &candidate :
+                     response.value("snapshot_after_candidates", Json::array()))
+                    if (candidate.is_string()) candidates.push_back(candidate.get<std::string>());
+            if (candidates != snapshot_candidates) {
+                snapshot_candidates = std::move(candidates);
+                if (!busy()) fill();
+            }
             return;
         }
         if (id == 0 || id != request_id) return;
@@ -920,6 +981,11 @@ struct RenderingSettingsWidget::Impl {
             providers_request = 0;
             registered = nullptr;
             if (!busy()) fill();
+            return;
+        }
+        // An engine without the context (or a refusal): v1's one place stays.
+        if (id != 0 && id == context_request) {
+            context_request = 0;
             return;
         }
         if (id == 0 || id != request_id) return;

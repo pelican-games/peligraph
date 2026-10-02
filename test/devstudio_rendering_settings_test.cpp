@@ -14,6 +14,7 @@
 // and its edits are the render edit history's.
 
 #include "featureparameterform.hpp"
+#include "featurerefusalfix.hpp"
 #include "renderconfigdigest.hpp"
 #include "rendereditcompletion.hpp"
 #include "renderedithistory.hpp"
@@ -44,6 +45,7 @@
 #include <QStringList>
 #include <QTableWidget>
 #include <QTest>
+#include <QTreeWidget>
 #include <QWidget>
 
 #define private public
@@ -785,6 +787,390 @@ TEST_CASE("UX-10 decision 4: Snapshots are rows -- + adds one after the opaque p
     auto multiview = profiles;
     multiview["view_execution"] = "multiview";
     CHECK(sent->at("params") == Json{{"base_source_digest", RootC}, {"set", {{"xr", multiview}}}});
+}
+
+
+// --- UX-12b (engine FR-1): refusals the engine names with what is missing,
+// and the one press that supplies it.
+const Json DeviceDepth{{"semantic", "pelican.render.depth@1"},
+                       {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+const Json OpaqueImage{{"semantic", "pelican.render.legacy_opaque_image@1"},
+                       {"arguments", Json::object()}};
+
+// Render features read with no feature, and a catalog of sky_ambient as
+// list_render_features gives it (FR-1's required_targets; `insertion` only
+// from an engine with FR-2).
+void ux12bFeaturesRead(Transport &engine, const std::string &digest, const Json &extra = Json::object()) {
+    const auto can_edit = engine.next("can_edit");
+    REQUIRE(can_edit);
+    engine.answer(*can_edit, {{"can_edit", true}});
+    const auto current = engine.next("get_render_features");
+    REQUIRE(current);
+    engine.answer(*current, {{"source_reference", "passes/main.json"},
+                             {"source_digest", {{"hex", digest}}},
+                             {"feature_instances", Json::array()}});
+    const auto catalog = engine.next("list_render_features");
+    REQUIRE(catalog);
+    Json sky{{"name", "sky_ambient"},
+             {"reference", SkyFeature},
+             {"available", true},
+             {"required_targets",
+              Json::array({{{"name", "lit_color"}, {"type", OpaqueImage}, {"usage", {"COLOR_ATTACHMENT"}}},
+                           {{"name", "scene_depth"}, {"type", DeviceDepth}, {"usage", {"SAMPLED"}}}})}};
+    sky.update(extra);
+    engine.answer(*catalog, {{"features", Json::array({sky})}});
+    const auto templates = engine.next("get_graph_templates");
+    REQUIRE(templates);
+    engine.answer(*templates, {{"templates", Json::array()}});
+}
+
+// What the panel reads before it asks or sends: the authoring context and
+// the Graph's nodes.
+void ux12bDocumentRead(Transport &engine, const Json &targets, const Json &nodes,
+                       const Json &passes = Json::array()) {
+    const auto context = engine.next("get_render_authoring_context");
+    REQUIRE(context);
+    engine.answer(*context, {{"render_targets", targets},
+                             {"graphs", Json::array({{{"graph", "main_render"}, {"passes", passes}}})}});
+    const auto graph = engine.next("get_graph_instances");
+    REQUIRE(graph);
+    engine.answer(*graph, {{"nodes", nodes}, {"definitions", Json::object()}});
+}
+
+// One edit of `method`, accepted, and its ticket answered with `result`.
+Json ux12bEdit(Transport &engine, const std::string &method, const Json &result) {
+    const auto sent = engine.next(method);
+    REQUIRE(sent);
+    engine.answer(*sent, {{"status", "accepted"}, {"ticket", "ux12b-" + method}});
+    const auto poll = engine.next("get_edit_result");
+    REQUIRE(poll);
+    CHECK(poll->at("params") == Json{{"ticket", "ux12b-" + method}});
+    engine.answer(*poll, result);
+    return sent->at("params");
+}
+
+Json ux12bRejected(Json error) {
+    return {{"status", "rejected"}, {"committed", false}, {"error", std::move(error)}};
+}
+
+void ux12bPickCatalog(RenderFeaturesWidget &features) {
+    auto &catalog = required<QTreeWidget>(features, "pelican.renderFeatures.catalog");
+    REQUIRE(catalog.topLevelItemCount() == 1);
+    catalog.setCurrentItem(catalog.topLevelItem(0));
+    QApplication::processEvents();
+}
+
+TEST_CASE("UX-12b decision 1: a feature's required targets are offered before it is added, and "
+          "Add with targets declares them, references them in the Graph and adds it, in order",
+          "[devstudio][ux12b][render-features][widget]") {
+    // The model: what is missing, the line, and the ops.
+    const Json sky_entry{{"required_targets",
+                          Json::array({{{"name", "lit_color"}, {"type", OpaqueImage}},
+                                       {{"name", "scene_depth"}, {"type", DeviceDepth}, {"usage", {"SAMPLED"}}}})}};
+    const auto required_targets = featureRequiredTargets(sky_entry);
+    REQUIRE(required_targets.size() == 2);
+    // lit_color is declared: only the depth is missing, and the Graph has no
+    // reference to it.
+    const auto missing = missingRequiredTargets(required_targets, {"lit_color"}, Json::array());
+    REQUIRE(missing.size() == 1);
+    CHECK(missing[0].name == "scene_depth");
+    CHECK(missing[0].declare);
+    CHECK(missing[0].reference);
+    CHECK(requiredTargetsQuestion("sky_ambient", missing) ==
+          "sky_ambient needs scene_depth (depth). Add it with the feature?");
+    CHECK(requiredTargetsQuestion("sky_ambient", missingRequiredTargets(required_targets, {}, Json::array())) ==
+          "sky_ambient needs lit_color (color) and scene_depth (depth). Add them with the feature?");
+    CHECK(missingRequiredTargets(required_targets, {"lit_color", "scene_depth"}, Json::array()).empty());
+    // The refusal names one target the same way.
+    const auto named = requiredTargetFromRefusal({{"code", "feature.required_target_missing@1"},
+                                                  {"feature", "sky_ambient"},
+                                                  {"target", "scene_depth"},
+                                                  {"type", DeviceDepth},
+                                                  {"document", SkyFeature}});
+    REQUIRE(named);
+    CHECK(named->name == "scene_depth");
+
+    Transport engine;
+    auto digest = std::make_shared<RenderConfigDigest>();
+    RenderFeaturesWidget features{&engine.viewport};
+    features.setRenderConfigDigest(digest);
+    features.show();
+    ux12bFeaturesRead(engine, RootA);
+    auto &notice = required<QLabel>(features, "pelican.renderFeatures.notice");
+    auto &with_targets = required<QPushButton>(features, "pelican.renderFeatures.addWithTargets");
+    CHECK_FALSE(with_targets.isVisibleTo(&features));
+
+    // Add: the document is read, and what it lacks asked about.
+    ux12bPickCatalog(features);
+    required<QPushButton>(features, "pelican.renderFeatures.add").click();
+    ux12bDocumentRead(engine, Json::array({{{"name", "lit_color"}}}), Json::array());
+    CHECK(notice.text() == QStringLiteral("sky_ambient needs scene_depth (depth). Add it with the feature?"));
+    REQUIRE(with_targets.isVisibleTo(&features));
+    REQUIRE(with_targets.isEnabled());
+
+    // Add with targets: read again, then three edits, each on the revision
+    // the one before wrote.
+    with_targets.click();
+    ux12bDocumentRead(engine, Json::array({{{"name", "lit_color"}}}),
+                      Json::array({{{"id", "scene_depth_ref"}, {"op", "render.image"}}}));
+    const auto targets = ux12bEdit(engine, "edit_render_targets", liveCommit(RootB));
+    CHECK(targets == Json{{"base_source_digest", RootA},
+                          {"ops", Json::array({{{"op", "add"},
+                                                {"target",
+                                                 {{"name", "scene_depth"},
+                                                  {"extent_scale", 1.0},
+                                                  {"format", "D32_SFLOAT"},
+                                                  {"format_class", "data"},
+                                                  {"usage", {"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"}}}}}})}});
+    const auto graph = ux12bEdit(engine, "edit_graph_document", liveCommit(RootC));
+    // Beside a node that already has the plain name.
+    CHECK(graph == Json{{"base_source_digest", RootB},
+                        {"ops", Json::array({{{"op", "add_node"},
+                                              {"scope", "root"},
+                                              {"node",
+                                               {{"id", "scene_depth_ref_2"},
+                                                {"op", "render.target_ref"},
+                                                {"parameters", {{"name", "scene_depth"}, {"type", DeviceDepth}}},
+                                                {"outputs", {"resource"}}}}}})}});
+    const std::string RootD(64, 'd');
+    const auto added = ux12bEdit(engine, "edit_render_features", liveCommit(RootD));
+    CHECK(added == Json{{"base_source_digest", RootC},
+                        {"operations", Json::array({{{"op", "add"}, {"feature", SkyFeature}}})}});
+    CHECK(digest->current() == RootD);
+    CHECK(notice.text() == QStringLiteral("Added sky_ambient with the render targets it needs."));
+    ux12bFeaturesRead(engine, RootD);
+    CHECK(notice.text() == QStringLiteral("Added sky_ambient with the render targets it needs."));
+
+    // The refusal of a plain Apply offers the same button.
+    ux12bPickCatalog(features);
+    required<QPushButton>(features, "pelican.renderFeatures.add").click();
+    // (A document that declares both: nothing asked.)
+    ux12bDocumentRead(engine, Json::array({{{"name", "lit_color"}}, {{"name", "scene_depth"}}}), Json::array());
+    CHECK_FALSE(with_targets.isVisibleTo(&features));
+    required<QPushButton>(features, "pelican.renderFeatures.apply").click();
+    (void)ux12bEdit(engine, "edit_render_features",
+                    ux12bRejected({{"code", "feature.required_target_missing@1"},
+                                   {"message", "sky_ambient needs scene_depth"},
+                                   {"feature", "sky_ambient"},
+                                   {"target", "scene_depth"},
+                                   {"type", DeviceDepth},
+                                   {"document", SkyFeature}}));
+    CHECK(notice.text() == QStringLiteral("sky_ambient needs scene_depth (depth). Add it with the feature?"));
+    CHECK(with_targets.isVisibleTo(&features));
+}
+
+TEST_CASE("UX-12b decision 2: a feature with no pass to go after is refused as such, what was "
+          "added for it is taken back, and Place offers the pass on the Graph tab",
+          "[devstudio][ux12b][render-features][widget]") {
+    // The model: FR-2's named refusal (develop 0b15fb62's shape), and an engine without it.
+    const auto named = insertionAnchorMissing({{"code", "feature.insertion_anchor_missing@1"},
+                                               {"feature", "sky_ambient"},
+                                               {"anchor", "deferred_lighting"},
+                                               {"candidates", {"lighting_pass", "present", "post_ldr"}},
+                                               {"document", SkyFeature}});
+    REQUIRE(named);
+    CHECK(named->anchor == "deferred_lighting");
+    CHECK(named->candidates == std::vector<std::string>{"lighting_pass", "present", "post_ldr"});
+    const auto sentence = insertionAnchorMissing(
+        {{"code", "render_pipeline_preflight_failed"},
+         {"message", "render feature pass insert anchor was not found: deferred_lighting"}});
+    REQUIRE(sentence);
+    CHECK(sentence->anchor == "deferred_lighting");
+    CHECK_FALSE(insertionAnchorMissing({{"code", "x"}, {"message", "something else"}}));
+    CHECK(insertionAnchorLine("sky_ambient", "deferred_lighting", "Deferred lighting") ==
+          "sky_ambient goes after deferred_lighting, which this pipeline does not have. "
+          "Place Deferred lighting first.");
+    const Json fr2{{"insertion", Json::array({{{"pass", "sky_background"},
+                                               {"anchor", "deferred_lighting"},
+                                               {"position", "after"}}})}};
+    CHECK(missingInsertionAnchors(fr2, {"render_fullscreen"}) == std::vector<std::string>{"deferred_lighting"});
+    CHECK(missingInsertionAnchors(fr2, {"deferred_lighting"}).empty());
+    // A canonical anchor is in every composed pipeline.
+    CHECK(missingInsertionAnchors({{"insertion", Json::array({{{"pass", "x"}, {"anchor", "post_ldr"}, {"position", "after"}}})}}, {}).empty());
+
+    Transport engine;
+    RenderFeaturesWidget features{&engine.viewport};
+    QStringList placed;
+    features.setPlaceInsertionAnchorAction([&](const QString &anchor) {
+        placed << anchor;
+        return true;
+    });
+    features.show();
+    auto &notice = required<QLabel>(features, "pelican.renderFeatures.notice");
+    auto &place = required<QPushButton>(features, "pelican.renderFeatures.placeAnchor");
+    const QString line = QStringLiteral(
+        "sky_ambient goes after deferred_lighting, which this pipeline does not have. "
+        "Place Deferred lighting first.");
+
+    SECTION("an engine without FR-2: the composer's sentence, after the targets went in; they come out") {
+        ux12bFeaturesRead(engine, RootA);
+        ux12bPickCatalog(features);
+        required<QPushButton>(features, "pelican.renderFeatures.add").click();
+        ux12bDocumentRead(engine, Json::array(), Json::array());
+        required<QPushButton>(features, "pelican.renderFeatures.addWithTargets").click();
+        ux12bDocumentRead(engine, Json::array(), Json::array());
+        (void)ux12bEdit(engine, "edit_render_targets", liveCommit(RootB));
+        (void)ux12bEdit(engine, "edit_graph_document", liveCommit(RootC));
+        const std::string RootE(64, 'e'), RootF(64, 'f');
+        (void)ux12bEdit(engine, "edit_render_features",
+                        ux12bRejected({{"code", "render_pipeline_preflight_failed"},
+                                       {"message", "render feature pass insert anchor was not found: "
+                                                   "deferred_lighting"}}));
+        // Taken back: the references, then the targets.
+        const auto references = ux12bEdit(engine, "edit_graph_document", liveCommit(RootE));
+        CHECK(references == Json{{"base_source_digest", RootC},
+                                 {"ops", Json::array({{{"op", "remove_node"}, {"scope", "root"}, {"node", "scene_depth_ref"}},
+                                                      {{"op", "remove_node"}, {"scope", "root"}, {"node", "lit_color_ref"}}})}});
+        const auto removed = ux12bEdit(engine, "edit_render_targets", liveCommit(RootF));
+        CHECK(removed == Json{{"base_source_digest", RootE},
+                              {"ops", Json::array({{{"op", "remove"}, {"name", "lit_color"}},
+                                                   {{"op", "remove"}, {"name", "scene_depth"}}})}});
+        CHECK(notice.text().startsWith(line));
+    }
+    SECTION("an engine with FR-2: insertion is looked at before anything is sent") {
+        ux12bFeaturesRead(engine, RootA,
+                          {{"insertion", Json::array({{{"pass", "sky_background"},
+                                                       {"anchor", "deferred_lighting"},
+                                                       {"position", "after"}}})}});
+        ux12bPickCatalog(features);
+        required<QPushButton>(features, "pelican.renderFeatures.add").click();
+        ux12bDocumentRead(engine, Json::array(), Json::array(),
+                          Json::array({{{"name", "render_fullscreen"}}, {{"name", "present"}}}));
+        CHECK(notice.text() == line);
+        CHECK_FALSE(engine.next("edit_render_targets", 200));
+    }
+    REQUIRE(place.isVisibleTo(&features));
+    CHECK(place.text() == QStringLiteral("Place Deferred lighting in the Graph"));
+    place.click();
+    CHECK(placed == QStringList{QStringLiteral("deferred_lighting")});
+    CHECK_FALSE(place.isVisibleTo(&features));
+}
+
+TEST_CASE("UX-12b decision 3: a snapshot's after is picked from the places the pipeline offers, "
+          "and an unknown one is refused with them",
+          "[devstudio][ux12b][rendering-settings][widget]") {
+    CHECK(snapshotAfterUnknownLine({{"code", "snapshot.after_unknown@1"},
+                                    {"snapshot", "opaque_snapshot"},
+                                    {"after", "opaque"},
+                                    {"candidates", {"post_ldr", "present"}}}) ==
+          std::optional<std::string>{"Snapshot opaque_snapshot cannot be taken after opaque: this "
+                                     "pipeline takes it after post_ldr or present."});
+    Transport engine;
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.show();
+    QApplication::processEvents();
+    settingsRead(engine, RootA, Json::object());
+    auto context = engine.next("get_render_authoring_context");
+    REQUIRE(context);
+    engine.answer(*context, {{"snapshot_after_candidates", {"post_ldr", "present"}}});
+    // +: after the first place the pipeline offers.
+    required<QPushButton>(settings, "pelican.renderingSettings.snapshots.add").click();
+    auto sent = engine.next("edit_rendering_keys");
+    REQUIRE(sent);
+    const Json one = Json::array({{{"name", "opaque_snapshot"}, {"after", "post_ldr"}}});
+    CHECK(sent->at("params") == Json{{"base_source_digest", RootA}, {"set", {{"snapshots", one}}}});
+    engine.answer(*sent, {{"status", "accepted"}, {"ticket", "render-keys-ux12b-1"}});
+    auto poll = engine.next("get_edit_result");
+    REQUIRE(poll);
+    engine.answer(*poll, liveCommit(RootB));
+    settingsRead(engine, RootB, {{"snapshots", one}});
+    QApplication::processEvents();
+    auto &after = required<QComboBox>(settings, "pelican.renderingSettings.snapshots.row0.after");
+    REQUIRE(after.count() == 2);
+    CHECK(after.itemText(0) == QStringLiteral("After opaque (post_ldr)"));
+    CHECK(after.itemData(1).toString() == QStringLiteral("present"));
+    after.setCurrentIndex(1);
+    sent = engine.next("edit_rendering_keys");
+    REQUIRE(sent);
+    CHECK(sent->at("params") ==
+          Json{{"base_source_digest", RootB},
+               {"set", {{"snapshots", Json::array({{{"name", "opaque_snapshot"}, {"after", "present"}}})}}}});
+    engine.answer(*sent, {{"status", "accepted"}, {"ticket", "render-keys-ux12b-2"}});
+    poll = engine.next("get_edit_result");
+    REQUIRE(poll);
+    engine.answer(*poll, ux12bRejected({{"code", "snapshot.after_unknown@1"},
+                                        {"message", "unknown"},
+                                        {"snapshot", "opaque_snapshot"},
+                                        {"after", "present"},
+                                        {"candidates", {"post_ldr"}}}));
+    CHECK(required<QLabel>(settings, "pelican.renderingSettings.notice").text() ==
+          QStringLiteral("Snapshot opaque_snapshot cannot be taken after present: this pipeline "
+                         "takes it after post_ldr."));
+}
+
+TEST_CASE("UX-12b decision 4: a target_ref the engine expects another type of offers Fix, which "
+          "writes that type in one edit and sends the refused change again",
+          "[devstudio][ux12b][render-features][widget]") {
+    auto array_depth = DeviceDepth;
+    array_depth["arguments"]["topology"] = "two_d_array";
+    const Json refusal{{"code", "graph.target_ref_type_mismatch@1"},
+                       {"message", "shadow_map_ref declares two_d"},
+                       {"node", "shadow_map_ref"},
+                       {"name", "shadow_map"},
+                       {"field", "topology"},
+                       {"declared", "two_d"},
+                       {"actual", "two_d_array"},
+                       {"expected", {{"type", array_depth}, {"layers", 3}}}};
+    const auto fix = targetRefTypeFix(refusal);
+    REQUIRE(fix);
+    CHECK(targetRefTypeFixLabel(*fix) == "Fix: make shadow_map_ref 2D array depth (3 layers)");
+
+    Transport engine;
+    RenderFeaturesWidget features{&engine.viewport};
+    features.show();
+    uxFeaturesRead(engine, RootA, Json::object());
+    auto &list = required<QListWidget>(features, "pelican.renderFeatures.current");
+    list.setCurrentRow(0);
+    QApplication::processEvents();
+    required<QPushButton>(features, "pelican.renderFeatures.parameters").click();
+    QApplication::processEvents();
+    auto *dialog = features.findChild<QDialog *>(QStringLiteral("pelican.featureParameters"));
+    REQUIRE(dialog != nullptr);
+    dialogChild<QDoubleSpinBox>(*dialog, "pelican.featureParameters.cascade_count").setValue(3);
+    auto [parameters, poll] = uxSent(engine, RootA);
+    CHECK(parameters == Json{{"cascade_count", 3}});
+    engine.answer(poll, ux12bRejected(refusal));
+    auto &button = required<QPushButton>(features, "pelican.renderFeatures.fixTargetRef");
+    REQUIRE(button.isVisibleTo(&features));
+    CHECK(button.text() == QStringLiteral("Fix: make shadow_map_ref 2D array depth (3 layers)"));
+
+    button.click();
+    const Json reference{{"id", "shadow_map_ref"},
+                         {"op", "render.target_ref"},
+                         {"parameters", {{"name", "shadow_map"}, {"type", DeviceDepth}}},
+                         {"outputs", {"resource"}}};
+    const auto graph = engine.next("get_graph_instances");
+    REQUIRE(graph);
+    engine.answer(*graph, {{"nodes", Json::array({reference})}, {"definitions", Json::object()}});
+    auto fixed = reference;
+    fixed["parameters"]["type"] = array_depth;
+    const auto written = ux12bEdit(engine, "edit_graph_document", liveCommit(RootB));
+    CHECK(written == Json{{"base_source_digest", RootA},
+                          {"ops", Json::array({{{"op", "replace_node"}, {"scope", "root"}, {"node", fixed}}})}});
+    const auto again = ux12bEdit(engine, "edit_render_features", liveCommit(RootC));
+    CHECK(again.at("base_source_digest") == RootB);
+    CHECK(again.at("operations").at(0).at("op") == "set_parameters");
+    CHECK(again.at("operations").at(0).at("parameters") == Json{{"cascade_count", 3}});
+    CHECK(required<QLabel>(features, "pelican.renderFeatures.notice").text() ==
+          QStringLiteral("shadow_map_ref takes the type the engine expects."));
+}
+
+TEST_CASE("UX-12b decision 5: material_route_unserved@1 is one sentence on what to do",
+          "[devstudio][ux12b][rendering-settings][widget]") {
+    Transport engine;
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.show();
+    QApplication::processEvents();
+    settingsRead(engine, RootA, Json::object());
+    auto &route = required<QComboBox>(settings, "pelican.renderingSettings.material_route_default");
+    route.setCurrentIndex(route.findData(QStringLiteral("forward")));
+    auto sent = engine.next("set_material_route_default");
+    REQUIRE(sent);
+    engine.answer(*sent, ux12bRejected({{"code", "material_route_unserved@1"},
+                                        {"message", "material_route_unserved@1: materials 0, 1"}}));
+    CHECK(required<QLabel>(settings, "pelican.renderingSettings.notice").text() ==
+          QStringLiteral("No forward material pass serves the route, so it stays on auto — add a "
+                         "forward material pass first."));
 }
 
 } // namespace PelicanStudio

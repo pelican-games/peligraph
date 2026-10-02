@@ -874,6 +874,19 @@
       "text": "KeyLight"
     },
     {
+      "label": "the Inspector shows its direction as an azimuth and an elevation, with Raw beside them",
+      "cmd": "wait",
+      "name": "pelican.inspectorDirectionRaw.light.direction",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Raw opens the stored vector x, y, z (UX-10 keeps it folded)",
+      "cmd": "click",
+      "name": "pelican.inspectorDirectionRaw.light.direction"
+    },
+    {
       "label": "the Inspector shows its direction",
       "cmd": "wait",
       "name": "pelican.inspectorVector.light.direction.0",

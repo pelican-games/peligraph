@@ -1,5 +1,7 @@
 #include "renderfeatureswidget.hpp"
 #include "featureparameterform.hpp"
+#include "featurerefusalfix.hpp"
+#include "fullscreenshadertemplate.hpp"
 #include "frameplanedit.hpp"
 #include "panelhelp.hpp"
 #include "renderconfigdigest.hpp"
@@ -2169,6 +2171,11 @@ struct RenderFeaturesWidget::Impl {
         // rows pick from.
         Context,
         Shaders,
+        // UX-12b: the reads and the edits of a feature added with its
+        // targets, and of a target_ref's type fix.
+        ChainContext,
+        ChainGraph,
+        ChainSubmit,
     };
 
     struct PendingRequest {
@@ -2262,6 +2269,59 @@ struct RenderFeaturesWidget::Impl {
     // panel (or an editor it opened) asked for the one on the way.
     EngineRestartAction engine_restart_action;
     bool restart_asked = false;
+    // --- UX-12b, decisions 1, 2 and 4: the ways out a refusal (or the
+    // catalog, before an add) names, under the notice, and the edits that
+    // take them one after another.
+    QWidget *offers = nullptr;
+    QPushButton *add_with_targets = nullptr;
+    QPushButton *place_anchor = nullptr;
+    QPushButton *fix_target_ref = nullptr;
+    std::function<bool(const QString &anchor)> place_anchor_action;
+    // list_render_features' entries by reference: required_targets and
+    // (engine FR-2) insertion.
+    std::map<std::string, nlohmann::json> catalog_entries;
+    QString offered_reference;
+    QString offered_name;
+    // A target a refusal named, kept beside what the catalog lists.
+    std::optional<FeatureRequiredTarget> offered_target;
+    QString offered_anchor;
+    std::optional<TargetRefTypeFix> offered_fix;
+    // The parameter change the target_ref refused, sent again after the fix.
+    std::optional<StagedOperation> offered_resend;
+    struct TargetsEdit {
+        enum class Step {
+            Reading,
+            Targets,
+            References,
+            Feature,
+            UndoReferences,
+            UndoTargets,
+            FixReading,
+            FixType,
+            FixResend,
+        };
+        Step step = Step::Reading;
+        // Only decide whether to ask (Add), or send (Add with targets).
+        bool ask_only = false;
+        QString reference;
+        QString name;
+        bool have_context = false;
+        bool have_graph = false;
+        std::vector<std::string> declared;
+        std::vector<std::string> passes;
+        nlohmann::json instances = nlohmann::json::object();
+        std::optional<FeatureRequiredTarget> extra;
+        std::vector<FeatureRequiredTarget> missing;
+        nlohmann::json reference_ops = nlohmann::json::array();
+        bool targets_added = false;
+        bool references_added = false;
+        // The answer that refused the feature, said once the targets are
+        // taken back.
+        QJsonObject refusal;
+        std::optional<TargetRefTypeFix> fix;
+        std::optional<StagedOperation> resend;
+    };
+    std::optional<TargetsEdit> chain;
 
     // A commit the engine runs only after a restart: the window restarts it
     // (asking about unsaved scene edits first), and the panel says so. The
@@ -2390,6 +2450,39 @@ struct RenderFeaturesWidget::Impl {
         applyPanelNoticeStyle(notice);
         notice->hide();
         layout->addWidget(notice);
+        // UX-12b: the one-press ways out of what the notice says.
+        offers = new QWidget(&owner);
+        offers->setObjectName(QStringLiteral("pelican.renderFeatures.offers"));
+        auto *offer_row = new QHBoxLayout(offers);
+        offer_row->setContentsMargins(0, 0, 0, 0);
+        add_with_targets = new QPushButton(owner.tr("Add with targets"), offers);
+        add_with_targets->setObjectName(QStringLiteral("pelican.renderFeatures.addWithTargets"));
+        add_with_targets->setToolTip(owner.tr(
+            "Declare the render targets the feature needs, add a render.target_ref of each "
+            "to the Graph, then add the feature; taken back if the engine refuses it."));
+        offer_row->addWidget(add_with_targets);
+        place_anchor = new QPushButton(offers);
+        place_anchor->setObjectName(QStringLiteral("pelican.renderFeatures.placeAnchor"));
+        offer_row->addWidget(place_anchor);
+        fix_target_ref = new QPushButton(offers);
+        fix_target_ref->setObjectName(QStringLiteral("pelican.renderFeatures.fixTargetRef"));
+        fix_target_ref->setToolTip(owner.tr(
+            "Write the type the engine expects into the render.target_ref, then send the "
+            "refused change again."));
+        offer_row->addWidget(fix_target_ref);
+        offer_row->addStretch();
+        layout->addWidget(offers);
+        hideOffers();
+        QObject::connect(add_with_targets, &QPushButton::clicked, &owner, [this] {
+            const auto reference = offered_reference;
+            const auto name = offered_name;
+            const auto extra = offered_target;
+            hideOffers();
+            staged.reset();
+            readForTargets(reference, name, false, extra);
+        });
+        QObject::connect(place_anchor, &QPushButton::clicked, &owner, [this] { placeAnchor(); });
+        QObject::connect(fix_target_ref, &QPushButton::clicked, &owner, [this] { startFix(); });
 
         auto *actions = new QHBoxLayout;
         refresh = new QPushButton(owner.tr("Refresh"), &owner);
@@ -2534,6 +2627,7 @@ struct RenderFeaturesWidget::Impl {
     // still receives everything the panel logs.
     void showNotice(const QString &colour, const QString &message) {
         notice_sticky = false;
+        hideOffers();
         notice->setStyleSheet(colour);
         setPanelNotice(notice, oneLine(message), message);
     }
@@ -2548,6 +2642,13 @@ struct RenderFeaturesWidget::Impl {
 
     void showSuccess(const QString &message) {
         showNotice(QStringLiteral("color: #388e3c;"), message);
+    }
+
+    // UX-12b: a line of two sentences (what is missing, what to do) shown
+    // whole; oneLine would keep the first.
+    void showWhole(const QString &colour, const QString &line) {
+        showNotice(colour, line);
+        setPanelNotice(notice, line, line);
     }
 
     qint64 request(RequestKind kind, const QString &method,
@@ -2619,6 +2720,437 @@ struct RenderFeaturesWidget::Impl {
         showInformation(owner.tr("Pending add: %1")
                             .arg(name));
         updateControls();
+        // UX-12b, decision 1: what it needs, looked at before it is sent.
+        checkRequiredTargets(reference, name);
+    }
+
+    // --- UX-12b, decisions 1, 2 and 4.
+    void hideOffers() {
+        if (offers == nullptr) return;
+        add_with_targets->hide();
+        place_anchor->hide();
+        fix_target_ref->hide();
+        offers->hide();
+    }
+
+    static nlohmann::json jsonOf(const QJsonObject &object) {
+        return nlohmann::json::parse(
+            QJsonDocument{object}.toJson(QJsonDocument::Compact).toStdString(), nullptr, false);
+    }
+    static QJsonObject qtOf(const nlohmann::json &object) {
+        return QJsonDocument::fromJson(QByteArray::fromStdString(object.dump())).object();
+    }
+
+    QString referenceNamed(const std::string &name) const {
+        for (const auto &[reference, entry] : catalog_entries)
+            if (entry.is_object() && entry.value("name", std::string{}) == name)
+                return QString::fromStdString(reference);
+        return {};
+    }
+
+    void checkRequiredTargets(const QString &reference, const QString &name) {
+        const auto entry = catalog_entries.find(reference.toStdString());
+        if (entry == catalog_entries.end()) return;
+        if (featureRequiredTargets(entry->second).empty() && !entry->second.contains("insertion"))
+            return;
+        readForTargets(reference, name, true);
+    }
+
+    // The authoring context (render targets, passes) and the Graph's
+    // nodes, then chainRead.
+    void readForTargets(const QString &reference, const QString &name, bool ask_only,
+                        std::optional<FeatureRequiredTarget> extra = std::nullopt) {
+        chain = TargetsEdit{};
+        chain->ask_only = ask_only;
+        chain->reference = reference;
+        chain->name = name;
+        chain->extra = std::move(extra);
+        if (request(RequestKind::ChainContext, QStringLiteral("get_render_authoring_context"), {}) ==
+                0 ||
+            request(RequestKind::ChainGraph, QStringLiteral("get_graph_instances"), {}) == 0) {
+            chain.reset();
+            return;
+        }
+        if (!ask_only)
+            showInformation(owner.tr("Adding %1 with its targets: reading the document...").arg(name));
+        updateControls();
+    }
+
+    void chainReceive(RequestKind kind, const QJsonObject &response) {
+        if (!chain) return;
+        if (kind == RequestKind::ChainSubmit) {
+            chainSubmitted(response);
+            return;
+        }
+        const auto json = jsonOf(response);
+        if (kind == RequestKind::ChainContext) {
+            chain->declared.clear();
+            chain->passes.clear();
+            for (const auto &target : json.value("render_targets", nlohmann::json::array()))
+                if (target.is_object() && target.contains("name") && target.at("name").is_string())
+                    chain->declared.push_back(target.at("name").get<std::string>());
+            for (const auto &graph : json.value("graphs", nlohmann::json::array())) {
+                if (!graph.is_object()) continue;
+                for (const auto &pass : graph.value("passes", nlohmann::json::array()))
+                    if (pass.is_object() && pass.contains("name") && pass.at("name").is_string())
+                        chain->passes.push_back(pass.at("name").get<std::string>());
+            }
+            chain->have_context = true;
+        } else {
+            chain->instances = json.is_object() ? json : nlohmann::json::object();
+            chain->have_graph = true;
+        }
+        if (chain->step == TargetsEdit::Step::Reading && chain->have_context && chain->have_graph)
+            chainRead();
+        else if (chain->step == TargetsEdit::Step::FixReading && chain->have_graph)
+            fixRead();
+    }
+
+    void chainRead() {
+        const auto found = catalog_entries.find(chain->reference.toStdString());
+        const auto entry = found != catalog_entries.end() ? found->second : nlohmann::json::object();
+        auto required = featureRequiredTargets(entry);
+        if (chain->extra && std::ranges::none_of(required, [&](const auto &target) {
+                return target.name == chain->extra->name;
+            }))
+            required.push_back(*chain->extra);
+        chain->missing = missingRequiredTargets(
+            required, chain->declared, chain->instances.value("nodes", nlohmann::json::array()));
+        if (chain->ask_only) {
+            auto asked = std::exchange(chain, std::nullopt);
+            updateControls();
+            // An engine that lists where a feature goes (FR-2): the place
+            // first, since the targets alone would still be refused.
+            // The passes are the composed config's (the authoring context)
+            // and the Graph's: a graph pass lands under its node's id, and the
+            // context's rendering_passes is read before the Graph composes.
+            auto passes = asked->passes;
+            for (const auto &node : asked->instances.value("nodes", nlohmann::json::array()))
+                if (node.is_object() && node.contains("id") && node.at("id").is_string())
+                    passes.push_back(node.at("id").get<std::string>());
+            if (const auto anchors = missingInsertionAnchors(entry, passes); !anchors.empty()) {
+                offerAnchor(asked->name, anchors.front());
+                return;
+            }
+            if (!asked->missing.empty()) offerTargets(asked->reference, asked->name, asked->missing);
+            return;
+        }
+        sendChainTargets();
+    }
+
+    void chainSubmit(const QString &method, const nlohmann::json &params, const QString &line) {
+        if (request(RequestKind::ChainSubmit, method, qtOf(params)) == 0) {
+            chain.reset();
+            updateControls();
+            return;
+        }
+        showInformation(line);
+        updateControls();
+    }
+
+    void sendChainTargets() {
+        const auto ops = requiredTargetAddOps(chain->missing);
+        if (ops.empty()) {
+            sendChainReferences();
+            return;
+        }
+        chain->step = TargetsEdit::Step::Targets;
+        chainSubmit(QStringLiteral("edit_render_targets"),
+                    {{"base_source_digest", source_digest.toStdString()}, {"ops", ops}},
+                    owner.tr("Adding %1 with its targets: declaring the render targets...")
+                        .arg(chain->name));
+    }
+
+    void sendChainReferences() {
+        chain->reference_ops = requiredTargetReferenceOps(
+            chain->missing, chain->instances.value("nodes", nlohmann::json::array()));
+        if (chain->reference_ops.empty()) {
+            sendChainFeature();
+            return;
+        }
+        chain->step = TargetsEdit::Step::References;
+        chainSubmit(QStringLiteral("edit_graph_document"),
+                    {{"base_source_digest", source_digest.toStdString()}, {"ops", chain->reference_ops}},
+                    owner.tr("Adding %1 with its targets: the Graph's target references...")
+                        .arg(chain->name));
+    }
+
+    void sendChainFeature() {
+        chain->step = TargetsEdit::Step::Feature;
+        chainSubmit(QStringLiteral("edit_render_features"),
+                    {{"base_source_digest", source_digest.toStdString()},
+                     {"operations", nlohmann::json::array({{{"op", "add"},
+                                                             {"feature", chain->reference.toStdString()}}})}},
+                    owner.tr("Adding %1 with its targets: the feature...").arg(chain->name));
+    }
+
+    void sendUndoReferences() {
+        chain->step = TargetsEdit::Step::UndoReferences;
+        chainSubmit(QStringLiteral("edit_graph_document"),
+                    {{"base_source_digest", source_digest.toStdString()},
+                     {"ops", removeAddedNodeOps(chain->reference_ops)}},
+                    owner.tr("%1 was refused; taking back the target references...").arg(chain->name));
+    }
+
+    void sendUndoTargets() {
+        chain->step = TargetsEdit::Step::UndoTargets;
+        chainSubmit(QStringLiteral("edit_render_targets"),
+                    {{"base_source_digest", source_digest.toStdString()},
+                     {"ops", requiredTargetRemoveOps(chain->missing)}},
+                    owner.tr("%1 was refused; taking back the render targets...").arg(chain->name));
+    }
+
+    void chainSubmitted(const QJsonObject &response) {
+        if (response.value(QStringLiteral("status")).toString() != QStringLiteral("accepted")) {
+            chainRefused(response);
+            return;
+        }
+        active_ticket = response.value(QStringLiteral("ticket")).toString();
+        if (active_ticket.isEmpty()) {
+            chain.reset();
+            showError(owner.tr("The engine accepted the edit without returning a ticket."));
+            return;
+        }
+        result_poll->start();
+        requestResult();
+    }
+
+    void chainResult(const QJsonObject &response) {
+        if (response.value(QStringLiteral("status")).toString() != QStringLiteral("committed") ||
+            !response.value(QStringLiteral("committed")).toBool(false)) {
+            chainRefused(response);
+            return;
+        }
+        const auto digest =
+            response.value(QStringLiteral("source_digest")).toObject().value(QStringLiteral("hex")).toString();
+        if (!digest.isEmpty()) {
+            source_digest = digest;
+            if (digest_hub) digest_hub->publish(digest.toStdString(), &owner);
+        }
+        if (completeEdit(response, restartAction()).restart_required) {
+            chain.reset();
+            return;
+        }
+        using Step = TargetsEdit::Step;
+        switch (chain->step) {
+        case Step::Targets:
+            chain->targets_added = true;
+            sendChainReferences();
+            return;
+        case Step::References:
+            chain->references_added = true;
+            sendChainFeature();
+            return;
+        case Step::Feature: {
+            const auto name = chain->name;
+            chain.reset();
+            requestRefresh();
+            showSuccess(owner.tr("Added %1 with the render targets it needs.").arg(name));
+            notice_sticky = true;
+            emit owner.renderConfigCommitted();
+            return;
+        }
+        case Step::UndoReferences:
+            chain->references_added = false;
+            if (chain->targets_added) sendUndoTargets();
+            else finishUndo();
+            return;
+        case Step::UndoTargets:
+            chain->targets_added = false;
+            finishUndo();
+            return;
+        case Step::FixType:
+            if (chain->resend) {
+                sendFixResend();
+                return;
+            }
+            [[fallthrough]];
+        case Step::FixResend: {
+            const auto node = chain->name;
+            chain.reset();
+            requestRefresh();
+            showSuccess(owner.tr("%1 takes the type the engine expects.").arg(node));
+            notice_sticky = true;
+            emit owner.renderConfigCommitted();
+            return;
+        }
+        case Step::Reading:
+        case Step::FixReading:
+            return;
+        }
+    }
+
+    void chainRefused(const QJsonObject &response) {
+        using Step = TargetsEdit::Step;
+        switch (chain->step) {
+        case Step::References:
+            chain->refusal = response;
+            if (chain->targets_added) sendUndoTargets();
+            else finishUndo();
+            return;
+        case Step::Feature:
+            chain->refusal = response;
+            if (chain->references_added) sendUndoReferences();
+            else if (chain->targets_added) sendUndoTargets();
+            else finishUndo();
+            return;
+        case Step::UndoReferences:
+        case Step::UndoTargets: {
+            const auto name = chain->name;
+            chain.reset();
+            requestRefresh();
+            showError(owner.tr("%1 was refused, and what was added for it could not be taken "
+                               "back (%2); Edit > Undo Render Edit takes it back.")
+                          .arg(name, responseError(response)));
+            notice_sticky = true;
+            return;
+        }
+        default: {
+            const auto name = chain->name;
+            const auto resend = chain->resend;
+            chain.reset();
+            showError(responseError(response));
+            offerFixes(response, resend, name);
+            return;
+        }
+        }
+    }
+
+    // The targets are taken back: the document is as before the press, and
+    // the refusal is said with the way out it names.
+    void finishUndo() {
+        const auto refusal = chain->refusal;
+        const auto name = chain->name;
+        chain.reset();
+        requestRefresh();
+        showError(responseError(refusal));
+        notice_sticky = true;
+        offerFixes(refusal, std::nullopt, name);
+    }
+
+    void offerTargets(const QString &reference, const QString &name,
+                      const std::vector<FeatureRequiredTarget> &missing) {
+        offered_reference = reference;
+        offered_name = name;
+        offered_target.reset();
+        showWhole(QStringLiteral("color: #4f7cac;"),
+                  QString::fromStdString(requiredTargetsQuestion(name.toStdString(), missing)));
+        notice_sticky = true;
+        offers->show();
+        add_with_targets->show();
+        add_with_targets->setEnabled(can_edit);
+    }
+
+    void offerAnchor(const QString &feature, const std::string &anchor) {
+        const auto kind = fullscreenShaderTemplateKindFromName(anchor);
+        const auto label = kind ? std::string{fullscreenShaderTemplateKindLabel(*kind)} : anchor;
+        showWhole(QStringLiteral("color: #d94c3d;"),
+                  QString::fromStdString(insertionAnchorLine(feature.toStdString(), anchor, label)));
+        notice_sticky = true;
+        offered_anchor = QString::fromStdString(anchor);
+        place_anchor->setText(owner.tr("Place %1 in the Graph").arg(QString::fromStdString(label)));
+        place_anchor->setEnabled(static_cast<bool>(place_anchor_action));
+        place_anchor->setToolTip(place_anchor_action
+                                     ? owner.tr("A fullscreen pass named %1 in the Graph, with "
+                                                "New\u2026 open on its shader template")
+                                           .arg(offered_anchor)
+                                     : owner.tr("The Graph tab is not open"));
+        offers->show();
+        place_anchor->show();
+    }
+
+    // The way out a refusal names, under the line it put up (decisions 1, 2
+    // and 4). `refused` is the edit that was refused, `name` its feature.
+    void offerFixes(const QJsonObject &response, const std::optional<StagedOperation> &refused,
+                    const QString &name) {
+        const auto error = jsonOf(response).value("error", nlohmann::json::object());
+        if (const auto target = requiredTargetFromRefusal(error)) {
+            const auto feature = error.value("feature", std::string{});
+            const auto reference = refused && refused->op == QStringLiteral("add")
+                                       ? refused->reference
+                                       : referenceNamed(feature);
+            if (reference.isEmpty()) return;
+            offerTargets(reference, feature.empty() ? name : QString::fromStdString(feature),
+                         {*target});
+            offered_target = *target;
+            return;
+        }
+        if (const auto anchor = insertionAnchorMissing(error)) {
+            offerAnchor(anchor->feature.empty() ? name : QString::fromStdString(anchor->feature),
+                        anchor->anchor);
+            return;
+        }
+        if (const auto fix = targetRefTypeFix(error)) {
+            offered_fix = *fix;
+            offered_resend.reset();
+            if (refused && refused->op == QStringLiteral("set_parameters")) offered_resend = refused;
+            fix_target_ref->setText(QString::fromStdString(targetRefTypeFixLabel(*fix)));
+            fix_target_ref->setEnabled(can_edit);
+            notice_sticky = true;
+            offers->show();
+            fix_target_ref->show();
+        }
+    }
+
+    void placeAnchor() {
+        const auto anchor = offered_anchor;
+        if (anchor.isEmpty() || !place_anchor_action) return;
+        hideOffers();
+        if (!place_anchor_action(anchor)) {
+            showError(owner.tr("The Graph could not place %1 now.").arg(anchor));
+            return;
+        }
+        showInformation(owner.tr("%1 is placed in the Graph: create its shader there, then add the "
+                                 "feature again.")
+                            .arg(anchor));
+    }
+
+    // Decision 4: the target_ref's node as the document has it, its type
+    // replaced (fixRead), then the refused change once more.
+    void startFix() {
+        if (!offered_fix) return;
+        chain = TargetsEdit{};
+        chain->step = TargetsEdit::Step::FixReading;
+        chain->fix = offered_fix;
+        chain->resend = offered_resend;
+        chain->name = QString::fromStdString(offered_fix->node);
+        hideOffers();
+        if (request(RequestKind::ChainGraph, QStringLiteral("get_graph_instances"), {}) == 0) {
+            chain.reset();
+            return;
+        }
+        showInformation(owner.tr("Fixing %1: reading the Graph...").arg(chain->name));
+        updateControls();
+    }
+
+    void fixRead() {
+        const auto ops = targetRefTypeFixOps(*chain->fix, chain->instances);
+        if (ops.empty()) {
+            const auto name = chain->name;
+            chain.reset();
+            showError(owner.tr("The Graph has no render.target_ref %1 now.").arg(name));
+            updateControls();
+            return;
+        }
+        chain->step = TargetsEdit::Step::FixType;
+        chainSubmit(QStringLiteral("edit_graph_document"),
+                    {{"base_source_digest", source_digest.toStdString()}, {"ops", ops}},
+                    owner.tr("Fixing %1: writing the type the engine expects...").arg(chain->name));
+    }
+
+    void sendFixResend() {
+        const auto again = *chain->resend;
+        chain->step = TargetsEdit::Step::FixResend;
+        nlohmann::json operation{{"op", "set_parameters"},
+                                 {"index", again.index},
+                                 {"parameters", jsonOf(again.parameters)},
+                                 {"scope", again.scope.toStdString()}};
+        if (again.scope == QStringLiteral("preset"))
+            operation["base_preset_digest"] = again.preset_digest.toStdString();
+        chainSubmit(QStringLiteral("edit_render_features"),
+                    {{"base_source_digest", source_digest.toStdString()},
+                     {"operations", nlohmann::json::array({operation})}},
+                    owner.tr("Fixing %1: sending %2's change again...").arg(chain->name, again.display_name));
     }
 
     void stageMaterialize() {
@@ -2762,7 +3294,7 @@ struct RenderFeaturesWidget::Impl {
     // Nothing of this panel in flight: an edit sent now is built on the
     // revision the panel holds.
     bool liveIdle() const {
-        if (!active_ticket.isEmpty() || retry_pending) return false;
+        if (!active_ticket.isEmpty() || retry_pending || chain) return false;
         for (auto it = pending.cbegin(); it != pending.cend(); ++it)
             if (it->kind == RequestKind::Submit || it->kind == RequestKind::Current ||
                 it->kind == RequestKind::CanEdit || it->kind == RequestKind::Result)
@@ -2921,6 +3453,13 @@ struct RenderFeaturesWidget::Impl {
             consumeChoices(request.kind, *decoded);
             return;
         }
+        if (request.kind == RequestKind::ChainContext || request.kind == RequestKind::ChainGraph ||
+            request.kind == RequestKind::ChainSubmit) {
+            chainReceive(request.kind, *decoded);
+            updateControls();
+            flushLiveParameters();
+            return;
+        }
         switch (request.kind) {
         case RequestKind::CanEdit:
             consumeCanEdit(*decoded);
@@ -2940,6 +3479,9 @@ struct RenderFeaturesWidget::Impl {
         case RequestKind::Templates:
         case RequestKind::Context:
         case RequestKind::Shaders:
+        case RequestKind::ChainContext:
+        case RequestKind::ChainGraph:
+        case RequestKind::ChainSubmit:
             break;
         }
         followWhenIdle();
@@ -2989,6 +3531,16 @@ struct RenderFeaturesWidget::Impl {
         }
         // UX-10: without the lists the combos offer what is written.
         if (kind == RequestKind::Context || kind == RequestKind::Shaders) return;
+        // UX-12b: a read or an edit of the chain failed in transport; what
+        // was added stays (Undo takes it back), and the line says why.
+        if (kind == RequestKind::ChainContext || kind == RequestKind::ChainGraph ||
+            kind == RequestKind::ChainSubmit) {
+            const bool asked = chain && chain->ask_only;
+            chain.reset();
+            if (!asked) showError(message);
+            updateControls();
+            return;
+        }
         if (kind == RequestKind::Result) {
             result_poll->stop();
             active_ticket.clear();
@@ -3053,6 +3605,7 @@ struct RenderFeaturesWidget::Impl {
 
     void consumeCatalog(const QJsonObject &response) {
         catalog->clear();
+        catalog_entries.clear();
         for (const auto value : response.value(
                  QStringLiteral("features")).toArray()) {
             const auto feature = value.toObject();
@@ -3075,6 +3628,7 @@ struct RenderFeaturesWidget::Impl {
             item->setData(0, AvailableRole, available);
             item->setData(0, UnavailableReasonRole,
                           unavailable_reason);
+            catalog_entries[reference.toStdString()] = jsonOf(feature);
             if (!available) {
                 item->setToolTip(0, unavailable_reason);
                 item->setToolTip(1, unavailable_reason);
@@ -3180,12 +3734,14 @@ struct RenderFeaturesWidget::Impl {
             QStringLiteral("accepted")) {
             if (refusedForMovedDocument(response)) return;
             const bool graph_template = submittingGraphTemplate();
-            submitted_staged.reset();
+            const auto refused = std::exchange(submitted_staged, std::nullopt);
             // It was sent at once, not staged for Apply: nothing stays pending.
             // UX-10: nor does a parameter change, which is sent at once too.
             if (graph_template || (staged && staged->op == QStringLiteral("set_parameters")))
                 staged.reset();
             showError(graph_template ? graphTemplateError(response) : responseError(response));
+            // UX-12b: and the way out the refusal names.
+            if (!graph_template) offerFixes(response, refused, refused ? refused->display_name : QString{});
             return;
         }
         // LP-4f2: what it made is named here, not in the commit.
@@ -3212,6 +3768,11 @@ struct RenderFeaturesWidget::Impl {
         if (status == QStringLiteral("pending")) return;
         result_poll->stop();
         active_ticket.clear();
+        // UX-12b: a ticket of a feature added with its targets, or of a fix.
+        if (chain) {
+            chainResult(response);
+            return;
+        }
         const bool graph_template = submittingGraphTemplate();
         const auto template_reference =
             graph_template ? submitted_staged->reference : QString{};
@@ -3219,9 +3780,11 @@ struct RenderFeaturesWidget::Impl {
             !response.value(QStringLiteral("committed"))
                  .toBool(false)) {
             if (refusedForMovedDocument(response)) return;
-            submitted_staged.reset();
+            const auto refused = std::exchange(submitted_staged, std::nullopt);
             applied_loop.clear();
             showError(graph_template ? graphTemplateError(response) : responseError(response));
+            // UX-12b: and the way out the refusal names.
+            if (!graph_template) offerFixes(response, refused, refused ? refused->display_name : QString{});
             return;
         }
         submitted_staged.reset();
@@ -3440,7 +4003,7 @@ struct RenderFeaturesWidget::Impl {
                              it->kind == RequestKind::Submit;
         }
         const bool idle = active_ticket.isEmpty() &&
-                          !submit_pending;
+                          !submit_pending && !chain;
         parameters->setEnabled(can_edit && idle && current->currentItem() &&
             current->currentItem()->data(InstanceRole).toJsonObject().value("editable").toBool());
         const auto instance = current->currentItem() ? current->currentItem()->data(InstanceRole).toJsonObject() : QJsonObject{};
@@ -3579,6 +4142,11 @@ void RenderFeaturesWidget::engineRestartDeclined(const QString &message) {
     impl_->requestRefresh();
     impl_->showInformation(message);
     impl_->notice_sticky = true;
+}
+
+void RenderFeaturesWidget::setPlaceInsertionAnchorAction(
+    std::function<bool(const QString &anchor)> action) {
+    impl_->place_anchor_action = std::move(action);
 }
 
 void RenderFeaturesWidget::setLoopVersionAppliedAction(

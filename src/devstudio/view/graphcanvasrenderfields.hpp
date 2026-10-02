@@ -247,6 +247,10 @@ class GraphCanvasPassFields final : public QWidget {
     void setProjectRoot(const std::filesystem::path &root);
     // Called after New... wrote a shader, so the lists hold it.
     void setShadersChanged(std::function<void()> changed);
+    // UX-12b, decision 2: New... opened on the fullscreen pass `node` shows,
+    // with the template named `kind` (fullscreenShaderTemplateKindName)
+    // picked. False when the fields show another node or no fullscreen pass.
+    bool offerTemplate(const std::string &node, const std::string &kind);
 
   private:
     void load(const nlohmann::json &parameters);

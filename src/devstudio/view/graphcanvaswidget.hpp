@@ -938,6 +938,12 @@ class GraphCanvasWidget final : public QWidget {
     // document the running engine now has.
     void setEngineRestartAction(std::function<void(const QString &reason)> action);
     void engineRestartDeclined(const QString &message);
+    // UX-12b, decision 2. A feature that goes after a pass the pipeline does
+    // not have ("Place Deferred lighting first"): a fullscreen pass named
+    // `name` is added to the root (or, when there is one, picked), and its
+    // Pass fields open New... on the shader template of that name (UX-5b),
+    // for Create. False when the tab cannot edit now.
+    bool placeNamedFullscreenPass(const QString &name);
     // LP-4e. Show a root node another panel's edit just made (Decompose into
     // loop's graph.loop): the document is read again, and the node is
     // selected as soon as a document that holds it arrives -- at once when

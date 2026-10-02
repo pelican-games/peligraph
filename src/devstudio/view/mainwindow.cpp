@@ -550,6 +550,13 @@ void MainWindow::createWorkspace() {
             render_features_->replaceWithLoopVersion(feature);
         });
     render_features_->setGraphNodeOpenAction(open_graph_node);
+    // UX-12b, decision 2: a feature refused for a pass the pipeline lacks
+    // ("Place Deferred lighting first") places that pass on the Graph tab,
+    // its New... open on the template of that name (UX-5b's path).
+    render_features_->setPlaceInsertionAnchorAction([this, render_tabs](const QString &anchor) {
+        render_tabs->setCurrentWidget(graph_canvas_);
+        return graph_canvas_->placeNamedFullscreenPass(anchor);
+    });
     // GL-1, decision 6: the Frame Plan's Open in Graph on any other pass
     // selects the node it is drawn under on the Graph canvas.
     frame_plan_->setGraphPassOpenAction([this, render_tabs](const QString &pass) {

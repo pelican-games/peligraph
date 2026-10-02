@@ -329,7 +329,7 @@
     {"label": "GL-3a: the canvas offers Fold into group", "expect": "list_count", "pattern": "pelican.graphCanvas.foldIntoGroup", "value": 1},
     {"label": "Rendering settings tab", "cmd": "action", "name": "pelican.view.renderTools.rendering_settings"},
     {"label": "the Draw sort list takes input", "cmd": "wait", "name": "pelican.renderingSettings.draw_sort", "visible": true, "enabled": true, "timeout_ms": 120000},
-    {"label": "Draw sort: state batched", "cmd": "select", "name": "pelican.renderingSettings.draw_sort", "text": "State batched / back to front"},
+    {"label": "Draw sort: state batched (UX-10 decision 7: the entries are the engine's registered providers, opaque / transparent)", "cmd": "select", "name": "pelican.renderingSettings.draw_sort", "text": "state_batched_v1 / back_to_front_v1"},
     {"label": "the tab says it was saved", "cmd": "wait", "name": "pelican.renderingSettings.notice", "contains": "Saved draw_sort.", "timeout_ms": 120000},
     {"label": "the engine has presented frames", "cmd": "wait_engine", "timeout_ms": 180000, "frames": 30},
     {"label": "let the engine run a few hundred frames", "cmd": "wait", "name": "pelican.graphCanvasNotice", "contains": "zz-never-shown", "timeout_ms": 4000, "expect_error": "automation.wait_timeout@1"},

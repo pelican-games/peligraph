@@ -421,6 +421,7 @@ struct FramePlanWidget::Impl {
         const auto loop = std::exchange(requested_loop_group, QString{});
         if (loop.isEmpty()) return;
         if (!logical_scene->selectLoopGroup(loop.toStdString())) {
+            picked_loop_line.clear();
             showStatus(owner.tr("The frame plan has no copies of loop %1.").arg(loop));
             return;
         }
@@ -430,7 +431,26 @@ struct FramePlanWidget::Impl {
             picked = picked.isValid() ? picked.united(item->sceneBoundingRect())
                                       : item->sceneBoundingRect();
         if (picked.isValid()) logical->centerOn(picked.center());
-        showStatus(owner.tr("Loop %1: its copies are picked.").arg(loop));
+        picked_loop_line = owner.tr("Loop %1: its copies are picked.").arg(loop);
+        picked_loop_copies = logical_scene->selectedNodes();
+        showStatus(picked_loop_line);
+    }
+    // UX-12b, decision 6: the line a picked loop put up, and the copies it
+    // picked. Every plan read also asks for the authoring context and the
+    // task catalog, and each runs populate() again when it lands; the
+    // summary line populate() writes went over this one milliseconds after
+    // it was shown. It stays while the copies are what is picked, until the
+    // next edit is sent.
+    QString picked_loop_line;
+    std::set<FramePlanNodeKey> picked_loop_copies;
+    void showPickedLoopLine() {
+        if (picked_loop_line.isEmpty()) return;
+        if (logical_scene->selectedNodes() != picked_loop_copies) {
+            picked_loop_line.clear();
+            picked_loop_copies.clear();
+            return;
+        }
+        showStatus(picked_loop_line);
     }
     std::optional<Pelican::ProjectPathResolver> project_resolver;
     FramePlanWidget::ShaderSourceOpenAction shader_source_open_action;
@@ -1889,6 +1909,7 @@ struct FramePlanWidget::Impl {
         shown_refusal_line.clear();
         submitted_notice = text(request.notice);
         commit_notice.clear();
+        picked_loop_line.clear();
         submitted_request = request;
         submitted_method = request.method;
         submitted_target = submittedTargetName(request);
@@ -3677,6 +3698,7 @@ struct FramePlanWidget::Impl {
         // VI-3a: what the last canvas edit moved, then a refused reload,
         // which outranks it.
         if (!commit_notice.isEmpty()) showStatus(commit_notice);
+        showPickedLoopLine();
         updateReloadRefusal();
     }
 

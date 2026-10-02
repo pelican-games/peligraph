@@ -37,6 +37,9 @@ add_library(pelican_studio_inspector_model STATIC
     # UX-6b: the frame's GPU time and the plan's size, per generation.
     planperfmodel.cpp
     planperfmodel.hpp
+    # UX-12b: the refusals FR-1 names with what is missing, and their fixes.
+    featurerefusalfix.cpp
+    featurerefusalfix.hpp
 )
 
 set_target_properties(pelican_studio_inspector_model PROPERTIES CXX_STANDARD 20)

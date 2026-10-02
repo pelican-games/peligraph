@@ -11455,6 +11455,64 @@ TEST_CASE("LP-4d2 Show in Frame Plan opens a loop's group with its copies picked
     CHECK(scene.selectedNodes().size() == 2);
 }
 
+TEST_CASE("UX-12b decision 6: the line Show in Frame Plan puts up outlasts the reads every "
+          "plan read asks for, while the copies stay picked",
+          "[devstudio][frame-plan][lp4d2][ux12b]") {
+    application();
+    Json wire = regionGroupingBaselineFramePlan();
+    const StringSet members{"HorizontalBlur_0", "VerticalBlur_0"};
+    std::int64_t element = 0;
+    for (auto &node : wire.at("nodes"))
+        if (members.contains(node.at("name").get<std::string>()))
+            node["loop_origin"] = {{"loop", "bloom_loop"}, {"element", element++},
+                                   {"node", "blur"}};
+    wire["loops"] = Json::array({{{"node", "bloom_loop"}, {"tier", "expand"}, {"count", 2},
+                                  {"elements", Json::array({
+                                      {{"element", 0}, {"index", 0}, {"branch", 0}},
+                                      {{"element", 1}, {"index", 1}, {"branch", 0}}})},
+                                  {"unmatched_branches", Json::array()}}});
+    EmbeddedViewport viewport;
+    FramePlanEditRecorder recorder;
+    FramePlanWidget widget{&viewport};
+    std::vector<qint64> reads;
+    qint64 next = 9100;
+    widget.setPlanRequest([&](QString *) {
+        reads.push_back(next);
+        return next++;
+    });
+    widget.resize(1200, 800);
+    widget.show();
+    widget.setEditCapability(recorder.capability());
+    QApplication::processEvents();
+
+    // Show in Frame Plan: the plan is read, and the copies picked.
+    widget.showLoopGroup(QStringLiteral("bloom_loop"));
+    REQUIRE(reads.size() == 1);
+    Q_EMIT viewport.inspectorRpcSucceeded(reads[0], QByteArray::fromStdString(wire.dump()));
+    QApplication::processEvents();
+    const QString picked = QStringLiteral("Loop bloom_loop: its copies are picked.");
+    CHECK(statusText(widget) == picked);
+    // The plan read asked for the authoring context and the task catalog;
+    // each lands after it and draws the plan again. The line stays.
+    REQUIRE(recorder.result);
+    REQUIRE(recorder.context_id != 0);
+    REQUIRE(recorder.task_id != 0);
+    recorder.result(recorder.context_id, QByteArrayLiteral("{}"));
+    QApplication::processEvents();
+    CHECK(statusText(widget) == picked);
+    recorder.result(recorder.task_id, QByteArrayLiteral("{}"));
+    QApplication::processEvents();
+    CHECK(statusText(widget) == picked);
+    // A plan read again (a commit elsewhere) keeps the copies picked, and so
+    // the line.
+    widget.planChangedByCommit();
+    QApplication::processEvents();
+    REQUIRE(reads.size() == 2);
+    Q_EMIT viewport.inspectorRpcSucceeded(reads[1], QByteArray::fromStdString(wire.dump()));
+    QApplication::processEvents();
+    CHECK(statusText(widget) == picked);
+}
+
 TEST_CASE("LP-4c a loop's or a definition's refusal reads as its sentence, "
           "and a graph variant is named whatever the code",
           "[devstudio][frame-plan][lp4c][refusal]") {

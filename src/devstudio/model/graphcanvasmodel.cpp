@@ -3302,6 +3302,14 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
         // smallest pass that is a whole document -- and the image is added
         // in the same list, as a required input's constant is.
         if (operation(op) == nullptr) return Json::array();
+        // UX-12b, decision 2: a pass a feature is inserted after is named as
+        // the feature names it (the seed's id), when that id is free.
+        if (seed.is_object())
+            if (const auto wanted = text(seed, "id");
+                !wanted.empty() && findNode(in_scope, wanted) == nullptr) {
+                id = wanted;
+                node["id"] = id;
+            }
         const Json type{{"semantic", "pelican.render.color_signal@1"},
                         {"arguments", Json{{"reference", "scene"}, {"transfer", "linear"},
                                            {"range", "extended"}}}};

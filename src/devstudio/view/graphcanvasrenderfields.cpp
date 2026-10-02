@@ -2082,6 +2082,17 @@ void GraphCanvasPassFields::commit(const char *stage, QComboBox *combo) {
     load(model_.nodeParameters(scope_, node_));
 }
 
+bool GraphCanvasPassFields::offerTemplate(const std::string &node, const std::string &kind) {
+    if (node.empty() || node != node_ || op_ != "render.fullscreen") return false;
+    const auto index = template_kind_->findData(qtext(kind));
+    if (index >= 0) template_kind_->setCurrentIndex(index);
+    if (new_shader_->isChecked())
+        showTemplateRow(true);
+    else
+        new_shader_->setChecked(true);
+    return true;
+}
+
 void GraphCanvasPassFields::showTemplateRow(bool shown) {
     form_->setRowVisible(template_row_, shown);
     if (shown) proposeTemplateName();
