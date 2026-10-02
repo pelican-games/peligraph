@@ -27537,6 +27537,62 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - **test**: `devstudio_rendering_settings_test` の `UX-12b decision 1`〜`5`([decision 1](../test/devstudio_rendering_settings_test.cpp#L863))、`devstudio_frameplan_graph_test` の `UX-12b decision 6`
 - **新しいファイル**: `src/devstudio/model/featurerefusalfix.{hpp,cpp}`(library `pelican_studio_inspector_model`)
 - **シナリオ**: `gui_settings_choose`(136 → 175)、`deferred_loop_from_scratch`(116 → 118)、`menu_actions` / `gui_build_optimize`(step の数は同じ)。実装者の最後の scenario の run では `deferred_loop_from_scratch`・`gui_build_optimize`・`loop_zone_wire`・`menu_actions` が緑で、`gui_settings_choose` は FR-2 の順(挿入先を先に)に書き直す前の形で落ちていた。今の形を流した記録は見当たらない(未確認)。本数は 60 のまま
+
+### UX-12e: 汎用の欄の残りを選ぶ形に —— 値の出どころ、asset の種類、union、実用の範囲、置ける場所(engine CT-4 の Studio 側)
+
+**Studio のみ(engine は CT-4 `4d682338`)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「node の欄の残りを選ぶ形に(✅UX-12e)」と「image の Mip levels と式」、シナリオの `gui_node_parameters`。**
+
+#### 前提
+- UX-12a(ac7c5250)で Graph の node の欄を CT-3 の表から作った。その報告で、string としか言われない選択肢・asset の種類・union・uint32 の上限・root に置けない op が残った(仕様の背景)
+
+#### 着地(2026-10-02、eeacce3e)
+- **決定 1(choices_from)**: 表に `choices_from` のある string は編集できる combo。`{rpc: get_render_authoring_context, key, field?}` は Studio が持つ context の返事をたどり([`graphParameterChoicesFromReply()`](../src/devstudio/view/graphcanvasparameterfields.cpp#L195))、context は文書の読みごとに 1 回だけ問う(欄ごとには問わない)。`{graph_nodes: [...]}` は今の scope のその op の node。一覧に無い値は打ったとおり残し、薄い `not listed`(`.<名前>.unlisted`)。ほかの `rpc` の一覧は空(今の engine に無い)。palette の必須のダイアログの `render.scalar` の `target` は UX-8 からの Studio の buffer の combo のまま(コードの読み)
+- **決定 2(asset の種類)**: asset の一覧を表の `extensions` で絞る(UX-12a の名前・説明からの推測を外した)。Import… もその拡張子だけ。写す先は `asset_kind` で、audio は UX-8 の Import と同じ道(`assets/audio`)、image は IA-1s の Import と同じ道(`.jpg` はそのまま `assets/images` に)、model は `assets/models`、analysis_table は `assets/analysis` に隣の `.import.json` ごと
+- **決定 3(union)**: 形を選ぶ combo と形ごとの欄(ray_query は Off / On / Custom、`value.sample_table` の row は Index / Name)。今の値の型から形を選ぶ。`render.image` の mip_levels は image の欄の Count / Full chain の combo(`pelican.graphCanvasImage.mipLevelsShape`)にし、UX-8 の「spin の 0 が full」を外した(spin は 1〜16)
+- **決定 4(soft_max)**: slider は `soft_min` / `soft_max` まで、spin は `min` / `max` まで打てる。越えた値は残し、薄い `above the usual range`(`.<名前>.unusual`)。image の欄の Fixed の width / height も 8192 を越えると印(`pelican.graphCanvasImage.sizeUnusual`)
+- **決定 5(placement)**: root の palette で `owned_instance` の op(`pose.*`・`value.morph_weight`)を灰色にし、行の末尾に `needs a definition` と New definition…(`pelican.graphCanvasPaletteNeedsDefinition.<op>`)。押すか Enter で UX-8 の New definition… の行が開き、作ると definition に入って palette をその op の絞り込みで開き直す。`graph.op_requires_owned_instance@1` を `<op> runs inside a definition attached to an object — make a definition and place it there` の 1 文に
+- **決定 6(シナリオ)**: `gui_node_parameters` を延長: 2 つ目の `render.buffer` の host_source を `runtime_f32`、palette の `render.scalar` の target を combo で `render_buffer_2`、`render.image` の Mip levels を Full chain(文書は `"full"`、spin が隠れる)、root の palette で灰色の `pose.clip_sample` の New definition… から `walk_pose` に入り、開き直した palette で置く。JSON を打たない
+- **test**: `devstudio_graphcanvas_scene_test` の `UX-12e decision 1`〜`5`([decision 1](../test/devstudio_graphcanvas_scene_test.cpp#L11158))
+- **新しいファイル**: なし
+- **シナリオ**: `gui_node_parameters`(122 → 169)。実装者の run で `gui_build_curve` と合わせて緑。本数は 60 のまま
+
+### AB-1s: 音の解析を焼いて描画に使う(engine AB-1 の Studio 側)—— Bake のダイアログ、value.sample_table、Use in a shader、Re-bake、音に反応する描画
+
+**Studio のみ(engine は AB-1 `892a1455`)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「音の解析を焼いて描画に使う(✅AB-1s)」と `docs/manual/08_gameplay.md` の「音に合わせて描く(✅AB-1s)」、シナリオの `gui_build_audio_reactive`。**
+
+#### 前提
+- GB-4 の目標 3「音に反応する描画」は engine に解析の node が無く止まっていた。利用者の方針(2026-10-02): DCC 寄りの機能は入れるが完成時は焼き込む。v0 の音の解析は焼き込み前提で、将来のリアルタイムを塞がない(仕様の背景)
+
+#### 着地(2026-10-02、149c0ec8)
+- **決定 1(Bake のダイアログ)**: Graph の `audio.playback` の Sound の行に Bake analysis…(`pelican.graphCanvasAudioBake`)。ダイアログ(`pelican.audioBakeDialog`)で RMS / Peak / Bands、bands(1〜128、既定 8)、hop、smoothing の attack / release、channels(Mix / Left / Right)、out(既定 `assets/analysis/<音の名前>.ktx2`)。`bake_audio_analysis` を送り、走っている間 `Baking <sound>… (n s)`、committed で `Baked <out>: <features> × <n> samples`。5 つの拒否を 1 文に([`audioAnalysisRefusalDescription()`](../src/devstudio/model/inspectormodel.cpp#L1409))。Inspector の Sound の欄には足していない(仕様は挙げていた。commit は Inspector の widget を変えていない。コードの読み)
+- **決定 2(value.sample_table)**: committed の行の Use in Graph で `value.sample_table` を `rms`(無ければ最初の行)で置く(time は省く = scene_time)。palette の必須のダイアログは、asset が manifest の tool が `pelican.audio_analysis` の表の combo、row がその表の `layout.features` の combo。`value.sample_table` の 2 つの拒否を 1 文に
+- **決定 3(GPU で読む)**: Use in a shader で、persistent の `render.image`(initial = 表、`R32_SFLOAT`)、vec4 の `render.buffer`(runtime_f32)と、それを埋める 2 つの `render.scalar`(rows_per_feature・sample_count・hop_seconds と scene_time)を 1 回の編集で置き、選んでいる fullscreen / raster の pass の shader が宣言していれば image の binding と `pelican_resource_<port>` の buffer に繋ぐ([`GraphCanvasModel::sampleTableShaderOps()`](../src/devstudio/model/graphcanvasaudioanalysis.cpp#L42))。`#include "pelican_sample_table.glsl"` と呼び方の 1 行を Copy 付きで出す
+- **決定 4(古さと Re-bake)**: `list_derived_assets` を project を開いたとき・文書の digest が変わったとき・Refresh で読み、stale の表を読む root の node(`value.sample_table` と initial の image)の帯に橙の `stale: <reason>`、選んだ node の欄に Re-bake(manifest の音と settings で焼き直す)。Re-bake の committed の後、root でその表を読む `value.sample_table` の parameters を同じ値のまま `set_node_parameters` で書き直す 1 回の編集を送り、graph を組み直させる([`GraphCanvasModel::rebuildSampleTableReaders()`](../src/devstudio/model/graphcanvasaudioanalysis.cpp#L218))。engine の IA-3(`26473e75`。reload と見張りが書き換わった表を拾う)が着地したので、この同じ値の `set_node_parameters` は UX-13a で外す予定
+- **決定 5(シナリオ)**: 新しい `gui_build_audio_reactive`。`gui_build_audio_reactive.prepare.py` が project の外に 1 秒の WAV 2 つ(前半無音・後半 62.5 Hz で −20 dBFS と、その逆)を書く。Blank → Import Sound → Bake analysis(RMS と 4 bands)→ Use in Graph → shader を書いた fullscreen pass を present に → Use in a shader → Timeline の左端と右端で、GPU の道(右半分)と CPU の道(`render.buffer` 経由の左半分)の画素が変わる → WAV を上書きして Refresh で `stale: source_changed`、Re-bake で消え、scene time 0 で左半分が変わる。Re-bake の後の GPU の道の画素は読むだけ(変わることは求めない)
+- **GPU で表を読む道**: engine の AB-1 には GPU で描いて値を見る test が無かった。このシナリオの (b) が、表を `pelican_sample_table` で読む shader の画素が scene time で変わることを見る
+- **test**: `devstudio_graphcanvas_scene_test` の `AB-1s decision 1` / `2`([decision 1](../test/devstudio_graphcanvas_scene_test.cpp#L11429))、`devstudio_graphcanvas_test` の `AB-1s decision 3` / `4`([decision 3](../test/devstudio_graphcanvas_test.cpp#L4336))
+- **新しいファイル**: `src/devstudio/model/audioanalysistables.{hpp,cpp}` と `src/devstudio/model/graphcanvasaudioanalysis.cpp`(library `pelican_studio_inspector_model`)、`src/devstudio/view/graphcanvasaudioanalysis.{hpp,cpp}`(library `pelican_studio_view`)、`test/studio_scenarios/gui_build_audio_reactive.json` / `.prepare.py`
+- **シナリオ**: `gui_build_audio_reactive`(新。148 step)。実装者の run で `gui_build_music`・`gui_build_curve` と合わせて緑。本数は 60 → 61
+
+### UX-12d: 書き手の繋ぎ替えと edit_batch で、sky_ambient と cascade 3 を最後まで(engine FR-3 の Studio 側)
+
+**Studio のみ(engine は FR-3 `55390f4b`)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「書き手を繋ぎ、1 本の edit_batch で足す(✅UX-12d)」と、「feature が要るものを足す前に言い、1 回の押下で直す(✅UX-12b)」の止まっていた所、シナリオの `gui_settings_choose`。**
+
+#### 前提
+- UX-12b(99f645fb)で FR-1 / FR-2 の拒否から 1 回の編集で直すボタンを入れたが、Blank → Graph の実 pipeline では `sky_ambient`(`scene_depth` を誰も書かない)と cascade 3(型の書き換えと `cascade_count` の変更が単独では通らない)が最後まで通らなかった。`gui_settings_choose` は止まる所を確かめる形だった(仕様の背景)
+
+#### 着地(2026-10-02、6c7dc8bb)
+- **決定 1(書き手)**: 足す前に `required_targets[].needs_writer` を見て、宣言の無い target なら Graph の root の node から書き手の候補を探し([`graphWriterCandidates()`](../src/devstudio/model/featurerefusalfix.hpp#L151))、問いに `…, and write scene_depth from render_material_pass.depth?` を足す(Add with targets で同じ batch に繋ぎ替え)。`feature.required_target_unwritten@1` の拒否は `<feature> reads <target>, which no pass writes before it. Write it from <node>.<port>.` と、`node` のある候補だけの Write <target> from …(2 つ以上なら combo)
+- **決定 2(edit_batch)**: Add with targets(target の宣言 → target_ref と書き手の繋ぎ替えを 1 つの `edit_graph_document` の ops に → feature の add)を 1 本の `edit_batch` に([`sendAddBatch()`](../src/devstudio/view/renderfeatureswidget.cpp#L2978))。拒否は `batch_index` で段を名指す。Studio の逆順の取り消し(と `requiredTargetRemoveOps` / `removeAddedNodeOps`)は外した。`edit_batch` を RU-1 の記録に足し、Undo 1 回で戻る(名前は batch の最後の記録する edit の名前)
+- **決定 3(cascade の Fix)**: target_ref の型の `replace_node` に、それを読む node の port の型の `set_node_parameters` を同じ ops に足し、断られた Parameters の変更を先にして 1 本の `edit_batch` で送る
+- **決定 4(空を画面に)**: feature を足した後、feature の pass が書いて誰も読まない color の target があれば `<feature> draws into <target>, which nothing reads. Connect it to <present> to see it.` と Connect <target> to <present>。押すと、挿入先の anchor が root の graph の node ならその color を target_ref に繋ぐ `edit_graph_document`(target_ref の型を port の型に)、次に present の最初の入力を target に替える `edit_preset_pass`。`edit_preset_pass` は `edit_batch` の外なので 2 つの ticket
+- **決定 5(古い文の一致)**: Graph の notice は `feature.required_target_unwritten@1` を code の 1 文で言い、UX-5d の ` — the graph pass that draws it runs after this pass` の句は frame planner の文のときだけ
+- **決定 6(シナリオ)**: `gui_settings_choose` を、Add with targets が committed、Connect lit_color to present で viewport の左上の隅の画素が変わり、`sky_ambient` の `color_r` 4 でまた変わる、`cascade_count` 3 が Fix の 1 本の `edit_batch` で committed で影が残る、の形に延長。止まる所を待つ期待は外した
+- **未確認**: 仕様の決定 2 は、UX-12b の取り消しの後に空の fragment(`render-targets.json`)が root に残ることも出なくなるのを確かめるよう求めていた。確かめた test・記録は見当たらない
+- **test**: `devstudio_rendering_settings_test` の `UX-12d decision 1` / `2` / `4`([decision 1](../test/devstudio_rendering_settings_test.cpp#L1244))。`UX-12b decision 2` と `UX-12b decision 4`(`UX-12d decision 3` を兼ねる)の名前と中身を書き換えた。`devstudio_graphcanvas_scene_test` の `GL-1e …` に決定 5 の確かめを足した
+- **新しいファイル**: なし
+- **シナリオ**: `gui_settings_choose`(175 → 197)。実装者の run で `gui_build_D` と合わせて緑。本数は 61 のまま
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

@@ -207,7 +207,7 @@ engine は RPC の `set_play_state` で一時停止でき、`advance_frames` で
 
 > **この 3 本は「アニメーションの API」ですが、対象が 2 つに分かれていて互いに委譲しません(✅AG-1b 決定 5)。ファサード分割もその線を引き直しただけで、行き先は変わっていません。** `render().setValueGraphParameter` が触るのは **pass 文書の `graph.instance`** の入力ポート、`animation().setParameter` / `animation().forceState` が触るのは **シーンの `animation` コンポーネント**が持つ評価器です(前者は [gamecontext.cpp:406](../../src/core/userpublic/gamecontext.cpp#L630) で `SceneLoader` へ、後者は [:319](../../src/core/userpublic/gamecontext.cpp#L535) / [:329](../../src/core/userpublic/gamecontext.cpp#L545) で `AnimationSystem` へ行きます)。**姿勢の装着様式が 2 つある**(§8.13)ことがそのまま API に出ています。同じ owner に両方は付かないので、「どちらを呼ぶか」は装着の仕方で決まります。
 >
-> 同じ `graph.instance` 側には `render().emitValueGraphEvent(object, input, command)` もあります。`input` は **`event.playback` ノードの(展開後の)id** で、そこから `value.event_clock` / `audio.playback` の `events` ポートへ再生制御イベントが流れます([valuegraph.cpp:302](../../src/core/userpublic/valuegraph.cpp#L568))。
+> 同じ `graph.instance` 側には `render().emitValueGraphEvent(object, input, command)` もあります。`input` は **`event.playback` ノードの(展開後の)id** で、そこから `value.event_clock` / `audio.playback` の `events` ポートへ再生制御イベントが流れます([valuegraph.cpp:302](../../src/core/userpublic/valuegraph.cpp#L569))。
 >
 > 一方、**姿勢の評価器そのものは `GameContext` に載っていません** — 評価器を載せると標準の評価器だけが特権を持ってしまい、「評価器ごと自作できる」という設計が空文になるためです([../design_animation_graph.md](../design_animation_graph.md))。自作評価器は凍結 C-ABI 経由です(§8.13)。
 
@@ -886,7 +886,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
   - 値は mixer ではなく、直前の frame が各 voice に求めたことから読みます。なので **null backend でも同じ値**です。
   - `idle` は voice が無いとき(まだ始まっていない・reset された・scene の commit で止まった)、`paused` は voice が止められているとき(voice 自身の pause、時計や `position` が止まっている、`delay` に届いていない)です。
   - 編集モード(`get_status.play.state` が `edit`)の間は何も鳴らないので、全部 `idle` で 0 です。game を一時停止している間は mix 全体が止まるので、鳴るはずの voice は `paused` になります。
-  - `get_graph_node_values` で読める `audio.playback` の node の値(lowering の後の op は `audio_playback`)は、その node の `time` 入力の秒で、`position_seconds`(音源の秒)とは意味が違います([評価する所](../../src/core/userpublic/valuegraph.cpp#L853))。
+  - `get_graph_node_values` で読める `audio.playback` の node の値(lowering の後の op は `audio_playback`)は、その node の `time` 入力の秒で、`position_seconds`(音源の秒)とは意味が違います([評価する所](../../src/core/userpublic/valuegraph.cpp#L861))。
   - 例(Play → 数 frame): `"voices": [{"node": "voice", "state": "playing", "position_seconds": <進んだ秒>}]`(test の、`time` に `scene_time` を繋いだ voice では、0 から frame ごとに 1 frame の秒ずつ進む)。Pause の後は `paused` になり、Stop の後は `{"node": "voice", "state": "idle", "position_seconds": 0.0}` です。test: `audio_test` の [「CT-1 get_status lists each graph voice's state and position, the same on the null backend」](../../test/audio_test.cpp#L908)(null backend の headless)。
   - Studio のシナリオ `graph_read` は、`9ca2d3ce` から `audio` の鍵が 3 つ(`available`・`backend`・`voices`)であることを見ます(`audio.$len` が 3。[第13章](13_editor.md) の「シナリオは無音です」)。CT-1 の着地の docs の時点では 2 つを見ていて、鍵の数が合わないはずでした。この docs ではシナリオを走らせて確かめていません(未確認)。
   - Studio の Graph は ✅UX-9 から、`audio.playback` の node の下の帯にこの `state` と `position_seconds` を `playing · 1.2 s` の形で出します(`edit` の間の `idle` は出しません。[第13章](13_editor.md) の「保存中でも palette が開く、確定前の値を送る、voice の帯、起動時の致命の 1 文」)。
@@ -916,7 +916,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 **一体版でも `events` は任意です**(✅AU-3。AU-2 までは必須で、無いと `unconnected graph input: <node>.events` で拒否されていました)。
 
-- `events` も `position` も無いノードは、**owner の最初のフレームで鳴り始め**、そのフレームから `time` 入力の時計で経過時間(写像の elapsed)を数えます([開始](../../src/core/userpublic/valuegraph.cpp#L1016))。分解版の「`events` が無ければ owner の最初のフレーム」と同じ規則です。
+- `events` も `position` も無いノードは、**owner の最初のフレームで鳴り始め**、そのフレームから `time` 入力の時計で経過時間(写像の elapsed)を数えます([開始](../../src/core/userpublic/valuegraph.cpp#L1024))。分解版の「`events` が無ければ owner の最初のフレーム」と同じ規則です。
 - `events` が無いときの `time` は、どの時計から来てもかまいません(`time` でも `scene_time` でも、時計の無い定数でも拒否されない)。
 - `time` は必須のままです。`events` を繋ぐなら `time` は `scene_time` だけから、の検査(`audio.clock_mismatch@1`、下の「状態と拒否」)も変わりません。
 - Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L3512)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。✅UX-8 から、palette の `audio.volume` / `audio.pitch` は置く前に駆動する voice(scope の `audio.playback`)を聞き、その `voice` からの線と、`value` に 1 の `value.constant` をつないだ形で置かれます。palette の `value.curve`(`time` が `scene_time` につながった、1 秒で 0 から 1 の key)を `value` へ線で落とせば、下の「フェード」の形になります。音声の file は Studio の File ▸ Import Sound… か Sound の欄の Import… で project の `assets/audio/` に写せます(同じ名前があれば `_2`)。どれも [第13章](13_editor.md) の「音の node を置く・音声を Import する(✅UX-8)」です。
@@ -1042,6 +1042,16 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 `audio.volume` の値は **そのフレームの長さ(dt)をかけて直線で寄せます**([`rampSoundVolume`](../../src/core/loader/scenegraphruntime.cpp#L268))。フレーム境界で段が付かず、曲線を折れ線でなぞる音量になります。最初のフレームはその値から始まります(上の例なら無音から)。`audio.pitch` は寄せずにその値を設定します。
 
+### 音に合わせて描く —— 解析を焼いて Studio で使う(✅AB-1s)
+
+音の rms・peak・帯域を表に焼き(engine の ✅AB-1。表の形は [第5章](05_assets.md) §5.8、読み方は [第6章](06_rendering.md) §6.18「焼いた音の解析の表を読む」)、その表で描画を動かす操作を、Studio の Graph タブで GUI だけで行えます(`149c0ec8`)。焼くのは制作の時で、実行時に音を解析するのではありません(v0 の音の解析は焼き込み)。細部は [第13章](13_editor.md) の「音の解析を焼いて描画に使う(✅AB-1s)」です。
+
+- **Bake analysis…**: Graph タブで `audio.playback` を選ぶと、Sound の行に **Bake analysis…** があります。ダイアログで RMS / Peak / Bands(帯の数は 1〜128、既定 8)、Hop(既定 10 ms)、Smoothing(attack / release)、Channels(Mix / Left / Right)と、書き出す表(既定 `assets/analysis/<音の名前>.ktx2`)を選んで **Bake** を押すと、`bake_audio_analysis` が表と隣の `<表>.import.json` を書きます。焼いている間は `Baking <音>… (<秒> s)`、終わると `Baked <表>: <行> × <標本数> samples` が出ます([Bake のダイアログの class `GraphCanvasBakeDialog`](../../src/devstudio/view/graphcanvasaudioanalysis.hpp#L36))。
+- **Use in Graph**: 焼き終わった行の **Use in Graph** は、値の graph に `value.sample_table`(表の `rms` の行、時刻は `scene_time`)を置きます。その出力を `render.buffer` の value に繋げば、CPU で読んだ値を shader に渡せます。palette で置く `value.sample_table` も、焼いた表とその行を一覧から選ぶダイアログで置けます。
+- **Use in a shader**: 同じ行の **Use in a shader** は、表を始めの内容にする persistent の `render.image` と、表の形(`rows_per_feature` / `sample_count` / `hop_seconds`)と scene time を入れた vec4 の `render.buffer` を 1 回の編集で置き、選んでいる fullscreen / raster の pass の shader が宣言していればその入力に繋ぎます。shader に写す `#include "pelican_sample_table.glsl"` と `pelican_sample_table(...)` の 1 行が出ます。
+- **Re-bake**: 元の音を書き換えた後に Graph の **Refresh** を押すと、その表を読む node の帯に橙の `stale: source_changed` が付き、node の欄に **Re-bake** が出ます。Re-bake は表の manifest に記録された音と設定で焼き直します。焼き直した表は graph を組み直すまで `value.sample_table` に届かないので、Studio はその後、表を読む `value.sample_table` の parameters を同じ値で書き直す編集を 1 回送ります([Re-bake の後に読み手を書き直す `GraphCanvasModel::rebuildSampleTableReaders()`](../../src/devstudio/model/graphcanvasaudioanalysis.cpp#L218))。engine の ✅IA-3(`26473e75`)で reload と file の見張りが書き換わった表を拾うようになったので、この同じ値の編集は UX-13a で外す予定です。
+- 動く例は Studio のシナリオ `gui_build_audio_reactive` です: 前半が無音・後半が音の WAV を焼き、Timeline の時刻を動かすと、CPU の道(`value.sample_table`)と GPU の道(shader で表を読む)の両方で viewport の明るさが変わります。
+
 ### 長い音の streaming(✅AU-2)
 
 - header が言う長さが **10 秒を超える**音は、WAV でも Ogg Vorbis でも streaming で鳴ります(判定は [`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L514)、10 秒は [`defaultStreamingThresholdSeconds`](../../src/core/audio/audio.cpp#L51))。
@@ -1063,7 +1073,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 ### 残した穴(AU-3 の時点)
 
-- **`events` の無い voice は、owner がいったん不活性になって戻ると頭から鳴り直します。** 不活性の間はノードの状態を捨て([該当箇所](../../src/core/userpublic/valuegraph.cpp#L978))、戻ったフレームで改めて開始する(一体版は経過時間をそのフレームから数え直す)ためです。
+- **`events` の無い voice は、owner がいったん不活性になって戻ると頭から鳴り直します。** 不活性の間はノードの状態を捨て([該当箇所](../../src/core/userpublic/valuegraph.cpp#L986))、戻ったフレームで改めて開始する(一体版は経過時間をそのフレームから数え直す)ためです。
 - **`wrap: once`(既定)で `events` が無いと、owner の最初のフレームから 1 回だけ鳴って止まります。** 好きな時に鳴らしたいなら `events` を繋ぎます(ループさせたいなら `wrap: repeat`)。
 
 ## 8.12 永続化(✅WP65)

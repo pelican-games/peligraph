@@ -73,7 +73,7 @@ Pelican が「こう呼んでいる」基本語(scene、asset、feature、render
 3. [`Loop::run()`](../../src/core/appflow/loop.cpp#L772) — 通常/XR/headless/RPCの実行方式を分ける（windowed + RPCを含む5経路）。
 4. [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L152) — 1フレームのゲーム状態更新を5フェーズで実行する。
 5. [`ECSCoreTemplatePublic::update()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L663) — 内部ECS Systemを依存順に実行する（実行計画は [`buildECSExecutionPlan()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L206) が作る）。
-6. [描画処理（複数のビュー群を受け取る実装）](../../src/core/vkcore/renderer.cpp#L6797) — 描画計画を GPU コマンドへ変換します。[単一ビュー群の呼び出し口](../../src/core/vkcore/renderer.cpp#L5194) はこの実装へ転送します。[通常画面の描画](../../src/core/vkcore/renderer.cpp#L6829) は計画の選択と再変換の再試行を担当し、[引数なしの描画関数](../../src/core/vkcore/renderer.cpp#L6872) はカメラから 1 つのビューを組み立てます。
+6. [描画処理（複数のビュー群を受け取る実装）](../../src/core/vkcore/renderer.cpp#L6804) — 描画計画を GPU コマンドへ変換します。[単一ビュー群の呼び出し口](../../src/core/vkcore/renderer.cpp#L5201) はこの実装へ転送します。[通常画面の描画](../../src/core/vkcore/renderer.cpp#L6836) は計画の選択と再変換の再試行を担当し、[引数なしの描画関数](../../src/core/vkcore/renderer.cpp#L6879) はカメラから 1 つのビューを組み立てます。
 7. [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) — 例外時もGPU/ECS/queue資源を規範順で解放する（実体は [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp#L122)）。
 
 ## リンクの見方
