@@ -4986,7 +4986,10 @@ TEST_CASE("LP-0a render.target_ref reads and writes targets declared outside the
         auto [code, fields] = lp0aRefusal(mismatched);
         CHECK(code == "graph.target_ref_type_mismatch@1");
         CHECK(fields == Json{{"node", "lit"}, {"name", "lit_color"}, {"field", "kind"},
-                             {"declared", "depth"}, {"actual", "color"}});
+                             {"declared", "depth"}, {"actual", "color"},
+                             // FR-1: a color target states no type to write.
+                             {"expected", {{"type", {{"semantic", "pelican.render.legacy_opaque_image@1"},
+                                                     {"arguments", Json::object()}}}}}});
         auto cube = lp0aSceneColorType();
         cube["arguments"]["topology"] = "cube";
         mismatched = document;
@@ -4995,7 +4998,9 @@ TEST_CASE("LP-0a render.target_ref reads and writes targets declared outside the
         std::tie(code, fields) = lp0aRefusal(mismatched);
         CHECK(code == "graph.target_ref_type_mismatch@1");
         CHECK(fields == Json{{"node", "lit"}, {"name", "lit_color"}, {"field", "topology"},
-                             {"declared", "cube"}, {"actual", "two_d"}});
+                             {"declared", "cube"}, {"actual", "two_d"},
+                             // FR-1: the declared type at the target's topology.
+                             {"expected", {{"type", lp0aSceneColorType()}}}});
         // A depth reference to a depth target passes.
         auto depth_ref = document;
         depth_ref["nodes"][0]["parameters"] = {{"name", "scene_depth"}, {"type", depth}};
@@ -9881,6 +9886,156 @@ TEST_CASE("IA-1 an initial asset on a transient image, beside an extent scale, o
                           Catch::Matchers::ContainsSubstring("graph.render_node_parameter_invalid@1") &&
                               Catch::Matchers::ContainsSubstring("\"parameter\":\"initial\""));
     }
+}
+
+namespace {
+// FR-1: a pipeline built up from Blank in the Graph: a direct pelican.graph
+// root whose rendering section lights lit_color and presents it. It declares
+// no scene depth, and no pass writes the swapchain.
+nlohmann::json fr1BlankGraph() {
+    return nlohmann::json::parse(R"json({
+  "schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {},
+  "rendering": {
+    "render_targets": [
+      {"name": "lit_color", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT",
+       "usage": ["COLOR_ATTACHMENT", "SAMPLED"]}
+    ],
+    "rendering_passes": [{"name": "main_render", "passes": [
+      {"name": "deferred_lighting", "type": "fullscreen", "input": [],
+       "output": {"color": ["lit_color"], "depth": null},
+       "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"}},
+      {"name": "present", "type": "fullscreen", "input": ["lit_color"],
+       "output": {"color": ["display"], "depth": null},
+       "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"}}
+    ]}]
+  }
+})json");
+}
+
+nlohmann::json fr1DeviceDepth() {
+    return {{"semantic", "pelican.render.depth@1"},
+            {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+}
+} // namespace
+
+TEST_CASE("FR-1 a feature names the targets it leaves to the pipeline and is refused by name without one",
+          "[render-feature][graph-composition][fr1]") {
+    using Json = nlohmann::json;
+    const auto engineFeature = [](std::string_view name) {
+        return Json::parse(loadEngineFeature("engine://features/" + std::string{name} + ".json"));
+    };
+    const Json opaque{{"semantic", "pelican.render.legacy_opaque_image@1"}, {"arguments", Json::object()}};
+    // What the feature writes, reads and overrides, its own targets left out;
+    // the declared required_targets gives scene_depth its type.
+    CHECK(renderFeatureRequiredTargets(engineFeature("sky_ambient")) ==
+          Json::array({Json{{"name", "lit_color"}, {"type", opaque}, {"usage", Json::array({"COLOR_ATTACHMENT"})}},
+                       Json{{"name", "scene_depth"}, {"type", fr1DeviceDepth()}, {"usage", Json::array({"SAMPLED"})}}}));
+    CHECK(renderFeatureRequiredTargets(engineFeature("shadow_directional")) == Json::array());
+    CHECK(renderFeatureRequiredTargets(engineFeature("ui")) == Json::array());
+    // A parameter's target by its default, with the parameter's usage; a
+    // history read names its target, the feature's own.
+    const auto taa = renderFeatureRequiredTargets(engineFeature("taa"));
+    const auto depth = std::find_if(taa.begin(), taa.end(), [](const Json &entry) {
+        return entry.at("name") == "offscreen_depth";
+    });
+    REQUIRE(depth != taa.end());
+    CHECK(depth->at("type") == fr1DeviceDepth());
+    CHECK(depth->at("usage") == Json::array({"SAMPLED", "DEPTH_STENCIL_ATTACHMENT"}));
+    for (const auto &entry : taa) CHECK(entry.at("name") != "taa_accum");
+
+    auto document = fr1BlankGraph();
+    document["rendering"]["features"] = Json::array({"engine://features/sky_ambient.json"});
+    const auto [code, fields] = lp0aRefusal(document);
+    CHECK(code == "feature.required_target_missing@1");
+    CHECK(fields == Json{{"feature", "sky_ambient"}, {"target", "scene_depth"}, {"type", fr1DeviceDepth()},
+                         {"document", "engine://features/sky_ambient.json"}});
+
+    // One edit: the target, and a render.target_ref of the type the refusal gave.
+    auto fixed = document;
+    fixed["rendering"]["render_targets"].push_back(
+        {{"name", "scene_depth"}, {"extent_scale", 1.0}, {"format", "D32_SFLOAT"},
+         {"usage", Json::array({"DEPTH_STENCIL_ATTACHMENT"})}});
+    fixed["nodes"].push_back({{"id", "scene_depth_ref"}, {"op", "render.target_ref"},
+                              {"parameters", {{"name", "scene_depth"}, {"type", fields.at("type")}}},
+                              {"outputs", Json::array({"resource"})}});
+    const auto composed = lp0aCompose(fixed);
+    CHECK(passByName(composed.config, "sky_background").at("input") == Json::array({"scene_depth"}));
+    std::size_t depth_targets = 0;
+    for (const auto &target : composed.config.at("render_targets"))
+        if (target.at("name") == "scene_depth") ++depth_targets;
+    CHECK(depth_targets == 1);
+
+    // A malformed declaration is the feature's error, not a missing target.
+    auto declared = engineFeature("sky_ambient");
+    declared["required_targets"][0].erase("type");
+    REQUIRE_THROWS_WITH(composeRenderFeatureConfig(fixed, RenderFeatureComposeDependencies{
+                            [&](std::string_view) { return declared.dump(); }, true}),
+                        Catch::Matchers::ContainsSubstring("required_targets"));
+}
+
+TEST_CASE("FR-1 a snapshot after a name the pipeline lacks is refused with the names it takes",
+          "[render-feature][snapshot][fr1]") {
+    using Json = nlohmann::json;
+    auto document = fr1BlankGraph();
+    document["rendering"]["snapshots"] = Json::array({{{"name", "opaque_snapshot"}, {"after", "opaque"}}});
+    const auto [code, fields] = lp0aRefusal(document);
+    CHECK(code == "snapshot.after_unknown@1");
+    CHECK(fields == Json{{"snapshot", "opaque_snapshot"}, {"after", "opaque"},
+                         {"candidates", Json::array({"post_ldr"})}});
+    // The authoring context reads the same names off the composed pipeline.
+    CHECK(Json(renderSnapshotAfterCandidates(lp0aCompose(fr1BlankGraph()).config)) == fields.at("candidates"));
+    // A pass in the region (one that writes the swapchain) is one too.
+    auto swapchain = baseConfigWithFeature("valid/dummy_feature.json");
+    swapchain["features"] = Json::array();
+    CHECK(renderSnapshotAfterCandidates(composeRenderFeatureConfig(swapchain).config) ==
+          std::vector<std::string>{"post_ldr", "present"});
+
+    // Each candidate composes, and the copy follows a frame node that the
+    // execution plan knows (the anchor's, not its bare name).
+    for (const auto &candidate : fields.at("candidates")) {
+        INFO(candidate.dump());
+        auto fixed = document;
+        fixed["rendering"]["snapshots"][0]["after"] = candidate;
+        auto composed = lp0aCompose(fixed);
+        const auto &copy = passByName(composed.config, "__snapshot_opaque_snapshot");
+        CHECK(copy.at("snapshot_after") == "__anchor_post_ldr");
+        for (auto &target : composed.config.at("render_targets")) {
+            if (target.value("format_class", std::string{}) != "display") continue;
+            target["width"] = 1280;
+            target["height"] = 720;
+        }
+        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+        REQUIRE(graphs.size() == 1);
+        const auto plan = planFrameGraph(graphs.front());
+        const auto execution = compileFrameExecutionPlan(
+            graphs.front(), plan,
+            ExecutionEndpoint{.id = "device:0", .endpoint_class = ExecutionEndpointClass::device, .backend = "vulkan"});
+        CHECK(std::any_of(execution.dependencies.begin(), execution.dependencies.end(), [](const auto &edge) {
+            return edge.from == "__anchor_post_ldr" && edge.to == "__snapshot_opaque_snapshot" &&
+                   edge.reason == "pelican.dependency.snapshot_after@1";
+        }));
+    }
+}
+
+TEST_CASE("FR-1 a target_ref whose type contradicts its target is told the type to write",
+          "[render-feature][graph-composition][fr1]") {
+    using Json = nlohmann::json;
+    // shadow_directional with cascade_count 3 makes shadow_map a 3-layer array.
+    const auto document = lp0dGraph(Json::array({Json{{"id", "shadow"}, {"op", "render.target_ref"},
+                                                      {"parameters", {{"name", "shadow_map"}, {"type", fr1DeviceDepth()}}},
+                                                      {"outputs", Json::array({"resource"})}}}),
+                                     Json{});
+    const auto [code, fields] = lp0aRefusal(document);
+    CHECK(code == "graph.target_ref_type_mismatch@1");
+    auto array_depth = fr1DeviceDepth();
+    array_depth["arguments"]["topology"] = "two_d_array";
+    CHECK(fields == Json{{"node", "shadow"}, {"name", "shadow_map"}, {"field", "topology"},
+                         {"declared", "two_d"}, {"actual", "two_d_array"},
+                         {"expected", {{"type", array_depth}, {"layers", 3}}}});
+    // The same edit with the type the refusal gave composes.
+    auto fixed = document;
+    fixed["nodes"][0]["parameters"]["type"] = fields.at("expected").at("type");
+    REQUIRE_NOTHROW(lp0aCompose(fixed));
 }
 
 } // namespace Pelican

@@ -1173,6 +1173,21 @@ OrderedJson RenderConfigEditorService::listRenderFeatures(
             encoded["unavailable_reason"] =
                 entry.unavailable_reason;
         }
+        // FR-1: the targets the pipeline has to declare for the feature to
+        // compose (feature.required_target_missing@1 otherwise). A document
+        // that cannot be read lists none; adding it says why.
+        encoded["required_targets"] = OrderedJson::array();
+        try {
+            std::string bytes;
+            if (entry.reference.starts_with("engine://"))
+                bytes = engineResourceOrThrow(entry.reference.substr(9));
+            else if (dependencies_.resolve_document_path)
+                bytes = readFileBytes(dependencies_.resolve_document_path(entry.reference));
+            if (!bytes.empty())
+                encoded["required_targets"] =
+                    OrderedJson::parse(renderFeatureRequiredTargets(Json::parse(bytes)).dump());
+        } catch (const std::exception &) {
+        }
         features.push_back(std::move(encoded));
     }
     return {{"features", std::move(features)}};
@@ -2185,6 +2200,9 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
          resolved.pipeline_preset ? "preset" : "direct"},
         {"graphs", std::move(graphs)},
         {"managed_fragments", std::move(fragments)},
+        // FR-1: what a rendering.snapshots entry's `after` may name here
+        // (snapshot.after_unknown@1 otherwise).
+        {"snapshot_after_candidates", renderSnapshotAfterCandidates(resolved.config)},
     };
 
     // F-1: every composed render target, where it was declared, and whether

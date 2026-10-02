@@ -127,4 +127,42 @@ void insertRenderPassRunAtAnchor(nlohmann::json &passes,
                                  std::size_t anchor_index, bool after,
                                  std::vector<nlohmann::json> run);
 
+// FR-1: the render targets a feature document's own declaration reads or
+// writes and leaves to the pipeline to declare -- its passes' color / depth
+// outputs and inputs and its render_target_overrides, a `$parameter` name by
+// that parameter's default -- as [{name, type, usage?}], in the order they are
+// first named. A target the feature declares itself, `swapchain`, `display`,
+// an integration's fragment and a parameter with no default are left out; an
+// `@history` read names its target. `type` is the logical image type a
+// render.target_ref naming it declares: the one the feature's
+// `required_targets` entry of that name gives, else pelican.render.depth@1
+// (device, projection) for a depth attachment, else
+// pelican.render.legacy_opaque_image@1. `usage` is what the feature uses it
+// for (COLOR_ATTACHMENT / DEPTH_STENCIL_ATTACHMENT / SAMPLED, and the override's
+// and the parameter's usage). Never throws on a malformed document; the
+// composer refuses that.
+nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature);
+
+// FR-1: a feature composed into a pipeline that declares none of a target it
+// needs. Fields: {feature, target, type, document} -- the feature's name, the
+// target, its renderFeatureRequiredTargets type, and the feature document's
+// reference. Raised as GraphRegistryError.
+inline constexpr std::string_view featureRequiredTargetMissingCode =
+    "feature.required_target_missing@1";
+
+// FR-1: a rendering.snapshots entry whose `after` names no pass or anchor in
+// some pass family. Fields: {snapshot, after, resolved?, candidates} --
+// `resolved` is the frame node an anchor name stands for
+// (`__anchor_<anchor>`), `candidates` renderSnapshotAfterCandidates of the
+// pipeline. Raised as GraphRegistryError.
+inline constexpr std::string_view snapshotAfterUnknownCode =
+    "snapshot.after_unknown@1";
+
+// FR-1: the names a rendering.snapshots entry's `after` may take in a composed
+// (or canonicalized) config: in every pass family, the frame nodes from the
+// post_ldr anchor up to the pelican_ui anchor -- an anchor by its anchor name
+// (`post_ldr`), a pass by its name -- that every family has, in the first
+// family's order. Snapshot copies are not among them.
+std::vector<std::string> renderSnapshotAfterCandidates(const nlohmann::json &config);
+
 } // namespace Pelican

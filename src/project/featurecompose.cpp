@@ -507,6 +507,44 @@ void enforceTerminalAfterComputeTasks(nlohmann::json &config) {
     }
 }
 
+// FR-1: renderSnapshotAfterCandidates (featurecompose.hpp).
+std::vector<std::string> snapshotAfterCandidatesOf(const nlohmann::json &config) {
+    std::vector<std::string> result;
+    const auto families = config.find("rendering_passes");
+    if (families == config.end() || !families->is_array()) return result;
+    const auto post_ldr = canonicalAnchorNodeName("post_ldr");
+    const auto transparent_begin = canonicalAnchorNodeName("pelican_ui");
+    bool first = true;
+    for (const auto &family : *families) {
+        std::vector<std::string> names;
+        const auto passes = family.is_object() ? family.find("passes") : family.end();
+        if (family.is_object() && passes != family.end() && passes->is_array()) {
+            bool inside = false;
+            for (const auto &pass : *passes) {
+                if (!pass.is_object()) continue;
+                const auto name = pass.value("name", std::string{});
+                if (name == transparent_begin) break;
+                if (name == post_ldr) inside = true;
+                if (!inside) continue;
+                const auto type = pass.value("type", std::string{});
+                if (type == "snapshot_copy") continue;
+                auto candidate = type == "canonical_anchor" ? pass.value("anchor", std::string{}) : name;
+                if (!candidate.empty() && std::find(names.begin(), names.end(), candidate) == names.end())
+                    names.push_back(std::move(candidate));
+            }
+        }
+        if (first) {
+            result = std::move(names);
+            first = false;
+        } else {
+            std::erase_if(result, [&](const std::string &candidate) {
+                return std::find(names.begin(), names.end(), candidate) == names.end();
+            });
+        }
+    }
+    return result;
+}
+
 void materializeSnapshots(nlohmann::json &config) {
     if (!config.contains("snapshots")) {
         return;
@@ -543,12 +581,13 @@ void materializeSnapshots(nlohmann::json &config) {
     }
 
     const auto anchor_it = std::find(canonical_anchors.begin(), canonical_anchors.end(), authored_after);
-    const auto after = anchor_it == canonical_anchors.end()
-                           ? authored_after
-                           : canonicalAnchorNodeName(authored_after);
+    const bool anchor = anchor_it != canonical_anchors.end();
+    const auto after = anchor ? canonicalAnchorNodeName(authored_after) : authored_after;
     const auto post_ldr = canonicalAnchorNodeName("post_ldr");
     const auto transparent_begin = canonicalAnchorNodeName("pelican_ui");
     const auto node = "__snapshot_" + name;
+    // FR-1: what `after` may name, read before any family takes the copy.
+    const auto candidates = snapshotAfterCandidatesOf(config);
 
     for (auto &pass_set : ensureArray(config, "rendering_passes")) {
         auto &passes = pass_set.at("passes");
@@ -561,8 +600,10 @@ void materializeSnapshots(nlohmann::json &config) {
             return pass.value("name", std::string{}) == after;
         });
         if (found == passes.end()) {
-            throw std::runtime_error("snapshot '" + name + "' copy point was not found: " +
-                                     authored_after);
+            // FR-1: by name, with the names this pipeline takes.
+            nlohmann::json fields{{"snapshot", name}, {"after", authored_after}, {"candidates", candidates}};
+            if (anchor) fields["resolved"] = after;
+            throw GraphRegistryError(std::string{snapshotAfterUnknownCode}, std::move(fields));
         }
         const auto post_ldr_it = std::find_if(passes.begin(), passes.end(), [&](const auto &pass) {
             return pass.value("name", std::string{}) == post_ldr;
@@ -582,7 +623,10 @@ void materializeSnapshots(nlohmann::json &config) {
             {"source", "display"},
             {"destination", name},
             {"snapshot", name},
-            {"snapshot_after", authored_after},
+            // FR-1: the frame node the copy follows. An anchor's is
+            // `__anchor_<anchor>`; its bare name is no node, and the
+            // execution plan refused the dependency on it.
+            {"snapshot_after", after},
         };
         passes.insert(found + 1, std::move(copy));
     }
@@ -1902,6 +1946,48 @@ void applyRenderTargetOverrides(nlohmann::json &config, const nlohmann::json &fe
             }
             (*target)["height"] = override_json.at("height");
         }
+    }
+}
+
+// FR-1: a feature's `required_targets` gives the image types of targets it
+// leaves to the pipeline: [{name, type}], type a logical image type.
+void validateDeclaredRequiredTargets(const nlohmann::json &feature, const std::string &feature_name) {
+    const auto declared = feature.find("required_targets");
+    if (declared == feature.end()) return;
+    const auto refuse = [&](const std::string &what) {
+        throw std::runtime_error("render feature '" + feature_name + "' required_targets " + what);
+    };
+    if (!declared->is_array()) refuse("must be an array");
+    for (const auto &entry : *declared) {
+        if (!entry.is_object()) refuse("entries must be objects");
+        for (const auto &[key, value] : entry.items())
+            if (key != "name" && key != "type") refuse("entries accept only name and type: " + key);
+        if (!entry.contains("name") || !entry.at("name").is_string() ||
+            entry.at("name").get_ref<const std::string &>().empty())
+            refuse("entries require a target name");
+        const auto type = entry.find("type");
+        if (type == entry.end() || !type->is_object() || !type->contains("semantic") ||
+            !type->at("semantic").is_string() ||
+            (type->contains("arguments") && !type->at("arguments").is_object()))
+            refuse("entry " + entry.at("name").get<std::string>() +
+                   " requires a type {semantic, arguments}");
+    }
+}
+
+// FR-1: every target the feature leaves to the pipeline is one the pipeline,
+// a feature or a snapshot declares (`available`); the first that is not is
+// refused by name before anything of the feature is applied.
+void requireFeatureTargets(const nlohmann::json &feature, const std::string &feature_name,
+                           const std::string &reference, const std::unordered_set<std::string> &available) {
+    validateDeclaredRequiredTargets(feature, feature_name);
+    for (const auto &required : renderFeatureRequiredTargets(feature)) {
+        const auto name = required.at("name").get<std::string>();
+        if (available.contains(name)) continue;
+        throw GraphRegistryError(std::string{featureRequiredTargetMissingCode},
+                                 {{"feature", feature_name},
+                                  {"target", name},
+                                  {"type", required.at("type")},
+                                  {"document", reference}});
     }
 }
 
@@ -3356,6 +3442,26 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         pending_surface_resources;
     pending_surface_resources.reserve(
         loaded_features.size());
+    // FR-1: the targets a feature may leave to others: the pipeline's, every
+    // feature's and integration's own, and the snapshots' (added last).
+    auto available_targets = target_names;
+    const auto addDeclaredNames = [&](const nlohmann::json &owner, const char *key) {
+        const auto found = owner.find(key);
+        if (found == owner.end() || !found->is_array()) return;
+        for (const auto &entry : *found)
+            if (entry.is_object() && entry.contains("name") && entry.at("name").is_string())
+                available_targets.insert(entry.at("name").get<std::string>());
+    };
+    addDeclaredNames(composed, "snapshots");
+    for (const auto &loaded : loaded_features) {
+        addDeclaredNames(loaded.feature, "render_targets");
+        if (const auto integrations = loaded.feature.find("integrations");
+            integrations != loaded.feature.end() && integrations->is_array())
+            for (const auto &integration : *integrations)
+                if (integration.is_object() && integration.contains("fragment") &&
+                    integration.at("fragment").is_object())
+                    addDeclaredNames(integration.at("fragment"), "render_targets");
+    }
     for (const auto &loaded : loaded_features) {
         nlohmann::json resolved_parameters;
         std::vector<std::string> scalar_defines;
@@ -3377,6 +3483,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
             composed, feature, buffer_names,
             loaded.name, loaded.instance.ref,
             resource_provenance);
+        requireFeatureTargets(feature, loaded.name, loaded.instance.ref, available_targets);
         applyRenderTargetOverrides(composed, feature);
         addFeaturePasses(
             composed, feature, pass_names,
@@ -3937,6 +4044,125 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     result.fold_planning = std::move(fold_application.planning);
     result.used_features = !feature_instances.empty();
     return result;
+}
+
+// FR-1: renderFeatureRequiredTargets (featurecompose.hpp).
+nlohmann::json renderFeatureRequiredTargets(const nlohmann::json &feature) {
+    auto result = nlohmann::json::array();
+    if (!feature.is_object()) return result;
+    const auto stringOf = [](const nlohmann::json &value) {
+        if (value.is_string()) return value.get<std::string>();
+        if (value.is_object() && value.contains("target") && value.at("target").is_string())
+            return value.at("target").get<std::string>();
+        return std::string{};
+    };
+    std::unordered_set<std::string> own;
+    for (const auto *key : {"render_targets", "buffers"}) {
+        const auto declared = feature.find(key);
+        if (declared == feature.end() || !declared->is_array()) continue;
+        for (const auto &entry : *declared)
+            if (entry.is_object() && entry.contains("name") && entry.at("name").is_string())
+                own.insert(entry.at("name").get<std::string>());
+    }
+    std::unordered_map<std::string, const nlohmann::json *> parameters;
+    if (const auto declared = feature.find("parameters"); declared != feature.end() && declared->is_object())
+        if (const auto targets = declared->find("render_targets"); targets != declared->end() && targets->is_array())
+            for (const auto &entry : *targets)
+                if (entry.is_object() && entry.contains("name") && entry.at("name").is_string())
+                    parameters.emplace(entry.at("name").get<std::string>(), &entry);
+    struct Entry {
+        std::string name;
+        std::vector<std::string> usage;
+    };
+    std::vector<Entry> entries;
+    const auto addUsage = [](Entry &entry, const nlohmann::json *usage) {
+        if (usage == nullptr || !usage->is_array()) return;
+        for (const auto &flag : *usage)
+            if (flag.is_string()) appendUnique(entry.usage, flag.get<std::string>());
+    };
+    const auto note = [&](std::string name, std::string_view usage, const nlohmann::json *more_usage) {
+        constexpr std::string_view history = "@history";
+        if (name.size() > history.size() && name.ends_with(history)) name.resize(name.size() - history.size());
+        const nlohmann::json *parameter_usage = nullptr;
+        if (name.starts_with("$")) {
+            const auto parameter = parameters.find(name.substr(1));
+            if (parameter == parameters.end()) return;
+            const auto fallback = parameter->second->find("default");
+            if (fallback == parameter->second->end() || !fallback->is_string()) return;
+            if (const auto declared = parameter->second->find("usage"); declared != parameter->second->end())
+                parameter_usage = &*declared;
+            name = fallback->get<std::string>();
+        }
+        if (name.empty() || name == "swapchain" || name == "display" || own.contains(name)) return;
+        auto entry = std::find_if(entries.begin(), entries.end(), [&](const Entry &e) { return e.name == name; });
+        if (entry == entries.end()) {
+            entries.push_back({name, {}});
+            entry = std::prev(entries.end());
+        }
+        if (!usage.empty()) appendUnique(entry->usage, std::string{usage});
+        addUsage(*entry, more_usage);
+        addUsage(*entry, parameter_usage);
+    };
+    if (const auto passes = feature.find("passes"); passes != feature.end() && passes->is_array()) {
+        for (const auto &entry : *passes) {
+            if (!entry.is_object()) continue;
+            const auto &pass = entry.contains("pass") && entry.at("pass").is_object() ? entry.at("pass") : entry;
+            if (const auto output = pass.find("output"); output != pass.end() && output->is_object()) {
+                if (const auto color = output->find("color"); color != output->end()) {
+                    if (color->is_array()) {
+                        for (const auto &target : *color) note(stringOf(target), "COLOR_ATTACHMENT", nullptr);
+                    } else {
+                        note(stringOf(*color), "COLOR_ATTACHMENT", nullptr);
+                    }
+                }
+                if (const auto depth = output->find("depth"); depth != output->end())
+                    note(stringOf(*depth), "DEPTH_STENCIL_ATTACHMENT", nullptr);
+            }
+            if (const auto input = pass.find("input"); input != pass.end()) {
+                if (input->is_array()) {
+                    for (const auto &target : *input) note(stringOf(target), "SAMPLED", nullptr);
+                } else {
+                    note(stringOf(*input), "SAMPLED", nullptr);
+                }
+            }
+        }
+    }
+    if (const auto overrides = feature.find("render_target_overrides");
+        overrides != feature.end() && overrides->is_object()) {
+        for (const auto &[name, value] : overrides->items()) {
+            const auto usage = value.is_object() ? value.find("usage") : value.end();
+            note(name, {}, value.is_object() && usage != value.end() ? &*usage : nullptr);
+        }
+    }
+    std::unordered_map<std::string, nlohmann::json> declared_types;
+    if (const auto declared = feature.find("required_targets"); declared != feature.end() && declared->is_array()) {
+        for (const auto &entry : *declared) {
+            if (!entry.is_object() || !entry.contains("name") || !entry.at("name").is_string()) continue;
+            const auto name = entry.at("name").get<std::string>();
+            note(name, {}, nullptr);
+            if (entry.contains("type") && entry.at("type").is_object()) declared_types.emplace(name, entry.at("type"));
+        }
+    }
+    for (const auto &entry : entries) {
+        nlohmann::json type;
+        if (const auto declared = declared_types.find(entry.name); declared != declared_types.end()) {
+            type = declared->second;
+        } else if (std::find(entry.usage.begin(), entry.usage.end(), "DEPTH_STENCIL_ATTACHMENT") != entry.usage.end()) {
+            type = {{"semantic", "pelican.render.depth@1"},
+                    {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+        } else {
+            type = {{"semantic", "pelican.render.legacy_opaque_image@1"}, {"arguments", nlohmann::json::object()}};
+        }
+        nlohmann::json encoded{{"name", entry.name}, {"type", std::move(type)}};
+        if (!entry.usage.empty()) encoded["usage"] = entry.usage;
+        result.push_back(std::move(encoded));
+    }
+    return result;
+}
+
+// FR-1: renderSnapshotAfterCandidates (featurecompose.hpp).
+std::vector<std::string> renderSnapshotAfterCandidates(const nlohmann::json &config) {
+    return snapshotAfterCandidatesOf(config);
 }
 
 } // namespace Pelican

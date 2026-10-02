@@ -74,5 +74,14 @@
       "usage": ["SAMPLED"]
     }
   },
+  "required_targets": [
+    {
+      "name": "scene_depth",
+      "type": {
+        "semantic": "pelican.render.depth@1",
+        "arguments": {"representation": "device", "space": "projection"}
+      }
+    }
+  ],
   "shader_defines": ["PELICAN_FEATURE_SKY_AMBIENT"]
 }

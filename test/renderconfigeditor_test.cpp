@@ -11333,4 +11333,73 @@ TEST_CASE("FG-2 verify_fold refuses a group that is being verified, and drops ru
     harness.service.reset();
 }
 
+// FR-1: Blank built up in the Graph -- a direct root whose rendering section
+// lights lit_color and presents it, with no scene depth -- takes sky_ambient
+// only once it declares the depth the feature reads. The catalog says so
+// before the edit, the edit's refusal names the target and its type, and the
+// authoring context lists where a snapshot can be taken.
+TEST_CASE("FR-1 the catalog gives each feature's required targets and adding one without them is refused by name",
+          "[render-config-editor][fr1]") {
+    TemporaryAnimgraphProject project;
+    writeBytes(project.render_config, R"json({
+  "schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {},
+  "rendering": {
+    "render_targets": [
+      {"name": "lit_color", "extent_scale": 1.0, "format": "R16G16B16A16_SFLOAT",
+       "usage": ["COLOR_ATTACHMENT", "SAMPLED"]}
+    ],
+    "rendering_passes": [{"name": "main_render", "passes": [
+      {"name": "deferred_lighting", "type": "fullscreen", "input": [],
+       "output": {"color": ["lit_color"], "depth": null},
+       "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"}},
+      {"name": "present", "type": "fullscreen", "input": ["lit_color"],
+       "output": {"color": ["display"], "depth": null},
+       "shader": {"vertex": "engine://fullscreen", "fragment": "engine://passthrough"}}
+    ]}]
+  }
+}
+)json");
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const Json depth{{"semantic", "pelican.render.depth@1"},
+                     {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+
+    const auto catalog = service->listRenderFeatures(Json::object());
+    const auto entry = std::ranges::find_if(catalog.at("features"), [](const auto &feature) {
+        return feature.at("name") == "sky_ambient";
+    });
+    REQUIRE(entry != catalog.at("features").end());
+    INFO(entry->dump());
+    const auto &required = entry->at("required_targets");
+    REQUIRE(required.size() == 2);
+    CHECK(required.at(0).at("name") == "lit_color");
+    CHECK(required.at(1) == nlohmann::ordered_json::parse(
+        Json{{"name", "scene_depth"}, {"type", depth}, {"usage", Json::array({"SAMPLED"})}}.dump()));
+    // A feature that declares every target it touches needs none.
+    for (const auto &feature : catalog.at("features"))
+        if (feature.at("name") == "shadow_directional") CHECK(feature.at("required_targets").empty());
+
+    const auto before = readBytes(project.render_config);
+    const auto accepted = service->editRenderFeatures(
+        {{"base_source_digest", service->documentForTesting().sourceDigest()},
+         {"operations", operation("add", "engine://features/sky_ambient.json")}});
+    REQUIRE(accepted.at("status") == "accepted");
+    service->commitPending();
+    const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("status") == "rejected");
+    const auto &error = result.at("error");
+    CHECK(error.at("code") == "feature.required_target_missing@1");
+    CHECK(error.at("feature") == "sky_ambient");
+    CHECK(error.at("target") == "scene_depth");
+    CHECK(Json::parse(error.at("type").dump()) == depth);
+    CHECK(error.at("document") == "engine://features/sky_ambient.json");
+    CHECK(readBytes(project.render_config) == before);
+
+    const auto context = service->getRenderAuthoringContext(Json::object());
+    CHECK(context.at("snapshot_after_candidates") == nlohmann::ordered_json::array({"post_ldr"}));
+}
+
 } // namespace Pelican

@@ -1375,6 +1375,34 @@ std::string composedTargetTopology(const Json &target) {
         return "two_d_array";
     return "two_d";
 }
+
+// FR-1: what a render.target_ref naming `target` declares instead of
+// `declared` (whose kind is `declared_kind`): {type, layers?}. The declared
+// type with the target's topology when the kinds agree (or the target's is not
+// known); a depth target's device depth, or the untyped legacy image for a
+// color one, when they do not. `layers` is the array target's layer count.
+Json expectedTargetRefType(const Json &declared, const std::string &declared_kind, const Json &target) {
+    const auto kind = composedTargetKind(target);
+    const auto topology = composedTargetTopology(target);
+    Json type;
+    if (kind.empty() || kind == declared_kind) {
+        type = declared;
+    } else if (kind == "depth") {
+        type = {{"semantic", "pelican.render.depth@1"},
+                {"arguments", {{"representation", "device"}, {"space", "projection"}}}};
+    } else {
+        type = {{"semantic", "pelican.render.legacy_opaque_image@1"}, {"arguments", Json::object()}};
+    }
+    if (type.at("semantic") != "pelican.render.legacy_opaque_image@1") {
+        auto &arguments = type["arguments"];
+        if (!arguments.is_object()) arguments = Json::object();
+        if (topology == "two_d") arguments.erase("topology");
+        else arguments["topology"] = topology;
+    }
+    Json expected{{"type", std::move(type)}};
+    if (topology == "two_d_array") expected["layers"] = target.at("layers");
+    return expected;
+}
 }
 
 namespace {
@@ -1401,7 +1429,8 @@ void checkTargetReference(const Json &composed, const RenderGraphTargetReference
     const auto mismatch = [&](const char *field, const std::string &declared, const std::string &actual) {
         throw GraphRegistryError("graph.target_ref_type_mismatch@1",
             {{"node", reference.node}, {"name", reference.name}, {"field", field},
-             {"declared", declared}, {"actual", actual}});
+             {"declared", declared}, {"actual", actual},
+             {"expected", expectedTargetRefType(reference.type, declared_kind, *found)}});
     };
     const auto actual_kind = composedTargetKind(*found);
     if (!actual_kind.empty() && actual_kind != declared_kind)
