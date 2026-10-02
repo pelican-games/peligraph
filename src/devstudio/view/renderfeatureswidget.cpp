@@ -2309,12 +2309,11 @@ struct RenderFeaturesWidget::Impl {
             FixReading,
             FixBatch,
             // Decision 4: what is read to say whether a target is shown, the
-            // read before the press is sent, then present's input and the
-            // anchor's colour.
+            // read before the press is sent, then the anchor's colour and
+            // present's input (UX-13d: one edit_batch).
             ShowCheck,
             ShowReading,
             ShowPresent,
-            ShowWriter,
         };
         Step step = Step::Reading;
         // Only decide whether to ask (Add), or send (Add with targets).
@@ -2339,7 +2338,6 @@ struct RenderFeaturesWidget::Impl {
         std::vector<QString> batch_steps;
         nlohmann::json context = nlohmann::json::object();
         std::optional<ShowTargetPlan> show;
-        nlohmann::json present_params = nlohmann::json::object();
         QString line;
     };
     std::optional<TargetsEdit> chain;
@@ -3077,9 +3075,6 @@ struct RenderFeaturesWidget::Impl {
             emit owner.renderConfigCommitted();
             return;
         }
-        case Step::ShowWriter:
-            sendShowPresent();
-            return;
         case Step::ShowPresent: {
             const auto plan = *chain->show;
             chain.reset();
@@ -3119,18 +3114,16 @@ struct RenderFeaturesWidget::Impl {
             return;
         }
         case Step::ShowPresent: {
+            // UX-13d: one edit_batch -- a refusal wrote nothing, so there is
+            // nothing to take back; the line names the edit it met.
             const auto plan = *chain->show;
-            const bool drawn = !plan.graph_ops.empty();
+            QString line = responseError(response);
+            if (const auto index = batchIndexOf(error); index && *index < chain->batch_steps.size())
+                line = owner.tr("Connecting %1 to %2 was refused at %3: %4")
+                           .arg(QString::fromStdString(plan.target), QString::fromStdString(plan.present),
+                                chain->batch_steps[*index], line);
             chain.reset();
-            if (!drawn) {
-                showError(responseError(response));
-                return;
-            }
-            requestRefresh();
-            showError(owner.tr("%1 is drawn now, but %2 could not read it (%3); Edit > Undo Render "
-                               "Edit takes it back.")
-                          .arg(QString::fromStdString(plan.target), QString::fromStdString(plan.present),
-                               responseError(response)));
+            showError(line);
             notice_sticky = true;
             return;
         }
@@ -3363,8 +3356,8 @@ struct RenderFeaturesWidget::Impl {
             return;
         }
         // present's edit is made from the context as read; the anchor's
-        // colour goes in first (alone it is drawn and not read, which
-        // composes), then present reads the target on the revision it made.
+        // colour goes in first, then present reads the target -- UX-13d
+        // (engine FR-4): one edit_batch, one ticket, one undo.
         const auto authoring = framePlanAuthoringFromContext(chain->context);
         std::string fragment;
         if (const auto *row = authoring.find(plan->graph, plan->present)) {
@@ -3379,31 +3372,36 @@ struct RenderFeaturesWidget::Impl {
             updateControls();
             return;
         }
-        chain->present_params = std::move(edit.params);
         chain->show = std::move(plan);
-        if (chain->show->graph_ops.empty()) sendShowPresent();
-        else sendShowWriter();
+        sendShow(std::move(edit.params));
     }
 
-    void sendShowWriter() {
+    // UX-13d, decision 1 (engine FR-4): the anchor's colour into the target
+    // and present's inputs as one edit_batch. Every digest is the one read
+    // with the plan: the batch's is the source's, and present's preset (or
+    // feature) digest stays the one before the batch -- the engine reads the
+    // preset as the graph edit left it.
+    void sendShow(nlohmann::json present) {
         const auto &plan = *chain->show;
-        chain->step = TargetsEdit::Step::ShowWriter;
-        chainSubmit(QStringLiteral("edit_graph_document"),
-                    {{"base_source_digest", source_digest.toStdString()}, {"ops", plan.graph_ops}},
-                    owner.tr("Connecting %1 to %2: the pass before it draws into %1...")
-                        .arg(QString::fromStdString(plan.target), QString::fromStdString(plan.present)));
-    }
-
-    void sendShowPresent() {
-        const auto &plan = *chain->show;
-        auto params = chain->present_params;
-        // On the revision the anchor's edit wrote (a preset's pass keeps its
-        // preset digest, which that edit does not move).
-        if (!source_digest.isEmpty()) params["base_source_digest"] = source_digest.toStdString();
+        const auto read_digest = present.value("base_source_digest", std::string{});
+        const auto base = read_digest.empty() ? source_digest.toStdString() : read_digest;
         chain->step = TargetsEdit::Step::ShowPresent;
-        chainSubmit(QStringLiteral("edit_preset_pass"), params,
-                    owner.tr("Connecting %1 to %2...")
-                        .arg(QString::fromStdString(plan.target), QString::fromStdString(plan.present)));
+        chain->batch_steps.clear();
+        const auto line = owner.tr("Connecting %1 to %2...")
+                              .arg(QString::fromStdString(plan.target), QString::fromStdString(plan.present));
+        if (plan.graph_ops.empty()) {
+            // Nothing for the Graph to draw first: present's edit alone.
+            present["base_source_digest"] = base;
+            chainSubmit(QStringLiteral("edit_preset_pass"), present, line);
+            return;
+        }
+        present.erase("base_source_digest"); // the batch's is the only one
+        auto edits = nlohmann::json::array(
+            {{{"method", "edit_graph_document"}, {"params", {{"ops", plan.graph_ops}}}},
+             {{"method", "edit_preset_pass"}, {"params", std::move(present)}}});
+        chain->batch_steps.push_back(owner.tr("the pass before it drawing into %1").arg(QString::fromStdString(plan.target)));
+        chain->batch_steps.push_back(owner.tr("%1 reading it").arg(QString::fromStdString(plan.present)));
+        chainSubmit(QStringLiteral("edit_batch"), {{"base_source_digest", base}, {"edits", std::move(edits)}}, line);
     }
 
     void stageMaterialize() {

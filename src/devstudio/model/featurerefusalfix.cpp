@@ -433,8 +433,10 @@ Json writerConnectOps(const FeatureRequiredTarget &target, const WriterCandidate
         reference = stringOf(ops.at(0).at("node"), "id");
     }
     // A writer whose port declares its type (a fullscreen pass's colour) is
-    // connected only from a source of exactly that type: the target_ref
-    // takes it (a colour target's catalog type is the untyped legacy image).
+    // connected only from a source of exactly that type. UX-13d (engine
+    // FR-4): the catalog gives a colour target the colour signal the Graph's
+    // ports declare, so the target_ref already has it; only one an older
+    // engine typed as the untyped legacy image takes the port's type.
     const auto *writer_node = nodeWithId(graph_nodes, writer.node);
     const auto port_type = writer_node == nullptr ? Json{}
                                                   : writer_node->value("parameters", Json::object())
@@ -449,7 +451,9 @@ Json writerConnectOps(const FeatureRequiredTarget &target, const WriterCandidate
                     if (op.contains("node") && op.at("node").is_object() && stringOf(op.at("node"), "id") == reference)
                         declared = &op.at("node");
         auto parameters = declared != nullptr ? declared->value("parameters", Json::object()) : Json::object();
-        if (parameters.value("type", Json{}) != port_type) {
+        const auto declared_type = parameters.value("type", Json{});
+        if (stringOf(declared_type, "semantic") == "pelican.render.legacy_opaque_image@1" &&
+            declared_type != port_type) {
             parameters["name"] = target.name;
             parameters["type"] = port_type;
             ops.push_back(Json{{"op", "set_node_parameters"},

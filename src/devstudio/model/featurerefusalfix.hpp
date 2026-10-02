@@ -160,9 +160,10 @@ std::string requiredTargetsQuestion(const std::string &feature,
 
 // The edit_graph_document ops that make `writer` write `target`: a
 // render.target_ref of it first when neither `graph_nodes` nor `added_ops`
-// (ops of the same edit, before these) has one; its type made the writer's
-// port's when the port's parameters declare one (a connection is matched
-// exactly); then set_input of the writer's port from its resource.
+// (ops of the same edit, before these) has one; then set_input of the
+// writer's port from its resource. UX-13d (engine FR-4): the target_ref keeps
+// the catalog's type; only a legacy image (an engine before FR-4) takes the
+// type the writer's port declares, since a connection is matched exactly.
 nlohmann::json writerConnectOps(const FeatureRequiredTarget &target, const WriterCandidate &writer,
                                 const nlohmann::json &graph_nodes, const nlohmann::json &added_ops);
 
@@ -174,7 +175,8 @@ std::optional<std::size_t> batchIndexOf(const nlohmann::json &error);
 // the edits that show it: present (the pass of the same graph that draws to
 // the display) reads it in place of its first input, and the pass the
 // feature goes after (its insertion anchor), when a root graph node made it,
-// draws its colour into the target first.
+// draws its colour into the target first. UX-13d (engine FR-4): both go as
+// one edit_batch, the graph edit first.
 struct ShowTargetPlan {
     std::string feature;
     std::string target;

@@ -1383,8 +1383,9 @@ TEST_CASE("UX-12d decision 2: a refused edit_batch names the edit it met (batch_
     CHECK(required<QPushButton>(features, "pelican.renderFeatures.add").isEnabled());
 }
 
-TEST_CASE("UX-12d decision 4: a target the feature draws that nothing reads is offered to "
-          "present, which reads it, and the pass the feature goes after draws into it first",
+TEST_CASE("UX-12d decision 4 / UX-13d decision 1: a target the feature draws that nothing reads is "
+          "offered to present, which reads it, and the pass the feature goes after draws into it first, "
+          "as one edit_batch",
           "[devstudio][ux12d][render-features][widget]") {
     const Json present_declaration{{"type", "fullscreen"},
                                    {"input", {"deferred_lighting__color"}},
@@ -1472,20 +1473,71 @@ TEST_CASE("UX-12d decision 4: a target the feature draws that nothing reads is o
     REQUIRE(show.isVisibleTo(&features));
     CHECK(show.text() == QStringLiteral("Connect lit_color to present"));
 
-    // The press: the anchor's colour into the target (alone it composes),
-    // then present's inputs (the root's pass) on the revision that wrote.
+    // The press -- UX-13d decision 1 (engine FR-4): the anchor's colour into
+    // the target and present's inputs (the root's pass) as one edit_batch,
+    // one ticket, on the digest read with the plan.
     show.click();
     read(RootB);
-    const std::string RootD(64, 'd');
-    const auto writer = ux12bEdit(engine, "edit_graph_document", liveCommit(RootC));
-    CHECK(writer == Json{{"base_source_digest", RootB}, {"ops", writes}});
-    const auto present = ux12bEdit(engine, "edit_preset_pass", liveCommit(RootD));
-    CHECK(present.at("base_source_digest") == RootC);
-    CHECK(present.at("graph") == "main_render");
-    CHECK(present.at("pass_name") == "present");
-    CHECK(present.at("input") == Json::array({"lit_color"}));
-    CHECK(present.at("shader").at("fragment") == "engine://passthrough");
+    const auto batch = ux12bEdit(engine, "edit_batch", liveCommit(RootC));
+    CHECK(batch.at("base_source_digest") == RootB);
+    REQUIRE(batch.at("edits").size() == 2);
+    CHECK(batch.at("edits").at(0) == Json{{"method", "edit_graph_document"}, {"params", {{"ops", writes}}}});
+    const auto &present = batch.at("edits").at(1);
+    CHECK(present.at("method") == "edit_preset_pass");
+    CHECK_FALSE(present.at("params").contains("base_source_digest")); // the batch's is the only one
+    CHECK(present.at("params").at("graph") == "main_render");
+    CHECK(present.at("params").at("pass_name") == "present");
+    CHECK(present.at("params").at("input") == Json::array({"lit_color"}));
+    CHECK(present.at("params").at("shader").at("fragment") == "engine://passthrough");
     CHECK(notice.text() == QStringLiteral("present shows lit_color."));
+    // Nothing else is sent for it.
+    CHECK_FALSE(engine.next("edit_preset_pass", 200));
+    CHECK_FALSE(engine.next("edit_graph_document", 50));
+}
+
+TEST_CASE("UX-13d decisions 2 and 3: a colour target the catalog types as a colour signal keeps "
+          "its type when a pass is connected to it; only a legacy image takes the port's",
+          "[devstudio][ux13d][render-features]") {
+    // Decision 3: sky_ambient's lit_color and rt_shadow_mask's G-buffer
+    // targets come as colour signals (engine FR-4); the references take that
+    // type as it is.
+    const Json shadow_mask{{"required_targets",
+                            Json::array({{{"name", "gbuffer_worldpos"}, {"type", ColorSignal}},
+                                         {{"name", "gbuffer_normal"}, {"type", ColorSignal}}})}};
+    const auto missing = missingRequiredTargets(featureRequiredTargets(shadow_mask), {}, ux12dNodes());
+    REQUIRE(missing.size() == 2);
+    const auto references = requiredTargetReferenceOps(missing, ux12dNodes());
+    REQUIRE(references.size() == 2);
+    CHECK(references.at(0).at("node").at("parameters") ==
+          Json{{"name", "gbuffer_worldpos"}, {"type", ColorSignal}});
+    CHECK(references.at(1).at("node").at("parameters") == Json{{"name", "gbuffer_normal"}, {"type", ColorSignal}});
+
+    // Decision 2: the lighting pass's colour port connected to a colour
+    // signal's target_ref is set_input alone; the type is not written again.
+    const WriterCandidate lighting{"deferred_lighting", "deferred_lighting", "color", "deferred_lighting__color"};
+    const FeatureRequiredTarget lit{"lit_color", ColorSignal, {}};
+    const Json signal_ref{{"id", "lit_color_ref"},
+                          {"op", "render.target_ref"},
+                          {"parameters", {{"name", "lit_color"}, {"type", ColorSignal}}}};
+    const Json connect{{"op", "set_input"},
+                       {"node", "deferred_lighting"},
+                       {"port", "color"},
+                       {"source", {{"node", "lit_color_ref"}, {"port", "resource"}}}};
+    CHECK(writerConnectOps(lit, lighting, ux12dNodes(Json::array({signal_ref})), Json::array()) ==
+          Json::array({connect}));
+    // Added in the same ops (Add with targets): the same.
+    const FeatureRequiredTarget declared_lit{"lit_color", ColorSignal, {}, true, true};
+    const auto added = requiredTargetReferenceOps(std::vector<FeatureRequiredTarget>{declared_lit}, ux12dNodes());
+    CHECK(writerConnectOps(lit, lighting, ux12dNodes(), added) == Json::array({connect}));
+    // An engine before FR-4 types it as the legacy image: that one still
+    // takes the port's type in the same ops.
+    auto legacy_ref = signal_ref;
+    legacy_ref["parameters"]["type"] = OpaqueImage;
+    const auto legacy = writerConnectOps(lit, lighting, ux12dNodes(Json::array({legacy_ref})), Json::array());
+    REQUIRE(legacy.size() == 2);
+    CHECK(legacy.at(0).at("op") == "set_node_parameters");
+    CHECK(legacy.at(0).at("parameters").at("type") == ColorSignal);
+    CHECK(legacy.at(1) == connect);
 }
 
 } // namespace PelicanStudio
