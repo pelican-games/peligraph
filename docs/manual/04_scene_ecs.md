@@ -244,7 +244,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 同じコンポーネントで、**クリップ 1 本の再生**か、**ステートマシン文書(`pelican.anim_graph`)の再生**かのどちらかを宣言します。受理するキーは `name` を除いて 6 つで、**`clip` と `graph` はちょうど一方**でなければなりません(両方書いても、どちらも書かなくても `field 'animation' requires exactly one of clip or graph` — [componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1485))。メッセージの `field '<path>' ` という前置きは検査側が付けるもので([structfieldjson.hpp:56](../../src/core/userpublic/details/schema/structfieldjson.hpp#L150))、ロード時にはさらに `animation.schema_validation` の legacy 拒否として包み直されます([componentcodec.cpp:1537](../../src/core/loader/componentcodec.cpp#L2139))。以下で引用するのは**その中の一節**です。
 
-(`graph` 装着の形。[skeletal_gltf_test.cpp:1074](../../test/skeletal_gltf_test.cpp#L1076) の実物から):
+(`graph` 装着の形。[skeletal_gltf_test.cpp:1074](../../test/skeletal_gltf_test.cpp#L1078) の実物から):
 
 ```json
 { "name": "animation", "graph": "turn.json",
@@ -409,7 +409,7 @@ retire 中の `onDestroy` は「自分の最終状態」を読めます。entity
 
 ### commit したのに作用が失敗したとき
 
-flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L2009))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
+flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L2013))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
 
 - 「シーンは切り替わらなかった」= commit 前の失敗は従来どおり**例外**です。両者を混同しないでください。
 - staging できる作用は 256 件までです。257 件目からは**控えに積まれず、実行もされません**(`playSound` は無効なハンドルを返します)。捨てた件数だけが `effect_outbox_full@1{dropped: N}` という 1 件のエラーにまとめて記録されます([reserveEntry](../../src/core/loader/effecttransaction.cpp#L119))。

@@ -27593,6 +27593,22 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - **新しいファイル**: なし
 - **シナリオ**: `gui_settings_choose`(175 → 197)。実装者の run で `gui_build_D` と合わせて緑。本数は 61 のまま
 
+### UX-13a: buffer の binding の順を engine の規則に、雛形は include の形に、Re-bake 後の組み直しを外す(engine IA-3 の Studio 側)
+
+**Studio のみ(engine は IA-3 `26473e75`)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「buffer の binding は engine の規則で、雛形は include の形、Re-bake の後は reload が表を拾う(✅UX-13a)」と、同じ章の UX-8 の Buffers・AB-1s の Use in a shader と Re-bake・F-3 の雛形の節、`docs/manual/08_gameplay.md` の「音に合わせて描く(✅AB-1s)」。**
+
+#### 前提
+- engine の答え: graph から作った pass の buffer の読みは、読む buffer の資源名(graph の buffer node の id)の順に、texture の入力の数(可変の組があれば `first + max`)から bind される。AB-1s と UX-8 の Studio は port の名前の順と仮定していた。IA-3 で reload と file の見張りが `value.sample_table` の表も拾うので、AB-1s の Re-bake の後の同じ値の `set_node_parameters` は要らない(仕様の engine の答え)
+
+#### 着地(2026-10-03、0e0f4481)
+- **決定 1(binding の順)**: pass の名前付きの buffer の port を、読む buffer の資源名の順(線の無い port は名前の順で後ろ、同じ buffer を読む port は 1 つの binding)で `buffer_binding_base + i` に数える([`GraphCanvasModel::bufferPortReads()`](../src/devstudio/model/graphcanvasvalues.cpp#L245))。`pelican_resource_<port>` の宣言はどの binding でもその名前の port(RS-5)。Graph のソケット・Buffers の欄(反映に出ない port も `binding <b> pelican_resource_<port> ← …`)・Use in a shader の layout の port(番号でなく名前で。反映と shader の text が include で読む名前から、`<表>_layout` を先に)が同じ規則。`namedBufferPorts()` は消えた
+- **決定 2(include の形)**: New… の雛形の buffer の入力は `layout(binding = N)` を書かず、最初の buffer の行の頭に `#include "pelican_resource_ports.glsl"` と `pelican_resource_<port>` で読む注釈([buffer の入力の行](../src/devstudio/view/fullscreenshadertemplate.cpp#L175))。Open the shader の行と Use in a shader の写す 1 行・notice も include を言う。`shaderResourcePortNames()` は `pelican_resource_<名前>` も拾う(`pelican_resource_ports` と `pelican_sample_table` は除く)
+- **決定 3(Re-bake の後)**: `rebuildSampleTableReaders()` と view の hook `rebaked` を外し、Re-bake の後は編集しない(Undo の 1 段も無くなった)。`initialAssets()` が `value.sample_table` の表も集めて見張りに渡し、reload の `changed_assets` は `project://` を外して重複を除く。notice は `Picked up the change to <表>.`
+- **決定 4(シナリオ)**: `gui_build_curve` と `gui_build_audio_reactive` の shader を include の形に書き換え、buffer の port は drag でなく pass の Buffers の + Buffer port で足す。`gui_build_audio_reactive` は Re-bake の後に `Graph change saved.` が出ない・Undo が押せない・`Picked up the change to assets/analysis/beat.ktx2` が出る・GPU の道の画素も変わる、を見る(AB-1s のときは GPU の道は読むだけだった)
+- **test**: `devstudio_graphcanvas_test` の `UX-13a decision 1` / `2`([decision 1](../test/devstudio_graphcanvas_test.cpp#L4474))、`devstudio_graphcanvas_scene_test` の `UX-13a decision 3`([decision 3](../test/devstudio_graphcanvas_scene_test.cpp#L11598))。`AB-1s decision 4` は名前の後半を `(UX-13a: and edits nothing after it)` に替え、書き直しの確かめを外した。`devstudio_shadertemplate_compile_test` の F-3 の buffer の SECTION に include の確かめを足した
+- **新しいファイル**: なし
+- **シナリオ**: `gui_build_curve`(88 → 94)、`gui_build_audio_reactive`(148 → 159)。実装者の run で `gui_build_music` と合わせて 3 本とも緑、`studio_cpu` の 646 本も緑。本数は 61 のまま
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
