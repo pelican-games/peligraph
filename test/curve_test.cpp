@@ -17,9 +17,13 @@
 #include <functional>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <tuple>
+#include <utility>
 
 using namespace Pelican::Animation;
 using Catch::Approx;
@@ -974,7 +978,10 @@ TEST_CASE("common graph contracts check types across instance boundaries", "[cur
     // A parameter string must not create a dependency invisible to port checking.
     document["nodes"].back()["inputs"].erase("duration");
     document["nodes"].back()["parameters"] = {{"duration", "two"}};
-    REQUIRE_THROWS_AS(ValueGraph::Graph(document.dump()), std::invalid_argument);
+    // CT-3: a duration is a number; named from the parameter table.
+    REQUIRE_THROWS_WITH(ValueGraph::Graph(document.dump()),
+                        Catch::Matchers::ContainsSubstring("graph.render_node_parameter_invalid@1") &&
+                            Catch::Matchers::ContainsSubstring("\"parameter\":\"duration\""));
 }
 
 TEST_CASE("common graph instances share definitions but preserve scope and connections", "[curve][graph-composition]") {
@@ -1189,6 +1196,220 @@ TEST_CASE("CT-1 the catalog lists each op's required parameters and the names va
     }
     CHECK_THROWS_WITH(validateGraphInputs(graph("frame_count")),
                       Catch::Matchers::ContainsSubstring("unbound frame graph input: frame_count"));
+}
+
+// CT-3: the catalog says what each op's parameters hold -- kind, default,
+// enum, range, nested fields -- read off the parser that reads them, and
+// resolveOperation refuses a value of the wrong kind by name. The table is
+// the one RS-9's required parameters are read from, so required_parameters
+// is what it was.
+TEST_CASE("CT-3 the catalog lists each op's parameters with their kinds and a wrong value is refused by name",
+          "[curve][graph-module][graph-catalog][ct3]") {
+    using namespace Pelican;
+    using Json = nlohmann::json;
+    const auto catalog = Json(builtinGraphModuleRegistry().catalog());
+    const auto operation = [&](std::string_view op) {
+        for (const auto &module : catalog.at("modules"))
+            for (const auto &entry : module.at("operations"))
+                if (entry.at("op").get<std::string>() == std::string{op}) return entry;
+        FAIL("the catalog lists no " << op);
+        return Json{};
+    };
+    const auto parameter = [&](std::string_view op, std::string_view name) {
+        const auto listed = operation(op);
+        for (const auto &entry : listed.at("parameters"))
+            if (entry.at("name").get<std::string>() == std::string{name}) return entry;
+        FAIL(op << " lists no parameter " << name);
+        return Json{};
+    };
+    const auto names = [&](std::string_view op) {
+        std::vector<std::string> result;
+        const auto listed = operation(op);
+        for (const auto &entry : listed.at("parameters")) result.push_back(entry.at("name").get<std::string>());
+        return result;
+    };
+
+    // RS-9's table before CT-3, which the schema's required entries replace,
+    // and the six the pose and draw.variant parsers required by themselves.
+    const std::map<std::string, Json> rs9{
+        {"render.fullscreen", Json::array({Json{{"name", "ports"}}, Json{{"name", "shader"}}})},
+        {"render.raster", Json::array({Json{{"name", "ports"}}, Json{{"name", "shader"}}, Json{{"name", "draw"}}})},
+        {"render.compute", Json::array({Json{{"name", "ports"}},
+                                        Json{{"one_of", Json::array({"shader", "ray_tracing"})}}})},
+        {"render.material_pass", Json::array({Json{{"name", "material_contract"}}})},
+        {"render.snapshot_copy", Json::array({Json{{"name", "snapshot_after"}}})},
+        {"render.target_ref", Json::array({Json{{"name", "name"}}, Json{{"name", "type"}}})},
+        {"render.image", Json::array({Json{{"name", "type"}}})},
+        {"render.buffer", Json::array({Json{{"name", "element"}}})},
+        {"render.attribute", Json::array({Json{{"name", "element"}}, Json{{"name", "domain"}},
+                                          Json{{"one_of", Json::array({"count", "source"})}}})},
+        {"render.scalar", Json::array({Json{{"name", "target"}}})},
+        {"value.input", Json::array({Json{{"name", "name"}}})},
+        {"value.constant", Json::array({Json{{"name", "value"}}})},
+        {"value.parameter", Json::array({Json{{"name", "name"}}, Json{{"name", "default"}}})},
+        {"value.morph_weight", Json::array({Json{{"name", "node"}}, Json{{"name", "target"}}})},
+        {"value.curve", Json::array({Json{{"name", "keys"}}})},
+        {"audio.playback", Json::array({Json{{"name", "asset"}}})},
+        {"audio.volume", Json::array({Json{{"one_of", Json::array({"target", "voice"})}}})},
+        {"audio.pitch", Json::array({Json{{"one_of", Json::array({"target", "voice"})}}})},
+        {"ui.value", Json::array({Json{{"name", "node"}}})},
+        {"ui.visible", Json::array({Json{{"name", "node"}}})},
+        {"pose.clip_sample", Json::array({Json{{"name", "rig"}}, Json{{"name", "clip"}}})},
+        {"pose.state_machine", Json::array({Json{{"name", "rig"}}, Json{{"name", "graph"}}})},
+        {"pose.retarget", Json::array({Json{{"name", "profile"}}})},
+        {"draw.variant", Json::array({Json{{"name", "variant"}}})},
+    };
+    const std::set<std::string> kinds{"number", "integer", "bool", "string", "enum", "vec2", "vec3", "vec4",
+                                      "color", "array", "object", "asset", "shader", "node_ref", "expression", "json"};
+    std::function<void(const Json &)> checkShape = [&](const Json &entry) {
+        INFO(entry.dump());
+        CHECK(kinds.contains(entry.at("kind").get<std::string>()));
+        CHECK(entry.contains("enum") == (entry.at("kind") == "enum"));
+        if (entry.contains("items")) checkShape(entry.at("items"));
+        for (const auto &field : entry.value("fields", Json::array())) checkShape(field);
+    };
+    for (const auto &module : catalog.at("modules"))
+        for (const auto &entry : module.at("operations")) {
+            const auto op = entry.at("op").get<std::string>();
+            INFO(op);
+            REQUIRE(entry.at("parameters").is_array());
+            CHECK(entry.at("parameters_complete").is_boolean());
+            // required_parameters is the parameters' required entries, and
+            // what RS-9 required before.
+            auto required = Json::array();
+            for (const auto &listed : entry.at("parameters")) {
+                checkShape(listed);
+                if (!listed.value("required", false)) {
+                    CHECK_FALSE(listed.contains("alternatives"));
+                    continue;
+                }
+                if (!listed.contains("alternatives")) {
+                    required.push_back(Json{{"name", listed.at("name")}});
+                    continue;
+                }
+                auto one_of = Json::array({listed.at("name")});
+                for (const auto &alternative : listed.at("alternatives")) one_of.push_back(alternative);
+                required.push_back(Json{{"one_of", std::move(one_of)}});
+            }
+            CHECK(entry.at("required_parameters") == required);
+            const auto before = rs9.find(op);
+            CHECK(entry.at("required_parameters") == (before != rs9.end() ? before->second : Json::array()));
+        }
+
+    // The parameters the GUI asked for, with their kinds, enums and defaults.
+#if PELICAN_WITH_ANIMATION
+    CHECK(names("pose.clip_sample") ==
+          std::vector<std::string>{"rig", "clip", "speed", "start_time", "loop", "root_motion", "root_node"});
+    CHECK(operation("pose.clip_sample").at("parameters_complete") == true);
+    CHECK(parameter("pose.clip_sample", "rig").at("kind") == "asset");
+    CHECK(parameter("pose.clip_sample", "rig").at("required") == true);
+    CHECK(parameter("pose.clip_sample", "clip").at("kind") == "string");
+    CHECK(parameter("pose.clip_sample", "clip").at("required") == true);
+    CHECK(parameter("pose.clip_sample", "speed") == Json{{"name", "speed"}, {"kind", "number"}, {"default", 1.0}});
+    CHECK(parameter("pose.clip_sample", "start_time").at("default") == 0.0);
+    CHECK(parameter("pose.clip_sample", "loop") == Json{{"name", "loop"}, {"kind", "bool"}, {"default", true}});
+    CHECK(parameter("pose.clip_sample", "root_motion").at("enum") == Json::array({"none", "extract"}));
+    CHECK(parameter("pose.clip_sample", "root_motion").at("default") == "none");
+#endif
+    CHECK(parameter("render.buffer", "element").at("required") == true);
+    CHECK(parameter("render.buffer", "element").at("enum").size() == 13);
+    CHECK(parameter("render.buffer", "size").at("kind") == "integer");
+    CHECK(parameter("render.buffer", "size").at("min") == 0);
+    CHECK(parameter("render.buffer", "lifetime").at("enum") == Json::array({"persistent", "transient"}));
+    CHECK(parameter("render.buffer", "lifetime").at("default") == "persistent");
+    CHECK(parameter("render.buffer", "host_source").at("enum").front() == "runtime_f32");
+    CHECK(parameter("render.attribute", "count").at("alternatives") == Json::array({"source"}));
+    CHECK(parameter("render.attribute", "lifetime").at("default") == "persistent");
+    CHECK(operation("render.buffer").at("parameters_complete") == true);
+    const auto shader = parameter("render.shadow_depth", "shader");
+    CHECK(shader.at("kind") == "shader");
+    CHECK(shader.at("fields") == Json::array({Json{{"name", "vertex"}, {"kind", "string"}, {"required", true}}}));
+    CHECK(shader.at("default") == Json{{"vertex", "engine://shadow_depth"}});
+    CHECK(parameter("render.shadow_depth", "ray_query").at("kind") == "json");
+    CHECK(parameter("render.shadow_depth", "depth_load_op").at("kind") == "enum");
+    CHECK(parameter("render.shadow_depth", "depth_store_op").at("enum").front() == "store");
+    CHECK(parameter("render.shadow_depth", "resolution_domain").at("default") == "independent");
+    CHECK(parameter("render.shadow_depth", "view_select").at("items").at("expression") == true);
+    CHECK(operation("render.shadow_depth").at("parameters_complete") == true);
+    CHECK(names("value.trigger_clock") == std::vector<std::string>{"paused", "reset"});
+    CHECK(parameter("value.trigger_clock", "paused").at("kind") == "number");
+    CHECK(parameter("value.trigger_clock", "reset").at("default") == 0.0);
+    // Nested: an image's type, its initial asset; incomplete ops say so.
+    const auto type = parameter("render.image", "type");
+    CHECK(type.at("kind") == "object");
+    CHECK(type.at("fields").at(0).at("name") == "semantic");
+    CHECK(type.at("fields").at(1).at("items").at("kind") == "string");
+    CHECK(parameter("render.image", "initial").at("fields").at(0) ==
+          Json{{"name", "asset"}, {"kind", "asset"}, {"required", true}});
+    CHECK(parameter("render.image", "width").at("expression") == true);
+    CHECK(operation("render.image").at("parameters_complete") == false);
+    CHECK(operation("render.fullscreen").at("parameters_complete") == false);
+
+    // A value of the wrong kind, outside its enum or its range is refused by
+    // name before the op's parser reads it.
+    const auto refusal = [](Json node) {
+        try {
+            (void)builtinGraphModuleRegistry().resolveOperation(node);
+        } catch (const GraphRegistryError &error) {
+            return std::pair{error.code(), error.detail()};
+        }
+        return std::pair{std::string{}, Json{}};
+    };
+    auto [code, detail] = refusal({{"id", "c"}, {"op", "value.constant"}, {"parameters", {{"value", "loud"}}}});
+    CHECK(code == "graph.render_node_parameter_invalid@1");
+    CHECK(detail == Json{{"node", "c"}, {"op", "value.constant"}, {"parameter", "value"}, {"expected", "number"},
+                         {"reason", "type"}});
+    std::tie(code, detail) = refusal(
+        {{"id", "data"}, {"op", "render.buffer"}, {"parameters", {{"element", "float"}, {"lifetime", "forever"}}}});
+    CHECK(code == "graph.render_node_parameter_invalid@1");
+    CHECK(detail.at("parameter") == "lifetime");
+    CHECK(detail.at("expected") == "enum");
+    CHECK(detail.at("reason") == "enum");
+    CHECK(detail.at("allowed") == Json::array({"persistent", "transient"}));
+    std::tie(code, detail) = refusal(
+        {{"id", "w"}, {"op", "value.morph_weight"}, {"parameters", {{"node", -1}, {"target", 0}}}});
+    CHECK(code == "graph.render_node_parameter_invalid@1");
+    CHECK(detail.at("parameter") == "node");
+    CHECK(detail.at("reason") == "range");
+    CHECK(detail.at("min") == 0);
+    std::tie(code, detail) = refusal(
+        {{"id", "k"}, {"op", "value.curve"},
+         {"parameters", {{"keys", Json::array({Json{{"time", 0}, {"value", 1}, {"interpolation", "smooth"}}})}}}});
+    CHECK(code == "graph.render_node_parameter_invalid@1");
+    CHECK(detail.at("parameter") == "keys[0].interpolation");
+    CHECK(detail.at("reason") == "enum");
+    std::tie(code, detail) = refusal(
+        {{"id", "shadow"}, {"op", "render.shadow_depth"}, {"parameters", {{"shader", "shaders/depth.vert"}}}});
+    CHECK(code == "graph.render_node_parameter_invalid@1");
+    CHECK(detail.at("parameter") == "shader");
+    CHECK(detail.at("expected") == "shader");
+    CHECK(detail.at("reason") == "type");
+    // RS-9 still names what is missing first.
+    std::tie(code, detail) = refusal({{"id", "c"}, {"op", "value.constant"}, {"parameters", Json::object()}});
+    CHECK(code == "graph.render_node_parameters_missing@1");
+    // What the pose and draw.variant parsers require is RS-9's too.
+    std::tie(code, detail) = refusal({{"id", "v"}, {"op", "draw.variant"}});
+    CHECK(code == "graph.render_node_parameters_missing@1");
+    CHECK(detail == Json{{"node", "v"}, {"op", "draw.variant"}, {"missing", Json::array({"variant"})}});
+#if PELICAN_WITH_ANIMATION
+    std::tie(code, detail) =
+        refusal({{"id", "walk"}, {"op", "pose.clip_sample"}, {"parameters", {{"clip", "Walk"}}}});
+    CHECK(code == "graph.render_node_parameters_missing@1");
+    CHECK(detail.at("missing") == Json::array({"rig"}));
+    std::tie(code, detail) = refusal({{"id", "brain"}, {"op", "pose.state_machine"}});
+    CHECK(detail.at("missing") == Json::array({"rig", "graph"}));
+    std::tie(code, detail) = refusal({{"id", "profile"}, {"op", "pose.retarget"}, {"parameters", Json::object()}});
+    CHECK(detail.at("missing") == Json::array({"profile"}));
+#endif
+    // A loop body's expression, JSON null and a key the table does not name
+    // are left to the op's own parser, as before.
+    std::tie(code, detail) = refusal(
+        {{"id", "shadow"}, {"op", "render.shadow_depth"},
+         {"parameters", {{"view_select", {{"cascade", {{"$expr", "element"}}}}}, {"pass_set", nullptr}}}});
+    CHECK(code.empty());
+    std::tie(code, detail) = refusal(
+        {{"id", "data"}, {"op", "render.buffer"}, {"parameters", {{"element", "float"}, {"note", 3}}}});
+    CHECK(code.empty());
 }
 
 TEST_CASE("a build without the animation unit rejects a pose document by name",

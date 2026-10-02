@@ -5317,7 +5317,17 @@ TEST_CASE("LP-0b placement refusals are named", "[render-feature][graph-composit
                                       Json{{"insert", {{"after", "deferred_lighting"}, {"before", "forward_opaque"}}}},
                                       Json{{"canonical_anchor", 1}}}) {
             INFO(placement.dump());
-            CHECK_THROWS_AS(partitionGraphDocument(lp0bGraph({"blit"}, placement)), std::invalid_argument);
+            // CT-3: a value of the wrong kind (insert a string, a side a
+            // number, the anchor a number) is named from the parameter
+            // table; the rest of the shape is the placement check's.
+            try {
+                (void)partitionGraphDocument(lp0bGraph({"blit"}, placement));
+                FAIL("the placement was accepted");
+            } catch (const GraphRegistryError &error) {
+                CHECK(error.code() == "graph.render_node_parameter_invalid@1");
+                CHECK(error.detail().at("reason") == "type");
+            } catch (const std::invalid_argument &) {
+            }
         }
     }
 }
@@ -9671,15 +9681,18 @@ TEST_CASE("PS-1 a once node that writes a transient resource or reads one that c
     SECTION("a schedule or lifetime the engine does not know is refused when edited") {
         auto document = ps1Graph();
         ps1Node(document, "h0")["parameters"]["schedule"] = "sometimes";
+        // CT-3: outside the schedule's enum, named from the parameter table.
         CHECK_THROWS_WITH(partitionGraphDocument(document),
-                          Catch::Matchers::ContainsSubstring("schedule must be per_frame or once"));
+                          Catch::Matchers::ContainsSubstring("graph.render_node_parameter_invalid@1") &&
+                              Catch::Matchers::ContainsSubstring("\"parameter\":\"schedule\""));
         document = ps1Graph();
         ps1Node(document, "h0")["parameters"]["schedule"] = "per_view";
         CHECK_THROWS(partitionGraphDocument(document));
         document = ps1Graph();
         ps1Node(document, "h0_image")["parameters"]["lifetime"] = "forever";
         CHECK_THROWS_WITH(partitionGraphDocument(document),
-                          Catch::Matchers::ContainsSubstring("lifetime must be persistent or transient"));
+                          Catch::Matchers::ContainsSubstring("graph.render_node_parameter_invalid@1") &&
+                              Catch::Matchers::ContainsSubstring("\"parameter\":\"lifetime\""));
     }
 }
 
@@ -9863,8 +9876,10 @@ TEST_CASE("IA-1 an initial asset on a transient image, beside an extent scale, o
     SECTION("an initial that is not {asset}") {
         auto parameters = ia1ImageParameters("R32G32B32A32_SFLOAT");
         parameters["initial"] = "assets/lut.ktx2";
+        // CT-3: initial is an object; named from the parameter table.
         CHECK_THROWS_WITH(lp0aCompose(ia1Graph(parameters)),
-                          Catch::Matchers::ContainsSubstring("render.image initial must be"));
+                          Catch::Matchers::ContainsSubstring("graph.render_node_parameter_invalid@1") &&
+                              Catch::Matchers::ContainsSubstring("\"parameter\":\"initial\""));
     }
 }
 

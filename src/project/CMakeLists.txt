@@ -11,6 +11,7 @@ add_library(pelican_project
     graphfold.cpp
     graphloopexpression.cpp
     graphmodule.cpp
+    graphparameterschema.cpp
     graphpartition.cpp
     graphtemplate.cpp
     rendergraphcomposition.cpp

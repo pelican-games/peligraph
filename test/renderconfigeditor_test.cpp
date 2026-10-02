@@ -1440,6 +1440,57 @@ TEST_CASE("CT-2 a graph refusal names the document and the definition its node w
     REQUIRE(readBytes(source.path) == saved);
 }
 
+// CT-3: an edit that writes a parameter of the wrong kind, outside its enum
+// or outside its range is refused by name through the editing ticket, with
+// CT-2's document; nothing is written.
+TEST_CASE("CT-3 an edit with a parameter of the wrong kind, enum or range is refused by name",
+          "[render-config-editor][graph-composition][ct3]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    TemporaryConfig source{readBytes(fixture_path)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+    const auto saved = readBytes(source.path);
+    const auto refused = [&](Json node) {
+        const auto result = Json(service->editGraphDocument(
+            {{"base_source_digest", service->getGraphInstances(Json::object()).at("source_digest").at("hex")},
+             {"ops", Json::array({Json{{"op", "add_node"}, {"node", std::move(node)}}})}}));
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(readBytes(source.path) == saved);
+        const auto error = result.at("error");
+        CHECK(error.at("code") == "graph.render_node_parameter_invalid@1");
+        CHECK(error.at("document") == "project://passes/main.json");
+        return error;
+    };
+    const auto buffer = [](Json parameters) {
+        return Json{{"id", "data"}, {"op", "render.buffer"}, {"parameters", std::move(parameters)},
+                    {"outputs", Json::array({"resource"})}};
+    };
+
+    auto error = refused(buffer({{"element", "float"}, {"size", "big"}}));
+    CHECK(error.at("node") == "data");
+    CHECK(error.at("op") == "render.buffer");
+    CHECK(error.at("parameter") == "size");
+    CHECK(error.at("expected") == "integer");
+    CHECK(error.at("reason") == "type");
+
+    error = refused(buffer({{"element", "float"}, {"lifetime", "forever"}}));
+    CHECK(error.at("parameter") == "lifetime");
+    CHECK(error.at("expected") == "enum");
+    CHECK(error.at("reason") == "enum");
+    CHECK(error.at("allowed") == Json::array({"persistent", "transient"}));
+
+    error = refused({{"id", "points"}, {"op", "render.attribute"},
+                     {"parameters", {{"element", "vec4"}, {"domain", "vertex"}, {"count", 0}}},
+                     {"outputs", Json::array({"resource"})}});
+    CHECK(error.at("parameter") == "count");
+    CHECK(error.at("reason") == "range");
+    CHECK(error.at("min") == 1);
+    REQUIRE(readBytes(source.path) == saved);
+}
+
 // CT-2: how a refused node's id finds its definition, and what a refusal
 // keeps. Only the document's structure is read: an instance's copy, a loop
 // body's template and an element's copy, and a body's own id.

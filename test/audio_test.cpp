@@ -797,7 +797,8 @@ TEST_CASE("AU-1 a document that mixes the two forms or two clocks is refused by 
         voice({{"wrap", "repeat"}}, {{"time", edge("now")}})}).dump()});
     REQUIRE_THROWS_WITH(ValueGraph::Graph{graphDocument({inputNode("now", "scene_time"), eventsNode("cue"),
         voice({{"bus", "master"}}, {{"time", edge("now")}, {"events", edge("cue", "events")}})}).dump()},
-        Catch::Matchers::ContainsSubstring("unknown audio bus"));
+        Catch::Matchers::ContainsSubstring("graph.render_node_parameter_invalid@1") &&
+            Catch::Matchers::ContainsSubstring("\"parameter\":\"bus\""));
 }
 
 TEST_CASE("AU-1 a player with a window opens the audio device, a headless one the device-less engine",

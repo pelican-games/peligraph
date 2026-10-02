@@ -1,5 +1,6 @@
 #include "graphmodule.hpp"
 #include "featurecompose.hpp"
+#include "graphparameterschema.hpp"
 #include "materialoutput.hpp"
 #include "renderpipeline.hpp"
 #include "shaderresourceport.hpp"
@@ -256,26 +257,10 @@ void checkDrawStepParameters(const std::string &op, const Json &parameters, cons
 // also be an input edge of that name: an audio.volume writes the voice its
 // `voice` edge brings, or the sound its `target` names; a render.attribute
 // takes its count from `count` or from its `source`.
-std::vector<std::vector<std::string_view>> renderNodeRequiredParameters(std::string_view op) {
-    if (op == "render.fullscreen") return {{"ports"}, {"shader"}};
-    if (op == "render.raster") return {{"ports"}, {"shader"}, {"draw"}};
-    if (op == "render.compute") return {{"ports"}, {"shader", "ray_tracing"}};
-    if (op == "render.material_pass") return {{"material_contract"}};
-    if (op == "render.snapshot_copy") return {{"snapshot_after"}};
-    if (op == "render.target_ref") return {{"name"}, {"type"}};
-    if (op == "render.image") return {{"type"}};
-    if (op == "render.buffer") return {{"element"}};
-    if (op == "render.attribute") return {{"element"}, {"domain"}, {"count", "source"}};
-    if (op == "render.scalar") return {{"target"}};
-    if (op == "value.input") return {{"name"}};
-    if (op == "value.constant") return {{"value"}};
-    if (op == "value.parameter") return {{"name"}, {"default"}};
-    if (op == "value.morph_weight") return {{"node"}, {"target"}};
-    if (op == "value.curve") return {{"keys"}};
-    if (op == "audio.playback") return {{"asset"}};
-    if (op == "audio.volume" || op == "audio.pitch") return {{"target", "voice"}};
-    if (op == "ui.value" || op == "ui.visible") return {{"node"}};
-    return {};
+// CT-3: read off the parameter schema's `required` entries
+// (graphparameterschema.cpp), the one table the catalog lists.
+std::vector<std::vector<std::string>> renderNodeRequiredParameters(std::string_view op) {
+    return graphOperationRequiredParameters(op);
 }
 
 // RS-9: graph.render_node_parameters_missing@1 {node, op, missing} when the
@@ -293,12 +278,12 @@ void checkRenderNodeRequiredParameters(const std::string &op, const Json &node) 
     const bool has_inputs = found_inputs != node.end() && found_inputs->is_object();
     auto missing = Json::array();
     for (const auto &alternatives : required) {
-        const bool given = std::any_of(alternatives.begin(), alternatives.end(), [&](std::string_view name) {
-            const auto found = parameters.find(std::string{name});
+        const bool given = std::any_of(alternatives.begin(), alternatives.end(), [&](const std::string &name) {
+            const auto found = parameters.find(name);
             return (found != parameters.end() && !found->is_null()) ||
-                   (has_inputs && found_inputs->contains(std::string{name}));
+                   (has_inputs && found_inputs->contains(name));
         });
-        if (!given) missing.push_back(std::string{alternatives.front()});
+        if (!given) missing.push_back(alternatives.front());
     }
     if (!missing.empty())
         throw GraphRegistryError("graph.render_node_parameters_missing@1",
@@ -576,11 +561,11 @@ OrderedJson operationJson(const std::string &op, const GraphOperationRegistratio
     auto required = OrderedJson::array();
     for (const auto &alternatives : renderNodeRequiredParameters(op)) {
         if (alternatives.size() == 1) {
-            required.push_back(OrderedJson{{"name", std::string{alternatives.front()}}});
+            required.push_back(OrderedJson{{"name", alternatives.front()}});
             continue;
         }
         auto names = OrderedJson::array();
-        for (const auto name : alternatives) names.push_back(std::string{name});
+        for (const auto &name : alternatives) names.push_back(name);
         required.push_back(OrderedJson{{"one_of", std::move(names)}});
     }
     OrderedJson result{{"op", op},
@@ -589,6 +574,16 @@ OrderedJson operationJson(const std::string &op, const GraphOperationRegistratio
                        {"change", std::move(change)},
                        {"sink", sink},
                        {"required_parameters", std::move(required)}};
+    // CT-3: what each parameter holds, from the same table.
+    auto parameters_schema = OrderedJson::array();
+    bool complete = false;
+    if (const auto *schema = graphOperationParameters(op)) {
+        for (const auto &parameter : schema->parameters)
+            parameters_schema.push_back(graphParameterSchemaJson(parameter));
+        complete = schema->complete;
+    }
+    result["parameters"] = std::move(parameters_schema);
+    result["parameters_complete"] = complete;
     // CT-1: the names value.input's `name` takes, from the table the frame
     // checks them against.
     if (op == "value.input") {
@@ -686,6 +681,8 @@ GraphOperationContract GraphModuleRegistry::resolveOperation(const nlohmann::jso
     // RS-9 / RS-15: what the op cannot do without, for a declared contract
     // and a factory alike.
     checkRenderNodeRequiredParameters(op, node);
+    // CT-3: a value of the wrong kind, named before the op's parser reads it.
+    checkGraphNodeParameterTypes(op, node);
     auto contract = registration.factory ? registration.factory(node) : registration.contract;
     if (registration.factory) {
         // The module declares the classification once; a factory supplies ports.
