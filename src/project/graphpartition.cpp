@@ -1,4 +1,6 @@
 #include "graphpartition.hpp"
+#include "graphinstanceowner.hpp"
+#include "graphparameterschema.hpp"
 #include "shaderresourceport.hpp"
 #include "graphloopexpression.hpp"
 
@@ -295,6 +297,9 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document,
     for (const auto &node : graph.nodes) {
         const auto id = node.at("id").get<std::string>();
         const auto op = node.at("op").get<std::string>();
+        // CT-4: a pose (or a morph weight) reads its owner's model; outside an
+        // owned instance it has none, on every edit and every load.
+        checkGraphOperationPlacement(op, id, graphInstanceOwnerOf(graph.instance_owners, id) != nullptr);
         auto &partition = domain_partition(domains.at(id));
         // An animation node reads this frame's scalars through the values
         // partition. Publishing the edge as an output is the whole coupling:

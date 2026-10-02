@@ -69,6 +69,30 @@ class P {
         schema_.checked_by_op = true;
         return *this;
     }
+    P &softRange(std::optional<double> min, std::optional<double> max) {
+        schema_.soft_min = min;
+        schema_.soft_max = max;
+        return *this;
+    }
+    P &assetOf(std::string kind, std::initializer_list<const char *> extensions) {
+        schema_.asset_kind = std::move(kind);
+        for (const auto *extension : extensions) schema_.extensions.emplace_back(extension);
+        return *this;
+    }
+    P &choicesFrom(std::string rpc, std::string key, std::string field = {}) {
+        schema_.choices_from = GraphParameterChoices{std::move(rpc), std::move(key), std::move(field), {}};
+        return *this;
+    }
+    P &choicesFromGraph(std::initializer_list<const char *> ops) {
+        GraphParameterChoices choices;
+        for (const auto *op : ops) choices.graph_ops.emplace_back(op);
+        schema_.choices_from = std::move(choices);
+        return *this;
+    }
+    P &variant(const P &shape) {
+        schema_.variants.push_back(shape.schema_);
+        return *this;
+    }
     const GraphParameterSchema &schema() const { return schema_; }
 };
 
@@ -92,9 +116,24 @@ P shader(std::string name) { return P{std::move(name), Kind::shader}; }
 P nodeRef(std::string name) { return P{std::move(name), Kind::node_ref}; }
 P color(std::string name) { return P{std::move(name), Kind::color}; }
 P json(std::string name) { return P{std::move(name), Kind::json}; }
+P union_(std::string name) { return P{std::move(name), Kind::union_}; }
 P uint32(std::string name) { return integer(std::move(name)).range(0.0, uint32_max); }
 
 // --- Shared by several ops, each as its parser reads it. ---
+
+// CT-4: the lists a string parameter's value is chosen from. The authoring
+// context lists the composed pipeline's names (renderconfigeditor.cpp).
+constexpr const char *authoring_context = "get_render_authoring_context";
+
+// CT-4: the image extent the engine's own features take at most: the
+// `resolution` range [64, 8192] of shadow_directional / shadow_point /
+// shadow_spot / planar_reflection / cube_capture
+// (src/core/resources/features/*.json), and a full mip chain of it.
+constexpr double image_extent_soft_max = 8192.0;
+constexpr double image_mip_levels_soft_max = 14.0; // floor(log2(8192)) + 1
+
+// A scene's model (model.cpp), which a pose's rig is checked against.
+P sceneModel(std::string name) { return asset(std::move(name)).assetOf("model", {".glb", ".gltf", ".vrm"}); }
 
 // pelican.render.*: a logical image type (resourceType in graphmodule.cpp).
 P imageType() {
@@ -129,7 +168,9 @@ P initialF32() {
                                                      "runtime_f32).");
 }
 P bufferViewFamily() {
-    return string("view_family").describe("The view family whose matrices a view_family_matrices_v1 buffer holds.");
+    return string("view_family")
+        .choicesFrom(authoring_context, "view_families")
+        .describe("The view family whose matrices a view_family_matrices_v1 buffer holds.");
 }
 P bufferLifetime() {
     return enumeration("lifetime", {"persistent", "transient"}).fallback("persistent")
@@ -139,7 +180,8 @@ P indexBuffer() { return boolean("index_buffer").fallback(false).describe("The b
 
 // Any pass's views, tags, family and place.
 P viewFamily() {
-    return string("view_family").fallback("$main").describe("The view family the pass renders for.");
+    return string("view_family").fallback("$main").choicesFrom(authoring_context, "view_families")
+        .describe("The view family the pass renders for.");
 }
 P viewSelect() {
     return object("view_select")
@@ -150,7 +192,10 @@ P regionTags() {
     return array("region_tags", string("")).describe("Region tags (merged with `regions`).");
 }
 P regions() { return array("regions", string("")).describe("Region tags, as the pass JSON names them."); }
-P passSet() { return string("pass_set").describe("The pass family the pass joins."); }
+P passSet() {
+    return string("pass_set").choicesFrom(authoring_context, "graphs", "name")
+        .describe("The pass family the pass joins.");
+}
 P order(const char *key) {
     return array(key, nodeRef("")).describe(std::string{"Passes this one runs "} + key + ".");
 }
@@ -163,7 +208,8 @@ P insert(bool declared) {
     return result.describe("Where the pass lands: exactly one of after / before.");
 }
 P canonicalAnchor() {
-    return string("canonical_anchor").describe("A canonical pass anchor the pass lands at (excludes insert).");
+    return string("canonical_anchor").choicesFrom(authoring_context, "canonical_anchors")
+        .describe("A canonical pass anchor the pass lands at (excludes insert).");
 }
 P loadOp(const char *name) {
     return enumeration(name, {"clear", "load", "dont_care", "Clear", "Load", "DontCare", "dontCare"});
@@ -175,8 +221,14 @@ P resolutionDomain(const char *fallback) {
         .describe("The extent domain the pass renders in.");
 }
 P rasterRayQuery() {
-    return json("ray_query").fallback(false)
+    return union_("ray_query").fallback(false)
+        .variant(boolean(""))
+        .variant(object("").field(string("acceleration_structure").required()))
         .describe("true (the scene's acceleration structure) or {\"acceleration_structure\": \"<name>\"}.");
+}
+P inheritBindingsFrom() {
+    return string("inherit_bindings_from").choicesFrom(authoring_context, "graphs.passes", "name")
+        .describe("The pass whose bindings it takes.");
 }
 P clearColor() { return color("clear_color").describe("The color attachments' clear value (RGBA)."); }
 P clearColors() {
@@ -201,9 +253,11 @@ P mapping(const char *name, std::optional<double> fallback) {
 
 using Table = std::map<std::string, GraphOperationParameters, std::less<>>;
 
-void add(Table &table, const char *op, bool complete, std::initializer_list<P> parameters) {
+void add(Table &table, const char *op, bool complete, std::initializer_list<P> parameters,
+         GraphOperationPlacement placement = GraphOperationPlacement::anywhere) {
     GraphOperationParameters entry;
     entry.complete = complete;
+    entry.placement = placement;
     for (const auto &parameter : parameters) entry.parameters.push_back(parameter.schema());
     table.emplace(op, std::move(entry));
 }
@@ -217,9 +271,12 @@ Table makeTable() {
     add(table, "value.constant", true, {number("value").required()});
     add(table, "value.parameter", true,
         {string("name").required().describe("The parameter's name."), number("default").required()});
+    // CT-4: it reads its owner's model (valuegraph.cpp), so it stands in an
+    // owned instance.
     add(table, "value.morph_weight", true,
         {uint32("node").required().describe("The node index in the owner's model."),
-         uint32("target").required().describe("The morph target index.")});
+         uint32("target").required().describe("The morph target index.")},
+        GraphOperationPlacement::owned_instance);
     add(table, "value.add", true, {});
     add(table, "value.multiply", true, {});
     add(table, "value.curve", true,
@@ -233,10 +290,10 @@ Table makeTable() {
              .describe("The curve's keys.")});
     // AB-1 (valuegraph.cpp; audioanalysisformat.hpp).
     add(table, "value.sample_table", true,
-        {asset("asset").required().describe("The baked table (a KTX2 with its .import.json beside it, e.g. "
-                                            "bake_audio_analysis's)."),
-         json("row").required().describe("The feature row: its index, or its name (\"rms\", \"peak\", "
-                                         "\"band:3\").")});
+        {asset("asset").required().assetOf("analysis_table", {".ktx2"})
+             .describe("The baked table (a KTX2 with its .import.json beside it, e.g. bake_audio_analysis's)."),
+         union_("row").required().variant(uint32("")).variant(string(""))
+             .describe("The feature row: its index, or its name (\"rms\", \"peak\", \"band:3\").")});
     add(table, "value.playback", true,
         {mapping("source_begin", 0.0), mapping("source_end", 1.0), mapping("duration", 1.0), mapping("speed", 1.0),
          mapping("delay", 0.0), mapping("sample_interval", 0.0), wrap()});
@@ -248,14 +305,15 @@ Table makeTable() {
 
     // pelican.audio (lowerAudioPlayback and the binding lowering).
     add(table, "audio.playback", true,
-        {asset("asset").required().describe("The sound asset the voice plays."),
+        {asset("asset").required().assetOf("audio", {".wav", ".ogg"}).describe("The sound asset the voice plays."),
          enumeration("bus", {"se", "bgm"}).fallback("se"), wrap(), mapping("source_begin", 0.0),
          mapping("source_end", std::nullopt).describe("A literal, or the input edge of the same name; absent: the "
                                                       "sound's length."),
          mapping("speed", 1.0), mapping("delay", 0.0)});
     for (const auto *op : {"audio.volume", "audio.pitch"})
         add(table, op, true,
-            {string("target").required({"voice"}).describe("The sound it writes, unless a `voice` edge brings one.")});
+            {string("target").required({"voice"}).choicesFromGraph({"audio.playback"})
+                 .describe("The sound it writes, unless a `voice` edge brings one.")});
 
     // pelican.ui.
     for (const auto *op : {"ui.value", "ui.visible"})
@@ -263,7 +321,8 @@ Table makeTable() {
 
     // pelican.render: the publication sink (lowerScalarGraph).
     add(table, "render.scalar", true,
-        {string("target").required().describe("The buffer it writes."),
+        {string("target").required().choicesFromGraph({"render.buffer", "render.attribute"})
+             .describe("The buffer it writes."),
          array("value", number("")).describe("A vec2 .. vec4 written as 2 to 4 numbers; a scalar comes in on the "
                                              "value edge."),
          integer("offset").range(0.0, std::nullopt).describe("Where the values land in the buffer, in bytes (a "
@@ -275,7 +334,8 @@ Table makeTable() {
         {bufferElement(),
          integer("size").range(0.0, std::nullopt).describe("The size in bytes."),
          object("size_from_extent")
-             .field(string("resource").required().describe("The render target whose extent sizes the buffer."))
+             .field(string("resource").required().choicesFrom(authoring_context, "render_targets", "name")
+                        .describe("The render target whose extent sizes the buffer."))
              .field(uint32("tile_width").required().range(1.0, uint32_max))
              .field(uint32("tile_height").required().range(1.0, uint32_max))
              .field(integer("header_bytes").required().range(0.0, std::nullopt))
@@ -289,7 +349,7 @@ Table makeTable() {
          integer("count").required({"source"}).range(1.0, std::nullopt)
              .describe("The element count, unless `source` derives it."),
          object("source")
-             .field(asset("asset").required())
+             .field(asset("asset").required().assetOf("model", {".glb", ".gltf"}))
              .field(uint32("mesh"))
              .field(uint32("primitive"))
              .field(string("semantic").describe("A vertex semantic, e.g. POSITION."))
@@ -303,25 +363,36 @@ Table makeTable() {
     // Incomplete: other readers of a render target are not traced here.
     add(table, "render.image", false,
         {imageType().required(),
-         object("initial").field(asset("asset").required()).describe("The asset the image starts from (lifetime "
-                                                                      "persistent)."),
+         object("initial")
+             .field(asset("asset").required().assetOf("image", {".ktx2", ".png", ".jpg"}))
+             .describe("The asset the image starts from (lifetime persistent)."),
          enumeration("lifetime", {"transient", "persistent"}).fallback("transient")
              .describe("Whether the contents are kept from frame to frame."),
-         string("format").describe("A Vulkan format name (the catalog's image formats)."),
-         string("format_class").describe("scene, display, data or explicit(<format>)."),
+         string("format").choicesFrom(authoring_context, "render_target_vocabulary.formats")
+             .describe("A Vulkan format name (the catalog's image formats)."),
+         string("format_class").choicesFrom(authoring_context, "render_target_vocabulary.format_classes")
+             .describe("scene, display, data or explicit(<format>)."),
          number("extent_scale").expression().describe("The extent as a fraction of the output's."),
-         uint32("width").range(1.0, uint32_max).expression(),
-         uint32("height").range(1.0, uint32_max).expression(),
+         uint32("width").range(1.0, uint32_max).softRange(std::nullopt, image_extent_soft_max).expression(),
+         uint32("height").range(1.0, uint32_max).softRange(std::nullopt, image_extent_soft_max).expression(),
          uint32("layers").range(1.0, uint32_max).expression(),
-         json("mip_levels").expression().describe("A positive integer, or \"full\"."),
+         union_("mip_levels")
+             .variant(uint32("").range(1.0, uint32_max).softRange(std::nullopt, image_mip_levels_soft_max))
+             .variant(enumeration("", {"full"}))
+             .expression()
+             .describe("A positive integer, or \"full\"."),
          enumeration("dimension", {"2d", "cube"}).fallback("2d"),
-         array("usage", string("")).describe("Image usage names, e.g. SAMPLED."),
+         array("usage", string("").choicesFrom(authoring_context, "render_target_vocabulary.usage"))
+             .describe("Image usage names, e.g. SAMPLED."),
          boolean("history").fallback(false),
          clearColor(),
          enumeration("role", {"color", "data"}),
-         array("format_candidates", string("")).describe("Formats to try after format.")});
+         array("format_candidates", string("").choicesFrom(authoring_context, "render_target_vocabulary.formats"))
+             .describe("Formats to try after format.")});
     add(table, "render.target_ref", true,
-        {string("name").required().describe("A target declared outside the graph."), imageType().required()});
+        {string("name").required().choicesFrom(authoring_context, "render_targets", "name")
+             .describe("A target declared outside the graph."),
+         imageType().required()});
 
     // LP-0e: the closed key sets renderPassKindPorts admits, typed as the
     // pass JSON reads them.
@@ -350,7 +421,7 @@ Table makeTable() {
              json("screen_inputs"), json("surface_resources"), json("material_resources"), rasterRayQuery(),
              loadOp("color_load_op"), storeOp("color_store_op"), loadOp("depth_load_op"), storeOp("depth_store_op"),
              clearColor(), clearColors(), viewFamily(), viewSelect(), regionTags(), regions(),
-             resolutionDomain("scene"), string("inherit_bindings_from").describe("The pass whose bindings it takes."),
+             resolutionDomain("scene"), inheritBindingsFrom(),
              passSet(), order("after"), order("before"), insert(true), canonicalAnchor()});
     }
     add(table, "render.fullscreen", false,
@@ -363,7 +434,7 @@ Table makeTable() {
          passSchedule(), string("push_constants"), boolean("uses_light_data").fallback(false), json("raster_state"),
          rasterRayQuery(), loadOp("color_load_op"), storeOp("color_store_op"), loadOp("depth_load_op"),
          storeOp("depth_store_op"), clearColor(), clearColors(), resolutionDomain("unclassified"),
-         string("inherit_bindings_from").describe("The pass whose bindings it takes."), viewFamily(), viewSelect(),
+         inheritBindingsFrom(), viewFamily(), viewSelect(),
          regionTags(), regions(), passSet(), order("after"), order("before"), insert(true), canonicalAnchor()});
     add(table, "render.raster", false,
         {object("ports").required().describe("Port name to its declaration."),
@@ -390,7 +461,9 @@ Table makeTable() {
 
     // LP-3a: draw steps (checkDrawStepParameters).
     add(table, "draw.material", true, {});
-    add(table, "draw.variant", true, {string("variant").required().describe("The material's variant to draw.")});
+    add(table, "draw.variant", true,
+        {string("variant").required().choicesFrom(authoring_context, "materials", "variants")
+             .describe("The material's variant to draw.")});
     add(table, "draw.override", true,
         {object("render_state")
              .field(enumeration("blend", {"opaque", "blend", "additive"}))
@@ -401,20 +474,24 @@ Table makeTable() {
              .field(boolean("depth_write")),
          array("defines", string("")).describe("Defines added to the material's shader.")});
 
-    // pelican.pose (posegraphmodule.cpp, posegraph.cpp).
+    // pelican.pose (posegraphmodule.cpp, posegraph.cpp). CT-4: a pose writes
+    // its owner's skeletal sink, so every pose op stands in an owned instance.
+    constexpr auto owned = GraphOperationPlacement::owned_instance;
     add(table, "pose.clip_sample", true,
-        {asset("rig").required().describe("The model whose rig the pose is for."),
+        {sceneModel("rig").required().describe("The model whose rig the pose is for."),
          string("clip").required().describe("The animation clip's name."), number("speed").fallback(1.0),
          number("start_time").fallback(0.0), boolean("loop").fallback(true),
          enumeration("root_motion", {"none", "extract"}).fallback("none"),
          uint32("root_node").checkedByOp().describe("The node root motion is extracted from (root_motion "
-                                                    "extract).")});
-    add(table, "pose.blend", true, {});
+                                                    "extract).")},
+        owned);
+    add(table, "pose.blend", true, {}, owned);
     add(table, "pose.state_machine", true,
-        {asset("rig").required(), json("graph").required().describe("A pelican.anim_graph v1 document.")});
-    add(table, "pose.retarget", true, {string("profile").required()});
-    add(table, "pose.skeletal", true, {});
-    add(table, "pose.transform", true, {});
+        {sceneModel("rig").required(), json("graph").required().describe("A pelican.anim_graph v1 document.")},
+        owned);
+    add(table, "pose.retarget", true, {string("profile").required()}, owned);
+    add(table, "pose.skeletal", true, {}, owned);
+    add(table, "pose.transform", true, {}, owned);
     return table;
 }
 
@@ -515,6 +592,7 @@ std::optional<Failure> checkValue(const Json &value, const GraphParameterSchema 
         return std::nullopt;
     case Kind::expression:
     case Kind::json:
+    case Kind::union_:
         return std::nullopt;
     }
     return std::nullopt;
@@ -552,13 +630,32 @@ std::string_view graphParameterKindName(GraphParameterKind kind) {
     case Kind::node_ref: return "node_ref";
     case Kind::expression: return "expression";
     case Kind::json: return "json";
+    case Kind::union_: return "union";
     }
     return "json";
+}
+
+std::string_view graphOperationPlacementName(GraphOperationPlacement placement) {
+    switch (placement) {
+    case GraphOperationPlacement::anywhere: return "anywhere";
+    case GraphOperationPlacement::owned_instance: return "owned_instance";
+    }
+    return "anywhere";
 }
 
 const GraphOperationParameters *graphOperationParameters(std::string_view op) {
     const auto found = table().find(op);
     return found == table().end() ? nullptr : &found->second;
+}
+
+GraphOperationPlacement graphOperationPlacement(std::string_view op) {
+    const auto *entry = graphOperationParameters(op);
+    return entry == nullptr ? GraphOperationPlacement::anywhere : entry->placement;
+}
+
+void checkGraphOperationPlacement(const std::string &op, const std::string &node, bool owned) {
+    if (owned || graphOperationPlacement(op) != GraphOperationPlacement::owned_instance) return;
+    throw GraphRegistryError("graph.op_requires_owned_instance@1", {{"node", node}, {"op", op}});
 }
 
 nlohmann::ordered_json graphParameterSchemaJson(const GraphParameterSchema &parameter) {
@@ -570,11 +667,29 @@ nlohmann::ordered_json graphParameterSchemaJson(const GraphParameterSchema &para
     if (!parameter.enum_values.empty()) result["enum"] = parameter.enum_values;
     if (parameter.min) result["min"] = bound(*parameter.min);
     if (parameter.max) result["max"] = bound(*parameter.max);
+    if (parameter.soft_min) result["soft_min"] = bound(*parameter.soft_min);
+    if (parameter.soft_max) result["soft_max"] = bound(*parameter.soft_max);
+    if (!parameter.asset_kind.empty()) result["asset_kind"] = parameter.asset_kind;
+    if (!parameter.extensions.empty()) result["extensions"] = parameter.extensions;
+    if (const auto &choices = parameter.choices_from) {
+        if (!choices->graph_ops.empty()) {
+            result["choices_from"] = OrderedJson{{"graph_nodes", choices->graph_ops}};
+        } else {
+            OrderedJson from{{"rpc", choices->rpc}, {"key", choices->key}};
+            if (!choices->field.empty()) from["field"] = choices->field;
+            result["choices_from"] = std::move(from);
+        }
+    }
     if (parameter.items) result["items"] = itemJson(*parameter.items);
     if (!parameter.fields.empty()) {
         auto fields = OrderedJson::array();
         for (const auto &field : parameter.fields) fields.push_back(graphParameterSchemaJson(field));
         result["fields"] = std::move(fields);
+    }
+    if (!parameter.variants.empty()) {
+        auto variants = OrderedJson::array();
+        for (const auto &variant : parameter.variants) variants.push_back(itemJson(variant));
+        result["variants"] = std::move(variants);
     }
     if (parameter.expression) result["expression"] = true;
     if (!parameter.description.empty()) result["description"] = parameter.description;

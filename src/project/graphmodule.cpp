@@ -584,6 +584,8 @@ OrderedJson operationJson(const std::string &op, const GraphOperationRegistratio
     }
     result["parameters"] = std::move(parameters_schema);
     result["parameters_complete"] = complete;
+    // CT-4: where a node of the op may stand, from the same table.
+    result["placement"] = std::string{graphOperationPlacementName(graphOperationPlacement(op))};
     // CT-1: the names value.input's `name` takes, from the table the frame
     // checks them against.
     if (op == "value.input") {

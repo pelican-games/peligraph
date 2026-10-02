@@ -2274,6 +2274,14 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
     for (const auto &[name, format] : imageFormats())
         format_aspects[name] = std::string{imageFormatAspectName(format)};
     result["render_target_vocabulary"]["format_aspects"] = std::move(format_aspects);
+    // CT-4: the names a pass's view_family and canonical_anchor take (the
+    // catalog's choices_from): the main family and each registered
+    // provider's, and the anchors featurecompose places passes at.
+    auto view_families = OrderedJson::array({std::string{mainRenderViewFamilyId}});
+    for (const auto &provider : renderViewFamilyProviderRegistry().providers())
+        view_families.push_back(provider.family_id);
+    result["view_families"] = std::move(view_families);
+    result["canonical_anchors"] = canonicalRenderPassAnchors();
     // EL-1: the names a draw_loop branch's `when` and draw.variant take, from
     // what the draw-loop tables judge (MaterialDrawSubject): `id` is the
     // matching key `when.material` compares, `tags` what `when.tags` / `where`

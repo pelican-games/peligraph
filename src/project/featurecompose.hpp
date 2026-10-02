@@ -103,6 +103,8 @@ std::vector<std::string> renderFeatureRequiredCapabilities(
 // color pipeline's anchors. Composition resolves such an insert to the anchor
 // before any pass that happens to share the name.
 bool isCanonicalRenderPassAnchor(std::string_view name);
+// CT-4: every name isCanonicalRenderPassAnchor takes, in pipeline order.
+std::vector<std::string> canonicalRenderPassAnchors();
 
 // The pass an insert names, in the pass family that holds it. A canonical
 // anchor is found (in every family) before any pass that shares its name;

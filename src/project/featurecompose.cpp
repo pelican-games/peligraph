@@ -44,6 +44,10 @@ bool isCanonicalRenderPassAnchor(std::string_view name) {
                      name) != canonical_anchors.end();
 }
 
+std::vector<std::string> canonicalRenderPassAnchors() {
+    return {canonical_anchors.begin(), canonical_anchors.end()};
+}
+
 namespace {
 
 bool isIdentifier(std::string_view value) {

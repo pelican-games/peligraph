@@ -1491,6 +1491,44 @@ TEST_CASE("CT-3 an edit with a parameter of the wrong kind, enum or range is ref
     REQUIRE(readBytes(source.path) == saved);
 }
 
+// CT-4: an op that reads its owner's model (the pose ops, value.morph_weight)
+// placed at the root is refused by name, with the document, before anything
+// is saved.
+TEST_CASE("CT-4 an edit placing an owned-instance op at the root is refused by name",
+          "[render-config-editor][graph-composition][ct4]") {
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    TemporaryConfig source{readBytes(fixture_path)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+    const auto saved = readBytes(source.path);
+    const auto refused = [&](Json node) {
+        const auto result = Json(service->editGraphDocument(
+            {{"base_source_digest", service->getGraphInstances(Json::object()).at("source_digest").at("hex")},
+             {"ops", Json::array({Json{{"op", "add_node"}, {"node", std::move(node)}}})}}));
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(readBytes(source.path) == saved);
+        const auto error = result.at("error");
+        CHECK(error.at("code") == "graph.op_requires_owned_instance@1");
+        CHECK(error.at("document") == "project://passes/main.json");
+        return error;
+    };
+    auto error = refused({{"id", "weight"}, {"op", "value.morph_weight"},
+                          {"parameters", {{"node", 0}, {"target", 0}}}, {"outputs", Json::array({"value"})}});
+    CHECK(error.at("node") == "weight");
+    CHECK(error.at("op") == "value.morph_weight");
+#if PELICAN_WITH_ANIMATION
+    error = refused({{"id", "walk"}, {"op", "pose.clip_sample"},
+                     {"parameters", {{"rig", "project://character.gltf"}, {"clip", "Turn"}}},
+                     {"inputs", {{"time", {{"node", "clock"}, {"port", "value"}}}}},
+                     {"outputs", Json::array({"pose"})}});
+    CHECK(error.at("node") == "walk");
+    CHECK(error.at("op") == "pose.clip_sample");
+#endif
+}
+
 // CT-2: how a refused node's id finds its definition, and what a refusal
 // keeps. Only the document's structure is read: an instance's copy, a loop
 // body's template and an element's copy, and a body's own id.
@@ -1932,21 +1970,25 @@ TEST_CASE("node values report the definition scope the drawn frame evaluated",
         // Acceptance 3. A pose operation produces no value of its own, but the
         // values partition publishes every scalar it consumes as
         // `$pose/<node>/<port>` -- which is the only place the number an
-        // animation node ran on is observable at all.
-        const auto add = edit(Json::array({Json{{"op", "add_node"}, {"node",
-            {{"id", "pose"}, {"op", "pose.clip_sample"},
-             {"parameters", {{"rig", "project://character.gltf"}, {"clip", "Turn"}}},
-             {"inputs", {{"time", {{"node", "clock"}, {"port", "value"}}}}},
-             {"outputs", Json::array({"pose"})}}}}}));
+        // animation node ran on is observable at all. CT-4: a pose stands in
+        // an owned instance (`left`), its time the clock through `gain`.
+        const auto add = edit(Json::array({
+            Json{{"op", "add_node"}, {"scope", "gain_curve"}, {"node",
+                {{"id", "pose"}, {"op", "pose.clip_sample"},
+                 {"parameters", {{"rig", "project://character.gltf"}, {"clip", "Turn"}}},
+                 {"inputs", {{"time", {{"node", "gain"}, {"port", "value"}}}}},
+                 {"outputs", Json::array({"pose"})}}}},
+            Json{{"op", "set_input"}, {"node", "left"}, {"port", "gain"},
+                 {"source", {{"node", "clock"}, {"port", "value"}}}}}));
 #if PELICAN_WITH_ANIMATION
         REQUIRE(commit(add).at("committed") == true);
         draw();
-        const auto reply = service->getGraphNodeValues(Json::object());
+        const auto reply = service->getGraphNodeValues({{"instance", "left"}});
         const auto pose = nodeOf(reply, "pose");
         REQUIRE(pose.at("outputs").at("time") == 0.5);
         scene_time = 1.5;
         draw();
-        REQUIRE(nodeOf(service->getGraphNodeValues(Json::object()), "pose")
+        REQUIRE(nodeOf(service->getGraphNodeValues({{"instance", "left"}}), "pose")
                     .at("outputs").at("time") == 1.5);
 #else
         // The control: without the animation module the operation is not

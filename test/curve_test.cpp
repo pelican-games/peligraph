@@ -3,6 +3,7 @@
 #include "../src/core/userpublic/valuegraph.hpp"
 #include "../src/project/graphcomposition.hpp"
 #include "../src/project/graphmodule.hpp"
+#include "../src/project/graphparameterschema.hpp"
 #include "../src/project/graphpartition.hpp"
 #include "../src/project/rendergraphcomposition.hpp"
 #include "graph_composition_fixture.hpp"
@@ -1261,14 +1262,17 @@ TEST_CASE("CT-3 the catalog lists each op's parameters with their kinds and a wr
         {"pose.retarget", Json::array({Json{{"name", "profile"}}})},
         {"draw.variant", Json::array({Json{{"name", "variant"}}})},
     };
+    // CT-4 added union.
     const std::set<std::string> kinds{"number", "integer", "bool", "string", "enum", "vec2", "vec3", "vec4",
-                                      "color", "array", "object", "asset", "shader", "node_ref", "expression", "json"};
+                                      "color", "array", "object", "asset", "shader", "node_ref", "expression", "json",
+                                      "union"};
     std::function<void(const Json &)> checkShape = [&](const Json &entry) {
         INFO(entry.dump());
         CHECK(kinds.contains(entry.at("kind").get<std::string>()));
         CHECK(entry.contains("enum") == (entry.at("kind") == "enum"));
         if (entry.contains("items")) checkShape(entry.at("items"));
         for (const auto &field : entry.value("fields", Json::array())) checkShape(field);
+        for (const auto &variant : entry.value("variants", Json::array())) checkShape(variant);
     };
     for (const auto &module : catalog.at("modules"))
         for (const auto &entry : module.at("operations")) {
@@ -1327,7 +1331,7 @@ TEST_CASE("CT-3 the catalog lists each op's parameters with their kinds and a wr
     CHECK(shader.at("kind") == "shader");
     CHECK(shader.at("fields") == Json::array({Json{{"name", "vertex"}, {"kind", "string"}, {"required", true}}}));
     CHECK(shader.at("default") == Json{{"vertex", "engine://shadow_depth"}});
-    CHECK(parameter("render.shadow_depth", "ray_query").at("kind") == "json");
+    CHECK(parameter("render.shadow_depth", "ray_query").at("kind") == "union"); // CT-4: was json
     CHECK(parameter("render.shadow_depth", "depth_load_op").at("kind") == "enum");
     CHECK(parameter("render.shadow_depth", "depth_store_op").at("enum").front() == "store");
     CHECK(parameter("render.shadow_depth", "resolution_domain").at("default") == "independent");
@@ -1342,7 +1346,9 @@ TEST_CASE("CT-3 the catalog lists each op's parameters with their kinds and a wr
     CHECK(type.at("fields").at(0).at("name") == "semantic");
     CHECK(type.at("fields").at(1).at("items").at("kind") == "string");
     CHECK(parameter("render.image", "initial").at("fields").at(0) ==
-          Json{{"name", "asset"}, {"kind", "asset"}, {"required", true}});
+          Json{{"name", "asset"}, {"kind", "asset"}, {"required", true},
+               // CT-4.
+               {"asset_kind", "image"}, {"extensions", Json::array({".ktx2", ".png", ".jpg"})}});
     CHECK(parameter("render.image", "width").at("expression") == true);
     CHECK(operation("render.image").at("parameters_complete") == false);
     CHECK(operation("render.fullscreen").at("parameters_complete") == false);
@@ -1412,6 +1418,159 @@ TEST_CASE("CT-3 the catalog lists each op's parameters with their kinds and a wr
     std::tie(code, detail) = refusal(
         {{"id", "data"}, {"op", "render.buffer"}, {"parameters", {{"element", "float"}, {"note", 3}}}});
     CHECK(code.empty());
+}
+
+// CT-4: what Studio needs to make a field of each parameter -- where a
+// string's value is chosen from, what an asset is, the shapes of a value of
+// two kinds, a slider's practical range -- and where an op may stand, which
+// the partition enforces by name. Nothing CT-3 checks changes.
+TEST_CASE("CT-4 the catalog says where a value is chosen from, an asset's kind, a union's shapes, a slider's range "
+          "and where an op may stand",
+          "[curve][graph-module][graph-catalog][ct4]") {
+    using namespace Pelican;
+    using Json = nlohmann::json;
+    const auto catalog = Json(builtinGraphModuleRegistry().catalog());
+    const auto operation = [&](std::string_view op) {
+        for (const auto &module : catalog.at("modules"))
+            for (const auto &entry : module.at("operations"))
+                if (entry.at("op").get<std::string>() == std::string{op}) return entry;
+        FAIL("the catalog lists no " << op);
+        return Json{};
+    };
+    const auto parameter = [&](std::string_view op, std::string_view name) {
+        const auto listed = operation(op);
+        for (const auto &entry : listed.at("parameters"))
+            if (entry.at("name").get<std::string>() == std::string{name}) return entry;
+        FAIL(op << " lists no parameter " << name);
+        return Json{};
+    };
+    const Json context{{"rpc", "get_render_authoring_context"}};
+    const auto from = [&](const char *key, const char *field = nullptr) {
+        auto result = context;
+        result["key"] = key;
+        if (field) result["field"] = field;
+        return result;
+    };
+
+    // 1. Where a string's value is chosen from.
+    CHECK(parameter("render.scalar", "target").at("choices_from") ==
+          Json{{"graph_nodes", Json::array({"render.buffer", "render.attribute"})}});
+    CHECK(parameter("render.shadow_depth", "view_family").at("choices_from") == from("view_families"));
+    CHECK(parameter("render.shadow_depth", "pass_set").at("choices_from") == from("graphs", "name"));
+    CHECK(parameter("render.shadow_depth", "canonical_anchor").at("choices_from") == from("canonical_anchors"));
+    CHECK(parameter("render.image", "format").at("choices_from") == from("render_target_vocabulary.formats"));
+    CHECK(parameter("render.image", "format_class").at("choices_from") ==
+          from("render_target_vocabulary.format_classes"));
+    CHECK(parameter("render.target_ref", "name").at("choices_from") == from("render_targets", "name"));
+    CHECK(parameter("render.fullscreen", "inherit_bindings_from").at("choices_from") ==
+          from("graphs.passes", "name"));
+    CHECK(parameter("draw.variant", "variant").at("choices_from") == from("materials", "variants"));
+#if PELICAN_WITH_AUDIO
+    CHECK(parameter("audio.volume", "target").at("choices_from") ==
+          Json{{"graph_nodes", Json::array({"audio.playback"})}});
+    CHECK(parameter("audio.playback", "asset").at("asset_kind") == "audio");
+    CHECK(parameter("audio.playback", "asset").at("extensions") == Json::array({".wav", ".ogg"}));
+#endif
+
+    // 2. An asset's kind and the extensions its reader takes.
+#if PELICAN_WITH_ANIMATION
+    CHECK(parameter("pose.clip_sample", "rig").at("asset_kind") == "model");
+    CHECK(parameter("pose.clip_sample", "rig").at("extensions") == Json::array({".glb", ".gltf", ".vrm"}));
+#endif
+    CHECK(parameter("value.sample_table", "asset").at("asset_kind") == "analysis_table");
+    CHECK(parameter("render.attribute", "source").at("fields").at(0).at("extensions") ==
+          Json::array({".glb", ".gltf"}));
+
+    // 3. A value of two kinds is a union of its shapes.
+    const auto ray_query = parameter("render.shadow_depth", "ray_query");
+    CHECK(ray_query.at("kind") == "union");
+    CHECK(ray_query.at("default") == false);
+    CHECK(ray_query.at("variants") ==
+          Json::array({Json{{"kind", "bool"}},
+                       Json{{"kind", "object"},
+                            {"fields", Json::array({Json{{"name", "acceleration_structure"}, {"kind", "string"},
+                                                         {"required", true}}})}}}));
+    const auto mip_levels = parameter("render.image", "mip_levels");
+    CHECK(mip_levels.at("kind") == "union");
+    CHECK(mip_levels.at("variants").at(0).at("kind") == "integer");
+    CHECK(mip_levels.at("variants").at(0).at("min") == 1);
+    CHECK(mip_levels.at("variants").at(1) == Json{{"kind", "enum"}, {"enum", Json::array({"full"})}});
+    CHECK(parameter("value.sample_table", "row").at("kind") == "union");
+    // Listed, not checked: the op's parser judges it, as it did a json value.
+    CHECK_NOTHROW(checkGraphNodeParameterTypes(
+        "render.shadow_depth",
+        Json{{"id", "shadow"}, {"op", "render.shadow_depth"}, {"parameters", {{"ray_query", "yes"}}}}));
+
+    // 5. A slider's range, never checked.
+    CHECK(parameter("render.image", "width").at("soft_max") == 8192);
+    CHECK(parameter("render.image", "height").at("soft_max") == 8192);
+    CHECK(parameter("render.image", "width").at("max") == 4294967295LL);
+    CHECK(mip_levels.at("variants").at(0).at("soft_max") == 14);
+    CHECK_FALSE(parameter("render.image", "layers").contains("soft_max"));
+
+    // 4. Where an op may stand: every op says so, and the pose ops and the
+    // morph weight only inside an owned instance.
+    std::set<std::string> owned;
+    for (const auto &module : catalog.at("modules"))
+        for (const auto &entry : module.at("operations")) {
+            INFO(entry.at("op"));
+            const auto placement = entry.at("placement").get<std::string>();
+            CHECK((placement == "anywhere" || placement == "owned_instance"));
+            if (placement == "owned_instance") owned.insert(entry.at("op").get<std::string>());
+        }
+    std::set<std::string> expected{"value.morph_weight"};
+#if PELICAN_WITH_ANIMATION
+    expected.insert({"pose.clip_sample", "pose.blend", "pose.state_machine", "pose.retarget", "pose.skeletal",
+                     "pose.transform"});
+#endif
+    CHECK(owned == expected);
+    const auto refusal = [](const Json &document) {
+        try {
+            (void)partitionGraphDocument(document);
+        } catch (const GraphRegistryError &error) {
+            return std::pair{error.code(), error.detail()};
+        }
+        return std::pair{std::string{}, Json{}};
+    };
+    // Each document has a clock at the root, which a clip sample's time reads.
+    const auto rooted = [](Json node) {
+        return Json{{"schema", "pelican.graph"}, {"version", 1},
+                    {"nodes", Json::array({Json{{"id", "clock"}, {"op", "value.input"},
+                                                {"parameters", {{"name", "time"}}},
+                                                {"outputs", Json::array({"value"})}},
+                                           std::move(node)})},
+                    {"outputs", Json::object()}};
+    };
+    const Json clock{{"node", "clock"}, {"port", "value"}};
+    auto [code, detail] = refusal(rooted({{"id", "weight"}, {"op", "value.morph_weight"},
+                                          {"parameters", {{"node", 0}, {"target", 0}}},
+                                          {"outputs", Json::array({"value"})}}));
+    CHECK(code == "graph.op_requires_owned_instance@1");
+    CHECK(detail == Json{{"node", "weight"}, {"op", "value.morph_weight"}});
+#if PELICAN_WITH_ANIMATION
+    std::tie(code, detail) = refusal(rooted({{"id", "walk"}, {"op", "pose.clip_sample"},
+                                             {"parameters", {{"rig", "m.glb"}, {"clip", "Walk"}}},
+                                             {"inputs", {{"time", clock}}}, {"outputs", Json::array({"pose"})}}));
+    CHECK(code == "graph.op_requires_owned_instance@1");
+    CHECK(detail == Json{{"node", "walk"}, {"op", "pose.clip_sample"}});
+    // In an instance without an owner, by its expanded id.
+    auto unowned = rooted({{"id", "hero"}, {"op", "graph.instance"}, {"definition", "pose"},
+                           {"inputs", {{"time", clock}}}});
+    unowned["definitions"]["pose"] = {
+        {"nodes", Json::array({Json{{"id", "time"}, {"op", "graph.input"}},
+                               Json{{"id", "walk"}, {"op", "pose.clip_sample"},
+                                    {"parameters", {{"rig", "m.glb"}, {"clip", "Walk"}}},
+                                    {"inputs", {{"time", {{"node", "time"}, {"port", "value"}}}}},
+                                    {"outputs", Json::array({"pose"})}}})},
+        {"outputs", Json::object()}};
+    std::tie(code, detail) = refusal(unowned);
+    CHECK(code == "graph.op_requires_owned_instance@1");
+    CHECK(detail.at("node") == "hero/walk");
+    // With an owner it stands.
+    unowned["nodes"][1]["owner"] = {{"scene", "scenes/main"}, {"object", 7}};
+    std::tie(code, detail) = refusal(unowned);
+    CHECK(code.empty());
+#endif
 }
 
 TEST_CASE("a build without the animation unit rejects a pose document by name",
