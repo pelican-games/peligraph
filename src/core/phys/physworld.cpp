@@ -1,3 +1,4 @@
+#include <bit>
 #include "physworld.hpp"
 #include "physicsruntime.hpp"
 #if PELICAN_WITH_BUILTIN_PHYSICS || PELICAN_WITH_JOLT_PHYSICS
@@ -384,6 +385,7 @@ PhysWorld::PreparedState PhysWorld::prepareSceneBindings(
 }
 
 void PhysWorld::publishPrepared(PreparedState &&prepared) noexcept {
+    invalidateColliderSnapshot();
     bindings.swap(prepared.bindings);
     active_trigger_pairs.swap(prepared.active_trigger_pairs);
     std::swap(next_collider_id_value, prepared.next_collider_id_value);
@@ -396,6 +398,7 @@ void PhysWorld::publishPrepared(PreparedState &&prepared,
 }
 
 void PhysWorld::clear() {
+    invalidateColliderSnapshot();
     bindings.clear();
     // A full scene reset is a domain boundary: old EntityIds are no longer
     // addressable, so it deliberately produces no synthetic OverlapExit.
@@ -409,6 +412,7 @@ void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider
         throw std::runtime_error("Collider object requires a name");
     }
     auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    invalidateColliderSnapshot();
     bindings.erase(std::remove_if(bindings.begin(), bindings.end(), [&](const Binding &binding) {
         const auto *bound_id = std::get_if<GameObjectId>(&binding.transform_source);
         return binding.identity.name == name && bound_id != nullptr &&
@@ -450,6 +454,7 @@ void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider
     }
     collider.validate();
     validateWorldTransform(static_transform);
+    invalidateColliderSnapshot();
     bindings.push_back(Binding{
         .identity = phys::ColliderIdentity{
             .collider_id = allocateColliderId(),
@@ -461,31 +466,71 @@ void PhysWorld::bindCollider(std::string name, const ColliderComponent &collider
     });
 }
 
-std::vector<phys::Collider> PhysWorld::collectColliders() const {
+std::shared_ptr<const std::vector<phys::Collider>> PhysWorld::colliderSnapshot() const {
+    // Read-only queries may overlap. Release the cache lock before invoking
+    // any provider, including one which re-enters the world.
+    const std::lock_guard snapshot_lock{collider_snapshot_mutex_};
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    const auto transformFor = [&](const Binding &binding)
+        -> std::optional<PhysWorldTransform> {
+        if (binding.mesh) return std::nullopt;
+        if (const auto *id = std::get_if<GameObjectId>(&binding.transform_source)) {
+            const auto *value = ecs.tryComponent<TransformComponent>(*id);
+            if (!value) return std::nullopt;
+            return transformFromComponent(*value);
+        }
+        return std::get<PhysWorldTransform>(binding.transform_source);
+    };
+    const auto same = [](const auto &a, const auto &b) {
+        if (a.has_value() != b.has_value()) return false;
+        if (!a) return true;
+        const auto equal = [](float x, float y) {
+            return std::bit_cast<std::uint32_t>(x) == std::bit_cast<std::uint32_t>(y);
+        };
+        return equal(a->pos.x, b->pos.x) && equal(a->pos.y, b->pos.y) && equal(a->pos.z, b->pos.z) &&
+               equal(a->rotation.x, b->rotation.x) && equal(a->rotation.y, b->rotation.y) &&
+               equal(a->rotation.z, b->rotation.z) && equal(a->rotation.w, b->rotation.w) &&
+               equal(a->scale.x, b->scale.x) && equal(a->scale.y, b->scale.y) && equal(a->scale.z, b->scale.z);
+    };
+    if (collider_snapshot_ && collider_transforms_.size() == bindings.size()) {
+        bool unchanged = true;
+        for (std::size_t i = 0; i < bindings.size(); ++i) {
+            if (!same(transformFor(bindings[i]), collider_transforms_[i])) {
+                unchanged = false;
+                break;
+            }
+        }
+        if (unchanged) return collider_snapshot_;
+    }
+    std::vector<std::optional<PhysWorldTransform>> transforms;
+    transforms.reserve(bindings.size());
     std::vector<PhysWorldColliderInput> inputs;
     inputs.reserve(bindings.size());
-    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
     for (const auto &binding : bindings) {
-        if (binding.mesh) continue;
-        PhysWorldTransform transform;
-        if (const auto *object_id = std::get_if<GameObjectId>(&binding.transform_source)) {
-            const auto *component = ecs.tryComponent<TransformComponent>(*object_id);
-            if (component == nullptr) {
-                continue;
-            }
-            transform = transformFromComponent(*component);
-        } else {
-            transform = std::get<PhysWorldTransform>(binding.transform_source);
-        }
+        const auto transform = transformFor(binding);
+        transforms.push_back(transform);
+        if (!transform) continue;
         inputs.push_back(PhysWorldColliderInput{
             .name = binding.identity.name,
             .collider = binding.collider,
-            .transform = transform,
+            .transform = *transform,
             .identity = binding.identity,
             .metadata = binding.metadata,
         });
     }
-    return buildPhysColliders(inputs);
+    // Publish only a completely validated snapshot. A provider may re-enter
+    // queries or publish bindings; the caller's shared ownership keeps its
+    // input span alive across such a callback.
+    auto snapshot = std::make_shared<const std::vector<phys::Collider>>(
+        buildPhysColliders(inputs));
+    collider_transforms_ = std::move(transforms);
+    collider_snapshot_ = std::move(snapshot);
+    ++collider_snapshot_builds_;
+    return collider_snapshot_;
+}
+
+std::vector<phys::Collider> PhysWorld::collectColliders() const {
+    return *colliderSnapshot();
 }
 
 namespace {
@@ -536,12 +581,12 @@ Physics::Status PhysWorld::queryRaycastAll(
     std::vector<phys::RaycastQueryHit> &hits) const {
     hits.clear();
     auto [meshes, acceleration, identities, metadata] = collectMeshQueries(bindings);
-    const auto colliders = collectColliders();
+    const auto colliders = colliderSnapshot();
     std::vector<phys::RaycastQueryHit> result;
     // Keep the legacy empty-world availability behavior, but a mesh-only world
     // does not need a primitive provider.
-    if (!colliders.empty() || meshes.empty()) {
-        const auto status = physics_internal::raycastAll(ray, colliders, filter, result);
+    if (!colliders->empty() || meshes.empty()) {
+        const auto status = physics_internal::raycastAll(ray, *colliders, filter, result);
         if (status != Physics::Status::ok) return status;
     }
     if (!meshes.empty()) {
@@ -603,10 +648,10 @@ Physics::Status PhysWorld::queryOverlapAll(
     std::vector<phys::OverlapHit> &hits) const {
     hits.clear();
     auto [meshes, acceleration, identities, metadata] = collectMeshQueries(bindings);
-    const auto colliders = collectColliders();
+    const auto colliders = colliderSnapshot();
     std::vector<phys::OverlapHit> result;
-    if (!colliders.empty() || meshes.empty()) {
-        const auto status = physics_internal::overlapAll(shape, colliders, filter, result);
+    if (!colliders->empty() || meshes.empty()) {
+        const auto status = physics_internal::overlapAll(shape, *colliders, filter, result);
         if (status != Physics::Status::ok) return status;
     }
     if (!meshes.empty()) {
@@ -646,10 +691,10 @@ Physics::Status PhysWorld::queryShapeCastAll(
     std::vector<phys::ShapeCastQueryHit> &hits) const {
     hits.clear();
     auto [meshes, acceleration, identities, metadata] = collectMeshQueries(bindings);
-    const auto colliders = collectColliders();
+    const auto colliders = colliderSnapshot();
     std::vector<phys::ShapeCastQueryHit> result;
-    if (!colliders.empty() || meshes.empty()) {
-        const auto status = physics_internal::shapeCastAll(shape, delta, colliders, filter, result);
+    if (!colliders->empty() || meshes.empty()) {
+        const auto status = physics_internal::shapeCastAll(shape, delta, *colliders, filter, result);
         if (status != Physics::Status::ok) return status;
     }
     if (!meshes.empty()) {
@@ -696,7 +741,7 @@ std::vector<std::string> PhysWorld::overlapAll(
 }
 
 void PhysWorld::updateTriggers(GameContext &ctx) {
-    const auto colliders = collectColliders();
+    const auto colliders = colliderSnapshot();
     const auto meshes = collectMeshQueries(bindings);
     MeshQueryInputs meshTriggers;
     for (std::size_t i = 0; i < meshes.meshes.size(); ++i) {
@@ -731,12 +776,12 @@ void PhysWorld::updateTriggers(GameContext &ctx) {
                 std::to_string(static_cast<std::uint32_t>(status)));
         return true;
     };
-    for (const auto &collider : colliders) {
+    for (const auto &collider : *colliders) {
         if (!collider.identity.entity) continue;
         const auto filter = filterFor(collider.identity,collider.metadata);
         std::vector<phys::OverlapHit> hits;
         if (collider.metadata.trigger) {
-            if (!available(physics_internal::overlapAll(collider.shape,colliders,&filter,hits))) return;
+            if (!available(physics_internal::overlapAll(collider.shape,*colliders,&filter,hits))) return;
             append(collider.identity,hits);
         }
         // Reverse the geometric query for mesh triggers: the primitive stays
@@ -798,8 +843,8 @@ void PhysWorld::updateTriggers(GameContext &ctx) {
 
 void PhysWorld::enqueueDebugDraw(DebugDraw &debug_draw,
                                  const glm::mat4 &view_projection) const {
-    const auto colliders = collectColliders();
-    for (const auto &collider : colliders) {
+    const auto colliders = colliderSnapshot();
+    for (const auto &collider : *colliders) {
         drawCollider(debug_draw, view_projection, collider);
     }
 }

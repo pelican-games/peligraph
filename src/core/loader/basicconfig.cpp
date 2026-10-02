@@ -587,6 +587,10 @@ void MetadataCommitToken::publishDocumentOnlyForFaultInjection() noexcept {
     // as a whole through commit().
     impl_->owner->scene_metadata.projection->authoring_.swap(
         impl_->candidate.projection->authoring_);
+    // The fault deliberately breaks the immutable pair. Neither half may
+    // retain a memoized preflight identity after this counterfactual publish.
+    impl_->owner->scene_metadata.projection->snapshot_identity_.reset();
+    impl_->candidate.projection->snapshot_identity_.reset();
 }
 
 void MetadataCommitToken::commit() noexcept {

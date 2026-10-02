@@ -313,6 +313,7 @@ class EditorEditCoordinator {
     nlohmann::ordered_json getPreviewResult(const nlohmann::json &params) const;
     nlohmann::ordered_json queryJournal(const nlohmann::json &params) const;
 
+    std::uint64_t reusedPreflightCountForTesting() const noexcept;
     void commitPending() noexcept;
     std::vector<nlohmann::ordered_json> takeCompletedResults();
     std::vector<std::string> pendingTicketIds() const;

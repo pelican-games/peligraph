@@ -248,7 +248,7 @@ struct Harness {
         });
     }
 
-    explicit Harness(bool install_behavior_resolver = true) {
+    explicit Harness(bool install_behavior_resolver = true, bool projection_snapshot = false) {
         EditorEditRuntimeDependencies dependencies{
                 .document = [this]() -> const AuthoringSceneDocument & {
                     return target.document;
@@ -469,6 +469,11 @@ struct Harness {
             };
         if (!install_behavior_resolver) {
             dependencies.resolve_behavior_attachment = {};
+        }
+        if (projection_snapshot) {
+            dependencies.projection_state = [this]() -> const SceneProjectionState & {
+                return target.projectionState();
+            };
         }
         edits = std::make_unique<EditorEditCoordinator>(
             std::move(dependencies));
@@ -2443,4 +2448,121 @@ TEST_CASE("Editor gate epoch treats a gate that closed and reopened as a change"
     CHECK(advanced != accepted);
 }
 
+} // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("Transform preflight reuse preserves commit journal undo and redo", "[editorjournal][performance]") {
+    const bool cached = GENERATE(false, true);
+    Harness h{true, cached};
+    const auto before = h.target.document.encodeSemantic();
+    const Json op{{"op", "set_component_value"}, {"object_id", 1},
+                  {"component_slot", "transform"}, {"field_path", "/pos"}, {"value", {2, 3, 4}}};
+    REQUIRE(h.commit(op).at("status") == "committed");
+    REQUIRE(h.edits->reusedPreflightCountForTesting() == (cached ? 1 : 0));
+    const auto after = h.target.document.encodeSemantic();
+    REQUIRE(h.runtime == after);
+    REQUIRE(h.edits->journal().size() == 1);
+    REQUIRE(h.edits->journal().back().ordered_forward.front().at("value") == Json::array({2, 3, 4}));
+    REQUIRE(ol1Revert(h, false).at("status") == "committed");
+    REQUIRE(h.target.document.encodeSemantic() == before);
+    REQUIRE(h.runtime == before);
+    REQUIRE(ol1Revert(h, true).at("status") == "committed");
+    REQUIRE(h.target.document.encodeSemantic() == after);
+    REQUIRE(h.runtime == after);
+}
+TEST_CASE("Transform preflight reuse retains admission and execution failures", "[editorjournal][performance]") {
+    const bool cached = GENERATE(false, true);
+    Harness h{true, cached};
+    Json op{{"op", "set_component_value"}, {"object_id", 1},
+            {"component_slot", "transform"}, {"field_path", "/pos"}, {"value", {2, 3, 4}}};
+    const auto before = h.target.document.encodeSemantic();
+    SECTION("bad field still rejected during admission") {
+        op["field_path"] = "/missing";
+        REQUIRE(h.enqueue(op).at("status") == "rejected");
+        REQUIRE(h.edits->reusedPreflightCountForTesting() == 0);
+    }
+    SECTION("transition after admission still rejects") {
+        const auto accepted = h.enqueue(op);
+        ++h.gate.transition_epoch;
+        h.edits->commitPending();
+        const auto result = h.edits->getResult({{"ticket", accepted.at("ticket")}});
+        REQUIRE(result.at("status") == "failed");
+        REQUIRE(result.at("error").at("code") == "gate_closed");
+        REQUIRE(h.edits->reusedPreflightCountForTesting() == 0);
+    }
+    SECTION("scene switch after admission still rejects") {
+        const auto accepted = h.enqueue(op);
+        h.current_scene = "other-scene";
+        h.edits->commitPending();
+        const auto result = h.edits->getResult({{"ticket", accepted.at("ticket")}});
+        REQUIRE(result.at("status") == "failed");
+        REQUIRE(result.at("error").at("code") == "gate_closed");
+        REQUIRE(h.edits->reusedPreflightCountForTesting() == 0);
+    }
+    SECTION("actual projection refusal is not bypassed") {
+        h.reject_next_edit_execution = true;
+        REQUIRE(h.commit(op).at("status") == "rejected");
+    }
+    REQUIRE(h.target.document.encodeSemantic() == before);
+    REQUIRE(h.runtime == before);
+    REQUIRE(h.edits->journal().empty());
+}
+TEST_CASE("Transform preflight identity rejects equal-number replacement snapshots", "[editorjournal][performance]") {
+    Harness h{true, true};
+    const Json op{{"op", "set_component_value"}, {"object_id", 1},
+                  {"component_slot", "transform"}, {"field_path", "/pos"}, {"value", {2, 3, 4}}};
+    const auto accepted = h.enqueue(op);
+    const auto &before = h.target.projectionState();
+    const auto old_identity = before.snapshotIdentity();
+    const auto copy = before;
+    REQUIRE(copy.snapshotIdentity() == old_identity);
+    auto replacement = ResolvedSceneResolver::prepare(before.authoring(), before.resolverGeneration(), before.resolved().defaults());
+    REQUIRE(replacement.snapshotIdentity() != old_identity);
+    h.target.publishProjectionState(replacement);
+    REQUIRE(replacement.snapshotIdentity() == old_identity);
+    h.edits->commitPending();
+    REQUIRE(h.edits->getResult({{"ticket", accepted.at("ticket")}}).at("status") == "committed");
+    REQUIRE(h.edits->reusedPreflightCountForTesting() == 0);
+}
+} // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("Transform preflight reuse does not bypass stale queued edits", "[editorjournal][performance]") {
+    const bool cached = GENERATE(false, true);
+    Harness h{true, cached};
+    Json op{{"op", "set_component_value"}, {"object_id", 1},
+            {"component_slot", "transform"}, {"field_path", "/pos"}, {"value", {2, 3, 4}}};
+    const auto first = h.enqueue(op);
+    op["value"] = {8, 9, 10};
+    const auto stale = h.enqueue(op);
+    h.edits->commitPending();
+    REQUIRE(h.edits->getResult({{"ticket", first.at("ticket")}}).at("status") == "committed");
+    const auto result = h.edits->getResult({{"ticket", stale.at("ticket")}});
+    REQUIRE(result.at("status") == "rejected");
+    REQUIRE(result.at("error").at("code") == "stale_revision");
+    REQUIRE(h.edits->journal().size() == 1);
+    REQUIRE(h.runtime == h.target.document.encodeSemantic());
+    REQUIRE(h.edits->reusedPreflightCountForTesting() == (cached ? 1 : 0));
+}
+
+TEST_CASE("Transform preflight reuse checks preview leases acquired after admission", "[editorjournal][performance]") {
+    const bool cached = GENERATE(false, true);
+    Harness h{true, cached};
+    const auto before = h.target.document.encodeSemantic();
+    const Json op{{"op", "set_component_value"}, {"object_id", 1},
+                  {"component_slot", "transform"}, {"field_path", "/pos"}, {"value", {2, 3, 4}}};
+    const auto accepted = h.enqueue(op);
+    REQUIRE(accepted.at("status") == "accepted");
+    const auto preview = h.edits->openPreview(
+        {{"actor_id", h.actor}, {"operations", Json::array({op})}});
+    REQUIRE(preview.at("status") == "accepted");
+    h.edits->commitPending();
+    REQUIRE(h.edits->getPreviewResult({{"request_id", preview.at("request_id")}}).at("status") == "open");
+    const auto result = h.edits->getResult({{"ticket", accepted.at("ticket")}});
+    REQUIRE(result.at("status") == "failed");
+    REQUIRE(result.at("error").at("code") == "preview_lease_conflict");
+    REQUIRE(h.target.document.encodeSemantic() == before);
+    REQUIRE(h.edits->journal().empty());
+    REQUIRE(h.edits->reusedPreflightCountForTesting() == (cached ? 1 : 0));
+}
 } // namespace Pelican

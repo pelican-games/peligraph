@@ -3241,6 +3241,8 @@ struct EditorEditCoordinator::Impl {
         EditorActorId actor_id{};
         SceneRevision base_revision{};
         Json raw_operations;
+        std::shared_ptr<const void> accepted_snapshot;
+        std::optional<PreparedBatch> accepted_batch;
         std::optional<std::string> source_transaction_id;
         std::optional<std::string> coalesce_key;
         std::optional<std::uint64_t> expected_closure_generation;
@@ -3317,6 +3319,7 @@ struct EditorEditCoordinator::Impl {
     PreviewLeaseState preview;
     EditorGateEpoch<EditorGateObservation> gate_tracker;
     bool hook_installed = false;
+    std::uint64_t reused_preflight_count = 0;
 
     explicit Impl(EditorEditRuntimeDependencies runtime)
         : dependencies{std::move(runtime)} {}
@@ -4171,12 +4174,23 @@ struct EditorEditCoordinator::Impl {
                 std::span<const EditorCanonicalOperation> execution_operations;
                 std::span<const EditorProjectionCommand> execution_commands;
                 if (ticket.kind == Ticket::Kind::edit) {
-                    batch = prepareBatch(ticket.raw_operations, document(),
-                                         ticket.accepted_scene_id,
-                                         prefabRegistry(),
-                                         bindableProvider(),
-                                         projectionState(),
-                                         componentExists());
+                    const auto *state = projectionState();
+                    if (ticket.accepted_batch && state &&
+                        &state->authoring() == &document() &&
+                        state->snapshotIdentity() == ticket.accepted_snapshot) {
+                        // Admission already fully validated this exact immutable
+                        // pair. Gate/scene/revision/CAS above and preview leases
+                        // below still run, as does the real projection commit.
+                        batch = std::move(*ticket.accepted_batch);
+                        ++reused_preflight_count;
+                    } else {
+                        batch = prepareBatch(ticket.raw_operations, document(),
+                                             ticket.accepted_scene_id,
+                                             prefabRegistry(),
+                                             bindableProvider(),
+                                             projectionState(),
+                                             componentExists());
+                    }
                     const auto writes = batchWriteSet(batch);
                     const auto domains = batchStructuralDomains(batch);
                     requireNoLeaseOverlap(writes, domains);
@@ -4449,14 +4463,21 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
             return result;
         }
     }
+    std::optional<PreparedBatch> accepted_batch;
+    std::shared_ptr<const void> accepted_snapshot;
     Json normalized_operations;
     std::optional<OrderedJson> accepted_unpack_forward;
     std::optional<OrderedJson> accepted_unpack_inverse;
     OrderedJson inserted_rows = OrderedJson::array();
     try {
+        const auto *initial_state = impl_->projectionState();
+        const auto initial_snapshot =
+            initial_state && &initial_state->authoring() == &impl_->document()
+                ? initial_state->snapshotIdentity()
+                : std::shared_ptr<const void>{};
         normalized_operations = normalizeBehaviorAttachmentIdentities(
             operations, impl_->document(), base, impl_->dependencies);
-        const auto batch = prepareBatch(normalized_operations, impl_->document(),
+        auto batch = prepareBatch(normalized_operations, impl_->document(),
                                         impl_->dependencies.current_scene_id(),
                                         impl_->prefabRegistry(),
                                         impl_->bindableProvider(),
@@ -4482,6 +4503,22 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
                 {{"address", forward.at("address")},
                  {"row_id", forward.at("address").at("row_id")}});
         }
+        // Start with the common, deterministic built-in transform edit. Do
+        // not memoize structural, behavior, prefab, generated or list edits:
+        // their preflight also observes mutable registries/runtime identities.
+        const auto *state = impl_->projectionState();
+        if (state && initial_snapshot &&
+            state->snapshotIdentity() == initial_snapshot &&
+            &state->authoring() == &impl_->document() &&
+            !impl_->document().usesPrefabs() && normalized_operations.size() == 1U) {
+            const auto &op = normalized_operations.front();
+            if (op.value("op", std::string{}) == "set_component_value" &&
+                op.value("component_slot", std::string{}) == "transform" &&
+                op.contains("object_id") && !op.contains("address")) {
+                accepted_snapshot = state->snapshotIdentity();
+                accepted_batch.emplace(std::move(batch));
+            }
+        }
     } catch (const EditFailure &failure) {
         auto result = impl_->rejected(ticket, actor, base, failure);
         impl_->results[ticket] = result;
@@ -4492,6 +4529,8 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
         .actor_id = actor,
         .base_revision = base,
         .raw_operations = std::move(normalized_operations),
+        .accepted_snapshot = std::move(accepted_snapshot),
+        .accepted_batch = std::move(accepted_batch),
         .coalesce_key = coalesce,
         .expected_closure_generation = request.closure_generation,
         .expected_provider_generation = request.provider_generation,
@@ -5142,4 +5181,10 @@ EditorProjectionResult EditorEditCoordinator::executeJournalForVerification(
     return impl_->dependencies.execute(request);
 }
 
+} // namespace Pelican
+
+namespace Pelican {
+std::uint64_t EditorEditCoordinator::reusedPreflightCountForTesting() const noexcept {
+    return impl_->reused_preflight_count;
+}
 } // namespace Pelican

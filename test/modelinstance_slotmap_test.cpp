@@ -385,3 +385,47 @@ TEST_CASE("ModelInstanceSlots copies keep room to release a withheld slot",
 }
 
 } // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("Full-capacity scene replacement keeps rollback slots and reclaims older generations",
+          "[model-instance][scene-replacement][capacity][performance][gpu]") {
+    setupLogger();
+    FastModuleContainer modules;
+    requireSlotMapVulkan();
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const auto model = emptyModel();
+    std::vector<ModelInstanceId> live;
+    for (int i = 0; i < 1024; ++i) live.push_back(instances.placeModelInstance(model));
+    for (int cutover = 0; cutover < 3; ++cutover) {
+        std::vector<std::uint32_t> retire;
+        auto candidate = instances.prepareSceneReplacement(retire);
+        std::vector<ModelInstanceId> next;
+        for (int i = 0; i < 1024; ++i) {
+            auto staged = instances.stagePreparedSceneModel(candidate, model);
+            next.push_back(staged.id());
+            instances.publishPreparedSceneModel(candidate, std::move(staged));
+        }
+        REQUIRE_THROWS_WITH(instances.stagePreparedSceneModel(candidate, model),
+                            "Model instance capacity exceeded");
+        REQUIRE(instances.instanceCountForTesting() == 1024);
+        for (const auto id : live) REQUIRE(instances.isModelInstanceAlive(id));
+        // Abort before publication, then publish and exercise inverse-swap
+        // rollback before committing the same prepared candidate.
+        auto discarded = candidate;
+        (void)discarded;
+        instances.publishPreparedScene(std::move(candidate));
+        for (const auto id : live) REQUIRE_FALSE(instances.isModelInstanceAlive(id));
+        instances.publishPreparedScene(std::move(candidate));
+        for (const auto id : live) REQUIRE(instances.isModelInstanceAlive(id));
+        instances.publishPreparedScene(std::move(candidate));
+        instances.enqueueSceneRetirement(std::move(retire));
+        live = std::move(next);
+        for (const auto id : live) REQUIRE(instances.isModelInstanceAlive(id));
+        REQUIRE(PolygonInstanceTestAccess::slotTable(instances).slotCount() <= 2048);
+        // Deliberately no frame/triggerUpdate between scene replacements.
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
+    instances.drainSceneRetirements();
+    REQUIRE(instances.instanceCountForTesting() == 1024);
+}
+} // namespace Pelican
