@@ -26,8 +26,17 @@ struct WatcherStatus {
     WatcherState state = WatcherState::disabled;
     std::uint64_t epoch = 1;
     std::string error;
+    // FW-1: totals since construction. A scan compares each file's size and
+    // mtime with the previous scan and hashes only the files that differ (and
+    // none at start-up); `scans` counts completed inventory passes.
+    std::uint64_t scans = 0;
+    std::uint64_t hashed_files = 0;
+    std::uint64_t hashed_bytes = 0;
 };
 
+// A store with an empty logical_mount is laid over the project root: its
+// top-level `.pelican` directory (the engine's own caches and metadata) is
+// neither scanned nor a reason to scan.
 struct WatchStore {
     std::string name;
     std::filesystem::path root;

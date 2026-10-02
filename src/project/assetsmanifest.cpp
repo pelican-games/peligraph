@@ -1,18 +1,8 @@
 #include "assetsmanifest.hpp"
 
-#include <nlohmann/json.hpp>
-#include <picosha2.h>
+#include "sha256stream.hpp"
 
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#include <bcrypt.h>
-#endif
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
@@ -174,45 +164,33 @@ std::string assetFileSha256(const std::filesystem::path &path) {
     if (!file.is_open()) {
         throw std::runtime_error("failed to hash file: " + pathString(path));
     }
-    // picosha2 needs ~20 s for 73 MB in a Debug build, which outlasts the
-    // Studio's wait for the player's window; Windows hashes with CNG instead.
-#ifdef _WIN32
-    BCRYPT_HASH_HANDLE handle = nullptr;
-    if (!BCRYPT_SUCCESS(BCryptCreateHash(BCRYPT_SHA256_ALG_HANDLE, &handle, nullptr, 0, nullptr, 0, 0))) {
-        throw std::runtime_error("failed to hash file: " + pathString(path) + " (BCryptCreateHash)");
+    std::optional<Sha256Stream> hash;
+    try {
+        hash.emplace();
+    } catch (const std::exception &error) {
+        throw std::runtime_error("failed to hash file: " + pathString(path) + " (" + error.what() + ")");
     }
-    const std::unique_ptr<void, decltype(&BCryptDestroyHash)> hash{handle, &BCryptDestroyHash};
-#else
-    picosha2::hash256_one_by_one hasher;
-#endif
-    std::vector<unsigned char> buffer(1 << 20);
+    std::vector<unsigned char> buffer(Sha256Stream::read_chunk_bytes);
     while (file) {
         file.read(reinterpret_cast<char *>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
         const auto count = file.gcount();
         if (count <= 0) {
             continue;
         }
-#ifdef _WIN32
-        if (!BCRYPT_SUCCESS(BCryptHashData(handle, buffer.data(), static_cast<ULONG>(count), 0))) {
-            throw std::runtime_error("failed to hash file: " + pathString(path) + " (BCryptHashData)");
+        try {
+            hash->update(buffer.data(), static_cast<std::size_t>(count));
+        } catch (const std::exception &error) {
+            throw std::runtime_error("failed to hash file: " + pathString(path) + " (" + error.what() + ")");
         }
-#else
-        hasher.process(buffer.begin(), buffer.begin() + count);
-#endif
     }
     if (file.bad()) {
         throw std::runtime_error("failed to hash file: " + pathString(path));
     }
-    std::array<unsigned char, picosha2::k_digest_size> digest{};
-#ifdef _WIN32
-    if (!BCRYPT_SUCCESS(BCryptFinishHash(handle, digest.data(), static_cast<ULONG>(digest.size()), 0))) {
-        throw std::runtime_error("failed to hash file: " + pathString(path) + " (BCryptFinishHash)");
+    try {
+        return hash->finishHex();
+    } catch (const std::exception &error) {
+        throw std::runtime_error("failed to hash file: " + pathString(path) + " (" + error.what() + ")");
     }
-#else
-    hasher.finish();
-    hasher.get_hash_bytes(digest.begin(), digest.end());
-#endif
-    return picosha2::bytes_to_hex_string(digest.begin(), digest.end());
 }
 
 namespace {

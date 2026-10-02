@@ -2,13 +2,20 @@
 #include "../src/core/watch/filewatcher.hpp"
 #include "../src/core/watch/reloadgate.hpp"
 #include "../src/core/launchconfig.hpp"
+#include "../src/project/assetsmanifest.hpp"
+#include "../src/project/sha256stream.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <picosha2.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -96,6 +103,40 @@ bool createDirectoryJunction(const std::filesystem::path &link, const std::files
     return exit_code == 0;
 }
 #endif
+
+// FW-1 fixtures. Files whose mtime is well in the past, as a project's assets
+// are when the watcher starts (a file written in the last 2 s is hashed: its
+// mtime could still change within one timestamp tick).
+void setAge(const std::filesystem::path &path, std::chrono::minutes age) {
+    std::filesystem::last_write_time(path, std::filesystem::file_time_type::clock::now() - age);
+}
+
+std::vector<std::filesystem::path> agedFiles(const std::filesystem::path &root, int count) {
+    std::vector<std::filesystem::path> files;
+    for (int index = 0; index < count; ++index) {
+        const auto path = root / ("asset-" + std::to_string(index) + ".txt");
+        writeText(path, "v1-" + std::to_string(index));
+        setAge(path, 60min);
+        files.push_back(path);
+    }
+    return files;
+}
+
+// A save whose mtime is set back again, so a second pass over the same scan
+// (a late notification) finds it settled and does not read it twice.
+void rewriteAged(const std::filesystem::path &path, std::string_view text, std::chrono::minutes age) {
+    writeText(path, text);
+    setAge(path, age);
+}
+
+FileWatcherOptions watchingOptions() {
+    FileWatcherOptions options;
+    options.manual_clock = true; // native watch armed; the debounce is passed by the fake clock
+    return options;
+}
+
+// Lets the native notifications of the writes so far arrive before a cycle.
+void settleNotifications() { std::this_thread::sleep_for(300ms); }
 
 } // namespace
 
@@ -454,6 +495,332 @@ TEST_CASE("overlapping stores dedupe physical identity and reparse escape is rej
     std::filesystem::remove_all(outside, ec);
 }
 #endif
+
+TEST_CASE("FW-1 an unknown live digest equals nothing, still reports removal and accepts a self-write",
+          "[fw1][digest]") {
+    const AssetKey key{"asset.txt", {}};
+    ContentDigestState state;
+
+    SECTION("the first observation queues even the start-up bytes, the next equal one does not") {
+        state.seedLiveUnknown(key);
+        REQUIRE(state.snapshot(key).live_unknown);
+        REQUIRE(state.observe(key, "same", 1) == ObserveDisposition::queue_reload);
+        state.commitSucceeded(key, std::string{"same"});
+        REQUIRE_FALSE(state.snapshot(key).live_unknown);
+        REQUIRE(state.observe(key, "same", 1) == ObserveDisposition::unchanged);
+    }
+    SECTION("a failed first reload is queued again by the next observation") {
+        state.seedLiveUnknown(key);
+        REQUIRE(state.observe(key, "same", 1) == ObserveDisposition::queue_reload);
+        state.commitFailed(key);
+        REQUIRE(state.observe(key, "same", 1) == ObserveDisposition::queue_reload);
+    }
+    SECTION("a removal of a never-hashed source is reported") {
+        state.seedLiveUnknown(key);
+        REQUIRE(state.observeMissing(key));
+    }
+    SECTION("an applied self-write is consumed without a known live digest") {
+        state.seedLiveUnknown(key);
+        state.registerSelfWrite(key, "new", 4, true);
+        REQUIRE(state.observe(key, "new", 4) == ObserveDisposition::consumed_self_write);
+    }
+    SECTION("a self-write whose runtime apply failed follows the normal reload") {
+        state.seedLiveUnknown(key);
+        state.registerSelfWrite(key, "new", 4, false);
+        REQUIRE(state.observe(key, "new", 4) == ObserveDisposition::queue_reload);
+    }
+}
+
+TEST_CASE("FW-1 start-up hashes nothing and one rewritten file of N is hashed once and queued once",
+          "[fw1][watcher]") {
+    Sandbox box;
+    const auto files = agedFiles(box.root, 8);
+    GateFixture gate;
+    FileWatcher watcher({{"project", box.root}}, [&] { return gate.snapshot(); }, watchingOptions());
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now());
+    REQUIRE(watcher.status().state == WatcherState::watching);
+    REQUIRE(watcher.status().scans >= 1);
+    REQUIRE(watcher.status().hashed_files == 0);
+    REQUIRE(watcher.status().hashed_bytes == 0);
+
+    rewriteAged(files[3], "v2-3 changed", 30min);
+    watcher.notifyPathForTesting(files[3]);
+    settleNotifications();
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+    REQUIRE(watcher.status().hashed_files == 1);
+    REQUIRE(watcher.status().hashed_bytes == std::string_view{"v2-3 changed"}.size());
+    REQUIRE(watcher.pendingCount() == 1);
+    const auto requests = applyAll(watcher);
+    REQUIRE(requests.size() == 1);
+    REQUIRE(requests.front().key.path == "asset-3.txt");
+    REQUIRE(requests.front().kind == ReloadKind::modified);
+    watcher.stop();
+}
+
+TEST_CASE("FW-1 a same-bytes resave reloads once while the live bytes are unknown, then is ignored",
+          "[fw1][watcher]") {
+    Sandbox box;
+    const auto files = agedFiles(box.root, 4);
+    GateFixture gate;
+    FileWatcher watcher({{"project", box.root}}, [&] { return gate.snapshot(); }, watchingOptions());
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now());
+    REQUIRE(watcher.status().hashed_files == 0);
+
+    // First save of a file the watcher never hashed: by contract it reloads
+    // once, since the bytes the engine loaded at start-up are not known.
+    rewriteAged(files[0], "v1-0", 30min);
+    settleNotifications();
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+    REQUIRE(watcher.status().hashed_files == 1);
+    REQUIRE(watcher.pendingCount() == 1);
+    REQUIRE(applyAll(watcher).size() == 1);
+
+    // From then on the live digest is known: only the mtime moved.
+    rewriteAged(files[0], "v1-0", 20min);
+    settleNotifications();
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+    REQUIRE(watcher.status().hashed_files == 2);
+    REQUIRE(watcher.pendingCount() == 0);
+    watcher.stop();
+}
+
+TEST_CASE("FW-1 polling ticks without a change hash nothing", "[fw1][watcher][polling]") {
+    Sandbox box;
+    agedFiles(box.root, 6);
+    GateFixture gate;
+    FileWatcherOptions options;
+    options.manual_clock = true;
+    options.poll_interval = 20ms;
+    options.watch_arm_override = [](const WatchStore &, unsigned) { return false; };
+    FileWatcher watcher({{"project", box.root}}, [&] { return gate.snapshot(); }, options);
+    const auto t0 = FileWatcher::Clock::now();
+    watcher.runControlCycleForTesting(t0);
+    REQUIRE(watcher.status().state == WatcherState::polling);
+    for (int tick = 1; tick <= 3; ++tick) {
+        watcher.runControlCycleForTesting(t0 + tick * 25ms);
+    }
+    REQUIRE(watcher.status().scans >= 4);
+    REQUIRE(watcher.status().hashed_files == 0);
+    REQUIRE(watcher.pendingCount() == 0);
+    watcher.stop();
+}
+
+TEST_CASE("FW-1 an overflow rescan hashes only the changed file", "[fw1][watcher][overflow]") {
+    Sandbox box;
+    const auto files = agedFiles(box.root, 8);
+    GateFixture gate;
+    FileWatcher watcher({{"project", box.root}}, [&] { return gate.snapshot(); }, watchingOptions());
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now());
+    REQUIRE(watcher.status().state == WatcherState::watching);
+
+    rewriteAged(files[5], "v2-5 after overflow", 30min);
+    settleNotifications();
+    watcher.injectOverflowZeroBytes();
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+    REQUIRE(watcher.status().hashed_files == 1);
+    REQUIRE(watcher.pendingCount() == 1);
+    REQUIRE(applyAll(watcher).front().key.path == "asset-5.txt");
+
+    watcher.injectOverflowNotifyEnumDir();
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+    REQUIRE(watcher.status().hashed_files == 1);
+    REQUIRE(watcher.pendingCount() == 0);
+    watcher.stop();
+}
+
+TEST_CASE("FW-1 the project's .pelican directory is neither scanned nor a reason to scan",
+          "[fw1][watcher][metadata]") {
+    Sandbox box;
+    const auto files = agedFiles(box.root, 2);
+    const auto cache = box.root / ".pelican" / "shader_cache" / "unit.spv";
+    writeText(cache, "spirv v1");
+    setAge(cache, 60min);
+    GateFixture gate;
+    FileWatcher watcher({{"project", box.root}}, [&] { return gate.snapshot(); }, watchingOptions());
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now());
+    REQUIRE(watcher.status().state == WatcherState::watching);
+    const auto seeded = watcher.status();
+
+    // The engine writing its caches: the notifications are dropped.
+    writeText(cache, "spirv v2 longer");
+    writeText(box.root / ".pelican" / "assets-hash-cache.json", "{}");
+    settleNotifications();
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+    REQUIRE(watcher.status().scans == seeded.scans);
+    REQUIRE(watcher.pendingCount() == 0);
+
+    // A full rescan does not enter .pelican either.
+    watcher.injectOverflowZeroBytes();
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+    REQUIRE(watcher.status().scans > seeded.scans);
+    REQUIRE(watcher.status().hashed_files == 0);
+    REQUIRE(watcher.pendingCount() == 0);
+
+    // A project file next to it is still watched.
+    rewriteAged(files[1], "v2-1 project edit", 30min);
+    settleNotifications();
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+    REQUIRE(watcher.pendingCount() == 1);
+    REQUIRE(applyAll(watcher).front().key.path == "asset-1.txt");
+    watcher.stop();
+}
+
+TEST_CASE("FW-1 Sha256Stream, assetFileSha256 and the watcher digest equal picosha2 around 1 MiB",
+          "[fw1][digest][sha256]") {
+    Sandbox box;
+    const std::size_t mib = Sha256Stream::read_chunk_bytes;
+    for (const std::size_t length : {std::size_t{0}, std::size_t{3}, mib - 1, mib, mib + 1, 2 * mib + 7}) {
+        std::string bytes(length, char{});
+        for (std::size_t i = 0; i < bytes.size(); ++i) bytes[i] = static_cast<char>((i * 131 + 7) & 0xff);
+        if (length == 3) bytes = "abc";
+        const auto expected = picosha2::hash256_hex_string(bytes.begin(), bytes.end());
+        CHECK(sha256Hex(bytes) == expected);
+        Sha256Stream split;
+        std::size_t offset = 0;
+        std::size_t step = 1;
+        while (offset < bytes.size()) {
+            const auto count = std::min(step, bytes.size() - offset);
+            split.update(bytes.data() + offset, count);
+            offset += count;
+            step = step * 3 + 1;
+        }
+        CHECK(split.finishHex() == expected);
+        const auto file = box.root / ("hash-" + std::to_string(length) + ".bin");
+        writeText(file, bytes);
+        CHECK(assetFileSha256(file) == expected);
+        const auto digest = readStableContentDigest(file);
+        REQUIRE(digest.status == DigestReadStatus::stable);
+        CHECK(digest.sha256 == expected);
+        CHECK(digest.byte_count == length);
+    }
+}
+
+// FW-1 measurement, hidden from the default ctest run. Copies
+// $PELICAN_TEST_PROJECTS_DIR/example (the corpus test/CMakeLists.txt names)
+// into a sandbox and watches it as the project store:
+//   (a) the first reconcile, (b) one rewritten file until it is queued (the
+//   write and the reconcile; the 200 ms debounce is not counted), (d) a
+//   reconcile with no change, and (c) the bytes the watcher hashed.
+TEST_CASE("FileWatcher bench on the example project", "[.][bench][fw1]") {
+    std::string corpus;
+    {
+        char *value = nullptr;
+        std::size_t size = 0;
+        if (_dupenv_s(&value, &size, "PELICAN_TEST_PROJECTS_DIR") == 0 && value != nullptr) corpus = value;
+        std::free(value);
+    }
+    if (corpus.empty() || !std::filesystem::exists(std::filesystem::path{corpus} / "example" / "project.json")) {
+        SKIP("PELICAN_TEST_PROJECTS_DIR/example is not available");
+    }
+    Sandbox box;
+    const auto root = box.root / "example";
+    std::filesystem::copy(std::filesystem::path{corpus} / "example", root,
+                          std::filesystem::copy_options::recursive);
+    std::uint64_t files = 0;
+    std::uint64_t bytes = 0;
+    std::filesystem::path target;
+    std::uint64_t target_size = 0;
+    for (const auto &entry : std::filesystem::recursive_directory_iterator{root}) {
+        if (!entry.is_regular_file()) continue;
+        ++files;
+        bytes += entry.file_size();
+        const auto relative = std::filesystem::relative(entry.path(), root).generic_string();
+        if (relative.starts_with("assets/") && entry.file_size() > target_size) {
+            target = entry.path();
+            target_size = entry.file_size();
+        }
+    }
+    REQUIRE_FALSE(target.empty());
+    const auto ms = [](auto duration) {
+        return std::chrono::duration<double, std::milli>(duration).count();
+    };
+
+    GateFixture gate;
+    FileWatcherOptions options;
+    options.manual_clock = true;
+    FileWatcher watcher({{"project", root}}, [&] { return gate.snapshot(); }, options);
+    auto begin = std::chrono::steady_clock::now();
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now());
+    const auto first = std::chrono::steady_clock::now() - begin;
+    REQUIRE(watcher.status().state == WatcherState::watching);
+    const auto after_first = watcher.status();
+
+    std::string content;
+    {
+        std::ifstream input(target, std::ios::binary);
+        content.assign(std::istreambuf_iterator<char>{input}, {});
+    }
+    content[content.size() / 2] = static_cast<char>(content[content.size() / 2] ^ 0x5a);
+    begin = std::chrono::steady_clock::now();
+    writeText(target, content);
+    const auto wrote = std::chrono::steady_clock::now() - begin;
+    // The debounce a real save waits before its scan (not counted below).
+    std::this_thread::sleep_for(250ms);
+    watcher.notifyPathForTesting(target);
+    begin = std::chrono::steady_clock::now();
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+    const auto changed = wrote + (std::chrono::steady_clock::now() - begin);
+    REQUIRE(watcher.pendingCount() == 1);
+    REQUIRE(applyAll(watcher).size() == 1);
+    const auto after_change = watcher.status();
+
+    begin = std::chrono::steady_clock::now();
+    watcher.injectOverflowZeroBytes();
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+    const auto unchanged = std::chrono::steady_clock::now() - begin;
+    REQUIRE(watcher.pendingCount() == 0);
+    const auto after_unchanged = watcher.status();
+
+    // (f) the stat walk alone over 3000 settled files in 30 directories.
+    {
+        Sandbox many;
+        for (int index = 0; index < 3000; ++index) {
+            const auto path = many.root / ("dir-" + std::to_string(index % 30)) /
+                              ("file-" + std::to_string(index) + ".bin");
+            writeText(path, "x");
+            setAge(path, 60min);
+        }
+        FileWatcher walker({{"project", many.root}}, [&] { return gate.snapshot(); }, options);
+        begin = std::chrono::steady_clock::now();
+        walker.runControlCycleForTesting(FileWatcher::Clock::now());
+        const auto seeded = std::chrono::steady_clock::now() - begin;
+        begin = std::chrono::steady_clock::now();
+        walker.injectOverflowZeroBytes();
+        walker.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+        const auto walked = std::chrono::steady_clock::now() - begin;
+        REQUIRE(walker.status().hashed_files == 0);
+        // For scale: listing the same tree with size and mtime, nothing else.
+        begin = std::chrono::steady_clock::now();
+        std::uint64_t listed = 0;
+        for (const auto &entry : std::filesystem::recursive_directory_iterator{many.root}) {
+            if (entry.is_regular_file()) listed += entry.file_size() + (entry.last_write_time().time_since_epoch().count() & 1);
+        }
+        const auto bare = std::chrono::steady_clock::now() - begin;
+        REQUIRE(listed >= 3000);
+        std::printf("fw1-bench: (f) 3000 files: start-up %.1f ms, reconcile with no change %.1f ms "
+                    "(the bare listing %.1f ms)\n",
+                    ms(seeded), ms(walked), ms(bare));
+        walker.stop();
+    }
+    std::printf("fw1-bench: (c) hashed files/bytes: first %llu/%llu, rewrite %llu/%llu, no change %llu/%llu "
+                "(scans %llu)\n",
+                static_cast<unsigned long long>(after_first.hashed_files),
+                static_cast<unsigned long long>(after_first.hashed_bytes),
+                static_cast<unsigned long long>(after_change.hashed_files - after_first.hashed_files),
+                static_cast<unsigned long long>(after_change.hashed_bytes - after_first.hashed_bytes),
+                static_cast<unsigned long long>(after_unchanged.hashed_files - after_change.hashed_files),
+                static_cast<unsigned long long>(after_unchanged.hashed_bytes - after_change.hashed_bytes),
+                static_cast<unsigned long long>(after_unchanged.scans));
+
+    std::printf("fw1-bench: store files=%llu bytes=%llu; rewritten %s (%llu bytes)\n",
+                static_cast<unsigned long long>(files), static_cast<unsigned long long>(bytes),
+                std::filesystem::relative(target, root).generic_string().c_str(),
+                static_cast<unsigned long long>(target_size));
+    std::printf("fw1-bench: (a) first reconcile %.1f ms; (b) rewrite to queued %.1f ms; "
+                "(d) reconcile with no change %.1f ms\n",
+                ms(first), ms(changed), ms(unchanged));
+    watcher.stop();
+}
 
 TEST_CASE("central gate adapts legacy shader flag without a second apply path", "[wp96][gate]") {
     EngineLaunchConfig config;
