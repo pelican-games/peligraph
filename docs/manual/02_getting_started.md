@@ -276,7 +276,7 @@ mygame/
 
 各フィールドの意味は [第3章](03_project_format.md) で詳しく説明します。
 
-`camera` に `up` はありません。✅CC-1(`c8367b87`)で camera の up は transform の回転から取るようになり、`basic_config.camera.up` は撤去されました(書いてあると `project.camera_up_removed@1` で開けません。前に作った project の直し方は [第3章 §3.13](03_project_format.md) の「camera の向きの規約の変換」)。雛形の `scenes/main.scene.json` の `MainCamera` は `pos` が `(0, 0, 3)`・回転なしで、回転なしの camera は −Z を向くので原点を見ます([雛形の scene](../../src/project/projecttemplate.cpp#L133))。座標の規約は [第6章 §6.1](06_rendering.md) の「座標の規約」です。
+`camera` に `up` はありません。✅CC-1(`c8367b87`)で camera の up は transform の回転から取るようになり、`basic_config.camera.up` は撤去されました(書いてあると `project.camera_up_removed@1` で開けません。前に作った project の直し方は [第3章 §3.13](03_project_format.md) の「camera の向きの規約の変換」)。雛形の `scenes/main.scene.json` の `MainCamera` は `pos` が `(0, 0, 3)`・回転なしで、回転なしの camera は −Z を向くので原点を見ます([雛形の scene](../../src/project/projecttemplate.cpp#L133))。同じ scene の `KeyLight`(directional)の `direction` は `(-0.5, -1, -0.25)` で、光は −Z の側へ進み、camera から見える面を照らします([雛形の KeyLight の向き](../../src/project/projecttemplate.cpp#L148))。✅CC-1c(`b0b2fc77`)の前は `(-0.5, -1, 0.25)` のままで、CC-1 で camera が z = +3 に移った後は光が +Z へ進み、camera の見る面が光の裏になって黒く写っていました(commit の記録は ambient が無いことを理由に挙げています。Studio の scenario 7 本(`add_primitive_object`・`forward_loop_from_scratch`・`gui_build_A` / `B` / `C` / `full` / `optimize`)で見つかりました)。この scene は Standard と Blank の両方の雛形が書きます([`templateFiles()`](../../src/project/projecttemplate.cpp#L350))。座標の規約は [第6章 §6.1](06_rendering.md) の「座標の規約」です。
 
 **描画パイプラインを 0 から組みたいときは `--template blank`** です(✅F-2。既定は上の `standard`)。
 `pelican_cli project init mygame --template blank` は上と同じ 16 エントリを書きますが、
