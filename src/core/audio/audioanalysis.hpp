@@ -41,8 +41,10 @@ struct AudioAnalysisBakeResult {
 
 // Reads `source`, analyzes it, writes `out` (R32_SFLOAT KTX2, writeKtx2) and
 // `<out>.import.json` (audioAnalysisManifest), each through a temporary file
-// renamed over the old one. Throws GraphRegistryError: audio.format_unsupported@1
-// from the decoder, audio.analysis_failed@1 for anything else.
+// renamed over the old one (writeFileReplacing, retried while a reader holds
+// the old one). Throws GraphRegistryError: audio.format_unsupported@1 from the
+// decoder, audio.analysis_failed@1 for anything else; {reason: "output_locked",
+// path} when a reader held `out` or the manifest past the retries.
 AudioAnalysisBakeResult bakeAudioAnalysis(const std::filesystem::path &source, const std::filesystem::path &out,
                                           const AudioAnalysisSettings &settings);
 

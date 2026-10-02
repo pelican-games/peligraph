@@ -1,5 +1,7 @@
 #include "projectdocumenttransaction.hpp"
 
+#include "filereplace.hpp"
+
 #include <picosha2.h>
 
 #include <algorithm>
@@ -17,16 +19,6 @@
 
 #include <cstddef>
 #include <cstring>
-
-// Windows 10 RS1 named these. Spell out the values when the SDK in use
-// predates them, so the file still compiles and the call simply fails with
-// ERROR_INVALID_PARAMETER at runtime, which takes the named fallback below.
-#ifndef FILE_RENAME_FLAG_REPLACE_IF_EXISTS
-#define FILE_RENAME_FLAG_REPLACE_IF_EXISTS 0x00000001
-#endif
-#ifndef FILE_RENAME_FLAG_POSIX_SEMANTICS
-#define FILE_RENAME_FLAG_POSIX_SEMANTICS 0x00000002
-#endif
 #endif
 
 namespace Pelican {
@@ -98,107 +90,26 @@ void noteLegacyFallback(const std::filesystem::path &destination,
 }
 
 #ifdef _WIN32
-std::string systemErrorMessage(DWORD code) {
-    const std::error_code error{static_cast<int>(code),
-                                std::system_category()};
-    return error.message() + " (" + std::to_string(code) + ")";
-}
-
-// A sharing handle another process holds may go away on its own.
-bool isTransientReplaceError(DWORD code) {
-    return code == ERROR_ACCESS_DENIED || code == ERROR_SHARING_VIOLATION ||
-           code == ERROR_LOCK_VIOLATION;
-}
-
-// FileRenameInfoEx is a Windows 10 RS1 information class that a pre-RS1 kernel
-// and a filesystem that does not implement it reject outright. These are the
-// answers that mean "this route does not exist here", not "this replacement
-// failed".
-bool isUnsupportedInformationClass(DWORD code) {
-    return code == ERROR_INVALID_PARAMETER || code == ERROR_NOT_SUPPORTED ||
-           code == ERROR_INVALID_FUNCTION || code == ERROR_CALL_NOT_IMPLEMENTED;
-}
-
-// Replace `destination` with `source` in one directory operation that
-// supersedes a destination another process still holds open.
+// AB-2: the single attempts live in filereplace.cpp, shared with the bake's
+// replaceFile. This transaction keeps its own retry loop below, because it
+// re-checks the destination's digest between attempts.
 //
-// MoveFileExW(MOVEFILE_REPLACE_EXISTING) cannot do that. A real-time scanner
-// opens the file it is inspecting with FILE_SHARE_READ | FILE_SHARE_WRITE |
-// FILE_SHARE_DELETE -- sharing everything, precisely so it does not break the
-// application -- and the classic rename still refuses to supersede a target
-// that has any open handle, returning ERROR_ACCESS_DENIED for as long as that
-// handle lives. POSIX semantics changes that answer: the link is dropped from
-// the directory immediately, the superseded file stays alive under its open
-// handles, and later openers see the new file. It does not bypass the share
-// mode -- a holder that withheld FILE_SHARE_DELETE still yields
-// ERROR_SHARING_VIOLATION -- so the retry loop around this call stays.
-// "replaces a manifest a real-time scanner holds open" measures both halves.
-//
-// This does NOT close the intermittent "Access is denied" on manifest.json.
-// An interleaved A/B of the two routes under a saturated scanner (704 runs of
-// the same multi-section editor test each) failed 36 times on MoveFileExW and
-// 24 times on this route, always ERROR_ACCESS_DENIED on the destination after
-// the full retry window. Whatever is left is a second cause, and it is not a
-// memory-mapped destination (POSIX rename supersedes one of those) nor a
-// delete-pending one. The structural answer was to stop superseding a live
-// file for the transaction's own decision at all: the committed marker is now
-// a separate name published by linkExclusive below, manifest.json is written
-// once and never replaced, and the remaining callers of this route replace
-// authored documents rather than transaction metadata.
-bool posixReplace(const std::filesystem::path &source,
-                  const std::filesystem::path &destination,
-                  DWORD &last_error, bool &staged_open_failed) {
-    // Ask for exactly what a rename needs and nothing more. MoveFileExW opens
-    // its source with DELETE | SYNCHRONIZE, so this open cannot be refused
-    // anywhere that one would have succeeded -- which matters when the handle
-    // a scanner holds is on the staged file rather than on the destination.
-    // Widening this (FILE_WRITE_DATA, to flush the staged bytes and recover
-    // what MOVEFILE_WRITE_THROUGH stood for) would trade that guarantee away.
-    // The sharing flags are the other direction: granting all three only makes
-    // this open tolerate handles other processes already hold.
-    const HANDLE handle = CreateFileW(
-        source.c_str(), DELETE | SYNCHRONIZE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (handle == INVALID_HANDLE_VALUE) {
-        // The staged file, not the destination. Say which, because the two
-        // read identically in a failure message and lead to different causes.
-        last_error = GetLastError();
-        staged_open_failed = true;
-        return false;
-    }
-
-    // FileRenameInfoEx wants a fully qualified target: RootDirectory is null,
-    // so a relative path would be resolved against nothing.
-    std::error_code absolute_error;
-    const auto target_path =
-        destination.is_absolute()
-            ? destination
-            : std::filesystem::absolute(destination, absolute_error);
-    if (absolute_error) {
-        CloseHandle(handle);
-        last_error = ERROR_BAD_PATHNAME;
-        return false;
-    }
-    const std::wstring target = target_path.wstring();
-    const std::size_t name_bytes = target.size() * sizeof(wchar_t);
-    std::vector<std::byte> storage(sizeof(FILE_RENAME_INFO) + name_bytes +
-                                   sizeof(wchar_t));
-    auto *info = reinterpret_cast<FILE_RENAME_INFO *>(storage.data());
-    info->Flags =
-        FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS;
-    info->RootDirectory = nullptr;
-    info->FileNameLength = static_cast<DWORD>(name_bytes);
-    std::memcpy(info->FileName, target.c_str(),
-                name_bytes + sizeof(wchar_t));
-
-    const BOOL renamed = SetFileInformationByHandle(
-        handle, FileRenameInfoEx, info,
-        static_cast<DWORD>(storage.size()));
-    if (!renamed) last_error = GetLastError();
-    CloseHandle(handle);
-    return renamed != FALSE;
-}
+// posixReplace does NOT close the intermittent "Access is denied" on
+// manifest.json. An interleaved A/B of the two routes under a saturated
+// scanner (704 runs of the same multi-section editor test each) failed 36
+// times on MoveFileExW and 24 times on the POSIX route, always
+// ERROR_ACCESS_DENIED on the destination after the full retry window.
+// Whatever is left is a second cause, and it is not a memory-mapped
+// destination (POSIX rename supersedes one of those) nor a delete-pending
+// one. The structural answer was to stop superseding a live file for the
+// transaction's own decision at all: the committed marker is now a separate
+// name published by linkExclusive below, manifest.json is written once and
+// never replaced, and the remaining callers of this route replace authored
+// documents rather than transaction metadata.
+using FileReplaceWin32::isTransientReplaceError;
+using FileReplaceWin32::isUnsupportedInformationClass;
+using FileReplaceWin32::posixReplace;
+using FileReplaceWin32::systemErrorMessage;
 #endif
 
 void atomicReplace(const std::filesystem::path &source,

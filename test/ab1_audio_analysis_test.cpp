@@ -29,6 +29,11 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#define NOMINMAX
+#include <Windows.h>
+#endif
+
 namespace Pelican {
 namespace {
 
@@ -345,6 +350,127 @@ TEST_CASE("AB-1 bake_audio_analysis runs on a ticket, and list_derived_assets ca
     CHECK(unsupported.at("status") == "rejected");
     CHECK(unsupported.at("error").at("code") == "audio.format_unsupported@1");
     CHECK_FALSE(std::filesystem::exists(dir / "tables" / "mp3.ktx2"));
+
+    std::error_code ignored;
+    std::filesystem::remove_all(dir, ignored);
+}
+
+// AB-2: a reader holding the table the way loadSampleTable and the KTX2 loader
+// open it (std::ifstream: sharing read and write, not delete) makes the rename
+// over it fail. The bake tries again (50 ms, doubling, 2 s in all): it commits
+// once the reader lets go, and refuses with output_locked, the old table and
+// manifest untouched and no temporary file left, when the reader never does.
+TEST_CASE("AB-2 bake_audio_analysis replaces a table a reader held open once it closes, and refuses with "
+          "output_locked when it never does",
+          "[audio][ab2][render-config-editor]") {
+    using namespace std::chrono_literals;
+    const auto dir = freshDirectory("ab2_locked");
+    const std::string root =
+        R"({"schema": "pelican.graph", "version": 1, "definitions": {}, "nodes": [], "outputs": {}})"
+        "\n";
+    writeText(dir / "passes" / "main.json", root);
+    writeText(dir / "sounds" / "tone.wav", toneThenSilenceWav(440.0));
+    RenderConfigEditorService service{RenderConfigEditorDependencies{
+        .source_reference = "passes/main.json",
+        .source_path = dir / "passes" / "main.json",
+        .source_bytes = root,
+        .project_root = dir,
+        .gate = [] { return RenderConfigEditorGateObservation{}; },
+        .runtime_snapshot = [] { return RenderConfigRuntimeSnapshot{}; },
+        .apply_candidate = [](RenderConfigCandidateDocumentSet, RenderConfigSourceCommit,
+                              RenderConfigRuntimeApplyCompletion) { return RenderConfigRuntimeApplyResult{}; },
+        .feature_catalog = [] { return std::vector<RenderFeatureCatalogEntry>{}; },
+    }};
+    const auto bake = [&](int bands) {
+        return service.bakeAudioAnalysis(
+            {{"asset", "sounds/tone.wav"}, {"out", "tables/tone.ktx2"}, {"settings", {{"bands", bands}}}});
+    };
+    const auto await = [&](const nlohmann::ordered_json &accepted) {
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        for (int attempt = 0; attempt < 2000; ++attempt) {
+            service.commitPending();
+            auto result = Json(service.getResult({{"ticket", accepted.at("ticket")}}));
+            if (result.at("status") != "running") return result;
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        }
+        FAIL("bake_audio_analysis did not end");
+        return Json{};
+    };
+    const auto table = dir / "tables" / "tone.ktx2";
+    const auto manifest = dir / "tables" / "tone.ktx2.import.json";
+    const auto temporary = dir / "tables" / "tone.ktx2.tmp";
+    REQUIRE(await(bake(4)).at("status") == "committed");
+    REQUIRE(loadSampleTable(table)->layout.features.size() == 6);
+
+    // Held, then closed 300 ms in: the retries outlast it.
+    {
+        auto holder = std::make_unique<std::ifstream>(table, std::ios::binary);
+        REQUIRE(holder->is_open());
+        const auto started = std::chrono::steady_clock::now();
+        const auto accepted = bake(8);
+        std::thread closer{[&] {
+            std::this_thread::sleep_for(300ms);
+            holder.reset();
+        }};
+        const auto result = await(accepted);
+        closer.join();
+        const auto waited = std::chrono::steady_clock::now() - started;
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("layout").at("features").size() == 10);
+#ifdef _WIN32
+        // It did wait on the reader: the first rename was refused.
+        CHECK(waited >= 250ms);
+#else
+        (void)waited;
+#endif
+    }
+    CHECK_FALSE(std::filesystem::exists(temporary));
+    CHECK(loadSampleTable(table)->layout.features.size() == 10);
+
+#ifdef _WIN32
+    // Held and never closed: refused by name once the retries run out.
+    const auto table_before = readText(table);
+    const auto manifest_before = readText(manifest);
+    {
+        std::ifstream holder{table, std::ios::binary};
+        REQUIRE(holder.is_open());
+        const auto started = std::chrono::steady_clock::now();
+        const auto result = await(bake(4));
+        const auto waited = std::chrono::steady_clock::now() - started;
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(result.at("committed") == false);
+        CHECK(result.at("error").at("code") == "audio.analysis_failed@1");
+        CHECK(result.at("error").at("reason") == "output_locked");
+        CHECK(result.at("error").at("path") == "tables/tone.ktx2");
+        CHECK(result.at("error").at("asset") == "sounds/tone.wav");
+        CHECK(result.at("error").at("out") == "tables/tone.ktx2");
+        CHECK(waited >= 1900ms);
+    }
+    CHECK_FALSE(std::filesystem::exists(temporary));
+    CHECK(readText(table) == table_before);
+    CHECK(readText(manifest) == manifest_before);
+
+    // Held the way the file watcher holds it (sharing delete as well): the
+    // POSIX rename supersedes it at once, and the holder keeps the old bytes.
+    {
+        const HANDLE watcher = CreateFileW(table.c_str(), GENERIC_READ,
+                                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        REQUIRE(watcher != INVALID_HANDLE_VALUE);
+        const auto started = std::chrono::steady_clock::now();
+        const auto result = await(bake(4));
+        const auto waited = std::chrono::steady_clock::now() - started;
+        CloseHandle(watcher);
+        INFO(result.dump());
+        CHECK(result.at("status") == "committed");
+        CHECK(waited < 1500ms);
+    }
+    CHECK_FALSE(std::filesystem::exists(temporary));
+    CHECK(loadSampleTable(table)->layout.features.size() == 6);
+#endif
 
     std::error_code ignored;
     std::filesystem::remove_all(dir, ignored);

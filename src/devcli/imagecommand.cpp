@@ -1,6 +1,7 @@
 #include "imagecommand.hpp"
 
 #include "../core/loader/ktx2.hpp"
+#include "../project/filereplace.hpp"
 
 #include <argparse/argparse.hpp>
 
@@ -104,10 +105,9 @@ int runKtx2Command(int argc, char *argv[]) {
     }
     const auto file = writeKtx2(*format, width, height, texels);
     const std::filesystem::path out{program.get<std::string>("--out")};
-    std::ofstream output{out, std::ios::binary | std::ios::trunc};
-    if (!output) throw std::runtime_error("cannot write " + out.string());
-    output.write(reinterpret_cast<const char *>(file.data()), static_cast<std::streamsize>(file.size()));
-    if (!output) throw std::runtime_error("cannot write " + out.string());
+    // AB-2: beside it and renamed over it, so an engine watching or reading
+    // the old texture never sees half a file.
+    writeFileReplacing(out, file);
     std::cout << "ktx2 " << ktx2FormatName(*format) << " " << width << "x" << height << " -> " << out.string()
               << std::endl;
     return 0;

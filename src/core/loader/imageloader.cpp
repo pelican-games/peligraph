@@ -100,14 +100,20 @@ LoadedImage loadedKtx2(Ktx2Image parsed) {
 }
 
 LoadedImage loadKtx2File(const std::filesystem::path &path) {
-    std::ifstream file{path, std::ios::binary | std::ios::ate};
-    if (!file) throw std::runtime_error("Failed to open KTX2 texture '" + path.string() + "'");
-    const auto end = file.tellg();
-    if (end < 0) throw std::runtime_error("Failed to size KTX2 texture '" + path.string() + "'");
-    std::vector<std::byte> bytes(static_cast<size_t>(end));
-    file.seekg(0);
-    if (!bytes.empty() && !file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
-        throw std::runtime_error("Failed to read KTX2 texture '" + path.string() + "'");
+    std::vector<std::byte> bytes;
+    {
+        // AB-2: closed before parsing, so a bake replacing the file waits on
+        // the read alone.
+        std::ifstream file{path, std::ios::binary | std::ios::ate};
+        if (!file) throw std::runtime_error("Failed to open KTX2 texture '" + path.string() + "'");
+        const auto end = file.tellg();
+        if (end < 0) throw std::runtime_error("Failed to size KTX2 texture '" + path.string() + "'");
+        bytes.resize(static_cast<size_t>(end));
+        file.seekg(0);
+        if (!bytes.empty() &&
+            !file.read(reinterpret_cast<char *>(bytes.data()), static_cast<std::streamsize>(bytes.size())))
+            throw std::runtime_error("Failed to read KTX2 texture '" + path.string() + "'");
+    }
     return loadedKtx2(parseKtx2(bytes, path.string()));
 }
 

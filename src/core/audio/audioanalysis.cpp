@@ -2,6 +2,7 @@
 
 #include "sounddecode.hpp"
 #include "../loader/ktx2.hpp"
+#include "../../project/filereplace.hpp"
 #include "../../project/graphcomposition.hpp"
 #include "../../project/sha256stream.hpp"
 
@@ -66,26 +67,6 @@ std::vector<std::byte> readBytes(const std::filesystem::path &path) {
     std::vector<std::byte> bytes(chars.size());
     if (!chars.empty()) std::memcpy(bytes.data(), chars.data(), chars.size());
     return bytes;
-}
-
-// Through a temporary file beside it, renamed over the old one, so a reader
-// never sees half a file.
-void writeReplacing(const std::filesystem::path &path, const void *data, std::size_t size) {
-    std::error_code error;
-    if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path(), error);
-    auto temporary = path;
-    temporary += ".tmp";
-    {
-        std::ofstream output{temporary, std::ios::binary | std::ios::trunc};
-        if (!output) throw std::runtime_error("cannot write " + temporary.generic_string());
-        output.write(static_cast<const char *>(data), static_cast<std::streamsize>(size));
-        if (!output) throw std::runtime_error("cannot write " + temporary.generic_string());
-    }
-    std::filesystem::rename(temporary, path, error);
-    if (error) {
-        std::filesystem::remove(temporary, error);
-        throw std::runtime_error("cannot replace " + path.generic_string());
-    }
 }
 
 } // namespace
@@ -200,10 +181,11 @@ AudioAnalysisTable analyzeAudio(const AudioDecode::DecodedSound &sound, const Au
 
 AudioAnalysisBakeResult bakeAudioAnalysis(const std::filesystem::path &source, const std::filesystem::path &out,
                                           const AudioAnalysisSettings &settings) {
-    const auto failed = [&](const std::string &message) {
-        return GraphRegistryError(std::string{audioAnalysisFailedCode},
-                                  {{"asset", source.generic_string()}, {"out", out.generic_string()},
-                                   {"message", message}});
+    const auto failed = [&](const std::string &message, nlohmann::json more = nlohmann::json::object()) {
+        more["asset"] = source.generic_string();
+        more["out"] = out.generic_string();
+        more["message"] = message;
+        return GraphRegistryError(std::string{audioAnalysisFailedCode}, std::move(more));
     };
     AudioAnalysisTable table;
     std::string source_sha256;
@@ -221,14 +203,17 @@ AudioAnalysisBakeResult bakeAudioAnalysis(const std::filesystem::path &source, c
         const auto height = table.layout.rows_per_feature * static_cast<std::uint32_t>(table.layout.features.size());
         const auto file = writeKtx2(Ktx2Format::R32Sfloat, table.layout.width, height,
                                     std::as_bytes(std::span{table.values}));
-        writeReplacing(out, file.data(), file.size());
+        writeFileReplacing(out, file);
         const auto table_sha256 =
             sha256Hex(std::string_view{reinterpret_cast<const char *>(file.data()), file.size()});
         const auto manifest_path = derivedAssetManifestPath(out);
         const auto manifest =
             audioAnalysisManifest(source, source_sha256, settings, table.layout, out, table_sha256).dump(2) + "\n";
-        writeReplacing(manifest_path, manifest.data(), manifest.size());
+        writeFileReplacing(manifest_path, std::as_bytes(std::span{manifest}));
         return {out, manifest_path, sampleTableLayoutJson(table.layout)};
+    } catch (const FileReplaceLocked &error) {
+        // AB-2: a reader held the table or its manifest past the retries.
+        throw failed(error.what(), {{"reason", "output_locked"}, {"path", error.path().generic_string()}});
     } catch (const std::exception &error) {
         throw failed(error.what());
     }

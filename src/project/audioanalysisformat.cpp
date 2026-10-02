@@ -248,9 +248,13 @@ OrderedJson audioAnalysisManifest(const std::filesystem::path &source, const std
 }
 
 DerivedAssetStatus readDerivedAssetStatus(const std::filesystem::path &manifest_path) {
-    std::ifstream input{manifest_path, std::ios::binary};
-    if (!input) throw std::runtime_error("cannot read " + manifest_path.generic_string());
-    const std::string text{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+    // AB-2: the manifest is closed before the source and the outputs are
+    // hashed, so a bake replacing it waits on this read alone.
+    const auto text = [&] {
+        std::ifstream input{manifest_path, std::ios::binary};
+        if (!input) throw std::runtime_error("cannot read " + manifest_path.generic_string());
+        return std::string{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+    }();
     const auto document = Json::parse(text);
     const auto manifest = parseImportManifestJson(document);
 

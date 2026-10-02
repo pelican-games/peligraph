@@ -87,6 +87,13 @@ OrderedJson RenderConfigEditorService::bakeAudioAnalysis(const Json &params) {
                                       auto fields = OrderedJson::parse(error.detail().dump());
                                       fields["asset"] = asset;
                                       fields["out"] = out;
+                                      // AB-2: output_locked names the locked file as the
+                                      // request named it.
+                                      if (const auto path = fields.find("path"); path != fields.end()) {
+                                          if (*path == out_path.generic_string()) *path = out;
+                                          else if (*path == derivedAssetManifestPath(out_path).generic_string())
+                                              *path = out + ".import.json";
+                                      }
                                       return {.committed = false, .fields = std::move(fields), .code = error.code(),
                                               .message = error.what()};
                                   } catch (const std::exception &error) {

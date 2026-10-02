@@ -6,6 +6,7 @@ add_library(pelican_project
     executionplanwire.cpp
     featurecompose.cpp
     featurejitter.cpp
+    filereplace.cpp
     frameresolutionwire.cpp
     graphvariantpolicy.cpp
     graphcomposition.cpp
