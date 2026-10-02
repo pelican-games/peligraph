@@ -7,9 +7,12 @@
 //       [--mark <node> <r> <g> <b> <pixels>] ...  [--pixel <x> <y> <r> <g> <b> <tolerance>] ...
 //       [--min-parallax <pixels>]
 //
-// The camera is the scene camera the player renders with: it looks along its
-// rotation's +z with its rotation's +y up (lookAtRH), through
-// perspectiveRH_ZO at the frame's aspect, as Camera does.
+// The camera is the scene camera the player renders with, in the engine's
+// convention (docs/design_coordinate_convention.md): it looks along its
+// rotation's -z with its rotation's +y up (viewFromWorld), through a
+// right-handed depth 0..1 perspective at the frame's aspect whose clip y is
+// flipped (vulkanPerspective), as src/core/renderer/clipspace.hpp makes them.
+// The probe keeps its own copy: it links pelican_project, not the core.
 //
 // --mark finds the item whose first authored node is <node>, projects its
 // centre, and measures the centroid of the frame's pixels within 48/255 of
@@ -62,6 +65,7 @@ Vec3 rotate(const std::array<double, 4> &q, const Vec3 &v) {
     return {v[0] + q[3] * t2[0] + c[0], v[1] + q[3] * t2[1] + c[1], v[2] + q[3] * t2[2] + c[2]};
 }
 
+// glm::lookAtRH: world to view (+x right, +y up, -z forward).
 Matrix lookAtRH(const Vec3 &eye, const Vec3 &dir, const Vec3 &up) {
     const auto f = normalize(dir);
     const auto s = normalize(cross(f, up));
@@ -69,11 +73,13 @@ Matrix lookAtRH(const Vec3 &eye, const Vec3 &dir, const Vec3 &up) {
     return {s[0], u[0], -f[0], 0, s[1], u[1], -f[1], 0, s[2], u[2], -f[2], 0, -dot(s, eye), -dot(u, eye), dot(f, eye), 1};
 }
 
-Matrix perspectiveRhZo(double yfov, double aspect, double near, double far) {
+// glm::perspectiveRH_ZO with clip y flipped: the view's +y reaches the top
+// row of the frame (vulkanPerspective).
+Matrix vulkanPerspective(double yfov, double aspect, double near, double far) {
     const auto t = std::tan(yfov / 2.0);
     Matrix m{};
     m[0] = 1.0 / (aspect * t);
-    m[5] = 1.0 / t;
+    m[5] = -1.0 / t;
     m[10] = far / (near - far);
     m[11] = -1.0;
     m[14] = -(far * near) / (far - near);
@@ -185,8 +191,8 @@ int main(int argc, char *argv[]) {
         if (place == ir.outputs.end()) throw std::runtime_error(std::string{"no canvas.place "} + argv[2]);
 
         const std::array<double, 4> rotation{camera[3], camera[4], camera[5], camera[6]};
-        const auto view = lookAtRH({camera[0], camera[1], camera[2]}, rotate(rotation, {0, 0, 1}), rotate(rotation, {0, 1, 0}));
-        const auto projection = perspectiveRhZo(yfov, static_cast<double>(width) / height, znear, zfar);
+        const auto view = lookAtRH({camera[0], camera[1], camera[2]}, rotate(rotation, {0, 0, -1}), rotate(rotation, {0, 1, 0}));
+        const auto projection = vulkanPerspective(yfov, static_cast<double>(width) / height, znear, zfar);
         const auto view_projection = multiply(projection, view);
         const std::array<double, 2> viewport{static_cast<double>(width), static_cast<double>(height)};
         const auto toPixel = [&](const std::array<double, 4> &clip) {

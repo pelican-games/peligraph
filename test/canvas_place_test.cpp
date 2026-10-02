@@ -8,6 +8,7 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <cmath>
 #include <set>
 #include <string>
 
@@ -82,7 +83,7 @@ Json placedDocument() {
                 "low": {"node": "low_fill", "port": "layer"}},
      "outputs": ["layer"]},
     {"id": "sign", "op": "canvas.place",
-     "parameters": {"position": [0, 1.2, 3], "rotation": [0, 180, 0], "scale": 1.0, "pixels_per_unit": 400,
+     "parameters": {"position": [0, 1.2, 0], "rotation": [0, 0, 0], "scale": 1.0, "pixels_per_unit": 400,
                     "anchor": [0.5, 0.5]},
      "inputs": {"layer": {"node": "board", "port": "layer"},
                 "color": {"node": "scene_color", "port": "resource"},
@@ -396,4 +397,23 @@ TEST_CASE("CV-6a the placement's matrix and an item's corners", "[canvas][cv6a]"
     REQUIRE(corners.pixel[0][1] == Approx(275));
     // Bottom right: stack (350, 75) -> world (0.75, 0.125, 0.25).
     REQUIRE(near(corners.world[2], {0.75, 0.125, 0.25}));
+
+    // Seen as the engine sees it (docs/design_coordinate_convention.md): a
+    // camera at z = 3 without a rotation looks down -z, and the projection
+    // flips clip y. The card, right of and above the board's middle, is right
+    // of and above the frame's middle, and its stack top left is the frame's.
+    const Pelican::CanvasMatrix view{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -3, 1};
+    const double t = std::tan(0.7853981633974483 / 2.0), near_plane = 0.1, far_plane = 100.0;
+    Pelican::CanvasMatrix projection{};
+    projection[0] = 1.0 / (2.0 * t);
+    projection[5] = -1.0 / t;
+    projection[10] = far_plane / (near_plane - far_plane);
+    projection[11] = -1.0;
+    projection[14] = -(far_plane * near_plane) / (far_plane - near_plane);
+    const auto seen = Pelican::canvasPlacedItemCorners(output, 0, view, projection, {800, 400});
+    REQUIRE(seen.in_front);
+    REQUIRE(seen.pixel[0][0] > 400.0);
+    REQUIRE(seen.pixel[0][1] < 200.0);
+    REQUIRE(seen.pixel[1][0] > seen.pixel[0][0]); // stack +x is the frame's right
+    REQUIRE(seen.pixel[3][1] > seen.pixel[0][1]); // stack +y is the frame's down
 }

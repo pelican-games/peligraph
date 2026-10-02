@@ -2,18 +2,29 @@
 # (the engine lowering the document as it reads it) onto the colour of a
 # forward material pass and tested against its depth.
 #
-# The scene is the box of test/fixtures/studio_material_pass_authoring (a
-# flat-tinted cube at z = 3, turned 30 degrees) and a board of 512 x 256 stack
-# units, 200 per world unit, through the box's middle, facing the camera. Its
-# layers: a background colour (depth 0), a green dot (depth 60) and, when the
-# system's Arial is there, a white word (depth 120). position.x follows a
-# curve: still until t = 0.6, then 0.6 to the side from t = 0.9.
+# In the engine's coordinate convention (docs/design_coordinate_convention.md):
+# the world is right-handed with +y up, a camera without a rotation looks down
+# -z, and the 3D screen is the world as seen, not its mirror.
 #
-# Three cameras, one run each: A straight on, B from the side (the parallax),
-# C close to the word (the edges, to look at). The probe holds each run's
-# frame against canvasplace.hpp: the dot's centroid against its projected
-# centre, the box's middle (in front of the board) showing the box, the board
-# beside the box showing its background. The frames are left in OUT_DIR.
+# The scene is the box of test/fixtures/studio_material_pass_authoring (a
+# flat-tinted cube at the origin, turned 30 degrees) and a board of 512 x 256
+# stack units, 200 per world unit, through the box's middle, without a
+# rotation: it faces +z, its stack +x is the world's +x and its stack top is
+# the world's +y. Its layers: a background colour (depth 0), a green dot
+# (depth 60) left of and above the middle and, when the system's Arial is
+# there, a white word (depth 120) right of the middle. position.x follows a
+# curve: still until t = 0.6, then 0.6 to the left (away from the box) from t = 0.9.
+#
+# Cameras, one run each: A straight on from z = 3 without a rotation, B from
+# the side (the parallax), C close to the word (the edges and the letters, to
+# look at), BACK from behind (z = -3, turned 180 degrees about y). The probe
+# holds each run's frame against canvasplace.hpp: the dot's centroid against
+# its projected centre, the box's middle (in front of the board) showing the
+# box, the board beside the box showing its background; and, without the
+# arithmetic, the dot left of and above the frame's middle (a mirrored or
+# upside-down screen puts it elsewhere). Then the same board with
+# double_sided false and depth_write: drawn from the front, gone from behind.
+# The frames are left in OUT_DIR.
 
 foreach(variable IN ITEMS CLI PLAYER PLAYER_DIR PROBE FIXTURE OUT_DIR)
     if(NOT DEFINED ${variable})
@@ -64,6 +75,8 @@ else()
 endif()
 
 set(document "${project_dir}/passes/main_rendering_config.json")
+# The graph document, with <place_extra> added to the canvas.place's parameters.
+function(write_document place_extra)
 file(WRITE "${document}" "{
   \"schema\": \"pelican.graph\",
   \"version\": 1,
@@ -88,7 +101,7 @@ file(WRITE "${document}" "{
     {\"id\": \"clock\", \"op\": \"value.input\", \"parameters\": {\"name\": \"time\"}, \"inputs\": {}, \"outputs\": [\"value\"]},
     {\"id\": \"slide\", \"op\": \"value.curve\",
      \"parameters\": {\"keys\": [{\"time\": 0, \"value\": 0}, {\"time\": 0.6, \"value\": 0},
-                               {\"time\": 0.9, \"value\": 0.6}, {\"time\": 10, \"value\": 0.6}]},
+                               {\"time\": 0.9, \"value\": -0.6}, {\"time\": 10, \"value\": -0.6}]},
      \"inputs\": {\"time\": {\"node\": \"clock\", \"port\": \"value\"}}, \"outputs\": [\"value\"]},
     {\"id\": \"back\", \"op\": \"canvas.color\", \"parameters\": {\"color\": [0.15, 0.2, 0.45, 1.0]},
      \"inputs\": {}, \"outputs\": [\"layer\"]},
@@ -103,7 +116,7 @@ ${word_nodes}
      \"inputs\": {\"back\": {\"node\": \"back\", \"port\": \"layer\"}, \"dot\": {\"node\": \"dot_fill\", \"port\": \"layer\"}${word_input}},
      \"outputs\": [\"layer\"]},
     {\"id\": \"sign\", \"op\": \"canvas.place\",
-     \"parameters\": {\"position\": [0, 0, 3.0], \"rotation\": [0, 180, 0], \"pixels_per_unit\": 200},
+     \"parameters\": {\"position\": [0, 0, 0], \"pixels_per_unit\": 200${place_extra}},
      \"inputs\": {\"layer\": {\"node\": \"board\", \"port\": \"layer\"},
                 \"color\": {\"node\": \"fwd\", \"port\": \"color\"}, \"depth\": {\"node\": \"fwd\", \"port\": \"depth\"},
                 \"position.x\": {\"node\": \"slide\", \"port\": \"value\"}},
@@ -129,6 +142,8 @@ ${word_nodes}
   }
 }
 ")
+endfunction()
+write_document("")
 
 set(width 960)
 set(height 540)
@@ -145,7 +160,7 @@ function(render name frames position quaternion)
       {\"name\": \"transform\", \"pos\": [${position_list}], \"rotation\": [${quaternion_list}], \"scale\": [1, 1, 1]},
       {\"name\": \"camera\", \"type\": \"perspective\", \"yfov\": ${yfov}, \"znear\": 0.1, \"zfar\": 100.0}]},
     {\"name\": \"CheckerBox\", \"components\": [
-      {\"name\": \"transform\", \"pos\": [0.0, 0.0, 3.0], \"rotation\": [0.0, 0.2588190451, 0.0, 0.9659258263],
+      {\"name\": \"transform\", \"pos\": [0.0, 0.0, 0.0], \"rotation\": [0.0, 0.2588190451, 0.0, 0.9659258263],
        \"scale\": [1.0, 1.0, 1.0]},
       {\"name\": \"simplemodelview\", \"model\": \"checker_box\"}]}
   ]}}}
@@ -183,28 +198,43 @@ function(probe name frame camera slide)
     endif()
 endfunction()
 
-# The camera looks along its +z with its +y up; turned 180 degrees about z, the
-# world's +y is up on the screen (the blank template's camera has up -y).
-set(camera_a 0 0 0 0 0 1 0)
-# From x = 1.5, turned toward the board's middle (yaw -26.565 degrees, then the same roll).
-set(camera_b 1.5 0 0 -0.2297529205 0 0.9732489895 0)
-set(camera_c -0.75 0.2 1.4 0 0 1 0)
-render(a 4 "0;0;0" "0;0;1;0")
-render(b 1 "1.5;0;0" "-0.2297529205;0;0.9732489895;0")
-render(c 1 "-0.75;0.2;1.4" "0;0;1;0")
+# A camera looks along its -z with its +y up. A: from z = 3, no rotation.
+set(camera_a 0 0 3 0 0 0 1)
+# From x = 1.5, turned toward the board's middle (yaw 26.565 degrees about +y).
+set(camera_b 1.5 0 3 0 0.2297529205 0 0.9732489895)
+set(camera_back 0 0 -3 0 1 0 0)
+render(a 4 "0;0;3" "0;0;0;1")
+render(b 1 "1.5;0;3" "0;0.2297529205;0;0.9732489895")
+render(c 1 "0.75;0.2;1.6" "0;0;0;1")
+render(back 1 "0;0;-3" "0;1;0;0")
 
 # Measured on the development machine (NVIDIA, Debug, 960 x 540): the dot's
 # centroid is 0.01 / 0.08 pixels from its projected centre straight on (before
-# and after the slide), 1.2 pixels from the side (a projected circle's centroid
+# and after the slide), 0.6 pixels from the side (a projected circle's centroid
 # is not its projected centre); the bar is 2.5 pixels.
 # The dot (sRGB 26 230 51 in the frame) where the arithmetic puts it, the box
-# (255 179 63) in front of the board's middle, the board (38 51 115) beside it.
+# (255 179 63) in front of the board's middle, the board (38 51 115) beside it
+# below and left of the box. The dot's middle, by hand: world (-0.88, 0.29,
+# 0.3), 2.7 from the camera, 2.414 * 270 / 2.7 pixels per unit, so (268, 200),
+# left of and above the frame's middle (480, 270).
 probe(a 0001 "${camera_a}" 0 --mark dot_fill 26 230 51 2.5
-      --pixel 480 270 255 179 63 24 --pixel 250 200 38 51 115 24)
-probe(a 0004 "${camera_a}" 0.6 --mark dot_fill 26 230 51 2.5)
-# From the side the dot (depth 60) sits 15 pixels off where the board's
-# plane would put it, and the pixels follow.
+      --pixel 480 270 255 179 63 24 --pixel 250 340 38 51 115 24 --pixel 268 200 26 230 51 24)
+probe(a 0004 "${camera_a}" -0.6 --mark dot_fill 26 230 51 2.5)
+# From the side the dot (depth 60) sits off where the board's plane would put
+# it, and the pixels follow.
 probe(b 0001 "${camera_b}" 0 --mark dot_fill 26 230 51 2.5 --min-parallax 10)
+# From behind, a double-sided board shows its back: the background at the
+# same pixel (the board's world x = +1.06 now).
+probe(back 0001 "${camera_back}" 0 --pixel 250 340 38 51 115 24)
+
+# One-sided, writing its depth: the front as before, from behind nothing but
+# the clear colour (0.07 0.07 0.09, in the frame 75 75 85).
+write_document([=[, "double_sided": false, "depth_write": true]=])
+render(one_front 1 "0;0;3" "0;0;0;1")
+render(one_back 1 "0;0;-3" "0;1;0;0")
+probe(one_front 0001 "${camera_a}" 0 --mark dot_fill 26 230 51 2.5
+      --pixel 480 270 255 179 63 24 --pixel 250 340 38 51 115 24)
+probe(one_back 0001 "${camera_back}" 0 --pixel 250 340 75 75 85 12 --pixel 480 270 255 179 63 24)
 if(NOT failures STREQUAL "")
     message(FATAL_ERROR "the frames differ from the placement:${failures}")
 endif()
