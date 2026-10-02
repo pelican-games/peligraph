@@ -18,6 +18,12 @@ What is observed, and what has to be removed for each case to go red:
 * ``job_kill`` -- a grandchild started by the wrapped command dies when the
   launcher is killed.  Remove ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`` (or the
   job entirely) and the grandchild survives.
+* ``shader_cache_sweep`` -- with ``LOCALAPPDATA`` (``XDG_CACHE_HOME``) pointed
+  at a temporary directory, the launcher removes a cache file not written for
+  15 days, keeps a new one and one in a sub-directory, writes its marker, and
+  does not sweep again within 24 hours; a directory the caller chose through
+  ``PELICAN_SHADER_CACHE_DIR`` is never swept.  Drop the sweep, the marker
+  check, or the caller check and this goes red.
 """
 from __future__ import annotations
 
@@ -243,10 +249,80 @@ def case_job_kill(launcher: str, root: Path, failures: list[str]) -> None:
             "lease would stay held by an orphan")
 
 
+SWEEP_MARKER = "last_sweep.stamp"
+STALE_SECONDS = 15 * 24 * 3600
+
+
+def case_shader_cache_sweep(launcher: str, root: Path, failures: list[str]) -> None:
+    """TS-2: the shader cache directory the launcher chose itself is swept."""
+    work = root / "sweep"
+    work.mkdir()
+    lease = f"pelican_gpu_lease_test_{uuid.uuid4().hex}"
+    base = work / "home"
+    cache = base / "pelican" / "test_shader_cache"
+    nested = cache / "nested"
+    nested.mkdir(parents=True)
+    stale = time.time() - STALE_SECONDS
+
+    def place(path: Path, old: bool) -> Path:
+        path.write_text("entry\n", encoding="utf-8")
+        if old:
+            os.utime(path, (stale, stale))
+        return path
+
+    def launch(step: str, **extra: str) -> None:
+        env = _environment(work, lease)
+        env.pop("PELICAN_SHADER_CACHE_DIR", None)
+        env["LOCALAPPDATA" if os.name == "nt" else "XDG_CACHE_HOME"] = str(base)
+        env.update(extra)
+        ran = work / f"{step}.txt"
+        result = subprocess.run(
+            [launcher, "--", *_self(), "--mode", "child", "--out", str(ran), "--seconds", "0"],
+            env=env, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0 or not ran.exists():
+            failures.append(
+                f"shader_cache_sweep[{step}]: launcher exit {result.returncode}, wrapped "
+                f"command ran={ran.exists()}: {result.stderr!r}")
+
+    old = place(cache / "old.spv-cache", old=True)
+    fresh = place(cache / "fresh.spv-cache", old=False)
+    deep = place(nested / "deep.spv-cache", old=True)
+
+    # A directory the caller chose is not swept, and the launcher's own one is
+    # not reached at all.
+    chosen = work / "chosen"
+    chosen.mkdir()
+    chosen_old = place(chosen / "old.spv-cache", old=True)
+    launch("caller_chose", PELICAN_SHADER_CACHE_DIR=str(chosen))
+    if not chosen_old.exists() or (chosen / SWEEP_MARKER).exists():
+        failures.append("shader_cache_sweep: a directory the caller chose was swept")
+    if not old.exists() or (cache / SWEEP_MARKER).exists():
+        failures.append("shader_cache_sweep: the launcher swept its own directory although the caller chose one")
+
+    # Its own directory: the 15 days old file goes, a new one and anything in
+    # a sub-directory stays, and the marker is written.
+    launch("first")
+    if old.exists():
+        failures.append("shader_cache_sweep: a file not written for 15 days survived the sweep")
+    if not fresh.exists():
+        failures.append("shader_cache_sweep: a new file was swept")
+    if not deep.exists():
+        failures.append("shader_cache_sweep: the sweep went into a sub-directory")
+    if not (cache / SWEEP_MARKER).exists():
+        failures.append("shader_cache_sweep: the sweep left no marker")
+
+    # Within 24 hours of that sweep the directory is not swept again.
+    second_old = place(cache / "second_old.spv-cache", old=True)
+    launch("second")
+    if not second_old.exists():
+        failures.append("shader_cache_sweep: swept again within 24 hours of the last sweep")
+
+
 CASES = {
     "mutual_exclusion": case_mutual_exclusion,
     "timeout": case_timeout,
     "job_kill": case_job_kill,
+    "shader_cache_sweep": case_shader_cache_sweep,
 }
 
 

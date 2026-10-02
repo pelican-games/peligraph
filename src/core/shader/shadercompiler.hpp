@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../container.hpp"
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -41,6 +42,22 @@ std::optional<vk::ShaderStageFlagBits> inferShaderStageFromPath(const std::files
 // The cache key is built from content (see shadercompiler.cpp), so projects
 // and engine builds may share one directory.
 inline constexpr char shaderCacheDirectoryEnvironment[] = "PELICAN_SHADER_CACHE_DIR";
+
+// TS-2: what a cache key holds besides the shader's own sources, defines,
+// stage and entry point: the digest of the embedded engine shader sources and
+// the compiler, target and options of this build. A test pins the key's
+// layout and hash against these, so it holds across engine shader edits and
+// SDK updates. Defined only with the runtime shader compiler.
+struct ShaderCacheKeyBuildInputs {
+    std::string engine_universe_sha256;
+    std::string shaderc_version;
+    std::uint32_t spirv_version = 0;
+    std::uint32_t spirv_revision = 0;
+    std::string target_environment;
+    std::string compile_options;
+    std::string contract_salt;
+};
+ShaderCacheKeyBuildInputs shaderCacheKeyBuildInputs();
 
 // A physical file read while building a cache key, kept while its size and
 // write time are unchanged.

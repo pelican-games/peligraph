@@ -7,58 +7,83 @@ foreach(required IN ITEMS PELICAN_CTEST_COMMAND PELICAN_BINARY_DIR
   endif()
 endforeach()
 
-execute_process(
-  COMMAND "${PELICAN_CTEST_COMMAND}"
-          --test-dir "${PELICAN_BINARY_DIR}"
-          -C "${PELICAN_TEST_CONFIG}"
-          --show-only=json-v1
-  RESULT_VARIABLE inventory_result
-  OUTPUT_VARIABLE inventory_json
-  ERROR_VARIABLE inventory_error
-)
-if(NOT inventory_result EQUAL 0)
-  message(FATAL_ERROR
-    "WP375c could not read the CTest inventory (${inventory_result}): "
-    "${inventory_error}")
+# The inventory is read from the `ctest -N` listing (one "  Test  #12: <name>"
+# line per test), once for every test and once for the tests carrying the gpu
+# label.  Walking `--show-only=json-v1` with string(JSON) re-parsed the whole
+# document on every lookup and grew with the square of the test count.
+#
+# A test name may hold ';', '[', ']' or '\', which a CMake list would split on
+# or join across.  Names are therefore percent-encoded for as long as they live
+# in a list and decoded only for messages.  The encoding is one-to-one, so
+# comparing encoded names compares the names themselves.
+function(wp375c_encode out_var text)
+  string(REPLACE "%" "%25" text "${text}")
+  string(REPLACE "\\" "%5C" text "${text}")
+  string(REPLACE ";" "%3B" text "${text}")
+  string(REPLACE "[" "%5B" text "${text}")
+  string(REPLACE "]" "%5D" text "${text}")
+  set(${out_var} "${text}" PARENT_SCOPE)
+endfunction()
+
+function(wp375c_decode out_var text)
+  string(REPLACE "%5D" "]" text "${text}")
+  string(REPLACE "%5B" "[" text "${text}")
+  string(REPLACE "%3B" ";" text "${text}")
+  string(REPLACE "%5C" "\\" text "${text}")
+  string(REPLACE "%25" "%" text "${text}")
+  set(${out_var} "${text}" PARENT_SCOPE)
+endfunction()
+
+set(wp375c_config_args)
+if(NOT PELICAN_TEST_CONFIG STREQUAL "")
+  list(APPEND wp375c_config_args -C "${PELICAN_TEST_CONFIG}")
 endif()
 
-string(JSON test_count LENGTH "${inventory_json}" tests)
-set(all_names)
-set(gpu_names)
-if(test_count GREATER 0)
-  math(EXPR last_test "${test_count} - 1")
-  foreach(test_index RANGE 0 ${last_test})
-    string(JSON test_name GET "${inventory_json}" tests ${test_index} name)
-    list(APPEND all_names "${test_name}")
+# Sets <out_var> to the encoded names `ctest -N <filter...>` lists.
+function(wp375c_read_names out_var)
+  execute_process(
+    COMMAND "${PELICAN_CTEST_COMMAND}"
+            --test-dir "${PELICAN_BINARY_DIR}"
+            ${wp375c_config_args}
+            -N
+            ${ARGN}
+    RESULT_VARIABLE inventory_result
+    OUTPUT_VARIABLE inventory_text
+    ERROR_VARIABLE inventory_error
+    ENCODING UTF-8
+  )
+  if(NOT inventory_result EQUAL 0)
+    message(FATAL_ERROR
+      "WP375c could not read the CTest inventory (${inventory_result}): "
+      "${inventory_error}")
+  endif()
 
-    string(JSON property_count LENGTH
-           "${inventory_json}" tests ${test_index} properties)
-    if(property_count GREATER 0)
-      math(EXPR last_property "${property_count} - 1")
-      foreach(property_index RANGE 0 ${last_property})
-        string(JSON property_name GET
-               "${inventory_json}" tests ${test_index} properties
-               ${property_index} name)
-        if(property_name STREQUAL "LABELS")
-          string(JSON label_count LENGTH
-                 "${inventory_json}" tests ${test_index} properties
-                 ${property_index} value)
-          if(label_count GREATER 0)
-            math(EXPR last_label "${label_count} - 1")
-            foreach(label_index RANGE 0 ${last_label})
-              string(JSON label GET
-                     "${inventory_json}" tests ${test_index} properties
-                     ${property_index} value ${label_index})
-              if(label STREQUAL "gpu")
-                list(APPEND gpu_names "${test_name}")
-              endif()
-            endforeach()
-          endif()
-        endif()
-      endforeach()
+  string(REPLACE "\r" "" inventory_text "${inventory_text}")
+  wp375c_encode(inventory_text "${inventory_text}")
+  string(REPLACE "\n" ";" inventory_lines "${inventory_text}")
+  set(names)
+  set(listed_count 0)
+  set(reported_count "")
+  foreach(line IN LISTS inventory_lines)
+    if(line MATCHES "^ *Test +#[0-9]+: (.*)$")
+      list(APPEND names "${CMAKE_MATCH_1}")
+      math(EXPR listed_count "${listed_count} + 1")
+    elseif(line MATCHES "^Total Tests: ([0-9]+)$")
+      set(reported_count "${CMAKE_MATCH_1}")
     endif()
   endforeach()
-endif()
+  # A listing whose shape this reader does not know must not pass as an
+  # inventory with fewer tests in it.
+  if(NOT reported_count STREQUAL "${listed_count}")
+    message(FATAL_ERROR
+      "WP375c could not read the CTest inventory: read ${listed_count} test "
+      "lines, CTest reported '${reported_count}' (filter: ${ARGN})")
+  endif()
+  set(${out_var} "${names}" PARENT_SCOPE)
+endfunction()
+
+wp375c_read_names(all_names)
+wp375c_read_names(gpu_names -L "^gpu$")
 
 set(unique_names ${all_names})
 list(REMOVE_DUPLICATES unique_names)
@@ -71,6 +96,7 @@ if(NOT all_count EQUAL unique_count)
 endif()
 foreach(test_name IN LISTS all_names)
   if(test_name MATCHES "_NOT_BUILT($|-)")
+    wp375c_decode(test_name "${test_name}")
     message(FATAL_ERROR
       "WP375c CTest inventory contains synthetic discovery failure: "
       "'${test_name}'")
@@ -78,9 +104,10 @@ foreach(test_name IN LISTS all_names)
 endforeach()
 
 function(wp375c_require_test test_name require_gpu)
+  wp375c_encode(encoded_name "${test_name}")
   set(matches 0)
   foreach(candidate IN LISTS all_names)
-    if(candidate STREQUAL test_name)
+    if(candidate STREQUAL encoded_name)
       math(EXPR matches "${matches} + 1")
     endif()
   endforeach()
@@ -89,7 +116,7 @@ function(wp375c_require_test test_name require_gpu)
       "WP375c expected exactly one '${test_name}', found ${matches}")
   endif()
   if(require_gpu)
-    list(FIND gpu_names "${test_name}" gpu_index)
+    list(FIND gpu_names "${encoded_name}" gpu_index)
     if(gpu_index EQUAL -1)
       message(FATAL_ERROR
         "WP375c expected gpu label on '${test_name}'")
@@ -115,7 +142,8 @@ set(rpc_test
 if(PELICAN_EXPECT_RPC)
   wp375c_require_test("${rpc_test}" TRUE)
 else()
-  list(FIND all_names "${rpc_test}" rpc_index)
+  wp375c_encode(encoded_rpc_test "${rpc_test}")
+  list(FIND all_names "${encoded_rpc_test}" rpc_index)
   if(NOT rpc_index EQUAL -1)
     message(FATAL_ERROR
       "WP375c RPC-OFF inventory unexpectedly contains '${rpc_test}'")

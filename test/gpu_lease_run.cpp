@@ -90,11 +90,49 @@ std::string log_directory() {
 #endif
 }
 
+// TS-2: the shared cache only grows (one engine shader byte renames every
+// key), so once a day the files nobody has written for 14 days go. A cache hit
+// does not touch its file: an entry in use is compiled again every 14 days.
+// The day is the write time of one marker file. Only regular files directly in
+// the directory are removed. Every failure is ignored; a sweep never stops a
+// test from starting.
+constexpr char kShaderCacheSweepMarker[] = "last_sweep.stamp";
+
+void sweep_shader_cache_directory(const std::filesystem::path& directory) noexcept {
+  try {
+    namespace fs = std::filesystem;
+    using clock = fs::file_time_type::clock;
+    constexpr auto kSweepInterval = std::chrono::hours(24);
+    constexpr auto kEntryLifetime = std::chrono::hours(24 * 14);
+    const fs::path marker = directory / kShaderCacheSweepMarker;
+    const auto now = clock::now();
+    std::error_code error;
+    const auto swept = fs::last_write_time(marker, error);
+    if (!error && swept <= now && now - swept < kSweepInterval) return;
+    { std::ofstream touch(marker, std::ios::trunc); }
+    fs::last_write_time(marker, now, error);
+
+    error.clear();
+    fs::directory_iterator it(directory, error);
+    for (; !error && it != fs::directory_iterator(); it.increment(error)) {
+      std::error_code entry_error;
+      const fs::path path = it->path();
+      if (path.filename() == kShaderCacheSweepMarker) continue;
+      if (!fs::is_regular_file(it->symlink_status(entry_error)) || entry_error) continue;
+      const auto written = fs::last_write_time(path, entry_error);
+      if (entry_error || written > now || now - written < kEntryLifetime) continue;
+      fs::remove(path, entry_error);
+    }
+  } catch (...) {
+  }
+}
+
 // TS-1: every GPU test and every worktree share one shader disk cache. The
 // engine names cache entries by content (sources, compiler, target, options),
 // so a fresh test project starts with the shaders earlier tests compiled.
-// A cache directory the caller already chose is kept; when none can be made,
-// the variable stays unset and each project keeps its own cache.
+// A cache directory the caller already chose is kept (and never swept); when
+// none can be made, the variable stays unset and each project keeps its own
+// cache.
 void prepare_shader_cache_directory() {
   constexpr char variable[] = "PELICAN_SHADER_CACHE_DIR";
   if (const char* set = std::getenv(variable); set && *set) return;
@@ -120,6 +158,7 @@ void prepare_shader_cache_directory() {
 #else
   setenv(variable, directory.string().c_str(), 1);
 #endif
+  sweep_shader_cache_directory(directory);
 }
 
 void log_event(const std::string& name, const std::string& own,

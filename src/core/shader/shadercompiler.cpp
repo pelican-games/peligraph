@@ -2,6 +2,7 @@
 #include "../loader/engineresources.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../startup.hpp"
+#include "../../project/sha256stream.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -12,7 +13,6 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <picosha2.h>
 #include <regex>
 #include <sstream>
 #include <stdexcept>
@@ -217,7 +217,7 @@ const std::string &engineShaderUniverseSha256() {
                 appendKeyPart(universe, "potential-engine-source", *resource);
             }
         }
-        return picosha2::hash256_hex_string(universe);
+        return sha256Hex(universe);
     }();
     return result;
 }
@@ -279,6 +279,23 @@ std::string keyFileName(const std::filesystem::path &file,
     return normal.string();
 }
 
+// TS-2: both include patterns below need "#" as the first character after
+// leading white space, and the word "include". A line without them skips
+// std::regex, which took 12.7 s of RT6's key time in Debug. A first byte the
+// regex's locale might take for white space (anything but printable ASCII)
+// still goes to the regex, so the result is the regex's.
+bool mayHoldIncludeDirective(std::string_view line) {
+    std::size_t at = 0;
+    while (at < line.size() && (line[at] == ' ' || line[at] == '\t' || line[at] == '\n' ||
+                                line[at] == '\v' || line[at] == '\f' || line[at] == '\r')) {
+        ++at;
+    }
+    if (at == line.size()) return false;
+    const auto first = static_cast<unsigned char>(line[at]);
+    if (first != '#' && first > 0x20 && first < 0x7f) return false;
+    return line.find("include", at) != std::string_view::npos;
+}
+
 std::string sourceGraphSha256(std::string_view source, std::string_view name,
                               const std::vector<std::filesystem::path> &include_dirs,
                               const std::vector<std::pair<std::string, std::string>> &virtual_sources,
@@ -295,7 +312,7 @@ std::string sourceGraphSha256(std::string_view source, std::string_view name,
             appendKeyPart(stable_input, "virtual-name", virtual_name);
             appendKeyPart(stable_input, "virtual-source", content);
         }
-        stable_input = picosha2::hash256_hex_string(stable_input);
+        stable_input = sha256Hex(stable_input);
         std::lock_guard lock{processSourceGraphMutex()};
         if (const auto found = processSourceGraphs().find(stable_input);
             found != processSourceGraphs().end()) {
@@ -320,8 +337,8 @@ std::string sourceGraphSha256(std::string_view source, std::string_view name,
     std::string graph;
     std::unordered_set<std::string> visited;
     bool has_file_dependency = false;
-    const std::regex include_directive{R"(^\s*#\s*include\b)"};
-    const std::regex include_pattern{R"(^\s*#\s*include\s*([<"])([^>"]+)[>"])"};
+    static const std::regex include_directive{R"(^\s*#\s*include\b)"};
+    static const std::regex include_pattern{R"(^\s*#\s*include\s*([<"])([^>"]+)[>"])"};
     const auto visit = [&](auto &&self, std::string source_name, std::string content) -> void {
         if (!visited.insert(source_name).second) {
             return;
@@ -333,6 +350,9 @@ std::string sourceGraphSha256(std::string_view source, std::string_view name,
         std::string line;
         std::smatch match;
         while (std::getline(lines, line)) {
+            if (!mayHoldIncludeDirective(line)) {
+                continue;
+            }
             if (!std::regex_search(line, match, include_pattern)) {
                 if (std::regex_search(line, include_directive)) {
                     throw std::runtime_error(
@@ -379,13 +399,25 @@ std::string sourceGraphSha256(std::string_view source, std::string_view name,
             potential_files.emplace_back(".", normalizedPath(root));
         } else {
             ec.clear();
+            // TS-2: the root is resolved once. Below it, a listed plain file
+            // is its own canonical path: the root's plus the listed names
+            // (FW-1 keys the file watcher the same way). Resolving every file
+            // took 7.3 s of RT6's key time. A symlink or another special
+            // entry is still resolved by itself; the iterator does not enter
+            // linked directories.
+            const auto canonical_root = normalizedPath(root);
             for (std::filesystem::recursive_directory_iterator it{
                      root, std::filesystem::directory_options::skip_permission_denied, ec}, end;
                  !ec && it != end; it.increment(ec)) {
                 if (it->is_regular_file(ec) && !ec) {
-                    potential_files.emplace_back(
-                        it->path().lexically_relative(root).generic_string(),
-                        normalizedPath(it->path()));
+                    const auto relative = it->path().lexically_relative(root);
+                    std::error_code link_ec;
+                    const bool plain =
+                        it->symlink_status(link_ec).type() == std::filesystem::file_type::regular &&
+                        !link_ec && !relative.empty() && *relative.begin() != "..";
+                    potential_files.emplace_back(relative.generic_string(),
+                                                 plain ? canonical_root / relative
+                                                       : normalizedPath(it->path()));
                 }
                 ec.clear();
             }
@@ -403,7 +435,7 @@ std::string sourceGraphSha256(std::string_view source, std::string_view name,
         dependencies->erase(std::unique(dependencies->begin(), dependencies->end()),
                             dependencies->end());
     }
-    auto result = picosha2::hash256_hex_string(graph);
+    auto result = sha256Hex(graph);
     if (!stable_input.empty() && !has_file_dependency) {
         std::lock_guard lock{processSourceGraphMutex()};
         processSourceGraphs().emplace(std::move(stable_input), result);
@@ -437,12 +469,12 @@ std::string shaderCacheKey(std::string_view source, vk::ShaderStageFlagBits stag
     appendKeyPart(raw, "stage", std::to_string(static_cast<std::uint32_t>(stage)));
     appendKeyPart(raw, "entry-point", entry_point);
     appendKeyPart(raw, "contract-salt", shaderContractSalt);
-    return picosha2::hash256_hex_string(raw);
+    return sha256Hex(raw);
 }
 
 std::string spirvSha256(const std::vector<uint32_t> &spirv) {
-    const auto *begin = reinterpret_cast<const unsigned char *>(spirv.data());
-    return picosha2::hash256_hex_string(begin, begin + spirv.size() * sizeof(uint32_t));
+    return sha256Hex(std::string_view{reinterpret_cast<const char *>(spirv.data()),
+                                      spirv.size() * sizeof(uint32_t)});
 }
 
 struct CacheReadResult {
@@ -658,6 +690,23 @@ std::optional<std::filesystem::path> sharedShaderCacheDirectory() {
 }
 
 } // namespace
+
+#if PELICAN_RUNTIME_SHADER_COMPILER
+ShaderCacheKeyBuildInputs shaderCacheKeyBuildInputs() {
+    ShaderCacheKeyBuildInputs inputs;
+    inputs.engine_universe_sha256 = engineShaderUniverseSha256();
+    inputs.shaderc_version = PELICAN_SHADERC_VERSION;
+    unsigned int spirv_version = 0;
+    unsigned int spirv_revision = 0;
+    shaderc_get_spv_version(&spirv_version, &spirv_revision);
+    inputs.spirv_version = spirv_version;
+    inputs.spirv_revision = spirv_revision;
+    inputs.target_environment = shaderTargetEnvironment;
+    inputs.compile_options = shaderCompileOptions;
+    inputs.contract_salt = shaderContractSalt;
+    return inputs;
+}
+#endif
 
 ShaderCompiler::ShaderCompiler(DetachedTag) : records_startup_metrics{false} {}
 

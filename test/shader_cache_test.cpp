@@ -3,7 +3,9 @@
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
+#include "../src/project/sha256stream.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -334,6 +336,105 @@ TEST_CASE("TS-1 a cache key reads an unchanged include file once per compiler",
     REQUIRE(rewritten.ok);
     CHECK(rewritten.cache_key != fresh.cache_key);
     CHECK_FALSE(rewritten.cache_hit);
+}
+
+namespace {
+// The key's own encoding of one part (shadercompiler.cpp appendKeyPart).
+void appendExpectedKeyPart(std::string &key, std::string_view label, std::string_view value) {
+    key += std::string{label} + "=" + std::to_string(value.size()) + ":" + std::string{value} + ";";
+}
+} // namespace
+
+// TS-2 changed how the key is computed (the hash, the include scan, the root
+// listing), not what it is: every project's and every machine's existing
+// cache entries stay valid. The expected key is written out here from the
+// key's layout, from the fixed files below and from what the build supplies
+// (shaderCacheKeyBuildInputs), so the test holds across engine shader edits.
+TEST_CASE("TS-2 a project shader's cache key is the documented digest of its sources",
+          "[shader][startup][cache][ts2]") {
+    TempDirectory temp;
+    const ScopedSharedCacheDirectory environment{""};
+    const auto project = temp.path / "project";
+    const std::string root_bytes = "#version 450\n"
+                                   "#extension GL_GOOGLE_include_directive : enable\n"
+                                   "// a line that mentions #include \"absent.glsl\" is not one\n"
+                                   "  #  include \"common.glsl\"\n"
+                                   "void main() { gl_Position = vec4(kValue + kDeep, 0.0, 0.0, 1.0); }\n";
+    const std::string common_bytes = "#include <deep.glsl>\nconst float kValue = 0.25;\n";
+    const std::string deep_bytes = "const float kDeep = 0.5;\n";
+    const std::string notes_bytes = "not a shader\n";
+    writeFile(project / "fixed.vert", root_bytes);
+    writeFile(project / "common.glsl", common_bytes);
+    writeFile(project / "shaders" / "include" / "deep.glsl", deep_bytes);
+    writeFile(project / "notes" / "readme.txt", notes_bytes);
+
+    ShaderCompiler compiler;
+    compiler.setCacheDirectory(temp.path / "cache");
+    const auto result = compiler.compileFile(project / "fixed.vert");
+    REQUIRE(result.ok);
+
+    // The embedded engine sources, as the key lists them.
+    const auto inputs = shaderCacheKeyBuildInputs();
+    std::string universe;
+    for (const auto id : registeredEngineResourceIds()) {
+        const auto extension = std::filesystem::path{id}.extension().string();
+        if (extension != ".glsl" && extension != ".vert" && extension != ".frag" && extension != ".comp" &&
+            extension != ".rgen" && extension != ".rmiss" && extension != ".rchit" && extension != ".rahit") {
+            continue;
+        }
+        if (const auto resource = engineResource(id)) {
+            appendExpectedKeyPart(universe, "potential-engine-name", id);
+            appendExpectedKeyPart(universe, "potential-engine-source", *resource);
+        }
+    }
+    CHECK(sha256Hex(universe) == inputs.engine_universe_sha256);
+
+    // compileFile searches the shader's folder (root 0), then its
+    // shaders/include (root 1). Files are named by root index and the path
+    // below the first root that holds them.
+    std::string graph;
+    appendExpectedKeyPart(graph, "source-name", "0/fixed.vert");
+    appendExpectedKeyPart(graph, "source-bytes", root_bytes);
+    appendExpectedKeyPart(graph, "source-name", "0/common.glsl");
+    appendExpectedKeyPart(graph, "source-bytes", common_bytes);
+    appendExpectedKeyPart(graph, "source-name", "0/shaders/include/deep.glsl");
+    appendExpectedKeyPart(graph, "source-bytes", deep_bytes);
+    appendExpectedKeyPart(graph, "include-root-count", "2");
+    for (const auto &[name, bytes] : std::vector<std::pair<std::string, std::string>>{
+             {"0/common.glsl", common_bytes},
+             {"0/fixed.vert", root_bytes},
+             {"0/notes/readme.txt", notes_bytes},
+             {"0/shaders/include/deep.glsl", deep_bytes},
+             {"1/deep.glsl", deep_bytes}}) {
+        appendExpectedKeyPart(graph, "potential-file-name", name);
+        appendExpectedKeyPart(graph, "potential-file-source", bytes);
+    }
+    appendExpectedKeyPart(graph, "potential-engine-universe-sha256", inputs.engine_universe_sha256);
+
+    std::string raw;
+    appendExpectedKeyPart(raw, "source-sha256", sha256Hex(graph));
+    appendExpectedKeyPart(raw, "shaderc-version", inputs.shaderc_version);
+    appendExpectedKeyPart(raw, "shaderc-spirv-version", std::to_string(inputs.spirv_version));
+    appendExpectedKeyPart(raw, "shaderc-spirv-revision", std::to_string(inputs.spirv_revision));
+    appendExpectedKeyPart(raw, "target-env", inputs.target_environment);
+    appendExpectedKeyPart(raw, "compile-options", inputs.compile_options);
+    appendExpectedKeyPart(raw, "stage", std::to_string(static_cast<std::uint32_t>(vk::ShaderStageFlagBits::eVertex)));
+    appendExpectedKeyPart(raw, "entry-point", "main");
+    appendExpectedKeyPart(raw, "contract-salt", inputs.contract_salt);
+    CHECK(result.cache_key == sha256Hex(raw));
+
+    // Hot reload finds a file by these exact strings: each one is the
+    // file's own weakly_canonical path, whatever the key scan does.
+    std::vector<std::string> expected_dependencies;
+    for (const auto &file : {project / "common.glsl", project / "fixed.vert", project / "notes" / "readme.txt",
+                             project / "shaders" / "include" / "deep.glsl"}) {
+        expected_dependencies.push_back(std::filesystem::weakly_canonical(file).string());
+    }
+    std::sort(expected_dependencies.begin(), expected_dependencies.end());
+    std::vector<std::string> dependencies;
+    for (const auto &dependency : result.dependencies) dependencies.push_back(dependency.string());
+    std::sort(dependencies.begin(), dependencies.end());
+    CHECK(dependencies == expected_dependencies);
 }
 #endif
 
