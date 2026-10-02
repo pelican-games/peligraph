@@ -21,9 +21,15 @@ render graph、surface shader、graphics pipeline、material metadata/valueを
 実装状況: **HR2-S は WP108(2026-07-15)で完了**。以下の規範どおり、
 shader の独自 mtime poll は撤去され、FileWatcher/ContentDigest の単一路、
 source/include/.surface reverse dependency、全 variant/pipeline/material layout の
-group-wide transaction が実装された。
+group-wide transaction が実装された。**FW-1(2026-10-02、`92681afd`)** で走査は
+size / mtime の比較になり、hash は変わったファイルだけになった(§1・§2-1・§2-1a・
+§2-3)。**HW-1(2026-10-02、`c947cef4`)** で、監視する素材とフォルダを project.json の
+`hot_reload` で宣言できるようになった(§0 の 3・§2-3・§3-2a)。
 前提: 確定規約 2 件(2026-07-08 ユーザー決定 — ①リプレイ/strict/rpc 駆動中は
-ホットリロード無効 ②エディタの自己書き込みは無視)、「ファイルが唯一の
+ホットリロード無効 ②エディタの自己書き込みは無視)、2026-10-02 の利用者決定
+(素材やフォルダごとに hot reload の有効化を設定できる形にする。既定 = 何も宣言して
+いない project を Studio で開いたときは監視なし。これにより ① の「rpc 駆動中」は
+「rpc 駆動中で、`hot_reload` を宣言していないとき」に狭まった)、「ファイルが唯一の
 真実」(devstudio D3 の実行基盤を兼ねる)、WP82(シェーダキャッシュ)、
 `design_project_vcs.md`(mounted store)。
 
@@ -35,7 +41,14 @@ group-wide transaction が実装された。
    継続 + 名前入り WARN + status」。壊れた .surface を保存しても落ちない
 3. **決定性の聖域を侵さない**: リプレイ / strict / rpc 駆動中は監視を
    無効化。復帰は §2 の reconcile プロトコル(単純な「一括再スキャン」
-   ではない — arm/scan race があるため)
+   ではない — arm/scan race があるため)。
+   (2026-10-02 利用者決定、HW-1)rpc 駆動中でも、project.json が
+   `hot_reload`(project root からの論理 path の配列)を宣言していれば、
+   列挙したものだけを監視する。空の配列は監視しない。宣言しなければ従来
+   どおり(単体の player は全体を監視、rpc 駆動中は監視しない)。リプレイ /
+   strict と headless(`shader_hot_reload = false`)は宣言があっても無効。
+   宣言は作者が「ここは外のツールで書き換える」と明示した場所だけに監視を
+   開くもので、宣言しない project の rpc 駆動の決定性は変わらない
 4. **適用はフレーム境界**: mid-frame 差し替えなし。検知はいつでも、適用は
    次フレーム先頭で一括
 5. **(v2 追加)差し替えは transaction**: 「新を構築 → 検証 → 差し替え」を
@@ -48,6 +61,16 @@ group-wide transaction が実装された。
 (overlapped)、fallback = mtime ポーリング(2s 既定。store ごとに自動
 判定 — watch 開始失敗・network path で降格)。監視対象 = project root
 配下 + mounted store の実パス。
+
+- project root に重なる store(mount が空)の最上位の `.pelican/`(shader
+  cache・`assets-hash-cache.json`・transaction・移行・log。engine が常に
+  書く)は**走査も通知も対象外**(FW-1)。reload participant が claim する
+  source はそこに無い
+- `hot_reload` の宣言があれば(HW-1、§2-3)、宣言に届かない mount の store は
+  走査も native watch もせず、走査は宣言に届かないフォルダに入らず、宣言の
+  外のファイルは inventory に入れない(hash も queue もしない)
+- 1 回の通知の record が全部 `.pelican` の下か宣言の外を名指すなら、その
+  通知では走査しない
 
 ### 1-1. handle と I/O の規範
 
@@ -67,8 +90,9 @@ group-wide transaction が実装された。
 
 - overflow = 「成功 + 0 bytes」または `ERROR_NOTIFY_ENUM_DIR`。このとき
   個別 event は**全破棄**されているため、**必ず該当 subtree の inventory
-  rescan**(全走査 + content hash 照合)へ落とす。Microsoft 仕様も
-  この場合の enumeration を要求する
+  rescan**(全走査 = 各ファイルの size / mtime を前回の inventory と比較し、
+  hash は size か mtime が違うファイルにだけ。FW-1)へ落とす。Microsoft
+  仕様もこの場合の enumeration を要求する
 - rescan 中に来た event は drain して該当 path を再 hash。rescan 中に
   再 overflow したらもう一周
 
@@ -102,10 +126,33 @@ API は存在しない。よって:
 - **`ContentDigest` 共通 utility を新設**: streaming SHA-256、canonical
   `AssetKey`(§3-1)、read/share violation・cancel の扱い、byte count を
   API 化。WP82/assetsmanifest の既存 private 実装は後続でこれへ寄せる
-  (挙動不変の移行)
+  (挙動不変の移行)。→ FW-1 で streaming SHA-256 は `Sha256Stream`
+  (`src/project/sha256stream.{hpp,cpp}`。Windows は BCrypt、それ以外は
+  picosha2。どちらも小文字 16 進で同じ digest)の 1 つになり、assets
+  manifest の `assetFileSha256()` と watcher の `readStableContentDigest()`
+  が共有する。読む単位はどちらも 1 MiB(`Sha256Stream::read_chunk_bytes`)。
+  shader cache の鍵(`shadercompiler.cpp`)は今も picosha2 を直接使う
 - baseline は「最後に**適用成功した** hash」。検知しただけ・失敗した
   candidate の hash を baseline に進めない(失敗後の再保存が無視される
   事故を防ぐ)
+- **走査は size / mtime の比較、hash は変わったファイルだけ(FW-1)**:
+  inventory の entry は directory の一覧から取った size / mtime を持ち、
+  次の走査で両方が同じで、その値が信用できる(下の settle 窓を過ぎていて、
+  hash がその版のファイルを読んだ)entry は読まずに digest を持ち越す。
+  hash するのは size か mtime が違うファイル、新しいファイル、信用できない
+  entry だけ
+- **起動時は hash しない(FW-1)**: 最初の走査はファイルを読まずに inventory
+  を作り、live は「未知」(§2-1a の `live_unknown`)にする。未知はどの
+  digest とも等しくないので、各ファイルの最初の観測は、中身が同じ再保存でも
+  1 回 reload を積む(起動時の中身を知らないため)。2 回目からは基準がある
+- **settle 窓(FW-1)**: mtime が走査の開始から 100 ms 以内のファイルは
+  size / mtime を信用せず、次の走査で読み直す(起動時も窓の中のファイル
+  だけは hash する)。NTFS の mtime は連続の書き込みで同じ値になり、
+  走査の直後に同じ size で書き直した保存を取りこぼすため(git の
+  racy-clean と同じ考え方)。100 ms は debounce の 200 ms より短く、
+  native watch が拾った保存は 1 回だけ hash する。mtime の刻みが窓より
+  粗い store(FAT の 2 s、時刻のずれた network share)で同じ刻みの中に
+  同じ size で 2 回保存すると、2 回目は取りこぼす(受け入れ済み)
 - hash 前後で size/mtime/file identity を比較し、書き込み中ならデバウンス
   再開。安定 read が得られない間は旧リソース継続 + retry(永久失敗に
   しない)
@@ -126,6 +173,11 @@ baseline・self-write consume・reconcile 比較を**一個の hash で実装し
 - token consume は `observed_digest` を更新するが、runtime apply 成功
   なしに `live_digest` を進めない。disable/resume 後も disk/live の
   不一致を失わない
+- (FW-1)起動時に hash しなかった source は `live_unknown`(live の中身が
+  未知)。未知の live はどの digest とも等しくない(self-write の consume
+  にも `unchanged` にも使わない)ので、最初の観測は `queue_reload`。消去は
+  未知でも報告する。commit 成功と、runtime 適用済みの self-write の登録で
+  未知は解ける
 - fixture: (a) editor apply+write→resume で再 queue なし
   (b) write 成功/runtime apply 失敗→通常 reload
   (c) token 後に異なる外部 hash→reload
@@ -146,7 +198,9 @@ path TTL ではなく **`(AssetKey, expected hash, watcher epoch)`** で登録�
    破棄 → §1-3 の停止手順で watcher を完全停止。「最後に適用成功した
    content inventory」は保持
 2. **resume/reconcile**: 新 epoch の watcher を**先に arm**(適用は
-   まだ禁止)→ 全 store を scan/hash して保持 inventory と比較
+   まだ禁止)→ 全 store を走査して保持 inventory と比較(size / mtime の
+   比較で、hash は size か mtime が違うファイルにだけ。FW-1。`hot_reload`
+   の宣言があれば、宣言に届く store・フォルダ・ファイルだけ。HW-1)
 3. scan 中に buffer へ来た event を drain して該当 path を再 hash。
    hash 前後で変化したファイルは静穏まで retry。overflow は scan を
    もう一周
@@ -161,11 +215,29 @@ gate の発火源(リプレイ開始/終了・strict・rpc 駆動)は**中央 1 
 hot reload flag を折る処理は、この centralized gate へ統合する(各 handler
 の独自判定で race を作らない)。
 
+**宣言(HW-1、2026-10-02)**: gate の入力に project.json の `hot_reload` の
+有無(`WatchDeclaration`: undeclared / empty / listed)が加わった。設定するのは
+`ReloadService::setup()` で、起動時に 1 回(launch の再設定は宣言に触らない)。
+決めるのは gate の 1 か所(`ReloadGate::updateLocked()`)だけ:
+
+- rpc 駆動の理由は undeclared のときだけ効く。listed なら rpc 駆動中でも監視する
+- empty は監視しない(理由 `"hot_reload empty"`。rpc 駆動中でも `"rpc driver"`
+  ではなくこちら)
+- 理由の優先は replay → strict assets → rpc driver → hot_reload empty →
+  shader_hot_reload disabled。headless は `shader_hot_reload = false` なので、
+  宣言があっても止まる
+
+宣言の当たり判定は、`AssetKey` の path が要素と等しいか、要素をフォルダとして
+その下か(成分ごと。`assets/tex` は `assets/textures/a.png` に当たらない。
+大文字小文字は区別する)。宣言は起動時にしか読まないので、変えたら engine を
+起こし直す(その場で切り替える口は無い)。
+
 ### 2-4. polling fallback にも同じ reconcile 状態機械(再レビュー HR-C3 — HR0 受入条件)
 
 fallback は「2s poll」ではなく watcher と同等の状態契約を持つ:
 
-1. poll tick は前回完了後にだけ開始し、同一 store の scan/hash を
+1. poll tick は前回完了後にだけ開始し、同一 store の走査(size / mtime の
+   比較と、変わったファイルの hash。FW-1 から変更の無い tick は hash 0)を
    重ねない。各 scan は開始 epoch を持ち、完了時に epoch/gate が
    違えば結果を破棄する
 2. polling の resume は「新 epoch の poll inventory 開始」を barrier と
@@ -243,6 +315,15 @@ project logical source である。
 入れない。同梱 feature を編集したい場合は project へコピーし、その参照へ
 差し替える。shader source/includeは従来の shader participant が所有し、
 pipeline participantとの二重claimを作らない。
+
+**rpc 駆動中は watcher の要求がこの participant に届かない(HW-1)**:
+`hot_reload` の宣言で rpc 駆動中に watcher が動くとき、`ReloadService::applyFrame()`
+は watcher が届けた要求を `pelican.render_pipeline` の participant に claim させない
+(`ReloadGate::rpcDriven()` のとき)。rpc 駆動中の render 文書(root / preset /
+feature)は client の `reload_render_documents`(RL-1)が持ち、watcher からも
+publish すると同じ文書で generation が 2 回出るため。誰も claim しない要求は
+従来どおり捨てられる。除外を renderer の登録ではなく `applyFrame()` に置いたので、
+`applyRequestsForTesting()` で participant を直接呼ぶ経路は変わらない。
 
 同じ watcher frame に root、preset、feature の変更が複数届いても、pipeline
 participantは一度だけ次を行う。
@@ -339,6 +420,28 @@ render graph reloadへ巻き込む」といった過剰な直列化を避ける�
 
   watcher error(監視自体の異常)と resource reload error(candidate
   失敗)を分ける
+
+  今の実物(`ReloadService::statusJson()`、FW-1 / HW-1 の後)は上の例と
+  ずれている。`last_watcher_error` は無く、監視の異常と gate が閉じている
+  理由は `error`(文字列か `null`)に出る。ほかに `participants`・`runtime`・
+  `model_catalog` があり、HW-1 で次の 4 つが足された:
+
+  ```json
+  {
+    "state": "watching", "epoch": 3, "error": null,
+    "applied": 1, "failed": 0, "participants": [...], "runtime": {...},
+    "model_catalog": null, "last_reload_error": null,
+    "watch": ["assets/textures", "passes"],
+    "scans": 4, "hashed_files": 2, "hashed_bytes": 20
+  }
+  ```
+
+  `watch` は正規化した `hot_reload` の宣言(無ければ `null`、空の配列なら
+  `[]`)。`scans`(完了した走査の回数)・`hashed_files`・`hashed_bytes` は
+  FW-1 の `WatcherStatus` の起動からの累計で、watcher が無いときは 0
+- log(FW-1): reconcile が終わるたびに、hash したファイルがあれば(起動後の
+  最初は 0 でも)INFO を 1 行 `file watcher: scanned {件数} files, hashed
+  {件数} ({x.x} MB) in {ms} ms`(件数は走査後の inventory の数、MB は 10^6 byte)
 - ImGui にリロード履歴パネル(WP86 の流儀で後続 — 初期はログのみ)
 
 ## 6. テスト戦略(レビュー §8)
@@ -368,7 +471,10 @@ resource handler suite(HR1 以降・GPU あり)は別に:
 - GPU in-flight の遅延破棄(フレーム跨ぎで crash しない)
 - model の rig layout 変化 → stale animation reset + temporal history
   reset(骨 palette の ghost なし)
-- 決定性: rpc 駆動中に監視が止まっている(書き換えても capture 不変)
+- 決定性: rpc 駆動中に監視が止まっている(書き換えても capture 不変)。
+  HW-1 からは「`hot_reload` を宣言しない project で」。宣言した project では
+  宣言したフォルダの texture が rpc 駆動中にも反映され、外は反映されないことを
+  見る(`texturereload_test` の HW-1 の GPU test)
 
 ## 7. WP 分割(レビュー §9 — v1 の H1/H2 を廃止)
 

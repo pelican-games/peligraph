@@ -40,7 +40,7 @@
 | パス | 内容 |
 |---|---|
 | `.pelican/local.json` | マシン固有のパス上書き(asset store の実パス差し替え。§3.4) |
-| `.pelican/shader_cache/` | シェーダのコンパイルキャッシュ(✅WP82 — [第6章](06_rendering.md)) |
+| `.pelican/shader_cache/` | シェーダのコンパイルキャッシュ(✅WP82 — [第6章](06_rendering.md))。環境変数 `PELICAN_SHADER_CACHE_DIR` を設定するとそちらに置かれ、ここには作られません(✅TS-1。[第10章](10_tools.md) §10.5) |
 | `.pelican/assets-hash-cache.json` | assets manifest の差分ハッシュキャッシュ(§3.4) |
 | `.pelican/logs/import-tools.log` | `pelican_cli import --rules` が起動した外部ツールのログ(§5.5) |
 | `.pelican/render-authoring.transaction/` | project の文書を何本かまとめて書き換える間だけ在る作業ディレクトリ(`manifest.json`・差し替え前の控え・commit 済みの印 `committed`)。書き手は 2 つで、rendering config の編集(Studio / RPC。root 文書と feature 断片)と、`project migrate` の apply(§3.13)です。ディレクトリは project に 1 つなので、この 2 つの commit は同時に走れません(後から commit しようとした方が `another render authoring transaction or recovery is active` で止まります)。名前は MG-1 で共用になる前のもので、据え置きです([projectdocumenttransaction.hpp](../../src/project/projectdocumenttransaction.hpp#L18) の冒頭コメント)。正常に終われば消えます。プロセスが途中で落ちて残っていれば、次の起動で commit 済みなら文書を確かめてから消し、commit 前なら文書を元に戻してから消します |
@@ -112,10 +112,11 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 | `name` | 実装上は任意 | `user://` スキームの project_id になる。無いと `user://` が使えない ※設計文書 [PF] §4 では必須と規定されているが、現行実装は検証しない |
 | `generator` | 任意 | パーサは読まない(生成元の記録用メタデータ) |
 | `engine_min_version` | 任意 | `"X.Y.Z"`。エンジン現行版(`0.1.0`。[`pelicanEngineVersion`](../../src/project/projectformat.hpp#L16))より新しければ `project.engine_too_old@1: project.json engine_min_version <値> is newer than this engine (0.1.0)` で起動拒否(名前は MG-1 から)。`--ignore-engine-version` で WARN に降格可 |
-| `saved_by_engine` | 任意 | **記録だけ**(✅MG-1)。最後に project.json を書いたエンジンの版 `"X.Y.Z"`。書くのは `pelican_cli project init`(雛形に入る)と `project migrate` の apply(§3.13)の 2 つだけで、scene の保存などでは書きません。何かを決めるのには使いません(移行するかどうかは各文書の `schema` / `version` で決まります)。文字列でない値は拒否せず無視し、今のエンジンより新しい版が書いてあっても拒否しません([`ProjectEnvelope`](../../src/project/projectformat.hpp#L22) のコメント)。キーを足しただけで `pelican.project` は version 1 のままで、MG-1 より前の player もこのキー入りの project.json を開けます(MG-1 の着地時に実物で確認) |
+| `saved_by_engine` | 任意 | **記録だけ**(✅MG-1)。最後に project.json を書いたエンジンの版 `"X.Y.Z"`。書くのは `pelican_cli project init`(雛形に入る)と `project migrate` の apply(§3.13)の 2 つだけで、scene の保存などでは書きません。何かを決めるのには使いません(移行するかどうかは各文書の `schema` / `version` で決まります)。文字列でない値は拒否せず無視し、今のエンジンより新しい版が書いてあっても拒否しません([`ProjectEnvelope`](../../src/project/projectformat.hpp#L28) のコメント)。キーを足しただけで `pelican.project` は version 1 のままで、MG-1 より前の player もこのキー入りの project.json を開けます(MG-1 の着地時に実物で確認) |
 | `requires` | 任意 | **このプロジェクトが動くために必要なビルド機能ユニットの名前の配列**(下記「機能ユニットの要求」)。語彙は `animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の 6 語(✅PG-1)。未知の名前は `project.requires_unknown@1`、その機能を OFF にしたビルドで開くと `<語>.module_unavailable@1`(例: `animation.module_unavailable@1`) |
 | `basic_config` | 任意 | 省略したキーは既定値で埋まる(次節) |
 | `asset_stores` | 任意 | asset store 宣言(§3.4) |
+| `hot_reload` | 任意 | **hot reload が監視する素材とフォルダ**(project root からの論理 path の配列。下記「hot reload で監視するもの」。✅HW-1)。書かなければ今までどおり。形が崩れていれば `project.hot_reload_invalid@1` で起動拒否 |
 | `packages` | 任意 | install 済み package の記録 `{namespace, package_version, sha256}` の配列(§3.11)。`pelican_cli package install` が書く |
 
 ### 機能ユニットの要求(`requires`)✅P-2b
@@ -144,10 +145,10 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 
 | 事項 | 中身 |
 |---|---|
-| 語彙 | **ビルド機能ユニットのレジストリに載っている名前**です。各語が指すオプションは上の表のとおりです([第2章 §2.2](02_getting_started.md))。今日の表は 6 行([projectformat.cpp:80](../../src/project/projectformat.cpp#L80) が `.def` を展開)で、`knownProjectRequirements()` がその一覧を返します |
-| 検証の時 | **parse 時**。[parseProjectRequirements()](../../src/project/projectformat.cpp#L118)が配列であること・非空文字列であること・表にある名前であることを見ます |
+| 語彙 | **ビルド機能ユニットのレジストリに載っている名前**です。各語が指すオプションは上の表のとおりです([第2章 §2.2](02_getting_started.md))。今日の表は 6 行([projectformat.cpp:80](../../src/project/projectformat.cpp#L81) が `.def` を展開)で、`knownProjectRequirements()` がその一覧を返します |
+| 検証の時 | **parse 時**。[parseProjectRequirements()](../../src/project/projectformat.cpp#L119)が配列であること・非空文字列であること・表にある名前であることを見ます |
 | 未知の名前 | `project.requires_unknown@1: project.json requires 'network', which this engine does not know; known requirements: animation, audio, physics, xr, vat, seqplayer` —— **既知の一覧を添えて**拒否します(一覧の順は `.def` の行の順) |
-| 満たせないビルド | 名前は新設せず、その語の `<語>.module_unavailable@1` を出します([projectformat.cpp:181](../../src/project/projectformat.cpp#L191))。例: `physics.module_unavailable@1: this build has PELICAN_WITH_PHYSICS=OFF, so project.json's requires: ["physics"] cannot be satisfied`。全要素が既知語かを先に確かめてから、最初に満たせない語を報告します。`pelican_player` はこれを捕まえて 1 行表示して exit 1 します |
+| 満たせないビルド | 名前は新設せず、その語の `<語>.module_unavailable@1` を出します([projectformat.cpp:181](../../src/project/projectformat.cpp#L253))。例: `physics.module_unavailable@1: this build has PELICAN_WITH_PHYSICS=OFF, so project.json's requires: ["physics"] cannot be satisfied`。全要素が既知語かを先に確かめてから、最初に満たせない語を報告します。`pelican_player` はこれを捕まえて 1 行表示して exit 1 します |
 | コーパス側 | **プロジェクト群を順に調べるテスト・スモークも同じ値を読みます**。満たせない要求を持つプロジェクトは失敗ではなく**名前付きの skip**(`skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)`)になります。`PELICAN_WITH_ANIMATION=OFF` build では `animation` を宣言した 3 つ分の行と、必要なら `skip editor lane: …`、最後に件数の要約が出ます([第2章 §2.2](02_getting_started.md))。`PELICAN_WITH_PHYSICS=OFF` build では `sprite_demo` が同じ形で飛ばされます |
 | 宣言しなくても止まるもの | `requires` はプロジェクトを開く時点の前倒しです。宣言が無くても、機能を外したビルドでその機能のコンポーネントを持つオブジェクトは、シーンロードの prepare と、エディタの `add_component` / `spawn` で同じ `<語>.module_unavailable@1` になります(今日対応付けがあるのは `collider` → `physics`、`animation` → `animation`。[第4章 §4.3](04_scene_ecs.md)) |
 | 出荷での宣言 | `animation`: `animgraph_demo` / `vrm_xr_demo` / `posegraph_demo`。`physics`: `sprite_demo`(PG-1)。`audio` / `xr` / `vat` / `seqplayer` を宣言した出荷プロジェクトはまだありません |
@@ -158,6 +159,44 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 > 3. **feature 文書の `integrations[].requires`**([第6章](06_rendering.md))= その統合を適用する条件としての**他の feature の名前**。
 >
 > 綴りが同じだけで、形も検証者も別です(語彙を共有するのは 1 と、2 の中の `capabilities` だけ)。
+
+### hot reload で監視するもの(`hot_reload`)✅HW-1
+
+> **設計決定(2026-10-02 利用者):** hot reload を**素材やフォルダごとに有効にできる**形にする。既定(何も宣言していない project を Studio で開いたとき)は監視しない。外のツール(DCC)で書き換える場所だけを作者が宣言し、Studio の下でもそこだけを監視する。
+
+Studio は engine を `--rpc` で起こし、`--rpc` の engine は宣言が無ければファイルを監視しません([第10章](10_tools.md) §10.5)。そのため Studio で開いている間は、外で保存した texture・model・material が反映されませんでした。`hot_reload` に書いた場所は、`--rpc` の下でも監視されます。
+
+```json
+{ "schema": "pelican.project", "version": 1, "name": "My Game",
+  "hot_reload": ["assets/textures", "assets/models/hero.glb", "shaders"] }
+```
+
+| `hot_reload` | 単体の player(`--rpc` なし、窓あり) | `--rpc`(Studio の engine) |
+|---|---|---|
+| 書かない | 今までどおり: project root と全 store を監視 | 今までどおり: 監視しない(`get_status.reload.error` が `"rpc driver"`) |
+| 配列 | 列挙したものだけ監視 | 列挙したものだけ監視 |
+| 空の配列 `[]` | 監視しない(`"hot_reload empty"`) | 同左 |
+
+- **読み方**: 区切りは `/`(`\` も区切りとして読みます)。`.` と空の成分は落とすので、`"./shaders"` は `"shaders"`、`"assets/textures/"` は `"assets/textures"` になります([`parseProjectHotReload()`](../../src/project/projectformat.cpp#L168))。`get_status.reload.watch` に出るのはこの正規化した形です。
+- **当たり判定**: 素材の論理 path(store の mount の下も mount を含めて書きます。例 `art/characters`)が要素と等しいか、要素をフォルダとしてその下にあれば監視します。比べるのは path の成分ごとで、`assets/tex` は `assets/textures/a.png` に当たりません。大文字小文字は区別します([`watchPathCovers()`](../../src/core/watch/filewatcher.cpp#L383))。
+- 宣言の外のファイルは走査せず、hash も reload もしません。宣言に届かない mount の store は監視自体を張りません。
+- 存在しない path は拒否しません。`.pelican/` の下は宣言しても監視しません(engine のキャッシュ置き場は常に対象外。[第10章](10_tools.md) §10.5)。
+- `--replay` / `--strict-assets` / headless では、宣言があっても監視しません([gate の 1 か所](../../src/core/watch/reloadgate.cpp#L37))。
+- `--rpc` の下で宣言した場所から反映されるのは、texture・material の値の文書・model・shader とその依存です。**render 文書(rendering config / preset / feature)は watcher からは反映されません**。`--rpc` の engine では render 文書は `reload_render_documents`(Studio が送ります。[第13章](13_editor.md))が持つためです([除外する所](../../src/core/watch/reloadservice.cpp#L886))。
+- **宣言は起動時に 1 回だけ読みます**([`ReloadService::setup()`](../../src/core/watch/reloadservice.cpp#L865))。書き換えたら engine を起こし直してください。Studio に宣言を切り替える画面はまだありません(project.json を手で書きます)。
+
+拒否は 1 つの code `project.hot_reload_invalid@1` で、文言が種類を言います。検査は封筒の parser(`parseProjectEnvelopeJson()`)の中の 1 か所なので、player の起動・engine の `basicconfig.cpp`・`pelican_cli dist-config`・Studio の project の読み込み([project.cpp](../../src/devstudio/model/project.cpp#L143))など、この parser を通る読み手はどれも同じ文言で断ります。
+
+| 書いたもの | 文言 |
+|---|---|
+| 配列でない | `project.hot_reload_invalid@1: project.json hot_reload must be an array of project-relative paths` |
+| 文字列でない要素 | `project.hot_reload_invalid@1: project.json hot_reload[1] must be a string` |
+| 正規化すると空(`""`・`"."`・`"./"`) | `project.hot_reload_invalid@1: project.json hot_reload[0] is empty; name a folder or file under the project root` |
+| 絶対 path(先頭が `/` か `\`、`C:` の形、`://` を含む。`project://assets` も) | `project.hot_reload_invalid@1: project.json hot_reload[0] '/assets' must be a path relative to the project root` |
+| `..` を含む | `project.hot_reload_invalid@1: project.json hot_reload[0] 'assets/../outside' must not contain '..'` |
+| 正規化して重複 | `project.hot_reload_invalid@1: project.json hot_reload[1] 'assets/textures/' repeats hot_reload[0] 'assets/textures'` |
+
+`"."`(project 全体)は空として断ります。project 全体を監視するのは「書かない」ときの単体の player だけで、`--rpc` の下で広く監視したいときは最上位のフォルダを並べます。web ビューアがこのキーをどう扱うかは確かめていません(未確認)。
 
 ### basic_config と「3 段合成」
 
@@ -308,7 +347,7 @@ manifest 本体(`pelican.assets` v1)は `pelican_cli assets manifest` が生成�
 - `files[]` は store 相対パスの**一意ソート必須**(生成は冪等 — 2 回実行で byte 一致)。差分ハッシュのキャッシュは `.pelican/assets-hash-cache.json`(git 非追跡)。
 - CLI: `pelican_cli assets manifest / verify / status --project <dir>`([第10章](10_tools.md))。
 - **起動時検証**: manifest 宣言のある store は player 起動時に照合されます。深刻度は「内容の変化 = INFO、欠落・参照不能・大文字小文字違い = WARNING」で、**ロードは止めません**。`--strict-assets` 指定時のみ全 issue が ERROR に昇格して起動中止になります。
-  - ✅AH-1(`0f93b5b8`)から、hash は file を 1 MiB ずつ読んで計算し、Windows では BCrypt の SHA-256 を使います([`assetFileSha256()`](../../src/project/assetsmanifest.cpp#L162))。digest は前と同じなので、今の manifest と hash cache はそのまま使えます。commit の記述では、hash cache の無い状態の Debug の `projects/example`(約 70 MB)で、検証が 23〜31 s から 0.5〜0.75 s になりました。それまでは Studio が engine の窓を見つけるまでの待ち(15 s)より長く、cache の無い worktree で Studio の test「running example fatal text」を走らせると、致命の行が出る前に engine が kill されていました。
+  - ✅AH-1(`0f93b5b8`)から、hash は file を 1 MiB ずつ読んで計算し、Windows では BCrypt の SHA-256 を使います([`assetFileSha256()`](../../src/project/assetsmanifest.cpp#L162)。計算そのものは ✅FW-1 から hot reload の file watcher と共有する [`Sha256Stream`](../../src/project/sha256stream.hpp#L15) にあります)。digest は前と同じなので、今の manifest と hash cache はそのまま使えます。commit の記述では、hash cache の無い状態の Debug の `projects/example`(約 70 MB)で、検証が 23〜31 s から 0.5〜0.75 s になりました。それまでは Studio が engine の窓を見つけるまでの待ち(15 s)より長く、cache の無い worktree で Studio の test「running example fatal text」を走らせると、致命の行が出る前に engine が kill されていました。
   - hash を始める前に、hash の要る file があれば `assets manifest [<store>] verifying <N> assets (<X> MB), <M> cached` を 1 行出します(N は hash する数、M は cache が当たった数。全部 cache が当たったときは出しません。[出す所](../../src/core/loader/assetsverification.cpp#L39))。
 
 > **設計決定(検証はロードを止めない):** アセットの正当性検査は開発の補助であり、既定では警告に留める。厳格化は明示フラグ(開発 CI・配布検証)でのみ行う。
@@ -624,7 +663,7 @@ RPC `uninstall_package{namespace}` は `packages/<ns>/` を消し、`project.jso
 - `sha256` は `package list` が再計算して照合します。エンジン起動時には照合しません。
 - `provides.components` は複製されるだけで、engine 側の消費者はまだありません。この `components` は **`pelican.render_component`**(§3.12)のディレクトリを指す語で、**ECS のコンポーネント([第4章](04_scene_ecs.md))とも、`project.json` の他の語とも無関係**です。今日それを読むのは `import_render_feature` だけで、package 経由では読まれません。
 - **install が途中で死ぬと `packages/<namespace>.tmp-<pid>` が残ります**。install 自体は失敗時に自分の staging を消しますが、プロセスごと消えた場合の残骸を**誰も掃除しません**(export 側の `user://components/*.tmp-*` は次の export が掃除します — §3.12。install 側にその機構はありません)。残骸は `pelican_packages()` が飛ばすのでビルドは壊れませんが、手で消す必要があります —— **glob(`packages/*/package.json`)自体は残骸も拾い**、拾ってから `if(package_name MATCHES "\\.tmp-") continue()` で落とす形です([src/player/CMakeLists.txt:277](../../src/player/CMakeLists.txt#L279))。
-- `uninstall_package` が「まだ使われているか」を見るのは **rendering config の root 文書と、その preset だけ**です([renderconfigeditor.cpp:1119](../../src/core/communication/renderconfigeditor.cpp#L1522))。他の feature 文書の中から `project://packages/<ns>/` を参照していても検出されません。
+- `uninstall_package` が「まだ使われているか」を見るのは **rendering config の root 文書と、その preset だけ**です([renderconfigeditor.cpp:1119](../../src/core/communication/renderconfigeditor.cpp#L1546))。他の feature 文書の中から `project://packages/<ns>/` を参照していても検出されません。
 - shader を持ち込む package は未対応です(feature が `engine://` shader だけを参照できる範囲)。
 
 ## 3.12 共有部品(render component)— feature 1 本を持ち出して別 project へ入れる(✅P-2a-3)
@@ -635,7 +674,7 @@ RPC `uninstall_package{namespace}` は `packages/<ns>/` を消し、`project.jso
 
 ### 書き出す(export)
 
-RPC [`export_render_feature{scope, index}`](../../src/core/communication/renderconfigeditor.cpp#L1296)(`scope` は `"root"` か `"preset"`、`index` は `features[]` の何番目か)が 1 本を書き出します。書き先は**固定で `user://components/<name>/`**([renderconfigeditor.cpp:944](../../src/core/communication/renderconfigeditor.cpp#L1347))、`<name>` は feature 文書の `name` です。プロジェクトには 1 バイトも書きません(設計決定 7 — [第1章 §1.5](01_overview.md))。
+RPC [`export_render_feature{scope, index}`](../../src/core/communication/renderconfigeditor.cpp#L1320)(`scope` は `"root"` か `"preset"`、`index` は `features[]` の何番目か)が 1 本を書き出します。書き先は**固定で `user://components/<name>/`**([renderconfigeditor.cpp:944](../../src/core/communication/renderconfigeditor.cpp#L1371))、`<name>` は feature 文書の `name` です。プロジェクトには 1 バイトも書きません(設計決定 7 — [第1章 §1.5](01_overview.md))。
 
 ディレクトリの中身は 2 ファイルです(以下は例):
 
@@ -671,7 +710,7 @@ user://components/glow_bloom/
 
 ### 取り込む(import)
 
-RPC [`import_render_feature{base_source_digest, source_dir, destination_reference}`](../../src/core/communication/renderconfigeditor.cpp#L1365) が、component ディレクトリを読んで **`destination_reference`(`project://…` の新規ファイル)に feature 文書を作り、`rendering.features` に足す**ところまでを **1 つのトランザクション**で行います(`base_source_digest` は CAS。[第13章](13_editor.md))。`source_dir` は**絶対パス**でなければならず、`destination_reference` は `project://` で始まる**新規**ファイル(`#` フラグメント不可)です。**この 3 つは別々の code で断られます** —— `project://` でない / `#` を含むは `invalid_feature_destination`([renderconfigeditor.cpp:974](../../src/core/communication/renderconfigeditor.cpp#L1377))、`source_dir` が絶対でないのは `render_component_invalid`([:980](../../src/core/communication/renderconfigeditor.cpp#L1383))、宛先が既にあるのは `feature_destination_exists`([:1026](../../src/core/communication/renderconfigeditor.cpp#L1429))です。
+RPC [`import_render_feature{base_source_digest, source_dir, destination_reference}`](../../src/core/communication/renderconfigeditor.cpp#L1389) が、component ディレクトリを読んで **`destination_reference`(`project://…` の新規ファイル)に feature 文書を作り、`rendering.features` に足す**ところまでを **1 つのトランザクション**で行います(`base_source_digest` は CAS。[第13章](13_editor.md))。`source_dir` は**絶対パス**でなければならず、`destination_reference` は `project://` で始まる**新規**ファイル(`#` フラグメント不可)です。**この 3 つは別々の code で断られます** —— `project://` でない / `#` を含むは `invalid_feature_destination`([renderconfigeditor.cpp:974](../../src/core/communication/renderconfigeditor.cpp#L1401))、`source_dir` が絶対でないのは `render_component_invalid`([:980](../../src/core/communication/renderconfigeditor.cpp#L1407))、宛先が既にあるのは `feature_destination_exists`([:1026](../../src/core/communication/renderconfigeditor.cpp#L1453))です。
 
 **複製であって参照ではありません** —— 取り込んだ後は component ディレクトリを消してもプロジェクトは描けます。
 
@@ -689,8 +728,8 @@ RPC [`import_render_feature{base_source_digest, source_dir, destination_referenc
 | `render_component_destination_exists` | `user://components/<name>/` が既にある(上書きしません) |
 | `render_component_digest_mismatch` | `feature.json` が `sha256` と一致しない |
 | `render_component_source_inside_project` | `source_dir` が取り込み先プロジェクトの中(それは `project://` で参照するものであって import ではありません) |
-| `render_component_requires_missing` | 宿主が宣言していない RT がある(`render_targets` に不足を列挙 — [renderconfigeditor.cpp:1019](../../src/core/communication/renderconfigeditor.cpp#L1422)) |
-| `render_component_write_failed` | staging ディレクトリの作成・2 ファイルの書き込み・公開 rename のどれかが失敗した([rendercomponent.cpp:37](../../src/project/rendercomponent.cpp#L37)、[:282](../../src/project/rendercomponent.cpp#L282))。受付では export / import の両方が `RenderComponentError` をそのままの code で返します([renderconfigeditor.cpp:955](../../src/core/communication/renderconfigeditor.cpp#L1358)、[:1050](../../src/core/communication/renderconfigeditor.cpp#L1358)) |
+| `render_component_requires_missing` | 宿主が宣言していない RT がある(`render_targets` に不足を列挙 — [renderconfigeditor.cpp:1019](../../src/core/communication/renderconfigeditor.cpp#L1446)) |
+| `render_component_write_failed` | staging ディレクトリの作成・2 ファイルの書き込み・公開 rename のどれかが失敗した([rendercomponent.cpp:37](../../src/project/rendercomponent.cpp#L37)、[:282](../../src/project/rendercomponent.cpp#L282))。受付では export / import の両方が `RenderComponentError` をそのままの code で返します([renderconfigeditor.cpp:955](../../src/core/communication/renderconfigeditor.cpp#L1382)、[:1050](../../src/core/communication/renderconfigeditor.cpp#L1382)) |
 | `invalid_feature_destination` | `destination_reference` が `project://` で始まらない、または `#` を含む(取り込み先の 2 種の 1 つ) |
 | `feature_destination_exists` | `destination_reference` のファイルが既にある(同上) |
 

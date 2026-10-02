@@ -888,7 +888,8 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
   - 編集モード(`get_status.play.state` が `edit`)の間は何も鳴らないので、全部 `idle` で 0 です。game を一時停止している間は mix 全体が止まるので、鳴るはずの voice は `paused` になります。
   - `get_graph_node_values` で読める `audio.playback` の node の値(lowering の後の op は `audio_playback`)は、その node の `time` 入力の秒で、`position_seconds`(音源の秒)とは意味が違います([評価する所](../../src/core/userpublic/valuegraph.cpp#L801))。
   - 例(Play → 数 frame): `"voices": [{"node": "voice", "state": "playing", "position_seconds": <進んだ秒>}]`(test の、`time` に `scene_time` を繋いだ voice では、0 から frame ごとに 1 frame の秒ずつ進む)。Pause の後は `paused` になり、Stop の後は `{"node": "voice", "state": "idle", "position_seconds": 0.0}` です。test: `audio_test` の [「CT-1 get_status lists each graph voice's state and position, the same on the null backend」](../../test/audio_test.cpp#L907)(null backend の headless)。
-  - ⚠ Studio のシナリオ `graph_read` は `audio` の鍵が 2 つ(`available` と `backend`)であることを見ています(`audio.$len` が 2。[第13章](13_editor.md) の「シナリオは無音です」)。CT-1 から `voices` が常に付くので、この step は鍵の数が合わないはずです(この docs の更新の時点で、シナリオは直していません。走らせては確かめていません)。
+  - Studio のシナリオ `graph_read` は、`9ca2d3ce` から `audio` の鍵が 3 つ(`available`・`backend`・`voices`)であることを見ます(`audio.$len` が 3。[第13章](13_editor.md) の「シナリオは無音です」)。CT-1 の着地の docs の時点では 2 つを見ていて、鍵の数が合わないはずでした。この docs ではシナリオを走らせて確かめていません(未確認)。
+  - Studio の Graph は ✅UX-9 から、`audio.playback` の node の下の帯にこの `state` と `position_seconds` を `playing · 1.2 s` の形で出します(`edit` の間の `idle` は出しません。[第13章](13_editor.md) の「保存中でも palette が開く、確定前の値を送る、voice の帯、起動時の致命の 1 文」)。
 
 ### グラフで鳴らす — `audio.playback`(✅AU-1)
 
@@ -918,7 +919,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 - `events` も `position` も無いノードは、**owner の最初のフレームで鳴り始め**、そのフレームから `time` 入力の時計で経過時間(写像の elapsed)を数えます([開始](../../src/core/userpublic/valuegraph.cpp#L964))。分解版の「`events` が無ければ owner の最初のフレーム」と同じ規則です。
 - `events` が無いときの `time` は、どの時計から来てもかまいません(`time` でも `scene_time` でも、時計の無い定数でも拒否されない)。
 - `time` は必須のままです。`events` を繋ぐなら `time` は `scene_time` だけから、の検査(`audio.clock_mismatch@1`、下の「状態と拒否」)も変わりません。
-- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L3464)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。
+- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L3464)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。✅UX-8 から、palette の `audio.volume` / `audio.pitch` は置く前に駆動する voice(scope の `audio.playback`)を聞き、その `voice` からの線と、`value` に 1 の `value.constant` をつないだ形で置かれます。palette の `value.curve`(`time` が `scene_time` につながった、1 秒で 0 から 1 の key)を `value` へ線で落とせば、下の「フェード」の形になります。音声の file は Studio の File ▸ Import Sound… か Sound の欄の Import… で project の `assets/audio/` に写せます(同じ名前があれば `_2`)。どれも [第13章](13_editor.md) の「音の node を置く・音声を Import する(✅UX-8)」です。
 
 下の例は `events` で鳴らす形です。
 

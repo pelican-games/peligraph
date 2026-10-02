@@ -18,7 +18,7 @@ Runtime object
 
 | データ | 純粋層 | runtime層 |
 |---|---|---|
-| project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L237) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L639) |
+| project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L300) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L639) |
 | path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L268) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1650) |
 | render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3115) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1556) |
@@ -35,15 +35,22 @@ Runtime object
 - `raw_data`: `PelicanCore(settings)`へ直接渡した上書きJSON
 - `project_data`: playerが読んだ`project.json`全体
 
-`project.json` のschema/version/`engine_min_version`ゲートは、まず [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L237) が検証します。`--ignore-engine-version`で継続する場合も純粋層はログを出さずwarning文字列を返し、engine adapterだけがそれをquillへ渡します。検証規則の正本はこの関数だけで、`basicconfig.cpp`やdevcliに写しはありません。`engine_min_version` が新しすぎるときの拒否は MG-1 から `project.engine_too_old@1` という名前で始まります（[`projectEngineTooOldCode`](../../src/project/projectformat.hpp#L19)）。
+`project.json` のschema/version/`engine_min_version`ゲートは、まず [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L300) が検証します。`--ignore-engine-version`で継続する場合も純粋層はログを出さずwarning文字列を返し、engine adapterだけがそれをquillへ渡します。検証規則の正本はこの関数だけで、`basicconfig.cpp`やdevcliに写しはありません。`engine_min_version` が新しすぎるときの拒否は MG-1 から `project.engine_too_old@1` という名前で始まります（[`projectEngineTooOldCode`](../../src/project/projectformat.hpp#L19)）。
 
 player ではこの parse の**前**に、MG-1 の入口 [`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563) が 1 回だけ走ります（[呼ぶ場所](../../src/player/main.cpp#L728)）。落ちたプロセスが残した project 文書の transaction を復旧してから、project root の下の `*.json` の最上位の `schema` / `version` を parser を通さずに読み、登録された移行手順の `from` に当たる文書があれば `project.migration_required@1` で止めます。parser の version 検査より前に置くのは、project.json 自身の版が上がったときも「知らない版」ではなく「移行が要る」で止めるためです。v0 の登録表は空で、そのときは root を歩きもしません。流れ全体は [manual 第3章 §3.13](../manual/03_project_format.md) にあります。
 
-[`ProjectEnvelope`](../../src/project/projectformat.hpp#L22) が持つのは `name` / `engine_min_version` / `saved_by_engine` / `requirements` / `basic_config` / `asset_stores` / `prefabs` の7つです。`saved_by_engine`（MG-1）は最後に project.json を書いたエンジンの版の**記録**で、何の判定にも使いません（文字列でなければ無視します）。このうち `requirements` は P-2b で入った **`requires`** キーで（`requires` はC++のキーワードなのでフィールド名だけずらしてあります）、「このプロジェクトが無いと動かないビルド機能」を宣言します。
+[`ProjectEnvelope`](../../src/project/projectformat.hpp#L28) が持つのは `name` / `engine_min_version` / `saved_by_engine` / `requirements` / `basic_config` / `asset_stores` / `hot_reload` / `prefabs` の8つです(`hot_reload` は HW-1 で増えた。下の箇条)。`saved_by_engine`（MG-1）は最後に project.json を書いたエンジンの版の**記録**で、何の判定にも使いません（文字列でなければ無視します）。このうち `requirements` は P-2b で入った **`requires`** キーで（`requires` はC++のキーワードなのでフィールド名だけずらしてあります）、「このプロジェクトが無いと動かないビルド機能」を宣言します。
 
-- 語彙は [`knownProjectRequirements()`](../../src/project/projectformat.hpp#L65) が返す表だけが持ち、現在は **`animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の6語**です（PG-1。各語が `PELICAN_WITH_ANIMATION` / `_AUDIO` / `_PHYSICS` / `_OPENXR` / `_VAT` / `_SEQPLAYER` の1つを指す）。表の行は `src/project/projectrequirements.def` で、同じ行をCMake側のコーパス選別（`cmake/pelican_project_requirements.cmake`）、component codecの `required_feature`、package の `requires.capabilities` の検査も読みます。知らない名前は黙って無視せず `project.requires_unknown@1` で拒否します（[`parseProjectRequirements()`](../../src/project/projectformat.cpp#L118)）。
-- このビルドが満たせない要求を書いたプロジェクトは、封筒のパースの時点で `<語>.module_unavailable@1`（例: `animation.module_unavailable@1`）を投げて止まります（[検査](../../src/project/projectformat.cpp#L191)）。ノードを1つずつ辿って「そんなopは知らない」と言われるより前に、名前で答えるためです。
-- 失敗させずに「このビルドでは開けない」だけ知りたい呼び手（`projects/` を順に調べるテスト等）のために、[`unsatisfiedProjectRequirement()`](../../src/project/projectformat.hpp#L86) が最初の未充足要求を返す形も用意されています。
+- 語彙は [`knownProjectRequirements()`](../../src/project/projectformat.hpp#L77) が返す表だけが持ち、現在は **`animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の6語**です（PG-1。各語が `PELICAN_WITH_ANIMATION` / `_AUDIO` / `_PHYSICS` / `_OPENXR` / `_VAT` / `_SEQPLAYER` の1つを指す）。表の行は `src/project/projectrequirements.def` で、同じ行をCMake側のコーパス選別（`cmake/pelican_project_requirements.cmake`）、component codecの `required_feature`、package の `requires.capabilities` の検査も読みます。知らない名前は黙って無視せず `project.requires_unknown@1` で拒否します（[`parseProjectRequirements()`](../../src/project/projectformat.cpp#L119)）。
+- このビルドが満たせない要求を書いたプロジェクトは、封筒のパースの時点で `<語>.module_unavailable@1`（例: `animation.module_unavailable@1`）を投げて止まります（[検査](../../src/project/projectformat.cpp#L253)）。ノードを1つずつ辿って「そんなopは知らない」と言われるより前に、名前で答えるためです。
+- 失敗させずに「このビルドでは開けない」だけ知りたい呼び手（`projects/` を順に調べるテスト等）のために、[`unsatisfiedProjectRequirement()`](../../src/project/projectformat.hpp#L98) が最初の未充足要求を返す形も用意されています。
+
+**`hot_reload`(✅HW-1、`c947cef4`)。**hot reload が監視する素材とフォルダの宣言で、[`parseProjectHotReload()`](../../src/project/projectformat.cpp#L168) が `parseProjectEnvelopeJson()` の中で `asset_stores` の隣に読み、`ProjectEnvelope::hot_reload`(`std::optional<std::vector<std::string>>`。キーが無ければ `nullopt`)に入れます。
+
+- 正規化: `/` と `\` で成分に分け、空の成分と `.` を落として `/` でつなぎ直します。存在するかは見ません(純粋層なので filesystem を触らない)。
+- 拒否は 1 つの code [`projectHotReloadInvalidCode`](../../src/project/projectformat.hpp#L25)(`project.hot_reload_invalid@1`)で、`requires` の `project.requires_unknown@1` と同じく文言が種類を言います: 配列でない / 文字列でない / 正規化して空 / 絶対(先頭が `/` か `\`、`C:` の形、`://` を含む)/ `..` の成分 / 正規化して重複。`"."` は空、`project://x` は絶対の扱いです。
+- runtime への道: [`ProjectPathResolver::setup()`](../../src/project/projectpathresolver.cpp#L343) が envelope の値を保持し、`hotReloadPaths()` で返します(reset で消える)。engine の [`PathResolver::hotReloadPaths()`](../../src/core/loader/pathresolver.hpp#L34) はそれに委譲し、[`ReloadService::setup()`](../../src/core/watch/reloadservice.cpp#L865) が起動時に 1 回読んで、`FileWatcherOptions::watch_paths` と gate の `WatchDeclaration` に渡します(下の「難所 — ファイルの再走査」の後の段落)。
+- test: [`projectformat_test.cpp` 内](../../test/projectformat_test.cpp#L115)「HW-1 project.json hot_reload is read as normalized logical paths and refused by name」。
 
 もう一つ、X-1で `project.json` に増えた **`packages`** キーは `ProjectEnvelope` には入りません。読むのは [`readInstalledPackagesJson()`](../../src/project/packagemanifest.hpp#L103) で、1エントリは `{namespace, package_version, sha256}` の [`InstalledPackage`](../../src/project/packagemanifest.hpp#L70) です（§3.16）。封筒のパーサとvendoringの台帳を別の関数に分けてあるので、package を知らない読み手は `packages` を素通りできます。
 
@@ -137,7 +144,7 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 
 ## 3.3 PathResolver
 
-解決規則の宣言は [`projectpathresolver.hpp`](../../src/project/projectpathresolver.hpp#L69)、中心実装は [`ProjectPathResolver::resolveRef()`](../../src/project/projectpathresolver.cpp#L551) です。ここは`pelican_project`に属し、Vulkan・quill・module containerへ依存しません。
+解決規則の宣言は [`projectpathresolver.hpp`](../../src/project/projectpathresolver.hpp#L69)、中心実装は [`ProjectPathResolver::resolveRef()`](../../src/project/projectpathresolver.cpp#L554) です。ここは`pelican_project`に属し、Vulkan・quill・module containerへ依存しません。
 
 engine側の [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9) は薄いmodule adapterです。[`pathresolver.cpp`](../../src/core/loader/pathresolver.cpp#L1) に残るのは、module寿命、返されたwarningのログ、`engine://` IDを埋め込みbytesへ変えるloader注入だけです。この境界によりdevstudioやCLIは`pelican_core`をリンクせず同じescape防止・asset store規則を使えます。
 
@@ -166,7 +173,7 @@ std::variant<
 | CLI由来の絶対path | そのpath | `--allow-absolute-paths`必須 |
 | project JSON内の絶対path | 不許可 | 常に拒否 |
 
-`std::filesystem::weakly_canonical`（`.` / `..` を畳み、途中までのsymlinkを解決して正規形へ落とす標準関数。末尾が実在しなくても失敗しない点が `canonical` との違いです）後にroot包含判定を行うため、単純な`../`文字列検査より強い境界です（[`ProjectPathResolver::resolveRef()`のproject処理](../../src/project/projectpathresolver.cpp#L656)）。
+`std::filesystem::weakly_canonical`（`.` / `..` を畳み、途中までのsymlinkを解決して正規形へ落とす標準関数。末尾が実在しなくても失敗しない点が `canonical` との違いです）後にroot包含判定を行うため、単純な`../`文字列検査より強い境界です（[`ProjectPathResolver::resolveRef()`のproject処理](../../src/project/projectpathresolver.cpp#L659)）。
 
 ### asset store
 
@@ -179,7 +186,7 @@ std::variant<
 - 実root同士の包含/重なりも拒否。
 - optional manifestのpathはproject root内に制限。
 
-相対参照がmount prefixに一致すると、project rootではなくstore rootへ付け替えます（[`asset store解決`](../../src/project/projectpathresolver.cpp#L640)）。これにより、VCS上の論理pathは固定したまま、大容量assetの実配置を開発者ごとに変えられます。
+相対参照がmount prefixに一致すると、project rootではなくstore rootへ付け替えます（[`asset store解決`](../../src/project/projectpathresolver.cpp#L643)）。これにより、VCS上の論理pathは固定したまま、大容量assetの実配置を開発者ごとに変えられます。
 
 ### engine resource
 
@@ -204,7 +211,7 @@ playerはcore起動前に [`verifyAssetsAtStartup()`](../../src/core/loader/asse
 
 **hash の速さ(✅AH-1、`0f93b5b8`)。**cache が外れた file の hash は [`assetFileSha256()`](../../src/project/assetsmanifest.cpp#L162) で、file を 1 MiB の buffer で読みます。AH-1 はこの関数の中で、Windows では CNG(`BCryptCreateHash(BCRYPT_SHA256_ALG_HANDLE, ...)` / `BCryptHashData` / `BCryptFinishHash`)、それ以外では picosha2 の `hash256_one_by_one` に chunk ごとに渡していました。今は FW-1(`92681afd`)がその計算を [`Sha256Stream`](../../src/project/sha256stream.hpp#L15)(`src/project/sha256stream.cpp`。Windows では BCrypt、それ以外では picosha2)に移し、file watcher と共有しています。1 MiB は `Sha256Stream::read_chunk_bytes` です。`pelican_project` は Windows で `bcrypt` を link します(`src/project/CMakeLists.txt`)。どちらも小文字の 16 進の SHA-256 で、digest は前と同じです。前は picosha2 に `istreambuf_iterator` で 1 byte ずつ渡しており、commit の記述では hash cache の無い Debug の `projects/example`(約 70 MB)で 23〜31 s、変更後は 0.5〜0.75 s です。前の時間は Studio が engine の窓を見つけるまでの待ち(15 s)より長く、cache の無い worktree で Studio の test を走らせると engine が kill されていました。
 
-hash を始める前に、[`verifyAssetsManifest()`](../../src/project/assetsmanifest.cpp#L574) は `AssetManifestVerifyOptions::before_hashing`(`include_content` のときだけ)を 1 回呼び、manifest の file のうち実在するものを cache が当たるかどうかで数えた [`AssetManifestHashPlan`](../../src/project/assetsmanifest.hpp#L56) `{to_hash, bytes_to_hash, cached}` を渡します([数える所](../../src/project/assetsmanifest.cpp#L605))。cache の当たりの判定は、hash の時に使う `cachedHash()`(size と mtime が合い、値が 16 進の SHA-256)と同じです。`verifyAssetsAtStartup()` はそれで `assets manifest [<store>] verifying <N> assets (<X> MB), <M> cached` を INFO で出します(`to_hash` が 0 なら出しません。[出す所](../../src/core/loader/assetsverification.cpp#L39))。test: `assetsmanifest_test` の [「asset file hashing matches SHA-256 for empty, small, and multi-chunk files」](../../test/assetsmanifest_test.cpp#L69)。
+hash を始める前に、[`verifyAssetsManifest()`](../../src/project/assetsmanifest.cpp#L574) は `AssetManifestVerifyOptions::before_hashing`(`include_content` のときだけ)を 1 回呼び、manifest の file のうち実在するものを cache が当たるかどうかで数えた [`AssetManifestHashPlan`](../../src/project/assetsmanifest.hpp#L56) `{to_hash, bytes_to_hash, cached}` を渡します([数える所](../../src/project/assetsmanifest.cpp#L605))。cache の当たりの判定は、hash の時に使う `cachedHash()`(size と mtime が合い、値が 16 進の SHA-256)と同じです。`verifyAssetsAtStartup()` はそれで `assets manifest [<store>] verifying <N> assets (<X> MB), <M> cached` を INFO で出します(`to_hash` が 0 なら出しません。[出す所](../../src/core/loader/assetsverification.cpp#L39))。test: `assetsmanifest_test` の [「asset file hashing matches SHA-256 for empty, small, and multi-chunk files」](../../test/assetsmanifest_test.cpp#L69)。`Sha256Stream` そのものは FW-1 の 2 本が見ます: `assetsmanifest_test` の [「FW-1 Sha256Stream streams across the 1 MiB read unit like one-shot SHA-256」](../../test/assetsmanifest_test.cpp#L91)(hashlib で求めた値と比べ、2 回目の `finishHex()` は throw)と、`filewatcher_test` の [「FW-1 Sha256Stream, assetFileSha256 and the watcher digest equal picosha2 around 1 MiB」](../../test/filewatcher_test.cpp#L668)(長さ 0 / 3 / 1 MiB の前後 / 2 MiB+7 を、一括・不揃いの分割・`assetFileSha256()`・`readStableContentDigest()` の 4 経路で picosha2 と比べる。assetsmanifest_test の実行ファイルは picosha2 の include を受け取っていないので、こちらに置いた)。
 
 manifestの生成も同じ`src/project/assetsmanifest.cpp`にあり、`pelican_cli assets manifest`から利用されます。
 
@@ -336,7 +343,7 @@ prepare（失敗可）
 
 診断の記録は **allocation 禁止** です。[`record()`](../../src/core/loader/effecttransaction.cpp#L97) は [`errors_`](../../src/core/loader/effecttransaction.hpp#L142)（`sceneEffectCapacity + 1` 個の [`FixedEffectError`](../../src/core/loader/effecttransaction.hpp#L124)）の固定 slot を 1 つ取って、文字列も `FixedText<512>` / `FixedText<384>` へ `memcpy` するだけで、`std::string` も `json` も作りません。末尾の 1 slot は診断用ではなく **outbox 溢れ専用**で、[`reserveEntry()`](../../src/core/loader/effecttransaction.cpp#L119) が 256 件を超えて積めなかった**副作用の**件数を `effect_outbox_full@1` の `dropped` として数え続けます（診断そのものが 256 件を超えた場合は数えずに落ちます。非対称の理由は §5.15）。公開用の文字列と JSON は commit 後に初めて作られます — [`effectErrors()`](../../src/core/loader/scene.cpp#L1815) の呼び出しは `noexcept` の commit tail（`flush` / `finish`）を通過した**後**にあり、そこで固定 slot を sequence 順に並べて [`CommittedWithEffectFailure::EffectError`](../../src/core/loader/sceneload.hpp#L176) へ変換します。
 
-副作用の失敗は例外ではなく [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として `SceneLoadResult` に載り、**扱いは root ごと**です: startup は [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L144)、pending も [`LOG_ERROR`](../../src/core/loader/scene.cpp#L1883)、rpc の `load_scene` は [`response["effect_errors"]`](../../src/core/communication/rpcserver.cpp#L1956) として JSON で返し（失敗が無ければ空配列）、import は [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275) にそのまま入れて呼び手へ渡します。いずれも `committed` であることは変わりません（scene は載っている）。
+副作用の失敗は例外ではなく [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として `SceneLoadResult` に載り、**扱いは root ごと**です: startup は [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L138)、pending も [`LOG_ERROR`](../../src/core/loader/scene.cpp#L1883)、rpc の `load_scene` は [`response["effect_errors"]`](../../src/core/communication/rpcserver.cpp#L1956) として JSON で返し（失敗が無ければ空配列）、import は [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275) にそのまま入れて呼び手へ渡します。いずれも `committed` であることは変わりません（scene は載っている）。
 
 transient glTF 経路（`load_gltf`）は executor を通らず、従来どおり [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L2248) の populate callback で作ります（§3.8 の「`load_gltf` はトランザクション」）。
 
@@ -450,7 +457,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 
 ## 3.6 即時loadと要求load
 
-- `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L136)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1942)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L856)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L500) で `PreCommitFailure` を従来どおりの例外へ戻します。
+- `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L151)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1942)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L856)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L500) で `PreCommitFailure` を従来どおりの例外へ戻します。
 - [`requestLoad()`](../../src/core/loader/scene.cpp#L1838) は存在確認後、scene IDだけをpendingへ保存。activate 段の behavior から呼ばれた場合は live ではなく candidate projection に対して存在確認し、要求も candidate 側に積みます（rollback で一緒に捨てる）。
 - [`applyPendingLoad()`](../../src/core/loader/scene.cpp#L1869) はフレームのゲーム更新末尾で、まず前回 commit 分の retirement queue を消費し、apply 時点の committed projection に late-bind した `Borrowed` request で実際にload。
 
@@ -500,7 +507,7 @@ tinygltf Model
 
 失敗したときに**誰が解放するか**も、この API の一部です（WP380a-fix）。`ModelAssetContainer` は §3.5 の 3 のとおり participant ではなく warm cache なので、scene load が失敗しても cache は戻りません。ただし「戻さない」と「作りかけを残す」は別です。[constructor](../../src/core/asset/model.cpp#L513) は宣言を1件ずつ commit していき、途中で投げたときに二段で GPU 資源を返します — 内側の catch が**その1件**（[`releaseModelGpuResources(model, false)`](../../src/core/asset/model.cpp#L837)）、外側の catch が**それまでに登録済みの全件**（[`impl_->releaseAllModels()`](../../src/core/asset/model.cpp#L562)）です。どちらも report が空でなければ `ModelResourceReleaseException` に載せ替えて投げ直します。加えて `Impl` の [destructor](../../src/core/asset/model.cpp#L420) と、公開前の reload candidate を持つ [`ModelPayload` の destructor](../../src/core/asset/model.cpp#L359) が `ReleaseErrorSink` 経由で同じ解放を行います。**公開されなかった `ModelAssetContainer` は cache になりません**（moduleとして `__ready()` が立たない。§2.2）ので、部分状態を再利用するより資源を戻すほうが正しい、という選択です。
 
-同じ WP の残り半分は**順序**です。起動経路では render graph の検証と公開が scene の prepare より**前**にあります（[`(void)GET_MODULE(Renderer)`](../../src/core/userpublic/pelican_core.cpp#L131) とその上のコメント。§2.1 の 10番）。この2つが逆だと、rendering config が壊れているプロジェクトでも先に model を upload してしまい、(a) 利用者が最初に見る fatal が material route の失敗ではなく morph 頂点 pool の容量超過にすり替わり、(b) 同一プロセスでの再試行ごとに pool の offset が積み上がります。順序と解放は独立した2つの性質で、片方だけ戻すともう片方のテストが落ちます。
+同じ WP の残り半分は**順序**です。起動経路では render graph の検証と公開が scene の prepare より**前**にあります（[`(void)GET_MODULE(Renderer)`](../../src/core/userpublic/pelican_core.cpp#L146) とその上のコメント。§2.1 の 10番）。この2つが逆だと、rendering config が壊れているプロジェクトでも先に model を upload してしまい、(a) 利用者が最初に見る fatal が material route の失敗ではなく morph 頂点 pool の容量超過にすり替わり、(b) 同一プロセスでの再試行ごとに pool の offset が積み上がります。順序と解放は独立した2つの性質で、片方だけ戻すともう片方のテストが落ちます。
 
 > 🧩 **難所 — 128枚の結合palette**([`selectSkin()`](../../src/core/model/gltf.cpp#L1632) / [`loadMesh()`](../../src/core/model/gltf.cpp#L2258))
 >
@@ -637,9 +644,9 @@ instances.publishModelInstance(std::move(staged_instance));
 
 | schema | version | パーサ | 位置づけ |
 |---|---|---|---|
-| `pelican.project` | 1 | [`projectformat.cpp`](../../src/project/projectformat.cpp#L237) | `project.json`。`engine_min_version` と `requires`（§3.2） |
+| `pelican.project` | 1 | [`projectformat.cpp`](../../src/project/projectformat.cpp#L300) | `project.json`。`engine_min_version` と `requires`（§3.2） |
 | `pelican.scene` | 1〜2 | [`sceneformat.cpp`](../../src/project/sceneformat.cpp#L268) | 保存は元の版を維持。prefabはv2が前提。永続IDは両版で受理 |
-| `pelican.graph` | 1 | [`graphcomposition.cpp`](../../src/project/graphcomposition.cpp#L1137) | 共通グラフ。`definitions` / `nodes` / `outputs`（§3.15） |
+| `pelican.graph` | 1 | [`graphcomposition.cpp`](../../src/project/graphcomposition.cpp#L1138) | 共通グラフ。`definitions` / `nodes` / `outputs`（§3.15） |
 | `pelican.render_feature` | 1 | [`featurecompose.cpp`](../../src/project/featurecompose.cpp#L3115) | 本節「render feature」 |
 | `pelican.render_pipeline` | 1 | [`renderpipeline.cpp`](../../src/project/renderpipeline.cpp#L834) | preset（`hybrid_v1` など） |
 | `pelican.render_component` | 1 | [`rendercomponent.hpp`](../../src/project/rendercomponent.hpp#L16) | export / import される描画部品（§3.16） |
@@ -692,11 +699,11 @@ instances.publishModelInstance(std::move(staged_instance));
 
 [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3115) はfeature JSONを順番に読み、render target、buffer、pass、compute taskを追加し、限定的なoverrideを適用します。名前衝突、曖昧anchor、未知override fieldは即時エラーです。shader defineも重複排除して集約します。
 
-runtime側の入口は [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1556) です。[`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L450) が `ProjectBasicConfig::renderingConfigJson()` の文字列と起動ターゲットの実extentを渡し、flat（OpenXR有効時は `#xr` も）とpreviewを **1回の登録トランザクション** として受け取ります。
+runtime側の入口は [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1556) です。[`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L453) が `ProjectBasicConfig::renderingConfigJson()` の文字列と起動ターゲットの実extentを渡し、flat（OpenXR有効時は `#xr` も）とpreviewを **1回の登録トランザクション** として受け取ります。
 
 起動主体が feature を足す公開面は `pelican_player --feature-overlay <uri>` です。文書の厳密な
 v1 検証と加算は [`applyRenderFeatureOverlays()`](../../src/project/renderfeatureoverlay.cpp#L122) が担当し、
-renderer は [`loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays()`](../../src/core/vkcore/renderer_config.cpp#L418)
+renderer は [`loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays()`](../../src/core/vkcore/renderer_config.cpp#L421)
 という**別名の startup 経路**からだけ呼びます。overlay が 0 件なら従来関数へそのまま委譲し、loader を
 呼びません。
 
@@ -810,27 +817,39 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 7. 形式パーサ実装とruntime接続済み範囲を混同していないか。
 8. componentを増やすなら、§3.11 のcodec五点セットを揃えたか。
 
-> 🧩 **難所 — ファイルの再走査で監視通知の取りこぼしを防ぐ**([`Impl::reconcile()`](../../src/core/watch/filewatcher.cpp#L620) / [`Impl::scan()`](../../src/core/watch/filewatcher.cpp#L454))
+> 🧩 **難所 — ファイルの再走査で監視通知の取りこぼしを防ぐ**([`Impl::reconcile()`](../../src/core/watch/filewatcher.cpp#L685) / [`Impl::scan()`](../../src/core/watch/filewatcher.cpp#L508))
 >
-> **何をする所か**: 監視対象のstoreを一巡して各ファイルの安定digestを取り、前回のinventoryとlive digestに照らしてreloadを積みます。
+> **何をする所か**: 監視対象のstoreを一巡し、各ファイルの size / mtime を前回のinventoryと比べて、違うファイルだけ安定digestを取り(✅FW-1。同じものは digest を持ち越す)、live digestに照らしてreloadを積みます。
 >
-> **素朴に読むと**: `for (;;)` の先頭で `notification_generation` を控え、scan完了後に一致していなければ**もう一周まるごと**やり直す形が、終わらないループに見えます。ここまでするのは、native watchを張る `armAll()` と最初のscanの間、およびscan実行中に届いた変更が、ディスクinventoryの差分だけでは検出できないからです(スキャン済みの位置が後から書き変わります)。generationを前後で比べるのは「スキャン中に通知が来たか」を知る唯一の手段で、来ていればハッシュを全部取り直します — 部分再スキャンにしないのは、どのファイルが変わったかを通知が持っていない(overflowもある)からです。`scan()` が [`readStableContentDigest()`](../../src/core/watch/contentdigest.cpp#L129) へ渡すcancelクロージャ([その受け渡し](../../src/core/watch/filewatcher.cpp#L578))は別の理由です。プロジェクト全体のSHA-256は数秒かかりうるのに、その間にreload gateが閉じたりepochが進んだりすれば結果は捨てるしかありません。捕まえた `epoch` と現在を比べて途中で降りることで、gateを閉じる操作(replay開始など)がwatcherスレッドの完了待ちでブロックしなくなります。ループが止まるのは、`stopping` / gate無効 / epoch不一致で `false` を返す出口([早期return](../../src/core/watch/filewatcher.cpp#L441))と、generation一致で `true` を返す出口([正常終了](../../src/core/watch/filewatcher.cpp#L414))の2つがあるためです。
+> **素朴に読むと**: `for (;;)` の先頭で `notification_generation` を控え、scan完了後に一致していなければ**もう一周まるごと**やり直す形が、終わらないループに見えます。ここまでするのは、native watchを張る `armAll()` と最初のscanの間、およびscan実行中に届いた変更が、ディスクinventoryの差分だけでは検出できないからです(スキャン済みの位置が後から書き変わります)。generationを前後で比べるのは「スキャン中に通知が来たか」を知る唯一の手段で、来ていれば全体をもう一度走査します(FW-1 からは size / mtime の比較なので、取り直す hash は変わったファイルの分だけです) — 部分再スキャンにしないのは、どのファイルが変わったかを通知が持っていない(overflowもある)からです。`scan()` が [`readStableContentDigest()`](../../src/core/watch/contentdigest.cpp#L129) へ渡すcancelクロージャ([その受け渡し](../../src/core/watch/filewatcher.cpp#L643))は別の理由です。大きいファイルの SHA-256 は時間がかかりうる(FW-1 前は reconcile のたびに全ファイルを hash し、`projects/example` の複写で 1 回約 17〜19 s)のに、その間にreload gateが閉じたりepochが進んだりすれば結果は捨てるしかありません。捕まえた `epoch` と現在を比べて途中で降りることで、gateを閉じる操作(replay開始など)がwatcherスレッドの完了待ちでブロックしなくなります。ループが止まるのは、`stopping` / gate無効 / epoch不一致で `false` を返す出口([早期return](../../src/core/watch/filewatcher.cpp#L495))と、generation一致で `true` を返す出口([正常終了](../../src/core/watch/filewatcher.cpp#L467))の2つがあるためです。
 >
 > **骨子**:
 > ```text
 > for (;;):
 >     generation = notification_generation      # scan の前に控える
->     current = scan(epoch)                     # 各ファイルの安定 digest
+>     current = scan(epoch, seed)               # size/mtime が同じ entry は持ち越し、違うものだけ安定 digest
+>                                               # (FW-1。起動時 = seed は settle 済みのファイルを hash しない)
 >     stopping / gate 無効 / epoch 違い -> return false
->     observe() が queue_reload を返したものを queue へ、消えたものは removed
+>     seed なら seedLive / seedLiveUnknown(digest の無い entry)で終わり
+>     それ以外: digest の無い entry は飛ばし、observe() が queue_reload を返したものを queue へ、消えたものは removed
 >     inventory = current
 >     notification_generation == generation -> dirty/overflow を落として return true
 >     # 違えば scan 中に通知が来ている: もう一周(部分ではなく全体)
 > ```
 >
-> **手がかり**: 呼び出し側は「arm → reconcile」の順を守る必要があり、[その呼び出し箇所](../../src/core/watch/filewatcher.cpp#L608) にコメントで `Required transition order: arm, reconcile while still in polling state, then publish watching` と明記されています。`readStableContentDigest()` は書き込み途中のファイルを読むと `retry` を返し、`scan()` は25ms間隔で最大20回まで粘ります([リトライの設定](../../src/core/watch/filewatcher.cpp#L406))。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L461)「disabled changes resume through arm-scan barrier exactly once」と [polling fallback 側](../../test/filewatcher_test.cpp#L258)(gate cancellation)。
+> **手がかり**: 呼び出し側は「arm → reconcile」の順を守る必要があり、[その呼び出し箇所](../../src/core/watch/filewatcher.cpp#L673) にコメントで `Required transition order: arm, reconcile while still in polling state, then publish watching` と明記されています。`readStableContentDigest()` は書き込み途中のファイルを読むと `retry` を返し、`scan()` は25ms間隔で最大20回まで粘ります([リトライの設定](../../src/core/watch/filewatcher.cpp#L459))。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L461)「disabled changes resume through arm-scan barrier exactly once」と [polling fallback 側](../../test/filewatcher_test.cpp#L258)(gate cancellation)。
 >
 > **不変条件**: generationはscanの**前**に控える。scan中に通知が来たら部分ではなく全体を取り直す。epochが動いたら結果を採用せず `false` で降りる。
+
+**走査を安くした所(✅FW-1、`92681afd`)と、宣言で絞る所(✅HW-1、`c947cef4`)。**どちらも `src/core/watch/filewatcher.cpp` の中です。
+
+- **持ち越しの条件**: inventory の entry は一覧から取った size / mtime と `stat_trusted` を持ち、[`recordFile()`](../../src/core/watch/filewatcher.cpp#L608) は size / mtime / key が同じで `stat_trusted` の entry を読まずに持ち越します。`stat_trusted` が立つのは、mtime が走査の開始から [`settled_after`](../../src/core/watch/filewatcher.cpp#L104)(100 ms)より前で、hash の読んだ handle の size / mtime が一覧と同じときだけです。窓の中のファイルは次の走査でもう一度読みます。NTFS の mtime は連続の書き込みで同じ値になり、窓が無いと「走査の直後に同じ size で書き直した保存」を取りこぼすためです(FW-1 の報告: 連続 200 回の書き込みで異なる mtime は 85 個。仕様書は対策を足さない指示で、ここは設計から外れた判断)。
+- **起動時**: 最初の reconcile は `seed` で走り、settle 済みのファイルは hash せずに digest の空の entry にし、`ContentDigestState::seedLiveUnknown()` で live を未知にします([`SourceDigestState::live_unknown`](../../src/core/watch/contentdigest.hpp#L56))。未知はどの digest とも等しくない([`liveEquals()`](../../src/core/watch/contentdigest.cpp#L141))ので、そのファイルの最初の観測は中身が同じでも `queue_reload` です。消去は `observeMissing()` が未知でも報告します。
+- **`.pelican`**: mount が空の store の深さ 0 の `.pelican` には入りません([`isProjectMetadataName()`](../../src/core/watch/filewatcher.cpp#L63))。native watch の側は、1 回の通知の record が全部無視してよい名前なら走査の理由にしません([`onlyIgnoredRecords()`](../../src/core/watch/filewatcher.cpp#L232))。
+- **path の key**: plain な entry は root の canonical に一覧の相対名を足して key にします(1 ファイルごとに `weakly_canonical` を 5 回呼び、Debug の 3000 ファイルで 1.3 s かかっていた)。symlink / junction とその下だけは従来どおり 1 件ずつ解決します。
+- **数える**: [`WatcherStatus`](../../src/core/watch/filewatcher.hpp#L25) の `scans` / `hashed_files` / `hashed_bytes` は起動からの累計で、`Impl` の `total_*` に足して `status()` が写します。reconcile の終わりに、hash したファイルがあれば(起動後の最初は 0 でも)INFO の `file watcher: scanned … files, hashed … (… MB) in … ms` を出します([出す所](../../src/core/watch/filewatcher.cpp#L756))。
+- **宣言(HW-1)**: `FileWatcherOptions::watch_paths` が `nullopt` なら全部を見ます。配列なら、constructor が届かない mount の store を外し(空の配列なら全部。[`Impl` の constructor](../../src/core/watch/filewatcher.cpp#L429))、`scan()` は `watchPathReaches()` で届かないフォルダに入らず、[`watchPathCovers()`](../../src/core/watch/filewatcher.cpp#L383) で外のファイルを inventory に入れません。`onlyIgnoredRecords()` は宣言の外の名前も無視してよい名前に数えます。gate の側は [`ReloadGate::updateLocked()`](../../src/core/watch/reloadgate.cpp#L37) で、`WatchDeclaration` が undeclared のときだけ rpc 駆動を閉じる理由にし、empty は `"hot_reload empty"` で閉じます。`--rpc` の下では [`ReloadService::applyFrame()`](../../src/core/watch/reloadservice.cpp#L886) が watcher の要求を `pelican.render_pipeline` の参加者に claim させません(`applyRequests()` の `excluded_participant`。`applyRequestsForTesting()` は誰も外さない)。
+- test: `filewatcher_test` の FW-1 の 7 本(起動時の hash 0 と 1 ファイルの書き換え、同じ中身の再保存、未知の live の状態機械、polling、overflow、`.pelican`、`Sha256Stream`)と HW-1 の 3 本(当たり判定と hash、届かない store、gate)、[`reloadtransaction_test.cpp` 内](../../test/reloadtransaction_test.cpp#L472)「HW-1 a declared watch runs under an RPC driver and never reaches the render pipeline」(本物の watcher thread で `passes/main.json` を書き換え、rpc では render pipeline の名前の fake が 0 回、rpc なしでは 1 回呼ばれる)、GPU の [`texturereload_test.cpp` 内](../../test/texturereload_test.cpp#L240)「HW-1 under an RPC driver the watch reloads a texture in the declared folder and not one outside」。
 
 > 🧩 **難所 — 自分の書き込みを一度だけ**([`ContentDigestState::observe()`](../../src/core/watch/contentdigest.cpp#L182) / [`registerSelfWrite()`](../../src/core/watch/contentdigest.cpp#L171))
 >
@@ -851,7 +870,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 > それ以外              -> queue_reload
 > ```
 >
-> **手がかり**: `observe()` が比較するのは前回の**ディスクinventory**ではなく `live_digest`(= ランタイムへ実際に適用済みの内容)です。[`reconcile()` 内](../../src/core/watch/filewatcher.cpp#L656) のコメントが規範で、「一度失敗した候補は、バイトが同じでも次の保存/reconcileで再び対象になる」ためにこの比較になっています。トークンを置くのは [`FileWatcher::registerSelfWrite()`](../../src/core/watch/filewatcher.cpp#L865) 経由で、`runtime_apply_succeeded` をそのまま持ち回ります。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L143)「ContentDigest streams bytes and separates observed live pending and self-write」と [batch commit の検査](../../test/filewatcher_test.cpp#L192)。
+> **手がかり**: `observe()` が比較するのは前回の**ディスクinventory**ではなく `live_digest`(= ランタイムへ実際に適用済みの内容)です。[`reconcile()` 内](../../src/core/watch/filewatcher.cpp#L721) のコメントが規範で、「一度失敗した候補は、バイトが同じでも次の保存/reconcileで再び対象になる」ためにこの比較になっています。トークンを置くのは [`FileWatcher::registerSelfWrite()`](../../src/core/watch/filewatcher.cpp#L930) 経由で、`runtime_apply_succeeded` をそのまま持ち回ります。テストは [`filewatcher_test.cpp` 内](../../test/filewatcher_test.cpp#L143)「ContentDigest streams bytes and separates observed live pending and self-write」と [batch commit の検査](../../test/filewatcher_test.cpp#L192)。
 >
 > **不変条件**: トークンは1回の観測で必ず消える。epochが違うトークンは抑止に使わない。`runtime_applied` がfalseの保存はreloadを積み直す。
 
@@ -1139,35 +1158,35 @@ P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **leg
 - `definitions` — 名前付きの部分グラフ。中に `graph.input`（境界ポート）を置けます。
 - `graph.instance` — 定義を根へ1個体として置くノード。`definition` と `owner`（`{scene, object}`）を持ちます。
 
-この2つの構造用opは置ける側が決まっていて、`graph.instance` を定義の中へ入れると `graph.nested_instance@1`、`graph.input` を根へ置くと `graph.input_scope@1` で拒否されます（[`editGraphDocument()` 内](../../src/project/graphcomposition.cpp#L2170)）。
+この2つの構造用opは置ける側が決まっていて、`graph.instance` を定義の中へ入れると `graph.nested_instance@1`、`graph.input` を根へ置くと `graph.input_scope@1` で拒否されます（[`editGraphDocument()` 内](../../src/project/graphcomposition.cpp#L2304)）。
 
 ### 展開 — `expandGraphDocument()`
 
-[`expandGraphDocument()`](../../src/project/graphcomposition.hpp#L130) が instance を実体化し、[`ExpandedGraphDocument`](../../src/project/graphcomposition.hpp#L114) を返します。ここで大事なのは**元の文書が正本のまま**という点で、展開後のIDや由来（`origins`）は導出物であって書き戻されません。
+[`expandGraphDocument()`](../../src/project/graphcomposition.hpp#L174) が instance を実体化し、[`ExpandedGraphDocument`](../../src/project/graphcomposition.hpp#L158) を返します。ここで大事なのは**元の文書が正本のまま**という点で、展開後のIDや由来（`origins`）は導出物であって書き戻されません。
 
-instance の入力ポートがどこから値を取るかは `edge > parameters > default` の順で決まり、結果は [`GraphInstanceInput`](../../src/project/graphcomposition.hpp#L96) に記録されます。edge で繋がれたポートは**展開後にノードを残しません**（定義の中の消費側が外の生産者を直接指す）ので、この由来は「展開中の authoring 文書」からしか読めません。
+instance の入力ポートがどこから値を取るかは `edge > parameters > default` の順で決まり、結果は [`GraphInstanceInput`](../../src/project/graphcomposition.hpp#L140) に記録されます。edge で繋がれたポートは**展開後にノードを残しません**（定義の中の消費側が外の生産者を直接指す）ので、この由来は「展開中の authoring 文書」からしか読めません。
 
 ### 編集 — `editGraphDocument()`
 
-[`editGraphDocument()`](../../src/project/graphcomposition.hpp#L201) は op の並びを1本の候補文書へ順に適用し、**最後に1回だけ展開**します。途中で1つでも落ちれば候補ごと捨てられ、呼び手の文書は無傷です。受け付ける op は5種で、**宣言の上のコメントがその5種と8つの名前付き拒否を列挙しています**（`40099e3f` で `set_node_label` と残りの拒否名が追記され、コメントと実装が揃いました）。
+[`editGraphDocument()`](../../src/project/graphcomposition.hpp#L245) は op の並びを1本の候補文書へ順に適用し、**最後に1回だけ展開**します。途中で1つでも落ちれば候補ごと捨てられ、呼び手の文書は無傷です。受け付ける op は5種で、**宣言の上のコメントがその5種と8つの名前付き拒否を列挙しています**（`40099e3f` で `set_node_label` と残りの拒否名が追記され、コメントと実装が揃いました）。
 
 | op | 実装 | 断り方 |
 |---|---|---|
-| `add_node` | [.cpp](../../src/project/graphcomposition.cpp#L2158) | `graph.node_duplicate@1` / `graph.nested_instance@1` / `graph.input_scope@1` |
-| `remove_node` | [.cpp](../../src/project/graphcomposition.cpp#L2199) | `graph.output_referenced@1`（出力や他ノードがまだ指している） |
-| `set_input` | [.cpp](../../src/project/graphcomposition.cpp#L2230) | `source` は `{node, port}` ちょうど2キー、または `null`（切断） |
-| `set_node_parameters` | [.cpp](../../src/project/graphcomposition.cpp#L2268) | 空オブジェクトは `parameters` キーごと削除 |
-| `set_node_label` | [.cpp](../../src/project/graphcomposition.cpp#L2281) | 人が付ける表示名。識別子ではないので、消すのは空文字列で表す |
-| `set_layout` | [.cpp](../../src/project/graphcomposition.cpp#L1082) | scope の editor 用 `layout`(node 位置 / reroute / tie)を丸ごと置換。`null` で消す。名指した node / 辺が無い、座標が非有限、未知 key は `graph.layout_invalid@1`。layout だけの op 列は再 compose しない(N-6) |
-| `add_definition` / `remove_definition` / `rename_definition` | [`applyDefinitionOp()`](../../src/project/graphcomposition.cpp#L2086) | ✅LP-0c。`graph.definition_duplicate@1` / `graph.definition_missing@1`。改名は名指す `graph.instance` と `graph.loop` の分岐を同じ op で書き換える。「消した definition がまだ名指されていないか」「instance / ループの供給する port が definition にあるか」「消した `graph.input` をまだ誰かが供給していないか」は op ごとではなく列の最後に 1 回([`runDeferredCheck()`](../../src/project/graphcomposition.cpp#L1992)) |
+| `add_node` | [.cpp](../../src/project/graphcomposition.cpp#L2292) | `graph.node_duplicate@1` / `graph.nested_instance@1` / `graph.input_scope@1` |
+| `remove_node` | [.cpp](../../src/project/graphcomposition.cpp#L2333) | `graph.output_referenced@1`（出力や他ノードがまだ指している） |
+| `set_input` | [.cpp](../../src/project/graphcomposition.cpp#L2364) | `source` は `{node, port}` ちょうど2キー、または `null`（切断） |
+| `set_node_parameters` | [.cpp](../../src/project/graphcomposition.cpp#L2402) | 空オブジェクトは `parameters` キーごと削除 |
+| `set_node_label` | [.cpp](../../src/project/graphcomposition.cpp#L2415) | 人が付ける表示名。識別子ではないので、消すのは空文字列で表す |
+| `set_layout` | [.cpp](../../src/project/graphcomposition.cpp#L1083) | scope の editor 用 `layout`(node 位置 / reroute / tie)を丸ごと置換。`null` で消す。名指した node / 辺が無い、座標が非有限、未知 key は `graph.layout_invalid@1`。layout だけの op 列は再 compose しない(N-6) |
+| `add_definition` / `remove_definition` / `rename_definition` | [`applyDefinitionOp()`](../../src/project/graphcomposition.cpp#L2220) | ✅LP-0c。`graph.definition_duplicate@1` / `graph.definition_missing@1`。改名は名指す `graph.instance` と `graph.loop` の分岐を同じ op で書き換える。「消した definition がまだ名指されていないか」「instance / ループの供給する port が definition にあるか」「消した `graph.input` をまだ誰かが供給していないか」は op ごとではなく列の最後に 1 回([`runDeferredCheck()`](../../src/project/graphcomposition.cpp#L2126)) |
 
-各opは任意で **`scope`** を取ります。省略（または根の名前）なら根の `nodes`、定義名なら `definitions.<名前>.nodes` を編集対象にします（[`resolveEditScope()`](../../src/project/graphcomposition.cpp#L1390)）。scope は op ごとに解決し直します —— 同じ並びの前のopが定義の中身を変えている可能性があるからです。定義の中に居る id を根から触ろうとすると `graph.definition_immutable@1` です。
+各opは任意で **`scope`** を取ります。省略（または根の名前）なら根の `nodes`、定義名なら `definitions.<名前>.nodes` を編集対象にします（[`resolveEditScope()`](../../src/project/graphcomposition.cpp#L1524)）。scope は op ごとに解決し直します —— 同じ並びの前のopが定義の中身を変えている可能性があるからです。定義の中に居る id を根から触ろうとすると `graph.definition_immutable@1` です。
 
-[`editGraphInstances()`](../../src/project/graphcomposition.hpp#L207)（instance の着脱）は、自分で文書を触らず**上のopへ翻訳してから** `editGraphDocument()` を呼びます。2つの入口が「何が妥当な編集か」で食い違えないようにするためです。
+[`editGraphInstances()`](../../src/project/graphcomposition.hpp#L251)（instance の着脱）は、自分で文書を触らず**上のopへ翻訳してから** `editGraphDocument()` を呼びます。2つの入口が「何が妥当な編集か」で食い違えないようにするためです。
 
 ### ループと合成の後の解決の段 ✅実装済み(LP-0a〜LP-Vb)
 
-`graph.loop`(書き方の正は manual 第6章 §6.18)は `graph.instance` と同じ構造の node で、処理が 2 つの段に分かれます。**形の検査は展開器**([`expandGraphDocument()`](../../src/project/graphcomposition.cpp#L1136) の中のループの展開)が編集と読み込みのたびに行い、各分岐の body を `<loop>/$<branch>/` の名前で 1 回だけ**雛形**として展開します(port の型の検査のため)。**回ごとの複写は合成の後**で、preset と feature の合成が済んでから [`resolveGraphDocumentAfterComposition()`](../../src/project/rendergraphcomposition.cpp#L1469) が [`expandRenderGraphLoops()`](../../src/project/rendergraphcomposition.cpp#L2150) を呼び、雛形の名前 `<loop>/$<branch>/` を `<loop>/<element>/` へ付け替えます。lowering はそのために、合成の後で使うもの(target の参照、history の読み、置き場所待ちの run、ループの body、ループの出力を読む側、draw_loop)を [`LoweredRenderGraphDocument`](../../src/project/rendergraphcomposition.hpp#L200) に残します。
+`graph.loop`(書き方の正は manual 第6章 §6.18)は `graph.instance` と同じ構造の node で、処理が 2 つの段に分かれます。**形の検査は展開器**([`expandGraphDocument()`](../../src/project/graphcomposition.cpp#L1137) の中のループの展開)が編集と読み込みのたびに行い、各分岐の body を `<loop>/$<branch>/` の名前で 1 回だけ**雛形**として展開します(port の型の検査のため)。**回ごとの複写は合成の後**で、preset と feature の合成が済んでから [`resolveGraphDocumentAfterComposition()`](../../src/project/rendergraphcomposition.cpp#L1469) が [`expandRenderGraphLoops()`](../../src/project/rendergraphcomposition.cpp#L2150) を呼び、雛形の名前 `<loop>/$<branch>/` を `<loop>/<element>/` へ付け替えます。lowering はそのために、合成の後で使うもの(target の参照、history の読み、置き場所待ちの run、ループの body、ループの出力を読む側、draw_loop)を [`LoweredRenderGraphDocument`](../../src/project/rendergraphcomposition.hpp#L200) に残します。
 
 | ファイル | 持ち物 |
 |---|---|
@@ -1176,23 +1195,23 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 | [`renderloopreport.hpp`](../../src/project/renderloopreport.hpp#L15) | `get_frame_plan` の `loops[]` と `loop_origin`、変種で非活性にした graph の node(`RenderGraphDeactivatedNode`) |
 | [`rendergraphcomposition.hpp`](../../src/project/rendergraphcomposition.hpp#L26) / `.cpp` | `render.target_ref` の検査、置き場所の run(`placeRenderGraphPassRun()` / `placeDeclaredRenderGraphPassRuns()`)、expand の展開、`pass_replacements` の適用、変種で外れる feature への依存 |
 | [`materialdrawloop.hpp`](../../src/project/materialdrawloop.hpp#L97) / `.cpp` | draw_loop の純粋層: `MaterialDrawStep`、material の照合の鍵、分岐の選び方、`get_frame_plan` の要素と paging、LP-2 の拒否 code |
-| [`materialpassdecompose.hpp`](../../src/project/materialpassdecompose.hpp#L74) / `.cpp` | `decompose_material_pass` の文書の書き換え(editor 側は [`RenderConfigEditorService::decomposeMaterialPass()`](../../src/core/communication/renderconfigeditor.cpp#L2787) が 1 つの transaction に載せる) |
+| [`materialpassdecompose.hpp`](../../src/project/materialpassdecompose.hpp#L74) / `.cpp` | `decompose_material_pass` の文書の書き換え(editor 側は [`RenderConfigEditorService::decomposeMaterialPass()`](../../src/core/communication/renderconfigeditor.cpp#L2818) が 1 つの transaction に載せる) |
 | [`viewselect.hpp`](../../src/project/viewselect.hpp#L21) | `view_select` の 4 つの拒否 code と、座標と選択の照合 |
 | `src/core/resources/graphs/*.json` | 出荷する分解版の雛形 4 本(engine は読まない。`decomposes` を持つ) |
 
 合成の中の順は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3115) の中で、(1) graph の lowering(`pass_set` の既定は [`defaultGraphPassFamily()`](../../src/project/featurecompose.cpp#L3089))→ (2) `insert.declared` の run を宣言の列へ置く → (3) feature・integration の合成 → (4) 変種で外れる feature に依存する node を外す([`withoutExcludedGraphDependents()`](../../src/project/rendergraphcomposition.cpp#L2580))→ (5) 残りの run を置く → (6) surface resources の consumer の選択と snapshot → (7) 解決の段(target の参照の検査 → ループの展開 → draw_loop の報告 → [`applyRenderFeaturePassReplacements()`](../../src/project/rendergraphcomposition.cpp#L2762))→ (8) ループの回の中で consumer を選び直す、です。run を consumer の選択より前に置くのは graph で書いた material pass が影の map を受けるため(LP-3a)、(8) は置き換えた consumer の代わりの回が受けるため(LP-Vb)です。
 
-**graph の node の出所(✅GL-2a)。**lowering は node が作った pass・compute task の名前ごとに、展開の [`GraphNodeOrigin`](../../src/project/graphcomposition.hpp#L38)(instance path・definition・node・loop・loop branch)を `LoweredRenderGraphDocument::origins` に残します([残す所](../../src/project/rendergraphcomposition.cpp#L1001))。ループの body の node は雛形の id `<loop>/$<branch>/<node>` で残ります。`applyRenderFeaturePassReplacements()` は、置き換え先ごとに置き換えた `{feature, pass}` を `RenderGraphLoopResolution::replacements` に返します(ループでは置き換えた pass と同じ family の回だけ。[返す所](../../src/project/rendergraphcomposition.cpp#L2853))。合成は provenance を同期した直後に、この 2 つを [`RenderPassProvenance`](../../src/project/renderpipeline.hpp#L277) の `graph_origin` と `replaces` へ載せます([載せる所](../../src/project/featurecompose.cpp#L3864)):root と instance の宣言は `graph_declarations` にある名前で引き、ループの回は `loop_origin` の `(loop, element)` が選んだ分岐から雛形の id を作って引き、`instance_path` を空にします。feature の provenance は飛ばします。`get_frame_plan` の `origin` / `replaces`(`framePlanToJson()`)と `get_compute_task_authoring` の `graph_node` は、どちらもこの 1 つを読みます(GL-2a の前は、editor が root を展開し直して task 名と突き合わせていました)。
+**graph の node の出所(✅GL-2a)。**lowering は node が作った pass・compute task の名前ごとに、展開の [`GraphNodeOrigin`](../../src/project/graphcomposition.hpp#L82)(instance path・definition・node・loop・loop branch)を `LoweredRenderGraphDocument::origins` に残します([残す所](../../src/project/rendergraphcomposition.cpp#L1001))。ループの body の node は雛形の id `<loop>/$<branch>/<node>` で残ります。`applyRenderFeaturePassReplacements()` は、置き換え先ごとに置き換えた `{feature, pass}` を `RenderGraphLoopResolution::replacements` に返します(ループでは置き換えた pass と同じ family の回だけ。[返す所](../../src/project/rendergraphcomposition.cpp#L2853))。合成は provenance を同期した直後に、この 2 つを [`RenderPassProvenance`](../../src/project/renderpipeline.hpp#L277) の `graph_origin` と `replaces` へ載せます([載せる所](../../src/project/featurecompose.cpp#L3864)):root と instance の宣言は `graph_declarations` にある名前で引き、ループの回は `loop_origin` の `(loop, element)` が選んだ分岐から雛形の id を作って引き、`instance_path` を空にします。feature の provenance は飛ばします。`get_frame_plan` の `origin` / `replaces`(`framePlanToJson()`)と `get_compute_task_authoring` の `graph_node` は、どちらもこの 1 つを読みます(GL-2a の前は、editor が root を展開し直して task 名と突き合わせていました)。
 
-**fold group の決定を展開名へ写す(✅FG-1)。**[`graphfold.hpp`](../../src/project/graphfold.hpp#L80) が root の `fold_groups` を読み([`parseGraphFoldGroups()`](../../src/project/graphfold.cpp#L128))、group の開いた形の digest を作り([`graphFoldGroupDigest()`](../../src/project/graphfold.cpp#L185))、印と比べて `verified` / `stale` / `unverified` を決めます([`reportGraphFoldGroups()`](../../src/project/graphfold.cpp#L240))。合成は上の `graph_origin` を provenance に載せた直後に [`applyGraphFoldGroups()`](../../src/project/graphfold.cpp#L269) を呼び([FG-1 の段を呼ぶ所](../../src/project/featurecompose.cpp#L3904))、`verified` の group の主語を展開名へ写して、合成した config の `target_planning` に `true` で書き込みます。pass と task は provenance の `loop_origin`(ループの回。`<loop>` の先頭の区切りが root の node)か `graph_origin`(instance の中なら `instance_path` の先頭)から root の node を引き、target と buffer は `loop_origin` か展開名の先頭の区切りで引きます。feature の provenance は飛ばします。合成した config が同じ entry を `false` にしていれば `graph.fold_decision_conflict@1` を投げます([投げる所](../../src/project/graphfold.cpp#L416))。結果は [`RenderFeatureComposeResult::fold_groups` / `fold_planning`](../../src/project/featurecompose.hpp#L73) に残り、`resolveRenderPipeline()` が印の無い・古い group を `fold_unverified` / `fold_stale` の診断にし([診断にする所](../../src/project/renderpipeline.cpp#L1400))、`fold_planning` の graph 名に変種の接尾辞を付けて([付ける所](../../src/project/renderpipeline.cpp#L1358))compiled pipeline へ渡します。`framePlanToJson()` はそれを `fold_decisions` として出し、`appendFramePlanPhysicalNodeReferences()` が `pelican.plan.fold_decision_applied@1` の要素にします(第7章)。editor は同じ `fold_planning` を authoring context に受け([渡す所](../../src/core/communication/editorruntimefactory.cpp#L2179))、EL-2 の `edit_target_planning` の `false` と [`graphFoldDecisionConflict()`](../../src/project/graphfold.hpp#L147) で突き合わせます。文書には展開名を書かないので、写しは組み立てのたびに作り直され、文書には残りません。
+**fold group の決定を展開名へ写す(✅FG-1)。**[`graphfold.hpp`](../../src/project/graphfold.hpp#L80) が root の `fold_groups` を読み([`parseGraphFoldGroups()`](../../src/project/graphfold.cpp#L128))、group の開いた形の digest を作り([`graphFoldGroupDigest()`](../../src/project/graphfold.cpp#L185))、印と比べて `verified` / `stale` / `unverified` を決めます([`reportGraphFoldGroups()`](../../src/project/graphfold.cpp#L240))。合成は上の `graph_origin` を provenance に載せた直後に [`applyGraphFoldGroups()`](../../src/project/graphfold.cpp#L269) を呼び([FG-1 の段を呼ぶ所](../../src/project/featurecompose.cpp#L3904))、`verified` の group の主語を展開名へ写して、合成した config の `target_planning` に `true` で書き込みます。pass と task は provenance の `loop_origin`(ループの回。`<loop>` の先頭の区切りが root の node)か `graph_origin`(instance の中なら `instance_path` の先頭)から root の node を引き、target と buffer は `loop_origin` か展開名の先頭の区切りで引きます。feature の provenance は飛ばします。合成した config が同じ entry を `false` にしていれば `graph.fold_decision_conflict@1` を投げます([投げる所](../../src/project/graphfold.cpp#L416))。結果は [`RenderFeatureComposeResult::fold_groups` / `fold_planning`](../../src/project/featurecompose.hpp#L73) に残り、`resolveRenderPipeline()` が印の無い・古い group を `fold_unverified` / `fold_stale` の診断にし([診断にする所](../../src/project/renderpipeline.cpp#L1400))、`fold_planning` の graph 名に変種の接尾辞を付けて([付ける所](../../src/project/renderpipeline.cpp#L1358))compiled pipeline へ渡します。`framePlanToJson()` はそれを `fold_decisions` として出し、`appendFramePlanPhysicalNodeReferences()` が `pelican.plan.fold_decision_applied@1` の要素にします(第7章)。editor は同じ `fold_planning` を authoring context に受け([渡す所](../../src/core/communication/editorruntimefactory.cpp#L2180))、EL-2 の `edit_target_planning` の `false` と [`graphFoldDecisionConflict()`](../../src/project/graphfold.hpp#L147) で突き合わせます。文書には展開名を書かないので、写しは組み立てのたびに作り直され、文書には残りません。
 
 **graph の compute task を読む rendering 節の pass(✅RS-6)。**compute task は全 pass の後に宣言されるので、合成は canonical の順と terminal の待ちを明示した後に [`waitOnGraphTasksInScenePasses()`](../../src/project/rendergraphcomposition.cpp#L3033) を呼び([RS-6 を呼ぶ所](../../src/project/featurecompose.cpp#L3827))、graph の task(`graph_declarations` とループの展開の名前で選ぶ。✅RS-6b から `graph_features.feature_passes` に載る feature と integration の task も。[task を選ぶ所](../../src/project/featurecompose.cpp#L3821))が書く render target を、family ごとに最初の canonical anchor より前で読む最初の rendering 節・preset の pass に `after: <task>` を足します。足すかどうかは、frame planner と同じ順(`after` / `before` と、前に宣言された最後の書き手から読みへ)を family ごとに組んだ [`FamilyOrder`](../../src/project/rendergraphcomposition.cpp#L2980) の到達で決め、書き手がすでに読み手に届くときと、読み手が task に届く(足すと循環になる)ときは足しません。読み手が `input` に挙げる graph の `render.image` には `SAMPLED` を足します(RS-6b から feature の render target も。合成が `resource_provenance` の source が feature の名前を `graph_images` に加えて渡します。[加える所](../../src/project/featurecompose.cpp#L3826))。読み手の候補から feature の pass を外す判定は RS-6 のままなので、feature が `before` / `after` で決めた順は変わりません。足した組([`GraphTaskReaderWait`](../../src/project/rendergraphcomposition.hpp#L428))は、provenance を同期した後に `RenderPassProvenance::added_after`([宣言](../../src/project/renderpipeline.hpp#L301))へ載り([載せる所](../../src/project/featurecompose.cpp#L3844))、`framePlanToJson()` が node の `added_after` として出します。RS-6b: `SAMPLED` を足した image は [`GraphTaskReaderWait::sampled`](../../src/project/rendergraphcomposition.hpp#L434) に残り([残す所](../../src/project/rendergraphcomposition.cpp#L3106))、合成がそれを `RenderResourceProvenance::added_usage`([`added_usage` の宣言](../../src/project/renderpipeline.hpp#L326))へ載せ([`added_usage` に載せる所](../../src/project/featurecompose.cpp#L3852))、`framePlanToJson()` が `resources[]` の `added_usage` として出します。関数名 `waitOnGraphTasksInScenePasses` は RS-6 のままで、中身は graph と feature の task です。task が待つ置き場所の無い graph の pass の塊を読み手の前に動かすのは、RS-3 の [`graphPassRunReaderPosition()`](../../src/project/rendergraphcomposition.cpp#L1645) の後半です([RS-6 の分](../../src/project/rendergraphcomposition.cpp#L1699)。塊を待つ task を `after` / `before` で閉包に集め、そういう task だけが書く image の最初の読み手を、塊が直接書く image の読み手と比べて早い方を取ります)。
 
 **graph の番号付きの入力の読み方(✅RS-14)。**graph module の [`renderPorts()`](../../src/project/graphmodule.cpp#L343) は `binding: "input"` の port について `view` だけを断り([断る所](../../src/project/graphmodule.cpp#L457))、`sampling` / `subresource` は値を見ずに通します。lowering([`lowerRenderGraphDocumentForComposition()`](../../src/project/rendergraphcomposition.cpp#L151))は番号付きの port を pass の `input` に並べるときに、その 2 つを `input_index` ごとに集め、pass の `input_settings` に番号の順の配列(設定の無い番号は `null`、設定を持つ最後の番号まで)として書きます([書く所](../../src/project/rendergraphcomposition.cpp#L970))。設定が 1 つも無ければ field を出さないので、書かない graph の合成結果は変わりません。node の `parameters` に `input_settings` があれば、`type` / `input` / `output` と同じく `render graph derives field from connections` で断ります([断る所](../../src/project/rendergraphcomposition.cpp#L808))。値の検査は engine が pass の JSON を読むときで、名前付きの port と同じ parser です(第6章 §6.2「番号付きの入力の設定」。書き方の正は manual 第6章 §6.18「番号付きの入力」)。
 
-**body の image の大きさと `log2`(✅RS-15)。**式を許す場所の表 [`bodyExpressionPlace()`](../../src/project/graphcomposition.cpp#L585) に、body の `render.image` の `width` / `height` / `layers` / `mip_levels`(整数の式)が加わりました([該当箇所](../../src/project/graphcomposition.cpp#L592))。評価した整数は、書いた数と同じく render target を読む所で検査されます。式の評価器には `log2(n)`(正の整数の切り捨て。1 未満と小数は `not_integer`。[評価する所](../../src/project/graphloopexpression.cpp#L252))が、組み直し時の定数 [`composedConstants()`](../../src/project/rendergraphcomposition.cpp#L1878) には「`mip_levels: "full"` で `width` / `height` が正の整数、`format_class` が `display` でない target の `mip_levels_of` は `bit_width(max(width, height))`」が加わりました([該当箇所](../../src/project/rendergraphcomposition.cpp#L1889))。文法の正本の BNF([graphloopexpression.hpp](../../src/project/graphloopexpression.hpp#L20))も `log2` を含みます。
+**body の image の大きさと `log2`(✅RS-15)。**式を許す場所の表 [`bodyExpressionPlace()`](../../src/project/graphcomposition.cpp#L586) に、body の `render.image` の `width` / `height` / `layers` / `mip_levels`(整数の式)が加わりました([該当箇所](../../src/project/graphcomposition.cpp#L593))。評価した整数は、書いた数と同じく render target を読む所で検査されます。式の評価器には `log2(n)`(正の整数の切り捨て。1 未満と小数は `not_integer`。[評価する所](../../src/project/graphloopexpression.cpp#L252))が、組み直し時の定数 [`composedConstants()`](../../src/project/rendergraphcomposition.cpp#L1878) には「`mip_levels: "full"` で `width` / `height` が正の整数、`format_class` が `display` でない target の `mip_levels_of` は `bit_width(max(width, height))`」が加わりました([該当箇所](../../src/project/rendergraphcomposition.cpp#L1889))。文法の正本の BNF([graphloopexpression.hpp](../../src/project/graphloopexpression.hpp#L20))も `log2` を含みます。
 
-**必須の parameter と欠けた鍵(✅RS-15 / CT-1)。**op の必須の表 [`renderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L259) の検査は、✅RS-15 から [`GraphModuleRegistry::resolveOperation()`](../../src/project/graphmodule.cpp#L679) が契約を作る前に 1 回呼びます([呼ぶ所](../../src/project/graphmodule.cpp#L688))。✅CT-1 から、展開器が文書から鍵を読む所(`nodes` / `outputs` / `id` / `op` / `definition` / edge の `node` / `port`)は [`member()`](../../src/project/graphcomposition.cpp#L31) を通り、`<場所> requires <鍵>` の `std::invalid_argument` になります。render の pass の port は [`checkRenderPortDeclaration()`](../../src/project/graphmodule.cpp#L328) が先に見て、欠けを `graph.port_field_missing@1` にします。どちらも manual 第6章 §6.18 の「名前付きの拒否の一覧」の下に書き方があります。
+**必須の parameter と欠けた鍵(✅RS-15 / CT-1)。**op の必須の表 [`renderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L259) の検査は、✅RS-15 から [`GraphModuleRegistry::resolveOperation()`](../../src/project/graphmodule.cpp#L679) が契約を作る前に 1 回呼びます([呼ぶ所](../../src/project/graphmodule.cpp#L688))。✅CT-1 から、展開器が文書から鍵を読む所(`nodes` / `outputs` / `id` / `op` / `definition` / edge の `node` / `port`)は [`member()`](../../src/project/graphcomposition.cpp#L32) を通り、`<場所> requires <鍵>` の `std::invalid_argument` になります。render の pass の port は [`checkRenderPortDeclaration()`](../../src/project/graphmodule.cpp#L328) が先に見て、欠けを `graph.port_field_missing@1` にします。どちらも manual 第6章 §6.18 の「名前付きの拒否の一覧」の下に書き方があります。
 
 > 🧩 **難所 — 回の順は名前に頼れない**: 展開器は node を id の辞書順に並べるので、`<loop>/10/x` は `<loop>/9/x` より前に来ます。そこで body の外の資源に触る回は、要素の順に明示の `after` でつながれます。回ごとの `render.image` だけに触る回はつながれず、並列にできます。
 
@@ -1220,7 +1239,7 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 
 ### 分割 — `partitionGraphDocument()`
 
-[`partitionGraphDocument()`](../../src/project/graphpartition.hpp#L28) は文書全体を検証してから、[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の3つへ分けます。どのopがどの領域かは、opを登録したモジュールが宣言します（[`GraphExecutionDomain`](../../src/project/graphcomposition.hpp#L219)）。CPUのスカラopを1つ足しても、分割側に新しいop名を教える必要はありません。
+[`partitionGraphDocument()`](../../src/project/graphpartition.hpp#L28) は文書全体を検証してから、[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の3つへ分けます。どのopがどの領域かは、opを登録したモジュールが宣言します（[`GraphExecutionDomain`](../../src/project/graphcomposition.hpp#L263)）。CPUのスカラopを1つ足しても、分割側に新しいop名を教える必要はありません。
 
 ```text
 values     … CPUのスカラ評価（value.* / audio.* / render.scalar）

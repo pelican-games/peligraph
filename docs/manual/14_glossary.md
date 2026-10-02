@@ -46,7 +46,7 @@
 
 ## 14.2 形式(JSON)とプロジェクトの語
 
-**エンベロープ** — JSON の先頭に置く `{"schema": "pelican.scene", "version": 2, ...}` の 2 キーのこと。封筒の中身(本体)を読む前に、**形式名と版が一致するかだけ**を先に見ます。不一致は hard error です。初出: [第4章 エンベロープの規則](04_scene_ecs.md#エンベロープの規則)。([projectformat.hpp:14](../../src/project/projectformat.hpp#L22))
+**エンベロープ** — JSON の先頭に置く `{"schema": "pelican.scene", "version": 2, ...}` の 2 キーのこと。封筒の中身(本体)を読む前に、**形式名と版が一致するかだけ**を先に見ます。不一致は hard error です。初出: [第4章 エンベロープの規則](04_scene_ecs.md#エンベロープの規則)。([projectformat.hpp:14](../../src/project/projectformat.hpp#L28))
 
 **closed schema / open schema** — closed schema は「宣言されたキー以外が来たら拒否する」受理仕様、open schema は「知らないキーは無視して通す」受理仕様です。エンジンの組み込みコンポーネントは closed schema(未知キーを拒否)で、ユーザー定義コンポーネントは codec を持たないため扱いが変わります。初出: [第12章 §12.5](12_codemap.md#125-データ--コード対応表json-はどこで読まれるか)。
 
@@ -72,7 +72,7 @@
 
 **3 段合成** — `basic_config` の値を「エンジン既定 → `project.json` → `.pelican/local.json`」の 3 段で重ねて決めること。deep merge ではなく**パス単位で問い合わせる**方式なので、どの段が勝ったかを後から言えます。初出: [第3章 basic_config と「3 段合成」](03_project_format.md#basic_config-と3-段合成)。
 
-**`requires`(project.json の)** — **このプロジェクトが動くために必要なビルド機能ユニットの名前**の配列。今日の語彙は `animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の 6 語(それぞれ `PELICAN_WITH_ANIMATION` / `_AUDIO` / `_PHYSICS` / `_OPENXR` / `_VAT` / `_SEQPLAYER`。✅PG-1)で、未知の名前は `project.requires_unknown@1`、満たせないビルドで開くと `<語>.module_unavailable@1`(例: `animation.module_unavailable@1`)になります。**同じ綴りの `requires` が 3 か所にあり、それぞれ別物です**: (1) project.json = ビルド機能ユニット名の配列、(2) package manifest = `{engine_min_version, sdk_abi, capabilities}` の object(`capabilities` だけは (1) と同じ語彙で検査)、(3) feature の `integrations[].requires` = 他の feature の名前。初出: [第3章 §3.2](03_project_format.md#機能ユニットの要求requiresp-2b)。([projectformat.cpp:80](../../src/project/projectformat.cpp#L80))
+**`requires`(project.json の)** — **このプロジェクトが動くために必要なビルド機能ユニットの名前**の配列。今日の語彙は `animation` / `audio` / `physics` / `xr` / `vat` / `seqplayer` の 6 語(それぞれ `PELICAN_WITH_ANIMATION` / `_AUDIO` / `_PHYSICS` / `_OPENXR` / `_VAT` / `_SEQPLAYER`。✅PG-1)で、未知の名前は `project.requires_unknown@1`、満たせないビルドで開くと `<語>.module_unavailable@1`(例: `animation.module_unavailable@1`)になります。**同じ綴りの `requires` が 3 か所にあり、それぞれ別物です**: (1) project.json = ビルド機能ユニット名の配列、(2) package manifest = `{engine_min_version, sdk_abi, capabilities}` の object(`capabilities` だけは (1) と同じ語彙で検査)、(3) feature の `integrations[].requires` = 他の feature の名前。初出: [第3章 §3.2](03_project_format.md#機能ユニットの要求requiresp-2b)。([projectformat.cpp:80](../../src/project/projectformat.cpp#L81))
 
 **component(3 つの別の語)** — 綴りが同じで中身が違う語が 3 つあります。**(1) ECS のコンポーネント** = シーン JSON の `{"name": "transform", …}` 1 レコード([第4章](04_scene_ecs.md))。**(2) render component**(`pelican.render_component` v1)= materialize 済みの feature 1 本 + その宿主への要求を 1 ディレクトリにまとめた**共有部品**([第3章 §3.12](03_project_format.md#312-共有部品render-component-feature-1-本を持ち出して別-project-へ入れるp-2a-3))。**(3) package manifest の `provides.components`** = (2) のディレクトリを指すパスの配列([第3章 §3.11](03_project_format.md#311-package--本体ツリーの外から持ち込むx-1))。文脈で読み分けてください。([rendercomponent.hpp:16](../../src/project/rendercomponent.hpp#L16))
 
