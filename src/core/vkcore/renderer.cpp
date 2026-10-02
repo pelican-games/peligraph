@@ -1590,6 +1590,9 @@ struct FrameGraphExecutionRequest {
     // PS-1: by frame graph node index, 1 for a once node this frame skips.
     // Empty: every node runs.
     std::span<const std::uint8_t> once_skipped{};
+    // MP-1: the frame's tally of what its material passes drew; null keeps
+    // none.
+    MaterialPassDrawTally *drawn_materials = nullptr;
 };
 
 void executePlannedFrameGraph(
@@ -2630,6 +2633,8 @@ void executeRenderingPasses(
         per_view_sort ? request.view_index : 0u};
     material_renderer_dependencies.draw_loops =
         request.material_draw_loops;
+    material_renderer_dependencies.drawn_materials =
+        request.drawn_materials;
     const FullscreenPassRendererDependencies fullscreen_pass_renderer_dependencies{request.modules.fullscreen_pass_container,
                                                                                   request.modules.frame_resources};
     std::optional<UiRendererDependencies> ui_renderer_dependencies;
@@ -4358,6 +4363,46 @@ nlohmann::json Renderer::currentFramePlanJson() const {
                     ->unmatched_exclude);
         }
     }
+    // MP-1: what each material pass drew in the last published frame of this
+    // program and generation: the effective materials of its draws (route,
+    // tags, variant and draw-loop steps resolved), in the order first drawn.
+    // A pass that drew nothing that frame lists none. Absent before such a
+    // frame is published.
+    if (last_drawn_materials.recorded &&
+        last_drawn_materials.runtime_generation ==
+            generation->generation &&
+        last_drawn_materials.rendering_pass_id ==
+            current_rendering_pass_id &&
+        result.contains("nodes") &&
+        result.at("nodes").is_array()) {
+        std::map<std::string, nlohmann::json *, std::less<>> nodes_by_name;
+        for (auto &node : result["nodes"]) {
+            if (node.is_object())
+                nodes_by_name.emplace(node.value("name", std::string{}), &node);
+        }
+        for (const auto &compiled_pass : program->rendering_pass.passes) {
+            if (!compiled_pass.definition.isMaterial()) continue;
+            const auto node = nodes_by_name.find(compiled_pass.definition.name);
+            if (node == nodes_by_name.end()) continue;
+            auto materials = nlohmann::json::array();
+            bool truncated = false;
+            if (const auto drawn = last_drawn_materials.passes.find(compiled_pass.definition.name);
+                drawn != last_drawn_materials.passes.end()) {
+                truncated = drawn->second.truncated;
+                for (const auto &material : drawn->second.materials) {
+                    nlohmann::json entry;
+                    if (!material.name.empty()) entry["material"] = material.name;
+                    entry["id"] = material.material;
+                    entry["draws"] = material.draws;
+                    materials.push_back(std::move(entry));
+                }
+            }
+            auto &target = *node->second;
+            target["drawn_materials"] = std::move(materials);
+            target["drawn_materials_frame"] = last_drawn_materials.frame;
+            if (truncated) target["drawn_materials_truncated"] = true;
+        }
+    }
     // LP-3a: a draw_loop's elements are the materials this generation
     // judges, known only here.
     if (generation->material_draw_loops != nullptr &&
@@ -5176,6 +5221,7 @@ class Renderer::LogicalFrameRecorder {
     void publishFrame();
     void retainOnceRuns();
     void retainNoSelectedViewNodes();
+    void retainDrawnMaterials();
     void retainPickingSnapshot();
     void publishExecutionTrace();
     void advanceFrameHistories();
@@ -5285,6 +5331,11 @@ class Renderer::LogicalFrameRecorder {
     std::vector<std::uint8_t> once_skipped;
     std::vector<OnceScheduleNode> once_ran;
     OnceResourceFacts once_facts;
+
+    // MP-1: what each material pass drew, filled while recordExecutions
+    // records them; retainDrawnMaterials keeps it once the frame is
+    // published.
+    MaterialPassDrawTally drawn_materials;
 
     // Valid from prepareViewFamilyStates, which recordOneExecution runs on the
     // first view only.
@@ -6391,6 +6442,7 @@ void Renderer::LogicalFrameRecorder::recordOneExecution(
                     ? runtime_generation->material_draw_loops.get()
                     : nullptr,
             .once_skipped = once_skipped,
+            .drawn_materials = &drawn_materials,
         },
         view_family_states, per_view_sort);
     if (external_depth_submission_active) {
@@ -6619,6 +6671,31 @@ void Renderer::LogicalFrameRecorder::retainNoSelectedViewNodes() {
         runtime_generation->generation;
 }
 
+// MP-1: what this published frame's material passes drew, with the
+// materials' names read while they are registered; get_frame_plan copies it
+// onto the material nodes of the same program and generation.
+void Renderer::LogicalFrameRecorder::retainDrawnMaterials() {
+    auto &kept = renderer.last_drawn_materials;
+    kept.passes.clear();
+    for (const auto &[pass, drawn] : drawn_materials) {
+        auto &entry = kept.passes[pass];
+        const auto count = std::min(drawn.materials.size(), drawnMaterialsListLimit);
+        entry.truncated = drawn.materials.size() > count;
+        entry.materials.reserve(count);
+        for (std::size_t index = 0; index < count; ++index) {
+            const auto &material = drawn.materials[index];
+            entry.materials.push_back(
+                {material.material,
+                 modules.material_container.materialName(GlobalMaterialId{material.material}),
+                 material.draws});
+        }
+    }
+    kept.rendering_pass_id = renderer.current_rendering_pass_id;
+    kept.runtime_generation = runtime_generation->generation;
+    kept.frame = engine_time.evaluationIndex();
+    kept.recorded = true;
+}
+
 void Renderer::LogicalFrameRecorder::retainPickingSnapshot() {
     if (picking_pass_active &&
         picking_model_instances_captured) {
@@ -6729,6 +6806,7 @@ void Renderer::renderLogicalFrame(
     recorder.publishFrame();
     recorder.retainOnceRuns();
     recorder.retainNoSelectedViewNodes();
+    recorder.retainDrawnMaterials();
     recorder.retainPickingSnapshot();
     recorder.publishExecutionTrace();
     recorder.advanceFrameHistories();

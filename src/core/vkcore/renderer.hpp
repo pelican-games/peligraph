@@ -59,6 +59,10 @@ enum class RenderGraphVariant {
     xr,
 };
 
+// MP-1: the most materials a material node's drawn_materials lists; past it
+// the first ones are kept and drawn_materials_truncated is true.
+inline constexpr std::size_t drawnMaterialsListLimit = 256;
+
 // CPU-only construction seam for exercising the production
 // currentFramePlanJson() path against an already-published runtime program.
 // It deliberately bypasses startup compilation and creates no GPU objects.
@@ -206,6 +210,27 @@ DECLARE_MODULE(Renderer) {
     RenderingPassId last_no_selected_view_rendering_pass_id =
         invalidRenderingPassId();
     std::uint64_t last_no_selected_view_runtime_generation = 0;
+    // MP-1: what each material pass drew in the last published logical
+    // frame, by pass name, and the program, generation and frame
+    // (EngineTime::evaluationIndex) it was. get_frame_plan copies it as the
+    // material nodes' drawn_materials.
+    struct DrawnMaterial {
+        int material = -1;
+        std::string name;
+        std::uint64_t draws = 0;
+    };
+    struct DrawnMaterialsOfPass {
+        std::vector<DrawnMaterial> materials;
+        bool truncated = false;
+    };
+    struct LastDrawnMaterials {
+        bool recorded = false;
+        RenderingPassId rendering_pass_id = invalidRenderingPassId();
+        std::uint64_t runtime_generation = 0;
+        std::uint64_t frame = 0;
+        std::map<std::string, DrawnMaterialsOfPass, std::less<>> passes;
+    };
+    LastDrawnMaterials last_drawn_materials;
     // PS-1: what each `schedule: "once"` node last ran with, by program
     // (RenderingPassId value) and node name, and the names rerun_once asked
     // to run on the next frame. A record is written when the frame that ran

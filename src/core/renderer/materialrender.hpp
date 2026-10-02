@@ -3,10 +3,14 @@
 #include "../container.hpp"
 #include "../renderingpass/renderingpass.hpp"
 #include <glm/glm.hpp>
+#include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -22,6 +26,30 @@ class PolygonInstanceContainer;
 class ShadowDepthPassContainer;
 class VelocityPassContainer;
 class VertBufContainer;
+
+// MP-1: the materials one material pass drew in a logical frame: each
+// effective material (the record a draw bound, after the pass's variant and
+// its draw-loop steps) in the order first drawn, with the indirect draw
+// commands issued for it, summed over every invocation of the pass.
+struct MaterialPassDrawnMaterial {
+    int material = -1;
+    std::uint64_t draws = 0;
+};
+
+struct MaterialPassDrawnMaterials {
+    std::vector<MaterialPassDrawnMaterial> materials;
+    std::unordered_map<int, std::size_t> index;
+
+    void add(int material, std::uint64_t draws) {
+        const auto [found, inserted] = index.try_emplace(material, materials.size());
+        if (inserted) materials.push_back({material, 0});
+        materials[found->second].draws += draws;
+    }
+};
+
+// By pass name, for the material passes the frame recorded.
+using MaterialPassDrawTally =
+    std::map<std::string, MaterialPassDrawnMaterials, std::less<>>;
 
 struct MaterialRendererDependencies {
     PolygonInstanceContainer &instance_container;
@@ -41,6 +69,9 @@ struct MaterialRendererDependencies {
     // LP-2: the draw-step table of the generation being recorded. Null or
     // empty draws every material pass the way it always has.
     const MaterialDrawLoopTable *draw_loops = nullptr;
+    // MP-1: where the frame's material passes count what they drew; null
+    // counts nothing.
+    MaterialPassDrawTally *drawn_materials = nullptr;
 };
 
 // LP-2: one indirect draw a material pass issued, with what was bound for

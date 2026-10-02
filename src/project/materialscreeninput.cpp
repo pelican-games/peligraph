@@ -56,12 +56,22 @@ std::string_view materialPassInputRelationKindName(
 }
 
 bool isFeatureOwnedMaterialPassInputContract(std::string_view name) noexcept {
-    return name == directionalShadowInputContractName || name == pointShadowInputContractName ||
-           name == spotShadowInputContractName;
+    return std::find(featureOwnedMaterialPassInputContractNames.begin(),
+                     featureOwnedMaterialPassInputContractNames.end(),
+                     name) != featureOwnedMaterialPassInputContractNames.end();
 }
 
 MaterialPassInputContract makeBuiltinMaterialPassInputContract(
     const LogicalTypeRegistry &types, std::string_view name) {
+    // MP-1: the lists are what the engine accepts (get_graph_catalog shows
+    // them); a name outside both is refused even if a branch below knew it.
+    if (std::find(builtinMaterialScreenInputContractNames.begin(),
+                  builtinMaterialScreenInputContractNames.end(),
+                  name) == builtinMaterialScreenInputContractNames.end() &&
+        !isFeatureOwnedMaterialPassInputContract(name)) {
+        throw std::runtime_error("unknown material pass input contract: " +
+                                 std::string{name});
+    }
     if (name == "opaque_color") {
         const auto scene = sceneLinearHdrV1(types);
         return {std::string{name}, scene, scene,

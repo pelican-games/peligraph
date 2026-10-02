@@ -275,6 +275,11 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
     // override and then the material shares the material but not the
     // pipeline, and the second draw must bind the material's own again.
     MaterialContainer::MaterialDrawBindState bound;
+    // MP-1: this pass's count in the frame's tally, when the frame keeps one.
+    auto *drawn =
+        dependencies.drawn_materials != nullptr
+            ? &dependencies.drawn_materials->try_emplace(pass.name).first->second
+            : nullptr;
     const auto *draw_loops =
         dependencies.draw_loops != nullptr &&
                 !dependencies.draw_loops->empty()
@@ -287,6 +292,9 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         const auto binding = material_container.bindMaterialDraw(
             cmd_buf, pass, effective_material, pipeline, bound,
             invocation);
+        if (drawn != nullptr) {
+            drawn->add(effective_material.value, draw_call.draw_count);
+        }
         const auto pipeline_layout = binding.layout;
         vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
         dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout, pass.ray_query_acceleration_structure);

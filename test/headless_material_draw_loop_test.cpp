@@ -46,6 +46,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -1415,6 +1416,111 @@ TEST_CASE("LP-3b get_frame_plan pages a draw_loop's materials",
     });
 #else
     SUCCEED("LP-3b GPU acceptance is compiler-ON only");
+#endif
+}
+
+TEST_CASE("MP-1 get_frame_plan lists the materials each material pass drew in the last frame",
+          "[headless][render][mp1][draw-loop][frame-plan]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    runDrawLoopCase("Vulkan MP-1 drawn materials unavailable", [](DrawLoopScene &scene) {
+        using Json = nlohmann::json;
+        constexpr std::string_view glass_reference = "project://shaders/glass.surface";
+        const std::string glass_source =
+            "//! pelican.surface v1\n"
+            "//! language: glsl\n"
+            "//! render_state: { blend: blend, cull: none, depth: read_only, "
+            "depth_compare: less_equal }\n\n"
+            "void pelican_surface_v1(in PelicanSurfaceInputV1 input_data, "
+            "inout PelicanSurfaceV1 surface) {\n"
+            "    surface.base_color = vec4(1.0, 0.1, 0.1, 0.5);\n"
+            "    surface.emissive = vec3(1.0, 0.1, 0.1);\n"
+            "}\n";
+        setUpDrawLoopScene(scene, Json::array(), {{"shaders/glass.surface", glass_source}});
+        auto &materials = GET_MODULE(MaterialContainer);
+        // The loop material goes to the G-buffer, the blended one to the
+        // transparent pass.
+        REQUIRE(materials.routeForMaterial(scene.material) == MaterialRouteClass::deferred_geometry);
+        const auto glass = registerSurfaceMaterial(
+            glass_reference, glass_source,
+            Json{{"schema", "pelican.material"},
+                 {"version", 1},
+                 {"materials", Json::array({{{"name", "glass"}, {"surface", std::string{glass_reference}}}})}},
+            "glass");
+        REQUIRE(materials.routeForMaterial(glass) == MaterialRouteClass::forward_transparent);
+        auto &geometry = GET_MODULE(VertBufContainer);
+        ModelTemplate model;
+        model.asset_id = ModelAssetId{2004};
+        model.material_primitives = {ModelTemplate::MaterialPrimitives{
+            .material = glass,
+            .primitives = {geometry.addPrimitiveEntry(awayQuadAt({0.0f, -0.4f, 0.5f}, 0.15f))},
+            .source_material_index = 0,
+        }};
+        REQUIRE(GET_MODULE(PolygonInstanceContainer)
+                    .isModelInstanceAlive(GET_MODULE(PolygonInstanceContainer).placeModelInstance(model)));
+
+        const auto node_of = [](const Json &plan, std::string_view name) {
+            for (const auto &node : plan.at("nodes"))
+                if (node.at("name") == std::string{name}) return node;
+            FAIL("the frame plan has no node " << name);
+            return Json{};
+        };
+        const auto ids_of = [](const Json &node) {
+            std::vector<int> ids;
+            for (const auto &entry : node.at("drawn_materials")) ids.push_back(entry.at("id").get<int>());
+            return ids;
+        };
+        const auto lists = [](const std::vector<int> &ids, GlobalMaterialId material) {
+            return std::find(ids.begin(), ids.end(), material.value) != ids.end();
+        };
+        // What the material renderer recorded for a pass: draw commands by
+        // the material each draw bound.
+        const auto recorded = [&](std::string_view pass) {
+            std::map<int, std::uint64_t> draws;
+            for (const auto &record : scene.records)
+                if (record.kind == "material" && record.pass == pass)
+                    draws[record.effective_material] += record.draw_count;
+            return draws;
+        };
+        const auto listed = [](const Json &node) {
+            std::map<int, std::uint64_t> draws;
+            for (const auto &entry : node.at("drawn_materials"))
+                draws[entry.at("id").get<int>()] = entry.at("draws").get<std::uint64_t>();
+            return draws;
+        };
+
+        (void)scene.render();
+        const auto plan = GET_MODULE(Renderer).currentFramePlanJson();
+        const auto deferred = node_of(plan, "deferred_geometry");
+        const auto transparent = node_of(plan, "forward_transparent");
+        const auto opaque = node_of(plan, "forward_opaque");
+        INFO(deferred.dump() << '\n' << transparent.dump());
+        // The G-buffer pass draws the loop material and never the blended
+        // one; the transparent pass draws only the blended one.
+        CHECK(lists(ids_of(deferred), scene.material));
+        CHECK_FALSE(lists(ids_of(deferred), glass));
+        CHECK(ids_of(transparent) == std::vector<int>{glass.value});
+        CHECK(transparent.at("drawn_materials").at(0) ==
+              Json{{"material", "glass"}, {"id", glass.value}, {"draws", 1}});
+        CHECK(opaque.at("drawn_materials") == Json::array());
+        // The counts are the draws the renderer issued that frame.
+        CHECK(listed(deferred) == recorded("deferred_geometry"));
+        CHECK(listed(transparent) == recorded("forward_transparent"));
+        REQUIRE(deferred.at("drawn_materials_frame").is_number_unsigned());
+        CHECK(transparent.at("drawn_materials_frame") == deferred.at("drawn_materials_frame"));
+        CHECK_FALSE(deferred.contains("drawn_materials_truncated"));
+        const auto loop_draws = listed(deferred).at(scene.material.value);
+
+        // After the draw loop: two steps for the loop material draw its
+        // range twice, and the next frame's plan says so.
+        installLive(stepsForKey(loopKey(), twoDraws()));
+        (void)scene.render();
+        const auto looped = node_of(GET_MODULE(Renderer).currentFramePlanJson(), "deferred_geometry");
+        CHECK(listed(looped).at(scene.material.value) == 2 * loop_draws);
+        CHECK(listed(looped) == recorded("deferred_geometry"));
+        CHECK_FALSE(lists(ids_of(looped), glass));
+    });
+#else
+    SUCCEED("MP-1 GPU acceptance is compiler-ON only");
 #endif
 }
 

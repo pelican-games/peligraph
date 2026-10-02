@@ -10288,6 +10288,56 @@ TEST_CASE("EL-1 get_graph_catalog lists the argument values render.image accepts
 // shaders by the stem references a pass gives, reflected on a worker thread
 // (EL-4c). Each list is read off the table the engine checks against (the
 // running engine's own case is in engine_primitives_test).
+TEST_CASE("MP-1 get_graph_catalog's material pass contracts list the screen inputs and surface resources the "
+          "engine takes",
+          "[render-config-editor][el4][mp1][graph-catalog]") {
+    G6Harness harness{false};
+    harness.service = makeProjectService(harness.project, harness.resolver, harness.runtime);
+    const auto catalog = Json(harness.service->getGraphCatalog(Json::object()));
+    const auto &contracts = catalog.at("material_pass_contracts");
+    REQUIRE(contracts.size() == materialPassContracts.size());
+    const auto names_of = [](const Json &entries) {
+        std::vector<std::string> names;
+        for (const auto &entry : entries) names.push_back(entry.at("name").get<std::string>());
+        return names;
+    };
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    for (const auto &contract : contracts) {
+        INFO(contract.dump());
+        // The names Studio held in a table of its own, now from the engine.
+        CHECK(names_of(contract.at("screen_inputs")) ==
+              std::vector<std::string>{"opaque_color", "opaque_depth", "scene_depth", "linear_view_depth"});
+        CHECK(names_of(contract.at("surface_resources")) ==
+              std::vector<std::string>{"directional_shadow", "point_shadow", "spot_shadow"});
+        // Each is one the parser binds there: a screen input a .surface may
+        // author, a surface resource a feature owns; source_type is the
+        // semantic type the bound target must carry.
+        for (const auto &entry : contract.at("screen_inputs")) {
+            const auto name = entry.at("name").get<std::string>();
+            const auto declared = makeBuiltinMaterialScreenInputContract(types, name);
+            CHECK_FALSE(isFeatureOwnedMaterialPassInputContract(name));
+            CHECK(entry.at("source_type") == semanticTypeIdName(declared.source_type.semantic));
+        }
+        for (const auto &entry : contract.at("surface_resources")) {
+            const auto name = entry.at("name").get<std::string>();
+            CHECK(isFeatureOwnedMaterialPassInputContract(name));
+            CHECK_THROWS(makeBuiltinMaterialScreenInputContract(types, name));
+            CHECK(entry.at("source_type") ==
+                  semanticTypeIdName(makeBuiltinMaterialPassInputContract(types, name).source_type.semantic));
+        }
+    }
+    const auto forward = std::find_if(contracts.begin(), contracts.end(), [](const Json &entry) {
+        return entry.at("contract") == "forward_opaque_v1";
+    });
+    REQUIRE(forward != contracts.end());
+    CHECK(forward->at("screen_inputs").at(0) ==
+          Json{{"name", "opaque_color"}, {"source_type", "pelican.render.color_signal@1"}});
+    CHECK(forward->at("surface_resources").at(0) ==
+          Json{{"name", "directional_shadow"}, {"source_type", "pelican.render.depth@1"}});
+    // A name in neither list is no input contract, whatever it names.
+    CHECK_THROWS(makeBuiltinMaterialPassInputContract(types, "lit_color"));
+}
+
 TEST_CASE("EL-4 get_graph_catalog lists material pass formats, material output formats and engine shaders",
           "[render-config-editor][el4][graph-catalog]") {
     G6Harness harness{false};
