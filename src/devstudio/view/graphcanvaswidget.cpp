@@ -4772,6 +4772,10 @@ struct GraphCanvasWidget::Impl {
     GraphCanvasValueFields *value_fields = nullptr;
     // SG-1: a canvas.stack's layers.
     GraphCanvasLayersPanel *canvas_layers = nullptr;
+    // SG-2: the canvas.output the Layers dock's + Canvas placed, to be put
+    // on present's inputs once the engine has it (and until when to try).
+    std::string present_hookup;
+    std::chrono::steady_clock::time_point present_hookup_deadline;
     QComboBox *loop_branch = nullptr;
     QLabel *shared_mark = nullptr;
     // GL-1, decision 5: Show: one box per domain the root canvas can draw.
@@ -5263,19 +5267,29 @@ struct GraphCanvasWidget::Impl {
         folded_summary->setWordWrap(true);
         folded_summary->hide();
         side_layout->addWidget(folded_summary);
-        // SG-1: the canvas's Layers panel, first in the column: it stays
-        // while the pick goes to another node, as a paint program's does.
+        // SG-1: the canvas's Layers panel. SG-2: a dock of its own, which
+        // the window takes (canvasLayersPanel); until then a hidden child.
         canvas_layers = new GraphCanvasLayersPanel(
             model,
             [this] {
                 dispatch();
                 showNotice();
             },
-            side);
+            &view);
+        canvas_layers->hide();
         canvas_layers->nodePicked = [this](const std::string &scope, const std::string &node) {
             scene->selectNode(scope, node);
         };
-        side_layout->addWidget(canvas_layers);
+        canvas_layers->projectRoot = [this] { return project_root; };
+        canvas_layers->addCanvas = [this](nlohmann::json ops, const std::string &output) {
+            if (!model.canEdit() || !model.submitEdit(std::move(ops))) {
+                showNotice();
+                return false;
+            }
+            present_hookup = output;
+            present_hookup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{60};
+            return true;
+        };
         // UX-6b, decision 4.
         plan_notes = new QLabel(side);
         plan_notes->setObjectName(QStringLiteral("pelican.graphCanvasPlanNotes"));
@@ -5712,6 +5726,47 @@ struct GraphCanvasWidget::Impl {
             });
 
         synchronize();
+    }
+
+    // --- SG-2: + Canvas in the Layers dock ends with the canvas on screen:
+    // once the engine has the new canvas.output (the document holds it and
+    // the plan has its pass), its image goes on present's inputs -- the edit
+    // the drag onto present's + input sends (GL-1e). A project with no
+    // present keeps the node alone.
+    void followPresentHookup() {
+        if (present_hookup.empty()) return;
+        const bool late = std::chrono::steady_clock::now() > present_hookup_deadline;
+        if (!model.canEdit() || pass_edit_request != 0 || !pass_ticket.isEmpty()) {
+            if (late) present_hookup.clear();
+            return;
+        }
+        const auto output = present_hookup;
+        const auto resource = model.outputResource(output, "image");
+        const auto &passes = model.planPasses();
+        const bool planned = std::ranges::any_of(passes, [&](const GraphCanvasPlanPass &pass) {
+            return pass.name == output || pass.name.starts_with(output + "$") ||
+                   std::ranges::any_of(pass.writes, [&](const std::string &write) {
+                       return write == output || write.starts_with(output + "$");
+                   });
+        });
+        const auto sockets = scene->passInputSockets("present");
+        if (resource.empty() || !sockets) {
+            if (late) present_hookup.clear();
+            return;
+        }
+        // A plan that never names it by these names is tried once at the end.
+        if (!planned && !late) return;
+        present_hookup.clear();
+        FramePlanSocketDrop drop;
+        if (std::ranges::any_of(sockets->sockets, [](const FramePlanInputSocket &socket) {
+                return socket.kind == FramePlanInputSocket::Kind::variadic_drop;
+            }))
+            drop.kind = FramePlanSocketDrop::Kind::variadic;
+        const auto request = scene->passInputConnectRequest("present", resource, drop);
+        if (!request.sendable()) return;
+        sendPassInputEdit(request, [this, resource, drop] {
+            return scene->passInputConnectRequest("present", resource, drop);
+        });
     }
 
     // --- GL-1e.
@@ -7589,6 +7644,7 @@ struct GraphCanvasWidget::Impl {
         if (place_fields != nullptr) place_fields->followEditable();
         if (value_fields != nullptr) value_fields->followEditable();
         if (canvas_layers != nullptr && canvas_layers->isVisible()) canvas_layers->followEditable();
+        followPresentHookup();
         // GL-4a, decision 2: a node of a group being verified takes no edit
         // from the side fields until the verify finishes.
         if (folds)
@@ -8097,5 +8153,6 @@ bool GraphCanvasWidget::removeImageTransferSource(const QString &resource, const
 
 GraphCanvasModel &GraphCanvasWidget::model() { return impl_->model; }
 GraphCanvasScene &GraphCanvasWidget::scene() { return *impl_->scene; }
+QWidget *GraphCanvasWidget::canvasLayersPanel() { return impl_->canvas_layers; }
 
 } // namespace PelicanStudio

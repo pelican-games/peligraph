@@ -24,6 +24,9 @@ add_library(pelican_studio_inspector_model STATIC
     # SG-1: pelican.canvas -- a stack's sockets and the Layers panel's edits.
     graphcanvaslayerstack.cpp
     graphcanvaslayerstack.hpp
+    # SG-2: pictures and PSD conversions copied into the project.
+    graphcanvasimport.cpp
+    graphcanvasimport.hpp
     renderedithistory.cpp
     renderedithistory.hpp
     # RSX: the one reading of a render config ticket's last answer.

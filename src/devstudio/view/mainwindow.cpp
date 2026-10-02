@@ -401,6 +401,16 @@ void MainWindow::createWorkspace() {
     docks_[FullscreenPassDock] = makeDock(
         this, tr("Pass Editor"),
         QStringLiteral("pelican.fullscreenPassDock"), pass_editor_scroll);
+    // SG-2: the canvas's Layers, a dock of their own beside the Inspector
+    // (the Graph tab holds the model they edit), scrolled like the Pass
+    // Editor so a long stack never pushes the dock area.
+    auto *layers_scroll = new QScrollArea(this);
+    layers_scroll->setObjectName(QStringLiteral("pelican.layersScroll"));
+    layers_scroll->setWidgetResizable(true);
+    layers_scroll->setFrameShape(QFrame::NoFrame);
+    layers_scroll->setWidget(graph_canvas_->canvasLayersPanel());
+    graph_canvas_->canvasLayersPanel()->show();
+    docks_[LayersDock] = makeDock(this, tr("Layers"), QStringLiteral("pelican.layersDock"), layers_scroll);
     fullscreen_pass_->setCommittedAction([this] { frame_plan_->refresh(); });
     // T-1: "New target: <pass>_color..." in the Pass Editor's colour output
     // opens the Frame Plan's New render target form on that name; the
@@ -3106,6 +3116,7 @@ void MainWindow::applyDefaultLayout() {
     docks_[ProjectDock]->raise();
 
     addDockWidget(Qt::RightDockWidgetArea, docks_[InspectorDock]);
+    splitDockWidget(docks_[InspectorDock], docks_[LayersDock], Qt::Vertical);
     addDockWidget(Qt::BottomDockWidgetArea, docks_[OutputDock]);
     addDockWidget(Qt::BottomDockWidgetArea, docks_[EngineLogDock]);
     addDockWidget(Qt::BottomDockWidgetArea, docks_[FramePlanDock]);
@@ -3115,6 +3126,9 @@ void MainWindow::applyDefaultLayout() {
     tabifyDockWidget(docks_[FramePlanDock], docks_[FullscreenPassDock]);
     docks_[FramePlanDock]->raise();
     resizeDocks({docks_[ProjectDock], docks_[InspectorDock]}, {280, 320}, Qt::Horizontal);
+    // SG-2: the Layers under the Inspector, tall enough for a few rows and
+    // the buttons.
+    resizeDocks({docks_[InspectorDock], docks_[LayersDock]}, {360, 300}, Qt::Vertical);
     resizeDocks({docks_[FullscreenPassDock]}, {320}, Qt::Vertical);
     resize(1280, 800);
 }

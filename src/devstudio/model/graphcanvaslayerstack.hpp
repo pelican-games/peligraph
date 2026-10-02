@@ -53,14 +53,28 @@ struct GraphCanvasStackRow {
     double opacity = 1.0;
     // A value line drives `<input>.opacity`: the field shows the stored one.
     bool opacity_driven = false;
-    // "rect", "ellipse", "group" (a canvas.stack) or "layer" (anything else,
-    // or nothing connected).
+    // "rect", "ellipse", "group" (a canvas.stack), "image" (a canvas.image),
+    // "color", "import" (an instance of a canvas definition: a PSD's) or
+    // "layer" (anything else, or nothing connected).
     std::string kind = "layer";
     // "fill" or "stroke" for a paint, else empty.
     std::string paint;
-    // The node on the layer's input, and the shape behind a paint.
+    // The node the layer draws -- behind its canvas.transform when it has
+    // one -- and the shape behind a paint.
     std::string source;
     std::string shape;
+    // SG-2: the canvas.transform between the layer's input and `source`.
+    std::string transform;
+    // SG-2 (CV-2a): clipped to the layer below; a group composited with the
+    // stack it is in; the input its mask is read from, and that mask's
+    // canvas.image; the blend (`normal` when it says none).
+    bool clip = false;
+    bool pass_through = false;
+    std::string mask;
+    std::string mask_source;
+    std::string blend = "normal";
+    // An import's definition (kind "import").
+    std::string definition;
 
     bool operator==(const GraphCanvasStackRow &) const = default;
 };
@@ -147,6 +161,103 @@ struct GraphCanvasStackRow {
                                                         std::string_view node,
                                                         std::string_view key,
                                                         const nlohmann::json &value);
+
+// --- SG-2: the Layers dock.
+
+// The stacks the dock can show in `nodes`: the stack each canvas.output
+// reads, in document order (an output reading no stack is left out).
+struct GraphCanvasOutputStack {
+    std::string output;
+    std::string stack;
+
+    bool operator==(const GraphCanvasOutputStack &) const = default;
+};
+[[nodiscard]] std::vector<GraphCanvasOutputStack> graphCanvasOutputStacks(
+    const std::vector<GraphCanvasNode> &nodes);
+// The stack a definition hands out as its `layer` output (an imported PSD's
+// root), read from the definition's nodes and outputs; empty when it is no
+// canvas.stack.
+[[nodiscard]] std::string graphCanvasDefinitionStack(const nlohmann::json &definition);
+
+// + Image: a canvas.image of a picture already in the project (`asset` is
+// its project:// reference, `size` its pixels) at the stack's middle, as a
+// layer on top named `name`.
+[[nodiscard]] nlohmann::json graphCanvasAddImageLayerOps(const std::vector<GraphCanvasNode> &nodes,
+                                                         std::string_view scope,
+                                                         std::string_view stack,
+                                                         const std::string &asset,
+                                                         const std::array<double, 2> &size,
+                                                         const std::string &name);
+// Whether the layer at `index` may be a clip layer: some layer below it is
+// not one (what it is clipped to; canvas.clip_base_missing@1 otherwise), and
+// so has every clip layer above it once it is.
+[[nodiscard]] bool graphCanvasClipAllowed(const std::vector<GraphCanvasNode> &nodes,
+                                          std::string_view stack, std::size_t index);
+// One member of a layer the SG-1 call does not take: `clip`, `pass_through`
+// (false is the default, left out) or `blend` ("normal" is left out).
+[[nodiscard]] nlohmann::json graphCanvasSetLayerFlagOps(const std::vector<GraphCanvasNode> &nodes,
+                                                        std::string_view scope,
+                                                        std::string_view stack, std::size_t index,
+                                                        std::string_view key,
+                                                        const nlohmann::json &value);
+// Add mask image: a luminance canvas.image of `asset` (`size` its pixels)
+// over the layer -- at an image layer's offset, else at the stack's middle --
+// read as the layer's `mask`. Empty when the layer has a mask already.
+[[nodiscard]] nlohmann::json graphCanvasAddMaskOps(const std::vector<GraphCanvasNode> &nodes,
+                                                   std::string_view scope, std::string_view stack,
+                                                   std::size_t index, const std::string &asset,
+                                                   const std::array<double, 2> &size);
+// Remove mask: the member, its line, and its canvas.image when nothing else
+// reads it.
+[[nodiscard]] nlohmann::json graphCanvasRemoveMaskOps(const std::vector<GraphCanvasNode> &nodes,
+                                                      std::string_view scope, std::string_view stack,
+                                                      std::size_t index);
+// The stack's own fields: `blend_space` ("linear" is the default, left out)
+// or `size`.
+[[nodiscard]] nlohmann::json graphCanvasSetStackOps(const std::vector<GraphCanvasNode> &nodes,
+                                                    std::string_view scope, std::string_view stack,
+                                                    std::string_view key, const nlohmann::json &value);
+
+// A layer's Transform. All at their defaults (no move, no turn, scale 1)
+// is no canvas.transform at all.
+struct GraphCanvasTransformValues {
+    std::array<double, 2> translate{0.0, 0.0};
+    double rotate = 0.0;
+    std::array<double, 2> scale{1.0, 1.0};
+
+    [[nodiscard]] bool isDefault() const noexcept;
+    bool operator==(const GraphCanvasTransformValues &) const = default;
+};
+// What the row's canvas.transform says, the defaults when it has none.
+[[nodiscard]] GraphCanvasTransformValues graphCanvasLayerTransform(
+    const std::vector<GraphCanvasNode> &nodes, const GraphCanvasStackRow &row);
+// The Transform set: a canvas.transform put between the layer and the stack
+// when there was none, its parameters set when there was, taken out when
+// `values` are the defaults again. One list.
+[[nodiscard]] nlohmann::json graphCanvasSetTransformOps(const std::vector<GraphCanvasNode> &nodes,
+                                                        std::string_view scope,
+                                                        std::string_view stack, std::size_t index,
+                                                        const GraphCanvasTransformValues &values);
+
+// Import PSD output: `definition` (canvas.graph.json's one definition, its
+// assets already the project's) added as `name`, a graph.instance of it, and
+// that instance as the top layer of `stack`, named `PSD: <label>`. One list.
+[[nodiscard]] nlohmann::json graphCanvasImportDefinitionOps(const std::vector<GraphCanvasNode> &nodes,
+                                                            std::string_view scope,
+                                                            std::string_view stack,
+                                                            const std::string &name,
+                                                            const nlohmann::json &definition,
+                                                            const std::string &label);
+// `definition` with every canvas.image `asset` read from the import's
+// directory: a relative path, or a project://imports/<other>/ one, becomes
+// `project://imports/<directory>/<path>`.
+[[nodiscard]] nlohmann::json graphCanvasRebaseImportAssets(const nlohmann::json &definition,
+                                                           std::string_view directory);
+
+// The one sentence the Layers dock says for a refusal of the canvas's
+// (CV-2a's named errors), found in the notice the edit got; empty for any
+// other.
+[[nodiscard]] std::string graphCanvasRefusalSentence(std::string_view notice);
 
 // The colours + Rect and + Ellipse start from, and the swatches the colour
 // field offers (sRGB, straight alpha), by name.

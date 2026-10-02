@@ -59,6 +59,10 @@ if(DEFINED GAME_LOGIC AND NOT "${GAME_LOGIC}" STREQUAL "")
         "PELICAN_STUDIO_PLAYER_ARGUMENTS=--game-logic \"${game_logic_native}\"")
 endif()
 
+# SG-2: the repository's test fixtures, which a scenario may read (a picture
+# to import, a PSD's conversion) but never writes: `{fixtures}`.
+get_filename_component(fixtures_dir "${FIXTURE_DIR}" DIRECTORY)
+
 set(report "${run_dir}/report.json")
 execute_process(
     COMMAND ${CMAKE_COMMAND} -E env "PATH=${scenario_path_env}" ${scenario_extra_env}
@@ -68,6 +72,7 @@ execute_process(
             --scenario "${SCENARIO}"
             --project "${project_dir}"
             --var "other_project=${other_project_dir}"
+            --var "fixtures=${fixtures_dir}"
             --artifacts "${run_dir}"
             --report "${report}"
     RESULT_VARIABLE driver_result

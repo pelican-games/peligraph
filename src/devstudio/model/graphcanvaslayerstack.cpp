@@ -184,6 +184,22 @@ std::vector<GraphCanvasPort> graphCanvasStackPorts(const Json &parameters) {
             opacity.type = kScalarType;
             ports.push_back(std::move(opacity));
         }
+    // SG-2 (CV-2a): a layer's `mask` is one more layer port, after them all.
+    if (parameters.is_object() && layers != parameters.end() && layers->is_array())
+        for (const auto &element : *layers) {
+            const auto mask = element.is_object() ? element.find("mask") : element.end();
+            if (!element.is_object() || mask == element.end() || !mask->is_string() ||
+                mask->get_ref<const std::string &>().empty())
+                continue;
+            const auto name = mask->get<std::string>();
+            if (std::ranges::any_of(ports, [&](const auto &port) { return port.port == name; })) continue;
+            GraphCanvasPort port;
+            port.port = name;
+            port.declared = true;
+            port.required = true;
+            port.type = std::string{graphCanvasLayerType};
+            ports.push_back(std::move(port));
+        }
     GraphCanvasPort open;
     open.port = std::string{graphCanvasStackAddPort};
     open.declared = true;
@@ -212,10 +228,31 @@ std::vector<GraphCanvasStackRow> graphCanvasLayerRows(const std::vector<GraphCan
         if (const auto opacity = element.find("opacity"); opacity != element.end() && opacity->is_number())
             row.opacity = opacity->get<double>();
         row.opacity_driven = !sourceOf(*found, opacityPort(row.input)).empty();
+        row.clip = element.value("clip", false) == true;
+        row.pass_through = element.value("pass_through", false) == true;
+        if (const auto blend = element.find("blend"); blend != element.end() && blend->is_string())
+            row.blend = blend->get<std::string>();
+        if (const auto mask = element.find("mask"); mask != element.end() && mask->is_string()) {
+            row.mask = mask->get<std::string>();
+            row.mask_source = sourceOf(*found, row.mask);
+        }
         row.source = sourceOf(*found, row.input);
+        // SG-2: a layer moved, turned or scaled draws what its transform reads.
+        if (const auto *transform = row.source.empty() ? nullptr : findNode(nodes, row.source);
+            transform != nullptr && transform->op == "canvas.transform") {
+            row.transform = row.source;
+            row.source = sourceOf(*transform, "layer");
+        }
         if (const auto *source = row.source.empty() ? nullptr : findNode(nodes, row.source)) {
             if (source->op == "canvas.stack") {
                 row.kind = "group";
+            } else if (source->op == "canvas.image") {
+                row.kind = "image";
+            } else if (source->op == "canvas.color") {
+                row.kind = "color";
+            } else if (source->op == "graph.instance") {
+                row.kind = "import";
+                row.definition = source->definition;
             } else if (source->op == "shape.fill" || source->op == "shape.stroke") {
                 row.paint = source->op == "shape.fill" ? "fill" : "stroke";
                 row.shape = sourceOf(*source, "geometry");
@@ -231,6 +268,7 @@ std::vector<GraphCanvasStackRow> graphCanvasLayerRows(const std::vector<GraphCan
 }
 
 std::string graphCanvasLayerKindText(const GraphCanvasStackRow &row) {
+    if (row.kind == "import") return "PSD";
     auto text = capitalized(row.kind);
     if (row.paint == "stroke") text += " stroke";
     return text;
@@ -246,7 +284,9 @@ std::string graphCanvasStackFor(const std::vector<GraphCanvasNode> &nodes, std::
     }
     // The paints a picked shape is drawn by, or the picked paint itself.
     std::vector<std::string> paints;
-    if (found->op == "shape.fill" || found->op == "shape.stroke") {
+    if (found->op == "shape.fill" || found->op == "shape.stroke" || found->op == "canvas.image" ||
+        found->op == "canvas.color" || found->op == "canvas.transform" ||
+        found->op == "graph.instance") {
         paints.push_back(found->id);
     } else if (found->op == "shape.rect" || found->op == "shape.ellipse") {
         for (const auto &each : nodes)
@@ -256,6 +296,12 @@ std::string graphCanvasStackFor(const std::vector<GraphCanvasNode> &nodes, std::
     } else {
         return {};
     }
+    // SG-2: and the transforms that move them.
+    for (std::size_t at = 0; at < paints.size(); ++at)
+        for (const auto &each : nodes)
+            if (each.op == "canvas.transform" && sourceOf(each, "layer") == paints[at] &&
+                std::ranges::find(paints, each.id) == paints.end())
+                paints.push_back(each.id);
     for (const auto &paint : paints)
         for (const auto &each : nodes) {
             if (each.op != "canvas.stack") continue;
@@ -269,7 +315,10 @@ std::string graphCanvasStackFor(const std::vector<GraphCanvasNode> &nodes, std::
 std::optional<std::size_t> graphCanvasRowFor(const std::vector<GraphCanvasNode> &nodes,
                                              std::string_view stack, std::string_view node) {
     for (const auto &row : graphCanvasLayerRows(nodes, stack))
-        if (row.source == node || (!row.shape.empty() && row.shape == node)) return row.index;
+        if (row.source == node || (!row.shape.empty() && row.shape == node) ||
+            (!row.transform.empty() && row.transform == node) ||
+            (!row.mask_source.empty() && row.mask_source == node))
+            return row.index;
     return std::nullopt;
 }
 
@@ -390,25 +439,37 @@ Json graphCanvasDeleteLayerOps(const std::vector<GraphCanvasNode> &nodes, std::s
     auto layers = layersOf(*target);
     if (index >= layers.size() || !layers.at(index).is_object()) return Json::array();
     const auto input = layers.at(index).value("input", std::string{});
+    // SG-2: its mask goes with it, unless another layer reads the same one.
+    auto mask = layers.at(index).value("mask", std::string{});
     auto parameters = target->parameters;
     layers.erase(layers.begin() + static_cast<std::ptrdiff_t>(index));
+    if (std::ranges::any_of(layers, [&](const Json &other) {
+            return other.is_object() && other.value("mask", std::string{}) == mask;
+        }))
+        mask.clear();
     parameters["layers"] = std::move(layers);
     Json ops = Json::array({setParameters(scope, target->id, std::move(parameters))});
     if (!sourceOf(*target, input).empty()) ops.push_back(setInput(scope, target->id, input, nullptr));
     if (!sourceOf(*target, opacityPort(input)).empty())
         ops.push_back(setInput(scope, target->id, opacityPort(input), nullptr));
+    if (!mask.empty() && !sourceOf(*target, mask).empty())
+        ops.push_back(setInput(scope, target->id, mask, nullptr));
     // The canvas nodes upstream of the layer that nothing else reads: a node
     // goes once every reader of it has gone (or is the line cut here), which
     // removes readers before what they read.
     const auto source = sourceOf(*target, input);
     std::vector<std::string> upstream;
-    if (!source.empty()) {
-        std::vector<std::string> pending{source};
+    if (!source.empty() || !mask.empty()) {
+        std::vector<std::string> pending;
+        if (!source.empty()) pending.push_back(source);
+        if (!mask.empty() && !sourceOf(*target, mask).empty()) pending.push_back(sourceOf(*target, mask));
         while (!pending.empty()) {
             auto id = std::move(pending.back());
             pending.pop_back();
             const auto *node = findNode(nodes, id);
-            if (node == nullptr || !isGraphCanvasOperation(node->op) || node->op == "canvas.output" ||
+            // SG-2: an imported PSD's instance goes too (its definition stays).
+            if (node == nullptr || (!isGraphCanvasOperation(node->op) && node->op != "graph.instance") ||
+                node->op == "canvas.output" ||
                 std::ranges::find(upstream, id) != upstream.end())
                 continue;
             upstream.push_back(id);
@@ -425,7 +486,9 @@ Json graphCanvasDeleteLayerOps(const std::vector<GraphCanvasNode> &nodes, std::s
                 if (std::ranges::find(removed, reader.id) != removed.end()) return false;
                 return std::ranges::any_of(reader.inputs, [&](const GraphCanvasPort &port) {
                     if (!port.connected || port.source_node != id) return false;
-                    return !(reader.id == target->id && (port.port == input || port.port == opacityPort(input)));
+                    return !(reader.id == target->id &&
+                             (port.port == input || port.port == opacityPort(input) ||
+                              (!mask.empty() && port.port == mask)));
                 });
             });
             if (read) continue;
@@ -525,6 +588,332 @@ Json graphCanvasSetParameterOps(const std::vector<GraphCanvasNode> &nodes, std::
         return Json::array();
     parameters[std::string{key}] = value;
     return Json::array({setParameters(scope, found->id, std::move(parameters))});
+}
+
+// --- SG-2.
+
+std::vector<GraphCanvasOutputStack> graphCanvasOutputStacks(const std::vector<GraphCanvasNode> &nodes) {
+    std::vector<GraphCanvasOutputStack> found;
+    for (const auto &node : nodes) {
+        if (node.op != "canvas.output") continue;
+        const auto source = sourceOf(node, "layer");
+        if (stackNode(nodes, source) != nullptr) found.push_back({node.id, source});
+    }
+    return found;
+}
+
+std::string graphCanvasDefinitionStack(const Json &definition) {
+    if (!definition.is_object()) return {};
+    const auto outputs = definition.find("outputs");
+    if (outputs == definition.end() || !outputs->is_object()) return {};
+    const auto layer = outputs->find("layer");
+    if (layer == outputs->end() || !layer->is_object()) return {};
+    const auto node = layer->value("node", std::string{});
+    const auto nodes = definition.find("nodes");
+    if (node.empty() || nodes == definition.end() || !nodes->is_array()) return {};
+    for (const auto &each : *nodes)
+        if (each.is_object() && each.value("id", std::string{}) == node &&
+            each.value("op", std::string{}) == "canvas.stack")
+            return node;
+    return {};
+}
+
+Json graphCanvasAddImageLayerOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
+                                 std::string_view stack, const std::string &asset,
+                                 const std::array<double, 2> &size, const std::string &name) {
+    const auto *target = stackNode(nodes, stack);
+    if (target == nullptr || asset.empty() || size[0] <= 0.0 || size[1] <= 0.0) return Json::array();
+    const auto numbered = numberedId(nodes, target, "image");
+    if (numbered.number == 0) return Json::array();
+    const auto canvas = stackSize(*target);
+    Json ops = Json::array();
+    ops.push_back(addNode(scope, Json{{"id", numbered.id}, {"op", "canvas.image"},
+                                      {"parameters", Json{{"asset", asset},
+                                                          {"offset", Json::array({(canvas[0] - size[0]) / 2.0,
+                                                                                  (canvas[1] - size[1]) / 2.0})},
+                                                          {"size", Json::array({size[0], size[1]})}}},
+                                      {"outputs", Json::array({"layer"})}}));
+    append(ops, addLayerOps(scope, *target, layersOf(*target).size(), numbered.id,
+                            name.empty() ? "Image " + std::to_string(numbered.number) : name, numbered.id,
+                            "layer"));
+    return ops;
+}
+
+bool graphCanvasClipAllowed(const std::vector<GraphCanvasNode> &nodes, std::string_view stack,
+                            std::size_t index) {
+    // Every clip layer needs an unclipped one somewhere below it: with the
+    // bottom layer unclipped, each layer above has one.
+    const auto *target = stackNode(nodes, stack);
+    if (target == nullptr || index == 0) return false;
+    const auto layers = layersOf(*target);
+    if (index >= layers.size() || layers.empty() || !layers.at(0).is_object()) return false;
+    return layers.at(0).value("clip", false) != true;
+}
+
+Json graphCanvasSetLayerFlagOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
+                                std::string_view stack, std::size_t index, std::string_view key,
+                                const Json &value) {
+    const auto *target = stackNode(nodes, stack);
+    if (target == nullptr) return Json::array();
+    auto layers = layersOf(*target);
+    if (index >= layers.size() || !layers.at(index).is_object()) return Json::array();
+    auto &element = layers.at(index);
+    const std::string member{key};
+    if ((member == "clip" || member == "pass_through") && value.is_boolean()) {
+        if (value.get<bool>()) element[member] = true;
+        else element.erase(member);
+    } else if (member == "blend" && value.is_string()) {
+        if (value == "normal") element.erase("blend");
+        else element["blend"] = value;
+    } else {
+        return Json::array();
+    }
+    if (layers == layersOf(*target)) return Json::array();
+    auto parameters = target->parameters;
+    parameters["layers"] = std::move(layers);
+    return Json::array({setParameters(scope, target->id, std::move(parameters))});
+}
+
+Json graphCanvasAddMaskOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
+                           std::string_view stack, std::size_t index, const std::string &asset,
+                           const std::array<double, 2> &size) {
+    const auto *target = stackNode(nodes, stack);
+    if (target == nullptr || asset.empty() || size[0] <= 0.0 || size[1] <= 0.0) return Json::array();
+    const auto rows = graphCanvasLayerRows(nodes, stack);
+    const auto row = std::ranges::find(rows, index, &GraphCanvasStackRow::index);
+    if (row == rows.end() || !row->mask.empty() || row->input.empty()) return Json::array();
+    // Over an image layer where the image is; over anything else, centred.
+    const auto canvas = stackSize(*target);
+    std::array<double, 2> offset{(canvas[0] - size[0]) / 2.0, (canvas[1] - size[1]) / 2.0};
+    if (const auto *image = row->kind == "image" ? findNode(nodes, row->source) : nullptr) {
+        const auto found = image->parameters.find("offset");
+        if (found != image->parameters.end() && found->is_array() && found->size() == 2 &&
+            found->at(0).is_number() && found->at(1).is_number())
+            offset = {found->at(0).get<double>(), found->at(1).get<double>()};
+    }
+    const auto id = freeId(nodes, target, row->input + "_mask");
+    auto layers = layersOf(*target);
+    layers.at(index)["mask"] = id;
+    auto parameters = target->parameters;
+    parameters["layers"] = std::move(layers);
+    Json ops = Json::array();
+    ops.push_back(addNode(scope, Json{{"id", id}, {"op", "canvas.image"},
+                                      {"parameters", Json{{"asset", asset},
+                                                          {"channel", "luminance"},
+                                                          {"offset", Json::array({offset[0], offset[1]})},
+                                                          {"size", Json::array({size[0], size[1]})}}},
+                                      {"outputs", Json::array({"layer"})}}));
+    ops.push_back(setParameters(scope, target->id, std::move(parameters)));
+    ops.push_back(setInput(scope, target->id, id, edge(id, "layer")));
+    return ops;
+}
+
+Json graphCanvasRemoveMaskOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
+                              std::string_view stack, std::size_t index) {
+    const auto *target = stackNode(nodes, stack);
+    if (target == nullptr) return Json::array();
+    auto layers = layersOf(*target);
+    if (index >= layers.size() || !layers.at(index).is_object()) return Json::array();
+    const auto mask = layers.at(index).value("mask", std::string{});
+    if (mask.empty()) return Json::array();
+    layers.at(index).erase("mask");
+    const bool shared = std::ranges::any_of(layers, [&](const Json &other) {
+        return other.is_object() && other.value("mask", std::string{}) == mask;
+    });
+    auto parameters = target->parameters;
+    parameters["layers"] = std::move(layers);
+    Json ops = Json::array({setParameters(scope, target->id, std::move(parameters))});
+    if (shared) return ops;
+    const auto source = sourceOf(*target, mask);
+    if (source.empty()) return ops;
+    ops.push_back(setInput(scope, target->id, mask, nullptr));
+    const bool read_elsewhere = std::ranges::any_of(nodes, [&](const GraphCanvasNode &reader) {
+        return std::ranges::any_of(reader.inputs, [&](const GraphCanvasPort &port) {
+            return port.connected && port.source_node == source &&
+                   !(reader.id == target->id && port.port == mask);
+        });
+    });
+    if (!read_elsewhere)
+        ops.push_back(Json{{"op", "remove_node"}, {"scope", scopeToken(scope)}, {"node", source}});
+    return ops;
+}
+
+Json graphCanvasSetStackOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
+                            std::string_view stack, std::string_view key, const Json &value) {
+    const auto *target = stackNode(nodes, stack);
+    if (target == nullptr) return Json::array();
+    auto parameters = target->parameters;
+    if (key == "blend_space" && value.is_string() && (value == "linear" || value == "srgb")) {
+        if (value == "linear") parameters.erase("blend_space");
+        else parameters["blend_space"] = value;
+    } else if (key == "size" && value.is_array() && value.size() == 2 && value.at(0).is_number() &&
+               value.at(1).is_number() && value.at(0).get<double>() > 0.0 && value.at(1).get<double>() > 0.0) {
+        parameters["size"] = value;
+    } else {
+        return Json::array();
+    }
+    if (parameters == target->parameters) return Json::array();
+    return Json::array({setParameters(scope, target->id, std::move(parameters))});
+}
+
+bool GraphCanvasTransformValues::isDefault() const noexcept {
+    return translate[0] == 0.0 && translate[1] == 0.0 && rotate == 0.0 && scale[0] == 1.0 && scale[1] == 1.0;
+}
+
+namespace {
+
+std::array<double, 2> pairOf(const Json &parameters, const char *key, double fallback) {
+    const auto found = parameters.find(key);
+    if (found == parameters.end() || !found->is_array() || found->size() != 2 || !found->at(0).is_number() ||
+        !found->at(1).is_number())
+        return {fallback, fallback};
+    return {found->at(0).get<double>(), found->at(1).get<double>()};
+}
+
+// Where a layer turns and scales about: its own middle.
+std::array<double, 2> layerPivot(const std::vector<GraphCanvasNode> &nodes, const GraphCanvasNode &stack,
+                                 const GraphCanvasStackRow &row) {
+    const auto canvas = stackSize(stack);
+    if (const auto *source = findNode(nodes, row.source); source != nullptr && source->op == "canvas.image") {
+        const auto offset = pairOf(source->parameters, "offset", 0.0);
+        const auto size = pairOf(source->parameters, "size", 0.0);
+        return {offset[0] + size[0] / 2.0, offset[1] + size[1] / 2.0};
+    }
+    if (const auto *shape = findNode(nodes, row.shape)) return pairOf(shape->parameters, "center", 0.0);
+    return {canvas[0] / 2.0, canvas[1] / 2.0};
+}
+
+Json transformParameters(const GraphCanvasTransformValues &values, const std::array<double, 2> &pivot) {
+    Json parameters = Json::object();
+    if (values.translate[0] != 0.0 || values.translate[1] != 0.0)
+        parameters["translate"] = Json::array({values.translate[0], values.translate[1]});
+    if (values.rotate != 0.0) parameters["rotate"] = values.rotate;
+    if (values.scale[0] != 1.0 || values.scale[1] != 1.0)
+        parameters["scale"] = Json::array({values.scale[0], values.scale[1]});
+    parameters["pivot"] = Json::array({pivot[0], pivot[1]});
+    return parameters;
+}
+
+} // namespace
+
+GraphCanvasTransformValues graphCanvasLayerTransform(const std::vector<GraphCanvasNode> &nodes,
+                                                     const GraphCanvasStackRow &row) {
+    GraphCanvasTransformValues values;
+    const auto *transform = row.transform.empty() ? nullptr : findNode(nodes, row.transform);
+    if (transform == nullptr) return values;
+    values.translate = pairOf(transform->parameters, "translate", 0.0);
+    values.scale = pairOf(transform->parameters, "scale", 1.0);
+    if (const auto rotate = transform->parameters.find("rotate");
+        rotate != transform->parameters.end() && rotate->is_number())
+        values.rotate = rotate->get<double>();
+    return values;
+}
+
+Json graphCanvasSetTransformOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
+                                std::string_view stack, std::size_t index,
+                                const GraphCanvasTransformValues &values) {
+    const auto *target = stackNode(nodes, stack);
+    if (target == nullptr) return Json::array();
+    const auto rows = graphCanvasLayerRows(nodes, stack);
+    const auto row = std::ranges::find(rows, index, &GraphCanvasStackRow::index);
+    if (row == rows.end() || row->input.empty()) return Json::array();
+    if (row->transform.empty()) {
+        // None yet: one between the layer's input and what it reads.
+        const auto *line = findPort(*target, row->input);
+        if (values.isDefault() || line == nullptr || !line->connected) return Json::array();
+        const auto id = freeId(nodes, target, row->input + "_transform");
+        Json ops = Json::array();
+        ops.push_back(addNode(scope, Json{{"id", id}, {"op", "canvas.transform"},
+                                          {"parameters", transformParameters(values, layerPivot(nodes, *target, *row))},
+                                          {"inputs", Json{{"layer", edge(line->source_node, line->source_port)}}},
+                                          {"outputs", Json::array({"layer"})}}));
+        ops.push_back(setInput(scope, target->id, row->input, edge(id, "layer")));
+        return ops;
+    }
+    const auto *transform = findNode(nodes, row->transform);
+    if (transform == nullptr) return Json::array();
+    if (values.isDefault()) {
+        // Back at the defaults: the layer reads what the transform read.
+        const auto *read = findPort(*transform, "layer");
+        if (read == nullptr || !read->connected) return Json::array();
+        return Json::array({setInput(scope, target->id, row->input, edge(read->source_node, read->source_port)),
+                            Json{{"op", "remove_node"}, {"scope", scopeToken(scope)}, {"node", transform->id}}});
+    }
+    auto parameters = transformParameters(values, pairOf(transform->parameters, "pivot", 0.0));
+    if (parameters == transform->parameters) return Json::array();
+    return Json::array({setParameters(scope, transform->id, std::move(parameters))});
+}
+
+Json graphCanvasImportDefinitionOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
+                                    std::string_view stack, const std::string &name, const Json &definition,
+                                    const std::string &label) {
+    const auto *target = stackNode(nodes, stack);
+    if (target == nullptr || name.empty() || graphCanvasDefinitionStack(definition).empty()) return Json::array();
+    const auto id = freeId(nodes, target, name);
+    Json ops = Json::array();
+    ops.push_back(Json{{"op", "add_definition"}, {"name", name}, {"definition", definition}});
+    ops.push_back(addNode(scope, Json{{"id", id}, {"op", "graph.instance"}, {"definition", name},
+                                      {"parameters", Json::object()}}));
+    append(ops, addLayerOps(scope, *target, layersOf(*target).size(), id, "PSD: " + label, id, "layer"));
+    return ops;
+}
+
+Json graphCanvasRebaseImportAssets(const Json &definition, std::string_view directory) {
+    auto rebased = definition;
+    const auto nodes = rebased.find("nodes");
+    if (nodes == rebased.end() || !nodes->is_array()) return rebased;
+    constexpr std::string_view imports = "project://imports/";
+    for (auto &node : *nodes) {
+        if (!node.is_object() || node.value("op", std::string{}) != "canvas.image") continue;
+        const auto parameters = node.find("parameters");
+        if (parameters == node.end() || !parameters->is_object()) continue;
+        const auto asset = parameters->find("asset");
+        if (asset == parameters->end() || !asset->is_string()) continue;
+        std::string path = asset->get<std::string>();
+        if (path.starts_with(imports)) {
+            // Another import's directory: the path inside it is kept.
+            const auto slash = path.find('/', imports.size());
+            if (slash == std::string::npos) continue;
+            path = path.substr(slash + 1);
+        } else if (path.find("://") != std::string::npos) {
+            continue;
+        }
+        while (path.starts_with("./")) path = path.substr(2);
+        *asset = std::string{imports} + std::string{directory} + "/" + path;
+    }
+    return rebased;
+}
+
+std::string graphCanvasRefusalSentence(std::string_view notice) {
+    struct Known {
+        std::string_view code;
+        std::string_view sentence;
+    };
+    static constexpr Known known[] = {
+        {"canvas.clip_base_missing@1",
+         "is clipped, but no unclipped layer lies below it to clip to: turn its clip off or move it up."},
+        {"canvas.mask_unsupported@1", "has a mask that is not an image: only a canvas.image can be a mask."},
+        {"canvas.blend_unsupported@1", "asks for a blend the engine does not draw yet: only normal is drawn."},
+        {"canvas.op_unsupported@1",
+         "The canvas reads a filter or the backdrop, which the engine does not draw yet."},
+        {"canvas.instance_inputs_unsupported@1",
+         "An imported group takes no inputs: its definition must have no graph.input."},
+    };
+    for (const auto &each : known) {
+        if (notice.find(each.code) == std::string_view::npos) continue;
+        if (!each.sentence.starts_with("is ") && !each.sentence.starts_with("has ") &&
+            !each.sentence.starts_with("asks "))
+            return std::string{each.sentence};
+        // The layer it names, when the notice carries the refusal's detail.
+        std::string layer;
+        constexpr std::string_view key = "\"layer\":\"";
+        if (const auto at = notice.find(key); at != std::string_view::npos) {
+            const auto end = notice.find('"', at + key.size());
+            if (end != std::string_view::npos) layer = std::string{notice.substr(at + key.size(), end - at - key.size())};
+        }
+        return (layer.empty() ? std::string{"A layer "} : "Layer \"" + layer + "\" ") + std::string{each.sentence};
+    }
+    return {};
 }
 
 const std::vector<GraphCanvasSwatch> &graphCanvasSwatches() {

@@ -1002,6 +1002,8 @@ class GraphCanvasWidget final : public QWidget {
 
     GraphCanvasModel &model();
     GraphCanvasScene &scene();
+    // SG-2: the Layers dock's contents (the window docks it).
+    QWidget *canvasLayersPanel();
 };
 
 // How the Graph tab's view is set up: a press on empty canvas draws a

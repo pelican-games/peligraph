@@ -106,6 +106,8 @@ class MainWindow : public QMainWindow {
         EngineLogDock,
         FramePlanDock,
         FullscreenPassDock,
+        // SG-2: the canvas's Layers.
+        LayersDock,
         DockCount,
     };
 
