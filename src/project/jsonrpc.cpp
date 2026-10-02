@@ -213,27 +213,34 @@ RpcEventInjection parseInjectEventParams(const nlohmann::json &params) {
     };
 }
 
+// The envelope's three keys are written in place around the dumped id and
+// result. Copying the result into an ordered_json only to keep "jsonrpc", "id"
+// and "result" in that order was a deep copy of every response (FP-2). The
+// bytes are the same: a nlohmann::json object dumps with its keys sorted, and
+// the ordered copy was built by walking those same sorted keys.
 std::string serializeJsonRpcResult(const nlohmann::json &id, const nlohmann::json &result) {
-    nlohmann::ordered_json response;
-    response["jsonrpc"] = "2.0";
-    response["id"] = id;
-    response["result"] = result;
-    return response.dump();
+    std::string response{R"({"jsonrpc":"2.0","id":)"};
+    response += id.dump();
+    response += R"(,"result":)";
+    response += result.dump();
+    response += '}';
+    return response;
 }
 
+// Same envelope; the error object keeps its written order code, message, data.
 std::string serializeJsonRpcError(const JsonRpcError &error) {
-    nlohmann::ordered_json error_object;
-    error_object["code"] = error.code;
-    error_object["message"] = error.message;
+    std::string response{R"({"jsonrpc":"2.0","id":)"};
+    response += error.id.dump();
+    response += R"(,"error":{"code":)";
+    response += nlohmann::json(error.code).dump();
+    response += R"(,"message":)";
+    response += nlohmann::json(error.message).dump();
     if (error.data) {
-        error_object["data"] = *error.data;
+        response += R"(,"data":)";
+        response += error.data->dump();
     }
-
-    nlohmann::ordered_json response;
-    response["jsonrpc"] = "2.0";
-    response["id"] = error.id;
-    response["error"] = std::move(error_object);
-    return response.dump();
+    response += "}}";
+    return response;
 }
 
 } // namespace Pelican
