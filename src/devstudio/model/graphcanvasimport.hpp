@@ -18,12 +18,12 @@ namespace PelicanStudio {
 // decision 9). `references` are `project://assets/canvas/<name>`, `copies`
 // the files written, in the same order; `error` says why one was not copied
 // (not a .png / .jpg / .jpeg, unreadable). Nothing is overwritten.
-struct GraphCanvasImageImport {
+struct GraphCanvasPictureImport {
     std::vector<std::string> references;
     std::vector<std::filesystem::path> copies;
     std::string error;
 };
-[[nodiscard]] GraphCanvasImageImport importCanvasImages(const std::filesystem::path &project_root,
+[[nodiscard]] GraphCanvasPictureImport importCanvasImages(const std::filesystem::path &project_root,
                                                         const std::vector<std::filesystem::path> &files);
 // Whether a path names a picture + Image takes (by its extension).
 [[nodiscard]] bool isCanvasImageFile(const std::filesystem::path &file);

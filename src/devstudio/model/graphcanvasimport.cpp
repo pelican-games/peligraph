@@ -64,9 +64,9 @@ bool isCanvasImageFile(const std::filesystem::path &file) {
     return extension == ".png" || extension == ".jpg" || extension == ".jpeg";
 }
 
-GraphCanvasImageImport importCanvasImages(const std::filesystem::path &project_root,
+GraphCanvasPictureImport importCanvasImages(const std::filesystem::path &project_root,
                                           const std::vector<std::filesystem::path> &files) {
-    GraphCanvasImageImport result;
+    GraphCanvasPictureImport result;
     if (project_root.empty()) {
         result.error = "No project is open.";
         return result;
