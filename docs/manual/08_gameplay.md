@@ -869,7 +869,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 - **引数があると環境変数は読みません。** 環境変数が空文字列なら未設定と同じ扱いです([`audioBackendEnvironment`](../../src/player/main.cpp#L123))。
 - 値は完全一致です(`Null` や空文字列の引数は通らない。[`audioBackendKindFromName`](../../src/core/audio/audiobackendkind.hpp#L31))。それ以外の値は起動を止め、`audio.backend_unknown@1: --audio-backend must be one of: device, offline, null: <値>` で失敗します(環境変数から来たときは `--audio-backend` の所が `PELICAN_AUDIO_BACKEND` になります。[`parseAudioBackend`](../../src/player/main.cpp#L111))。
 - `device` / `offline` を名指ししても、開けなければ名指ししないときと同じく `null` へ退避し、`fallback_reason` が付きます。
-- **Studio の埋め込み player は Studio の環境を継承します**(QProcess)。Studio を `PELICAN_AUDIO_BACKEND=null` で起動すれば、埋め込み player は音を出しません。Studio の scenario driver(`tools/studio_drive.py`)は、呼び出し側が値を決めていない(未設定か空)ときに `null` を渡します([該当箇所](../../tools/studio_drive.py#L1308)、`d616e35a`)。
+- **Studio の埋め込み player は Studio の環境を継承します**(QProcess)。Studio を `PELICAN_AUDIO_BACKEND=null` で起動すれば、埋め込み player は音を出しません。Studio の scenario driver(`tools/studio_drive.py`)は、呼び出し側が値を決めていない(未設定か空)ときに `null` を渡します([該当箇所](../../tools/studio_drive.py#L1316)、`d616e35a`)。
 - **`PELICAN_WITH_AUDIO=OFF` の build** では `--audio-backend null` だけを受け付けます。`offline` / `device` は `This binary was built with PELICAN_WITH_AUDIO=OFF: --audio-backend <値> is unavailable` で起動を止めます(未知の値は、その前に `audio.backend_unknown@1`)。**環境変数は読みません**(継承した値で OFF の player が止まらないように)。
 
 どれになったかは rpc の **`get_status` の `audio`** で読めます([`audioStatusJson()`](../../src/core/communication/audiostatus.cpp#L37))。
@@ -893,7 +893,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 ### グラフで鳴らす — `audio.playback`(✅AU-1)
 
-`audio.playback` は 1 ノードで 1 つの voice です。catalog の入力と parameter は次のとおりです([登録](../../src/project/graphmodule.cpp#L815))。
+`audio.playback` は 1 ノードで 1 つの voice です。catalog の入力と parameter は次のとおりです([登録](../../src/project/graphmodule.cpp#L817))。
 
 | 種類 | 名前 | 意味 |
 |---|---|---|
@@ -919,7 +919,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 - `events` も `position` も無いノードは、**owner の最初のフレームで鳴り始め**、そのフレームから `time` 入力の時計で経過時間(写像の elapsed)を数えます([開始](../../src/core/userpublic/valuegraph.cpp#L1016))。分解版の「`events` が無ければ owner の最初のフレーム」と同じ規則です。
 - `events` が無いときの `time` は、どの時計から来てもかまいません(`time` でも `scene_time` でも、時計の無い定数でも拒否されない)。
 - `time` は必須のままです。`events` を繋ぐなら `time` は `scene_time` だけから、の検査(`audio.clock_mismatch@1`、下の「状態と拒否」)も変わりません。
-- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L3485)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。✅UX-8 から、palette の `audio.volume` / `audio.pitch` は置く前に駆動する voice(scope の `audio.playback`)を聞き、その `voice` からの線と、`value` に 1 の `value.constant` をつないだ形で置かれます。palette の `value.curve`(`time` が `scene_time` につながった、1 秒で 0 から 1 の key)を `value` へ線で落とせば、下の「フェード」の形になります。音声の file は Studio の File ▸ Import Sound… か Sound の欄の Import… で project の `assets/audio/` に写せます(同じ名前があれば `_2`)。どれも [第13章](13_editor.md) の「音の node を置く・音声を Import する(✅UX-8)」です。
+- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L3512)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。✅UX-8 から、palette の `audio.volume` / `audio.pitch` は置く前に駆動する voice(scope の `audio.playback`)を聞き、その `voice` からの線と、`value` に 1 の `value.constant` をつないだ形で置かれます。palette の `value.curve`(`time` が `scene_time` につながった、1 秒で 0 から 1 の key)を `value` へ線で落とせば、下の「フェード」の形になります。音声の file は Studio の File ▸ Import Sound… か Sound の欄の Import… で project の `assets/audio/` に写せます(同じ名前があれば `_2`)。どれも [第13章](13_editor.md) の「音の node を置く・音声を Import する(✅UX-8)」です。
 
 下の例は `events` で鳴らす形です。
 

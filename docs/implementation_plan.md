@@ -27483,6 +27483,60 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - **test**: `devstudio_graphcanvas_scene_test` の `UX-11 decisions 1 and 4`([test](../test/devstudio_graphcanvas_scene_test.cpp#L10482))、`devstudio_pass_forms_test` の `UX-11 decision 2`。UX-4a の pass forms の test と fullscreen pass の test は Tags の部品に合わせて直した
 - **新しいファイル**: `src/devstudio/view/graphcanvastagpicker.{hpp,cpp}`、`src/devstudio/view/graphcanvasmaterialfields.{hpp,cpp}`(どちらも library `pelican_studio_view`)
 - **シナリオ**: `graph_from_blank`(35 → 48)。本数は 58 のまま
+
+### UX-12c: Materials drawn を実物に、screen_inputs / surface_resources の名前を engine の一覧から(engine MP-1 の Studio 側)
+
+**Studio のみ(engine は MP-1 `afd923e1`)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「Materials drawn を実物で、binding の名前を engine の一覧から(✅UX-12c)」、シナリオの `gui_build_D`。**
+
+#### 前提
+- UX-11 の Materials drawn は Tags と Variant から推した近似で、deferred の pass に組み込みの transparent が出るなど外れていた。`MaterialSettingsForm` の `screen_inputs` / `surface_resources` の名前は Studio の固定の表だった(仕様の背景)
+
+#### 着地(2026-10-02、708c4055)
+- **決定 1(Materials drawn)**: plan の pass が `drawn_materials` を持てば、Graph の material pass の欄の Materials drawn をその material と draws の表に(名前が重なれば `<名前> (material <id>)`、名前が無ければ `material <id>`、組み込みは ` (built in)`。[描いた material の表を作る所](../src/devstudio/view/graphcanvasmaterialfields.cpp#L398))。見出しは `Materials drawn as of frame N -- M draw(s)`、truncated なら ` (first 256 shown)` の形。持たない間(publish の後にまだ frame が無い、MP-1 の前の engine)は近似のまま、見出しが `the engine has not said what it drew` を言い、plan を poll で最大 12 回読み直す。行は今どおり Frame Plan の Materials へ
+- **決定 2(Frame Plan)**: material pass の詳細に `Materials drawn` のグループ(`N material(s), M draw(s) (frame F)`)。Materials のタブに `Drawn` の列と、描いた material ごとの行(`drawn by <pass>, N draw(s)`)
+- **決定 3(binding の名前)**: Graph の欄の `MaterialSettingsForm` の名前の combo を catalog の `material_pass_contracts` の一覧から(固定の表は一覧の無い engine のときだけ)。Reads を名前の `source_type` と同じ semantic type の target に絞る(型の分からない target は残す)。Graph で Reads が空の binding は送らない(以前は送って毎回断られていた)。Pass Editor の form には一覧を渡していない(固定の表のまま。コードの読み)
+- **決定 4(シナリオ)**: `gui_build_D` の後半に、`get_frame_plan` の `drawn_materials[1].material` が `pelican.primitive.default`、Materials drawn の見出しが `as of frame`、行が `pelican.primitive.default (material 1)` / `(material 2)` で `pelican.builtin.transparent (built in)` が無いこと、Add binding の名前を一覧の `linear_view_depth` から選ぶこと。`graph_from_blank` は変えていない
+- **test**: `devstudio_graphcanvas_scene_test` の `UX-12c decision 1` / `3`([decision 1](../test/devstudio_graphcanvas_scene_test.cpp#L10635))、`devstudio_frameplan_graph_test` の `UX-12c decision 2`
+- **シナリオ**: `gui_build_D`(85 → 99)。実装者の run で `gui_build_D` と `graph_from_blank` が緑。本数は 59 のまま(UX-10 の `gui_settings_choose` で 59。UX-10 の完了の行はこの台帳に無い)
+
+### UX-12a: Graph の node の欄を engine の parameters の表から作る(engine CT-3 の Studio 側)
+
+**Studio のみ(engine は CT-3 `0d215a68`)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「node の欄を catalog の表から作る(✅UX-12a)」と「palette で置くときに、要る parameter を先に聞きます」、シナリオの `gui_node_parameters`。**
+
+#### 前提
+- Graph の op の parameters の多くは、詳細表の JSON の行か値の帯の型推定でしか触れなかった(`pose.clip_sample` の start_time / root_motion、`value.trigger_clock`、置いた後の `render.buffer` の size / lifetime など)。UX-7 / UX-8 の必須ダイアログは Studio の表、UX-10 の pose の欄は Studio が glTF を読んで作っていた(仕様の背景)
+
+#### 着地(2026-10-02、ac7c5250)
+- **決定 1(汎用の欄)**: op の `parameters` から 1 件 1 行([node の parameter の欄 `GraphCanvasParameterFields`](../src/devstudio/view/graphcanvasparameterfields.hpp#L152))。kind ごとの部品(number / integer は UX-10 の spin と、min と max が近ければ slider。spin は範囲で止めない)、bool / enum / string / color / vec、asset は project の file と Import…、shader、node_ref、object の fields と map / array の行、ƒ の式、json。`default` と違えば Reset(鍵を消す)。専用の欄を持つ op は More parameters の下に、専用の欄が出さない名前だけ。変更は parameters 全体の `set_node_parameters` 1 回、spin の動きは 150 ms まとめる
+- **決定 2(必須)**: `required` に ` *`、空なら赤と `Required: …`。palette の必須ダイアログを表から作り、`alternatives` は radio、入力 port でもある候補(voice)は `or connect a line …`。Studio の表 `requiredParameters()` を消した(catalog が `parameters` を出さない engine ではダイアログが出ない。コードの読み)
+- **決定 3(値の帯)**: 帯のその場編集は表の kind を先に(integer は小数無しで整数として送る、enum は表の値の一覧)。表に無い名前だけ値の JSON の型から推す
+- **決定 4(拒否の文)**: `graph.render_node_parameter_invalid@1` を `<node>.<parameter> must be <expected> (<why>)` に(`wrong type` / `one of: …` / `range: min..max` / `range: at least …` / `range: at most …`)。編集した scope のその node の欄の行を赤く、下に同じ文。入れ子の道は中の field も赤く。次の commit で消える
+- **決定 5(pose.clip_sample)**: UX-10 の Pose の欄を汎用の欄の上に載せ替え(`pelican.graphCanvasPose.<parameter>`)。clip だけ rig の glTF の animation の名前の combo(Studio の知識)。start_time / root_motion / root_node も欄に。作りかけの New definition… の名前の行が閉じなくなった
+- **決定 6(シナリオ)**: 新しい `gui_node_parameters`(Blank → `render.buffer` の size / lifetime、範囲外の −4 の拒否と赤い行、Reset、`value.trigger_clock` の paused、definition の中の `pose.clip_sample` を rig の Import… と clip の `Run` で置き、speed / loop / start_time)。JSON を打たない
+- **engine の表で足りない所**: `parameters_complete: false` の 5 op はどれも専用の欄の op で、表に無い鍵は詳細表の JSON の行のまま。CT-4(`4d682338`。UX-12a の後に着地)の `choices_from` / `asset_kind` / `soft_min` / `soft_max` / `placement` は読んでいない
+- **test**: `devstudio_graphcanvas_scene_test` の `UX-12a decision 1` / `2` / `3` / `4`([decision 1](../test/devstudio_graphcanvas_scene_test.cpp#L10873))。`devstudio_graphcanvas_test` の UX-8 decisions 7 and 13 は、`audio.volume` の必須が表の `target`(voice は線の代わり)になった期待に直した
+- **新しいファイル**: `src/devstudio/view/graphcanvasparameterfields.{hpp,cpp}`(library `pelican_studio_view`)
+- **シナリオ**: `gui_node_parameters`(新。122 step)。実装者の run で `gui_build_curve`・`gui_build_music` と合わせて緑。本数は 59 → 60
+
+### UX-12b: engine が「何が要るか」を返す拒否を 1 回の操作で直す(engine FR-1 / FR-2 の Studio 側)+ 全シナリオの run で古くなった 4 本の期待
+
+**Studio のみ(engine は FR-1 `45ca769b`・FR-2 `0b15fb62`)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「feature が要るものを足す前に言い、1 回の押下で直す(✅UX-12b)」と「Studio の Rendering settings タブ」の Snapshots / Material route default、シナリオの `gui_settings_choose`。**
+
+#### 前提
+- UX-10 の `gui_settings_choose` で、Blank → Graph の pipeline に `sky_ambient` を足す / `cascade_count` を 3 にする / Snapshot を足す、が engine に断られた。engine は文書に無い target を黙って作らず、断るときに何が要るかを返す方針(FR-1。仕様の背景)
+- 統合側の全シナリオの run(develop `f19fc221` 相当)で 4 本の期待が古くなっていた(仕様)
+
+#### 着地(2026-10-02、99f645fb)
+- **決定 1(要る target)**: Add の後に catalog の `required_targets` を読み、足りない target を `<feature> needs … Add them with the feature?` と **Add with targets** で言う。押すと `edit_render_targets` → root の `render.target_ref`(`edit_graph_document`)→ `edit_render_features` の add を順に送り、途中で断られたら逆の順に戻す(1 ticket ではない)。`feature.required_target_missing@1` の拒否にも同じボタン([足りない target を選ぶ `missingRequiredTargets()`](../src/devstudio/model/featurerefusalfix.hpp#L39))
+- **決定 2(挿入先)**: FR-2 の `insertion` の anchor が authoring context の passes にも Graph の root の node にも無ければ(engine の canonical anchor は常にある扱い)、target より先に `<feature> goes after <anchor>, which this pipeline does not have. Place Deferred lighting first.` と **Place Deferred lighting in the Graph**。押すと Graph タブに `<anchor>` の fullscreen pass を置き、New… をその名前の雛形で開く(UX-5b の道)。`feature.insertion_anchor_missing@1` と、FR-2 の無い engine の文 `insert anchor was not found: <anchor>` にも同じボタン
+- **決定 3(snapshot の after)**: Rendering settings の Snapshots の after を `snapshot_after_candidates` の combo に(候補を返さない engine では `post_ldr` だけ)。`snapshot.after_unknown@1` は候補を並べた 1 文
+- **決定 4(cascade の型)**: `graph.target_ref_type_mismatch@1` に `expected` があれば **Fix: make <target_ref> <形> <種類> (<N> layers)**。押すと `replace_node` 1 回で型を書き換え、断られた Parameters の変更をもう一度送る
+- **決定 5(route の文)**: `material_route_unserved@1` を `No forward material pass serves the route, so it stays on auto — add a forward material pass first.` に
+- **決定 6(4 本の期待)**: `deferred_loop_from_scratch` は光の向きの Raw を開く手を足した、`menu_actions` は File の 5 項目、`gui_build_optimize` は Draw sort を provider 名の `state_batched_v1 / back_to_front_v1` で選ぶ、`loop_zone_wire` は Studio を直した: Frame Plan の `Loop <loop>: its copies are picked.` を、plan の読みに続く authoring context と task の一覧の返事の populate() が数 ms で上書きしていた。回が選ばれている間は戻す(test 1 本)
+- **止まった所(engine)**: `gui_settings_choose` の Blank → Graph の pipeline で、`sky_ambient` は Place と Add with targets の後も `Pass input target is not produced as an earlier output: scene_depth` で断られ(宣言しただけで誰も書かない target は読めない)、パネルが足したものを戻す。`cascade_count` 3 は Fix の `edit_graph_document` が `graph type mismatch at deferred_lighting.shadow_map from shadow_map_ref.resource` で断られる(lighting の pass が 2D の depth 入力を宣言。型と cascade_count はどちらを先に送っても単独では通らない)。どちらも engine の FR-3(未着地)待ちで、cascade には複数の編集を 1 回で受ける `edit_batch` が要る(commit の記録)。シナリオはこの 2 つの拒否を期待として待つ
+- **test**: `devstudio_rendering_settings_test` の `UX-12b decision 1`〜`5`([decision 1](../test/devstudio_rendering_settings_test.cpp#L863))、`devstudio_frameplan_graph_test` の `UX-12b decision 6`
+- **新しいファイル**: `src/devstudio/model/featurerefusalfix.{hpp,cpp}`(library `pelican_studio_inspector_model`)
+- **シナリオ**: `gui_settings_choose`(136 → 175)、`deferred_loop_from_scratch`(116 → 118)、`menu_actions` / `gui_build_optimize`(step の数は同じ)。実装者の最後の scenario の run では `deferred_loop_from_scratch`・`gui_build_optimize`・`loop_zone_wire`・`menu_actions` が緑で、`gui_settings_choose` は FR-2 の順(挿入先を先に)に書き直す前の形で落ちていた。今の形を流した記録は見当たらない(未確認)。本数は 60 のまま
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
