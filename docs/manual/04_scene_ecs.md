@@ -231,7 +231,11 @@ CameraComponent 自体は**マーカー**です。マーカーコンポーネン
 | `layer` / `mask` | 任意 uint32(既定 `1` / `0xffffffff`)。query と reciprocal に一致した collider だけ対象 |
 | `trigger` / `one_way` | 任意 bool(既定 false)。query metadata。イベント/方向 policy 自体は別層 |
 
-旧名 `size` / `height` は半分値の新名を案内する hard error です。オブジェクトに `transform` があれば移動に追従します。クエリ(raycast / overlap / shapeCast)は [第8章](08_gameplay.md) を参照してください。なお `PELICAN_WITH_PHYSICS=OFF` ビルドでは collider を含むシーンはロードの prepare 段で `physics.module_unavailable@1` になります(パージ可能境界。§4.3。✅PG-1)。
+旧名 `size` / `height` は半分値の新名を案内する hard error です。オブジェクトに `transform` があれば移動に追従します。クエリ(raycast / overlap / shapeCast)は [第8章](08_gameplay.md) を参照してください。
+
+**クエリの間で collider の配列を共有します(`8bde3c2f`。利用者の codex の変更、handoff 04)。**クエリは、collider の定義と今の transform から検証済みの collider の配列を作って判定します。前はクエリのたびに全部を作り直していましたが、今は作った配列を次のクエリでも使います([`PhysWorld::colliderSnapshot()`](../../src/core/phys/physworld.cpp#L469))。毎回のクエリで各 collider の今の transform を読み、前に作ったときの値と bit で比べ、1 つでも違えば(entity が消えて transform が引けなくなった場合も)作り直します。collider の束縛を変える操作(シーンの公開・`clear`・collider の束縛)では捨てます。なので同じ frame の中で ECS の transform を直接書き換えても、次のクエリに出ます(コードの注記と test)。mesh の collider の扱いと、最も近い hit の選び方は変えていません。codex の報告と commit の説明では、512 collider に 200 本の ray で 50.7 ms → 26.4 ms(Release、前後 3 組の中央値)です。全部が当たるよう ray の上に球を並べた人工的な負荷で、collider が動かない条件の値です。collider が多く動く条件では測っていません。test: `physworld_test` の [「PhysWorld snapshot follows same-frame writes and binding cutovers」](../../test/physworld_test.cpp#L1150)。
+
+なお `PELICAN_WITH_PHYSICS=OFF` ビルドでは collider を含むシーンはロードの prepare 段で `physics.module_unavailable@1` になります(パージ可能境界。§4.3。✅PG-1)。
 
 ### animation(✅WP38)— スケルタルクリップ再生
 
@@ -381,6 +385,12 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 9. **finish**: 生成済み entity のトークンを確定します。
 
 2〜9 の 8 段が [SceneLoadPhase](../../src/core/loader/sceneload.hpp#L27) の 8 値(`prepare` / `early_publish` / `publish` / `activate` / `commit_metadata` / `retire` / `flush` / `finish`)にそのまま対応します(1 は executor に入る前の解釈レイヤなので phase ではありません)。ロード結果に付く phase trace は内部の順序検証(と fault injection)のためのもので、rpc には出ていません。
+
+**モデルのインスタンスの枠(`8bde3c2f`。利用者の codex の変更、handoff 05)。**同時に置けるモデルのインスタンスは今までどおり 1,024 で、それを超えると `Model instance capacity exceeded` です。一方、内部の物理的な slot は 2,048 にしました([インスタンスの上限](../../src/core/renderer/polygoninstancecontainer.cpp#L28))。prepare で新しいシーンの候補を作る間も、公開中の旧シーンの slot は rollback のために残るので、旧と新の合計が 1,024 を超えると置き換えができなかったためです(codex の報告では、約 1,000 model のシーンの最初の再読込で起きていました)。
+
+- 置き換えの準備の時に、前に retire した世代が回収されずに残っていれば(frame を挟まずに `load_scene` を続けた場合)、GPU の完了を待って(`waitIdle`)から回収します。公開中の世代は置き換えが commit するまで回収しません([連続した load で古い世代を回収する所](../../src/core/renderer/polygoninstancecontainer.cpp#L576))。
+- 代わりに払うもの: device の buffer が 18.2 MiB 増えます(うち skin palette の 2 本で 16 MiB。commit の説明の値)。連続した load では必要に応じて GPU を待ちます。frame ごとの新しい待ちは足していません(codex の報告)。
+- codex の報告では、998 個の cube と Anchor・Camera の 1,000 object のシーンで、前は 3 回とも最初の再読込が失敗し、今は 3 回とも 6 回の再読込が通りました。test: `modelinstance_slotmap_test` の [「Full-capacity scene replacement keeps rollback slots and reclaims older generations」](../../test/modelinstance_slotmap_test.cpp#L390)(1,024 個のモデルで候補の作成・公開後の rollback・frame を挟まない 3 回の置き換え。報告では GPU の test)。
 
 > **ビルドから外した機能を要求するシーンは prepare で止まります(✅AG-1b / ✅PG-1)。** `PELICAN_WITH_ANIMATION=OFF` のビルドで `animation` コンポーネントを含むシーンをロードすると、**2 の prepare 段**で `animation.module_unavailable@1`(オブジェクト名入り)になります。`PELICAN_WITH_PHYSICS=OFF` のビルドの `collider` も同じ形で `physics.module_unavailable@1` です。どのコンポーネントがどの機能を要るかは codec の `required_feature` が持ち、判定は [`resolvedObjectFeatureRefusal()`](../../src/core/loader/resolvedscene.cpp#L78) の 1 か所です。エディタの `add_component` / `spawn` も同じ関数を呼ぶので、ロードで拒否されるものは編集でも同じ名前で拒否されます。commit 前なので**ロールバックの契約に乗り**、稼働中の旧シーンはそのまま残ります —— 「読めたが誰も評価しないので rest pose のまま動かない」という状態を作りません。コンポーネントの **codec は OFF でも残る**ので、ツールは同じビルドでシーンを読み書きできます(読めることと動かせることを分けています)。
 

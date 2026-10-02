@@ -389,7 +389,7 @@ void updateFrameState() {
 - **位置が固定**: reload公開の後、`freeze_events` の直前。windowed / headless固定フレーム / RPC `step_frame` の全loop面で同じ位置です。
 - **未設置ならzero-state no-op**: hookが無い場合、moduleを生成せずmodule graphも変えません。
 
-実装者は現在 [`EditorJournal` の登録箇所](../../src/core/communication/editorjournal.cpp#L4327) の1箇所だけです。
+実装者は現在 [`EditorJournal` の登録箇所](../../src/core/communication/editorjournal.cpp#L4341) の1箇所だけです。
 
 > **設計決定:** 編集の公開点をフレーム境界の1箇所へ寄せることで、「エディタが動いていないビルド／セッションでは編集面が存在しない」状態を保っています。§2.4 のwindowed RPC dispatch（`updateFrameState()` の直後）と合わせて読むと、リクエスト受理→次フレーム冒頭で公開、という往復になります。
 
@@ -410,9 +410,9 @@ ECSCore::update()
 
 **再生のセッション(✅PM-2)。**`changePlayState()` の外側、[`set_play_state` の handler](../../src/core/communication/rpcserver.cpp#L2094) が、`edit` との間の移りを「セッション」として包みます。セッションの持ち物は endpoint の `Impl` が 1 つ持つ [`internal::PlaySession`](../../src/core/communication/playsession.hpp#L51) です。
 
-- **始める(`edit` → `playing` / `paused`)**: [`requireNoPendingSceneEdit()`](../../src/core/communication/rpcserver.cpp#L972) が受け付けたまま commit されていない ticket と開いた preview を `play_busy` で断る → game logic の DLL を読んでいれば、[replay / golden の driver でないとき](../../src/core/communication/rpcserver.cpp#L2173)に reload する(reload service があれば `applyRuntimeNow`。失敗はその code で断り、セッションは始まらない)→ 今の scene があれば [`PlaySession::begin()`](../../src/core/communication/playsession.cpp#L18) が authoring の文書・`currentSceneId()`・editor の [`snapshotHistory()`](../../src/core/communication/editorjournal.cpp#L4973)(journal・last_writers・undo / redo の stack)と、そのときの journal の長さを取る → `changePlayState()` の作り直し。作り直しが投げたら `discard()` で捨てる
+- **始める(`edit` → `playing` / `paused`)**: [`requireNoPendingSceneEdit()`](../../src/core/communication/rpcserver.cpp#L972) が受け付けたまま commit されていない ticket と開いた preview を `play_busy` で断る → game logic の DLL を読んでいれば、[replay / golden の driver でないとき](../../src/core/communication/rpcserver.cpp#L2173)に reload する(reload service があれば `applyRuntimeNow`。失敗はその code で断り、セッションは始まらない)→ 今の scene があれば [`PlaySession::begin()`](../../src/core/communication/playsession.cpp#L18) が authoring の文書・`currentSceneId()`・editor の [`snapshotHistory()`](../../src/core/communication/editorjournal.cpp#L5012)(journal・last_writers・undo / redo の stack)と、そのときの journal の長さを取る → `changePlayState()` の作り直し。作り直しが投げたら `discard()` で捨てる
 - **再生中**: 記録は別に持たず、[`PlaySession::recordedEdits()`](../../src/core/communication/playsession.cpp#L32) が journal の起点より後を毎回読みます。`undo` / `redo` の項目は `source_transaction_id` が記録の行を指せばその行を消し、指さなければ自分を積みます。`get_status.play` の `session` / `recorded_edits` はこれです。[`refuseDuringPlaySession()`](../../src/core/communication/rpcserver.cpp#L1019) を `load_scene` が自分で、`save_scene` / `import_scene_snapshot` が editor の RPC の hook `refuse_during_play_session` から呼び、`play_session_active` で断ります
-- **終える(→ `edit`)**: `keep` の形を読み([`parsePlaySessionKeep()`](../../src/core/communication/rpcserver.cpp#L991))、`play_busy`、[`PlaySession::keptRecords()`](../../src/core/communication/playsession.cpp#L55) が記録に無い transaction_id を `play_keep_unknown_transaction` で断る → [セッションを終える所](../../src/core/communication/rpcserver.cpp#L2227)で `changePlayState()` を呼び、渡す関数の中で preview を中止し、[`Audio::stopAll()`](../../src/core/audio/audio.cpp#L850) で音を全部止め、セッションがあれば保存した scene を [`ProjectBasicConfig::prepareRestoredSceneMetadata()`](../../src/core/loader/basicconfig.cpp#L907) の token で `SceneLoadRoot::rpc` の読み込みにかける(無ければ PM-1b のとおり今の authoring から作り直す)→ [`restoreHistory()`](../../src/core/communication/editorjournal.cpp#L4982) で履歴を戻す → `keep` があれば [`replayJournalRecords()`](../../src/core/communication/editorjournal.cpp#L4990) で当て直し、`not_kept` と `kept_transaction_id` を返す
+- **終える(→ `edit`)**: `keep` の形を読み([`parsePlaySessionKeep()`](../../src/core/communication/rpcserver.cpp#L991))、`play_busy`、[`PlaySession::keptRecords()`](../../src/core/communication/playsession.cpp#L55) が記録に無い transaction_id を `play_keep_unknown_transaction` で断る → [セッションを終える所](../../src/core/communication/rpcserver.cpp#L2227)で `changePlayState()` を呼び、渡す関数の中で preview を中止し、[`Audio::stopAll()`](../../src/core/audio/audio.cpp#L850) で音を全部止め、セッションがあれば保存した scene を [`ProjectBasicConfig::prepareRestoredSceneMetadata()`](../../src/core/loader/basicconfig.cpp#L911) の token で `SceneLoadRoot::rpc` の読み込みにかける(無ければ PM-1b のとおり今の authoring から作り直す)→ [`restoreHistory()`](../../src/core/communication/editorjournal.cpp#L5021) で履歴を戻す → `keep` があれば [`replayJournalRecords()`](../../src/core/communication/editorjournal.cpp#L5029) で当て直し、`not_kept` と `kept_transaction_id` を返す
 - 順が設計([design_play_mode.md](../design_play_mode.md) §6.3)と違い、runtime を作ってから履歴を戻して当て直します。当て直しは editor の edit と同じく runtime の射影まで通るので、戻した authoring から作った `edit` の runtime が先に要るためです
 - `--start-state` を省いた起動の最初の `playing` にはセッションが無いので、最初の Stop は作り直すだけです。scene の無い engine もセッションを作りません
 
@@ -568,6 +568,7 @@ flat / xr の `RenderingPassId` に対して、preview は**データだけの�
 - コンパイルは起動時、runtime moduleが凍結される前です。[`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L415) が [`precompilePreviewGraph()`](../../src/core/renderingpass/previewgraph.hpp#L66) を呼び、結果を `Renderer` の [`preview_graph_program`](../../src/core/vkcore/renderer.hpp#L195) が保持します。
 - 共有のrender target / pass登録は**意図的に行いません**。ヘッダのコメント通り、`render_preview` がリクエストローカルな資源に対して実行するため、`Renderer::renderLogicalFrame()` には入りません。
 - 実行と隔離キャプチャは [`PreviewExecutor`](../../src/core/vkcore/previewexecutor.hpp#L61) が担当します。
+- ✅PV-1(`a173e70c`)から、preview を組めなくても起動は失敗しません。`preview_graph_program` は `available: false` と理由を持つ空の program になり、flat / xr は通常どおり公開されます。起動の log に warning が 1 行出て、`render_preview` は `preview.unavailable@1` で断ります(第6章「graph variant: flat、`#xr`、preview」の PV-1 の段落)。
 
 つまりpreviewは「フレームループの外側で、同じ宣言から作った別プログラムを動かす」構造で、通常フレームの決定性やtemporal historyへは触れません。
 

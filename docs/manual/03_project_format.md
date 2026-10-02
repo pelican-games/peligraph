@@ -186,7 +186,7 @@ Studio は engine を `--rpc` で起こし、`--rpc` の engine は宣言が無�
 - `--rpc` の下で宣言した場所から反映されるのは、texture・material の値の文書・model・shader とその依存です。**render 文書(rendering config / preset / feature)は watcher からは反映されません**。`--rpc` の engine では render 文書は `reload_render_documents`(Studio が送ります。[第13章](13_editor.md))が持つためです([除外する所](../../src/core/watch/reloadservice.cpp#L902))。
 - **宣言は起動時に 1 回だけ読みます**([`ReloadService::setup()`](../../src/core/watch/reloadservice.cpp#L870))。書き換えたら engine を起こし直してください。Studio に宣言を切り替える画面はまだありません(project.json を手で書きます)。
 
-拒否は 1 つの code `project.hot_reload_invalid@1` で、文言が種類を言います。検査は封筒の parser(`parseProjectEnvelopeJson()`)の中の 1 か所なので、player の起動・engine の `basicconfig.cpp`・`pelican_cli dist-config`・Studio の project の読み込み([project.cpp](../../src/devstudio/model/project.cpp#L143))など、この parser を通る読み手はどれも同じ文言で断ります。
+拒否は 1 つの code `project.hot_reload_invalid@1` で、文言が種類を言います。検査は封筒の parser(`parseProjectEnvelopeJson()`)の中の 1 か所なので、player の起動・engine の `basicconfig.cpp`・`pelican_cli dist-config`・Studio の project の読み込み([project.cpp](../../src/devstudio/model/project.cpp#L145))など、この parser を通る読み手はどれも同じ文言で断ります。
 
 | 書いたもの | 文言 |
 |---|---|
@@ -439,6 +439,18 @@ example の README にあった手書き sha256 表の役目は、この manifes
 ### シーンはホットリロード対象ではない
 
 シーン JSON はファイル監視の対象外です([第10章](10_tools.md) §10.5)。書き戻しの経路は保存 API(rpc の `save_scene`)だけで、これは rpc の `get_status` にも `scene_source: {"hot_reload": false, "save_method": "save_scene"}` として現れます。
+
+### transform を 1 つ変える編集は、受付の検査を実行時に使い回す(`8bde3c2f`)
+
+利用者の codex が書いた変更です(handoff 01)。編集(`edit`)の ticket は、受付の時に操作を使い捨ての文書へ当ててみて検査し、フレーム境界で実行するときにもう一度同じ検査をしていました。次の条件をすべて満たす編集では、受付で作った検査済みの結果を実行時にそのまま使います([受付で検査結果を残す所](../../src/core/communication/editorjournal.cpp#L4506)、[実行時に使い回す所](../../src/core/communication/editorjournal.cpp#L4181))。
+
+- 操作が 1 つで、`set_component_value` の `component_slot: "transform"`、宛先を `object_id` で指す(`address` ではない)
+- シーン文書が prefab を使っていない
+- 受付の前後と実行時で、authoring の文書と resolved scene の組が同じもの
+
+組が同じかは revision や resolver の世代の番号ではなく、組を作るたびに新しく作る識別子([`snapshot_identity_`](../../src/core/loader/resolvedscene.hpp#L331))で見ます。番号が同じ別の組に置き換わっていれば、今までどおり検査し直します。受付の検査は全部残り、実行時の gate・scene・revision・CAS・preview lease の検査と、実際の投影の commit も残ります(コードの注記)。構造の変更・behavior・prefab・複数の操作の編集は今までの道です。
+
+codex の報告と commit の説明では、10,000 object のシーンで transform の編集 1 回(受付 + `step_frame` での適用 + 結果の取得)が 1,102 ms → 751 ms です(Release、前後 3 組の中央値)。改善後も数百 ms かかり、対象を絞った作り直しは今後の課題と報告にあります。test: `editorjournal_test` の [「Transform preflight reuse preserves commit journal undo and redo」](../../test/editorjournal_test.cpp#L2454) ほか `Transform preflight` で始まる 5 本(失敗の扱い、番号が同じ別の組、古くなった待ちの編集、受付の後に取られた preview lease)。
 
 編集操作・リビジョンの排他制御・プレビュー・rpc メソッドの詳細は [第10章](10_tools.md) と [第13章](13_editor.md) を参照してください。
 

@@ -226,7 +226,7 @@ engine は RPC の `set_play_state` で一時停止でき、`advance_frames` で
 | `ctx.animation().setParameter` / `forceState` | `PELICAN_WITH_ANIMATION=OFF` | 例外ではなく `Animation::Status::not_found`。シーンのロード/破棄トランザクションの中では、ON の build と同じく `phase_order_error` |
 
 - `BuildFeatureCallDisabledError` は `BuildFeatureDisabledError` の派生です。PG-2 より前から `BuildFeatureDisabledError` や `std::runtime_error` で受けていたコードは、そのまま受け取れます。名前で分岐したいときは `code()` を見てください。型の定義は [build_features.hpp](../../src/core/build_features.hpp#L45)、`phys::ProviderUnavailableError` は `gamecontext.hpp` が include している `phys/physquery.hpp` にあります。
-- provider 0 本の build では、トリガー更新は例外を投げません。`OverlapEnter` / `OverlapExit` を出さず、それまでの overlap の組をそのまま持ち続けます([physworld.cpp のコメント](../../src/core/phys/physworld.cpp#L564))。
+- provider 0 本の build では、トリガー更新は例外を投げません。`OverlapEnter` / `OverlapExit` を出さず、それまでの overlap の組をそのまま持ち続けます([physworld.cpp のコメント](../../src/core/phys/physworld.cpp#L609))。
 - `PELICAN_WITH_PHYSICS=OFF` の build の rpc `raycast` は、PG-2b から stub の [`PhysWorld::raycastClosest()`](../../src/core/phys/physworld_stub.cpp#L108) に問い合わせず、params を見る前に上の JSON-RPC error で断ります。PG-2b より前は stub の空の答えがそのまま `{"hit": null}` になり、「外れ」と区別できませんでした。
 - activate 相(`onInit`)と、ロードの外の通常の呼び出しは、PG-2b の後も上の表のとおり投げます。空で答えるのは `onDestroy` の中だけです([規則のコメント](../../src/core/userpublic/gamecontext.hpp#L43))。
 - 残した穴: `render()` の `setRayTracingDispatchExtent` / `setRayTracingCallableRecord` は、scene のトランザクション中の呼び出しを `SceneTransactionMutationRejected` で投げます([トランザクション中の拒否](../../src/core/userpublic/gamecontext.cpp#L298))。PG-2b の包みの外なので、ロード中の `onDestroy` から呼ぶと `std::terminate` になりえます(コードからの推論。実行では未確認)。
@@ -723,7 +723,7 @@ ctx.loadScene("scene_flow_second");   // 予約(名前はその場で検証。�
 
 ## 8.8 物理クエリとトリガー(✅P1/P2/WP107/179)
 
-> **設計決定:** ランタイム物理シミュレーションは「やらない」ではなく「**後**」(2026-07-07 決定)。現在あるのは raycast / overlap / shapeCast の **query world**(collider の配置だけを持ち、問い合わせに答える世界。速度や力を積分して物を動かす step は持たない — [physworld.hpp](../../src/core/phys/physworld.hpp#L42) の公開面はバインドとクエリだけ)。Jolt は query provider として実装済みですが、剛体 step/constraint を持つシミュレーションは未実装です。映像用の破壊・布は Houdini ベイク(transform_seq / VAT)レーンが担当([第5章](05_assets.md))。
+> **設計決定:** ランタイム物理シミュレーションは「やらない」ではなく「**後**」(2026-07-07 決定)。現在あるのは raycast / overlap / shapeCast の **query world**(collider の配置だけを持ち、問い合わせに答える世界。速度や力を積分して物を動かす step は持たない — [physworld.hpp](../../src/core/phys/physworld.hpp#L43) の公開面はバインドとクエリだけ)。Jolt は query provider として実装済みですが、剛体 step/constraint を持つシミュレーションは未実装です。映像用の破壊・布は Houdini ベイク(transform_seq / VAT)レーンが担当([第5章](05_assets.md))。
 
 - collider はシーン JSON のコンポーネントとして定義します([第4章](04_scene_ecs.md) §4.2)。**collider を持つオブジェクトには `name` が必須**です。
 - ゲームコードから:
@@ -810,7 +810,7 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 2. 入力はフレーム頭のスナップショットで凍結(WP37)—— フレーム開始時に、前フレーム以降に OS から届いた入力を 1 回だけ切り出し([beginFrame](../../src/core/os/inputstate.cpp#L417))、そのフレーム中は誰が何度読んでも同じ値です(途中で届いた入力は次フレームの分として待ちます)
 3. システム実行順 = order → 名前の辞書順
 4. イベント配送 = 次フレーム頭・emit 順
-5. 物理のタイブレーク(同じ距離・同じ TOI に並んだヒットの順序決め)= stable `ColliderId` → entity 世代 → shape ordinal(名前は最終手段)。無フィルタ専用だった単引数版 `raycastClosest(ray)` は廃止され、[`raycastClosest(ray, filter = {})`](../../src/core/userpublic/gamecontext.hpp#L56) 1 本になりました(filter を省いても規則は同じ。「フィルタ無しで全 collider」が要るときは `phys::every_collider_filter` を渡します)。最近傍 1 件を選ぶときの同距離クラスタの決着だけは、どの filter でも文字列 id の昇順です([physworld.cpp](../../src/core/phys/physworld.cpp#L591))
+5. 物理のタイブレーク(同じ距離・同じ TOI に並んだヒットの順序決め)= stable `ColliderId` → entity 世代 → shape ordinal(名前は最終手段)。無フィルタ専用だった単引数版 `raycastClosest(ray)` は廃止され、[`raycastClosest(ray, filter = {})`](../../src/core/userpublic/gamecontext.hpp#L56) 1 本になりました(filter を省いても規則は同じ。「フィルタ無しで全 collider」が要るときは `phys::every_collider_filter` を渡します)。最近傍 1 件を選ぶときの同距離クラスタの決着だけは、どの filter でも文字列 id の昇順です([physworld.cpp](../../src/core/phys/physworld.cpp#L636))
 6. 乱数 = PCG32 + 固定シード(`basic_config.seed` / `ctx.setSeed` / rpc `set_seed`)
 7. シーン切替 = フレーム境界適用
 8. ヘッドレス実行 = 固定ステップ時刻(dt = 1/fps)
@@ -919,7 +919,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 - `events` も `position` も無いノードは、**owner の最初のフレームで鳴り始め**、そのフレームから `time` 入力の時計で経過時間(写像の elapsed)を数えます([開始](../../src/core/userpublic/valuegraph.cpp#L1024))。分解版の「`events` が無ければ owner の最初のフレーム」と同じ規則です。
 - `events` が無いときの `time` は、どの時計から来てもかまいません(`time` でも `scene_time` でも、時計の無い定数でも拒否されない)。
 - `time` は必須のままです。`events` を繋ぐなら `time` は `scene_time` だけから、の検査(`audio.clock_mismatch@1`、下の「状態と拒否」)も変わりません。
-- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L3507)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。✅UX-8 から、palette の `audio.volume` / `audio.pitch` は置く前に駆動する voice(scope の `audio.playback`)を聞き、その `voice` からの線と、`value` に 1 の `value.constant` をつないだ形で置かれます。palette の `value.curve`(`time` が `scene_time` につながった、1 秒で 0 から 1 の key)を `value` へ線で落とせば、下の「フェード」の形になります。音声の file は Studio の File ▸ Import Sound… か Sound の欄の Import… で project の `assets/audio/` に写せます(同じ名前があれば `_2`)。どれも [第13章](13_editor.md) の「音の node を置く・音声を Import する(✅UX-8)」です。
+- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L3511)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。✅UX-8 から、palette の `audio.volume` / `audio.pitch` は置く前に駆動する voice(scope の `audio.playback`)を聞き、その `voice` からの線と、`value` に 1 の `value.constant` をつないだ形で置かれます。palette の `value.curve`(`time` が `scene_time` につながった、1 秒で 0 から 1 の key)を `value` へ線で落とせば、下の「フェード」の形になります。音声の file は Studio の File ▸ Import Sound… か Sound の欄の Import… で project の `assets/audio/` に写せます(同じ名前があれば `_2`)。どれも [第13章](13_editor.md) の「音の node を置く・音声を Import する(✅UX-8)」です。
 
 下の例は `events` で鳴らす形です。
 
