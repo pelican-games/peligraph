@@ -1130,6 +1130,8 @@ RT pipeline task も最上位 `compute_tasks` を使います。これは `vkCmd
 
 stage stem は順に `.rgen` / `.rmiss` / `.rchit`（または埋め込み `.spv`）へ解決されます。`shader` との併記、compute 用 `groups` / `groups_from` の指定はエラーです。`rays_from` は指定image mipの幅・高さから実行サイズを決め、resize/rebind後に再計算します。callableは`ray_tracing.callable`、any-hit/intersectionはray group layoutから指定します。resource port の binding は、全 stage の反映を合わせた中の `pelican_resource_<port>` の名前で決まり、port を書く順には依りません(✅RS-5。上の「compute タスク」の「port の binding は shader の反映の名前で決まります」)。[加速構造とRT pipelineの説明](../source-code-guide/11_ray_query_acceleration_structures.md)も参照してください。
 
+Studio では ✅CT-6s(`827eddd7`)から、Graph タブの `render.compute` の **New…**(compute の欄の Shader の横と palette の行)が、この形の最小の組 `shaders/<名前>.rgen` / `.rmiss` / `.rchit`(ray group layout の無い形。画素ごとに 1 本 trace し、当たった面の法線を色にする)を書いて、その組で trace する task にします。Task Editor の New ray tracing も同じ組を書きます。中身と残る穴は [第13章](13_editor.md) §13.5 の「RT を Graph で組む(✅CT-6s)」です。
+
 Callable recordの初期値は、StudioのRender Features → Callable Records...で編集できます。
 taskとcallableを選び、表示された型に沿って値を入力し、Applyで保存・反映します。
 整数はi32/u32、実数はf32、vectorは成分ごとに入力します。Reset taskは元宣言の値に戻し、
@@ -2875,7 +2877,7 @@ layout の骨格:
 | 無し | `LegacyNoLayout` | 宣言層は無効。`acceleration_structure` も `pelican_ray_instance` も書けない |
 | 有り(version 3) | `LayoutV3` | `acceleration_structure` と `pelican_ray_instance` が使える |
 
-MG-2a より前は version 1(`LayoutV1Q`: 行の `instance_custom_index` を常に q で上書き)と version 2(`LayoutV2`)を別の mode として持っていましたが、どちらも消えました。同一プロセス内で mode が変わる差し替え(グラフのリロード等)は `pelican.ray_layout_mode_change_requires_restart@1` で拒否されます。組み込みの `pelican_ray_instance` codec は **layout があるときだけ codec 表に載ります**([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L2224))。codec 表は既定で 8 件、layout があるプロジェクトだけ 9 件目としてこれが載る、という形です([第4章](04_scene_ecs.md) §4.2 に「条件付き」として別項があります)。
+MG-2a より前は version 1(`LayoutV1Q`: 行の `instance_custom_index` を常に q で上書き)と version 2(`LayoutV2`)を別の mode として持っていましたが、どちらも消えました。同一プロセス内で mode が変わる差し替え(グラフのリロード等)は `pelican.ray_layout_mode_change_requires_restart@1` で拒否されます(拒否なので文書は書かれません。`restart_required` の答えではないので、Studio は再起動の道に乗せず、✅CT-6s から 1 文 `Whether the project has a ray group layout changes only when the engine restarts: restart it to apply this` を出すだけです。[第13章](13_editor.md) §13.5 の「RT を Graph で組む(✅CT-6s)」)。組み込みの `pelican_ray_instance` codec は **layout があるときだけ codec 表に載ります**([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L2224))。codec 表は既定で 8 件、layout があるプロジェクトだけ 9 件目としてこれが載る、という形です([第4章](04_scene_ecs.md) §4.2 に「条件付き」として別項があります)。
 
 ### 状態表
 
@@ -3229,6 +3231,7 @@ CT-3 で新しく必須になった名前は、`pose.clip_sample` の `rig` / `c
 - **候補(`choices_from`)**: `ray_tracing.acceleration_structure` は上の表のとおりです。`dispatch.indirect.buffer` は `{graph_nodes: ["render.buffer", "render.attribute"], where: {command_layout: ["compute_dispatch", "ray_dispatch"]}}` です(test の期待)。候補が無く `string` のままのものは、`groups_from` / `rays_from` の `port` の名前、`traced_ray_types` の要素(ray type の名前)、`misses` の鍵(miss の名前)、`hit_shaders` の鍵(ray type と group の名前)です。
 - **CT-3 の型の検査**は、この 2 つの中にもかかります(CT-3 の code はそのまま。§6.18 の CT-3 の項)。test で断られることを確かめている道筋: `ray_tracing.raygen` に数(`expected: "shader"`、`reason: "type"`)、`ray_tracing.max_recursion` に 0(`range`、`min: 1`)、`ray_tracing.hit_shaders.primary.sphere.closesthit` に数、`dispatch.rays[1]` に 0(`range`)、`dispatch.groups_from.port` に数(`expected: "string"`)、`dispatch.indirect.offset` に -4(`range`)。どれも `graph.render_node_parameter_invalid@1` です。`union` の値(`miss` / `closesthit` / `callable` / `groups` と `callable_records` の値)は、CT-4 の段落のとおり見ません。
 - **今ある書き方は通ります**(test): Studio の engine pipeline の形(`raygen` / `miss` / `closesthit` が `engine://rt_shadow_mask_pipeline` の 1 本ずつ、`rays_from`)、配列の `miss` / `closesthit` と `callable` / `callable_record` / `callable_records`・`max_recursion: 2`・`acceleration_structure: "actors"`、ray group layout の形(`projects/pathtrace_demo` の `traced_ray_types` / `misses` / `hit_shaders` と `indirect`)、`groups` の配列と object、`groups_from`、`offset` 付きの `indirect`。commit の記録では、既存の project・engine の graph・test の fixture・シナリオも断られません(全部を 1 本の test で見ているわけではありません)。着地の gate(触った家族の 16 本)は緑でした(統合側の記録)。
+- **Studio の欄**(✅CT-6s、`827eddd7`): Graph タブは `ray_tracing` を汎用の欄(More parameters)で出し、stage の名前の field(`raygen` / `miss` / `closesthit` / `anyhit` / `intersection` / `callable` と `misses`)の shader の候補をその stage の拡張子と engine のその stage の shader に絞り、`groups_from` / `rays_from` の `port` を node の image の port の combo にします。ray type / miss / group の名前は候補の無い打つ欄のままです。RT の拒否 16 種は 1 文の表です。[第13章](13_editor.md) §13.5 の「RT を Graph で組む(✅CT-6s)」。
 - test: `curve_test` の [「CT-6 the catalog lists render.compute's ray_tracing and dispatch as fields and its parameters as complete」](../../test/curve_test.cpp#L1708)。
 
 ANIMATION と AUDIO が ON の build では 5 module / 37 op(✅AB-1 の `value.sample_table` を含む。v0_freeze の表の行の数)。ANIMATION=OFF で 4 / 31(`pose.*` の 6 本が消える)、AUDIO=OFF で 4 / 34(`audio.*` の 3 本)、両方 OFF で 3 / 28。この対応は `test/run_devcli_graph_catalog.cmake` が [docs/v0_freeze.md](../v0_freeze.md) §1.3 の表と機械照合しています —— **表と実装がずれたらテストが赤になります**。

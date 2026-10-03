@@ -350,7 +350,7 @@ component に `resolution_error`。
 
 2026-10 の追加(CT-3 / MP-1。形の正は [第13章](13_editor.md) §13.5 と [第6章](06_rendering.md) §6.17・§6.18):
 
-- `get_graph_catalog` の各 op に `parameters: [{name, kind, required?, alternatives?, default?, enum?, min?, max?, items?, fields?, expression?, description?}]` と `parameters_complete`(✅CT-3、`0d215a68`)。catalog 本体の鍵なので `pelican_cli graph-catalog` にも出ます。`parameters_complete` が `false` の op は `render.image` / `render.fullscreen` / `render.raster` / `render.compute` / `render.material_pass` です。
+- `get_graph_catalog` の各 op に `parameters: [{name, kind, required?, alternatives?, default?, enum?, min?, max?, items?, fields?, expression?, description?}]` と `parameters_complete`(✅CT-3、`0d215a68`)。catalog 本体の鍵なので `pelican_cli graph-catalog` にも出ます。`parameters_complete` が `false` の op は `render.image` / `render.fullscreen` / `render.raster` / `render.material_pass` です(CT-3 のときは `render.compute` を含む 5 つでした。✅CT-6 で `render.compute` は `true` になりました。[第6章](06_rendering.md) §6.17)。
 - 名前付きの拒否 `graph.render_node_parameter_invalid@1 {node, op, parameter, expected, reason: type | enum | range, allowed? | min? / max?}`(✅CT-3)。編集の rejected には CT-2 の `document` も付きます。
 - `get_graph_catalog` の `material_pass_contracts` の各 contract に `screen_inputs` / `surface_resources`(`[{name, source_type}]`。✅MP-1、`afd923e1`)。CLI には出ません。
 - `get_frame_plan` の material pass の node に `drawn_materials: [{material?, id, draws}]`・`drawn_materials_frame`、256 件を超えたら `drawn_materials_truncated: true`(✅MP-1)。最後に公開した logical frame で、その pass が描いた material です。
