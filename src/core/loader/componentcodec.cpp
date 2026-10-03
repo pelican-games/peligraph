@@ -125,9 +125,17 @@ inline constexpr auto transform_schema = structFields(
     defaulted(field<&TransformCodecData::rotation>("rotation"), quat{0.0f, 0.0f, 0.0f, 1.0f}),
     defaulted(field<&TransformCodecData::scale>("scale"), vec3{1.0f, 1.0f, 1.0f}));
 
+// MT-2: `materials` is the object's own material list (SC-1 rows, edited by
+// row id like animation.parameters).
+struct SimpleModelViewSchemaFields {
+    std::string model;
+    List<ModelMaterialOverride> materials;
+};
+
 inline constexpr auto simple_model_view_schema = structFields(
     componentPolicy("simplemodelview"),
-    required(field<&SimpleModelViewCodecData::model>("model")));
+    required(field<&SimpleModelViewSchemaFields::model>("model")),
+    defaulted(field<&SimpleModelViewSchemaFields::materials>("materials")));
 
 inline constexpr auto camera_schema = structFields(
     componentPolicy("camera"),
@@ -235,7 +243,6 @@ auto materializeSchema(const Schema &schema) {
 }
 
 const auto transform_fields = materializeSchema(transform_schema);
-const auto simple_model_view_fields = materializeSchema(simple_model_view_schema);
 const auto camera_fields = materializeSchema(camera_schema);
 const auto light_fields = materializeSchema(light_schema);
 const auto collider_fields = materializeSchema(collider_schema);
@@ -716,6 +723,32 @@ ComponentCodecValue decodeSimpleModelView(const Json &json) {
     if (const auto *params = optionalObject(json, "simplemodelview", "params")) {
         result.params = *params;
     }
+    if (const auto materials = json.find("materials"); materials != json.end()) {
+        SimpleModelViewSchemaFields fields;
+        internal::decodeStructObject(Json{{"model", result.model}, {"materials", *materials}}, fields,
+                                     simple_model_view_schema, "simplemodelview");
+        // MT-2: a row covers one GLB primitive (mesh and primitive) or every
+        // primitive (neither), and no two rows cover the same.
+        std::set<std::pair<std::int64_t, std::int64_t>> targets;
+        for (const auto &row : fields.materials.rows) {
+            if (row.value.material.empty())
+                codecError(StructFieldErrorCode::OutOfRange, "simplemodelview.materials",
+                           "row " + std::to_string(row.envelope.id) + " names no material");
+            if (row.value.mesh.has_value() != row.value.primitive.has_value())
+                codecError(StructFieldErrorCode::OutOfRange, "simplemodelview.materials",
+                           "row " + std::to_string(row.envelope.id) +
+                               " gives mesh and primitive together, or neither (every primitive)");
+            const auto target = row.value.mesh
+                                    ? std::pair<std::int64_t, std::int64_t>{*row.value.mesh, *row.value.primitive}
+                                    : std::pair<std::int64_t, std::int64_t>{-1, -1};
+            if (!targets.insert(target).second)
+                codecError(StructFieldErrorCode::OutOfRange, "simplemodelview.materials",
+                           "row " + std::to_string(row.envelope.id) +
+                               (row.value.mesh ? " covers a primitive another row covers"
+                                               : " covers every primitive, as another row does"));
+        }
+        result.materials = std::move(fields.materials);
+    }
     return result;
 }
 
@@ -724,6 +757,11 @@ OrderedJson encodeSimpleModelView(const ComponentCodecValue &value) {
     if (data.model.empty()) codecError(StructFieldErrorCode::OutOfRange, "simplemodelview.model", "must not be empty");
     OrderedJson result{{"name", "simplemodelview"}, {"model", data.model}};
     if (data.params) result["params"] = *data.params;
+    if (data.materials) {
+        SimpleModelViewSchemaFields fields{.model = data.model, .materials = *data.materials};
+        result["materials"] =
+            internal::encodeStructObject(fields, simple_model_view_schema, "simplemodelview").at("materials");
+    }
     return result;
 }
 
@@ -731,19 +769,22 @@ void applySimpleModelView(const ComponentCodecValue &value, void *raw_target) {
     if (raw_target == nullptr) throw std::invalid_argument("simplemodelview runtime target is null");
     const auto &data = codecValue<SimpleModelViewCodecData>(value, "simplemodelview");
     auto &target = *static_cast<SimpleModelViewComponent *>(raw_target);
-    if (target.model_name == data.model) return;
+    if (target.model_name == data.model && target.materials == data.materials) return;
+    // A changed model or material list is a new instance, staged by the
+    // update system from the component.
     if (target.model_instance_id) {
         GET_MODULE(PolygonInstanceContainer).removeModelInstance(*target.model_instance_id);
         target.model_instance_id.reset();
     }
     target.model_name = data.model;
+    target.materials = data.materials;
     target.dirty = 1;
 }
 
 ComponentCodecValue projectSimpleModelView(const void *raw_source) {
     if (raw_source == nullptr) throw std::invalid_argument("simplemodelview runtime source is null");
-    return SimpleModelViewCodecData{
-        .model = static_cast<const SimpleModelViewComponent *>(raw_source)->model_name};
+    const auto &source = *static_cast<const SimpleModelViewComponent *>(raw_source);
+    return SimpleModelViewCodecData{.model = source.model_name, .params = std::nullopt, .materials = source.materials};
 }
 
 ComponentCodecValue decodeProceduralGeometry(const Json &json) {
@@ -2014,7 +2055,7 @@ const std::array codecs{
     ComponentCodec{"simplemodelview", ComponentCodecRuntimeKind::Ecs,
                    EditorProjectionPolicy::RendererModel,
                    decodeResult<decodeSimpleModelView>,
-                    encodeSimpleModelView, []() -> const SchemaNode & { static const auto node = SchemaNode::fromFlat(fieldSpan(simple_model_view_fields)); return node; },
+                    encodeSimpleModelView, []() -> const SchemaNode & { static constexpr auto node = internal::materializeSchemaNode(simple_model_view_schema); return node; },
                    applySimpleModelView, projectSimpleModelView, nullptr, nullptr},
     ComponentCodec{"pelican_procedural_geometry",
                    ComponentCodecRuntimeKind::Ecs,

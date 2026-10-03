@@ -6,6 +6,7 @@
 #include "../loader/basicconfig.hpp"
 #include "../loader/engineresources.hpp"
 #include "../loader/pathresolver.hpp"
+#include "../loader/resolvedscene.hpp"
 #include "../log.hpp"
 #include "../material/material.hpp"
 #include "../material/materialcontainer.hpp"
@@ -1150,11 +1151,40 @@ ModelBindingState readBindingState(std::string_view method, const std::string &m
     return state;
 }
 
+// MT-2: the scene objects (every scene of the document as the editor holds it,
+// prefab-generated objects included) whose simplemodelview draws `model`, and
+// how many of them carry their own materials (a non-empty
+// simplemodelview.materials).
+std::pair<std::size_t, std::size_t> countModelObjects(const std::string &model) {
+    std::size_t objects = 0;
+    std::size_t overrides = 0;
+    const auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>();
+    if (config == nullptr) return {objects, overrides};
+    for (const auto &scene : config->resolvedScene().scenes()) {
+        for (const auto &object : scene.objects) {
+            for (const auto &component : object.components) {
+                if (component.name != "simplemodelview" || !component.effective_json.is_object() ||
+                    component.effective_json.value("model", std::string{}) != model)
+                    continue;
+                ++objects;
+                const auto materials = component.effective_json.find("materials");
+                if (materials != component.effective_json.end() && materials->is_object() &&
+                    materials->contains("rows") && materials->at("rows").is_array() &&
+                    !materials->at("rows").empty())
+                    ++overrides;
+                break;
+            }
+        }
+    }
+    return {objects, overrides};
+}
+
 Json getMaterialBindings(const Json &params, PathResolver &paths) {
     constexpr std::string_view method = "get_material_bindings";
     requireOnly(method, params, {"model"});
     const auto model = requireString(method, params, "model");
     const auto state = readBindingState(method, model, readAssetData(paths), paths);
+    const auto [objects, object_overrides] = countModelObjects(model);
     auto primitives = Json::array();
     for (const auto &slot : state.slots) {
         const auto &entry = state.current.at({slot.mesh, slot.primitive});
@@ -1167,7 +1197,9 @@ Json getMaterialBindings(const Json &params, PathResolver &paths) {
     return {{"model", model},
             {"material_bindings", state.bindings_reference ? Json(*state.bindings_reference) : Json(nullptr)},
             {"bindings_digest", state.bindings_reference ? Json(state.bindings_digest) : Json(nullptr)},
-            {"primitives", std::move(primitives)}};
+            {"primitives", std::move(primitives)},
+            {"objects", objects},
+            {"object_overrides", object_overrides}};
 }
 
 struct BindingMaterial {

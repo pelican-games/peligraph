@@ -301,6 +301,9 @@ struct ModelInstanceSlotSeed {
     std::shared_ptr<const VrmSemanticData> vrm_semantic;
     std::shared_ptr<const MorphTargetLayout> morph_layout;
     MorphWeightFrame morph_weight_frame;
+    // MT-2: the scene object's material overrides (null: none), kept so a
+    // model reload resolves them again against the new template.
+    std::shared_ptr<const InstanceMaterialOverrides> material_overrides;
 };
 
 // Every per-slot array of the model-instance inventory, as one value. The same
@@ -331,8 +334,10 @@ struct ModelInstanceSlotTable {
     std::vector<std::shared_ptr<const MorphTargetLayout>> morph_layouts;
     std::vector<MorphWeightFrame> morph_weight_frames;
     std::vector<bool> morph_history_valid;
+    std::vector<std::shared_ptr<const InstanceMaterialOverrides>>
+        material_override_specs;
 
-    static constexpr std::size_t arrayCount = 17;
+    static constexpr std::size_t arrayCount = 18;
 
     std::size_t slotCount() const noexcept {
         return model_instances_data.size();
@@ -496,8 +501,18 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void publishPreparedScene(PreparedSceneState &&prepared) noexcept;
     void publishPreparedScene(PreparedSceneState &&prepared,
                               SceneLoadPhaseTrace &phase_trace) noexcept;
+    // MT-2: `material_overrides` (null: none) is the scene object's own
+    // materials; a name neither the model nor the project registers leaves
+    // its primitives on the model's material, with a warning.
     StagedModelInstance stagePreparedSceneModel(
-        PreparedSceneState &prepared, const ModelTemplate &model);
+        PreparedSceneState &prepared, const ModelTemplate &model,
+        std::shared_ptr<const InstanceMaterialOverrides> material_overrides = nullptr);
+    // MT-2: the live instance `id` of `model` takes `material_overrides` in
+    // the candidate: its draw items are rebuilt with the materials they
+    // resolve to, keeping the instance, its slot and its animation state.
+    void setPreparedSceneModelMaterials(
+        PreparedSceneState &prepared, ModelInstanceId id, const ModelTemplate &model,
+        std::shared_ptr<const InstanceMaterialOverrides> material_overrides);
     void setPreparedSceneModelMatrix(StagedModelInstance &staged,
                                      const glm::mat4 &matrix) noexcept;
     void publishPreparedSceneModel(PreparedSceneState &prepared,
@@ -509,11 +524,24 @@ DECLARE_MODULE(PolygonInstanceContainer) {
         SceneLoadPhaseTrace &phase_trace) noexcept;
     void drainSceneRetirements();
     void preflightModelInstance(const ModelTemplate &model) const;
-    StagedModelInstance stageModelInstance(const ModelTemplate &model);
+    StagedModelInstance stageModelInstance(
+        const ModelTemplate &model,
+        std::shared_ptr<const InstanceMaterialOverrides> material_overrides = nullptr);
     void setStagedModelMatrix(StagedModelInstance &staged,
                               const glm::mat4 &matrix) noexcept;
     void publishModelInstance(StagedModelInstance staged) noexcept;
-    ModelInstanceId placeModelInstance(const ModelTemplate &model);
+    ModelInstanceId placeModelInstance(
+        const ModelTemplate &model,
+        std::shared_ptr<const InstanceMaterialOverrides> material_overrides = nullptr);
+    // MT-2: the material each primitive of a live instance draws with now,
+    // ordered by mesh then primitive (one entry per GLB primitive).
+    struct InstancePrimitiveMaterial {
+        std::uint32_t mesh = 0;
+        std::uint32_t primitive = 0;
+        GlobalMaterialId material;
+        std::string name;
+    };
+    std::vector<InstancePrimitiveMaterial> instancePrimitiveMaterials(ModelInstanceId id) const;
     bool removeModelInstance(ModelInstanceId id);
     void clear();
     void triggerUpdate();

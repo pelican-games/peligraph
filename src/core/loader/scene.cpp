@@ -1058,9 +1058,9 @@ struct RendererParticipant final : TransactionParticipant {
                 object.prepared_model_physics = makeModelPhysicsBinding(
                     model, runtimeObjectIdentityName(t.request.scene_id,
                         object.authoring_object_id, object.name), PhysWorldTransform{});
-                auto staged =
-                    renderer.stagePreparedSceneModel(t.renderer_candidate,
-                                                     model);
+                auto staged = renderer.stagePreparedSceneModel(
+                    t.renderer_candidate, model,
+                    instanceMaterialOverrides(model_view.materials));
                 object.prepared_model_instance = staged.id();
                 renderer.publishPreparedSceneModel(t.renderer_candidate,
                                                     std::move(staged));

@@ -318,7 +318,8 @@ struct SceneObjectProjectionAdapter::Impl {
                     std::any_cast<const SimpleModelViewCodecData &>(
                         model_load->decoded);
                 auto &model = models->getModelTemplateByName(data.model);
-                staged_model.emplace(renderer->stageModelInstance(model));
+                staged_model.emplace(renderer->stageModelInstance(
+                    model, instanceMaterialOverrides(data.materials)));
                 renderer->setStagedAuthoringObject(*staged_model, prepared_target.value);
                 staged_model_id = staged_model->id();
 
@@ -1236,14 +1237,31 @@ void RendererModelProjectionAdapter::prepare(
         const auto &data =
             std::any_cast<const SimpleModelViewCodecData &>(
                 next_component->requireRuntimeValue());
-        if (data.model == live->model_name) continue;
+        if (data.model == live->model_name && data.materials == live->materials) continue;
 
         auto &model = impl_->models.getModelTemplateByName(data.model);
-        auto staged = impl_->renderer.stagePreparedSceneModel(*impl_->candidate, model);
+        auto next_value = *live;
+        next_value.materials = data.materials;
+        if (data.model == live->model_name && live->model_instance_id &&
+            impl_->renderer.isModelInstanceAlive(*live->model_instance_id)) {
+            // MT-2: only the object's materials changed. The instance stays;
+            // its draw items take the materials in the candidate.
+            impl_->renderer.setPreparedSceneModelMaterials(
+                *impl_->candidate, *live->model_instance_id, model,
+                instanceMaterialOverrides(data.materials));
+            impl_->prepared.push_back(Impl::Prepared{
+                .ecs_value = impl_->ecs.prepareComponentSwap(binding.entity,
+                                                             next_value),
+                .next_id = *live->model_instance_id,
+                .old_id = std::nullopt,
+            });
+            continue;
+        }
+        auto staged = impl_->renderer.stagePreparedSceneModel(
+            *impl_->candidate, model, instanceMaterialOverrides(data.materials));
         impl_->renderer.setStagedAuthoringObject(staged, binding.authoring_object_id.value);
         const auto next_id = staged.id();
         impl_->renderer.publishPreparedSceneModel(*impl_->candidate, std::move(staged));
-        auto next_value = *live;
         next_value.model_name = data.model;
         next_value.dirty = 0;
         next_value.model_instance_id = next_id;

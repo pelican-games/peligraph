@@ -1,7 +1,9 @@
 #include "polygoninstancecontainer.hpp"
 #include "../loader/sceneload.hpp"
 #include "../loader/editorprojectiontransaction.hpp"
+#include "../log.hpp"
 #include "../material/materialcontainer.hpp"
+#include "../material/projectmaterialasset.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../model/occurrenceidentity.hpp"
 #include "../shader/pelican_sets.hpp"
@@ -333,10 +335,14 @@ size_t primitiveCount(const ModelTemplate &model) {
     return result;
 }
 
+// `effective` is the material the primitive draws with: the group's, or the
+// scene object's override of it (MT-2). The source material index stays the
+// group's, as a material binding keeps it.
 DrawItemSnapshot makeDrawItemSnapshot(
     ModelInstanceId instance,
     const ModelTemplate::MaterialPrimitives &material,
     const ModelTemplate::PrimitiveRefInfo &primitive,
+    GlobalMaterialId effective,
     std::string_view material_asset_reference,
     std::string_view material_document_reference,
     MaterialRouteClass route,
@@ -347,9 +353,9 @@ DrawItemSnapshot makeDrawItemSnapshot(
     }
     const auto &materials = GET_MODULE(MaterialContainer);
     const auto material_generation =
-        materials.rayMaterialGeneration(material.material);
+        materials.rayMaterialGeneration(effective);
     const auto material_lease =
-        materials.rayMaterialLease(material.material);
+        materials.rayMaterialLease(effective);
     return DrawItemSnapshot{
         .stable_identity =
             DrawStableIdentity{
@@ -370,7 +376,7 @@ DrawItemSnapshot makeDrawItemSnapshot(
             },
         .pipeline_material_key =
             DrawPipelineMaterialKey{
-                .material = material.material,
+                .material = effective,
                 .source_material_index = material.source_material_index.value_or(
                     noSourceMaterialIndex),
                 .skinned = primitive.skinned,
@@ -379,7 +385,7 @@ DrawItemSnapshot makeDrawItemSnapshot(
             std::string{material_asset_reference},
         .material_document_reference =
             std::string{material_document_reference},
-        .material_name = materials.materialName(material.material),
+        .material_name = materials.materialName(effective),
         .ray_material_generation = material_generation,
         .ray_material_lease = material_lease,
         .route = route,
@@ -395,6 +401,78 @@ DrawItemSnapshot makeDrawItemSnapshot(
         .ray_attribute_presence =
             primitive.ray_attribute_presence,
     };
+}
+
+// MT-2: the materials a scene object's overrides name, resolved against one
+// model generation: the model's glTF materials first, then the project's
+// (the two never share a name; a model load refuses that).
+struct ResolvedInstanceMaterials {
+    std::optional<GlobalMaterialId> every;
+    std::map<std::pair<std::uint32_t, std::uint32_t>, GlobalMaterialId>
+        primitives;
+
+    GlobalMaterialId effective(const ModelTemplate::PrimitiveRefInfo &primitive,
+                               GlobalMaterialId model_material) const {
+        if (const auto found = primitives.find(
+                {primitive.mesh_index, primitive.primitive_index});
+            found != primitives.end())
+            return found->second;
+        return every.value_or(model_material);
+    }
+};
+
+std::optional<GlobalMaterialId> findNamedMaterial(const ModelTemplate &model,
+                                                  std::string_view name) {
+    for (const auto &named : model.named_materials)
+        if (named.name == name) return named.material;
+    if (const auto *project =
+            FastModuleContainer::tryGet<ProjectMaterialAssetContainer>())
+        for (const auto &named : project->namedMaterials())
+            if (named.name == name) return named.material;
+    return std::nullopt;
+}
+
+ResolvedInstanceMaterials resolveInstanceMaterials(
+    const ModelTemplate &model, const InstanceMaterialOverrides *overrides) {
+    ResolvedInstanceMaterials result;
+    if (overrides == nullptr) return result;
+    for (const auto &entry : *overrides) {
+        const auto material = findNamedMaterial(model, entry.material);
+        if (!material) {
+            LOG_WARNING(logger,
+                        "model '{}': the object's material '{}' is not registered; "
+                        "its primitives draw with the model's material",
+                        model.authored_asset_reference, entry.material);
+            continue;
+        }
+        if (entry.primitive)
+            result.primitives.insert_or_assign(*entry.primitive, *material);
+        else
+            result.every = *material;
+    }
+    return result;
+}
+
+// One draw item per primitive of `model` for instance `id`, each with the
+// material it draws with. `next_ordinal` numbers them when given (a rebuild);
+// publication numbers them otherwise.
+void appendModelDrawItems(std::vector<DrawItemSnapshot> &items,
+                          ModelInstanceId id, const ModelTemplate &model,
+                          const InstanceMaterialOverrides *overrides,
+                          std::uint64_t *next_ordinal = nullptr) {
+    if (primitiveCount(model) == 0) return;
+    const auto &materials = GET_MODULE(MaterialContainer);
+    const auto resolved = resolveInstanceMaterials(model, overrides);
+    for (const auto &group : model.material_primitives) {
+        for (const auto &primitive : group.primitives) {
+            const auto material = resolved.effective(primitive, group.material);
+            items.push_back(makeDrawItemSnapshot(
+                id, group, primitive, material, model.authored_asset_reference,
+                materials.materialDocumentReference(material),
+                materials.routeForMaterial(material),
+                next_ordinal != nullptr ? (*next_ordinal)++ : 0));
+        }
+    }
 }
 } // namespace
 
@@ -436,6 +514,7 @@ ModelInstanceSlotTable::slotCounts() const {
         morph_layouts.size(),
         morph_weight_frames.size(),
         morph_history_valid.size(),
+        material_override_specs.size(),
     };
 }
 
@@ -457,6 +536,7 @@ void ModelInstanceSlotTable::reserveSlots(std::size_t capacity) {
     morph_layouts.reserve(capacity);
     morph_weight_frames.reserve(capacity);
     morph_history_valid.reserve(capacity);
+    material_override_specs.reserve(capacity);
 }
 
 void ModelInstanceSlotTable::placeSlot(std::uint32_t index,
@@ -480,6 +560,7 @@ void ModelInstanceSlotTable::placeSlot(std::uint32_t index,
         morph_layouts.push_back(std::move(seed.morph_layout));
         morph_weight_frames.push_back(std::move(seed.morph_weight_frame));
         morph_history_valid.push_back(false);
+        material_override_specs.push_back(std::move(seed.material_overrides));
     } else {
         // A reused slot keeps animation_generations[index]: clearSlot() bumped
         // it when the previous occupant died, and the staged morph frame was
@@ -501,6 +582,7 @@ void ModelInstanceSlotTable::placeSlot(std::uint32_t index,
         morph_layouts[index] = std::move(seed.morph_layout);
         morph_weight_frames[index] = std::move(seed.morph_weight_frame);
         morph_history_valid[index] = false;
+        material_override_specs[index] = std::move(seed.material_overrides);
     }
     ray_authoring_object_ids[index] = seed.authoring_object_id;
 }
@@ -525,6 +607,7 @@ void ModelInstanceSlotTable::clearSlot(std::uint32_t index) {
         .instance_generation = animation_generations[index],
     };
     morph_history_valid[index] = false;
+    material_override_specs[index].reset();
 }
 
 void ModelInstanceSlotTable::swap(ModelInstanceSlotTable &other) noexcept {
@@ -545,6 +628,7 @@ void ModelInstanceSlotTable::swap(ModelInstanceSlotTable &other) noexcept {
     morph_layouts.swap(other.morph_layouts);
     morph_weight_frames.swap(other.morph_weight_frames);
     morph_history_valid.swap(other.morph_history_valid);
+    material_override_specs.swap(other.material_override_specs);
 }
 
 bool PolygonInstanceContainer::isLive(ModelInstanceId id) const noexcept {
@@ -632,7 +716,8 @@ void PolygonInstanceContainer::publishPreparedScene(
 }
 
 StagedModelInstance PolygonInstanceContainer::stagePreparedSceneModel(
-    PreparedSceneState &prepared, const ModelTemplate &model) {
+    PreparedSceneState &prepared, const ModelTemplate &model,
+    std::shared_ptr<const InstanceMaterialOverrides> material_overrides) {
     const auto primitive_count = primitiveCount(model);
     if (prepared.slots.instance_slots.liveCount() >= maxActiveModelInstances ||
         (!prepared.slots.instance_slots.hasReusableSlot() &&
@@ -681,20 +766,9 @@ StagedModelInstance PolygonInstanceContainer::stagePreparedSceneModel(
         .previous = defaults,
     };
     staged->draw_items.reserve(primitive_count);
-    if (primitive_count != 0) {
-        const auto &materials = GET_MODULE(MaterialContainer);
-        for (const auto &material : model.material_primitives) {
-            if (material.primitives.empty()) continue;
-            const auto route = materials.routeForMaterial(material.material);
-            const auto &document =
-                materials.materialDocumentReference(material.material);
-            for (const auto &primitive : material.primitives) {
-                staged->draw_items.push_back(makeDrawItemSnapshot(
-                    staged->id, material, primitive,
-                    model.authored_asset_reference, document, route));
-            }
-        }
-    }
+    appendModelDrawItems(staged->draw_items, staged->id, model,
+                         material_overrides.get());
+    staged->seed.material_overrides = std::move(material_overrides);
 
     const auto capacity = prepared.slots.slotCount() + (reuse ? 0U : 1U);
     prepared.slots.reserveSlots(capacity);
@@ -808,7 +882,9 @@ void PolygonInstanceContainer::preflightModelInstance(const ModelTemplate &model
     }
 }
 
-StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemplate &model) {
+StagedModelInstance PolygonInstanceContainer::stageModelInstance(
+    const ModelTemplate &model,
+    std::shared_ptr<const InstanceMaterialOverrides> material_overrides) {
     preflightModelInstance(model);
 
     auto staged = std::make_unique<StagedModelInstance::Impl>();
@@ -844,20 +920,9 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
 
     const auto draw_item_count = primitiveCount(model);
     staged->draw_items.reserve(draw_item_count);
-    if (draw_item_count != 0) {
-        const auto &materials = GET_MODULE(MaterialContainer);
-        for (const auto &material : model.material_primitives) {
-            if (material.primitives.empty()) continue;
-            const auto route = materials.routeForMaterial(material.material);
-            const auto &document =
-                materials.materialDocumentReference(material.material);
-            for (const auto &primitive : material.primitives) {
-                staged->draw_items.push_back(makeDrawItemSnapshot(
-                    staged->id, material, primitive,
-                    model.authored_asset_reference, document, route));
-            }
-        }
-    }
+    appendModelDrawItems(staged->draw_items, staged->id, model,
+                         material_overrides.get());
+    staged->seed.material_overrides = std::move(material_overrides);
 
     // Reserve every live container before publication. Once this succeeds,
     // publishModelInstance() only moves/copies into already allocated storage.
@@ -901,11 +966,72 @@ void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) 
                            candidate.draw_items);
 }
 
-ModelInstanceId PolygonInstanceContainer::placeModelInstance(const ModelTemplate &model) {
-    auto staged = stageModelInstance(model);
+ModelInstanceId PolygonInstanceContainer::placeModelInstance(
+    const ModelTemplate &model,
+    std::shared_ptr<const InstanceMaterialOverrides> material_overrides) {
+    auto staged = stageModelInstance(model, std::move(material_overrides));
     const auto id = staged.id();
     publishModelInstance(std::move(staged));
     return id;
+}
+
+void PolygonInstanceContainer::setPreparedSceneModelMaterials(
+    PreparedSceneState &prepared, ModelInstanceId id, const ModelTemplate &model,
+    std::shared_ptr<const InstanceMaterialOverrides> material_overrides) {
+    const auto index =
+        prepared.slots.instance_slots.requireLive(id, "setPreparedSceneModelMaterials");
+    if (prepared.slots.model_asset_ids.at(index) != model.asset_id) {
+        throw std::logic_error(
+            "setPreparedSceneModelMaterials: the instance draws another model");
+    }
+    // The instance's items keep their declaration ordinals, so where a
+    // policy puts equal keys does not move.
+    std::vector<std::uint64_t> ordinals;
+    for (const auto &item : prepared.draw_inventory)
+        if (item.stable_identity.instance == id)
+            ordinals.push_back(item.declaration_ordinal);
+    std::vector<DrawItemSnapshot> items;
+    items.reserve(primitiveCount(model));
+    appendModelDrawItems(items, id, model, material_overrides.get());
+    if (items.size() != ordinals.size()) {
+        throw std::logic_error(
+            "setPreparedSceneModelMaterials: the instance's draw items do not match its model");
+    }
+    std::size_t next = 0;
+    for (auto &item : prepared.draw_inventory) {
+        if (item.stable_identity.instance != id) continue;
+        items[next].declaration_ordinal = ordinals[next];
+        item = std::move(items[next]);
+        ++next;
+    }
+    prepared.slots.material_override_specs.at(index) = std::move(material_overrides);
+}
+
+std::vector<PolygonInstanceContainer::InstancePrimitiveMaterial>
+PolygonInstanceContainer::instancePrimitiveMaterials(ModelInstanceId id) const {
+    std::vector<InstancePrimitiveMaterial> result;
+    if (!isLive(id)) return result;
+    const auto &materials = GET_MODULE(MaterialContainer);
+    for (const auto &item : draw_inventory) {
+        if (item.stable_identity.instance != id) continue;
+        const auto mesh = item.stable_identity.mesh_index;
+        const auto primitive = item.stable_identity.primitive_index;
+        // A GLB mesh several nodes draw is one primitive here.
+        if (std::any_of(result.begin(), result.end(), [&](const auto &entry) {
+                return entry.mesh == mesh && entry.primitive == primitive;
+            }))
+            continue;
+        result.push_back(InstancePrimitiveMaterial{
+            .mesh = mesh,
+            .primitive = primitive,
+            .material = item.pipeline_material_key.material,
+            .name = materials.materialName(item.pipeline_material_key.material),
+        });
+    }
+    std::sort(result.begin(), result.end(), [](const auto &left, const auto &right) {
+        return std::pair{left.mesh, left.primitive} < std::pair{right.mesh, right.primitive};
+    });
+    return result;
 }
 void PolygonInstanceContainer::resetSlot(std::uint32_t index) {
     slots.clearSlot(index);
@@ -1278,9 +1404,6 @@ PolygonInstanceContainer::prepareModelInstanceRebuild(
         throw std::runtime_error("Draw declaration ordinal exhausted");
     }
     auto next_declaration_ordinal = prepared.next_draw_declaration_ordinal;
-    const auto *materials = replacement_item_count == 0
-                                ? nullptr
-                                : &GET_MODULE(MaterialContainer);
 
     for (uint32_t instance = 0; instance < next.model_asset_ids.size();
          ++instance) {
@@ -1289,18 +1412,10 @@ PolygonInstanceContainer::prepareModelInstanceRebuild(
         if (found == by_asset.end()) continue;
         const auto &replacement = *found->second;
         const auto instance_id = next.instance_slots.idAt(instance);
-        for (const auto &material : replacement.material_primitives) {
-            if (material.primitives.empty()) continue;
-            const auto route = materials->routeForMaterial(material.material);
-            const auto &document =
-                materials->materialDocumentReference(material.material);
-            for (const auto &primitive : material.primitives) {
-                rebuilt.push_back(makeDrawItemSnapshot(
-                    instance_id, material, primitive,
-                    replacement.authored_asset_reference, document, route,
-                    next_declaration_ordinal++));
-            }
-        }
+        // MT-2: the object's overrides, resolved against the new template.
+        appendModelDrawItems(rebuilt, instance_id, replacement,
+                             next.material_override_specs[instance].get(),
+                             &next_declaration_ordinal);
 
         const auto asset = next.model_asset_ids[instance].value;
         const auto &rest_palette = rest_palettes.at(asset);

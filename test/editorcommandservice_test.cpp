@@ -247,8 +247,10 @@ TEST_CASE("component addition catalog uses codec defaults and excludes attached 
     CHECK_FALSE(model->at("unavailable_reason").get<std::string>().empty());
     CHECK_FALSE(model->contains("component"));
     CHECK(model->at("component_template") == nlohmann::ordered_json{{"name", "simplemodelview"}});
-    REQUIRE(model->at("schema_fields").size() == 1);
+    // MT-2: the object's own material rows beside the model.
+    REQUIRE(model->at("schema_fields").size() == 2);
     CHECK(model->at("schema_fields")[0].at("name") == "model");
+    CHECK(model->at("schema_fields")[1].at("name") == "materials");
     auto authored_model = model->at("component_template");
     authored_model["model"] = "character";
     const auto model_decoded = requireComponentCodec("simplemodelview").decodeAuthored(authored_model);

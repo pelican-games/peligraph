@@ -2228,6 +2228,14 @@ target_link_libraries(pelican_test_materialdocumentrpc_test PRIVATE pelican_shad
 if(COMMAND pelican_copy_shaderc_runtime)
     pelican_copy_test_shaderc_runtime(pelican_test_materialdocumentrpc_test)
 endif()
+# MT-2: a scene object's own material over RPC; two Blank boxes, one recoloured
+# live (set_object_material), undone, saved and drawn by the next start.
+pelican_define_test(mt2_object_material_test GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
+target_include_directories(pelican_test_mt2_object_material_test PRIVATE ${stb_SOURCE_DIR})
+target_link_libraries(pelican_test_mt2_object_material_test PRIVATE pelican_shaderc)
+if(COMMAND pelican_copy_shaderc_runtime)
+    pelican_copy_test_shaderc_runtime(pelican_test_mt2_object_material_test)
+endif()
 # VI-1: variadic pass inputs, shader.defines and engine://passthrough. The
 # layout / define cases are CPU-only; the rest edit present over RPC.
 pelican_define_test(vi1_variadic_inputs_test MIXED_GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)

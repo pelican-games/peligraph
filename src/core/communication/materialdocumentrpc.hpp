@@ -51,7 +51,12 @@ class ReloadService;
 //     render_state, only when it declares one.
 //   get_material_bindings {model} ->
 //     {model, material_bindings: path | null, bindings_digest | null,
-//      primitives: [{mesh, primitive, slot, material, usd_path | null}]}
+//      primitives: [{mesh, primitive, slot, material, usd_path | null}],
+//      objects, object_overrides}
+//     MT-2: `objects` counts the scene objects (every scene of the document
+//     the editor holds, prefab-generated ones included) whose simplemodelview
+//     draws the model; `object_overrides` those of them with their own
+//     materials (set_object_material).
 //
 // Writes ({committed, changed, ..., applied: "live" | "restart_required",
 // restart_required: {reason} | null}):

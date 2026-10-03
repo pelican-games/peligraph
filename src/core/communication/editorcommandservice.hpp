@@ -342,6 +342,28 @@ class EditorCommandService {
     nlohmann::ordered_json edit(const nlohmann::json &params);
     nlohmann::ordered_json undo(const nlohmann::json &params);
     nlohmann::ordered_json redo(const nlohmann::json &params);
+    // MT-2 (editorobjectmaterial.cpp). A scene object's own materials:
+    //   set_object_material {actor_id, object, scene_id?, base_scene_revision?,
+    //                        material: name | null, primitive?: {mesh, primitive} | slot?}
+    //   set_object_material {actor_id, object, scene_id?, base_scene_revision?,
+    //                        materials: [{material: name | null, primitive?}]}
+    //     writes the object's simplemodelview.materials rows as one edit
+    //     (the edit's answer: status, ticket, ...) and adds {changed, object,
+    //     scene_id, model, previous: {materials: [{material | null,
+    //     primitive?}]}}; sending previous.materials back as `materials`
+    //     takes it back. Without primitive / slot the material covers every
+    //     primitive; slot covers each primitive carrying that glTF material.
+    //     base_scene_revision defaults to the current revision.
+    //   get_object_materials {object, scene_id?} ->
+    //     {object, scene_id, model, materials: [{row_id, material, primitive?,
+    //      resolved}], primitives: [{mesh, primitive, slot, material,
+    //      source: "object" | "model", model_material, drawn | null}]}
+    //   Refusals: material.object_unknown@1 {object, reason},
+    //   material.model_unknown@1 {model, object, reason},
+    //   material.name_unknown@1 {name, reason},
+    //   material.binding_invalid@1 {model, object, reason}.
+    nlohmann::ordered_json setObjectMaterial(const nlohmann::json &params);
+    nlohmann::ordered_json getObjectMaterials(const nlohmann::json &params) const;
     nlohmann::ordered_json openPreview(const nlohmann::json &params);
     nlohmann::ordered_json updatePreview(const nlohmann::json &params);
     nlohmann::ordered_json commitPreview(const nlohmann::json &params);
@@ -454,6 +476,9 @@ class EditorCommandRpcAdapter {
         const nlohmann::json &params) const;
     nlohmann::ordered_json undo(const nlohmann::json &params) const;
     nlohmann::ordered_json redo(const nlohmann::json &params) const;
+    // MT-2.
+    nlohmann::ordered_json setObjectMaterial(const nlohmann::json &params) const;
+    nlohmann::ordered_json getObjectMaterials(const nlohmann::json &params) const;
     nlohmann::ordered_json openPreview(const nlohmann::json &params) const;
     nlohmann::ordered_json updatePreview(const nlohmann::json &params) const;
     nlohmann::ordered_json commitPreview(const nlohmann::json &params) const;

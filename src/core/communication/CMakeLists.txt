@@ -42,6 +42,7 @@ target_sources(pelican_core PRIVATE
     proceduralasseteditor.cpp
     proceduralassetpublication.cpp
     editorcommandservice.cpp
+    editorobjectmaterial.cpp
     editorjournal.cpp
     editorjournalintegrity.cpp
     editorjournalops.cpp

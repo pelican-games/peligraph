@@ -359,7 +359,8 @@ class SimpleModelMigrationParticipant final
             auto *component = static_cast<SimpleModelViewComponent *>(
                 context.staged_component);
             auto &model = models_.getModelTemplateByName(component->model_name);
-            staged_.emplace(renderer_.stageModelInstance(model));
+            staged_.emplace(renderer_.stageModelInstance(
+                model, instanceMaterialOverrides(component->materials)));
             renderer_.setStagedAuthoringObject(*staged_, component->authoring_object_id);
             glm::mat4 matrix{1.0F};
             if (const auto *transform =
