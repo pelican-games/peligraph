@@ -23,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -2754,4 +2755,70 @@ TEST_CASE("PM-3b a Stop that kept nothing on a saved scene leaves it saved",
     plain.observeSceneRevision(5);
     plain.observeSceneRevision(6);
     CHECK(plain.hasUnsavedChanges());
+}
+
+TEST_CASE("MT-2s decision 5: the Material rows' set_object_material is an edit of the Inspector's own "
+          "session, so its Undo is the scene's Undo",
+          "[devstudio][inspector][materials][mt2s]") {
+    using PelicanStudio::SpawnOutcome;
+    InspectorHarness harness;
+    harness.open();
+    const auto revision = harness.model.snapshot()->scene_revision;
+    const auto takeAll = [&](std::string_view method) {
+        std::optional<InspectorRpcRequest> found;
+        for (auto &request : harness.model.takeRpcRequests())
+            if (request.method == method) found = request;
+        REQUIRE(found);
+        return *found;
+    };
+    const Json asked{{"object", 41}, {"scene_id", "main"}, {"materials", Json::array({{{"material", "paint"}}})}};
+
+    // The session's actor and the revision it last saw are added.
+    REQUIRE(harness.model.submitObjectMaterial(asked, "paint on Cube") == SpawnOutcome::Sent);
+    auto sent = harness.take("set_object_material");
+    auto expected = asked;
+    expected["actor_id"] = 9;
+    expected["base_scene_revision"] = revision;
+    CHECK(sent.params == expected);
+    CHECK(harness.model.busy());
+    // One at a time.
+    CHECK(harness.model.submitObjectMaterial(asked, "paint on Cube") == SpawnOutcome::Refused);
+
+    // changed: false is no edit, and no failure.
+    harness.reply(sent, {{"changed", false}, {"object", 41}, {"scene_id", "main"}, {"model", "m"},
+                         {"previous", {{"materials", Json::array()}}}});
+    CHECK_FALSE(harness.model.busy());
+    CHECK(harness.model.notice().kind == InspectorNoticeKind::Information);
+    CHECK(harness.model.notice().message == "paint on Cube: nothing to change.");
+    CHECK_FALSE(harness.model.hasUnsavedChanges());
+
+    // A refusal wrote nothing: the scene does not read as unsaved.
+    REQUIRE(harness.model.submitObjectMaterial(asked, "paint on Cube") == SpawnOutcome::Sent);
+    sent = harness.take("set_object_material");
+    harness.model.receiveRpcFailure(sent.request_id, "No material is named paint (material.name_unknown@1).",
+                                    false, true);
+    CHECK_FALSE(harness.model.hasUnsavedChanges());
+    CHECK(harness.model.notice().message == "No material is named paint (material.name_unknown@1).");
+    takeAll("scene_outline");
+
+    // Committed: it is this session's edit, and Undo sends the session's
+    // actor -- the engine's undo of that actor takes the material back.
+    REQUIRE(harness.model.submitObjectMaterial(asked, "paint on Cube") == SpawnOutcome::Sent);
+    sent = harness.take("set_object_material");
+    harness.reply(sent, {{"status", "committed"},
+                         {"committed_revision", revision + 1},
+                         {"transaction_id", "t1"},
+                         {"changed", true},
+                         {"object", 41},
+                         {"scene_id", "main"},
+                         {"model", "m"},
+                         {"previous", {{"materials", Json::array({{{"material", nullptr}}})}}}});
+    CHECK(harness.model.hasUnsavedChanges());
+    const auto committed = harness.model.takeCommittedEdits();
+    REQUIRE(committed.size() == 1);
+    CHECK(committed.front().label == "paint on Cube");
+    harness.model.takeRpcRequests();
+    harness.model.undo();
+    const auto undo = takeAll("undo");
+    CHECK(undo.params.at("actor_id") == 9);
 }

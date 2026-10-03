@@ -19,13 +19,27 @@ namespace PelicanStudio {
 namespace {
 
 using Json = nlohmann::json;
+using Scope = MaterialAssignSession::Scope;
 
 QString qtext(const std::string &text) { return QString::fromStdString(text); }
 
+Json toJson(const QJsonObject &object) {
+    const auto parsed =
+        Json::parse(QJsonDocument(object).toJson(QJsonDocument::Compact).toStdString(), nullptr, false);
+    return parsed.is_discarded() ? Json::object() : parsed;
+}
+
 // What a combo's entry carries: a material's name, Model default (empty),
-// or the placeholder of primitives that carry different ones.
+// the placeholder of primitives that carry different ones, or (This object)
+// the entry that says what is drawn now.
 const QString ModelDefault;
 const QString Mixed = QStringLiteral("\x01mixed");
+const QString Current = QStringLiteral("\x01current");
+
+void disableItem(QComboBox &combo, int index) {
+    if (auto *model = qobject_cast<QStandardItemModel *>(combo.model()))
+        if (auto *item = model->item(index)) item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+}
 
 } // namespace
 
@@ -33,8 +47,11 @@ struct MaterialAssignWidget::Impl {
     MaterialAssignWidget &owner;
     Hooks hooks;
     MaterialAssignSession session;
+    QComboBox *target = nullptr;
     QComboBox *choice = nullptr;
+    QToolButton *use_default = nullptr;
     QLabel *scope = nullptr;
+    QLabel *missing = nullptr;
     QWidget *primitives_box = nullptr;
     QFormLayout *primitives_form = nullptr;
     std::vector<QComboBox *> primitive_choices;
@@ -53,6 +70,15 @@ struct MaterialAssignWidget::Impl {
                   if (id == 0 && error != nullptr) *error = message.toStdString();
                   return id;
               },
+              .edit_object = [this](const Json &params, const std::string &description,
+                                    std::string *error) -> bool {
+                  if (!hooks.edit_object) return false;
+                  const auto object = QJsonDocument::fromJson(QByteArray::fromStdString(params.dump())).object();
+                  QString message;
+                  const bool sent = hooks.edit_object(object, qtext(description), &message);
+                  if (!sent && error != nullptr) *error = message.toStdString();
+                  return sent;
+              },
           }} {
         session.changed = [this] { present(); };
         session.restartRequested = [this](const std::string &reason) {
@@ -67,24 +93,48 @@ struct MaterialAssignWidget::Impl {
         auto *layout = new QVBoxLayout(&owner);
         layout->setContentsMargins(6, 6, 6, 6);
         layout->setSpacing(3);
+        // MT-2s, decision 1: what a choice applies to, This object first.
+        target = new QComboBox(&owner);
+        target->setObjectName(QStringLiteral("pelican.inspectorMaterialTarget"));
+        target->addItem(owner.tr("This object"), static_cast<int>(Scope::Object));
+        target->addItem(owner.tr("Every model"), static_cast<int>(Scope::Model));
+        target->setItemData(0, owner.tr("Only this object's materials change (set_object_material); "
+                                        "the scene's Undo takes it back"),
+                            Qt::ToolTipRole);
+        target->setItemData(1, owner.tr("The model's material changes for every object that shows it "
+                                        "(bind_material)"),
+                            Qt::ToolTipRole);
+        QObject::connect(target, &QComboBox::currentIndexChanged, &owner, [this](int index) {
+            if (index < 0) return;
+            session.setScope(static_cast<Scope>(target->itemData(index).toInt()));
+        });
+        layout->addWidget(target);
         auto *row = new QHBoxLayout;
         choice = new QComboBox(&owner);
         choice->setObjectName(QStringLiteral("pelican.inspectorMaterialChoice"));
-        choice->setToolTip(owner.tr("The material every primitive of this model draws with (bind_material)"));
         QObject::connect(choice, &QComboBox::currentIndexChanged, &owner, [this](int index) {
             if (index < 0) return;
             const auto value = choice->itemData(index).toString();
-            if (value == Mixed) return;
-            const auto shared = session.sharedMaterial();
-            if (shared && *shared == value.toStdString()) return;
+            if (value == Mixed || value == Current) return;
+            if (session.scope() == Scope::Model) {
+                const auto shared = session.sharedMaterial();
+                if (shared && *shared == value.toStdString()) return;
+            }
             session.choose(value.toStdString());
         });
+        use_default = new QToolButton(&owner);
+        use_default->setObjectName(QStringLiteral("pelican.inspectorMaterialUseModelDefault"));
+        use_default->setToolButtonStyle(Qt::ToolButtonTextOnly);
+        use_default->setText(owner.tr("Use model default"));
+        use_default->setToolTip(owner.tr("Take this object's own materials away: it draws the model's again"));
+        QObject::connect(use_default, &QToolButton::clicked, &owner, [this] { session.useModelDefault(); });
         undo = new QToolButton(&owner);
         undo->setObjectName(QStringLiteral("pelican.inspectorMaterialUndo"));
         undo->setToolButtonStyle(Qt::ToolButtonTextOnly);
         undo->setText(owner.tr("Undo"));
         QObject::connect(undo, &QToolButton::clicked, &owner, [this] { session.undo(); });
         row->addWidget(choice, 1);
+        row->addWidget(use_default);
         row->addWidget(undo);
         layout->addLayout(row);
         scope = new QLabel(&owner);
@@ -92,6 +142,12 @@ struct MaterialAssignWidget::Impl {
         applyPanelNoticeStyle(scope);
         scope->setWordWrap(true);
         layout->addWidget(scope);
+        missing = new QLabel(&owner);
+        missing->setObjectName(QStringLiteral("pelican.inspectorMaterialMissing"));
+        missing->setStyleSheet(QStringLiteral("color: #d9a23d;"));
+        missing->setWordWrap(true);
+        missing->hide();
+        layout->addWidget(missing);
         primitives_box = new QWidget(&owner);
         primitives_box->setObjectName(QStringLiteral("pelican.inspectorMaterialPrimitives"));
         primitives_form = new QFormLayout(primitives_box);
@@ -106,8 +162,13 @@ struct MaterialAssignWidget::Impl {
         owner.hide();
     }
 
-    // Model default, then the project's materials; `extra` (a name the
-    // bindings carry that is not listed: a glTF material) after them.
+    void addMaterials(QComboBox &combo) {
+        if (!session.materials().empty()) combo.insertSeparator(combo.count());
+        for (const auto &name : session.materials()) combo.addItem(qtext(name), qtext(name));
+    }
+
+    // Every <model>: Model default, then the project's materials; a name the
+    // bindings carry that is not listed (a glTF material) after them.
     void fill(QComboBox &combo, const std::optional<std::string> &current, const std::string &slot_hint) {
         const QSignalBlocker block{&combo};
         combo.clear();
@@ -115,12 +176,10 @@ struct MaterialAssignWidget::Impl {
         combo.setItemData(0, slot_hint.empty() ? owner.tr("The model's own material")
                                                : owner.tr("The model's own material (%1)").arg(qtext(slot_hint)),
                           Qt::ToolTipRole);
-        if (!session.materials().empty()) combo.insertSeparator(combo.count());
-        for (const auto &name : session.materials()) combo.addItem(qtext(name), qtext(name));
+        addMaterials(combo);
         if (!current) {
             combo.addItem(owner.tr("(differs per primitive)"), Mixed);
-            if (auto *model = qobject_cast<QStandardItemModel *>(combo.model()))
-                if (auto *item = model->item(combo.count() - 1)) item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
+            disableItem(combo, combo.count() - 1);
             combo.setCurrentIndex(combo.count() - 1);
             return;
         }
@@ -132,40 +191,78 @@ struct MaterialAssignWidget::Impl {
         combo.setCurrentIndex(index);
     }
 
+    // This object (decision 2): first what is drawn now and where it comes
+    // from, then -- for one primitive that carries its own -- the model's
+    // again, then the project's materials to choose from. While the edit of
+    // a choice is out, that choice stays the entry held.
+    void fillObject(QComboBox &combo, const std::optional<std::string> &current,
+                    const std::optional<std::string> &model_material,
+                    const std::optional<std::string> &chosen = std::nullopt) {
+        const QSignalBlocker block{&combo};
+        combo.clear();
+        combo.addItem(current ? qtext(*current) : owner.tr("(differs per primitive)"), current ? Current : Mixed);
+        disableItem(combo, 0);
+        if (model_material)
+            combo.addItem(owner.tr("Model default (%1)").arg(qtext(*model_material)), ModelDefault);
+        addMaterials(combo);
+        const int held = chosen ? combo.findData(qtext(*chosen)) : -1;
+        combo.setCurrentIndex(held > 0 ? held : 0);
+    }
+
     void presentPrimitives() {
-        const auto &primitives = session.primitives();
-        const bool several = primitives.size() > 1;
+        const bool object_scope = session.scope() == Scope::Object;
+        const auto count = object_scope ? session.objectMaterials().primitives.size() : session.primitives().size();
+        const bool several = count > 1;
         primitives_box->setVisible(several);
         if (!several) {
             while (primitives_form->rowCount() > 0) primitives_form->removeRow(0);
             primitive_choices.clear();
             return;
         }
-        if (primitive_choices.size() != primitives.size()) {
+        if (primitive_choices.size() != count) {
             while (primitives_form->rowCount() > 0) primitives_form->removeRow(0);
             primitive_choices.clear();
-            for (std::size_t index = 0; index < primitives.size(); ++index) {
+            for (std::size_t index = 0; index < count; ++index) {
                 auto *combo = new QComboBox(primitives_box);
                 combo->setObjectName(QStringLiteral("pelican.inspectorMaterialPrimitive.%1").arg(index));
                 QObject::connect(combo, &QComboBox::currentIndexChanged, &owner, [this, index, combo](int row) {
-                    if (row < 0 || index >= session.primitives().size()) return;
-                    const auto value = combo->itemData(row).toString().toStdString();
-                    const auto &primitive = session.primitives()[index];
-                    const auto shown = primitive.material == primitive.slot ? std::string{} : primitive.material;
-                    if (value != shown) session.choosePrimitive(index, value);
+                    if (row < 0) return;
+                    const auto value = combo->itemData(row).toString();
+                    if (value == Current || value == Mixed) return;
+                    if (session.scope() == Scope::Model) {
+                        if (index >= session.primitives().size()) return;
+                        const auto &primitive = session.primitives()[index];
+                        const auto shown = primitive.material == primitive.slot ? std::string{} : primitive.material;
+                        if (value.toStdString() == shown) return;
+                    }
+                    session.choosePrimitive(index, value.toStdString());
                 });
-                primitives_form->addRow(owner.tr("Mesh %1 \xC2\xB7 primitive %2")
-                                            .arg(primitives[index].mesh)
-                                            .arg(primitives[index].primitive),
-                                        combo);
+                primitives_form->addRow(QString{}, combo);
                 primitive_choices.push_back(combo);
             }
         }
-        for (std::size_t index = 0; index < primitives.size(); ++index) {
-            const auto &primitive = primitives[index];
-            fill(*primitive_choices[index],
-                 primitive.material == primitive.slot ? std::string{} : primitive.material, primitive.slot);
-            primitive_choices[index]->setEnabled(session.ready() && !session.bindPending());
+        for (std::size_t index = 0; index < count; ++index) {
+            std::uint64_t mesh = 0;
+            std::uint64_t primitive_index = 0;
+            if (object_scope) {
+                const auto &primitive = session.objectMaterials().primitives[index];
+                mesh = primitive.mesh;
+                primitive_index = primitive.primitive;
+                fillObject(*primitive_choices[index], objectMaterialLabel(primitive),
+                           primitive.source == "object" ? std::optional{primitive.model_material} : std::nullopt);
+            } else {
+                const auto &primitive = session.primitives()[index];
+                mesh = primitive.mesh;
+                primitive_index = primitive.primitive;
+                fill(*primitive_choices[index],
+                     primitive.material == primitive.slot ? std::string{} : primitive.material, primitive.slot);
+            }
+            if (auto *label = qobject_cast<QLabel *>(
+                    primitives_form->itemAt(static_cast<int>(index), QFormLayout::LabelRole)
+                        ? primitives_form->itemAt(static_cast<int>(index), QFormLayout::LabelRole)->widget()
+                        : nullptr))
+                label->setText(owner.tr("Mesh %1 \xC2\xB7 primitive %2").arg(mesh).arg(primitive_index));
+            primitive_choices[index]->setEnabled(session.choosable());
         }
     }
 
@@ -173,14 +270,41 @@ struct MaterialAssignWidget::Impl {
         const bool shown = !session.model().empty();
         owner.setVisible(shown);
         if (!shown) return;
-        const auto &primitives = session.primitives();
-        fill(*choice, session.shownMaterial(), primitives.size() == 1 ? primitives.front().slot : std::string{});
-        choice->setEnabled(session.ready() && session.bindingsRead() && !session.bindPending());
-        setPanelNotice(scope, qtext(modelScopeLine(session.model(), session.objects())),
-                       owner.tr("A material is bound to the model (%1), not to this object")
-                           .arg(qtext(session.model())));
+        const bool object_scope = session.scope() == Scope::Object;
+        const auto model_name = qtext(modelShortName(session.model()));
+        {
+            const QSignalBlocker block{target};
+            target->setItemText(1, owner.tr("Every %1").arg(model_name));
+            target->setCurrentIndex(object_scope ? 0 : 1);
+            target->setEnabled(session.ready());
+        }
+        if (object_scope) {
+            fillObject(*choice, session.shownObjectLabel(), std::nullopt, session.objectRequested());
+            choice->setToolTip(owner.tr("The material this object draws with; a choice gives this object its own "
+                                        "(set_object_material)"));
+            setPanelNotice(scope, qtext(objectScopeLine(session.subject().name)),
+                           owner.tr("Every other %1 keeps the model's material").arg(model_name));
+        } else {
+            const auto &primitives = session.primitives();
+            fill(*choice, session.shownMaterial(),
+                 primitives.size() == 1 ? primitives.front().slot : std::string{});
+            choice->setToolTip(
+                owner.tr("The material every primitive of this model draws with (bind_material)"));
+            setPanelNotice(scope, qtext(modelScopeLine(session.model(), session.counts())),
+                           owner.tr("A material is bound to the model (%1); an object with its own keeps it")
+                               .arg(qtext(session.model())));
+        }
+        choice->setEnabled(session.choosable());
+        use_default->setVisible(object_scope);
+        use_default->setEnabled(session.canUseModelDefault());
+        // Decision 7: an override whose material is not loaded.
+        const auto missing_line = object_scope ? objectMaterialMissingLine(session.objectMaterials()) : std::string{};
+        missing->setVisible(!missing_line.empty());
+        missing->setText(missing_line.empty() ? QString{} : QStringLiteral("\xE2\x9A\xA0 ") + qtext(missing_line));
+        missing->setToolTip(qtext(missing_line));
         presentPrimitives();
         const auto &undo_entries = session.undoEntries();
+        undo->setVisible(!undo_entries.empty());
         undo->setEnabled(!undo_entries.empty() && session.ready() && !session.bindPending());
         undo->setText(undo_entries.empty() ? owner.tr("Undo")
                                            : owner.tr("Undo %1").arg(qtext(undo_entries.back().description)));
@@ -202,12 +326,21 @@ MaterialAssignWidget::~MaterialAssignWidget() {
 void MaterialAssignWidget::engineAvailable() { impl_->session.engineReady(); }
 void MaterialAssignWidget::engineUnavailable() { impl_->session.engineGone(); }
 
-void MaterialAssignWidget::setSubject(const std::string &model, const std::string &object) {
-    impl_->session.setSubject(model, object);
+void MaterialAssignWidget::setSubject(const MaterialAssignSession::Subject &subject) {
+    impl_->session.setSubject(subject);
 }
+
+void MaterialAssignWidget::setSceneBusy(bool busy) { impl_->session.setSceneBusy(busy); }
 
 void MaterialAssignWidget::materialsChanged() { impl_->session.materialsChanged(); }
 void MaterialAssignWidget::bindingsChanged() { impl_->session.bindingsChanged(); }
+
+QString MaterialAssignWidget::objectEditRefused(const QString &error_code, const QString &message,
+                                                const QJsonValue &data) {
+    impl_->session.objectEditRefused(error_code.toStdString(), message.toStdString(),
+                                     toJson(data.toObject().value(QStringLiteral("error_fields")).toObject()));
+    return qtext(impl_->session.notice());
+}
 
 bool MaterialAssignWidget::receiveResult(qint64 request_id, const QByteArray &result_json) {
     if (!impl_->session.owns(request_id)) return false;
@@ -220,13 +353,10 @@ bool MaterialAssignWidget::receiveRefusal(qint64 request_id, int code, const QSt
                                           const QJsonValue &data) {
     if (!impl_->session.owns(request_id)) return false;
     const QJsonObject object = data.toObject();
-    const auto fields = Json::parse(QJsonDocument(object.value(QStringLiteral("error_fields")).toObject())
-                                        .toJson(QJsonDocument::Compact)
-                                        .toStdString(),
-                                    nullptr, false);
     return impl_->session.receiveRefusal(request_id, code,
                                          object.value(QStringLiteral("error_code")).toString().toStdString(),
-                                         message.toStdString(), fields.is_discarded() ? Json::object() : fields);
+                                         message.toStdString(),
+                                         toJson(object.value(QStringLiteral("error_fields")).toObject()));
 }
 
 bool MaterialAssignWidget::receiveFailure(qint64 request_id, const QString &message) {

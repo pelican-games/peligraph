@@ -366,11 +366,17 @@ modelReferenceChoices(std::string_view current,
 //   material.surface_unknown@1    {surface, reason}
 //   material.model_unknown@1      {model, reason}
 //   material.binding_invalid@1    {model, reason}
+//   material.object_unknown@1     {object, reason}  (MT-2s: set_object_material,
+//                                                    get_object_materials)
 //   material.transaction_busy@1   {path}
 //   external_modification         {path, expected, actual}
 // `error` as for graphLoopRefusalDescription. Answers "<sentence>
 // (<code>).", or empty for any other refusal.
 [[nodiscard]] std::string materialRefusalDescription(const nlohmann::json &error);
+// MT-2s, decision 6: whether the Inspector draws a component's list with the
+// generic rows (a table and JSON typed per row). A simplemodelview's
+// `/materials` is not drawn there: the Material rows above choose them.
+[[nodiscard]] bool inspectorListShown(std::string_view component, std::string_view list_path);
 // UX-8, decision 13 (c) (engine CT-1): the engine could not read its
 // configuration at start and stopped. Its fatal line ("Pelican fatal error :
 // <message>") reads as "The engine stopped: <the code's sentence> in <file>.
@@ -479,8 +485,11 @@ class InspectorModel {
                           std::string_view result_json);
     // `unknown_method`: the engine refused the method itself (JSON-RPC
     // -32601), as one from before scene_outline does (UX-13c).
+    // `refused`: the engine refused the request with an error_code of its
+    // own, so it wrote nothing (MT-2s: a refused set_object_material does
+    // not leave the scene's save state uncertain).
     void receiveRpcFailure(std::uint64_t request_id, std::string message,
-                           bool unknown_method = false);
+                           bool unknown_method = false, bool refused = false);
     void pollPendingOperations();
     void pollExternalChanges();
     // Whether either poll has anything to ask. A panel with no edit in flight
@@ -538,6 +547,13 @@ class InspectorModel {
     // new object, these name an object the edit in flight may be changing.
     SpawnOutcome submitSceneEdit(SceneEditKind kind, std::uint64_t subject_id,
                                  nlohmann::json operation, std::string description);
+    // MT-2s (engine MT-2): one set_object_material from the Inspector's
+    // Material rows, through this session's actor (so its Undo is the
+    // scene's Undo), on the scene revision last observed. `params` is the
+    // request without actor_id and base_scene_revision. Refused (the reason
+    // in notice()) while another edit is in flight. A reply that changed
+    // nothing (changed: false) is no edit and says so.
+    SpawnOutcome submitObjectMaterial(nlohmann::json params, std::string description);
     // The last spawn, Outliner edit, undo or redo to reach its end.
     const std::optional<SceneEditOutcome> &lastSceneEdit() const noexcept;
     void abortActivePreview();

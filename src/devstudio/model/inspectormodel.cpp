@@ -352,6 +352,10 @@ makeInspectorWidgetPlan(const Json &component,
     std::vector<InspectorWidgetDescriptor> result;
     result.reserve(fields.size());
     for (const Json &field : fields) {
+        // MT-2s: a list (simplemodelview.materials since engine MT-2) is no
+        // field of its own; its rows are drawn from the schema node
+        // (collectInspectorLists).
+        if (field.is_object() && field.value("type", std::string{}) == "list") continue;
         auto declaration =
             Pelican::parseSchemaFieldDeclaration(field, "schema field");
         const std::string field_name = declaration.name;
@@ -1636,7 +1640,7 @@ constexpr std::string_view ProjectSettingsUndoNeedsRestartText =
     "{store} was there when the engine started, so it stays declared \xE2\x80\x94 only stores added since then can be undone";
 
 // MT-1s, decision 7: the material editor's refusals (engine MT-1).
-constexpr std::array<GraphLoopRefusalText, 14> MaterialRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 15> MaterialRefusalTexts{{
     {"material.value_invalid@1", "{param} cannot take that value: {reason}"},
     {"material.param_unknown@1", "The surface of {path} declares no {kind} {param}"},
     {"material.document_unknown@1", "{path} is not a material document the project lists: {reason}"},
@@ -1649,6 +1653,7 @@ constexpr std::array<GraphLoopRefusalText, 14> MaterialRefusalTexts{{
     {"material.surface_unknown@1", "The surface {surface} cannot be read: {reason}"},
     {"material.model_unknown@1", "{model} cannot take a material: {reason}"},
     {"material.binding_invalid@1", "The materials of {model} cannot be bound that way: {reason}"},
+    {"material.object_unknown@1", "Object {object} cannot take a material of its own: {reason}"},
     {"material.transaction_busy@1", "{path} is being written by another edit; try again"},
     {"external_modification", "{path} changed outside Studio since it was read; it was read again, try again"},
 }};
@@ -1683,6 +1688,10 @@ std::string materialRefusalDescription(const nlohmann::json &error) {
     if (!fields.contains("kind") || !fields["kind"].is_string()) fields["kind"] = "value";
     if (!fields.contains("reason")) fields["reason"] = error.value("message", std::string{});
     return fillRefusalPattern(entry->sentence, fields) + " (" + std::string{entry->code} + ").";
+}
+
+bool inspectorListShown(std::string_view component, std::string_view list_path) {
+    return !(component == "simplemodelview" && list_path == "/materials");
 }
 
 std::string projectSettingsRefusalDescription(const nlohmann::json &error, bool undo) {
@@ -3052,6 +3061,13 @@ struct InspectorModel::Impl {
                           " accepted; waiting for the player frame boundary.");
             return;
         }
+        // MT-2s: set_object_material answers changed: false, and no ticket,
+        // when the object already carries what was asked.
+        if (!result.contains("status") && result.value("changed", true) == false) {
+            setNotice(InspectorNoticeKind::Information,
+                      state.description + ": nothing to change.");
+            return;
+        }
         handleEditCompletion(result, pending);
     }
 
@@ -3254,7 +3270,7 @@ struct InspectorModel::Impl {
     }
 
     void handleFailure(const RequestState &state, std::string message,
-                       bool unknown_method = false) {
+                       bool unknown_method = false, bool refused = false) {
         if (state.purpose == RequestPurpose::SceneTree && unknown_method &&
             state.scene_outline) {
             // UX-13c, decision 5: an engine from before scene_outline. Ask it
@@ -3317,7 +3333,8 @@ struct InspectorModel::Impl {
             actor_id.reset();
             break;
         case RequestPurpose::EditSubmit:
-            scene_revision_uncertain = true;
+            // A refusal wrote nothing; a lost reply may have written.
+            if (!refused) scene_revision_uncertain = true;
             recordSceneEdit(state.scene_edit, state.scene_edit_subject, nullptr, message);
             requestRefresh(true);
             break;
@@ -3457,7 +3474,7 @@ void InspectorModel::receiveRpcResult(std::uint64_t request_id,
 
 void InspectorModel::receiveRpcFailure(std::uint64_t request_id,
                                        std::string message,
-                                       bool unknown_method) {
+                                       bool unknown_method, bool refused) {
     const auto request = impl_->requests.find(request_id);
     if (request == impl_->requests.end()) {
         return;
@@ -3467,7 +3484,7 @@ void InspectorModel::receiveRpcFailure(std::uint64_t request_id,
     if (message.empty()) {
         message = "Inspector RPC failed without an error message.";
     }
-    impl_->handleFailure(state, std::move(message), unknown_method);
+    impl_->handleFailure(state, std::move(message), unknown_method, refused);
 }
 
 bool InspectorModel::pendingPollWanted() const noexcept {
@@ -3945,6 +3962,28 @@ SpawnOutcome InspectorModel::submitSceneEdit(SceneEditKind kind, std::uint64_t s
                   .description = std::move(description),
                   .scene_edit = kind,
                   .scene_edit_subject = subject_id});
+    return SpawnOutcome::Sent;
+}
+
+SpawnOutcome InspectorModel::submitObjectMaterial(Json params, std::string description) {
+    if (!impl_->spawnReady() || !params.is_object()) {
+        impl_->setNotice(InspectorNoticeKind::Error,
+                         "The engine editor session is not ready.");
+        return SpawnOutcome::Refused;
+    }
+    impl_->flushQueuedSpawn();
+    if (busy() || refreshBlocked()) {
+        impl_->setNotice(InspectorNoticeKind::Error,
+                         "Finish the edit in progress first, then choose the material again.");
+        return SpawnOutcome::Refused;
+    }
+    params["actor_id"] = *impl_->actor_id;
+    params["base_scene_revision"] = *impl_->current_scene_revision;
+    // Its own undo step, as the Outliner's edits are.
+    impl_->queue("set_object_material", std::move(params),
+                 {.purpose = Impl::RequestPurpose::EditSubmit,
+                  .selection_generation = impl_->selection_generation,
+                  .description = std::move(description)});
     return SpawnOutcome::Sent;
 }
 

@@ -97,6 +97,14 @@ struct FakeEngine {
     std::optional<MaterialsDock::SelectedObject> selected;
     std::vector<std::string> bound;
     int materials_changed = 0;
+    // MT-2s: the set_object_material requests handed to the Inspector's
+    // editor session, and whether it takes the next one.
+    struct ObjectEdit {
+        Json params;
+        std::string description;
+    };
+    std::vector<ObjectEdit> object_edits;
+    bool session_takes_edits = true;
 
     std::function<qint64(const QString &, const QJsonObject &, QString *)> sender() {
         return [this](const QString &method, const QJsonObject &params, QString *) {
@@ -120,6 +128,17 @@ struct FakeEngine {
         return MaterialAssignWidget::Hooks{
             .send = sender(),
             .restart = [this](const QString &reason) { restarts.push_back(reason); },
+            .edit_object =
+                [this](const QJsonObject &params, const QString &description, QString *error) {
+                    if (!session_takes_edits) {
+                        if (error != nullptr) *error = QStringLiteral("Finish the edit in progress first.");
+                        return false;
+                    }
+                    object_edits.push_back(
+                        {Json::parse(QJsonDocument(params).toJson(QJsonDocument::Compact).toStdString()),
+                         description.toStdString()});
+                    return true;
+                },
         };
     }
 
@@ -265,6 +284,56 @@ T *named(QWidget &root, const QString &name) {
 QTreeWidgetItem *rowNamed(QTreeWidget &tree, const QString &text) {
     const auto items = tree.findItems(text, Qt::MatchExactly | Qt::MatchRecursive);
     return items.isEmpty() ? nullptr : items.front();
+}
+
+// MT-2s: the Inspector's selected object, read at `revision`.
+MaterialAssignSession::Subject subjectOf(const std::string &model, const std::string &name,
+                                         std::uint64_t object = 7, std::uint64_t revision = 1) {
+    return {.model = model, .name = name, .object = object, .scene_id = "default_scene", .revision = revision};
+}
+
+Json cubeBindings(std::size_t objects = 2, std::size_t overrides = 0) {
+    return Json{{"model", Cube},
+                {"material_bindings", nullptr},
+                {"bindings_digest", nullptr},
+                {"primitives",
+                 Json::array({{{"mesh", 0},
+                               {"primitive", 0},
+                               {"slot", "pelican.primitive.default"},
+                               {"material", "pelican.primitive.default"},
+                               {"usd_path", nullptr}}})},
+                {"objects", objects},
+                {"object_overrides", overrides}};
+}
+
+// get_object_materials of the cube: `own` its all-primitive row, or none.
+Json cubeObject(const std::string &own = {}, bool resolved = true) {
+    auto rows = Json::array();
+    if (!own.empty()) rows.push_back({{"row_id", 1}, {"material", own}, {"resolved", resolved}});
+    const bool applies = !own.empty() && resolved;
+    return Json{{"object", 7},
+                {"scene_id", "default_scene"},
+                {"model", Cube},
+                {"materials", rows},
+                {"primitives",
+                 Json::array({{{"mesh", 0},
+                               {"primitive", 0},
+                               {"slot", "pelican.primitive.default"},
+                               {"material", applies ? own : "pelican.primitive.default"},
+                               {"source", applies ? "object" : "model"},
+                               {"model_material", "pelican.primitive.default"},
+                               {"drawn", applies ? own : "pelican.primitive.default"}}})}};
+}
+
+// The Inspector's rows on the cube, everything read.
+void readyCube(MaterialAssignWidget &rows, FakeEngine &engine, const Json &object = cubeObject(),
+               const Json &bindings = cubeBindings()) {
+    rows.engineAvailable();
+    rows.setSubject(subjectOf(Cube, "Cube"));
+    answer(rows, engine, "list_materials", listResult());
+    answer(rows, engine, "get_material_bindings", bindings);
+    const auto read = answer(rows, engine, "get_object_materials", object);
+    CHECK(read.params == Json{{"object", 7}, {"scene_id", "default_scene"}});
 }
 
 // The dock on a project, the engine up, the list read and paint selected,
@@ -555,36 +624,15 @@ TEST_CASE("MT-1s decision 5: the Inspector's Material combo binds every primitiv
     application();
     FakeEngine engine;
     MaterialAssignWidget rows{engine.assignHooks()};
-    rows.engineAvailable();
     CHECK(rows.isHidden());
-    rows.setSubject(Cube, "Cube");
-    answer(rows, engine, "list_materials", listResult());
-    answer(rows, engine, "get_material_bindings",
-           Json{{"model", Cube},
-                {"material_bindings", nullptr},
-                {"bindings_digest", nullptr},
-                {"primitives",
-                 Json::array({{{"mesh", 0},
-                               {"primitive", 0},
-                               {"slot", "pelican.primitive.default"},
-                               {"material", "pelican.primitive.default"},
-                               {"usd_path", nullptr}}})}});
-    const Json scene{{"objects",
-                      Json::array({{{"name", "Cube"},
-                                    {"components", Json::array({{{"name", "simplemodelview"}, {"model", Cube}}})}},
-                                   {{"name", "Cube_001"},
-                                    {"components", Json::array({{{"name", "simplemodelview"}, {"model", Cube}}})}},
-                                   {{"name", "Ball"},
-                                    {"components", Json::array({{{"name", "simplemodelview"},
-                                                                 {"model", "engine://primitives/sphere"}}})}}})}};
-    const auto snapshot = answer(rows, engine, "export_scene_snapshot",
-                                 Json{{"schema_version", 2}, {"semantic_scene_bytes", scene.dump()}});
-    CHECK(snapshot.params == Json{{"schema_version", 2}, {"allow_pending", true}});
+    readyCube(rows, engine);
+    // MT-2s: the model's bind is Every Cube.
+    named<QComboBox>(rows, QStringLiteral("pelican.inspectorMaterialTarget"))->setCurrentIndex(1);
     CHECK_FALSE(rows.isHidden());
     auto *choice = named<QComboBox>(rows, QStringLiteral("pelican.inspectorMaterialChoice"));
     CHECK(choice->currentText() == QStringLiteral("Model default"));
     CHECK(named<QLabel>(rows, QStringLiteral("pelican.inspectorMaterialScope"))->text() ==
-          QStringLiteral("Applies to every Cube in this project (2 objects)."));
+          QStringLiteral("Applies to every Cube in this project (2 objects, 0 with their own material)."));
     CHECK(rows.findChild<QWidget *>(QStringLiteral("pelican.inspectorMaterialPrimitives"))->isHidden());
 
     choice->setCurrentIndex(choice->findText(QStringLiteral("paint")));
@@ -596,7 +644,8 @@ TEST_CASE("MT-1s decision 5: the Inspector's Material combo binds every primitiv
     FakeEngine ship_engine;
     MaterialAssignWidget ship{ship_engine.assignHooks()};
     ship.engineAvailable();
-    ship.setSubject("ship", "Ship");
+    ship.setSubject(subjectOf("ship", "Ship"));
+    ship.session().setScope(MaterialAssignSession::Scope::Model);
     answer(ship, ship_engine, "list_materials", listResult());
     answer(ship, ship_engine, "get_material_bindings",
            Json{{"model", "ship"},
@@ -691,15 +740,8 @@ TEST_CASE("MT-1s decision 6: Undo sends an edit's previous against the digest af
     // The Inspector's rows keep their own Undo.
     FakeEngine inspector_engine;
     MaterialAssignWidget rows{inspector_engine.assignHooks()};
-    rows.engineAvailable();
-    rows.setSubject(Cube, "Cube");
-    answer(rows, inspector_engine, "list_materials", listResult());
-    answer(rows, inspector_engine, "get_material_bindings",
-           Json{{"model", Cube},
-                {"primitives", Json::array({{{"mesh", 0},
-                                             {"primitive", 0},
-                                             {"slot", "pelican.primitive.default"},
-                                             {"material", "pelican.primitive.default"}}})}});
+    readyCube(rows, inspector_engine);
+    rows.session().setScope(MaterialAssignSession::Scope::Model);
     REQUIRE(rows.session().choose("paint"));
     sent = inspector_engine.take("bind_material");
     REQUIRE(sent.has_value());
@@ -750,4 +792,252 @@ TEST_CASE("MT-1s decision 7: a refused value is said under its row; any other re
     CHECK(materialRefusalDescription(Json{{"code", "material.name_conflict@1"},
                                           {"error_fields", {{"name", "paint"}, {"path", Paint}}}}) ==
           "A material named paint exists already (material.name_conflict@1).");
+}
+
+TEST_CASE("MT-2s decision 1: a choice applies to this object first (set_object_material through the "
+          "Inspector's session); Every Cube is the model's bind_material",
+          "[devstudio][materials][mt2s]") {
+    application();
+    FakeEngine engine;
+    MaterialAssignWidget rows{engine.assignHooks()};
+    readyCube(rows, engine);
+    auto *target = named<QComboBox>(rows, QStringLiteral("pelican.inspectorMaterialTarget"));
+    CHECK(target->currentText() == QStringLiteral("This object"));
+    CHECK(target->itemText(1) == QStringLiteral("Every Cube"));
+    CHECK(named<QLabel>(rows, QStringLiteral("pelican.inspectorMaterialScope"))->text() ==
+          QStringLiteral("Applies to Cube only."));
+
+    auto *choice = named<QComboBox>(rows, QStringLiteral("pelican.inspectorMaterialChoice"));
+    choice->setCurrentIndex(choice->findText(QStringLiteral("paint")));
+    REQUIRE(engine.object_edits.size() == 1);
+    CHECK(engine.object_edits.back().params ==
+          Json{{"object", 7}, {"scene_id", "default_scene"}, {"materials", Json::array({{{"material", "paint"}}})}});
+    CHECK(engine.object_edits.back().description == "paint on Cube");
+    CHECK_FALSE(engine.asked("bind_material"));
+    // While the edit is out the rows wait, holding what was asked.
+    CHECK_FALSE(choice->isEnabled());
+    CHECK(choice->currentText() == QStringLiteral("paint"));
+    CHECK(choice->itemText(0) == QStringLiteral("paint (this object)"));
+    // The session took it, ran it and is idle again: the object is read anew.
+    rows.setSceneBusy(true);
+    rows.setSceneBusy(false);
+    answer(rows, engine, "get_object_materials", cubeObject("paint"));
+    CHECK(choice->isEnabled());
+
+    // What it carries already is not sent again.
+    choice->setCurrentIndex(choice->findText(QStringLiteral("paint")));
+    CHECK(engine.object_edits.size() == 1);
+    // A session that cannot take an edit now says why, and nothing waits.
+    engine.session_takes_edits = false;
+    named<QToolButton>(rows, QStringLiteral("pelican.inspectorMaterialUseModelDefault"))->click();
+    CHECK(engine.object_edits.size() == 1);
+    CHECK(named<QLabel>(rows, QStringLiteral("pelican.inspectorMaterialNotice"))
+              ->toolTip()
+              .contains(QStringLiteral("Finish the edit")));
+    CHECK(choice->isEnabled());
+
+    // Every Cube: the model's bind, as MT-1s.
+    target->setCurrentIndex(1);
+    choice->setCurrentIndex(choice->findText(QStringLiteral("paint")));
+    const auto sent = engine.take("bind_material");
+    REQUIRE(sent.has_value());
+    CHECK(sent->params == Json{{"model", Cube}, {"material", "paint"}});
+    CHECK(engine.object_edits.size() == 1);
+}
+
+TEST_CASE("MT-2s decision 2: the combo shows what is drawn and where it comes from; Use model default "
+          "takes the object's own away",
+          "[devstudio][materials][mt2s]") {
+    application();
+    FakeEngine engine;
+    MaterialAssignWidget rows{engine.assignHooks()};
+    readyCube(rows, engine);
+    auto *choice = named<QComboBox>(rows, QStringLiteral("pelican.inspectorMaterialChoice"));
+    auto *use_default = named<QToolButton>(rows, QStringLiteral("pelican.inspectorMaterialUseModelDefault"));
+    CHECK(choice->currentText() == QStringLiteral("(model default: pelican.primitive.default)"));
+    CHECK_FALSE(use_default->isEnabled());
+
+    // Its own row: the drawn material, "(this object)".
+    rows.setSubject(subjectOf(Cube, "Cube", 7, 2));
+    answer(rows, engine, "get_object_materials", cubeObject("paint"));
+    CHECK(choice->currentText() == QStringLiteral("paint (this object)"));
+    REQUIRE(use_default->isEnabled());
+    use_default->click();
+    REQUIRE(engine.object_edits.size() == 1);
+    CHECK(engine.object_edits.back().params == Json{{"object", 7},
+                                                    {"scene_id", "default_scene"},
+                                                    {"materials", Json::array({{{"material", nullptr}}})}});
+    CHECK(engine.object_edits.back().description == "Model default on Cube");
+}
+
+TEST_CASE("MT-2s decision 3: with several primitives, each row follows the target -- This object sends "
+          "set_object_material for that primitive",
+          "[devstudio][materials][mt2s]") {
+    application();
+    FakeEngine engine;
+    MaterialAssignWidget ship{engine.assignHooks()};
+    ship.engineAvailable();
+    ship.setSubject(subjectOf("ship", "Ship", 9));
+    answer(ship, engine, "list_materials", listResult());
+    answer(ship, engine, "get_material_bindings",
+           Json{{"model", "ship"},
+                {"primitives", Json::array({{{"mesh", 0}, {"primitive", 0}, {"slot", "hull"}, {"material", "hull"}},
+                                            {{"mesh", 1}, {"primitive", 0}, {"slot", "sail"}, {"material", "sail"}}})},
+                {"objects", 1},
+                {"object_overrides", 1}});
+    answer(ship, engine, "get_object_materials",
+           Json{{"object", 9},
+                {"scene_id", "default_scene"},
+                {"model", "ship"},
+                {"materials", Json::array({{{"row_id", 3},
+                                            {"material", "paint"},
+                                            {"primitive", {{"mesh", 1}, {"primitive", 0}}},
+                                            {"resolved", true}}})},
+                {"primitives",
+                 Json::array({{{"mesh", 0}, {"primitive", 0}, {"slot", "hull"}, {"material", "hull"},
+                               {"source", "model"}, {"model_material", "hull"}, {"drawn", "hull"}},
+                              {{"mesh", 1}, {"primitive", 0}, {"slot", "sail"}, {"material", "paint"},
+                               {"source", "object"}, {"model_material", "sail"}, {"drawn", "paint"}}})}});
+    CHECK(named<QComboBox>(ship, QStringLiteral("pelican.inspectorMaterialChoice"))->currentText() ==
+          QStringLiteral("(differs per primitive)"));
+    auto *first = named<QComboBox>(ship, QStringLiteral("pelican.inspectorMaterialPrimitive.0"));
+    auto *second = named<QComboBox>(ship, QStringLiteral("pelican.inspectorMaterialPrimitive.1"));
+    CHECK(first->currentText() == QStringLiteral("(model default: hull)"));
+    CHECK(second->currentText() == QStringLiteral("paint (this object)"));
+
+    first->setCurrentIndex(first->findText(QStringLiteral("paint")));
+    REQUIRE(engine.object_edits.size() == 1);
+    CHECK(engine.object_edits.back().params == Json{{"object", 9},
+                                                    {"scene_id", "default_scene"},
+                                                    {"material", "paint"},
+                                                    {"primitive", {{"mesh", 0}, {"primitive", 0}}}});
+    ship.setSceneBusy(true);
+    ship.setSceneBusy(false);
+    REQUIRE(engine.take("get_object_materials").has_value());
+    // The primitive's own row taken away: Model default (sail).
+    second->setCurrentIndex(second->findText(QStringLiteral("Model default (sail)")));
+    REQUIRE(engine.object_edits.size() == 2);
+    CHECK(engine.object_edits.back().params == Json{{"object", 9},
+                                                    {"scene_id", "default_scene"},
+                                                    {"material", nullptr},
+                                                    {"primitive", {{"mesh", 1}, {"primitive", 0}}}});
+    CHECK_FALSE(engine.asked("bind_material"));
+}
+
+TEST_CASE("MT-2s decision 4: N and M are get_material_bindings' objects and object_overrides, read again "
+          "whenever the scene's revision moves",
+          "[devstudio][materials][mt2s]") {
+    application();
+    FakeEngine engine;
+    MaterialAssignWidget rows{engine.assignHooks()};
+    readyCube(rows, engine, cubeObject(), cubeBindings(2, 1));
+    rows.session().setScope(MaterialAssignSession::Scope::Model);
+    auto *scope = named<QLabel>(rows, QStringLiteral("pelican.inspectorMaterialScope"));
+    CHECK(scope->text() == QStringLiteral("Applies to every Cube in this project (2 objects, 1 with their own material)."));
+    CHECK_FALSE(engine.asked("export_scene_snapshot"));
+
+    // Another Cube is added: the same model, a new revision -- counted again.
+    rows.setSubject(subjectOf(Cube, "Cube", 7, 2));
+    answer(rows, engine, "get_material_bindings", cubeBindings(3, 1));
+    answer(rows, engine, "get_object_materials", cubeObject());
+    CHECK(scope->text() == QStringLiteral("Applies to every Cube in this project (3 objects, 1 with their own material)."));
+    // The same revision asks nothing.
+    rows.setSubject(subjectOf(Cube, "Cube", 7, 2));
+    CHECK_FALSE(engine.asked("get_material_bindings"));
+    CHECK(parseModelObjectCounts(Json{{"primitives", Json::array()}}).objects == std::nullopt);
+}
+
+TEST_CASE("MT-2s decision 5: an object's material is the scene's Undo; the rows' own Undo takes a bind "
+          "back to the model it was sent to, whatever is selected by then",
+          "[devstudio][materials][mt2s]") {
+    application();
+    FakeEngine engine;
+    MaterialAssignWidget rows{engine.assignHooks()};
+    readyCube(rows, engine);
+    // This object: handed to the scene session, not kept here.
+    REQUIRE(rows.session().choose("paint"));
+    REQUIRE(engine.object_edits.size() == 1);
+    CHECK(rows.session().undoEntries().empty());
+    rows.setSceneBusy(true);
+    rows.setSceneBusy(false);
+    answer(rows, engine, "get_object_materials", cubeObject("paint"));
+
+    // Every Cube: a bind, kept with the model it went to.
+    rows.session().setScope(MaterialAssignSession::Scope::Model);
+    REQUIRE(rows.session().choose("paint"));
+    auto sent = engine.take("bind_material");
+    REQUIRE(sent.has_value());
+    const Json previous =
+        Json::array({{{"mesh", 0}, {"primitive", 0}, {"material", "pelican.primitive.default"}}});
+    REQUIRE(rows.receiveResult(sent->id, QByteArray::fromStdString(Json{{"committed", true},
+                                                                        {"changed", true},
+                                                                        {"model", Cube},
+                                                                        {"previous", {{"bindings", previous}}},
+                                                                        {"applied", "live"},
+                                                                        {"restart_required", nullptr}}
+                                                                       .dump())));
+    REQUIRE(rows.session().undoEntries().size() == 1);
+    CHECK(rows.session().undoEntries().back().model == Cube);
+
+    // A ship is selected now; Undo still goes to the Cube.
+    rows.setSubject(subjectOf("ship", "Ship", 9));
+    auto *undo = named<QToolButton>(rows, QStringLiteral("pelican.inspectorMaterialUndo"));
+    CHECK(undo->text() == QStringLiteral("Undo paint on every Cube"));
+    undo->click();
+    sent = engine.take("bind_material");
+    REQUIRE(sent.has_value());
+    CHECK(sent->params == Json{{"model", Cube}, {"bindings", previous}});
+}
+
+TEST_CASE("MT-2s decision 6: a simplemodelview's materials list is chosen in the Material rows, not typed "
+          "in the generic list",
+          "[devstudio][materials][mt2s]") {
+    CHECK_FALSE(inspectorListShown("simplemodelview", "/materials"));
+    CHECK(inspectorListShown("animation", "/parameters"));
+    CHECK(inspectorListShown("simplemodelview", "/other"));
+    // Engine MT-2 lists materials among simplemodelview's flat fields as a
+    // "list": no widget of its own (its rows come from the schema node), and
+    // the model field is planned as before.
+    const Json component{
+        {"name", "simplemodelview"},
+        {"component_index", 1},
+        {"authored_json", {{"name", "simplemodelview"}, {"model", Cube}}},
+        {"schema",
+         {{"state", "available"},
+          {"fields", Json::array({{{"name", "model"}, {"type", "string"}}, {{"name", "materials"}, {"type", "list"}}})}}}};
+    const auto plan = makeInspectorWidgetPlan(component, 7);
+    REQUIRE(plan.size() == 1);
+    CHECK(plan.front().field_name == "model");
+}
+
+TEST_CASE("MT-2s decision 7: a refused set_object_material is one sentence in the rows; a material that is "
+          "not loaded is marked",
+          "[devstudio][materials][mt2s]") {
+    application();
+    FakeEngine engine;
+    MaterialAssignWidget rows{engine.assignHooks()};
+    readyCube(rows, engine, cubeObject("gone", false));
+    auto *missing = named<QLabel>(rows, QStringLiteral("pelican.inspectorMaterialMissing"));
+    CHECK(missing->isVisibleTo(&rows));
+    CHECK(missing->toolTip() == QStringLiteral("Material gone is missing; drawing the model default"));
+    CHECK(named<QComboBox>(rows, QStringLiteral("pelican.inspectorMaterialChoice"))->currentText() ==
+          QStringLiteral("(model default: pelican.primitive.default)"));
+
+    REQUIRE(rows.session().choose("paint"));
+    const auto sentence = rows.objectEditRefused(
+        QStringLiteral("material.object_unknown@1"), QStringLiteral("set_object_material: object 7 draws no model"),
+        QJsonObject{{QStringLiteral("error_code"), QStringLiteral("material.object_unknown@1")},
+                    {QStringLiteral("error_fields"),
+                     QJsonObject{{QStringLiteral("object"), 7},
+                                 {QStringLiteral("reason"), QStringLiteral("the object has no simplemodelview")}}}});
+    CHECK(sentence == QStringLiteral("Object 7 cannot take a material of its own: the object has no "
+                                     "simplemodelview (material.object_unknown@1)."));
+    CHECK(named<QLabel>(rows, QStringLiteral("pelican.inspectorMaterialNotice"))->toolTip().isEmpty() == false);
+    // The rows read the object again and take choices again.
+    CHECK(engine.asked("get_object_materials"));
+    CHECK_FALSE(rows.session().objectEditPending());
+    // The table's existing material.* sentences are not repeated for it.
+    CHECK(materialRefusalDescription(Json{{"code", "material.name_unknown@1"},
+                                          {"error_fields", {{"name", "gone"}, {"reason", "not registered"}}}}) ==
+          "No material is named gone: not registered (material.name_unknown@1).");
 }

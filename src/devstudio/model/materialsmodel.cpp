@@ -74,24 +74,6 @@ void flattenFiles(const std::vector<AssetEntry> &entries, std::vector<const Asse
     }
 }
 
-void countUsers(const Json &value, std::string_view model, std::size_t &count) {
-    if (value.is_array()) {
-        for (const auto &entry : value) countUsers(entry, model, count);
-        return;
-    }
-    if (!value.is_object()) return;
-    if (const auto components = value.find("components");
-        components != value.end() && components->is_array()) {
-        for (const auto &component : *components)
-            if (text(component, "name") == "simplemodelview" && text(component, "model") == model) {
-                ++count;
-                break;
-            }
-    }
-    for (const auto &[key, member] : value.items())
-        if (key != "components") countUsers(member, model, count);
-}
-
 } // namespace
 
 // --- list_materials
@@ -396,22 +378,84 @@ std::vector<MaterialPrimitive> parseMaterialBindings(const Json &result) {
     return primitives;
 }
 
-std::optional<std::size_t> countModelUsers(const Json &scene, std::string_view model) {
-    if (!scene.is_object() && !scene.is_array()) return std::nullopt;
-    std::size_t count = 0;
-    countUsers(scene, model, count);
-    return count;
+ModelObjectCounts parseModelObjectCounts(const Json &result) {
+    ModelObjectCounts counts;
+    if (!result.is_object()) return counts;
+    const auto count = [&](const char *key) -> std::optional<std::size_t> {
+        const auto found = result.find(key);
+        if (found == result.end() || !found->is_number_integer() || found->get<std::int64_t>() < 0)
+            return std::nullopt;
+        return static_cast<std::size_t>(found->get<std::int64_t>());
+    };
+    counts.objects = count("objects");
+    counts.overrides = count("object_overrides");
+    return counts;
 }
 
-std::string modelScopeLine(std::string_view model, std::optional<std::size_t> objects) {
+std::string modelShortName(std::string_view model) {
     std::string shown = builtinModelLabel(model);
     constexpr std::string_view builtin = " (built-in)";
     if (shown.ends_with(builtin)) shown.erase(shown.size() - builtin.size());
     if (shown.empty()) shown = std::string{model};
-    std::string line = "Applies to every " + shown + " in this project";
-    if (objects)
-        line += " (" + std::to_string(*objects) + (*objects == 1 ? " object)" : " objects)");
+    return shown;
+}
+
+std::string modelScopeLine(std::string_view model, const ModelObjectCounts &counts) {
+    std::string line = "Applies to every " + modelShortName(model) + " in this project";
+    if (counts.objects) {
+        line += " (" + std::to_string(*counts.objects) + (*counts.objects == 1 ? " object" : " objects");
+        if (counts.overrides) line += ", " + std::to_string(*counts.overrides) + " with their own material";
+        line += ")";
+    }
     return line + ".";
+}
+
+std::string objectScopeLine(std::string_view object) {
+    return "Applies to " + (object.empty() ? std::string{"this object"} : std::string{object}) + " only.";
+}
+
+// --- an object's own materials
+
+ObjectMaterials parseObjectMaterials(const Json &result) {
+    ObjectMaterials materials;
+    if (!result.is_object()) return materials;
+    materials.object = counter(result, "object");
+    materials.scene_id = text(result, "scene_id");
+    materials.model = text(result, "model");
+    if (const auto rows = result.find("materials"); rows != result.end() && rows->is_array())
+        for (const auto &row : *rows) {
+            if (!row.is_object()) continue;
+            ObjectMaterialRow parsed{.row_id = counter(row, "row_id"), .material = text(row, "material")};
+            if (const auto primitive = row.find("primitive"); primitive != row.end() && primitive->is_object())
+                parsed.primitive = std::pair{counter(*primitive, "mesh"), counter(*primitive, "primitive")};
+            if (const auto resolved = row.find("resolved"); resolved != row.end() && resolved->is_boolean())
+                parsed.resolved = resolved->get<bool>();
+            materials.rows.push_back(std::move(parsed));
+        }
+    if (const auto primitives = result.find("primitives"); primitives != result.end() && primitives->is_array())
+        for (const auto &primitive : *primitives) {
+            if (!primitive.is_object()) continue;
+            materials.primitives.push_back({.mesh = counter(primitive, "mesh"),
+                                            .primitive = counter(primitive, "primitive"),
+                                            .slot = text(primitive, "slot"),
+                                            .material = text(primitive, "material"),
+                                            .source = text(primitive, "source"),
+                                            .model_material = text(primitive, "model_material"),
+                                            .drawn = text(primitive, "drawn")});
+        }
+    return materials;
+}
+
+std::string objectMaterialLabel(const ObjectMaterialPrimitive &primitive) {
+    const auto &shown = primitive.drawn.empty() ? primitive.material : primitive.drawn;
+    if (primitive.source == "object") return shown + " (this object)";
+    return "(model default: " + shown + ")";
+}
+
+std::string objectMaterialMissingLine(const ObjectMaterials &materials) {
+    for (const auto &row : materials.rows)
+        if (!row.resolved) return "Material " + row.material + " is missing; drawing the model default";
+    return {};
 }
 
 // --- the Materials dock
@@ -884,55 +928,112 @@ std::int64_t MaterialAssignSession::send(const std::string &method, const Json &
 
 void MaterialAssignSession::engineReady() {
     ready_ = true;
-    bindings_request_ = materials_request_ = count_request_ = bind_request_ = 0;
+    bindings_request_ = materials_request_ = object_request_ = bind_request_ = 0;
+    object_edit_pending_ = false;
+    object_requested_.reset();
     readAll();
     notify();
 }
 
 void MaterialAssignSession::engineGone() {
     ready_ = false;
-    bindings_request_ = materials_request_ = count_request_ = bind_request_ = 0;
+    bindings_request_ = materials_request_ = object_request_ = bind_request_ = 0;
+    object_edit_pending_ = false;
+    object_requested_.reset();
     notify();
 }
 
-void MaterialAssignSession::setSubject(const std::string &model, const std::string &object) {
-    object_ = object;
-    if (model == model_) return;
-    model_ = model;
-    primitives_.clear();
-    bindings_read_ = false;
-    objects_.reset();
-    notice_.clear();
-    notice_detail_.clear();
-    bindings_request_ = count_request_ = 0;
-    readAll();
+void MaterialAssignSession::setSubject(const Subject &subject) {
+    if (subject == subject_) return;
+    const bool other_model = subject.model != subject_.model;
+    const bool other_object =
+        other_model || subject.object != subject_.object || subject.scene_id != subject_.scene_id;
+    const bool moved = subject.revision != subject_.revision;
+    subject_ = subject;
+    if (other_model) {
+        primitives_.clear();
+        bindings_read_ = false;
+        counts_ = {};
+        bindings_request_ = 0;
+    }
+    if (other_object) {
+        object_materials_ = {};
+        object_read_ = false;
+        object_request_ = 0;
+        object_edit_pending_ = false;
+        object_requested_.reset();
+        notice_.clear();
+        notice_detail_.clear();
+    }
+    if (!subject_.model.empty()) {
+        if (other_model) readMaterials();
+        // N and M move with the scene (an object added, an override set), so
+        // a new revision reads them again, as it reads the object's rows.
+        if (other_model || moved) readBindings();
+        if (other_object || moved) readObject();
+    }
+    notify();
+}
+
+void MaterialAssignSession::setSceneBusy(bool busy) {
+    if (busy == scene_busy_) return;
+    scene_busy_ = busy;
+    if (!busy && object_edit_pending_) {
+        // The edit reached its end (committed, refused or lost): what the
+        // object carries now is the engine's to say.
+        object_edit_pending_ = false;
+        object_requested_.reset();
+        readObject();
+        readBindings();
+    }
     notify();
 }
 
 void MaterialAssignSession::materialsChanged() { readMaterials(); }
 
-void MaterialAssignSession::bindingsChanged() { readBindings(); }
+void MaterialAssignSession::bindingsChanged() {
+    readBindings();
+    readObject();
+}
+
+void MaterialAssignSession::setScope(Scope scope) {
+    if (scope == scope_) return;
+    scope_ = scope;
+    notify();
+}
 
 void MaterialAssignSession::readAll() {
-    if (!ready_ || model_.empty()) return;
+    if (!ready_ || subject_.model.empty()) return;
     readMaterials();
     readBindings();
-    readCount();
+    readObject();
 }
 
 void MaterialAssignSession::readBindings() {
-    if (!ready_ || model_.empty()) return;
-    bindings_request_ = send("get_material_bindings", Json{{"model", model_}});
+    if (!ready_ || subject_.model.empty()) return;
+    bindings_request_ = send("get_material_bindings", Json{{"model", subject_.model}});
 }
 
 void MaterialAssignSession::readMaterials() {
-    if (!ready_ || model_.empty()) return;
+    if (!ready_ || subject_.model.empty()) return;
     materials_request_ = send("list_materials", Json::object());
 }
 
-void MaterialAssignSession::readCount() {
-    if (!ready_ || model_.empty()) return;
-    count_request_ = send("export_scene_snapshot", Json{{"schema_version", 2}, {"allow_pending", true}});
+void MaterialAssignSession::readObject() {
+    if (!ready_ || subject_.model.empty() || subject_.object == 0) return;
+    Json params{{"object", subject_.object}};
+    if (!subject_.scene_id.empty()) params["scene_id"] = subject_.scene_id;
+    object_request_ = send("get_object_materials", params);
+}
+
+const std::string &MaterialAssignSession::label() const noexcept {
+    return subject_.name.empty() ? subject_.model : subject_.name;
+}
+
+bool MaterialAssignSession::choosable() const noexcept {
+    if (!ready_ || subject_.model.empty() || bind_request_ != 0) return false;
+    if (scope_ == Scope::Model) return bindings_read_;
+    return object_read_ && !scene_busy_ && !object_edit_pending_ && subject_.object != 0;
 }
 
 std::optional<std::string> MaterialAssignSession::sharedMaterial() const {
@@ -949,12 +1050,23 @@ std::optional<std::string> MaterialAssignSession::shownMaterial() const {
     return sharedMaterial();
 }
 
+std::optional<std::string> MaterialAssignSession::shownObjectLabel() const {
+    if (object_edit_pending_ && object_requested_) return *object_requested_ + " (this object)";
+    const auto &primitives = object_materials_.primitives;
+    if (primitives.empty()) return std::nullopt;
+    const auto first = objectMaterialLabel(primitives.front());
+    if (std::ranges::all_of(primitives, [&](const auto &p) { return objectMaterialLabel(p) == first; }))
+        return first;
+    return std::nullopt;
+}
+
 bool MaterialAssignSession::bind(Json params, std::string description, bool undoing,
                                  std::optional<std::string> requested) {
-    if (!ready_ || model_.empty() || bind_request_ != 0) return false;
+    if (!ready_ || bind_request_ != 0) return false;
     notice_.clear();
     notice_detail_.clear();
     bind_description_ = std::move(description);
+    bind_model_ = params.value("model", std::string{});
     bind_undoing_ = undoing;
     requested_ = std::move(requested);
     bind_request_ = send("bind_material", params);
@@ -962,43 +1074,134 @@ bool MaterialAssignSession::bind(Json params, std::string description, bool undo
     return bind_request_ != 0;
 }
 
+bool MaterialAssignSession::editObject(Json params, std::string description,
+                                       std::optional<std::string> requested) {
+    if (!choosable() || scope_ != Scope::Object || !transport_.edit_object) return false;
+    params["object"] = subject_.object;
+    if (!subject_.scene_id.empty()) params["scene_id"] = subject_.scene_id;
+    notice_.clear();
+    notice_detail_.clear();
+    std::string error;
+    if (!transport_.edit_object(params, description, &error)) {
+        notice_ = error.empty() ? std::string{"The scene is busy with another edit; try again."} : error;
+        notice_detail_ = error;
+        notify();
+        return false;
+    }
+    object_edit_pending_ = true;
+    object_requested_ = std::move(requested);
+    notify();
+    return true;
+}
+
 bool MaterialAssignSession::choose(const std::string &material) {
+    if (scope_ == Scope::Object) {
+        if (!object_read_) return false;
+        if (material.empty()) return useModelDefault();
+        // Every primitive: the all-primitive row, and a primitive's own row
+        // taken away so it does not keep beating it -- one edit.
+        auto entries = Json::array({{{"material", material}}});
+        bool same = false;
+        for (const auto &row : object_materials_.rows) {
+            if (!row.primitive) {
+                same = row.material == material;
+                continue;
+            }
+            entries.push_back({{"material", nullptr},
+                               {"primitive", {{"mesh", row.primitive->first}, {"primitive", row.primitive->second}}}});
+        }
+        if (same && entries.size() == 1) return false;
+        return editObject(Json{{"materials", entries}}, material + " on " + label(), material);
+    }
     if (!bindings_read_) return false;
-    const auto label = object_.empty() ? model_ : object_;
+    const auto every = "every " + modelShortName(subject_.model);
     if (!material.empty())
-        return bind(Json{{"model", model_}, {"material", material}}, material + " on " + label, false, material);
+        return bind(Json{{"model", subject_.model}, {"material", material}}, material + " on " + every, false,
+                    material);
     auto bindings = Json::array();
     for (const auto &primitive : primitives_)
         if (primitive.material != primitive.slot)
             bindings.push_back(
                 {{"mesh", primitive.mesh}, {"primitive", primitive.primitive}, {"material", primitive.slot}});
     if (bindings.empty()) return false;
-    return bind(Json{{"model", model_}, {"bindings", bindings}}, "Model default on " + label, false,
+    return bind(Json{{"model", subject_.model}, {"bindings", bindings}}, "Model default on " + every, false,
                 std::string{});
 }
 
 bool MaterialAssignSession::choosePrimitive(std::size_t index, const std::string &material) {
+    if (scope_ == Scope::Object) {
+        if (index >= object_materials_.primitives.size()) return false;
+        const auto &primitive = object_materials_.primitives[index];
+        const Json target{{"mesh", primitive.mesh}, {"primitive", primitive.primitive}};
+        const auto where = " on mesh " + std::to_string(primitive.mesh) + " primitive " +
+                           std::to_string(primitive.primitive) + " of " + label();
+        if (material.empty()) {
+            const auto key = std::pair{primitive.mesh, primitive.primitive};
+            const bool own = std::ranges::any_of(object_materials_.rows,
+                                                 [&](const auto &row) { return row.primitive == key; });
+            const bool all = std::ranges::any_of(object_materials_.rows,
+                                                 [](const auto &row) { return !row.primitive; });
+            // Its own row taken away; under an all-primitive row that would
+            // still beat the model, the model's material is named instead.
+            if (own) return editObject(Json{{"material", nullptr}, {"primitive", target}}, "Model default" + where,
+                                       std::nullopt);
+            if (all && !primitive.model_material.empty())
+                return editObject(Json{{"material", primitive.model_material}, {"primitive", target}},
+                                  "Model default" + where, std::nullopt);
+            return false;
+        }
+        if (primitive.source == "object" && primitive.material == material) return false;
+        return editObject(Json{{"material", material}, {"primitive", target}}, material + where, std::nullopt);
+    }
     if (index >= primitives_.size()) return false;
     const auto &primitive = primitives_[index];
     const auto chosen = material.empty() ? primitive.slot : material;
     if (chosen == primitive.material) return false;
-    return bind(Json{{"model", model_},
+    return bind(Json{{"model", subject_.model},
                      {"bindings", Json::array({{{"mesh", primitive.mesh},
                                                 {"primitive", primitive.primitive},
                                                 {"material", chosen}}})}},
                 (material.empty() ? std::string{"Model default"} : material) + " on mesh " +
-                    std::to_string(primitive.mesh) + " primitive " + std::to_string(primitive.primitive),
+                    std::to_string(primitive.mesh) + " primitive " + std::to_string(primitive.primitive) +
+                    " of every " + modelShortName(subject_.model),
                 false);
+}
+
+bool MaterialAssignSession::canUseModelDefault() const noexcept {
+    return scope_ == Scope::Object && choosable() && !object_materials_.rows.empty();
+}
+
+bool MaterialAssignSession::useModelDefault() {
+    if (!canUseModelDefault()) return false;
+    auto entries = Json::array();
+    for (const auto &row : object_materials_.rows) {
+        Json entry{{"material", nullptr}};
+        if (row.primitive) entry["primitive"] = {{"mesh", row.primitive->first}, {"primitive", row.primitive->second}};
+        entries.push_back(std::move(entry));
+    }
+    return editObject(Json{{"materials", entries}}, "Model default on " + label(), std::nullopt);
 }
 
 bool MaterialAssignSession::undo() {
     if (undo_.empty()) return false;
-    return bind(Json{{"model", model_}, {"bindings", undo_.back().bindings}}, undo_.back().description, true);
+    // To the model the bind went to, not the one selected now.
+    const auto &entry = undo_.back();
+    return bind(Json{{"model", entry.model}, {"bindings", entry.bindings}}, entry.description, true);
+}
+
+void MaterialAssignSession::objectEditRefused(const std::string &error_code, const std::string &message,
+                                              const Json &error_fields) {
+    object_edit_pending_ = false;
+    object_requested_.reset();
+    notice_ = sentenceFor(error_code, message, error_fields);
+    notice_detail_ = message;
+    readObject();
+    notify();
 }
 
 bool MaterialAssignSession::owns(std::int64_t id) const noexcept {
     return id != 0 &&
-           (id == bindings_request_ || id == materials_request_ || id == count_request_ || id == bind_request_);
+           (id == bindings_request_ || id == materials_request_ || id == object_request_ || id == bind_request_);
 }
 
 bool MaterialAssignSession::receiveResult(std::int64_t id, const Json &result) {
@@ -1006,18 +1209,15 @@ bool MaterialAssignSession::receiveResult(std::int64_t id, const Json &result) {
     if (id == bindings_request_) {
         bindings_request_ = 0;
         primitives_ = parseMaterialBindings(result);
+        counts_ = parseModelObjectCounts(result);
         bindings_read_ = true;
     } else if (id == materials_request_) {
         materials_request_ = 0;
         materials_ = materialNames(parseMaterialList(result));
-    } else if (id == count_request_) {
-        count_request_ = 0;
-        objects_.reset();
-        if (result.is_object())
-            if (const auto bytes = result.find("semantic_scene_bytes"); bytes != result.end() && bytes->is_string()) {
-                const auto scene = Json::parse(bytes->get<std::string>(), nullptr, false);
-                if (!scene.is_discarded()) objects_ = countModelUsers(scene, model_);
-            }
+    } else if (id == object_request_) {
+        object_request_ = 0;
+        object_materials_ = parseObjectMaterials(result);
+        object_read_ = true;
     } else if (id == bind_request_) {
         bind_request_ = 0;
         if (bind_undoing_) {
@@ -1025,7 +1225,7 @@ bool MaterialAssignSession::receiveResult(std::int64_t id, const Json &result) {
         } else {
             const auto previous = result.value("previous", Json::object()).value("bindings", Json::array());
             if (result.value("changed", true) && previous.is_array() && !previous.empty())
-                undo_.push_back({bind_description_, previous});
+                undo_.push_back({bind_description_, bind_model_, previous});
         }
         const auto restart = result.find("restart_required");
         if (restart != result.end() && !restart->is_null()) {
@@ -1036,6 +1236,7 @@ bool MaterialAssignSession::receiveResult(std::int64_t id, const Json &result) {
             if (restartRequested) restartRequested(reason);
         }
         readBindings();
+        readObject();
     }
     notify();
     return true;
@@ -1043,17 +1244,21 @@ bool MaterialAssignSession::receiveResult(std::int64_t id, const Json &result) {
 
 bool MaterialAssignSession::receiveRefusal(std::int64_t id, int code, const std::string &error_code,
                                            const std::string &message, const Json &error_fields) {
-    (void)code;
     if (!owns(id)) return false;
+    if (id == object_request_ && code == -32601) {
+        // An engine from before MT-2: no object of its can carry its own.
+        object_request_ = 0;
+        notice_ = "This engine cannot give an object its own material (no get_object_materials); "
+                  "choose Every " + modelShortName(subject_.model) + ".";
+        notice_detail_ = message;
+        notify();
+        return true;
+    }
     if (error_code.empty()) return receiveFailure(id, message);
     if (id == bindings_request_) bindings_request_ = 0;
     else if (id == materials_request_) materials_request_ = 0;
-    else if (id == count_request_) {
-        // The count is said when it is known; not knowing it says nothing.
-        count_request_ = 0;
-        notify();
-        return true;
-    } else if (id == bind_request_) {
+    else if (id == object_request_) object_request_ = 0;
+    else if (id == bind_request_) {
         bind_request_ = 0;
         readBindings();
     }
@@ -1071,8 +1276,10 @@ bool MaterialAssignSession::receiveFailure(std::int64_t id, const std::string &m
         notice_detail_ = message;
     } else if (id == materials_request_) {
         materials_request_ = 0;
-    } else if (id == count_request_) {
-        count_request_ = 0;
+    } else if (id == object_request_) {
+        object_request_ = 0;
+        notice_ = "Could not read the object's materials: " + message;
+        notice_detail_ = message;
     } else if (id == bind_request_) {
         bind_request_ = 0;
         notice_ = "Could not bind the material: " + message;

@@ -37,6 +37,7 @@
 #include <QPointer>
 #include <QPlainTextEdit>
 #include <QScrollArea>
+#include <QSet>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QTimer>
@@ -181,6 +182,12 @@ struct InspectorWidget::Impl {
     // UX-13c: the request the engine has just refused as an unknown method
     // (-32601); its failure, which follows at once, says so to the model.
     qint64 unknown_method_transport = 0;
+    // MT-2s: the Material rows' set_object_material requests out, and the one
+    // the engine has just refused with the sentence it reads as; its failure,
+    // which follows at once, hands the model that sentence.
+    QSet<qint64> object_material_transports;
+    qint64 refused_object_material_transport = 0;
+    QString refused_object_material_sentence;
     std::uint64_t rendered_content_revision =
         std::numeric_limits<std::uint64_t>::max();
     bool rebuilding = false;
@@ -318,6 +325,19 @@ struct InspectorWidget::Impl {
                 .restart = [this](const QString &reason) {
                     if (engine_restart_action) engine_restart_action(reason);
                 },
+                // MT-2s, decision 5: a scene edit of this session, so the
+                // Undo above takes it back.
+                .edit_object = [this](const QJsonObject &params, const QString &description, QString *error) {
+                    const auto parsed = Json::parse(
+                        QJsonDocument(params).toJson(QJsonDocument::Compact).toStdString(), nullptr, false);
+                    const auto outcome = model.submitObjectMaterial(
+                        parsed.is_discarded() ? Json::object() : parsed, description.toStdString());
+                    if (outcome == SpawnOutcome::Refused && error != nullptr)
+                        *error = QString::fromStdString(model.notice().message);
+                    synchronize();
+                    dispatchRequests();
+                    return outcome != SpawnOutcome::Refused;
+                },
             },
             &owner);
         layout->addWidget(material_assign);
@@ -437,6 +457,7 @@ struct InspectorWidget::Impl {
                          &owner, [this] {
                              transport_requests.clear();
                              graph_transport_requests.clear();
+                             object_material_transports.clear();
                              graph_attachments->setConnected(true);
                              material_assign->engineAvailable();
                              model.startSession();
@@ -448,6 +469,7 @@ struct InspectorWidget::Impl {
             [this](const QString &message) {
                 transport_requests.clear();
                 graph_transport_requests.clear();
+                object_material_transports.clear();
                 graph_attachments->setConnected(false);
                 material_assign->engineUnavailable();
                 model.stopSession(message.toStdString());
@@ -472,6 +494,7 @@ struct InspectorWidget::Impl {
                 }
                 const std::uint64_t model_request_id = pending.value();
                 transport_requests.erase(pending);
+                object_material_transports.remove(transport_request_id);
                 model.receiveRpcResult(
                     model_request_id,
                     std::string_view{
@@ -499,9 +522,14 @@ struct InspectorWidget::Impl {
                 }
                 const std::uint64_t model_request_id = pending.value();
                 transport_requests.erase(pending);
+                object_material_transports.remove(transport_request_id);
+                const bool refused =
+                    std::exchange(refused_object_material_transport, 0) == transport_request_id;
                 model.receiveRpcFailure(
-                    model_request_id, message.toStdString(),
-                    std::exchange(unknown_method_transport, 0) == transport_request_id);
+                    model_request_id,
+                    refused ? std::exchange(refused_object_material_sentence, {}).toStdString()
+                            : message.toStdString(),
+                    std::exchange(unknown_method_transport, 0) == transport_request_id, refused);
                 synchronize();
                 dispatchRequests();
             });
@@ -510,6 +538,15 @@ struct InspectorWidget::Impl {
             [this](qint64 transport_request_id, int code, const QString &message,
                    const QJsonValue &data) {
                 if (material_assign->receiveRefusal(transport_request_id, code, message, data)) return;
+                // MT-2s, decision 7: a refused set_object_material is said
+                // in the Material rows and, as one sentence, by the Inspector.
+                const auto error_code =
+                    data.toObject().value(QStringLiteral("error_code")).toString();
+                if (object_material_transports.contains(transport_request_id) && !error_code.isEmpty()) {
+                    refused_object_material_transport = transport_request_id;
+                    refused_object_material_sentence =
+                        material_assign->objectEditRefused(error_code, message, data);
+                }
                 unknown_method_transport =
                     code == -32601 && transport_requests.contains(transport_request_id)
                         ? transport_request_id
@@ -556,7 +593,7 @@ struct InspectorWidget::Impl {
         add_component_button->setVisible(!shown);
         ray_occurrences_button->setVisible(!shown);
         graph_attachments->setVisible(!shown);
-        if (shown) material_assign->setSubject({}, {});
+        if (shown) material_assign->setSubject({});
     }
 
     void showRuntimeObject(const RuntimeObject &object) {
@@ -994,6 +1031,8 @@ struct InspectorWidget::Impl {
                 transport_requests.insert(
                     transport_request_id,
                     static_cast<quint64>(request.request_id));
+                if (request.method == "set_object_material")
+                    object_material_transports.insert(transport_request_id);
             }
             synchronize();
         }
@@ -1468,9 +1507,19 @@ struct InspectorWidget::Impl {
             : std::nullopt);
         ray_occurrences_button->setEnabled(model.snapshot().has_value() && !model.busy() && !model.refreshBlocked());
         {
+            // MT-2s: the object itself and the revision it was read at, so
+            // the rows read its materials again after any edit or Undo.
             const auto subject = materialSubject();
-            material_assign->setSubject(subject ? subject->first : std::string{},
-                                        subject ? subject->second : std::string{});
+            MaterialAssignSession::Subject material_subject;
+            if (subject && snapshot) {
+                material_subject = {.model = subject->first,
+                                    .name = subject->second,
+                                    .object = snapshot->authoring_object_id,
+                                    .scene_id = snapshot->scene_id,
+                                    .revision = snapshot->scene_revision};
+            }
+            material_assign->setSubject(material_subject);
+            material_assign->setSceneBusy(model.busy() || model.refreshBlocked());
         }
         synchronizeRayDialog();
         add_component_button->setEnabled(model.canRequestComponentAddCandidates());
@@ -1729,6 +1778,14 @@ struct InspectorWidget::Impl {
                     }
         }
         for (const auto &list : component.lists) {
+            // MT-2s, decision 6: a list the Material rows choose is not typed
+            // here as well.
+            if (!inspectorListShown(component.name, list.path)) {
+                auto *note = plainLabel(owner.tr("Chosen in the Material rows above"), group);
+                note->setObjectName(QStringLiteral("pelican.inspectorListElsewhere"));
+                form->addRow(QString::fromStdString(list.path), note);
+                continue;
+            }
             addList(*form, group, list);
         }
         if (component.widgets.empty() && component.lists.empty()) {

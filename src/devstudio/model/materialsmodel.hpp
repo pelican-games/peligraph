@@ -173,13 +173,65 @@ struct MaterialPrimitive {
     bool operator==(const MaterialPrimitive &) const = default;
 };
 [[nodiscard]] std::vector<MaterialPrimitive> parseMaterialBindings(const nlohmann::json &result);
-// The objects of a scene (export_scene_snapshot's semantic_scene_bytes,
-// parsed) whose simplemodelview shows `model`; nullopt when the scene could
-// not be read.
-[[nodiscard]] std::optional<std::size_t> countModelUsers(const nlohmann::json &scene, std::string_view model);
-// "Applies to every Cube in this project (2 objects)." -- the count left out
-// when it is not known.
-[[nodiscard]] std::string modelScopeLine(std::string_view model, std::optional<std::size_t> objects);
+// MT-2s, decision 4 (engine MT-2): get_material_bindings' `objects` (the scene
+// objects that draw the model, every scene, prefab-made ones too) and
+// `object_overrides` (those of them with materials of their own); nullopt
+// from an engine that does not count them.
+struct ModelObjectCounts {
+    std::optional<std::size_t> objects;
+    std::optional<std::size_t> overrides;
+};
+[[nodiscard]] ModelObjectCounts parseModelObjectCounts(const nlohmann::json &result);
+// How a model reads in a line: a built-in primitive by its name ("Cube"),
+// any other model by its reference.
+[[nodiscard]] std::string modelShortName(std::string_view model);
+// "Applies to every Cube in this project (2 objects, 1 with their own
+// material)." -- what is not known left out.
+[[nodiscard]] std::string modelScopeLine(std::string_view model, const ModelObjectCounts &counts);
+// "Applies to Cube_001 only." (MT-2s, decision 1: This object).
+[[nodiscard]] std::string objectScopeLine(std::string_view object);
+
+// --- an object's own materials (MT-2s, engine MT-2's get_object_materials)
+
+struct ObjectMaterialRow {
+    std::uint64_t row_id = 0;
+    std::string material;
+    // The primitive the row is for; nullopt: every primitive.
+    std::optional<std::pair<std::uint64_t, std::uint64_t>> primitive;
+    // false: no material of that name is loaded, and the model's draws.
+    bool resolved = true;
+    bool operator==(const ObjectMaterialRow &) const = default;
+};
+struct ObjectMaterialPrimitive {
+    std::uint64_t mesh = 0;
+    std::uint64_t primitive = 0;
+    std::string slot;
+    // What the primitive carries: the object's row when one applies, else
+    // the model's.
+    std::string material;
+    // "object" or "model".
+    std::string source;
+    std::string model_material;
+    // What is drawn now (empty when the object has no live instance).
+    std::string drawn;
+    bool operator==(const ObjectMaterialPrimitive &) const = default;
+};
+struct ObjectMaterials {
+    std::uint64_t object = 0;
+    std::string scene_id;
+    std::string model;
+    std::vector<ObjectMaterialRow> rows;
+    std::vector<ObjectMaterialPrimitive> primitives;
+    bool operator==(const ObjectMaterials &) const = default;
+};
+[[nodiscard]] ObjectMaterials parseObjectMaterials(const nlohmann::json &result);
+// Decision 2: what a primitive reads as -- the drawn material (the one it
+// carries when nothing is drawn), "paint (this object)" when the object's own
+// row gives it, "(model default: pelican.primitive.default)" when the model's.
+[[nodiscard]] std::string objectMaterialLabel(const ObjectMaterialPrimitive &primitive);
+// Decision 7: "Material <name> is missing; drawing the model default" for the
+// first row whose material is not loaded; empty when every row resolves.
+[[nodiscard]] std::string objectMaterialMissingLine(const ObjectMaterials &materials);
 
 // --- the Materials dock
 
@@ -348,10 +400,40 @@ class MaterialsDockSession {
 class MaterialAssignSession {
   public:
     using Json = nlohmann::json;
-    using Transport = MaterialsDockSession::Transport;
 
+    struct Transport {
+        std::function<std::int64_t(const std::string &method, const Json &params, std::string *error)>
+            request;
+        // MT-2s, decision 5: set_object_material is a scene edit, so it goes
+        // through the Inspector's editor session -- its actor, its revision,
+        // its Undo -- which adds actor_id and base_scene_revision. false (the
+        // reason in *error) when that session could not take it.
+        std::function<bool(const Json &params, const std::string &description, std::string *error)>
+            edit_object;
+    };
+
+    // MT-2s, decision 1: what a choice applies to.
+    enum class Scope : std::uint8_t { Object, Model };
+
+    // The selected object, as the Inspector's snapshot holds it.
+    struct Subject {
+        std::string model;
+        std::string name;
+        std::uint64_t object = 0;
+        std::string scene_id;
+        // The scene revision the snapshot was read at: another one means the
+        // object's rows may have moved (an edit, an Undo, another client).
+        std::uint64_t revision = 0;
+        bool operator==(const Subject &) const = default;
+    };
+
+    // A bind_material of the Material rows, taken back with its
+    // previous.bindings. set_object_material is not here: it is the
+    // scene's Undo (decision 5). `model` is the model the bind was sent to:
+    // Undo sends the bindings back there, whatever is selected by then.
     struct UndoEntry {
         std::string description;
+        std::string model;
         Json bindings = Json::array();
     };
 
@@ -362,19 +444,37 @@ class MaterialAssignSession {
 
     void engineReady();
     void engineGone();
-    // The selected object's model (empty: none, or no simplemodelview) and
-    // the name the Undo names it by.
-    void setSubject(const std::string &model, const std::string &object);
+    // The selected object (an empty model: none, or no simplemodelview).
+    void setSubject(const Subject &subject);
+    // The Inspector's editor session has an edit in flight (one of these
+    // rows' set_object_material among them): the rows wait for it, then read
+    // the object again.
+    void setSceneBusy(bool busy);
     // The materials or the model's bindings changed elsewhere (the dock).
     void materialsChanged();
     void bindingsChanged();
 
-    // Decision 5 (a): every primitive of the model; an empty material is
-    // "Model default" (each primitive back to its own slot).
+    // Decision 1. This object (the default) or Every <model>.
+    void setScope(Scope scope);
+    [[nodiscard]] Scope scope() const noexcept { return scope_; }
+
+    // Every primitive. This object: set_object_material of the object's
+    // all-primitive row (decision 1). Every <model>: bind_material of the
+    // model, an empty material being "Model default" (each primitive back to
+    // its own slot) (MT-1s decision 5 (a)).
     bool choose(const std::string &material);
-    // Decision 5 (c): one primitive (an index of primitives()).
+    // One primitive (an index of primitives() / objectMaterials().primitives),
+    // as the scope says (decision 3). This object and an empty material: the
+    // primitive draws the model's again.
     bool choosePrimitive(std::size_t index, const std::string &material);
+    // Decision 2: every row of the object taken away (material: null).
+    bool useModelDefault();
+    [[nodiscard]] bool canUseModelDefault() const noexcept;
     bool undo();
+
+    // Decision 7: the engine refused this session's set_object_material
+    // (the Inspector's session handed its refusal here).
+    void objectEditRefused(const std::string &error_code, const std::string &message, const Json &error_fields);
 
     [[nodiscard]] bool owns(std::int64_t id) const noexcept;
     bool receiveResult(std::int64_t id, const Json &result);
@@ -383,18 +483,33 @@ class MaterialAssignSession {
     bool receiveFailure(std::int64_t id, const std::string &message);
 
     [[nodiscard]] bool ready() const noexcept { return ready_; }
-    [[nodiscard]] const std::string &model() const noexcept { return model_; }
+    [[nodiscard]] const std::string &model() const noexcept { return subject_.model; }
+    [[nodiscard]] const Subject &subject() const noexcept { return subject_; }
     [[nodiscard]] const std::vector<std::string> &materials() const noexcept { return materials_; }
     [[nodiscard]] const std::vector<MaterialPrimitive> &primitives() const noexcept { return primitives_; }
     [[nodiscard]] bool bindingsRead() const noexcept { return bindings_read_; }
-    [[nodiscard]] const std::optional<std::size_t> &objects() const noexcept { return objects_; }
-    // What the combo shows: one material all primitives carry, "" when each
+    [[nodiscard]] const ModelObjectCounts &counts() const noexcept { return counts_; }
+    [[nodiscard]] const ObjectMaterials &objectMaterials() const noexcept { return object_materials_; }
+    [[nodiscard]] bool objectRead() const noexcept { return object_read_; }
+    // The rows can take a choice now (read, nothing of theirs in flight).
+    [[nodiscard]] bool choosable() const noexcept;
+    // Every <model>: one material all primitives carry, "" when each
     // carries its own slot (Model default), nullopt when they differ.
     [[nodiscard]] std::optional<std::string> sharedMaterial() const;
-    // What the combo shows: the material asked for while its bind is out,
-    // else sharedMaterial().
+    // Every <model>: the material asked for while its bind is out, else
+    // sharedMaterial().
     [[nodiscard]] std::optional<std::string> shownMaterial() const;
+    // This object: the one label every primitive reads as
+    // (objectMaterialLabel), nullopt when they differ; the material asked for
+    // while its edit is out.
+    [[nodiscard]] std::optional<std::string> shownObjectLabel() const;
     [[nodiscard]] bool bindPending() const noexcept { return bind_request_ != 0; }
+    [[nodiscard]] bool objectEditPending() const noexcept { return object_edit_pending_; }
+    // The material whose set_object_material is out (nullopt: none, or Use
+    // model default).
+    [[nodiscard]] std::optional<std::string> objectRequested() const {
+        return object_edit_pending_ ? object_requested_ : std::nullopt;
+    }
     [[nodiscard]] const std::string &notice() const noexcept { return notice_; }
     [[nodiscard]] const std::string &noticeDetail() const noexcept { return notice_detail_; }
     [[nodiscard]] const std::vector<UndoEntry> &undoEntries() const noexcept { return undo_; }
@@ -405,27 +520,36 @@ class MaterialAssignSession {
     void readAll();
     void readBindings();
     void readMaterials();
-    void readCount();
+    void readObject();
     bool bind(Json params, std::string description, bool undoing,
               std::optional<std::string> requested = std::nullopt);
+    bool editObject(Json params, std::string description, std::optional<std::string> requested);
+    [[nodiscard]] const std::string &label() const noexcept;
 
     Transport transport_;
     bool ready_ = false;
-    std::string model_;
-    std::string object_;
+    Subject subject_;
+    Scope scope_ = Scope::Object;
+    bool scene_busy_ = false;
     std::vector<std::string> materials_;
     std::vector<MaterialPrimitive> primitives_;
     bool bindings_read_ = false;
-    std::optional<std::size_t> objects_;
+    ModelObjectCounts counts_;
+    ObjectMaterials object_materials_;
+    bool object_read_ = false;
+    bool object_edit_pending_ = false;
+    std::optional<std::string> object_requested_;
     std::string notice_;
     std::string notice_detail_;
     std::vector<UndoEntry> undo_;
     std::string bind_description_;
+    // The model the bind out was sent to.
+    std::string bind_model_;
     std::optional<std::string> requested_;
     bool bind_undoing_ = false;
     std::int64_t bindings_request_ = 0;
     std::int64_t materials_request_ = 0;
-    std::int64_t count_request_ = 0;
+    std::int64_t object_request_ = 0;
     std::int64_t bind_request_ = 0;
 };
 
