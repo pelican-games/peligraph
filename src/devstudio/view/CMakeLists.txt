@@ -122,6 +122,9 @@ add_library(pelican_studio_view STATIC
     viewselectfield.hpp
     playcontrols.cpp
     playcontrols.hpp
+    # HW-2s / AV-1s: the Assets dock.
+    assetsdock.cpp
+    assetsdock.hpp
     studioscreen.cpp
     studioscreen.hpp
 )

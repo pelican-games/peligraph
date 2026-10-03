@@ -114,6 +114,13 @@ class ShaderReloadFollower {
     // A get_status result handed in directly (tests, and any caller that
     // already has one). Marks are applied; no follow-up read is started.
     void consume(const QByteArray &status_json);
+    // HW-2s, decision 7: a reading of a get_status some other panel asked
+    // for. Nothing is marked; only whether the engine's own watch is open
+    // (details.enabled -- project.json's hot_reload, gate_reason empty) is
+    // kept. With it open, the engine's watcher can apply a shader write
+    // before this follower's reload_shaders lands; that request then finds
+    // nothing new, and is followed as the commit it was.
+    void observeStatus(const ShaderReloadReading &reading);
 
     // A watched file changed. Public so a test can say so without a disk.
     void sourceChanged();
@@ -148,6 +155,8 @@ class ShaderReloadFollower {
     // A write that landed while a reload was in flight: one more reload.
     bool reload_again_ = false;
     std::optional<ShaderReloadReading> last_reading_;
+    // HW-2s, decision 7: the last reading's details.enabled.
+    bool engine_watch_open_ = false;
     std::optional<ShaderReloadReading> baseline_;
     // RL-1s: the render documents, as the watcher spells them.
     QStringList document_files_;

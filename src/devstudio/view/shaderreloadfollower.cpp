@@ -128,8 +128,16 @@ void ShaderReloadFollower::sendReload() {
             .kind = ShaderReloadOutcome::Kind::error, .message = error});
 }
 
-void ShaderReloadFollower::finishReload(const ShaderReloadOutcome &outcome) {
+void ShaderReloadFollower::finishReload(const ShaderReloadOutcome &answer) {
     pending_reload_ = 0;
+    ShaderReloadOutcome outcome = answer;
+    // HW-2s, decision 7: with the engine's own watch open, its watcher may
+    // have compiled the write before this request landed, which then found
+    // nothing new. That was the watcher's commit: the panels read the plan
+    // and the sockets again, and the status read below says whether it
+    // compiled.
+    if (outcome.kind == ShaderReloadOutcome::Kind::unchanged && engine_watch_open_)
+        outcome.kind = ShaderReloadOutcome::Kind::committed;
     if (hooks_.reloaded) hooks_.reloaded(outcome);
     // The marks follow the engine's own status: a commit has cleared its
     // last error, a failure has written it.
@@ -245,6 +253,10 @@ void ShaderReloadFollower::consume(const QByteArray &status_json) {
     handle(status_json, false);
 }
 
+void ShaderReloadFollower::observeStatus(const ShaderReloadReading &reading) {
+    if (reading.reported) engine_watch_open_ = reading.enabled;
+}
+
 void ShaderReloadFollower::handle(const QByteArray &status_json,
                                   bool following) {
     ShaderReloadReading reading;
@@ -257,6 +269,7 @@ void ShaderReloadFollower::handle(const QByteArray &status_json,
         return;
     }
     last_reading_ = reading;
+    if (reading.reported) engine_watch_open_ = reading.enabled;
     if (hooks_.apply)
         hooks_.apply(shaderReloadMarks(reading, sources_), reading, following);
     if (!following) return;

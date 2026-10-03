@@ -169,6 +169,10 @@ class FramePlanWidget final : public QWidget {
     // one calls `changed` with its path and never asks for reload_shaders.
     void setWatchedRenderDocuments(std::vector<std::filesystem::path> files,
                                    std::function<void(const QString &path)> changed);
+    // HW-2s, decision 7: a get_status any panel read. Whether the engine's
+    // own watch is open (project.json's hot_reload) decides how a
+    // reload_shaders that found nothing new is read.
+    void observeEngineStatus(const nlohmann::json &status);
     // UX-6a, decision 4: the Physical plan's Remove on an image the planner
     // keeps out of aliasing because it has TRANSFER_SRC. The action takes
     // the flag off the image (the Graph tab's document): the resource, and

@@ -1,4 +1,5 @@
 #include "mainwindow.hpp"
+#include "assetsdock.hpp"
 #include "frameplaneditcapability.hpp"
 #include "frameplanwidget.hpp"
 #include "fullscreenpasswidget.hpp"
@@ -293,6 +294,26 @@ void MainWindow::createWorkspace() {
     project_list_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     docks_[ProjectDock] =
         makeDock(this, tr("Project"), QStringLiteral("pelican.projectDock"), project_list_);
+    // HW-2s / AV-1s: the asset folders beside Project -- Reload when saved
+    // outside on each row, and the contents check against a manifest.
+    assets_dock_ = new AssetsDock(
+        AssetsDock::Hooks{
+            .send = [this](const QString &method, const QJsonObject &params,
+                           QString *error) { return viewport_->requestRpc(method, params, error); },
+            .restart = [this](const QString &reason) { requestEngineRestart(reason); },
+            .render_documents =
+                [this] {
+                    std::vector<std::filesystem::path> paths;
+                    if (render_reload_)
+                        for (const auto &[reference, document] : render_reload_->documents())
+                            paths.push_back(document.path);
+                    return paths;
+                },
+        },
+        this);
+    assets_dock_->setObjectName(QStringLiteral("pelican.assetsPanel"));
+    docks_[AssetsPanelDock] =
+        makeDock(this, tr("Assets"), QStringLiteral("pelican.assetsDock"), assets_dock_);
 
     outliner_ = new OutlinerTree(this);
     // The tree itself is named, not only its dock: picking a scene object is
@@ -772,6 +793,7 @@ void MainWindow::createWorkspace() {
                 dispatchGizmoModel();
                 // RL-1s: what this engine composes is what is watched.
                 if (render_reload_) render_reload_->engineReady();
+                assets_dock_->engineAvailable();
             });
     connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
             [this](const QString &) {
@@ -779,6 +801,7 @@ void MainWindow::createWorkspace() {
                 // the history stays (its documents are on disk).
                 if (render_history_) render_history_->abandonInFlight();
                 if (render_reload_) render_reload_->engineGone();
+                assets_dock_->engineUnavailable();
                 if (pending_navigation_ != Navigation::None) {
                     cancelNavigation(tr("The engine disconnected. The project remains open."));
                 }
@@ -800,6 +823,8 @@ void MainWindow::createWorkspace() {
             [this](qint64 request_id, const QByteArray &result_json) {
                 if (migration_panel_->acceptRpcResult(request_id, result_json))
                     return;
+                // HW-2s / AV-1s: the Assets dock's settings edits and checks.
+                if (assets_dock_->receiveResult(request_id, result_json)) return;
                 // PM-3a: Pause, Step and the reads that follow them.
                 if (play_controls_ &&
                     play_controls_->receiveResult(request_id, result_json))
@@ -859,6 +884,7 @@ void MainWindow::createWorkspace() {
             [this](qint64 request_id, const QString &message) {
                 if (migration_panel_->acceptRpcFailure(request_id, message))
                     return;
+                if (assets_dock_->receiveFailure(request_id, message)) return;
                 if (play_controls_ &&
                     play_controls_->receiveFailure(request_id, message))
                     return;
@@ -1255,6 +1281,14 @@ void MainWindow::createMenus() {
         connect(show_tab, &QAction::triggered, this,
                 [this, id = id]() { showRenderToolsTab(id); });
     }
+    // HW-2s: the Assets dock brought to the front -- it shares a tab with
+    // Project and the Outliner, and Panels only shows or hides it.
+    QAction *show_assets = view_menu->addAction(tr("&Assets"));
+    show_assets->setObjectName(QStringLiteral("pelican.view.assets"));
+    connect(show_assets, &QAction::triggered, this, [this] {
+        docks_[AssetsPanelDock]->show();
+        docks_[AssetsPanelDock]->raise();
+    });
 
     QMenu *layout_menu = menuBar()->addMenu(tr("&Layout"));
     layout_menu->setObjectName(QStringLiteral("pelican.layoutMenu"));
@@ -1398,11 +1432,16 @@ void MainWindow::createPlayControls(QToolBar *band) {
                 play_controls_->observeStatus(request_id, status);
                 // UX-9, decision 4: the voices on the Graph's bands.
                 if (graph_canvas_ != nullptr) graph_canvas_->observeStatus(status);
+                // HW-2s: the watch, the last reload and the contents check;
+                // and, decision 7, whether the engine's own watch is open.
+                assets_dock_->observeStatus(request_id, status);
+                frame_plan_->observeEngineStatus(status);
             });
     connect(viewport_, &EmbeddedViewport::engineRpcRefused, this,
             [this](qint64 request_id, int code, const QString &message,
                    const QJsonValue &data) {
                 play_controls_->receiveRefusal(request_id, code, message, data);
+                assets_dock_->receiveRefusal(request_id, code, message, data);
                 // UX-13c: an engine without scene_outline (-32601).
                 if (request_id != 0 && request_id == pending_outliner_request_ &&
                     code == -32601)
@@ -1860,6 +1899,7 @@ void MainWindow::openProjectNow(const QString &path) {
         project_model_ = std::move(opened_project);
         // RL-1s: nor anything the reload watched.
         if (render_reload_) render_reload_->open(project_model_->projectRoot());
+        assets_dock_->open(project_model_->projectRoot());
         tool_layout_presets_.emplace(
             application_config_directory_,
             displayPath(project_model_->projectRoot()));
@@ -1944,6 +1984,7 @@ void MainWindow::leaveCurrentProject(
     endGizmoSessionForProjectSwitch(next_project_root);
     if (render_history_) render_history_->clear();
     if (render_reload_) render_reload_->open({});
+    assets_dock_->open({});
     selection_model_.bindProject(nullptr);
     project_model_.reset();
     tool_layout_presets_.reset();
@@ -3168,6 +3209,9 @@ void MainWindow::applyDefaultLayout() {
     addDockWidget(Qt::LeftDockWidgetArea, docks_[ProjectDock]);
     addDockWidget(Qt::LeftDockWidgetArea, docks_[OutlinerDock]);
     tabifyDockWidget(docks_[ProjectDock], docks_[OutlinerDock]);
+    // HW-2s: Assets is the tab next to Project.
+    addDockWidget(Qt::LeftDockWidgetArea, docks_[AssetsPanelDock]);
+    tabifyDockWidget(docks_[ProjectDock], docks_[AssetsPanelDock]);
     docks_[ProjectDock]->raise();
 
     addDockWidget(Qt::RightDockWidgetArea, docks_[InspectorDock]);

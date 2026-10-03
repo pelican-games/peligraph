@@ -4717,6 +4717,10 @@ void FramePlanWidget::setWatchedRenderDocuments(
     impl_->reload_follower->setDocumentFiles(std::move(files), std::move(changed));
 }
 
+void FramePlanWidget::observeEngineStatus(const nlohmann::json &status) {
+    impl_->reload_follower->observeStatus(readShaderReloadStatus(status));
+}
+
 void FramePlanWidget::fixSockets(const QString &graph, const QString &pass) {
     impl_->fixSockets(FramePlanNodeKey{graph.toStdString(), pass.toStdString()});
 }

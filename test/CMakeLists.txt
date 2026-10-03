@@ -880,6 +880,24 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   add_dependencies(pelican_test_devstudio_play_controls_test
     pelican_test_process_fixture_child)
 
+  # HW-2s / AV-1s: the Assets dock on its real widgets, with the test
+  # answering for the engine through the dock's own hooks; and the Frame
+  # Plan's shader follower when the engine's own watch is open.
+  pelican_define_test(devstudio_assets_dock_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+
   # PM-3c: the Outliner's rows for what the running game spawned, and the
   # Inspector's read-only view of one, on the real window over the real RPC
   # transport, with the test answering as an RO-1 engine.

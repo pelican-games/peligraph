@@ -172,6 +172,8 @@ TEST_CASE("Saved devstudio layouts remain restorable as later docks are added",
     QDockWidget *engine_log = dock("pelican.engineLogDock");
     QDockWidget *frame_plan = dock("pelican.framePlanDock");
     QDockWidget *fullscreen_pass = dock("pelican.fullscreenPassDock");
+    // HW-2s: a dock no saved layout knows yet.
+    QDockWidget *assets = dock("pelican.assetsDock");
 
     bool default_applied = false;
     QString error;
@@ -208,20 +210,21 @@ TEST_CASE("Saved devstudio layouts remain restorable as later docks are added",
     REQUIRE_FALSE(frame_plan->isHidden());
     REQUIRE(current_window.dockWidgetArea(fullscreen_pass) !=
             Qt::NoDockWidgetArea);
+    REQUIRE(current_window.dockWidgetArea(assets) != Qt::NoDockWidgetArea);
 
     const auto docks = current_window.findChildren<QDockWidget *>();
-    REQUIRE(docks.size() == 7);
+    REQUIRE(docks.size() == 8);
     QSet<QString> object_names;
     for (const QDockWidget *current : docks) {
         REQUIRE_FALSE(current->objectName().isEmpty());
         object_names.insert(current->objectName());
     }
-    REQUIRE(object_names.size() == 7);
+    REQUIRE(object_names.size() == 8);
 
     auto *panels = current_window.findChild<QMenu *>(
         QStringLiteral("pelican.panelsMenu"));
     REQUIRE(panels != nullptr);
-    REQUIRE(panels->actions().size() == 7);
+    REQUIRE(panels->actions().size() == 8);
 }
 
 TEST_CASE("Devstudio restores the last panel layout at startup with an unsaved default control",
@@ -288,7 +291,7 @@ TEST_CASE("Devstudio restores the last panel layout at startup with an unsaved d
     REQUIRE(fallback_window.dockWidgetArea(project) ==
             Qt::LeftDockWidgetArea);
     const auto docks = fallback_window.findChildren<QDockWidget *>();
-    REQUIRE(docks.size() == 7);
+    REQUIRE(docks.size() == 8);
     for (const QDockWidget *dock : docks) {
         REQUIRE(fallback_window.dockWidgetArea(
                     const_cast<QDockWidget *>(dock)) !=

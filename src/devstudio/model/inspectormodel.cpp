@@ -1505,6 +1505,58 @@ std::string audioAnalysisRefusalDescription(const nlohmann::json &error) {
     return sentence + " (" + std::string{entry->code} + ").";
 }
 
+namespace {
+
+// HW-2s / AV-1s: the Assets dock's refusals (engine PJ-1 and AV-1).
+constexpr std::array<GraphLoopRefusalText, 9> ProjectSettingsRefusalTexts{{
+    {"project.settings_change_unsupported@1",
+     "{store} cannot change that way while the engine runs: {reason}"},
+    {"external_modification", "project.json changed outside Studio since it was read; try again"},
+    {"project.hot_reload_invalid@1", "Reload when saved outside cannot take that path: {reason}"},
+    {"project.settings_invalid@1", "{store} cannot be declared that way: {reason}"},
+    {"project.settings_transaction_busy@1",
+     "project.json is being written by another edit; try again"},
+    {"assets_store_unknown@1", "No asset store is named {store}"},
+    {"assets_manifest_undeclared@1", "Asset store {store} declares no manifest"},
+    {"assets_manifest_write_failed@1", "The manifest of {store} could not be written: {reason}"},
+    {"assets_verification_unavailable@1", "This engine does not check asset contents"},
+}};
+
+// An Undo the engine turned back because the store was there when it started.
+constexpr std::string_view ProjectSettingsUndoNeedsRestartText =
+    "{store} was there when the engine started, so it stays declared \xE2\x80\x94 only stores added since then can be undone";
+
+} // namespace
+
+std::string projectSettingsRefusalDescription(const nlohmann::json &error, bool undo) {
+    if (!error.is_object()) return {};
+    const auto code = error.value("code", std::string{});
+    const auto entry = std::ranges::find(ProjectSettingsRefusalTexts, code, &GraphLoopRefusalText::code);
+    if (entry == ProjectSettingsRefusalTexts.end()) return {};
+    auto fields = graphRefusalFields(error, entry->code).value_or(nlohmann::json::object());
+    if (!fields.is_object()) fields = nlohmann::json::object();
+    // A refusal about a key and not a store names the key instead.
+    if (!fields.contains("store") || !fields["store"].is_string())
+        fields["store"] = fields.value("key", std::string{"asset_stores"});
+    if (!fields.contains("reason")) fields["reason"] = error.value("message", std::string{});
+    const std::string_view pattern =
+        undo && code == "project.settings_change_unsupported@1" ? ProjectSettingsUndoNeedsRestartText
+                                                                : entry->sentence;
+    std::string sentence;
+    for (std::size_t index = 0; index < pattern.size();) {
+        const auto open = pattern.find('{', index);
+        if (open == std::string_view::npos) {
+            sentence += pattern.substr(index);
+            break;
+        }
+        const auto close = pattern.find('}', open);
+        sentence += pattern.substr(index, open - index);
+        sentence += graphRefusalFieldText(fields, pattern.substr(open + 1, close - open - 1));
+        index = close + 1;
+    }
+    return sentence + " (" + std::string{entry->code} + ").";
+}
+
 std::string projectRenderDocument(const std::filesystem::path &project_root) {
     if (project_root.empty()) return {};
     std::ifstream input{project_root / "project.json", std::ios::binary};

@@ -1,0 +1,316 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "gui_assets_watch_verify",
+  "description": "HW-2s / AV-1s, from Blank with the GUI only. File > New Project > Blank; the Assets dock (View > Assets) lists the template's assets/. The textures folder's Reload when saved outside writes project.json's hot_reload through edit_project_settings, and the engine watches it at once (get_status.reload.watch). Track asset contents declares the store main at assets/ with assets.manifest.json in one edit; the engine writes the manifest and checks against it: nothing differs. A texture baked outside Studio (gui_assets_watch_verify.prepare.py) is saved into assets/textures; the engine reads it again and the line above the tree names it; Verify again finds one extra file; Update manifest says how many files change, writes the manifest, and the check is clean again. Undo takes back Track asset contents, then the watch: project.json's two keys are gone again.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "File > New Project...",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts, never the repository",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "assets_project"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed, because the template is on disk",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the new project's frame plan has the pass the template authored",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers editor RPC and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the Blank template declares no watch and no asset store",
+      "expect": "rpc_equals",
+      "method": "get_project_settings",
+      "params": {},
+      "path": "hot_reload",
+      "value": null
+    },
+    {
+      "label": "View > Assets brings the dock beside Project to the front",
+      "cmd": "action",
+      "name": "pelican.view.assets"
+    },
+    {
+      "label": "the dock is on screen with the template's folders",
+      "cmd": "wait",
+      "name": "pelican.assetsTree",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "nothing is watched until someone asks: no line above the tree",
+      "cmd": "wait",
+      "name": "pelican.assets.watchLine",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Track asset contents is offered, because no store declares a manifest",
+      "cmd": "wait",
+      "name": "pelican.assets.trackContents",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "pick the textures folder",
+      "cmd": "select",
+      "name": "pelican.assetsTree",
+      "text": "textures"
+    },
+    {
+      "label": "its Reload when saved outside (the row's right-click entry)",
+      "cmd": "action",
+      "name": "pelican.assets.reloadWhenSavedOutside"
+    },
+    {
+      "label": "the engine watches the folder at once",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "reload.watch",
+      "value": [
+        "assets/textures"
+      ],
+      "retry_ms": 15000
+    },
+    {
+      "label": "project.json holds it",
+      "expect": "rpc_equals",
+      "method": "get_project_settings",
+      "params": {},
+      "path": "hot_reload",
+      "value": [
+        "assets/textures"
+      ]
+    },
+    {
+      "label": "the line above the tree says what is watched",
+      "cmd": "wait",
+      "name": "pelican.assets.watchLine",
+      "contains": "Watching 1 folder",
+      "timeout_ms": 15000
+    },
+    {
+      "label": "Track asset contents",
+      "cmd": "click",
+      "name": "pelican.assets.trackContents"
+    },
+    {
+      "label": "the manifest is written and the contents match it",
+      "cmd": "wait",
+      "name": "pelican.assets.verificationSummary",
+      "contains": "Asset contents match the manifest",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the store main at assets/ declares assets.manifest.json",
+      "expect": "rpc_equals",
+      "method": "get_project_settings",
+      "params": {},
+      "path": "asset_stores.main.manifest",
+      "value": "assets.manifest.json"
+    },
+    {
+      "label": "the check found nothing",
+      "expect": "rpc_equals",
+      "method": "get_assets_verification",
+      "params": {},
+      "path": "stores[0].issues.$len",
+      "value": 0
+    },
+    {
+      "label": "Track asset contents is not offered once a manifest is declared",
+      "cmd": "wait",
+      "name": "pelican.assets.trackContents",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the prepared texture exists (gui_assets_watch_verify.prepare.py, baked by pelican_cli)",
+      "file": "exists",
+      "path": "{artifacts}/incoming/stray.ktx2",
+      "value": true
+    },
+    {
+      "label": "a texture baked outside Studio is saved into the watched folder",
+      "file": "copy",
+      "path": "{artifacts}/assets_project/assets/textures/stray.ktx2",
+      "from": "{artifacts}/incoming/stray.ktx2"
+    },
+    {
+      "label": "the engine read it again, and the line above the tree names it",
+      "cmd": "wait",
+      "name": "pelican.assets.watchLine",
+      "contains": "last reload: textures/stray.ktx2",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Verify again",
+      "cmd": "click",
+      "name": "pelican.assets.verifyAgain"
+    },
+    {
+      "label": "one extra file",
+      "cmd": "wait",
+      "name": "pelican.assets.verificationSummary",
+      "text": "1 file differs from the manifest: 1 extra.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the extra file's row is opened to, marked",
+      "cmd": "wait",
+      "name": "pelican.assetsTree::row#stray.ktx2",
+      "visible": true,
+      "timeout_ms": 15000
+    },
+    {
+      "label": "the engine says the same",
+      "expect": "rpc_equals",
+      "method": "get_assets_verification",
+      "params": {},
+      "path": "stores[0].issues[0].kind",
+      "value": "extra"
+    },
+    {
+      "label": "a picture of the dock with the extra file",
+      "expect": "screenshot",
+      "path": "gui_assets_watch_verify_extra.png"
+    },
+    {
+      "label": "Update manifest of the store main",
+      "cmd": "click",
+      "name": "pelican.assets.updateManifest.main"
+    },
+    {
+      "label": "it asks first, with how many files change",
+      "cmd": "wait",
+      "name": "pelican.assets.updateConfirm",
+      "text": "1 file will change in assets.manifest.json.",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Update",
+      "cmd": "click",
+      "name": "pelican.assets.updateConfirmed"
+    },
+    {
+      "label": "the manifest lists it now, and the contents match",
+      "cmd": "wait",
+      "name": "pelican.assets.verificationSummary",
+      "contains": "Asset contents match the manifest",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the engine's check is clean",
+      "expect": "rpc_equals",
+      "method": "get_assets_verification",
+      "params": {},
+      "path": "stores[0].issues.$len",
+      "value": 0
+    },
+    {
+      "label": "Undo takes back Track asset contents",
+      "cmd": "action",
+      "name": "pelican.assets.undo"
+    },
+    {
+      "label": "the store is gone from project.json",
+      "expect": "rpc_equals",
+      "method": "get_project_settings",
+      "params": {},
+      "path": "asset_stores",
+      "value": null,
+      "retry_ms": 15000
+    },
+    {
+      "label": "and Track asset contents is offered again",
+      "cmd": "wait",
+      "name": "pelican.assets.trackContents",
+      "visible": true,
+      "timeout_ms": 15000
+    },
+    {
+      "label": "Undo takes back the watch",
+      "cmd": "action",
+      "name": "pelican.assets.undo"
+    },
+    {
+      "label": "the engine watches nothing again",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "reload.watch",
+      "value": null,
+      "retry_ms": 15000
+    },
+    {
+      "label": "project.json has no hot_reload, as the template wrote it",
+      "expect": "rpc_equals",
+      "method": "get_project_settings",
+      "params": {},
+      "path": "hot_reload",
+      "value": null
+    },
+    {
+      "label": "no line above the tree",
+      "cmd": "wait",
+      "name": "pelican.assets.watchLine",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "a picture of the window for the reader of this report",
+      "expect": "screenshot",
+      "path": "gui_assets_watch_verify_window.png"
+    }
+  ]
+}

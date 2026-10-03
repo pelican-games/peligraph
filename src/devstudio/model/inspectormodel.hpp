@@ -322,6 +322,25 @@ modelReferenceChoices(std::string_view current,
 // true for it (the bake row then offers Bake again).
 [[nodiscard]] std::string audioAnalysisRefusalDescription(const nlohmann::json &error);
 [[nodiscard]] bool audioAnalysisOutputLocked(const nlohmann::json &error);
+// HW-2s / AV-1s (engine PJ-1 and AV-1): the refusals of the Assets dock's
+// requests -- edit_project_settings, verify_assets and update_assets_manifest
+// -- one sentence each from their fields:
+//   project.settings_change_unsupported@1 {key, store?, reason}
+//   external_modification                 {expected, actual}
+//   project.hot_reload_invalid@1          {key, reason}
+//   project.settings_invalid@1            {key, store?, reason}
+//   project.settings_transaction_busy@1   {path}
+//   assets_store_unknown@1                {store}
+//   assets_manifest_undeclared@1          {store}
+//   assets_manifest_write_failed@1        {store, manifest?, reason}
+//   assets_verification_unavailable@1     {}
+// `error` as for graphLoopRefusalDescription. `undo`: the request was an
+// Undo; a store the engine had when it started cannot be taken away while it
+// runs, and project.settings_change_unsupported@1 then says "so it stays
+// declared". Answers "<sentence> (<code>).", or empty for any
+// other refusal.
+[[nodiscard]] std::string projectSettingsRefusalDescription(const nlohmann::json &error,
+                                                            bool undo = false);
 // UX-8, decision 13 (c) (engine CT-1): the engine could not read its
 // configuration at start and stopped. Its fatal line ("Pelican fatal error :
 // <message>") reads as "The engine stopped: <the code's sentence> in <file>.
