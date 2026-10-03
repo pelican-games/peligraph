@@ -35,6 +35,20 @@ class ReloadService;
 //     {surface, params: [{name, type, default, min?, max?, hint?, encoding}],
 //      textures: [{name, default, color_space, role, dimension}]}
 //     As the surface's `//!` header declares them, nothing added.
+//   list_surfaces {} ->
+//     {surfaces: [{reference, source: "engine" | "project", name?,
+//       params: <count>, textures: <count>, routing?: {alpha_mode,
+//       double_sided}, render_state?: {blend, cull, depth_test, depth_write,
+//       depth_compare}, error?}]}
+//     MT-1b: the engine's registered `surfaces/**.surface` resources
+//     (engine://, sorted), then every `*.surface` under the project
+//     directory (project://, sorted; hidden and symlinked directories are not
+//     entered). Each is read as get_surface_schema reads it; one that does not
+//     read or parse carries `error` (and no counts) instead of being dropped.
+//     `name` and `routing`: the engine surface manifest's variant (OpenPBR's
+//     manifest.json), only for a surface it lists; `routing` is a material's
+//     routing as create_material takes it. `render_state`: the header's
+//     render_state, only when it declares one.
 //   get_material_bindings {model} ->
 //     {model, material_bindings: path | null, bindings_digest | null,
 //      primitives: [{mesh, primitive, slot, material, usd_path | null}]}

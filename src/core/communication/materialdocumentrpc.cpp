@@ -4,6 +4,7 @@
 
 #include "../asset/model.hpp"
 #include "../loader/basicconfig.hpp"
+#include "../loader/engineresources.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
 #include "../material/material.hpp"
@@ -619,6 +620,171 @@ Json getSurfaceSchema(const Json &params, PathResolver &paths) {
     const auto reference = requireString(method, params, "surface");
     SurfaceCache surfaces{paths};
     return surfaceSchemaJson(reference, requireSurface(method, surfaces, reference));
+}
+
+// --- list_surfaces.
+
+std::string_view blendModeName(SurfaceBlendMode mode) {
+    switch (mode) {
+    case SurfaceBlendMode::opaque: return "opaque";
+    case SurfaceBlendMode::blend: return "blend";
+    case SurfaceBlendMode::additive: return "additive";
+    }
+    return "unknown";
+}
+
+std::string_view cullModeName(SurfaceCullMode mode) {
+    switch (mode) {
+    case SurfaceCullMode::none: return "none";
+    case SurfaceCullMode::front: return "front";
+    case SurfaceCullMode::back: return "back";
+    }
+    return "unknown";
+}
+
+std::string_view depthCompareName(SurfaceDepthCompare compare) {
+    switch (compare) {
+    case SurfaceDepthCompare::never: return "never";
+    case SurfaceDepthCompare::less: return "less";
+    case SurfaceDepthCompare::equal: return "equal";
+    case SurfaceDepthCompare::less_equal: return "less_equal";
+    case SurfaceDepthCompare::greater: return "greater";
+    case SurfaceDepthCompare::not_equal: return "not_equal";
+    case SurfaceDepthCompare::greater_equal: return "greater_equal";
+    case SurfaceDepthCompare::always: return "always";
+    }
+    return "unknown";
+}
+
+// Whether the `//!` header (the source before the code) has a render_state
+// key. The parsed document holds the defaults when it has none.
+bool declaresRenderState(std::string_view source, std::size_t code_offset) {
+    const auto header = source.substr(0, std::min(code_offset, source.size()));
+    std::size_t start = 0;
+    while (start < header.size()) {
+        auto end = header.find('\n', start);
+        if (end == std::string_view::npos) end = header.size();
+        auto line = header.substr(start, end - start);
+        start = end + 1;
+        const auto first = line.find_first_not_of(" \t");
+        if (first == std::string_view::npos || line.substr(first, 3) != "//!") continue;
+        line = line.substr(first + 3);
+        const auto colon = line.find(':');
+        if (colon == std::string_view::npos) continue;
+        auto key = line.substr(0, colon);
+        const auto key_first = key.find_first_not_of(" \t");
+        if (key_first == std::string_view::npos) continue;
+        key = key.substr(key_first, key.find_last_not_of(" \t") - key_first + 1);
+        if (key == "render_state") return true;
+    }
+    return false;
+}
+
+// The engine's surface manifests (`surfaces/<family>/manifest.json`, e.g.
+// OpenPBR's) name each surface they list and the material routing it is.
+struct EngineSurfaceVariant {
+    std::string name;
+    std::optional<std::string> alpha_mode;
+    std::optional<bool> double_sided;
+};
+
+std::map<std::string, EngineSurfaceVariant> engineSurfaceVariants() {
+    std::map<std::string, EngineSurfaceVariant> variants;
+    for (const auto id : registeredEngineResourceIds()) {
+        if (!id.starts_with("surfaces/") || !id.ends_with("/manifest.json")) continue;
+        const auto bytes = engineResource(id);
+        if (!bytes) continue;
+        const auto manifest = Json::parse(bytes->begin(), bytes->end(), nullptr, false);
+        if (!manifest.is_object() || !manifest.contains("variants") || !manifest.at("variants").is_array())
+            continue;
+        for (const auto &variant : manifest.at("variants")) {
+            if (!variant.is_object() || !variant.contains("surface") || !variant.at("surface").is_string() ||
+                !variant.contains("name") || !variant.at("name").is_string())
+                continue;
+            EngineSurfaceVariant entry{.name = variant.at("name").get<std::string>()};
+            if (variant.contains("alpha_mode") && variant.at("alpha_mode").is_string())
+                entry.alpha_mode = variant.at("alpha_mode").get<std::string>();
+            if (variant.contains("double_sided") && variant.at("double_sided").is_boolean())
+                entry.double_sided = variant.at("double_sided").get<bool>();
+            variants.emplace(variant.at("surface").get<std::string>(), std::move(entry));
+        }
+    }
+    return variants;
+}
+
+// Every `*.surface` under the project directory, as project:// references,
+// sorted. Hidden directories (.git, .pelican, ...) and symlinked ones are
+// not entered.
+std::vector<std::string> projectSurfaceReferences(const std::filesystem::path &root) {
+    std::vector<std::string> references;
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator it{root, std::filesystem::directory_options::skip_permission_denied,
+                                                     error};
+    if (error) return references;
+    for (const std::filesystem::recursive_directory_iterator end; it != end; it.increment(error)) {
+        if (error) break;
+        const auto &entry = *it;
+        std::error_code status;
+        if (entry.is_directory(status)) {
+            const auto name = entry.path().filename().generic_u8string();
+            if ((!name.empty() && name.front() == u8'.') || entry.is_symlink(status)) it.disable_recursion_pending();
+            continue;
+        }
+        if (!entry.is_regular_file(status) || entry.path().extension() != ".surface") continue;
+        const auto relative = entry.path().lexically_relative(root).generic_u8string();
+        references.push_back("project://" + std::string{relative.begin(), relative.end()});
+    }
+    std::sort(references.begin(), references.end());
+    return references;
+}
+
+// One list_surfaces entry: the surface read as get_surface_schema reads it,
+// or `error` when it does not read or parse.
+Json surfaceListEntry(const PathResolver &paths, const std::string &reference, std::string_view source,
+                      const EngineSurfaceVariant *variant) {
+    Json entry{{"reference", reference}, {"source", std::string{source}}};
+    if (variant) entry["name"] = variant->name;
+    try {
+        const auto text = paths.loadText(reference);
+        const auto surface = parseSurfaceFormat(text, reference);
+        entry["params"] = surface.params.size();
+        entry["textures"] = surface.textures.size();
+        // A material's routing as create_material takes it: only where the
+        // engine's manifest says it.
+        if (variant && variant->alpha_mode && variant->double_sided)
+            entry["routing"] = {{"alpha_mode", *variant->alpha_mode}, {"double_sided", *variant->double_sided}};
+        if (declaresRenderState(text, surface.code_offset)) {
+            const auto &state = surface.render_state;
+            entry["render_state"] = {{"blend", std::string{blendModeName(state.blend)}},
+                                     {"cull", std::string{cullModeName(state.cull)}},
+                                     {"depth_test", state.depth_test},
+                                     {"depth_write", state.depth_write},
+                                     {"depth_compare", std::string{depthCompareName(state.depth_compare)}}};
+        }
+    } catch (const std::exception &error) {
+        entry["error"] = error.what();
+    }
+    return entry;
+}
+
+Json listSurfaces(const Json &params, PathResolver &paths) {
+    constexpr std::string_view method = "list_surfaces";
+    if (!params.is_null() && !(params.is_object() && params.empty())) invalidParams(method, "takes no parameters");
+    auto surfaces = Json::array();
+    const auto variants = engineSurfaceVariants();
+    std::vector<std::string> engine;
+    for (const auto id : registeredEngineResourceIds())
+        if (id.starts_with("surfaces/") && id.ends_with(".surface")) engine.push_back("engine://" + std::string{id});
+    std::sort(engine.begin(), engine.end());
+    for (const auto &reference : engine) {
+        const auto variant = variants.find(reference);
+        surfaces.push_back(
+            surfaceListEntry(paths, reference, "engine", variant == variants.end() ? nullptr : &variant->second));
+    }
+    if (paths.isSetup())
+        for (const auto &reference : projectSurfaceReferences(paths.projectRoot()))
+            surfaces.push_back(surfaceListEntry(paths, reference, "project", nullptr));
+    return {{"surfaces", std::move(surfaces)}};
 }
 
 // --- edit_material.
@@ -1286,6 +1452,9 @@ void configureMaterialDocumentRpcHandlers(RpcServer &server, PathResolver &path_
         [](const OrderedJson &) { return true; });
     server.setHandler("get_surface_schema", [&path_resolver](const Json &params) {
         return getSurfaceSchema(params, path_resolver);
+    });
+    server.setHandler("list_surfaces", [&path_resolver](const Json &params) {
+        return listSurfaces(params, path_resolver);
     });
     server.setHandler("edit_material", [&path_resolver](const Json &params) {
         return editMaterial(params, path_resolver);

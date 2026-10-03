@@ -391,4 +391,135 @@ TEST_CASE("MT-1 a Blank box is given a material made, bound and recoloured over 
     }
 }
 
+// MT-1b. list_surfaces names what New material can be made on: the engine's
+// OpenPBR surfaces and the project's own `.surface` files, wherever they are
+// in the project, each counted as get_surface_schema reads it; one that does
+// not parse is listed with its error.
+TEST_CASE("MT-1b list_surfaces lists the engine's OpenPBR surfaces and the project's own over RPC",
+          "[mt1][material][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("surfaces");
+    const auto root = makeBlankBoxProject(dir.root);
+    writeFile(root / "shaders/tint.surface",
+              "//! pelican.surface v1\n"
+              "//! language: glsl\n"
+              "//! params:\n"
+              "//!   - { name: tint, type: color, default: [1.0, 0.5, 0.25, 1.0] }\n"
+              "//! textures:\n"
+              "//!   - { name: detail, default: \"engine://textures/white\", color_space: srgb, role: color }\n"
+              "//! render_state: { blend: blend, cull: back, depth: read_only, depth_compare: less_equal }\n"
+              "\n"
+              "void pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {}\n");
+    writeFile(root / "materials/deep/plain.surface",
+              "//! pelican.surface v1\n"
+              "//! language: glsl\n"
+              "\n"
+              "void pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {}\n");
+    writeFile(root / "shaders/broken.surface", "//! pelican.surface v1\n//! language: cobol\n");
+    writeFile(root / ".hidden/skipped.surface",
+              "//! pelican.surface v1\n//! language: glsl\n\nvoid pelican_surface_v1(in PelicanSurfaceInputV1 i, "
+              "inout PelicanSurfaceV1 s) {}\n");
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    (void)GET_MODULE(Renderer);
+    Rpc rpc;
+
+    const auto surfaces = rpc.result("list_surfaces").at("surfaces");
+    INFO(surfaces.dump(2));
+    const auto find = [&](std::string_view reference) {
+        for (const auto &entry : surfaces)
+            if (entry.at("reference").get<std::string>() == reference) return entry;
+        return Json{};
+    };
+
+    // The engine's six OpenPBR surfaces, first, named by their manifest.
+    std::size_t engine_count = 0;
+    bool engine_first = true;
+    bool seen_project = false;
+    for (const auto &entry : surfaces) {
+        if (entry.at("source") == "engine") {
+            ++engine_count;
+            engine_first = engine_first && !seen_project;
+        } else {
+            CHECK(entry.at("source") == "project");
+            seen_project = true;
+        }
+    }
+    CHECK(engine_count >= 6);
+    CHECK(engine_first);
+
+    const auto opaque = find(openPbrOpaque);
+    REQUIRE(opaque.is_object());
+    CHECK(opaque.at("source") == "engine");
+    CHECK(opaque.at("name") == "opaque_single_sided");
+    // The counts are get_surface_schema's own.
+    const auto schema = rpc.result("get_surface_schema", {{"surface", openPbrOpaque}});
+    CHECK(opaque.at("params") == schema.at("params").size());
+    CHECK(opaque.at("textures") == schema.at("textures").size());
+    CHECK(opaque.at("params").get<std::size_t>() > 10);
+    // routing is a material's, as create_material takes it; render_state the
+    // header's declaration.
+    CHECK(opaque.at("routing") == Json{{"alpha_mode", "opaque"}, {"double_sided", false}});
+    CHECK(opaque.at("render_state") == Json{{"blend", "opaque"},
+                                            {"cull", "back"},
+                                            {"depth_test", true},
+                                            {"depth_write", true},
+                                            {"depth_compare", "less"}});
+    const auto blend = find("engine://surfaces/openpbr/blend_double.surface");
+    REQUIRE(blend.is_object());
+    CHECK(blend.at("name") == "blend_double_sided");
+    CHECK(blend.at("routing") == Json{{"alpha_mode", "blend"}, {"double_sided", true}});
+    CHECK(blend.at("render_state") == Json{{"blend", "blend"},
+                                           {"cull", "none"},
+                                           {"depth_test", true},
+                                           {"depth_write", false},
+                                           {"depth_compare", "less"}});
+    CHECK(find("engine://surfaces/openpbr/mask_single.surface").at("routing") ==
+          Json{{"alpha_mode", "mask"}, {"double_sided", false}});
+
+    // The project's, as project:// references, sorted, wherever they are.
+    std::vector<std::string> project;
+    for (const auto &entry : surfaces)
+        if (entry.at("source") == "project") project.push_back(entry.at("reference").get<std::string>());
+    CHECK(project == std::vector<std::string>{"project://materials/deep/plain.surface",
+                                              "project://shaders/broken.surface",
+                                              "project://shaders/tint.surface"});
+
+    const auto tint = find("project://shaders/tint.surface");
+    CHECK_FALSE(tint.contains("name"));
+    CHECK_FALSE(tint.contains("error"));
+    CHECK(tint.at("params") == 1);
+    CHECK(tint.at("textures") == 1);
+    // No manifest names it: no routing; its render_state as declared.
+    CHECK_FALSE(tint.contains("routing"));
+    CHECK(tint.at("render_state") == Json{{"blend", "blend"},
+                                          {"cull", "back"},
+                                          {"depth_test", true},
+                                          {"depth_write", false},
+                                          {"depth_compare", "less_equal"}});
+    // A listed reference is one get_surface_schema reads.
+    const auto tint_schema = rpc.result("get_surface_schema", {{"surface", "project://shaders/tint.surface"}});
+    CHECK(tint_schema.at("params").at(0).at("name") == "tint");
+
+    // No render_state declared: none listed.
+    const auto plain = find("project://materials/deep/plain.surface");
+    CHECK(plain.at("params") == 0);
+    CHECK(plain.at("textures") == 0);
+    CHECK_FALSE(plain.contains("routing"));
+    CHECK_FALSE(plain.contains("render_state"));
+
+    // One that does not parse is listed with its error, not dropped.
+    const auto broken = find("project://shaders/broken.surface");
+    REQUIRE(broken.contains("error"));
+    CHECK(broken.at("error").get<std::string>().find("cobol") != std::string::npos);
+    CHECK_FALSE(broken.contains("params"));
+
+    // It takes no parameters.
+    const auto refused = rpc.call("list_surfaces", {{"filter", "x"}});
+    CHECK(refused.contains("error"));
+
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 } // namespace Pelican
