@@ -2270,6 +2270,9 @@ class GraphCanvasModel {
     // of its own); a context without the vocabulary is not asked again. The
     // request goes out with the next dispatch.
     void askRenderTargetVocabulary();
+    // GL-5b, decision 2: the context read again now -- a render target was
+    // declared from the Graph, and one already on its way may predate it.
+    void readRenderAuthoringAgain();
     // The catalog's image types, in its order: the legacy one after the rest.
     [[nodiscard]] std::vector<GraphCanvasImageType> imageTypes() const;
     [[nodiscard]] std::optional<GraphCanvasImageType> imageType(std::string_view semantic) const;

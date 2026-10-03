@@ -18,6 +18,7 @@
 #include "panelhelp.hpp"
 #include "renderconfigdigest.hpp"
 #include "rendereditcompletion.hpp"
+#include "rendertargetform.hpp"
 #include "planperfmodel.hpp"
 
 #include "nodelayout.hpp"
@@ -5020,6 +5021,18 @@ struct GraphCanvasWidget::Impl {
     std::function<FramePlanEditRequest()> pass_edit_rebuild;
     bool pass_edit_retried = false;
     std::optional<std::uint64_t> pass_retry_after;
+    // GL-5b: the method of the edit in flight, so its refusal reads in its terms.
+    std::string pass_edit_method;
+    // --- GL-5b, decision 2: New render target… from the Graph, the Frame
+    // Plan's form (presentNewRenderTarget) and edit (framePlanRenderTargetAddRequest).
+    RenderTargetForm *new_target_form = nullptr;
+    // What follows once the target is declared, given "" when none was made.
+    std::function<void(const std::string &target)> new_target_made;
+    std::string new_target_name;
+    // The form waits for the context (its vocabulary); the name sent waits
+    // to be among the context's targets.
+    bool new_target_context_wanted = false;
+    std::string new_target_sent;
     // RU-1's two actions, which the tab's Undo and Redo also reach.
     QAction *render_undo = nullptr;
     QAction *render_redo = nullptr;
@@ -5499,6 +5512,15 @@ struct GraphCanvasWidget::Impl {
                 sendPassEdit(request, std::move(rebuild), false, PassEditFrom::fields);
             },
             side);
+        // GL-5b, decision 2 (b): an output's New target… is the Frame Plan's
+        // New render target, and the output writes what it made.
+        folded_pass_fields->setNewTargetAction(
+            [this](const std::string &pass, std::size_t output, const std::string &name) {
+                openNewRenderTarget(name, [this, pass, output](const std::string &target) {
+                    if (!target.empty() && folded_pass_fields != nullptr)
+                        folded_pass_fields->outputTargetCreated(pass, output, target);
+                });
+            });
         side_layout->addWidget(folded_pass_fields);
         // UX-6b, decision 4.
         plan_notes = new QLabel(side);
@@ -6001,7 +6023,8 @@ struct GraphCanvasWidget::Impl {
     // section -- the rest of its declaration (edit_preset_pass) and its
     // graph-wide decisions (edit_target_planning) -- one at a time, the same
     // way.
-    enum class PassEditFrom { sockets, fields };
+    // GL-5b: and New render target…'s edit_render_targets.
+    enum class PassEditFrom { sockets, fields, target };
     PassEditFrom pass_edit_from = PassEditFrom::sockets;
     void sendPassEdit(const FramePlanEditRequest &request,
                       std::function<FramePlanEditRequest()> rebuild, bool retry = false,
@@ -6015,7 +6038,10 @@ struct GraphCanvasWidget::Impl {
             return;
         }
         const bool planning = request.method == "edit_target_planning";
-        const auto &send = planning ? graph.requestEditTargetPlanning : graph.requestEditPresetPass;
+        const bool targets = request.method == "edit_render_targets";
+        const auto &send = planning  ? graph.requestEditTargetPlanning
+                           : targets ? graph.requestEditRenderTargets
+                                     : graph.requestEditPresetPass;
         if (!send) {
             say(InspectorNoticeKind::Error,
                 "This engine connection cannot edit a pass from the Graph.");
@@ -6037,12 +6063,14 @@ struct GraphCanvasWidget::Impl {
         pass_edit_notice = request.notice;
         pass_edit_rebuild = std::move(rebuild);
         pass_edit_retried = retry;
+        pass_edit_method = request.method;
         // The saving line names what is saved: a pass's inputs (GL-1e), its
-        // declaration or a decision (GL-5a).
+        // declaration or a decision (GL-5a), a render target (GL-5b).
         pass_edit_from = from;
         const auto pass = request.params.value("pass_name", std::string{});
         say(InspectorNoticeKind::Information,
             planning                           ? std::string{"Saving the decision..."}
+            : targets                          ? std::string{"Declaring the render target..."}
             : from == PassEditFrom::fields ? pass + ": saving..."
                                            : pass + ": saving its inputs...");
     }
@@ -6066,6 +6094,11 @@ struct GraphCanvasWidget::Impl {
         const auto &reason = error != response.end() && error->is_object() ? *error : response;
         const auto code = reason.value("code", std::string{});
         const auto message = reason.value("message", std::string{});
+        // GL-5b: a render target refused reads as the Frame Plan's New render
+        // target reads it, by its code.
+        if (pass_edit_method == "edit_render_targets")
+            return framePlanRenderTargetRejection(
+                reason, framePlanAuthoringFromContext(model.renderAuthoringContext()).preset_name);
         // UX-5a: the line is the code and the message's sentence; the whole
         // message follows it, on the lines the tooltip shows.
         std::string line = engineRefusalLine(reason);
@@ -6114,6 +6147,12 @@ struct GraphCanvasWidget::Impl {
         pass_edit_rebuild = {};
         model.setEditNotice({InspectorNoticeKind::Error, passEditRefusal(response)});
         showNotice();
+        // GL-5b: a refused target made nothing; a refused output (or any
+        // column edit) is not carried into the next one.
+        if (pass_edit_method == "edit_render_targets")
+            newTargetDone({});
+        else if (pass_edit_from == PassEditFrom::fields && folded_pass_fields != nullptr)
+            folded_pass_fields->editRefused();
         // GL-5a, decision 5: a refused box shows what the root holds again,
         // and the column takes the next change.
         syncFoldedPassFields();
@@ -6130,6 +6169,7 @@ struct GraphCanvasWidget::Impl {
             model.setEditNotice({InspectorNoticeKind::Error,
                                  !request.line.empty() ? request.line : request.refusal});
             showNotice();
+            if (pass_edit_from == PassEditFrom::target) newTargetDone({});
             return;
         }
         sendPassEdit(request, rebuild, true, pass_edit_from);
@@ -6164,7 +6204,112 @@ struct GraphCanvasWidget::Impl {
         scene->noteRenderEdit();
         if (plan_commit_action) plan_commit_action();
         model.refresh();
+        // GL-5b: the target is waited for among the context's (followNewTarget).
+        if (pass_edit_method == "edit_render_targets") model.readRenderAuthoringAgain();
         dispatch();
+    }
+
+    // --- GL-5b, decision 2: New render target… from the Graph -- the
+    // target_ref palette's combo and the detail column's outputs. The form is
+    // the Frame Plan's (presentNewRenderTarget: the proposed name, the
+    // defaults' format and size, the engine's vocabulary) and so is its edit
+    // (framePlanRenderTargetAddRequest), sent the way the tab sends a pass's
+    // edit: one at a time, its ticket, RU-1's Undo. `made` is told the
+    // target once the context names it, or "" when none was made.
+    void openNewRenderTarget(std::string name, std::function<void(const std::string &)> made) {
+        const auto refuse = [this, &made](std::string line) {
+            model.setEditNotice({InspectorNoticeKind::Error, std::move(line)});
+            showNotice();
+            if (made) made({});
+        };
+        if (!graph.requestEditRenderTargets || !model.connected())
+            return refuse("This engine connection cannot declare a render target from the Graph.");
+        if (!new_target_sent.empty() || pass_edit_request != 0 || !pass_ticket.isEmpty())
+            return refuse("Wait for the current change to finish.");
+        // A form left open for another output, or another reference, is let go.
+        newTargetDone({});
+        new_target_made = std::move(made);
+        new_target_name = std::move(name);
+        const auto authoring = framePlanAuthoringFromContext(model.renderAuthoringContext());
+        if (!authoring.received) {
+            // Opened as soon as the context that names the vocabulary arrives.
+            new_target_context_wanted = true;
+            model.readRenderAuthoringAgain();
+            dispatch();
+            model.setEditNotice({InspectorNoticeKind::Information,
+                                 "Reading the render authoring context..."});
+            showNotice();
+            return;
+        }
+        presentNewRenderTarget(newTargetForm(), authoring, new_target_name);
+    }
+
+    RenderTargetForm &newTargetForm() {
+        if (new_target_form != nullptr) return *new_target_form;
+        new_target_form = new RenderTargetForm(&view);
+        new_target_form->setSubmit([this](const RenderTargetFormValues &values) -> QString {
+            const auto build = [this, values] {
+                auto request = framePlanRenderTargetAddRequest(
+                    framePlanAuthoringFromContext(model.renderAuthoringContext()), values);
+                request.notice = "Render target " + values.name + " declared.";
+                return request;
+            };
+            const auto request = build();
+            if (!request.sendable()) return qtext(request.refusal);
+            if (pass_edit_request != 0 || !pass_ticket.isEmpty())
+                return QObject::tr("Wait for the current change to finish.");
+            new_target_sent = values.name;
+            sendPassEdit(request, build, false, PassEditFrom::target);
+            if (pass_edit_request == 0) {
+                new_target_sent.clear();
+                return qtext(model.editNotice().message);
+            }
+            return {};
+        });
+        // Cancel (or the window closed) before OK: nothing was made.
+        QObject::connect(new_target_form, &QDialog::rejected, &view, [this] {
+            if (new_target_sent.empty()) newTargetDone({});
+        });
+        return *new_target_form;
+    }
+
+    void newTargetDone(std::string target) {
+        new_target_sent.clear();
+        new_target_context_wanted = false;
+        if (auto made = std::exchange(new_target_made, {})) made(target);
+    }
+
+    // From the tick: the form waiting for the context, and the target sent
+    // waiting to be one the context names.
+    void followNewTarget() {
+        if (new_target_context_wanted) {
+            const auto authoring = framePlanAuthoringFromContext(model.renderAuthoringContext());
+            if (authoring.received) {
+                new_target_context_wanted = false;
+                presentNewRenderTarget(newTargetForm(), authoring, new_target_name);
+            }
+        }
+        if (new_target_sent.empty() || pass_edit_request != 0 || !pass_ticket.isEmpty()) return;
+        const auto targets = model.declaredRenderTargets();
+        if (std::ranges::find(targets, new_target_sent, &GraphCanvasDeclaredTarget::name) !=
+            targets.end())
+            newTargetDone(std::string{new_target_sent});
+    }
+
+    // GL-5b, decision 2 (a): the palette's New render target…. The reference
+    // is placed once the target is declared, as a picked one is.
+    void newTargetReference(const std::string &scope) {
+        openNewRenderTarget({}, [this, scope](const std::string &target) {
+            if (target.empty()) {
+                scene->clearPaletteScope();
+                return;
+            }
+            PaletteChoice choice;
+            choice.scope = scope;
+            choice.op = "render.target_ref";
+            choice.seed["name"] = target;
+            placeWhenEditable(std::move(choice));
+        });
     }
 
     // GL-3a: a fold_nodes committed. What any render edit of this tab does
@@ -7450,6 +7595,8 @@ struct GraphCanvasWidget::Impl {
     // its row's New definition… makes a definition, goes into it and opens
     // the palette there again, on that op.
     static constexpr int kPaletteNeedsDefinitionRole = Qt::UserRole + 1;
+    // GL-5b, decision 2 (a): the data of the target combo's New render target….
+    static constexpr char kPaletteNewTarget[] = "\x1f" "new_target";
     std::string palette_filter_next;
     // The op New definition… was pressed for, until the row is applied or
     // closed; then the definition the palette opens in once it is on screen.
@@ -7755,11 +7902,24 @@ struct GraphCanvasWidget::Impl {
                                          QObject::tr("declared by: %1").arg(qtext(target.source)),
                                          Qt::ToolTipRole);
                 }
+                // GL-5b, decision 2 (a): or one declared here, by the Frame
+                // Plan's New render target.
+                if (graph.requestEditRenderTargets) {
+                    targets->addItem(QObject::tr("New render target…"),
+                                     QString::fromLatin1(kPaletteNewTarget));
+                    targets->setItemData(targets->count() - 1,
+                                         QObject::tr("Declares a render target (New render "
+                                                     "target), then places its reference"),
+                                         Qt::ToolTipRole);
+                }
                 targets->setCurrentIndex(std::max(0, targets->findData(kept)));
                 if (targets->count() == 0) {
                     ready = false;
-                    note = QObject::tr("No render target is declared yet: declare one (Frame "
-                                       "Plan > New render target...) or use render.image.");
+                    note = QObject::tr("No render target is declared yet: use render.image.");
+                } else if (targets->currentData().toString() ==
+                           QLatin1String{kPaletteNewTarget}) {
+                    note = QObject::tr("OK opens New render target; the reference is placed "
+                                       "once the target is declared.");
                 }
             }
             if (snapshot) {
@@ -7801,6 +7961,9 @@ struct GraphCanvasWidget::Impl {
             if (auto *ok = buttons->button(QDialogButtonBox::Ok)) ok->setEnabled(ready);
         };
         QObject::connect(attribute_domain, &QComboBox::currentIndexChanged, dialog,
+                         [syncDefinition] { syncDefinition(); });
+        // GL-5b: the note follows New render target… being picked.
+        QObject::connect(targets, &QComboBox::currentIndexChanged, dialog,
                          [syncDefinition] { syncDefinition(); });
         QObject::connect(compute_new, &QPushButton::clicked, dialog,
                          [this, compute_shader, seed_note, syncDefinition] {
@@ -7899,6 +8062,13 @@ struct GraphCanvasWidget::Impl {
                 // LP-4e: a material pass's second argument is its contract.
                 if (choice.op == "render.material_pass")
                     choice.definition = contracts->currentData().toString().toStdString();
+                // GL-5b, decision 2 (a): the target is declared first.
+                if (choice.op == "render.target_ref" &&
+                    targets->currentData().toString() == QLatin1String{kPaletteNewTarget}) {
+                    QMetaObject::invokeMethod(
+                        &view, [this, scope] { newTargetReference(scope); }, Qt::QueuedConnection);
+                    return;
+                }
                 // UX-3, decision 1: what was picked beside the op.
                 if (choice.op == "render.target_ref")
                     choice.seed["name"] = targets->currentData().toString().toStdString();
@@ -8260,6 +8430,8 @@ struct GraphCanvasWidget::Impl {
     void synchronize() {
         // GL-3a: the fold groups follow the document the tab holds.
         if (folds) folds->follow();
+        // GL-5b: New render target… waits for the context, then for its target.
+        followNewTarget();
         const bool history_available = !scene->editingInline() &&
                                        !scene->dragging() && !scene->layoutPending();
         // GL-1e: the render edit history is reached through these too.

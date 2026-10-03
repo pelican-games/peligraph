@@ -40,6 +40,9 @@ const QString &foldedPrefix() {
 
 QString childName(const QString &suffix) { return foldedPrefix() + QLatin1Char('.') + suffix; }
 
+// GL-5b: the data of an output's last entry, New target….
+constexpr char kNewTargetMarker[] = "\x1f" "new_target";
+
 QLabel *caption(const QString &text, QWidget *parent) {
     auto *label = new QLabel(text, parent);
     label->setFont(studioSmallFont());
@@ -98,6 +101,13 @@ GraphCanvasFoldedPassFields::GraphCanvasFoldedPassFields(GraphCanvasModel &model
     inputs_->setToolTip(tr("The pass's input, in binding order. Drop a line on the node's "
                            "sockets to change it."));
     form->addRow(caption(tr("Inputs"), fields), inputs_);
+    // GL-5b, decision 3: what each colour output writes, picked again from
+    // the declared targets (fillOutputs).
+    outputs_ = new QWidget(fields);
+    outputs_->setObjectName(childName(QStringLiteral("outputs")));
+    auto *outputs_layout = new QVBoxLayout(outputs_);
+    outputs_layout->setContentsMargins(0, 0, 0, 0);
+    form->addRow(caption(tr("Writes"), fields), outputs_);
     defines_ = new ShaderDefinesForm(foldedPrefix(), fields);
     form->addRow(caption(tr("Defines"), fields), defines_);
     interface_ = new FullscreenPassInterfaceRow(fields, foldedPrefix());
@@ -201,6 +211,7 @@ void GraphCanvasFoldedPassFields::showPass(const std::string &pass) {
         load(*found);
     }
     fillShaderChoices(declaration);
+    fillOutputs();
     showPlanning();
     readPlanning();
     show();
@@ -248,6 +259,8 @@ void GraphCanvasFoldedPassFields::load(const FramePlanAuthoringPass &row) {
     ops_->show();
     choices_shown_.clear();
     fillShaderChoices(original_);
+    outputs_shown_.clear();
+    fillOutputs();
     compact(*this);
     loading_ = false;
     // What the forms give back untouched: a commit that still gives this
@@ -286,9 +299,94 @@ void GraphCanvasFoldedPassFields::fillShaderChoices(const Json &declaration) {
 
 void GraphCanvasFoldedPassFields::followEditable(bool can_send) {
     can_send_ = can_send;
-    for (QWidget *widget : std::initializer_list<QWidget *>{vertex_, fragment_, defines_, interface_,
-                                                          ops_, settings_, planning_})
+    for (QWidget *widget : std::initializer_list<QWidget *>{vertex_, fragment_, outputs_, defines_,
+                                                          interface_, ops_, settings_, planning_})
         widget->setEnabled(can_send);
+}
+
+void GraphCanvasFoldedPassFields::fillOutputs() {
+    const auto &current = ops_->colorTargets();
+    // The declared colour targets: a depth target is no colour output.
+    std::vector<std::string> declared;
+    for (const auto &target : model_.declaredRenderTargets())
+        if (!target.depth) declared.push_back(target.name);
+    // Decision 5: New target… is named as the Pass Editor's is.
+    const auto proposed = proposedRenderTargetName(authoring(), pass_);
+    std::string key = pass_ + "\x1f" + proposed;
+    for (const auto &name : current) key += "\x1f" + name;
+    key += "\x1e";
+    for (const auto &name : declared) key += "\x1f" + name;
+    if (key == outputs_shown_) return;
+    outputs_shown_ = key;
+    // A combo may be the one whose pick led here: it goes once its signal is done.
+    for (auto *combo : std::exchange(output_combos_, {})) {
+        combo->setObjectName({});
+        combo->hide();
+        combo->deleteLater();
+    }
+    for (std::size_t output = 0; output < current.size(); ++output) {
+        auto *combo = new QComboBox(outputs_);
+        combo->setObjectName(childName(QStringLiteral("output.%1").arg(output)));
+        combo->setToolTip(tr("The render target colour output %1 writes: a declared one, or a "
+                             "new one (one edit_preset_pass).")
+                              .arg(output));
+        auto names = declared;
+        if (std::ranges::find(names, current[output]) == names.end())
+            names.insert(names.begin(), current[output]);
+        for (const auto &name : names) combo->addItem(qtext(name), qtext(name));
+        combo->addItem(tr("New target: %1…").arg(qtext(proposed)),
+                       QString::fromLatin1(kNewTargetMarker));
+        combo->setItemData(combo->count() - 1, qtext(proposed), Qt::UserRole + 1);
+        combo->setItemData(combo->count() - 1,
+                           tr("Opens New render target with this name; once it is declared, "
+                              "this output writes it."),
+                           Qt::ToolTipRole);
+        combo->setCurrentIndex(combo->findData(qtext(current[output])));
+        combo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+        combo->setMinimumContentsLength(6);
+        outputs_->layout()->addWidget(combo);
+        connect(combo, &QComboBox::currentIndexChanged, this,
+                [this, output](int index) { outputPicked(output, index); });
+        output_combos_.push_back(combo);
+    }
+}
+
+void GraphCanvasFoldedPassFields::outputPicked(std::size_t output, int index) {
+    if (loading_ || !editable_ || output >= output_combos_.size() ||
+        output >= ops_->colorTargets().size())
+        return;
+    auto *combo = output_combos_[output];
+    if (combo->itemData(index).toString() == QLatin1String{kNewTargetMarker}) {
+        const auto name = combo->itemData(index, Qt::UserRole + 1).toString().toStdString();
+        {
+            const QSignalBlocker block{combo};
+            combo->setCurrentIndex(combo->findData(qtext(ops_->colorTargets()[output])));
+        }
+        if (new_target_) new_target_(pass_, output, name);
+        return;
+    }
+    retarget(output, combo->itemData(index).toString().toStdString());
+}
+
+void GraphCanvasFoldedPassFields::retarget(std::size_t output, const std::string &target) {
+    if (output >= ops_->colorTargets().size() || ops_->colorTargets()[output] == target) return;
+    // The output's Load / Store and clear colour go with it; the edit is the
+    // Pass Editor's Save of the pass with that output changed.
+    ops_->retargetColor(output, target);
+    typing_->stop();
+    commit();
+}
+
+void GraphCanvasFoldedPassFields::outputTargetCreated(const std::string &pass, std::size_t output,
+                                                      const std::string &target) {
+    if (pass != pass_ || !editable_) return;
+    retarget(output, target);
+}
+
+void GraphCanvasFoldedPassFields::editRefused() {
+    // What the root holds is shown again: the next showPass loads it.
+    shown_.clear();
+    outputs_shown_.clear();
 }
 
 Json GraphCanvasFoldedPassFields::draftJson(const Json &original) const {

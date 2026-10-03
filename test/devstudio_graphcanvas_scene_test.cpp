@@ -1,4 +1,5 @@
 #include "graphcanvasaudioanalysis.hpp"
+#include "frameplanedit.hpp"
 #include "fullscreenshadertemplate.hpp"
 #include "graphcanvascomputefields.hpp"
 #include "graphcanvasloopfields.hpp"
@@ -80,6 +81,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <functional>
@@ -7016,6 +7018,263 @@ TEST_CASE("GL-5a a rendering-section pass picked on the Graph is edited in the d
     REQUIRE(transport.countOf(QStringLiteral("get_render_documents")) == reads + 1);
     answer("get_render_documents", root(true));
     CHECK(serial->isChecked());
+}
+
+// --- GL-5b: New render target... and a pass's output, from the Graph.
+
+namespace {
+
+// Blank's context with the engine's display, a target the project declared,
+// any `extra` names, and the vocabulary the form offers.
+Json gl5bAuthoring(const std::vector<std::string> &extra = {}) {
+    auto context = gl1eAuthoring({});
+    auto targets = Json::array(
+        {Json{{"name", "display"},
+              {"declaration", {{"name", "display"}, {"format_class", "display"}}},
+              {"editable", false},
+              {"source", "engine"}},
+         Json{{"name", "other_color"},
+              {"declaration", {{"name", "other_color"}, {"format", "R16G16B16A16_SFLOAT"},
+                               {"format_class", "scene"}}},
+              {"editable", true},
+              {"source", "authoring"}}});
+    for (const auto &name : extra)
+        targets.push_back({{"name", name},
+                           {"declaration", {{"name", name}, {"format", "R16G16B16A16_SFLOAT"},
+                                            {"format_class", "scene"}}},
+                           {"editable", true},
+                           {"source", "authoring"}});
+    context["render_targets"] = std::move(targets);
+    context["render_target_vocabulary"] = {
+        {"formats", Json::array({"R8G8B8A8_UNORM", "R16G16B16A16_SFLOAT"})},
+        {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED", "STORAGE"})}};
+    return context;
+}
+
+// The Graph tab on Blank's root, with what a New render target… sends
+// recorded: the reads it makes are answered from `authoring` as they come.
+struct Gl5bTab {
+    RecordedCapability transport;
+    std::vector<std::string> extra;
+    std::set<qint64> answered;
+    std::unique_ptr<PelicanStudio::GraphCanvasWidget> widget;
+
+    qint64 record(const char *method, const QJsonObject &params) {
+        RecordedCapability::Call call{QString::fromLatin1(method)};
+        call.body = QJsonDocument(params).toJson(QJsonDocument::Compact);
+        transport.calls.push_back(call);
+        return transport.next++;
+    }
+
+    Gl5bTab() {
+        auto capability = transport.capability();
+        capability.requestFramePlan = [this](QString *) {
+            transport.calls.push_back({QStringLiteral("get_frame_plan")});
+            return transport.next++;
+        };
+        capability.requestRenderAuthoringContext = [this](QString *) {
+            transport.calls.push_back({QStringLiteral("get_render_authoring_context")});
+            return transport.next++;
+        };
+        capability.requestEditPresetPass = [this](const QJsonObject &params, QString *) {
+            return record("edit_preset_pass", params);
+        };
+        capability.requestEditRenderTargets = [this](const QJsonObject &params, QString *) {
+            return record("edit_render_targets", params);
+        };
+        widget = std::make_unique<PelicanStudio::GraphCanvasWidget>(capability);
+        widget->resize(1100, 700);
+        widget->show();
+        QCoreApplication::processEvents();
+        auto catalog = visualCatalog();
+        catalog["modules"][1]["operations"].push_back(
+            {{"op", "render.target_ref"}, {"domain", "rendering"}, {"evaluation", "direct"},
+             {"sink", false}, {"ports", "parameter_dependent"}});
+        answer("get_graph_catalog", catalog);
+        reads();
+    }
+
+    void answer(const char *method, const Json &reply) {
+        const qint64 id = transport.idOf(QString::fromLatin1(method));
+        REQUIRE(id != 0);
+        answered.insert(id);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    }
+
+    // Every read not answered yet: the document, its plan and the context.
+    void reads() {
+        for (int round = 0; round < 6; ++round) {
+            bool any = false;
+            for (std::size_t index = 0; index < transport.calls.size(); ++index) {
+                const auto id = static_cast<qint64>(index) + 1;
+                const auto &method = transport.calls[index].method;
+                if (answered.contains(id)) continue;
+                Json reply;
+                if (method == QLatin1String{"get_graph_instances"}) reply = gl1eRead();
+                else if (method == QLatin1String{"get_frame_plan"}) reply = gl1ePlan({});
+                else if (method == QLatin1String{"get_render_authoring_context"})
+                    reply = gl5bAuthoring(extra);
+                else continue;
+                answered.insert(id);
+                transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+                any = true;
+            }
+            QCoreApplication::processEvents();
+            if (!any) break;
+        }
+    }
+
+    Json sent(const char *method) {
+        const auto id = transport.idOf(QString::fromLatin1(method));
+        REQUIRE(id != 0);
+        return Json::parse(transport.calls[static_cast<std::size_t>(id - 1)].body.toStdString());
+    }
+
+    // The render target form on screen, its name field, OK.
+    QWidget *form() {
+        return widget->findChild<QWidget *>(QStringLiteral("pelican.renderTargetForm"));
+    }
+
+    // OK in New render target, then the engine takes it: the commit, and the
+    // context that names the target read again.
+    void declare(const std::string &name) {
+        auto *ok = form()->findChild<QPushButton *>(QStringLiteral("pelican.renderTargetForm.ok"));
+        REQUIRE(ok != nullptr);
+        const int before = transport.countOf(QStringLiteral("edit_render_targets"));
+        ok->click();
+        QCoreApplication::processEvents();
+        REQUIRE(transport.countOf(QStringLiteral("edit_render_targets")) == before + 1);
+        // The Frame Plan's edit, from the same context.
+        PelicanStudio::RenderTargetFormValues values;
+        values.name = name;
+        CHECK(sent("edit_render_targets") ==
+              PelicanStudio::framePlanRenderTargetAddRequest(
+                  PelicanStudio::framePlanAuthoringFromContext(gl5bAuthoring(extra)), values)
+                  .params);
+        answer("edit_render_targets", Json{{"status", "accepted"}, {"ticket", "gl5b-target"}});
+        answer("get_edit_result", Json{{"status", "committed"},
+                                       {"committed", true},
+                                       {"source_digest", {{"hex", "gl1e-root"}}}});
+        extra.push_back(name);
+        reads();
+    }
+};
+
+} // namespace
+
+TEST_CASE("GL-5b the target_ref palette's New render target... opens the Frame Plan's form on a "
+          "proposed name, sends its one edit_render_targets, and places the reference once the "
+          "target is declared",
+          "[devstudio][graph-canvas][scene][gl5b]") {
+    (void)application();
+    Gl5bTab tab;
+    auto &widget = *tab.widget;
+    auto *add = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasAddNode"));
+    REQUIRE(add != nullptr);
+    REQUIRE(add->isEnabled());
+    QStringList offered;
+    QString note;
+    REQUIRE(whilePaletteOpen(*add, [&](QDialog &dialog) {
+        auto *filter = dialog.findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasPaletteFilter"));
+        REQUIRE(filter != nullptr);
+        filter->setText(QStringLiteral("target_ref"));
+        QCoreApplication::processEvents();
+        auto *targets = dialog.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasPaletteTarget"));
+        REQUIRE(targets != nullptr);
+        for (int index = 0; index < targets->count(); ++index) offered << targets->itemText(index);
+        targets->setCurrentIndex(targets->count() - 1);
+        QCoreApplication::processEvents();
+        auto *shown = dialog.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasPaletteNote"));
+        REQUIRE(shown != nullptr);
+        note = shown->text();
+        dialog.accept();
+    }));
+    // Decision 2 (a): the declared targets, and New render target… last --
+    // in place of "declare one in the Frame Plan".
+    CHECK(offered == QStringList{QStringLiteral("display"), QStringLiteral("other_color"),
+                                 QString::fromUtf8("New render target\xE2\x80\xA6")});
+    CHECK(note.contains(QStringLiteral("OK opens New render target")));
+    QCoreApplication::processEvents();
+    // The Frame Plan's form (presentNewRenderTarget), on the name decision 5
+    // proposes: nothing to type.
+    REQUIRE(tab.form() != nullptr);
+    CHECK(tab.form()->isVisible());
+    auto *name = tab.form()->findChild<QLineEdit *>(QStringLiteral("pelican.renderTargetForm.name"));
+    REQUIRE(name != nullptr);
+    CHECK(name->text() == QStringLiteral("render_target"));
+    CHECK(tab.transport.countOf(QStringLiteral("edit_graph_document")) == 0);
+    tab.declare("render_target");
+    // Once the context names it, the reference is placed as a picked one is.
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_graph_document")) == 1);
+    const auto ops = tab.sent("edit_graph_document");
+    CHECK(std::ranges::any_of(ops, [](const Json &op) {
+        return op.value("op", std::string{}) == "add_node" &&
+               op.at("node").value("op", std::string{}) == "render.target_ref" &&
+               op.at("node").at("parameters").value("name", std::string{}) == "render_target";
+    }));
+}
+
+TEST_CASE("GL-5b a rendering-section pass's output is picked again from the declared targets, or "
+          "New target... declares one first: each is one edit_preset_pass",
+          "[devstudio][graph-canvas][scene][gl5b]") {
+    (void)application();
+    Gl5bTab tab;
+    auto &widget = *tab.widget;
+    auto *notice = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasNotice"));
+    REQUIRE(notice != nullptr);
+    widget.scene().selectNode("present");
+    QCoreApplication::processEvents();
+    const auto output = [&] {
+        return widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasFoldedPass.output.0"));
+    };
+    REQUIRE(output() != nullptr);
+    REQUIRE(output()->isVisible());
+    QStringList offered;
+    for (int index = 0; index < output()->count(); ++index) offered << output()->itemText(index);
+    CHECK(offered == QStringList{QStringLiteral("display"), QStringLiteral("other_color"),
+                                 QString::fromUtf8("New target: present_color\xE2\x80\xA6")});
+    CHECK(output()->currentData().toString() == QStringLiteral("display"));
+    // The params the Pass Editor's Save builds for present with that output.
+    const auto saved = [](const char *target) {
+        return Json{{"base_source_digest", "gl1e-root"},
+                    {"graph", "main_render"},
+                    {"pass_name", "present"},
+                    {"ray_query", false},
+                    {"input", Json::array()},
+                    {"output", {{"color", Json::array({target})}, {"depth", nullptr}}},
+                    {"shader", {{"vertex", "engine://fullscreen"},
+                                {"fragment", "engine://passthrough"}}}};
+    };
+
+    // Decision 3: a declared target picked is one edit_preset_pass.
+    output()->setCurrentIndex(output()->findData(QStringLiteral("other_color")));
+    QCoreApplication::processEvents();
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_preset_pass")) == 1);
+    CHECK(tab.sent("edit_preset_pass") == saved("other_color"));
+    // Refused: the column shows what the root holds again.
+    tab.answer("edit_preset_pass",
+               Json{{"status", "rejected"},
+                    {"error", {{"code", "render_pipeline_preflight_failed"},
+                               {"message", "display is not written"}}}});
+    QCoreApplication::processEvents();
+    REQUIRE(output() != nullptr);
+    CHECK(output()->currentData().toString() == QStringLiteral("display"));
+
+    // Decision 2 (b): New target… opens the Frame Plan's form on the Pass
+    // Editor's name; once the target is declared the output writes it.
+    output()->setCurrentIndex(output()->count() - 1);
+    QCoreApplication::processEvents();
+    CHECK(tab.transport.countOf(QStringLiteral("edit_preset_pass")) == 1);
+    REQUIRE(tab.form() != nullptr);
+    CHECK(tab.form()->isVisible());
+    auto *name = tab.form()->findChild<QLineEdit *>(QStringLiteral("pelican.renderTargetForm.name"));
+    REQUIRE(name != nullptr);
+    CHECK(name->text() == QStringLiteral("present_color"));
+    tab.declare("present_color");
+    CHECK(notice->text() == QStringLiteral("present: saving..."));
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_preset_pass")) == 2);
+    CHECK(tab.sent("edit_preset_pass") == saved("present_color"));
 }
 
 // --- UX-1: how the Graph feels in the hand.

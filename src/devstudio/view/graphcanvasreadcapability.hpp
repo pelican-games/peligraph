@@ -102,6 +102,11 @@ struct GraphCanvasReadCapability {
     // them; a ticket get_edit_result polls. Left empty: the detail column
     // offers no decisions.
     std::function<qint64(const QJsonObject &params, QString *error)> requestEditTargetPlanning;
+    // GL-5b, decision 2: edit_render_targets, the Frame Plan's New render
+    // target... sent from the Graph (framePlanRenderTargetAddRequest's params);
+    // a ticket get_edit_result polls. Left empty: the Graph offers no New
+    // render target.
+    std::function<qint64(const QJsonObject &params, QString *error)> requestEditRenderTargets;
     // GL-4a: verify_fold, a ticket get_edit_result polls (running for as
     // long as the engine's child runs draw).
     std::function<qint64(const QJsonObject &params, QString *error)> requestVerifyFold;

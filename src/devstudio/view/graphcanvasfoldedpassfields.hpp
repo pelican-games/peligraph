@@ -51,8 +51,9 @@ class ShaderDefinesForm;
 // A pass of the preset or a feature shows nothing here (read only; its
 // tooltip says Expand to edit…). Children are named
 // `pelican.graphCanvasFoldedPass.<field>`: `.vertex`, `.fragment`,
-// `.inputs`, the forms' own fields, `.serial`, `.isolate`,
-// `.noAlias.<resource>`.
+// `.inputs`, `.output.<n>` (GL-5b: colour output n's target, picked from the
+// declared ones or made with New target…), the forms' own fields, `.serial`,
+// `.isolate`, `.noAlias.<resource>`.
 class GraphCanvasFoldedPassFields final : public QWidget {
   public:
     using Send = std::function<void(const FramePlanEditRequest &request,
@@ -84,6 +85,19 @@ class GraphCanvasFoldedPassFields final : public QWidget {
     // one yet.
     [[nodiscard]] FramePlanEditRequest passEditRequest() const;
 
+    // GL-5b, decision 2 (b): an output's last entry, New target…, hands the
+    // tab the pass, the output and the name proposedRenderTargetName gives
+    // it; the tab opens New render target on it (presentNewRenderTarget).
+    using NewTarget =
+        std::function<void(const std::string &pass, std::size_t output, const std::string &name)>;
+    void setNewTargetAction(NewTarget action) { new_target_ = std::move(action); }
+    // The target New target… asked for is declared now: that output of the
+    // pass writes it -- one edit_preset_pass, as a pick from the list is.
+    void outputTargetCreated(const std::string &pass, std::size_t output, const std::string &target);
+    // The engine refused this column's edit: the forms show what the root
+    // holds again (a refused output is not carried into the next edit).
+    void editRefused();
+
   private:
     [[nodiscard]] FramePlanAuthoring authoring() const;
     [[nodiscard]] const FramePlanAuthoringPass *row(const FramePlanAuthoring &authoring) const;
@@ -96,6 +110,10 @@ class GraphCanvasFoldedPassFields final : public QWidget {
     [[nodiscard]] nlohmann::json draftJson(const nlohmann::json &original) const;
     void formChanged();
     void commit();
+    // GL-5b, decision 3: one combo per colour output.
+    void fillOutputs();
+    void outputPicked(std::size_t output, int index);
+    void retarget(std::size_t output, const std::string &target);
 
     GraphCanvasModel &model_;
     GraphCanvasReadCapability graph_;
@@ -123,6 +141,11 @@ class GraphCanvasFoldedPassFields final : public QWidget {
     AttachmentOpsForm *ops_ = nullptr;
     MaterialSettingsForm *settings_ = nullptr;
     QTimer *typing_ = nullptr;
+    // GL-5b, decisions 2 and 3: `.output.<n>`, and what they were filled from.
+    QWidget *outputs_ = nullptr;
+    std::vector<QComboBox *> output_combos_;
+    std::string outputs_shown_;
+    NewTarget new_target_;
 
     // Decision 5.
     QWidget *planning_ = nullptr;

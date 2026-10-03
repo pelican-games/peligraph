@@ -6870,6 +6870,11 @@ void GraphCanvasModel::askRenderTargetVocabulary() {
     read(RequestKind::Authoring, "get_render_authoring_context", Json::object());
 }
 
+void GraphCanvasModel::readRenderAuthoringAgain() {
+    if (!connected_) return;
+    read(RequestKind::Authoring, "get_render_authoring_context", Json::object());
+}
+
 std::string GraphCanvasModel::semanticLabel(std::string_view semantic) {
     auto name = semantic;
     if (const auto at = name.find('@'); at != std::string_view::npos) name = name.substr(0, at);

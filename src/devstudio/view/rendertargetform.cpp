@@ -269,4 +269,14 @@ void RenderTargetForm::updateEnabled() {
     cancel_->setVisible(writable);
 }
 
+void presentNewRenderTarget(RenderTargetForm &form,
+                            const FramePlanAuthoring &authoring,
+                            const std::string &name) {
+    RenderTargetFormValues values;
+    values.name = name.empty() ? proposedRenderTargetName(authoring) : name;
+    form.present(RenderTargetForm::Mode::create, values,
+                 authoring.render_target_formats,
+                 authoring.render_target_usages);
+}
+
 } // namespace PelicanStudio

@@ -1426,6 +1426,22 @@ Json renderTargetDeclaration(const RenderTargetFormValues &values,
     return declaration;
 }
 
+std::string proposedRenderTargetName(const FramePlanAuthoring &authoring,
+                                     std::string_view pass) {
+    std::vector<std::string> taken;
+    taken.reserve(authoring.render_targets.size());
+    for (const auto &[name, target] : authoring.render_targets) {
+        (void)target;
+        taken.push_back(name);
+    }
+    if (!pass.empty()) return proposedColorTargetName(pass, taken);
+    const std::string base = "render_target";
+    std::string candidate = base;
+    for (int index = 2; std::ranges::find(taken, candidate) != taken.end(); ++index)
+        candidate = base + "_" + std::to_string(index);
+    return candidate;
+}
+
 FramePlanEditRequest framePlanRenderTargetAddRequest(
     const FramePlanAuthoring &authoring, const RenderTargetFormValues &values) {
     if (!authoring.received)

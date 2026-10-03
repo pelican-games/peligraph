@@ -41,6 +41,12 @@ class AttachmentOpsForm final : public PassForm {
     // The colour outputs, in order: an entry whose target is still among
     // them keeps its fields; a new one is the bare name.
     void setColorTargets(const std::vector<std::string> &targets);
+    // GL-5b, decision 3: colour output `index` writes `target` instead; its
+    // Load / Store and clear colour go with it.
+    void retargetColor(std::size_t index, const std::string &target);
+    [[nodiscard]] const std::vector<std::string> &colorTargets() const noexcept {
+        return targets_;
+    }
     // The depth output's target ("" for none). Its fields stay.
     void setDepthTarget(const std::string &target);
     // A fullscreen pass has no depth attachment to load or store.

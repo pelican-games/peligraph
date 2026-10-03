@@ -9299,6 +9299,9 @@ TEST_CASE("F-1 New render target sends one edit_render_targets from the form, "
         auto *name = form->findChild<QLineEdit *>(
             QStringLiteral("pelican.renderTargetForm.name"));
         REQUIRE(name != nullptr);
+        // GL-5b, decision 5: it opens on a name the declared targets leave
+        // free (presentNewRenderTarget, which the Graph opens it with too).
+        CHECK(name->text() == QStringLiteral("render_target"));
         CHECK(form->findChild<QWidget *>(
                   QStringLiteral("pelican.renderTargetForm.usage.STORAGE")) !=
               nullptr);

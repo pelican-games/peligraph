@@ -2926,11 +2926,9 @@ struct FramePlanWidget::Impl {
                 "Reading the render authoring context..."));
             return;
         }
-        RenderTargetFormValues values;
-        values.name = std::exchange(new_target_name, {});
-        renderTargetForm().present(RenderTargetForm::Mode::create, values,
-                                   authoring.render_target_formats,
-                                   authoring.render_target_usages);
+        // GL-5b, decision 2: the Graph's New render target… opens the same way.
+        presentNewRenderTarget(renderTargetForm(), authoring,
+                               std::exchange(new_target_name, {}));
     }
 
     void openRenderTargetForm(const std::string &name) {

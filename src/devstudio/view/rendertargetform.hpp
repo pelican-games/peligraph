@@ -83,4 +83,15 @@ class RenderTargetForm final : public QDialog {
     QPushButton *cancel_ = nullptr;
 };
 
+// GL-5b, decision 2. New render target..., wherever it is offered -- the Frame
+// Plan's toolbar and canvas, the Graph's render.target_ref combo and its detail
+// column's outputs: the form opens in create mode on `name` (empty: the one
+// proposedRenderTargetName proposes), the defaults' format and size
+// (RenderTargetFormValues), and the engine's vocabulary from `authoring`. OK
+// hands the form's submit the values; the RPC is
+// framePlanRenderTargetAddRequest's one edit_render_targets, whoever sends it.
+void presentNewRenderTarget(RenderTargetForm &form,
+                            const FramePlanAuthoring &authoring,
+                            const std::string &name = {});
+
 } // namespace PelicanStudio

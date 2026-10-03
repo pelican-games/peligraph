@@ -496,6 +496,13 @@ nlohmann::json renderTargetDeclaration(
     const RenderTargetFormValues &values,
     const nlohmann::json &base = nlohmann::json::object());
 
+// GL-5b, decisions 2 and 5: the name New render target... opens on, wherever
+// it is offered. For a pass's output, the Pass Editor's `<pass>_color`;
+// otherwise `render_target`. Either one the declared targets leave free
+// (base, base_2, base_3, ...), as suggestDefinitionName names a definition.
+std::string proposedRenderTargetName(const FramePlanAuthoring &authoring,
+                                     std::string_view pass = {});
+
 FramePlanEditRequest framePlanRenderTargetAddRequest(
     const FramePlanAuthoring &authoring, const RenderTargetFormValues &values);
 FramePlanEditRequest framePlanRenderTargetReplaceRequest(
