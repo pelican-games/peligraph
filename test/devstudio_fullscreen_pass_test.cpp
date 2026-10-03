@@ -2552,10 +2552,12 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
         expected.erase("raster_state");
     }
     if (pass_type == "material" && named) {
-        auto &other = required<QPlainTextEdit>(form, "pelican.fullscreenPass.materialOther");
-        other.setPlainText("[]");
+        // UX-15a, decision 6: GPU draws with no buffer to read are no
+        // declaration the engine takes.
+        auto &gpu_draws = required<QCheckBox>(form, "pelican.fullscreenPass.gpuDrawSource");
+        gpu_draws.setChecked(true);
         CHECK_FALSE(save.isEnabled());
-        other.clear();
+        gpu_draws.setChecked(false);
         // UX-11, decision 2: the Tags are a picker; a tag no material lists
         // is typed in its "+ new tag" line.
         auto &new_tag = required<QLineEdit>(form, "pelican.fullscreenPass.materialFilter.include.newTag");

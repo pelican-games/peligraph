@@ -30,6 +30,7 @@
 #include "viewportgeometry.hpp"
 
 #include <QApplication>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QDialog>
 #include <QDoubleSpinBox>
@@ -53,6 +54,7 @@
 #undef private
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -410,13 +412,19 @@ TEST_CASE("RSX decision 3: Rendering settings shows the root's rendering keys, s
     auto &strategy = required<QComboBox>(settings, "pelican.renderingSettings.render_strategy");
     CHECK(strategy.isEnabled());
     auto &xr = required<QPlainTextEdit>(settings, "pelican.renderingSettings.xr");
-    auto &xr_apply = required<QPushButton>(settings, "pelican.renderingSettings.xr.apply");
-    xr.setPlainText(QStringLiteral("{\"views\": 2}"));
-    xr_apply.click();
+    auto &multiview = required<QCheckBox>(settings, "pelican.renderingSettings.xr.multiviewAuto");
+    // UX-15a, decision 4: the same edit from the check or from the JSON.
+    const bool from_json = GENERATE(false, true);
+    if (from_json) {
+        xr.setPlainText(QStringLiteral("{\"multiview_auto\": {}}"));
+        required<QPushButton>(settings, "pelican.renderingSettings.xr.apply").click();
+    } else {
+        multiview.setChecked(true);
+    }
     sent = engine.next("edit_rendering_keys");
     REQUIRE(sent);
     CHECK(sent->at("params") == Json{{"base_source_digest", std::string(64, 'd')},
-                                     {"set", {{"xr", {{"views", 2}}}}}});
+                                     {"set", {{"xr", {{"multiview_auto", Json::object()}}}}}});
     engine.answer(*sent, {{"status", "rejected"},
                           {"committed", false},
                           {"error",
@@ -429,6 +437,9 @@ TEST_CASE("RSX decision 3: Rendering settings shows the root's rendering keys, s
                  {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}});
     CHECK_FALSE(xr.isEnabled());
     CHECK(xr.toolTip() == QStringLiteral("test_reason: not here"));
+    CHECK_FALSE(multiview.isEnabled());
+    CHECK_FALSE(multiview.isChecked());
+    CHECK_FALSE(required<QPushButton>(settings, "pelican.renderingSettings.xr.apply").isEnabled());
 }
 
 // --- UX-10, decision 1.
@@ -723,7 +734,8 @@ TEST_CASE("UX-10 decision 7: draw_sort and render_strategy are picked from the p
     emit engine.viewport.inspectorRpcFailed(asked->at("id").get<qint64>(),
                                             QStringLiteral("RPC -32601: method not found"));
     QApplication::processEvents();
-    CHECK(draw_sort.count() == 3);
+    // UX-15a, decision 2: the XR policy is a combo of its own, not an entry.
+    CHECK(draw_sort.count() == 2);
     CHECK(draw_sort.itemText(1) == QStringLiteral("State batched / back to front"));
     CHECK(strategy.count() == 1);
 }
@@ -789,6 +801,282 @@ TEST_CASE("UX-10 decision 4: Snapshots are rows -- + adds one after the opaque p
     CHECK(sent->at("params") == Json{{"base_source_digest", RootC}, {"set", {{"xr", multiview}}}});
 }
 
+
+// --- UX-15a: the rest of the rendering section picked, not typed.
+
+// An edit the panel sent, accepted and committed at `digest`; its params.
+Json ux15aCommitted(Transport &engine, const std::string &digest) {
+    const auto sent = engine.next("edit_rendering_keys");
+    REQUIRE(sent);
+    engine.answer(*sent, {{"status", "accepted"}, {"ticket", "ux15a"}});
+    const auto poll = engine.next("get_edit_result");
+    REQUIRE(poll);
+    engine.answer(*poll, liveCommit(digest));
+    return sent->at("params");
+}
+
+// EL-6's answer with these graph transform and render strategy providers.
+void ux15aProviders(Transport &engine, const Json &transforms, const Json &strategies) {
+    const auto asked = engine.next("get_registered_providers");
+    REQUIRE(asked);
+    engine.answer(*asked, {{"draw_sort", Json::array()},
+                           {"pass_implementation", Json::array()},
+                           {"region_replacements", Json::array()},
+                           {"graph_transforms", transforms},
+                           {"render_strategy", strategies}});
+}
+
+Json ux15aProvider(const char *name, const char *source = "engine") {
+    return {{"name", name}, {"source", source}, {"provider_version", 1}};
+}
+
+TEST_CASE("UX-15a decision 1: a render strategy picked on a root without one is sent with the "
+          "name the engine requires (its provider's); the name and parameters are fields",
+          "[devstudio][ux15a][rendering-settings][widget]") {
+    Transport engine;
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.show();
+    QApplication::processEvents();
+    auto &strategy = required<QComboBox>(settings, "pelican.renderingSettings.render_strategy");
+    auto &name = required<QLineEdit>(settings, "pelican.renderingSettings.render_strategy.name");
+    auto &parameters =
+        required<QLineEdit>(settings, "pelican.renderingSettings.render_strategy.parameters");
+    settingsRead(engine, RootA, Json::object());
+    ux15aProviders(engine, Json::array(),
+                   Json::array({ux15aProvider("builtin.authored_config_v1"),
+                                ux15aProvider("my_strategy", "game")}));
+    // Nothing written: no name to give.
+    CHECK(strategy.currentIndex() == 0);
+    CHECK_FALSE(name.isEnabled());
+    strategy.setCurrentIndex(strategy.findText(QStringLiteral("builtin.authored_config_v1")));
+    const Json picked{{"provider", "builtin.authored_config_v1"},
+                      {"name", "builtin.authored_config_v1"}};
+    CHECK(ux15aCommitted(engine, RootB) ==
+          Json{{"base_source_digest", RootA}, {"set", {{"render_strategy", picked}}}});
+    settingsRead(engine, RootB, {{"render_strategy", picked}});
+    CHECK(strategy.currentText() == QStringLiteral("builtin.authored_config_v1"));
+    REQUIRE(name.isEnabled());
+    CHECK(name.text() == QStringLiteral("builtin.authored_config_v1"));
+    CHECK(parameters.text().isEmpty());
+    // Another name, and parameters as one JSON line.
+    name.setText(QStringLiteral("main"));
+    parameters.setText(QStringLiteral("{\"quality\": 2}"));
+    Q_EMIT parameters.editingFinished();
+    const Json named{{"provider", "builtin.authored_config_v1"},
+                     {"name", "main"},
+                     {"parameters", {{"quality", 2}}}};
+    CHECK(ux15aCommitted(engine, RootC) ==
+          Json{{"base_source_digest", RootB}, {"set", {{"render_strategy", named}}}});
+    settingsRead(engine, RootC, {{"render_strategy", named}});
+    CHECK(parameters.text() == QStringLiteral("{\"quality\":2}"));
+    // Not an object: said, and not sent.
+    parameters.setText(QStringLiteral("[1]"));
+    Q_EMIT parameters.editingFinished();
+    CHECK(required<QLabel>(settings, "pelican.renderingSettings.notice")
+              .text()
+              .contains(QStringLiteral("not a JSON object")));
+    CHECK_FALSE(engine.next("edit_rendering_keys", 200));
+}
+
+TEST_CASE("UX-15a decision 2: draw_sort's XR policy is a combo of its own beside the pair, and "
+          "Per view is sent with the pair",
+          "[devstudio][ux15a][rendering-settings][widget]") {
+    Transport engine;
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.show();
+    QApplication::processEvents();
+    auto &draw_sort = required<QComboBox>(settings, "pelican.renderingSettings.draw_sort");
+    auto &policy = required<QComboBox>(settings, "pelican.renderingSettings.draw_sort.xrViewPolicy");
+    settingsRead(engine, RootA, Json::object());
+    // The engine's default: no policy to pick.
+    CHECK_FALSE(policy.isEnabled());
+    settings.refresh();
+    settingsRead(engine, RootA, {{"draw_sort", DefaultDrawSort}});
+    CHECK(draw_sort.currentText() == QStringLiteral("State batched / back to front"));
+    REQUIRE(policy.isEnabled());
+    CHECK(policy.currentText() == QStringLiteral("Logical view center"));
+    policy.setCurrentIndex(policy.findData(QStringLiteral("per_view")));
+    auto per_view = DefaultDrawSort;
+    per_view["xr_view_policy"] = "per_view";
+    CHECK(ux15aCommitted(engine, RootB) ==
+          Json{{"base_source_digest", RootA}, {"set", {{"draw_sort", per_view}}}});
+    // Read back: the pair is still its entry (not a Custom one), Per view beside it.
+    settingsRead(engine, RootB, {{"draw_sort", per_view}});
+    CHECK(draw_sort.currentText() == QStringLiteral("State batched / back to front"));
+    CHECK(policy.currentText() == QStringLiteral("Per view"));
+}
+
+TEST_CASE("UX-15a decision 3: graph_transforms is a row each -- provider, name, parameters, "
+          "up / down, x -- and + adds the first provider named after it; the JSON is read-only",
+          "[devstudio][ux15a][rendering-settings][widget]") {
+    Transport engine;
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.show();
+    QApplication::processEvents();
+    const Json two = Json::array({{{"name", "a"}, {"provider", "builtin.identity_v1"}},
+                                  {{"name", "b"}, {"provider", "game.t"}, {"parameters", {{"k", 1}}}}});
+    settingsRead(engine, RootA, {{"graph_transforms", two}});
+    ux15aProviders(engine,
+                   Json::array({ux15aProvider("builtin.identity_v1"), ux15aProvider("game.t", "game")}),
+                   Json::array());
+    CHECK(required<QPlainTextEdit>(settings, "pelican.renderingSettings.graph_transforms").isReadOnly());
+    auto &provider = required<QComboBox>(settings, "pelican.renderingSettings.graph_transforms.row1.provider");
+    CHECK(provider.currentText() == QStringLiteral("game.t (game)"));
+    CHECK(required<QLineEdit>(settings, "pelican.renderingSettings.graph_transforms.row1.name").text() ==
+          QStringLiteral("b"));
+    CHECK(required<QLineEdit>(settings, "pelican.renderingSettings.graph_transforms.row1.parameters")
+              .text() == QStringLiteral("{\"k\":1}"));
+    CHECK_FALSE(required<QPushButton>(settings, "pelican.renderingSettings.graph_transforms.row0.up").isEnabled());
+    CHECK_FALSE(required<QPushButton>(settings, "pelican.renderingSettings.graph_transforms.row1.down").isEnabled());
+    // Up: b runs first.
+    required<QPushButton>(settings, "pelican.renderingSettings.graph_transforms.row1.up").click();
+    CHECK(ux15aCommitted(engine, RootB) ==
+          Json{{"base_source_digest", RootA},
+               {"set", {{"graph_transforms", Json::array({two[1], two[0]})}}}});
+    settingsRead(engine, RootB, {{"graph_transforms", two}});
+    // +: named after its provider, free of the names already there.
+    const Json one = Json::array({{{"name", "builtin.identity_v1"}, {"provider", "builtin.identity_v1"}}});
+    settings.refresh();
+    settingsRead(engine, RootB, {{"graph_transforms", one}});
+    required<QPushButton>(settings, "pelican.renderingSettings.graph_transforms.add").click();
+    auto added = one;
+    added.push_back({{"name", "builtin.identity_v1_2"}, {"provider", "builtin.identity_v1"}});
+    CHECK(ux15aCommitted(engine, RootC) ==
+          Json{{"base_source_digest", RootB}, {"set", {{"graph_transforms", added}}}});
+    settingsRead(engine, RootC, {{"graph_transforms", added}});
+    // Another provider for a row.
+    auto &second = required<QComboBox>(settings, "pelican.renderingSettings.graph_transforms.row1.provider");
+    second.setCurrentIndex(second.findData(QStringLiteral("game.t")));
+    auto changed = added;
+    changed[1]["provider"] = "game.t";
+    const std::string RootD(64, 'd');
+    CHECK(ux15aCommitted(engine, RootD) ==
+          Json{{"base_source_digest", RootC}, {"set", {{"graph_transforms", changed}}}});
+    settingsRead(engine, RootD, {{"graph_transforms", one}});
+    // x on the last one: the key goes.
+    required<QPushButton>(settings, "pelican.renderingSettings.graph_transforms.row0.remove").click();
+    const auto sent = engine.next("edit_rendering_keys");
+    REQUIRE(sent);
+    CHECK(sent->at("params") ==
+          Json{{"base_source_digest", RootD}, {"remove", Json::array({"graph_transforms"})}});
+}
+
+TEST_CASE("UX-15a decision 4: xr.multiview_auto is a check with its minimum gain a spin, and the "
+          "xr JSON under Advanced writes the same key -- each shows what the other wrote",
+          "[devstudio][ux15a][rendering-settings][widget]") {
+    Transport engine;
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.show();
+    QApplication::processEvents();
+    auto &multiview = required<QCheckBox>(settings, "pelican.renderingSettings.xr.multiviewAuto");
+    auto &gain = required<QDoubleSpinBox>(settings, "pelican.renderingSettings.xr.minimumGainPercent");
+    auto &xr = required<QPlainTextEdit>(settings, "pelican.renderingSettings.xr");
+    auto &apply = required<QPushButton>(settings, "pelican.renderingSettings.xr.apply");
+    CHECK_FALSE(xr.isReadOnly());
+    settingsRead(engine, RootA, {{"xr", {{"view_execution", "auto"}}}});
+    CHECK_FALSE(multiview.isChecked());
+    CHECK_FALSE(gain.isEnabled());
+    REQUIRE(multiview.isEnabled());
+    // The check: on adds it, and the JSON shows it once read back.
+    multiview.setChecked(true);
+    const Json measured{{"view_execution", "auto"}, {"multiview_auto", Json::object()}};
+    CHECK(ux15aCommitted(engine, RootB) ==
+          Json{{"base_source_digest", RootA}, {"set", {{"xr", measured}}}});
+    settingsRead(engine, RootB, {{"xr", measured}});
+    CHECK(Json::parse(xr.toPlainText().toStdString()) == measured);
+    // The gain: the engine's 0 until set.
+    REQUIRE(gain.isEnabled());
+    CHECK(gain.value() == 0.0);
+    gain.setValue(2.5);
+    const Json gained{{"view_execution", "auto"},
+                      {"multiview_auto", {{"minimum_gain_percent", 2.5}}}};
+    CHECK(ux15aCommitted(engine, RootC) ==
+          Json{{"base_source_digest", RootB}, {"set", {{"xr", gained}}}});
+    // The JSON: profiles written by hand, kept by the check and the spin.
+    const Json profiles{{"view_execution", "auto"},
+                        {"multiview_auto",
+                         {{"minimum_gain_percent", 2.5},
+                          {"profiles", Json::array({{{"id", "quest"}, {"vendor_id", 4318}}})}}}};
+    settingsRead(engine, RootC, {{"xr", gained}});
+    xr.setPlainText(QString::fromStdString(profiles.dump()));
+    apply.click();
+    const std::string RootD(64, 'd');
+    CHECK(ux15aCommitted(engine, RootD) ==
+          Json{{"base_source_digest", RootC}, {"set", {{"xr", profiles}}}});
+    settingsRead(engine, RootD, {{"xr", profiles}});
+    CHECK(multiview.isChecked());
+    CHECK(gain.value() == 2.5);
+    // multiview_auto taken out in the JSON: the check is off once read back.
+    xr.setPlainText(QStringLiteral("{\"view_execution\": \"auto\"}"));
+    apply.click();
+    const std::string RootE(64, 'e');
+    CHECK(ux15aCommitted(engine, RootE) ==
+          Json{{"base_source_digest", RootD}, {"set", {{"xr", {{"view_execution", "auto"}}}}}});
+    settingsRead(engine, RootE, {{"xr", {{"view_execution", "auto"}}}});
+    CHECK_FALSE(multiview.isChecked());
+    CHECK_FALSE(gain.isEnabled());
+    // Not an object: said, and not sent.
+    xr.setPlainText(QStringLiteral("[1]"));
+    apply.click();
+    CHECK(required<QLabel>(settings, "pelican.renderingSettings.notice")
+              .text()
+              .contains(QStringLiteral("not a JSON object")));
+    CHECK_FALSE(engine.next("edit_rendering_keys", 200));
+}
+
+TEST_CASE("UX-15a decision 5: a root that selects a project preset shows the preset's "
+          "shader_defines, snapshots, draw_sort and graph_transforms as grey rows; the engine's "
+          "own preset is said to be unlisted",
+          "[devstudio][ux15a][rendering-settings][widget]") {
+    Transport engine;
+    RenderingSettingsWidget settings{&engine.viewport};
+    settings.show();
+    QApplication::processEvents();
+    const Json rendering{{"pipeline", {{"preset", "project://render_pipelines/fork.json"}}},
+                         {"graph_transforms", Json::array({{{"name", "mine"}}})}};
+    const Json preset{{"schema", "pelican.render_pipeline_preset"},
+                      {"version", 1},
+                      {"name", "fork"},
+                      {"config",
+                       {{"shader_defines", Json::array({"P=1", "Q"})},
+                        {"snapshots", Json::array({{{"name", "s"}, {"after", "post_ldr"}}})},
+                        {"draw_sort", DefaultDrawSort},
+                        {"graph_transforms", Json::array({{{"name", "theirs"}}})}}}};
+    auto documents = rootDocuments(RootA, rendering);
+    documents["documents"].push_back({{"reference", "project://render_pipelines/fork.json"},
+                                      {"kind", "preset"},
+                                      {"digest", std::string(64, 'e')},
+                                      {"content", preset.dump(2)}});
+    const auto read = engine.next("get_render_documents");
+    REQUIRE(read);
+    engine.answer(*read, documents);
+    const auto row = [&](const char *name) -> QLabel & { return required<QLabel>(settings, name); };
+    CHECK(row("pelican.renderingSettings.shader_defines.preset.row0").text() == QStringLiteral("Preset: P=1"));
+    CHECK(row("pelican.renderingSettings.shader_defines.preset.row1").text() == QStringLiteral("Preset: Q"));
+    CHECK(row("pelican.renderingSettings.snapshots.preset.row0").text() ==
+          QStringLiteral("Preset: s, after post_ldr"));
+    CHECK(row("pelican.renderingSettings.draw_sort.preset.row0").text() ==
+          QStringLiteral("Preset: state_batched_v1 / back_to_front_v1, XR logical_view_center"));
+    auto &theirs = row("pelican.renderingSettings.graph_transforms.preset.row0");
+    CHECK(theirs.text() == QStringLiteral("Preset: theirs (builtin.identity_v1)"));
+    CHECK(theirs.toolTip() == QStringLiteral("Comes from preset fork; fork the preset to change it"));
+    CHECK(theirs.isVisibleTo(&settings));
+    // The root's own row comes after the preset's.
+    CHECK(required<QLineEdit>(settings, "pelican.renderingSettings.graph_transforms.row0.name").text() ==
+          QStringLiteral("mine"));
+    auto &line = row("pelican.renderingSettings.preset");
+    CHECK(line.isVisibleTo(&settings));
+    CHECK(line.text().contains(QStringLiteral("selects preset fork")));
+    // The engine's preset: its document is not listed.
+    settings.refresh();
+    settingsRead(engine, RootB,
+                 {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}});
+    CHECK(line.text().contains(QStringLiteral("engine's preset engine://render_pipelines/hybrid_v1.json")));
+    CHECK_FALSE(required<QWidget>(settings, "pelican.renderingSettings.graph_transforms.preset")
+                    .isVisibleTo(&settings));
+    CHECK(settings.findChild<QLabel *>(QStringLiteral("pelican.renderingSettings.graph_transforms.preset.row0")) ==
+          nullptr);
+}
 
 // --- UX-12b (engine FR-1): refusals the engine names with what is missing,
 // and the one press that supplies it.

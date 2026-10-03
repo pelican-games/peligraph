@@ -9,7 +9,9 @@
 #include "../viewport/embeddedviewport.hpp"
 
 #include <QAction>
+#include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -25,6 +27,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -54,18 +57,20 @@ struct Choice {
     std::optional<Json> value;
 };
 
+// UX-15a, decision 2: a draw_sort entry is its opaque / transparent pair; its
+// xr_view_policy is a combo of its own beside it, so the pair's entries do not
+// carry one (and the root's value is matched with its policy left out).
+Json withoutViewPolicy(Json draw_sort) {
+    if (draw_sort.is_object()) draw_sort.erase("xr_view_policy");
+    return draw_sort;
+}
+
 std::vector<Choice> choicesFor(const std::string &key) {
-    if (key == "draw_sort") {
-        const auto policy = [](const char *xr) {
-            return Json{{"opaque", {{"provider", "state_batched_v1"}}},
-                        {"transparent", {{"provider", "back_to_front_v1"}}},
-                        {"xr_view_policy", xr}};
-        };
+    if (key == "draw_sort")
         return {{QObject::tr("Engine default"), std::nullopt},
-                {QObject::tr("State batched / back to front"), policy("logical_view_center")},
-                {QObject::tr("State batched / back to front, sorted per view (XR)"),
-                 policy("per_view")}};
-    }
+                {QObject::tr("State batched / back to front"),
+                 Json{{"opaque", {{"provider", "state_batched_v1"}}},
+                      {"transparent", {{"provider", "back_to_front_v1"}}}}}};
     if (key == "render_strategy")
         return {{QObject::tr("Engine default (builtin.authored_config_v1)"), std::nullopt}};
     if (key == "resolver_version")
@@ -102,6 +107,19 @@ QString providerLabel(const Provider &provider) {
     return provider.game ? QObject::tr("%1 (game)").arg(text(provider.name)) : text(provider.name);
 }
 
+// UX-15a, decisions 1 and 3: the name a render strategy or a graph transform
+// gets when nobody typed one -- its provider's, with _2, _3... after it when
+// `taken` already has that (graph transform names are unique across the
+// preset's and the root's).
+std::string defaultNameFor(const std::string &provider, const std::vector<std::string> &taken) {
+    const auto free = [&](const std::string &name) {
+        return std::find(taken.begin(), taken.end(), name) == taken.end();
+    };
+    if (free(provider)) return provider;
+    for (int suffix = 2;; ++suffix)
+        if (auto name = provider + "_" + std::to_string(suffix); free(name)) return name;
+}
+
 // The draw_sort and render_strategy entries made from the registered
 // providers: every opaque / transparent pair of draw sort providers, and
 // each render strategy provider in place of the one `current` names (its
@@ -119,8 +137,7 @@ std::vector<Choice> providerChoices(const std::string &key, const Json &register
                 choices.push_back(
                     {QObject::tr("%1 / %2").arg(providerLabel(opaque), providerLabel(transparent)),
                      Json{{"opaque", {{"provider", opaque.name}}},
-                          {"transparent", {{"provider", transparent.name}}},
-                          {"xr_view_policy", "logical_view_center"}}});
+                          {"transparent", {{"provider", transparent.name}}}}});
         return choices;
     }
     if (key == "render_strategy") {
@@ -130,6 +147,11 @@ std::vector<Choice> providerChoices(const std::string &key, const Json &register
         for (const auto &provider : providers) {
             Json value = current != nullptr && current->is_object() ? *current : Json::object();
             value["provider"] = provider.name;
+            // UX-15a, decision 1: the engine requires a name; a root without
+            // one gets the provider's.
+            if (!value.contains("name") || !value.at("name").is_string() ||
+                value.at("name").get<std::string>().empty())
+                value["name"] = defaultNameFor(provider.name, {});
             choices.push_back({providerLabel(provider), std::move(value)});
         }
     }
@@ -142,11 +164,47 @@ const std::vector<std::string> &comboKeys() {
     return keys;
 }
 
-// UX-10, decision 4: snapshots and xr.view_execution are fields now;
-// graph_transforms, and xr whole (its multiview_auto profiles), stay JSON.
+// UX-15a: graph_transforms and xr are fields now; each keeps its whole value
+// as JSON under Advanced -- graph_transforms to read, xr to write too (its
+// multiview_auto profiles are measured values no field holds).
 const std::vector<std::string> &jsonKeys() {
     static const std::vector<std::string> keys{"graph_transforms", "xr"};
     return keys;
+}
+
+// UX-15a, decision 5: the four keys a preset's config can hold that this tab
+// shows beside the root's.
+const std::vector<std::string> &presetKeys() {
+    static const std::vector<std::string> keys{"shader_defines", "snapshots", "draw_sort",
+                                               "graph_transforms"};
+    return keys;
+}
+
+// UX-15a, decision 3: graph_transforms[]'s provider when an entry names none.
+const char *const DefaultTransformProvider = "builtin.identity_v1";
+
+QString jsonLine(const Json &value) { return text(value.dump()); }
+
+// `object[key]` when it is a string; empty otherwise.
+std::string stringField(const Json &object, const char *key) {
+    if (!object.is_object()) return {};
+    const auto found = object.find(key);
+    return found != object.end() && found->is_string() ? found->get<std::string>()
+                                                         : std::string{};
+}
+
+// A one-line JSON object field: empty is nullopt (the key left out); an
+// error says what is wrong.
+std::optional<Json> objectFromLine(const QString &line, bool &bad) {
+    bad = false;
+    const auto typed = line.trimmed();
+    if (typed.isEmpty()) return std::nullopt;
+    auto value = Json::parse(typed.toStdString(), nullptr, false);
+    if (value.is_discarded() || !value.is_object()) {
+        bad = true;
+        return std::nullopt;
+    }
+    return value;
 }
 
 // UX-10, decision 3: rendering.material_route_default, which
@@ -225,8 +283,41 @@ struct RenderingSettingsWidget::Impl {
     QPushButton *refresh_button = nullptr;
     ShaderDefinesForm *defines = nullptr;
     std::map<std::string, QComboBox *> combos;
+    // UX-15a: graph_transforms and xr whole, under Advanced (xr with Apply).
     std::map<std::string, QPlainTextEdit *> json_fields;
-    std::map<std::string, QPushButton *> json_apply;
+    QPushButton *xr_apply = nullptr;
+    // --- UX-15a, decision 1: render_strategy's name and parameters.
+    QLineEdit *strategy_name = nullptr;
+    QLineEdit *strategy_parameters = nullptr;
+    // --- UX-15a, decision 2: draw_sort.xr_view_policy.
+    QComboBox *draw_sort_policy = nullptr;
+    // --- UX-15a, decision 3: one row per graph transform.
+    struct TransformRow {
+        QWidget *row = nullptr;
+        QComboBox *provider = nullptr;
+        QLineEdit *name = nullptr;
+        QLineEdit *parameters = nullptr;
+        QPushButton *up = nullptr;
+        QPushButton *down = nullptr;
+        QPushButton *remove = nullptr;
+    };
+    QWidget *transforms_box = nullptr;
+    QVBoxLayout *transform_rows_layout = nullptr;
+    std::vector<TransformRow> transform_rows;
+    QPushButton *transform_add = nullptr;
+    // --- UX-15a, decision 4: xr.multiview_auto, and its
+    // minimum_gain_percent.
+    QCheckBox *multiview_auto = nullptr;
+    QDoubleSpinBox *minimum_gain = nullptr;
+    // --- UX-15a, decision 5: what the selected preset holds, in grey.
+    QLabel *preset_line = nullptr;
+    std::map<std::string, QWidget *> preset_boxes;
+    std::map<std::string, std::vector<QLabel *>> preset_rows;
+    // The preset's config (get_render_documents' document of kind
+    // "preset"); null when the root selects none, or the engine's own (that
+    // document is listed only for a project preset).
+    Json preset_config = nullptr;
+    std::string preset_name;
     // --- UX-10, decision 3: Auto / Forward.
     QComboBox *route_default = nullptr;
     // --- UX-10, decision 4: one row per snapshot, and + to add one.
@@ -300,10 +391,18 @@ struct RenderingSettingsWidget::Impl {
                      "(edit_rendering_keys). A change is saved at once.")));
         layout->addLayout(heading);
 
+        // UX-15a, decision 5: a root that selects a preset says so, once.
+        preset_line = new QLabel(body);
+        preset_line->setObjectName(QStringLiteral("pelican.renderingSettings.preset"));
+        preset_line->setWordWrap(true);
+        preset_line->hide();
+        layout->addWidget(preset_line);
+
         auto *defines_label = new QLabel(owner.tr("Shader defines"), body);
         defines_label->setToolTip(owner.tr(
             "rendering.shader_defines: added to the compile of every shader."));
         layout->addWidget(defines_label);
+        layout->addWidget(presetBox("shader_defines", body));
         defines = new ShaderDefinesForm(QStringLiteral("pelican.renderingSettings"), body);
         defines->setRenderingSection(true);
         layout->addWidget(defines);
@@ -324,9 +423,55 @@ struct RenderingSettingsWidget::Impl {
             combo->setObjectName(QStringLiteral("pelican.renderingSettings.") + text(key));
             combo->setToolTip(QStringLiteral("rendering.") + text(key));
             combos[key] = combo;
-            form->addRow(labels.at(key), combo);
             QObject::connect(combo, &QComboBox::currentIndexChanged, &owner,
                              [this, key] { comboChanged(key); });
+            if (key == "draw_sort") {
+                // UX-15a, decision 2: the pair, and beside it how XR sorts.
+                auto *box = new QWidget(body);
+                auto *box_layout = new QVBoxLayout(box);
+                box_layout->setContentsMargins(0, 0, 0, 0);
+                box_layout->setSpacing(2);
+                box_layout->addWidget(presetBox(key, box));
+                auto *line = new QHBoxLayout;
+                line->addWidget(combo, 2);
+                draw_sort_policy = new QComboBox(box);
+                draw_sort_policy->setObjectName(
+                    QStringLiteral("pelican.renderingSettings.draw_sort.xrViewPolicy"));
+                draw_sort_policy->addItem(owner.tr("Logical view center"),
+                                          QStringLiteral("logical_view_center"));
+                draw_sort_policy->addItem(owner.tr("Per view"), QStringLiteral("per_view"));
+                line->addWidget(draw_sort_policy, 1);
+                box_layout->addLayout(line);
+                QObject::connect(draw_sort_policy, &QComboBox::currentIndexChanged, &owner,
+                                 [this] { viewPolicyChanged(); });
+                form->addRow(labels.at(key), box);
+            } else if (key == "render_strategy") {
+                // UX-15a, decision 1: the provider, and the name and
+                // parameters it is given.
+                auto *box = new QWidget(body);
+                auto *box_layout = new QVBoxLayout(box);
+                box_layout->setContentsMargins(0, 0, 0, 0);
+                box_layout->setSpacing(2);
+                box_layout->addWidget(combo);
+                auto *line = new QHBoxLayout;
+                strategy_name = new QLineEdit(box);
+                strategy_name->setObjectName(
+                    QStringLiteral("pelican.renderingSettings.render_strategy.name"));
+                strategy_name->setPlaceholderText(owner.tr("name"));
+                line->addWidget(strategy_name, 1);
+                strategy_parameters = new QLineEdit(box);
+                strategy_parameters->setObjectName(
+                    QStringLiteral("pelican.renderingSettings.render_strategy.parameters"));
+                strategy_parameters->setPlaceholderText(owner.tr("parameters (JSON); empty: none"));
+                line->addWidget(strategy_parameters, 1);
+                box_layout->addLayout(line);
+                for (auto *field : {strategy_name, strategy_parameters})
+                    QObject::connect(field, &QLineEdit::editingFinished, &owner,
+                                     [this] { strategyFieldChanged(); });
+                form->addRow(labels.at(key), box);
+            } else {
+                form->addRow(labels.at(key), combo);
+            }
         }
         // UX-10, decision 3: the route materials take by default.
         route_default = new QComboBox(body);
@@ -343,6 +488,12 @@ struct RenderingSettingsWidget::Impl {
         auto *snapshots_layout = new QVBoxLayout(snapshots_box);
         snapshots_layout->setContentsMargins(0, 0, 0, 0);
         snapshots_layout->setSpacing(2);
+        auto *snapshots_outer = new QWidget(body);
+        auto *snapshots_outer_layout = new QVBoxLayout(snapshots_outer);
+        snapshots_outer_layout->setContentsMargins(0, 0, 0, 0);
+        snapshots_outer_layout->setSpacing(2);
+        snapshots_outer_layout->addWidget(presetBox("snapshots", snapshots_outer));
+        snapshots_outer_layout->addWidget(snapshots_box);
         snapshot_rows_layout = new QVBoxLayout;
         snapshot_rows_layout->setContentsMargins(0, 0, 0, 0);
         snapshots_layout->addLayout(snapshot_rows_layout);
@@ -350,58 +501,122 @@ struct RenderingSettingsWidget::Impl {
         snapshot_add->setObjectName(QStringLiteral("pelican.renderingSettings.snapshots.add"));
         snapshot_add->setMaximumWidth(32);
         snapshots_layout->addWidget(snapshot_add, 0, Qt::AlignLeft);
-        form->addRow(labels.at("snapshots"), snapshots_box);
+        form->addRow(labels.at("snapshots"), snapshots_outer);
         QObject::connect(snapshot_add, &QPushButton::clicked, &owner, [this] { addSnapshot(); });
-        // Large shapes: JSON for now, one Apply each.
+        // The whole value of each JSON key under Advanced: xr's is written
+        // with Apply, graph_transforms' is read (its rows write it).
         for (const auto &key : jsonKeys()) {
-            auto *row = new QWidget(body);
-            auto *row_layout = new QHBoxLayout(row);
-            row_layout->setContentsMargins(0, 0, 0, 0);
-            auto *field = new QPlainTextEdit(row);
+            auto *field = new QPlainTextEdit(body);
             field->setObjectName(QStringLiteral("pelican.renderingSettings.") + text(key));
+            field->setReadOnly(key != "xr");
             field->setPlaceholderText(owner.tr("Engine default (empty)"));
-            field->setToolTip(owner.tr("rendering.%1 as JSON; empty leaves it out.")
-                                  .arg(text(key)));
             field->setMaximumHeight(70);
-            auto *apply = new QPushButton(owner.tr("Apply"), row);
-            apply->setObjectName(QStringLiteral("pelican.renderingSettings.") + text(key) +
-                                 QStringLiteral(".apply"));
-            row_layout->addWidget(field, 1);
-            row_layout->addWidget(apply, 0, Qt::AlignTop);
+            field->hide();
             json_fields[key] = field;
-            json_apply[key] = apply;
-            if (key == "xr") {
-                // UX-10, decision 4: the view execution is picked; the whole
-                // xr (its profiles) stays JSON under Advanced.
-                auto *xr_box = new QWidget(body);
-                auto *xr_layout = new QVBoxLayout(xr_box);
-                xr_layout->setContentsMargins(0, 0, 0, 0);
-                xr_layout->setSpacing(2);
-                auto *pick = new QHBoxLayout;
-                xr_view_execution = new QComboBox(xr_box);
-                xr_view_execution->setObjectName(
-                    QStringLiteral("pelican.renderingSettings.xr.viewExecution"));
-                xr_view_execution->addItem(owner.tr("Auto (engine default)"), QString{});
-                xr_view_execution->addItem(owner.tr("Sequential"), QStringLiteral("sequential"));
-                xr_view_execution->addItem(owner.tr("Multiview"), QStringLiteral("multiview"));
-                pick->addWidget(xr_view_execution, 1);
-                xr_advanced = new QPushButton(owner.tr("Advanced"), xr_box);
-                xr_advanced->setObjectName(QStringLiteral("pelican.renderingSettings.xr.advanced"));
-                xr_advanced->setCheckable(true);
-                xr_advanced->setFlat(true);
-                xr_advanced->setToolTip(owner.tr("rendering.xr as JSON (multiview_auto profiles)"));
-                pick->addWidget(xr_advanced);
-                xr_layout->addLayout(pick);
-                xr_layout->addWidget(row);
-                row->hide();
-                QObject::connect(xr_advanced, &QPushButton::toggled, row, &QWidget::setVisible);
-                QObject::connect(xr_view_execution, &QComboBox::currentIndexChanged, &owner,
-                                 [this] { viewExecutionChanged(); });
-                form->addRow(labels.at(key), xr_box);
-            } else {
-                form->addRow(labels.at(key), row);
-            }
-            QObject::connect(apply, &QPushButton::clicked, &owner, [this, key] { jsonApplied(key); });
+        }
+        const auto advanced = [this, body](const std::string &key, const QString &tip) {
+            auto *button = new QPushButton(owner.tr("Advanced"), body);
+            button->setObjectName(QStringLiteral("pelican.renderingSettings.") + text(key) +
+                                  QStringLiteral(".advanced"));
+            button->setCheckable(true);
+            button->setFlat(true);
+            button->setToolTip(tip);
+            QObject::connect(button, &QPushButton::toggled, json_fields.at(key),
+                             &QWidget::setVisible);
+            return button;
+        };
+        // UX-15a, decision 3: graph_transforms as rows -- the preset's in
+        // grey above, the root's after them (the engine appends them).
+        {
+            auto *outer_box = new QWidget(body);
+            auto *outer_layout = new QVBoxLayout(outer_box);
+            outer_layout->setContentsMargins(0, 0, 0, 0);
+            outer_layout->setSpacing(2);
+            outer_layout->addWidget(presetBox("graph_transforms", outer_box));
+            transforms_box = new QWidget(outer_box);
+            transforms_box->setObjectName(
+                QStringLiteral("pelican.renderingSettings.graph_transforms.rows"));
+            auto *rows_layout = new QVBoxLayout(transforms_box);
+            rows_layout->setContentsMargins(0, 0, 0, 0);
+            rows_layout->setSpacing(2);
+            transform_rows_layout = new QVBoxLayout;
+            transform_rows_layout->setContentsMargins(0, 0, 0, 0);
+            rows_layout->addLayout(transform_rows_layout);
+            auto *buttons = new QHBoxLayout;
+            transform_add = new QPushButton(QStringLiteral("+"), transforms_box);
+            transform_add->setObjectName(
+                QStringLiteral("pelican.renderingSettings.graph_transforms.add"));
+            transform_add->setMaximumWidth(32);
+            transform_add->setToolTip(owner.tr(
+                "Add a graph transform: the first provider the engine lists, named after it"));
+            buttons->addWidget(transform_add);
+            buttons->addStretch(1);
+            buttons->addWidget(advanced("graph_transforms",
+                                        owner.tr("rendering.graph_transforms as JSON, to read")));
+            rows_layout->addLayout(buttons);
+            outer_layout->addWidget(transforms_box);
+            outer_layout->addWidget(json_fields.at("graph_transforms"));
+            QObject::connect(transform_add, &QPushButton::clicked, &owner,
+                             [this] { addTransform(); });
+            form->addRow(labels.at("graph_transforms"), outer_box);
+        }
+        // UX-10, decision 4: the view execution is picked; UX-15a, decision
+        // 4: multiview_auto is a check with its minimum gain; the whole xr
+        // (its profiles) is JSON under Advanced, with Apply. The check, the
+        // gain and the JSON write the same key: a commit reads the root back
+        // into all three.
+        {
+            auto *xr_box = new QWidget(body);
+            auto *xr_layout = new QVBoxLayout(xr_box);
+            xr_layout->setContentsMargins(0, 0, 0, 0);
+            xr_layout->setSpacing(2);
+            auto *pick = new QHBoxLayout;
+            xr_view_execution = new QComboBox(xr_box);
+            xr_view_execution->setObjectName(
+                QStringLiteral("pelican.renderingSettings.xr.viewExecution"));
+            xr_view_execution->addItem(owner.tr("Auto (engine default)"), QString{});
+            xr_view_execution->addItem(owner.tr("Sequential"), QStringLiteral("sequential"));
+            xr_view_execution->addItem(owner.tr("Multiview"), QStringLiteral("multiview"));
+            pick->addWidget(xr_view_execution, 1);
+            multiview_auto = new QCheckBox(owner.tr("Measured gate"), xr_box);
+            multiview_auto->setObjectName(
+                QStringLiteral("pelican.renderingSettings.xr.multiviewAuto"));
+            pick->addWidget(multiview_auto);
+            minimum_gain = new QDoubleSpinBox(xr_box);
+            minimum_gain->setObjectName(
+                QStringLiteral("pelican.renderingSettings.xr.minimumGainPercent"));
+            // The engine's parser: [0, 100), 0 when left out.
+            minimum_gain->setRange(0.0, 99.99);
+            minimum_gain->setDecimals(2);
+            minimum_gain->setSuffix(QStringLiteral(" %"));
+            minimum_gain->setKeyboardTracking(false);
+            pick->addWidget(minimum_gain);
+            xr_advanced = advanced("xr", owner.tr("rendering.xr as JSON (multiview_auto profiles); "
+                                                  "Apply writes it"));
+            pick->addWidget(xr_advanced);
+            xr_layout->addLayout(pick);
+            auto *json_row = new QWidget(xr_box);
+            auto *json_layout = new QHBoxLayout(json_row);
+            json_layout->setContentsMargins(0, 0, 0, 0);
+            auto *xr_json = json_fields.at("xr");
+            xr_json->setParent(json_row);
+            xr_json->show();
+            json_layout->addWidget(xr_json, 1);
+            xr_apply = new QPushButton(owner.tr("Apply"), json_row);
+            xr_apply->setObjectName(QStringLiteral("pelican.renderingSettings.xr.apply"));
+            json_layout->addWidget(xr_apply, 0, Qt::AlignTop);
+            json_row->hide();
+            QObject::disconnect(xr_advanced, &QPushButton::toggled, xr_json, nullptr);
+            QObject::connect(xr_advanced, &QPushButton::toggled, json_row, &QWidget::setVisible);
+            xr_layout->addWidget(json_row);
+            QObject::connect(xr_apply, &QPushButton::clicked, &owner, [this] { xrApplied(); });
+            QObject::connect(minimum_gain, &QDoubleSpinBox::valueChanged, &owner,
+                             [this] { minimumGainChanged(); });
+            QObject::connect(xr_view_execution, &QComboBox::currentIndexChanged, &owner,
+                             [this] { viewExecutionChanged(); });
+            QObject::connect(multiview_auto, &QCheckBox::toggled, &owner,
+                             [this] { multiviewAutoChanged(); });
+            form->addRow(labels.at("xr"), xr_box);
         }
         layout->addLayout(form);
         layout->addStretch(1);
@@ -560,6 +775,23 @@ struct RenderingSettingsWidget::Impl {
         // A rendering section that selects a preset names it as `pipeline`
         // (EL-3, editRenderingKeys).
         selects_preset = rendering.contains("pipeline");
+        // UX-15a, decision 5: the preset's config, when the engine lists its
+        // document (a project preset; the engine's own is not listed).
+        preset_config = nullptr;
+        preset_name.clear();
+        if (selects_preset)
+            for (const auto &document : documents)
+                if (document.is_object() && document.value("kind", std::string{}) == "preset") {
+                    const auto preset =
+                        Json::parse(document.value("content", std::string{}), nullptr, false);
+                    if (preset.is_object() && preset.contains("config") &&
+                        preset.at("config").is_object()) {
+                        preset_config = preset.at("config");
+                        preset_name = stringField(preset, "name");
+                        if (preset_name.empty()) preset_name = stringField(document, "reference");
+                    }
+                    break;
+                }
         digest = root->value("digest", std::string{});
         have_root = !digest.empty();
         if (digest_hub && have_root) digest_hub->publish(digest, &owner);
@@ -595,9 +827,12 @@ struct RenderingSettingsWidget::Impl {
             for (const auto &choice : choices)
                 combo->addItem(choice.label,
                                choice.value ? compact(*choice.value) : QString{});
-            // The first entry is the key left out.
+            // The first entry is the key left out. UX-15a, decision 2: a
+            // draw_sort is matched with its xr_view_policy left out.
             const auto *value = current(key);
-            const QString wanted = value ? compact(*value) : QString{};
+            const QString wanted =
+                value ? compact(key == "draw_sort" ? withoutViewPolicy(*value) : *value)
+                      : QString{};
             int index = value ? combo->findData(wanted) : 0;
             if (index < 0) {
                 // Written by hand or by another tool: shown as it is.
@@ -627,10 +862,395 @@ struct RenderingSettingsWidget::Impl {
                 index = xr_view_execution->count() - 1;
             }
             xr_view_execution->setCurrentIndex(index);
+            // UX-15a, decision 4.
+            multiview_auto->setChecked(xr != nullptr && xr->is_object() &&
+                                       xr->contains("multiview_auto"));
+            double gain = 0.0;
+            if (multiview_auto->isChecked())
+                if (const auto &automatic = xr->at("multiview_auto"); automatic.is_object())
+                    if (const auto found = automatic.find("minimum_gain_percent");
+                        found != automatic.end() && found->is_number())
+                        gain = found->get<double>();
+            minimum_gain->setValue(gain);
+        }
+        // UX-15a, decision 1: the strategy's name and parameters.
+        {
+            const auto *strategy = current("render_strategy");
+            const bool object = strategy != nullptr && strategy->is_object();
+            strategy_name->setText(text(object ? stringField(*strategy, "name") : std::string{}));
+            const auto parameters = object && strategy->contains("parameters")
+                                        ? jsonLine(strategy->at("parameters"))
+                                        : QString{};
+            strategy_parameters->setText(parameters);
+        }
+        // UX-15a, decision 2: how XR sorts; absent is the engine's
+        // logical_view_center.
+        {
+            const auto *draw_sort = current("draw_sort");
+            const auto policy = draw_sort != nullptr && draw_sort->is_object()
+                                    ? stringField(*draw_sort, "xr_view_policy")
+                                    : std::string{};
+            int index = policy.empty() ? 0 : draw_sort_policy->findData(text(policy));
+            if (index < 0) {
+                draw_sort_policy->addItem(owner.tr("Custom: %1").arg(text(policy)), text(policy));
+                index = draw_sort_policy->count() - 1;
+            }
+            draw_sort_policy->setCurrentIndex(index);
         }
         fillSnapshots();
+        fillTransforms();
+        fillPreset();
         filling = false;
         controls();
+    }
+
+    // --- UX-15a, decision 5: the preset's values, in grey rows.
+    QWidget *presetBox(const std::string &key, QWidget *parent) {
+        auto *box = new QWidget(parent);
+        box->setObjectName(QStringLiteral("pelican.renderingSettings.") + text(key) +
+                           QStringLiteral(".preset"));
+        auto *box_layout = new QVBoxLayout(box);
+        box_layout->setContentsMargins(0, 0, 0, 0);
+        box_layout->setSpacing(0);
+        box->hide();
+        preset_boxes[key] = box;
+        return box;
+    }
+
+    QString presetTip() const {
+        return owner.tr("Comes from preset %1; fork the preset to change it")
+            .arg(text(preset_name));
+    }
+
+    // What the preset's `key` holds, a line a row.
+    std::vector<QString> presetLines(const std::string &key) const {
+        std::vector<QString> lines;
+        if (!preset_config.is_object()) return lines;
+        const auto found = preset_config.find(key);
+        if (found == preset_config.end()) return lines;
+        const auto &value = *found;
+        const auto entryLine = [](const Json &entry) {
+            return entry.is_string() ? text(entry.get<std::string>()) : jsonLine(entry);
+        };
+        if (key == "shader_defines" && value.is_array()) {
+            for (const auto &entry : value) lines.push_back(entryLine(entry));
+        } else if (key == "snapshots" && value.is_array()) {
+            for (const auto &entry : value)
+                lines.push_back(entry.is_object()
+                                    ? owner.tr("%1, after %2")
+                                          .arg(text(stringField(entry, "name")),
+                                               text(stringField(entry, "after")))
+                                    : jsonLine(entry));
+        } else if (key == "graph_transforms" && value.is_array()) {
+            for (const auto &entry : value) {
+                if (!entry.is_object()) {
+                    lines.push_back(jsonLine(entry));
+                    continue;
+                }
+                auto provider = stringField(entry, "provider");
+                if (provider.empty()) provider = DefaultTransformProvider;
+                auto line = owner.tr("%1 (%2)").arg(text(stringField(entry, "name")), text(provider));
+                if (entry.contains("parameters"))
+                    line += QStringLiteral(" ") + jsonLine(entry.at("parameters"));
+                lines.push_back(line);
+            }
+        } else if (key == "draw_sort" && value.is_object()) {
+            const auto phase = [&](const char *name) {
+                const auto found_phase = value.find(name);
+                return found_phase != value.end() ? stringField(*found_phase, "provider")
+                                                  : std::string{};
+            };
+            auto policy = stringField(value, "xr_view_policy");
+            if (policy.empty()) policy = "logical_view_center";
+            auto line = owner.tr("%1 / %2, XR %3")
+                            .arg(text(phase("opaque")), text(phase("transparent")), text(policy));
+            // The root's own draw_sort replaces the preset's.
+            if (current("draw_sort") != nullptr) line += owner.tr(" (the root's below replaces it)");
+            lines.push_back(line);
+        } else {
+            lines.push_back(jsonLine(value));
+        }
+        return lines;
+    }
+
+    void fillPreset() {
+        const QString dim = QStringLiteral("color: %1;").arg(studioDimTextColor().name());
+        for (const auto &key : presetKeys()) {
+            auto &rows = preset_rows[key];
+            for (auto *label : rows) {
+                label->hide();
+                label->setParent(nullptr);
+                label->deleteLater();
+            }
+            rows.clear();
+            auto *box = preset_boxes.at(key);
+            const auto lines = presetLines(key);
+            for (std::size_t index = 0; index < lines.size(); ++index) {
+                auto *label = new QLabel(owner.tr("Preset: %1").arg(lines[index]), box);
+                label->setObjectName(box->objectName() + QStringLiteral(".row%1").arg(index));
+                label->setStyleSheet(dim);
+                label->setToolTip(presetTip());
+                label->setWordWrap(true);
+                box->layout()->addWidget(label);
+                rows.push_back(label);
+            }
+            box->setVisible(!rows.empty());
+        }
+        if (!selects_preset) {
+            preset_line->hide();
+            return;
+        }
+        const auto *pipeline = current("pipeline");
+        const auto reference = pipeline != nullptr ? stringField(*pipeline, "preset") : std::string{};
+        preset_line->setStyleSheet(dim);
+        if (preset_config.is_object()) {
+            preset_line->setText(owner.tr("This root selects preset %1: what it holds shows in "
+                                          "grey. Fork the preset to change it.")
+                                     .arg(text(preset_name)));
+            preset_line->setToolTip(presetTip());
+        } else {
+            preset_line->setText(owner.tr("This root selects the engine's preset %1: its values "
+                                          "are not listed here. Fork the preset to see and "
+                                          "change them.")
+                                     .arg(text(reference)));
+            preset_line->setToolTip(text(reference));
+        }
+        preset_line->show();
+    }
+
+    // --- UX-15a, decision 1: the name and parameters of the strategy picked.
+    void strategyFieldChanged() {
+        if (filling) return;
+        const auto *now = current("render_strategy");
+        if (now == nullptr || !now->is_object()) return;
+        Json value = *now;
+        const auto name = strategy_name->text().trimmed().toStdString();
+        if (name.empty()) {
+            showError(owner.tr("A render strategy needs a name."));
+            strategy_name->setText(text(stringField(*now, "name")));
+            return;
+        }
+        value["name"] = name;
+        bool bad = false;
+        const auto parameters = objectFromLine(strategy_parameters->text(), bad);
+        if (bad) {
+            showError(owner.tr("The render strategy's parameters are not a JSON object."));
+            return;
+        }
+        if (parameters)
+            value["parameters"] = *parameters;
+        else
+            value.erase("parameters");
+        edit("render_strategy", std::move(value));
+    }
+
+    // --- UX-15a, decision 2: how XR sorts the picked draw sort.
+    void viewPolicyChanged() {
+        if (filling) return;
+        const auto *now = current("draw_sort");
+        if (now == nullptr || !now->is_object()) return;
+        Json value = *now;
+        value["xr_view_policy"] = draw_sort_policy->currentData().toString().toStdString();
+        edit("draw_sort", std::move(value));
+    }
+
+    // --- UX-15a, decision 4: xr.multiview_auto on (its defaults, the
+    // profiles kept) or off.
+    void multiviewAutoChanged() {
+        if (filling) return;
+        const auto *now = current("xr");
+        Json xr = now != nullptr && now->is_object() ? *now : Json::object();
+        if (multiview_auto->isChecked()) {
+            if (!xr.contains("multiview_auto")) xr["multiview_auto"] = Json::object();
+        } else {
+            xr.erase("multiview_auto");
+        }
+        edit("xr", xr.empty() ? std::nullopt : std::optional<Json>{std::move(xr)});
+    }
+
+    // xr.multiview_auto.minimum_gain_percent; 0 (the engine's) is left out
+    // when it was not written.
+    void minimumGainChanged() {
+        if (filling) return;
+        const auto *now = current("xr");
+        if (now == nullptr || !now->is_object() || !now->contains("multiview_auto") ||
+            !now->at("multiview_auto").is_object())
+            return;
+        Json xr = *now;
+        auto &automatic = xr["multiview_auto"];
+        if (minimum_gain->value() == 0.0 && !automatic.contains("minimum_gain_percent"))
+            return;
+        automatic["minimum_gain_percent"] = minimum_gain->value();
+        edit("xr", std::move(xr));
+    }
+
+    // The whole xr as typed under Advanced; empty leaves it out.
+    void xrApplied() {
+        const auto typed = json_fields.at("xr")->toPlainText().trimmed();
+        if (typed.isEmpty()) {
+            edit("xr", std::nullopt);
+            return;
+        }
+        auto value = Json::parse(typed.toStdString(), nullptr, false);
+        if (value.is_discarded() || !value.is_object()) {
+            showError(owner.tr("rendering.xr is not a JSON object."));
+            return;
+        }
+        edit("xr", std::move(value));
+    }
+
+    // --- UX-15a, decision 3: the graph transform rows.
+    Json transformsRead() const {
+        const auto *value = current("graph_transforms");
+        return value != nullptr && value->is_array() ? *value : Json::array();
+    }
+
+    std::vector<Provider> transformProviders() const {
+        auto providers = registered.is_object() ? providersOf(registered, "graph_transforms")
+                                                : std::vector<Provider>{};
+        if (providers.empty()) providers.push_back({DefaultTransformProvider, false});
+        return providers;
+    }
+
+    // The names a new transform must not take: the preset's and the root's.
+    std::vector<std::string> transformNames() const {
+        std::vector<std::string> names;
+        const auto collect = [&names](const Json &entries) {
+            if (entries.is_array())
+                for (const auto &entry : entries) names.push_back(stringField(entry, "name"));
+        };
+        collect(transformsRead());
+        if (preset_config.is_object())
+            collect(preset_config.value("graph_transforms", Json::array()));
+        return names;
+    }
+
+    void fillTransforms() {
+        for (auto &row : transform_rows) {
+            row.row->hide();
+            row.row->setParent(nullptr);
+            row.row->deleteLater();
+        }
+        transform_rows.clear();
+        const auto entries = transformsRead();
+        const auto providers = transformProviders();
+        for (std::size_t index = 0; index < entries.size(); ++index) {
+            const auto &entry = entries[index];
+            const auto prefix =
+                QStringLiteral("pelican.renderingSettings.graph_transforms.row%1").arg(index);
+            TransformRow row;
+            row.row = new QWidget(transforms_box);
+            auto *line = new QHBoxLayout(row.row);
+            line->setContentsMargins(0, 0, 0, 0);
+            row.provider = new QComboBox(row.row);
+            row.provider->setObjectName(prefix + QStringLiteral(".provider"));
+            row.provider->setToolTip(owner.tr("The provider that transforms the composed graph "
+                                              "(get_registered_providers)"));
+            const auto provider = stringField(entry, "provider");
+            if (provider.empty())
+                row.provider->addItem(owner.tr("Default (%1)").arg(text(DefaultTransformProvider)),
+                                      QString{});
+            for (const auto &each : providers)
+                row.provider->addItem(providerLabel(each), text(each.name));
+            if (!provider.empty() && row.provider->findData(text(provider)) < 0)
+                row.provider->addItem(owner.tr("Custom: %1").arg(text(provider)), text(provider));
+            row.provider->setCurrentIndex(std::max(0, row.provider->findData(text(provider))));
+            line->addWidget(row.provider, 2);
+            row.name = new QLineEdit(text(stringField(entry, "name")), row.row);
+            row.name->setObjectName(prefix + QStringLiteral(".name"));
+            row.name->setToolTip(owner.tr("The transform's name, unique among the preset's and "
+                                          "the root's"));
+            line->addWidget(row.name, 2);
+            row.parameters = new QLineEdit(row.row);
+            row.parameters->setObjectName(prefix + QStringLiteral(".parameters"));
+            row.parameters->setPlaceholderText(owner.tr("parameters (JSON); empty: none"));
+            if (entry.is_object() && entry.contains("parameters"))
+                row.parameters->setText(jsonLine(entry.at("parameters")));
+            line->addWidget(row.parameters, 2);
+            const auto button = [&](const QString &label, const char *suffix, const QString &tip) {
+                auto *pressed = new QPushButton(label, row.row);
+                pressed->setObjectName(prefix + QString::fromLatin1(suffix));
+                pressed->setToolTip(tip);
+                pressed->setMaximumWidth(28);
+                line->addWidget(pressed);
+                return pressed;
+            };
+            row.up = button(QStringLiteral("\u2191"), ".up", owner.tr("Run this transform earlier"));
+            row.down = button(QStringLiteral("\u2193"), ".down", owner.tr("Run this transform later"));
+            row.remove = button(QStringLiteral("\u00d7"), ".remove", owner.tr("Remove this transform"));
+            row.up->setEnabled(index > 0);
+            row.down->setEnabled(index + 1 < entries.size());
+            transform_rows_layout->addWidget(row.row);
+            QObject::connect(row.provider, &QComboBox::currentIndexChanged, &owner,
+                             [this] { transformsChanged(std::nullopt, 0); });
+            for (auto *field : {row.name, row.parameters})
+                QObject::connect(field, &QLineEdit::editingFinished, &owner,
+                                 [this] { transformsChanged(std::nullopt, 0); });
+            QObject::connect(row.up, &QPushButton::clicked, &owner,
+                             [this, index] { transformsChanged(index, -1); });
+            QObject::connect(row.down, &QPushButton::clicked, &owner,
+                             [this, index] { transformsChanged(index, +1); });
+            QObject::connect(row.remove, &QPushButton::clicked, &owner,
+                             [this, index] { transformsChanged(index, 0); });
+            transform_rows.push_back(row);
+        }
+    }
+
+    // The rows as the key's value. `at` with `move` 0 is removed; with -1 /
+    // +1 it trades places with the row before / after it.
+    void transformsChanged(std::optional<std::size_t> at, int move) {
+        if (filling) return;
+        const auto entries = transformsRead();
+        std::vector<Json> rows;
+        for (std::size_t index = 0; index < transform_rows.size(); ++index) {
+            const auto &row = transform_rows[index];
+            Json entry = index < entries.size() && entries[index].is_object() ? entries[index]
+                                                                              : Json::object();
+            const auto name = row.name->text().trimmed().toStdString();
+            if (name.empty()) {
+                showError(owner.tr("A graph transform needs a name."));
+                return;
+            }
+            entry["name"] = name;
+            const auto provider = row.provider->currentData().toString().toStdString();
+            if (provider.empty())
+                entry.erase("provider");
+            else
+                entry["provider"] = provider;
+            bool bad = false;
+            const auto parameters = objectFromLine(row.parameters->text(), bad);
+            if (bad) {
+                showError(owner.tr("The parameters of graph transform %1 are not a JSON object.")
+                              .arg(text(name)));
+                return;
+            }
+            if (parameters)
+                entry["parameters"] = *parameters;
+            else
+                entry.erase("parameters");
+            rows.push_back(std::move(entry));
+        }
+        if (at && *at < rows.size()) {
+            if (move == 0) {
+                rows.erase(rows.begin() + static_cast<std::ptrdiff_t>(*at));
+            } else {
+                const auto other = static_cast<std::ptrdiff_t>(*at) + move;
+                if (other >= 0 && other < static_cast<std::ptrdiff_t>(rows.size()))
+                    std::swap(rows[*at], rows[static_cast<std::size_t>(other)]);
+            }
+        }
+        Json value = Json::array();
+        for (auto &entry : rows) value.push_back(std::move(entry));
+        edit("graph_transforms",
+             value.empty() ? std::nullopt : std::optional<Json>{std::move(value)});
+    }
+
+    // +: the first provider the engine lists, named after it.
+    void addTransform() {
+        auto value = transformsRead();
+        const auto provider = transformProviders().front().name;
+        value.push_back({{"provider", provider}, {"name", defaultNameFor(provider, transformNames())}});
+        edit("graph_transforms", std::move(value));
     }
 
     // --- UX-10, decision 3.
@@ -755,9 +1375,44 @@ struct RenderingSettingsWidget::Impl {
                 widget->setToolTip(QStringLiteral("rendering.") + text(key));
         };
         for (const auto &[key, combo] : combos) gate(combo, key);
-        for (const auto &[key, field] : json_fields) {
-            gate(field, key);
-            json_apply.at(key)->setEnabled(field->isEnabled());
+        for (const auto &[key, field] : json_fields) gate(field, key);
+        // UX-15a, decisions 1 and 2: a strategy's name and parameters, and a
+        // draw sort's XR policy, once there is one.
+        const auto *strategy = current("render_strategy");
+        const bool strategy_set = strategy != nullptr && strategy->is_object();
+        for (auto *field : {strategy_name, strategy_parameters}) {
+            gate(field, "render_strategy");
+            field->setEnabled(field->isEnabled() && strategy_set);
+        }
+        if (!refusal("render_strategy")) {
+            strategy_name->setToolTip(owner.tr("render_strategy.name: the strategy the provider "
+                                               "makes (required; the provider's name unless "
+                                               "typed)"));
+            strategy_parameters->setToolTip(owner.tr("render_strategy.parameters as one JSON "
+                                                     "object; empty leaves it out"));
+        }
+        gate(draw_sort_policy, "draw_sort");
+        const auto *draw_sort = current("draw_sort");
+        draw_sort_policy->setEnabled(draw_sort_policy->isEnabled() && draw_sort != nullptr &&
+                                     draw_sort->is_object());
+        if (!refusal("draw_sort"))
+            draw_sort_policy->setToolTip(owner.tr(
+                "draw_sort.xr_view_policy: in XR, sort once from the center of the views "
+                "(Logical view center) or again for each view (Per view)"));
+        // UX-15a, decision 3.
+        gate(transforms_box, "graph_transforms");
+        // UX-15a, decision 4.
+        gate(multiview_auto, "xr");
+        gate(minimum_gain, "xr");
+        minimum_gain->setEnabled(minimum_gain->isEnabled() && multiview_auto->isChecked());
+        xr_apply->setEnabled(json_fields.at("xr")->isEnabled());
+        if (!refusal("xr")) {
+            multiview_auto->setToolTip(owner.tr(
+                "xr.multiview_auto: with view execution Auto, take multiview only where a "
+                "measured profile says it is faster (its profiles are written under Advanced)"));
+            minimum_gain->setToolTip(owner.tr(
+                "xr.multiview_auto.minimum_gain_percent: how much faster a profile must measure "
+                "multiview to take it (0, the engine's, when left out)"));
         }
         route_default->setEnabled(ready);
         route_default->setToolTip(owner.tr(
@@ -777,8 +1432,15 @@ struct RenderingSettingsWidget::Impl {
     void comboChanged(const std::string &key) {
         if (filling) return;
         const auto data = combos.at(key)->currentData().toString();
-        edit(key, data.isEmpty() ? std::nullopt
-                                 : std::optional<Json>{Json::parse(data.toStdString())});
+        if (data.isEmpty()) {
+            edit(key, std::nullopt);
+            return;
+        }
+        auto value = Json::parse(data.toStdString());
+        // UX-15a, decision 2: the pair with the XR policy picked beside it.
+        if (key == "draw_sort" && value.is_object())
+            value["xr_view_policy"] = draw_sort_policy->currentData().toString().toStdString();
+        edit(key, std::move(value));
     }
 
     void definesChanged() {
@@ -789,20 +1451,6 @@ struct RenderingSettingsWidget::Impl {
         }
         const auto value = defines->defines();
         edit("shader_defines", value.is_null() ? std::nullopt : std::optional<Json>{value});
-    }
-
-    void jsonApplied(const std::string &key) {
-        const auto typed = json_fields.at(key)->toPlainText().trimmed();
-        if (typed.isEmpty()) {
-            edit(key, std::nullopt);
-            return;
-        }
-        auto value = Json::parse(typed.toStdString(), nullptr, false);
-        if (value.is_discarded()) {
-            showError(owner.tr("rendering.%1 is not JSON.").arg(text(key)));
-            return;
-        }
-        edit(key, std::move(value));
     }
 
     // --- Sending.

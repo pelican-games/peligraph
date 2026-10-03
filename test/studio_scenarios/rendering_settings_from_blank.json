@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "rendering_settings_from_blank",
-  "description": "RSX: the Render tools' Rendering settings tab, from nothing. From a Blank project, the tab reads the root's rendering section; Add define opens a row, the name is typed and Return commits it, which sends one edit_rendering_keys and the root holds the define (get_render_documents says so). Edit > Undo Render Edit takes it back -- the render edit history names it Set shader_defines -- and the root no longer holds it.",
+  "description": "RSX: the Render tools' Rendering settings tab, from nothing. From a Blank project, the tab reads the root's rendering section; Add define opens a row, the name is typed and Return commits it, which sends one edit_rendering_keys and the root holds the define (get_render_documents says so). Edit > Undo Render Edit takes it back -- the render edit history names it Set shader_defines -- and the root no longer holds it. UX-15a: then the render strategy's provider is picked on that root, which holds none; the name the engine requires is the provider's, and the engine takes it (Saved, and the name read back from the root). + adds a graph transform row (provider and name filled), the engine takes it and the root holds it; Undo takes the row back and then the strategy.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -207,6 +207,164 @@
       "expect": "screenshot",
       "name": "pelican.renderingSettings",
       "path": "rendering_settings_from_blank_undone.png"
+    },
+    {
+      "label": "UX-15a: the blank root holds no render strategy",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents[0].content",
+      "op": "excludes",
+      "value": "render_strategy"
+    },
+    {
+      "label": "UX-15a, decision 1: the render strategy's provider, picked by the label a person reads",
+      "cmd": "select",
+      "name": "pelican.renderingSettings.render_strategy",
+      "text": "builtin.authored_config_v1"
+    },
+    {
+      "label": "the engine took it: the tab says it was saved",
+      "cmd": "wait",
+      "name": "pelican.renderingSettings.notice",
+      "contains": "Saved render_strategy.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the root's rendering section holds the strategy",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents[0].content",
+      "op": "contains",
+      "value": "render_strategy",
+      "retry_ms": 60000
+    },
+    {
+      "label": "its name, read back from the root, is the provider's: nothing was typed",
+      "cmd": "wait",
+      "name": "pelican.renderingSettings.render_strategy.name",
+      "text": "builtin.authored_config_v1",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the engine draws with it",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "UX-15a, decision 3: + adds a graph transform row",
+      "cmd": "click",
+      "name": "pelican.renderingSettings.graph_transforms.add"
+    },
+    {
+      "label": "the engine took it: the tab says it was saved",
+      "cmd": "wait",
+      "name": "pelican.renderingSettings.notice",
+      "contains": "Saved graph_transforms.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the root's rendering section holds the transform",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents[0].content",
+      "op": "contains",
+      "value": "graph_transforms",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the row reads it back, named after its provider",
+      "cmd": "wait",
+      "name": "pelican.renderingSettings.graph_transforms.row0.name",
+      "text": "builtin.identity_v1",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the engine draws with it",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "a picture of the tab with the strategy and the transform row",
+      "expect": "screenshot",
+      "name": "pelican.renderingSettings",
+      "path": "rendering_settings_from_blank_transforms.png"
+    },
+    {
+      "label": "Edit > Undo Render Edit: the transform",
+      "cmd": "action",
+      "name": "pelican.edit.undoRenderEdit"
+    },
+    {
+      "label": "one line names what was undone",
+      "cmd": "wait",
+      "name": "pelican.framePlanStatus",
+      "contains": "Undid \"Set graph_transforms\".",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Undo: the root no longer holds the transform",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents[0].content",
+      "op": "excludes",
+      "value": "graph_transforms",
+      "retry_ms": 120000
+    },
+    {
+      "label": "and its row is gone",
+      "cmd": "wait",
+      "name": "pelican.renderingSettings.graph_transforms.row0.name",
+      "missing": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Edit > Undo Render Edit: the strategy",
+      "cmd": "action",
+      "name": "pelican.edit.undoRenderEdit"
+    },
+    {
+      "label": "one line names what was undone",
+      "cmd": "wait",
+      "name": "pelican.framePlanStatus",
+      "contains": "Undid \"Set render_strategy\".",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Undo: the root no longer holds the strategy",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents[0].content",
+      "op": "excludes",
+      "value": "render_strategy",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the engine draws after the Undos",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
     }
   ]
 }

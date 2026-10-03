@@ -2633,6 +2633,8 @@ struct FullscreenPassWidget::Impl {
       showPresetFields(preserve_declaration);
       if (editingMaterialPass()) {
         material_form->setResourceCandidates(resourceNames());
+        // UX-15a, decision 6: the declared buffers GPU draws read.
+        material_form->setBufferCandidates(bufferNames());
         material_form->setVariantCandidates(materialVariantNames());
         material_form->setTagCandidates(material_tags);
         material_form->load(declaration);

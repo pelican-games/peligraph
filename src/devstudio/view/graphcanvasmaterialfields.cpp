@@ -277,7 +277,8 @@ void GraphCanvasMaterialPassFields::showNode(const GraphCanvasNode *node, const 
     scope_ = scope;
     const auto current = model_.nodeParameters(scope_, node_);
     QStringList parts{qtext(scope_), qtext(node_), qtext(current.dump())};
-    for (const auto &list : {model_.materialTags(), model_.materialVariants(), model_.planTargets()}) {
+    for (const auto &list : {model_.materialTags(), model_.materialVariants(), model_.planTargets(),
+                             model_.bufferChoices(scope_)}) {
         parts << QStringLiteral("|");
         for (const auto &entry : list) parts << qtext(entry);
     }
@@ -327,6 +328,8 @@ void GraphCanvasMaterialPassFields::showNode(const GraphCanvasNode *node, const 
                 target_candidates_ = model_.planTargets();
                 settings_->setResourceCandidates(target_candidates_);
             }
+            // UX-15a, decision 6: the render.buffer nodes GPU draws read.
+            settings_->setBufferCandidates(model_.bufferChoices(scope_));
             loading_ = false;
             // One row's pick is the pass's op: read back, every row says it.
             auto ops_now = opsOf(current);
@@ -364,6 +367,7 @@ void GraphCanvasMaterialPassFields::load(const Json &parameters) {
     target_candidates_ = model_.planTargets();
     settings_->setVariantCandidates(variant_candidates_);
     settings_->setResourceCandidates(target_candidates_);
+    settings_->setBufferCandidates(model_.bufferChoices(scope_));
     settings_->load(parameters);
     loading_ = false;
     loadOps(parameters);

@@ -4,6 +4,7 @@
 
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -12,7 +13,6 @@ class QCheckBox;
 class QComboBox;
 class QGridLayout;
 class QLineEdit;
-class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
 class QFormLayout;
@@ -34,7 +34,10 @@ class GraphCanvasTagPicker;
 //     name, type, source, and the blend and write mask the pass gives it
 //   - screen_inputs, surface_resources, material_resources: one row a
 //     binding -- which of the three, its name, the resource it reads
-//   - gpu_draw_source, and nothing else, stays JSON ("Other").
+//   - gpu_draw_source (UX-15a, decision 6): on / off, its layout, the
+//     commands, count and segments buffers picked among the buffers given
+//     (setBufferCandidates), max_draw_count, the two offsets, fallback and
+//     execution. No setting is typed as JSON.
 // What a setting held that the form does not show stays as it was.
 class MaterialSettingsForm final : public PassForm {
     Q_OBJECT
@@ -55,6 +58,10 @@ class MaterialSettingsForm final : public PassForm {
     void reset();
     // The resources a binding row offers to read.
     void setResourceCandidates(const std::vector<std::string> &resources);
+    // UX-15a, decision 6: the buffers gpu_draw_source's commands, count and
+    // segments are picked among (the Pass Editor's declared buffers, the
+    // Graph's render.buffer nodes). What the pass names stays offered.
+    void setBufferCandidates(const std::vector<std::string> &buffers);
     // UX-12c, decision 3: the names a `kind` ("screen_inputs",
     // "surface_resources") row offers, as the engine lists them
     // (get_graph_catalog's material_pass_contracts, MP-1): {name,
@@ -75,7 +82,8 @@ class MaterialSettingsForm final : public PassForm {
     void setContractAndVariantShown(bool shown);
 
     // Each of the ten keys the pass has now; one left out is absent. Throws
-    // when Other is not a JSON object of the keys it may hold.
+    // when GPU draws are on without a commands and a count buffer (or, for
+    // draw_queue_segments_v1, a segments one), as the engine would refuse.
     [[nodiscard]] nlohmann::json settings() const;
 
   private:
@@ -86,9 +94,14 @@ class MaterialSettingsForm final : public PassForm {
     void fillResourceNames(ResourceRow &row);
     void fillResourceReads(ResourceRow &row);
     [[nodiscard]] std::vector<std::string> resourceNamesOf(const std::string &kind) const;
+    void loadGpuDraw(const nlohmann::json &source);
+    void fillBufferChoices(QComboBox &combo, const std::string &current);
+    void followGpuDraw();
+    [[nodiscard]] std::optional<nlohmann::json> gpuDrawSource() const;
 
     nlohmann::json original_ = nlohmann::json::object();
     std::vector<std::string> resource_candidates_;
+    std::vector<std::string> buffer_candidates_;
     std::map<std::string, std::vector<std::pair<std::string, std::string>>> name_candidates_;
     std::map<std::string, std::string> candidate_types_;
     std::vector<std::string> tag_candidates_;
@@ -110,7 +123,18 @@ class MaterialSettingsForm final : public PassForm {
     QGridLayout *resources_grid_ = nullptr;
     QPushButton *add_resource_ = nullptr;
     std::vector<std::unique_ptr<ResourceRow>> resource_rows_;
-    QPlainTextEdit *other_ = nullptr;
+    // UX-15a, decision 6: gpu_draw_source.
+    QWidget *gpu_box_ = nullptr;
+    QCheckBox *gpu_draw_ = nullptr;
+    QComboBox *gpu_layout_ = nullptr;
+    QComboBox *gpu_commands_ = nullptr;
+    QComboBox *gpu_count_ = nullptr;
+    QComboBox *gpu_segments_ = nullptr;
+    QSpinBox *gpu_max_draws_ = nullptr;
+    QSpinBox *gpu_command_offset_ = nullptr;
+    QSpinBox *gpu_count_offset_ = nullptr;
+    QComboBox *gpu_fallback_ = nullptr;
+    QComboBox *gpu_execution_ = nullptr;
     int next_line_ = 1;
 };
 
