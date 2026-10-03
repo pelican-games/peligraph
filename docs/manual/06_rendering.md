@@ -1491,6 +1491,8 @@ compute writeから`DrawIndirect` / `IndirectCommandRead` barrierを導出しま
 既存CPU DrawQueueを描画します。比較・診断用の`execution: "cpu"`も同じfallbackを強制します。
 現時点で他のfallbackとVulkan 1.1 + `VK_KHR_draw_indirect_count`だけの経路は受理しません。
 
+Studio では ✅UX-15a から、`gpu_draw_source` を material pass の form(Pass Editor と Graph の material pass の欄)の **GPU draws** の欄で書きます。layout は選択、commands / count / segments は宣言済みの buffer(Graph では `render.buffer` の node)から選び、JSON は打ちません([第13章](13_editor.md)の「gpu_draw_source の欄(✅UX-15a)」)。
+
 ### プランダンプ(実行計画の可視化)
 
 ```sh
@@ -1745,7 +1747,7 @@ multiview選択時は2-layer image、`viewMask=0b11`、execution count 1とな�
 
 貼り付け後は `physical_target_plan.applied_pin_package` に同じ package が出ます。論理 graph が変わった package は `pin package is stale`、現在の device/provider で成立しない candidate は `pinned backend candidate is infeasible` として失敗し、別 candidate へ黙って fallback しません。ここで **fingerprint** は「対象の内容から計算した短いハッシュ値」で、貼った package が今のグラフ向けかどうかを照合するための鍵です。`logical_graph_fingerprint` は論理グラフ(パスと資源と依存)から計算され、**物理側の指定(`target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments`)はその計算に入りません**。したがってこれらを貼ったこと自体では logical fingerprint は変わらず、貼った package が直後に stale になることもありません。
 
-RPC から書くときは `edit_vulkan_plan_pins {base_source_digest, family, pin}`(✅EL-2)です。同じ family の同じ `graph` の package を置き換え、`pin: null` で消します([第13章](13_editor.md)の「graph 全体の計画の決定を書く(✅EL-2)」)。
+RPC から書くときは `edit_vulkan_plan_pins {base_source_digest, family, pin}`(✅EL-2)です。同じ family の同じ `graph` の package を置き換え、`pin: null` で消します([第13章](13_editor.md)の「graph 全体の計画の決定を書く(✅EL-2)」)。✅UX-15b から、Studio の Frame Plan の Backends タブで候補の行を右クリックして **Pin this candidate** を押すと、`ejectable_pin_package` の候補だけを替えたものをこの RPC で送ります(帯の **Unpin** で消します。第13章の「下の層の決定を Frame Plan から書く(✅UX-15b)」)。
 
 v1 pin が固定するのは有限集合の **backend candidate だけ**です。resource/scopeを編集する場合は、次の別schemaを使います。
 
@@ -1848,7 +1850,7 @@ sample count、array layer上限、external depthなら`TRANSFER_SRC`契約を�
 
 貼り付け後は`applied_physical_fragment`で適用内容を再観測できます。logical graphだけでなく、変更前の自動plan、target facts、選択候補、provider generationも`automatic_plan_fingerprint`へ束縛されます。いずれかが変わった古いfragmentは **stale error**(貼った package が前提にしていた plan はもう存在しない、という失敗)となり、部分的に推測して修復しません。直し方は「もう一度 eject してから編集し直す」だけです。
 
-RPC から書くときは `put_vulkan_physical_fragment {base_source_digest, family, fragment}`(✅EL-2)です。stale な fragment は、ticket の結果の `physical_fragment_stale {family, graph, fingerprint, expected, actual}` で返り、文書は変わりません(`fingerprint` は `logical_graph` か `automatic_plan`。[第13章](13_editor.md)の「graph 全体の計画の決定を書く(✅EL-2)」)。
+RPC から書くときは `put_vulkan_physical_fragment {base_source_digest, family, fragment}`(✅EL-2)です。stale な fragment は、ticket の結果の `physical_fragment_stale {family, graph, fingerprint, expected, actual}` で返り、文書は変わりません(`fingerprint` は `logical_graph` か `automatic_plan`。[第13章](13_editor.md)の「graph 全体の計画の決定を書く(✅EL-2)」)。✅UX-15b から、Studio の Frame Plan の Physical plan タブの **Freeze this physical plan** が `ejectable_physical_fragment` をそのままこの RPC で送り、**Remove** が消し、stale で断られたときは **Eject again** が画面の plan の fragment で置き換えます(第13章の「下の層の決定を Frame Plan から書く(✅UX-15b)」)。
 
 同じ名前のtargetを複数graphやflat/XR variantが共有する場合、全planは同じphysical formatを選ぶ必要があります。異なるformatを同時に使う設計ならtarget名を分けてください。hot reloadでformatを変更した場合は、新しいruntime generationのimage・view・pipelineを作ってから一括publishし、旧generationは既存のGPU lease規則でretireします。
 
@@ -1988,7 +1990,7 @@ output schema・format・MSAA(sample 数)・local-read・attachment state で描
   候補世代に合わせて作り直してから公開します([`prepareRenderPipelineModelReload` と `applyRenderPipelineCompanionReload` を呼ぶ所](../../src/core/vkcore/renderer.cpp#L3604)、
   [作り直しの計画](../../src/core/material/materialgenerationplanner.cpp#L1294))。output schema が変わる material は fragment shader を
   新しい schema で compile し直し、format・sample 数・local-read・attachment state が変わる material は pipeline を作り直します。
-  作り直しのどれかが失敗すると例外で候補世代を捨て、旧世代を保ちます([`ReloadService::applyRenderPipelineCompanionReload()`](../../src/core/watch/reloadservice.cpp#L420))。
+  作り直しのどれかが失敗すると例外で候補世代を捨て、旧世代を保ちます([`ReloadService::applyRenderPipelineCompanionReload()`](../../src/core/watch/reloadservice.cpp#L432))。
   graph と material surface を同じ transaction で組み直す仕組みは、この経路では既に動いています。
   - この経路でも断られるもの: 受け皿の無い route(`material_route_unserved@1`)、1 つの material の route が flat と XR で別の schema や
     別の物理の契約になる候補、同じ fragment shader や pipeline を共有する material が両立しない契約を要求する候補。
@@ -2001,7 +2003,7 @@ output schema・format・MSAA(sample 数)・local-read・attachment state で描
     ([gate の条件](../../src/core/watch/reloadgate.cpp#L46)、[headless では読み直しを要求しない所](../../src/player/main.cpp#L502))。
     ✅AV-1 から、`PELICAN_WITH_HOT_RELOAD=OFF` の build(配布 build)では起動のしかたに関係なく動きません([第10章](10_tools.md) §10.5)。
     ✅HW-1 から、project.json に `hot_reload` を宣言すると `--rpc` の下でも watcher は動きますが、`--rpc` の下では watcher の変更は
-    この経路(`pelican.render_pipeline` の参加者)に届きません([除外する所](../../src/core/watch/reloadservice.cpp#L908))。
+    この経路(`pelican.render_pipeline` の参加者)に届きません([除外する所](../../src/core/watch/reloadservice.cpp#L920))。
     Studio が起こす engine には常に `--rpc` が付くので([Studio の起動引数](../../src/devstudio/viewport/studioplayerarguments.cpp#L81))、
     Studio の中の engine はこの経路を通りません。Studio の外でディスクの文書を書き換えたときは、`reload_render_documents`(✅RL-1)で取り込みます。
     これは下の「編集 RPC の候補」として組み直します([第13章](13_editor.md)の「ディスクで書き換えた render 文書を取り込む」)。
@@ -2605,7 +2607,7 @@ preview graph の合成規則(すべて起動時に検証されます):
   - `history_read`: `<target>@history` を読む pass(`graph`・`pass`)
   - `history_write`: `writes_history` の pass(`graph`・`pass`)
   - `composition`: それ以外の理由で preview を組めなかった。拒否が名前付き(`GraphRegistryError` か `<code>: <fields>` の形)なら `cause: {code, ...その fields}` が付きます(例: preview だけが断る graph のループの `graph.loop_expression_invalid@1` は `cause: {code: "graph.loop_expression_invalid@1", node: "steps", reason: "not_static"}`。test)
-- **出る所**: `get_status` の `preview`([`get_status` の PV-1 の鍵](../../src/core/communication/rpcserver.cpp#L1653))、`get_frame_plan` の最上位の `preview`([frame plan の PV-1 の鍵](../../src/core/vkcore/renderer.cpp#L4377))、render の編集の committed の結果の `preview`(公開した世代の状態。`reload_render_documents` と `edit_batch` の committed も同じ。[committed に preview を足す所](../../src/core/communication/renderconfigeditor.cpp#L6749))。
+- **出る所**: `get_status` の `preview`([`get_status` の PV-1 の鍵](../../src/core/communication/rpcserver.cpp#L1657))、`get_frame_plan` の最上位の `preview`([frame plan の PV-1 の鍵](../../src/core/vkcore/renderer.cpp#L4377))、render の編集の committed の結果の `preview`(公開した世代の状態。`reload_render_documents` と `edit_batch` の committed も同じ。[committed に preview を足す所](../../src/core/communication/renderconfigeditor.cpp#L6749))。
 - **`render_preview`**: preview が利用できない世代では、capture の中身を読む前に `preview.unavailable@1` で断ります。JSON-RPC の error(`-32000`)の `data` が `{code: "preview.unavailable@1", method: "render_preview", reason: <上の reason>}` です([`checkPreviewAvailable()`](../../src/core/communication/editorpreviewservice.cpp#L134))。
 - **編集**: 編集の preflight は preview を組みません([PV-1 で preview を組まなくなった preflight](../../src/core/renderingpass/previewgraph.cpp#L223))。preview だけが組めない編集も committed になり、`preview` が `available: false` に変わります。逆に history を外す編集で `available: true` に戻ります。
 - **log**: 起動時に、preview が利用できなければ warning を 1 行出します。形は `render preview unavailable (preview.unsupported_authoring@1 feature=history target=accum); normal play continues, render_preview refuses: <message>` で、`target=` は reason に `target` があるときだけです([PV-1 の warning の行](../../src/core/vkcore/renderer_config.cpp#L584))。同じ関数は reload と編集の組み直しでも通るので、そこでも preview が利用できなければ同じ行が出ます(コードの読み。test は起動時の 1 行だけを見ます)。
@@ -3088,9 +3090,9 @@ RPC なら `get_graph_catalog`([第10章](10_tools.md))。どちらも同じ `pe
 
 **必須の parameter と value.input の名前(✅CT-1、`ac8d836b`)。**どの op にも `required_parameters` が付きます。中身は、node をその op で組むときに `graph.render_node_parameters_missing@1` を出す検査と**同じ表**([`renderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L262))から作った配列で、単独の必須は `{name}`、どれか 1 つでよい組は `{one_of: [...]}`、必須の無い op は `[]` です([組む所](../../src/project/graphmodule.cpp#L576))。例: `render.scalar` は `[{"name": "target"}]`、`render.compute` は `[{"name": "ports"}, {"one_of": ["shader", "ray_tracing"]}]`、`audio.volume` は `[{"one_of": ["target", "voice"]}]`、`value.add` は `[]`。名前は同名の入力 edge でも満たせます(`audio.volume` の `voice` の edge など。下の §6.18「名前付きの拒否の一覧」の RS-9 / RS-15 の項)。`value.input` の op にだけ `input_names: [{name, type, description}]` が付き、`value.input` の `name` に書ける名前を並べます —— `time`(game の時計の秒)・`delta_time`(この frame の長さの秒)・`scene_time`(今の scene が始まってからの秒)で、`type` は `pelican.value.scalar@1` を catalog の型の書き方(`{semantic, ...}`)にしたものです([`graphFrameInputNames()`](../../src/project/graphmodule.cpp#L927))。frame が値を渡す名前の検査(`validateGraphInputs()`)も同じ表を読むので、並んだ名前は通り、それ以外は `unbound frame graph input: <名前>` で断られます。test: `curve_test` の [「CT-1 the catalog lists each op's required parameters and the names value.input takes」](../../test/curve_test.cpp#L1147)。
 
-**各 op の parameter の形(✅CT-3、`0d215a68`)。**どの op にも `parameters` と `parameters_complete` が付きます。catalog 本体が出す鍵なので、`pelican_cli graph-catalog` にも出ます([CT-3 で op に足す所](../../src/project/graphmodule.cpp#L577))。表は [`graphparameterschema.cpp` の CT-3 の表 `makeTable()`](../../src/project/graphparameterschema.cpp#L294) の 1 つで、各 op の parser が読む鍵から拾ったものです(コードの注記)。`required_parameters`(上の CT-1)と RS-9 の必須の検査も、この表の `required` から作ります(RS-9 の表は CT-3 で置き換えました)。
+**各 op の parameter の形(✅CT-3、`0d215a68`)。**どの op にも `parameters` と `parameters_complete` が付きます。catalog 本体が出す鍵なので、`pelican_cli graph-catalog` にも出ます([CT-3 で op に足す所](../../src/project/graphmodule.cpp#L577))。表は [`graphparameterschema.cpp` の CT-3 の表 `makeTable()`](../../src/project/graphparameterschema.cpp#L386) の 1 つで、各 op の parser が読む鍵から拾ったものです(コードの注記)。`required_parameters`(上の CT-1)と RS-9 の必須の検査も、この表の `required` から作ります(RS-9 の表は CT-3 で置き換えました)。
 
-`parameters` の要素は `{name, kind, required?, alternatives?, default?, enum?, min?, max?, items?, fields?, expression?, description?}` です([1 件を JSON にする所 CT-3](../../src/project/graphparameterschema.cpp#L700))。
+`parameters` の要素は `{name, kind, required?, alternatives?, default?, enum?, min?, max?, items?, fields?, expression?, description?}` です([1 件を JSON にする所 CT-3](../../src/project/graphparameterschema.cpp#L794))。
 
 - **`kind`** は `number` / `integer` / `bool` / `string` / `enum` / `vec2` / `vec3` / `vec4` / `color` / `array` / `object` / `asset` / `shader` / `node_ref` / `expression` / `json` / `union`(✅CT-4)のどれかです。`json` は形を言えない値です(`render.material_pass` の `material_filter`、`render.compute` の `dispatch` など)。`union` は 2 通りの形を取る値で、形を `variants` に並べます(下の CT-4 の段落)。今の表で `vec2` / `vec3` / `vec4` / `expression` の kind を持つ parameter はありません。
 - **入れ子**: `object` は名前の決まった member を `fields` に並べます。`items` があれば、任意の鍵を持つ map です(`view_select` の軸の名前 → 番号、`clear_colors` の出力の名前 → 色)。`array` の `items` は要素の形です。`items` の中は `name` を持ちません。`shader` は、`fields` があれば stage の object(`render.fullscreen` の `vertex` / `fragment` / `defines` など)、無ければ shader 1 本の path の文字列です(`render.compute` の `shader`)。
@@ -3103,7 +3105,7 @@ RPC なら `get_graph_catalog`([第10章](10_tools.md))。どちらも同じ `pe
 
 CT-3 で新しく必須になった名前は、`pose.clip_sample` の `rig` / `clip`、`pose.state_machine` の `rig` / `graph`、`pose.retarget` の `profile`、`draw.variant` の `variant` です。CT-3 の前は、これらの op の parser が自分で断っていました(test の注記)。今は RS-9 の `graph.render_node_parameters_missing@1` で断られます。表の値の型・enum・範囲の検査は、§6.18「名前付きの拒否の一覧」の CT-3 の項です。test: `curve_test` の [「CT-3 the catalog lists each op's parameters with their kinds and a wrong value is refused by name」](../../test/curve_test.cpp#L1207)。この test は、全 op の `required_parameters` が表の `required` から作ったものと同じで、CT-3 の前の RS-9 の表に上の 6 つを足したものとも同じであることも見ます。
 
-**値の出どころ・asset の種類・2 通りの形・実用の範囲・置ける場所(✅CT-4、`4d682338`)。**Studio が CT-3 の表から欄を作るのに足りなかったものを、同じ表に足しました。CT-3 の検査(何を断るか)は変わりません(test の注記)。`parameters` の要素に `soft_min?` / `soft_max?` / `asset_kind?` / `extensions?` / `choices_from?` / `variants?` が加わり、op に `placement` が付きます([CT-4 の鍵を JSON にする所](../../src/project/graphparameterschema.cpp#L709))。
+**値の出どころ・asset の種類・2 通りの形・実用の範囲・置ける場所(✅CT-4、`4d682338`)。**Studio が CT-3 の表から欄を作るのに足りなかったものを、同じ表に足しました。CT-3 の検査(何を断るか)は変わりません(test の注記)。`parameters` の要素に `soft_min?` / `soft_max?` / `asset_kind?` / `extensions?` / `choices_from?` / `variants?` が加わり、op に `placement` が付きます([CT-4 の鍵を JSON にする所](../../src/project/graphparameterschema.cpp#L803))。
 
 - **`choices_from`**: string の値を engine の別の一覧から選ぶ parameter に付きます。形は 2 つです([`GraphParameterChoices`](../../src/project/graphparameterschema.hpp#L55) の注記。✅CT-5 で 3 つ目の `asset_manifest` と、条件の `where` が加わりました。下の CT-5 の段落)。
   - `{rpc, key, field?}`: RPC の返り値の中の一覧です。`key` は返り値の中の道を `.` でつないだもので、途中で配列に会えば要素ごとにたどります。`field` は各要素の中で名前を持つ member で、無ければ要素そのものが名前です。`field` の値が配列なら、その中の文字列の 1 つずつが名前です。今の `rpc` はどれも `get_render_authoring_context` です。
@@ -3133,14 +3135,14 @@ CT-3 で新しく必須になった名前は、`pose.clip_sample` の `rig` / `c
   - CT-3 の前の `json` と同じく、`union` の値は検査しません(op の parser が判定します。`ray_query: "yes"` も CT-3 の検査を通ることを test で確かめています)。
 - **`soft_min` / `soft_max`**: slider の範囲で、`min` / `max` の内側です。検査はしません。今付いているのは `render.image` の `width` / `height` の `soft_max: 8192` と、`mip_levels` の整数の形の `soft_max: 14` だけです(`layers` には付けていません)。8192 は engine の feature の `resolution` の範囲 `[64, 8192]`(`shadow_directional` / `shadow_point` / `shadow_spot` / `planar_reflection` / `cube_capture`)、14 はその mip の段の数 `floor(log2(8192)) + 1` です([CT-4 の 8192 の出どころの注記](../../src/project/graphparameterschema.cpp#L146))。
 - **op の `placement`**: どの op にも `"anywhere"` か `"owned_instance"` が付きます([CT-4 で op に placement を足す所](../../src/project/graphmodule.cpp#L588))。`owned_instance` は `owner` 付きの `graph.instance` の中にしか置けない op で、`pose.clip_sample` / `pose.blend` / `pose.state_machine` / `pose.retarget` / `pose.skeletal` / `pose.transform` と `value.morph_weight` です(owner の model を読む・owner の skeletal の sink に書くため。コードの注記)。ANIMATION=OFF の build では `value.morph_weight` だけです。
-  - 外に置くと `graph.op_requires_owned_instance@1` `{node, op}` で断ります。検査は graph の partition の中で、編集でも読み込みでも同じ所を通ります([CT-4 の placement の検査を呼ぶ所](../../src/project/graphpartition.cpp#L374)、[`checkGraphOperationPlacement()`](../../src/project/graphparameterschema.cpp#L695))。`node` は展開名で、owner の無い instance の中なら `hero/walk` のようになります。`graph.` の code なので CT-2 の `document`(と、body の node なら `definition`)も付きます。owner を付ければ同じ文書が通ります(test)。
+  - 外に置くと `graph.op_requires_owned_instance@1` `{node, op}` で断ります。検査は graph の partition の中で、編集でも読み込みでも同じ所を通ります([CT-4 の placement の検査を呼ぶ所](../../src/project/graphpartition.cpp#L374)、[`checkGraphOperationPlacement()`](../../src/project/graphparameterschema.cpp#L789))。`node` は展開名で、owner の無い instance の中なら `hero/walk` のようになります。`graph.` の code なので CT-2 の `document`(と、body の node なら `definition`)も付きます。owner を付ければ同じ文書が通ります(test)。
 
 例(test の期待): `render.scalar` の `target` は `{"graph_nodes": ["render.buffer", "render.attribute"]}`(✅CT-5 からはこれに `where` が付きます。下の CT-5 の段落)、`render.shadow_depth` の `pass_set` は `{"rpc": "get_render_authoring_context", "key": "graphs", "field": "name"}`、`render.shadow_depth` の `ray_query` は `{"kind": "union", "default": false, "variants": [{"kind": "bool"}, {"kind": "object", "fields": [{"name": "acceleration_structure", "kind": "string", "required": true}]}]}`、`render.image` の `width` は `max: 4294967295`・`soft_max: 8192` です。test: `curve_test` の [「CT-4 the catalog says where a value is chosen from, an asset's kind, a union's shapes, a slider's range and where an op may stand」](../../test/curve_test.cpp#L1427) と、`renderconfigeditor_test` の [「CT-4 an edit placing an owned-instance op at the root is refused by name」](../../test/renderconfigeditor_test.cpp#L1497)(root に置いた `value.morph_weight` と `pose.clip_sample` の編集が rejected で、`document: "project://passes/main.json"` が付き、文書は書かれないこと)。
 
 **値の出どころの条件、asset の manifest、残りの一覧(✅CT-5、`65f3a8a3`)。**GUI の UX-12e の報告で、CT-4 の表に残っていた出どころの無い string を、engine が実際に読む一覧があるものだけ埋めました。CT-3 の検査の規則は変わりません。
 
-- **`where`**: `choices_from` に付く条件で、候補をその member の値が合うものだけに絞ります。RPC の一覧なら各要素の member、`graph_nodes` なら各 node の parameters の値を見ます。値が 1 つなら文字列、複数なら配列(どれか 1 つ)です([CT-5 の `where` を JSON にする所](../../src/project/graphparameterschema.cpp#L733))。
-- **`asset_manifest`**: 3 つ目の形 `{asset_manifest: {parameter, manifest: "<asset>.import.json", key}}` です。同じ node の parameter `parameter` が名指す asset の隣の import manifest の、`key`(`.` でつないだ道)の名前が候補です([CT-5 の `asset_manifest` を JSON にする所](../../src/project/graphparameterschema.cpp#L719))。
+- **`where`**: `choices_from` に付く条件で、候補をその member の値が合うものだけに絞ります。RPC の一覧なら各要素の member、`graph_nodes` なら各 node の parameters の値を見ます。値が 1 つなら文字列、複数なら配列(どれか 1 つ)です([CT-5 の `where` を JSON にする所](../../src/project/graphparameterschema.cpp#L827))。
+- **`asset_manifest`**: 3 つ目の形 `{asset_manifest: {parameter, manifest: "<asset>.import.json", key}}` です。同じ node の parameter `parameter` が名指す asset の隣の import manifest の、`key`(`.` でつないだ道)の名前が候補です([CT-5 の `asset_manifest` を JSON にする所](../../src/project/graphparameterschema.cpp#L813))。
 - 足した `choices_from`(`rpc` を省いたものは `get_render_authoring_context`):
 
 | parameter | `choices_from` |
@@ -3151,7 +3153,7 @@ CT-3 で新しく必須になった名前は、`pose.clip_sample` の `rig` / `c
 | pass の `ray_query` の object の形の `acceleration_structure`(`render.fullscreen` などの pass の op と `render.compute`) | `{key: "acceleration_structures"}` |
 | `region_tags` の要素(`render.fullscreen` / `render.raster` / `render.material_pass` / `render.compute` / `render.shadow_depth` / `render.snapshot_copy`)と `regions` の要素(前の 4 つ) | `{key: "graphs.passes.declaration", field: "regions"}`(合成された pass が宣言している tag。新しい tag も書けます。コードの注記) |
 
-- **`push_constants`**: `render.fullscreen` の `push_constants` は kind `enum` `["none", "camera_position", "projection_view"]`、既定 `none` になりました(fullscreen の parser が読む名前。[CT-5 の enum](../../src/project/graphparameterschema.cpp#L468))。CT-3 の検査に乗るので、外の値(例 `"camera"`)は `graph.render_node_parameter_invalid@1` で断られます(test)。
+- **`push_constants`**: `render.fullscreen` の `push_constants` は kind `enum` `["none", "camera_position", "projection_view"]`、既定 `none` になりました(fullscreen の parser が読む名前。[CT-5 の enum](../../src/project/graphparameterschema.cpp#L560))。CT-3 の検査に乗るので、外の値(例 `"camera"`)は `graph.render_node_parameter_invalid@1` で断られます(test)。
 - **`get_render_authoring_context`** に 2 つ足しました。
   - `acceleration_structures`: ray_query の `acceleration_structure` に書ける名前で、先頭が `"scene"`、その後に合成された `scene_acceleration_structures` の各要素の `name` です(ほかの名前は compiler が断ります。コードの注記。[CT-5 で一覧を足す所](../../src/core/communication/renderconfigeditor.cpp#L2662))。
   - `render_target_vocabulary.format_class_patterns`: 引数を取る format class の書き方です。今は `[{name: "explicit", form: "explicit(<format>)", argument_choices_from: {rpc: "get_render_authoring_context", key: "render_target_vocabulary.formats"}}]` の 1 つです([CT-5 で書き方を足す所](../../src/core/communication/renderconfigeditor.cpp#L2632))。
@@ -3577,7 +3579,7 @@ test: `featurecompose_test` の [「IA-1 a persistent image takes its initial as
  "outputs": ["value"]}
 ```
 
-- `asset`(kind `asset`。✅CT-4 から `asset_kind: "analysis_table"`・`extensions: [".ktx2"]`)と `row`(CT-3 では kind `json`。✅CT-4 から kind `union` で、`variants` は整数と文字列)は必須です(CT-3 の表。[AB-1 の parameter の行](../../src/project/graphparameterschema.cpp#L321))。`row` は行の番号(整数)か名前(`"rms"` / `"peak"` / `"band:3"`。manifest の `layout.features` の名前)です。
+- `asset`(kind `asset`。✅CT-4 から `asset_kind: "analysis_table"`・`extensions: [".ktx2"]`)と `row`(CT-3 では kind `json`。✅CT-4 から kind `union` で、`variants` は整数と文字列)は必須です(CT-3 の表。[AB-1 の parameter の行](../../src/project/graphparameterschema.cpp#L413))。`row` は行の番号(整数)か名前(`"rms"` / `"peak"` / `"band:3"`。manifest の `layout.features` の名前)です。
 - 入力 `time` は任意です。edge を省くと、lowering が `scene_time` を読む入力の node(`<id>/$scene_time`)を足して、それを読みます。`audio.playback` の event と同じ時計です([AB-1 の lowering](../../src/core/userpublic/valuegraph.cpp#L216))。
 - 値は、標本 `time / hop_seconds` の前後 2 つの線形補間で、最初より前と最後より後は端の値です(`time` が有限でなければ 0 秒として読みます)。
 - 表は **graph を組む時に 1 回読みます**([AB-1 で表を読む所](../../src/core/userpublic/valuegraph.cpp#L474))。読むのは KTX2 と、manifest の `source.metadata.layout` だけです。asset は project が立っていれば path resolver が既存の file として解き、立っていなければ(tool や test)file の path として読みます。同じ file の表は、file と manifest の中身の sha256 が同じあいだ graph の間で共有されます([`loadSampleTable()`](../../src/core/loader/sampletable.cpp#L55))。✅IA-3(`26473e75`)の前は更新時刻と大きさで判定していたので、同じ大きさで時刻を戻した書き換えは古い表のまま使われました。IA-3 からは読んだ bytes を hash し、parse するのもその同じ bytes です([IA-3 の中身で判定する cache](../../src/core/loader/sampletable.cpp#L61))。
@@ -3794,10 +3796,10 @@ feature の instance は object 形で `pass_replacements` を持てます。値
   - test が確かめているのは編集の ticket の道(root の node、definition の body の node、RS-9 の code)と、展開名から definition を辿る規則です。起動時の致命の行と reload の message は、コードの読みと実装者の報告で、test はありません。
   - test: `renderconfigeditor_test` の [「CT-2 a graph refusal names the document and the definition its node was written in」](../../test/renderconfigeditor_test.cpp#L1387) と [「CT-2 a refused node id is traced to the definition that holds it」](../../test/renderconfigeditor_test.cpp#L1692)。
 - ✅CT-3(`0d215a68`)。§6.17「各 op の parameter の形」の表が kind を付けた値を、op の parser が読む前に名前で断ります。
-  - **検査する所**: [CT-3 の `checkGraphNodeParameterTypes()`](../../src/project/graphparameterschema.cpp#L766) です。[`resolveOperation()` が RS-9 の検査の直後に呼びます](../../src/project/graphmodule.cpp#L687)。なので RS-9 と同じく、op の契約を作る所の全部で効きます。必須のものが欠けていれば、RS-9 の `graph.render_node_parameters_missing@1` が先です。
+  - **検査する所**: [CT-3 の `checkGraphNodeParameterTypes()`](../../src/project/graphparameterschema.cpp#L860) です。[`resolveOperation()` が RS-9 の検査の直後に呼びます](../../src/project/graphmodule.cpp#L687)。なので RS-9 と同じく、op の契約を作る所の全部で効きます。必須のものが欠けていれば、RS-9 の `graph.render_node_parameters_missing@1` が先です。
   - **code と field**: `graph.render_node_parameter_invalid@1` `{node, op, parameter, expected, reason}` です。`expected` は表の kind です。`reason` は `type`(kind が違う)/ `enum`(enum の外。`allowed` に取れる値)/ `range`(範囲の外。表にある方の端を `min` / `max` に)のどれかです。`graph.` の code なので、CT-2 の `document`(と `definition`)も付きます。
   - **どれを名指すか**: 表の順に見て、最初に合わない 1 つです。入れ子は道筋で名指します。配列の要素は `[<番号>]`、object の member は `.<鍵>` です(例: `value.curve` の `keys[0].interpolation`)。
-  - **kind ごとに通る値**([CT-3 の kind ごとの判定](../../src/project/graphparameterschema.cpp#L581)):
+  - **kind ごとに通る値**([CT-3 の kind ごとの判定](../../src/project/graphparameterschema.cpp#L675)):
     - `number` は数、`integer` は整数、`bool` は真偽値、`string` / `asset` / `node_ref` は文字列、`enum` は `enum` の中の文字列です。
     - `vec2` / `vec3` / `vec4` / `color` は、2 / 3 / 4 / 4 個の数の配列です(要素は式の object でもよい)。
     - `array` は配列で、`items` があれば要素ごとに同じ規則で見ます。
