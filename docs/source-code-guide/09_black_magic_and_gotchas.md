@@ -107,7 +107,7 @@ cleaners: [B, A]
 >
 > **不変条件**: `operator Base()` を消すと logging/indexing の呼び出し側が広範囲に壊れるので、当面は「別 handle 型の `==` は通る」を前提に読んでください。`Hash` は派生型を受けるため、`BasicHandle` を非 CRTP に書き換えると連想コンテナが全部壊れます。
 
-世代付きの識別子は増えました。ECS の `EntityId`(index + generation)に加え、[`ModelInstanceId`](../../src/core/renderer/modelinstance.hpp#L11) が `index + generation + scene_epoch` になり(WP146 / INSTANCE0)、[`RegistrationToken`](../../src/core/userpublic/details/reload/registrationowner.hpp#L29) と `RegistrationOwner` も identity + generation です。
+世代付きの識別子は増えました。ECS の `EntityId`(index + generation)に加え、[`ModelInstanceId`](../../src/core/renderer/modelinstance.hpp#L28) が `index + generation + scene_epoch` になり(WP146 / INSTANCE0)、[`RegistrationToken`](../../src/core/userpublic/details/reload/registrationowner.hpp#L29) と `RegistrationOwner` も identity + generation です。
 
 **それでも `ResourceContainer` 系の GPU ハンドルだけは依然として世代なし** です。GPU resource handle と、世代付きの Entity / ModelInstance / Registration handle を同じ寿命モデルだと考えないでください。
 
@@ -134,16 +134,16 @@ cleaners: [B, A]
 
 ### `ModelInstanceId` の落とし穴
 
-`ModelInstanceId` は 3 フィールドの比較可能な値型で、`toString()` は `"index:generation@scene_epoch"` を返します([`toString()`](../../src/core/renderer/modelinstance.hpp#L21))。
+`ModelInstanceId` は 3 フィールドの比較可能な値型で、`toString()` は `"index:generation@scene_epoch"` を返します([`toString()`](../../src/core/renderer/modelinstance.hpp#L38))。
 
 - **identity は `PolygonInstanceContainer` から [`ModelInstanceSlots`](../../src/core/renderer/modelinstanceslots.hpp#L22) へ切り出されました。** `index` / `generation` / `scene_epoch` を持っているのはこの class で、`PolygonInstanceContainer` 側にはもう `scene_epoch` も世代表もありません(`instance_slots` メンバ越しに問い合わせます)。
-- `scene_epoch` が進むのは [`ModelInstanceSlots::clearPrepared()`](../../src/core/renderer/modelinstanceslots.cpp#L107) の **1 か所だけ** で、これは [`PolygonInstanceContainer::clear()`](../../src/core/renderer/polygoninstancecontainer.cpp#L937)(scene clear / 再ロード)から呼ばれます。個別 slot が死んで再利用されるときに進むのは [`ModelInstanceSlots::retire()`](../../src/core/renderer/modelinstanceslots.cpp#L87) が上げる slot generation の方です。いずれも animation generation や model asset content revision からは独立です。
+- `scene_epoch` が進むのは [`ModelInstanceSlots::clearPrepared()`](../../src/core/renderer/modelinstanceslots.cpp#L107) の **1 か所だけ** で、これは [`PolygonInstanceContainer::clear()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1063)(scene clear / 再ロード)から呼ばれます。個別 slot が死んで再利用されるときに進むのは [`ModelInstanceSlots::retire()`](../../src/core/renderer/modelinstanceslots.cpp#L87) が上げる slot generation の方です。いずれも animation generation や model asset content revision からは独立です。
 - `clear()` 自体も §9.17 の prepare/publish 形です。epoch 枯渇(`scene epoch exhausted`)を投げうる検査は [`ModelInstanceSlots::prepareClear()`](../../src/core/renderer/modelinstanceslots.cpp#L98) が先に済ませ、実際の書き換えは `noexcept` の `clearPrepared()` が行います。`clear()` を読むときはこの 2 段を 1 つの操作として読んでください。
-- 生存確認は [`isModelInstanceAlive(id)`](../../src/core/renderer/polygoninstancecontainer.hpp#L573)。
-- [`removeModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L517) は `void` ではなく **`bool`** を返します。戻り値を無視すると「消したつもりで消えていない」を見逃します。
+- 生存確認は [`isModelInstanceAlive(id)`](../../src/core/renderer/polygoninstancecontainer.hpp#L601)。
+- [`removeModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L545) は `void` ではなく **`bool`** を返します。戻り値を無視すると「消したつもりで消えていない」を見逃します。
 - `instanceCountForTesting()` は **live 数** を返すよう変わり、スロット総数は `slotCountForTesting()` です。両者の差は空きスロットです。
 
-登録は 3 段階に分かれました(WP144 / TRANSIENT0)。[`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L511)(Vulkan 資源確保前の容量拒否)→ [`stageModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L512) → [`publishModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L515)(`noexcept`、**唯一の no-fail 公開点**)です。詳細は §9.17。
+登録は 3 段階に分かれました(WP144 / TRANSIENT0)。[`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L526)(Vulkan 資源確保前の容量拒否)→ [`stageModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L527) → [`publishModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L532)(`noexcept`、**唯一の no-fail 公開点**)です。詳細は §9.17。
 
 > 🧩 **難所 — `struct_size` の 3 段ルール**([`getApiV1()`](../../src/core/animation/animationservice.cpp#L1830) / [`validateDescriptor()`](../../src/core/animation/animationserviceabi.hpp#L15))
 >
@@ -375,7 +375,7 @@ ID 割当を engine-wide schema として管理する必要がある点は変わ
 cannot unregister component '<name>': dependent ECS system '<sys>' remains
 ```
 
-この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2640))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
+この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2648))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
 
 ### custom Component の現状
 
@@ -1071,7 +1071,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 失敗しうる作業(確保・検証・容量チェック・id 採番)を prepare に全部集め、publish を `noexcept` の swap 列にして「公開後は失敗しない」を型で固定し、finish は「もう巻き戻さない」と決まってから初めて破棄・`deinit` を行う。
 
-**どこに出るか**: loader は [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1650) が prepare → early_publish → publish → activate → commit_metadata の 5 段。ECS は [`ECSArchetypeMigrationAdapter`](../../src/core/ecs/archetypemigration.hpp#L45) のヘッダコメントが「Publication must not fail」を宣言し、**公開済みの実体**に `cb_deinit` を呼ぶのは [`finishPublished()`](../../src/core/ecs/archetypemigration.cpp#L352) とその逆手順の [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229) だけ(未公開の候補側は `discardPrepared()` / `deinitializeStaged()` / `rollbackCreate()` が担当する)。描画は [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L634) が容量検査と確保、物理は [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.cpp#L287)、behavior は [`PreparedBehaviorAttachmentEdits::publish()`](../../src/core/gamelogic/behaviorarena.cpp#L472)、アセットは [`model.cpp` の validate/stage](../../src/core/asset/model.cpp#L657)。
+**どこに出るか**: loader は [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1650) が prepare → early_publish → publish → activate → commit_metadata の 5 段。ECS は [`ECSArchetypeMigrationAdapter`](../../src/core/ecs/archetypemigration.hpp#L45) のヘッダコメントが「Publication must not fail」を宣言し、**公開済みの実体**に `cb_deinit` を呼ぶのは [`finishPublished()`](../../src/core/ecs/archetypemigration.cpp#L352) とその逆手順の [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229) だけ(未公開の候補側は `discardPrepared()` / `deinitializeStaged()` / `rollbackCreate()` が担当する)。描画は [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L718) が容量検査と確保、物理は [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.cpp#L287)、behavior は [`PreparedBehaviorAttachmentEdits::publish()`](../../src/core/gamelogic/behaviorarena.cpp#L472)、アセットは [`model.cpp` の validate/stage](../../src/core/asset/model.cpp#L657)。
 
 **読むときの手順**: まず `publish` の宣言に `noexcept` が付いているかを見て、付いていれば「この関数より前に全ての失敗が済んでいる」と読み替えます。次に、その関数が触るメンバが *candidate* 側か *live* 側かを 1 つずつ確かめてください。
 
@@ -1093,9 +1093,9 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### generation による stale ハンドル検出
 
-**形**: index(= スロット)は再利用するが generation は再利用しない。index と generation を**対で持てば**、古いハンドルが新しい実体を指す ABA を必ず検出できます。持ち方は 1 語の 64bit に詰める形([`LogicalAssetId`](../../src/core/watch/reloadtransaction.hpp#L21))と、フィールドを分けて scene epoch まで足す形([`ModelInstanceId`](../../src/core/renderer/modelinstance.hpp#L11))の両方があります。index を伴わない単調カウンタ(`ray_generation` / `geometry_address_generation`)は形が違い、ハンドルの ABA ではなく「手元のスナップショットが古いか」の判定に使います。
+**形**: index(= スロット)は再利用するが generation は再利用しない。index と generation を**対で持てば**、古いハンドルが新しい実体を指す ABA を必ず検出できます。持ち方は 1 語の 64bit に詰める形([`LogicalAssetId`](../../src/core/watch/reloadtransaction.hpp#L21))と、フィールドを分けて scene epoch まで足す形([`ModelInstanceId`](../../src/core/renderer/modelinstance.hpp#L28))の両方があります。index を伴わない単調カウンタ(`ray_generation` / `geometry_address_generation`)は形が違い、ハンドルの ABA ではなく「手元のスナップショットが古いか」の判定に使います。
 
-**どこに出るか**: 論理アセットは [`makeLogicalAssetId()`](../../src/core/watch/reloadtransaction.cpp#L19) が `(generation << 32) | index`、entity は [`prepareCreate()` の `reuses_id`](../../src/core/ecs/archetypemigration.cpp#L1029)、描画インスタンスは [`stagePreparedSceneModel()` の `nextId`](../../src/core/renderer/polygoninstancecontainer.cpp#L634)、マテリアルは [`ray_generation` の採番](../../src/core/material/materialcontainer.cpp#L807)、ジオメトリのデバイスアドレスは [`geometry_address_generation`](../../src/core/model/vertbufcontainer.cpp#L321)。
+**どこに出るか**: 論理アセットは [`makeLogicalAssetId()`](../../src/core/watch/reloadtransaction.cpp#L19) が `(generation << 32) | index`、entity は [`prepareCreate()` の `reuses_id`](../../src/core/ecs/archetypemigration.cpp#L1029)、描画インスタンスは [`stagePreparedSceneModel()` の `nextId`](../../src/core/renderer/polygoninstancecontainer.cpp#L718)、マテリアルは [`ray_generation` の採番](../../src/core/material/materialcontainer.cpp#L807)、ジオメトリのデバイスアドレスは [`geometry_address_generation`](../../src/core/model/vertbufcontainer.cpp#L321)。
 
 **読むときの手順**: [第4章「generation 0 を跨がない台帳」](04_ecs_deep_dive.md)を先に読み、そのうえで「この世代は何が変わったら進むのか」を軸ごとに分けてください。scene epoch・slot generation・content revision・compatibility revision は**互いに独立**で、1 本だと思って読むと必ず外します(→ §9.2)。
 
@@ -1137,7 +1137,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: 「scene transaction に関与する**独立に観測できるフィールド 1 個 = 1 行**」の表で、snapshot 比較・変異テスト・契約テストが参照する唯一の分類権威です。列は [`SceneParticipantManifestEntry`](../../src/core/loader/sceneparticipantmanifest.hpp#L36) の **10 個**(owner / field / presence / role / prepare_owner / publication / rollback / retirement / snapshot_schema / mutation_id)で、「16 フィールド」は誤りです。行数も **100 行**(`manifest`)で、166 は配列末尾の行番号にすぎません。[`public_api_manifest`](../../src/core/loader/sceneparticipantmanifest.cpp#L206) は別表で 32 行です。
 
-#### [`resolveParentOrder()`](../../src/core/loader/componentcodec.hpp#L115) — 巡回検査の fresh→active→done
+#### [`resolveParentOrder()`](../../src/core/loader/componentcodec.hpp#L116) — 巡回検査の fresh→active→done
 
 **分からなくなること**: なぜ 3 値なのか、なぜ既に検証済みのはずの循環をもう一度見るのか。
 
@@ -1167,7 +1167,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [static_assert 群](../../src/core/loader/scene.cpp#L1082) | commit tail の `noexcept` 固定 | 20 個の表明が何を守るか | → §9.22「`noexcept` なコミットテール」 |
 | [`PendingSceneTransactionScope`](../../src/core/loader/scene.cpp#L225) | thread_local + RAII の ambient context | なぜ引数で渡さないのか | early publication が呼ぶ**全 game-DLL callback**に同じ transaction-local な effect を観測させるため。`requestLoad()` は `active_pending_scene_transaction->loader == this` を見て live ではなく candidate へ書く |
 | [run_nonce の初期化](../../src/core/loader/scene.cpp#L167) | `ticks ^ pointer`、0 を回避 | なぜ 0 を避けるのか | 0 は既定構築の `SceneAuthority{}`(= まだ何も commit していない)に予約されている |
-| [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L634) と publish の分離 | 容量検査 + 確保 / 挿入 | なぜ 2 つに割るのか | stage が `ModelInstanceId` を返す失敗しうる側で、loader は公開前にその id を `SimpleModelViewComponent` へ書く必要があるから |
+| [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L718) と publish の分離 | 容量検査 + 確保 / 挿入 | なぜ 2 つに割るのか | stage が `ModelInstanceId` を返す失敗しうる側で、loader は公開前にその id を `SimpleModelViewComponent` へ書く必要があるから |
 | [`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L222) の Borrowed / Owned | 入口ごとの所有形 | 2 形態がある理由 | Borrowed は commit 済み projection の読み直し(metadata は複製されるだけ)、Owned は import root で未公開の候補を token ごと所有し、失敗時は token を捨てるだけ |
 | [`MetadataCommitToken`](../../src/core/loader/sceneload.hpp#L195) | opaque pointer | なぜ中身を隠すのか | 呼び手が「document だけ」「projection だけ」を公開できないようにするため。唯一の commit は `SceneMetadataState` 全体の swap |
 | [transform → localtransform 自動付与](../../src/core/loader/scene.cpp#L397) | `transform` を持つ全 object への補完(GP-1) | なぜ loader が component を足すのか、足した local は保存されるのか | authored なのは local TRS、runtime の読み手は world の `TransformComponent`。`LocalTransformSystem` は local を持つ object の world を local から毎フレーム作り直す。GP-1 から scene の `localtransform` 宣言が無い全 transform object に足す(以前は scene に `parent` が 1 つでもあるときの親子参加者だけで、parent の無い scene では `setLocalTransform` が `false` を返していた — 解消済み)。足した分は JSON を持たない `injected_local` で、値は投影段が authored の transform から書く。authored object の component ではないので**保存には出ない**。world を直接書く経路(`SceneLoader::applyObjectTransform`・editor の spawn)は local も書く。足さないのは editor の `add_component` で後から足した `transform`(次の load まで)と `load_gltf` の transient object |
@@ -1195,11 +1195,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **台帳**: 生成 ID のバイト定義は [prefab.hpp のコメント](../../src/project/prefab.hpp#L224)どおり WP361 v4。
 
-#### [`ComponentCodec::completeDefaults()` の camera 補完](../../src/core/loader/componentcodec.cpp#L2201) — aspect を継承しない
+#### [`ComponentCodec::completeDefaults()` の camera 補完](../../src/core/loader/componentcodec.cpp#L2242) — aspect を継承しない
 
 **分からなくなること**: 省略されたフィールドが「既定から継承される」ものと「クリアされる」ものに分かれる基準。
 
-**答え**: camera の既定補完は `resolveComponent()` の中の分岐ではなくなりました。resolver は codec へ[一行で委譲する](../../src/core/loader/resolvedscene.cpp#L303)だけで、規則は [`completeCameraDefaults()`](../../src/core/loader/componentcodec.cpp#L1112) にあります。その中の[コメント](../../src/core/loader/componentcodec.cpp#L1148)が "aspect is intentionally not inherited when it is omitted" と書いているとおり、**aspect はビューポート由来の値**なので、**projection を明示したうえで** aspect を省略したときは継承せずクリアします(`projection` 自体を書かなければ既定の投影を丸ごと継承するので、そのときは aspect にも既定値が入ります)。perspective は yfov、orthographic は xmag/ymag が必須で、既定の projection kind が同種のときだけ既定値へフォールバックできます(異種なら `camera.*_required_for_*` 違反)。znear/zfar は両方で継承、ortho では aspect を reset します。
+**答え**: camera の既定補完は `resolveComponent()` の中の分岐ではなくなりました。resolver は codec へ[一行で委譲する](../../src/core/loader/resolvedscene.cpp#L303)だけで、規則は [`completeCameraDefaults()`](../../src/core/loader/componentcodec.cpp#L1153) にあります。その中の[コメント](../../src/core/loader/componentcodec.cpp#L1189)が "aspect is intentionally not inherited when it is omitted" と書いているとおり、**aspect はビューポート由来の値**なので、**projection を明示したうえで** aspect を省略したときは継承せずクリアします(`projection` 自体を書かなければ既定の投影を丸ごと継承するので、そのときは aspect にも既定値が入ります)。perspective は yfov、orthographic は xmag/ymag が必須で、既定の projection kind が同種のときだけ既定値へフォールバックできます(異種なら `camera.*_required_for_*` 違反)。znear/zfar は両方で継承、ortho では aspect を reset します。
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
@@ -1209,13 +1209,13 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [behavior の canonicalize_params 呼び出し](../../src/core/loader/resolvedscene.cpp#L256) | behavior だけ別経路 | なぜコア codec を通さないのか | behavior はコア codec を持たず、**登録済み behavior の schema が受理の正**だから。[211 行のコメント](../../src/core/loader/resolvedscene.cpp#L256)どおり pre-WP360 の親 RPC 表現を再現するため、正準化結果を `source_json_exact["params"]` へ書き戻す |
 | [`ResolvedSceneResolver::resolve()`](../../src/core/loader/resolvedscene.cpp#L780) | 4 フェーズ | 相の前提と依存 | 1a は codec を見ずに instance 検証、1b は provider 検証後に具体 JSON へ置換、2 は authored-first / generated-second で materialize し transform 個数・重複名・gid 一意性を**デコード前に**強制、3 でオブジェクト同一性を凍結、4 で宣言順に canonicalize。「構成規則の違反は runtime decode より前に落とす」ため 2 が 4 に先行する |
 | [`name != "behavior"` の重複検査](../../src/core/loader/resolvedscene.cpp#L904) | 重複 component の拒否 | behavior だけ通る理由 | behavior は 1 オブジェクトに複数付けられる唯一の種別(`type` で区別)。gid 一意性は behavior にも等しく適用される。なおこの重複検査が走るのは **prefab instance の merged component 集合に対してだけ**で、素の object の重複はこの経路では見ていない |
-| [`requireNonZeroQuat()`](../../src/core/loader/componentcodec.cpp#L432) | 四元数の検査 | なぜ正規化しないのか | 弾くのは長さゼロの退化四元数だけで(`OutOfRange` "must be a non-zero quaternion")、値には触れない。宣言 schema は成分ごとの range しか持てないので、値全体の規則であるこの検査だけが手書きで残る。正規化しない理由は関数のコメントに書かれた: decode → `encodeCanonical` のバイト厳密な往復を守るためで、正規化するのは world への合成側([`composeWorldTransform()`](../../src/core/loader/componentcodec.cpp#L2342)) |
-| [`projectTransform()`](../../src/core/loader/componentcodec.cpp#L675) | 親からの逆変換 | 順序と epsilon の意味 | `applyTransform` の合成を厳密に逆順で解く(親並進を引く → 親回転の逆 → 親スケールで割る)。epsilon は親スケールの軸が 0 近傍のとき inf/NaN を静かに作らず `transform.parent.scale` の OutOfRange として名指しで落とすため |
-| [camera.controller の二重指定](../../src/core/loader/componentcodec.cpp#L1016) | nested と非 nested | どちらが優先か | **優先順位は存在しません**。両方あれば `UnknownField` で拒否するので、`controller = nested_controller` の代入に到達するのは非 nested が無いときだけです(「nested 優先」は誤読) |
-| [`decodeRayInstanceFlags()`](../../src/core/loader/componentcodec.cpp#L1676) | instance_flags の decode | 制約と排他の理由 | 「文字列配列」「既知 4 名のみ」「重複禁止」「`force_opaque` と `force_no_opaque` は排他」。最後は AS インスタンスフラグとして同時指定が矛盾するため。各失敗は `LegacyBranchDescriptor` 表に登録された `pelican_ray_instance.*` の安定 branch id を持つ(**その id を何に使うかを述べた記述はコードにない**) |
-| [`decodeCollider()`](../../src/core/loader/componentcodec.cpp#L1376) | normalized にしてから宣言 schema | なぜ二段なのか | **向きが逆です**。受理の唯一の権威は codec の宣言 schema 側で、[`ColliderComponent::loadFromJsonArchive()`](../../src/core/userpublic/components/collider.cpp#L39)(= `ref()` 経路)は `requireComponentCodec("collider")` を引いてこの codec へ委譲します。前段の `normalized` が残るのは、`shape` 自体の既定(`sphere`)と shape 依存の既定値(sphere/capsule の radius、box の half_extents、capsule の half_height)が codec 側の正準既定だからで、加えて **その shape が読まない鍵を `erase` してから** schema へ渡します(`{"shape":"sphere","half_height":-1}` が受理されたままなのはこのため。宣言 range に見せると落ちる)。値全体の規則(厳密な正値、どの shape にどれが効くか)は JSON を通らない生成経路のために [`ColliderComponent::validate()`](../../src/core/userpublic/components/collider.cpp#L47) に残ります |
-| [`decodeSchemaFieldsWithLegacyBranches()`](../../src/core/loader/componentcodec.cpp#L630) | schema の失敗を v1 の branch id へ訳す | 宣言化で拒否 id が変わらない理由 | `decodeSchemaFields` を try で包み、`StructFieldValidationError` の path と [`reasonOf()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L136) の `StructFieldErrorReason` を規則表([collider の表](../../src/core/loader/componentcodec.cpp#L1290))で引いて、旧手書きパーサと同じ `collider.*` / `sprite_view.*` の branch id で `legacyReject` する。表に無い理由は素通しで `<codec>.schema_validation` になるので、[`legacyRulesAreTotal()`](../../src/core/loader/componentcodec.cpp#L576) の `static_assert` が「その field の型と presence から到達しうる理由」を全部覆っているかを **compile 時に**要求する。shape のように規則が分岐する field は `discriminant` を持ち、[`legacyRuleDiscriminantsAgree()`](../../src/core/loader/componentcodec.cpp#L597) が「どの shape でも同じ理由集合を覆う」ことを課す |
-| [`decodeCamera()`](../../src/core/loader/componentcodec.cpp#L904) / [`findCameraNumber()`](../../src/core/loader/componentcodec.cpp#L833) | nested / fallback / type 推論 | 既定値表が読めない | 個別規則はコードから読めるが、**既定値の一覧表としては未執筆**(camera defaults 表と対で図示が要る) |
+| [`requireNonZeroQuat()`](../../src/core/loader/componentcodec.cpp#L439) | 四元数の検査 | なぜ正規化しないのか | 弾くのは長さゼロの退化四元数だけで(`OutOfRange` "must be a non-zero quaternion")、値には触れない。宣言 schema は成分ごとの range しか持てないので、値全体の規則であるこの検査だけが手書きで残る。正規化しない理由は関数のコメントに書かれた: decode → `encodeCanonical` のバイト厳密な往復を守るためで、正規化するのは world への合成側([`composeWorldTransform()`](../../src/core/loader/componentcodec.cpp#L2383)) |
+| [`projectTransform()`](../../src/core/loader/componentcodec.cpp#L682) | 親からの逆変換 | 順序と epsilon の意味 | `applyTransform` の合成を厳密に逆順で解く(親並進を引く → 親回転の逆 → 親スケールで割る)。epsilon は親スケールの軸が 0 近傍のとき inf/NaN を静かに作らず `transform.parent.scale` の OutOfRange として名指しで落とすため |
+| [camera.controller の二重指定](../../src/core/loader/componentcodec.cpp#L1057) | nested と非 nested | どちらが優先か | **優先順位は存在しません**。両方あれば `UnknownField` で拒否するので、`controller = nested_controller` の代入に到達するのは非 nested が無いときだけです(「nested 優先」は誤読) |
+| [`decodeRayInstanceFlags()`](../../src/core/loader/componentcodec.cpp#L1717) | instance_flags の decode | 制約と排他の理由 | 「文字列配列」「既知 4 名のみ」「重複禁止」「`force_opaque` と `force_no_opaque` は排他」。最後は AS インスタンスフラグとして同時指定が矛盾するため。各失敗は `LegacyBranchDescriptor` 表に登録された `pelican_ray_instance.*` の安定 branch id を持つ(**その id を何に使うかを述べた記述はコードにない**) |
+| [`decodeCollider()`](../../src/core/loader/componentcodec.cpp#L1417) | normalized にしてから宣言 schema | なぜ二段なのか | **向きが逆です**。受理の唯一の権威は codec の宣言 schema 側で、[`ColliderComponent::loadFromJsonArchive()`](../../src/core/userpublic/components/collider.cpp#L39)(= `ref()` 経路)は `requireComponentCodec("collider")` を引いてこの codec へ委譲します。前段の `normalized` が残るのは、`shape` 自体の既定(`sphere`)と shape 依存の既定値(sphere/capsule の radius、box の half_extents、capsule の half_height)が codec 側の正準既定だからで、加えて **その shape が読まない鍵を `erase` してから** schema へ渡します(`{"shape":"sphere","half_height":-1}` が受理されたままなのはこのため。宣言 range に見せると落ちる)。値全体の規則(厳密な正値、どの shape にどれが効くか)は JSON を通らない生成経路のために [`ColliderComponent::validate()`](../../src/core/userpublic/components/collider.cpp#L47) に残ります |
+| [`decodeSchemaFieldsWithLegacyBranches()`](../../src/core/loader/componentcodec.cpp#L637) | schema の失敗を v1 の branch id へ訳す | 宣言化で拒否 id が変わらない理由 | `decodeSchemaFields` を try で包み、`StructFieldValidationError` の path と [`reasonOf()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L136) の `StructFieldErrorReason` を規則表([collider の表](../../src/core/loader/componentcodec.cpp#L1331))で引いて、旧手書きパーサと同じ `collider.*` / `sprite_view.*` の branch id で `legacyReject` する。表に無い理由は素通しで `<codec>.schema_validation` になるので、[`legacyRulesAreTotal()`](../../src/core/loader/componentcodec.cpp#L583) の `static_assert` が「その field の型と presence から到達しうる理由」を全部覆っているかを **compile 時に**要求する。shape のように規則が分岐する field は `discriminant` を持ち、[`legacyRuleDiscriminantsAgree()`](../../src/core/loader/componentcodec.cpp#L604) が「どの shape でも同じ理由集合を覆う」ことを課す |
+| [`decodeCamera()`](../../src/core/loader/componentcodec.cpp#L945) / [`findCameraNumber()`](../../src/core/loader/componentcodec.cpp#L874) | nested / fallback / type 推論 | 既定値表が読めない | 個別規則はコードから読めるが、**既定値の一覧表としては未執筆**(camera defaults 表と対で図示が要る) |
 
 ### 9.23.3 ECS
 
@@ -1309,19 +1309,19 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: 実所有者は `current_batch` と [`SubmissionLeaseBundle`](../../src/core/vkcore/deletionqueue.hpp#L67) で、キュー自身は weak 参照しか持ちません。submit 失敗でリースが捨てられた場合や、フレームターゲットがフェンス完了後にリースを解放した場合、batch は自動で消えます。`flushAll` の `lock()` はその**既に解放済みバッチ**で失敗し、エントリを erase します。
 
-#### [`stagePreparedSceneModel()` の reuse 判定](../../src/core/renderer/polygoninstancecontainer.cpp#L634) — スロット再利用と世代
+#### [`stagePreparedSceneModel()` の reuse 判定](../../src/core/renderer/polygoninstancecontainer.cpp#L718) — スロット再利用と世代
 
 **分からなくなること**: 「再利用」と「新規確保」をどこで見分けているのか。
 
 **答え**: `instance_slots.nextId(size)` は空きスロットがあればその index を、無ければ現在サイズを返すので、`index != model_instances_data.size()` が再利用、等しければ新規確保です。これで reserve 量や `animation_generations` の引き継ぎを切り替えます。ID の generation は再利用スロットを指す古いハンドルを無効化するためのもので、scene epoch とは別軸です(→ §9.2「`ModelInstanceId` の落とし穴」)。
 
-#### [`uploadMaterialAbsoluteOverrides()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1987) — instance_identity が 1-indexed
+#### [`uploadMaterialAbsoluteOverrides()`](../../src/core/renderer/polygoninstancecontainer.cpp#L2102) — instance_identity が 1-indexed
 
 **分からなくなること**: なぜ添字を 1 つずらすのか。
 
-**答え**: header は `maxModelInstances` 個の密配列で `headers[instance_identity - 1]` として索引します。**0 は「オーバーライド無し / 未設定」の sentinel** なので、`instance_identity == 0` は範囲外として例外になります。morph frame identity([`instance_identity = index + 1`](../../src/core/renderer/polygoninstancecontainer.cpp#L524))も同じ 1-indexed 規約です。
+**答え**: header は `maxModelInstances` 個の密配列で `headers[instance_identity - 1]` として索引します。**0 は「オーバーライド無し / 未設定」の sentinel** なので、`instance_identity == 0` は範囲外として例外になります。morph frame identity([`instance_identity = index + 1`](../../src/core/renderer/polygoninstancecontainer.cpp#L606))も同じ 1-indexed 規約です。
 
-#### [phase × sort_view_index の直積](../../src/core/renderer/polygoninstancecontainer.cpp#L1088) — variants を事前展開する目的
+#### [phase × sort_view_index の直積](../../src/core/renderer/polygoninstancecontainer.cpp#L1214) — variants を事前展開する目的
 
 **分からなくなること**: なぜフレーム中に選ぶのではなく、全組み合わせを先に作るのか。
 
@@ -1353,12 +1353,12 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [multiview のスロット分離](../../src/core/renderer/frameresources.hpp#L117) | seq / multiview の別配列 | last_data が vector になる理由 | **未執筆**(上記スロット確保と対で書く必要がある) |
 | [RT SBT のリース](../../src/core/renderer/frameresources.cpp#L386) / [RT descriptor bundle の publication](../../src/core/renderer/frameresources.cpp#L403) | 世代の保持と二重 bind | 何を指しているのか | **未執筆**(根拠がコードにない) |
 | [`SubmissionLeaseBundle`](../../src/core/vkcore/deletionqueue.hpp#L67) | 入れ子リースの upstream | 完了順序 | **未執筆**(根拠がコードにない) |
-| [`declaration_ordinal`](../../src/core/renderer/polygoninstancecontainer.cpp#L730) | 単調増加の宣言順 | 単調性が要る理由 | `DrawQueueBuilder` 側の[一意性検査](../../src/core/renderer/drawqueuebuilder.cpp#L504)(重複したら拒否)を満たし、`stableOrderKey` の**最後の要素=同点時の決定的なタイブレーク(宣言順)**になる |
-| [`prepareSceneReplacement()`](../../src/core/renderer/polygoninstancecontainer.cpp#L574) / [`drainSceneRetirements()`](../../src/core/renderer/polygoninstancecontainer.cpp#L760) | 次フレーム回収 | いつ実際に解放されるか | **未執筆**(manifest の `next-frame-retirement-queue` 語彙と対で書く必要がある) |
-| [`canRebuildModelInstances()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1194) | 再構築前の容量計算 | 何を数えているか | **未執筆**(根拠がコードにない) |
-| [world_bounds / history / `resetTemporalHistory()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1172) | 前フレーム状態 | lazy 更新の条件 | **未執筆**(TAA / モーションベクタ用。→ [第6章「epoch ペアが reset 信号」](06_rendering_vulkan_shader.md)) |
-| [VRM transaction の `noexcept` rollback ラムダ](../../src/core/renderer/polygoninstancecontainer.cpp#L2147) | `noexcept` な巻き戻し | なぜ投げないのか | → §9.22「三段トランザクション」「`noexcept` なコミットテール」 |
-| [alpha override の優先順位](../../src/core/renderer/polygoninstancecontainer.cpp#L1447) | 絶対 / 相対の合成 | どちらが勝つか | **未執筆**(§9.23.5 の per-row 表と対) |
+| [`declaration_ordinal`](../../src/core/renderer/polygoninstancecontainer.cpp#L804) | 単調増加の宣言順 | 単調性が要る理由 | `DrawQueueBuilder` 側の[一意性検査](../../src/core/renderer/drawqueuebuilder.cpp#L504)(重複したら拒否)を満たし、`stableOrderKey` の**最後の要素=同点時の決定的なタイブレーク(宣言順)**になる |
+| [`prepareSceneReplacement()`](../../src/core/renderer/polygoninstancecontainer.cpp#L658) / [`drainSceneRetirements()`](../../src/core/renderer/polygoninstancecontainer.cpp#L834) | 次フレーム回収 | いつ実際に解放されるか | **未執筆**(manifest の `next-frame-retirement-queue` 語彙と対で書く必要がある) |
+| [`canRebuildModelInstances()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1320) | 再構築前の容量計算 | 何を数えているか | **未執筆**(根拠がコードにない) |
+| [world_bounds / history / `resetTemporalHistory()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1298) | 前フレーム状態 | lazy 更新の条件 | **未執筆**(TAA / モーションベクタ用。→ [第6章「epoch ペアが reset 信号」](06_rendering_vulkan_shader.md)) |
+| [VRM transaction の `noexcept` rollback ラムダ](../../src/core/renderer/polygoninstancecontainer.cpp#L2262) | `noexcept` な巻き戻し | なぜ投げないのか | → §9.22「三段トランザクション」「`noexcept` なコミットテール」 |
+| [alpha override の優先順位](../../src/core/renderer/polygoninstancecontainer.cpp#L1562) | 絶対 / 相対の合成 | どちらが勝つか | **未執筆**(§9.23.5 の per-row 表と対) |
 
 ### 9.23.5 RT(acceleration structure・SBT・oracle)
 

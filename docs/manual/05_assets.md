@@ -122,7 +122,7 @@
 - `pelican.material_bindings` v1 の `binding.material` は glTF 内 named material と
   project material の両方を探索します。同名が両域にある場合、または project 文書間で
   material 名が重複した場合は、曖昧な優先順位を設けず名指しで失敗します。
-- **engine の基本形**(GP-5): `engine://primitives/{cube,plane,sphere}` は asset_data に登録しなくても model の参照として使えます(`simplemodelview.model` にそのまま書く)。形は engine がコードで生成し(cube は一辺 1、plane は XZ の 1×1 で +Y 向き、sphere は半径 0.5・32×16 分割)、既定の material は灰色の OpenPBR(`pelican.primitive.default`)です。material を差し替えるときは asset_data に `{"name": …, "path": "engine://primitives/cube", "material_bindings": …}` と宣言し、上の `pelican.material_bindings` の `model` に同じ参照を書きます。未知の名前は `model.primitive_unknown@1`。
+- **engine の基本形**(GP-5): `engine://primitives/{cube,plane,sphere}` は asset_data に登録しなくても model の参照として使えます(`simplemodelview.model` にそのまま書く)。形は engine がコードで生成し(cube は一辺 1、plane は XZ の 1×1 で +Y 向き、sphere は半径 0.5・32×16 分割)、既定の material は灰色の OpenPBR(`pelican.primitive.default`)です。material を差し替えるときは asset_data に `{"name": …, "path": "engine://primitives/cube", "material_bindings": …}` と宣言し、上の `pelican.material_bindings` の `model` に同じ参照を書きます。未知の名前は `model.primitive_unknown@1`。Studio では ✅MT-1s から、この宣言を手で書かずに、Inspector の **Material** の combo が engine の `bind_material`(下の「RPC で書かせる」)で書きます([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
 - `binding.routing` は実行時にも照合されます。OpenPBR の
   `{opaque,mask,blend}_{single,double}` と一致しない binding は拒否されます。
 - material values と参照 texture は既存のファイル監視経路へ登録され、実行中の

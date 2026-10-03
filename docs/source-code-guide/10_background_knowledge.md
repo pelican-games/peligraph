@@ -349,7 +349,7 @@ return { std::max(1u, base.width >> mip), std::max(1u, base.height >> mip) };
 
 Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取ります。CPU 側はその (set, binding) に対して `VkWriteDescriptorSet`(`dstSet` / `dstBinding` / `descriptorType` / バッファまたはイメージの情報)を組んで `vkUpdateDescriptorSets` を呼び、set の形そのものは `VkDescriptorSetLayout` が、確保元は `VkDescriptorPool` が持ちます。**仕様上の位置**は Vulkan 仕様 "Resource Descriptors" 章(HTML 版のアンカー `#VkWriteDescriptorSet` / `#VkDescriptorSetLayoutBinding`)です。GLSL 側の数値と C++ 側の数値が一致しているかをコンパイラは検査しないので、両方から読まれる定数表を 1 つ置いてそれを唯一の出所にする、というのが定型になります。
 
-**使用場所**: [pelican_sets.glsl の binding 定数](../../src/core/resources/shaders/include/pelican_sets.glsl#L9) / [FrameResources::configureViewCount()](../../src/core/renderer/frameresources.cpp#L110)(`writes[0].dstBinding = PELICAN_FRAME_UBO_BINDING` として同じ定数を使う) / [PolygonInstanceContainer::PolygonInstanceContainer()](../../src/core/renderer/polygoninstancecontainer.cpp#L243) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1022)
+**使用場所**: [pelican_sets.glsl の binding 定数](../../src/core/resources/shaders/include/pelican_sets.glsl#L9) / [FrameResources::configureViewCount()](../../src/core/renderer/frameresources.cpp#L110)(`writes[0].dstBinding = PELICAN_FRAME_UBO_BINDING` として同じ定数を使う) / [PolygonInstanceContainer::PolygonInstanceContainer()](../../src/core/renderer/polygoninstancecontainer.cpp#L245) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetaskcontainer.cpp#L1022)
 
 **このコードベースでの注意**: 定数表は GLSL のヘッダ側にあり、C++ からも同じマクロ名で読まれます。番号を動かすときは、シェーダと C++ の両方が同じヘッダを見ていることが前提です。
 
@@ -439,7 +439,7 @@ BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKH
 
 TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE` は「このインスタンスは不透明として扱う」= **any-hit シェーダを呼ばない**、`FORCE_NO_OPAQUE` はその逆です。両方を同時に立てるのは矛盾なので、宣言側で弾く必要があります。any-hit シェーダは交差**候補**ごとに(順不同で、同じ交差に対して複数回)呼ばれ、`ignoreIntersectionEXT` でその候補を棄却します。三角形の hit attribute は組み込みで `vec2` の重心座標(残り 1 成分は `1 - u - v`)、プリミティブ番号は `gl_PrimitiveID` です。したがってアルファ抜きを any-hit で実装している構成で `FORCE_OPAQUE` を立てると、抜きが丸ごと無効になります。
 
-**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1676)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1232)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
+**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1717)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1232)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
 
 ### in-flight フレームと GPU 資源の寿命
 
@@ -639,7 +639,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 2 つの 32bit 値を 1 つの 64bit に詰める `(hi << 32) | lo` は、単なる節約ではなく「2 つのキーの辞書順比較を、整数 1 回の比較で行う」ための表現です(上位に来た値が優先される)。復元はシフトとマスクで、詰める前に両方が 32bit に収まることを確かめておかないと静かに桁が落ちます。関連する定型が `(1u << n) - 1u`(下位 n ビットを立てる)で、n がビット幅と同じときは左シフトが未定義になるため別扱いが要ります。フラグ集合では「同時に立ってはいけない組み合わせ」を `(x & A) != 0 && (x & B) != 0` の形で検査するのが定石です。
 
-**使用場所**: [sceneBehaviorAttachmentSeq()](../../src/core/gamelogic/behaviorarena.cpp#L72)(32bit を超える入力を `length_error` で弾いてから詰める) / [refreshSceneAttachmentSequence()](../../src/core/gamelogic/behaviorarena.cpp#L455) / [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L250)(view_count 32 のときだけ `UINT32_MAX` へ分岐) / [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1676)(相反フラグの検査)
+**使用場所**: [sceneBehaviorAttachmentSeq()](../../src/core/gamelogic/behaviorarena.cpp#L72)(32bit を超える入力を `length_error` で弾いてから詰める) / [refreshSceneAttachmentSequence()](../../src/core/gamelogic/behaviorarena.cpp#L455) / [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L250)(view_count 32 のときだけ `UINT32_MAX` へ分岐) / [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1717)(相反フラグの検査)
 
 ### shared_ptr / weak_ptr による寿命の「リース」
 
@@ -663,7 +663,7 @@ C++ のムーブは、移動元を「有効だが未規定の状態」にしま�
 
 `std::any` は「任意の 1 個のコピー可能な値」を型を隠して保持する箱で、取り出しは `std::any_cast<T>` です。型が違えば `std::bad_any_cast` を投げます(ポインタ版は null を返します)。異なるコーデックが返す異種の値を 1 つのコンテナで運ぶような場面で、共通の基底クラスを作らずに済ませる手段になります。取り出し側は必ず失敗しうるので、`bad_any_cast` をその境界の例外契約(たとえば `std::invalid_argument`)へ翻訳しておくと、呼び出し側が 1 種類の失敗だけを見ればよくなります。
 
-**使用場所**: [codecValue()](../../src/core/loader/componentcodec.cpp#L447)(`any_cast` の失敗を `invalid_argument` に翻訳) / [prepareSceneBindings()](../../src/core/loader/scene.cpp#L305)
+**使用場所**: [codecValue()](../../src/core/loader/componentcodec.cpp#L454)(`any_cast` の失敗を `invalid_argument` に翻訳) / [prepareSceneBindings()](../../src/core/loader/scene.cpp#L305)
 
 ### Result 型で例外型を境界の外に出さない
 
@@ -689,7 +689,7 @@ C++20 の `consteval` 関数は必ず定数評価されます。定数評価の�
 
 **使用場所**: [validateFloatingRange()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L414)(範囲が非有限、または min > max なら文字列を throw) / [field()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L486)(フィールド名が空、または予約接頭辞 `$` で始まるなら throw)
 
-**このコードベースでの注意**: 同じ `consteval` でも、[structFieldType()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L369) と [legacyBranchDescriptorsAreStrictlyOrdered()](../../src/core/loader/componentcodec.cpp#L1994) は `throw` ではなく `static_assert`(前者は `always_false_v` のフォールバック、後者は戻り値を呼び出し側の `static_assert` が見る形)で落とします。「引数の値に対する検査」は throw、「型やテーブル全体に対する検査」は `static_assert`、という使い分けです。
+**このコードベースでの注意**: 同じ `consteval` でも、[structFieldType()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L369) と [legacyBranchDescriptorsAreStrictlyOrdered()](../../src/core/loader/componentcodec.cpp#L2035) は `throw` ではなく `static_assert`(前者は `always_false_v` のフォールバック、後者は戻り値を呼び出し側の `static_assert` が見る形)で落とします。「引数の値に対する検査」は throw、「型やテーブル全体に対する検査」は `static_assert`、という使い分けです。
 
 ### __COUNTER__ と ADL タグディスパッチによる「登録済みの型の列挙」
 
@@ -713,7 +713,7 @@ C++20 の `concept` と `requires` 式は「この型がこう使えるか」を
 
 `std::array<T, N>` は N ごとに別の型なので、そのまま非テンプレートの関数に渡せません。`std::span<const T>`(C++20)はポインタと個数の組を持つ非所有のビューで、`array` でも `vector` でも生配列でも同じ引数型で受けられるようにします。所有しないので**元の配列より長生きしてはいけない**のが唯一にして最大の注意点で、テンポラリから作った span を返すと即座にダングリングになります。
 
-**使用場所**: [fieldSpan()](../../src/core/loader/componentcodec.cpp#L1903) / [ReleaseReport](../../src/core/model/modelresourcerelease.hpp#L36)(`view()` が固定長配列の先頭 N 件を span で返す)
+**使用場所**: [fieldSpan()](../../src/core/loader/componentcodec.cpp#L1944) / [ReleaseReport](../../src/core/model/modelresourcerelease.hpp#L36)(`view()` が固定長配列の先頭 N 件を span で返す)
 
 ### 関数スコープ static の一度きり初期化
 
@@ -1110,7 +1110,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 四元数 q でベクトル v を回すとき、`q * v * conj(q)` を素直に計算する代わりに `t = 2 * cross(q.xyz, v); v' = v + q.w * t + cross(q.xyz, t)` と展開するのが標準的です。行列を作らずに済み、乗算回数も少なくなります。この式は q が単位四元数であることを前提にしているので、上の判定を通っていない値を渡すと大きさまで変わります。
 
-**使用場所**: [requireNonZeroQuat()](../../src/core/loader/componentcodec.cpp#L432)(`norm_squared <= epsilon` を拒否するだけで正規化はしない) / [rotateVector()](../../src/core/phys/physquery.cpp#L107)(上の展開形) / [normalizedQuat()](../../src/core/phys/physquery.cpp#L97)
+**使用場所**: [requireNonZeroQuat()](../../src/core/loader/componentcodec.cpp#L439)(`norm_squared <= epsilon` を拒否するだけで正規化はしない) / [rotateVector()](../../src/core/phys/physquery.cpp#L107)(上の展開形) / [normalizedQuat()](../../src/core/phys/physquery.cpp#L97)
 
 ### GLM の quat コンストラクタ引数順は (w, x, y, z)
 
@@ -1124,7 +1124,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 親の world 変換から子の local を復元するときは、この逆を逆順に当てます — 並進を引き、親回転の逆を掛け、親スケールで割る。スケールで割る以上、**成分が 0 に近い親スケールでは逆算が発散します**ので、閾値を置いて拒否するのが定石です。非一様スケールと回転が混ざると local の scale が一意に決まらない(せん断が生じる)ことにも注意が要ります。
 
-**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2226)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L675)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
+**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2341)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L682)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
 
 ### 法線の変換は transpose(inverse(M))
 
@@ -1144,7 +1144,7 @@ mip レベル m の寸法は `max(1, n >> m)` です(2 で割ることを右シ�
 
 ビュー行列 V は world → view の変換なので、その逆 `world_from_view = inverse(V)` は view → world、つまり**カメラの姿勢そのもの**です。列優先の 4×4 では、第 0・1・2 列が**ビュー空間の +X / +Y / +Z 軸**を world 座標で表し、第 3 列がカメラ位置になります。右手座標系のカメラは −Z を向くので、第 2 列は「前」ではなく**後ろ向き**であり、視線ベクトルは `-world_from_view[2]` です(この符号の取り違えが、ソートや背面判定が丸ごと反転するよくある原因です)。ビュー行列が直交かつ一様スケールなら、逆行列は回転部の転置 + 平行移動の付け替えで安く求まりますが、素直に `inverse()` を呼んでも意味は同じです。
 
-**使用場所**: [drawQueueSortView()](../../src/core/renderer/polygoninstancecontainer.cpp#L52)(`inverse(view)` の第 2 列を符号反転して正規化し、描画順のソート軸にする)
+**使用場所**: [drawQueueSortView()](../../src/core/renderer/polygoninstancecontainer.cpp#L54)(`inverse(view)` の第 2 列を符号反転して正規化し、描画順のソート軸にする)
 
 ✅CC-1(`c8367b87`)から、camera の view は transform の回転から作り(前方 R·(0,0,−1)、up R·(0,1,0)。[`viewFromWorld()`](../../src/core/renderer/clipspace.hpp#L100))、`world_from_view` は camera の transform(位置と回転)そのものになりました。XR の `world_from_stage = inverse(active camera の view)` もこれに依っています。CC-1 より前は前方が R·(0,0,+1) で、`world_from_view` は transform と一致しませんでした。
 

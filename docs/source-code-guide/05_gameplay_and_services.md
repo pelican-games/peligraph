@@ -73,7 +73,7 @@ setterは対象ライトのstructを書き換えるだけです（[`LightContain
 
 **投影**: [`materialize(Request&)`](../../src/core/loader/runtimespawn.cpp#L400) は editor の spawn と同じ `SceneObjectProjectionAdapter` を、文書無しの入口 [`prepareTransientSpawn()`](../../src/core/loader/editorprojectionadapters.hpp#L92) で使います。ECS の entity と描画のインスタンスは editor の spawn と同じ staging、collider と model の衝突 mesh は `runtime_only` の physics binding（名前は `SpawnParams::name` か `spawn:<境界>.<番号>`）になり、scene の runtime object binding・camera・light には触りません。`publish()` の後に [`BehaviorAttachmentArena::attachSpawned()`](../../src/core/gamelogic/behaviorarena.hpp#L305) で behavior を付けて `onInit` を呼び、それが投げたら adapter を `rollback()` します（その spawn だけが戻る）。[`retire()`](../../src/core/loader/runtimespawn.cpp#L452) は逆順で、`preDestroyEntity()`（`onDestroy`）→ [`prepareTransientDestroy()`](../../src/core/loader/editorprojectionadapters.hpp#L94)（physics の binding を外し、entity を消す）です。
 
-**scene run の終わり**: scene load の behavior participant は arena の reconciliation を `BehaviorSpawnedAttachments::retire` で準備します（[behavior participant の指定](../../src/core/loader/scene.cpp#L1541)）。`runtime_spawned` の attachment は新しい vector へ運ばれず、load の commit 後の finish で旧 scene の behavior と一緒に `onDestroy` を受けます（rollback なら戻ります）。editor の編集の reconciliation（[`editorprojectionadapters.cpp` の呼び出し](../../src/core/loader/editorprojectionadapters.cpp#L1039)）は引数を省くので既定の `carry` で運びます。scene transaction 中の `spawn` / `destroy` の分類は `covered.spawn-queue`（§5.15）です。
+**scene run の終わり**: scene load の behavior participant は arena の reconciliation を `BehaviorSpawnedAttachments::retire` で準備します（[behavior participant の指定](../../src/core/loader/scene.cpp#L1541)）。`runtime_spawned` の attachment は新しい vector へ運ばれず、load の commit 後の finish で旧 scene の behavior と一緒に `onDestroy` を受けます（rollback なら戻ります）。editor の編集の reconciliation（[`editorprojectionadapters.cpp` の呼び出し](../../src/core/loader/editorprojectionadapters.cpp#L1040)）は引数を省くので既定の `carry` で運びます。scene transaction 中の `spawn` / `destroy` の分類は `covered.spawn-queue`（§5.15）です。
 
 残した穴（manual 第8章 §8.4 と同じ）: light / camera を持つ prefab は拒否 / object 型 parameter は代役で解決 / scene load 中の旧 behavior の `onDestroy` からの spawn は `objectRun()` が新しい run を返すので、切り替えを越えて新しい run に積まれる / 大量 spawn の負荷は未測定 / 多 object の prefab は v1。
 
@@ -1119,7 +1119,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L170)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L177)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3920)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L3928)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 

@@ -100,7 +100,7 @@
 
 **participant(参加者)** — 1 回のシーンロードで状態を遷移させる**当事者**のこと(ECS・レンダラ・物理・ゲームロジック・永続化など)。誰がどの段で何をしたかを行にした `sceneParticipantManifest` があり、テストと診断が「取りこぼした参加者」を名指しできます。初出: [第13章 §13.13](13_editor.md#1313-シーン遷移とゲームロジックの結果wp378380b380e381381a)。([SceneParticipantManifestEntry](../../src/core/loader/sceneparticipantmanifest.hpp#L36))
 
-**codec(component codec)** — コンポーネントの**受理仕様**。JSON ↔ canonical ↔ runtime の 3 層を 1 つの表で往復させ、組み込みコンポーネントについては未知キーを拒否します(closed schema)。エディタが値を書き戻すと codec の正規形に整形されます。codec を持たない名前のコンポーネントは、保持はされますが編集面では扱えません。初出: [第12章 §12.5](12_codemap.md#125-データ--コード対応表json-はどこで読まれるか)。([ComponentCodecState](../../src/core/loader/componentcodec.hpp#L49))
+**codec(component codec)** — コンポーネントの**受理仕様**。JSON ↔ canonical ↔ runtime の 3 層を 1 つの表で往復させ、組み込みコンポーネントについては未知キーを拒否します(closed schema)。エディタが値を書き戻すと codec の正規形に整形されます。codec を持たない名前のコンポーネントは、保持はされますが編集面では扱えません。初出: [第12章 §12.5](12_codemap.md#125-データ--コード対応表json-はどこで読まれるか)。([ComponentCodecState](../../src/core/loader/componentcodec.hpp#L50))
 
 **EntityId / generation(世代)** — ECS の entity ハンドルは `index + generation` の組です。index を再利用するとき generation を進めるので、古いハンドルは「同じ index の別 entity」に**誤接続しません**。generation が上限に達したスロットは再利用せず永久に退役させます(低確率の取り違えを許容しない)。初出: [第4章 §4.4](04_scene_ecs.md#44-ランタイム-ecs-の要点ゲーム開発者向け)。([EntityId](../../src/core/userpublic/details/ecs/entity.hpp#L12))
 
@@ -116,7 +116,7 @@
 
 **MutationScope** — ECS の構造変更(entity / コンポーネントの追加・削除)の**再入を禁止する**ガード。構造変更の途中でさらに構造変更を始めると、半端に適用された状態が観測されうるため、`std::logic_error("ECS structural mutation is not reentrant")` で弾きます。初出: [第4章 §4.4](04_scene_ecs.md#44-ランタイム-ecs-の要点ゲーム開発者向け)。([MutationScope::MutationScope()](../../src/core/userpublic/details/ecs/coretemplate.cpp#L297))
 
-**SlotMap** — 「index + generation のハンドルで引く配列 + 空きリスト」という一般的なデータ構造。pelican2 に `SlotMap` という名前の型はありませんが、`ModelInstanceId`(index + generation + scene_epoch)が同じ形です。初出: [source-code-guide 第10章 §10.3](../source-code-guide/10_background_knowledge.md#世代付きハンドルindex--generationと-slotmap)。([ModelInstanceId](../../src/core/renderer/modelinstance.hpp#L11))
+**SlotMap** — 「index + generation のハンドルで引く配列 + 空きリスト」という一般的なデータ構造。pelican2 に `SlotMap` という名前の型はありませんが、`ModelInstanceId`(index + generation + scene_epoch)が同じ形です。初出: [source-code-guide 第10章 §10.3](../source-code-guide/10_background_knowledge.md#世代付きハンドルindex--generationと-slotmap)。([ModelInstanceId](../../src/core/renderer/modelinstance.hpp#L28))
 
 **hazard(ハザード)** — 「同じものを読み書きする者どうしが同時に走ると壊れる」関係。2 か所で出ます: ECS ではシステムの read / write 宣言から実行順を自動で決めるための競合関係、フレームグラフではノード間のリソース依存から barrier を導くための関係です(`hazard_stress` は後者をわざと厳しくする計画プロファイル名)。初出: [第8章 §8.3](08_gameplay.md#83-ゲームシステムの登録と実行順序wp43)。([ECSHazardPolicy](../../src/core/userpublic/details/ecs/coretemplate.hpp#L35) / [targetplanning.hpp:257](../../src/project/targetplanning.hpp#L257))
 

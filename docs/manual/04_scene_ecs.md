@@ -182,7 +182,7 @@ CameraComponent 自体は**マーカー**です。マーカーコンポーネン
 - glTF の camera を `pelican_cli import gltf --extract-scene` で取り込むと、node の回転がそのまま `transform` に入り([TRS を書く所](../../src/devcli/gltfsceneextract.cpp#L159))、CC-1 からは変換なしで glTF と同じ向きになります(取り込みの経路で絵を比べる test は無く、未確認)。
 - `controller` の種類: `orbit`(`distance` 必須)/ `follow`(`target`・`offset` 必須)/ `fly`(`speed`・`sensitivity` 必須)。controller 付きカメラのオブジェクトは **name 必須**です。`type` は必須で、ほかの値は `value '<値>' is not supported` で拒まれます。
 
-**controller の field(codec の読み。✅SC-1 で component の schema に載りました)。**`controller` は閉じた object で、読む鍵は `type` によって違います([`decodeController()`](../../src/core/loader/componentcodec.cpp#L841))。
+**controller の field(codec の読み。✅SC-1 で component の schema に載りました)。**`controller` は閉じた object で、読む鍵は `type` によって違います([`decodeController()`](../../src/core/loader/componentcodec.cpp#L882))。
 
 | field | 型・範囲 | 読む `type`(`applies_to`) | 無いと拒む `type`(`required_for`) | 書かないときの値 |
 |---|---|---|---|---|
@@ -197,11 +197,11 @@ CameraComponent 自体は**マーカー**です。マーカーコンポーネン
 
 - 範囲は codec の検査です。schema の `range` はどれも `[0, 1e12]` で、0 を含むかどうかは載りません。
 - `yaw_degrees` / `pitch_degrees` も受けます(orbit で度として読み、ラジアンに直す)。`yaw` と `yaw_degrees` を両方書くと `UnknownField` の error(`duplicates its radian field`)で拒まれます。schema には別の field として載せていません(SC-1 の codec の注記。`yaw` / `pitch` の別名の扱い)。
-- `up` の鍵は ✅CC-1(`c8367b87`)で撤去しました。書くと閉じた object の未知の鍵として `UnknownField`(path `camera.controller.up`、`is unknown`)で拒まれます([鍵の一覧](../../src/core/loader/componentcodec.cpp#L844))。controller の world の上は常に +Y です。
+- `up` の鍵は ✅CC-1(`c8367b87`)で撤去しました。書くと閉じた object の未知の鍵として `UnknownField`(path `camera.controller.up`、`is unknown`)で拒まれます([鍵の一覧](../../src/core/loader/componentcodec.cpp#L885))。controller の world の上は常に +Y です。
 - orbit の `yaw` / `pitch` は、target から camera へ向かう方向です。`yaw = pitch = 0` は +Z(camera は target の +Z 側から −Z を向いて target を見る)、`yaw` が増えると −X 側へ回り、`pitch` が増えると上(+Y)へ上がります([yaw / pitch の基底](../../src/core/userpublic/cameracontrollersystem.cpp#L104))。CC-1 より前の値は、変換の script が同じ方向を指す値に書き換えます([第3章 §3.13](03_project_format.md))。
 - fly の `move` の x は画面の右へ(`kbd:wasd` なら D が右)、y は視線の前へ動きます。`look` の x は視線を画面の右へ、y は画面の下へ向けます([fly の更新](../../src/core/userpublic/cameracontrollersystem.cpp#L331))。
 - `damping` は codec がどの `type` でも読みますが、動かすときに使うのは orbit と follow だけなので、`applies_to` は orbit / follow です(コードの注記。`cameracontrollersystem.cpp`)。
-- Studio の Inspector が欄を作るときに読む schema(`get_components` の `schema.fields[]`)には、この表が `discriminant: "controller.type"`・`applies_to`・`required_for`・`default` の鍵で載ります([条件の表](../../src/core/loader/componentcodec.cpp#L2304))。鍵の意味は [第13章](13_editor.md) §13.5 の「ほかの field の値で読まれ方が変わる field」。test: `componentcodec_test` の [「SC-1 camera controller schema states each type and the fields it reads」](../../test/componentcodec_test.cpp#L593)(各 `type` の最小の controller から、`required_for` の field を抜くと拒まれ、`applies_to` だけの field は書かなければ `default` で読まれ、書けば読まれることを codec で確かめる)。
+- Studio の Inspector が欄を作るときに読む schema(`get_components` の `schema.fields[]`)には、この表が `discriminant: "controller.type"`・`applies_to`・`required_for`・`default` の鍵で載ります([条件の表](../../src/core/loader/componentcodec.cpp#L2345))。鍵の意味は [第13章](13_editor.md) §13.5 の「ほかの field の値で読まれ方が変わる field」。test: `componentcodec_test` の [「SC-1 camera controller schema states each type and the fields it reads」](../../test/componentcodec_test.cpp#L593)(各 `type` の最小の controller から、`required_for` の field を抜くと拒まれ、`applies_to` だけの field は書かなければ `default` で読まれ、書けば読まれることを codec で確かめる)。
 
 ### light(✅)— ECS を経由しない
 
@@ -249,7 +249,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 { "name": "animation", "clip": "character.glb#animation/Turn", "speed": 1.0, "loop": true, "start_time": 0.0 }
 ```
 
-同じコンポーネントで、**クリップ 1 本の再生**か、**ステートマシン文書(`pelican.anim_graph`)の再生**かのどちらかを宣言します。受理するキーは `name` を除いて 6 つで、**`clip` と `graph` はちょうど一方**でなければなりません(両方書いても、どちらも書かなくても `field 'animation' requires exactly one of clip or graph` — [componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1487))。メッセージの `field '<path>' ` という前置きは検査側が付けるもので([structfieldjson.hpp:56](../../src/core/userpublic/details/schema/structfieldjson.hpp#L150))、ロード時にはさらに `animation.schema_validation` の legacy 拒否として包み直されます([componentcodec.cpp:1537](../../src/core/loader/componentcodec.cpp#L2141))。以下で引用するのは**その中の一節**です。
+同じコンポーネントで、**クリップ 1 本の再生**か、**ステートマシン文書(`pelican.anim_graph`)の再生**かのどちらかを宣言します。受理するキーは `name` を除いて 6 つで、**`clip` と `graph` はちょうど一方**でなければなりません(両方書いても、どちらも書かなくても `field 'animation' requires exactly one of clip or graph` — [componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1528))。メッセージの `field '<path>' ` という前置きは検査側が付けるもので([structfieldjson.hpp:56](../../src/core/userpublic/details/schema/structfieldjson.hpp#L150))、ロード時にはさらに `animation.schema_validation` の legacy 拒否として包み直されます([componentcodec.cpp:1537](../../src/core/loader/componentcodec.cpp#L2182))。以下で引用するのは**その中の一節**です。
 
 (`graph` 装着の形。[skeletal_gltf_test.cpp:1074](../../test/skeletal_gltf_test.cpp#L1078) の実物から):
 
@@ -268,7 +268,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 | `loop` | 任意 | true | 非 bool は名指しエラー。**`clip` のときだけ** |
 | `start_time` | 任意 | 0.0 | 開始オフセット秒。**`clip` のときだけ** |
 
-`graph` と一緒に `speed` / `loop` / `start_time` を書くと拒否されます —— メッセージは**書いた鍵を名指し**するので、`field 'animation.speed' is clip-only; graph states define their playback clocks` のほか `field 'animation.loop' …` / `field 'animation.start_time' …` の形も出ます([componentcodec.cpp:1009](../../src/core/loader/componentcodec.cpp#L1506))—— ステートマシンでは再生時計を各ステートが決めるからで、黙って無視はされません。実行時にパラメータを動かす API は [第8章 §8.13](08_gameplay.md)(`setAnimationGraphParameter` / `forceAnimationGraphState`)です。**出荷プロジェクトの scene.json には、今日 `animation` コンポーネント自体がありません**(2026-09-17 実測)。`animgraph_demo` は同じ形のステートマシンを**ゲームコードから**駆動しており(`code/` の `EvaluatorV1`)、`animgraph_demo` / `vrm_xr_demo` の `movement.anim_graph.json` はどちらの scene からも参照されていません。姿勢をデータだけで装着する実物は `posegraph_demo`(様式 (2)、下記)です。
+`graph` と一緒に `speed` / `loop` / `start_time` を書くと拒否されます —— メッセージは**書いた鍵を名指し**するので、`field 'animation.speed' is clip-only; graph states define their playback clocks` のほか `field 'animation.loop' …` / `field 'animation.start_time' …` の形も出ます([componentcodec.cpp:1009](../../src/core/loader/componentcodec.cpp#L1547))—— ステートマシンでは再生時計を各ステートが決めるからで、黙って無視はされません。実行時にパラメータを動かす API は [第8章 §8.13](08_gameplay.md)(`setAnimationGraphParameter` / `forceAnimationGraphState`)です。**出荷プロジェクトの scene.json には、今日 `animation` コンポーネント自体がありません**(2026-09-17 実測)。`animgraph_demo` は同じ形のステートマシンを**ゲームコードから**駆動しており(`code/` の `EvaluatorV1`)、`animgraph_demo` / `vrm_xr_demo` の `movement.anim_graph.json` はどちらの scene からも参照されていません。姿勢をデータだけで装着する実物は `posegraph_demo`(様式 (2)、下記)です。
 
 制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128。モーフターゲットは描画対応 ✅WP121(初期 weight で表示)ですが、**クリップの `weights` チャネルは v1 非対応**(表情などの weight 駆動は [第8章](08_gameplay.md) §8.13 の VRM service 経由)。時刻源は `EngineTime`(rpc `set_time` と同一経路 = 決定的)。`PELICAN_WITH_ANIMATION=OFF` のビルドでは、このコンポーネントを持つシーンは**ロードの prepare 段で** `animation.module_unavailable@1` になります(§4.3)。
 
@@ -355,7 +355,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 | `overrides` | **現状は必ず拒否**(下記) |
 
 - 3 つとも省略可ですが、**1 つも書かないとエラー**(`pelican.ray_instance_empty@1`)です。closed schema で、上記以外のキーは `pelican.ray_instance_unknown_field@1`、範囲外の値は `pelican.ray_instance_field_range@1` になります。
-- `instance_flags` は配列でないと `pelican.ray_instance_field_type@1`、重複も同じコード、未知の名前は `pelican.ray_as_unknown_flag@1`、`force_opaque` と `force_no_opaque` の併記は `pelican.ray_as_conflicting_instance_flags@1` です([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1743))。この codec の名前付き拒否は `pelican.` 接頭辞 + `@1` が付きますが、**`overrides` の拒否だけは接頭辞が付きません**(下記)。
+- `instance_flags` は配列でないと `pelican.ray_instance_field_type@1`、重複も同じコード、未知の名前は `pelican.ray_as_unknown_flag@1`、`force_opaque` と `force_no_opaque` の併記は `pelican.ray_as_conflicting_instance_flags@1` です([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1784))。この codec の名前付き拒否は `pelican.` 接頭辞 + `@1` が付きますが、**`overrides` の拒否だけは接頭辞が付きません**(下記)。
 - `overrides`はWP382dで有効化されました。occurrence IDを指定した行でmask/flags/custom indexを上書きできます。対象が失われても行を消さず、`OccurrenceAbsent`として診断へ残します。previewでは`ray_instance_overrides_unsupported@1`を返します。
 
 ### コンポーネント名の名前空間と所有者(✅WP379/379a)
@@ -389,9 +389,9 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 2〜9 の 8 段が [SceneLoadPhase](../../src/core/loader/sceneload.hpp#L27) の 8 値(`prepare` / `early_publish` / `publish` / `activate` / `commit_metadata` / `retire` / `flush` / `finish`)にそのまま対応します(1 は executor に入る前の解釈レイヤなので phase ではありません)。ロード結果に付く phase trace は内部の順序検証(と fault injection)のためのもので、rpc には出ていません。
 
-**モデルのインスタンスの枠(`8bde3c2f`。利用者の codex の変更、handoff 05)。**同時に置けるモデルのインスタンスは今までどおり 1,024 で、それを超えると `Model instance capacity exceeded` です。一方、内部の物理的な slot は 2,048 にしました([インスタンスの上限](../../src/core/renderer/polygoninstancecontainer.cpp#L28))。prepare で新しいシーンの候補を作る間も、公開中の旧シーンの slot は rollback のために残るので、旧と新の合計が 1,024 を超えると置き換えができなかったためです(codex の報告では、約 1,000 model のシーンの最初の再読込で起きていました)。
+**モデルのインスタンスの枠(`8bde3c2f`。利用者の codex の変更、handoff 05)。**同時に置けるモデルのインスタンスは今までどおり 1,024 で、それを超えると `Model instance capacity exceeded` です。一方、内部の物理的な slot は 2,048 にしました([インスタンスの上限](../../src/core/renderer/polygoninstancecontainer.cpp#L30))。prepare で新しいシーンの候補を作る間も、公開中の旧シーンの slot は rollback のために残るので、旧と新の合計が 1,024 を超えると置き換えができなかったためです(codex の報告では、約 1,000 model のシーンの最初の再読込で起きていました)。
 
-- 置き換えの準備の時に、前に retire した世代が回収されずに残っていれば(frame を挟まずに `load_scene` を続けた場合)、GPU の完了を待って(`waitIdle`)から回収します。公開中の世代は置き換えが commit するまで回収しません([連続した load で古い世代を回収する所](../../src/core/renderer/polygoninstancecontainer.cpp#L576))。
+- 置き換えの準備の時に、前に retire した世代が回収されずに残っていれば(frame を挟まずに `load_scene` を続けた場合)、GPU の完了を待って(`waitIdle`)から回収します。公開中の世代は置き換えが commit するまで回収しません([連続した load で古い世代を回収する所](../../src/core/renderer/polygoninstancecontainer.cpp#L660))。
 - 代わりに払うもの: device の buffer が 18.2 MiB 増えます(うち skin palette の 2 本で 16 MiB。commit の説明の値)。連続した load では必要に応じて GPU を待ちます。frame ごとの新しい待ちは足していません(codex の報告)。
 - codex の報告では、998 個の cube と Anchor・Camera の 1,000 object のシーンで、前は 3 回とも最初の再読込が失敗し、今は 3 回とも 6 回の再読込が通りました。test: `modelinstance_slotmap_test` の [「Full-capacity scene replacement keeps rollback slots and reclaims older generations」](../../test/modelinstance_slotmap_test.cpp#L390)(1,024 個のモデルで候補の作成・公開後の rollback・frame を挟まない 3 回の置き換え。報告では GPU の test)。
 

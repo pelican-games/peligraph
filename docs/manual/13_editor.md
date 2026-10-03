@@ -449,6 +449,163 @@ manifest と照合する(`asset_stores` の manifest。engine の ✅AV-1)場所
   `devstudio_layoutpreset_test` はドックの数を 7 から 8 にし、古い保存済みの配置を戻しても Assets のドックが置き場を持つことを見ます。
 - シナリオ: `gui_assets_watch_verify`(Blank から GUI だけで。§13.5「Studio の自動化面」)。
 
+### Studio の Materials のドック —— surface の宣言から作る欄、New material…、object への割り当て(✅MT-1s)
+
+✅MT-1s(`2d81ef51`)から、Studio に **Materials のドック**(`pelican.materialsDock`。中身は
+[`MaterialsDock`](../../src/devstudio/view/materialsdock.hpp#L41)、RPC のやり取りは Qt を使わない
+[`MaterialsDockSession`](../../src/devstudio/model/materialsmodel.hpp#L186))と、Inspector の **Material** の行
+([`MaterialAssignWidget`](../../src/devstudio/view/materialassignwidget.hpp#L28)、やり取りは
+[`MaterialAssignSession`](../../src/devstudio/model/materialsmodel.hpp#L348))があります。project の material を一覧し、
+surface の宣言から作った欄で値を直し、新しい material を作り、object の model に割り当てる場所です。Studio は material の
+ファイルを自分で書かず(D0)、engine の ✅MT-1 の 7 本(§13.5 の「material 文書を読み書きする(✅MT-1)」)と ✅MT-1b の
+`list_surfaces`(下の New material…)だけを送ります。値の変更は engine が起こし直さずに当てるので、**Blank から作った project でも、
+Cube を置いてその色を変えるまでが GUI だけで、再起動なしで済みます**(下のシナリオ)。MT-1s の前は、色 1 つに JSON を 3 つ手で書いて
+engine を起こし直していました(仕様書の記述)。
+
+- **開き方**: 既定の配置では Assets のドックの隣のタブです([既定の配置](../../src/devstudio/view/mainwindow.cpp#L3260))。
+  **View > Materials**(`pelican.view.materials`)で前に出します([View > Materials](../../src/devstudio/view/mainwindow.cpp#L1327))。
+  View > Panels でも開閉できます。
+- **一覧**(決定 1): 上の木(`pelican.materials.list`。列は Material / Surface)は、`list_materials` の文書ごとの行と、その下の
+  material の行です。`status` が `missing` / `invalid` の文書は灰色で、Surface の列に `<status>: <理由>` が出て、選べません。
+  この engine にまだ登録されていない material(`registered: false`)は名前が灰色で、tooltip が「engine の起動時に読まれる」と言います
+  ([木を作る所](../../src/devstudio/view/materialsdock.cpp#L359))。文書の行を選ぶと、その最初の material を選びます。
+- **読み直し**: ドックが見えている間だけ、`list_materials` を 1 秒ごとに送ります([`PollMs`](../../src/devstudio/model/materialsmodel.hpp#L192)。
+  隠れると止め、見え直したときに 1 回読みます)。答えが前と同じ(digest を含めて)なら何もしません。選んでいる material の文書の digest が、
+  このドックの書き込みでないのに動いていれば(外で書かれた)、その material を読み直します([一覧の答えを読む所](../../src/devstudio/model/materialsmodel.cpp#L663))。
+  Assets のドックは時計で読まない(ファイルの監視)ので、間隔は揃えていません(実装者の報告)。
+
+**エディタ —— surface の宣言から作る欄**(決定 2・3)
+
+material を選ぶと、`get_material` で文書のままの material を、続けてその `surface` の `get_surface_schema` を読み、宣言の
+`params` / `textures` から欄を作ります(見出しは `<名前> — <path>`)。param の欄の種類は
+[`materialFieldKind()`](../../src/devstudio/model/materialsmodel.cpp#L184) が決めます。
+
+| 宣言 | 欄 | 自動化面の名前(`pelican.materials.param.<名前>` の後ろ) |
+|---|---|---|
+| `float` で `min` と `max` の両方がある | slider と spin(spin はその範囲) | `.slider` / `.spin` |
+| `float` で範囲が揃っていない | spin | `.spin` |
+| `int` | spin(hint が `bool` / `toggle` なら check) | `.spin` / `.check` |
+| `color`、または hint が `color` の `vec3` / `vec4` | 色の swatch(押すと色のダイアログ) | `.swatch` |
+| ほかの `vec2` / `vec3` / `vec4` | 成分ごとの spin | `.0` / `.1` … |
+| それ以外 | 値を JSON の文字で出すだけ(編集しない) | `.value` |
+
+- **送り方**: 変更 1 回が `edit_material` の `values` 1 回です。spin は確定したとき(Return か focus を外す)、slider は drag の間は数字だけを
+  動かして離したとき、色はダイアログの OK で送ります。今の値と同じなら送りません。書く要求はドックの中で 1 本ずつ並べ、送る直前に、
+  その文書について最後に知った digest を `base_material_digest` にします([送る所](../../src/devstudio/model/materialsmodel.cpp#L551))。
+- **色**: encoding が `linear` の色は、swatch では sRGB に直して見せ、選んだ色を linear に戻して保存します(小数 6 桁)。`srgb` の色は
+  見たままです([見せる色 `materialColorForDisplay()`](../../src/devstudio/model/materialsmodel.cpp#L242)、
+  [保存する色 `materialColorFromDisplay()`](../../src/devstudio/model/materialsmodel.cpp#L254))。alpha は今の値のままで、swatch の文字は
+  見せている色の `#rrggbb` です。色のダイアログ(`pelican.materials.colorDialog`)は Qt のダイアログで、hex の欄(`.hex`)と OK / Cancel
+  (`.ok` / `.cancel`)に名前が付いているので、シナリオから打てます。
+- **default との違い**: 文書が default と違う値を書いている param は、名前が太字です([`materialParamOverridden()`](../../src/devstudio/model/materialsmodel.cpp#L202))。
+  名前の右クリックの **Reset to default**(`.reset`。default と違うときだけ押せる)は `values: {<名前>: null}` を送り、文書からその値を
+  外します。名前の tooltip は型・hint・範囲と `Default: <値>` です。
+- **テクスチャ**: `textures` の slot ごとに combo(`pelican.materials.texture.<名前>`)です。先頭の `None (<宣言の default>)` は `null` を
+  送り(文書から外す)、続いて project の `assets/` の下の画像のうち、slot の `dimension` に合うものが `project://<論理 path>` の値で
+  並びます(表示は `project://assets/` を外した path)。画像の次元は Studio がファイルから推します: KTX2 はヘッダの depth / layer / face の
+  数から `2d` / `cube` / `cube_array` / `2d_array` / `3d`、`.png` / `.jpg` / `.jpeg` / `.tga` / `.bmp` / `.hdr` / `.exr` は `2d` です
+  ([`textureFileDimension()`](../../src/devstudio/model/materialsmodel.cpp#L350))。tooltip は color space・role・dimension で、文書が
+  名指す texture があれば slot の名前が太字です。
+- **Surface・Tags・Alpha mode・Variants**(決定 3): **Surface** の combo は `list_surfaces` の一覧です(一覧に無い今の値はそのまま足して
+  見せます)。**Tags** は UX-11 のタグ選びで、候補は一覧の material が持つタグ、`+ new tag` で新しいタグも足せます。**Alpha mode** は
+  `opaque` / `mask` / `blend` の combo と **Double sided** の check で、`routing` を丸ごと送ります。**Variants** は名前の一覧を読むだけです
+  (tooltip `Variants are edited in the document itself for now`)。どれも変更 1 回が `edit_material` 1 回で、textures の変更と同じく
+  engine は書いたうえで `restart_required` を返します(§13.5 の MT-1 の規則)。
+- **`restart_required`**: 書く答えの `restart_required` が `null` でなければ、Studio はその場で engine を起こし直します(RSX と同じ
+  `MainWindow::requestEngineRestart()`。未保存の scene があれば今までの Save / Discard / Cancel が出ます)。ドックの notice には
+  `Restart the engine to apply: <理由>` と **Restart engine**(`pelican.materials.restartEngine`)が残ります(Assets のドックと同じ)。
+  Inspector の Material の行の `restart_required` も同じ道です。
+
+**New material…**(決定 4)
+
+- ドックの上の **New material…**(`pelican.materials.newMaterial`)を押すと、木の上に行が開きます(modal のダイアログではありません)。
+  **Surface**(`pelican.materials.new.surface`)は engine の `list_surfaces`(✅MT-1b。engine に登録された `surfaces/**.surface` と project の
+  `*.surface`。[engine の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L38))から作り、**Studio は surface の一覧の写しを
+  持ちません**。表示は、engine の manifest が名前を付けた variant なら `<family> / <variant 名>`(例 `openpbr / opaque_single_sided`)、ほかは
+  `surfaces/` の下の path から `.surface` を外したもの(project のものは `shaders/toon` など)です([`surfaceChoiceLabel()`](../../src/devstudio/model/materialsmodel.cpp#L289))。
+  読めない surface(`error` 付き)は灰色で選べず、tooltip に理由が出ます。最初に選ばれているのは
+  `engine://surfaces/openpbr/opaque_single.surface` があればそれ、無ければ読める最初のものです([`defaultSurfaceChoice()`](../../src/devstudio/model/materialsmodel.cpp#L302))。
+- **Name**(`pelican.materials.new.name`)には空いている名前が入って開きます。`material`、使われていれば `material_2`、`material_3`… の、
+  一覧の material の名前・一覧の文書の path・project の `materials/<名前>.material.json` のファイルのどれとも重ならない最初のものです
+  ([`suggestMaterialName()`](../../src/devstudio/model/materialsmodel.cpp#L324))。その下に書く先 `materials/<名前>.material.json`
+  (`pelican.materials.new.path`)が出ます。名前が英数字と `_` でない・もうある名前のときは、行の中に 1 文が出て **Create** が押せません。
+- **Create**(`pelican.materials.new.create`)は `create_material {path, surface, name}` を 1 回送ります。選んだ surface の `list_surfaces` の
+  答えが `routing`(OpenPBR の variant の `alpha_mode` / `double_sided`)を持っていれば、それも `routing` に載せます
+  ([`MaterialsDockSession::create()`](../../src/devstudio/model/materialsmodel.cpp#L603))。engine は live で登録するので、起こし直しは要りません。
+  notice に `Created <名前> in <path>.` が出て、次の `list_materials` にその material が現れた時点でそれを選びます。
+- engine が `list_surfaces` を知らない(`-32601`)ときは、行が `This engine does not list surfaces (list_surfaces), so no material can be made here yet.`
+  を言い、Create は押せません。
+- 作った material は Undo の対象ではありません(engine に `delete_material` が無いため)。確認なしで作ります。
+
+**割り当て**(決定 5)
+
+- **Inspector の Material の行**: `simplemodelview` の `model` を持つ object を選ぶと、Inspector の Attached graphs の下(properties の scroll
+  より上)に **Material** のグループ(`pelican.inspectorMaterial`)が出ます([置く所](../../src/devstudio/view/inspectorwidget.cpp#L313))。
+  model の無い object と、再生中に spawn された object では出ません。combo(`pelican.inspectorMaterialChoice`)は **Model default**、区切り、
+  `list_materials` の material の名前の順です。material を選ぶと `bind_material {model, material}`(model の全 primitive)を 1 回送ります。
+  Model default は、割り当てを変えた primitive をそれぞれ model 自身の material(`get_material_bindings` の `slot`)に戻す `bindings` を
+  送ります([`MaterialAssignSession::choose()`](../../src/devstudio/model/materialsmodel.cpp#L965))。primitive ごとに違う material を持つ
+  ときは、combo は選べない項目 `(differs per primitive)` を示します。
+- **model 単位であることの 1 行**: combo の下(`pelican.inspectorMaterialScope`)に `Applies to every <model> in this project (N objects).`
+  が出ます(例 `Applies to every Cube in this project (2 objects).`。基本形は `(built-in)` を外した名前。[`modelScopeLine()`](../../src/devstudio/model/materialsmodel.cpp#L406))。
+  tooltip は `A material is bound to the model (<model>), not to this object` です。N は `export_scene_snapshot {schema_version: 2, allow_pending: true}`
+  の `semantic_scene_bytes` を読み、`simplemodelview.model` がその model の object を数えたもので([`countModelUsers()`](../../src/devstudio/model/materialsmodel.cpp#L399))、
+  読めなければ数を省きます。実装者の報告では、数えるのは今の scene の object で、prefab の中は数えません。
+- **primitive が複数ある model**: `get_material_bindings` の `primitives` が 2 つ以上なら、その下に `Mesh <n> · primitive <m>` の行ごとの
+  combo(`pelican.inspectorMaterialPrimitive.<番号>`)が出て、選ぶとその primitive だけの `bindings` を送ります。
+- **ドックの Assign to selected object**(`pelican.materials.assignSelected`): ドックで選んだ material を、Inspector が今出している object の
+  model に `bind_material {model, material}` で割り当てます。model を持つ object を選んでいなければ
+  `Pick an object that shows a model in the Outliner first.` と言います。割り当ての後は Inspector の Material の行が読み直します。
+- **object ごとの上書きはまだありません。**割り当ては engine の MT-1 のとおり model 単位で、`engine://primitives/cube` に割り当てると project の
+  Cube は全部その material になります。**利用者の判断(2026-10-03)**: material は object ごとの上書きを持ちます。engine の MT-2 の着地の後に、Inspector の割り当てを
+  「この object だけ / この model 全部」に替えます。engine の MT-2 は MT-1s の後に develop に入りました(`44b7b50a`。この章はまだ MT-2 の
+  RPC を書いていません)。MT-1s の Studio が送るのは model 単位の `bind_material` だけです。
+
+**Undo**(決定 6)
+
+- ドックの **Undo**(action `pelican.materials.undo`。ボタンは木の上の右の `pelican.materials.undoButton`、ドックの中での Ctrl+Z も)は、
+  ドックの書き込みを 1 回ずつ戻します。`edit_material` は答えの `previous` を、その書き込みの後の `material_digest` で同じ RPC に送り、
+  Assign to selected object の `bind_material` は `previous.bindings` を `bindings` に送ります([`MaterialsDockSession::undo()`](../../src/devstudio/model/materialsmodel.cpp#L633))。
+  ボタンの文字は `Undo <何を>` で、書き込みの答えを待つ間は押せません。project を替えると消え、engine の起こし直しでは残ります(コードの読み)。
+- Inspector の Material の行にも、自分の割り当てを `previous.bindings` で戻す **Undo**(`pelican.inspectorMaterialUndo`)があります。
+  ドックとは別の履歴で、Edit メニューの Undo Render Edit や Inspector の scene の Undo とも別です。
+- `create_material` は戻せません(上)。
+
+**拒否**(決定 7)
+
+- MT-1 の拒否 13 種(`material.*@1`)と `external_modification` を、Studio の 1 文の表で `<文> (<code>).` にします
+  ([表](../../src/devstudio/model/inspectormodel.cpp#L1639)、[`materialRefusalDescription()`](../../src/devstudio/model/inspectormodel.cpp#L1674))。
+  例: `materials/material.material.json changed outside Studio since it was read; it was read again, try again (external_modification).`。
+  表に無い code は engine の message のままです。
+- `material.value_invalid@1` だけは、その param の行の下に赤い 1 行(`.error`。`<param> cannot take that value: <理由> (material.value_invalid@1).`)
+  で出ます。ほかはドックの notice(Inspector の行が受けた拒否は、その行の notice)です。断られた書き込みの後ろに並んでいた書き込みは捨て、
+  一覧と material を読み直します。
+
+**残した穴**(着地時の記録):
+
+- **作った後に名前を変えられません。**仕様は「edit_material の name」で変えるとしていましたが、engine の `edit_material` の `name` は対象の
+  material を選ぶ鍵で、改名ではありません。`delete_material` も無いので、作り損ねた material を GUI で消せません(engine に回しました)。
+- **variants は読むだけ**です(編集の欄はありません)。
+- **テクスチャの候補は project の `assets/` の下だけ**です(asset store の別の mount は入りません)。次元は Studio の推定です。
+- **再起動の道(tags / routing / surface / textures の `restart_required`)はシナリオで通していません**(test だけ)。
+- ドックの routing / surface の combo は、edit の答えが来るまで一瞬前の値に戻って見えます(答えで正しくなります。実装者の報告)。
+- この文書を書いた側のコードの読み(test はありません): Inspector の Material の行の Undo は戻す割り当ての model を覚えず、押した時点で
+  Inspector が出している model に `previous.bindings` を送ります。N は選んだ object の model が替わったとき(と engine に繋がったとき)だけ
+  数えるので、同じ model の object を足しても読み直しません。
+- engine に回したもの: 改名と `delete_material`、surface の variant の人が読む名前、model を使う object の数を `get_material_bindings` で、
+  画像の一覧の dimension。
+
+- test: `devstudio_materials_test`(`QT_OFFSCREEN`。test が engine の代わりに答えます)の
+  [「MT-1s decision 1: the Materials dock lists the documents and their materials, a missing one greyed with its reason, and a poll whose digests are the same changes nothing」](../../test/devstudio_materials_test.cpp#L288)・
+  [「MT-1s decision 2: the editor's rows are made from the surface's params -- a slider and a spin, a swatch, a spin, a texture combo by dimension -- and each change is one edit_material」](../../test/devstudio_materials_test.cpp#L328)・
+  [「MT-1s decision 3: tags, routing and surface are one edit each, and restart_required restarts the engine as every other panel's edit does」](../../test/devstudio_materials_test.cpp#L420)・
+  [「MT-1s decision 4: New material… offers the engine's surfaces, proposes a free name and its file, creates it and selects it」](../../test/devstudio_materials_test.cpp#L468)・
+  [「MT-1s decision 5: the Inspector's Material combo binds every primitive of the model, says it is the model's, has a row per primitive when there are several; the dock assigns to the selected object」](../../test/devstudio_materials_test.cpp#L552)・
+  [「MT-1s decision 6: Undo sends an edit's previous against the digest after it, and a bind's previous bindings; a new material is not in it」](../../test/devstudio_materials_test.cpp#L640)・
+  [「MT-1s decision 7: a refused value is said under its row; any other refusal is one sentence in the dock's notice」](../../test/devstudio_materials_test.cpp#L719)。
+  `devstudio_layoutpreset_test` はドックの数を 8 から 9 にし、古い保存済みの配置を戻しても Materials のドックが置き場を持つことを見ます。
+- シナリオ: `gui_material_from_blank`(Blank から GUI だけで。§13.5「Studio の自動化面」)。
+
 ### Studio で game を再生・停止する(✅PM-3a / PM-3b / PM-3c)
 
 engine の play の RPC(§13.5 の「一時停止と 1 歩ずつ進める(✅PM-1a)」「edit 状態(✅PM-1b)」「再生のセッション(✅PM-2)」
@@ -682,7 +839,7 @@ pelican_player --project mygame --headless --rpc
 
 - 文書 1 つ = **シーンファイル 1 本**です。`pelican.scene` v2 のエンベロープ丸ごと —— そのファイルの `scenes` が宣言する全シーン、その中の全オブジェクト、その全コンポーネントの生 JSON —— を保持します([authoringscenedocument.hpp](../../src/core/loader/authoringscenedocument.hpp#L114))。プロジェクトに複数のシーンファイルがあれば文書も複数で、`export_scene_snapshot` はその全部を返します。
 - **`AuthoringObjectId`**(セッション内で安定・1 始まり)と **`SceneRevision`**(単調増加)が編集の座標系です。ランタイムの `EntityId` は付随情報で、**同一性の代用にはしません**(オブジェクトが再生成されると変わるため)。
-- コンポーネントの受理・正規化は [第4章](04_scene_ecs.md) §4.2 の component codec が担当します。値を書くと**必ず codec の正規形に書き直されて**保存されます。ここでいう**正規形**は、書いた JSON をいったん codec で読み(`decodeAuthored()`)、その値からもう一度書き出した(`encodeCanonical()`)形のことです —— 鍵の並び・省略した既定値・数値の型が一意に決まるので、同じ意味の JSON は必ず同じバイト列になります([componentcodec.hpp](../../src/core/loader/componentcodec.hpp#L339))。
+- コンポーネントの受理・正規化は [第4章](04_scene_ecs.md) §4.2 の component codec が担当します。値を書くと**必ず codec の正規形に書き直されて**保存されます。ここでいう**正規形**は、書いた JSON をいったん codec で読み(`decodeAuthored()`)、その値からもう一度書き出した(`encodeCanonical()`)形のことです —— 鍵の並び・省略した既定値・数値の型が一意に決まるので、同じ意味の JSON は必ず同じバイト列になります([componentcodec.hpp](../../src/core/loader/componentcodec.hpp#L342))。
 
 ### 保存の往復について(weak round-trip)
 
@@ -739,7 +896,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `duplicate` | `object_id`, `declaration_index?`(このほかのキーは拒否) | 子孫ごと複製(✅OL-1。下記) |
 
 `get_procedural_assets` / `edit_procedural_asset` は **`edit` の op ではなく独立した RPC メソッド**です
-([登録](../../src/core/communication/editorrpchandlers.cpp#L308))。`edit_procedural_asset` は
+([登録](../../src/core/communication/editorrpchandlers.cpp#L315))。`edit_procedural_asset` は
 `base_source_digest` と `asset_name` を取り、編集は `aabb` / `record`、新規は `operation: "create"` と両方の値、
 削除は `operation: "delete"` だけです。実行モデルはレンダー設定側(§13.5)と同じ digest CAS です。
 
@@ -850,7 +1007,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `required_for` | そのうち、この field が無いと codec が拒む値の列。無ければ鍵ごと出ません |
 | `default` | `applies_to` のうち必須でない値で、書かなかったときに読まれる値。`applies_to` の全部で必須なら出ません |
 
-今これを持つのは camera の `controller.*` だけです(ほかの component の field は変わりません)。controller の各 field の表は [第4章](04_scene_ecs.md) §4.2 の camera の項です。例(`get_components` の test の期待値): `{"name": "controller.sensitivity", "type": "f32", "range": [0.0, 1e12], "default": 1.0, "discriminant": "controller.type", "applies_to": ["orbit", "fly"], "required_for": ["fly"]}`。test: `editorcommandservice_test` の [「SC-1 get_components describes the camera controller by type」](../../test/editorcommandservice_test.cpp#L262)(`get_components` の要素と、`get_component_add_candidates` の `schema_fields` が同じであること)。
+今これを持つのは camera の `controller.*` だけです(ほかの component の field は変わりません)。controller の各 field の表は [第4章](04_scene_ecs.md) §4.2 の camera の項です。例(`get_components` の test の期待値): `{"name": "controller.sensitivity", "type": "f32", "range": [0.0, 1e12], "default": 1.0, "discriminant": "controller.type", "applies_to": ["orbit", "fly"], "required_for": ["fly"]}`。test: `editorcommandservice_test` の [「SC-1 get_components describes the camera controller by type」](../../test/editorcommandservice_test.cpp#L264)(`get_components` の要素と、`get_component_add_candidates` の `schema_fields` が同じであること)。
 
 ここでいう**解決**は、オーサリング文書の生 JSON を codec に通し、既定値を補ってランタイムの値にするところまでを指します。範囲外の数値・未知の鍵・型違いなど、利用者が書いた内容が契約に反していれば解決は失敗します。
 
@@ -907,7 +1064,7 @@ revisionはauthoringの変更を表し、runtimeやプレビュー値の監視�
 
 - 実装([`EditorCommandService::sceneOutline()`](../../src/core/communication/editorcommandservice.cpp#L794)、[登録 `scene_outline`](../../src/core/communication/editorrpchandlers.cpp#L77)): authoring の resolved scene の object の情報(id・宣言の位置・名前・親の名前)だけを読み、親の名前をその scene の名前から id に引き直します。object ごとの `queryObject`(component の JSON・schema・runtime の値を作る所)は呼びません(test が runtime と schema の問い合わせが 0 回であることを見ます)。`setHandler` で登録しているので、応答の鍵の順は保たれません(上の例の鍵の順は読みやすさのためです)。
 - 作者と計測: 利用者の codex が書いた変更です(handoff 02、`b29ccfea`)。commit の説明では、10,000 object で 758 ms → 44 ms(Release、3 回)。計測の script `tools/scene_outline_benchmark.py` は、同じ Release の player で `scene_tree` と `scene_outline` を比べるものです(時間は pipe と engine の分と、client の JSON の decode の分を別に出します。GUI の操作の待ち時間ではありません。script の注記)。
-- test: `editorcommandservice_test` の [「scene_outline returns stable hierarchy in declaration order without detail queries」](../../test/editorcommandservice_test.cpp#L1318)、[「scene_outline conditional reads require scene identity and observe new revisions」](../../test/editorcommandservice_test.cpp#L1378)、[「scene_outline rejects malformed selectors on the registered RPC wire」](../../test/editorcommandservice_test.cpp#L1431)。
+- test: `editorcommandservice_test` の [「scene_outline returns stable hierarchy in declaration order without detail queries」](../../test/editorcommandservice_test.cpp#L1320)、[「scene_outline conditional reads require scene identity and observe new revisions」](../../test/editorcommandservice_test.cpp#L1380)、[「scene_outline rejects malformed selectors on the registered RPC wire」](../../test/editorcommandservice_test.cpp#L1433)。
 
 ### セッションと編集
 
@@ -1169,7 +1326,7 @@ project.json を手で書いて engine を起こし直さないと効きませ�
 
 MT-1(`976c410d`)の前は、Blank の project で物体の色を変えるには JSON を 3 つ手で書いて engine を起こし直すしかありませんでした
 (仕様書の記述)。7 本は material 文書・`.surface` の宣言・model の割り当てを engine に読ませて書かせます
-([MT-1 の 7 method の登録](../../src/core/communication/materialdocumentrpc.cpp#L1443))。
+([MT-1 の 7 method の登録](../../src/core/communication/materialdocumentrpc.cpp#L1475))。
 
 - 書く 3 本は、読んだときの digest を CAS に project の文書の transaction で書き、返る前に engine に当てます。
   当てられないときは書いたうえで `applied: "restart_required"` と `restart_required: {reason}` を返します。
@@ -1181,7 +1338,8 @@ MT-1(`976c410d`)の前は、Blank の project で物体の色を変えるには 
 - 戻すときは返り値の `previous` を同じ RPC で送ります(`edit_material` は新しい `material_digest` で、`bind_material` は
   `previous.bindings` を `bindings` に)。`delete_material` はありません。
 - `edit_batch` の対象ではありません。material の文書は RD-1 の render 文書の集合の外にあるためです(commit の記録)。
-- Studio はまだこの RPC を使いません(`src/devstudio` に呼ぶ所はありません。Studio 側の画面は別の WP で、未着地)。
+- ✅MT-1s(`2d81ef51`)から、**Studio の Materials のドックと Inspector の Material の行がこの 7 本を呼びます**(surface の一覧は ✅MT-1b の
+  `list_surfaces`。§13.1 の「Studio の Materials のドック」)。MT-1s の前は、`src/devstudio` に呼ぶ所がありませんでした。
 
 各鍵の意味・拒否の条件の表・実例は [第10章](10_tools.md) §10.3 の「material 文書を読み書きする」、live と restart_required の
 規則と残る穴は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、engine が書くファイルの形は
@@ -1282,7 +1440,7 @@ commit し、`get_frame_plan` で各 material が名前で選んだ分岐に入�
 一覧に無い値は文書を変えずに断られることを見る)。
 
 **material pass の format と engine の shader も、engine の一覧から読めます(✅EL-4 / EL-4b)。**Studio が format や shader の名前を打たせず、
-engine の一覧から選ばせるための読みです。`get_graph_catalog` に 2 つの鍵が足され([足す所](../../src/core/communication/renderconfigeditor.cpp#L3737))、engine の shader の一覧は読むだけの RPC `get_engine_shaders` が返し([返す所](../../src/core/communication/renderconfigeditor.cpp#L3749)、[登録](../../src/core/communication/editorrpchandlers.cpp#L294))、
+engine の一覧から選ばせるための読みです。`get_graph_catalog` に 2 つの鍵が足され([足す所](../../src/core/communication/renderconfigeditor.cpp#L3737))、engine の shader の一覧は読むだけの RPC `get_engine_shaders` が返し([返す所](../../src/core/communication/renderconfigeditor.cpp#L3749)、[登録](../../src/core/communication/editorrpchandlers.cpp#L301))、
 この context の `render_target_vocabulary` に `format_aspects` が足されます。どれも engine が検査に使う表から作り、検査の側もその表を使うように寄せてあります([一覧を作る所](../../src/core/communication/engineauthoringlists.hpp#L13))。
 
 **`get_engine_shaders {}`(✅EL-4b、`3a7df62d`。✅EL-4c、`8e00ae90` から答えに `status`)。**params は空の object だけで、field を足すと `-32602`(`get_engine_shaders contains unsupported field '<鍵>'`)。呼び出しはすぐ返り、答えは次の 3 つの形のどれかです([答えを作る所](../../src/core/communication/engineauthoringlists.cpp#L404))。
@@ -1313,7 +1471,7 @@ MP-1 の `screen_inputs` / `surface_resources` は `renderconfigeditor_test` の
 [「MP-1 get_graph_catalog's material pass contracts list the screen inputs and surface resources the engine takes」](../../test/renderconfigeditor_test.cpp#L10471)
 (4 つの contract とも同じ名前の列で、`source_type` が入力の契約の semantic type と同じこと、`forward_opaque_v1` の先頭が `{name: "opaque_color", source_type: "pelican.render.color_signal@1"}` と `{name: "directional_shadow", source_type: "pelican.render.depth@1"}` であること、一覧の外の名前(`lit_color`)が契約にならないこと)。
 
-**project の shader の入出力を読む —— `get_shader_interface`(✅EL-5、`59e5d792`)。**`get_engine_shaders` は engine に組み込まれた shader だけを返すので、利用者が project に書いた shader(`project://shaders/...`)の port を Studio が読む口がありませんでした(仕様書の記述では、GB-3 で手で書いた)。`get_shader_interface` は 1 つの stem の参照について、`get_engine_shaders` と同じ形の要素を返します([引数を読む所](../../src/core/communication/renderconfigeditor.cpp#L3765)、[答えを作る所](../../src/core/communication/engineauthoringlists.cpp#L609)、[登録](../../src/core/communication/editorrpchandlers.cpp#L297))。
+**project の shader の入出力を読む —— `get_shader_interface`(✅EL-5、`59e5d792`)。**`get_engine_shaders` は engine に組み込まれた shader だけを返すので、利用者が project に書いた shader(`project://shaders/...`)の port を Studio が読む口がありませんでした(仕様書の記述では、GB-3 で手で書いた)。`get_shader_interface` は 1 つの stem の参照について、`get_engine_shaders` と同じ形の要素を返します([引数を読む所](../../src/core/communication/renderconfigeditor.cpp#L3765)、[答えを作る所](../../src/core/communication/engineauthoringlists.cpp#L609)、[登録](../../src/core/communication/editorrpchandlers.cpp#L304))。
 
 ```json
 {"method": "get_shader_interface", "params": {"reference": "project://shaders/el5_probe"}}
@@ -1818,7 +1976,7 @@ ticket を次の結果で終えます([型付きの拒否のときだけ commit 
   `restore_render_documents` で戻せます。印の ticket は、既に並んでいる ticket より先に commit されます([`harvestFoldVerifies()`](../../src/core/communication/renderconfigeditor.cpp#L3171))。
 - **すぐ断るもの**:
   - **`fold_verify_unavailable`**(`reason`): `headless` / `golden` / `replay`(`--replay` か入力の再生中)/ `executable_unknown`(自分の exe の path を取れない。Windows 以外は常にこれ)/
-    `no_runner`(子を起こす口を持たない構成)([判定](../../src/core/communication/editorruntimefactory.cpp#L2353))。コードには engine の終了で止めた run の `shutdown` もありますが、
+    `no_runner`(子を起こす口を持たない構成)([判定](../../src/core/communication/editorruntimefactory.cpp#L2354))。コードには engine の終了で止めた run の `shutdown` もありますが、
     終了の時は editor ごと消えるので、答えとして読む道は見当たりません(コードの読み)。
   - **`fold_verify_busy`**(`group`・`ticket`): 同じ group を検査している間。ほかの group と、ほかの編集は止めません。
   - `gate_closed`・`external_modification`(ほかの編集と同じ)。
@@ -1829,7 +1987,7 @@ ticket を次の結果で終えます([型付きの拒否のときだけ commit 
     開いた形 ×2(対照)、決定ありの形 ×1。終われば写しを消します。
   - 子の引数は `--headless --project <写し> --frames <frames> --fps <親の fps> [--size <project の窓の大きさ>] [--start-time <warmup_seconds>] --render-out <run>/frame_%d.png
     --vulkan-validation on --log-file <run>/pelican.log` で、親が `--allow-absolute-paths` / `--game-logic` で起きていればそれも付けます
-    ([組み立て](../../src/core/communication/graphfoldverify.cpp#L291)、[親から読む所](../../src/core/communication/editorruntimefactory.cpp#L1969))。
+    ([組み立て](../../src/core/communication/graphfoldverify.cpp#L291)、[親から読む所](../../src/core/communication/editorruntimefactory.cpp#L1970))。
     warm-up は player の `--start-time` で、その時刻までの fixed-step の frame を描いて捨てます(時刻ではなく frame の数で数えます)。
 - **比べ方**([`judgeFoldVerifyRuns()`](../../src/core/communication/graphfoldverify.cpp#L388)): 各 frame の PNG を RGBA8 に読み、4 byte のどれかが違う画素を数えます(大きさが違えば
   大きい方の全画素)。validation の error は、子の stdout と stderr にある `Validation Error` の数です。判定は次の順で、最初に当たったものが答えです。
@@ -3363,15 +3521,36 @@ Outputs の区は body に出力があるときだけ、Carry の区は body に
 - **詳細欄**(`pelican.graphCanvasFoldedPass`。[`GraphCanvasFoldedPassFields`](../../src/devstudio/view/graphcanvasfoldedpassfields.hpp#L57)): root の canvas でその node を選ぶと、右の欄に見出し `<pass> (<type>): from the rendering section` と、Pass Editor と同じ部品が出ます。部品は複製せず、Pass Editor の部品をそのまま持ちます。
   - fullscreen pass: **Vertex** / **Fragment**(`pelican.graphCanvasFoldedPass.vertex` / `.fragment`。Pass Editor と同じ shader の一覧から選ぶ combo で、engine の一覧が届けばそれに替わります)、**Inputs**(`.inputs`。読むだけの一覧。変えるのは GL-1e のソケットへの線です)、**Defines**(`ShaderDefinesForm`)、**Frame data**(`FullscreenPassInterfaceRow`)、**Attachments**(`AttachmentOpsForm`。color の Load / Clear / Store と clear colour)。
   - material pass: `MaterialSettingsForm` の 10 個の設定(✅UX-15a の GPU draws を含む)と、depth を含む `AttachmentOpsForm`。material pass の routing は出しません(Pass Editor も root の pass では routing を書きません。実装者の報告)。
-  - fullscreen と material 以外の type の root の pass には欄を出しません。出力の target の付け替えもありません(実装者の報告)。
+  - fullscreen と material 以外の type の root の pass には欄を出しません。GL-5a の着地時は出力の target の付け替えもありませんでした(実装者の報告)。✅GL-5b から color 出力の行があります(下の GL-5b の段落)。
 - **送り方**: 選ぶ欄は選んだときに、打つ欄(define、clear colour、material の設定)は打つ手が 500 ms 止まってから、`edit_preset_pass` を 1 回送ります。params は Pass Editor の Save と同じ [`presetPassEditParams()`](../../src/devstudio/view/presetpassedit.cpp#L12) が組みます(Pass Editor の `requestEditPresetPass()` の本体を切り出したもので、Frame Plan の Edit pass が開く Pass Editor も同じ関数です。[Pass Editor が呼ぶ所](../../src/devstudio/view/fullscreenpasswidget.cpp#L2500))。読み込んだときと値が変わっていなければ送りません。
   - 送るのは Graph タブの GL-1e の口を広げた `sendPassEdit()` で、1 つずつ・ticket を待ち・render の編集の履歴に積みます。Graph タブの Undo 1 回で戻ります(上の GL-1e の「Undo」と同じ)。notice は送った直後が `<pass>: saving...`、commit の後が `<pass> saved.` です。
   - 値を作れないとき(engine が断る define、まだ色になっていない clear colour など)は送らず、notice が `<pass>: <理由>` を言います。拒否は GL-1e と同じく inspectormodel の 1 文の表で notice に出ます。
   - Pass Editor と同じく、編集した root の pass には `"ray_query": false` が書き足されます(実装者の報告。Pass Editor の Save と同じ動き)。
 - **Serial / Isolate / No alias**: 詳細欄の **Decisions** に、pass の **Serial**(`.serial`)・**Isolate**(`.isolate`)と、pass が書く render target ごとの **No alias: <target>**(`.noAlias.<target>`)の check があります。押すと Frame Plan の右クリック(✅GL-3a)と同じ `graphTargetPlanningParams()` で組んだ `edit_target_planning` を 1 回送り、notice は `Serial set on <pass>.` / `Serial taken off <pass>.` の形です([`GraphCanvasFoldedPassFields::togglePlanning()`](../../src/devstudio/view/graphcanvasfoldedpassfields.cpp#L546))。check の状態は `get_render_documents` で読んだ root の `target_planning` で、commit か拒否の後に読み直します。present の画面(display)には No alias を出しません。送る口は `GraphCanvasReadCapability` に足した `requestEditTargetPlanning` です。
-- **作らなかったもの**: 仕様の決定 3(rendering 節の compute task を Task Editor の部品で直す)は作っていません。root の rendering 節は `compute_tasks` を宣言できない(MG-2b)ので、畳んだ node になる task は全部 preset か feature のもので、読むだけだからです(実装者の報告。広げるかは裁定待ち)。GL-5b(Add fullscreen pass / Add compute task / Add material pass / New render target を palette と同じ関数に。詳細欄の出力の target の付け替えもここ)と GL-5c(Frame Plan の Edit pass / Edit task を Graph への委譲に)は残っています。
+- **作らなかったもの**: 仕様の決定 3(rendering 節の compute task を Task Editor の部品で直す)は作っていません。root の rendering 節は `compute_tasks` を宣言できない(MG-2b)ので、畳んだ node になる task は全部 preset か feature のもので、読むだけだからです(実装者の報告。広げるかは裁定待ち)。GL-5b(Add fullscreen pass / Add compute task / Add material pass / New render target を palette と同じ関数に。詳細欄の出力の target の付け替えもここ)は ✅GL-5b(下の段落。Add は束ねていません)、GL-5c(Frame Plan の Edit pass / Edit task を Graph への委譲に)は残っています。
 - **手で打つ欄**: 新しくは足していません。詳細欄は Pass Editor の部品を持つので、部品が元から持つ打つ欄(define の名前と値、clear colour、material の出力の名前と `+ new tag`)が Graph にも出ます。
 - test: `devstudio_graphcanvas_scene_test` の [「GL-5a a rendering-section pass picked on the Graph is edited in the detail column: a shader pick is one edit_preset_pass with Undo, Serial one edit_target_planning, and a refusal reads as the inspector's sentence」](../../test/devstudio_graphcanvas_scene_test.cpp#L6854)、`devstudio_fullscreen_pass_test` の [「GL-5a the Pass Editor and the Graph's detail column send the same edit_preset_pass for the same change of the root's pass」](../../test/devstudio_fullscreen_pass_test.cpp#L3036)(Frame Plan の Edit pass が開く Pass Editor で fragment を変えて Save した params と、Graph の詳細欄で同じ fragment を選んだ params が一致すること)。GL-1 の tooltip の test は新しい文に直しました。GPU シナリオは `gui_folded_pass_edit`(下の「Studio の自動化面」)です。
+
+**New render target を Frame Plan と Graph で 1 つの関数に、詳細欄で出力の target を選び直す(✅GL-5b、`60ff3a2c`)**: 設計 [design_graph_layers](../design_graph_layers.md) §7 の GL-5(Frame Plan を mode に)の 2 本目です。GL-5a と同じく、書き先は今のままで入口だけを束ねます。
+
+- **New render target は 1 つの関数です。**form を開くのは [`presentNewRenderTarget()`](../../src/devstudio/view/rendertargetform.cpp#L272)(create の form を、提案した名前・`RenderTargetFormValues` の既定の format と大きさ・engine の語彙で開く)、名前の提案は [`proposedRenderTargetName()`](../../src/devstudio/view/frameplanedit.cpp#L1429)(pass の出力から開くなら Pass Editor と同じ `<pass>_color`、ほかは `render_target`。宣言済みと重なれば `_2`、`_3`…)、送るのは今までの `framePlanRenderTargetAddRequest()` の `edit_render_targets` 1 回、拒否の文も今までの `framePlanRenderTargetRejection()` です。Frame Plan の toolbar・canvas の右クリック・Pass Editor の `New target: …` と、Graph の 2 つの入口(下)が同じ関数を通ります。Frame Plan の New render target... も、GL-5b から名前が入って開きます(下の「Frame Plan で render target を宣言する(✅F-1)」)。
+- **palette の `render.target_ref` の New render target…**: target の combo(`pelican.graphCanvasPaletteTarget`)の最後に **New render target…** が付きます(engine の接続が `edit_render_targets` を送れるときだけ)。選ぶと note が `OK opens New render target; the reference is placed once the target is declared.` を言い、OK で palette が閉じて New render target の form が開きます。form の OK で target が宣言されると、Graph タブは authoring context を読み直し、その target が載った時点で、一覧から選んだときと同じく `<target>_ref` の node を置きます([palette の New render target… を受ける所](../../src/devstudio/view/graphcanvaswidget.cpp#L6301))。form を Cancel すると何も置きません。GL-5b の前は、宣言が 1 つも無いと OK を押せず、Frame Plan へ案内していました(上の「palette で置ける render node」の表の `render.target_ref` の行)。
+- **詳細欄の出力の行**: GL-5a の詳細欄(rendering 節の pass)に **Writes** の行が足され、color 出力ごとに combo(`pelican.graphCanvasFoldedPass.output.<n>`)が出ます。候補は宣言済みの target のうち depth でないもの(今の値が一覧に無ければ先頭に足す)と、最後の `New target: <pass>_color…` です([`GraphCanvasFoldedPassFields::fillOutputs()`](../../src/devstudio/view/graphcanvasfoldedpassfields.cpp#L307))。target を選ぶと、その出力の Load / Store と clear colour を連れて target を替え([`AttachmentOpsForm::retargetColor()`](../../src/devstudio/view/passforms/attachmentopsform.cpp#L198))、Pass Editor の Save と同じ `presetPassEditParams()` の `edit_preset_pass` を 1 回送ります。`New target: …` は New render target の form をその名前で開き、target が宣言されて context に載った後に、その出力をその target に替える `edit_preset_pass` を送ります。宣言と付け替えは別の 2 回の編集なので、Graph タブの Undo も 2 回分です(実装者の報告)。depth の出力は付け替えません。
+- **拒否**: `edit_render_targets` の拒否は Frame Plan の New render target と同じ code ごとの 1 文です。詳細欄の編集が断られたときは、欄を root の内容で読み直します([`GraphCanvasFoldedPassFields::editRefused()`](../../src/devstudio/view/graphcanvasfoldedpassfields.cpp#L386)。断られた付け替えが combo に残って次の編集に混ざらないためで、GL-5a の shader の選び直しの拒否にも効きます。実装者の報告)。送る口は GL-5a の `sendPassEdit()` に `edit_render_targets` を足したもので、`GraphCanvasReadCapability` に `requestEditRenderTargets` が増えました。
+- **Add は束ねていません**(仕様の決定 4)。入口ごとの書き先は次のとおりです(実装者がコードを読んで作った表。test はありません)。
+
+| 入口 | RPC | 書き先 |
+|---|---|---|
+| Frame Plan の New render target...、Graph の New render target…(palette と詳細欄) | `edit_render_targets` `{op: add}` | managed feature fragment `project://passes/authoring/render-targets.json`(初回は root の `features[]` に足す) |
+| Frame Plan の Add material pass... | 新しい target があれば先に `edit_render_targets`、次に `add_authored_pass` | managed feature fragment `project://passes/authoring/pass-<id>.json`(root の `features[]` に足す) |
+| Frame Plan の Add fullscreen pass...(右クリック) | `add_authored_pass` | 同じ managed feature fragment |
+| Frame Plan の Add compute task...(右クリック。Features タブの Task Editor へ移る) | `add_compute_task` | 新しい feature 文書(置き場は利用者が打つ。root の `features[]` に足す) |
+| Graph の palette の `render.material_pass` / `render.fullscreen` / `render.raster` / `render.compute` / `render.image` / `render.target_ref` | `edit_graph_document` | graph の `nodes`(material pass は draw の body の definition も。`render.target_ref` は宣言済みの target を名前で指すだけ) |
+
+  書き先が同じなのは New render target の組だけで、上のとおり 1 つの関数に束ねました。Frame Plan の Add の 3 つ(feature に書く)と palette(graph の `nodes` に書く)は書き先が違うので束ねず、「Blank で Frame Plan の Add material pass... を押すと palette と同じものが置かれる」という仕様の目標にも届いていません。どちらに寄せるかは GL-6 の判断で、統合側は「graph root では Frame Plan の Add を palette に寄せる」を利用者に提案しています(2026-10-03)。rendering 節に書く Add は Frame Plan にも Graph にもありません(実装者の報告)。
+- **分かっている穴**: New render target の既定の種類(Scene color)の target は、Blank の forward の material pass の color 出力にすると engine に `Material pass color output format mismatch` で断られます(シナリオは種類で Explicit format を選び、`R16G16B16A16_SFLOAT` にしています)。出どころに合わせて既定を変える案は GL-5c 以降です。GL-5c(Frame Plan の Edit pass / Edit task を Graph への委譲に。Frame Plan の New render target... を Graph の入口へ委譲するかもここ)は残っています。
+- **手で打つ欄**: 新しくは足していません。Graph から開く form は Frame Plan と同じなので、form の名前(提案入りで、打たずに OK でよい)と clear colour の欄が Graph からも出ます。
+- test: `devstudio_graphcanvas_scene_test` の [「GL-5b the target_ref palette's New render target... opens the Frame Plan's form on a proposed name, sends its one edit_render_targets, and places the reference once the target is declared」](../../test/devstudio_graphcanvas_scene_test.cpp#L7166)・[「GL-5b a rendering-section pass's output is picked again from the declared targets, or New target... declares one first: each is one edit_preset_pass」](../../test/devstudio_graphcanvas_scene_test.cpp#L7218)。`devstudio_frameplan_graph_test` の [「F-1 New render target sends one edit_render_targets from the form, and the target's node takes Delete」](../../test/devstudio_frameplan_graph_test.cpp#L9268) は、form が `render_target` の名前で開くことを 1 行見ます。GPU シナリオは `gui_graph_new_target`(下の「Studio の自動化面」)です。
 
 **pass の出力のソケット(✅GL-1f)**: engine の RS-4 で、`render.material_pass` / `render.shadow_depth` / `render.snapshot_copy` は、書いた image を出力の port として渡すようになりました(契約は [第6章](06_rendering.md) §6.18 の「グラフで書く pass」)。Graph タブはこの port を出力のソケットとして描き、fullscreen の出力と同じように線を引けます(設計は [design_graph_layers](../design_graph_layers.md) §7 の GL-1f)。
 
@@ -3420,7 +3599,7 @@ Outputs の区は body に出力があるときだけ、Carry の区は body に
 
 | op | palette で選ぶもの | 置く形 |
 |---|---|---|
-| `render.target_ref` | 宣言済みの target の combo(`pelican.graphCanvasPaletteTarget`。`get_render_authoring_context.render_targets[]` から graph 自身の `render.image` を除いたもの。tooltip は `declared by: <source>`) | id は `<target>_ref`。`type` は宣言の `type`、無ければ format(depth か)と `dimension: cube` / `layers` から作ります([`GraphCanvasModel::targetRefType()`](../../src/devstudio/model/graphcanvasmodel.cpp#L7085))。宣言が 1 つも無ければ OK を押せず、`No render target is declared yet: declare one (Frame Plan > New render target...) or use render.image.` が出ます |
+| `render.target_ref` | 宣言済みの target の combo(`pelican.graphCanvasPaletteTarget`。`get_render_authoring_context.render_targets[]` から graph 自身の `render.image` を除いたもの。tooltip は `declared by: <source>`) | id は `<target>_ref`。`type` は宣言の `type`、無ければ format(depth か)と `dimension: cube` / `layers` から作ります([`GraphCanvasModel::targetRefType()`](../../src/devstudio/model/graphcanvasmodel.cpp#L7085))。✅GL-5b から combo の最後は **New render target…** で、選んで OK を押すと target を宣言してから置きます(下の GL-5b の段落)。`edit_render_targets` を送れない接続で宣言も無ければ OK を押せず、`No render target is declared yet: use render.image.` が出ます(GL-5b の前は、宣言が無ければいつもこうで、文は `… declare one (Frame Plan > New render target...) or use render.image.` でした) |
 | `render.image`(単独) | 無し | 上の欄の既定: Color signal(scene / linear / extended)・`R16G16B16A16_SFLOAT`・画面の大きさ・usage `COLOR_ATTACHMENT` / `SAMPLED`。view の軸で回すループの body では、family の大きさです |
 | `render.buffer` / `render.attribute` | element の combo・attribute の domain の combo(vertex / instance / index)・数の spin | buffer は `size` = 数 × element の byte 数(3 要素は 4 要素分)、attribute は `domain` と `count`。domain が index なら element は `uint` です |
 | `render.raster` | 無し | 上の Add fullscreen pass と同じ形(`engine://fullscreen` + `engine://passthrough`、自前の image)に `draw: {vertex_count: 3}`。Pass Editor の一覧にその 2 つの shader があるときだけ palette に出ます |
@@ -4175,9 +4354,11 @@ fork は勧めません([direct root の canvas の拒否](../../src/devstudio/v
 canvas の空所の右クリックの同名 action(`pelican.framePlan.newRenderTarget`)で form(`pelican.renderTargetForm`)が開きます
 ([form](../../src/devstudio/view/rendertargetform.cpp#L36))。欄は名前・種類(Scene color / Display / Data / Explicit format と
 format)・大きさ(Screen ratio = `extent_scale`、または Fixed size = `width` × `height`)・usage(engine が返した語彙の
-checkbox)・history・clear color(`r, g, b, a`、任意)です。**名前だけ入れて OK** すれば、画面と同じ大きさの scene color
+checkbox)・history・clear color(`r, g, b, a`、任意)です。名前は ✅GL-5b から空いている `render_target`(使われていれば `render_target_2`…)が
+入って開くので(それまでは空)、**そのまま OK** すれば、画面と同じ大きさの scene color
 (`R16G16B16A16_SFLOAT`、`COLOR_ATTACHMENT` + `SAMPLED`)になります。Fixed size でも `extent_scale: 1` は書かれます
 (parser が必須にしているため。[宣言の組み立て](../../src/devstudio/view/frameplanedit.cpp#L1403))。送るのは `edit_render_targets` 1 回です。
+✅GL-5b から、同じ form が Graph タブの palette の `render.target_ref` と詳細欄の出力の行からも、同じ関数で開きます(§13.5 の「New render target を Frame Plan と Graph で 1 つの関数に(✅GL-5b)」)。
 canvas は **Target**(`pelican.framePlanTarget`)で選んだ target を resource node として描き(自動化面の合成名は
 `resource_node#<名前>`)、作った target は次の描画でそこに選ばれます(Target が **Whole frame** のときは選び直さず、
 Whole frame のまま新しい target を描きます。下の段落)。その node の **double-click** で同じ form が
@@ -4676,7 +4857,7 @@ driver の stdout / stderr は、cp932 の console で出せない文字があ�
 
 **回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L1276)(Python 3.11以上、標準ライブラリだけ)が Studio を
 `--automation --project --tab` で起動し、step を順に送り、`report.json` を書きます。ctest からは
-`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3584)) —— **実物の窓が要るので
+`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3592)) —— **実物の窓が要るので
 `QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
 文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../../test/run_studio_scenario.cmake#L30))。✅IA-1s から、シナリオの隣に `<名前>.prepare.py` があれば、ctest の口([prepare の script を走らせる所](../../test/run_studio_scenario.cmake#L68))が driver を起こす前に`<名前>.prepare.py --out <run の directory>/incoming --cli <pelican_cli>` を走らせます。人が Studio を開く前に外で作る file の代わりで、シナリオは `{artifacts}/incoming/` の file を Studio の Import で取り込みます(今は `gui_build_ltc` と ✅AB-1s の `gui_build_audio_reactive` の 2 本。[第10章](10_tools.md) §10.7)。
 CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。
@@ -4716,7 +4897,7 @@ Q-10 の時点では、埋め込んだ player は窓があるので実物の dev
 
 **`get_status` の返事は 1 回だけ parse します(✅UX-7)**: viewport は、誰が送った `get_status` の返事でも、生の bytes の signal `engineStatusRead` の後に、1 回 parse した JSON を `engineStatusParsed(request_id, status)` で渡します([渡す所](../../src/devstudio/viewport/embeddedviewport.cpp#L834))。Play の帯・Outliner の runtime の行・`wait_engine`([`render.published_frames` を読む所](../../src/devstudio/automation/automationcommands.cpp#L1819))はこれを読みます。UX-7 の前はそれぞれが GUI の thread で parse していて、ループを 16 回展開した graph で約 2 MB の返事が GUI を止めていました(仕様の背景。engine の ✅ST-1 で返事自体も小さくなりました)。UX-6b の `PlanPerfHub` は生の bytes を受けて thread pool で parse します。
 
-現在のシナリオは **65 本**です(`test/studio_scenarios/*.json` の数。✅CT-6s の `gui_build_rt_from_blank` で 65 本になりました。それまでの数え方: ✅UX-15b の `gui_lower_layer_pin_freeze` で 63 本に、✅GL-5a の `gui_folded_pass_edit` で 64 本になりました。✅UX-15a は新しいシナリオを足さず、`rendering_settings_from_blank` を延ばしました。それまでの数え方: ✅HW-2s / AV-1s の `gui_assets_watch_verify` で 62 本になりました。それまでの数え方: ✅AB-1s の `gui_build_audio_reactive` で 61 本になりました。✅UX-12e は `gui_node_parameters` を、✅UX-12d と ✅UX-13d は `gui_settings_choose` を延ばしました。✅UX-14 は、CC-1 の後の絵に合わせて `gui_settings_choose`・`gui_build_ocean`・`gui_build_ocean_compute`・`gui_build_ltc` の期待を直しました(`gui_settings_choose` は CC-1c の後に `a954d38c` でもう一度)。それまでの数え方: ✅UX-10 の `gui_settings_choose` で 59 本に、✅UX-12a の `gui_node_parameters` で 60 本になりました。✅UX-12c は `gui_build_D` を、✅UX-12b は `gui_settings_choose` を延ばし、全シナリオの run で古くなっていた 4 本の期待(`deferred_loop_from_scratch` の光の向きの Raw、`menu_actions` の File の 5 項目、`gui_build_optimize` の provider 名の Draw sort、`loop_zone_wire` の Frame Plan の status 行。最後の 1 本は Studio の側を直しました)を直しました。それまでの数え方: ✅UX-8 の `gui_build_curve` で 57 本に、✅EL-5s の `gui_build_ocean_compute` で 58 本になりました。✅PS-1s / IA-1s / UX-11 は新しいシナリオを足さず、`gui_build_ocean`・`gui_build_ocean_compute`・`gui_build_ltc`・`graph_from_blank` を延ばしました。それまでの数え方: ✅GB-3 の `gui_build_ocean` と `gui_build_ltc` で 54 本に、✅RL-1s の `render_reload_external` で 55 本に、✅GB-4 の `gui_build_music` で 56 本になりました。それまでの数え方: ✅UX-3 の `graph_palette_kinds` で 43 本に、✅GB-1 の `gui_build_A`〜`gui_build_E` で 48 本に、✅RSX の `rendering_settings_from_blank` で 49 本に、✅GB-2 の `gui_build_full` と `gui_build_optimize` で 51 本に、✅GL-3a の `graph_fold_decisions` で 52 本になりました。それまでの数え方: ✅LP-4f1 の `loop_view_axis` と ✅LP-4f2 の `graph_template_bloom` で 31 本から 33 本に、✅EW-2 の `engine_window_embedded` で 34 本に、✅Q-19 の `loop_zone_read` で 35 本に、✅PM-3a の `play_pause_step` で 36 本に、✅PM-3b の `play_mode_roundtrip` と `play_view_camera` で 38 本に、✅PM-3c の `play_runtime_objects` で 39 本に、✅PM-3d で `play_view_camera` を `play_mode_roundtrip` にまとめて 38 本に、✅GL-1 の `graph_folded_features` で 39 本に、✅GL-2b の `graph_layers_origin` で 40 本に、✅GL-1d の `graph_from_blank` と `graph_from_blank_forward` で 42 本になりました)。
+現在のシナリオは **67 本**です(`test/studio_scenarios/*.json` の数。✅GL-5b の `gui_graph_new_target` で 67 本になりました。それまでの数え方: ✅MT-1s の `gui_material_from_blank` で 66 本になりました。それまでの数え方: ✅CT-6s の `gui_build_rt_from_blank` で 65 本になりました。✅UX-15b の `gui_lower_layer_pin_freeze` で 63 本に、✅GL-5a の `gui_folded_pass_edit` で 64 本になりました。✅UX-15a は新しいシナリオを足さず、`rendering_settings_from_blank` を延ばしました。それまでの数え方: ✅HW-2s / AV-1s の `gui_assets_watch_verify` で 62 本になりました。それまでの数え方: ✅AB-1s の `gui_build_audio_reactive` で 61 本になりました。✅UX-12e は `gui_node_parameters` を、✅UX-12d と ✅UX-13d は `gui_settings_choose` を延ばしました。✅UX-14 は、CC-1 の後の絵に合わせて `gui_settings_choose`・`gui_build_ocean`・`gui_build_ocean_compute`・`gui_build_ltc` の期待を直しました(`gui_settings_choose` は CC-1c の後に `a954d38c` でもう一度)。それまでの数え方: ✅UX-10 の `gui_settings_choose` で 59 本に、✅UX-12a の `gui_node_parameters` で 60 本になりました。✅UX-12c は `gui_build_D` を、✅UX-12b は `gui_settings_choose` を延ばし、全シナリオの run で古くなっていた 4 本の期待(`deferred_loop_from_scratch` の光の向きの Raw、`menu_actions` の File の 5 項目、`gui_build_optimize` の provider 名の Draw sort、`loop_zone_wire` の Frame Plan の status 行。最後の 1 本は Studio の側を直しました)を直しました。それまでの数え方: ✅UX-8 の `gui_build_curve` で 57 本に、✅EL-5s の `gui_build_ocean_compute` で 58 本になりました。✅PS-1s / IA-1s / UX-11 は新しいシナリオを足さず、`gui_build_ocean`・`gui_build_ocean_compute`・`gui_build_ltc`・`graph_from_blank` を延ばしました。それまでの数え方: ✅GB-3 の `gui_build_ocean` と `gui_build_ltc` で 54 本に、✅RL-1s の `render_reload_external` で 55 本に、✅GB-4 の `gui_build_music` で 56 本になりました。それまでの数え方: ✅UX-3 の `graph_palette_kinds` で 43 本に、✅GB-1 の `gui_build_A`〜`gui_build_E` で 48 本に、✅RSX の `rendering_settings_from_blank` で 49 本に、✅GB-2 の `gui_build_full` と `gui_build_optimize` で 51 本に、✅GL-3a の `graph_fold_decisions` で 52 本になりました。それまでの数え方: ✅LP-4f1 の `loop_view_axis` と ✅LP-4f2 の `graph_template_bloom` で 31 本から 33 本に、✅EW-2 の `engine_window_embedded` で 34 本に、✅Q-19 の `loop_zone_read` で 35 本に、✅PM-3a の `play_pause_step` で 36 本に、✅PM-3b の `play_mode_roundtrip` と `play_view_camera` で 38 本に、✅PM-3c の `play_runtime_objects` で 39 本に、✅PM-3d で `play_view_camera` を `play_mode_roundtrip` にまとめて 38 本に、✅GL-1 の `graph_folded_features` で 39 本に、✅GL-2b の `graph_layers_origin` で 40 本に、✅GL-1d の `graph_from_blank` と `graph_from_blank_forward` で 42 本になりました)。
 `graph_read` は fixture を Graph タブで開き、`list` が objectName を返すこと・無い名前が
 `automation.widget_missing@1` で断られること・キャンバスが描いたものが `get_graph_instances` の中身と合うことを見ます
 ([シナリオ](../../test/studio_scenarios/graph_read.json))。✅GL-1 から root は既定で Render の領域だけを描く(値の node は隠れる)ので、`graph_read` は `Show:` の Value を押してから、root の 2 つの node(値の node `clock` と instance の `left`)を名前で待ちます。GL-1 の前は canvas の node の数(2)を数えていましたが、畳んだ node が並ぶので数えなくなりました。`graph_edit_roundtrip` は**実物の engine で**値の帯を
@@ -4954,6 +5135,10 @@ preview の判定と除外の伝播が直り([第6章 §6.13](06_rendering.md))�
 
 ✅CT-6s の `gui_build_rt_from_blank`(json の step は 79)は、File > New Project > Blank pipeline から GUI だけで、project の RT の shader を書いて trace の task を組みます(上の「RT を Graph で組む(✅CT-6s)」)。Add Object の Cube を置いて保存し(光線が当たる物)、`MainCamera` を選んでから Graph タブの palette を開き、絞り込みに `render.compute` を打ちます。shader の combo の横の **New…**(`pelican.graphCanvasPaletteComputeNew`)を押すと、combo が `project://shaders/ray_tracing  (ray tracing)` になり、project に `shaders/ray_tracing.rgen` / `.rmiss` / `.rchit` があり、`.rgen` が `#include "pelican_frame.glsl"` を持つことを見ます。Return で置くと、engine が 3 つの stage を読んでから `render_compute` とその image `render_compute__color` が描かれ、`get_graph_instances` の task が `ray_tracing` の `raygen` / `miss` / `closesthit` にその組を、`dispatch.rays_from.port` に `color` を持ち、image の format が `R16G16B16A16_SFLOAT` であることを見ます。compute の欄の Shader がその組を示し、reflection error の行が無いことを見てから、task の `color` を `present` の `+ input` へ drag し、notice の `Pass inputs saved.` と、frame plan の順(`__scene_acceleration_structure` → `render_compute` → `present`、`present` が `render_compute__color` を読む)を見ます。viewport の中央が前のグラデーションと違い、隅(miss の空)とも違う(cube の法線の色)ことを見て撮ります。最後に task の **More parameters** → `ray_tracing` の見出しを開き、`raygen` の欄がその組を示すこと、Max recursion に `2` を打って Return で `get_graph_instances` の `max_recursion` が 2 になり、`raygen` が残り、engine が trace を描き続ける(中央がグラデーションと違う)ことを見ます。打つ欄は New Project のフォルダと名前 `gb_rt`、palette の絞り込みの `render.compute`、Max recursion の `2` です([RT を Blank から組むシナリオ](../../test/studio_scenarios/gui_build_rt_from_blank.json))。ray tracing の pipeline を持つ device が要ります。実装者の run では 3 回目に緑でした(報告は 81 step と数えています。1・2 回目の赤は、シナリオの node の添字の書き違い —— Blank の graph は node が 0 個で、frame plan の先頭は `__scene_acceleration_structure` —— を直したもの)。報告の画素は、中央が `#bcbbff`、隅が `#65788b`、置く前のグラデーションの中央が `#bcbcbc` です(シナリオは値ではなく「違うこと」を見ます)。
 
+✅MT-1s の `gui_material_from_blank`(json の step は 91)は、File > New Project > Blank pipeline から GUI だけで、箱の色を変えます(§13.1 の「Studio の Materials のドック」)。Add Object の Cube を置いて保存し、Frame Plan の **Add material pass…** で Forward opaque の pass `forward_opaque`(Create missing targets で `scene_color`、forward の既定にする)を足して engine の起こし直しを待ち、`scene_color` を `present` の可変の帯へ drag して、viewport に箱が出る(色が 64 以下で、中央が隅の背景とも前のグラデーションとも違う)ことを見ます(`add_primitive_object` と同じ道)。**View > Materials** でドックを前に出し、`list_materials` の文書が 0 件であることを見てから **New material…** を押し、Surface で `openpbr / opaque_single_sided` を選びます。名前は打たずに `material`、path は `materials/material.material.json` です。Create で engine の一覧にその文書が `registered: true` で入り、エディタの見出しがそれを示します。`base_color` の swatch で色のダイアログを開き、hex に `#ff0000` を打って OK で、文書の `base_color` が `[1.0, 0.0, 0.0, 1.0]` になります。Outliner で Cube を選び、Inspector の Material が `Model default` で、その下の 1 行が `Applies to every Cube in this project` を言うことを見てから、combo で `material` を選ぶと、`get_material_bindings` の primitive 0 がそれになり、**起こし直さずに**箱の中央が赤寄り(`rgb` の赤が緑と青より 40 以上大きい)になり、Restart engine のボタンが出ていないことを見ます。続けて `specular_roughness` の spin に `0.8` を打って Return で文書がその値を持ち、ドックの Undo を 2 回押すと、1 回目で roughness が、2 回目で赤が文書から外れ(文書に `base_color` が無い。割り当ては残したまま)、箱の中央が赤寄りでなくなります。打つ欄は New Project のフォルダと名前 `material_project`、色の hex の `#ff0000`、roughness の `0.8` です([Materials のドックのシナリオ](../../test/studio_scenarios/gui_material_from_blank.json))。実装者の run では緑でした(報告は 93 step と数え、23.7 s、`PELICAN_STUDIO_SCREEN=1`)。報告の画素は、箱の中央が割り当て前 `#756f63`、割り当て後 `rgb(74, 1, 0)`、Undo の後 `rgb(66, 62, …)` です。`restart_required` の道、テクスチャ、primitive ごとの行、拒否はこのシナリオでは通していません。
+
+✅GL-5b の `gui_graph_new_target`(json の step は 60)は、File > New Project > Blank pipeline から GUI だけで、Graph タブの中で render target を宣言して使います(上の「New render target を Frame Plan と Graph で 1 つの関数に(✅GL-5b)」)。Graph タブの palette を `target_ref` に絞り、target の combo で **New render target…** を選ぶと note が `OK opens New render target` を言い、Return で palette が閉じて New render target の form が名前 `render_target` 入りで開きます(打ちません)。種類で Explicit format を選んで format が `R16G16B16A16_SFLOAT` であることを見て OK を押すと、`get_render_authoring_context` の `render_targets[0]` が `render_target` になり、`render_target_ref` の node が置かれ、文書の `nodes[0].parameters.name` がそれを名指します。続けて palette を `material_pass` に絞り、contract `forward_opaque_v1` で置くと engine が起こし直し(route default)、draw ループのゾーンが描かれます。`render_target_ref` の resource の出力を material pass の color のソケットへ drag して文書の `nodes[4].inputs.color.node` が `render_target_ref` になり、同じ出力を `present` の `+` 入力へ drag すると `Pass inputs saved.` と、target を書く pass から `present` への線(`render_material_pass->present`。GL-1f)が出て、中央の画素がグラデーションと違います。Graph タブの Undo でその線が消え、画素が前と同じに戻ることを見ます。打つ欄は New Project のフォルダと名前 `graph_target`、palette の絞り込みの `target_ref` と `material_pass` です([Graph で New render target のシナリオ](../../test/studio_scenarios/gui_graph_new_target.json))。実装者の run では 3 回目に緑でした(23.6 s。1 回目は既定の Scene color の target を material pass の color に繋ぐ編集が format mismatch で断られ、form で Explicit format を選ぶ手順を足した。2 回目は `present` への線の名前の書き違い)。報告の画素は、中央が `#bcbcbc` → `#000000` → Undo で `#bcbcbc` です。詳細欄の出力の付け替えと `New target: …` はこのシナリオでは通していません(unit test だけ)。既存の `gui_folded_pass_edit` と `graph_palette_kinds` も、実装者の run で緑でした。
+
 ⚠ **2 つの注意。**(1) `open_project` に**今開いている directory** を渡すと何も起きません(`EmbeddedViewport::openProject`
 がそう作られています)。ディスクから読み直させたいときは、別の project を開いてから戻ります。
 (2) `screenshot` の既定(`widget` モード)は Qt の widget 木を描くので、**埋め込まれた engine の窓は写りません**
@@ -4982,6 +5167,9 @@ viewport の隣の panel を撮っていました。今は窓の client の原�
 対する 0〜1 の割合なので、窓の大きさを知らずに書けます。配列でない・2 要素でない・範囲外なら `automation.bad_request@1` です。
 `result` step の `remember` で 1 点の色を覚え、別の点を `value_of` と `op`(`eq` / `ne`)で比べれば「同じ縞の下も同じ色、隣の縞は違う色」の
 ように、output transform がどんな色にしても絵の形を判定できます。
+✅MT-1s から、同じ点の色を `[r, g, b]`(0〜255)で並べた **`rgb`** も返ります([rgb を足す所](../../src/devstudio/automation/automationcommands.cpp#L2138)。
+`pixels` はそのまま)。`rgb[0][1]` を `remember` し、`rgb[0][0]` を `op: gt` と `plus` で比べれば、色の濃さを知らずに「赤が緑より 40 以上大きい」
+を言えます(`gui_material_from_blank`。シナリオの README の screenshot の段落)。
 
 **この面が最初の往復で本物のバグを見つけました。**値の帯を click → type → Enter すると「Graph change saved.」と
 出るのに古い値が保存される —— `QDoubleSpinBox` の `keyboardTracking=false` と、editor の filter が Enter を先に
@@ -5274,8 +5462,10 @@ with PelicanRpc("mygame") as rpc:   # 第 1 引数は project の dir。既定�
 | Assets のドック(View > Assets、行ごとの Reload when saved outside とドックの Undo、監視の 1 行、Track asset contents…、照合の印と一覧、Verify again / Update manifest の確認の 1 行、`edit_project_settings` と AV-1 の拒否の 1 文)、監視が開いているときの `reload_shaders` の `committed: false` を読み直しとして扱う | ✅HW-2s / AV-1s `78737fdf`(engine の HW-1 / AV-1 / PJ-1。シナリオ `gui_assets_watch_verify`) |
 | Frame Plan の Backends の Pin this candidate / Unpin(`edit_vulkan_plan_pins`)、Physical plan の Freeze / Remove / Eject again(`put_vulkan_physical_fragment`)と `physical_fragment_stale` の 1 文、常駐 BLAS の節、置き換えの来歴(Replaced by と Compile rewrites)、Layers の `is replaced by` の穴の直し | ✅UX-15b `5c5110ef`(engine の EL-2。シナリオ `gui_lower_layer_pin_freeze`) |
 | Rendering settings の render_strategy の name と parameters、draw_sort の XR の並べ方(Per view)、graph_transforms の行、XR の Measured gate と minimum gain、preset の値の灰色の行、material の `gpu_draw_source` の欄(Other (JSON) を外す) | ✅UX-15a `06a9cd2d`(シナリオ `rendering_settings_from_blank` を延長) |
-| rendering 節の pass を Graph の詳細欄で Pass Editor と同じ部品・同じ `presetPassEditParams()` で直す、詳細欄の Serial / Isolate / No alias、畳んだ node の tooltip を出どころごとに | ✅GL-5a `6565221b`(シナリオ `gui_folded_pass_edit`。task の欄と GL-5b / GL-5c は未着手) |
+| rendering 節の pass を Graph の詳細欄で Pass Editor と同じ部品・同じ `presetPassEditParams()` で直す、詳細欄の Serial / Isolate / No alias、畳んだ node の tooltip を出どころごとに | ✅GL-5a `6565221b`(シナリオ `gui_folded_pass_edit`。task の欄と GL-5c は未着手。GL-5b は下の行) |
 | `render.compute` の `ray_tracing` を汎用の欄に(stage ごとの shader の候補、union の Shader / List)、`dispatch` の `groups_from` / `rays_from` の port を task の image port の combo に、compute の欄と palette の New… で RT の雛形(raygen / miss / closest hit)、Task Editor の New ray tracing も同じ雛形、RT の拒否 16 種の 1 文 | ✅CT-6s `827eddd7`(engine の CT-6。シナリオ `gui_build_rt_from_blank`。mode の変更は再起動の道に乗らず拒否の 1 文まで) |
+| Materials のドック(View > Materials、`list_materials` の一覧と見えている間の poll、surface の宣言から作る欄 —— slider / spin / 色の swatch(linear は sRGB で見せる)/ check / テクスチャの combo、default と違う値の太字と Reset to default、Tags / Alpha mode / Surface と `restart_required` の再起動、`list_surfaces` から New material…、Assign to selected object、ドックの Undo、`material.*` と `external_modification` の 1 文)、Inspector の Material の行(model 単位の 1 行と使う object の数、primitive ごとの行、自分の Undo)、screenshot の `rgb` | ✅MT-1s `2d81ef51`(engine の MT-1 / MT-1b。シナリオ `gui_material_from_blank`。object ごとの割り当ては engine の MT-2(`44b7b50a`)を使う次の Studio の作業) |
+| New render target を Frame Plan と Graph で 1 つの関数に(`presentNewRenderTarget()` / `proposedRenderTargetName()`)、palette の `render.target_ref` の combo の New render target…、詳細欄の color 出力の行(宣言済みの target から選び直す・`New target: <pass>_color…`)、詳細欄の編集が断られたら root から読み直す、Add の入口と書き先の表 | ✅GL-5b `60ff3a2c`(シナリオ `gui_graph_new_target`。Add は束ねていない —— 寄せ方は GL-6 の判断。GL-5c は未着手) |
 
 Qt Inspectorは再帰schemaのListを行IDと値の一覧で表示します。`Add`で行の値をJSON入力し、`Edit`で選択行の値を変更、`Remove`で削除、`Up`/`Down`で順序を変えます。`$row`や`next_id`を入力する必要はありません。移動は同じ行IDを保持し、通常のUndo/Redoと保存を使用します。省略されたListにも行を追加できます。generated・pending・read-onlyのcomponentとList内部のネストしたListは編集対象外です。
 
