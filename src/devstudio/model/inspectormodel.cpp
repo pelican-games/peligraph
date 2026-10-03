@@ -761,6 +761,108 @@ std::string componentUnavailableDescription(std::string_view code) {
     return sentence + " (" + std::string{code} + ")";
 }
 
+namespace {
+
+// CT-6s, decision 5. One sentence per code of the ray tracing task parser
+// (computetaskdefinitionjson.cpp); {task} is the task the message names
+// ("compute task '<name>'"), {name} what it quotes after `quoted`. A new code
+// reads as the engine's message until a row is added here.
+struct RayTracingRefusalText {
+    std::string_view code;
+    std::string_view sentence;
+    std::string_view quoted;
+};
+constexpr std::array<RayTracingRefusalText, 16> RayTracingRefusalTexts{{
+    {"pelican.ray_layout_mode_change_requires_restart@1",
+     "Whether the project has a ray group layout changes only when the engine restarts: restart "
+     "it to apply this",
+     ""},
+    {"pelican.ray_tracing.legacy_syntax_with_layout@1",
+     "This project has a ray group layout: {task} names its shaders in traced_ray_types, misses "
+     "and hit_shaders, not miss and closesthit",
+     ""},
+    {"pelican.ray_tracing.unknown_shader_stage@1",
+     "{task}'s ray_tracing has {name}, which the engine does not read", "field '"},
+    {"pelican.ray_tracing.unsupported_shader_stage@1",
+     "{task} cannot name a {name} shader here: any-hit and intersection shaders belong to a hit "
+     "group of a ray group layout",
+     "stage '"},
+    {"pelican.ray_tracing.shader_stage_required@1",
+     "{task} needs a raygen, a miss and a closesthit shader", ""},
+    {"pelican.ray_tracing.invalid_shader_reference@1",
+     "{task}'s ray tracing stages must each name a shader", ""},
+    {"pelican.ray_tracing.traced_ray_types_invalid@1",
+     "{task}'s traced_ray_types must be ray types of the ray group layout, each once", ""},
+    {"pelican.ray_tracing.miss_shader_missing@1",
+     "{task} needs a miss shader for every miss of the ray group layout", ""},
+    {"pelican.ray_tracing.miss_shader_unknown@1", "The ray group layout has no miss {name}", "miss='"},
+    {"pelican.ray_tracing.hit_shader_missing@1",
+     "{task} needs a closest-hit shader for every ray type it traces and every hit group", ""},
+    {"pelican.ray_tracing.hit_shader_untraced@1",
+     "{task} gives hit shaders for {name}, a ray type it does not trace", "ray type '"},
+    {"pelican.ray_tracing.hit_shader_unknown_group@1",
+     "The ray group layout has no hit group {name}", "group='"},
+    {"pelican.ray_tracing.invalid_recursion@1",
+     "{task}'s max_recursion must be a whole number from 1", ""},
+    {"pelican.ray_tracing.invalid_trace_dispatch@1",
+     "A ray tracing task launches its rays with exactly one of rays [x, y, z], rays_from or "
+     "indirect",
+     ""},
+    {"pelican.ray_tracing.rays_from_requires_pipeline@1",
+     "Only a ray tracing task launches rays_from an image: a compute task counts groups", ""},
+    {"pelican.ray_tracing.trace_extent_required@1",
+     "{task} needs to say how many rays it launches: rays, rays_from or indirect", ""},
+}};
+
+// The text after `marker` in `message`, up to the next quote.
+std::string quotedAfter(std::string_view message, std::string_view marker) {
+    if (marker.empty()) return {};
+    const auto at = message.find(marker);
+    if (at == std::string_view::npos) return {};
+    const auto begin = at + marker.size();
+    const auto end = message.find('\'', begin);
+    return std::string{message.substr(begin, end == std::string_view::npos ? std::string_view::npos : end - begin)};
+}
+
+} // namespace
+
+std::string rayTracingRefusalDescription(std::string_view code, std::string_view message) {
+    const RayTracingRefusalText *entry = nullptr;
+    for (const auto &candidate : RayTracingRefusalTexts)
+        if (code == candidate.code || message.find(candidate.code) != std::string_view::npos) {
+            entry = &candidate;
+            break;
+        }
+    if (entry == nullptr) return {};
+    // The parser's own message, from its code on: the task and what it quotes.
+    const auto own = message.substr(std::min(message.size(), message.find(entry->code)));
+    const auto task = quotedAfter(own, "task '");
+    const auto name = quotedAfter(own, entry->quoted);
+    std::string pattern{entry->sentence};
+    // A layout's fields where the project has none: the other form.
+    if (entry->code == "pelican.ray_tracing.unknown_shader_stage@1" &&
+        (name == "traced_ray_types" || name == "misses" || name == "hit_shaders"))
+        pattern = "This project has no ray group layout: {task} names its shaders in miss and "
+                  "closesthit, not {name}";
+    std::string sentence;
+    for (std::size_t at = 0; at < pattern.size();) {
+        const auto open = pattern.find('{', at);
+        if (open == std::string::npos) {
+            sentence += pattern.substr(at);
+            break;
+        }
+        const auto close = pattern.find('}', open);
+        sentence += pattern.substr(at, open - at);
+        const auto key = pattern.substr(open + 1, close - open - 1);
+        if (key == "task")
+            sentence += task.empty() ? (open == 0 ? "The task" : "the task") : "Task " + task;
+        else
+            sentence += name.empty() ? "?" : name;
+        at = close + 1;
+    }
+    return sentence + " (" + std::string{entry->code} + ").";
+}
+
 std::string knownRefusalDescription(std::string_view code, std::string_view message,
                                     bool name_document) {
     // RL-1s, decision 5: the render document on disk was rewritten and its
@@ -774,6 +876,8 @@ std::string knownRefusalDescription(std::string_view code, std::string_view mess
     for (const auto &entry : UnavailableComponentTexts)
         if (message.find(entry.code) != std::string_view::npos)
             return componentUnavailableDescription(entry.code);
+    // CT-6s, decision 5: a render.compute's ray tracing.
+    if (auto ray = rayTracingRefusalDescription(code, message); !ray.empty()) return ray;
     // LP-4a: a view_select refusal carries its fields in the message.
     const nlohmann::json error{{"code", std::string{code}}, {"message", std::string{message}}};
     if (auto view_select = viewSelectRefusalDescription(error); !view_select.empty())

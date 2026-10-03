@@ -278,4 +278,52 @@ ShaderSocketRewrite variadicShaderSockets(std::string_view source);
 // Whether `source` holds a block Fix sockets wrote.
 bool shaderHasFixedSockets(std::string_view source);
 
+// --- CT-6s, decision 3: a ray tracing set "New..." writes for a
+// render.compute -- shaders/<name>.rgen, .rmiss and .rchit, one stem, which
+// the task names as raygen, miss and closesthit alike (the stage picks the
+// file). The form is the engine's rt_shadow_mask_pipeline's (no ray group
+// layout): pelican_sets.glsl and pelican_frame.glsl, the scene's
+// acceleration structure at the frame set's ray query binding, one storage
+// image port written by the ray generation shader.
+//   - raygen: one ray per pixel from the camera (the frame's view and
+//     projection), two more through the pixels right and below; where all
+//     three hit, the surface normal they span is the colour (n * 0.5 + 0.5),
+//     elsewhere a dim sky by the ray's height;
+//   - miss: nothing hit;
+//   - closest hit: where the ray hit (the normal needs the triangle's
+//     vertices, which a set without a ray group layout cannot read, so the
+//     ray generation shader takes it from its neighbours).
+enum class RayTracingTemplateStage { raygen, miss, closest_hit };
+inline constexpr std::array RayTracingTemplateStages{
+    RayTracingTemplateStage::raygen,
+    RayTracingTemplateStage::miss,
+    RayTracingTemplateStage::closest_hit,
+};
+inline constexpr std::string_view RayTracingTemplateLabel =
+    "Ray tracing (raygen + miss + closest hit)";
+// The storage image port the ray generation shader writes
+// (pelican_resource_color, R16G16B16A16_SFLOAT).
+inline constexpr std::string_view RayTracingTemplatePort = "color";
+// ".rgen", ".rmiss", ".rchit".
+std::string_view rayTracingTemplateExtension(RayTracingTemplateStage stage);
+std::string rayTracingShaderTemplate(RayTracingTemplateStage stage,
+                                     std::string_view name);
+
+// The name New... proposes: `base` ("ray_tracing" when it folds to
+// nothing), then _2, _3... past every name that has any of the three files.
+std::string rayTracingTemplateName(const std::filesystem::path &project_root,
+                                   std::string_view base = "ray_tracing");
+
+struct RayTracingTemplateWrite {
+    // The three files, in RayTracingTemplateStages' order.
+    std::vector<std::filesystem::path> paths;
+    std::string reference;
+    // False when one of them was already there: then none is written.
+    bool created = false;
+};
+// Writes the three files unless one of them is already there. Throws for an
+// invalid name or a write that fails; never overwrites.
+RayTracingTemplateWrite writeRayTracingTemplate(
+    const std::filesystem::path &project_root, std::string_view name);
+
 } // namespace PelicanStudio

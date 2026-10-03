@@ -261,6 +261,15 @@ modelReferenceChoices(std::string_view current,
 [[nodiscard]] std::string knownRefusalDescription(std::string_view code,
                                                   std::string_view message,
                                                   bool name_document = true);
+// CT-6s, decision 5: render.compute's ray tracing refused by the task
+// parser (pelican.ray_tracing.*@1, a ray group layout's form where the
+// project has none or the other way round, pelican.ray_layout_mode_change_
+// requires_restart@1), found in the code or anywhere in the message. Answers
+// "<sentence> (<code>).", the task and the field, stage, miss or ray type
+// the message quotes named in it; empty for any other refusal.
+// knownRefusalDescription answers it too.
+[[nodiscard]] std::string rayTracingRefusalDescription(std::string_view code,
+                                                       std::string_view message);
 // LP-4a: the four view_select refusals (LP-Va) are sentences made from the
 // refusal's own fields -- the pass, the view family, the axis, and for a
 // value past the axis its value and length:

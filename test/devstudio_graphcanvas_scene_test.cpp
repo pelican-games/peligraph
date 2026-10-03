@@ -12246,3 +12246,251 @@ TEST_CASE("AB-1s decision 2 / UX-13b decision 5: value.sample_table's dialog is 
     std::error_code ignored;
     std::filesystem::remove_all(root, ignored);
 }
+
+// --- CT-6s (engine CT-6): a ray tracing task built in the Graph --
+// render.compute's ray_tracing and dispatch in the generic fields, a ray
+// tracing set from New..., and the ray tracing refusals in one sentence.
+
+namespace {
+
+Json ct6sPorts() {
+    return Json{{"color", {{"kind", "image"}, {"access", "write"}, {"binding", "storage"}}},
+                {"depth", {{"kind", "image"}, {"access", "read"}, {"binding", "sampled"}}},
+                {"counts", {{"kind", "buffer"}, {"access", "read"}}}};
+}
+
+Json ct6sDocument(const Json &parameters) {
+    return Json{{"schema", "pelican.graph"},
+                {"version", 1},
+                {"definitions", Json::object()},
+                {"nodes", Json::array({{{"id", "trace__color"},
+                                        {"op", "render.image"},
+                                        {"parameters", {{"format", "R16G16B16A16_SFLOAT"},
+                                                        {"extent_scale", 1.0},
+                                                        {"usage", {"STORAGE", "SAMPLED"}}}},
+                                        {"outputs", Json::array({"resource"})}},
+                                       {{"id", "trace"},
+                                        {"op", "render.compute"},
+                                        {"parameters", parameters},
+                                        {"inputs", {{"color", {{"node", "trace__color"}, {"port", "resource"}}}}},
+                                        {"outputs", Json::array({"color"})}}})}};
+}
+
+// A project whose shaders folder has a set (a), a second miss (b), a
+// compute shader (c) and an any-hit shader (d).
+std::filesystem::path ct6sProject() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_ct6s_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "shaders");
+    for (const char *file : {"a.rgen", "a.rmiss", "a.rchit", "b.rmiss", "c.comp", "d.rahit"})
+        std::ofstream{root / "shaders" / file} << "x";
+    return root;
+}
+
+} // namespace
+
+TEST_CASE("CT-6s decision 1: ray_tracing is the generic fields' -- each stage lists that stage's "
+          "shaders, Max recursion a spin, a miss made a list keeps its shader -- and a task "
+          "that runs a shader has none",
+          "[devstudio][graph-canvas][scene][ct6s]") {
+    (void)application();
+    const auto root = ct6sProject();
+    {
+        Ux2Tab tab{false};
+        tab.widget->setProjectRoot(root);
+        const std::string set = "project://shaders/a";
+        auto parameters = Json{{"ports", ct6sPorts()},
+                               {"ray_tracing", {{"raygen", set}, {"miss", set}, {"closesthit", set}}},
+                               {"dispatch", {{"rays_from", {{"port", "color"}}}}}};
+        tab.read(ct6sDocument(parameters), "ct6s-0");
+        tab.answer("get_graph_catalog", engineCatalog());
+        const auto pick = [&] {
+            tab.widget->scene().selectNode("trace");
+            QCoreApplication::processEvents();
+        };
+        pick();
+        const auto own = PelicanStudio::GraphCanvasParameterFields::ownFieldNames("render.compute");
+        CHECK(std::ranges::find(own, "ray_tracing") == own.end());
+        CHECK_FALSE(tab.field<QLabel>("pelican.graphCanvasParameters.ray_tracing.label")->isHidden());
+        // Each stage: the project's files of that stage only.
+        auto *raygen = tab.field<QComboBox>("pelican.graphCanvasParameters.ray_tracing.raygen");
+        CHECK(ux2Items(*raygen) == QStringList{"project://shaders/a"});
+        CHECK(raygen->currentData().toString() == QStringLiteral("project://shaders/a"));
+        auto *miss = tab.field<QComboBox>("pelican.graphCanvasParameters.ray_tracing.miss");
+        CHECK(ux2Items(*miss) == QStringList{"(none)", "Shader", "List"});
+        CHECK(miss->currentText() == QStringLiteral("Shader"));
+        CHECK(ux2Items(*tab.field<QComboBox>("pelican.graphCanvasParameters.ray_tracing.miss.shader")) ==
+              QStringList{"(none)", "project://shaders/a", "project://shaders/b"});
+        CHECK(ux2Items(*tab.field<QComboBox>("pelican.graphCanvasParameters.ray_tracing.closesthit.shader")) ==
+              QStringList{"(none)", "project://shaders/a"});
+
+        // Max recursion: a spin, one edit, the rest of ray_tracing kept.
+        auto *recursion = tab.field<QDoubleSpinBox>("pelican.graphCanvasParameters.ray_tracing.max_recursion");
+        CHECK(recursion->value() == 1.0);
+        recursion->setValue(2.0);
+        REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == 1; }));
+        auto expected = parameters;
+        expected["ray_tracing"]["max_recursion"] = 2;
+        CHECK(tab.sent(1).at("parameters") == expected);
+        tab.commit(ct6sDocument(expected), "ct6s-1");
+        pick();
+
+        // A miss made a list keeps the shader it had as its first row.
+        miss = tab.field<QComboBox>("pelican.graphCanvasParameters.ray_tracing.miss");
+        miss->setCurrentIndex(miss->findText(QStringLiteral("List")));
+        QCoreApplication::processEvents();
+        expected["ray_tracing"]["miss"] = Json::array({set});
+        CHECK(tab.sent(2).at("parameters") == expected);
+        CHECK(tab.field<QPushButton>("pelican.graphCanvasParameters.ray_tracing.miss.array.add") != nullptr);
+
+        // A task that runs a compute shader shows no ray tracing.
+        tab.commit(ct6sDocument(Json{{"ports", ct6sPorts()},
+                                     {"shader", "project://shaders/c"},
+                                     {"dispatch", {{"groups", {1, 1, 1}}}}}),
+                   "ct6s-2");
+        pick();
+        CHECK(tab.field<QLabel>("pelican.graphCanvasParameters.ray_tracing.label")->isHidden());
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+TEST_CASE("CT-6s decision 2: dispatch is the catalog's fields -- groups a list or x / y / z, "
+          "rays_from's port one of the task's image ports, indirect's buffer the graph's "
+          "dispatch buffers",
+          "[devstudio][graph-canvas][scene][ct6s]") {
+    (void)application();
+    Ux2Tab tab{false};
+    const std::string set = "project://shaders/a";
+    auto parameters = Json{{"ports", ct6sPorts()},
+                           {"ray_tracing", {{"raygen", set}, {"miss", set}, {"closesthit", set}}},
+                           {"dispatch", {{"rays_from", {{"port", "color"}}}}}};
+    tab.read(ct6sDocument(parameters), "ct6s-0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    tab.widget->scene().selectNode("trace");
+    QCoreApplication::processEvents();
+    CHECK(tab.field<QToolButton>("pelican.graphCanvasParameters.dispatch.fold") != nullptr);
+    auto *groups = tab.field<QComboBox>("pelican.graphCanvasParameters.dispatch.groups");
+    CHECK(ux2Items(*groups) == QStringList{"List", "Custom"});
+    CHECK(groups->currentText() == QStringLiteral("List"));
+    // The port is picked from the task's own image ports, not typed.
+    auto *port = tab.field<QComboBox>("pelican.graphCanvasParameters.dispatch.rays_from.port");
+    CHECK_FALSE(port->isHidden());
+    CHECK(ux2Items(*port) == QStringList{"color", "depth"});
+    CHECK(port->currentText() == QStringLiteral("color"));
+    CHECK(ux2Items(*tab.field<QComboBox>("pelican.graphCanvasParameters.dispatch.groups_from.port")) ==
+          QStringList{"(choose)", "color", "depth"});
+    tab.pick(port, QStringLiteral("depth"));
+    auto expected = parameters;
+    expected["dispatch"]["rays_from"]["port"] = "depth";
+    CHECK(tab.sent(1).at("parameters") == expected);
+    // indirect's buffer: chosen from the graph's buffers, as CT-5's lists are.
+    CHECK(tab.field<QComboBox>("pelican.graphCanvasParameters.dispatch.indirect.buffer")->isEditable());
+}
+
+TEST_CASE("CT-6s decision 3: New... beside a compute task's Shader writes a ray tracing set "
+          "(raygen + miss + closest hit) under a free name it proposes, and the task traces "
+          "with it; nothing already there is overwritten",
+          "[devstudio][graph-canvas][scene][ct6s]") {
+    (void)application();
+    using PelicanStudio::RayTracingTemplateStage;
+    // The engine's form: its includes, the scene at the ray query binding,
+    // one storage image port, one payload the three stages share.
+    const auto raygen = PelicanStudio::rayTracingShaderTemplate(RayTracingTemplateStage::raygen, "rt");
+    for (const char *part : {"#include \"pelican_sets.glsl\"", "#include \"pelican_frame.glsl\"",
+                             "binding = PELICAN_RAY_QUERY_TLAS_BINDING", "pelican_resource_color",
+                             "rayPayloadEXT vec4 hit", "traceRayEXT", "imageStore"})
+        CHECK(raygen.find(part) != std::string::npos);
+    CHECK(PelicanStudio::rayTracingShaderTemplate(RayTracingTemplateStage::miss, "rt")
+              .find("rayPayloadInEXT vec4 hit") != std::string::npos);
+    CHECK(PelicanStudio::rayTracingShaderTemplate(RayTracingTemplateStage::closest_hit, "rt")
+              .find("gl_HitTEXT") != std::string::npos);
+
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_ct6s_new_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "shaders");
+    {
+        const Json document{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+                            {"definitions", Json::object()},
+                            {"nodes", Json::array({Json{{"id", "task"}, {"op", "render.compute"},
+                                                        {"parameters", {{"shader", "engine://some_compute"},
+                                                                        {"dispatch", {{"groups", {1, 1, 1}}}},
+                                                                        {"ports", Json::object()}}},
+                                                        {"outputs", Json::array()}}})}};
+        ZoneHarness h{document};
+        h.catalog["modules"][1]["operations"].push_back(el5sComputeCatalogEntry());
+        h.open();
+        int submitted = 0;
+        int changed = 0;
+        PelicanStudio::GraphCanvasComputeFields fields{h.model, [&] { ++submitted; }};
+        fields.setShadersChanged([&] { ++changed; });
+        fields.setProjectRoot(root);
+        const auto drawn = h.model.nodes({});
+        REQUIRE(drawn.size() == 1);
+        fields.showNode(&drawn[0], {});
+        auto *new_shader = fields.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasCompute.newShader"));
+        REQUIRE(new_shader != nullptr);
+        CHECK(new_shader->isEnabled());
+        new_shader->click();
+        auto *kind = fields.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasCompute.shaderTemplateKind"));
+        REQUIRE(kind != nullptr);
+        CHECK(kind->currentText() == QStringLiteral("Ray tracing (raygen + miss + closest hit)"));
+        // Proposed, so nothing has to be typed.
+        auto *name = fields.findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasCompute.shaderTemplateName"));
+        REQUIRE(name != nullptr);
+        CHECK(name->text() == QStringLiteral("ray_tracing"));
+        fields.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasCompute.createShader"))->click();
+        for (const char *file : {"ray_tracing.rgen", "ray_tracing.rmiss", "ray_tracing.rchit"})
+            CHECK(std::filesystem::exists(root / "shaders" / file));
+        CHECK(changed == 1);
+        CHECK(submitted == 1);
+        // The task traces with it once the engine has read its ports.
+        const auto asked = el5sAsked(h);
+        REQUIRE(asked.size() == 1);
+        CHECK(asked[0].second.at("reference") == "project://shaders/ray_tracing");
+        CHECK(fields.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasCompute.shaderTemplateNotice"))
+                  ->text()
+                  .contains(QStringLiteral("shaders/ray_tracing.rgen")));
+        // The next proposal moves on; nothing there is written over, and a
+        // set with one file already there is not written at all.
+        CHECK(PelicanStudio::rayTracingTemplateName(root) == "ray_tracing_2");
+        CHECK_FALSE(PelicanStudio::writeRayTracingTemplate(root, "ray_tracing").created);
+        std::ofstream{root / "shaders" / "mine.rmiss"} << "keep";
+        CHECK_FALSE(PelicanStudio::writeRayTracingTemplate(root, "mine").created);
+        CHECK_FALSE(std::filesystem::exists(root / "shaders" / "mine.rgen"));
+        CHECK(PelicanStudio::rayTracingTemplateName(root, "mine") == "mine_2");
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+TEST_CASE("CT-6s decision 5: a ray tracing task's refusal reads as one sentence -- the layout's "
+          "form where the project has none and the other way round, a field the engine does "
+          "not read, and the layout mode that changes only on a restart",
+          "[devstudio][graph-canvas][scene][ct6s]") {
+    using PelicanStudio::knownRefusalDescription;
+    CHECK(knownRefusalDescription(
+              "render_pipeline_preflight_failed",
+              "render pipeline preflight failed: pelican.ray_tracing.legacy_syntax_with_layout@1: compute "
+              "task 'trace' must use traced_ray_types/misses/hit_shaders") ==
+          "This project has a ray group layout: Task trace names its shaders in traced_ray_types, misses "
+          "and hit_shaders, not miss and closesthit (pelican.ray_tracing.legacy_syntax_with_layout@1).");
+    CHECK(knownRefusalDescription({}, "pelican.ray_tracing.unknown_shader_stage@1: compute task 'trace' "
+                                      "declares unknown ray tracing field 'traced_ray_types'") ==
+          "This project has no ray group layout: Task trace names its shaders in miss and closesthit, not "
+          "traced_ray_types (pelican.ray_tracing.unknown_shader_stage@1).");
+    CHECK(knownRefusalDescription({}, "pelican.ray_tracing.unknown_shader_stage@1: compute task 'trace' "
+                                      "declares unknown ray tracing field 'rgen'") ==
+          "Task trace's ray_tracing has rgen, which the engine does not read "
+          "(pelican.ray_tracing.unknown_shader_stage@1).");
+    CHECK(knownRefusalDescription({}, "pelican.ray_tracing.invalid_recursion@1: compute task 'trace' "
+                                      "max_recursion must be a positive uint32 integer") ==
+          "Task trace's max_recursion must be a whole number from 1 (pelican.ray_tracing.invalid_recursion@1).");
+    CHECK(knownRefusalDescription("pelican.ray_layout_mode_change_requires_restart@1",
+                                  "ray layout semantic mode cannot change during a process lifetime") ==
+          "Whether the project has a ray group layout changes only when the engine restarts: restart it to "
+          "apply this (pelican.ray_layout_mode_change_requires_restart@1).");
+    CHECK(PelicanStudio::rayTracingRefusalDescription({}, "graph.something_else@1: no").empty());
+}

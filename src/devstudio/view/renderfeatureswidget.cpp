@@ -382,6 +382,31 @@ class ComputeTaskDialog final : public QDialog, public RestartsEngine {
     const int index = task_box->currentIndex() - tasks.size();
     return index >= 0 && index < 2 ? index : -1;
   }
+  // CT-6s, decision 3: the ray tracing set a new ray tracing draft names,
+  // written into the project once per dialog; empty when it has no project
+  // or the write failed (the notice says why).
+  QString ray_template_reference;
+  QString ray_template_failure;
+  QString rayTracingTemplateReference() {
+    if (!ray_template_reference.isEmpty() || !ray_template_failure.isEmpty())
+      return ray_template_reference;
+    const std::filesystem::path root{viewport.projectRoot().toStdWString()};
+    if (root.empty()) {
+      ray_template_failure = tr("No project is open to write the shaders into.");
+      return {};
+    }
+    try {
+      const auto written =
+          writeRayTracingTemplate(root, rayTracingTemplateName(root));
+      if (written.created)
+        ray_template_reference = QString::fromStdString(written.reference);
+      else
+        ray_template_failure = tr("The shaders' name was taken meanwhile.");
+    } catch (const std::exception &error) {
+      ray_template_failure = QString::fromUtf8(error.what());
+    }
+    return ray_template_reference;
+  }
   void initializeNewDraft(int index) {
     if (!new_drafts[index].root_digest.isEmpty())
       return;
@@ -390,12 +415,29 @@ class ComputeTaskDialog final : public QDialog, public RestartsEngine {
       task.insert("shader", "project://shaders/compute");
       task.insert("dispatch", QJsonObject{{"groups", QJsonArray{1, 1, 1}}});
     } else {
-      task.insert(
-          "ray_tracing",
-          QJsonObject{{"raygen", "project://shaders/raygen"},
-                      {"miss", QJsonArray{"project://shaders/miss"}},
-                      {"closesthit", QJsonArray{"project://shaders/hit"}}});
-      task.insert("dispatch", QJsonObject{{"rays", QJsonArray{1, 1, 1}}});
+      // CT-6s, decision 3: the set the Graph's New... writes (raygen + miss
+      // + closest hit), written under a free name -- a draft never names a
+      // shader with no file behind it. A project with a ray tracing task
+      // starts from that task instead (below), and nothing is written.
+      const bool copies = std::any_of(tasks.begin(), tasks.end(), [](const auto &entry) {
+        return entry.toObject().value("declaration").toObject().contains("ray_tracing");
+      });
+      const auto reference = copies ? QString{} : rayTracingTemplateReference();
+      task.insert("ray_tracing",
+                  QJsonObject{{"raygen", reference},
+                              {"miss", QJsonArray{reference}},
+                              {"closesthit", QJsonArray{reference}}});
+      // The image its raygen writes: a target of that name is the task's
+      // to declare, or the connections below point the port elsewhere.
+      const auto port = QString::fromUtf8(RayTracingTemplatePort.data(),
+                                          static_cast<qsizetype>(RayTracingTemplatePort.size()));
+      const auto target = reference.isEmpty()
+                              ? port
+                              : reference.mid(reference.lastIndexOf('/') + 1) + "_" + port;
+      task.insert("writes", QJsonArray{target});
+      task.insert("resource_ports",
+                  QJsonObject{{port, QJsonObject{{"resource", target}, {"access", "storage"}}}});
+      task.insert("dispatch", QJsonObject{{"rays_from", QJsonObject{{"port", port}}}});
     }
     QString exact_ray_template;
     if (index == 1) {
@@ -750,6 +792,15 @@ private:
                          "shader references. Add resources and other task "
                          "settings in JSON as needed. For ray tracing, match "
                          "the project ray group layout."));
+      // CT-6s: what the ray tracing draft wrote, or why it could not.
+      if (index == 1 && !ray_template_reference.isEmpty())
+        notice->setText(tr("Wrote %1 (.rgen, .rmiss and .rchit) for this "
+                           "task. Point its port at a storage image in "
+                           "Connections, set the destination, and apply.")
+                            .arg(ray_template_reference));
+      else if (index == 1 && !ray_template_failure.isEmpty())
+        notice->setText(tr("Could not write the ray tracing shaders: %1")
+                            .arg(ray_template_failure));
       loadDispatch();
       loadConnections();
       loadView();

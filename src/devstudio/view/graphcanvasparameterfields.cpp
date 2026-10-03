@@ -147,6 +147,58 @@ std::pair<std::string, std::string> firstStep(std::string path) {
     return {path.substr(0, end), path.substr(end)};
 }
 
+// CT-6s, decision 1: the ray tracing stage a field of render.compute's
+// ray_tracing names its shaders for, by the field's name ("misses" holds
+// miss shaders); empty for any other name.
+std::string rayShaderStage(std::string_view name) {
+    if (name == "raygen" || name == "miss" || name == "closesthit" || name == "anyhit" ||
+        name == "intersection" || name == "callable")
+        return std::string{name};
+    if (name == "misses") return "miss";
+    return {};
+}
+
+bool isRayShaderStage(std::string_view stage) { return !stage.empty() && rayShaderStage(stage) == stage; }
+
+// Whether an entry is a shader, or a list, map or choice of them.
+bool holdsShader(const Json &entry) {
+    if (!entry.is_object()) return false;
+    if (textOf(entry, "kind") == "shader") return true;
+    for (const char *under : {"items", "variants"}) {
+        const auto found = entry.find(under);
+        if (found == entry.end()) continue;
+        if (found->is_array() && std::ranges::any_of(*found, [](const Json &each) { return holdsShader(each); }))
+            return true;
+        if (found->is_object() && holdsShader(*found)) return true;
+    }
+    return false;
+}
+
+// The stage a "shader:<stage>" hint names: the word after the colon (a row
+// of a list carries its list's description after it).
+std::string hintedShaderStage(std::string_view hint) {
+    if (!hint.starts_with("shader:")) return {};
+    const auto rest = hint.substr(7);
+    return std::string{rest.substr(0, rest.find(' '))};
+}
+
+// CT-6s, decision 2: a render.compute's dispatch.groups_from / rays_from
+// port is one of the task's own image ports (the keys of its `ports`, as the
+// parameters around it hold them).
+std::optional<std::vector<std::string>> taskPortChoices(const Json &schema, const GraphParameterChoices *choices,
+                                                        const Json &around) {
+    if (choices == nullptr || choices->op != "render.compute" || textOf(schema, "name") != "port")
+        return std::nullopt;
+    std::vector<std::string> ports;
+    const auto declared = around.is_object() ? around.find("ports") : Json::const_iterator{};
+    if (around.is_object() && declared != around.end() && declared->is_object())
+        for (const auto &[port, declaration] : declared->items()) {
+            const auto kind = declaration.is_object() ? textOf(declaration, "kind") : std::string{};
+            if (kind.empty() || kind == "image") ports.push_back(port);
+        }
+    return ports;
+}
+
 std::filesystem::path freeName(const std::filesystem::path &folder, const std::filesystem::path &file) {
     auto target = folder / file.filename();
     std::error_code error;
@@ -291,6 +343,10 @@ QString graphUnionVariantLabel(std::string_view name, const Json &variant) {
     if (kind == "number") return QObject::tr("Number");
     if (kind == "string") return QObject::tr("Name");
     if (kind == "object") return QObject::tr("Custom");
+    // CT-6s: one shader or several (ray_tracing.miss), a list of counts
+    // (dispatch.groups).
+    if (kind == "shader") return QObject::tr("Shader");
+    if (kind == "array") return QObject::tr("List");
     return qtext(kind);
 }
 
@@ -775,7 +831,10 @@ void GraphParameterEditor::buildUnion() {
         if (editor != nullptr && editor->value().is_null()) {
             const bool was = loading_;
             loading_ = true;
-            editor->setValue(itemFallback(editor->schema()));
+            // CT-6s: one shader made a list keeps it as the list's first row.
+            const bool keeps = editor->kind() == "array" && set_ && !value_.is_null() &&
+                               !value_.is_array() && !isExpressionValue(value_);
+            editor->setValue(keeps ? Json::array({value_}) : itemFallback(editor->schema()));
             loading_ = was;
         }
         showUnion();
@@ -800,7 +859,10 @@ void GraphParameterEditor::loadUnion(const Json &shown) {
                           (variant_kind == "number" && shown.is_number()) ||
                           (variant_kind == "string" && shown.is_string()) ||
                           (variant_kind == "object" && shown.is_object() && !isExpressionValue(shown)) ||
-                          (variant_kind == "enum" && shown.is_string());
+                          (variant_kind == "enum" && shown.is_string()) ||
+                          // CT-6s: a shader's path, or a list.
+                          (variant_kind == "shader" && shown.is_string()) ||
+                          (variant_kind == "array" && shown.is_array());
         if (fits) picked = static_cast<int>(at);
     }
     if (picked < 0 && shown.is_null()) {
@@ -863,8 +925,12 @@ void GraphParameterEditor::buildObject() {
         if (!field.is_object()) continue;
         const auto name = textOf(field, "name");
         if (name.empty()) continue;
-        const auto field_hint =
-            shader && textOf(field, "kind") == "string" ? "shader:" + name : hint;
+        auto field_hint = shader && textOf(field, "kind") == "string" ? "shader:" + name : hint;
+        // CT-6s, decision 1: a ray tracing stage's shaders are that stage's
+        // (render.compute's ray_tracing.raygen / miss / misses / closesthit,
+        // and a hit group's closesthit / anyhit / intersection).
+        if (const auto stage = rayShaderStage(name); !stage.empty() && holdsShader(field))
+            field_hint = "shader:" + stage;
         auto *editor = new GraphParameterEditor(field, choices_, child(qtext(name)), field_hint, parts.body);
         auto *label = new QLabel(qtext(name) + (field.value("required", false) ? QStringLiteral(" *")
                                                                                 : QString{}),
@@ -1054,9 +1120,13 @@ std::vector<std::pair<std::string, std::string>> GraphParameterEditor::comboChoi
         return result;
     }
     if (k == "shader" || hint_.starts_with("shader:")) {
-        std::string stage = hint_.starts_with("shader:") ? hint_.substr(7) : std::string{};
-        if (choices_->op == "render.compute") stage = "compute";
-        if (stage != "vertex" && stage != "fragment" && stage != "compute") stage.clear();
+        std::string stage = hintedShaderStage(hint_);
+        // CT-6s, decision 1: a ray tracing stage lists that stage's files
+        // (.rgen, .rmiss, .rchit, .rahit, .rint, .rcall) and the engine's
+        // shaders of it; render.compute's own shader is a compute shader.
+        if (choices_->op == "render.compute" && !isRayShaderStage(stage)) stage = "compute";
+        if (stage != "vertex" && stage != "fragment" && stage != "compute" && !isRayShaderStage(stage))
+            stage.clear();
         std::vector<std::string> values;
         if (choices_->model != nullptr)
             for (const auto &shader : choices_->model->engineShaders())
@@ -1065,6 +1135,8 @@ std::vector<std::pair<std::string, std::string>> GraphParameterEditor::comboChoi
             if (stage.empty() || shader_stage.toStdString() == stage) values.push_back(reference.toStdString());
         return plain(std::move(values));
     }
+    if (k == "string")
+        if (auto ports = taskPortChoices(schema_, choices_.get(), around_)) return plain(std::move(*ports));
     if (k == "string" && choices_->strings)
         if (auto known = choices_->strings(textOf(schema_, "name"), around_)) return plain(std::move(*known));
     return result;
@@ -1096,8 +1168,9 @@ void GraphParameterEditor::fillCombo() {
     const bool string_kind = kind() == "string" && !hint_.starts_with("shader:");
     if (string_kind) {
         // A string Studio knows nothing of is typed.
-        const bool known = choices_ != nullptr && choices_->strings &&
-                           choices_->strings(textOf(schema_, "name"), around_).has_value();
+        const bool known = taskPortChoices(schema_, choices_.get(), around_).has_value() ||
+                           (choices_ != nullptr && choices_->strings &&
+                            choices_->strings(textOf(schema_, "name"), around_).has_value());
         parts.combo->setVisible(known);
         parts.text->setVisible(!known);
         parts.plain = known ? static_cast<QWidget *>(parts.combo) : parts.text;
@@ -1484,7 +1557,9 @@ const std::vector<OwnFields> &ownFields() {
         {"render.raster",
          {"ports", "shader", "draw", "schedule", "raster_state", "color_load_op", "color_store_op",
           "clear_color"}},
-        {"render.compute", {"ports", "shader", "ray_tracing", "schedule"}},
+        // CT-6s, decision 1: ray_tracing is the generic fields' (engine
+        // CT-6), each stage's shaders narrowed to that stage's.
+        {"render.compute", {"ports", "shader", "schedule"}},
         {"render.material_pass",
          {"material_contract", "material_variant", "material_filter", "material_range",
           "material_outputs", "material_output_states", "screen_inputs", "surface_resources",
@@ -1643,6 +1718,10 @@ void GraphCanvasParameterFields::showNode(const GraphCanvasNode *node, const std
                                             : row.editor->toolTip());
         }
         if (row.name == "view_select") form_->setRowVisible(row.label, !view);
+        // CT-6s, decision 1: a compute task that runs a shader has no ray
+        // tracing to show (the two exclude each other; Shader picks which).
+        if (row.name == "ray_tracing" && node->op == "render.compute")
+            form_->setRowVisible(row.label, node->parameters.is_object() && node->parameters.contains("ray_tracing"));
     }
     load(*node);
     followEditable();

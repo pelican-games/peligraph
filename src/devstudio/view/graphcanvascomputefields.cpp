@@ -1,13 +1,16 @@
 #include "graphcanvascomputefields.hpp"
 
+#include "fullscreenshadertemplate.hpp"
 #include "studiotheme.hpp"
 
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QStringList>
@@ -53,8 +56,56 @@ GraphCanvasComputeFields::GraphCanvasComputeFields(GraphCanvasModel &model,
     shader_->setMinimumContentsLength(12);
     auto *caption = new QLabel(tr("Shader"), this);
     caption->setFont(studioSmallFont());
-    form->addRow(caption, shader_);
+    // CT-6s, decision 3: New... beside it.
+    auto *shader_row = new QWidget(this);
+    auto *shader_layout = new QHBoxLayout(shader_row);
+    shader_layout->setContentsMargins(0, 0, 0, 0);
+    shader_layout->addWidget(shader_, 1);
+    new_shader_ = new QPushButton(tr("New…"), shader_row);
+    new_shader_->setObjectName(computeFieldName(QStringLiteral("newShader")));
+    new_shader_->setToolTip(tr("Write a starting set of shaders into the project's shaders folder, "
+                               "and run the task with it."));
+    new_shader_->setCheckable(true);
+    new_shader_->setEnabled(false);
+    shader_layout->addWidget(new_shader_);
+    form->addRow(caption, shader_row);
     connect(shader_, &QComboBox::currentIndexChanged, this, [this] { commit(); });
+    template_row_ = new QWidget(this);
+    template_row_->setObjectName(computeFieldName(QStringLiteral("shaderTemplateRow")));
+    auto *template_layout = new QGridLayout(template_row_);
+    template_layout->setContentsMargins(0, 0, 0, 0);
+    template_kind_ = new QComboBox(template_row_);
+    template_kind_->setObjectName(computeFieldName(QStringLiteral("shaderTemplateKind")));
+    template_kind_->addItem(qtext(std::string{RayTracingTemplateLabel}), QStringLiteral("ray_tracing"));
+    template_kind_->setToolTip(tr("Ray tracing: shaders/<name>.rgen, .rmiss and .rchit. One ray per "
+                                  "pixel of the image the task writes, coloured by the normal of the "
+                                  "surface it hits."));
+    template_name_ = new QLineEdit(template_row_);
+    template_name_->setObjectName(computeFieldName(QStringLiteral("shaderTemplateName")));
+    template_name_->setToolTip(tr("The files' name in the project's shaders folder (a free one is "
+                                  "proposed). Letters, digits, '_' and '-'."));
+    create_shader_ = new QPushButton(tr("Create"), template_row_);
+    create_shader_->setObjectName(computeFieldName(QStringLiteral("createShader")));
+    template_notice_ = new QLabel(template_row_);
+    template_notice_->setObjectName(computeFieldName(QStringLiteral("shaderTemplateNotice")));
+    template_notice_->setFont(studioSmallFont());
+    template_notice_->setWordWrap(true);
+    template_notice_->hide();
+    template_layout->addWidget(template_kind_, 0, 0, 1, 2);
+    template_layout->addWidget(template_name_, 1, 0);
+    template_layout->addWidget(create_shader_, 1, 1);
+    template_layout->addWidget(template_notice_, 2, 0, 1, 2);
+    form->addRow(QString{}, template_row_);
+    form->setRowVisible(template_row_, false);
+    connect(new_shader_, &QPushButton::toggled, this, [this, form](bool on) {
+        form->setRowVisible(template_row_, on);
+        if (on) {
+            templateNotice({}, false);
+            proposeTemplateName();
+        }
+    });
+    connect(create_shader_, &QPushButton::clicked, this, [this] { createTemplate(); });
+    connect(template_name_, &QLineEdit::returnPressed, this, [this] { createTemplate(); });
     auto *status_row = new QHBoxLayout;
     status_row->setContentsMargins(0, 0, 0, 0);
     status_ = new QLabel(this);
@@ -119,7 +170,71 @@ void GraphCanvasComputeFields::showNode(const GraphCanvasNode *node, const std::
 
 void GraphCanvasComputeFields::followEditable() {
     shader_->setEnabled(model_.canEdit());
+    new_shader_->setEnabled(model_.canEdit() && !project_root_.empty());
+    create_shader_->setEnabled(model_.canEdit() && !project_root_.empty());
     schedule_->followEditable();
+}
+
+void GraphCanvasComputeFields::setProjectRoot(const std::filesystem::path &root) {
+    if (project_root_ == root) return;
+    project_root_ = root;
+    auto_template_name_.clear();
+    template_name_->clear();
+    followEditable();
+}
+
+void GraphCanvasComputeFields::proposeTemplateName() {
+    if (project_root_.empty()) return;
+    // A name typed over the proposal is the author's; the proposal is a free
+    // one, so nothing has to be typed.
+    const auto current = template_name_->text().trimmed().toStdString();
+    if (!current.empty() && current != auto_template_name_) return;
+    auto_template_name_ = rayTracingTemplateName(project_root_);
+    template_name_->setText(qtext(auto_template_name_));
+}
+
+void GraphCanvasComputeFields::templateNotice(const QString &text, bool failure) {
+    template_notice_->setStyleSheet(failure ? QStringLiteral("color: #d94c3d;") : QString{});
+    template_notice_->setText(text);
+    template_notice_->setVisible(!text.isEmpty());
+}
+
+void GraphCanvasComputeFields::createTemplate() {
+    if (node_.empty() || project_root_.empty() || !model_.canEdit()) return;
+    const auto name = template_name_->text().trimmed().toStdString();
+    if (!isValidShaderTemplateName(name)) {
+        templateNotice(tr("A shader name is letters, digits, '_' and '-'."), true);
+        return;
+    }
+    RayTracingTemplateWrite written;
+    try {
+        written = writeRayTracingTemplate(project_root_, name);
+    } catch (const std::exception &error) {
+        templateNotice(tr("Could not write the shaders: %1").arg(QString::fromUtf8(error.what())), true);
+        return;
+    }
+    const auto files = QStringLiteral("shaders/%1.rgen, .rmiss and .rchit").arg(qtext(name));
+    if (!written.created) {
+        templateNotice(tr("shaders/%1 already has a .rgen, .rmiss or .rchit and was left as it is: "
+                          "name the new set otherwise.")
+                           .arg(qtext(name)),
+                       true);
+        return;
+    }
+    if (shaders_changed_) shaders_changed_();
+    // The task traces with it once the engine has read its ports.
+    if (!model_.setComputeShader(scope_, node_, written.reference)) {
+        templateNotice(tr("Wrote %1, but the task could not take it now: pick it from the Shader "
+                          "list.")
+                           .arg(files),
+                       true);
+        return;
+    }
+    // Used: the next New... proposes the next free name.
+    auto_template_name_ = name;
+    templateNotice(tr("Wrote %1; the task traces with %2.").arg(files, qtext(written.reference)), false);
+    shown_.clear();
+    if (submitted_) submitted_();
 }
 
 void GraphCanvasComputeFields::load(const std::string &reference) {

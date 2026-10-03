@@ -886,4 +886,179 @@ bool shaderHasFixedSockets(std::string_view source) {
     return findFixedBlock(source, sourceLines(source)).has_value();
 }
 
+// --- CT-6s, decision 3: the ray tracing set.
+
+std::string_view rayTracingTemplateExtension(RayTracingTemplateStage stage) {
+    switch (stage) {
+    case RayTracingTemplateStage::raygen: return ".rgen";
+    case RayTracingTemplateStage::miss: return ".rmiss";
+    case RayTracingTemplateStage::closest_hit: return ".rchit";
+    }
+    return ".rgen";
+}
+
+std::string rayTracingShaderTemplate(RayTracingTemplateStage stage,
+                                     std::string_view name) {
+    const std::string heading =
+        "// " + std::string{name} + std::string{rayTracingTemplateExtension(stage)} +
+        ": a ray tracing set Studio wrote (raygen + miss + closest hit).\n";
+    // The payload every stage of the set shares: where the ray hit (xyz) and
+    // whether it hit (w).
+    constexpr std::string_view payload_comment =
+        "// The payload the three stages share: xyz is where the ray hit, w is 1\n"
+        "// on a hit and 0 when the miss shader ran.\n";
+    switch (stage) {
+    case RayTracingTemplateStage::raygen:
+        return "#version 460\n"
+               "#extension GL_GOOGLE_include_directive : enable\n"
+               "#extension GL_EXT_ray_tracing : require\n"
+               "\n" +
+               heading +
+               "// One ray per pixel of the image it writes (the task's dispatch.rays_from),\n"
+               "// from the camera through that pixel; the colour is the normal of the\n"
+               "// surface it hits, or a dim sky where it hits nothing.\n"
+               "\n"
+               "#include \"pelican_sets.glsl\"\n"
+               "#include \"pelican_frame.glsl\"\n"
+               "\n"
+               "// The image the task writes, port \"" +
+               std::string{RayTracingTemplatePort} +
+               "\": an image of this format (STORAGE and\n"
+               "// SAMPLED) is made beside the task when it is placed.\n"
+               "layout(rgba16f, set = PELICAN_SET_PASS_INPUT, binding = 0)\n"
+               "    writeonly uniform image2D pelican_resource_" +
+               std::string{RayTracingTemplatePort} +
+               ";\n"
+               "\n"
+               "// The scene's acceleration structure (the task's acceleration_structure).\n"
+               "layout(set = PELICAN_SET_FRAME, binding = PELICAN_RAY_QUERY_TLAS_BINDING)\n"
+               "    uniform accelerationStructureEXT pelicanRayTracingScene;\n"
+               "\n" +
+               std::string{payload_comment} +
+               "layout(location = 0) rayPayloadEXT vec4 hit;\n"
+               "\n"
+               "const float RAY_MIN_DISTANCE = 0.001;\n"
+               "const float RAY_MAX_DISTANCE = 10000.0;\n"
+               "\n"
+               "// The direction from the camera through a point of the image, in pixels.\n"
+               "vec3 cameraRay(vec2 pixel) {\n"
+               "    vec2 ndc = pixel / vec2(gl_LaunchSizeEXT.xy) * 2.0 - 1.0;\n"
+               "    vec4 target = inverse(pelicanFrame.projection) * vec4(ndc, 0.5, 1.0);\n"
+               "    vec3 direction = normalize(target.xyz / target.w);\n"
+               "    return normalize((inverse(pelicanFrame.view) * vec4(direction, 0.0)).xyz);\n"
+               "}\n"
+               "\n"
+               "vec4 trace(vec3 origin, vec3 direction) {\n"
+               "    hit = vec4(0.0);\n"
+               "    traceRayEXT(pelicanRayTracingScene, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0,\n"
+               "                origin, RAY_MIN_DISTANCE, direction, RAY_MAX_DISTANCE, 0);\n"
+               "    return hit;\n"
+               "}\n"
+               "\n"
+               "void main() {\n"
+               "    vec2 pixel = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);\n"
+               "    vec3 origin = (inverse(pelicanFrame.view) * vec4(0.0, 0.0, 0.0, 1.0)).xyz;\n"
+               "    vec3 direction = cameraRay(pixel);\n"
+               "    vec4 center = trace(origin, direction);\n"
+               "    vec3 color;\n"
+               "    if (center.w < 0.5) {\n"
+               "        // Nothing hit: a dim sky, lighter upwards.\n"
+               "        color = mix(vec3(0.04, 0.05, 0.07), vec3(0.18, 0.26, 0.36),\n"
+               "                    clamp(direction.y * 0.5 + 0.5, 0.0, 1.0));\n"
+               "    } else {\n"
+               "        // The surface's normal: the two rays beside this one span it.\n"
+               "        vec4 right = trace(origin, cameraRay(pixel + vec2(1.0, 0.0)));\n"
+               "        vec4 below = trace(origin, cameraRay(pixel + vec2(0.0, 1.0)));\n"
+               "        vec3 normal = -direction;\n"
+               "        vec3 spanned = cross(right.xyz - center.xyz, below.xyz - center.xyz);\n"
+               "        if (right.w > 0.5 && below.w > 0.5 && dot(spanned, spanned) > 1e-14)\n"
+               "            normal = normalize(spanned);\n"
+               "        if (dot(normal, direction) > 0.0) normal = -normal;\n"
+               "        color = normal * 0.5 + 0.5;\n"
+               "    }\n"
+               "    imageStore(pelican_resource_" +
+               std::string{RayTracingTemplatePort} +
+               ", ivec2(gl_LaunchIDEXT.xy), vec4(color, 1.0));\n"
+               "}\n";
+    case RayTracingTemplateStage::miss:
+        return "#version 460\n"
+               "#extension GL_EXT_ray_tracing : require\n"
+               "\n" +
+               heading + "// Runs where a ray hits nothing.\n\n" + std::string{payload_comment} +
+               "layout(location = 0) rayPayloadInEXT vec4 hit;\n"
+               "\n"
+               "void main() {\n"
+               "    hit.w = 0.0;\n"
+               "}\n";
+    case RayTracingTemplateStage::closest_hit:
+        return "#version 460\n"
+               "#extension GL_EXT_ray_tracing : require\n"
+               "\n" +
+               heading +
+               "// Runs at the nearest surface a ray hits. It says where: the normal needs\n"
+               "// the triangle's vertices, which a set without a ray group layout cannot\n"
+               "// read, so the ray generation shader takes it from the rays beside it.\n"
+               "\n" +
+               std::string{payload_comment} +
+               "layout(location = 0) rayPayloadInEXT vec4 hit;\n"
+               "\n"
+               "void main() {\n"
+               "    hit = vec4(gl_WorldRayOriginEXT + gl_HitTEXT * gl_WorldRayDirectionEXT, 1.0);\n"
+               "}\n";
+    }
+    return {};
+}
+
+namespace {
+
+std::filesystem::path rayTracingTemplatePath(const std::filesystem::path &project_root,
+                                             std::string_view name, RayTracingTemplateStage stage) {
+    if (!isValidShaderTemplateName(name))
+        throw std::invalid_argument("a shader name is letters, digits, '_' and '-': " + std::string{name});
+    return project_root / "shaders" / (std::string{name} + std::string{rayTracingTemplateExtension(stage)});
+}
+
+bool rayTracingTemplateTaken(const std::filesystem::path &project_root, std::string_view name) {
+    std::error_code error;
+    return std::ranges::any_of(RayTracingTemplateStages, [&](RayTracingTemplateStage stage) {
+        return std::filesystem::exists(rayTracingTemplatePath(project_root, name, stage), error);
+    });
+}
+
+} // namespace
+
+std::string rayTracingTemplateName(const std::filesystem::path &project_root, std::string_view base) {
+    auto folded = suggestedShaderTemplateName(base);
+    if (folded.empty()) folded = "ray_tracing";
+    auto candidate = folded;
+    for (int index = 2; rayTracingTemplateTaken(project_root, candidate); ++index)
+        candidate = folded + "_" + std::to_string(index);
+    return candidate;
+}
+
+RayTracingTemplateWrite writeRayTracingTemplate(const std::filesystem::path &project_root,
+                                                std::string_view name) {
+    RayTracingTemplateWrite result;
+    for (const auto stage : RayTracingTemplateStages)
+        result.paths.push_back(rayTracingTemplatePath(project_root, name, stage));
+    result.reference = shaderTemplateReference(name);
+    // A file the author already has is theirs; the set is written whole or
+    // not at all.
+    if (rayTracingTemplateTaken(project_root, name)) return result;
+    std::error_code error;
+    std::filesystem::create_directories(result.paths.front().parent_path(), error);
+    if (error)
+        throw std::runtime_error("could not create " + result.paths.front().parent_path().string() + ": " +
+                                 error.message());
+    for (std::size_t index = 0; index < RayTracingTemplateStages.size(); ++index) {
+        const auto contents = rayTracingShaderTemplate(RayTracingTemplateStages[index], name);
+        std::ofstream output{result.paths[index], std::ios::binary};
+        output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+        output.close();
+        if (!output) throw std::runtime_error("could not write " + result.paths[index].string());
+    }
+    result.created = true;
+    return result;
+}
+
 } // namespace PelicanStudio

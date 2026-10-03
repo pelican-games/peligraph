@@ -5689,6 +5689,8 @@ struct GraphCanvasWidget::Impl {
         pass_fields->setShadersChanged([this] { refreshShaderChoices(); });
         side_layout->addWidget(pass_fields);
         compute_fields = new GraphCanvasComputeFields(model, [this] { dispatch(); }, side);
+        // CT-6s: New... wrote a ray tracing set; the lists hold it from now on.
+        compute_fields->setShadersChanged([this] { refreshComputeShaderChoices(); });
         side_layout->addWidget(compute_fields);
         place_fields = new GraphCanvasPlaceFields(model, sent, side);
         place_fields->setPendingChanged([this] { showNotice(); });
@@ -7607,7 +7609,21 @@ struct GraphCanvasWidget::Impl {
                                                "ray tracing pipelines (raygen, miss and "
                                                "closesthit), whose ports the task arrives with"));
         compute_shader->hide();
-        layout->addWidget(compute_shader);
+        // CT-6s, decision 3: New... writes a ray tracing set under a name it
+        // proposes, and the task is placed tracing with it.
+        auto *compute_row = new QWidget(dialog);
+        auto *compute_layout = new QHBoxLayout(compute_row);
+        compute_layout->setContentsMargins(0, 0, 0, 0);
+        compute_layout->addWidget(compute_shader, 1);
+        auto *compute_new = new QPushButton(QObject::tr("New…"), compute_row);
+        compute_new->setObjectName(QStringLiteral("pelican.graphCanvasPaletteComputeNew"));
+        compute_new->setToolTip(QObject::tr("Write %1 into the project's shaders folder under a free "
+                                            "name, and place the task tracing with it")
+                                    .arg(qtext(std::string{RayTracingTemplateLabel})));
+        compute_new->setAutoDefault(false);
+        compute_new->hide();
+        compute_layout->addWidget(compute_new);
+        layout->addWidget(compute_row);
         auto *buffer_row = new QWidget(dialog);
         auto *buffer_layout = new QHBoxLayout(buffer_row);
         buffer_layout->setContentsMargins(0, 0, 0, 0);
@@ -7672,8 +7688,8 @@ struct GraphCanvasWidget::Impl {
         };
         const auto syncDefinition = [this, list, definitions, new_definition_data, new_name,
                                      contracts, targets, snapshot_after, compute_shader,
-                                     buffer_row, attribute_domain, element, seed_note,
-                                     buttons, scope] {
+                                     compute_new, buffer_row, attribute_domain, element,
+                                     seed_note, buttons, scope] {
             auto *row = list->currentItem();
             const auto op = row != nullptr ? row->data(Qt::UserRole).toString() : QString{};
             const bool loop = op == QLatin1String{"graph.loop"};
@@ -7764,6 +7780,7 @@ struct GraphCanvasWidget::Impl {
             targets->setVisible(target_ref);
             snapshot_after->setVisible(snapshot);
             compute_shader->setVisible(compute);
+            compute_new->setVisible(compute && !project_root.empty());
             buffer_row->setVisible(buffer || attribute);
             attribute_domain->setVisible(attribute);
             element->setEnabled(!(attribute && attribute_domain->currentData().toString() ==
@@ -7785,6 +7802,31 @@ struct GraphCanvasWidget::Impl {
         };
         QObject::connect(attribute_domain, &QComboBox::currentIndexChanged, dialog,
                          [syncDefinition] { syncDefinition(); });
+        QObject::connect(compute_new, &QPushButton::clicked, dialog,
+                         [this, compute_shader, seed_note, syncDefinition] {
+                             RayTracingTemplateWrite written;
+                             QString failure;
+                             try {
+                                 written = writeRayTracingTemplate(
+                                     project_root, rayTracingTemplateName(project_root));
+                             } catch (const std::exception &error) {
+                                 failure = QString::fromUtf8(error.what());
+                             }
+                             if (failure.isEmpty() && !written.created)
+                                 failure = QObject::tr("the name was taken meanwhile");
+                             if (!failure.isEmpty()) {
+                                 seed_note->setText(
+                                     QObject::tr("Could not write the shaders: %1").arg(failure));
+                                 seed_note->show();
+                                 return;
+                             }
+                             // Listed and picked: the row reads the lists again.
+                             refreshComputeShaderChoices();
+                             const auto data = QStringLiteral("ray_tracing|") + qtext(written.reference);
+                             compute_shader->addItem(qtext(written.reference), data);
+                             compute_shader->setCurrentIndex(compute_shader->findData(data));
+                             syncDefinition();
+                         });
         QObject::connect(definitions, &QComboBox::currentIndexChanged, dialog,
                          [syncDefinition] { syncDefinition(); });
         QObject::connect(search, &QLineEdit::textChanged, dialog, [reload, syncDefinition] {
@@ -8769,6 +8811,7 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
     impl_->image_fields->setProjectRoot(project_root);
     impl_->pose_fields->setProjectRoot(project_root);
     impl_->parameter_fields->setProjectRoot(project_root);
+    impl_->compute_fields->setProjectRoot(project_root);
     impl_->publishShaderSources();
     impl_->published_initial_assets.reset();
     impl_->publishInitialAssets();
