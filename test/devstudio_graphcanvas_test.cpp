@@ -2752,8 +2752,10 @@ TEST_CASE("GL-1 the plan's passes no graph node made are folded nodes, read only
     // What it reads and hands on; bloom_0 and bloom_1 stay inside.
     CHECK(bloom.reads == std::vector<std::string>{"scene_color"});
     CHECK(bloom.writes == std::vector<std::string>{"scene_color_bloomed"});
-    CHECK(bloom.tooltip() == "From the rendering section (feature:bloom): read only here. "
-                             "Frame Plan and Features edit it.");
+    // GL-5a, decision 1: a feature's fold is read only; the way to edit it is
+    // to expand it.
+    CHECK_FALSE(bloom.rendering_section);
+    CHECK(bloom.tooltip() == "From feature bloom: read only here. Expand to edit\xE2\x80\xA6");
     const auto &gbuffer = folded(nodes, "gbuffer");
     CHECK(gbuffer.material);
     CHECK(gbuffer.type == "material");

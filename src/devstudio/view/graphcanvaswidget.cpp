@@ -2,6 +2,7 @@
 #include "graphcanvasaudioanalysis.hpp"
 #include "graphcanvascomputefields.hpp"
 #include "graphcanvasdrawing.hpp"
+#include "graphcanvasfoldedpassfields.hpp"
 #include "graphcanvasfoldgroups.hpp"
 #include "graphcanvasloopfields.hpp"
 #include "graphcanvasmaterialfields.hpp"
@@ -4944,6 +4945,9 @@ struct GraphCanvasWidget::Impl {
     std::function<void(const QString &)> replace_action;
     // Decision 1: what a picked folded node is, in one line.
     QLabel *folded_summary = nullptr;
+    // GL-5a: a picked folded pass of the rendering section, edited in the
+    // Pass Editor's parts (and its graph-wide decisions).
+    GraphCanvasFoldedPassFields *folded_pass_fields = nullptr;
     // GL-2b, decision 3: the Layers section over the details (it folds),
     // and who selects a plan node in the Frame Plan when an L1 row is
     // clicked. The plan's diagnostics, one line under the notice that
@@ -5477,6 +5481,25 @@ struct GraphCanvasWidget::Impl {
         folded_summary->setWordWrap(true);
         folded_summary->hide();
         side_layout->addWidget(folded_summary);
+        // GL-5a: what the tab sends for it goes the way a pass's input edit
+        // does -- one edit, its ticket, the refusal's sentence, RU-1's Undo.
+        folded_pass_fields = new GraphCanvasFoldedPassFields(
+            model, graph,
+            [this](const FramePlanEditRequest &request,
+                   std::function<FramePlanEditRequest()> rebuild) {
+                if (!request.sendable()) {
+                    model.setEditNotice({InspectorNoticeKind::Error,
+                                         !request.line.empty()      ? request.line
+                                         : !request.refusal.empty() ? request.refusal
+                                                                    : std::string{"Nothing to change."}});
+                    showNotice();
+                    folded_pass_fields->editFinished();
+                    return;
+                }
+                sendPassEdit(request, std::move(rebuild), false, PassEditFrom::fields);
+            },
+            side);
+        side_layout->addWidget(folded_pass_fields);
         // UX-6b, decision 4.
         plan_notes = new QLabel(side);
         plan_notes->setObjectName(QStringLiteral("pelican.graphCanvasPlanNotes"));
@@ -5838,7 +5861,7 @@ struct GraphCanvasWidget::Impl {
         scene->passInputEditRequested =
             [this](const FramePlanEditRequest &request,
                    std::function<FramePlanEditRequest()> rebuild) {
-                sendPassInputEdit(request, std::move(rebuild));
+                sendPassEdit(request, std::move(rebuild));
             };
         // Decision 5: the owner brings the Frame Plan forward.
         scene->showInFramePlanRequested = [this](const std::string &loop) {
@@ -5972,8 +5995,15 @@ struct GraphCanvasWidget::Impl {
 
     // --- GL-1e.
 
-    void sendPassInputEdit(const FramePlanEditRequest &request,
-                           std::function<FramePlanEditRequest()> rebuild, bool retry = false) {
+    // GL-5a: and the detail column's edits of a folded pass of the rendering
+    // section -- the rest of its declaration (edit_preset_pass) and its
+    // graph-wide decisions (edit_target_planning) -- one at a time, the same
+    // way.
+    enum class PassEditFrom { sockets, fields };
+    PassEditFrom pass_edit_from = PassEditFrom::sockets;
+    void sendPassEdit(const FramePlanEditRequest &request,
+                      std::function<FramePlanEditRequest()> rebuild, bool retry = false,
+                      PassEditFrom from = PassEditFrom::sockets) {
         const auto say = [this](InspectorNoticeKind kind, std::string line) {
             model.setEditNotice({kind, std::move(line)});
             showNotice();
@@ -5982,7 +6012,9 @@ struct GraphCanvasWidget::Impl {
             say(InspectorNoticeKind::Error, "Wait for the current change to finish.");
             return;
         }
-        if (!graph.requestEditPresetPass) {
+        const bool planning = request.method == "edit_target_planning";
+        const auto &send = planning ? graph.requestEditTargetPlanning : graph.requestEditPresetPass;
+        if (!send) {
             say(InspectorNoticeKind::Error,
                 "This engine connection cannot edit a pass from the Graph.");
             return;
@@ -5995,7 +6027,7 @@ struct GraphCanvasWidget::Impl {
             return;
         }
         QString error;
-        pass_edit_request = graph.requestEditPresetPass(params, &error);
+        pass_edit_request = send(params, &error);
         if (pass_edit_request == 0) {
             say(InspectorNoticeKind::Error, error.toStdString());
             return;
@@ -6003,8 +6035,14 @@ struct GraphCanvasWidget::Impl {
         pass_edit_notice = request.notice;
         pass_edit_rebuild = std::move(rebuild);
         pass_edit_retried = retry;
+        // The saving line names what is saved: a pass's inputs (GL-1e), its
+        // declaration or a decision (GL-5a).
+        pass_edit_from = from;
+        const auto pass = request.params.value("pass_name", std::string{});
         say(InspectorNoticeKind::Information,
-            request.params.value("pass_name", std::string{}) + ": saving its inputs...");
+            planning                           ? std::string{"Saving the decision..."}
+            : from == PassEditFrom::fields ? pass + ": saving..."
+                                           : pass + ": saving its inputs...");
     }
 
     void requestPassTicket() {
@@ -6074,6 +6112,10 @@ struct GraphCanvasWidget::Impl {
         pass_edit_rebuild = {};
         model.setEditNotice({InspectorNoticeKind::Error, passEditRefusal(response)});
         showNotice();
+        // GL-5a, decision 5: a refused box shows what the root holds again,
+        // and the column takes the next change.
+        syncFoldedPassFields();
+        if (folded_pass_fields != nullptr) folded_pass_fields->editFinished();
     }
 
     void resumePassRetry() {
@@ -6088,11 +6130,13 @@ struct GraphCanvasWidget::Impl {
             showNotice();
             return;
         }
-        sendPassInputEdit(request, rebuild, true);
+        sendPassEdit(request, rebuild, true, pass_edit_from);
     }
 
     void passEditCommitted(const nlohmann::json &response) {
         pass_edit_rebuild = {};
+        // GL-5a, decision 5: the decisions are read again with the document.
+        if (folded_pass_fields != nullptr) folded_pass_fields->editFinished();
         // Q-13: the other panels read the revision this commit made, and
         // this tab reads the document, the plan and the context again.
         const auto digest = response.value("source_digest", nlohmann::json::object())
@@ -6185,6 +6229,11 @@ struct GraphCanvasWidget::Impl {
 
     void deliverResult(qint64 request_id, const QByteArray &result_json) {
         if (deliverPassEdit(request_id, result_json)) return;
+        // GL-5a, decision 5: the root's planning decisions.
+        if (folded_pass_fields != nullptr && folded_pass_fields->deliverResult(request_id, result_json)) {
+            dispatch();
+            return;
+        }
         // AB-1s: bake_audio_analysis, its ticket, list_derived_assets.
         if (analysis && analysis->deliverResult(request_id, result_json)) {
             dispatch();
@@ -6721,6 +6770,24 @@ struct GraphCanvasWidget::Impl {
                                      qtext(diagnostic.detail)));
         diagnostics_list->setText(lines.join(QLatin1Char('\n')));
         diagnostics_list->setVisible(open);
+    }
+
+    // GL-5a, decision 1: a picked folded node of the root canvas that is a
+    // pass of the rendering section is edited in the column; anything else
+    // takes the column's fields away.
+    void syncFoldedPassFields() {
+        if (folded_pass_fields == nullptr) return;
+        const auto &selected = scene->selectedNode();
+        std::string pass;
+        if (selected && scene->selectedScope().empty() && model.currentScope().empty() &&
+            !model.foldedView())
+            for (const auto &node : model.foldedNodes())
+                if (node.id == *selected && node.rendering_section) pass = node.id;
+        // Its shader lists are the Pass Editor's, read again as it is shown.
+        if (!pass.empty() && pass != folded_pass_fields->pass()) refreshShaderChoices();
+        folded_pass_fields->showPass(pass);
+        folded_pass_fields->followEditable(model.connected() && pass_edit_request == 0 &&
+                                           pass_ticket.isEmpty());
     }
 
     // Decision 1: a picked folded node, in one line: what it is, where it
@@ -7902,6 +7969,7 @@ struct GraphCanvasWidget::Impl {
         // GL-3a: a picked fold group's Decisions.
         if (folds) folds->syncFields();
         syncFoldedSummary();
+        syncFoldedPassFields();
         syncPlanNotes();
         syncLayers();
         // UX-2: a row being written goes with the rows.
@@ -8235,6 +8303,9 @@ struct GraphCanvasWidget::Impl {
         if (value_fields != nullptr) value_fields->followEditable();
         if (pose_fields != nullptr) pose_fields->followEditable();
         if (parameter_fields != nullptr) parameter_fields->followEditable();
+        // GL-5a: and the folded pass's, which also take the context and the
+        // shader list as they arrive.
+        syncFoldedPassFields();
         // GL-4a, decision 2: a node of a group being verified takes no edit
         // from the side fields until the verify finishes.
         if (folds)

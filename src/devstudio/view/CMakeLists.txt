@@ -34,6 +34,10 @@ add_library(pelican_studio_view STATIC
     fullscreenpasswidget.hpp
     fullscreenpasssettings.cpp
     fullscreenpasssettings.hpp
+    # GL-5a: the edit_preset_pass the Pass Editor and the Graph's folded pass
+    # fields build alike.
+    presetpassedit.cpp
+    presetpassedit.hpp
     # UX-4a: the forms that edit parts of a pass declaration (Pass Editor now,
     # the Graph's detail panel next).
     passforms/passform.cpp
@@ -91,6 +95,9 @@ add_library(pelican_studio_view STATIC
     # GL-3a: fold groups on the Graph canvas, and their Decisions.
     graphcanvasfoldgroups.cpp
     graphcanvasfoldgroups.hpp
+    # GL-5a: a folded pass of the rendering section, edited beside the canvas.
+    graphcanvasfoldedpassfields.cpp
+    graphcanvasfoldedpassfields.hpp
     # AB-1s: Bake analysis, Use in Graph / in a shader, and Re-bake.
     graphcanvasaudioanalysis.cpp
     graphcanvasaudioanalysis.hpp

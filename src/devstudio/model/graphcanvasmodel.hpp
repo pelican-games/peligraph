@@ -780,9 +780,16 @@ struct GraphCanvasFoldedNode {
     };
     bool takes_lines = false;
     std::vector<InputSocket> input_sockets;
+    // GL-5a, decision 1: who owns it. A pass the root's rendering section
+    // declares (F-6) is edited in the Graph's detail column; one of the
+    // preset (`preset` its name, when the authoring context said) or of a
+    // feature is read only here.
+    bool rendering_section = false;
+    std::string preset;
 
     [[nodiscard]] bool enterable() const noexcept { return feature_group || material; }
-    // "From the rendering section (<source>): read only here. ..."
+    // "From the rendering section: edit it here.", "From preset <name>: read
+    // only here. Expand to edit…", "From feature <name>: ...".
     [[nodiscard]] std::string tooltip() const;
     bool operator==(const GraphCanvasFoldedNode &) const = default;
 };
@@ -1388,6 +1395,8 @@ class GraphCanvasModel {
     [[nodiscard]] std::string foldedOwnerOf(const GraphCanvasPlanPass &pass) const;
     [[nodiscard]] std::vector<GraphCanvasFoldedNode> rootFoldedNodes() const;
     [[nodiscard]] std::vector<GraphCanvasFoldedNode> featurePassNodes(std::string_view feature) const;
+    // GL-5a, decision 1: the folded node's owner, from the authoring context.
+    void markFoldedOwner(GraphCanvasFoldedNode &node) const;
     [[nodiscard]] const GraphCanvasPlanPass *planPass(std::string_view name) const;
     // The plan's passes a node of `scope` made: a root node's, or a body
     // node's copies (as loopElementRead finds them).
@@ -2180,6 +2189,9 @@ class GraphCanvasModel {
         return render_authoring_;
     }
     [[nodiscard]] std::uint64_t authoringRevision() const noexcept { return authoring_revision_; }
+    // GL-5a, decision 1: whether the context lists `pass` of the plan's graph
+    // as one the root's rendering section declares (editable_root_pass).
+    [[nodiscard]] bool renderingSectionPass(std::string_view pass) const;
     // The last plan in the Frame Plan's terms, as far as a pass's input
     // sockets need it: its graph, each pass with its pass_inputs, and which
     // resources are buffers.

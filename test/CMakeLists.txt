@@ -594,6 +594,9 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/featureparameterform.cpp
     # GL-3a: the fold groups the Graph tab draws and writes.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
+    # GL-5a: a folded pass of the rendering section, and the edit it shares with the Pass Editor.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldedpassfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/presetpassedit.cpp
     # AB-1s: Bake analysis, Use in Graph / in a shader, Re-bake.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasaudioanalysis.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
@@ -650,6 +653,9 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasparameterfields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/featureparameterform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldgroups.cpp
+    # GL-5a: a folded pass of the rendering section, and the edit it shares with the Pass Editor.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasfoldedpassfields.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/presetpassedit.cpp
     # AB-1s: Bake analysis, Use in Graph / in a shader, Re-bake.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasaudioanalysis.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp

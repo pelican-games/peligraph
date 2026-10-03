@@ -49,10 +49,13 @@ class FullscreenPassInterfaceRow final : public QWidget {
     // Writes the two fields into a draft; a field left at its default is
     // absent, as the engine reads an absent one.
     void apply(nlohmann::json &draft) const;
-    // An edit_preset_pass request carries a field only when it differs from
-    // the declaration it edits; null removes it.
-    void addEditParams(const nlohmann::json &original,
-                       nlohmann::json &params) const;
 };
+
+// An edit_preset_pass request carries the two fields only when the draft
+// (FullscreenPassInterfaceRow::apply's) differs from the declaration it edits;
+// null removes one. GL-5a: presetPassEditParams' part for a fullscreen pass.
+void fullscreenInterfaceEditParams(const nlohmann::json &original,
+                                   const nlohmann::json &draft,
+                                   nlohmann::json &params);
 
 } // namespace PelicanStudio

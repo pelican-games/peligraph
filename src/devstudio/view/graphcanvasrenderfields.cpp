@@ -1269,14 +1269,14 @@ void GraphCanvasImageFields::putSizeExpression(bool half) {
 
 // --- Decision 2: render.fullscreen / render.raster.
 
-namespace {
-
 // UX-5b: a shader list's entry shows the engine's mark for a shader whose
 // ports are connected by hand; its data is the reference itself.
 void addShaderChoice(QComboBox &combo, const std::string &reference) {
     combo.addItem(qtext(shaderChoiceLabel(reference)), qtext(reference));
     combo.setItemData(combo.count() - 1, qtext(shaderChoiceTooltip(reference)), Qt::ToolTipRole);
 }
+
+namespace {
 
 // The Pass Editor's parts are as wide as their longest choice; beside the
 // canvas they take what the column gives them, so the canvas keeps its width.

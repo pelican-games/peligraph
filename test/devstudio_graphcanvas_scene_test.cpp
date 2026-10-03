@@ -7,6 +7,8 @@
 #include "graphcanvasrenderfields.hpp"
 #include "graphcanvasvaluefields.hpp"
 #include "graphcanvaswidget.hpp"
+#include "graphfoldgroups.hpp"
+#include "inspectormodel.hpp"
 #include "graphcomposition.hpp"
 #include "graphmodule.hpp"
 #include "graphpartition.hpp"
@@ -6843,6 +6845,177 @@ TEST_CASE("GL-1e the Graph tab sends a pass's input edit, its Undo reaches the r
     undo->trigger();
     QCoreApplication::processEvents();
     CHECK(undone == 1);
+}
+
+// --- GL-5a: a folded pass of the rendering section, edited beside the canvas.
+
+TEST_CASE("GL-5a a rendering-section pass picked on the Graph is edited in the detail column: "
+          "a shader pick is one edit_preset_pass with Undo, Serial one edit_target_planning, "
+          "and a refusal reads as the inspector's sentence",
+          "[devstudio][graph-canvas][scene][gl5a]") {
+    (void)application();
+    RecordedCapability transport;
+    auto capability = transport.capability();
+    const auto record = [&](const char *method, const QJsonObject &params) {
+        RecordedCapability::Call call{QString::fromLatin1(method)};
+        call.body = QJsonDocument(params).toJson(QJsonDocument::Compact);
+        transport.calls.push_back(call);
+        return transport.next++;
+    };
+    capability.requestFramePlan = [&](QString *) {
+        transport.calls.push_back({QStringLiteral("get_frame_plan")});
+        return transport.next++;
+    };
+    capability.requestRenderAuthoringContext = [&](QString *) {
+        transport.calls.push_back({QStringLiteral("get_render_authoring_context")});
+        return transport.next++;
+    };
+    capability.requestEditPresetPass = [&](const QJsonObject &params, QString *) {
+        return record("edit_preset_pass", params);
+    };
+    capability.requestEditTargetPlanning = [&](const QJsonObject &params, QString *) {
+        return record("edit_target_planning", params);
+    };
+    capability.requestRootDocument = [&](const QString &reference, QString *) {
+        transport.calls.push_back({QStringLiteral("get_render_documents"), reference});
+        return transport.next++;
+    };
+    PelicanStudio::GraphCanvasWidget widget{capability};
+    QAction render_undo{QStringLiteral("Undo Render Edit")};
+    QAction render_redo{QStringLiteral("Redo Render Edit")};
+    int undone = 0;
+    QObject::connect(&render_undo, &QAction::triggered, [&] { ++undone; });
+    render_undo.setEnabled(false);
+    render_redo.setEnabled(false);
+    widget.setRenderHistoryActions(&render_undo, &render_redo);
+    widget.resize(1100, 700);
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto answer = [&](const char *method, const Json &reply) {
+        const qint64 id = transport.idOf(QString::fromLatin1(method));
+        REQUIRE(id != 0);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    };
+    const auto sent = [&](const char *method) {
+        const auto id = transport.idOf(QString::fromLatin1(method));
+        REQUIRE(id != 0);
+        return Json::parse(transport.calls[static_cast<std::size_t>(id - 1)].body.toStdString());
+    };
+    // The root as get_render_documents gives it, with or without present's
+    // Serial in its target_planning.
+    const auto root = [](bool serial) {
+        Json content{{"schema", "pelican.graph"}, {"rendering", Json::object()}};
+        if (serial)
+            content["rendering"]["target_planning"] = {
+                {"graphs", {{"main_render", {{"nodes", {{"present", {{"serial", true}}}}}}}}}};
+        return Json{{"documents",
+                     Json::array({{{"reference", "fixture"}, {"content", content.dump()}}})}};
+    };
+    answer("get_graph_catalog", visualCatalog());
+    answer("get_graph_instances", gl1eRead());
+    answer("get_frame_plan", gl1ePlan({}));
+    answer("get_render_authoring_context", gl1eAuthoring({}));
+    auto *notice = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasNotice"));
+    REQUIRE(notice != nullptr);
+
+    // Decision 1: present is the root's own; it says it is edited here.
+    const auto folded = widget.model().foldedNodes();
+    const auto present = std::ranges::find(folded, std::string{"present"},
+                                           &PelicanStudio::GraphCanvasFoldedNode::id);
+    REQUIRE(present != folded.end());
+    CHECK(present->rendering_section);
+    CHECK(present->tooltip() == "From the rendering section: edit it here.");
+    auto *fields = widget.findChild<QWidget *>(QStringLiteral("pelican.graphCanvasFoldedPass"));
+    REQUIRE(fields != nullptr);
+    CHECK_FALSE(fields->isVisible());
+    widget.scene().selectNode("present");
+    QCoreApplication::processEvents();
+    REQUIRE(fields->isVisible());
+    // Decision 5: the root's decisions are read for its boxes.
+    answer("get_render_documents", root(false));
+    auto *serial = widget.findChild<QCheckBox *>(QStringLiteral("pelican.graphCanvasFoldedPass.serial"));
+    REQUIRE(serial != nullptr);
+    CHECK_FALSE(serial->isChecked());
+
+    // Decision 2: a fragment picked from the Pass Editor's list is one
+    // edit_preset_pass of the root's pass -- the params presetPassEditParams
+    // builds for the Pass Editor's Save.
+    auto *fragment =
+        widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasFoldedPass.fragment"));
+    REQUIRE(fragment != nullptr);
+    CHECK(fragment->currentData().toString() == QStringLiteral("engine://passthrough"));
+    const auto pick = [&](const char *reference) {
+        const int index = fragment->findData(QString::fromLatin1(reference));
+        REQUIRE(index >= 0);
+        fragment->setCurrentIndex(index);
+        QCoreApplication::processEvents();
+    };
+    pick("engine://fullscreen");
+    REQUIRE(transport.countOf(QStringLiteral("edit_preset_pass")) == 1);
+    CHECK(sent("edit_preset_pass") ==
+          Json{{"base_source_digest", "gl1e-root"},
+               {"graph", "main_render"},
+               {"pass_name", "present"},
+               {"ray_query", false},
+               {"input", Json::array()},
+               {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+               {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}}});
+    CHECK(notice->text() == QStringLiteral("present: saving..."));
+    answer("edit_preset_pass", Json{{"status", "accepted"}, {"ticket", "gl5a"}});
+    answer("get_edit_result", Json{{"status", "committed"},
+                                   {"committed", true},
+                                   {"source_digest", {{"hex", "gl5a-root-2"}}}});
+    CHECK(notice->text() == QStringLiteral("present saved."));
+    // RU-1: the tab's Undo takes the pass's edit back.
+    render_undo.setEnabled(true);
+    QCoreApplication::processEvents();
+    auto *undo = widget.findChild<QAction *>(QStringLiteral("pelican.graphCanvas.undo"));
+    REQUIRE(undo != nullptr);
+    CHECK(undo->isEnabled());
+    undo->trigger();
+    QCoreApplication::processEvents();
+    CHECK(undone == 1);
+
+    // Decision 6: a refused edit reads as the Pass Editor's sentence for its
+    // code, from the inspector model's table.
+    pick("engine://scene_present");
+    REQUIRE(transport.countOf(QStringLiteral("edit_preset_pass")) == 2);
+    const std::string code = "graph.view_select_needs_target_plan@1";
+    const std::string message = code + ": {\"pass\":\"present\"}";
+    answer("edit_preset_pass",
+           Json{{"status", "rejected"}, {"error", {{"code", code}, {"message", message}}}});
+    const auto sentence = PelicanStudio::knownRefusalDescription(code, message);
+    REQUIRE_FALSE(sentence.empty());
+    CHECK(notice->toolTip().startsWith(QString::fromStdString(sentence)));
+
+    // Decision 5: Serial is the Frame Plan's edit_target_planning of the pass,
+    // and the box says what the root holds once it is read again. The reads
+    // the edits above asked for are answered first (each edit reads the
+    // root again).
+    for (int answered = transport.countOf(QStringLiteral("get_render_documents")), round = 0;
+         round < 4; ++round) {
+        answer("get_render_documents", root(false));
+        const int now = transport.countOf(QStringLiteral("get_render_documents"));
+        if (now == answered) break;
+        answered = now;
+    }
+    CHECK_FALSE(serial->isChecked());
+    serial->click();
+    QCoreApplication::processEvents();
+    REQUIRE(transport.countOf(QStringLiteral("edit_target_planning")) == 1);
+    CHECK(sent("edit_target_planning") ==
+          PelicanStudio::graphTargetPlanningParams("gl1e-root", "main_render", "node", "present",
+                                                   "serial", true));
+    const int reads = transport.countOf(QStringLiteral("get_render_documents"));
+    answer("edit_target_planning", Json{{"status", "accepted"}, {"ticket", "gl5a-serial"}});
+    answer("get_edit_result", Json{{"status", "committed"},
+                                   {"committed", true},
+                                   {"source_digest", {{"hex", "gl5a-root-3"}}}});
+    CHECK(notice->text() == QStringLiteral("Serial set on present."));
+    REQUIRE(transport.countOf(QStringLiteral("get_render_documents")) == reads + 1);
+    answer("get_render_documents", root(true));
+    CHECK(serial->isChecked());
 }
 
 // --- UX-1: how the Graph feels in the hand.

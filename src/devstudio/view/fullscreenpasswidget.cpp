@@ -7,6 +7,7 @@
 
 #include "fullscreenpasssettings.hpp"
 #include "fullscreenshadertemplate.hpp"
+#include "presetpassedit.hpp"
 #include "panelhelp.hpp"
 #include "renderconfigdigest.hpp"
 #include "rendereditcompletion.hpp"
@@ -1620,16 +1621,6 @@ struct FullscreenPassWidget::Impl {
         output_ops->setColorTargets(selectedSequence(*colors));
     }
 
-    // What edit_preset_pass sends for a fullscreen pass besides its input,
-    // output and shader: the interface fields and clear_colors, each only
-    // when it changed.
-    void addPassSettingsEditParams(const Json &draft, Json &params) const {
-        interface_row->addEditParams(original_preset_pass, params);
-        const auto clear = draft.value("clear_colors", Json(nullptr));
-        if (clear != original_preset_pass.value("clear_colors", Json(nullptr)))
-            params["clear_colors"] = clear;
-    }
-
     // A rejected candidate. A shader that did not compile is shown whole,
     // under the form, and the form keeps every value it holds; the notice row
     // says only that it happened.
@@ -2487,68 +2478,26 @@ struct FullscreenPassWidget::Impl {
       if (!authoring.editPresetPass || !editing_preset_pass)
         return;
       try {
-        auto draft = draftJson();
-        Json params{{"base_source_digest", source_digest},
-                    {"graph", editing_preset_pass->first},
-                    {"pass_name", editing_preset_pass->second},
-                    {"ray_query", rayQueryDeclaration()}};
+        // GL-5a: the params are presetPassEditParams', which the Graph's
+        // detail column builds its edit of a rendering-section pass with.
+        PresetPassEditSubject subject{.source_digest = source_digest,
+                                      .graph = editing_preset_pass->first,
+                                      .pass = editing_preset_pass->second};
         // F-6: the root's own pass is named by base_source_digest alone.
-        if (!editingRootPass())
-            params[editingFeaturePass() ? "base_feature_digest" : "base_preset_digest"] = passSourceDigest();
-        if (preservesPresetDeclaration()) {
-            if (editingMaterialPass()) {
-                auto settings = Json::object();
-                const auto collect = [&](const char *key) {
-                    if (draft.contains(key)) {
-                        if (!original_preset_pass.contains(key) || draft.at(key) != original_preset_pass.at(key)) settings[key] = draft.at(key);
-                    } else if (original_preset_pass.contains(key)) settings[key] = nullptr;
-                };
-                for (const auto &key : MaterialSettingsForm::keys()) collect(key.c_str());
-                if (!settings.empty()) params["material_settings"] = std::move(settings);
-                if (editsPresetRouting()) {
-                    const auto routing = routingDraft();
-                    if (routing != preset_material_routing) params["material_routing"] = routing;
-                }
-            }
-            for (const auto *key : {"input", "output", "shader", "draw", "raster_state"}) {
-                if (draft.contains(key) && (!original_preset_pass.contains(key) || draft.at(key) != original_preset_pass.at(key)))
-                    params[key] = draft.at(key);
-            }
-            if (editingRasterPass() && original_preset_pass.contains("raster_state") && !draft.contains("raster_state"))
-                params["raster_state"] = nullptr;
-            if (editsSkinnedShader() && original_preset_pass.value("shader", Json::object()).contains("skinned_vertex") &&
-                !draft.value("shader", Json::object()).contains("skinned_vertex"))
-                params["shader"]["skinned_vertex"] = nullptr;
-        } else {
-            auto output = original_preset_pass.value("output", Json::object());
-            output["color"] = draft.at("output").at("color");
-            output["depth"] = draft.at("output").at("depth");
-            auto shader = original_preset_pass.value("shader", Json::object());
-            // VI-3b: off engine://passthrough, its define means nothing.
-            if (shader.value("fragment", std::string{}) == EnginePassthroughFragment &&
-                draft.at("shader").value("fragment", std::string{}) !=
-                    EnginePassthroughFragment)
-                shader = framePlanShaderWithoutPassthroughInput(std::move(shader));
-            shader["vertex"] = draft.at("shader").at("vertex");
-            shader["fragment"] = draft.at("shader").at("fragment");
-            // UX-4a: the defines are the form's; moving off
-            // engine://passthrough still drops its input define (VI-3b).
-            if (const auto defines = draft.at("shader").find("defines");
-                defines != draft.at("shader").end())
-                shader["defines"] = *defines;
-            else
-                shader.erase("defines");
-            if (shader.value("fragment", std::string{}) != EnginePassthroughFragment &&
-                original_preset_pass.value("shader", Json::object())
-                        .value("fragment", std::string{}) == EnginePassthroughFragment)
-                shader = framePlanShaderWithoutPassthroughInput(std::move(shader));
-            params["input"] = draft.at("input");
-            params["output"] = std::move(output);
-            params["shader"] = std::move(shader);
-            addPassSettingsEditParams(draft, params);
+        if (!editingRootPass()) {
+          subject.document = editingFeaturePass() ? PresetPassEditSubject::Document::feature
+                                                  : PresetPassEditSubject::Document::preset;
+          subject.document_digest = passSourceDigest();
         }
-        if (auto view_select = editedViewSelect())
-            params["view_select"] = std::move(*view_select);
+        PresetPassEditDraft edit{.original = original_preset_pass,
+                                 .draft = draftJson(),
+                                 .ray_query = rayQueryDeclaration()};
+        if (preservesPresetDeclaration() && editingMaterialPass() && editsPresetRouting()) {
+          edit.routing = routingDraft();
+          edit.original_routing = preset_material_routing;
+        }
+        edit.view_select = editedViewSelect();
+        const auto params = presetPassEditParams(subject, edit);
         QString error;
         pending_authoring_kind = AuthoringRequest::edit;
         pending_authoring_request = authoring.editPresetPass(

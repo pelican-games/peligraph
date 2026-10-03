@@ -133,18 +133,22 @@ void FullscreenPassInterfaceRow::apply(Json &draft) const {
         draft["push_constants"] = push;
 }
 
-void FullscreenPassInterfaceRow::addEditParams(const Json &original,
-                                               Json &params) const {
-    const auto uses = original.find("uses_light_data");
-    const bool was_using =
-        uses != original.end() && uses->is_boolean() && uses->get<bool>();
-    if (was_using != usesLightData())
-        params["uses_light_data"] = usesLightData() ? Json(true) : Json(nullptr);
-    auto was_pushing = original.value("push_constants", std::string{});
-    if (was_pushing == "none") was_pushing.clear();
-    if (was_pushing != pushConstants())
+void fullscreenInterfaceEditParams(const Json &original, const Json &draft,
+                                   Json &params) {
+    const auto lights = [](const Json &declaration) {
+        const auto uses = declaration.find("uses_light_data");
+        return uses != declaration.end() && uses->is_boolean() && uses->get<bool>();
+    };
+    const auto pushing = [](const Json &declaration) {
+        auto value = declaration.value("push_constants", std::string{});
+        if (value == "none") value.clear();
+        return value;
+    };
+    if (lights(original) != lights(draft))
+        params["uses_light_data"] = lights(draft) ? Json(true) : Json(nullptr);
+    if (pushing(original) != pushing(draft))
         params["push_constants"] =
-            pushConstants().empty() ? Json(nullptr) : Json(pushConstants());
+            pushing(draft).empty() ? Json(nullptr) : Json(pushing(draft));
 }
 
 } // namespace PelicanStudio

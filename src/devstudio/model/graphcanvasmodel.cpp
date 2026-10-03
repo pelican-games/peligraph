@@ -5548,8 +5548,12 @@ GraphCanvasFoldedNode singlePassNode(const GraphCanvasPlanPass &pass) {
 } // namespace
 
 std::string GraphCanvasFoldedNode::tooltip() const {
-    return "From the rendering section (" + source +
-           "): read only here. Frame Plan and Features edit it.";
+    if (rendering_section) return "From the rendering section: edit it here.";
+    // §4 rule 3: readable here; expanded to be edited.
+    const auto owner = !feature.empty() ? "feature " + featureShortName(feature)
+                       : !preset.empty() ? "preset " + preset
+                                         : "the preset (" + source + ")";
+    return "From " + owner + ": read only here. Expand to edit\xE2\x80\xA6";
 }
 
 std::string GraphCanvasDomainStub::text() const {
@@ -5779,8 +5783,34 @@ std::vector<GraphCanvasFoldedNode> GraphCanvasModel::rootFoldedNodes() const {
         }
         found->passes.push_back(pass.name);
     }
-    for (auto &node : result) foldedBoundary(node, plan_passes_);
+    for (auto &node : result) {
+        foldedBoundary(node, plan_passes_);
+        markFoldedOwner(node);
+    }
     return result;
+}
+
+bool GraphCanvasModel::renderingSectionPass(std::string_view pass) const {
+    const auto graphs = render_authoring_.find("graphs");
+    if (graphs == render_authoring_.end() || !graphs->is_array()) return false;
+    for (const auto &graph : *graphs) {
+        if (!graph.is_object() || text(graph, "name") != plan_graph_) continue;
+        const auto passes = graph.find("passes");
+        if (passes == graph.end() || !passes->is_array()) return false;
+        for (const auto &entry : *passes)
+            if (entry.is_object() && text(entry, "name") == pass)
+                return entry.value("editable_root_pass", false);
+    }
+    return false;
+}
+
+void GraphCanvasModel::markFoldedOwner(GraphCanvasFoldedNode &node) const {
+    node.rendering_section = !node.feature_group && node.feature.empty() &&
+                             node.passes.size() == 1 && renderingSectionPass(node.passes.front());
+    if (node.rendering_section || !node.feature.empty()) return;
+    if (const auto preset = render_authoring_.find("pipeline_preset");
+        preset != render_authoring_.end() && preset->is_object())
+        node.preset = text(*preset, "name");
 }
 
 std::vector<GraphCanvasFoldedNode> GraphCanvasModel::featurePassNodes(std::string_view feature) const {
@@ -5789,6 +5819,7 @@ std::vector<GraphCanvasFoldedNode> GraphCanvasModel::featurePassNodes(std::strin
         if (pass.feature != feature || pass.kind == "anchor") continue;
         result.push_back(singlePassNode(pass));
         foldedBoundary(result.back(), plan_passes_);
+        markFoldedOwner(result.back());
     }
     return result;
 }

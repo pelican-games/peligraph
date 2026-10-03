@@ -27,7 +27,9 @@ class EmbeddedViewport;
 // the document edit: the canvas cannot attach an instance or fork a preset
 // from here. GL-1e adds one pass edit, and only one: edit_preset_pass on a
 // pass of the rendering section, changing its `input` the way the Frame
-// Plan's socket drop does. set_time and render_frame are the scrub, and they
+// Plan's socket drop does (GL-5a: and the rest of its declaration from the
+// detail column, with the params the Pass Editor's Save builds, and its
+// graph-wide planning decisions). set_time and render_frame are the scrub, and they
 // are named separately rather than folded into one "scrub" call so that what
 // leaves the Studio when a person drags the Timeline is two RPCs a reader can
 // count -- O-1's reading of going to a time, and nothing else.
@@ -94,6 +96,12 @@ struct GraphCanvasReadCapability {
     std::function<qint64(QString *error)> requestFoldGroups;
     std::function<qint64(const QString &reference, QString *error)> requestRootDocument;
     std::function<qint64(const QJsonObject &params, QString *error)> requestFoldNodes;
+    // GL-5a, decision 5: edit_target_planning (EL-2), the Serial / Isolate /
+    // No alias of a rendering-section pass picked on the canvas -- the params
+    // graphTargetPlanningParams builds, as the Frame Plan's right-click sends
+    // them; a ticket get_edit_result polls. Left empty: the detail column
+    // offers no decisions.
+    std::function<qint64(const QJsonObject &params, QString *error)> requestEditTargetPlanning;
     // GL-4a: verify_fold, a ticket get_edit_result polls (running for as
     // long as the engine's child runs draw).
     std::function<qint64(const QJsonObject &params, QString *error)> requestVerifyFold;
