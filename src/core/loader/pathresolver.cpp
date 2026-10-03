@@ -59,6 +59,24 @@ void PathResolver::setup(
           std::move(user_dir_override));
 }
 
+AssetStoresChange PathResolver::replaceDeclarations(
+    const nlohmann::json &declared,
+    std::optional<std::vector<std::string>> hot_reload) {
+    auto change = resolver.replaceDeclarations(declared, std::move(hot_reload));
+    for (const auto &name : change.added_stores) {
+        for (const auto &store : resolver.stores()) {
+            if (store.name == name) {
+                LOG_INFO(logger, "asset store added in place: {}={}", store.name,
+                         store.root.string());
+            }
+        }
+    }
+    for (const auto &name : change.removed_stores) {
+        LOG_INFO(logger, "asset store removed in place: {}", name);
+    }
+    return change;
+}
+
 void PathResolver::resetForTesting() {
     resolver.reset();
 }

@@ -353,6 +353,131 @@ void ProjectPathResolver::setup(
               std::move(user_dir_override));
 }
 
+std::vector<ProjectPathResolver::AssetStoreMount>
+ProjectPathResolver::parseAssetStores(
+    const std::filesystem::path &project_root_abs,
+    const nlohmann::json &declared) {
+    if (!declared.is_object()) {
+        throw std::runtime_error("project.json asset_stores must be an object");
+    }
+
+    std::set<std::string> declared_names;
+    std::vector<AssetStoreMount> parsed_stores;
+    for (const auto &[name, store] : declared.items()) {
+        if (name.empty()) {
+            throw std::runtime_error("project.json asset_stores store names must not be empty");
+        }
+        if (!declared_names.insert(name).second) {
+            throw std::runtime_error("duplicate asset store declaration: " + name);
+        }
+        if (!store.is_object()) {
+            throw std::runtime_error("project.json asset_stores." + name + " must be an object");
+        }
+        if (!store.contains("mount") || !store.at("mount").is_string()) {
+            throw std::runtime_error("project.json asset_stores." + name + ".mount must be a string");
+        }
+
+        const auto mount = store.at("mount").get<std::string>();
+        validateRefSyntax(mount);
+        const std::filesystem::path mount_path{mount};
+        if (hasAbsoluteSyntax(mount_path, mount)) {
+            throw std::runtime_error("asset store mount must be relative: " + name);
+        }
+        const auto normalized_mount = mount_path.lexically_normal();
+        const auto mount_components = normalizedRelativeComponents(normalized_mount);
+        if (mount_components.empty()) {
+            throw std::runtime_error("asset store mount must not resolve to project root: " + name);
+        }
+
+        for (const auto &existing : parsed_stores) {
+            if (componentsOverlap(mount_components, normalizedRelativeComponents(existing.logical_mount))) {
+                throw std::runtime_error("asset store mounts overlap: " + existing.name + " and " +
+                                         name);
+            }
+        }
+
+        std::optional<std::filesystem::path> manifest_abs;
+        std::optional<std::string> manifest_error;
+        if (const auto manifest = store.find("manifest"); manifest != store.end()) {
+            try {
+                if (!manifest->is_string()) {
+                    throw std::runtime_error("project.json asset_stores." + name +
+                                             ".manifest must be a string");
+                }
+                const auto manifest_ref = manifest->get<std::string>();
+                validateRefSyntax(manifest_ref);
+                const std::filesystem::path manifest_path{manifest_ref};
+                if (hasAbsoluteSyntax(manifest_path, manifest_ref)) {
+                    throw std::runtime_error("asset store manifest must be project-relative: " + name);
+                }
+                manifest_abs = weaklyCanonicalOrThrow(project_root_abs / manifest_path,
+                                                      "PathResolver asset store manifest " + name);
+                if (*manifest_abs == project_root_abs || !isWithinRoot(project_root_abs, *manifest_abs)) {
+                    throw std::runtime_error("asset store manifest escapes project root: " + name);
+                }
+            } catch (const std::exception &err) {
+                manifest_abs.reset();
+                manifest_error = err.what();
+            }
+        }
+
+        parsed_stores.push_back(AssetStoreMount{
+            .name = name,
+            .mount = normalizedGenericRelativeString(normalized_mount),
+            .logical_mount = normalized_mount,
+            .root_abs = weaklyCanonicalOrThrow(project_root_abs / normalized_mount,
+                                               "PathResolver asset store " + name),
+            .manifest_abs = std::move(manifest_abs),
+            .manifest_error = std::move(manifest_error),
+        });
+    }
+
+    const auto local_path = project_root_abs / ".pelican" / "local.json";
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(local_path, ec) && !ec) {
+        const auto local = nlohmann::json::parse(readBinaryFile(local_path));
+        rejectUnexpectedLocalKeys(local);
+        if (local.contains("asset_stores")) {
+            const auto &overrides = local.at("asset_stores");
+            if (!overrides.is_object()) {
+                throw std::runtime_error(".pelican/local.json asset_stores must be an object");
+            }
+            for (const auto &[name, value] : overrides.items()) {
+                const auto match = std::find_if(parsed_stores.begin(), parsed_stores.end(),
+                                                [&](const AssetStoreMount &store) {
+                                                    return store.name == name;
+                                                });
+                if (match == parsed_stores.end()) {
+                    throw std::runtime_error(".pelican/local.json references undeclared asset store: " +
+                                             name);
+                }
+                if (!value.is_string()) {
+                    throw std::runtime_error(".pelican/local.json asset_stores." + name +
+                                             " must be a path string");
+                }
+                auto override_path = std::filesystem::path{value.get<std::string>()};
+                if (override_path.is_relative()) {
+                    override_path = project_root_abs / override_path;
+                }
+                match->root_abs = weaklyCanonicalOrThrow(override_path,
+                                                         "PathResolver asset store override " + name);
+            }
+        }
+    }
+
+    for (size_t i = 0; i < parsed_stores.size(); ++i) {
+        for (size_t j = i + 1; j < parsed_stores.size(); ++j) {
+            if (isWithinRoot(parsed_stores[i].root_abs, parsed_stores[j].root_abs) ||
+                isWithinRoot(parsed_stores[j].root_abs, parsed_stores[i].root_abs)) {
+                throw std::runtime_error("asset store roots overlap: " + parsed_stores[i].name +
+                                         " and " + parsed_stores[j].name);
+            }
+        }
+    }
+
+    return parsed_stores;
+}
+
 void ProjectPathResolver::setupImpl(
     const std::filesystem::path &project_root, bool allow_absolute,
     const ProjectEnvelope *project,
@@ -380,126 +505,7 @@ void ProjectPathResolver::setupImpl(
     }
 
     if (project != nullptr) {
-        const auto &declared = project->asset_stores;
-        if (!declared.is_object()) {
-            throw std::runtime_error("project.json asset_stores must be an object");
-        }
-
-        std::set<std::string> declared_names;
-        std::vector<AssetStoreMount> parsed_stores;
-        for (const auto &[name, store] : declared.items()) {
-            if (name.empty()) {
-                throw std::runtime_error("project.json asset_stores store names must not be empty");
-            }
-            if (!declared_names.insert(name).second) {
-                throw std::runtime_error("duplicate asset store declaration: " + name);
-            }
-            if (!store.is_object()) {
-                throw std::runtime_error("project.json asset_stores." + name + " must be an object");
-            }
-            if (!store.contains("mount") || !store.at("mount").is_string()) {
-                throw std::runtime_error("project.json asset_stores." + name + ".mount must be a string");
-            }
-
-            const auto mount = store.at("mount").get<std::string>();
-            validateRefSyntax(mount);
-            const std::filesystem::path mount_path{mount};
-            if (hasAbsoluteSyntax(mount_path, mount)) {
-                throw std::runtime_error("asset store mount must be relative: " + name);
-            }
-            const auto normalized_mount = mount_path.lexically_normal();
-            const auto mount_components = normalizedRelativeComponents(normalized_mount);
-            if (mount_components.empty()) {
-                throw std::runtime_error("asset store mount must not resolve to project root: " + name);
-            }
-
-            for (const auto &existing : parsed_stores) {
-                if (componentsOverlap(mount_components, normalizedRelativeComponents(existing.logical_mount))) {
-                    throw std::runtime_error("asset store mounts overlap: " + existing.name + " and " +
-                                             name);
-                }
-            }
-
-            std::optional<std::filesystem::path> manifest_abs;
-            std::optional<std::string> manifest_error;
-            if (const auto manifest = store.find("manifest"); manifest != store.end()) {
-                try {
-                    if (!manifest->is_string()) {
-                        throw std::runtime_error("project.json asset_stores." + name +
-                                                 ".manifest must be a string");
-                    }
-                    const auto manifest_ref = manifest->get<std::string>();
-                    validateRefSyntax(manifest_ref);
-                    const std::filesystem::path manifest_path{manifest_ref};
-                    if (hasAbsoluteSyntax(manifest_path, manifest_ref)) {
-                        throw std::runtime_error("asset store manifest must be project-relative: " + name);
-                    }
-                    manifest_abs = weaklyCanonicalOrThrow(project_root_abs / manifest_path,
-                                                          "PathResolver asset store manifest " + name);
-                    if (*manifest_abs == project_root_abs || !isWithinRoot(project_root_abs, *manifest_abs)) {
-                        throw std::runtime_error("asset store manifest escapes project root: " + name);
-                    }
-                } catch (const std::exception &err) {
-                    manifest_abs.reset();
-                    manifest_error = err.what();
-                }
-            }
-
-            parsed_stores.push_back(AssetStoreMount{
-                .name = name,
-                .mount = normalizedGenericRelativeString(normalized_mount),
-                .logical_mount = normalized_mount,
-                .root_abs = weaklyCanonicalOrThrow(project_root_abs / normalized_mount,
-                                                   "PathResolver asset store " + name),
-                .manifest_abs = std::move(manifest_abs),
-                .manifest_error = std::move(manifest_error),
-            });
-        }
-
-        const auto local_path = project_root_abs / ".pelican" / "local.json";
-        std::error_code ec;
-        if (std::filesystem::is_regular_file(local_path, ec) && !ec) {
-            const auto local = nlohmann::json::parse(readBinaryFile(local_path));
-            rejectUnexpectedLocalKeys(local);
-            if (local.contains("asset_stores")) {
-                const auto &overrides = local.at("asset_stores");
-                if (!overrides.is_object()) {
-                    throw std::runtime_error(".pelican/local.json asset_stores must be an object");
-                }
-                for (const auto &[name, value] : overrides.items()) {
-                    const auto match = std::find_if(parsed_stores.begin(), parsed_stores.end(),
-                                                    [&](const AssetStoreMount &store) {
-                                                        return store.name == name;
-                                                    });
-                    if (match == parsed_stores.end()) {
-                        throw std::runtime_error(".pelican/local.json references undeclared asset store: " +
-                                                 name);
-                    }
-                    if (!value.is_string()) {
-                        throw std::runtime_error(".pelican/local.json asset_stores." + name +
-                                                 " must be a path string");
-                    }
-                    auto override_path = std::filesystem::path{value.get<std::string>()};
-                    if (override_path.is_relative()) {
-                        override_path = project_root_abs / override_path;
-                    }
-                    match->root_abs = weaklyCanonicalOrThrow(override_path,
-                                                             "PathResolver asset store override " + name);
-                }
-            }
-        }
-
-        for (size_t i = 0; i < parsed_stores.size(); ++i) {
-            for (size_t j = i + 1; j < parsed_stores.size(); ++j) {
-                if (isWithinRoot(parsed_stores[i].root_abs, parsed_stores[j].root_abs) ||
-                    isWithinRoot(parsed_stores[j].root_abs, parsed_stores[i].root_abs)) {
-                    throw std::runtime_error("asset store roots overlap: " + parsed_stores[i].name +
-                                             " and " + parsed_stores[j].name);
-                }
-            }
-        }
-
-        asset_stores = std::move(parsed_stores);
+        asset_stores = parseAssetStores(project_root_abs, project->asset_stores);
     } else {
         const auto local_path = project_root_abs / ".pelican" / "local.json";
         std::error_code ec;
@@ -523,6 +529,169 @@ void ProjectPathResolver::reset() {
     allow_absolute_paths = false;
     asset_stores.clear();
     hot_reload_paths.reset();
+    stores_added_in_place.clear();
+    manifests_declared_in_place.clear();
+}
+
+AssetStoresChangeRefused::AssetStoresChangeRefused(std::string_view code,
+                                                   std::string store,
+                                                   std::string reason)
+    : std::runtime_error{std::string{code} + ": asset_stores" +
+                         (store.empty() ? std::string{} : "." + store) + ": " +
+                         reason},
+      code_{code}, store_{std::move(store)}, reason_{std::move(reason)} {}
+
+AssetStoresChange ProjectPathResolver::planChange(
+    const std::vector<AssetStoreMount> &next) const {
+    const auto contains = [](const std::vector<std::string> &names,
+                             const std::string &name) {
+        return std::find(names.begin(), names.end(), name) != names.end();
+    };
+    const auto unsupported = [](const std::string &store, std::string reason) {
+        return AssetStoresChangeRefused{projectSettingsChangeUnsupportedCode,
+                                        store, std::move(reason)};
+    };
+    const auto declaresManifest = [](const AssetStoreMount &store) {
+        return store.manifest_abs.has_value() || store.manifest_error.has_value();
+    };
+
+    AssetStoresChange change;
+    for (const auto &old : asset_stores) {
+        const auto found = std::find_if(next.begin(), next.end(),
+                                        [&](const AssetStoreMount &store) {
+                                            return store.name == old.name;
+                                        });
+        if (found == next.end()) {
+            if (!contains(stores_added_in_place, old.name)) {
+                throw unsupported(
+                    old.name,
+                    "removing a store the engine opened the project with changes "
+                    "where the references under its mount resolve; restart the "
+                    "engine after editing project.json");
+            }
+            change.removed_stores.push_back(old.name);
+            continue;
+        }
+        if (normalizedRelativeComponents(found->logical_mount) !=
+            normalizedRelativeComponents(old.logical_mount)) {
+            throw unsupported(old.name,
+                              "the mount moves from '" + old.mount + "' to '" +
+                                  found->mount +
+                                  "', which changes where references resolve; "
+                                  "restart the engine after editing project.json");
+        }
+        if (found->root_abs != old.root_abs) {
+            throw unsupported(old.name,
+                              "the store's root moves from '" +
+                                  old.root_abs.generic_string() + "' to '" +
+                                  found->root_abs.generic_string() +
+                                  "' (.pelican/local.json); restart the engine to "
+                                  "apply it");
+        }
+        const bool had = declaresManifest(old);
+        const bool has = declaresManifest(*found);
+        if (!had && has) {
+            if (found->manifest_error) {
+                throw AssetStoresChangeRefused{projectSettingsInvalidCode, old.name,
+                                               *found->manifest_error};
+            }
+            change.declared_manifests.push_back(old.name);
+        } else if (had && !has) {
+            if (!contains(manifests_declared_in_place, old.name) &&
+                !contains(stores_added_in_place, old.name)) {
+                throw unsupported(old.name,
+                                  "removing the manifest the engine opened the "
+                                  "project with changes what the store is "
+                                  "verified against; restart the engine after "
+                                  "editing project.json");
+            }
+            change.removed_manifests.push_back(old.name);
+        } else if (had && (found->manifest_abs != old.manifest_abs ||
+                           found->manifest_error != old.manifest_error)) {
+            throw unsupported(old.name,
+                              "replacing the store's manifest changes what it is "
+                              "verified against; restart the engine after "
+                              "editing project.json");
+        }
+    }
+    for (const auto &store : next) {
+        const bool known = std::any_of(asset_stores.begin(), asset_stores.end(),
+                                       [&](const AssetStoreMount &old) {
+                                           return old.name == store.name;
+                                       });
+        if (known) continue;
+        // References under the mount resolved inside the project folder of
+        // the same name until now; the store keeps them on the same files
+        // only when that folder is its root.
+        const auto unmounted = weaklyCanonicalOrThrow(
+            project_root_abs / store.logical_mount,
+            "PathResolver asset store " + store.name);
+        if (store.root_abs != unmounted) {
+            throw unsupported(store.name,
+                              "the store's root is '" +
+                                  store.root_abs.generic_string() +
+                                  "' (.pelican/local.json), not the project "
+                                  "folder its mount names, so references under "
+                                  "the mount would resolve to other files; "
+                                  "restart the engine to apply it");
+        }
+        if (store.manifest_error) {
+            throw AssetStoresChangeRefused{projectSettingsInvalidCode, store.name,
+                                           *store.manifest_error};
+        }
+        change.added_stores.push_back(store.name);
+        if (store.manifest_abs) change.declared_manifests.push_back(store.name);
+    }
+    return change;
+}
+
+AssetStoresChange ProjectPathResolver::planDeclarations(
+    const nlohmann::json &declared) const {
+    if (!configured) {
+        throw std::runtime_error("PathResolver setup must be called before its declarations change");
+    }
+    std::vector<AssetStoreMount> next;
+    try {
+        next = parseAssetStores(project_root_abs, declared);
+    } catch (const std::exception &error) {
+        throw AssetStoresChangeRefused{projectSettingsInvalidCode, {}, error.what()};
+    }
+    return planChange(next);
+}
+
+AssetStoresChange ProjectPathResolver::replaceDeclarations(
+    const nlohmann::json &declared,
+    std::optional<std::vector<std::string>> hot_reload) {
+    if (!configured) {
+        throw std::runtime_error("PathResolver setup must be called before its declarations change");
+    }
+    std::vector<AssetStoreMount> next;
+    try {
+        next = parseAssetStores(project_root_abs, declared);
+    } catch (const std::exception &error) {
+        throw AssetStoresChangeRefused{projectSettingsInvalidCode, {}, error.what()};
+    }
+    auto change = planChange(next);
+
+    const auto erase = [](std::vector<std::string> &names, const std::string &name) {
+        names.erase(std::remove(names.begin(), names.end(), name), names.end());
+    };
+    for (const auto &name : change.removed_stores) {
+        erase(stores_added_in_place, name);
+        erase(manifests_declared_in_place, name);
+    }
+    for (const auto &name : change.removed_manifests) erase(manifests_declared_in_place, name);
+    for (const auto &name : change.added_stores) stores_added_in_place.push_back(name);
+    for (const auto &name : change.declared_manifests) {
+        // A store added with its manifest is taken back as a whole.
+        if (std::find(change.added_stores.begin(), change.added_stores.end(), name) ==
+            change.added_stores.end()) {
+            manifests_declared_in_place.push_back(name);
+        }
+    }
+    asset_stores = std::move(next);
+    hot_reload_paths = std::move(hot_reload);
+    return change;
 }
 
 std::vector<AssetStoreStatus> ProjectPathResolver::stores() const {

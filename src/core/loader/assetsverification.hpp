@@ -102,6 +102,9 @@ DECLARE_MODULE(AssetsVerification) {
     std::optional<std::string> skipped_reason;
     std::optional<Record> record;
     bool running = false;
+    // PJ-1: the stores changed while a run read the previous ones; the
+    // worker runs once more before it reports.
+    bool stale = false;
 
     void run();
     void startLocked();
@@ -127,6 +130,16 @@ DECLARE_MODULE(AssetsVerification) {
     nlohmann::json verify();
     // update_assets_manifest {store}. Throws AssetsVerificationError.
     nlohmann::json updateManifest(const std::string &store);
+    // PJ-1: project.json's asset stores changed in place
+    // (edit_project_settings). Writes the manifest of each store named in
+    // `generate` whose manifest file does not exist yet, from the disk as
+    // update_assets_manifest does, then verifies the new stores: starts a
+    // rerun, or has the one running read them once it is done. Returns
+    // {state, generated:[{store, manifest, files, hashed, cached}],
+    //  failed:[{store, manifest, reason}]}. Throws AssetsVerificationError
+    // (unavailable) in a host that never ran the startup check.
+    nlohmann::json redeclareStores(std::vector<AssetStoreStatus> stores,
+                                   const std::vector<std::string> &generate);
 
     // Joins the worker; a run in progress finishes first.
     void stop();

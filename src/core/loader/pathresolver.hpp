@@ -34,6 +34,13 @@ DECLARE_MODULE(PathResolver) {
     const std::optional<std::vector<std::string>> &hotReloadPaths() const {
         return resolver.hotReloadPaths();
     }
+    // PJ-1: edit_project_settings. See ProjectPathResolver.
+    AssetStoresChange planDeclarations(const nlohmann::json &declared) const {
+        return resolver.planDeclarations(declared);
+    }
+    AssetStoresChange replaceDeclarations(
+        const nlohmann::json &declared,
+        std::optional<std::vector<std::string>> hot_reload);
 
     ResolvedRef resolveProjectRef(std::string_view ref) const;
     ResolvedRef resolveCliRef(std::string_view ref) const;

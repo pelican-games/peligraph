@@ -868,7 +868,13 @@ void ReloadService::ensureBuiltInParticipants() {
 }
 
 void ReloadService::setup(const PathResolver &resolver) {
-    if (watcher_) watcher_->stop();
+    if (watcher_) {
+        watcher_->stop();
+        const auto replaced = watcher_->status();
+        carried_scans_ += replaced.scans;
+        carried_hashed_files_ += replaced.hashed_files;
+        carried_hashed_bytes_ += replaced.hashed_bytes;
+    }
     ensureBuiltInParticipants();
     std::vector<WatchStore> stores;
     stores.push_back({"project", resolver.projectRoot(), {}});
@@ -1435,9 +1441,13 @@ nlohmann::json ReloadService::statusJson() const {
                 {"model_catalog", model_catalog},
                 {"last_reload_error", std::move(resource_error)},
                 {"watch", watch},
-                {"scans", 0}, {"hashed_files", 0}, {"hashed_bytes", 0}};
+                {"scans", carried_scans_}, {"hashed_files", carried_hashed_files_},
+                {"hashed_bytes", carried_hashed_bytes_}};
     }
-    const auto status = watcher_->status();
+    auto status = watcher_->status();
+    status.scans += carried_scans_;
+    status.hashed_files += carried_hashed_files_;
+    status.hashed_bytes += carried_hashed_bytes_;
     return {{"state", watcherStateName(status.state)}, {"epoch", status.epoch},
             {"error", status.error.empty() ? nlohmann::json(nullptr) : nlohmann::json(status.error)},
             {"applied", resources.applied}, {"failed", resources.failed},

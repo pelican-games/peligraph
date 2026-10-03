@@ -8,6 +8,7 @@
 #include "engineauthoringlists.hpp"
 #include "playsession.hpp"
 #include "projectmigrationrpc.hpp"
+#include "projectsettingsrpc.hpp"
 #include "../startup.hpp"
 
 #include "../appflow/framephase.hpp"
@@ -1580,6 +1581,9 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             },
         });
     internal::configureAssetsVerificationRpcHandlers(server, modules.assets_verification);
+    // PJ-1: project.json's hot_reload / asset_stores, applied in place.
+    configureProjectSettingsRpcHandlers(server, modules.path_resolver, modules.reload_service,
+                                        modules.assets_verification);
 
     server.setHandler("get_status", [instance_id, &modules, &editor_service,
                                      &play_session](const nlohmann::json &params) {

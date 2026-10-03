@@ -193,6 +193,10 @@ DECLARE_MODULE(ReloadService) {
   public:
     ReloadService() = default;
     ~ReloadService();
+    // Called once the startup resources are loaded, and again (PJ-1) when
+    // project.json's hot_reload or asset_stores change in place: the watcher
+    // is replaced by one over the resolver's stores and declaration as they
+    // are now (its inventory seeded from the disk as it is now).
     void setup(const PathResolver &resolver);
     void applyFrame();
     RuntimeReloadSummary applyRuntimeBoundary(RuntimeReloadBoundary boundary);
@@ -299,6 +303,11 @@ DECLARE_MODULE(ReloadService) {
     std::unique_ptr<FileWatcher> watcher_;
     // HW-1: project.json `hot_reload` as of setup (nullopt: undeclared).
     std::optional<std::vector<std::string>> watch_paths_;
+    // PJ-1: setup again (edit_project_settings) replaces the watcher; the
+    // FW-1 totals of the watchers it replaced, so status keeps counting.
+    std::uint64_t carried_scans_ = 0;
+    std::uint64_t carried_hashed_files_ = 0;
+    std::uint64_t carried_hashed_bytes_ = 0;
     ReloadCoordinator transactions_;
     std::vector<ReloadParticipant> participants_;
     std::unordered_map<std::string, RuntimeParticipantStatus> runtime_status_;

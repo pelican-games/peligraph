@@ -26,6 +26,7 @@ target_sources(pelican_core PRIVATE
     windowedrpchost.cpp
     editorrpchandlers.cpp
     projectmigrationrpc.cpp
+    projectsettingsrpc.cpp
 )
 else()
 target_sources(pelican_core PRIVATE

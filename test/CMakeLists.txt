@@ -3690,6 +3690,14 @@ pelican_define_test(effecttransaction_test GROUP core_diagnostics pelican_core)
 endif()
 pelican_define_test(assetsmanifest_test pelican_project)
 pelican_define_test(assetsverification_test pelican_core)
+if(PELICAN_WITH_RPC AND WIN32)
+    # PJ-1: edit_project_settings through a headless --rpc player.
+    pelican_define_test(projectsettingsrpc_test GPU pelican_project)
+    target_compile_definitions(pelican_test_projectsettingsrpc_test PRIVATE
+        PELICAN_PJ1_PLAYER="$<TARGET_FILE:pelican_player>"
+        PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+    add_dependencies(pelican_test_projectsettingsrpc_test pelican_player)
+endif()
 
 add_test(
     NAME devcli_assets_command
