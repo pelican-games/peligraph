@@ -179,10 +179,13 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 | `list_materials` | `{}` | asset_data の `materials[]` の全部の文書と、その中の material(✅MT-1。下の「material 文書を読み書きする」) |
 | `get_material` | `{path, name?}` | 1 つの material を文書のままと、`material_digest`(✅MT-1。同上) |
 | `get_surface_schema` | `{surface}` | `.surface` の `//!` の宣言の `params` と `textures`(✅MT-1。同上) |
-| `get_material_bindings` | `{model}` | model の primitive ごとの material(✅MT-1。同上) |
+| `list_surfaces` | `{}`(引数は取らない) | engine と project の `.surface` の一覧。数・OpenPBR の名前と routing・render_state(✅MT-1b。同上) |
+| `get_material_bindings` | `{model}` | model の primitive ごとの material(✅MT-1。同上)。✅MT-2 から、その model を描く scene の object の数 `objects` と、自分の material を持つ数 `object_overrides` も |
 | `edit_material` | `{base_material_digest, path, name?, values?, textures?, tags?, routing?, variants?, surface?}` | material を 1 つ直す。values だけなら live、ほかが変われば書いて restart_required(✅MT-1。同上) |
 | `create_material` | `{path, surface, name?, values?, tags?, routing?}` | material 文書を作り asset_data に載せ、live で登録する(✅MT-1。同上) |
 | `bind_material` | `{model, material, primitive?\|slot?}` か `{model, bindings}` | model の material_bindings を書き、model を読み直す(✅MT-1。同上) |
+| `set_object_material` | `{actor_id, object, scene_id?, base_scene_revision?, material\|null, primitive?\|slot?}` か `{actor_id, object, scene_id?, base_scene_revision?, materials}` | scene の object 1 つだけの material を、その `simplemodelview.materials` に 1 つの scene の編集で書く(CAS・undo / redo。✅MT-2。同上) |
+| `get_object_materials` | `{object, scene_id?}` | object の primitive ごとの実効の material と、その出所(`object` / `model`)(✅MT-2。同上) |
 | `set_input_profile` | `{name}` | 入力プロファイル切替(✅WP91) |
 | `start_input_record` | `{path}` | input_seq 収録開始(✅WP89。v2 で書く) |
 | `stop_input_record` | `{}` | 収録停止。`{path, frames, events}` |
@@ -480,14 +483,21 @@ params は `get_assets_verification` / `verify_assets` が空の object だけ�
 
 ### material 文書を読み書きする(✅MT-1)
 
-7 本(✅MT-1、`976c410d`)は、material 文書(`pelican.material`)・`.surface` の宣言・model の material_bindings を、動いている engine に読ませて書かせます([MT-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L14)。[MT-1 の handler の登録](../../src/core/communication/materialdocumentrpc.cpp#L1475))。書く 3 本は project の文書の transaction と digest の CAS で書き、返る前に engine に当てます。どの鍵の変更が live で、どれが restart_required かの規則は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、engine が書くファイルの形は [第5章](05_assets.md) §5.2 です。
+7 本(✅MT-1、`976c410d`)は、material 文書(`pelican.material`)・`.surface` の宣言・model の material_bindings を、動いている engine に読ませて書かせます([MT-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L14)。[MT-1 の handler の登録](../../src/core/communication/materialdocumentrpc.cpp#L1475))。書く 3 本は project の文書の transaction と digest の CAS で書き、返る前に engine に当てます。どの鍵の変更が live で、どれが restart_required かの規則は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、engine が書くファイルの形は [第5章](05_assets.md) §5.2 です。✅MT-1b の `list_surfaces` と、✅MT-2 の object ごとの上書きの 2 本(`set_object_material` / `get_object_materials`)もこの節に書きます。
 
-**読む 4 本**(状態を変えません)
+**読む 4 本と `list_surfaces`**(状態を変えません)
 
 - **`list_materials {}`** → `{asset_data_digest, documents: [{path, material_digest, status, reason?, materials: [{name, surface, tags, id, registered}]}]}`。asset_data の `materials[]` の並びのままです。`status` は `loaded` / `missing`(読めない。`material_digest` は `null`)/ `invalid`(JSON でない、または `pelican.material` の `materials` 配列が無い)で、`reason` が付きます。`id` は `get_render_authoring_context` の `materials[]` と同じ draw の鍵、`registered` はこの engine がその文書からその material を登録しているかです。params は省くか空の object だけです。
 - **`get_material {path, name?}`** → `{path, material_digest, name, names, registered, material}`。`material` は文書に書かれているままの object で、鍵の順も文書のままです(ordered の handler)。`path` は asset_data に書かれたままか、正規化して同じになる参照です。文書が 1 つの material だけを持つなら `name` は省けます。
 - **`get_surface_schema {surface}`** → `{surface, params: [{name, type, default, min?, max?, hint?, encoding}], textures: [{name, default, color_space, role, dimension}]}`。`.surface` の `//!` の宣言そのままで、何も足しません。`surface` は `.surface` で終わる参照です。
-- **`get_material_bindings {model}`** → `{model, material_bindings, bindings_digest, primitives: [{mesh, primitive, slot, material, usd_path}]}`。`model` は asset_data の `models[]` の名前か、engine の基本形の参照です。`slot` は model のファイル(基本形なら生成した形)が primitive に付けている glTF の material の名前、`material` は今の割り当て(binding が無ければ `slot` と同じ)です。material_bindings の文書が無ければ `material_bindings` / `bindings_digest` / `usd_path` は `null` です。
+- **`get_material_bindings {model}`** → `{model, material_bindings, bindings_digest, primitives: [{mesh, primitive, slot, material, usd_path}], objects, object_overrides}`。`model` は asset_data の `models[]` の名前か、engine の基本形の参照です。`slot` は model のファイル(基本形なら生成した形)が primitive に付けている glTF の material の名前、`material` は今の割り当て(binding が無ければ `slot` と同じ)です。material_bindings の文書が無ければ `material_bindings` / `bindings_digest` / `usd_path` は `null` です。
+  - `objects` / `object_overrides`(✅MT-2): `objects` は、その model を `simplemodelview` で描く scene の object の数です。エディタが持つ文書の全部の scene を数え、prefab から生成された object も含みます。`object_overrides` はそのうち `simplemodelview.materials` に行を持つ(自分の material を持つ)数です([object を数える所 MT-2](../../src/core/communication/materialdocumentrpc.cpp#L1158))。
+- **`list_surfaces {}`**(✅MT-1b、`a6373c01`)→ `{surfaces: [{reference, source: "engine" | "project", name?, params, textures, routing?, render_state?, error?}]}`([MT-1b の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L38))。引数は取りません(`{}` 以外は `-32602`)。
+  - 並び: engine の資源に登録された `surfaces/**.surface`(`engine://`、整列)が先で、その後に project のディレクトリの下の全部の `*.surface`(`project://`、整列)です。project の走査は再帰で、名前が `.` で始まるディレクトリと symlink のディレクトリには入りません。asset store の実体のディレクトリを別に辿る処理はありません。
+  - `params` / `textures` は数で、`get_surface_schema` と同じ読み方で数えます。読めない・parse できない surface は落とさず、数の代わりに `error`(例外の文)を付けて並べます。
+  - `name` と `routing: {alpha_mode, double_sided}` は、engine の OpenPBR の `manifest.json` の variant が載せている surface にだけ付きます。`name` は variant の名前、`routing` は `create_material` の `routing` にそのまま渡せる形です。
+  - `render_state: {blend, cull, depth_test, depth_write, depth_compare}` は、surface の `//!` の宣言に `render_state:` があるときだけ付きます。
+  - 実例(test): `engine://surfaces/openpbr/opaque_single.surface` は `name: "opaque_single_sided"`、`routing: {"alpha_mode": "opaque", "double_sided": false}`、`render_state: {"blend": "opaque", "cull": "back", "depth_test": true, "depth_write": true, "depth_compare": "less"}`。`//! language: cobol` の project の surface は `error` に `cobol` を含み、`params` がありません。
 
 実例(test。Blank の project の箱 `engine://primitives/cube`、割り当て前):
 
@@ -536,7 +546,37 @@ params の形が違う(鍵が足りない・知らない鍵・型が違う)と�
 - `edit_batch` の対象ではありません(material の文書は RD-1 の render 文書の集合の外。commit の記録)。`delete_material` はありません。
 - `list_assets` は name の無い entry を飛ばすので、material の一覧には `list_materials` を使います。
 - ✅MT-1s(`2d81ef51`)から、Studio の **Materials のドック**と Inspector の **Material** の行がこの 7 本と ✅MT-1b の `list_surfaces` を呼びます(surface の宣言から作る値の欄、New material…、割り当て、答えの `previous` を送り返す Undo。拒否は 1 文で出し、`restart_required` は engine の起こし直しへ。[第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
-- 残る穴(着地時の記録): 割り当て済みの material の `routing` を変えても binding の `routing` とのずれを断らない、`material_route_default` は `Renderer` の constructor が記録する(起動の順)、割り当てが model 単位(object ごとの上書きは MT-2 で作業中)。詳しくは第6章の同じ節です。
+- 残る穴(着地時の記録): 割り当て済みの material の `routing` を変えても binding の `routing` とのずれを断らない、`material_route_default` は `Renderer` の constructor が記録する(起動の順)。`bind_material` の割り当ては model 単位です。object ごとの上書きは ✅MT-2(`44b7b50a`)で入りました(下の「object ごとの上書きの 2 本」)。詳しくは第6章の同じ節です。
+
+**object ごとの上書きの 2 本(✅MT-2、`44b7b50a`)**
+
+scene の object 1 つだけの material を、その object の `simplemodelview.materials`(第4章 §4.2)に読み書きします。model の割り当て(`bind_material`)が既定で、object の行がそれを上書きします。効く順は「その primitive の行」>「全 primitive の行」> model の既定です。2 本はエディタの RPC で、`set_object_material` は scene の編集の `edit` を 1 本出します([MT-2 の契約の注記](../../src/core/communication/editorcommandservice.hpp#L345))。
+
+- **`set_object_material {actor_id, object, scene_id?, base_scene_revision?, material: 名前 | null, primitive?: {mesh, primitive} | slot?}`** または **`{actor_id, object, scene_id?, base_scene_revision?, materials: [{material: 名前 | null, primitive?}]}`**([set_object_material の本体](../../src/core/communication/editorobjectmaterial.cpp#L213))
+  - `actor_id` は必須です(`open_editor_session` の actor)。`object` は `authoring_object_id`、`scene_id` を渡すとその scene の object であることも確かめます。`base_scene_revision` を省くと今の revision です。
+  - `primitive` はその 1 つ、`slot` はその glTF の material を持つ primitive の全部(primitive の行に展開して保存します)、どちらも無ければ全 primitive の 1 行です。`null` はその対象の行を外します(model の既定に戻る)。
+  - 対象ごとに、行の material をその場で替える・行を末尾に足す・行を外す、の操作を作り、まとめて 1 本の `edit` にします(`base_revision` の CAS、undo / redo)。
+  - 返り値は `edit` の答え(`status`・`ticket` など)に `changed: true`・`object`・`scene_id`・`model`・`previous: {materials: [{material | null, primitive?}]}` を足したものです。`previous.materials` を `materials` に送れば戻ります。
+  - 何も変わらない要求は `edit` を出さず、`{changed: false, object, scene_id, model, previous}` を返します。
+  - `material` と `materials` の両方か、どちらも無い・`materials` と `primitive` / `slot` の併記・`primitive` と `slot` の併記・同じ対象を 2 回・空の `materials`・知らない鍵は `-32602` です。
+  - 実例(test。Blank の箱 2 つの右の箱): `{actor_id, object: <右>, material: "paint"}` → `changed: true`、`model: "engine://primitives/cube"`、`scene_id: "default_scene"`、`previous: {"materials": [{"material": null}]}`。次の frame で右の箱だけが赤く描かれます。
+- **`get_object_materials {object, scene_id?}`** → `{object, scene_id, model, materials: [{row_id, material, primitive?, resolved}], primitives: [{mesh, primitive, slot, material, source: "object" | "model", model_material, drawn | null}]}`([get_object_materials の本体](../../src/core/communication/editorobjectmaterial.cpp#L351))
+  - `materials` は object の行のままです。`resolved` は、その名前が model の glTF の material か登録済みの project material にあるかです。
+  - `primitives` は model の primitive ごとです。`material` は実効の material、`source` はそれが object の行から来たか model から来たか、`model_material` は model の割り当て(material_bindings、無ければ `slot`)です。
+  - `drawn` は、生きている instance がその primitive を今描いている material の名前です。instance が無ければ `null` です。
+  - 実例(test。上の後): `primitives[0]` は `{material: "paint", source: "object", model_material: "pelican.primitive.default", drawn: "paint"}`、`materials[0]` は `{material: "paint", resolved: true}`(`primitive` 無し)。
+
+断るとき(`-32000`、`data: {error_code, error_fields}`)は何も書きません。
+
+| `error_code` | いつ | `error_fields` |
+|---|---|---|
+| `material.object_unknown@1` | その id の object が無い、`scene_id` と別の scene にある、`simplemodelview` を持たない | `{object, reason}` |
+| `material.model_unknown@1` | object の model が読めない(model の container の無い host、知らない基本形など) | `{model, object, reason}` |
+| `material.name_unknown@1` | `material` が model の glTF の material にも登録済みの project material にも無い | `{name, reason}` |
+| `material.binding_invalid@1` | model に無い primitive、その `slot` を持つ primitive が無い | `{model, object, reason}` |
+
+- scene の文書に名前の解けない行があっても(手で書いたなど)、読み込みは断りません。警告を出して、その行が無いものとして描きます(第6章 §6.7 の「object ごとの上書き」)。
+- test の無い所: Play 中の編集、`bind_material` などで model を読み直したときに上書きを解き直す経路、draw_loop の振り分け(第6章の同じ節)。
 
 ### 移行の 2 method と移行専用 endpoint(✅MG-1)
 

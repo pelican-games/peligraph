@@ -142,6 +142,30 @@ codec の表には 8 個目として `pelican_ray_instance` が並んでいま�
 
 `model` は `asset_data.json` の `models[].name` を指します(`foo.glb#mesh/名前` のフラグメント登録も可 — [第5章](05_assets.md))。✅WP67 で**単一コンポーネントに統合**されました: `SimpleModelViewComponent` が `model_name` + `dirty` + インスタンスハンドルを 1 つで持ちます(旧 `simplemodelviewupdate` は消滅。JSON の書き味は不変)。実行時に `model_name` を書き換えれば(`init` が dirty を立てるため)モデル差し替えもできます。
 
+| フィールド | 必須? | 既定 | 意味 |
+|---|---|---|---|
+| `model` | 必須 | — | 描く model の名前(上) |
+| `materials` | 任意 | なし | この object だけの material(✅MT-2、`44b7b50a`)。`List<Row>`(§4.4 の「schema が使える値の形」)で、行は `{material, mesh?, primitive?}` |
+| `params` | 任意 | — | authoring の往復保存用の object |
+
+**object ごとの material(✅MT-2)。**model の material(asset_data の `material_bindings`、無ければ glTF の material)はその model を使う全部の object の既定で、`materials` はこの object だけの上書きです。関係は Unity の Mesh の既定の material と MeshRenderer の materials と同じです(2026-10-03 の利用者の判断「object ごとの上書きはあったほうがいい」)。
+
+```json
+{ "name": "simplemodelview", "model": "engine://primitives/cube",
+  "materials": { "$list": { "v": 1, "next_id": 2 },
+                 "rows": [ { "$row": { "id": 1, "v": 1 }, "material": "paint", "mesh": 0, "primitive": 0 } ] } }
+```
+
+- 行の `mesh` と `primitive` は GLB の mesh と primitive の番号で、その 1 つを覆います。両方とも省いた行は全 primitive を覆います([行の型 `ModelMaterialOverride`](../../src/core/userpublic/components/modelview.hpp#L17))。
+- 効く順は「その primitive の行」>「全 primitive の行」> model の既定です([効く順を決める所 MT-2](../../src/core/renderer/polygoninstancecontainer.cpp#L409))。
+- `material` は、その model の glTF の material の名前か、登録済みの project material の名前です。
+- codec が断る行(`simplemodelview.materials` の範囲エラー。[行の検査 MT-2](../../src/core/loader/componentcodec.cpp#L730)):
+  - `material` が空の行。
+  - `mesh` と `primitive` の片方だけの行。
+  - 同じ対象(同じ primitive、または全 primitive)を覆う行が 2 つあるとき。
+- scene を読むときに名前が解けない行は断りません。警告をログに出し、その行が無いものとして描きます(全 primitive の行が解けていればそれ、無ければ model の既定。[名前が解けないときの警告](../../src/core/renderer/polygoninstancecontainer.cpp#L442))。`get_object_materials` ではその行が `resolved: false` です。
+- エディタからは `set_object_material` で書きます([第13章](13_editor.md) §13.5 の「material 文書を読み書きする」)。`get_component_add_candidates` の simplemodelview の `schema_fields` は `[model, materials]` の 2 つになりました。
+
 ### localtransform(✅)
 
 `pos` / `rotation` / `scale`(すべて必須)。毎フレーム値が `transform` へ反映されます。親子階層はオブジェクト直下の `parent` キー(§4.1)で宣言します — localtransform コンポーネント自体に親を書くフィールドはありません。

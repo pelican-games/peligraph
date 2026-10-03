@@ -556,10 +556,10 @@ material を選ぶと、`get_material` で文書のままの material を、続�
 - **ドックの Assign to selected object**(`pelican.materials.assignSelected`): ドックで選んだ material を、Inspector が今出している object の
   model に `bind_material {model, material}` で割り当てます。model を持つ object を選んでいなければ
   `Pick an object that shows a model in the Outliner first.` と言います。割り当ての後は Inspector の Material の行が読み直します。
-- **object ごとの上書きはまだありません。**割り当ては engine の MT-1 のとおり model 単位で、`engine://primitives/cube` に割り当てると project の
-  Cube は全部その material になります。**利用者の判断(2026-10-03)**: material は object ごとの上書きを持ちます。engine の MT-2 の着地の後に、Inspector の割り当てを
-  「この object だけ / この model 全部」に替えます。engine の MT-2 は MT-1s の後に develop に入りました(`44b7b50a`。この章はまだ MT-2 の
-  RPC を書いていません)。MT-1s の Studio が送るのは model 単位の `bind_material` だけです。
+- **Studio はまだ object ごとの上書きを送りません。**Studio の割り当ては engine の MT-1 のとおり model 単位で、`engine://primitives/cube` に割り当てると project の
+  Cube は全部その material になります。**利用者の判断(2026-10-03)**: 「object ごとの上書きはあったほうがいい」。engine 側は ✅MT-2(`44b7b50a`)で
+  MT-1s の後に develop に入りました(RPC の `set_object_material` / `get_object_materials` は §13.5 の「material 文書を読み書きする(✅MT-1)」)。
+  Inspector の割り当てを「この object だけ / この model 全部」に替えるのは Studio 側の作業として残っています。MT-1s の Studio が送るのは model 単位の `bind_material` だけです。
 
 **Undo**(決定 6)
 
@@ -1319,10 +1319,13 @@ project.json を手で書いて engine を起こし直さないと効きませ�
 | `list_materials` | `{}` | `{asset_data_digest, documents: [{path, material_digest, status, reason?, materials: [{name, surface, tags, id, registered}]}]}` | なし |
 | `get_material` | `{path, name?}` | `{path, material_digest, name, names, registered, material}`(`material` は文書のままの object) | `material.document_unknown@1` / `material.document_invalid@1` / `material.name_unknown@1` |
 | `get_surface_schema` | `{surface}` | `{surface, params: [{name, type, default, min?, max?, hint?, encoding}], textures: [{name, default, color_space, role, dimension}]}` | `material.surface_unknown@1` |
-| `get_material_bindings` | `{model}` | `{model, material_bindings, bindings_digest, primitives: [{mesh, primitive, slot, material, usd_path}]}` | `material.model_unknown@1` / `material.binding_invalid@1` |
+| `list_surfaces`(✅MT-1b) | `{}`(ほかは `-32602`) | `{surfaces: [{reference, source: "engine" \| "project", name?, params, textures, routing?: {alpha_mode, double_sided}, render_state?: {blend, cull, depth_test, depth_write, depth_compare}, error?}]}` | なし(読めない surface は `error` 付きで並ぶ) |
+| `get_material_bindings` | `{model}` | `{model, material_bindings, bindings_digest, primitives: [{mesh, primitive, slot, material, usd_path}], objects, object_overrides}`(`objects` / `object_overrides` は ✅MT-2) | `material.model_unknown@1` / `material.binding_invalid@1` |
 | `edit_material` | `{base_material_digest, path, name?, values?, textures?, tags?, routing?, variants?, surface?}` | `{committed: true, changed, path, name, material_digest, previous_material_digest, previous, applied, restart_required}` | `external_modification` / `material.value_invalid@1` / `material.param_unknown@1` / `material.document_unknown@1` / `material.document_invalid@1` / `material.name_unknown@1` / `material.surface_unknown@1` / `material.transaction_busy@1` |
 | `create_material` | `{path, surface, name?, values?, tags?, routing?}` | `{committed: true, changed: true, path, name, material_digest, asset_data_digest, previous_asset_data_digest, applied, restart_required}` | `material.path_invalid@1` / `material.path_conflict@1` / `material.name_invalid@1` / `material.name_conflict@1` / `material.surface_unknown@1` / `material.value_invalid@1` / `material.param_unknown@1` / `material.document_invalid@1` / `external_modification` / `material.transaction_busy@1` |
 | `bind_material` | `{model, material, primitive?: {mesh, primitive} \| slot?}` か `{model, bindings: [{mesh, primitive, material}]}` | `{committed: true, changed, model, material_bindings, bindings_digest, previous_bindings_digest, previous: {bindings}, asset_data_digest?, previous_asset_data_digest?, applied, restart_required}` | `material.model_unknown@1` / `material.binding_invalid@1` / `material.name_unknown@1` / `material.document_invalid@1` / `external_modification` / `material.transaction_busy@1` |
+| `set_object_material`(✅MT-2) | `{actor_id, object, scene_id?, base_scene_revision?, material: 名前 \| null, primitive?: {mesh, primitive} \| slot?}` か `{actor_id, object, scene_id?, base_scene_revision?, materials: [{material: 名前 \| null, primitive?}]}` | `edit` の答え + `{changed: true, object, scene_id, model, previous: {materials: [{material \| null, primitive?}]}}`。変化が無ければ `edit` を出さず `{changed: false, object, scene_id, model, previous}` | `material.object_unknown@1` / `material.model_unknown@1` / `material.name_unknown@1` / `material.binding_invalid@1` |
+| `get_object_materials`(✅MT-2) | `{object, scene_id?}` | `{object, scene_id, model, materials: [{row_id, material, primitive?, resolved}], primitives: [{mesh, primitive, slot, material, source: "object" \| "model", model_material, drawn \| null}]}` | `material.object_unknown@1` / `material.model_unknown@1` |
 
 MT-1(`976c410d`)の前は、Blank の project で物体の色を変えるには JSON を 3 つ手で書いて engine を起こし直すしかありませんでした
 (仕様書の記述)。7 本は material 文書・`.surface` の宣言・model の割り当てを engine に読ませて書かせます
@@ -1335,6 +1338,16 @@ MT-1(`976c410d`)の前は、Blank の project で物体の色を変えるには 
 - `create_material` は文書と asset_data の `materials[]` を 1 つの transaction で書き、live で登録します。
 - `bind_material` は model の material_bindings を書いて model を読み直します。割り当ては **model 単位**で、
   `engine://primitives/cube` のような宣言の無い基本形には asset_data の `models[]` に宣言を足します。
+- **object ごとの上書き(✅MT-2、`44b7b50a`)**: `set_object_material` は scene の object 1 つだけの material を、その
+  `simplemodelview.materials`(第4章 §4.2)に書きます。model の割り当てが既定で、効く順は「その primitive の行」>「全 primitive の行」>
+  model の既定です。書くのは 1 本の `edit`(`base_revision` の CAS、undo / redo)で、`actor_id` は必須、`base_scene_revision` を省くと
+  今の revision です。`slot` はその glTF の material を持つ primitive の行に展開して保存します。戻すときは返り値の `previous.materials` を
+  `materials` に送ります。`get_object_materials` は primitive ごとの実効の material・出所(`object` / `model`)・model の割り当て
+  (`model_material`)・今描いている material(`drawn`)を返します
+  ([MT-2 の 2 method の登録](../../src/core/communication/editorrpchandlers.cpp#L179))。
+- **surface の一覧(✅MT-1b、`a6373c01`)**: `list_surfaces` は engine の登録済みの `surfaces/**.surface` と、project の下の
+  `*.surface`(隠しフォルダと symlink は入らない)を並べます。数は `get_surface_schema` と同じ読み方で、OpenPBR の manifest の variant に
+  載る surface には `name` と `routing`、`//! render_state:` を宣言する surface には `render_state` が付きます。
 - 戻すときは返り値の `previous` を同じ RPC で送ります(`edit_material` は新しい `material_digest` で、`bind_material` は
   `previous.bindings` を `bindings` に)。`delete_material` はありません。
 - `edit_batch` の対象ではありません。material の文書は RD-1 の render 文書の集合の外にあるためです(commit の記録)。

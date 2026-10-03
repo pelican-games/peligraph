@@ -2326,7 +2326,8 @@ standard / toon に続く**特権なしの standard library surface** として�
 
 MT-1 の前は、Blank の project で物体の色を 1 つ変えるのに JSON を 3 つ手で書き(material 文書・asset_data の `materials[]`・material_bindings)、engine を起こし直していました(仕様書の記述)。MT-1 から、動いている engine が material 文書・`.surface` の宣言・model の割り当てを RPC で読み書きします。エディタはファイルを自分で書かず、この RPC を送ります([MT-1 の 7 本を登録する所](../../src/core/communication/materialdocumentrpc.cpp#L1475)。[engine の RPC に MT-1 を足す行](../../src/core/communication/rpcserver.cpp#L1590))。引数・返り値・拒否の表は [第10章](10_tools.md) §10.3 の「material 文書を読み書きする」と [第13章](13_editor.md) §13.5 です。✅MT-1s(`2d81ef51`)から、Studio の Materials のドックと Inspector の Material の行がこの RPC を呼び、Blank の project でも GUI だけで material を作り、色を変え、箱に割り当てられます([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
 
-- **読む 4 本**: `list_materials`(asset_data の `materials[]` の全部の文書と、その中の material)、`get_material`(1 つの material を文書のまま)、`get_surface_schema`(`.surface` の `//!` の宣言の `params` と `textures`。宣言にあるものだけで、何も足しません)、`get_material_bindings`(model の primitive ごとの material)。
+- **読む 4 本**: `list_materials`(asset_data の `materials[]` の全部の文書と、その中の material)、`get_material`(1 つの material を文書のまま)、`get_surface_schema`(`.surface` の `//!` の宣言の `params` と `textures`。宣言にあるものだけで、何も足しません)、`get_material_bindings`(model の primitive ごとの material。✅MT-2 から、その model を描く scene の object の数 `objects` と、そのうち自分の material を持つ数 `object_overrides` も)。
+- **surface の一覧(✅MT-1b、`a6373c01`)**: `list_surfaces {}` は、material を作るときに選べる `.surface` を並べます(下の「surface の一覧」)。
 - **書く 3 本**: `edit_material`(文書の 1 つの material を直す)、`create_material`(material 文書を作って asset_data に載せる)、`bind_material`(model の material_bindings を書く)。どれも読んだときの digest を CAS に、project の文書の transaction で書き、返る前に動いている engine に当てます。当てられないときは、書いたうえで `applied: "restart_required"` と `restart_required: {reason}` を返します(当てたときは `applied: "live"`、`restart_required: null`)。
 
 **`edit_material` は values だけが live で、ほかは restart_required です。**決めるのは、その編集で実際に変わった鍵です([live か restart_required かを決める所 MT-1](../../src/core/communication/materialdocumentrpc.cpp#L891))。
@@ -2341,7 +2342,7 @@ MT-1 の前は、Blank の project で物体の色を 1 つ変えるのに JSON 
 
 **`bind_material` は model を読み直して当てます。**model の `pelican.material_bindings` の文書を書き(無ければ作る)、[`ReloadService::reloadModelsNow()`](../../src/core/watch/reloadservice.cpp#L409) で model の reload の transaction を 1 つ、返る前に commit します([bind_material が model を読み直す所](../../src/core/communication/materialdocumentrpc.cpp#L1464))。
 
-- 割り当ては **model 単位**です。`engine://primitives/cube` に割り当てると、その model を使う cube は全部同じ material になります(仕様書の記述)。2026-10-03 に利用者は「material は object ごとの上書きを持つ」と判断し、engine の MT-2 が MT-1s の後に develop に入りました(`44b7b50a`。この節はまだ MT-2 を書いていません)。
+- `bind_material` の割り当ては **model 単位**です。`engine://primitives/cube` に割り当てると、その model を使う cube は全部同じ material になります(仕様書の記述)。1 つの object だけを変えるのは ✅MT-2 の `set_object_material` です(下の「object ごとの上書き」)。
 - `engine://primitives/cube` のように asset_data に宣言の無い基本形には、`models[]` に宣言を足します(第5章 §5.2)。
 - 割り当てる material が asset_data に載っていても、この engine に登録されていなければ `restart_required` です。
 
@@ -2353,10 +2354,38 @@ MT-1 の前は、Blank の project で物体の色を 1 つ変えるのに JSON 
 
 - 割り当て済みの material の `routing` を `edit_material` で変えても、binding の `routing` とのずれを断りません。起動時の照合は `binding.routing` の不一致を hard error にするので(上の「primitive binding」)、次の起動で断られると考えられます(未確認)。
 - 起動の順: `material_route_default` は `Renderer` の constructor が、material を lowering する前に記録します([G-4 の snapshot の行](../../src/core/vkcore/renderer.cpp#L3198))。MT-1 の test は player と同じく `Renderer` を先に作ってから RPC の endpoint を作ります(test の注記)。この順でない host での振る舞いは確かめていません(未確認)。
-- 割り当てが model 単位であること(上)。
+- 割り当てが model 単位であること(上)。✅MT-2 で、scene の object ごとの上書きが入りました(下)。
 - `list_assets` は name の無い entry を今も飛ばすので、material の一覧には出ません。material の一覧は `list_materials` で読みます。
 
 test: [`materialdocumentrpc_test` の MT-1 の GPU test](../../test/materialdocumentrpc_test.cpp#L202)(Blank の project に箱を 1 つ置き、`create_material` → `bind_material` → `edit_material` で色を変え、起動し直さずに画素がその色になる。範囲外の値・知らない param・古い digest・名前と path の衝突の拒否、`previous` での戻し、`tags` の変更が `restart_required` で画素が変わらないこと、次の起動で書いたものが描かれること)。
+
+**surface の一覧(✅MT-1b、`a6373c01`)。**MT-1b の前は、Studio の New material で surface を選ぶ一覧を engine から読む口が無く、Studio はこの章の一覧を写そうとしていました(仕様書の記述)。`list_surfaces {}` は engine が知っている surface と project の surface を並べます([list_surfaces の本体](../../src/core/communication/materialdocumentrpc.cpp#L771))。
+
+- **engine の surface**: engine の資源に登録された `surfaces/**.surface` を `engine://` の参照で、整列して先に並べます。今あるのは OpenPBR の 6 つ(`engine://surfaces/openpbr/{opaque,mask,blend}_{single,double}.surface`)です。
+- **OpenPBR の名前と routing**: OpenPBR の `manifest.json` の `variants` が載せている surface には、variant の名前が `name`(例 `opaque_single_sided`)に、`alpha_mode` / `double_sided` が `routing` に付きます([manifest の variant を読む所](../../src/core/communication/materialdocumentrpc.cpp#L692))。`routing` は `create_material` の `routing` にそのまま渡せる形です。
+- **project の surface**: project のディレクトリの下を再帰で走査し、`*.surface` を `project://` の参照で整列して engine の後に並べます。名前が `.` で始まるディレクトリ(`.git`、`.pelican` など)と symlink のディレクトリには入りません([project を走査する所](../../src/core/communication/materialdocumentrpc.cpp#L719))。
+  - asset store の実体のディレクトリ(`.pelican/local.json` で project の外に置いたもの)を別に辿る処理はありません。
+  - path resolver に project が設定されていない host では、project の surface は並びません(engine の分だけ)。
+- **render_state**: surface の `//!` の宣言に `render_state:` があるときだけ、`render_state: {blend, cull, depth_test, depth_write, depth_compare}` が付きます。
+- **数**: `params` / `textures` の数は、`get_surface_schema` と同じ読み方(`parseSurfaceFormat()`)で数えます。読めない・parse できない surface は落とさず、数の代わりに `error` を付けて並べます。
+
+test: [`materialdocumentrpc_test` の MT-1b の GPU test](../../test/materialdocumentrpc_test.cpp#L398)(OpenPBR の 6 つが先に並び、名前・routing・render_state と、数が `get_surface_schema` と同じこと。project の 3 つが深い所のものも含めて整列して並び、`.hidden` の下は出ないこと。parse できないものが `error` 付きで出ること。引数を渡すと断られること)。
+
+**object ごとの上書き(✅MT-2、`44b7b50a`)。**`bind_material` は model 単位なので、Blank で箱 1 つに割り当てると project の箱が全部同じ material になりました(仕様書の記述)。2026-10-03 の利用者の判断は「object ごとの上書きはあったほうがいい」です。model の割り当て(asset_data の `material_bindings`、無ければ glTF の material)が既定で、scene の object の `simplemodelview.materials` がその object だけの上書きです。関係は Unity の Mesh の既定の material と MeshRenderer の materials と同じです。
+
+- **書く所**: scene の文書の `simplemodelview.materials`(SC-1 の list。行は `{material, mesh?, primitive?}`)。書き方と codec が断る行は [第4章](04_scene_ecs.md) §4.2 の simplemodelview の項です。
+- **効く順**: その primitive の行 > 全 primitive の行 > model の既定。
+- **RPC**: 書くのは `set_object_material`(scene の編集の `edit` として 1 本。CAS・undo / redo)、読むのは `get_object_materials`(primitive ごとの実効の material と、その出所 `object` / `model`)です。引数・返り値・拒否は [第10章](10_tools.md) §10.3 と [第13章](13_editor.md) §13.5 の「material 文書を読み書きする」です。
+- **描き方**: instance ごとの draw item に、その primitive の実効の material が入ります([draw item を作る所 MT-2](../../src/core/renderer/polygoninstancecontainer.cpp#L459))。
+  - draw の束ね方の鍵(`pipeline_material_key.material`)・material の route・material 文書の参照・名前は、この実効の material から作ります。
+  - 同じ model で material が違う 2 つの instance は、それぞれの material で描かれます。MP-1 の `drawn_materials` も実効の material で数えます(test では、forward の pass が `paint` と model の既定を 1 回ずつ描きました)。
+  - tags / variant / draw_loop の振り分けがこれに従うことは commit の記述です。draw_loop の振り分けの test はありません(未確認)。
+- **material だけの変更**: エディタの投影は instance を作り直しません。同じ instance の draw item だけを、宣言の順番(declaration ordinal)を保ったまま作り直します([material だけが変わったときの分岐](../../src/core/loader/editorprojectionadapters.cpp#L1247)、[`PolygonInstanceContainer::setPreparedSceneModelMaterials()`](../../src/core/renderer/polygoninstancecontainer.cpp#L978))。model が変わったときは今までどおり新しい instance です。component の codec が runtime の component に当てる経路([`applySimpleModelView()` の MT-2 の比較](../../src/core/loader/componentcodec.cpp#L772))は、model か `materials` が変われば instance を外して作り直します。
+- **model を読み直すとき**: instance は上書きの指定を持ち続け、model の reload(`bind_material` やファイルの変更)が作る新しい template に対して解き直します([reload で解き直す所](../../src/core/renderer/polygoninstancecontainer.cpp#L1415))。この経路の test はありません(未確認)。
+- **名前が解けない上書き**: 読み込みや投影のときに解けない名前は断りません。警告を出し、その行が無いものとして描きます(全 primitive の行が解けていればそれ、無ければ model の既定。`get_object_materials` ではその行が `resolved: false`)。`set_object_material` は書く前に知らない名前を `material.name_unknown@1` で断ります。
+- **Play 中**: `set_object_material` は `edit` を通るので、Play 中の扱いは他の scene の編集と同じ経路です(コードの読み)。Play 中の編集の test はありません(未確認)。
+
+test: [`mt2_object_material_test` の GPU test](../../test/mt2_object_material_test.cpp#L241)(Blank の project に箱を 2 つ置き、`create_material` で赤を作って `set_object_material` で右の箱だけを赤に。次の frame で右だけが赤く、左は既定の色。`get_object_materials`・`get_material_bindings` の `objects` / `object_overrides`・MP-1 の `drawn_materials`、同じ値で `changed: false`、undo / redo、`previous` での戻し、primitive と slot での指定、拒否 3 種で scene の revision が動かないこと、保存した scene の行と次の起動で右の箱が赤いこと)。
 
 ### 現状と重要な限界
 

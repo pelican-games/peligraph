@@ -612,6 +612,8 @@ tinygltf Model
 
 sceneの`SimpleModelViewComponent`は初期化時にdirtyになり、内部 [`SimpleModelViewUpdateSystem`](../../src/core/ecs/predefined/modelviewupdatesystem.cpp#L42) がmodel名からtemplateを引き、`PolygonInstanceContainer`へinstanceを置きます。
 
+✅MT-2(`44b7b50a`)から、component は object 自身の material の list `SimpleModelViewComponent::materials`(`std::optional<List<ModelMaterialOverride>>`。[行の型 MT-2 の `ModelMaterialOverride`](../../src/core/userpublic/components/modelview.hpp#L17) は `{material, mesh?, primitive?}`)も持ちます。instance を置く所はどれも、これを [`instanceMaterialOverrides()`](../../src/core/ecs/predefined/modelview.cpp#L15) で名前の列 `InstanceMaterialOverrides`([`InstanceMaterialOverride`](../../src/core/renderer/modelinstance.hpp#L19)。`primitive` が nullopt なら全 primitive。行が無ければ null)に変えて渡します。渡す所は 4 つです: `SimpleModelViewUpdateSystem` の `placeModelInstance()`([update system の MT-2 の引数](../../src/core/ecs/predefined/modelviewupdatesystem.cpp#L59))、scene の load の `RendererParticipant`([scene の load の MT-2 の引数](../../src/core/loader/scene.cpp#L1063))、editor の移し替えの `SimpleModelMigrationParticipant`([移し替えの MT-2 の引数](../../src/core/communication/editorruntimefactory.cpp#L363))、editor の投影(§3.11)。名前を material に解くのは描画の側です(第6章 §6.5)。
+
 ### `ModelInstanceId` はSlotMapハンドル（WP146）
 
 `ModelInstanceId` は単なる整数の添字ではありません（[`ModelInstanceId`](../../src/core/renderer/modelinstance.hpp#L28)）。SlotMap は「配列のスロットを使い回しつつ、スロットごとに世代番号を持たせるハンドル方式」で、詳しい持ち物はこの節の最後（`PolygonInstanceContainer` 側）に書いてあります（[用語集](../manual/14_glossary.md)）。
@@ -812,7 +814,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 
 #### RPC で material 文書を読み書きする(✅MT-1、`976c410d`)
 
-新しい [`materialdocumentrpc.hpp` の MT-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L14) / `materialdocumentrpc.cpp`(`pelican_core`)が、7 本の RPC(`list_materials` / `get_material` / `get_surface_schema` / `get_material_bindings` / `edit_material` / `create_material` / `bind_material`)を持ちます。入口は [`configureMaterialDocumentRpcHandlers()`](../../src/core/communication/materialdocumentrpc.cpp#L1475) の 1 つで、[`configureEngineRpcHandlers()` が PJ-1 の直後に呼びます](../../src/core/communication/rpcserver.cpp#L1590)。RPC の契約は manual 第10章 §10.3「material 文書を読み書きする」、live と restart_required の規則は manual 第6章 §6.7 です。
+新しい [`materialdocumentrpc.hpp` の MT-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L14) / `materialdocumentrpc.cpp`(`pelican_core`)が、7 本の RPC(`list_materials` / `get_material` / `get_surface_schema` / `get_material_bindings` / `edit_material` / `create_material` / `bind_material`)を持ちます(✅MT-1b で 8 本目の `list_surfaces` が加わりました。下の「surface の一覧」)。入口は [`configureMaterialDocumentRpcHandlers()`](../../src/core/communication/materialdocumentrpc.cpp#L1475) の 1 つで、[`configureEngineRpcHandlers()` が PJ-1 の直後に呼びます](../../src/core/communication/rpcserver.cpp#L1590)。RPC の契約は manual 第10章 §10.3「material 文書を読み書きする」、live と restart_required の規則は manual 第6章 §6.7 です。
 
 - **書き方**: 書く 3 本は、文書を `nlohmann::ordered_json` で読んで直し、鍵の順・2 空白の indent・元の改行コードで出し直します(新しいファイルは LF。[MT-1 の文書の書き出し `renderJsonDocument`](../../src/core/communication/materialdocumentrpc.cpp#L110))。書き込みは `commitProjectDocuments()`(project の文書の transaction。digest の CAS)で、`ProjectDocumentExternalModification` は `external_modification`、`ProjectDocumentTransactionBusy` は `material.transaction_busy@1` に写します。asset_data を書いたときは `ProjectBasicConfig::publishAssetDataJson()` で engine の写しも替えます([MT-1 の asset_data の写しの更新](../../src/core/communication/materialdocumentrpc.cpp#L516))。
 - **書く前の検査**: 値は surface の宣言で型と `min` / `max` を見ます([MT-1 の値の検査 `valueProblem`](../../src/core/communication/materialdocumentrpc.cpp#L363))。書いた後の文書は、起動時と同じく `parseMaterialFormatJson()` と `lowerMaterial()` / `lowerMaterialVariants()` に通します([MT-1 の候補の文書の検査](../../src/core/communication/materialdocumentrpc.cpp#L459))。
@@ -830,6 +832,34 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
   - [`ModelAssetContainer::modelDeclaringMaterial()`](../../src/core/asset/model.cpp#L905): その名前の glTF の material を持つ model の名前(`create_material` の名前の衝突。同じ名前の project material は、その model の bindings を曖昧にして読み込みを止めるため)。
   - 流れ: 文書を commit → `exchangeMaterialBindings()` → `waitIdle()` → [`ReloadService::reloadModelsNow()`](../../src/core/watch/reloadservice.cpp#L409)(`ReloadKind::modified` の要求で model の reload group を作り、transaction を prepare・publication の準備・commit まで、返る前に済ませる。ファイルの変更が積むのと同じ group)。reload が throw したら `restoreMaterialBindings()` で戻し、`restart_required` を返します([MT-1 の model の読み直しを呼ぶ所](../../src/core/communication/materialdocumentrpc.cpp#L1464))。
 - test: [`materialdocumentrpc_test.cpp` の MT-1 の 1 本](../../test/materialdocumentrpc_test.cpp#L202)(GPU。`pelican_define_test(materialdocumentrpc_test GPU RUNTIME_SHADER ...)`)。着地の gate(触った家族の 259 本)は緑でした(統合側の記録)。
+
+#### surface の一覧 `list_surfaces`(✅MT-1b、`a6373c01`)
+
+MT-1b は `materialdocumentrpc.{hpp,cpp}` だけを触り、[`listSurfaces()` の本体 MT-1b](../../src/core/communication/materialdocumentrpc.cpp#L771) と、その登録([MT-1b の list_surfaces の登録](../../src/core/communication/materialdocumentrpc.cpp#L1488))を足しました。契約は [MT-1b の list_surfaces の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L38) です。
+
+- **引数**: `{}` か null 以外は `std::invalid_argument`(`-32602`)です。
+- **engine の分**: `registeredEngineResourceIds()` のうち `surfaces/` で始まり `.surface` で終わる id を `engine://` を付けて整列し、先に並べます。
+- **名前と routing**: [`engineSurfaceVariants()`](../../src/core/communication/materialdocumentrpc.cpp#L692) が、同じ登録の中の `surfaces/**/manifest.json` の `variants[]` から `{surface → name, alpha_mode?, double_sided?}` の表を作ります。`name` は表にあれば付け、`routing` は `alpha_mode` と `double_sided` が両方あり、surface が parse できたときだけ付けます。
+- **project の分**: [`projectSurfaceReferences()`](../../src/core/communication/materialdocumentrpc.cpp#L719) が `PathResolver::projectRoot()` から `recursive_directory_iterator` で走査します。名前が `.` で始まるディレクトリと symlink のディレクトリは `disable_recursion_pending()` で入らず、`*.surface` の通常ファイルを `project://<相対パス>` にして整列します。`PathResolver::isSetup()` が偽なら project の分は空です。asset store の実体を別に辿る処理はありません。
+- **1 件の作り方**: [`surfaceListEntry()`](../../src/core/communication/materialdocumentrpc.cpp#L744) が `PathResolver::loadText()` と `parseSurfaceFormat()`(`get_surface_schema` と同じ)で読み、`params` / `textures` の数を入れます。例外は `error` に例外の文を入れて、その 1 件を残します。
+- **render_state**: [`declaresRenderState()`](../../src/core/communication/materialdocumentrpc.cpp#L662) が、code より前の `//!` の行に `render_state` の鍵があるかを見ます。parse 結果は宣言が無くても既定値を持つため、宣言の有無はこの関数で別に判定し、あるときだけ `{blend, cull, depth_test, depth_write, depth_compare}` を出します。
+- test: [`materialdocumentrpc_test.cpp` の MT-1b の 1 本](../../test/materialdocumentrpc_test.cpp#L398)(GPU。OpenPBR の 6 つ・project の 3 つ・`.hidden` の除外・parse できない surface の `error`・引数の拒否)。
+
+#### object ごとの material(✅MT-2、`44b7b50a`)
+
+scene の object が自分の model の material を上書きします(利用者の判断 2026-10-03「object ごとの上書きはあったほうがいい」。Unity の Mesh の既定の material と MeshRenderer の materials の関係)。書き先は `simplemodelview.materials` で、codec は §3.11、描画の側は第6章 §6.5 の「Material 描画のデータ経路」です。ここは RPC の 2 本と `get_material_bindings` の足し分です。
+
+- **置き場所**: 2 本は material の RPC の file ではなく、editor の journal を使うので新しい `editorobjectmaterial.cpp` に `EditorCommandService` の member として置きました([`EditorCommandService::setObjectMaterial()`](../../src/core/communication/editorobjectmaterial.cpp#L213) / [`EditorCommandService::getObjectMaterials()`](../../src/core/communication/editorobjectmaterial.cpp#L351))。登録は `configureEditorRpcHandlers()` の `undo` / `redo` の後です([MT-2 の set_object_material の登録](../../src/core/communication/editorrpchandlers.cpp#L179))。契約は [MT-2 の 2 本の契約の注記](../../src/core/communication/editorcommandservice.hpp#L345) です。
+- **`set_object_material` の流れ**:
+  1. 鍵と形を検査します(`std::invalid_argument` は `-32602`)。
+  2. 今の文書から object と最初の `simplemodelview` を探し(無ければ `material.object_unknown@1`)、`ModelAssetContainer` から template と `materialSlots()` を引きます(引けなければ `material.model_unknown@1`)。
+  3. 要求を「対象(1 つの primitive か、全 primitive)→ material か null」の列にします。`slot` は、その glTF の material を持つ primitive の全部に展開します。無い primitive や、誰も持たない `slot` は `material.binding_invalid@1` です。
+  4. 名前は [`knownMaterial()`](../../src/core/communication/editorobjectmaterial.cpp#L153) で、model の `named_materials` と `ProjectMaterialAssetContainer::namedMaterials()` を引きます。無ければ `material.name_unknown@1` です。
+  5. 今の行([`currentRows()`](../../src/core/communication/editorobjectmaterial.cpp#L169)。対象ごとに 1 行)と比べ、変わる対象ごとに journal の operation を 1 つ作ります: 行の `/material` を `set_component_value`、新しい行を末尾に `insert_component_field`、null は行を `remove_component_field`。address は `list_path: "/materials"` と `row_id` です([`rowAddress()`](../../src/core/communication/editorobjectmaterial.cpp#L184))。
+  6. operation があれば `edit({actor_id, base_revision, operations})` を 1 回呼びます(`base_scene_revision` が無ければ今の revision)。無ければ `edit` を呼ばず `changed: false` です。どちらの答えにも `object` / `scene_id` / `model` / `previous.materials` を足します。
+- **`get_object_materials`**: 行ごとに `resolved`(`knownMaterial()`)を付け、primitive ごとに「その primitive の解ける行 > 全 primitive の解ける行 > model の割り当て」で `material` と `source` を決めます。model の割り当ては `ModelAssetContainer::declaredMaterialBindings()` の bindings、無ければ `slot` です。`drawn` は、[`liveInstance()`](../../src/core/communication/editorobjectmaterial.cpp#L198) が `SceneLoader::runtimeObjectBindings()` から引いた instance の [`PolygonInstanceContainer::instancePrimitiveMaterials()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1011)(draw item の `pipeline_material_key.material` の名前)です。
+- **`get_material_bindings` の `objects` / `object_overrides`**: [`countModelObjects()`](../../src/core/communication/materialdocumentrpc.cpp#L1158) が `ProjectBasicConfig::resolvedScene().scenes()` の全 object の `simplemodelview` の `effective_json` を見て、`model` が一致する数と、そのうち `materials.rows` が空でない数を数えます(prefab から生成された object も含む。header の注記)。
+- test: [`mt2_object_material_test.cpp` の 1 本](../../test/mt2_object_material_test.cpp#L241)(GPU。`pelican_define_test(mt2_object_material_test GPU RUNTIME_SHADER ...)`)。Blank の箱 2 つで、右だけを赤にして画素・`get_object_materials`・`get_material_bindings`・MP-1 の `drawn_materials`・undo / redo・`previous`・primitive と slot・拒否 3 種・保存と次の起動を見ます。Play 中の編集、model の reload で解き直す経路、draw_loop の振り分けの test はありません。
 
 > 🧩 **難所 — vec3の後ろ4 byte**([`std140SizeAlignment()`](../../src/project/materiallowering.cpp#L32) / [`makeSurfaceStd140Layout()`](../../src/project/materiallowering.cpp#L435))
 >
@@ -1026,6 +1056,13 @@ struct ComponentCodec {
 | `animation` | `Ecs` | `EcsCodec` | あり |
 | `sprite_view` | `Ecs` | `EcsCodec` | あり |
 | `pelican_ray_instance` | `Ecs` | `EcsCodec` | あり（gate付き） |
+
+**`simplemodelview.materials`(✅MT-2、`44b7b50a`)。**schema は `SimpleModelViewCodecData` ではなく、`model` と `materials` を持つ [`SimpleModelViewSchemaFields`](../../src/core/loader/componentcodec.cpp#L130) の上の `structFields` になり(`materials` は `defaulted` の SC-1 の `List<ModelMaterialOverride>`)、codec の表の `schema` は `fieldSpan` の平坦な列でなく `materializeSchemaNode(simple_model_view_schema)` を返します。そのため `get_component_add_candidates` の `schema_fields` は `[model, materials]` の 2 つです(`editorcommandservice_test` の MT-2 の変更)。
+
+- **decode**: [`decodeSimpleModelView()`](../../src/core/loader/componentcodec.cpp#L718) は `materials` があるときだけ `decodeStructObject()` で読み、行ごとに検査します。`material` が空、`mesh` と `primitive` の片方だけ、同じ対象(同じ primitive、または全 primitive)の 2 行目は、どれも `simplemodelview.materials` の `OutOfRange` です([MT-2 の行の検査](../../src/core/loader/componentcodec.cpp#L730))。名前が解けるかはここでは見ません。
+- **encode**: `materials` があれば同じ schema で書き戻します(無ければ鍵を出しません)。`params` は今までどおり schema の外で往復します。
+- **apply**: [`applySimpleModelView()`](../../src/core/loader/componentcodec.cpp#L768) は、model か `materials` が変われば instance を外して `dirty` を立てます(次の update system が新しい instance を置く)。
+- **editor の投影**: `RendererModel` の投影は model が同じで `materials` だけが変わり、instance が生きていれば、instance を作り直さず [`PolygonInstanceContainer::setPreparedSceneModelMaterials()`](../../src/core/renderer/polygoninstancecontainer.cpp#L978) で候補の draw item だけを替えます([投影の MT-2 の分岐](../../src/core/loader/editorprojectionadapters.cpp#L1245))。model が変わったときは従来どおり新しい instance を stage します。
 
 transformだけは専用の投影関数 [`projectTransformRuntimeJson()`](../../src/core/loader/componentcodec.hpp#L447) を持ちます。
 

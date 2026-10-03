@@ -902,6 +902,15 @@ flowchart LR
 
 skinning palette(スキニング行列パレット — ボーンごとの変換行列を 1 本の配列に並べたもの。頂点側は行列そのものではなく配列の添字と重みだけを持ち、シェーダで合成します)、morph weight、per-instance material override の GPU バッファも [`PolygonInstanceContainer`](../../src/core/renderer/polygoninstancecontainer.hpp#L382) が所有します。skin palette / morph weight には前フレーム分(previous バッファ)があり TAA velocity の入力になります。material override は per-frame history を持ちます(WP122/122b。golden: material_instance_override / material_absolute_override)。
 
+**object ごとの material は draw item に入ります(✅MT-2、`44b7b50a`)。**上の material override(WP122 の GPU バッファ)とは別に、MT-2 では scene の object が「どの material で描くか」そのものを替えます。持ち方と解き方は次のとおりです。
+
+- **持ち物**: instance を stage する関数(`stageModelInstance()` / `stagePreparedSceneModel()` / `placeModelInstance()`)は、省略できる引数 `std::shared_ptr<const InstanceMaterialOverrides>`(material の名前の列。null は上書き無し)を受けます。slot の seed を経て slot table の [`ModelInstanceSlotTable::material_override_specs` の MT-2 の列](../../src/core/renderer/polygoninstancecontainer.hpp#L337) に、instance ごとに名前のまま残します(`arrayCount` は 17 から 18)。
+- **解き方**: [`resolveInstanceMaterials()`](../../src/core/renderer/polygoninstancecontainer.cpp#L435) が、名前を model の `named_materials`、次に `ProjectMaterialAssetContainer::namedMaterials()` で `GlobalMaterialId` に解きます(`findNamedMaterial()`)。解けない名前は警告を出して飛ばします。[`ResolvedInstanceMaterials::effective()` の効く順 MT-2](../../src/core/renderer/polygoninstancecontainer.cpp#L414) は「その primitive の行 > 全 primitive の行 > model の material(binding、無ければ glTF)」です。
+- **draw item**: [`appendModelDrawItems()`](../../src/core/renderer/polygoninstancecontainer.cpp#L459) が primitive ごとに実効の material を決め、`makeDrawItemSnapshot()` に渡します。`pipeline_material_key.material`、`material_document_reference`、`material_name`、`route` / `phase`(`MaterialContainer::routeForMaterial()`)、ray の material の世代と lease が、全部この実効の material から作られます。draw queue の range は material の変化で閉じる(下の難所)ので、同じ model で material の違う instance は別の range で描かれ、MP-1 の `drawn_materials` も実効の material で数えます。
+- **material だけを替える**: [`PolygonInstanceContainer::setPreparedSceneModelMaterials()`](../../src/core/renderer/polygoninstancecontainer.cpp#L978) は、生きている instance の draw item を候補の inventory の中で作り直し、各 item の `declaration_ordinal` を元のまま保ちます(同点の鍵の並びが動かないように。コードの注記)。slot と animation の状態は残ります。editor の投影だけがこれを使います(第3章 §3.11)。
+- **model の reload**: [`prepareModelInstanceRebuild()` の MT-2 の解き直し](../../src/core/renderer/polygoninstancecontainer.cpp#L1416) は、残しておいた名前の列を新しい template に対して解き直します。この経路の test はありません(未確認)。
+- **読み戻し**: [`PolygonInstanceContainer::instancePrimitiveMaterials()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1011) は、生きている instance の draw item から (mesh, primitive) ごとに material と名前を 1 つずつ返します(複数の node が描く mesh も 1 件)。`get_object_materials` の `drawn` です。
+
 > 🧩 **難所 — 量子化するのはアンカーだけ**([`classifyStrictSprite()`](../../src/core/userpublic/sprite/pixelpolicy.cpp#L98) / [`quantizePixelBoundary()`](../../src/core/userpublic/sprite/pixelpolicy.cpp#L153))
 >
 > **何をする所か**: material 経路の隣にある 2D スプライト経路の要です。pixel-perfect(strict)の成立条件を CPU で判定し、成立したものだけ頂点シェーダで「アンカー 1 点を framebuffer のピクセル境界へスナップ」します。
