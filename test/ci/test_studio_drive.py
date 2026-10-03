@@ -14,6 +14,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 import studio_drive  # noqa: E402
 
 
+class StudioDriveTimingTest(unittest.TestCase):
+    def test_short_command_keeps_submillisecond_timing_on_performance_clock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = studio_drive.Run({"name": "timing"}, Path(directory))
+            run.channel = mock.Mock(spec=studio_drive.Channel)
+            run.channel.send.return_value = {"ok": True, "result": {}}
+            with (
+                mock.patch.object(studio_drive.time, "perf_counter", side_effect=[10.0, 10.00025]),
+                mock.patch.object(studio_drive.time, "monotonic", return_value=100000.0),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertTrue(studio_drive.run_command_step(run, {"cmd": "text", "name": "x"}, "short"))
+            measured = run.steps[0]
+            self.assertEqual(measured["duration_ms"], 0)
+            self.assertAlmostEqual(measured["duration_precise_ms"], 0.25)
+            self.assertAlmostEqual(
+                (measured["finished_perf_s"] - measured["started_perf_s"]) * 1000, 0.25)
+
+
 class StudioDriveShutdownTest(unittest.TestCase):
     def run_scenario(
         self, exit_code: int | None, *, stopped_code: int = 0,

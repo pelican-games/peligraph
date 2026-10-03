@@ -583,12 +583,20 @@ class Run:
         screenshot: str | None = None,
     ) -> dict[str, Any]:
         index = len(self.steps) + 1
+        # perf_counter uses the high-resolution performance clock on Windows;
+        # monotonic can have a ~15.6 ms tick on Python 3.12. Keep deadline
+        # clocks separate from measurements of short GUI operations.
+        finished = time.perf_counter()
+        duration_ms = (finished - started) * 1000 if started else 0.0
         entry = {
             "index": index,
             "kind": kind,
             "label": label,
             "ok": ok,
-            "duration_ms": round((time.monotonic() - started) * 1000) if started else 0,
+            "duration_ms": round(duration_ms),
+            "duration_precise_ms": duration_ms,
+            "started_perf_s": started,
+            "finished_perf_s": finished,
             "request": request,
             "response": response,
             "detail": detail,
@@ -679,7 +687,7 @@ _META_KEYS = {"label", "expect", "expect_error", "note", "wait_s"}
 
 
 def run_command_step(run: Run, step: dict[str, Any], label: str) -> bool:
-    started = time.monotonic()
+    started = time.perf_counter()
     request = command_of(step)
     expected_error = step.get("expect_error")
     try:
@@ -767,7 +775,7 @@ def run_file_step(
     owns.
     """
 
-    started = time.monotonic()
+    started = time.perf_counter()
     action = str(step["file"])
     request = {key: value for key, value in step.items() if key not in _META_KEYS}
     try:
@@ -830,7 +838,7 @@ def run_file_step(
 
 
 def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
-    started = time.monotonic()
+    started = time.perf_counter()
     kind = str(step["expect"])
     try:
         if kind == "rpc_equals":
@@ -1233,7 +1241,7 @@ def probe_no_automation(
 ) -> bool:
     """Acceptance 1, first half: without the flag there is no channel at all."""
 
-    started = time.monotonic()
+    started = time.perf_counter()
     control = Studio(
         [str(studio)], artifacts / "studio_no_automation.log", env
     )
@@ -1326,7 +1334,7 @@ def main() -> int:
 
     run = Run(scenario, artifacts)
     started_at = time.time()
-    started = time.monotonic()
+    started = time.perf_counter()
     studio: Studio | None = None
     launch_error = ""
     watchdog = Watchdog()
@@ -1399,7 +1407,7 @@ def main() -> int:
     exit_code: int | None = None
     forced_shutdown = False
     if studio is not None:
-        shutdown_started = time.monotonic()
+        shutdown_started = time.perf_counter()
         if run.channel is not None:
             try:
                 run.channel.send({"cmd": "quit"}, timeout=30.0)
@@ -1443,7 +1451,7 @@ def main() -> int:
         "studio": str(arguments.studio.resolve()),
         "automation_socket": local_socket_path(pipe),
         "started": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(started_at)),
-        "duration_ms": round((time.monotonic() - started) * 1000),
+        "duration_ms": round((time.perf_counter() - started) * 1000),
         "ok": failed == 0 and not launch_error,
         "verdict": "green" if (failed == 0 and not launch_error) else "red",
         "steps_run": len(run.steps),
