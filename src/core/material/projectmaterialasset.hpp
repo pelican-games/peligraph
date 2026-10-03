@@ -4,8 +4,11 @@
 #include "../model/modeltemplate.hpp"
 
 #include <memory>
+#include <optional>
+#include <string>
 #include <span>
 #include <string_view>
+#include <vector>
 
 namespace Pelican {
 
@@ -29,6 +32,19 @@ DECLARE_MODULE(ProjectMaterialAssetContainer) {
     namedMaterials() const noexcept;
     GlobalMaterialId
     materialByName(std::string_view name) const;
+
+    // MT-1 (create_material): reads one material document the project's
+    // asset_data now lists and registers its materials, as the constructor
+    // registers every listed document at start (values reload included).
+    // Throws, registering nothing, when the document does not parse, names a
+    // surface that is missing, or holds a name already registered. Returns
+    // the names registered.
+    std::vector<std::string> registerDocument(
+        const std::string &reference);
+    // MT-1: the document a registered material was read from (its asset_data
+    // materials[] reference), or nullopt for a name that is not registered.
+    std::optional<std::string> documentOf(
+        std::string_view name) const;
 };
 
 } // namespace Pelican

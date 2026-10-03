@@ -1,0 +1,1304 @@
+#include "materialdocumentrpc.hpp"
+
+#include "rpcserver.hpp"
+
+#include "../asset/model.hpp"
+#include "../loader/basicconfig.hpp"
+#include "../loader/pathresolver.hpp"
+#include "../log.hpp"
+#include "../material/material.hpp"
+#include "../material/materialcontainer.hpp"
+#include "../material/projectmaterialasset.hpp"
+#include "../model/engineprimitives.hpp"
+#include "../vkcore/core.hpp"
+#include "../watch/assetkey.hpp"
+#include "../watch/reloadservice.hpp"
+
+#include "../../project/assetdataformat.hpp"
+#include "../../project/materialdrawloop.hpp"
+#include "../../project/materialformat.hpp"
+#include "../../project/materiallowering.hpp"
+#include "../../project/projectdocumenttransaction.hpp"
+#include "../../project/surfaceformat.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <initializer_list>
+#include <iterator>
+#include <limits>
+#include <map>
+#include <optional>
+#include <set>
+#include <span>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace Pelican {
+namespace {
+
+using Json = nlohmann::json;
+using OrderedJson = nlohmann::ordered_json;
+
+constexpr std::string_view materialSchema = "pelican.material";
+constexpr std::string_view bindingsSchema = "pelican.material_bindings";
+
+constexpr std::string_view externalModificationCode = "external_modification";
+constexpr std::string_view valueInvalidCode = "material.value_invalid@1";
+constexpr std::string_view paramUnknownCode = "material.param_unknown@1";
+constexpr std::string_view documentUnknownCode = "material.document_unknown@1";
+constexpr std::string_view documentInvalidCode = "material.document_invalid@1";
+constexpr std::string_view nameUnknownCode = "material.name_unknown@1";
+constexpr std::string_view nameInvalidCode = "material.name_invalid@1";
+constexpr std::string_view nameConflictCode = "material.name_conflict@1";
+constexpr std::string_view pathInvalidCode = "material.path_invalid@1";
+constexpr std::string_view pathConflictCode = "material.path_conflict@1";
+constexpr std::string_view surfaceUnknownCode = "material.surface_unknown@1";
+constexpr std::string_view modelUnknownCode = "material.model_unknown@1";
+constexpr std::string_view bindingInvalidCode = "material.binding_invalid@1";
+constexpr std::string_view transactionBusyCode = "material.transaction_busy@1";
+
+[[noreturn]] void refuse(std::string_view method, const std::string &message, std::string_view code,
+                         Json fields) {
+    throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, std::string{method} + ": " + message,
+                              Json{{"error_code", std::string{code}}, {"error_fields", std::move(fields)}});
+}
+
+[[noreturn]] void invalidParams(std::string_view method, const std::string &message) {
+    throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams, std::string{method} + " " + message);
+}
+
+void requireOnly(std::string_view method, const Json &params, std::initializer_list<std::string_view> keys) {
+    if (!params.is_object()) invalidParams(method, "params must be an object");
+    for (const auto &[key, value] : params.items()) {
+        (void)value;
+        if (std::find(keys.begin(), keys.end(), key) == keys.end())
+            invalidParams(method, "does not take '" + key + "'");
+    }
+}
+
+std::string requireString(std::string_view method, const Json &params, std::string_view key) {
+    const auto found = params.find(std::string{key});
+    if (found == params.end() || !found->is_string() || found->get_ref<const std::string &>().empty())
+        invalidParams(method, "requires a non-empty string '" + std::string{key} + "'");
+    return found->get<std::string>();
+}
+
+std::optional<std::string> optionalString(std::string_view method, const Json &params, std::string_view key) {
+    const auto found = params.find(std::string{key});
+    if (found == params.end()) return std::nullopt;
+    if (!found->is_string() || found->get_ref<const std::string &>().empty())
+        invalidParams(method, "'" + std::string{key} + "' must be a non-empty string");
+    return found->get<std::string>();
+}
+
+std::string readFileBytes(const std::filesystem::path &path) {
+    std::ifstream input{path, std::ios::binary};
+    if (!input) throw std::runtime_error("cannot read " + path.generic_string());
+    return std::string{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+}
+
+// A document as the engine writes it: the keys in the order they had (a new
+// key last), two spaces, and the file's own line ending and final newline. A
+// new file is LF with a final newline.
+std::string renderJsonDocument(const OrderedJson &document, std::string_view previous) {
+    auto text = document.dump(2);
+    if (previous.empty() || previous.ends_with('\n')) text += '\n';
+    if (previous.find("\r\n") == std::string_view::npos) return text;
+    std::string crlf;
+    crlf.reserve(text.size() + text.size() / 16);
+    for (const char ch : text) {
+        if (ch == '\n') crlf += '\r';
+        crlf += ch;
+    }
+    return crlf;
+}
+
+Json toJson(const OrderedJson &value) { return Json::parse(value.dump()); }
+OrderedJson toOrdered(const Json &value) { return OrderedJson::parse(value.dump()); }
+
+bool isIdentifier(std::string_view value) {
+    if (value.empty()) return false;
+    return std::all_of(value.begin(), value.end(), [](char ch) {
+        return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_';
+    });
+}
+
+// --- asset_data and the material documents it lists.
+
+struct AssetDataFile {
+    std::string reference;
+    std::filesystem::path path;
+    std::string bytes;
+    std::string digest;
+    OrderedJson json;
+};
+
+AssetDataFile readAssetData(PathResolver &paths) {
+    auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>();
+    if (config == nullptr) throw std::runtime_error("no project is open");
+    AssetDataFile file;
+    file.reference = config->assetDataReference();
+    file.path = paths.resolveExistingFile(file.reference);
+    file.bytes = readFileBytes(file.path);
+    file.digest = projectDocumentDigest(file.bytes);
+    file.json = OrderedJson::parse(file.bytes);
+    return file;
+}
+
+std::vector<std::string> listedMaterialPaths(const OrderedJson &asset_data) {
+    std::vector<std::string> paths;
+    const auto materials = asset_data.find("materials");
+    if (materials == asset_data.end() || !materials->is_array()) return paths;
+    for (const auto &entry : *materials)
+        if (entry.is_object() && entry.contains("path") && entry.at("path").is_string())
+            paths.push_back(entry.at("path").get<std::string>());
+    return paths;
+}
+
+std::optional<std::string> normalizedOrNull(const PathResolver &paths, std::string_view reference) {
+    try {
+        return paths.normalizedReference(reference);
+    } catch (const std::exception &) {
+        return std::nullopt;
+    }
+}
+
+// The asset_data materials[] path `path` names, as asset_data writes it.
+std::optional<std::string> findListedMaterial(const AssetDataFile &asset_data, const PathResolver &paths,
+                                              std::string_view path) {
+    const auto listed = listedMaterialPaths(asset_data.json);
+    for (const auto &entry : listed)
+        if (entry == path) return entry;
+    const auto normalized = normalizedOrNull(paths, path);
+    if (!normalized) return std::nullopt;
+    for (const auto &entry : listed)
+        if (normalizedOrNull(paths, entry) == normalized) return entry;
+    return std::nullopt;
+}
+
+struct MaterialDocumentFile {
+    std::string reference;
+    std::filesystem::path path;
+    std::string bytes;
+    std::string digest;
+    OrderedJson json;
+};
+
+MaterialDocumentFile readMaterialDocument(std::string_view method, const PathResolver &paths,
+                                          const std::string &reference) {
+    MaterialDocumentFile document;
+    document.reference = reference;
+    try {
+        document.path = paths.resolveExistingFile(reference);
+        document.bytes = readFileBytes(document.path);
+    } catch (const std::exception &error) {
+        refuse(method, "material document '" + reference + "' cannot be read: " + error.what(),
+               documentUnknownCode, {{"path", reference}, {"reason", error.what()}});
+    }
+    document.digest = projectDocumentDigest(document.bytes);
+    try {
+        document.json = OrderedJson::parse(document.bytes);
+    } catch (const std::exception &error) {
+        refuse(method, "material document '" + reference + "' is not JSON: " + error.what(), documentInvalidCode,
+               {{"path", reference}, {"reason", error.what()}});
+    }
+    if (!document.json.is_object() || document.json.value("schema", std::string{}) != materialSchema ||
+        !document.json.contains("materials") || !document.json.at("materials").is_array()) {
+        refuse(method, "'" + reference + "' is not a pelican.material document", documentInvalidCode,
+               {{"path", reference}, {"reason", "not a pelican.material document with a materials array"}});
+    }
+    return document;
+}
+
+std::size_t locateMaterial(std::string_view method, const MaterialDocumentFile &document,
+                           const std::optional<std::string> &name) {
+    const auto &materials = document.json.at("materials");
+    if (!name) {
+        if (materials.size() == 1) return 0;
+        refuse(method,
+               "'" + document.reference + "' holds " + std::to_string(materials.size()) +
+                   " materials; name the one meant",
+               nameUnknownCode,
+               {{"name", nullptr},
+                {"path", document.reference},
+                {"reason", "the document holds " + std::to_string(materials.size()) + " materials"}});
+    }
+    for (std::size_t index = 0; index < materials.size(); ++index)
+        if (materials.at(index).is_object() && materials.at(index).value("name", std::string{}) == *name)
+            return index;
+    refuse(method, "'" + document.reference + "' has no material '" + *name + "'", nameUnknownCode,
+           {{"name", *name}, {"path", document.reference}, {"reason", "not in the document"}});
+}
+
+std::vector<std::string> materialNames(const OrderedJson &document) {
+    std::vector<std::string> names;
+    const auto materials = document.find("materials");
+    if (materials == document.end() || !materials->is_array()) return names;
+    for (const auto &material : *materials)
+        if (material.is_object() && material.contains("name") && material.at("name").is_string())
+            names.push_back(material.at("name").get<std::string>());
+    return names;
+}
+
+bool registeredFrom(std::string_view name, std::string_view reference) {
+    const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
+    if (project == nullptr) return false;
+    const auto document = project->documentOf(name);
+    return document && *document == reference;
+}
+
+// --- surfaces.
+
+class SurfaceCache {
+    const PathResolver &paths_;
+    std::map<std::string, SurfaceFormatDocument> loaded_;
+
+  public:
+    explicit SurfaceCache(const PathResolver &paths) : paths_{paths} {}
+
+    // Throws std::runtime_error when the surface does not load or parse.
+    const SurfaceFormatDocument &load(const std::string &reference) {
+        if (const auto found = loaded_.find(reference); found != loaded_.end()) return found->second;
+        if (!reference.ends_with(".surface")) throw std::runtime_error("a surface reference ends in .surface");
+        auto document = parseSurfaceFormat(paths_.loadText(reference), reference);
+        return loaded_.emplace(reference, std::move(document)).first->second;
+    }
+
+    // Every surface a material document's materials and variants name.
+    MaterialSurfaceCatalog catalogFor(const OrderedJson &document) {
+        MaterialSurfaceCatalog catalog;
+        const auto take = [&](const OrderedJson &object) {
+            if (!object.is_object()) return;
+            const auto surface = object.find("surface");
+            if (surface == object.end() || !surface->is_string()) return;
+            const auto reference = surface->get<std::string>();
+            if (catalog.contains(reference)) return;
+            try {
+                catalog.emplace(reference, load(reference));
+            } catch (const std::exception &) {
+                // Left out: the parse names the surface it could not validate.
+            }
+        };
+        for (const auto &material : document.at("materials")) {
+            take(material);
+            if (material.is_object() && material.contains("variants") && material.at("variants").is_object())
+                for (const auto &[name, variant] : material.at("variants").items()) {
+                    (void)name;
+                    take(variant);
+                }
+        }
+        return catalog;
+    }
+};
+
+const SurfaceFormatDocument &requireSurface(std::string_view method, SurfaceCache &surfaces,
+                                            const std::string &reference) {
+    try {
+        return surfaces.load(reference);
+    } catch (const std::exception &error) {
+        refuse(method, "surface '" + reference + "' cannot be read: " + error.what(), surfaceUnknownCode,
+               {{"surface", reference}, {"reason", error.what()}});
+    }
+}
+
+Json paramValueJson(const SurfaceParamValue &value) {
+    switch (value.type) {
+    case SurfaceParamType::integer:
+        return value.integer_value;
+    case SurfaceParamType::floating:
+        return value.values[0];
+    default: {
+        auto components = Json::array();
+        for (std::size_t index = 0; index < value.component_count; ++index)
+            components.push_back(value.values[index]);
+        return components;
+    }
+    }
+}
+
+Json surfaceSchemaJson(const std::string &reference, const SurfaceFormatDocument &surface) {
+    auto params = Json::array();
+    for (const auto &param : surface.params) {
+        Json entry{{"name", param.name},
+                   {"type", std::string{surfaceParamTypeName(param.type)}},
+                   {"default", paramValueJson(param.default_value)},
+                   {"encoding", param.encoding}};
+        if (param.min) entry["min"] = *param.min;
+        if (param.max) entry["max"] = *param.max;
+        if (param.hint) entry["hint"] = *param.hint;
+        params.push_back(std::move(entry));
+    }
+    auto textures = Json::array();
+    for (const auto &texture : surface.textures) {
+        textures.push_back({{"name", texture.name},
+                            {"default", texture.default_reference},
+                            {"color_space", texture.color_space},
+                            {"role", texture.role == SurfaceTextureRole::color ? "color" : "data"},
+                            {"dimension", std::string{surfaceTextureDimensionName(texture.dimension)}}});
+    }
+    return {{"surface", reference}, {"params", std::move(params)}, {"textures", std::move(textures)}};
+}
+
+const SurfaceParamDefinition *findParam(const SurfaceFormatDocument &surface, std::string_view name) {
+    const auto found = std::find_if(surface.params.begin(), surface.params.end(),
+                                    [name](const auto &param) { return param.name == name; });
+    return found == surface.params.end() ? nullptr : &*found;
+}
+
+const SurfaceTextureDefinition *findTexture(const SurfaceFormatDocument &surface, std::string_view name) {
+    const auto found = std::find_if(surface.textures.begin(), surface.textures.end(),
+                                    [name](const auto &texture) { return texture.name == name; });
+    return found == surface.textures.end() ? nullptr : &*found;
+}
+
+// Why `value` is not one the declaration takes: its type, then every
+// component against the declared min / max. nullopt: it is.
+std::optional<std::string> valueProblem(const Json &value, const SurfaceParamDefinition &param) {
+    const std::string type{surfaceParamTypeName(param.type)};
+    std::vector<double> components;
+    const auto numbers = [&](std::size_t low, std::size_t high) -> bool {
+        if (!value.is_array() || value.size() < low || value.size() > high) return false;
+        for (const auto &component : value) {
+            if (!component.is_number()) return false;
+            components.push_back(component.get<double>());
+        }
+        return true;
+    };
+    switch (param.type) {
+    case SurfaceParamType::floating:
+        if (!value.is_number()) return "must be a number (" + type + ")";
+        components.push_back(value.get<double>());
+        break;
+    case SurfaceParamType::integer:
+        if (!value.is_number_integer()) return "must be an integer (" + type + ")";
+        components.push_back(static_cast<double>(value.get<std::int64_t>()));
+        break;
+    case SurfaceParamType::vec2:
+        if (!numbers(2, 2)) return "must be an array of 2 numbers (" + type + ")";
+        break;
+    case SurfaceParamType::vec3:
+        if (!numbers(3, 3)) return "must be an array of 3 numbers (" + type + ")";
+        break;
+    case SurfaceParamType::vec4:
+        if (!numbers(4, 4)) return "must be an array of 4 numbers (" + type + ")";
+        break;
+    case SurfaceParamType::color:
+        if (!numbers(3, 4)) return "must be an array of 3 or 4 numbers (" + type + ")";
+        break;
+    }
+    for (std::size_t index = 0; index < components.size(); ++index) {
+        const auto where = components.size() == 1 ? std::string{"value"} : "component " + std::to_string(index);
+        if (param.min && components[index] < *param.min)
+            return where + " " + Json(components[index]).dump() + " is below the declared min " +
+                   Json(*param.min).dump();
+        if (param.max && components[index] > *param.max)
+            return where + " " + Json(components[index]).dump() + " is above the declared max " +
+                   Json(*param.max).dump();
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> textureProblem(const Json &value, const PathResolver &paths) {
+    if (!value.is_string()) return "must be a project:// or engine:// reference string";
+    const auto reference = value.get<std::string>();
+    if (reference.find('\\') != std::string::npos) return "must use forward slashes";
+    if (reference.starts_with("engine://")) return std::nullopt;
+    if (!reference.starts_with("project://")) return "must be a project:// or engine:// reference";
+    try {
+        (void)paths.resolveExistingFile(reference);
+    } catch (const std::exception &error) {
+        return std::string{"does not resolve to a file: "} + error.what();
+    }
+    return std::nullopt;
+}
+
+// values / textures of a create or an edit, merged into `target` (an object
+// key of the material). `previous` receives each key's earlier value (null:
+// absent). Unknown names and values the surface does not take are refused.
+void mergeSurfaceInputs(std::string_view method, const std::string &path, const Json &given,
+                        std::string_view key, const SurfaceFormatDocument &surface, const PathResolver &paths,
+                        OrderedJson &material, OrderedJson *previous) {
+    if (!given.is_object()) invalidParams(method, "'" + std::string{key} + "' must be an object");
+    const std::string field{key};
+    const bool textures = field == "textures";
+    auto target = material.contains(field) && material.at(field).is_object() ? material.at(field)
+                                                                              : OrderedJson::object();
+    auto before = OrderedJson::object();
+    for (const auto &[name, value] : given.items()) {
+        const bool declared = textures ? findTexture(surface, name) != nullptr : findParam(surface, name) != nullptr;
+        if (!declared) {
+            refuse(method, "the surface declares no " + std::string{textures ? "texture" : "param"} + " '" + name + "'",
+                   paramUnknownCode, {{"path", path}, {"param", name}, {"kind", textures ? "texture" : "value"}});
+        }
+        before[name] = target.contains(name) ? target.at(name) : OrderedJson(nullptr);
+        if (value.is_null()) {
+            target.erase(name);
+            continue;
+        }
+        const auto problem = textures ? textureProblem(value, paths) : valueProblem(value, *findParam(surface, name));
+        if (problem) {
+            refuse(method, std::string{textures ? "texture" : "value"} + " '" + name + "' " + *problem,
+                   valueInvalidCode, {{"path", path}, {"param", name}, {"reason", *problem}});
+        }
+        target[name] = toOrdered(value);
+    }
+    if (target.empty()) material.erase(field);
+    else material[field] = std::move(target);
+    if (previous) (*previous)[field] = std::move(before);
+}
+
+// The candidate document as the engine reads it at start: parsed with its
+// surfaces, and every material lowered (MaterialFormat + lowering).
+void checkCandidateDocument(std::string_view method, const std::string &path, const OrderedJson &document,
+                            SurfaceCache &surfaces) {
+    try {
+        auto catalog = surfaces.catalogFor(document);
+        const auto parsed = parseMaterialFormatJson(toJson(document), catalog);
+        for (const auto &definition : parsed.materials) {
+            if (!definition.surface) throw std::runtime_error("material '" + definition.name + "' requires a surface");
+            const auto surface = catalog.find(*definition.surface);
+            if (surface == catalog.end()) (void)surfaces.load(*definition.surface);
+            (void)lowerMaterial(definition, catalog.at(*definition.surface), projectMaterialLoweringCapabilities());
+            (void)lowerMaterialVariants(definition, catalog, projectMaterialLoweringCapabilities());
+        }
+    } catch (const JsonRpcHandlerError &) {
+        throw;
+    } catch (const std::exception &error) {
+        refuse(method, "'" + path + "' would not load: " + error.what(), documentInvalidCode,
+               {{"path", path}, {"reason", error.what()}});
+    }
+}
+
+void commitDocuments(std::string_view method, const std::filesystem::path &project_root,
+                     std::span<const ProjectCandidateDocument> documents, const std::string &path) {
+    try {
+        (void)commitProjectDocuments(project_root, documents);
+    } catch (const ProjectDocumentExternalModification &error) {
+        refuse(method, error.what(), externalModificationCode, {{"path", path}, {"expected", nullptr}, {"actual", nullptr}});
+    } catch (const ProjectDocumentTransactionBusy &error) {
+        refuse(method, error.what(), transactionBusyCode, {{"path", error.path().generic_string()}});
+    }
+}
+
+ProjectCandidateDocument replacement(const std::string &reference, const std::filesystem::path &path,
+                                     const std::string &digest, std::string bytes) {
+    return ProjectCandidateDocument{
+        .reference = reference,
+        .normalized_reference = reference,
+        .path = path,
+        .operation = ProjectDocumentOperation::replace,
+        .expected = {ProjectDocumentExistence::present, digest},
+        .bytes = std::move(bytes),
+    };
+}
+
+ProjectCandidateDocument creation(const std::string &reference, const std::filesystem::path &path,
+                                  std::string bytes) {
+    return ProjectCandidateDocument{
+        .reference = reference,
+        .normalized_reference = reference,
+        .path = path,
+        .operation = ProjectDocumentOperation::create,
+        .expected = {ProjectDocumentExistence::missing, {}},
+        .bytes = std::move(bytes),
+    };
+}
+
+// asset_data.json is the engine's cached copy too (list_assets, the model
+// and material containers read it); a write publishes the new bytes to it.
+void publishAssetData(PathResolver &paths, std::string_view bytes) {
+    auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>();
+    if (config == nullptr) return;
+    try {
+        config->publishAssetDataJson(config->prepareAssetDataJson(bytes, paths));
+    } catch (const std::exception &error) {
+        LOG_WARNING(logger, "asset_data.json written; the engine's copy was not refreshed: {}", error.what());
+    }
+}
+
+Json appliedLive(Json answer) {
+    answer["applied"] = "live";
+    answer["restart_required"] = nullptr;
+    return answer;
+}
+
+Json appliedAtRestart(Json answer, const std::string &reason) {
+    answer["applied"] = "restart_required";
+    answer["restart_required"] = {{"reason", reason}};
+    LOG_WARNING(logger, "material document written; restart required: {}", reason);
+    return answer;
+}
+
+// --- list_materials / get_material / get_surface_schema.
+
+Json listMaterials(const Json &params, PathResolver &paths) {
+    constexpr std::string_view method = "list_materials";
+    if (!params.is_null() && !(params.is_object() && params.empty())) invalidParams(method, "takes no parameters");
+    const auto asset_data = readAssetData(paths);
+    auto documents = Json::array();
+    for (const auto &reference : listedMaterialPaths(asset_data.json)) {
+        Json entry{{"path", reference}, {"material_digest", nullptr}, {"materials", Json::array()}};
+        std::string bytes;
+        try {
+            bytes = readFileBytes(paths.resolveExistingFile(reference));
+        } catch (const std::exception &error) {
+            entry["status"] = "missing";
+            entry["reason"] = error.what();
+            documents.push_back(std::move(entry));
+            continue;
+        }
+        entry["material_digest"] = projectDocumentDigest(bytes);
+        OrderedJson document;
+        try {
+            document = OrderedJson::parse(bytes);
+        } catch (const std::exception &error) {
+            entry["status"] = "invalid";
+            entry["reason"] = error.what();
+            documents.push_back(std::move(entry));
+            continue;
+        }
+        if (!document.is_object() || document.value("schema", std::string{}) != materialSchema ||
+            !document.contains("materials") || !document.at("materials").is_array()) {
+            entry["status"] = "invalid";
+            entry["reason"] = "not a pelican.material document with a materials array";
+            documents.push_back(std::move(entry));
+            continue;
+        }
+        entry["status"] = "loaded";
+        for (const auto &material : document.at("materials")) {
+            if (!material.is_object() || !material.contains("name") || !material.at("name").is_string()) continue;
+            const auto name = material.at("name").get<std::string>();
+            const auto surface = material.find("surface");
+            const auto tags = material.find("tags");
+            entry["materials"].push_back({
+                {"name", name},
+                {"surface", surface != material.end() && surface->is_string() ? Json(surface->get<std::string>())
+                                                                              : Json(nullptr)},
+                {"tags", tags != material.end() && tags->is_array() ? toJson(*tags) : Json::array()},
+                {"id", materialDrawSubjectKey(name, reference, reference, std::nullopt)},
+                {"registered", registeredFrom(name, reference)},
+            });
+        }
+        documents.push_back(std::move(entry));
+    }
+    return {{"asset_data_digest", asset_data.digest}, {"documents", std::move(documents)}};
+}
+
+OrderedJson getMaterial(const Json &params, PathResolver &paths) {
+    constexpr std::string_view method = "get_material";
+    requireOnly(method, params, {"path", "name"});
+    const auto path = requireString(method, params, "path");
+    const auto name = optionalString(method, params, "name");
+    const auto asset_data = readAssetData(paths);
+    const auto listed = findListedMaterial(asset_data, paths, path);
+    if (!listed)
+        refuse(method, "asset_data materials[] does not list '" + path + "'", documentUnknownCode,
+               {{"path", path}, {"reason", "not listed in asset_data materials[]"}});
+    const auto document = readMaterialDocument(method, paths, *listed);
+    const auto index = locateMaterial(method, document, name);
+    const auto &material = document.json.at("materials").at(index);
+    const auto material_name = material.value("name", std::string{});
+    OrderedJson answer;
+    answer["path"] = *listed;
+    answer["material_digest"] = document.digest;
+    answer["name"] = material_name;
+    answer["names"] = materialNames(document.json);
+    answer["registered"] = registeredFrom(material_name, *listed);
+    answer["material"] = material;
+    return answer;
+}
+
+Json getSurfaceSchema(const Json &params, PathResolver &paths) {
+    constexpr std::string_view method = "get_surface_schema";
+    requireOnly(method, params, {"surface"});
+    const auto reference = requireString(method, params, "surface");
+    SurfaceCache surfaces{paths};
+    return surfaceSchemaJson(reference, requireSurface(method, surfaces, reference));
+}
+
+// --- edit_material.
+
+Json editMaterial(const Json &params, PathResolver &paths) {
+    constexpr std::string_view method = "edit_material";
+    requireOnly(method, params,
+                {"base_material_digest", "path", "name", "values", "textures", "tags", "routing", "variants",
+                 "surface"});
+    const auto base = requireString(method, params, "base_material_digest");
+    const auto path = requireString(method, params, "path");
+    const auto name = optionalString(method, params, "name");
+    for (const auto *key : {"tags", "routing", "variants"}) {
+        const auto found = params.find(key);
+        if (found == params.end() || found->is_null()) continue;
+        const bool ok = std::string_view{key} == "tags" ? found->is_array() : found->is_object();
+        if (!ok)
+            invalidParams(method, "'" + std::string{key} + "' must be " +
+                                      (std::string_view{key} == "tags" ? "an array" : "an object") + " or null");
+    }
+    if (params.contains("surface") && !params.at("surface").is_string())
+        invalidParams(method, "'surface' must be a string reference");
+
+    const auto asset_data = readAssetData(paths);
+    const auto listed = findListedMaterial(asset_data, paths, path);
+    if (!listed)
+        refuse(method, "asset_data materials[] does not list '" + path + "'", documentUnknownCode,
+               {{"path", path}, {"reason", "not listed in asset_data materials[]"}});
+    const auto document = readMaterialDocument(method, paths, *listed);
+    if (base != document.digest) {
+        refuse(method,
+               "'" + *listed + "' changed since it was read (expected sha256 " + base + ", found " +
+                   document.digest + ")",
+               externalModificationCode, {{"path", *listed}, {"expected", base}, {"actual", document.digest}});
+    }
+    const auto index = locateMaterial(method, document, name);
+    auto candidate = document.json;
+    auto &material = candidate.at("materials").at(index);
+    const auto material_name = material.value("name", std::string{});
+    auto previous = OrderedJson::object();
+    SurfaceCache surfaces{paths};
+
+    if (params.contains("surface")) {
+        previous["surface"] = material.contains("surface") ? material.at("surface") : OrderedJson(nullptr);
+        const auto reference = params.at("surface").get<std::string>();
+        (void)requireSurface(method, surfaces, reference);
+        material["surface"] = reference;
+    }
+    const auto surface_reference = material.contains("surface") && material.at("surface").is_string()
+                                       ? std::optional<std::string>{material.at("surface").get<std::string>()}
+                                       : std::nullopt;
+    for (const auto *key : {"values", "textures"}) {
+        if (!params.contains(key)) continue;
+        if (!surface_reference)
+            refuse(method, "material '" + material_name + "' names no surface to take " + key, documentInvalidCode,
+                   {{"path", *listed}, {"reason", "the material names no surface"}});
+        const auto &surface = requireSurface(method, surfaces, *surface_reference);
+        mergeSurfaceInputs(method, *listed, params.at(key), key, surface, paths, material, &previous);
+    }
+    if (surface_reference && params.contains("surface")) {
+        // What the material already sets has to be declared by the new surface.
+        const auto &surface = requireSurface(method, surfaces, *surface_reference);
+        for (const auto *key : {"values", "textures"}) {
+            if (!material.contains(key) || !material.at(key).is_object()) continue;
+            const bool textures = std::string_view{key} == "textures";
+            for (const auto &[param, value] : material.at(key).items()) {
+                (void)value;
+                const bool declared =
+                    textures ? findTexture(surface, param) != nullptr : findParam(surface, param) != nullptr;
+                if (!declared)
+                    refuse(method, "surface '" + *surface_reference + "' declares no '" + param + "'",
+                           paramUnknownCode,
+                           {{"path", *listed}, {"param", param}, {"kind", textures ? "texture" : "value"}});
+            }
+        }
+    }
+    for (const auto *key : {"tags", "routing", "variants"}) {
+        if (!params.contains(key)) continue;
+        previous[key] = material.contains(key) ? material.at(key) : OrderedJson(nullptr);
+        if (params.at(key).is_null()) material.erase(key);
+        else material[key] = toOrdered(params.at(key));
+    }
+    checkCandidateDocument(method, *listed, candidate, surfaces);
+
+    Json answer{{"committed", true},
+                {"path", *listed},
+                {"name", material_name},
+                {"previous_material_digest", document.digest},
+                {"previous", toJson(previous)}};
+    if (candidate == document.json) {
+        answer["changed"] = false;
+        answer["material_digest"] = document.digest;
+        return appliedLive(std::move(answer));
+    }
+    auto bytes = renderJsonDocument(candidate, document.bytes);
+    const auto digest = projectDocumentDigest(bytes);
+    const std::array documents{replacement(*listed, document.path, document.digest, std::move(bytes))};
+    commitDocuments(method, paths.projectRoot(), documents, *listed);
+    answer["changed"] = true;
+    answer["material_digest"] = digest;
+    LOG_INFO(logger, "material '{}' in '{}' edited", material_name, *listed);
+
+    std::vector<std::string> structural;
+    // Only what this edit really changed decides: values alone are live.
+    const auto &original = document.json.at("materials").at(index);
+    const auto field = [](const OrderedJson &object, const std::string &key) {
+        return object.contains(key) ? object.at(key) : OrderedJson(nullptr);
+    };
+    for (const auto &[key, value] : previous.items()) {
+        (void)value;
+        if (key != "values" && field(original, key) != field(material, key)) structural.push_back(key);
+    }
+    if (!structural.empty()) {
+        std::string keys;
+        for (const auto &key : structural) keys += (keys.empty() ? "" : ", ") + key;
+        return appliedAtRestart(std::move(answer),
+                                keys + " change how material '" + material_name +
+                                    "' is registered (its shader, pipeline, textures or draw tags); the engine "
+                                    "reads them when it starts");
+    }
+    if (!registeredFrom(material_name, *listed))
+        return appliedAtRestart(std::move(answer), "material '" + material_name +
+                                                       "' is not registered in this engine; it is read when the "
+                                                       "engine starts");
+    auto *materials = FastModuleContainer::tryGet<MaterialContainer>();
+    if (materials == nullptr)
+        return appliedAtRestart(std::move(answer), "this host runs no material container");
+    try {
+        const std::array keys{watch::makeAssetKey(*listed)};
+        if (auto commit = materials->prepareSurfaceMaterialReload({}, keys)) commit();
+    } catch (const std::exception &error) {
+        return appliedAtRestart(std::move(answer),
+                                std::string{"the values could not be applied in place: "} + error.what());
+    }
+    return appliedLive(std::move(answer));
+}
+
+// --- create_material.
+
+std::string projectRelative(std::string_view method, const std::string &path) {
+    std::string relative = path;
+    if (relative.starts_with("project://")) relative = relative.substr(std::string_view{"project://"}.size());
+    const auto invalid = [&](const std::string &reason) {
+        refuse(method, "'" + path + "' " + reason, pathInvalidCode, {{"path", path}, {"reason", reason}});
+    };
+    if (relative.empty()) invalid("names no file");
+    if (relative.find('\\') != std::string::npos) invalid("must use forward slashes");
+    if (relative.find("://") != std::string::npos) invalid("must be a project:// or project-relative path");
+    if (relative.front() == '/' || (relative.size() > 1 && relative[1] == ':')) invalid("must be project-relative");
+    if (!relative.ends_with(".json")) invalid("must end in .json");
+    const std::filesystem::path parsed{relative};
+    for (const auto &part : parsed)
+        if (part == ".." || part == ".") invalid("must not contain '.' or '..' segments");
+    return relative;
+}
+
+std::string defaultMaterialName(const std::string &relative) {
+    auto file = std::filesystem::path{relative}.filename().generic_string();
+    for (const std::string_view suffix : {".material.json", ".json"})
+        if (file.ends_with(suffix)) return file.substr(0, file.size() - suffix.size());
+    return file;
+}
+
+// Where a name is held already: a listed document (path) or a model's glTF
+// material (model; a project material of that name would make the model's
+// bindings ambiguous and stop it loading).
+std::optional<Json> nameHolder(const std::string &name, const AssetDataFile &asset_data, const PathResolver &paths) {
+    for (const auto &reference : listedMaterialPaths(asset_data.json)) {
+        try {
+            const auto names = materialNames(OrderedJson::parse(readFileBytes(paths.resolveExistingFile(reference))));
+            if (std::find(names.begin(), names.end(), name) != names.end()) return Json{{"path", reference}};
+        } catch (const std::exception &) {
+        }
+    }
+    if (const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>())
+        if (const auto document = project->documentOf(name)) return Json{{"path", *document}};
+    return std::nullopt;
+}
+
+Json createMaterial(const Json &params, PathResolver &paths) {
+    constexpr std::string_view method = "create_material";
+    requireOnly(method, params, {"path", "surface", "name", "values", "tags", "routing"});
+    const auto path = requireString(method, params, "path");
+    const auto surface_reference = requireString(method, params, "surface");
+    if (params.contains("tags") && !params.at("tags").is_array()) invalidParams(method, "'tags' must be an array");
+    if (params.contains("routing") && !params.at("routing").is_object())
+        invalidParams(method, "'routing' must be an object");
+    const auto relative = projectRelative(method, path);
+    const auto name = optionalString(method, params, "name").value_or(defaultMaterialName(relative));
+    if (!isIdentifier(name))
+        refuse(method, "'" + name + "' is not a material name", nameInvalidCode,
+               {{"name", name}, {"reason", "a material name is letters, digits and '_'"}});
+
+    const auto asset_data = readAssetData(paths);
+    const auto file = paths.projectRoot() / std::filesystem::path{relative};
+    if (findListedMaterial(asset_data, paths, relative) || std::filesystem::exists(file))
+        refuse(method, "'" + relative + "' is there already", pathConflictCode, {{"path", relative}});
+    if (auto holder = nameHolder(name, asset_data, paths)) {
+        Json fields{{"name", name}};
+        fields.update(*holder);
+        refuse(method, "material '" + name + "' exists already", nameConflictCode, std::move(fields));
+    }
+    if (const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>())
+        if (const auto holder = models->modelDeclaringMaterial(name))
+            refuse(method, "model '" + *holder + "' has a glTF material named '" + name + "'", nameConflictCode,
+                   {{"name", name}, {"model", *holder}});
+
+    SurfaceCache surfaces{paths};
+    const auto &surface = requireSurface(method, surfaces, surface_reference);
+    OrderedJson material;
+    material["name"] = name;
+    if (params.contains("tags")) material["tags"] = toOrdered(params.at("tags"));
+    material["surface"] = surface_reference;
+    if (params.contains("values"))
+        mergeSurfaceInputs(method, relative, params.at("values"), "values", surface, paths, material, nullptr);
+    material["routing"] = params.contains("routing")
+                              ? toOrdered(params.at("routing"))
+                              : OrderedJson{{"alpha_mode", "opaque"}, {"double_sided", false}};
+    OrderedJson document;
+    document["schema"] = std::string{materialSchema};
+    document["version"] = 1;
+    document["materials"] = OrderedJson::array({material});
+    checkCandidateDocument(method, relative, document, surfaces);
+
+    auto asset_json = asset_data.json;
+    if (!asset_json.contains("materials") || !asset_json.at("materials").is_array())
+        asset_json["materials"] = OrderedJson::array();
+    asset_json["materials"].push_back({{"path", relative}});
+    try {
+        (void)parseAssetDataFormatJson(toJson(asset_json));
+    } catch (const std::exception &error) {
+        refuse(method, std::string{"asset_data would not load: "} + error.what(), documentInvalidCode,
+               {{"path", asset_data.reference}, {"reason", error.what()}});
+    }
+    auto bytes = renderJsonDocument(document, {});
+    const auto digest = projectDocumentDigest(bytes);
+    auto asset_bytes = renderJsonDocument(asset_json, asset_data.bytes);
+    const auto asset_digest = projectDocumentDigest(asset_bytes);
+    const std::array documents{
+        creation(relative, file, std::move(bytes)),
+        replacement(asset_data.reference, asset_data.path, asset_data.digest, asset_bytes),
+    };
+    commitDocuments(method, paths.projectRoot(), documents, relative);
+    publishAssetData(paths, asset_bytes);
+    LOG_INFO(logger, "material '{}' created in '{}'", name, relative);
+
+    Json answer{{"committed", true},
+                {"changed", true},
+                {"path", relative},
+                {"name", name},
+                {"material_digest", digest},
+                {"asset_data_digest", asset_digest},
+                {"previous_asset_data_digest", asset_data.digest}};
+    if (FastModuleContainer::tryGet<MaterialContainer>() == nullptr)
+        return appliedAtRestart(std::move(answer), "this host runs no material container");
+    try {
+        if (auto *core = FastModuleContainer::tryGet<VulkanManageCore>()) core->waitIdle();
+        if (auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>()) {
+            (void)project->registerDocument(relative);
+        } else {
+            // Made now, from the asset_data just published: it registers every
+            // listed document, this one with them.
+            (void)GET_MODULE(ProjectMaterialAssetContainer);
+        }
+    } catch (const std::exception &error) {
+        return appliedAtRestart(std::move(answer),
+                                std::string{"the material could not be registered in place: "} + error.what());
+    }
+    return appliedLive(std::move(answer));
+}
+
+// --- get_material_bindings / bind_material.
+
+using PrimitiveKey = std::pair<std::uint32_t, std::uint32_t>;
+
+struct BindingEntry {
+    std::string material;
+    std::optional<std::string> usd_path;
+    std::optional<MaterialVariantRouting> routing;
+};
+
+struct ModelBindingState {
+    std::string model;
+    std::optional<std::size_t> asset_index;
+    std::optional<std::string> bindings_reference;
+    std::filesystem::path bindings_path;
+    std::string bindings_bytes;
+    std::string bindings_digest;
+    OrderedJson bindings_json;
+    std::vector<ModelMaterialSlot> slots;
+    std::map<PrimitiveKey, BindingEntry> current;
+};
+
+OrderedJson routingJson(const MaterialVariantRouting &routing) {
+    return {{"alpha_mode", std::string{materialAlphaModeName(routing.alpha_mode)}},
+            {"double_sided", routing.double_sided}};
+}
+
+std::optional<MaterialVariantRouting> routingFromJson(const OrderedJson &value) {
+    if (!value.is_object() || !value.contains("alpha_mode") || !value.at("alpha_mode").is_string() ||
+        !value.contains("double_sided") || !value.at("double_sided").is_boolean())
+        return std::nullopt;
+    const auto mode = value.at("alpha_mode").get<std::string>();
+    MaterialVariantRouting routing;
+    if (mode == "opaque") routing.alpha_mode = MaterialAlphaMode::opaque;
+    else if (mode == "mask") routing.alpha_mode = MaterialAlphaMode::mask;
+    else if (mode == "blend") routing.alpha_mode = MaterialAlphaMode::blend;
+    else return std::nullopt;
+    routing.double_sided = value.at("double_sided").get<bool>();
+    return routing;
+}
+
+ModelBindingState readBindingState(std::string_view method, const std::string &model,
+                                   const AssetDataFile &asset_data, const PathResolver &paths) {
+    auto *models = FastModuleContainer::tryGet<ModelAssetContainer>();
+    if (models == nullptr)
+        refuse(method, "this host runs no model container", modelUnknownCode,
+               {{"model", model}, {"reason", "no model container"}});
+    ModelBindingState state;
+    state.model = model;
+    if (const auto declared = asset_data.json.find("models"); declared != asset_data.json.end() && declared->is_array())
+        for (std::size_t index = 0; index < declared->size(); ++index)
+            if (declared->at(index).is_object() && declared->at(index).value("name", std::string{}) == model)
+                state.asset_index = index;
+    const bool primitive = isEnginePrimitiveReference(model);
+    if (!state.asset_index && !primitive)
+        refuse(method, "asset_data declares no model '" + model + "'", modelUnknownCode,
+               {{"model", model}, {"reason", "not declared in asset_data models[]"}});
+    try {
+        if (primitive) requireKnownEnginePrimitive(model);
+        if (!models->hasModel(model)) {
+            if (!primitive) throw std::runtime_error("the model is not loaded by this engine");
+            (void)models->getModelTemplateByName(model);
+        }
+        state.slots = models->materialSlots(model);
+    } catch (const std::exception &error) {
+        refuse(method, "model '" + model + "': " + error.what(), modelUnknownCode,
+               {{"model", model}, {"reason", error.what()}});
+    }
+    if (state.asset_index) {
+        const auto &entry = asset_data.json.at("models").at(*state.asset_index);
+        if (entry.contains("material_bindings") && entry.at("material_bindings").is_string())
+            state.bindings_reference = entry.at("material_bindings").get<std::string>();
+    }
+    if (state.bindings_reference) {
+        try {
+            state.bindings_path = paths.resolveExistingFile(*state.bindings_reference);
+            state.bindings_bytes = readFileBytes(state.bindings_path);
+            state.bindings_json = OrderedJson::parse(state.bindings_bytes);
+            const auto parsed = parsePrimitiveMaterialBindingJson(toJson(state.bindings_json));
+            for (const auto &binding : parsed.bindings)
+                state.current.insert_or_assign(PrimitiveKey{binding.mesh_index, binding.primitive_index},
+                                               BindingEntry{binding.material, binding.usd_path, binding.routing});
+        } catch (const std::exception &error) {
+            refuse(method, "model '" + model + "' material bindings: " + error.what(), bindingInvalidCode,
+                   {{"model", model}, {"reason", error.what()}});
+        }
+        state.bindings_digest = projectDocumentDigest(state.bindings_bytes);
+    }
+    for (const auto &slot : state.slots)
+        state.current.try_emplace(PrimitiveKey{slot.mesh, slot.primitive},
+                                  BindingEntry{slot.slot, std::nullopt, slot.routing});
+    return state;
+}
+
+Json getMaterialBindings(const Json &params, PathResolver &paths) {
+    constexpr std::string_view method = "get_material_bindings";
+    requireOnly(method, params, {"model"});
+    const auto model = requireString(method, params, "model");
+    const auto state = readBindingState(method, model, readAssetData(paths), paths);
+    auto primitives = Json::array();
+    for (const auto &slot : state.slots) {
+        const auto &entry = state.current.at({slot.mesh, slot.primitive});
+        primitives.push_back({{"mesh", slot.mesh},
+                              {"primitive", slot.primitive},
+                              {"slot", slot.slot},
+                              {"material", entry.material},
+                              {"usd_path", entry.usd_path ? Json(*entry.usd_path) : Json(nullptr)}});
+    }
+    return {{"model", model},
+            {"material_bindings", state.bindings_reference ? Json(*state.bindings_reference) : Json(nullptr)},
+            {"bindings_digest", state.bindings_reference ? Json(state.bindings_digest) : Json(nullptr)},
+            {"primitives", std::move(primitives)}};
+}
+
+struct BindingMaterial {
+    MaterialVariantRouting routing;
+    bool live = true;
+};
+
+BindingMaterial resolveBindingMaterial(std::string_view method, const std::string &name,
+                                       const ModelBindingState &state, const AssetDataFile &asset_data,
+                                       const PathResolver &paths) {
+    std::optional<BindingMaterial> slot;
+    for (const auto &candidate : state.slots)
+        if (candidate.slot == name && candidate.routing) slot = BindingMaterial{*candidate.routing, true};
+    std::optional<BindingMaterial> project;
+    if (const auto *container = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>()) {
+        for (const auto &material : container->namedMaterials()) {
+            if (material.name != name) continue;
+            if (!material.routing)
+                refuse(method, "material '" + name + "' declares no routing, which a binding needs",
+                       bindingInvalidCode, {{"model", state.model}, {"reason", "material '" + name + "' has no routing"}});
+            project = BindingMaterial{*material.routing, true};
+        }
+    }
+    if (!project) {
+        for (const auto &reference : listedMaterialPaths(asset_data.json)) {
+            OrderedJson document;
+            try {
+                document = OrderedJson::parse(readFileBytes(paths.resolveExistingFile(reference)));
+            } catch (const std::exception &) {
+                continue;
+            }
+            if (!document.contains("materials") || !document.at("materials").is_array()) continue;
+            for (const auto &material : document.at("materials")) {
+                if (!material.is_object() || material.value("name", std::string{}) != name) continue;
+                const auto routing = material.contains("routing") ? routingFromJson(material.at("routing"))
+                                                                  : std::nullopt;
+                if (!routing)
+                    refuse(method, "material '" + name + "' declares no routing, which a binding needs",
+                           bindingInvalidCode,
+                           {{"model", state.model}, {"reason", "material '" + name + "' has no routing"}});
+                project = BindingMaterial{*routing, false};
+            }
+        }
+    }
+    if (slot && project)
+        refuse(method, "'" + name + "' is both a glTF material of the model and a project material",
+               bindingInvalidCode,
+               {{"model", state.model}, {"reason", "material name '" + name + "' is ambiguous"}});
+    if (slot) return *slot;
+    if (project) return *project;
+    refuse(method, "no material '" + name + "' to bind", nameUnknownCode,
+           {{"name", name}, {"reason", "neither a project material nor a glTF material of model '" + state.model + "'"}});
+}
+
+std::string bindingsBaseName(const std::string &model) {
+    std::string base = isEnginePrimitiveReference(model) ? model.substr(enginePrimitivePrefix.size()) : model;
+    for (auto &ch : base)
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' ||
+              ch == '-'))
+            ch = '_';
+    return base.empty() ? std::string{"model"} : base;
+}
+
+Json bindMaterial(const Json &params, PathResolver &paths, watch::ReloadService *reload_service) {
+    constexpr std::string_view method = "bind_material";
+    requireOnly(method, params, {"model", "material", "primitive", "slot", "bindings"});
+    const auto model = requireString(method, params, "model");
+    const bool listed_form = params.contains("bindings");
+    if (listed_form && (params.contains("material") || params.contains("primitive") || params.contains("slot")))
+        invalidParams(method, "takes either 'bindings' or 'material' with 'primitive' / 'slot'");
+    if (params.contains("primitive") && params.contains("slot"))
+        invalidParams(method, "takes 'primitive' or 'slot', not both");
+
+    const auto asset_data = readAssetData(paths);
+    auto state = readBindingState(method, model, asset_data, paths);
+
+    // The primitives asked for, each with the material it is to carry.
+    std::map<PrimitiveKey, std::string> requested;
+    const auto requirePrimitive = [&](const Json &value, std::string_view where) {
+        const auto index = [](const Json &object, const char *key) {
+            return object.contains(key) && object.at(key).is_number_integer() &&
+                   object.at(key).get<std::int64_t>() >= 0 &&
+                   object.at(key).get<std::int64_t>() <= std::numeric_limits<std::uint32_t>::max();
+        };
+        if (!value.is_object() || !index(value, "mesh") || !index(value, "primitive"))
+            invalidParams(method, std::string{where} + " must be {mesh, primitive} (non-negative integers)");
+        const PrimitiveKey key{value.at("mesh").get<std::uint32_t>(), value.at("primitive").get<std::uint32_t>()};
+        if (!state.current.contains(key))
+            refuse(method,
+                   "model '" + model + "' has no mesh " + std::to_string(key.first) + " primitive " +
+                       std::to_string(key.second),
+                   bindingInvalidCode, {{"model", model}, {"reason", "no such primitive"}});
+        return key;
+    };
+    if (listed_form) {
+        const auto &bindings = params.at("bindings");
+        if (!bindings.is_array() || bindings.empty()) invalidParams(method, "'bindings' must be a non-empty array");
+        for (const auto &binding : bindings) {
+            if (!binding.is_object() || !binding.contains("material") || !binding.at("material").is_string())
+                invalidParams(method, "'bindings' entries are {mesh, primitive, material}");
+            requested.insert_or_assign(requirePrimitive(binding, "a 'bindings' entry"),
+                                       binding.at("material").get<std::string>());
+        }
+    } else {
+        const auto material = requireString(method, params, "material");
+        if (params.contains("primitive")) {
+            requested.emplace(requirePrimitive(params.at("primitive"), "'primitive'"), material);
+        } else if (params.contains("slot")) {
+            if (!params.at("slot").is_string()) invalidParams(method, "'slot' must be a string");
+            const auto slot = params.at("slot").get<std::string>();
+            for (const auto &candidate : state.slots)
+                if (candidate.slot == slot) requested.emplace(PrimitiveKey{candidate.mesh, candidate.primitive}, material);
+            if (requested.empty())
+                refuse(method, "no primitive of model '" + model + "' carries '" + slot + "'", bindingInvalidCode,
+                       {{"model", model}, {"reason", "no primitive carries slot '" + slot + "'"}});
+        } else {
+            for (const auto &[key, entry] : state.current) {
+                (void)entry;
+                requested.emplace(key, material);
+            }
+        }
+    }
+
+    bool live = true;
+    auto previous = Json::array();
+    std::map<std::string, BindingMaterial> resolved;
+    for (const auto &[key, material] : requested) {
+        auto found = resolved.find(material);
+        if (found == resolved.end())
+            found = resolved.emplace(material, resolveBindingMaterial(method, material, state, asset_data, paths)).first;
+        live = live && found->second.live;
+        auto &entry = state.current.at(key);
+        if (entry.material == material && entry.routing == found->second.routing) continue;
+        previous.push_back({{"mesh", key.first}, {"primitive", key.second}, {"material", entry.material}});
+        entry.material = material;
+        entry.routing = found->second.routing;
+    }
+
+    // The document: the one asset_data names, rewritten in place, or a new
+    // one covering every primitive (a binding document is whole-model).
+    std::set<std::string> usd_paths;
+    for (const auto &[key, entry] : state.current)
+        if (entry.usd_path) usd_paths.insert(*entry.usd_path);
+    for (auto &[key, entry] : state.current) {
+        if (!entry.routing)
+            refuse(method,
+                   "mesh " + std::to_string(key.first) + " primitive " + std::to_string(key.second) +
+                       " carries no named glTF material; bind it too",
+                   bindingInvalidCode, {{"model", model}, {"reason", "a primitive has no material to keep"}});
+        if (entry.usd_path) continue;
+        auto usd_path = "/mesh_" + std::to_string(key.first) + "/primitive_" + std::to_string(key.second);
+        for (int suffix = 2; usd_paths.contains(usd_path); ++suffix)
+            usd_path = "/mesh_" + std::to_string(key.first) + "/primitive_" + std::to_string(key.second) + "_" +
+                       std::to_string(suffix);
+        usd_paths.insert(usd_path);
+        entry.usd_path = usd_path;
+    }
+    OrderedJson document;
+    if (state.bindings_reference) {
+        document = state.bindings_json;
+        auto &bindings = document.at("bindings");
+        for (auto &binding : bindings) {
+            const PrimitiveKey key{binding.at("mesh").get<std::uint32_t>(), binding.at("primitive").get<std::uint32_t>()};
+            const auto &entry = state.current.at(key);
+            binding["material"] = entry.material;
+            binding["routing"] = routingJson(*entry.routing);
+        }
+    } else {
+        document["schema"] = std::string{bindingsSchema};
+        document["version"] = 1;
+        document["model"] = isEnginePrimitiveReference(model)
+                                ? model
+                                : asset_data.json.at("models").at(*state.asset_index).at("path").get<std::string>();
+        auto bindings = OrderedJson::array();
+        for (const auto &[key, entry] : state.current) {
+            bindings.push_back({{"usd_path", *entry.usd_path},
+                                {"mesh", key.first},
+                                {"primitive", key.second},
+                                {"material", entry.material},
+                                {"routing", routingJson(*entry.routing)}});
+        }
+        document["bindings"] = std::move(bindings);
+    }
+    try {
+        (void)parsePrimitiveMaterialBindingJson(toJson(document));
+    } catch (const std::exception &error) {
+        refuse(method, std::string{"the bindings would not load: "} + error.what(), bindingInvalidCode,
+               {{"model", model}, {"reason", error.what()}});
+    }
+
+    Json answer{{"committed", true},
+                {"model", model},
+                {"previous_bindings_digest", state.bindings_reference ? Json(state.bindings_digest) : Json(nullptr)},
+                {"previous", {{"bindings", previous}}}};
+    std::vector<ProjectCandidateDocument> documents;
+    std::optional<std::string> asset_bytes;
+    std::string reference;
+    std::string digest;
+    if (state.bindings_reference) {
+        reference = *state.bindings_reference;
+        auto bytes = renderJsonDocument(document, state.bindings_bytes);
+        digest = projectDocumentDigest(bytes);
+        if (bytes != state.bindings_bytes)
+            documents.push_back(replacement(reference, state.bindings_path, state.bindings_digest, std::move(bytes)));
+    } else {
+        const auto base = bindingsBaseName(model);
+        reference = "materials/" + base + ".bindings.json";
+        for (int suffix = 2; std::filesystem::exists(paths.projectRoot() / reference); ++suffix)
+            reference = "materials/" + base + "_" + std::to_string(suffix) + ".bindings.json";
+        auto bytes = renderJsonDocument(document, {});
+        digest = projectDocumentDigest(bytes);
+        documents.push_back(creation(reference, paths.projectRoot() / reference, std::move(bytes)));
+        auto asset_json = asset_data.json;
+        if (state.asset_index) {
+            asset_json.at("models").at(*state.asset_index)["material_bindings"] = reference;
+        } else {
+            if (!asset_json.contains("models") || !asset_json.at("models").is_array())
+                asset_json["models"] = OrderedJson::array();
+            asset_json["models"].push_back({{"name", model}, {"path", model}, {"material_bindings", reference}});
+        }
+        try {
+            (void)parseAssetDataFormatJson(toJson(asset_json));
+        } catch (const std::exception &error) {
+            refuse(method, std::string{"asset_data would not load: "} + error.what(), documentInvalidCode,
+                   {{"path", asset_data.reference}, {"reason", error.what()}});
+        }
+        asset_bytes = renderJsonDocument(asset_json, asset_data.bytes);
+        documents.push_back(replacement(asset_data.reference, asset_data.path, asset_data.digest, *asset_bytes));
+        answer["asset_data_digest"] = projectDocumentDigest(*asset_bytes);
+        answer["previous_asset_data_digest"] = asset_data.digest;
+    }
+    answer["material_bindings"] = reference;
+    answer["bindings_digest"] = digest;
+    if (documents.empty()) {
+        answer["changed"] = false;
+        return appliedLive(std::move(answer));
+    }
+    commitDocuments(method, paths.projectRoot(), documents, reference);
+    if (asset_bytes) publishAssetData(paths, *asset_bytes);
+    answer["changed"] = true;
+    LOG_INFO(logger, "material bindings of model '{}' written to '{}'", model, reference);
+
+    if (!live)
+        return appliedAtRestart(std::move(answer),
+                                "a bound material is not registered in this engine; it is read when the engine starts");
+    // The endpoint resolves its modules once, when it is made; a host that
+    // made the reload service after that still has it.
+    if (reload_service == nullptr) reload_service = FastModuleContainer::tryGet<watch::ReloadService>();
+    if (reload_service == nullptr)
+        return appliedAtRestart(std::move(answer),
+                                "this host has no reload service; the bindings apply when the engine starts");
+    auto &models = GET_MODULE(ModelAssetContainer);
+    std::optional<PrimitiveMaterialBindingDocument> replaced;
+    try {
+        replaced = models.exchangeMaterialBindings(model, reference);
+    } catch (const std::exception &error) {
+        return appliedAtRestart(std::move(answer), std::string{"the bindings could not be read back: "} + error.what());
+    }
+    try {
+        if (auto *core = FastModuleContainer::tryGet<VulkanManageCore>()) core->waitIdle();
+        const std::array keys{models.reloadKey(model)};
+        reload_service->reloadModelsNow(keys);
+    } catch (const std::exception &error) {
+        models.restoreMaterialBindings(model, std::move(replaced));
+        return appliedAtRestart(std::move(answer),
+                                std::string{"the model could not be rebuilt in place: "} + error.what());
+    }
+    return appliedLive(std::move(answer));
+}
+
+} // namespace
+
+void configureMaterialDocumentRpcHandlers(RpcServer &server, PathResolver &path_resolver,
+                                          watch::ReloadService *reload_service) {
+    server.setHandler("list_materials", [&path_resolver](const Json &params) {
+        return listMaterials(params, path_resolver);
+    });
+    // The material object as the document holds it: its key order is the
+    // document's.
+    server.setOrderedHandler(
+        "get_material", [&path_resolver](const Json &params) { return getMaterial(params, path_resolver); },
+        [](const OrderedJson &) { return true; });
+    server.setHandler("get_surface_schema", [&path_resolver](const Json &params) {
+        return getSurfaceSchema(params, path_resolver);
+    });
+    server.setHandler("edit_material", [&path_resolver](const Json &params) {
+        return editMaterial(params, path_resolver);
+    });
+    server.setHandler("create_material", [&path_resolver](const Json &params) {
+        return createMaterial(params, path_resolver);
+    });
+    server.setHandler("get_material_bindings", [&path_resolver](const Json &params) {
+        return getMaterialBindings(params, path_resolver);
+    });
+    server.setHandler("bind_material", [&path_resolver, reload_service](const Json &params) {
+        return bindMaterial(params, path_resolver, reload_service);
+    });
+}
+
+} // namespace Pelican

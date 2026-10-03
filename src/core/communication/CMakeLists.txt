@@ -27,6 +27,7 @@ target_sources(pelican_core PRIVATE
     editorrpchandlers.cpp
     projectmigrationrpc.cpp
     projectsettingsrpc.cpp
+    materialdocumentrpc.cpp
 )
 else()
 target_sources(pelican_core PRIVATE

@@ -9,6 +9,7 @@
 #include "playsession.hpp"
 #include "projectmigrationrpc.hpp"
 #include "projectsettingsrpc.hpp"
+#include "materialdocumentrpc.hpp"
 #include "../startup.hpp"
 
 #include "../appflow/framephase.hpp"
@@ -1584,6 +1585,9 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     // PJ-1: project.json's hot_reload / asset_stores, applied in place.
     configureProjectSettingsRpcHandlers(server, modules.path_resolver, modules.reload_service,
                                         modules.assets_verification);
+    // MT-1: material documents, surface schemas and material bindings, read
+    // and written through the project document transaction, applied live.
+    configureMaterialDocumentRpcHandlers(server, modules.path_resolver, modules.reload_service);
 
     server.setHandler("get_status", [instance_id, &modules, &editor_service,
                                      &play_session](const nlohmann::json &params) {

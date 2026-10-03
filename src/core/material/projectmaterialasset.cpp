@@ -222,63 +222,65 @@ MaterialInfo makeMaterialInfo(
 struct ProjectMaterialAssetContainer::Impl {
     std::vector<ModelTemplate::NamedMaterial>
         named_materials;
+    // MT-1: the document each named material was read from (its asset_data
+    // materials[] reference), by name.
+    std::map<std::string, std::string>
+        material_documents;
     std::unique_ptr<ProjectMaterialTextureResolver>
         texture_resolver;
+
+    // Reads, lowers and registers every material of `references` (asset_data
+    // materials[] paths). A document that does not parse, a surface that is
+    // missing, a name another document (or one already registered) holds:
+    // all of it is refused before the first material is registered.
+    std::vector<std::string> registerDocuments(
+        std::span<const std::string> references);
 };
 
-ProjectMaterialAssetContainer::
-    ProjectMaterialAssetContainer()
-    : impl_{std::make_unique<Impl>()} {
-    const auto asset_json = nlohmann::json::parse(
-        GET_MODULE(ProjectBasicConfig).assetDataJson());
-    const auto asset_data =
-        parseAssetDataFormatJson(asset_json);
-    if (asset_data.materials.empty()) {
-        return;
-    }
-
+std::vector<std::string>
+ProjectMaterialAssetContainer::Impl::registerDocuments(
+    std::span<const std::string> references) {
     auto &paths = GET_MODULE(PathResolver);
     std::vector<SourceDocument> documents;
-    documents.reserve(asset_data.materials.size());
+    documents.reserve(references.size());
     MaterialSurfaceCatalog surfaces;
-    for (const auto &declaration :
-         asset_data.materials) {
+    for (const auto &reference : references) {
         const auto parsed_reference =
-            parsePathReference(declaration.path);
+            parsePathReference(reference);
         if (parsed_reference.fragment) {
             throw std::runtime_error(
                 "project material document must not "
                 "contain a fragment: " +
-                declaration.path);
+                reference);
         }
         auto document = SourceDocument{
-            .reference = declaration.path,
+            .reference = reference,
             .path =
                 paths.resolveExistingFile(
-                    declaration.path),
+                    reference),
             .key =
                 watch::makeAssetKey(
-                    declaration.path),
+                    reference),
         };
         document.json = readJsonFile(
             document.path,
             "project material document");
-        for (const auto &reference :
+        for (const auto &surface_reference :
              referencedSurfaces(document.json)) {
-            if (surfaces.contains(reference)) {
+            if (surfaces.contains(surface_reference)) {
                 continue;
             }
             try {
                 surfaces.emplace(
-                    reference,
+                    surface_reference,
                     parseSurfaceFormat(
-                        paths.loadText(reference),
-                        reference));
+                        paths.loadText(surface_reference),
+                        surface_reference));
             } catch (const std::exception &error) {
                 throw std::runtime_error(
                     "project material document '" +
-                    declaration.path +
-                    "' surface '" + reference +
+                    reference +
+                    "' surface '" + surface_reference +
                     "': " + error.what());
             }
         }
@@ -286,7 +288,7 @@ ProjectMaterialAssetContainer::
     }
 
     std::map<std::string, std::string>
-        material_sources;
+        material_sources = material_documents;
     std::vector<PreparedProjectMaterial> prepared;
     for (std::size_t document_index = 0;
          document_index < documents.size();
@@ -363,17 +365,22 @@ ProjectMaterialAssetContainer::
     auto &standard =
         GET_MODULE(StandardMaterialResource);
     auto &shaders = GET_MODULE(ShaderLibrary);
-    impl_->texture_resolver =
-        std::make_unique<
-            ProjectMaterialTextureResolver>(
-            materials, standard, paths);
+    if (!texture_resolver) {
+        texture_resolver =
+            std::make_unique<
+                ProjectMaterialTextureResolver>(
+                materials, standard, paths);
+    }
     const auto shader_defines =
         activeMaterialShaderDefines();
     std::vector<std::vector<
         MaterialContainer::
             ReloadableMaterialValuesBinding>>
         reload_bindings(documents.size());
-    impl_->named_materials.reserve(prepared.size());
+    named_materials.reserve(named_materials.size() +
+                            prepared.size());
+    std::vector<std::string> registered;
+    registered.reserve(prepared.size());
 
     for (auto &entry : prepared) {
         const auto &surface_reference =
@@ -385,7 +392,7 @@ ProjectMaterialAssetContainer::
             entry.lowered, surface,
             surface_reference, shader_defines,
             standard, shaders,
-            *impl_->texture_resolver);
+            *texture_resolver);
         const auto &source_document =
             documents.at(entry.document_index);
         info.name = entry.definition.name;
@@ -411,7 +418,7 @@ ProjectMaterialAssetContainer::
                 variant.material.surface,
                 shader_defines,
                 standard, shaders,
-                *impl_->texture_resolver);
+                *texture_resolver);
             variant_info.name =
                 entry.definition.name + "#variant/" +
                 variant.name;
@@ -427,11 +434,15 @@ ProjectMaterialAssetContainer::
         materials.registerMaterialVariants(
             material, std::move(variants));
 
-        impl_->named_materials.push_back({
+        named_materials.push_back({
             .name = entry.definition.name,
             .material = material,
             .routing = entry.lowered.routing,
         });
+        material_documents.insert_or_assign(
+            entry.definition.name,
+            source_document.reference);
+        registered.push_back(entry.definition.name);
         auto &bindings =
             reload_bindings.at(
                 entry.document_index);
@@ -458,6 +469,26 @@ ProjectMaterialAssetContainer::
                 surfaces,
                 reload_bindings[index]);
     }
+    return registered;
+}
+
+ProjectMaterialAssetContainer::
+    ProjectMaterialAssetContainer()
+    : impl_{std::make_unique<Impl>()} {
+    const auto asset_json = nlohmann::json::parse(
+        GET_MODULE(ProjectBasicConfig).assetDataJson());
+    const auto asset_data =
+        parseAssetDataFormatJson(asset_json);
+    if (asset_data.materials.empty()) {
+        return;
+    }
+    std::vector<std::string> references;
+    references.reserve(asset_data.materials.size());
+    for (const auto &declaration :
+         asset_data.materials) {
+        references.push_back(declaration.path);
+    }
+    (void)impl_->registerDocuments(references);
 }
 
 ProjectMaterialAssetContainer::
@@ -484,6 +515,24 @@ ProjectMaterialAssetContainer::materialByName(
             std::string{name});
     }
     return found->material;
+}
+
+std::vector<std::string>
+ProjectMaterialAssetContainer::registerDocument(
+    const std::string &reference) {
+    return impl_->registerDocuments(
+        std::span<const std::string>{&reference, 1});
+}
+
+std::optional<std::string>
+ProjectMaterialAssetContainer::documentOf(
+    std::string_view name) const {
+    const auto found =
+        impl_->material_documents.find(std::string{name});
+    if (found == impl_->material_documents.end()) {
+        return std::nullopt;
+    }
+    return found->second;
 }
 
 } // namespace Pelican

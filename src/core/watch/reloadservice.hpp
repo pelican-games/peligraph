@@ -245,6 +245,11 @@ DECLARE_MODULE(ReloadService) {
             companion_requests);
     std::unique_ptr<PreparedReloadTransaction> prepareRenderPipelineModelReload(
         std::span<const ReloadRequest> requests);
+    // MT-1 (bind_material): the models `keys` name rebuilt now, through one
+    // model reload transaction committed before this returns (the same group
+    // a file change of theirs would enqueue). Throws what the transaction
+    // threw; nothing is published then.
+    void reloadModelsNow(std::span<const AssetKey> keys);
 
   private:
     struct RuntimeParticipantStatus {

@@ -847,6 +847,68 @@ bool ModelAssetContainer::retireReloadPayload(
     }
 }
 
+bool ModelAssetContainer::hasModel(const std::string &name) const {
+    return impl_->records.contains(name);
+}
+
+std::vector<ModelMaterialSlot> ModelAssetContainer::materialSlots(const std::string &name) const {
+    const auto &declaration = impl_->records.at(name).declaration;
+    const auto preview = GET_MODULE(GltfLoader).inspect(prepareDeclaration(declaration));
+    std::map<std::pair<std::uint32_t, std::uint32_t>, ModelMaterialSlot> slots;
+    for (const auto &group : preview.material_primitives) {
+        const auto named = std::find_if(preview.named_materials.begin(), preview.named_materials.end(),
+                                        [&](const auto &material) { return material.material == group.material; });
+        for (const auto &primitive : group.primitives) {
+            slots.try_emplace({primitive.mesh_index, primitive.primitive_index},
+                              ModelMaterialSlot{
+                                  .mesh = primitive.mesh_index,
+                                  .primitive = primitive.primitive_index,
+                                  .slot = named != preview.named_materials.end() ? named->name : std::string{},
+                                  .routing = named != preview.named_materials.end()
+                                                 ? named->routing
+                                                 : std::optional<MaterialVariantRouting>{},
+                              });
+        }
+    }
+    std::vector<ModelMaterialSlot> result;
+    result.reserve(slots.size());
+    for (auto &[key, slot] : slots) {
+        (void)key;
+        result.push_back(std::move(slot));
+    }
+    return result;
+}
+
+std::optional<PrimitiveMaterialBindingDocument>
+ModelAssetContainer::declaredMaterialBindings(const std::string &name) const {
+    return impl_->records.at(name).declaration.material_bindings;
+}
+
+std::optional<PrimitiveMaterialBindingDocument>
+ModelAssetContainer::exchangeMaterialBindings(const std::string &name, const std::string &reference) {
+    auto &declaration = impl_->records.at(name).declaration;
+    auto bindings = declaration.engine_primitive
+                        ? loadMaterialBindings(reference, declaration.name, {}, declaration.reference)
+                        : loadMaterialBindings(reference, declaration.name, declaration.path);
+    return std::exchange(declaration.material_bindings, std::move(bindings));
+}
+
+void ModelAssetContainer::restoreMaterialBindings(const std::string &name,
+                                                  std::optional<PrimitiveMaterialBindingDocument> previous) {
+    impl_->records.at(name).declaration.material_bindings = std::move(previous);
+}
+
+watch::AssetKey ModelAssetContainer::reloadKey(const std::string &name) const {
+    return impl_->records.at(name).declaration.container_key;
+}
+
+std::optional<std::string> ModelAssetContainer::modelDeclaringMaterial(std::string_view material) const {
+    for (const auto &[name, record] : impl_->records)
+        for (const auto &named : record.model.named_materials)
+            if (named.name == material) return name;
+    return std::nullopt;
+}
+
 ModelAssetId ModelAssetContainer::assetIdForTesting(const std::string &name) const {
     return impl_->records.at(name).model.asset_id;
 }

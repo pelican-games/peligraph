@@ -406,6 +406,18 @@ bool ReloadService::applyShaderReloadBatch(
     return runtime.committed;
 }
 
+void ReloadService::reloadModelsNow(std::span<const AssetKey> keys) {
+    ensureBuiltInParticipants();
+    auto *models = FastModuleContainer::tryGet<ModelAssetContainer>();
+    if (models == nullptr) throw std::runtime_error("model reload: no model container is running");
+    std::vector<ReloadRequest> requests;
+    requests.reserve(keys.size());
+    for (const auto &key : keys) requests.push_back(ReloadRequest{.key = key, .kind = ReloadKind::modified});
+    auto prepared = transactions_.prepare(models->makeReloadGroup(requests, transactions_), retireSink());
+    prepared->preparePublication();
+    prepared->commit();
+}
+
 std::unique_ptr<PreparedReloadTransaction> ReloadService::prepareRenderPipelineModelReload(
     std::span<const ReloadRequest> requests) {
     auto *models = FastModuleContainer::tryGet<ModelAssetContainer>();

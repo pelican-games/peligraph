@@ -2198,6 +2198,14 @@ target_compile_definitions(pelican_test_engine_primitives_test PRIVATE
 if(COMMAND pelican_copy_shaderc_runtime)
     pelican_copy_test_shaderc_runtime(pelican_test_engine_primitives_test)
 endif()
+# MT-1: material documents read and written over RPC; a Blank box recoloured
+# live (create_material -> bind_material -> edit_material).
+pelican_define_test(materialdocumentrpc_test GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
+target_include_directories(pelican_test_materialdocumentrpc_test PRIVATE ${stb_SOURCE_DIR})
+target_link_libraries(pelican_test_materialdocumentrpc_test PRIVATE pelican_shaderc)
+if(COMMAND pelican_copy_shaderc_runtime)
+    pelican_copy_test_shaderc_runtime(pelican_test_materialdocumentrpc_test)
+endif()
 # VI-1: variadic pass inputs, shader.defines and engine://passthrough. The
 # layout / define cases are CPU-only; the rest edit present over RPC.
 pelican_define_test(vi1_variadic_inputs_test MIXED_GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
