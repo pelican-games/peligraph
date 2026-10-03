@@ -2122,14 +2122,20 @@ AutomationReply commandScreenshot(const AutomationHost &host,
         reply.insert(QStringLiteral("desktop_obstructed"), true);
     if (!wanted_pixels.empty()) {
         QJsonArray pixels;
+        // MT-1s: and each as [r, g, b] (0-255), so a step can ask which way
+        // a colour leans ("red above green") without knowing its shade.
+        QJsonArray channels;
         for (const QPointF &at : wanted_pixels) {
             const int x = std::clamp(static_cast<int>(at.x() * image.width()),
                                      0, image.width() - 1);
             const int y = std::clamp(static_cast<int>(at.y() * image.height()),
                                      0, image.height() - 1);
-            pixels.append(QColor(image.pixel(x, y)).name());
+            const QColor color{image.pixel(x, y)};
+            pixels.append(color.name());
+            channels.append(QJsonArray{color.red(), color.green(), color.blue()});
         }
         reply.insert(QStringLiteral("pixels"), pixels);
+        reply.insert(QStringLiteral("rgb"), channels);
     }
     return AutomationReply::success(reply);
 }

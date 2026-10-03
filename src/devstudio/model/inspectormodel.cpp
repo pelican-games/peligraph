@@ -1635,7 +1635,55 @@ constexpr std::array<GraphLoopRefusalText, 9> ProjectSettingsRefusalTexts{{
 constexpr std::string_view ProjectSettingsUndoNeedsRestartText =
     "{store} was there when the engine started, so it stays declared \xE2\x80\x94 only stores added since then can be undone";
 
+// MT-1s, decision 7: the material editor's refusals (engine MT-1).
+constexpr std::array<GraphLoopRefusalText, 14> MaterialRefusalTexts{{
+    {"material.value_invalid@1", "{param} cannot take that value: {reason}"},
+    {"material.param_unknown@1", "The surface of {path} declares no {kind} {param}"},
+    {"material.document_unknown@1", "{path} is not a material document the project lists: {reason}"},
+    {"material.document_invalid@1", "{path} would not load: {reason}"},
+    {"material.name_unknown@1", "No material is named {name}: {reason}"},
+    {"material.name_invalid@1", "{name} cannot be a material name: {reason}"},
+    {"material.name_conflict@1", "A material named {name} exists already"},
+    {"material.path_invalid@1", "{path} cannot be a material document: {reason}"},
+    {"material.path_conflict@1", "{path} is there already"},
+    {"material.surface_unknown@1", "The surface {surface} cannot be read: {reason}"},
+    {"material.model_unknown@1", "{model} cannot take a material: {reason}"},
+    {"material.binding_invalid@1", "The materials of {model} cannot be bound that way: {reason}"},
+    {"material.transaction_busy@1", "{path} is being written by another edit; try again"},
+    {"external_modification", "{path} changed outside Studio since it was read; it was read again, try again"},
+}};
+
+std::string fillRefusalPattern(std::string_view pattern, const nlohmann::json &fields) {
+    std::string sentence;
+    for (std::size_t index = 0; index < pattern.size();) {
+        const auto open = pattern.find('{', index);
+        if (open == std::string_view::npos) {
+            sentence += pattern.substr(index);
+            break;
+        }
+        const auto close = pattern.find('}', open);
+        sentence += pattern.substr(index, open - index);
+        sentence += graphRefusalFieldText(fields, pattern.substr(open + 1, close - open - 1));
+        index = close + 1;
+    }
+    return sentence;
+}
+
 } // namespace
+
+std::string materialRefusalDescription(const nlohmann::json &error) {
+    if (!error.is_object()) return {};
+    const auto code = error.value("code", std::string{});
+    const auto entry = std::ranges::find(MaterialRefusalTexts, code, &GraphLoopRefusalText::code);
+    if (entry == MaterialRefusalTexts.end()) return {};
+    auto fields = graphRefusalFields(error, entry->code).value_or(nlohmann::json::object());
+    if (!fields.is_object()) fields = nlohmann::json::object();
+    // What the engine leaves out reads as a word, not a "?".
+    if (!fields.contains("path") || !fields["path"].is_string()) fields["path"] = "the material";
+    if (!fields.contains("kind") || !fields["kind"].is_string()) fields["kind"] = "value";
+    if (!fields.contains("reason")) fields["reason"] = error.value("message", std::string{});
+    return fillRefusalPattern(entry->sentence, fields) + " (" + std::string{entry->code} + ").";
+}
 
 std::string projectSettingsRefusalDescription(const nlohmann::json &error, bool undo) {
     if (!error.is_object()) return {};

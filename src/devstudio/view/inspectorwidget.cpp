@@ -2,6 +2,7 @@
 
 #include "panelhelp.hpp"
 #include "graphattachmentwidget.hpp"
+#include "materialassignwidget.hpp"
 #include "componentaddlist.hpp"
 
 #include "../model/inspectormodel.hpp"
@@ -126,6 +127,8 @@ struct InspectorWidget::Impl {
     QPointer<QPushButton> take_from_game;
     GraphAttachmentWidget *graph_attachments = nullptr;
     QHash<qint64, quint64> graph_transport_requests;
+    // MT-1s, decision 5: the Material rows of an object that shows a model.
+    MaterialAssignWidget *material_assign = nullptr;
     QLabel *selection_label = nullptr;
     QLabel *notice_label = nullptr;
     // PM-3c: the read-only view of a spawned object, in place of the fields.
@@ -307,6 +310,17 @@ struct InspectorWidget::Impl {
                          [this](const QString &reason) {
                              if (engine_restart_action) engine_restart_action(reason);
                          });
+        material_assign = new MaterialAssignWidget(
+            MaterialAssignWidget::Hooks{
+                .send = [this](const QString &method, const QJsonObject &params, QString *error) {
+                    return viewport.requestRpc(method, params, error);
+                },
+                .restart = [this](const QString &reason) {
+                    if (engine_restart_action) engine_restart_action(reason);
+                },
+            },
+            &owner);
+        layout->addWidget(material_assign);
 
         notice_label = new QLabel(&owner);
         notice_label->setObjectName(QStringLiteral("pelican.inspectorNotice"));
@@ -424,6 +438,7 @@ struct InspectorWidget::Impl {
                              transport_requests.clear();
                              graph_transport_requests.clear();
                              graph_attachments->setConnected(true);
+                             material_assign->engineAvailable();
                              model.startSession();
                              synchronize();
                              dispatchRequests();
@@ -434,6 +449,7 @@ struct InspectorWidget::Impl {
                 transport_requests.clear();
                 graph_transport_requests.clear();
                 graph_attachments->setConnected(false);
+                material_assign->engineUnavailable();
                 model.stopSession(message.toStdString());
                 synchronize();
             });
@@ -441,6 +457,7 @@ struct InspectorWidget::Impl {
             &viewport, &EmbeddedViewport::inspectorRpcSucceeded, &owner,
             [this](qint64 transport_request_id,
                    const QByteArray &result_json) {
+                if (material_assign->receiveResult(transport_request_id, result_json)) return;
                 const auto graph_pending = graph_transport_requests.find(transport_request_id);
                 if (graph_pending != graph_transport_requests.end()) {
                     const auto id = graph_pending.value();
@@ -467,6 +484,7 @@ struct InspectorWidget::Impl {
         QObject::connect(
             &viewport, &EmbeddedViewport::inspectorRpcFailed, &owner,
             [this](qint64 transport_request_id, const QString &message) {
+                if (material_assign->receiveFailure(transport_request_id, message)) return;
                 const auto graph_pending = graph_transport_requests.find(transport_request_id);
                 if (graph_pending != graph_transport_requests.end()) {
                     const auto id = graph_pending.value();
@@ -489,8 +507,9 @@ struct InspectorWidget::Impl {
             });
         QObject::connect(
             &viewport, &EmbeddedViewport::engineRpcRefused, &owner,
-            [this](qint64 transport_request_id, int code, const QString &,
-                   const QJsonValue &) {
+            [this](qint64 transport_request_id, int code, const QString &message,
+                   const QJsonValue &data) {
+                if (material_assign->receiveRefusal(transport_request_id, code, message, data)) return;
                 unknown_method_transport =
                     code == -32601 && transport_requests.contains(transport_request_id)
                         ? transport_request_id
@@ -512,6 +531,7 @@ struct InspectorWidget::Impl {
         synchronize();
         if (viewport.rpcReady()) {
             graph_attachments->setConnected(true);
+            material_assign->engineAvailable();
             model.startSession();
             dispatchRequests();
         }
@@ -536,6 +556,7 @@ struct InspectorWidget::Impl {
         add_component_button->setVisible(!shown);
         ray_occurrences_button->setVisible(!shown);
         graph_attachments->setVisible(!shown);
+        if (shown) material_assign->setSubject({}, {});
     }
 
     void showRuntimeObject(const RuntimeObject &object) {
@@ -1404,6 +1425,22 @@ struct InspectorWidget::Impl {
                       : owner.tr("Refresh to load geometry for the current selection."));
     }
 
+    // MT-1s, decision 5: the model the selected object shows (its
+    // simplemodelview's), and the object's name.
+    std::optional<std::pair<std::string, std::string>> materialSubject() const {
+        const auto &snapshot = model.snapshot();
+        if (!snapshot || runtime_shown) return std::nullopt;
+        for (const auto &component : snapshot->components) {
+            if (component.name != "simplemodelview" || !component.authored_json.is_object()) continue;
+            const auto found = component.authored_json.find("model");
+            if (found == component.authored_json.end() || !found->is_string() ||
+                found->get_ref<const std::string &>().empty())
+                continue;
+            return std::pair{found->get<std::string>(), snapshot->name.value_or(std::string{})};
+        }
+        return std::nullopt;
+    }
+
     void synchronize() {
         const bool scene_dirty = model.hasUnsavedChanges();
         const bool scene_busy = model.busy() || model.refreshBlocked();
@@ -1430,6 +1467,11 @@ struct InspectorWidget::Impl {
             ? std::optional<GraphAttachmentOwner>{{snapshot->scene_id, snapshot->authoring_object_id}}
             : std::nullopt);
         ray_occurrences_button->setEnabled(model.snapshot().has_value() && !model.busy() && !model.refreshBlocked());
+        {
+            const auto subject = materialSubject();
+            material_assign->setSubject(subject ? subject->first : std::string{},
+                                        subject ? subject->second : std::string{});
+        }
         synchronizeRayDialog();
         add_component_button->setEnabled(model.canRequestComponentAddCandidates());
         synchronizeComponentAddDialog();
@@ -2547,6 +2589,14 @@ void InspectorWidget::setEngineRestartAction(
     std::function<void(const QString &reason)> action) {
     impl_->engine_restart_action = std::move(action);
 }
+
+std::optional<std::pair<std::string, std::string>> InspectorWidget::materialSubject() const {
+    return impl_->materialSubject();
+}
+
+void InspectorWidget::materialsChanged() { impl_->material_assign->materialsChanged(); }
+
+void InspectorWidget::materialBindingsChanged() { impl_->material_assign->bindingsChanged(); }
 
 void InspectorWidget::setRayGroupAction(std::function<void(const QString &)> action) {
     impl_->ray_group_action = std::move(action);

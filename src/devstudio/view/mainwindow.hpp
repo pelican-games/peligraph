@@ -45,6 +45,7 @@ class QToolBar;
 namespace PelicanStudio {
 
 class AssetsDock;
+class MaterialsDock;
 class EmbeddedViewport;
 class FramePlanWidget;
 class GraphCanvasWidget;
@@ -109,6 +110,8 @@ class MainWindow : public QMainWindow {
         FullscreenPassDock,
         // HW-2s: beside Project.
         AssetsPanelDock,
+        // MT-1s: beside Assets.
+        MaterialsPanelDock,
         DockCount,
     };
 
@@ -119,6 +122,8 @@ class MainWindow : public QMainWindow {
     QListWidget *project_list_ = nullptr;
     // HW-2s / AV-1s: the asset folders, their watch and the contents check.
     AssetsDock *assets_dock_ = nullptr;
+    // MT-1s: the project's materials and their editor.
+    MaterialsDock *materials_dock_ = nullptr;
     OutlinerTree *outliner_ = nullptr;
     // Q-7: one line under the Outliner for what became of an Add object.
     QLabel *outliner_notice_ = nullptr;

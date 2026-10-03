@@ -48,6 +48,9 @@ add_library(pelican_studio_inspector_model STATIC
     # HW-2s / AV-1s: the Assets dock's watch switches and contents check.
     assetsdockmodel.cpp
     assetsdockmodel.hpp
+    # MT-1s: the material editor's reads, writes and Undo (engine MT-1).
+    materialsmodel.cpp
+    materialsmodel.hpp
 )
 
 set_target_properties(pelican_studio_inspector_model PROPERTIES CXX_STANDARD 20)

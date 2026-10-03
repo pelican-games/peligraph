@@ -132,6 +132,11 @@ add_library(pelican_studio_view STATIC
     # HW-2s / AV-1s: the Assets dock.
     assetsdock.cpp
     assetsdock.hpp
+    # MT-1s: the Materials dock and the Inspector's Material rows.
+    materialsdock.cpp
+    materialsdock.hpp
+    materialassignwidget.cpp
+    materialassignwidget.hpp
     studioscreen.cpp
     studioscreen.hpp
 )

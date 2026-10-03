@@ -503,6 +503,9 @@ Three things worth knowing before writing a scenario:
   against it: "the same colour down a stripe, a different one across it" is
   how `render_pipeline_from_scratch` tells stripes from a gradient without
   knowing what colour the output transform makes of them.
+  MT-1s added `rgb`, the same points as `[r, g, b]` (0-255): `remember`
+  `rgb[0][1]` and ask `rgb[0][0]` `gt` it with `plus`, and a step says
+  "red above green" without knowing the shade (`gui_material_from_blank`).
 * A dialog is filled in the way a panel is: it is shown with `open()`, not
   `exec()`, so its controls are named widgets like any other. File > New
   Project... is `pelican.newProjectDialog`, with `pelican.newProject.location`,

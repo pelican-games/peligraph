@@ -350,6 +350,27 @@ modelReferenceChoices(std::string_view current,
 // other refusal.
 [[nodiscard]] std::string projectSettingsRefusalDescription(const nlohmann::json &error,
                                                             bool undo = false);
+// MT-1s, decision 7 (engine MT-1): the refusals of the material editor's
+// requests -- list_materials, get_material, get_surface_schema,
+// edit_material, create_material, get_material_bindings, bind_material --
+// one sentence each from their fields:
+//   material.value_invalid@1      {path, param, reason}
+//   material.param_unknown@1      {path, param, kind}
+//   material.document_unknown@1   {path, reason}
+//   material.document_invalid@1   {path, reason}
+//   material.name_unknown@1       {name, reason}
+//   material.name_invalid@1       {name, reason}
+//   material.name_conflict@1      {name, path? | model?}
+//   material.path_invalid@1       {path, reason}
+//   material.path_conflict@1      {path}
+//   material.surface_unknown@1    {surface, reason}
+//   material.model_unknown@1      {model, reason}
+//   material.binding_invalid@1    {model, reason}
+//   material.transaction_busy@1   {path}
+//   external_modification         {path, expected, actual}
+// `error` as for graphLoopRefusalDescription. Answers "<sentence>
+// (<code>).", or empty for any other refusal.
+[[nodiscard]] std::string materialRefusalDescription(const nlohmann::json &error);
 // UX-8, decision 13 (c) (engine CT-1): the engine could not read its
 // configuration at start and stopped. Its fatal line ("Pelican fatal error :
 // <message>") reads as "The engine stopped: <the code's sentence> in <file>.

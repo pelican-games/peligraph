@@ -88,6 +88,14 @@ class InspectorWidget final : public QWidget {
     // RSX, decision 1. A graph attachment edit that committed with
     // restart_required hands the restart to this action.
     void setEngineRestartAction(std::function<void(const QString &reason)> action);
+    // MT-1s, decision 5. The selected object's model (its simplemodelview's)
+    // and the object's name; nullopt when it shows none. The Materials dock's
+    // Assign to selected object binds to it.
+    [[nodiscard]] std::optional<std::pair<std::string, std::string>> materialSubject() const;
+    // The materials (a new one), or the model's bindings, changed elsewhere:
+    // the Material rows read them again.
+    void materialsChanged();
+    void materialBindingsChanged();
 
   protected:
     bool eventFilter(QObject *watched, QEvent *event) override;

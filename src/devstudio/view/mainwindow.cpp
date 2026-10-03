@@ -1,5 +1,6 @@
 #include "mainwindow.hpp"
 #include "assetsdock.hpp"
+#include "materialsdock.hpp"
 #include "frameplaneditcapability.hpp"
 #include "frameplanwidget.hpp"
 #include "fullscreenpasswidget.hpp"
@@ -314,6 +315,33 @@ void MainWindow::createWorkspace() {
     assets_dock_->setObjectName(QStringLiteral("pelican.assetsPanel"));
     docks_[AssetsPanelDock] =
         makeDock(this, tr("Assets"), QStringLiteral("pelican.assetsDock"), assets_dock_);
+    // MT-1s: the materials beside Assets -- the list, the editor made from
+    // the surface's declaration, New material… and Assign to selected
+    // object. The Inspector is built after it, so the hooks read it late.
+    materials_dock_ = new MaterialsDock(
+        MaterialsDock::Hooks{
+            .send = [this](const QString &method, const QJsonObject &params,
+                           QString *error) { return viewport_->requestRpc(method, params, error); },
+            .restart = [this](const QString &reason) { requestEngineRestart(reason); },
+            .selected_object =
+                [this]() -> std::optional<MaterialsDock::SelectedObject> {
+                    const auto subject = inspector_ != nullptr ? inspector_->materialSubject() : std::nullopt;
+                    if (!subject) return std::nullopt;
+                    return MaterialsDock::SelectedObject{subject->first, subject->second};
+                },
+            .materials_changed =
+                [this] {
+                    if (inspector_ != nullptr) inspector_->materialsChanged();
+                },
+            .bound =
+                [this](const std::string &) {
+                    if (inspector_ != nullptr) inspector_->materialBindingsChanged();
+                },
+        },
+        this);
+    materials_dock_->setObjectName(QStringLiteral("pelican.materialsPanel"));
+    docks_[MaterialsPanelDock] =
+        makeDock(this, tr("Materials"), QStringLiteral("pelican.materialsDock"), materials_dock_);
 
     outliner_ = new OutlinerTree(this);
     // The tree itself is named, not only its dock: picking a scene object is
@@ -794,6 +822,7 @@ void MainWindow::createWorkspace() {
                 // RL-1s: what this engine composes is what is watched.
                 if (render_reload_) render_reload_->engineReady();
                 assets_dock_->engineAvailable();
+                materials_dock_->engineAvailable();
             });
     connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
             [this](const QString &) {
@@ -802,6 +831,7 @@ void MainWindow::createWorkspace() {
                 if (render_history_) render_history_->abandonInFlight();
                 if (render_reload_) render_reload_->engineGone();
                 assets_dock_->engineUnavailable();
+                materials_dock_->engineUnavailable();
                 if (pending_navigation_ != Navigation::None) {
                     cancelNavigation(tr("The engine disconnected. The project remains open."));
                 }
@@ -825,6 +855,8 @@ void MainWindow::createWorkspace() {
                     return;
                 // HW-2s / AV-1s: the Assets dock's settings edits and checks.
                 if (assets_dock_->receiveResult(request_id, result_json)) return;
+                // MT-1s: the Materials dock's reads and writes.
+                if (materials_dock_->receiveResult(request_id, result_json)) return;
                 // PM-3a: Pause, Step and the reads that follow them.
                 if (play_controls_ &&
                     play_controls_->receiveResult(request_id, result_json))
@@ -885,6 +917,7 @@ void MainWindow::createWorkspace() {
                 if (migration_panel_->acceptRpcFailure(request_id, message))
                     return;
                 if (assets_dock_->receiveFailure(request_id, message)) return;
+                if (materials_dock_->receiveFailure(request_id, message)) return;
                 if (play_controls_ &&
                     play_controls_->receiveFailure(request_id, message))
                     return;
@@ -1289,6 +1322,13 @@ void MainWindow::createMenus() {
         docks_[AssetsPanelDock]->show();
         docks_[AssetsPanelDock]->raise();
     });
+    // MT-1s: and the Materials dock, the tab after it.
+    QAction *show_materials = view_menu->addAction(tr("&Materials"));
+    show_materials->setObjectName(QStringLiteral("pelican.view.materials"));
+    connect(show_materials, &QAction::triggered, this, [this] {
+        docks_[MaterialsPanelDock]->show();
+        docks_[MaterialsPanelDock]->raise();
+    });
 
     QMenu *layout_menu = menuBar()->addMenu(tr("&Layout"));
     layout_menu->setObjectName(QStringLiteral("pelican.layoutMenu"));
@@ -1442,6 +1482,7 @@ void MainWindow::createPlayControls(QToolBar *band) {
                    const QJsonValue &data) {
                 play_controls_->receiveRefusal(request_id, code, message, data);
                 assets_dock_->receiveRefusal(request_id, code, message, data);
+                materials_dock_->receiveRefusal(request_id, code, message, data);
                 // UX-13c: an engine without scene_outline (-32601).
                 if (request_id != 0 && request_id == pending_outliner_request_ &&
                     code == -32601)
@@ -1900,6 +1941,7 @@ void MainWindow::openProjectNow(const QString &path) {
         // RL-1s: nor anything the reload watched.
         if (render_reload_) render_reload_->open(project_model_->projectRoot());
         assets_dock_->open(project_model_->projectRoot());
+        materials_dock_->open(project_model_->projectRoot());
         tool_layout_presets_.emplace(
             application_config_directory_,
             displayPath(project_model_->projectRoot()));
@@ -1985,6 +2027,7 @@ void MainWindow::leaveCurrentProject(
     if (render_history_) render_history_->clear();
     if (render_reload_) render_reload_->open({});
     assets_dock_->open({});
+    materials_dock_->open({});
     selection_model_.bindProject(nullptr);
     project_model_.reset();
     tool_layout_presets_.reset();
@@ -3212,6 +3255,9 @@ void MainWindow::applyDefaultLayout() {
     // HW-2s: Assets is the tab next to Project.
     addDockWidget(Qt::LeftDockWidgetArea, docks_[AssetsPanelDock]);
     tabifyDockWidget(docks_[ProjectDock], docks_[AssetsPanelDock]);
+    // MT-1s: Materials is the tab after Assets.
+    addDockWidget(Qt::LeftDockWidgetArea, docks_[MaterialsPanelDock]);
+    tabifyDockWidget(docks_[AssetsPanelDock], docks_[MaterialsPanelDock]);
     docks_[ProjectDock]->raise();
 
     addDockWidget(Qt::RightDockWidgetArea, docks_[InspectorDock]);
