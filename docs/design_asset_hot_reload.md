@@ -27,7 +27,11 @@ size / mtime の比較になり、hash は変わったファイルだけにな�
 `hot_reload` で宣言できるようになった(§0 の 3・§2-3・§3-2a)。**PJ-1(2026-10-03、
 `89643cd7`)** で、`hot_reload` と `asset_stores` を動いている engine に RPC
 `edit_project_settings` で書かせ、その場で watcher を作り直せるようになった(§2-3。
-HW-2 の engine 側)。
+HW-2 の engine 側)。**HW-2s(2026-10-03、`78737fdf`)** で、Studio の Assets の
+ドックの行ごとの「Reload when saved outside」がこの RPC で `hot_reload` を書き換える
+ようになった(manual 第13章 §13.1 の「Studio の Assets のドック」)。監視が開いて
+いるとき、Studio は `reload_shaders` の `committed: false` を watcher の読み直しとして
+扱う(§2-3 の gate が開いていれば watcher が先に compile しうるため)。
 前提: 確定規約 2 件(2026-07-08 ユーザー決定 — ①リプレイ/strict/rpc 駆動中は
 ホットリロード無効 ②エディタの自己書き込みは無視)、2026-10-02 の利用者決定
 (素材やフォルダごとに hot reload の有効化を設定できる形にする。既定 = 何も宣言して
@@ -252,6 +256,10 @@ store の一覧と宣言を差し替え、`ReloadService::setup()` で watcher �
 `asset_stores` で受けるのは store の追加と manifest の宣言の追加だけで、mount の
 移動と起動時からある store / manifest の削除・差し替えは
 `project.settings_change_unsupported@1` で断る(manual 第3章 §3.4・第10章 §10.3)。
+HW-2s(2026-10-03、`78737fdf`)から、Studio の Assets のドックがこの口を呼ぶ。
+行の印は `get_status.reload.watch` を同じ当たり判定(成分ごと、大文字小文字を
+区別する)で読み、親のフォルダで効いている行はその行だけでは外せない(`hot_reload`
+に除外の書き方が無い)。
 着地時に残った穴: 新しい watcher は、見張っていなかった間の外の変更を読み直さない。
 resolver の差し替えは lock を取らず、main thread の frame の境目で呼ぶ前提。
 

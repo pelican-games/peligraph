@@ -27685,6 +27685,28 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - 作業の log では、CC-1c の後の統合側の run で上の 7 本は緑、`gui_settings_choose` だけが赤で、この直しの後に 2 回緑
 - **シナリオ**: `gui_settings_choose`(205 → 206)。打つ数は 2・−116.57・4・3
 
+### HW-2s / AV-1s: Assets のドック —— 素材・フォルダごとの「外部の保存を反映」と、素材の照合(Blank から GUI で)
+
+**Studio のみ(engine は HW-1 `c947cef4`・AV-1 `5f7c5cdb`・PJ-1 `89643cd7`)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「Studio の Assets のドック —— 外の保存を反映する素材と、素材の照合(✅HW-2s / ✅AV-1s)」、「shader を外のエディタで保存すると画面が変わる」の「何も変わっていない」、「Studio の自動化面」の `gui_assets_watch_verify`。**
+
+#### 前提
+- Studio に素材のフォルダを見る画面が無く(Project のドックは project 名の 1 行)、Blank の雛形は `asset_stores` も `hot_reload` も書かないので、HW-1 の監視と AV-1 の照合は project.json を手で書かないと効かなかった。利用者の決定(2026-10-03): HW-2 と AV-1s をどちらもやり、**Blank から組んだ project でも GUI だけで使えること**。照合は雛形を変えず、Studio のボタンで宣言を足す。使わない人には何も出さない(仕様の記述)
+
+#### 着地(2026-10-03、78737fdf)
+- **決定 1(Assets のドック)**: `AssetsPanelDock`(objectName `pelican.assetsDock`)を既定の配置で Project の隣のタブに([作る所](../src/devstudio/view/mainwindow.cpp#L299))。木は `assets/` と、`asset_stores` の mount のうち `assets/` の外にあるもの。`.gitkeep` は出さない([`assetRoots()`](../src/devstudio/model/assetsdockmodel.cpp#L165))。`QFileSystemWatcher`(フォルダの全部と監視中のファイル ≤512)の 250 ms の debounce の後に全体を読み直す
+- **決定 2(行ごとの切り替え)**: Reload の列の checkbox と右クリックの Reload when saved outside が、`get_project_settings` の digest で `hot_reload` を書き換える `edit_project_settings` 1 本([`sendEdit()`](../src/devstudio/model/assetsdockmodel.cpp#L491))。印は `get_status.reload.watch` を成分ごとの前方一致で読み、親で効いている行は中間の印と `via <folder>`。最後の 1 つを外すと `hot_reload: null`(空の配列は書かない)。Undo はドック自身の履歴で、答えの `previous` の、その編集が変えた鍵を送る
+- **決定 3(監視の 1 行)**: `Watching N folders and M files · last reload: <file>`([`assetsWatchLine()`](../src/devstudio/model/assetsdockmodel.cpp#L324))。engine は読み直したファイル名を返さないので、「最後に読み直した素材」は Studio の watcher が見た書き換えのうち最新のものを、`hashed_files` が増えたときに出す推定。render 文書の行の tooltip は Reload from disk(RL-1)を言う
+- **決定 4(Track asset contents…)**: manifest を宣言した store が無いときだけ出し、1 回の `edit_project_settings` で `asset_stores.main = {mount: "assets/", manifest: "assets.manifest.json"}`。store が既にあれば manifest の無い store ごとに manifest だけ(2 つ目からは `assets.<store>.manifest.json`。[`assetStoresWithManifest()`](../src/devstudio/model/assetsdockmodel.cpp#L351))。確認は出さない
+- **決定 5(照合の結果)**: `running` / `verified` のときだけ木の下に 1 行([`assetsVerificationLine()`](../src/devstudio/model/assetsdockmodel.cpp#L288))、食い違いがあれば枠と太字と Details の一覧、該当する行の Contents の列に種類(`content differs` / `missing` / `extra` / `case differs` / `unreadable`)。`missing` は灰色の斜体の行。新しく印の付いたファイルのフォルダは 1 度だけ開く。`not_run` は何も出さない
+- **決定 6(Verify again / Update manifest)**: Update manifest はドックの中の 1 行(`N files will change in <manifest>.` と Update / Cancel)で確かめてから送る(modal ではない)。照合の間と答えを待つ間はどちらも押せない([`verificationRunning()`](../src/devstudio/model/assetsdockmodel.cpp#L567))
+- **拒否の 1 文**: `edit_project_settings` と AV-1 の RPC の 9 種の code を `inspectormodel.cpp` の表に([表](../src/devstudio/model/inspectormodel.cpp#L1511))。Undo が `project.settings_change_unsupported@1` で断られたときは `<store> was there when the engine started, so it stays declared — only stores added since then can be undone`([文](../src/devstudio/model/inspectormodel.cpp#L1526))。実装者の報告は仕様の文「Restart Studio's engine to remove it」を出すと書くが、着地したコードの文は上のとおりで起こし直しを勧めない(報告の「残した穴」のとおり、起こし直しても PJ-1 は起動時からある store の削除を断る。統合側が着地の前に、起こし直しを勧めない今の文に替えた)
+- **決定 7(shader の二重の読み直し)**: `ShaderReloadFollower` が `details.enabled` を覚え(自分の読みと、ほかの panel の `get_status` を `FramePlanWidget::observeEngineStatus()` から)、開いているときの `reload_shaders` の `committed: false` を commit として扱う([扱いを替える所](../src/devstudio/view/shaderreloadfollower.cpp#L139))。閉じている(`rpc driver`)ときは今までどおり何もしない。実装者の報告では、Studio の文言で `gate_reason` の文字列に依存する所は無かった
+- **仕様から外れた判断(実装者の報告)**: View > Assets(`pelican.view.assets`)を足した(Panels の開閉だけではタブの後ろのドックを前に出せない)。Undo はドック自身のもの(Edit の Undo Render Edit とは別)で、project を替えると消え、engine の起こし直しでは残る
+- **test**: `devstudio_assets_dock_test`(新規、`QT_OFFSCREEN`)の `HW-2s decision 1`〜`4`・`AV-1s decision 5` / `6`・`HW-2s decision 7`(決定ごとに 1 本。[decision 1](../test/devstudio_assets_dock_test.cpp#L167))。`devstudio_layoutpreset_test` はドックの数を 7 → 8 にし、古い保存済みの配置を戻しても Assets のドックが置き場を持つことを足した
+- **新しいファイル**: `src/devstudio/model/assetsdockmodel.{hpp,cpp}`、`src/devstudio/view/assetsdock.{hpp,cpp}`、`test/devstudio_assets_dock_test.cpp`、`test/studio_scenarios/gui_assets_watch_verify.json` / `.prepare.py`
+- **シナリオ**: `gui_assets_watch_verify`(新規、46 step。File > New Project > Blank → View > Assets → textures の Reload when saved outside → Track asset contents → prepare が焼いた `stray.ktx2` を置く → Verify again で extra 1 件 → Update manifest で 0 件 → Undo 2 回で project.json の 2 つの鍵が消える)。打つ欄は New Project のフォルダと名前だけ。実装者の run では 3 回目に緑(1・2 回目はシナリオの手順の誤り)、`studio_cpu` は 668 本が緑(実装者の報告。1 回目の赤 2 本は `devstudio_layoutpreset_test` のドックの数)。本数は 61 → 62
+- **残した穴**: (1) 起動時からある store は Undo で外せない(上の 1 文。外すには project.json を手で直して起こし直す。Studio が project.json を直接書いて起こし直す形にするかは判断待ち)。(2) `restart_required` の Restart engine は player が `null` しか返さないので test でも scenario でも通っていない。(3) 親のフォルダで効いている行は個別に外せない(`hot_reload` に除外の書き方が無い)。(4) 監視を入れる前に保存した変更は読み直さない(engine の穴。この engine の実行中に入れたときだけ tooltip `Changes saved before now are not reloaded.`)。ほかに、manifest を書く間と照合を待つ間に frame が止まる(engine)、木は書き換えのたびに全体を走査する、hot reload で読み直しても照合の結果は自動では変わらない(Verify again)、シナリオは決定 7 を通していない
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
