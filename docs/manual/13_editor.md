@@ -767,7 +767,7 @@ typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化�
 **`resolution_error` を含む応答はキー順が保存されます** —— editor 側のハンドラが「応答木のどこかに
 `resolution_error` があるか」を見る述語 `embedsResolutionError` を登録時に添え
 ([editorrpchandlers.cpp](../../src/core/communication/editorrpchandlers.cpp#L50))、`RpcServer` はその述語が真を返した応答だけを
-ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1185))。
+ordered JSON で直列化するためです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1186))。
 
 ### 一覧だけを読む `scene_outline`
 
@@ -863,7 +863,7 @@ revisionはauthoringの変更を表し、runtimeやプレビュー値の監視�
 | メソッド | params | 返すもの | 拒否 |
 |---|---|---|---|
 | `set_play_state` | `{state: "edit" \| "playing" \| "paused", keep?}` | `{state, previous}`(`keep` を書いた Stop は下の「再生のセッション」) | 上の表と同じ。`keep` と PM-2 の拒否は下の「再生のセッション(✅PM-2)」 |
-| `set_view_camera` | `{camera: "editor" \| "game"}`(鍵は `camera` だけ) | `{camera, previous}`。同じ view への指示は何も変えずに成功 | `playing` では `-32000` の `play_state_mismatch`(`data` に `state` と `required: ["edit", "paused"]`)/ editor camera の無い起動で `"editor"` は `-32000` の `view_camera_unavailable`(`data` に `camera`)/ それ以外の値や鍵は `-32602`([`set_view_camera` の handler](../../src/core/communication/rpcserver.cpp#L2289)) |
+| `set_view_camera` | `{camera: "editor" \| "game"}`(鍵は `camera` だけ) | `{camera, previous}`。同じ view への指示は何も変えずに成功 | `playing` では `-32000` の `play_state_mismatch`(`data` に `state` と `required: ["edit", "paused"]`)/ editor camera の無い起動で `"editor"` は `-32000` の `view_camera_unavailable`(`data` に `camera`)/ それ以外の値や鍵は `-32602`([`set_view_camera` の handler](../../src/core/communication/rpcserver.cpp#L2293)) |
 
 **`edit` で何が効くか。**
 
@@ -890,7 +890,7 @@ revisionはauthoringの変更を表し、runtimeやプレビュー値の監視�
 
 ### 再生のセッション(✅PM-2)
 
-`edit` から `playing` / `paused` へ移ると**再生のセッション**が始まり、`edit` へ戻るとセッションが終わって scene が再生の前に戻ります(設計は [design_play_mode.md](../design_play_mode.md) §6・§7。実体は [`set_play_state` の handler](../../src/core/communication/rpcserver.cpp#L2094) と [`PlaySession`](../../src/core/communication/playsession.hpp#L51))。Studio の Play / Stop と Keep は ✅PM-3b です(§13.1「Studio で game を再生・停止する」)。
+`edit` から `playing` / `paused` へ移ると**再生のセッション**が始まり、`edit` へ戻るとセッションが終わって scene が再生の前に戻ります(設計は [design_play_mode.md](../design_play_mode.md) §6・§7。実体は [`set_play_state` の handler](../../src/core/communication/rpcserver.cpp#L2098) と [`PlaySession`](../../src/core/communication/playsession.hpp#L51))。Studio の Play / Stop と Keep は ✅PM-3b です(§13.1「Studio で game を再生・停止する」)。
 
 **Play でセッションが始まるとき。**
 
@@ -939,7 +939,7 @@ revisionはauthoringの変更を表し、runtimeやプレビュー値の監視�
 
 ### spawn された object を読む(✅RO-1)
 
-`get_runtime_objects {}` は、今の scene で game が spawn した生きている object を、spawn された順(boundary、その中の index の順)に返します([handler](../../src/core/communication/rpcserver.cpp#L1377))。authoring の object は `scene_tree` / `get_components` で読み、spawn された object はこちらで読みます。field を足すと `-32602` です。
+`get_runtime_objects {}` は、今の scene で game が spawn した生きている object を、spawn された順(boundary、その中の index の順)に返します([handler](../../src/core/communication/rpcserver.cpp#L1378))。authoring の object は `scene_tree` / `get_components` で読み、spawn された object はこちらで読みます。field を足すと `-32602` です。
 
 ```json
 {"objects": [{"name": "spawn:2.0", "entity": {"index": 7, "generation": 1},
@@ -964,7 +964,7 @@ revisionはauthoringの変更を表し、runtimeやプレビュー値の監視�
 **file watch の gate は開けません。**`--rpc` で動く engine(Studio が起こす engine はすべてそう)は、reload gate が
 `rpc driver` を理由に閉じていて、shader file を保存しても自分では読み直しません。`reload_shaders` はそれを開けずに、
 **頼まれたその 1 回だけ** shader の runtime participant を当てます(`reload_game_logic` と同じ形。
-[handler](../../src/core/communication/rpcserver.cpp#L1377))。閉じた gate を越えるのは明示の要求だけで、
+[handler](../../src/core/communication/rpcserver.cpp#L1378))。閉じた gate を越えるのは明示の要求だけで、
 replay と `--strict-assets` の engine は今までどおり断ります([越えてよいかの判定](../../src/core/watch/reloadservice.cpp#L692) /
 [`ReloadGate::explicitShaderReloadRefusal()`](../../src/core/watch/reloadgate.cpp#L66))。file watch の poll の経路は `--rpc` の下で
 今までどおり何もしません。
@@ -979,8 +979,10 @@ engine を起こし直さずに反映されます([gate の 1 か所](../../src/
   `reload_render_documents`(下の「外のエディタで書き換えた render の文書を拾います」)が持ちます。
 - watcher が先に shader を反映していれば、後から届く Studio の `reload_shaders` は `{committed: false, attempted: false}` になる、
   とコードからは読めます(HW-1 の報告。test はありません。未確認)。
-- 宣言は engine の起動時に 1 回だけ読みます。**Studio に宣言を表示したり切り替えたりする画面はまだありません**(HW-2)。
-  今は project.json を手で書き、engine を起こし直します。宣言しているかどうかと監視の様子は `get_status.reload` の
+- 宣言は engine の起動時に読みます。✅PJ-1(`89643cd7`)から、動いている engine には `edit_project_settings` で宣言を
+  差し替えられ、engine を起こし直さずに watcher が作り直されます(下の「project.json の宣言を書き換える」)。
+  **Studio に宣言を表示したり切り替えたりする画面はまだありません**(HW-2。PJ-1 はその engine 側)。project.json を手で
+  書いたときは engine を起こし直します。宣言しているかどうかと監視の様子は `get_status.reload` の
   `watch` / `error` / `scans` / `hashed_files` / `hashed_bytes` で見えます([第10章](10_tools.md) §10.5)。
 
 - **いつ効くか**: RPC は frame 境界で処理されるので、handler の中で即時に準備・commit し、新しい shader は次の frame の
@@ -1001,7 +1003,7 @@ shader の batch、render pipeline の読み直しが shader の変更を一緒�
 
 - **`reload_shaders` の答え**: 読み直し自体は公開されたので `committed: true` のままで(意味は変えていません。shader library は
   compile できた新しい shader を持ち、断られていない pipeline はそれで描きます)、`refused_passes` に断った pass が並びます
-  ([答えを組む所](../../src/core/communication/rpcserver.cpp#L1418))。要素は `{pass, fragment, reason, shader_input_mismatch, declarations}`
+  ([答えを組む所](../../src/core/communication/rpcserver.cpp#L1419))。要素は `{pass, fragment, reason, shader_input_mismatch, declarations}`
   で、`reason` は下の拒否と同じ message、`shader_input_mismatch` は編集の拒否と同じ形(同じ関数で組みます)、`declarations` は
   **断られた新しい shader** の宣言 `[{binding, type, name, variadic}]` です([形](../../src/core/fullscreenpass/shaderinputmismatchjson.cpp#L48))。
   `committed: false` の答え(何も変わっていない)には `refused_passes` は付きません。
@@ -1028,6 +1030,31 @@ shader の batch、render pipeline の読み直しが shader の変更を一緒�
 - ⚠ 照合しないもの: 入力の無い raster pass(load でも照合しないので、読み直しも同じ)と、XR mirror の output transform
   (pass の名前を持たない pipeline)。読み直しで固定の宣言が既定の resource で埋まっても、Q-14f の LOG_WARNING は出ません
   (warning を出すのは pass の compile だけです)。
+
+### project.json の宣言を書き換える(✅PJ-1)
+
+| メソッド | params | 返すもの | 拒否(`error.data` の `{error_code, error_fields}`) |
+|---|---|---|---|
+| `get_project_settings` | `{}` | `{project_digest, hot_reload, asset_stores}`。2 つの値は project.json に書かれているままで、鍵が無ければ `null` | なし |
+| `edit_project_settings` | `{base_project_digest, hot_reload?, asset_stores?}`(ほかの鍵は `-32602`) | `{committed: true, changed, previous_project_digest, project_digest, applied, previous, asset_stores_change, assets_verification, restart_required}` | `project.settings_change_unsupported@1 {key, store?, reason}` / `external_modification` / `project.hot_reload_invalid@1` / `project.settings_invalid@1` / `project.settings_transaction_busy@1` |
+
+Blank / Standard の雛形は `asset_stores` も `hot_reload` も宣言しないので、HW-1 の監視(上の段落)と AV-1 の照合は、
+project.json を手で書いて engine を起こし直さないと効きませんでした。PJ-1 の 2 method は、その 2 つの鍵を engine に
+書かせ、その場で反映します([handler の登録(PJ-1)](../../src/core/communication/projectsettingsrpc.cpp#L253))。
+鍵を省けば今の値のまま、`null` で鍵ごと消します。書き込みは project の文書の transaction で `base_project_digest` を CAS に
+使い、ほかの鍵と並びは保ちます。反映は resolver の store と宣言の差し替え、file watcher の作り直し、asset の照合
+(新しく宣言した manifest のファイルが無ければ書いて、再検証を始める)の 3 つです。
+
+- 受けるのは store の追加と、manifest の無い store への manifest の宣言だけです。mount の移動と、起動時からある store・
+  manifest の削除や差し替えは `project.settings_change_unsupported@1` で断ります(project.json は変わりません)。
+- 戻すときは返り値の `previous` を同じ RPC で送ります。外せるのは、この実行中にこの RPC で足したものだけです。
+- 1 回書くと project.json は 2 空白の indent に展開されるので、値を戻しても digest は戻りません。
+- 照合が終わった通知は無いので、`get_status.assets_verification.state` を見ます。
+- 2026-10-03 に利用者が「Studio のボタンで宣言を足す」形を承認しました(HW-2 / AV-1s)。**Studio からこの RPC を呼ぶ画面は
+  まだありません。**
+
+返り値の各鍵・拒否の条件・残る穴は [第10章](10_tools.md) §10.3 の「project.json の宣言を書き換える」、受ける変更と断る変更の
+規則は [第3章](03_project_format.md) §3.4 の「起動中の engine に宣言を足す」です。
 
 ### レンダー設定を編集する
 
@@ -1133,7 +1160,7 @@ engine の一覧から選ばせるための読みです。`get_graph_catalog` �
 - `{status: "ready", engine_shaders: [...]}` —— 要素は下の表の `engine_shaders` の行と同じです。出来上がった後は process が終わるまで同じ答えです
 - `{status: "failed", error}` —— worker 自体が失敗したとき(thread を作れない、反映の途中の例外)。shader 1 本が反映できないのはその要素の `reflection_error` で、`failed` にはなりません
 
-反映は process に 1 つの worker thread が行います([worker](../../src/core/communication/engineauthoringlists.cpp#L346))。engine は RPC の endpoint を作った直後に worker を裏で始め(Studio が聞く前に一覧が出来ているように。[始める所](../../src/core/communication/rpcserver.cpp#L2792))、endpoint が閉じるときに止めて join します([止める所](../../src/core/communication/rpcserver.cpp#L2797))。止めるのは shader 1 本ごとの区切りで、作りかけの一覧は捨て、次に始めるときは最初から作ります([1 本ごとに見る所](../../src/core/communication/engineauthoringlists.cpp#L334))。worker が動いておらず答えも無いときに `get_engine_shaders` が来れば、その呼び出しが worker を始めて `building` を返します。worker は自分専用の compiler([`ShaderCompiler::detached()`](../../src/core/shader/shadercompiler.hpp#L91))を使います。この compiler は module を読まず、project の disk の shader cache を持たず、`StartupMetrics` に記録しないので、反映は `get_status` の `startup`(shader の時間と cache の数)に入らず、frame の側の compiler の cache とも共有しません。読むのは engine に組み込まれた shader だけです。
+反映は process に 1 つの worker thread が行います([worker](../../src/core/communication/engineauthoringlists.cpp#L346))。engine は RPC の endpoint を作った直後に worker を裏で始め(Studio が聞く前に一覧が出来ているように。[始める所](../../src/core/communication/rpcserver.cpp#L2796))、endpoint が閉じるときに止めて join します([止める所](../../src/core/communication/rpcserver.cpp#L2801))。止めるのは shader 1 本ごとの区切りで、作りかけの一覧は捨て、次に始めるときは最初から作ります([1 本ごとに見る所](../../src/core/communication/engineauthoringlists.cpp#L334))。worker が動いておらず答えも無いときに `get_engine_shaders` が来れば、その呼び出しが worker を始めて `building` を返します。worker は自分専用の compiler([`ShaderCompiler::detached()`](../../src/core/shader/shadercompiler.hpp#L91))を使います。この compiler は module を読まず、project の disk の shader cache を持たず、`StartupMetrics` に記録しないので、反映は `get_status` の `startup`(shader の時間と cache の数)に入らず、frame の側の compiler の cache とも共有しません。読むのは engine に組み込まれた shader だけです。
 
 EL-4b までは、一覧を process の最初の呼び出しの中で作っていました(engine の GLSL の source を compile して反映します。commit の記録では十数本で、その間 frame と RPC が数秒止まっていました)。EL-4 では同じ一覧を `get_graph_catalog` の最初の呼び出しの中で作っていたので、起動時に catalog を読む Studio の次の `get_status` が 5 秒で timeout していました(commit の記録)。EL-4b から `get_graph_catalog` は反映も compile もしません。✅UX-5d(`fe276fc4`)から Studio の Graph は、`building` を受けると 500 ms 後に poll から聞き直し、`failed` は `error` の文を notice に出して一覧を空として扱います(palette の「Reading...」はそこで止まります)。`status` の無い古い答えは今までどおり読みます(`src/devstudio/model/graphcanvasmodel.cpp`)。palette の render.compute で選んだ ray tracing の pipeline の task が書く image は、`resource_ports` の `format` があればその format で作ります(shadow mask なら `R8_UNORM`。無ければ `R16G16B16A16_SFLOAT`)。
 
@@ -1175,7 +1202,7 @@ MP-1 の `screen_inputs` / `surface_resources` は `renderconfigeditor_test` の
 - **stage の集め方**: shader library が stem の参照を読むときと同じ候補(stage ごとに source と `.spv`)を同じ検査で探します([`shaderStemCandidateReference()` / `existingShaderStemCandidate()`](../../src/core/shader/shaderlibrary.cpp#L555))。runtime compiler の無い build では、`.spv` の無い stage は出ません。どの stage の file も無ければ、worker を待たずに `{status: "failed", reference, error: "shader_not_found"}` です。
 - **stage の失敗**: compile も反映もできない stage は、答えは `ready` のまま、その要素に `reflection_error`(compile の log)が入ります。log の中の機械の絶対パスは file の参照(`project://shaders/<file>`)に置き換えます([置き換える所](../../src/core/communication/engineauthoringlists.cpp#L178))。test では `project://shaders/el5_broken.frag:3: ...` の形です。`failed` になるのは worker の中の例外のときです。
 - **include**: project の file は、その file の directory、`<その directory>/shaders/include`、engine の資源(`<名前>` と `shaders/include/<名前>`)の順に解決します([`ShaderCompiler::compileFile()`](../../src/core/shader/shadercompiler.cpp#L761)、include の解決は [`resolveInclude()`](../../src/core/shader/shadercompiler.cpp#L105))。pass の `ports` から生成される `pelican_resource_ports.glsl` を include する shader は、この順のとおり、project の側に同名の file が無ければ engine 同梱の空の include で compile されます(`get_engine_shaders` と同じ。要素の `resource_port_include: true`)。
-- **worker**: 反映は自分専用の worker thread が 1 本で行い、依頼の順に 1 つずつ処理します。compiler は `get_engine_shaders` と同じ [`ShaderCompiler::detached()`](../../src/core/shader/shadercompiler.hpp#L91) の別の instance で、frame の側の shader library と project の cache には触らず、disk と engine の資源を読むだけです([`ShaderInterfaceReflection`](../../src/core/communication/engineauthoringlists.cpp#L461))。worker は最初の依頼で始まり、engine の RPC の endpoint が閉じるときに `get_engine_shaders` の worker と一緒に止めて join します([止める所](../../src/core/communication/rpcserver.cpp#L2799))。止めるのは stage 1 つごとの区切りで、出来上がった答えは残し、待ち行列と作りかけは捨てます。まだ始まっていない同じ reference の依頼は、新しい依頼で置き換わります(待ち行列の最後に入り直します)。
+- **worker**: 反映は自分専用の worker thread が 1 本で行い、依頼の順に 1 つずつ処理します。compiler は `get_engine_shaders` と同じ [`ShaderCompiler::detached()`](../../src/core/shader/shadercompiler.hpp#L91) の別の instance で、frame の側の shader library と project の cache には触らず、disk と engine の資源を読むだけです([`ShaderInterfaceReflection`](../../src/core/communication/engineauthoringlists.cpp#L461))。worker は最初の依頼で始まり、engine の RPC の endpoint が閉じるときに `get_engine_shaders` の worker と一緒に止めて join します([止める所](../../src/core/communication/rpcserver.cpp#L2803))。止めるのは stage 1 つごとの区切りで、出来上がった答えは残し、待ち行列と作りかけは捨てます。まだ始まっていない同じ reference の依頼は、新しい依頼で置き換わります(待ち行列の最後に入り直します)。
 - **作り直し**: 答えは reference ごとに、stem の各 stage の file の中身の SHA-256 を key に持ちます。呼ぶたびに RPC の thread で file を読んで key を作り直し、変わっていれば新しく作らせて `building` を返します。**include の変更は追いません。**include を書き換えたら `refresh: true` で呼びます(持っている答えを使わずに作り直します)。
 - **`engine://` の reference**: `get_engine_shaders` の一覧の、その stem の要素をそのまま返します(一覧が作りかけなら `building`。`refresh` は効きません。一覧に無い stem は `shader_not_found`)。
 - **分かっている穴**: rendering 節の `shader_defines` を compile に渡していません(仕様書の記述。コードの読みでは `compileFile()` に define を渡していません)。define で port が変わる shader では、pass が実際に使う形と違いえます。
@@ -5031,7 +5058,7 @@ scene のロードは 1 つのトランザクションになりました([第4�
 ### `get_status.participants.game_logic` の `error_code` / `error_fields`
 
 `get_status` に `participants.game_logic` が入りました。**まだ 1 度も reload を試していない
-起動直後でも、startup の初期化失敗がここに出ます**([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1284))。
+起動直後でも、startup の初期化失敗がここに出ます**([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1285))。
 
 - 試行済みなら `reload.runtime.game_logic` の内容(`configured` / `loaded` / `reloading` /
   `pending` / `source_busy_retries` / `generation` / `systems` / `source` / `loaded_copy` /

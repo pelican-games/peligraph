@@ -24,7 +24,10 @@ source/include/.surface reverse dependency、全 variant/pipeline/material layou
 group-wide transaction が実装された。**FW-1(2026-10-02、`92681afd`)** で走査は
 size / mtime の比較になり、hash は変わったファイルだけになった(§1・§2-1・§2-1a・
 §2-3)。**HW-1(2026-10-02、`c947cef4`)** で、監視する素材とフォルダを project.json の
-`hot_reload` で宣言できるようになった(§0 の 3・§2-3・§3-2a)。
+`hot_reload` で宣言できるようになった(§0 の 3・§2-3・§3-2a)。**PJ-1(2026-10-03、
+`89643cd7`)** で、`hot_reload` と `asset_stores` を動いている engine に RPC
+`edit_project_settings` で書かせ、その場で watcher を作り直せるようになった(§2-3。
+HW-2 の engine 側)。
 前提: 確定規約 2 件(2026-07-08 ユーザー決定 — ①リプレイ/strict/rpc 駆動中は
 ホットリロード無効 ②エディタの自己書き込みは無視)、2026-10-02 の利用者決定
 (素材やフォルダごとに hot reload の有効化を設定できる形にする。既定 = 何も宣言して
@@ -218,6 +221,11 @@ hot reload flag を折る処理は、この centralized gate へ統合する(各
 **宣言(HW-1、2026-10-02)**: gate の入力に project.json の `hot_reload` の
 有無(`WatchDeclaration`: undeclared / empty / listed)が加わった。設定するのは
 `ReloadService::setup()` で、起動時に 1 回(launch の再設定は宣言に触らない)。
+PJ-1(2026-10-03)から、RPC `edit_project_settings` が project.json を書いた後に
+`setup()` をもう一度呼ぶ。前の watcher を止め、resolver の今の store と宣言で
+新しい watcher を作る(inventory はそのときのディスクから取り直す)。FW-1 の
+累計(`scans` / `hashed_files` / `hashed_bytes`)は前の watcher の分を足して
+引き継ぐ。
 決めるのは gate の 1 か所(`ReloadGate::updateLocked()`)だけ:
 
 - rpc 駆動の理由は undeclared のときだけ効く。listed なら rpc 駆動中でも監視する
@@ -236,8 +244,16 @@ hot reload flag を折る処理は、この centralized gate へ統合する(各
 
 宣言の当たり判定は、`AssetKey` の path が要素と等しいか、要素をフォルダとして
 その下か(成分ごと。`assets/tex` は `assets/textures/a.png` に当たらない。
-大文字小文字は区別する)。宣言は起動時にしか読まないので、変えたら engine を
-起こし直す(その場で切り替える口は無い)。
+大文字小文字は区別する)。宣言は起動時に読む。project.json を手で書き換えたら
+engine を起こし直す。PJ-1(2026-10-03)から、その場で切り替える口は RPC
+`edit_project_settings` で、engine が project.json に書き(project の文書の
+transaction、digest の CAS)、`PathResolver::replaceDeclarations()` で resolver の
+store の一覧と宣言を差し替え、`ReloadService::setup()` で watcher を作り直す。
+`asset_stores` で受けるのは store の追加と manifest の宣言の追加だけで、mount の
+移動と起動時からある store / manifest の削除・差し替えは
+`project.settings_change_unsupported@1` で断る(manual 第3章 §3.4・第10章 §10.3)。
+着地時に残った穴: 新しい watcher は、見張っていなかった間の外の変更を読み直さない。
+resolver の差し替えは lock を取らず、main thread の frame の境目で呼ぶ前提。
 
 ### 2-4. polling fallback にも同じ reconcile 状態機械(再レビュー HR-C3 — HR0 受入条件)
 
@@ -446,6 +462,8 @@ render graph reloadへ巻き込む」といった過剰な直列化を避ける�
   `watch` は正規化した `hot_reload` の宣言(無ければ `null`、空の配列なら
   `[]`)。`scans`(完了した走査の回数)・`hashed_files`・`hashed_bytes` は
   FW-1 の `WatcherStatus` の起動からの累計で、watcher が無いときは 0
+  (PJ-1 から、`edit_project_settings` が watcher を作り直しても前の分を足して
+  数え続ける)
 - log(FW-1): reconcile が終わるたびに、hash したファイルがあれば(起動後の
   最初は 0 でも)INFO を 1 行 `file watcher: scanned {件数} files, hashed
   {件数} ({x.x} MB) in {ms} ms`(件数は走査後の inventory の数、MB は 10^6 byte)

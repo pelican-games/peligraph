@@ -144,7 +144,7 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 - batch・notification 非対応。エラーコードは標準 + アプリケーションエラー -32000、RenderDoc capture -32010。ハンドラ内例外は応答に変換されプロセスは落ちません。EOF で正常終了。
 - 1 プロセス 1 クライアント。**ゲーム DLL リロード中は全メソッドがアプリケーションエラーで拒否**されます。
 
-> **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)**バイト単位で完全一致**しなければならない。CI で検証済み。`instance_id` だけが除外されるのは、それが RPC エンドポイント生成時に振られる UUID v4 で、起動ごとに必ず変わる値だからです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L2782))。
+> **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)**バイト単位で完全一致**しなければならない。CI で検証済み。`instance_id` だけが除外されるのは、それが RPC エンドポイント生成時に振られる UUID v4 で、起動ごとに必ず変わる値だからです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L2786))。
 
 ### 基盤メソッド一覧
 
@@ -158,22 +158,24 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 | `capture_gpu` | `{}` | `render_frame` と同じcurrent-time描画を1回だけ**RenderDoc**(GPU に送った描画コマンドを 1 フレーム分丸ごと記録して後から追える外部デバッガ)で captureし、実際に増えたindexのcanonical `.rdc` pathを返す |
 | `capture` | `{path}` | 直近フレームを PNG 保存(sRGB。応答に `encoding:"srgb"`) |
 | `get_frame_plan` | `{}`、または `{loop_elements: {node, offset?, limit?}}`(✅LP-3b。draw_loop の要素の paging) | フレームプラン JSON(fullscreen / raster pass の node には shader の set 1 の宣言 `pass_inputs` が付く。✅VI-1 / VI-1b。LP 系からは最上位の `loops[]`、node と resource の `loop_origin`、node の `view_select` / `view_axes` / `no_selected_view` も。✅LC-1 から、shader が `pelican_loop.glsl` の回の番号を読む pass / task の node に `reads_loop_index: true`。✅PS-1 から、`schedule: "once"` の node に `schedule: "once"`・`last_run_generation`・`last_run_frame`(まだ走っていなければ `null`)。✅IA-1 から、`physical_target_plan.resources[]` の `initial: {asset}` を持つ image の要素に `initial_asset: {asset, sha256}`(`sha256` は `assets.manifest` の値、載っていなければ `null`。✅AB-1 から、asset の隣に `.import.json` があれば `derived_from` / `stale` / `stale_reasons` も)。✅PV-1 から最上位に `preview: {available, reason?}`(`get_status` の `preview` と同じ形)。形は[第 13 章](13_editor.md) §13.5「ループと分解の RPC」) |
-| `rerun_once` | `{node?}`(✅PS-1。`node` は空でない文字列。ほかの鍵は `-32602`) | `{scheduled: [<pass / task の名前>...]}`。`schedule: "once"` の node を次の frame で走らせる。`node` を省くと今の frame plan の once の全部、graph の node の id ならその node が作った once、`graph.loop` の id なら全回の once。per_frame の node は `[]`。frame plan に無い名前は `-32602` で `data` が `{code: "node_unknown", node}`([`rerun_once` の登録](../../src/core/communication/rpcserver.cpp#L2449)、[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4103)。走る条件は[第 6 章](06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」) |
+| `rerun_once` | `{node?}`(✅PS-1。`node` は空でない文字列。ほかの鍵は `-32602`) | `{scheduled: [<pass / task の名前>...]}`。`schedule: "once"` の node を次の frame で走らせる。`node` を省くと今の frame plan の once の全部、graph の node の id ならその node が作った once、`graph.loop` の id なら全回の once。per_frame の node は `[]`。frame plan に無い名前は `-32602` で `data` が `{code: "node_unknown", node}`([`rerun_once` の登録](../../src/core/communication/rpcserver.cpp#L2453)、[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4103)。走る条件は[第 6 章](06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」) |
 | `pick_object` | `{x, y}` | 最後に完了した **ID バッファ**(色ではなく「そのピクセルに写っているオブジェクトの ID」を書き出す描画出力。`picking` feature が宣言する `R32_UINT` のレンダーターゲット `picking_id` — [picking.json](../../src/core/resources/features/picking.json))の 1 ピクセルを同期読み出し。`engine://features/picking.json` が必要 |
 | `set_gizmo` | `{selection:GizmoSelection\|null, mode}` | 選択 transform のギズモ表示を設定/解除。`engine://features/gizmo.json` が必要 |
 | `query_gizmo_handle` | `{selection:GizmoSelection, mode, x, y}` | 指定した選択・mode・物理 pixel にある handle を状態なしで問い合わせ。同 feature が必要 |
 | `load_gltf` | `{path, name?}` | glb の一時ロード(プロジェクト相対のみ) |
 | `load_scene` | `{name}` | シーン切替。応答は `{name, committed, effect_errors[]}`(✅WP380b/380e。commit 後の副作用の失敗は error ではなく result に出ます — [第13章](13_editor.md) §13.13) |
 | `set_camera` | `{name}` | シーン内カメラへ切替 |
-| `raycast` | `{origin, direction, max_distance}`(3 鍵ちょうど) | 最近傍 1 件を `{hit: {name, collider_id, shape_ordinal, distance, position, normal, trigger, one_way}}`、当たらなければ `{hit: null}`([受け口](../../src/core/communication/rpcserver.cpp#L1239))。`PELICAN_WITH_PHYSICS=OFF` の build では `hit: null` ではなく JSON-RPC error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b)。provider が 0 本の build も `-32000`(message は `physics.provider_unavailable@1` の例外文。[第8章](08_gameplay.md) §8.4「機能を外した build」) |
+| `raycast` | `{origin, direction, max_distance}`(3 鍵ちょうど) | 最近傍 1 件を `{hit: {name, collider_id, shape_ordinal, distance, position, normal, trigger, one_way}}`、当たらなければ `{hit: null}`([受け口](../../src/core/communication/rpcserver.cpp#L1240))。`PELICAN_WITH_PHYSICS=OFF` の build では `hit: null` ではなく JSON-RPC error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b)。provider が 0 本の build も `-32000`(message は `physics.provider_unavailable@1` の例外文。[第8章](08_gameplay.md) §8.4「機能を外した build」) |
 | `update_transforms` | `{objects, transforms}` | 次フレーム境界で適用。`rot` は名指し拒否(`rotation`) |
-| `inject_input` | `{events:[...]}` | 入力注入。`key_*` / `mouse_*` / `axis` + **`gamepadButtonDown` / `gamepadUp` / `gamepadAxis`**(リプレイ中は拒否)。`mouse_move` の `x` / `y` は**窓座標**で、OS からの移動と同じ event になる。`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにする(headless は 1 倍。✅GP-4、[注入の受け口](../../src/core/communication/rpcserver.cpp#L862)) |
+| `inject_input` | `{events:[...]}` | 入力注入。`key_*` / `mouse_*` / `axis` + **`gamepadButtonDown` / `gamepadUp` / `gamepadAxis`**(リプレイ中は拒否)。`mouse_move` の `x` / `y` は**窓座標**で、OS からの移動と同じ event になる。`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにする(headless は 1 倍。✅GP-4、[注入の受け口](../../src/core/communication/rpcserver.cpp#L863)) |
 | `inject_event` | `{type, payload}` | 登録済みゲームイベントの emit。payload は EventPayloadSchema で事前検証(✅WP71) |
 | `reload_game_logic` | `{}` | ゲームロジック DLL を即時リロード(✅WP90) |
 | `reload_shaders` | `{}` | shader を読み直して公開する(✅F-5。file watch が閉じている `--rpc` の下でも、明示の要求は通る。入力と宣言が合わなくなった pass はその pass だけ前の shader で描き続け、`refused_passes` に名が出る。✅VI-1b。返り値とエラーは[第 13 章](13_editor.md)の表) |
 | `get_assets_verification` | `{}` | 起動時(または最後の再検証)の asset 検証の全件(✅AV-1。下の「起動時の asset 検証の結果」) |
 | `verify_assets` | `{}` | asset 検証を worker で走らせ直し、すぐ `{state: "running"}` を返す(✅AV-1) |
 | `update_assets_manifest` | `{store}` | その store の manifest を今のディスクから書き直し、再検証を始める(✅AV-1) |
+| `get_project_settings` | `{}` | project.json の `hot_reload` と `asset_stores` を書かれているまま(無ければ `null`)と、`project_digest`(✅PJ-1。下の「project.json の宣言を書き換える」) |
+| `edit_project_settings` | `{base_project_digest, hot_reload?, asset_stores?}` | project.json の 2 つの鍵を書き、engine にその場で反映する(✅PJ-1。同上) |
 | `set_input_profile` | `{name}` | 入力プロファイル切替(✅WP91) |
 | `start_input_record` | `{path}` | input_seq 収録開始(✅WP89。v2 で書く) |
 | `stop_input_record` | `{}` | 収録停止。`{path, frames, events}` |
@@ -314,7 +316,7 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 `import_scene_snapshot` の result に `committed` / `effect_errors`、`get_components` の各
 component に `resolution_error`。
 
-2026-09 の追加(GP-4、`c095493c`): `get_status` の `input` に `cursor {requested, effective, embedded}`([組み立て](../../src/core/communication/rpcserver.cpp#L1735))。`requested` はゲームコードが `ctx.input().setCursorMode` で頼んだモード、`effective` は窓に適用したモード(`normal` / `hidden` / `locked`)、`embedded` は窓が別の窓に埋め込まれているか(`--rpc` かつ `WS_CHILD`。Windows だけで判定)。埋め込みでは `locked` を頼んでも `effective` は `normal` です。headless は窓が無いので `effective` は常に `normal`、`embedded` は `false`。
+2026-09 の追加(GP-4、`c095493c`): `get_status` の `input` に `cursor {requested, effective, embedded}`([組み立て](../../src/core/communication/rpcserver.cpp#L1739))。`requested` はゲームコードが `ctx.input().setCursorMode` で頼んだモード、`effective` は窓に適用したモード(`normal` / `hidden` / `locked`)、`embedded` は窓が別の窓に埋め込まれているか(`--rpc` かつ `WS_CHILD`。Windows だけで判定)。埋め込みでは `locked` を頼んでも `effective` は `normal` です。headless は窓が無いので `effective` は常に `normal`、`embedded` は `false`。
 
 2026-09 の追加(AG-3a、`32d9a20b`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L3723)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L461))。読み取り専用で `edit_*` の CAS には乗らない。
 
@@ -372,7 +374,7 @@ component に `resolution_error`。
 
 ### 起動時の asset 検証の結果(✅AV-1)
 
-player が起動時に行う assets manifest の照合([第3章](03_project_format.md) §3.4 の「起動時検証」)の結果は、log に出るだけでなく store ごとに engine に残ります([`AssetsVerification`](../../src/core/loader/assetsverification.hpp#L83))。読み方と走らせ直し方は次の 4 つです(handler は [`configureAssetsVerificationRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1477))。Studio にこれを見せる画面はまだありません(AV-1s)。
+player が起動時に行う assets manifest の照合([第3章](03_project_format.md) §3.4 の「起動時検証」)の結果は、log に出るだけでなく store ごとに engine に残ります([`AssetsVerification`](../../src/core/loader/assetsverification.hpp#L83))。読み方と走らせ直し方は次の 4 つです(handler は [`configureAssetsVerificationRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1478))。Studio にこれを見せる画面はまだありません(AV-1s)。
 
 **`get_status.assets_verification`**(軽い要約。[`statusJson()`](../../src/core/loader/assetsverification.cpp#L204))
 
@@ -400,14 +402,14 @@ player が起動時に行う assets manifest の照合([第3章](03_project_form
 - `verified_at` は UTC の ISO 8601(秒まで)。`not_run` では `reason` が付き、`verified_at: null`、`stores: []` です。
 - `running` の間は `state: "running"` と、**直前の結果**(`verified_at` と `stores`)を返します。件数が多くても全部返します。
 
-**`verify_assets {}`** → `{"state":"running"}` をすぐ返し、module 専用の worker thread で起動時と同じ検査(中身の照合込み、起動時と同じ strict、同じ hash cache)を走らせます([`verify()`](../../src/core/loader/assetsverification.cpp#L298))。終わると `get_status` / `get_assets_verification` の結果が置き換わります。完了の通知は無いので、`get_status.assets_verification.state` が `running` でなくなるのを待って取り直します。
+**`verify_assets {}`** → `{"state":"running"}` をすぐ返し、module 専用の worker thread で起動時と同じ検査(中身の照合込み、起動時と同じ strict、同じ hash cache)を走らせます([`verify()`](../../src/core/loader/assetsverification.cpp#L302))。終わると `get_status` / `get_assets_verification` の結果が置き換わります。完了の通知は無いので、`get_status.assets_verification.state` が `running` でなくなるのを待って取り直します。
 
 - 走っている間にもう一度呼ぶと、新しく走らせず `{"state":"running"}` を返します(合流)。
 - manifest を宣言した store が無い project では走らせず `{"state":"not_run","reason":"no asset store declares a manifest"}` を返します。
 - 再検証は log を出しません。配布 build でも明示の要求として走り、終わると `verified` になります。
-- 照合する store の構成は起動時のままです(`asset_stores` を書き換えたら engine を起こし直します)。
+- 照合する store の構成は、起動時のものか、✅PJ-1 の `edit_project_settings` で足した後のものです。project.json を手で書き換えたときは engine を起こし直します(下の「project.json の宣言を書き換える」)。
 
-**`update_assets_manifest {"store": "<name>"}`** は「今のディスクを正とする」操作です。`pelican_cli assets manifest` と同じ書き方(hash cache は `<project>/.pelican/assets-hash-cache.json`、`--full` なし)でその store の manifest を書き、INFO を 1 行(`manifest main: 2 files (1 hashed, 1 cached) -> <path>`、CLI と同じ文言)出して、`verify_assets` と同じ再検証を始めます([`updateManifest()`](../../src/core/loader/assetsverification.cpp#L313))。返り値は `{"store":"main","manifest":"<path>","files":2,"hashed":1,"cached":1,"state":"running"}` です。書き込みは handler の中で同期に行い、再検証が走っている最中ならそれが終わるまで待ってから書きます(その間は frame も止まります)。
+**`update_assets_manifest {"store": "<name>"}`** は「今のディスクを正とする」操作です。`pelican_cli assets manifest` と同じ書き方(hash cache は `<project>/.pelican/assets-hash-cache.json`、`--full` なし)でその store の manifest を書き、INFO を 1 行(`manifest main: 2 files (1 hashed, 1 cached) -> <path>`、CLI と同じ文言)出して、`verify_assets` と同じ再検証を始めます([`updateManifest()`](../../src/core/loader/assetsverification.cpp#L317))。返り値は `{"store":"main","manifest":"<path>","files":2,"hashed":1,"cached":1,"state":"running"}` です。書き込みは handler の中で同期に行い、再検証が走っている最中ならそれが終わるまで待ってから書きます(その間は frame も止まります)。
 
 params は `get_assets_verification` / `verify_assets` が空の object だけ、`update_assets_manifest` が `store`(空でない文字列)だけで、それ以外は `-32602` です。断るときは `reload_shaders` と同じ形(`code: -32000`、`data: {error_code, error_fields}`)です。
 
@@ -418,13 +420,64 @@ params は `get_assets_verification` / `verify_assets` が空の object だけ�
 | `assets_manifest_write_failed@1` | `update_assets_manifest: cannot write the manifest of asset store 'main': <理由>` | `{"store","manifest","reason"}`(宣言した manifest が解決できない store では `{"store","reason"}`) |
 | `assets_verification_unavailable@1` | `verify_assets: this host does not verify assets` | `{}` |
 
+### project.json の宣言を書き換える(✅PJ-1)
+
+`get_project_settings` / `edit_project_settings`(✅PJ-1、`89643cd7`)は、project.json の `hot_reload` と `asset_stores` を動いている engine に書かせ、engine を起こし直さずに反映します([2 method の登録](../../src/core/communication/projectsettingsrpc.cpp#L253)。[engine の RPC への登録](../../src/core/communication/rpcserver.cpp#L1585))。Blank / Standard の雛形はどちらの鍵も宣言しないので、HW-1 の監視と AV-1 の照合は、これまで project.json を手で書いて engine を起こし直さないと効きませんでした。2026-10-03 に利用者が「Studio のボタンで宣言を足す」形を承認し(HW-2 / AV-1s)、これはその engine 側です。Studio からこれを呼ぶ画面はまだありません。何を受けて何を断るかの規則は [第3章](03_project_format.md) §3.4 の「起動中の engine に宣言を足す」です。
+
+**`get_project_settings {}`** → `{project_digest, hot_reload, asset_stores}`。2 つの値は project.json に書かれているままで、鍵が無ければ `null` です。`project_digest` は project.json の bytes の sha256 で、`edit_project_settings` の `base_project_digest` に渡します。params は空の object か省略だけです。
+
+**`edit_project_settings {base_project_digest, hot_reload?, asset_stores?}`**([書き込みと反映](../../src/core/communication/projectsettingsrpc.cpp#L93))
+
+- 鍵を省けば今の値のまま、`null` を渡せば鍵ごと消します。`hot_reload` は配列の置き換えで、HW-1 の検査([第3章](03_project_format.md) の「hot reload で監視するもの」)を通した正規化の形で書きます。`asset_stores` は宣言の全体(`{name: {mount, manifest?}}`)を渡します。
+- 書き込みは project の文書の transaction で、`base_project_digest` を CAS に使います。ほかの鍵と並びは保ちます。書くと全体が 2 空白の indent に展開されるので、値を元に戻しても digest は元に戻りません(実例: 何も宣言しない project の `1f89682d…` に store と `hot_reload` を足して戻すと `6d686b44…` になる)。値が変わらない要求は書かず、`changed: false` を返します。
+- 書いた後、その場で 3 つを反映します: resolver の store の一覧と `hot_reload` の宣言の差し替え(`PathResolver::replaceDeclarations()`)、file watcher の作り直し(`ReloadService::setup()` をもう一度。§10.5 の `scans` などの累計は引き継ぎます)、asset の照合(新しく宣言した manifest のファイルが無ければ今のディスクから書き、再検証を始める。[`redeclareStores()`](../../src/core/loader/assetsverification.cpp#L376))。照合が走っている最中なら、その照合は終わった後に新しい store の一覧でもう一度走ってから結果を出します。
+- params は上の 3 つの鍵だけで、ほかの鍵、無いか文字列でない `base_project_digest`、配列でも `null` でもない `hot_reload`、object でも `null` でもない `asset_stores` は `-32602` です。
+
+返り値(実例。何も宣言しない Blank 相当の project に store と監視を足した。`get_status.reload.watch` は `["assets/textures","shaders"]` になる):
+
+```json
+{"committed":true,"changed":true,
+ "previous_project_digest":"1f89682d…","project_digest":"621c7ab7…",
+ "applied":{"asset_stores":{"main":{"mount":"assets/"}},"hot_reload":["assets/textures","shaders"]},
+ "previous":{"asset_stores":null,"hot_reload":null},
+ "asset_stores_change":{"added":["main"],"removed":[],"manifests_declared":[],"manifests_removed":[]},
+ "assets_verification":{"state":"not_run","reason":"no asset store declares a manifest","generated":[],"failed":[]},
+ "restart_required":null}
+```
+
+続けて同じ store に `"manifest": "assets.manifest.json"` を足すと、`asset_stores_change.manifests_declared` が `["main"]`、`assets_verification` が `{"state":"running","generated":[{"store":"main","manifest":"<path>","files":6,"hashed":6,"cached":0}],"failed":[]}` になります。
+
+| 鍵 | 中身 |
+|---|---|
+| `committed` | 成功なら常に `true` |
+| `changed` | project.json を書いたか。`false` なら何も書かず、`project_digest` は前のまま |
+| `previous_project_digest` / `project_digest` | 書く前と書いた後の digest |
+| `applied` / `previous` | 書いた後と書く前の `{hot_reload, asset_stores}`(project.json のままの値)。`previous` をそのまま渡すと戻ります。外せるのは、この engine の実行中にこの RPC で足した store と manifest だけです |
+| `asset_stores_change` | `{added, removed, manifests_declared, manifests_removed}`。store の名前の列 |
+| `assets_verification` | 照合の module の答え `{state, reason?, generated, failed}`(`generated` は書いた manifest、`failed` は書けなかった manifest と理由)。照合しない host(module が無いか、起動時の照合の経路を通っていない)と `changed: false` では `null` |
+| `restart_required` | `null` か `{reason}`。出るのは、project.json を書いた後に反映が失敗したときと、監視か照合の module の無い host で、その部分が要るときだけです。player では `null` です([その組み立て](../../src/core/communication/projectsettingsrpc.cpp#L205)) |
+
+照合が終わった通知はありません。`get_status.assets_verification.state` が `running` でなくなるのを待ちます。
+
+断るときは何も書きません。形は `code: -32000`、`data: {error_code, error_fields}` です。
+
+| `error_code` | いつ | `error_fields` |
+|---|---|---|
+| `project.settings_change_unsupported@1` | engine が開いたときからある宣言を動かす変更: mount の移動、store の root の移動(`.pelican/local.json`)、起動時からある store の削除、起動時からある manifest の削除と差し替え、足す store の root が mount の名指すフォルダでない(実例の文言: `the mount moves from 'assets/' to 'assets/models', which changes where references resolve; restart the engine after editing project.json`) | `{key: "asset_stores", store?, reason}` |
+| `external_modification` | `base_project_digest` が今の project.json と違う。または transaction が書く直前に変更を見つけた | `{expected, actual}`(transaction が見つけたときは `actual: null`) |
+| `project.hot_reload_invalid@1` | `hot_reload` が HW-1 の検査に通らない(例 `project.json hot_reload[0] '../x' must not contain '..'`) | `{key: "hot_reload", reason}` |
+| `project.settings_invalid@1` | 書いた後の project.json が engine の開くときの検査に通らない(`key: "project"`)、`asset_stores` が起動時の検査(mount の重なりなど)に通らないか、新しく宣言した manifest が解決できない(`key: "asset_stores"`) | `{key, store?, reason}` |
+| `project.settings_transaction_busy@1` | 別の書き手が project の文書の transaction を持っている | `{path}` |
+
+残る穴(着地時の記録): manifest を書いている間と、走っている照合の終わりを待つ間は frame が止まります。作り直した watcher は、見張っていなかった間の外の変更を読み直しません。mount で始まり `..` で mount の外へ出る参照は、store を足すと解けなくなります。resolver の差し替えは lock を取らず、main thread の frame の境目で呼ぶことが前提です。
+
 ### 移行の 2 method と移行専用 endpoint(✅MG-1)
 
 `plan_project_migration` / `apply_project_migration`([実装](../../src/core/communication/projectmigrationrpc.cpp#L50))は
 `pelican_cli project migrate` の RPC 版です(流れと名前は [第3章 §3.13](03_project_format.md))。失敗は application error(-32000)で、
 `error.data` が `{error_code, error_fields}`(例: `error_code: "project.migration_plan_stale@1"`、`error_fields: {expected, actual}`)です。
 
-- **ふつうに動いている engine** も 2 つに答えます([登録](../../src/core/communication/rpcserver.cpp#L1858))。移行の要る project はそもそも入口で止まるので、ここに来るのは空の plan(`required: false`)です(動いている間に文書が前の版に戻された場合を除く)。
+- **ふつうに動いている engine** も 2 つに答えます([登録](../../src/core/communication/rpcserver.cpp#L1862))。移行の要る project はそもそも入口で止まるので、ここに来るのは空の plan(`required: false`)です(動いている間に文書が前の版に戻された場合を除く)。
 - **移行専用 endpoint**: `--rpc` の player が開くときの入口で `project.migration_required@1` に当たると、engine を起動せずに
   この 2 method **だけ**に答える JSON-RPC endpoint になります([`runProjectMigrationRpcServer()`](../../src/core/communication/projectmigrationrpc.cpp#L98)、
   [player 側](../../src/player/main.cpp#L741))。ほかの method は application error で、message は入口が出した
@@ -798,10 +851,10 @@ pelican_cli audio analyze --asset sounds/tone.wav --out tables/few.ktx2 --featur
 | ゲームロジック DLL | ✅WP90/162 | 下記。candidateを旧DLLと並存side-decodeしてから切替 |
 | input actions / profile(HR2-I)、pelican.ui(U3) | 📐 | backlog Tier 1 |
 | rendering config | ✅ | ディスク経由は `pelican.render_pipeline` 参加者が拾う。加えて Studio から `features[]`・feature の scalar パラメータ・**共通グラフ文書**(`nodes` / `definitions`)を編集して再起動なしで反映できる(§13.5)。どれも engine がファイルを所有し、編集側は触りません |
-| scene JSON / project.json | 対象外 | 設計上の決定(再起動) |
+| scene JSON / project.json | 対象外 | 設計上の決定(再起動)。ただし project.json の `hot_reload` / `asset_stores` は、RPC `edit_project_settings` で書かせればその場で反映される(✅PJ-1。§10.3) |
 
-- **有効条件**: ウィンドウモードのみ(既定 ON・専用フラグなし)。リプレイ / `--strict-assets` / rpc 駆動中は中央ゲートで無効。headless では自動監視しません。✅HW-1 から、project.json に `hot_reload`(監視する素材とフォルダの配列)を書くと、**列挙したものだけ**を監視し、rpc 駆動中(Studio の engine)でもそこは監視します。空の配列なら監視しません。リプレイ / `--strict-assets` / headless は宣言があっても無効です。書き方・拒否・`--rpc` の下で反映されないもの(render 文書)は [第3章](03_project_format.md) の「hot reload で監視するもの」。
-- **配布 build(`PELICAN_WITH_HOT_RELOAD=OFF`)✅AV-1**: dist-config が常に OFF を出す build(§10.4)では、ファイルを監視せず(FileWatcher を作らない)、game logic の DLL の更新も見に行きません。`get_status.reload` は `state: "disabled"`、`error` と `runtime."pelican.shaders".gate_reason` は `"hot reload build disabled"` で、この理由は他のどの理由よりも先に出ます([gate の 1 か所](../../src/core/watch/reloadgate.cpp#L49))。project.json の `hot_reload` は読みます(形の拒否は同じ)が効かず、宣言があれば起動時に INFO を 1 行 `project.json hot_reload is ignored: this binary was built with PELICAN_WITH_HOT_RELOAD=OFF` 出します([出す所](../../src/core/watch/reloadservice.cpp#L894))。F5・`reload_game_logic`・`reload_shaders` の明示の reload は AV-1 で変えていません(`reload_shaders` を断るのは今も replay と `--strict-assets` だけ。OFF の build で実際に走らせての確認はしていません)。起動時の assets manifest の照合も `--strict-assets` のときだけになります(§10.4 の `assets`)。ソースは build から外していません(FileWatcher のコードは binary に残ります)。
+- **有効条件**: ウィンドウモードのみ(既定 ON・専用フラグなし)。リプレイ / `--strict-assets` / rpc 駆動中は中央ゲートで無効。headless では自動監視しません。✅HW-1 から、project.json に `hot_reload`(監視する素材とフォルダの配列)を書くと、**列挙したものだけ**を監視し、rpc 駆動中(Studio の engine)でもそこは監視します。空の配列なら監視しません。リプレイ / `--strict-assets` / headless は宣言があっても無効です。書き方・拒否・`--rpc` の下で反映されないもの(render 文書)は [第3章](03_project_format.md) の「hot reload で監視するもの」。宣言は起動時に読みます。✅PJ-1 から、動いている engine には `edit_project_settings` で宣言を差し替えられ、watcher はその場で作り直されます(§10.3 の「project.json の宣言を書き換える」)。
+- **配布 build(`PELICAN_WITH_HOT_RELOAD=OFF`)✅AV-1**: dist-config が常に OFF を出す build(§10.4)では、ファイルを監視せず(FileWatcher を作らない)、game logic の DLL の更新も見に行きません。`get_status.reload` は `state: "disabled"`、`error` と `runtime."pelican.shaders".gate_reason` は `"hot reload build disabled"` で、この理由は他のどの理由よりも先に出ます([gate の 1 か所](../../src/core/watch/reloadgate.cpp#L49))。project.json の `hot_reload` は読みます(形の拒否は同じ)が効かず、宣言があれば起動時に INFO を 1 行 `project.json hot_reload is ignored: this binary was built with PELICAN_WITH_HOT_RELOAD=OFF` 出します([出す所](../../src/core/watch/reloadservice.cpp#L900))。F5・`reload_game_logic`・`reload_shaders` の明示の reload は AV-1 で変えていません(`reload_shaders` を断るのは今も replay と `--strict-assets` だけ。OFF の build で実際に走らせての確認はしていません)。起動時の assets manifest の照合も `--strict-assets` のときだけになります(§10.4 の `assets`)。ソースは build から外していません(FileWatcher のコードは binary に残ります)。
 - **fail-soft**: 壊れたファイルを保存しても旧リソースで動き続け、名前入り WARNING と `get_status.reload.last_reload_error` に出ます。修正して保存し直せば回復します。
 
 ### ファイル監視の走査(✅FW-1)
@@ -815,7 +868,7 @@ pelican_cli audio analyze --asset sounds/tone.wav --out tables/few.ktx2 --featur
 - 走査が終わるたびに、hash したファイルがあれば(起動後の最初は 0 件でも)INFO を 1 行出します: `file watcher: scanned <件数> files, hashed <件数> (<x.x> MB) in <ms> ms`([出す所](../../src/core/watch/filewatcher.cpp#L756))。
 - 報告の測定(Debug、`projects/example` の複写 416 ファイル・85.4 MB)では、起動時の最初の走査が 19,176 ms から 5.5 ms に、52.6 MB の `.glb` を 1 byte 書き換えてから reload の待ち行列に入るまでが 17,010 ms から 91 ms になりました(FW-1 の commit の記述と台帳)。
 
-`get_status.reload` で監視の様子が見えます([`ReloadService::statusJson()`](../../src/core/watch/reloadservice.cpp#L1413))。
+`get_status.reload` で監視の様子が見えます([`ReloadService::statusJson()`](../../src/core/watch/reloadservice.cpp#L1419))。
 
 | field | 中身 |
 |---|---|
@@ -825,7 +878,7 @@ pelican_cli audio analyze --asset sounds/tone.wav --out tables/few.ktx2 --featur
 | `applied` / `failed` / `last_reload_error` | 適用した数・失敗した数・最後の失敗 |
 | `participants` / `runtime` / `model_catalog` | 登録された参加者、runtime の参加者の状態、model の目録 |
 | `watch` | ✅HW-1。正規化した `hot_reload` の宣言。書いていなければ `null`、空の配列なら `[]` |
-| `scans` / `hashed_files` / `hashed_bytes` | ✅HW-1(数えるのは FW-1)。起動からの累計: 終わった走査の回数・hash したファイルの数・hash した byte 数。watcher がまだ無ければ 0 |
+| `scans` / `hashed_files` / `hashed_bytes` | ✅HW-1(数えるのは FW-1)。起動からの累計: 終わった走査の回数・hash したファイルの数・hash した byte 数。watcher がまだ無ければ 0。✅PJ-1 の `edit_project_settings` が watcher を作り直しても、前の watcher の分を足して数え続けます(§10.3 の「project.json の宣言を書き換える」) |
 
 ### ゲームロジック DLL のホットリロード(✅WP90/162 = G2/BEH1)
 

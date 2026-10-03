@@ -60,7 +60,7 @@
 
 **wire** — 「ディスク / RPC に出る形」のこと。同じ値でも、C++ の構造体(runtime)・正規化した中間形(canonical)・JSON に出る形(wire)は別物で、codec がこの 3 者を往復させます。「wire モデル」は「JSON に出る形の設計」の意味です。初出: [第3章 §3.10](03_project_format.md#310-コンポーネント宣言スキーマ-v3--flags-と-list-の-wirewp382a)。
 
-**解決(resolve)** — 参照や宣言から、実際に使う対象を確定する操作です。パス解決では `project://` や相対パスをプロジェクト基準、`user://` をユーザーデータ領域基準で解釈し、asset store は設定されたマウント先を使います。`engine://` は絶対ファイルパスではなく埋め込みリソースの識別子になる場合があります。`#` 以降のフラグメントも保持します。許可されたルートからの脱出は拒否しますが、すべての参照先がプロジェクトディレクトリ内にあるという意味ではありません。描画計画などで使う resolve は別の対象を確定する処理です。 初出: [第3章 §3.3](03_project_format.md#33-パス参照と-pathresolver)。([PathResolver](../../src/core/loader/pathresolver.hpp#L9) / [ProjectPathResolver](../../src/project/projectpathresolver.hpp#L69))
+**解決(resolve)** — 参照や宣言から、実際に使う対象を確定する操作です。パス解決では `project://` や相対パスをプロジェクト基準、`user://` をユーザーデータ領域基準で解釈し、asset store は設定されたマウント先を使います。`engine://` は絶対ファイルパスではなく埋め込みリソースの識別子になる場合があります。`#` 以降のフラグメントも保持します。許可されたルートからの脱出は拒否しますが、すべての参照先がプロジェクトディレクトリ内にあるという意味ではありません。描画計画などで使う resolve は別の対象を確定する処理です。 初出: [第3章 §3.3](03_project_format.md#33-パス参照と-pathresolver)。([PathResolver](../../src/core/loader/pathresolver.hpp#L9) / [ProjectPathResolver](../../src/project/projectpathresolver.hpp#L114))
 
 **結合(binding)** — 解決で得た実体を、**実行時のオブジェクトへ繋ぐ**操作。「形式の解析(`src/project`、GPU 不要)」と「実行時の結合(`src/core`)」を分けるのが pelican2 の二段構えで、`src/project` は純粋なパーサに保たれます。入力の `binding` は別語で、こちらは「デバイスの操作 → アクション名」の対応表です([第7章 §7.2](07_input_ui.md#72-アクション定義とバインディングプロファイル))。初出: [第3章 §3.5](03_project_format.md#35-解釈レイヤ--pelican_project-とバインダの分離)。
 

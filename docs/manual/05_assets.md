@@ -291,6 +291,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 ## 5.7 バイナリアセットの管理
 
 - バイナリの sha256 台帳は **assets manifest(✅WP66)** です: `pelican_cli assets manifest / verify / status` で生成・照合し、起動時にも検証されます([第3章](03_project_format.md) §3.4)。example の README にあった手書き表はこれに置き換わりました。
+- ✅AV-1 から、起動時の照合の結果は engine に残り、RPC で読めて走らせ直せます(`get_status.assets_verification`・`get_assets_verification`・`verify_assets`・`update_assets_manifest`。[第10章](10_tools.md) §10.3 の「起動時の asset 検証の結果」)。照合するのは manifest を宣言した store だけで、Blank / Standard の雛形は store も manifest も宣言しません。✅PJ-1(`89643cd7`)から、動いている engine に `edit_project_settings` で store と manifest の宣言を足せます。manifest のファイルが無ければ engine が今のディスクから書き、照合を走らせ直します。照合が終わった通知は無いので、`get_status.assets_verification.state` を見ます。受ける変更と断る変更は [第3章](03_project_format.md) §3.4 の「起動中の engine に宣言を足す」です。
 - 置き場所を外部化したい場合は asset store([第3章](03_project_format.md) §3.4)を使います。
 - `pelican_cli project init` が生成する `.gitattributes` は `*.glb -text` 等の改行変換防止(CRLF 事故防止)+ LFS 行のコメントアウトを含みます。⚠️ 並ぶのは `*.glb` / `*.vrm` / `*.png` / `*.wav` / `*.spv` で、**`*.ogg` はまだありません**(AU-2 で Ogg Vorbis を足したときに雛形を直していない)。Ogg を置く project は `*.ogg -text` を自分で足してください([雛形](../../src/project/projecttemplate.cpp#L293))。
 

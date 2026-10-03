@@ -19,7 +19,7 @@ Runtime object
 | データ | 純粋層 | runtime層 |
 |---|---|---|
 | project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L311) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L625) |
-| path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
+| path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L114) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L268) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1650) |
 | render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3422) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1660) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L56) |
@@ -49,7 +49,7 @@ player ではこの parse の**前**に、MG-1 の入口 [`requireProjectMigrati
 
 - 正規化: `/` と `\` で成分に分け、空の成分と `.` を落として `/` でつなぎ直します。存在するかは見ません(純粋層なので filesystem を触らない)。
 - 拒否は 1 つの code [`projectHotReloadInvalidCode`](../../src/project/projectformat.hpp#L36)(`project.hot_reload_invalid@1`)で、`requires` の `project.requires_unknown@1` と同じく文言が種類を言います: 配列でない / 文字列でない / 正規化して空 / 絶対(先頭が `/` か `\`、`C:` の形、`://` を含む)/ `..` の成分 / 正規化して重複。`"."` は空、`project://x` は絶対の扱いです。
-- runtime への道: [`ProjectPathResolver::setup()`](../../src/project/projectpathresolver.cpp#L343) が envelope の値を保持し、`hotReloadPaths()` で返します(reset で消える)。engine の [`PathResolver::hotReloadPaths()`](../../src/core/loader/pathresolver.hpp#L34) はそれに委譲し、[`ReloadService::setup()`](../../src/core/watch/reloadservice.cpp#L870) が起動時に 1 回読んで、`FileWatcherOptions::watch_paths` と gate の `WatchDeclaration` に渡します(下の「難所 — ファイルの再走査」の後の段落)。
+- runtime への道: [`ProjectPathResolver::setup()`](../../src/project/projectpathresolver.cpp#L343) が envelope の値を保持し、`hotReloadPaths()` で返します(reset で消える)。engine の [`PathResolver::hotReloadPaths()`](../../src/core/loader/pathresolver.hpp#L34) はそれに委譲し、[`ReloadService::setup()`](../../src/core/watch/reloadservice.cpp#L870) が起動時に 1 回読んで、`FileWatcherOptions::watch_paths` と gate の `WatchDeclaration` に渡します(下の「難所 — ファイルの再走査」の後の段落)。✅PJ-1 から、RPC `edit_project_settings` が値を `replaceDeclarations()` で差し替え、`ReloadService::setup()` をもう一度呼びます(§3.3 の「宣言のその場の差し替え」)。
 - test: [`projectformat_test.cpp` 内](../../test/projectformat_test.cpp#L127)「HW-1 project.json hot_reload is read as normalized logical paths and refused by name」。
 
 もう一つ、X-1で `project.json` に増えた **`packages`** キーは `ProjectEnvelope` には入りません。読むのは [`readInstalledPackagesJson()`](../../src/project/packagemanifest.hpp#L103) で、1エントリは `{namespace, package_version, sha256}` の [`InstalledPackage`](../../src/project/packagemanifest.hpp#L70) です（§3.16）。封筒のパーサとvendoringの台帳を別の関数に分けてあるので、package を知らない読み手は `packages` を素通りできます。
@@ -144,7 +144,7 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 
 ## 3.3 PathResolver
 
-解決規則の宣言は [`projectpathresolver.hpp`](../../src/project/projectpathresolver.hpp#L69)、中心実装は [`ProjectPathResolver::resolveRef()`](../../src/project/projectpathresolver.cpp#L554) です。ここは`pelican_project`に属し、Vulkan・quill・module containerへ依存しません。
+解決規則の宣言は [`projectpathresolver.hpp`](../../src/project/projectpathresolver.hpp#L114)、中心実装は [`ProjectPathResolver::resolveRef()`](../../src/project/projectpathresolver.cpp#L723) です。ここは`pelican_project`に属し、Vulkan・quill・module containerへ依存しません。
 
 engine側の [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9) は薄いmodule adapterです。[`pathresolver.cpp`](../../src/core/loader/pathresolver.cpp#L1) に残るのは、module寿命、返されたwarningのログ、`engine://` IDを埋め込みbytesへ変えるloader注入だけです。この境界によりdevstudioやCLIは`pelican_core`をリンクせず同じescape防止・asset store規則を使えます。
 
@@ -161,7 +161,7 @@ std::variant<
 >
 ```
 
-`engine://`はファイルシステム上のpathではなく、実行ファイルへ埋め込まれたresource IDです。また**fragment**を、コンテナ内要素のアドレスとして失わず伝えるためvariantになっています（[`parsePathReference()`](../../src/project/projectpathresolver.cpp#L278)）。fragmentは参照文字列の `#` 以降の `kind/path` で、「そのファイルの中のどれを指すか」を表します — 例が `assets/character.glb#mesh/Cube`（[`pathresolver_test.cpp` 内](../../test/pathresolver_test.cpp#L486)）で、`kind` が要素の種類、後半が名前です。`/` を含まない後半は名前アドレス、含む場合はコンテナ内のフルパスアドレスになります（[`AssetFragmentAddressKind`](../../src/project/projectpathresolver.hpp#L20)。[用語集](../manual/14_glossary.md) の「フラグメント参照(`#`)」）。`#` が2つある、`kind` だけで後半が無い、後半が全部数字、といった形は受理されません。
+`engine://`はファイルシステム上のpathではなく、実行ファイルへ埋め込まれたresource IDです。また**fragment**を、コンテナ内要素のアドレスとして失わず伝えるためvariantになっています（[`parsePathReference()`](../../src/project/projectpathresolver.cpp#L278)）。fragmentは参照文字列の `#` 以降の `kind/path` で、「そのファイルの中のどれを指すか」を表します — 例が `assets/character.glb#mesh/Cube`（[`pathresolver_test.cpp` 内](../../test/pathresolver_test.cpp#L486)）で、`kind` が要素の種類、後半が名前です。`/` を含まない後半は名前アドレス、含む場合はコンテナ内のフルパスアドレスになります（[`AssetFragmentAddressKind`](../../src/project/projectpathresolver.hpp#L21)。[用語集](../manual/14_glossary.md) の「フラグメント参照(`#`)」）。`#` が2つある、`kind` だけで後半が無い、後半が全部数字、といった形は受理されません。
 
 ### scheme別の処理
 
@@ -173,7 +173,7 @@ std::variant<
 | CLI由来の絶対path | そのpath | `--allow-absolute-paths`必須 |
 | project JSON内の絶対path | 不許可 | 常に拒否 |
 
-`std::filesystem::weakly_canonical`（`.` / `..` を畳み、途中までのsymlinkを解決して正規形へ落とす標準関数。末尾が実在しなくても失敗しない点が `canonical` との違いです）後にroot包含判定を行うため、単純な`../`文字列検査より強い境界です（[`ProjectPathResolver::resolveRef()`のproject処理](../../src/project/projectpathresolver.cpp#L659)）。
+`std::filesystem::weakly_canonical`（`.` / `..` を畳み、途中までのsymlinkを解決して正規形へ落とす標準関数。末尾が実在しなくても失敗しない点が `canonical` との違いです）後にroot包含判定を行うため、単純な`../`文字列検査より強い境界です（[`ProjectPathResolver::resolveRef()`のproject処理](../../src/project/projectpathresolver.cpp#L828)）。
 
 ### asset store
 
@@ -186,7 +186,19 @@ std::variant<
 - 実root同士の包含/重なりも拒否。
 - optional manifestのpathはproject root内に制限。
 
-相対参照がmount prefixに一致すると、project rootではなくstore rootへ付け替えます（[`asset store解決`](../../src/project/projectpathresolver.cpp#L643)）。これにより、VCS上の論理pathは固定したまま、大容量assetの実配置を開発者ごとに変えられます。
+相対参照がmount prefixに一致すると、project rootではなくstore rootへ付け替えます（[`asset store解決`](../../src/project/projectpathresolver.cpp#L812)）。これにより、VCS上の論理pathは固定したまま、大容量assetの実配置を開発者ごとに変えられます。
+
+#### 宣言のその場の差し替え(✅PJ-1、`89643cd7`)
+
+RPC `edit_project_settings`(第7章の RPC の表、manual 第10章 §10.3)は、setup をやり直さずに `asset_stores` と `hot_reload` の部分だけを差し替えます。
+
+- `asset_stores` の読み方は `setupImpl()` から切り出した static の [`parseAssetStores()`(PJ-1 で切り出し)](../../src/project/projectpathresolver.cpp#L357) 1 か所です(`.pelican/local.json` の適用込み)。setup も差し替えも同じ検査を通ります。
+- [`planDeclarations()`](../../src/project/projectpathresolver.cpp#L648) は新しい宣言を読み(検査に落ちれば `projectSettingsInvalidCode`)、[`planChange()`](../../src/project/projectpathresolver.cpp#L544) で今の store と比べて [`AssetStoresChange`](../../src/project/projectpathresolver.hpp#L95) `{added_stores, removed_stores, declared_manifests, removed_manifests}` を返します。何も変えません。RPC は project.json を書く前にこれを呼んで断ります。
+- `planChange()` の規則: 今ある store について、消えたら `stores_added_in_place` に無い限り断る / 論理 mount が変わったら断る / root(`.pelican/local.json`)が変わったら断る / manifest が無→有なら宣言の追加(解決できなければ `projectSettingsInvalidCode`)/ 有→無は `manifests_declared_in_place` か `stores_added_in_place` にあるときだけ / 有→別のものは断る。新しい store は、root が `weakly_canonical(project root / 論理 mount)` と同じときだけ受けます(mount の下の参照が前と同じファイルに解けるため)。断るのは [`AssetStoresChangeRefused`](../../src/project/projectpathresolver.hpp#L78) `{code, store, reason}` で、code は `project.settings_change_unsupported@1` か `project.settings_invalid@1` です。
+- [`ProjectPathResolver::replaceDeclarations()`](../../src/project/projectpathresolver.cpp#L662) は同じ plan を作り(断るときは何も変えない)、`stores_added_in_place` / `manifests_declared_in_place` を更新してから `asset_stores` と `hot_reload_paths` を置き換えます。store と一緒に足した manifest は store の側にだけ記録するので、外すときは store ごと外れます。2 つの記録は `reset()` で消えます。
+- engine の [`PathResolver::replaceDeclarations()`(module の側)](../../src/core/loader/pathresolver.cpp#L62) は委譲して、`asset store added in place: <name>=<root>` / `asset store removed in place: <name>` を INFO で出します。
+- lock はありません。差し替えの間ほかの thread が resolver を読まないことは呼び手が守る前提で、engine は RPC の handler(frame の境目、main thread)から呼びます(header の注記)。
+- test: [`projectsettingsrpc_test.cpp` の PJ-1 の 1 本目](../../test/projectsettingsrpc_test.cpp#L207)(headless の `pelican_player --rpc` を子 process で起こし、Blank の project に store・監視・manifest を足して戻す)と [2 本目](../../test/projectsettingsrpc_test.cpp#L321)(起動時からある宣言は変えられない)。`test/CMakeLists.txt` では `pelican_define_test(projectsettingsrpc_test GPU ...)` で定義しています。
 
 ### engine resource
 
@@ -216,12 +228,13 @@ playerはcore起動前に module [`AssetsVerification`](../../src/core/loader/as
 |---|---|---|
 | [`statusJson()`](../../src/core/loader/assetsverification.cpp#L204) | `get_status.assets_verification` | `running` → `running`、module が設定されていない → `not_run` `"this host does not verify assets"`、飛ばした理由があればそれ、結果が無いか store が 0 → `not_run` `"no asset store declares a manifest"`、それ以外は severity ごとの件数 |
 | [`detailJson()`](../../src/core/loader/assetsverification.cpp#L238) | `get_assets_verification` | `statusJson()` の `state` / `reason` に、`verified_at` と store ごとの issue の全件。走っている間は直前の `Record` を返す |
-| [`verify()`](../../src/core/loader/assetsverification.cpp#L298) | `verify_assets` | `startLocked()` が worker thread を 1 本起こす(走っていれば何もしない = 合流)。worker の [`run()`](../../src/core/loader/assetsverification.cpp#L253) は `verifyAssetStores(..., log = false)` で同じ照合をし、成功したら `Record` を置き換えて飛ばした理由を消す |
-| [`updateManifest()`](../../src/core/loader/assetsverification.cpp#L313) | `update_assets_manifest` | store を名前で引き、`generateAssetsManifest(root, manifest, cache, name, false)` で書いてから `verify()` |
+| [`verify()`](../../src/core/loader/assetsverification.cpp#L302) | `verify_assets` | `startLocked()` が worker thread を 1 本起こす(走っていれば何もしない = 合流)。worker の [`run()`](../../src/core/loader/assetsverification.cpp#L253) は `verifyAssetStores(..., log = false)` で同じ照合をし、成功したら `Record` を置き換えて飛ばした理由を消す |
+| [`updateManifest()`](../../src/core/loader/assetsverification.cpp#L317) | `update_assets_manifest` | store を名前で引き、`generateAssetsManifest(root, manifest, cache, name, false)` で書いてから `verify()` |
+| [`redeclareStores()`(PJ-1)](../../src/core/loader/assetsverification.cpp#L376) | `edit_project_settings` の反映 | ✅PJ-1。新しく宣言した manifest のうちファイルが無いものを `disk` の下で `generateAssetsManifest()` で書き、store の一覧を置き換えてから `verify()`。manifest を宣言した store が 1 つも無くなれば `Record` を捨てる。走っている worker があれば `stale` を立て、worker は結果を出す前に新しい一覧でもう一度照合する([`stale` を見る所](../../src/core/loader/assetsverification.cpp#L284))。返り値は `verify()` の答えに `generated` / `failed` を足したもの |
 
-mutex は 2 つです。`mutex` は状態(store の一覧・結果・`running`)を守り、`disk` は store・manifest・hash cache を読み書きする間を守ります。worker の照合と `updateManifest()` の書き込みは `disk` で直列になるので、再検証の最中に `update_assets_manifest` が来ると handler(= frame)はその照合が終わるまで待ちます(報告に残された穴)。module の破棄は `stop()` で worker を join するので、長い照合の途中で engine を閉じると照合の終わりまで待ちます。拒否は [`AssetsVerificationError`](../../src/core/loader/assetsverification.hpp#L64)(`code()` と `fields()`)で、RPC の側が `data: {error_code, error_fields}` にします。`fields_` は丸括弧で初期化します。波括弧だと nlohmann の json 1 つが要素 1 つの配列になり、RPC の側が object でない `fields()` を `{}` に置き換えてしまうためです(コンストラクタの注記)。
+mutex は 2 つです。`mutex` は状態(store の一覧・結果・`running`)を守り、`disk` は store・manifest・hash cache を読み書きする間を守ります。worker の照合と `updateManifest()` の書き込みは `disk` で直列になるので、再検証の最中に `update_assets_manifest` が来ると handler(= frame)はその照合が終わるまで待ちます(報告に残された穴)。PJ-1 の `redeclareStores()` が manifest を書くときも同じで、書いている間と照合の終わりを待つ間は frame が止まります。module の破棄は `stop()` で worker を join するので、長い照合の途中で engine を閉じると照合の終わりまで待ちます。拒否は [`AssetsVerificationError`](../../src/core/loader/assetsverification.hpp#L64)(`code()` と `fields()`)で、RPC の側が `data: {error_code, error_fields}` にします。`fields_` は丸括弧で初期化します。波括弧だと nlohmann の json 1 つが要素 1 つの配列になり、RPC の側が object でない `fields()` を `{}` に置き換えてしまうためです(コンストラクタの注記)。
 
-RPC の側は [`internal::configureAssetsVerificationRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1477) で、module は `EngineRpcModules::assets_verification` に `FastModuleContainer::tryGet<AssetsVerification>()` で入ります。module の無い host(in-process の test など)は `get_status` で `not_run`、`verify_assets` / `update_assets_manifest` で `assets_verification_unavailable@1` になります。test は [`assetsverification_test.cpp`](../../test/assetsverification_test.cpp#L161) の AV-1 の 4 本(`RpcServer::processLine` で往復。worker は `holdForTesting()` / `waitForTesting()` で止めて `running` を見る)です。
+RPC の側は [`internal::configureAssetsVerificationRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1478) で、module は `EngineRpcModules::assets_verification` に `FastModuleContainer::tryGet<AssetsVerification>()` で入ります。module の無い host(in-process の test など)は `get_status` で `not_run`、`verify_assets` / `update_assets_manifest` で `assets_verification_unavailable@1` になります。test は [`assetsverification_test.cpp`](../../test/assetsverification_test.cpp#L161) の AV-1 の 4 本(`RpcServer::processLine` で往復。worker は `holdForTesting()` / `waitForTesting()` で止めて `running` を見る)です。
 
 **hash の速さ(✅AH-1、`0f93b5b8`)。**cache が外れた file の hash は [`assetFileSha256()`](../../src/project/assetsmanifest.cpp#L162) で、file を 1 MiB の buffer で読みます。AH-1 はこの関数の中で、Windows では CNG(`BCryptCreateHash(BCRYPT_SHA256_ALG_HANDLE, ...)` / `BCryptHashData` / `BCryptFinishHash`)、それ以外では picosha2 の `hash256_one_by_one` に chunk ごとに渡していました。今は FW-1(`92681afd`)がその計算を [`Sha256Stream`](../../src/project/sha256stream.hpp#L15)(`src/project/sha256stream.cpp`。Windows では BCrypt、それ以外では picosha2)に移し、file watcher と共有しています。1 MiB は `Sha256Stream::read_chunk_bytes` です。`pelican_project` は Windows で `bcrypt` を link します(`src/project/CMakeLists.txt`)。どちらも小文字の 16 進の SHA-256 で、digest は前と同じです。前は picosha2 に `istreambuf_iterator` で 1 byte ずつ渡しており、commit の記述では hash cache の無い Debug の `projects/example`(約 70 MB)で 23〜31 s、変更後は 0.5〜0.75 s です。前の時間は Studio が engine の窓を見つけるまでの待ち(15 s)より長く、cache の無い worktree で Studio の test を走らせると engine が kill されていました。
 
@@ -359,7 +372,7 @@ renderer の slot には、frame を挟まない連続の load の道もあり�
 
 診断の記録は **allocation 禁止** です。[`record()`](../../src/core/loader/effecttransaction.cpp#L97) は [`errors_`](../../src/core/loader/effecttransaction.hpp#L142)（`sceneEffectCapacity + 1` 個の [`FixedEffectError`](../../src/core/loader/effecttransaction.hpp#L124)）の固定 slot を 1 つ取って、文字列も `FixedText<512>` / `FixedText<384>` へ `memcpy` するだけで、`std::string` も `json` も作りません。末尾の 1 slot は診断用ではなく **outbox 溢れ専用**で、[`reserveEntry()`](../../src/core/loader/effecttransaction.cpp#L119) が 256 件を超えて積めなかった**副作用の**件数を `effect_outbox_full@1` の `dropped` として数え続けます（診断そのものが 256 件を超えた場合は数えずに落ちます。非対称の理由は §5.15）。公開用の文字列と JSON は commit 後に初めて作られます — [`effectErrors()`](../../src/core/loader/scene.cpp#L1815) の呼び出しは `noexcept` の commit tail（`flush` / `finish`）を通過した**後**にあり、そこで固定 slot を sequence 順に並べて [`CommittedWithEffectFailure::EffectError`](../../src/core/loader/sceneload.hpp#L176) へ変換します。
 
-副作用の失敗は例外ではなく [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として `SceneLoadResult` に載り、**扱いは root ごと**です: startup は [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L138)、pending も [`LOG_ERROR`](../../src/core/loader/scene.cpp#L1883)、rpc の `load_scene` は [`response["effect_errors"]`](../../src/core/communication/rpcserver.cpp#L2035) として JSON で返し（失敗が無ければ空配列）、import は [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275) にそのまま入れて呼び手へ渡します。いずれも `committed` であることは変わりません（scene は載っている）。
+副作用の失敗は例外ではなく [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として `SceneLoadResult` に載り、**扱いは root ごと**です: startup は [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L138)、pending も [`LOG_ERROR`](../../src/core/loader/scene.cpp#L1883)、rpc の `load_scene` は [`response["effect_errors"]`](../../src/core/communication/rpcserver.cpp#L2039) として JSON で返し（失敗が無ければ空配列）、import は [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275) にそのまま入れて呼び手へ渡します。いずれも `committed` であることは変わりません（scene は載っている）。
 
 transient glTF 経路（`load_gltf`）は executor を通らず、従来どおり [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L2248) の populate callback で作ります（§3.8 の「`load_gltf` はトランザクション」）。
 
@@ -473,7 +486,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 
 ## 3.6 即時loadと要求load
 
-- `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L151)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L2021)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L845)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L500) で `PreCommitFailure` を従来どおりの例外へ戻します。
+- `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L151)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L2025)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L845)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L500) で `PreCommitFailure` を従来どおりの例外へ戻します。
 - [`requestLoad()`](../../src/core/loader/scene.cpp#L1838) は存在確認後、scene IDだけをpendingへ保存。activate 段の behavior から呼ばれた場合は live ではなく candidate projection に対して存在確認し、要求も candidate 側に積みます（rollback で一緒に捨てる）。
 - [`applyPendingLoad()`](../../src/core/loader/scene.cpp#L1869) はフレームのゲーム更新末尾で、まず前回 commit 分の retirement queue を消費し、apply 時点の committed projection に late-bind した `Borrowed` request で実際にload。
 
@@ -921,7 +934,7 @@ material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](.
 - **`.pelican`**: mount が空の store の深さ 0 の `.pelican` には入りません([`isProjectMetadataName()`](../../src/core/watch/filewatcher.cpp#L63))。native watch の側は、1 回の通知の record が全部無視してよい名前なら走査の理由にしません([`onlyIgnoredRecords()`](../../src/core/watch/filewatcher.cpp#L232))。
 - **path の key**: plain な entry は root の canonical に一覧の相対名を足して key にします(1 ファイルごとに `weakly_canonical` を 5 回呼び、Debug の 3000 ファイルで 1.3 s かかっていた)。symlink / junction とその下だけは従来どおり 1 件ずつ解決します。
 - **数える**: [`WatcherStatus`](../../src/core/watch/filewatcher.hpp#L25) の `scans` / `hashed_files` / `hashed_bytes` は起動からの累計で、`Impl` の `total_*` に足して `status()` が写します。reconcile の終わりに、hash したファイルがあれば(起動後の最初は 0 でも)INFO の `file watcher: scanned … files, hashed … (… MB) in … ms` を出します([出す所](../../src/core/watch/filewatcher.cpp#L756))。
-- **宣言(HW-1)**: `FileWatcherOptions::watch_paths` が `nullopt` なら全部を見ます。配列なら、constructor が届かない mount の store を外し(空の配列なら全部。[`Impl` の constructor](../../src/core/watch/filewatcher.cpp#L429))、`scan()` は `watchPathReaches()` で届かないフォルダに入らず、[`watchPathCovers()`](../../src/core/watch/filewatcher.cpp#L383) で外のファイルを inventory に入れません。`onlyIgnoredRecords()` は宣言の外の名前も無視してよい名前に数えます。gate の側は [`ReloadGate::updateLocked()`](../../src/core/watch/reloadgate.cpp#L37) で、`WatchDeclaration` が undeclared のときだけ rpc 駆動を閉じる理由にし、empty は `"hot_reload empty"` で閉じます。`--rpc` の下では [`ReloadService::applyFrame()`](../../src/core/watch/reloadservice.cpp#L902) が watcher の要求を `pelican.render_pipeline` の参加者に claim させません(`applyRequests()` の `excluded_participant`。`applyRequestsForTesting()` は誰も外さない)。
+- **宣言(HW-1)**: `FileWatcherOptions::watch_paths` が `nullopt` なら全部を見ます。配列なら、constructor が届かない mount の store を外し(空の配列なら全部。[`Impl` の constructor](../../src/core/watch/filewatcher.cpp#L429))、`scan()` は `watchPathReaches()` で届かないフォルダに入らず、[`watchPathCovers()`](../../src/core/watch/filewatcher.cpp#L383) で外のファイルを inventory に入れません。`onlyIgnoredRecords()` は宣言の外の名前も無視してよい名前に数えます。gate の側は [`ReloadGate::updateLocked()`](../../src/core/watch/reloadgate.cpp#L37) で、`WatchDeclaration` が undeclared のときだけ rpc 駆動を閉じる理由にし、empty は `"hot_reload empty"` で閉じます。`--rpc` の下では [`ReloadService::applyFrame()`](../../src/core/watch/reloadservice.cpp#L908) が watcher の要求を `pelican.render_pipeline` の参加者に claim させません(`applyRequests()` の `excluded_participant`。`applyRequestsForTesting()` は誰も外さない)。
 - test: `filewatcher_test` の FW-1 の 7 本(起動時の hash 0 と 1 ファイルの書き換え、同じ中身の再保存、未知の live の状態機械、polling、overflow、`.pelican`、`Sha256Stream`)と HW-1 の 3 本(当たり判定と hash、届かない store、gate)、[`reloadtransaction_test.cpp` 内](../../test/reloadtransaction_test.cpp#L472)「HW-1 a declared watch runs under an RPC driver and never reaches the render pipeline」(本物の watcher thread で `passes/main.json` を書き換え、rpc では render pipeline の名前の fake が 0 回、rpc なしでは 1 回呼ばれる)、GPU の [`texturereload_test.cpp` 内](../../test/texturereload_test.cpp#L240)「HW-1 under an RPC driver the watch reloads a texture in the declared folder and not one outside」。
 
 > 🧩 **難所 — 自分の書き込みを一度だけ**([`ContentDigestState::observe()`](../../src/core/watch/contentdigest.cpp#L182) / [`registerSelfWrite()`](../../src/core/watch/contentdigest.cpp#L171))

@@ -183,8 +183,8 @@ Studio は engine を `--rpc` で起こし、`--rpc` の engine は宣言が無�
 - 存在しない path は拒否しません。`.pelican/` の下は宣言しても監視しません(engine のキャッシュ置き場は常に対象外。[第10章](10_tools.md) §10.5)。
 - `--replay` / `--strict-assets` / headless では、宣言があっても監視しません([gate の 1 か所](../../src/core/watch/reloadgate.cpp#L37))。
 - **配布 build(`PELICAN_WITH_HOT_RELOAD=OFF`。`pelican_cli dist-config` が常に出す)では、宣言は読みます(下の拒否は同じ)が効きません**。監視そのものが無く、宣言があれば起動時に INFO を 1 行 `project.json hot_reload is ignored: this binary was built with PELICAN_WITH_HOT_RELOAD=OFF` 出して、そのまま開きます(✅AV-1。[第10章](10_tools.md) §10.5)。
-- `--rpc` の下で宣言した場所から反映されるのは、texture・material の値の文書・model・shader とその依存です。**render 文書(rendering config / preset / feature)は watcher からは反映されません**。`--rpc` の engine では render 文書は `reload_render_documents`(Studio が送ります。[第13章](13_editor.md))が持つためです([除外する所](../../src/core/watch/reloadservice.cpp#L902))。
-- **宣言は起動時に 1 回だけ読みます**([`ReloadService::setup()`](../../src/core/watch/reloadservice.cpp#L870))。書き換えたら engine を起こし直してください。Studio に宣言を切り替える画面はまだありません(project.json を手で書きます)。
+- `--rpc` の下で宣言した場所から反映されるのは、texture・material の値の文書・model・shader とその依存です。**render 文書(rendering config / preset / feature)は watcher からは反映されません**。`--rpc` の engine では render 文書は `reload_render_documents`(Studio が送ります。[第13章](13_editor.md))が持つためです([除外する所](../../src/core/watch/reloadservice.cpp#L908))。
+- **宣言は起動時に読みます**([`ReloadService::setup()`](../../src/core/watch/reloadservice.cpp#L870))。project.json を手で書き換えたときは engine を起こし直してください。✅PJ-1(`89643cd7`)から、**動いている engine には RPC `edit_project_settings` で宣言を差し替えられます**。engine が project.json に書き、その場で watcher を作り直します(§3.4 の「起動中の engine に宣言を足す」)。Studio からこれを呼ぶ画面はまだありません。
 
 拒否は 1 つの code `project.hot_reload_invalid@1` で、文言が種類を言います。検査は封筒の parser(`parseProjectEnvelopeJson()`)の中の 1 か所なので、player の起動・engine の `basicconfig.cpp`・`pelican_cli dist-config`・Studio の project の読み込み([project.cpp](../../src/devstudio/model/project.cpp#L145))など、この parser を通る読み手はどれも同じ文言で断ります。
 
@@ -363,6 +363,28 @@ manifest 本体(`pelican.assets` v1)は `pelican_cli assets manifest` が生成�
 > **設計決定(検証はロードを止めない):** アセットの正当性検査は開発の補助であり、既定では警告に留める。厳格化は明示フラグ(開発 CI・配布検証)でのみ行う。
 
 example の README にあった手書き sha256 表の役目は、この manifest([../../projects/example/assets.manifest.json](../../projects/example/assets.manifest.json)・26 エントリ)に置き換わりました。
+
+### 起動中の engine に宣言を足す(✅PJ-1)
+
+✅PJ-1(`89643cd7`)から、動いている engine に RPC で `asset_stores` と `hot_reload` を書かせ、engine を起こし直さずに反映できます。読むのは `get_project_settings {}`、書くのは `edit_project_settings {base_project_digest, hot_reload?, asset_stores?}` です。返り値と拒否の形は [第10章](10_tools.md) §10.3 の「project.json の宣言を書き換える」にあります([PJ-1 の書き込みと反映の handler](../../src/core/communication/projectsettingsrpc.cpp#L93))。
+
+背景: `pelican_cli project init` の Blank / Standard の雛形は `assets/` を作るだけで、`asset_stores` も `hot_reload` も宣言しません。そのため hot reload の宣言(HW-1)と素材の照合(AV-1)は、project.json を手で書いて engine を起こし直さないと効きませんでした。2026-10-03 に利用者が「Studio のボタンで宣言を足す」形を承認し(HW-2 / AV-1s)、PJ-1 はその engine 側です。Studio からこの RPC を呼ぶ画面はまだありません。
+
+- **書き方**: 鍵を省けば今の値のまま、`null` を渡せば鍵ごと消します。`hot_reload` は配列の置き換えで、HW-1 と同じ検査(上の「hot reload で監視するもの」)を通した正規化の形で書きます。`asset_stores` は宣言の全体を渡します。
+- **project.json への書き込み**は project の文書の transaction で、`base_project_digest` を CAS に使います。ほかの鍵と並びは保ち、新しい鍵は末尾に足します。書くと全体が 2 空白の indent に展開されるので、値を元に戻しても digest は元に戻りません。改行コードは元のファイルのものを使います([書く形を作る所](../../src/core/communication/projectsettingsrpc.cpp#L62))。値が変わらない要求は書かず、`changed: false` を返します。
+- **受ける変更**は次の 2 つだけです。
+  - store を足す。足した store の root は、mount が名指す project のフォルダでなければなりません。そうであれば、mount の下の参照は store を足す前と同じファイルに解けます。`.pelican/local.json` で別の場所に向けた store は断ります。
+  - 起動時から manifest の無い store に manifest を宣言する。manifest のファイルがまだ無ければ engine が今のディスクから書き(`update_assets_manifest` と同じ書き方)、照合を走らせ直します([第10章](10_tools.md) §10.3)。
+- **断る変更**(`project.settings_change_unsupported@1 {key, store?, reason}`。project.json は変わりません)は、engine が開いたときからある宣言を動かすものです: mount の移動、`.pelican/local.json` による store の root の移動、起動時からある store の削除、起動時からある manifest の削除と差し替え。どれも、参照の解ける先か照合の基準が変わるためです。理由の文言はどれも `restart the engine` で終わります([断る判定](../../src/project/projectpathresolver.cpp#L544))。
+- **戻す**: 返り値の `previous` をそのまま渡せば戻ります。外せるのは、この engine の実行中にこの RPC で足した store と manifest だけです(store と一緒に足した manifest は store ごと外れます)。
+- 照合が終わったことの通知はありません。`get_status.assets_verification.state` が `running` でなくなるのを待ちます。
+
+残る穴(着地時の記録):
+
+- manifest を書いている間と、走っている照合の終わりを待つ間は frame が止まります。
+- 作り直した watcher は、作り直す前に見張っていなかった間の外の変更を読み直しません。
+- mount で始まり `..` で mount の外へ出る参照(例 `assets/../scenes/a.json`)は、store を足すと解けなくなります。store を通る参照は store の root の外に出られないためです(`Asset store path escapes mount root ...`。上の「脱出防止の基準点は store 経由の参照では mount root に付け替わります」)。
+- resolver の宣言の差し替えは lock を取りません。main thread の frame の境目で呼ぶことが前提です。
 
 ## 3.5 解釈レイヤ — pelican_project とバインダの分離
 
