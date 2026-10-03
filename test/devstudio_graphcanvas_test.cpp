@@ -3120,6 +3120,43 @@ TEST_CASE("GL-2b the plan's origin says which graph node made a pass; bands, Lay
           GraphCanvasPlanTarget{"loop", "depth", "", "", "cascades", 2, false});
 }
 
+// UX-15b, decision 5 (GL-2b's hole): a feature whose passes graph nodes took
+// the place of, every one, has no folded node to say "is replaced by" on; the
+// graph's own Layers rows (nothing picked) say it instead.
+TEST_CASE("UX-15b a feature every pass of which a graph node replaced says so in the graph's "
+          "own Layers rows",
+          "[studio][graph-canvas][ux15b]") {
+    using PelicanStudio::GraphCanvasLayerRow;
+    Harness h;
+    h.open(gl2bDocument());
+    auto plan = gl2bPlan();
+    // shadow_resolve is no feature pass any more: no pass of
+    // shadow_directional is left, only the loop's copies in its place.
+    for (auto &node : plan["nodes"])
+        if (node.at("name") == "shadow_resolve") {
+            node.erase("provider_feature");
+            node["source"] = "engine";
+        }
+    h.reply(h.take("get_frame_plan"), plan);
+    auto &model = h.model;
+    for (const auto &domain : GraphCanvasModel::domainNames())
+        model.setDomainShown(domain, domain == "render");
+    REQUIRE(model.layersShown());
+    for (const auto &node : model.foldedNodes()) CHECK(node.id != "feature:shadow_directional");
+    const GraphCanvasLayerRow replaced{
+        "L1", "replaced",
+        "pass shadow_depth of shadow_directional is replaced by graph node cascades",
+        "cascades/0/depth"};
+    // Once, not once a copy.
+    CHECK(std::ranges::count(model.graphLayerRows(), replaced) == 1);
+
+    // With the feature's folded node there, the row stays on that node.
+    h.model.refresh();
+    h.reply(h.take("get_graph_instances"), gl2bDocument());
+    h.reply(h.take("get_frame_plan"), gl2bPlan());
+    CHECK(std::ranges::count(model.graphLayerRows(), replaced) == 0);
+}
+
 // UX-6b, decision 4 (engine PO-1): an output nothing reads and a binding the
 // shader never reads are said on the node that made the pass -- the band's
 // words and one sentence each, once for all of a loop's copies.

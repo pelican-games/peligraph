@@ -6874,6 +6874,9 @@ struct FramePlanEditRecorder {
         capability.editRenderTargets = record("edit_render_targets");
         capability.addAuthoredPass = record("add_authored_pass");
         capability.decomposeMaterialPass = record("decompose_material_pass");
+        // UX-15b.
+        capability.editVulkanPlanPins = record("edit_vulkan_plan_pins");
+        capability.putVulkanPhysicalFragment = record("put_vulkan_physical_fragment");
         capability.requestEditResult = [this](const QString &, QString *) {
             ticket_id = next_id++;
             return ticket_id;
@@ -12364,5 +12367,258 @@ TEST_CASE("UX-12c decision 2: a material pass's row says how many materials it d
     // The Graph's Materials drawn picks the route and the materials.
     fixture.widget.showMaterialRoutes(QStringLiteral("wp343_mixed_a"));
     CHECK(materials->selectedItems().size() == 4);
+}
+
+// --- UX-15b: the lower layer's decisions from the Frame Plan (engine EL-2).
+
+namespace {
+
+// Accepted, then committed: what the engine answers an edit it took.
+void commitSubmitted(EditingFixture &fixture) {
+    fixture.recorder.result(
+        fixture.recorder.submit_id,
+        QByteArray::fromStdString(Json{{"status", "accepted"}, {"ticket", "t-ux15b"}}.dump()));
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.ticket_id != 0);
+    fixture.recorder.result(
+        fixture.recorder.ticket_id,
+        QByteArray::fromStdString(Json{{"status", "committed"}, {"committed", true}}.dump()));
+    QApplication::processEvents();
+}
+
+QString bandText(FramePlanWidget &widget, const char *name) {
+    auto *label = widget.findChild<QLabel *>(QString::fromLatin1(name));
+    return label == nullptr ? QString{} : label->text();
+}
+
+} // namespace
+
+TEST_CASE("UX-15b decision 1: Pin this candidate sends the ejected pin with that candidate; a pin "
+          "the plan applies is a band with Unpin",
+          "[devstudio][frame-plan][ux15b][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    fixture.open();
+    const auto &physical = fixture.wire.at("physical_target_plan");
+    const Json ejected = physical.at("ejectable_pin_package");
+    REQUIRE(ejected.is_object());
+    std::string pinnable;
+    std::string rejected;
+    for (const auto &candidate : physical.at("backend_selection").at("candidates")) {
+        const auto name = candidate.at("candidate").get<std::string>();
+        if (candidate.value("feasible", false) && pinnable.empty()) pinnable = name;
+        if (!candidate.value("feasible", false) && !candidate.value("selected", false))
+            rejected = name;
+    }
+    REQUIRE_FALSE(pinnable.empty());
+    CHECK(bandText(fixture.widget, "pelican.framePlan.backend.state")
+              .startsWith(QStringLiteral("Not pinned")));
+
+    // The candidate's row, picked; the named entry acts on it.
+    auto *backends =
+        fixture.widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanBackends"));
+    REQUIRE(backends != nullptr);
+    const auto rows = backends->findItems(QString::fromStdString(pinnable), Qt::MatchExactly, 0);
+    REQUIRE(rows.size() == 1);
+    backends->setCurrentItem(rows.front());
+    auto *pin = fixture.widget.findChild<QAction *>(QStringLiteral("pelican.framePlan.backend.pin"));
+    REQUIRE(pin != nullptr);
+    pin->trigger();
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.submits == 1);
+    CHECK(fixture.recorder.method == QStringLiteral("edit_vulkan_plan_pins"));
+    Json expected_pin = ejected;
+    expected_pin["pins"]["backend_candidate"] = pinnable;
+    CHECK(sentParams(fixture.recorder) ==
+          Json{{"base_source_digest", RootDigest}, {"family", "flat"}, {"pin", expected_pin}});
+    commitSubmitted(fixture);
+    CHECK(statusText(fixture.widget) == QString::fromStdString("Pinned " + pinnable + "."));
+
+    // The plan read again applies it: the band says so and offers Unpin.
+    Json pinned = fixture.wire;
+    pinned["physical_target_plan"]["applied_pin_package"] = expected_pin;
+    fixture.widget.receiveResult(QByteArray::fromStdString(pinned.dump()));
+    QApplication::processEvents();
+    CHECK(bandText(fixture.widget, "pelican.framePlan.backend.state") ==
+          QString::fromStdString("Pinned: " + pinnable));
+    auto *unpin = fixture.widget.findChild<QPushButton *>(
+        QStringLiteral("pelican.framePlan.backend.unpinButton"));
+    REQUIRE(unpin != nullptr);
+    unpin->click();
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.submits == 2);
+    CHECK(sentParams(fixture.recorder) == Json{{"base_source_digest", RootDigest},
+                                               {"family", "flat"},
+                                               {"pin", nullptr},
+                                               {"graph", fixture.graph}});
+
+    // What is not sent says why.
+    const auto model = buildFramePlanModel(pinned.dump());
+    CHECK(framePlanBackendPinRequest(FramePlanAuthoring{}, model, pinnable).refusal ==
+          "The render authoring context has not arrived yet.");
+    FramePlanAuthoring received;
+    received.received = true;
+    CHECK(framePlanBackendPinRequest(received, model, pinnable).refusal ==
+          pinnable + " is pinned already.");
+    if (!rejected.empty())
+        CHECK(framePlanBackendPinRequest(received, model, rejected).refusal ==
+              rejected + " was rejected by the planner: only a Selected or Feasible candidate "
+                         "can be pinned.");
+    CHECK(framePlanPackageFamily("main_render#xr") == "xr");
+}
+
+TEST_CASE("UX-15b decision 2: Freeze sends the ejected fragment as it is; Frozen offers Remove; a "
+          "stale refusal is one sentence beside Eject again",
+          "[devstudio][frame-plan][ux15b][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    fixture.open();
+    const Json fragment = fixture.wire.at("physical_target_plan").at("ejectable_physical_fragment");
+    REQUIRE(fragment.is_object());
+    CHECK(bandText(fixture.widget, "pelican.framePlan.physical.state")
+              .startsWith(QStringLiteral("Not frozen")));
+    auto *freeze = fixture.widget.findChild<QPushButton *>(
+        QStringLiteral("pelican.framePlan.physical.freezeButton"));
+    REQUIRE(freeze != nullptr);
+    freeze->click();
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.submits == 1);
+    CHECK(fixture.recorder.method == QStringLiteral("put_vulkan_physical_fragment"));
+    const Json frozen{{"base_source_digest", RootDigest}, {"family", "flat"}, {"fragment", fragment}};
+    CHECK(sentParams(fixture.recorder) == frozen);
+
+    // The runtime's linker finds it stale when the change commits.
+    fixture.recorder.result(
+        fixture.recorder.submit_id,
+        QByteArray::fromStdString(Json{{"status", "accepted"}, {"ticket", "t-stale"}}.dump()));
+    QApplication::processEvents();
+    fixture.recorder.result(
+        fixture.recorder.ticket_id,
+        QByteArray::fromStdString(
+            Json{{"status", "rejected"},
+                 {"error",
+                  {{"code", "physical_fragment_stale"},
+                   {"message", "Vulkan physical fragment automatic plan fingerprint is stale"},
+                   {"family", "flat"},
+                   {"graph", fixture.graph},
+                   {"fingerprint", "automatic_plan"},
+                   {"expected", "fnv1a64:0000000000000001"},
+                   {"actual", "fnv1a64:0000000000000002"}}}}
+                .dump()));
+    QApplication::processEvents();
+    auto *status = fixture.widget.findChild<QLabel *>(QStringLiteral("pelican.framePlanStatus"));
+    REQUIRE(status != nullptr);
+    CHECK(status->toolTip().contains(QStringLiteral(
+        "The frozen plan no longer matches the graph (automatic_plan); Eject again "
+        "(physical_fragment_stale).")));
+    auto *eject = fixture.widget.findChild<QPushButton *>(
+        QStringLiteral("pelican.framePlan.physical.ejectAgainButton"));
+    REQUIRE(eject != nullptr);
+    CHECK_FALSE(eject->isHidden());
+    // Eject again: the plan on screen's fragment, in one edit.
+    eject->click();
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.submits == 2);
+    CHECK(sentParams(fixture.recorder) == frozen);
+    CHECK(eject->isHidden());
+    commitSubmitted(fixture);
+
+    // The plan read again applies it: Frozen, and Remove.
+    Json applied = fixture.wire;
+    applied["physical_target_plan"]["applied_physical_fragment"] = fragment;
+    fixture.widget.receiveResult(QByteArray::fromStdString(applied.dump()));
+    QApplication::processEvents();
+    CHECK(bandText(fixture.widget, "pelican.framePlan.physical.state")
+              .startsWith(QStringLiteral("Frozen")));
+    auto *remove = fixture.widget.findChild<QPushButton *>(
+        QStringLiteral("pelican.framePlan.physical.removeButton"));
+    REQUIRE(remove != nullptr);
+    remove->click();
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.submits == 3);
+    CHECK(sentParams(fixture.recorder) == Json{{"base_source_digest", RootDigest},
+                                               {"family", "flat"},
+                                               {"fragment", nullptr},
+                                               {"graph", fixture.graph}});
+}
+
+TEST_CASE("UX-15b decisions 4 and 5: the resident BLAS only for a ray-query scene, and the rewrite "
+          "that put a pass in the plan",
+          "[devstudio][frame-plan][ux15b]") {
+    application();
+    Json wire = capturedRuntimeFramePlan();
+    const auto rayQueryRow = [](FramePlanWidget &widget) -> QTreeWidgetItem * {
+        auto *physical =
+            widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanPhysical"));
+        if (physical == nullptr) return nullptr;
+        const auto rows = physical->findItems(QStringLiteral("Ray query acceleration structures"),
+                                              Qt::MatchExactly, 0);
+        return rows.isEmpty() ? nullptr : rows.front();
+    };
+    {
+        // The captured project has no ray tracing: no section.
+        REQUIRE_FALSE(wire.at("ray_query_acceleration_structures").value("requested", true));
+        EmbeddedViewport viewport;
+        FramePlanWidget widget{&viewport};
+        widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+        QApplication::processEvents();
+        CHECK(rayQueryRow(widget) == nullptr);
+    }
+
+    auto &scene = wire["ray_query_acceleration_structures"];
+    scene["requested"] = true;
+    scene["tlas_instance_count"] = 3;
+    scene["named_tlas_instance_counts"] = {{"scene", 3}};
+    scene["resident_blas_keys"] = Json::array(
+        {{{"geometry_kind", "triangles"}, {"geometry_allocation_id", 7}, {"geometry_flags", 1},
+          {"geometry_count", 2}, {"index_device_address", 0}, {"vertex_device_address", 0}},
+         {{"geometry_kind", "aabbs"}, {"geometry_allocation_id", 9}, {"geometry_flags", 0},
+          {"geometry_count", 1}, {"index_device_address", 0}, {"vertex_device_address", 0}}});
+    const auto replaced = wire.at("nodes").at(1).at("name").get<std::string>();
+    const auto untouched = wire.at("nodes").at(0).at("name").get<std::string>();
+    wire["physical_target_plan"]["subgraph_replacements"] = Json::array(
+        {{{"region", "bloom_region"},
+          {"provider", "pelican.test.bloom"},
+          {"implementation", "fused"},
+          {"explicitly_selected", true},
+          {"source_nodes", Json::array({"bloom_a", "bloom_b"})},
+          {"replacement_nodes", Json::array({replaced})}}});
+    wire["physical_target_plan"]["render_strategy"] = {{"name", "forward"},
+                                                       {"provider", "pelican.strategy.forward"},
+                                                       {"implementation", "default"},
+                                                       {"graph_variant", "flat"}};
+
+    const auto model = buildFramePlanModel(wire.dump());
+    REQUIRE(model.ray_query.has_value());
+    CHECK(model.ray_query->shown());
+    CHECK(model.ray_query->resident_blas_keys ==
+          std::vector<FramePlanBlasKey>{{"triangles", 7, 1, 2}, {"aabbs", 9, 0, 1}});
+    CHECK(framePlanReplacedByLines(model, replaced) ==
+          std::vector<std::string>{"subgraph replacement bloom_region by pelican.test.bloom (fused)"});
+    // The strategy rewrote the whole graph: said once, not on each pass.
+    CHECK(framePlanReplacedByLines(model, untouched).empty());
+    REQUIRE(model.physical_plan.rewrites.size() == 2);
+    CHECK(framePlanRewriteLine(model.physical_plan.rewrites[1]) ==
+          "render strategy forward by pelican.strategy.forward (default), graph variant flat");
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    QApplication::processEvents();
+    auto *section = rayQueryRow(widget);
+    REQUIRE(section != nullptr);
+    CHECK(section->text(2) == QStringLiteral("2 resident BLAS, 3 TLAS instances"));
+    QStringList children;
+    for (int index = 0; index < section->childCount(); ++index)
+        children << section->child(index)->text(1);
+    CHECK(children.contains(QStringLiteral("Resident BLAS (2)")));
+    CHECK(children.contains(QStringLiteral("Named TLAS (1)")));
+
+    auto *passes = widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanPasses"));
+    REQUIRE(passes != nullptr);
+    const auto rows = passes->findItems(QString::fromStdString(replaced), Qt::MatchExactly, 1);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows.front()->toolTip(1) ==
+          QStringLiteral("Replaced by subgraph replacement bloom_region by pelican.test.bloom (fused)"));
 }
 } // namespace PelicanStudio

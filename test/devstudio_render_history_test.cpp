@@ -860,6 +860,52 @@ TEST_CASE("LP-4f2 apply_graph_template is recorded as Replace <feature> with <ti
     CHECK(rig.history.redoLabel() == "Replace bloom with Bloom loop");
 }
 
+// UX-15b, decision 3: the Frame Plan's pin and frozen plan (EL-2) are
+// render edits like any other: recorded, named by what they did, undone.
+TEST_CASE("UX-15b a backend pin and a frozen physical plan are recorded, named, and undone",
+          "[devstudio][render-history][ux15b]") {
+    Rig rig;
+    const std::string RootAfter(64, 'f');
+    const Json pin{{"schema", "pelican.vulkan_target_plan_pins"},
+                   {"version", 1},
+                   {"graph", "main_render"},
+                   {"logical_graph_fingerprint", "fnv1a64:0000000000000001"},
+                   {"pins", {{"backend_candidate", "pelican.vulkan.transient_plan@1"}}}};
+    const auto before = rig.sent.size();
+    const auto panel = rig.panelSends(
+        "edit_vulkan_plan_pins", Json{{"base_source_digest", RootA}, {"family", "flat"}, {"pin", pin}});
+    REQUIRE(rig.sent.size() == before + 1);
+    CHECK(rig.sent[before].method == "get_render_documents");
+    rig.answer(rig.sent[before].id, Json{{"documents", bothBefore()}});
+    rig.answer(panel, Json{{"status", "accepted"}, {"ticket", "t-pin"}});
+    REQUIRE(rig.last().method == "get_edit_result");
+    rig.answer(rig.last().id, committed({{Root, RootAfter}}));
+    REQUIRE(rig.last().method == "get_render_documents");
+    rig.answer(rig.last().id,
+               Json{{"documents", Json::array({document(Root, "root", RootAfter, "root after")})}});
+    REQUIRE(rig.history.undoStack().size() == 1);
+    CHECK(rig.history.undoLabel() == "Pin backend pelican.vulkan.transient_plan@1");
+    REQUIRE(rig.history.undo());
+    REQUIRE(rig.last().method == "get_render_documents");
+    rig.answer(rig.last().id,
+               Json{{"documents", Json::array({document(Root, "root", RootAfter, "root after")})}});
+    REQUIRE(rig.last().method == "restore_render_documents");
+    CHECK(rig.last().params.at("documents") ==
+          Json::array({restored(Root, RootAfter, "root bytes")}));
+
+    // The other three gestures, by the package they carry.
+    CHECK(RenderEditHistory::labelFor("edit_vulkan_plan_pins",
+                                      Json{{"pin", nullptr}, {"graph", "main_render"}}) ==
+          "Unpin backend");
+    CHECK(RenderEditHistory::recordsMethod("put_vulkan_physical_fragment"));
+    CHECK(RenderEditHistory::labelFor("put_vulkan_physical_fragment",
+                                      Json{{"fragment", {{"graph", "main_render"}}}}) ==
+          "Freeze physical plan");
+    CHECK(RenderEditHistory::labelFor("put_vulkan_physical_fragment",
+                                      Json{{"fragment", nullptr}, {"graph", "main_render"}}) ==
+          "Remove frozen physical plan");
+}
+
 TEST_CASE("LP-4f2 the entry is named for the template until the engine names the feature",
           "[devstudio][render-history][lp4f2]") {
     CHECK(RenderEditHistory::labelFor(

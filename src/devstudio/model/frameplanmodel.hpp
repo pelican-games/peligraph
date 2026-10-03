@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace PelicanStudio {
@@ -605,6 +606,27 @@ struct FramePlanWireSection {
     bool operator==(const FramePlanWireSection &) const = default;
 };
 
+// UX-15b, decision 5: one compile rewrite the physical target plan names --
+// a subgraph_replacements entry, a graph_transforms entry, or the
+// render_strategy.
+struct FramePlanRewrite {
+    // "subgraph_replacement", "graph_transform" or "render_strategy".
+    std::string kind;
+    // The region a replacement took, or the transform's / strategy's name.
+    std::string name;
+    std::string provider;
+    std::string implementation;
+    // A subgraph replacement's nodes: the ones it took out, and the ones the
+    // plan holds in their place. A transform and a strategy name no node.
+    std::vector<std::string> source_nodes;
+    std::vector<std::string> replacement_nodes;
+    // render_strategy only.
+    std::string graph_variant;
+    bool explicitly_selected = false;
+
+    bool operator==(const FramePlanRewrite &) const = default;
+};
+
 enum class FramePlanExecutionPlanState {
     unavailable,
     available,
@@ -678,6 +700,19 @@ struct FramePlanPhysicalPlan {
     // makes key-set coverage mechanically checkable and prevents silent loss
     // when the producer adds another current-version section.
     std::vector<FramePlanWireSection> wire_sections;
+    // UX-15b, decisions 1 and 2 (engine EL-2): the packages the plan ejects
+    // and the ones the document applied to it, each as its JSON text; empty
+    // when the plan has none. The Frame Plan sends them back unchanged (a
+    // pin with only its candidate swapped).
+    std::string ejectable_pin_package;
+    std::string ejectable_physical_fragment;
+    std::string applied_pin_package;
+    std::string applied_physical_fragment;
+    // applied_pin_package's pins.backend_candidate.
+    std::string pinned_backend_candidate;
+    // UX-15b, decision 5: subgraph_replacements, graph_transforms and
+    // render_strategy, in that order.
+    std::vector<FramePlanRewrite> rewrites;
 
     [[nodiscard]] bool available() const noexcept {
         return state == FramePlanPhysicalPlanState::available;
@@ -716,6 +751,36 @@ struct FramePlanGpuResourceArena {
     bool operator==(const FramePlanGpuResourceArena &) const = default;
 };
 
+// UX-15b, decision 4: one BLAS the ray-query scene keeps resident
+// (ray_query_acceleration_structures.resident_blas_keys).
+struct FramePlanBlasKey {
+    std::string geometry_kind;
+    std::uint64_t geometry_allocation_id = 0;
+    std::uint64_t geometry_flags = 0;
+    std::uint64_t geometry_count = 0;
+
+    bool operator==(const FramePlanBlasKey &) const = default;
+};
+
+// UX-15b, decision 4: get_frame_plan's ray_query_acceleration_structures.
+// The engine keeps one ray-query scene: its BLAS are shared by every TLAS,
+// and a named TLAS is told apart only by its instance count.
+struct FramePlanRayQueryStructures {
+    bool requested = false;
+    std::uint64_t active_blas_count = 0;
+    std::uint64_t blas_variant_count = 0;
+    std::uint64_t tlas_instance_count = 0;
+    std::vector<std::pair<std::string, std::uint64_t>> named_tlas_instance_counts;
+    std::vector<FramePlanBlasKey> resident_blas_keys;
+
+    // A project without ray tracing asks for no scene and keeps no BLAS.
+    [[nodiscard]] bool shown() const noexcept {
+        return requested || !resident_blas_keys.empty();
+    }
+
+    bool operator==(const FramePlanRayQueryStructures &) const = default;
+};
+
 struct FramePlanModel {
     std::string profile;
     std::string graph;
@@ -736,9 +801,20 @@ struct FramePlanModel {
     FramePlanExecutionPlan execution_plan;
     FramePlanPhysicalPlan physical_plan;
     std::optional<FramePlanGpuResourceArena> gpu_resource_arena;
+    // UX-15b, decision 4: absent from a plan that predates the member.
+    std::optional<FramePlanRayQueryStructures> ray_query;
 
     bool operator==(const FramePlanModel &) const = default;
 };
+
+// UX-15b, decision 5: the rewrites that put `node` into the plan, one line
+// each ("subgraph replacement <region> by <provider> (<implementation>)").
+// Only a subgraph replacement names its nodes; a graph transform and the
+// render strategy rewrite the whole graph and are said once, not per pass.
+[[nodiscard]] std::vector<std::string> framePlanReplacedByLines(const FramePlanModel &model,
+                                                                std::string_view node);
+// One rewrite as the Frame Plan names it.
+[[nodiscard]] std::string framePlanRewriteLine(const FramePlanRewrite &rewrite);
 
 // Builds the compact, view-independent projection used by Pelican Studio from
 // the result value of get_frame_plan. Only pelican.frame_plan version 1 is

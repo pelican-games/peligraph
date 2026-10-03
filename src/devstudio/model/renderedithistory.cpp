@@ -22,7 +22,7 @@ constexpr int TicketPollMs = 25;
 // The render edits: the ones that replace what documents hold (RD-1), and
 // the ones that create or remove files (RD-1b), which RU-1 could not take
 // back.
-constexpr std::array<std::string_view, 22> RecordedMethods{
+constexpr std::array<std::string_view, 24> RecordedMethods{
     "edit_preset_pass",
     "decompose_material_pass",
     // LP-4f2: a shipped graph template in place of a feature (GT-1).
@@ -47,6 +47,10 @@ constexpr std::array<std::string_view, 22> RecordedMethods{
     // decision written from the Frame Plan (EL-2).
     "fold_nodes",
     "edit_target_planning",
+    // UX-15b: a backend pin and a frozen physical plan (EL-2), from the
+    // Frame Plan's Backends and Physical plan tabs.
+    "edit_vulkan_plan_pins",
+    "put_vulkan_physical_fragment",
     // GL-4a: the verified mark verify_fold writes (FG-2), after it runs.
     "verify_fold",
     // UX-12d: several edits in one ticket (FR-3), taken back as one.
@@ -309,6 +313,17 @@ std::string RenderEditHistory::labelFor(const std::string &method, const Json &p
         return named(removed ? "Unfold " : "Fold group ", group, removed ? "Unfold" : "Fold group");
     }
     if (method == "edit_target_planning") return "Edit planning decisions";
+    // UX-15b: a null package takes the decision away.
+    if (method == "edit_vulkan_plan_pins") {
+        const auto pin = params.is_object() ? params.value("pin", Json{}) : Json{};
+        if (!pin.is_object()) return "Unpin backend";
+        return named("Pin backend ", stringAt(pin.value("pins", Json::object()), "backend_candidate"),
+                     "Pin backend");
+    }
+    if (method == "put_vulkan_physical_fragment")
+        return params.is_object() && params.value("fragment", Json{}).is_object()
+                   ? "Freeze physical plan"
+                   : "Remove frozen physical plan";
     if (method == "verify_fold") return named("Verify ", stringAt(params, "group"), "Verify");
     // UX-12d: a batch is named by its last edit the history names itself
     // (the feature it adds, the change it sends again).

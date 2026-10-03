@@ -547,6 +547,22 @@ struct FramePlanWidget::Impl {
     QAction *planning_serial = nullptr;
     QAction *planning_isolate = nullptr;
     QAction *planning_no_alias = nullptr;
+    // --- UX-15b: the lower layer's decisions (EL-2), named so a scenario
+    // fires them: Pin this candidate acts on the picked Backends row.
+    QAction *backend_pin = nullptr;
+    QAction *backend_unpin = nullptr;
+    QAction *physical_freeze = nullptr;
+    QAction *physical_remove = nullptr;
+    QAction *physical_eject_again = nullptr;
+    // Beside the line of a physical_fragment_stale refusal.
+    QPushButton *eject_again = nullptr;
+    // The bands on screen. A tree lets go of a row's widget only later
+    // (deleteLater), so a band is deleted here before its tree is filled
+    // again, and its name never answers for two widgets at once.
+    std::vector<QPointer<QWidget>> bands;
+    void dropBands() {
+        for (auto &band : std::exchange(bands, {})) delete band.data();
+    }
     qint64 pending_task_request = 0;
     qint64 pending_edit_request = 0;
     qint64 pending_ticket_request = 0;
@@ -793,6 +809,17 @@ struct FramePlanWidget::Impl {
         QObject::connect(reload_authoring, &QPushButton::clicked, &owner,
                          [this] { reloadAuthoring(); });
         status_row->addWidget(reload_authoring);
+        // UX-15b, decision 2: a frozen plan the graph moved away from.
+        eject_again = new QPushButton(owner.tr("Eject again"), &owner);
+        eject_again->setObjectName(
+            QStringLiteral("pelican.framePlan.physical.ejectAgainButton"));
+        eject_again->setToolTip(owner.tr(
+            "Freeze the physical plan again from the plan on screen: one change, "
+            "which Undo takes back."));
+        eject_again->hide();
+        QObject::connect(eject_again, &QPushButton::clicked, &owner,
+                         [this] { freezePhysicalPlan(); });
+        status_row->addWidget(eject_again);
         // Q-14: the two ways out of a pass whose shader does not read the
         // inputs it was given.
         const auto actions = shaderInputContractActions();
@@ -1312,6 +1339,27 @@ struct FramePlanWidget::Impl {
                                            owner.tr("Isolate"), "isolate");
         planning_no_alias = planning_action("pelican.framePlan.planning.noAlias",
                                             owner.tr("No alias"), "no_alias");
+        // UX-15b, decisions 1 and 2. Always on: what cannot be sent says why
+        // on the status line.
+        const auto lower_action = [this](const char *name, const QString &label,
+                                         void (Impl::*run)()) {
+            auto *action = new QAction(label, &owner);
+            action->setObjectName(QString::fromLatin1(name));
+            owner.addAction(action);
+            QObject::connect(action, &QAction::triggered, &owner, [this, run] { (this->*run)(); });
+            return action;
+        };
+        backend_pin = lower_action("pelican.framePlan.backend.pin",
+                                   owner.tr("Pin this candidate"), &Impl::pinPickedCandidate);
+        backend_unpin = lower_action("pelican.framePlan.backend.unpin", owner.tr("Unpin"),
+                                     &Impl::unpinBackend);
+        physical_freeze = lower_action("pelican.framePlan.physical.freeze",
+                                       owner.tr("Freeze this physical plan"),
+                                       &Impl::freezePhysicalPlan);
+        physical_remove = lower_action("pelican.framePlan.physical.remove", owner.tr("Remove"),
+                                       &Impl::removeFrozenPlan);
+        physical_eject_again = lower_action("pelican.framePlan.physical.ejectAgain",
+                                            owner.tr("Eject again"), &Impl::freezePhysicalPlan);
         for (QTreeWidget *tree : {passes, resources, physical, decisions, backends, barriers}) {
             tree->setContextMenuPolicy(Qt::CustomContextMenu);
             QObject::connect(tree, &QWidget::customContextMenuRequested, &owner,
@@ -1370,6 +1418,7 @@ struct FramePlanWidget::Impl {
                              pending_edit_request = 0;
                              pending_ticket_request = 0;
                              pending_ticket.clear();
+                             eject_again->hide();
                              submitted_method.clear();
                              submitted_target.clear();
                              pending_target_selection.clear();
@@ -1439,6 +1488,7 @@ struct FramePlanWidget::Impl {
             target->setCurrentIndex(-1);
         }
         target->setEnabled(false);
+        dropBands();
         passes->clear();
         resources->clear();
         physical->clear();
@@ -1879,7 +1929,11 @@ struct FramePlanWidget::Impl {
                 ? edit.decomposeMaterialPass
             // GL-3a, decision 8.
             : request.method == "edit_target_planning" ? edit.editTargetPlanning
-                                                      : nullptr;
+            // UX-15b.
+            : request.method == "edit_vulkan_plan_pins" ? edit.editVulkanPlanPins
+            : request.method == "put_vulkan_physical_fragment"
+                ? edit.putVulkanPhysicalFragment
+                : nullptr;
         if (!sender) {
             showStatus(owner.tr("Canvas editing is unavailable: %1").arg(method));
             return false;
@@ -1906,6 +1960,7 @@ struct FramePlanWidget::Impl {
         hideShaderContract();
         refusal_disconnect->hide();
         refusal_open_shader->hide();
+        eject_again->hide();
         shown_refusal_line.clear();
         submitted_notice = text(request.notice);
         commit_notice.clear();
@@ -2046,6 +2101,8 @@ struct FramePlanWidget::Impl {
         // has the engine's whole message as well.
         const QString whole = responseDetail(response);
         showStatus(oneLine(message), message.contains(whole) ? message : message + QLatin1Char('\n') + whole);
+        // UX-15b, decision 2: the frozen plan is older than the graph.
+        if (framePlanPhysicalFragmentStale(refusalOf(response))) eject_again->show();
     }
 
     // --- Q-14. The pass's inputs and its shader's declarations disagree:
@@ -3060,6 +3117,7 @@ struct FramePlanWidget::Impl {
         const auto names = rowNodes(item);
         QMenu menu;
         addPlanningEntries(menu, item);
+        addLowerLayerEntries(menu, tree, item);
         if (names.size() > 1) {
             QMenu *each = menu.addMenu(owner.tr("Open in Graph"));
             for (const auto &name : names) {
@@ -3151,6 +3209,96 @@ struct FramePlanWidget::Impl {
                                                        : "Isolate";
         request.notice = title + (on ? " set on " : " taken off ") + name + ".";
         submit(request);
+    }
+    // --- UX-15b, decisions 1 and 2: a backend pinned from its Backends row,
+    // and the physical plan frozen from the Physical plan tab. Each is one
+    // edit (EL-2), which RU-1's Undo takes back.
+    static constexpr int BackendCandidateRole = Qt::UserRole + 73;
+    static std::string candidateOf(const QTreeWidgetItem *item) {
+        for (; item != nullptr; item = item->parent()) {
+            const auto name = item->data(0, BackendCandidateRole).toString();
+            if (!name.isEmpty()) return name.toStdString();
+        }
+        return {};
+    }
+    static FramePlanEditRequest noPlanYet() {
+        FramePlanEditRequest request;
+        request.refusal = "The frame plan has not arrived yet.";
+        return request;
+    }
+    void pinCandidate(const std::string &candidate) {
+        submitBuilt([this, candidate] {
+            return model ? framePlanBackendPinRequest(authoring, *model, candidate) : noPlanYet();
+        });
+    }
+    void pinPickedCandidate() {
+        const auto candidate = candidateOf(backends->currentItem());
+        if (candidate.empty()) {
+            showStatus(owner.tr("Pick a candidate row on the Backends tab first."));
+            return;
+        }
+        pinCandidate(candidate);
+    }
+    void unpinBackend() {
+        submitBuilt([this] {
+            return model ? framePlanBackendUnpinRequest(authoring, *model) : noPlanYet();
+        });
+    }
+    void freezePhysicalPlan() {
+        submitBuilt([this] {
+            return model ? framePlanPhysicalFreezeRequest(authoring, *model) : noPlanYet();
+        });
+    }
+    void removeFrozenPlan() {
+        submitBuilt([this] {
+            return model ? framePlanPhysicalRemoveRequest(authoring, *model) : noPlanYet();
+        });
+    }
+    // A candidate row's right-click: Pin this candidate, switched off (with
+    // the reason as its tooltip) where it cannot be sent; Unpin while a pin
+    // applies.
+    void addLowerLayerEntries(QMenu &menu, const QTreeWidget &tree, const QTreeWidgetItem *item) {
+        if (&tree != backends || !model) return;
+        const auto candidate = candidateOf(item);
+        if (candidate.empty()) return;
+        const auto request = framePlanBackendPinRequest(authoring, *model, candidate);
+        const bool idle = pending_edit_request == 0 && pending_ticket.isEmpty();
+        QAction *pin = menu.addAction(owner.tr("Pin this candidate"));
+        pin->setObjectName(QStringLiteral("pelican.framePlan.backend.pinEntry"));
+        pin->setEnabled(request.sendable() && idle);
+        pin->setToolTip(text(request.refusal));
+        QObject::connect(pin, &QAction::triggered, &owner,
+                         [this, candidate] { pinCandidate(candidate); });
+        if (!model->physical_plan.pinned_backend_candidate.empty()) {
+            QAction *unpin = menu.addAction(owner.tr("Unpin"));
+            unpin->setEnabled(idle);
+            QObject::connect(unpin, &QAction::triggered, &owner, [this] { unpinBackend(); });
+        }
+        menu.setToolTipsVisible(true);
+        menu.addSeparator();
+    }
+    // A row across the whole tree, first, holding `line` and its buttons.
+    QLabel *addBand(QTreeWidget *tree, const QString &line, const char *label_name,
+                    std::initializer_list<std::pair<QAction *, const char *>> buttons) {
+        auto *item = new QTreeWidgetItem;
+        tree->insertTopLevelItem(0, item);
+        item->setFirstColumnSpanned(true);
+        auto *band = new QWidget;
+        auto *row = new QHBoxLayout(band);
+        row->setContentsMargins(4, 2, 4, 2);
+        auto *label = new QLabel(line, band);
+        label->setObjectName(QString::fromLatin1(label_name));
+        row->addWidget(label);
+        for (const auto &[action, name] : buttons) {
+            auto *button = new QPushButton(action->text(), band);
+            button->setObjectName(QString::fromLatin1(name));
+            QObject::connect(button, &QPushButton::clicked, action, &QAction::trigger);
+            row->addWidget(button);
+        }
+        row->addStretch(1);
+        tree->setItemWidget(item, 0, band);
+        bands.emplace_back(band);
+        return label;
     }
     void requestPlanning() {
         if (!edit.requestRootDocument || authoring.source_reference.empty() ||
@@ -3577,6 +3725,7 @@ struct FramePlanWidget::Impl {
         const TreeFillGuard filling{passes,    resources, physical,
                                     decisions, backends,  barriers,
                                     materials, logical_details};
+        dropBands();
         passes->clear();
         resources->clear();
         physical->clear();
@@ -3616,6 +3765,7 @@ struct FramePlanWidget::Impl {
         populatePhysicalPlan();
         populateDecisions();
         populateBackends();
+        addBackendBand();
         populateBarriers();
         populateMaterials();
         raw_json_stale = true;
@@ -3886,6 +4036,15 @@ struct FramePlanWidget::Impl {
 
             auto *facts = groupItem(item, owner.tr("Plan facts"));
             addFact(facts, owner.tr("Source"), text(node.source));
+            // UX-15b, decision 5: the rewrite that put the pass here.
+            if (model)
+                if (const auto lines = framePlanReplacedByLines(*model, node.name);
+                    !lines.empty()) {
+                    QStringList said;
+                    for (const auto &line : lines) said.push_back(text(line));
+                    addFact(facts, owner.tr("Replaced by"), said.join(QStringLiteral("; ")));
+                    item->setToolTip(1, owner.tr("Replaced by %1").arg(said.join(QStringLiteral("; "))));
+                }
             addFact(facts, owner.tr("Provider feature"),
                     text(node.provider_feature));
             addFact(facts, owner.tr("Provider ref"),
@@ -4166,12 +4325,19 @@ struct FramePlanWidget::Impl {
         for (const auto &candidate : model->backend_candidates) {
             auto *candidate_item = new QTreeWidgetItem(backends);
             setRowNodes(candidate_item, candidate.from_nodes);
+            // UX-15b, decision 1: the row Pin this candidate acts on.
+            candidate_item->setData(0, BackendCandidateRole, text(candidate.candidate));
+            if (candidate.selected || candidate.feasible)
+                candidate_item->setToolTip(
+                    0, owner.tr("Right-click: Pin this candidate, so the planner keeps it."));
             candidate_item->setText(0, text(candidate.candidate));
             candidate_item->setText(
                 1, candidate.selected
                        ? owner.tr("Selected")
                        : (candidate.feasible ? owner.tr("Feasible")
                                              : owner.tr("Rejected")));
+            if (candidate.candidate == model->physical_plan.pinned_backend_candidate)
+                candidate_item->setText(1, owner.tr("%1, pinned").arg(candidate_item->text(1)));
             candidate_item->setText(2, text(candidate.endpoint));
             QFont font = candidate_item->font(0);
             font.setBold(true);
@@ -4193,6 +4359,24 @@ struct FramePlanWidget::Impl {
                 item->setText(4, text(diagnostic.detail));
             }
         }
+    }
+
+    // UX-15b, decision 1: the pin the document applies, first, with the way
+    // off it; without one, where the way on is.
+    void addBackendBand() {
+        if (!model->physical_plan.available()) return;
+        const auto &pinned = model->physical_plan.pinned_backend_candidate;
+        if (!model->physical_plan.applied_pin_package.empty())
+            addBand(backends,
+                    owner.tr("Pinned: %1").arg(pinned.empty() ? owner.tr("(no candidate named)")
+                                                              : text(pinned)),
+                    "pelican.framePlan.backend.state",
+                    {{backend_unpin, "pelican.framePlan.backend.unpinButton"}});
+        else
+            addBand(backends,
+                    owner.tr("Not pinned: the planner picks the candidate. Right-click a "
+                             "Selected or Feasible row to pin it."),
+                    "pelican.framePlan.backend.state", {});
     }
 
     void populateResources() {
@@ -4319,6 +4503,30 @@ struct FramePlanWidget::Impl {
                             *model->physical_plan.output_width))
                         .arg(static_cast<qulonglong>(
                             *model->physical_plan.output_height)));
+            }
+
+            // UX-15b, decision 5: what rewrote the graph before it was
+            // planned, and by which provider.
+            if (!model->physical_plan.rewrites.empty()) {
+                auto *rewrites = groupItem(state, owner.tr("Compile rewrites"),
+                                           model->physical_plan.rewrites.size());
+                for (const auto &rewrite : model->physical_plan.rewrites) {
+                    auto *item = new QTreeWidgetItem(rewrites);
+                    setRowNodes(item, rewrite.replacement_nodes);
+                    item->setText(0, text(rewrite.name));
+                    item->setText(1, rewrite.kind == "subgraph_replacement"
+                                         ? owner.tr("Subgraph replacement")
+                                     : rewrite.kind == "graph_transform"
+                                         ? owner.tr("Graph transform")
+                                         : owner.tr("Render strategy"));
+                    item->setText(2, text(rewrite.provider));
+                    item->setText(3, rewrite.replacement_nodes.empty()
+                                         ? text(framePlanRewriteLine(rewrite))
+                                         : owner.tr("%1 -> %2")
+                                               .arg(joined(rewrite.source_nodes),
+                                                    joined(rewrite.replacement_nodes)));
+                    item->setToolTip(3, text(framePlanRewriteLine(rewrite)));
+                }
             }
 
             auto *aliases = groupItem(
@@ -4480,6 +4688,67 @@ struct FramePlanWidget::Impl {
             }
         }
         populateTransferSourceRows();
+        populateRayQuery();
+        addPhysicalBand();
+    }
+
+    // UX-15b, decision 2: whether the document freezes the physical plan,
+    // first, and the one button that changes it.
+    void addPhysicalBand() {
+        if (!model->physical_plan.available()) return;
+        if (!model->physical_plan.applied_physical_fragment.empty())
+            addBand(physical,
+                    owner.tr("Frozen: every compile keeps the physical plan the document "
+                             "holds."),
+                    "pelican.framePlan.physical.state",
+                    {{physical_remove, "pelican.framePlan.physical.removeButton"}});
+        else
+            addBand(physical,
+                    owner.tr("Not frozen: the planner decides the physical plan each compile."),
+                    "pelican.framePlan.physical.state",
+                    {{physical_freeze, "pelican.framePlan.physical.freezeButton"}});
+    }
+
+    // UX-15b, decision 4: the ray-query scene's resident BLAS. A project
+    // without ray tracing asks for none, and the section is not shown.
+    void populateRayQuery() {
+        if (!model->ray_query || !model->ray_query->shown()) return;
+        const auto &scene = *model->ray_query;
+        auto *group = new QTreeWidgetItem(physical);
+        group->setText(0, owner.tr("Ray query acceleration structures"));
+        QFont font = group->font(0);
+        font.setBold(true);
+        group->setFont(0, font);
+        group->setText(1, scene.requested ? owner.tr("Requested") : owner.tr("Not requested"));
+        group->setText(2, owner.tr("%1 resident BLAS, %2 TLAS instances")
+                              .arg(static_cast<qulonglong>(scene.resident_blas_keys.size()))
+                              .arg(static_cast<qulonglong>(scene.tlas_instance_count)));
+        addFact(group, owner.tr("Active BLAS"),
+                QString::number(static_cast<qulonglong>(scene.active_blas_count)));
+        addFact(group, owner.tr("BLAS variants"),
+                QString::number(static_cast<qulonglong>(scene.blas_variant_count)));
+        if (!scene.named_tlas_instance_counts.empty()) {
+            auto *named = groupItem(group, owner.tr("Named TLAS"),
+                                    scene.named_tlas_instance_counts.size());
+            for (const auto &[name, count] : scene.named_tlas_instance_counts)
+                addFact(named, text(name),
+                        owner.tr("%1 instances").arg(static_cast<qulonglong>(count)));
+        }
+        auto *keys = groupItem(group, owner.tr("Resident BLAS"), scene.resident_blas_keys.size());
+        keys->setToolTip(1, owner.tr("One BLAS per geometry the scene keeps built; every TLAS "
+                                     "shares them."));
+        for (std::size_t index = 0; index < scene.resident_blas_keys.size(); ++index) {
+            const auto &key = scene.resident_blas_keys[index];
+            auto *item = new QTreeWidgetItem(keys);
+            item->setText(0, QStringLiteral("#%1").arg(static_cast<qulonglong>(index)));
+            item->setText(1, text(key.geometry_kind));
+            item->setText(2, owner.tr("allocation %1")
+                                 .arg(static_cast<qulonglong>(key.geometry_allocation_id)));
+            item->setText(3, owner.tr("%1 geometries, flags 0x%2")
+                                 .arg(static_cast<qulonglong>(key.geometry_count))
+                                 .arg(static_cast<qulonglong>(key.geometry_flags), 0, 16));
+        }
+        group->setExpanded(true);
     }
 
     // UX-6a, decision 4: an image the planner keeps out of aliasing that has

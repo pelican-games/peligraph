@@ -743,4 +743,33 @@ FramePlanEditRequest framePlanTaskViewSelectRequest(
     const FramePlanTaskAuthoring &authoring, const std::string &task,
     const std::string &axis, std::optional<std::uint64_t> value);
 
+// --- UX-15b: the lower layer's decisions, written into the root by EL-2's
+// edit_vulkan_plan_pins and put_vulkan_physical_fragment ({base_source_digest,
+// family, pin | fragment, graph?}).
+
+// The plan family a graph's packages are declared under ("flat" or "xr").
+// get_frame_plan does not say: this is inferred from the graph's name.
+std::string framePlanPackageFamily(const std::string &graph);
+
+// Pin this candidate: the plan's ejectable_pin_package with its
+// pins.backend_candidate swapped. Refused, in one line, for a candidate the
+// planner rejected or one pinned already, and without the context's digest
+// or a package to eject.
+FramePlanEditRequest framePlanBackendPinRequest(const FramePlanAuthoring &authoring,
+                                                const FramePlanModel &model,
+                                                const std::string &candidate);
+// Unpin: pin null for the plan's graph.
+FramePlanEditRequest framePlanBackendUnpinRequest(const FramePlanAuthoring &authoring,
+                                                  const FramePlanModel &model);
+// Freeze this physical plan -- and Eject again, which is the same edit made
+// from the plan on screen: its ejectable_physical_fragment as it is.
+FramePlanEditRequest framePlanPhysicalFreezeRequest(const FramePlanAuthoring &authoring,
+                                                    const FramePlanModel &model);
+// Remove: fragment null for the plan's graph.
+FramePlanEditRequest framePlanPhysicalRemoveRequest(const FramePlanAuthoring &authoring,
+                                                    const FramePlanModel &model);
+// Whether a refusal is physical_fragment_stale (the frozen fragment's
+// fingerprints are not the plan's): the line offers Eject again.
+bool framePlanPhysicalFragmentStale(const nlohmann::json &error);
+
 } // namespace PelicanStudio

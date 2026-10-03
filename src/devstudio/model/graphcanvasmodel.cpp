@@ -6422,6 +6422,27 @@ std::vector<GraphCanvasLayerRow> GraphCanvasModel::graphLayerRows() const {
     std::vector<GraphCanvasLayerRow> rows;
     if (!layersShown()) return rows;
     const std::string dot{kDot};
+    // UX-15b, decision 5 (GL-2b's hole): a feature whose passes graph nodes
+    // took the place of, every one, has no folded node to carry its
+    // "is replaced by" rows (layerRows). The graph's own rows carry them.
+    const auto folded = rootFoldedNodes();
+    std::vector<std::string> said;
+    for (const auto &pass : plan_passes_)
+        for (const auto &replaced : pass.replaces) {
+            const bool on_feature =
+                std::ranges::any_of(folded, [&](const GraphCanvasFoldedNode &node) {
+                    return node.feature_group && (node.feature == replaced.feature ||
+                                                  featureShortName(node.feature) == replaced.feature);
+                });
+            if (on_feature) continue;
+            auto owner = graphOwnerOf(pass);
+            if (owner.empty()) owner = pass.name;
+            const auto line = "pass " + replaced.pass + " of " + replaced.feature +
+                              " is replaced by graph node " + owner;
+            if (listed(said, line)) continue;
+            said.push_back(line);
+            rows.push_back({"L1", "replaced", line, pass.name});
+        }
     for (const auto &decision : plan_decisions_)
         if (decision.from_nodes.empty())
             rows.push_back({"L3", "decision",
