@@ -2319,6 +2319,42 @@ standard / toon に続く**特権なしの standard library surface** として�
 - **primitive binding**: `pelican.material_bindings` v1(プリミティブ → マテリアル名の whole-model 契約)を asset_data の `models[].material_bindings` で参照できます(✅WP116/240c。fragment モデルには適用不可)。`binding.material` は glTF 内 named material と project material の両域を探索し、同名衝突は hard error、`binding.routing` の不一致も hard error です。
 - **glTF 再現**: glTF material も同じ lowering 経路を通り、`alphaMode` / `alphaCutoff` / `doubleSided` は routing 6 状態から得ます。BLEND は `forward_transparent`、MASK は cutout wrapper へ流れます。
 
+### RPC で material を読み書きする(✅MT-1、`976c410d`)
+
+MT-1 の前は、Blank の project で物体の色を 1 つ変えるのに JSON を 3 つ手で書き(material 文書・asset_data の `materials[]`・material_bindings)、engine を起こし直していました(仕様書の記述)。MT-1 から、動いている engine が material 文書・`.surface` の宣言・model の割り当てを RPC で読み書きします。エディタはファイルを自分で書かず、この RPC を送ります([MT-1 の 7 本を登録する所](../../src/core/communication/materialdocumentrpc.cpp#L1443)。[engine の RPC に MT-1 を足す行](../../src/core/communication/rpcserver.cpp#L1590))。引数・返り値・拒否の表は [第10章](10_tools.md) §10.3 の「material 文書を読み書きする」と [第13章](13_editor.md) §13.5 です。
+
+- **読む 4 本**: `list_materials`(asset_data の `materials[]` の全部の文書と、その中の material)、`get_material`(1 つの material を文書のまま)、`get_surface_schema`(`.surface` の `//!` の宣言の `params` と `textures`。宣言にあるものだけで、何も足しません)、`get_material_bindings`(model の primitive ごとの material)。
+- **書く 3 本**: `edit_material`(文書の 1 つの material を直す)、`create_material`(material 文書を作って asset_data に載せる)、`bind_material`(model の material_bindings を書く)。どれも読んだときの digest を CAS に、project の文書の transaction で書き、返る前に動いている engine に当てます。当てられないときは、書いたうえで `applied: "restart_required"` と `restart_required: {reason}` を返します(当てたときは `applied: "live"`、`restart_required: null`)。
+
+**`edit_material` は values だけが live で、ほかは restart_required です。**決めるのは、その編集で実際に変わった鍵です([live か restart_required かを決める所 MT-1](../../src/core/communication/materialdocumentrpc.cpp#L890))。
+
+- `values` だけが変わったときは、WP105 の値の reload と同じ [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L377) でその場に当てます([edit_material が値の reload を呼ぶ所](../../src/core/communication/materialdocumentrpc.cpp#L917))。`applied: "live"` です。
+- `textures` / `tags` / `routing` / `variants` / `surface` のどれかが実際に変わったときは、文書を書いて `restart_required` を返します。理由の文は「`<鍵>` change how material '<名前>' is registered (its shader, pipeline, textures or draw tags); the engine reads them when it starts」です。
+- `values` だけでも `restart_required` になるのは 3 つです: その material がこの engine に(その文書から)登録されていない、material の container の無い host、値の reload が例外を投げた。
+- 何も変わらない要求は書かず、`changed: false`・`applied: "live"` を返します。
+- 値は書く前に surface の宣言で検査します。宣言に無い名前は `material.param_unknown@1`、型(float は数、int は整数、vec2 / vec3 / vec4 は 2 / 3 / 4 個の数、color は 3 か 4 個の数)と宣言の `min` / `max`(成分ごと)に合わない値と、解決できない texture の参照は `material.value_invalid@1` です。書いた後の文書は、起動時と同じく parse して全 material を lowering し、通らなければ `material.document_invalid@1` です([候補の文書を起動時と同じに読む所](../../src/core/communication/materialdocumentrpc.cpp#L458))。
+
+**`create_material` は live で登録します。**1 つの material の文書を作り、asset_data の `materials[]` に `{path}` を足すのを 1 つの transaction で書き、[`ProjectMaterialAssetContainer::registerDocument()`](../../src/core/material/projectmaterialasset.cpp#L521) で登録します([create_material が登録を呼ぶ所](../../src/core/communication/materialdocumentrpc.cpp#L1046))。登録できなければ `restart_required` です。
+
+**`bind_material` は model を読み直して当てます。**model の `pelican.material_bindings` の文書を書き(無ければ作る)、[`ReloadService::reloadModelsNow()`](../../src/core/watch/reloadservice.cpp#L409) で model の reload の transaction を 1 つ、返る前に commit します([bind_material が model を読み直す所](../../src/core/communication/materialdocumentrpc.cpp#L1432))。
+
+- 割り当ては **model 単位**です。`engine://primitives/cube` に割り当てると、その model を使う cube は全部同じ material になります(仕様書の記述)。object ごとの上書きは MT-2 で作業中です(未着地)。
+- `engine://primitives/cube` のように asset_data に宣言の無い基本形には、`models[]` に宣言を足します(第5章 §5.2)。
+- 割り当てる material が asset_data に載っていても、この engine に登録されていなければ `restart_required` です。
+
+**戻し**は、返り値の `previous` を同じ RPC で送ります(`edit_material` は新しい `material_digest` と一緒に、`bind_material` は `previous.bindings` を `bindings` に)。`delete_material` はありません。
+
+**やっていないこと**: この 3 本は `edit_batch` の対象ではありません。material の文書は RD-1 の render 文書の集合の外にあるためです(commit の記録)。
+
+**残る穴**(着地時の記録):
+
+- 割り当て済みの material の `routing` を `edit_material` で変えても、binding の `routing` とのずれを断りません。起動時の照合は `binding.routing` の不一致を hard error にするので(上の「primitive binding」)、次の起動で断られると考えられます(未確認)。
+- 起動の順: `material_route_default` は `Renderer` の constructor が、material を lowering する前に記録します([G-4 の snapshot の行](../../src/core/vkcore/renderer.cpp#L3198))。MT-1 の test は player と同じく `Renderer` を先に作ってから RPC の endpoint を作ります(test の注記)。この順でない host での振る舞いは確かめていません(未確認)。
+- 割り当てが model 単位であること(上)。
+- `list_assets` は name の無い entry を今も飛ばすので、material の一覧には出ません。material の一覧は `list_materials` で読みます。
+
+test: [`materialdocumentrpc_test` の MT-1 の GPU test](../../test/materialdocumentrpc_test.cpp#L202)(Blank の project に箱を 1 つ置き、`create_material` → `bind_material` → `edit_material` で色を変え、起動し直さずに画素がその色になる。範囲外の値・知らない param・古い digest・名前と path の衝突の拒否、`previous` での戻し、`tags` の変更が `restart_required` で画素が変わらないこと、次の起動で書いたものが描かれること)。
+
 ### 現状と重要な限界
 
 - レンダラ接続は ✅ — `.surface` → コンパイル → パイプライン → SSBO → 描画まで golden(`surface_toon` / `skeletal_toon` / `openpbr_coat_sphere`)で実証済みです。
@@ -3094,12 +3130,12 @@ RPC なら `get_graph_catalog`([第10章](10_tools.md))。どちらも同じ `pe
 
 `parameters` の要素は `{name, kind, required?, alternatives?, default?, enum?, min?, max?, items?, fields?, expression?, description?}` です([1 件を JSON にする所 CT-3](../../src/project/graphparameterschema.cpp#L794))。
 
-- **`kind`** は `number` / `integer` / `bool` / `string` / `enum` / `vec2` / `vec3` / `vec4` / `color` / `array` / `object` / `asset` / `shader` / `node_ref` / `expression` / `json` / `union`(✅CT-4)のどれかです。`json` は形を言えない値です(`render.material_pass` の `material_filter`、`render.compute` の `dispatch` など)。`union` は 2 通りの形を取る値で、形を `variants` に並べます(下の CT-4 の段落)。今の表で `vec2` / `vec3` / `vec4` / `expression` の kind を持つ parameter はありません。
+- **`kind`** は `number` / `integer` / `bool` / `string` / `enum` / `vec2` / `vec3` / `vec4` / `color` / `array` / `object` / `asset` / `shader` / `node_ref` / `expression` / `json` / `union`(✅CT-4)のどれかです。`json` は形を言えない値です(`render.material_pass` の `material_filter`、`render.raster` の `raster_state` など。`render.compute` の `dispatch` と `ray_tracing` も CT-6 の前は `json` でした。✅CT-6 から `fields` 付きの `object` です。下の CT-6 の段落)。`union` は 2 通りの形を取る値で、形を `variants` に並べます(下の CT-4 の段落)。今の表で `vec2` / `vec3` / `vec4` / `expression` の kind を持つ parameter はありません。
 - **入れ子**: `object` は名前の決まった member を `fields` に並べます。`items` があれば、任意の鍵を持つ map です(`view_select` の軸の名前 → 番号、`clear_colors` の出力の名前 → 色)。`array` の `items` は要素の形です。`items` の中は `name` を持ちません。`shader` は、`fields` があれば stage の object(`render.fullscreen` の `vertex` / `fragment` / `defines` など)、無ければ shader 1 本の path の文字列です(`render.compute` の `shader`)。
 - **`required`**: 最上位の `required` は、RS-9 の `graph.render_node_parameters_missing@1` が断る条件です。`alternatives` は、代わりにそれを書けば足りる名前です(`required_parameters` の `one_of` の 2 つ目から)。`fields` の中の `required` は、その op の parser が断る条件を表示のために書いたもので、CT-3 の検査はこれを見ません。
 - **`default`** は parser が省略時に使う値です。既定の無い parameter には鍵がありません。`enum` は取れる値、`min` / `max` は範囲です。符号なし 32 bit の値は `min: 0, max: 4294967295` です。
 - **`expression: true`** は、ループの body で `$expr` / `$format` を書ける所です(LP-1b の許可の表。下の §6.18「ループの式」)。
-- **`parameters_complete`** が `false` なら、並んだものは正しいが、parser はほかにも読みます。今 `false` の op は `render.image` / `render.fullscreen` / `render.raster` / `render.compute` / `render.material_pass` の 5 つです。`ports` の中の port の形、`raster_state`・`dispatch`・`ray_tracing`・draw の中身は出していません(`json` か、`fields` の無い `object` として並びます)。表に載っていない op は `parameters: []`・`parameters_complete: false` です。parameter を持たない op(`value.add`・`pose.blend`・`draw.material` など)は `parameters: []`・`parameters_complete: true` です。
+- **`parameters_complete`** が `false` なら、並んだものは正しいが、parser はほかにも読みます。今 `false` の op は `render.image` / `render.fullscreen` / `render.raster` / `render.material_pass` の 4 つです(CT-3 のときは `render.compute` を含む 5 つでした。✅CT-6 で `render.compute` が `true` になりました)。`ports` の中の port の形、`raster_state`・draw の中身は出していません(`json` か、`fields` の無い `object` として並びます。`render.compute` の `ports` も `fields` の無い `object` のままです)。表に載っていない op は `parameters: []`・`parameters_complete: false` です。parameter を持たない op(`value.add`・`pose.blend`・`draw.material` など)は `parameters: []`・`parameters_complete: true` です。
 
 例(test の期待): `pose.clip_sample` は `rig`(`asset`、必須)・`clip`(`string`、必須)・`speed` `{"name": "speed", "kind": "number", "default": 1.0}`・`start_time`(既定 0)・`loop` `{"name": "loop", "kind": "bool", "default": true}`・`root_motion`(`enum` `["none", "extract"]`、既定 `none`)・`root_node` の順です。`render.buffer` の `element` は必須の `enum`(13 個)、`size` は `integer` で `min: 0`、`lifetime` は `["persistent", "transient"]` で既定 `persistent` です。`render.shadow_depth` の `shader` は `kind: "shader"` で、`fields` が `[{"name": "vertex", "kind": "string", "required": true}]`、`default` が `{"vertex": "engine://shadow_depth"}` です。`render.image` の `type` は `object` で、`fields` が `semantic`(`string`)と `arguments`(`items` が `string` の map)です。`initial` の `fields` は `[{"name": "asset", "kind": "asset", "required": true}]` で、✅CT-4 からこの要素に `"asset_kind": "image"`・`"extensions": [".ktx2", ".png", ".jpg"]` も付きます。
 
@@ -3132,6 +3168,7 @@ CT-3 で新しく必須になった名前は、`pose.clip_sample` の `rig` / `c
   - pass の `ray_query`(`render.shadow_depth` / `render.material_pass` / `render.fullscreen` / `render.raster`): `bool` か、`acceleration_structure`(string、必須)を持つ `object`。既定は `false`。
   - `render.image` の `mip_levels`: `integer`(`min: 1`、`soft_max: 14`)か、`enum` `["full"]`。
   - `value.sample_table` の `row`: `integer`(0 以上の 32 bit)か `string`。
+  - ✅CT-6 から `render.compute` の中にも union があります(`ray_tracing` の `miss` / `closesthit` / `callable`、`callable_records` の各値、`dispatch` の `groups`。下の CT-6 の段落)。
   - CT-3 の前の `json` と同じく、`union` の値は検査しません(op の parser が判定します。`ray_query: "yes"` も CT-3 の検査を通ることを test で確かめています)。
 - **`soft_min` / `soft_max`**: slider の範囲で、`min` / `max` の内側です。検査はしません。今付いているのは `render.image` の `width` / `height` の `soft_max: 8192` と、`mip_levels` の整数の形の `soft_max: 14` だけです(`layers` には付けていません)。8192 は engine の feature の `resolution` の範囲 `[64, 8192]`(`shadow_directional` / `shadow_point` / `shadow_spot` / `planar_reflection` / `cube_capture`)、14 はその mip の段の数 `floor(log2(8192)) + 1` です([CT-4 の 8192 の出どころの注記](../../src/project/graphparameterschema.cpp#L146))。
 - **op の `placement`**: どの op にも `"anywhere"` か `"owned_instance"` が付きます([CT-4 で op に placement を足す所](../../src/project/graphmodule.cpp#L588))。`owned_instance` は `owner` 付きの `graph.instance` の中にしか置けない op で、`pose.clip_sample` / `pose.blend` / `pose.state_machine` / `pose.retarget` / `pose.skeletal` / `pose.transform` と `value.morph_weight` です(owner の model を読む・owner の skeletal の sink に書くため。コードの注記)。ANIMATION=OFF の build では `value.morph_weight` だけです。
@@ -3160,6 +3197,39 @@ CT-3 で新しく必須になった名前は、`pose.clip_sample` の `rig` / `c
 - **付けなかったもの**(engine が読む一覧が無い。test): `pose.retarget` の `profile`、`draw.override` の `defines` の要素、`render.attribute` の `source.semantic`。`soft_min` はどこにも足していません。
 - definition を owner 付きの instance だけが使うかは、`get_graph_instances` の `definition_instances` で読みます([第13章](13_editor.md) §13.5 の表の `get_graph_instances`)。
 - test: `curve_test` の上の CT-5 の test(`where` と `asset_manifest` の形、`type.semantic`・`acceleration_structure`・`region_tags` の値、`push_constants` の enum、付けなかったもの)と、`renderconfigeditor_test` の [「CT-5 the authoring context lists acceleration structures and the explicit format class's form」](../../test/renderconfigeditor_test.cpp#L1668)。
+
+**`render.compute` の `ray_tracing` と `dispatch` の欄(✅CT-6、`cbc9bb03`)。**CT-5 までは、この 2 つは形の無い `json` で、`render.compute` は `parameters_complete: false` でした。Studio はこの 2 つの欄を作れませんでした(GUI session の報告)。CT-6 で、2 つを `fields` 付きの `object` にしました。欄は、compute task の JSON の parser(`computetaskdefinitionjson.cpp`)が読む鍵・型・既定値から拾ったものです(コードの注記)。`render.compute` の `parameters_complete` は `true` です([CT-6 で render.compute を complete にした行](../../src/project/graphparameterschema.cpp#L585))。
+
+`ray_tracing`(kind `object`。それ自体は必須ではなく、`shader` と排他です。[CT-6 の ray_tracing の欄の表](../../src/project/graphparameterschema.cpp#L289))の `fields` は、次の順に並びます。
+
+| field | kind・既定 | 説明(description の要約) |
+|---|---|---|
+| `raygen` | `shader`、`required` | ray generation shader |
+| `miss` / `closesthit` | `union`(`shader` 1 本か、`shader` の `array`) | 番号の順の shader。ray group layout が無いときは必須、あるときは断られる |
+| `traced_ray_types` | `string` の `array` | この task が trace する layout の ray type。それぞれ 1 回(layout があるときは必須) |
+| `misses` | `object`(`items` は `shader`) | layout の miss の名前 → shader。layout の miss の全部(layout があるときは必須) |
+| `hit_shaders` | `object` の `object`(`items` の `items`) | trace する ray type → layout の group → hit shader の object。その object の `fields` は `closesthit`(`shader`、`required`)・`anyhit`(`shader`)・`intersection`(`shader`。procedural の group では必須、triangles の group では断られる)。trace する type と group の全部(layout があるときは必須) |
+| `callable` | `union`(`miss` と同じ形) | 番号の順の callable shader |
+| `callable_record` | `array`(要素は `{name, type}`) | callable record の member の並び。`name` は必須の `string`(`^[A-Za-z0-9_]{1,64}$`、それぞれ 1 回)、`type` は必須の `enum` `i32` / `u32` / `f32` / `vec2` / `vec3` / `vec4`(`callable` と `callable_records` と一緒に書く) |
+| `callable_records` | `array`(要素は `object`、その `items` は `union`(`number` か `number` の `array`)) | callable ごとに 1 record。`callable_record` の各 member を名前で、数か vector の数で書く |
+| `max_recursion` | `integer`、`min: 1`・`max: 4294967295`、既定 `1` | — |
+| `acceleration_structure` | `string`、既定 `"scene"` | trace する acceleration structure。`"scene"` か、合成された `scene_acceleration_structures` の名前。`choices_from` は `{rpc: "get_render_authoring_context", key: "acceleration_structures"}`(CT-5 の一覧) |
+
+`dispatch`(kind `object`。[CT-6 の dispatch の欄の表](../../src/project/graphparameterschema.cpp#L333))の `fields` は次の 5 つです。何も書かなければ 1 group です(コードの注記)。
+
+| field | kind・既定 | 説明 |
+|---|---|---|
+| `groups` | `union`(1 以上の `integer` の `array` か、`{x, y, z}`(どれも 1 以上の `integer`、既定 1)の `object`)、既定 `[1, 1, 1]` | workgroup の数(compute の task) |
+| `groups_from` | `object`、`fields` は `port`(`string`、`required`) | port の image に要るだけの group を、shader の workgroup の大きさで(compute の task。`groups` と排他) |
+| `rays` | 1 以上の `integer` の `array` | launch の大きさ。正の整数 3 つ `[x, y, z]`(ray tracing の task。単独で) |
+| `rays_from` | `object`、`fields` は `port`(`string`、`required`) | port の image の画素ごとに 1 ray(ray tracing の task。単独で) |
+| `indirect` | `object`、`fields` は `buffer`(`string`、`required`)と `offset`(`integer`、`min: 0`、既定 `0`) | buffer が持つ数で launch する(ほかと排他)。`buffer` は task が書かない buffer で、command_layout が compute の task なら `compute_dispatch`、ray tracing の task なら `ray_dispatch`。`offset` は command の始まりの byte で、4 の倍数 |
+
+- **鍵の組み合わせは description に書いてあるだけです。**ray group layout(project の `pelican.ray_group_layout`)の有無で、読む鍵の組が分かれます。layout が無いときは `raygen` / `miss` / `closesthit`、あるときは `raygen` / `traced_ray_types` / `misses` / `hit_shaders` で、`miss` / `closesthit` は断られます。どちらでも `callable`・`callable_record` / `callable_records`・`max_recursion`・`acceleration_structure` を読みます(コードの注記)。`dispatch` は、ray tracing の task が `rays` / `rays_from` / `indirect` のちょうど 1 つ、compute の task が `groups` か `groups_from`、または `indirect` だけです(`local_size` は断られます)。この組み合わせも、`fields` の中の `required`(`raygen` など)も、CT-3 の検査は見ません。断るのは今までどおり parser です。
+- **候補(`choices_from`)**: `ray_tracing.acceleration_structure` は上の表のとおりです。`dispatch.indirect.buffer` は `{graph_nodes: ["render.buffer", "render.attribute"], where: {command_layout: ["compute_dispatch", "ray_dispatch"]}}` です(test の期待)。候補が無く `string` のままのものは、`groups_from` / `rays_from` の `port` の名前、`traced_ray_types` の要素(ray type の名前)、`misses` の鍵(miss の名前)、`hit_shaders` の鍵(ray type と group の名前)です。
+- **CT-3 の型の検査**は、この 2 つの中にもかかります(CT-3 の code はそのまま。§6.18 の CT-3 の項)。test で断られることを確かめている道筋: `ray_tracing.raygen` に数(`expected: "shader"`、`reason: "type"`)、`ray_tracing.max_recursion` に 0(`range`、`min: 1`)、`ray_tracing.hit_shaders.primary.sphere.closesthit` に数、`dispatch.rays[1]` に 0(`range`)、`dispatch.groups_from.port` に数(`expected: "string"`)、`dispatch.indirect.offset` に -4(`range`)。どれも `graph.render_node_parameter_invalid@1` です。`union` の値(`miss` / `closesthit` / `callable` / `groups` と `callable_records` の値)は、CT-4 の段落のとおり見ません。
+- **今ある書き方は通ります**(test): Studio の engine pipeline の形(`raygen` / `miss` / `closesthit` が `engine://rt_shadow_mask_pipeline` の 1 本ずつ、`rays_from`)、配列の `miss` / `closesthit` と `callable` / `callable_record` / `callable_records`・`max_recursion: 2`・`acceleration_structure: "actors"`、ray group layout の形(`projects/pathtrace_demo` の `traced_ray_types` / `misses` / `hit_shaders` と `indirect`)、`groups` の配列と object、`groups_from`、`offset` 付きの `indirect`。commit の記録では、既存の project・engine の graph・test の fixture・シナリオも断られません(全部を 1 本の test で見ているわけではありません)。着地の gate(触った家族の 16 本)は緑でした(統合側の記録)。
+- test: `curve_test` の [「CT-6 the catalog lists render.compute's ray_tracing and dispatch as fields and its parameters as complete」](../../test/curve_test.cpp#L1708)。
 
 ANIMATION と AUDIO が ON の build では 5 module / 37 op(✅AB-1 の `value.sample_table` を含む。v0_freeze の表の行の数)。ANIMATION=OFF で 4 / 31(`pose.*` の 6 本が消える)、AUDIO=OFF で 4 / 34(`audio.*` の 3 本)、両方 OFF で 3 / 28。この対応は `test/run_devcli_graph_catalog.cmake` が [docs/v0_freeze.md](../v0_freeze.md) §1.3 の表と機械照合しています —— **表と実装がずれたらテストが赤になります**。
 

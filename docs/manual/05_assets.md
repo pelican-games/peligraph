@@ -127,6 +127,30 @@
   `{opaque,mask,blend}_{single,double}` と一致しない binding は拒否されます。
 - material values と参照 texture は既存のファイル監視経路へ登録され、実行中の
   hot reload 対象です。surface/routing/文書構造の変更は values reload の範囲外です。
+- **RPC で書かせる(✅MT-1、`976c410d`)**: 動いている engine に、この節の 3 つ(material 文書・`materials[]`・
+  `pelican.material_bindings`)を書かせられます。RPC の一覧と「values だけが live、ほかは restart_required」の
+  規則は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、引数と拒否の表は [第10章](10_tools.md) §10.3 です。
+  engine が書くファイルの形は次のとおりです(コードの読み)。
+  - `create_material {path, surface, name?, values?, tags?, routing?}` は、`schema` / `version: 1` / 1 つの material の
+    `materials` を持つ文書を新しく作り、asset_data の `materials[]` の末尾に `{"path": <path>}` を足します。2 つは
+    1 つの transaction で書きます。`path` は project 相対(`project://` は外す)で `/` 区切り、`.json` で終わり、
+    `.` / `..` を含まないこと(違えば `material.path_invalid@1`)。asset_data にもう載っているか、ファイルがあれば `material.path_conflict@1` です。
+  - `name` を省くと、ファイル名から `.material.json`(または `.json`)を外したものです。英数字と `_` だけ
+    (違えば `material.name_invalid@1`)。asset_data に載った文書・登録済みの project material・読み込まれた model の glTF の
+    material に同じ名前があれば `material.name_conflict@1` です(glTF の material と同じ名前の project material は、
+    その model の binding を曖昧にして読み込みを止めるため。コードの注記)。
+  - `routing` を省くと `{"alpha_mode": "opaque", "double_sided": false}` を書きます(binding が routing を要るため)。
+  - `bind_material` は、model の宣言が `material_bindings` を持てばその文書を書き換え、持たなければ
+    `materials/<model の名前>.bindings.json`(基本形は `engine://primitives/` を外した名前。英数字・`_`・`-` 以外は `_`。
+    同じ名前のファイルがあれば `<名前>_2` などにする)を新しく作って、asset_data の `models[]` の
+    その model に `material_bindings` を足します。新しい文書は model の全 primitive を並べます(binding の文書は
+    whole-model の契約)。
+  - `engine://primitives/cube` のように `models[]` に宣言の無い基本形には、`{"name": <参照>, "path": <参照>,
+    "material_bindings": <文書>}` を `models[]` に足します。割り当ては model 単位なので、その基本形を使う物体は
+    全部同じ material になります。
+  - engine が書く JSON は 2 空白の indent で、既存のファイルは鍵の順と改行コードを保ち、新しいファイルは LF です。
+  - asset_data を書いたときは、engine が持つ asset_data の写しも新しい bytes に置き換えます(`list_assets` などが読む写し)。
+  - `list_assets` は `name` の無い entry を飛ばすので、`materials[]` の entry は出ません([name の無い entry を飛ばす所](../../src/core/communication/editorassetqueryruntime.cpp#L63))。material の一覧は `list_materials` で読みます。
 
 ### モデル材質の identity — レイトレの AS 規則が見る値(✅WP383)
 

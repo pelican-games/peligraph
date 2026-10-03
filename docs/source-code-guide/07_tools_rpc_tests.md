@@ -497,7 +497,7 @@ node の `Delete` = `remove_node` です。位置と折り畳みは `(scope, nod
 engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L36) が
 名前で持つ 5 つ(`get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` /
 `get_edit_result`)だけで、それ以外は `The graph canvas cannot issue %1.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L6393))。規範は struct の宣言そのもの
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L6395))。規範は struct の宣言そのもの
 ([メンバ 5 本](../../src/devstudio/view/graphcanvasreadcapability.hpp#L45))で、その上の宣言コメントは
 **読みを 3 つと数えたまま**です —— メンバは `requestGraphInstances` / `requestGraphCatalog` /
 `requestGraphValues` / `requestEditResult` の 4 読み + `requestEditGraphDocument` の 1 編集なので、
@@ -511,7 +511,7 @@ engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view
 `EmbeddedViewport *` を直接受け取る(capability struct を通さない)側です。扱うのは feature の追加・削除、
 feature パラメータ(**Parameters...**)、materialize(**Make editable...**)、preset の fork、region replacement、
 compute / RT task、callable record、scene acceleration structure、frame node order、procedural asset で、
-ボタンの構築は [1 箇所](../../src/devstudio/view/renderfeatureswidget.cpp#L2389)に並んでいます。
+ボタンの構築は [1 箇所](../../src/devstudio/view/renderfeatureswidget.cpp#L2440)に並んでいます。
 dialog は `pelican.featureMaterialize`(+ `.destination`)と `pelican.featureParameters`(+ `.<name>`)です。
 **export / import と package の UI はここにありません** —— 対応する RPC(§7.7)は engine 側にだけあります。
 
@@ -565,7 +565,7 @@ revision、背景での解除、feature/RPC 失敗時の選択維持を純粋 mo
 [`InspectorModel`](../../src/devstudio/model/inspectormodel.hpp) も view/Qt から独立した公開 RPC client
 です。選択の object を一覧の `authoring_object_id` で確かめてから(選択が id を持てば id で、持たなければ
 `declaration_index` で引く。一覧は ✅UX-13c から `scene_outline {scene_id}`、`-32601` で断る engine にはその session の間
-`scene_tree`。[問いを積む所](../../src/devstudio/model/inspectormodel.cpp#L2116)、[`-32601` を覚える所](../../src/devstudio/model/inspectormodel.cpp#L3108)。
+`scene_tree`。[問いを積む所](../../src/devstudio/model/inspectormodel.cpp#L2220)、[`-32601` を覚える所](../../src/devstudio/model/inspectormodel.cpp#L3212)。
 `-32601` は `InspectorWidget` が `EmbeddedViewport::engineRpcRefused` から拾って `receiveRpcFailure(..., unknown_method)` で渡す)
 `get_components` を読み、component 応答の `schema.fields` だけから整数、浮動小数、真偽、列挙、文字列、
 vector、quaternion の [`InspectorWidgetDescriptor`](../../src/devstudio/model/inspectormodel.hpp) を作ります。
@@ -797,9 +797,9 @@ throw JsonRpcHandlerError{
      {"source", "rpc"}}};
 ```
 
-engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1550) と、そこから呼ぶ [`configureEditorRpcHandlers()`](../../src/core/communication/editorrpchandlers.cpp#L66) に集約されています。現在 **90 メソッド**で、実行制御・診断系が 29、編集系が 61 です。数え方は、両関数(および前者が呼ぶ 2 つの補助関数 [`configureGameLogicReloadRpcHandler()`](../../src/core/communication/rpcserver.cpp#L1310) と [`configurePhysicsRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1241))の中で `server.setHandler()` **または `server.setOrderedHandler()`** に渡す一意な公開 method 文字列を 1 メソッドとします。後者は `nlohmann::ordered_json` を返す版([宣言](../../src/core/communication/rpcserver.hpp#L98))で、使っているのは編集系の 3 つ(`get_components` / `get_ray_occurrences` / `resolve_ray_occurrence`)だけです —— **`setHandler` だけを数えると 87 本にしかなりません**。表で `start` / `stop` のように同じ行へ併記した名前も、それぞれ 1 メソッドです。条件コンパイルでの出し分けはこの 2 関数の中にはありません。
+engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1550) と、そこから呼ぶ [`configureEditorRpcHandlers()`](../../src/core/communication/editorrpchandlers.cpp#L66) に集約されています。現在 **90 メソッド**で、実行制御・診断系が 29、編集系が 61 です。数え方は、両関数(および前者が呼ぶ 2 つの補助関数 [`configureGameLogicReloadRpcHandler()`](../../src/core/communication/rpcserver.cpp#L1310) と [`configurePhysicsRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1241))の中で `server.setHandler()` **または `server.setOrderedHandler()`** に渡す一意な公開 method 文字列を 1 メソッドとします。後者は `nlohmann::ordered_json` を返す版([宣言](../../src/core/communication/rpcserver.hpp#L98))で、使っているのは編集系の 3 つ(`get_components` / `get_ray_occurrences` / `resolve_ray_occurrence`)だけです(✅MT-1 から、`configureEngineRpcHandlers()` が呼ぶ `configureMaterialDocumentRpcHandlers()` の `get_material` も使います) —— **`setHandler` だけを数えると 87 本にしかなりません**。表で `start` / `stop` のように同じ行へ併記した名前も、それぞれ 1 メソッドです。条件コンパイルでの出し分けはこの 2 関数の中にはありません。
 
-#### 実行制御・診断系(表は 34 行・36 メソッド)
+#### 実行制御・診断系(表は 41 行・43 メソッド)
 
 | method | 実装行 | 状態変更 |
 |---|---|---|
@@ -810,6 +810,13 @@ engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/commu
 | `update_assets_manifest` | [manifest の書き直し](../../src/core/communication/rpcserver.cpp#L1518) | ✅AV-1。`{store}` の manifest を `generateAssetsManifest()` で書き、再検証を始める。拒否は `assets_store_unknown@1` / `assets_manifest_undeclared@1` / `assets_manifest_write_failed@1` / `assets_verification_unavailable@1`(`data: {error_code, error_fields}`) |
 | `get_project_settings` | [project.json の宣言を読む](../../src/core/communication/projectsettingsrpc.cpp#L256) | ✅PJ-1。状態変更なし。`{}` → `{project_digest, hot_reload, asset_stores}`(project.json に書かれているまま、無ければ `null`) |
 | `edit_project_settings` | [project.json の宣言を書いて反映](../../src/core/communication/projectsettingsrpc.cpp#L262) | ✅PJ-1。`{base_project_digest, hot_reload?, asset_stores?}` を検査して project.json に書き(project の文書の transaction、digest の CAS)、`PathResolver::replaceDeclarations()`・`ReloadService::setup()`・`AssetsVerification::redeclareStores()` でその場で反映する。受けるのは store の追加と manifest の宣言の追加だけ。拒否は `project.settings_change_unsupported@1` / `external_modification` / `project.hot_reload_invalid@1` / `project.settings_invalid@1` / `project.settings_transaction_busy@1`(`data: {error_code, error_fields}`)。commit の後に反映できなかった部分は `restart_required: {reason}`(player では `null`)。登録は [`configureEngineRpcHandlers()` の中(PJ-1)](../../src/core/communication/rpcserver.cpp#L1586)。形は manual 第10章 §10.3「project.json の宣言を書き換える」、PathResolver の側は [第3章](03_project_and_loading.md) §3.3 |
+| `list_materials` | [MT-1 の list_materials の登録](../../src/core/communication/materialdocumentrpc.cpp#L1445) | ✅MT-1。状態変更なし。`{}` → `{asset_data_digest, documents: [{path, material_digest, status, reason?, materials: [{name, surface, tags, id, registered}]}]}`。asset_data の `materials[]` の全部(`list_assets` は name の無い entry を飛ばすので material を出さない)。登録は [`configureEngineRpcHandlers()` の中(MT-1)](../../src/core/communication/rpcserver.cpp#L1590) が呼ぶ `configureMaterialDocumentRpcHandlers()`。形は manual 第10章 §10.3「material 文書を読み書きする」、中の作りは [第3章](03_project_and_loading.md) §3.9 の「RPC で material 文書を読み書きする」 |
+| `get_material` | [MT-1 の get_material の登録](../../src/core/communication/materialdocumentrpc.cpp#L1450) | ✅MT-1。状態変更なし。`{path, name?}` → `{path, material_digest, name, names, registered, material}`。`setOrderedHandler()` で、`material` は文書の鍵の順のまま |
+| `get_surface_schema` | [MT-1 の get_surface_schema の登録](../../src/core/communication/materialdocumentrpc.cpp#L1453) | ✅MT-1。状態変更なし。`{surface}` → `.surface` の `//!` の宣言の `params` / `textures`(`parseSurfaceFormat()` の結果をそのまま) |
+| `get_material_bindings` | [MT-1 の get_material_bindings の登録](../../src/core/communication/materialdocumentrpc.cpp#L1465) | ✅MT-1。状態変更なし。`{model}` → `{model, material_bindings, bindings_digest, primitives: [{mesh, primitive, slot, material, usd_path}]}`(`slot` は `ModelAssetContainer::materialSlots()`) |
+| `edit_material` | [MT-1 の edit_material の登録](../../src/core/communication/materialdocumentrpc.cpp#L1459) | ✅MT-1。`{base_material_digest, path, name?, values?, textures?, tags?, routing?, variants?, surface?}` を検査して material 文書に書く(project の文書の transaction、digest の CAS)。変わった鍵が `values` だけなら `MaterialContainer::prepareSurfaceMaterialReload()` で live、ほかが変われば `restart_required: {reason}`。返り値の `previous` で戻す。`edit_batch` の対象ではない |
+| `create_material` | [MT-1 の create_material の登録](../../src/core/communication/materialdocumentrpc.cpp#L1462) | ✅MT-1。`{path, surface, name?, values?, tags?, routing?}`。文書の作成と asset_data の `materials[]` への追加を 1 つの transaction で書き、`ProjectMaterialAssetContainer::registerDocument()` で live に登録する |
+| `bind_material` | [MT-1 の bind_material の登録](../../src/core/communication/materialdocumentrpc.cpp#L1468) | ✅MT-1。`{model, material, primitive?\|slot?}` か `{model, bindings}`。model の material_bindings を書き(基本形には asset_data の `models[]` に宣言を足す)、`ModelAssetContainer::exchangeMaterialBindings()` と `ReloadService::reloadModelsNow()` で model を読み直す。割り当ては model 単位。拒否は MT-1 の 7 本で共通の `material.*@1` 13 種と `external_modification`(`data: {error_code, error_fields}`。一覧は manual 第10章) |
 | `get_runtime_objects` | [spawn された object の一覧](../../src/core/communication/rpcserver.cpp#L1796) | 今の scene で spawn された生きている object を spawn 順に返す(RO-1。`name`、`entity`、`parent`、`spawned_by`、`transform`) |
 | `get_gpu_timing` | [GPU 時間平均](../../src/core/communication/rpcserver.cpp#L1853) | 直近 30 フレームの node 別 `body_ms` / `barriers_ms` 平均と対応状況を軽量に返す |
 | `set_seed` | [seed 設定](../../src/core/communication/rpcserver.cpp#L1925) | deterministic RNG を reseed |

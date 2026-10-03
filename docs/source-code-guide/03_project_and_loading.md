@@ -810,6 +810,27 @@ test: `featurecompose_test` の [「FR-1 a feature names the targets it leaves t
 
 material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](../../src/project/materialformat.hpp#L45) の `usd_path`、[`modeltemplate.cpp`](../../src/core/model/modeltemplate.cpp#L99) で重複/未解決を検証）。これはU-USDレーン（WP119/124）の観測境界です。
 
+#### RPC で material 文書を読み書きする(✅MT-1、`976c410d`)
+
+新しい [`materialdocumentrpc.hpp` の MT-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L14) / `materialdocumentrpc.cpp`(`pelican_core`)が、7 本の RPC(`list_materials` / `get_material` / `get_surface_schema` / `get_material_bindings` / `edit_material` / `create_material` / `bind_material`)を持ちます。入口は [`configureMaterialDocumentRpcHandlers()`](../../src/core/communication/materialdocumentrpc.cpp#L1443) の 1 つで、[`configureEngineRpcHandlers()` が PJ-1 の直後に呼びます](../../src/core/communication/rpcserver.cpp#L1590)。RPC の契約は manual 第10章 §10.3「material 文書を読み書きする」、live と restart_required の規則は manual 第6章 §6.7 です。
+
+- **書き方**: 書く 3 本は、文書を `nlohmann::ordered_json` で読んで直し、鍵の順・2 空白の indent・元の改行コードで出し直します(新しいファイルは LF。[MT-1 の文書の書き出し `renderJsonDocument`](../../src/core/communication/materialdocumentrpc.cpp#L109))。書き込みは `commitProjectDocuments()`(project の文書の transaction。digest の CAS)で、`ProjectDocumentExternalModification` は `external_modification`、`ProjectDocumentTransactionBusy` は `material.transaction_busy@1` に写します。asset_data を書いたときは `ProjectBasicConfig::publishAssetDataJson()` で engine の写しも替えます([MT-1 の asset_data の写しの更新](../../src/core/communication/materialdocumentrpc.cpp#L515))。
+- **書く前の検査**: 値は surface の宣言で型と `min` / `max` を見ます([MT-1 の値の検査 `valueProblem`](../../src/core/communication/materialdocumentrpc.cpp#L362))。書いた後の文書は、起動時と同じく `parseMaterialFormatJson()` と `lowerMaterial()` / `lowerMaterialVariants()` に通します([MT-1 の候補の文書の検査](../../src/core/communication/materialdocumentrpc.cpp#L458))。
+- **`edit_material` の当て方**: 変わった鍵が `values` だけなら `MaterialContainer::prepareSurfaceMaterialReload({}, {文書の key})` を作って commit します(WP105 の values reload の経路)。ほかの鍵が変わったら `restart_required` です([MT-1 の live の判定](../../src/core/communication/materialdocumentrpc.cpp#L890))。
+- **`create_material` の登録**: `VulkanManageCore::waitIdle()` の後、[`ProjectMaterialAssetContainer::registerDocument()`](../../src/core/material/projectmaterialasset.cpp#L521) で新しい文書の material を登録します。module がまだ無ければ `GET_MODULE` で作り、constructor が asset_data の全部の文書を登録します(コードの注記)。
+  - `registerDocument()` は constructor と同じ `Impl::registerDocuments()` を 1 件で呼びます。constructor が持っていた「文書を読み、surface を parse し、lowering して登録する」処理を、MT-1 でこの関数に切り出しました。parse できない文書・無い surface・登録済みの名前は、1 つも登録せずに throw します(header の注記)。
+  - [`ProjectMaterialAssetContainer::documentOf()`](../../src/core/material/projectmaterialasset.cpp#L528) は、登録済みの material を読んだ文書の参照(asset_data の `materials[]` の参照)を返します(`Impl::material_documents`)。`list_materials` / `get_material` の `registered` と、`create_material` の名前の衝突の検査が使います。
+- **`bind_material` の当て方**: [`ModelAssetContainer`](../../src/core/asset/model.hpp#L39) に MT-1 で足した関数を使います(§3.8 の model の container)。
+  - [`ModelAssetContainer::hasModel()`](../../src/core/asset/model.cpp#L850): その名前の template を今持っているか。
+  - [`ModelAssetContainer::materialSlots()`](../../src/core/asset/model.cpp#L854): model のファイル(基本形なら生成した形)を `GltfLoader::inspect()` で読み直し、primitive ごとに `ModelMaterialSlot {mesh, primitive, slot, routing}`(`slot` は primitive が持つ glTF の material の名前)を mesh・primitive の順に返します。bindings の内容は見ず、何も登録しません。
+  - [`ModelAssetContainer::declaredMaterialBindings()`](../../src/core/asset/model.cpp#L883): 今の宣言が持つ material_bindings の文書。
+  - [`ModelAssetContainer::exchangeMaterialBindings()`](../../src/core/asset/model.cpp#L888): 参照を material_bindings の文書として読み(`loadMaterialBindings()`)、宣言の中のものと入れ替えて前のものを返します。template は、`reloadKey()` の reload が作り直すまで前の bindings のままです。
+  - [`ModelAssetContainer::restoreMaterialBindings()`](../../src/core/asset/model.cpp#L896): 入れ替えの後の reload が失敗したときに前のものを戻します。
+  - [`ModelAssetContainer::reloadKey()`](../../src/core/asset/model.cpp#L901): その model の reload を要求する `AssetKey`(宣言の `container_key`)。
+  - [`ModelAssetContainer::modelDeclaringMaterial()`](../../src/core/asset/model.cpp#L905): その名前の glTF の material を持つ model の名前(`create_material` の名前の衝突。同じ名前の project material は、その model の bindings を曖昧にして読み込みを止めるため)。
+  - 流れ: 文書を commit → `exchangeMaterialBindings()` → `waitIdle()` → [`ReloadService::reloadModelsNow()`](../../src/core/watch/reloadservice.cpp#L409)(`ReloadKind::modified` の要求で model の reload group を作り、transaction を prepare・publication の準備・commit まで、返る前に済ませる。ファイルの変更が積むのと同じ group)。reload が throw したら `restoreMaterialBindings()` で戻し、`restart_required` を返します([MT-1 の model の読み直しを呼ぶ所](../../src/core/communication/materialdocumentrpc.cpp#L1432))。
+- test: [`materialdocumentrpc_test.cpp` の MT-1 の 1 本](../../test/materialdocumentrpc_test.cpp#L202)(GPU。`pelican_define_test(materialdocumentrpc_test GPU RUNTIME_SHADER ...)`)。着地の gate(触った家族の 259 本)は緑でした(統合側の記録)。
+
 > 🧩 **難所 — vec3の後ろ4 byte**([`std140SizeAlignment()`](../../src/project/materiallowering.cpp#L32) / [`makeSurfaceStd140Layout()`](../../src/project/materiallowering.cpp#L435))
 >
 > **何をする所か**: surfaceのparameter宣言順にstd140(GLSLのuniform block標準レイアウト規則)のオフセットを割り付け、values領域の総サイズを決めます。

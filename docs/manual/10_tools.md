@@ -176,6 +176,13 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 | `update_assets_manifest` | `{store}` | その store の manifest を今のディスクから書き直し、再検証を始める(✅AV-1) |
 | `get_project_settings` | `{}` | project.json の `hot_reload` と `asset_stores` を書かれているまま(無ければ `null`)と、`project_digest`(✅PJ-1。下の「project.json の宣言を書き換える」) |
 | `edit_project_settings` | `{base_project_digest, hot_reload?, asset_stores?}` | project.json の 2 つの鍵を書き、engine にその場で反映する(✅PJ-1。同上) |
+| `list_materials` | `{}` | asset_data の `materials[]` の全部の文書と、その中の material(✅MT-1。下の「material 文書を読み書きする」) |
+| `get_material` | `{path, name?}` | 1 つの material を文書のままと、`material_digest`(✅MT-1。同上) |
+| `get_surface_schema` | `{surface}` | `.surface` の `//!` の宣言の `params` と `textures`(✅MT-1。同上) |
+| `get_material_bindings` | `{model}` | model の primitive ごとの material(✅MT-1。同上) |
+| `edit_material` | `{base_material_digest, path, name?, values?, textures?, tags?, routing?, variants?, surface?}` | material を 1 つ直す。values だけなら live、ほかが変われば書いて restart_required(✅MT-1。同上) |
+| `create_material` | `{path, surface, name?, values?, tags?, routing?}` | material 文書を作り asset_data に載せ、live で登録する(✅MT-1。同上) |
+| `bind_material` | `{model, material, primitive?\|slot?}` か `{model, bindings}` | model の material_bindings を書き、model を読み直す(✅MT-1。同上) |
 | `set_input_profile` | `{name}` | 入力プロファイル切替(✅WP91) |
 | `start_input_record` | `{path}` | input_seq 収録開始(✅WP89。v2 で書く) |
 | `stop_input_record` | `{}` | 収録停止。`{path, frames, events}` |
@@ -470,6 +477,65 @@ params は `get_assets_verification` / `verify_assets` が空の object だけ�
 | `project.settings_transaction_busy@1` | 別の書き手が project の文書の transaction を持っている | `{path}` |
 
 残る穴(着地時の記録): manifest を書いている間と、走っている照合の終わりを待つ間は frame が止まります。作り直した watcher は、見張っていなかった間の外の変更を読み直しません。mount で始まり `..` で mount の外へ出る参照は、store を足すと解けなくなります。resolver の差し替えは lock を取らず、main thread の frame の境目で呼ぶことが前提です。
+
+### material 文書を読み書きする(✅MT-1)
+
+7 本(✅MT-1、`976c410d`)は、material 文書(`pelican.material`)・`.surface` の宣言・model の material_bindings を、動いている engine に読ませて書かせます([MT-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L14)。[MT-1 の handler の登録](../../src/core/communication/materialdocumentrpc.cpp#L1443))。書く 3 本は project の文書の transaction と digest の CAS で書き、返る前に engine に当てます。どの鍵の変更が live で、どれが restart_required かの規則は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、engine が書くファイルの形は [第5章](05_assets.md) §5.2 です。
+
+**読む 4 本**(状態を変えません)
+
+- **`list_materials {}`** → `{asset_data_digest, documents: [{path, material_digest, status, reason?, materials: [{name, surface, tags, id, registered}]}]}`。asset_data の `materials[]` の並びのままです。`status` は `loaded` / `missing`(読めない。`material_digest` は `null`)/ `invalid`(JSON でない、または `pelican.material` の `materials` 配列が無い)で、`reason` が付きます。`id` は `get_render_authoring_context` の `materials[]` と同じ draw の鍵、`registered` はこの engine がその文書からその material を登録しているかです。params は省くか空の object だけです。
+- **`get_material {path, name?}`** → `{path, material_digest, name, names, registered, material}`。`material` は文書に書かれているままの object で、鍵の順も文書のままです(ordered の handler)。`path` は asset_data に書かれたままか、正規化して同じになる参照です。文書が 1 つの material だけを持つなら `name` は省けます。
+- **`get_surface_schema {surface}`** → `{surface, params: [{name, type, default, min?, max?, hint?, encoding}], textures: [{name, default, color_space, role, dimension}]}`。`.surface` の `//!` の宣言そのままで、何も足しません。`surface` は `.surface` で終わる参照です。
+- **`get_material_bindings {model}`** → `{model, material_bindings, bindings_digest, primitives: [{mesh, primitive, slot, material, usd_path}]}`。`model` は asset_data の `models[]` の名前か、engine の基本形の参照です。`slot` は model のファイル(基本形なら生成した形)が primitive に付けている glTF の material の名前、`material` は今の割り当て(binding が無ければ `slot` と同じ)です。material_bindings の文書が無ければ `material_bindings` / `bindings_digest` / `usd_path` は `null` です。
+
+実例(test。Blank の project の箱 `engine://primitives/cube`、割り当て前):
+
+```json
+{"model":"engine://primitives/cube","material_bindings":null,"bindings_digest":null,
+ "primitives":[{"mesh":0,"primitive":0,"slot":"pelican.primitive.default",
+                "material":"pelican.primitive.default","usd_path":null}]}
+```
+
+**書く 3 本**(どれも返り値に `committed: true`・`changed`・`applied: "live" | "restart_required"`・`restart_required: {reason} | null`)
+
+- **`edit_material {base_material_digest, path, name?, values?, textures?, tags?, routing?, variants?, surface?}`**([edit_material の本体](../../src/core/communication/materialdocumentrpc.cpp#L792))
+  - `values` / `textures` は `{param: 値 | null}` で今の値に重ねます(`null` はその上書きを外す)。`tags` / `routing` / `variants` は値の全体で置き換え(`null` は鍵ごと消す)、`surface` は参照を替えます。`surface` を替えるときは、material が既に書いている `values` / `textures` の名前が新しい surface に宣言されている必要があります(無ければ `material.param_unknown@1`)。
+  - 返り値に `path`・`name`・`material_digest`・`previous_material_digest`・`previous`。`previous` は渡した鍵ごとの前の値です(`values` / `textures` は `{param: 前の値 | null}`、ほかは前の値か `null`)。`previous` を新しい `material_digest` と一緒に同じ RPC で送れば戻ります。
+  - `values` だけが変わったときは live、`textures` / `tags` / `routing` / `variants` / `surface` のどれかが実際に変わったときは、書いたうえで restart_required です。
+  - 実例(test): 赤の `base_color` / `emission_color` を青にすると `applied: "live"`・`previous: {"values": {"base_color": [1,0,0,1], "emission_color": [1,0,0,1]}}` で、次の frame の画素が青になります。続けて `tags: ["paint"]` を送ると `applied: "restart_required"`・`previous: {"tags": null}` で、画素は変わりません。
+- **`create_material {path, surface, name?, values?, tags?, routing?}`**([create_material の本体](../../src/core/communication/materialdocumentrpc.cpp#L967))
+  - 1 つの material の文書を作り、asset_data の `materials[]` に足して(1 つの transaction)、live で登録します。`name` の既定はファイル名、`routing` の既定は `{alpha_mode: "opaque", double_sided: false}` です。
+  - 返り値に `path`・`name`・`material_digest`・`asset_data_digest`・`previous_asset_data_digest`。
+- **`bind_material {model, material, primitive?: {mesh, primitive} | slot?}`** または **`{model, bindings: [{mesh, primitive, material}]}`**([bind_material の本体](../../src/core/communication/materialdocumentrpc.cpp#L1234))
+  - `primitive` はその 1 つ、`slot` はその glTF の material を持つ primitive の全部、どちらも無ければ model の全 primitive に割り当てます。`primitive` と `slot` の両方、`bindings` と `material` / `primitive` / `slot` の両方は `-32602` です。
+  - `material` は、その model の glTF の material の名前か project material の名前です。両方にあれば `material.binding_invalid@1`(曖昧)、どちらにも無ければ `material.name_unknown@1`、`routing` の無い project material は `material.binding_invalid@1` です。
+  - model の material_bindings の文書を書き(無ければ作り、asset_data の `models[]` に `material_bindings` を足す。基本形は `models[]` に宣言ごと足す)、model を読み直します。割り当ては model 単位です。
+  - 返り値に `model`・`material_bindings`・`bindings_digest`・`previous_bindings_digest`(文書が無かったなら `null`)・`previous: {bindings: [{mesh, primitive, material}]}`(変わった primitive の前の material)、asset_data を書いたときは `asset_data_digest` / `previous_asset_data_digest`。`previous.bindings` を `bindings` に送れば戻ります。
+  - 実例(test): 箱に `{model: "engine://primitives/cube", slot: "pelican.primitive.default", material: "paint"}` → `applied: "live"`、`previous: {"bindings": [{"mesh": 0, "primitive": 0, "material": "pelican.primitive.default"}]}`。
+
+params の形が違う(鍵が足りない・知らない鍵・型が違う)ときは `-32602` です。断るとき(`-32000`、`data: {error_code, error_fields}`)は何も書きません([MT-1 の拒否の code の並び](../../src/core/communication/materialdocumentrpc.cpp#L51))。
+
+| `error_code` | いつ | `error_fields` |
+|---|---|---|
+| `external_modification` | `base_material_digest` が今の文書と違う。または transaction が書く直前に変更を見つけた | `{path, expected, actual}`(transaction が見つけたときは `expected` / `actual` が `null`) |
+| `material.value_invalid@1` | 値が surface の宣言の型か `min` / `max` に合わない、texture の参照が解決できない(test の入力 `base_color: [2.0, 0, 0, 1]` なら `reason` は `component 0 2.0 is above the declared max 1.0`。文はコードの読みで、test は `max` を含むことだけを見ます) | `{path, param, reason}` |
+| `material.param_unknown@1` | surface が宣言していない param / texture | `{path, param, kind: "value" \| "texture"}` |
+| `material.document_unknown@1` | asset_data の `materials[]` に無い、または文書が読めない | `{path, reason}` |
+| `material.document_invalid@1` | 文書が JSON でない・`pelican.material` でない、書いた後の文書が起動時の読み込み(parse と lowering)を通らない、surface の無い material に values / textures、書いた後の asset_data が読めない | `{path, reason}` |
+| `material.name_unknown@1` | 複数の material を持つ文書で `name` が無い・その名前が無い(`bind_material` では割り当てる material が無い) | `{name, path?, reason}` |
+| `material.name_invalid@1` | `create_material` の名前が英数字と `_` でない | `{name, reason}` |
+| `material.name_conflict@1` | `create_material` の名前が、文書・登録済みの material・model の glTF の material にある | `{name, path}` か `{name, model}` |
+| `material.path_invalid@1` | `create_material` の `path` が project 相対・`/` 区切り・`.json` 終わり・`.` / `..` 無しでない | `{path, reason}` |
+| `material.path_conflict@1` | `create_material` の `path` がもう asset_data に載っているか、ファイルがある | `{path}` |
+| `material.surface_unknown@1` | surface が読めない・parse できない | `{surface, reason}` |
+| `material.model_unknown@1` | `models[]` に無い model、読み込まれていない model、知らない基本形、model の container の無い host | `{model, reason}` |
+| `material.binding_invalid@1` | 無い primitive、その slot の primitive が無い、material の名前が曖昧、routing の無い material、割り当ての無い primitive が glTF の material も持たない、今の material_bindings の文書が読めない、書いた後の文書が読めない | `{model, reason}` |
+| `material.transaction_busy@1` | 別の書き手が project の文書の transaction を持っている | `{path}` |
+
+- `edit_batch` の対象ではありません(material の文書は RD-1 の render 文書の集合の外。commit の記録)。`delete_material` はありません。
+- `list_assets` は name の無い entry を飛ばすので、material の一覧には `list_materials` を使います。
+- 残る穴(着地時の記録): 割り当て済みの material の `routing` を変えても binding の `routing` とのずれを断らない、`material_route_default` は `Renderer` の constructor が記録する(起動の順)、割り当てが model 単位(object ごとの上書きは MT-2 で作業中)。詳しくは第6章の同じ節です。
 
 ### 移行の 2 method と移行専用 endpoint(✅MG-1)
 
@@ -1106,7 +1172,7 @@ acceleration structure = 菱形 / swapchain = 六角 / history = 縁の太い丸
 ボタンは 3 段です。著作一覧の下の行が **Remove selected** / **Parameters...** / **Make editable...**、
 カタログの下が **Add selected**、最下段が **Refresh** / **Procedural assets...** / **Tasks...** /
 **Fork preset...** / **Region replacements...** / **Callable Records...** / **Scene AS...** / **Apply**
-([構築](../../src/devstudio/view/renderfeatureswidget.cpp#L2389))。**Parameters...** は選択 feature の
+([構築](../../src/devstudio/view/renderfeatureswidget.cpp#L2440))。**Parameters...** は選択 feature の
 scalar パラメータを編集し、**Make editable...** は materialize(具体値へ展開した派生を新しい
 `project://` ファイルに作り、元の参照をそれに差し替える)です。どちらも詳細は
 [第13章](13_editor.md) §13.5。**この dock に export / import や package の UI はありません** ——
