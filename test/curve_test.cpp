@@ -1701,6 +1701,181 @@ TEST_CASE("CT-5 the catalog's remaining choices and a render.scalar writing an i
     CHECK(code.empty());
 }
 
+// CT-6: render.compute's ray_tracing and dispatch as the task JSON parser
+// reads them (computetaskdefinitionjson.cpp), so Studio makes a form of each:
+// their fields, a wrong kind refused by name before the parser reads it, and
+// the forms Studio, the engine's pipelines and the RT demos write still taken.
+TEST_CASE("CT-6 the catalog lists render.compute's ray_tracing and dispatch as fields and its parameters as complete",
+          "[curve][graph-module][graph-catalog][ct6]") {
+    using namespace Pelican;
+    using Json = nlohmann::json;
+    const auto catalog = Json(builtinGraphModuleRegistry().catalog());
+    Json compute;
+    for (const auto &module : catalog.at("modules"))
+        for (const auto &entry : module.at("operations"))
+            if (entry.at("op") == "render.compute") compute = entry;
+    REQUIRE(compute.is_object());
+    const auto parameter = [&](std::string_view name) {
+        for (const auto &listed : compute.at("parameters"))
+            if (listed.at("name").get<std::string>() == std::string{name}) return listed;
+        FAIL("render.compute lists no parameter " << name);
+        return Json{};
+    };
+    const auto field = [](const Json &holder, std::string_view name) {
+        for (const auto &listed : holder.at("fields"))
+            if (listed.at("name").get<std::string>() == std::string{name}) return listed;
+        FAIL("no field " << name);
+        return Json{};
+    };
+    const auto names = [](const Json &holder) {
+        std::vector<std::string> result;
+        for (const auto &listed : holder.at("fields")) result.push_back(listed.at("name").get<std::string>());
+        return result;
+    };
+
+    // 1. ray_tracing: both of the parser's key sets, and what either reads.
+    CHECK(compute.at("parameters_complete") == true);
+    const auto ray_tracing = parameter("ray_tracing");
+    CHECK(ray_tracing.at("kind") == "object");
+    CHECK_FALSE(ray_tracing.contains("required"));
+    CHECK(names(ray_tracing) ==
+          std::vector<std::string>{"raygen", "miss", "closesthit", "traced_ray_types", "misses", "hit_shaders",
+                                   "callable", "callable_record", "callable_records", "max_recursion",
+                                   "acceleration_structure"});
+    CHECK(field(ray_tracing, "raygen").at("kind") == "shader");
+    CHECK(field(ray_tracing, "raygen").at("required") == true);
+    for (const auto *list : {"miss", "closesthit", "callable"}) {
+        INFO(list);
+        CHECK(field(ray_tracing, list).at("kind") == "union");
+        CHECK(field(ray_tracing, list).at("variants") ==
+              Json::array({Json{{"kind", "shader"}}, Json{{"kind", "array"}, {"items", {{"kind", "shader"}}}}}));
+    }
+    CHECK(field(ray_tracing, "traced_ray_types").at("items") == Json{{"kind", "string"}});
+    CHECK(field(ray_tracing, "misses").at("items") == Json{{"kind", "shader"}});
+    const auto group = field(ray_tracing, "hit_shaders").at("items").at("items");
+    CHECK(group.at("kind") == "object");
+    CHECK(names(group) == std::vector<std::string>{"closesthit", "anyhit", "intersection"});
+    CHECK(field(group, "closesthit") == Json{{"name", "closesthit"}, {"kind", "shader"}, {"required", true}});
+    const auto member = field(ray_tracing, "callable_record").at("items");
+    CHECK(field(member, "type").at("enum") == Json::array({"i32", "u32", "f32", "vec2", "vec3", "vec4"}));
+    CHECK(field(ray_tracing, "callable_records").at("items").at("items").at("kind") == "union");
+    const auto recursion = field(ray_tracing, "max_recursion");
+    CHECK(recursion.at("kind") == "integer");
+    CHECK(recursion.at("min") == 1);
+    CHECK(recursion.at("max") == 4294967295LL);
+    CHECK(recursion.at("default") == 1);
+    const auto acceleration_structure = field(ray_tracing, "acceleration_structure");
+    CHECK(acceleration_structure.at("kind") == "string");
+    CHECK(acceleration_structure.at("default") == "scene");
+    CHECK(acceleration_structure.at("choices_from") ==
+          Json{{"rpc", "get_render_authoring_context"}, {"key", "acceleration_structures"}});
+
+    // 2. dispatch: a compute task's groups, a ray tracing task's rays, an
+    // indirect buffer's command.
+    const auto dispatch = parameter("dispatch");
+    CHECK(dispatch.at("kind") == "object");
+    CHECK(names(dispatch) == std::vector<std::string>{"groups", "groups_from", "rays", "rays_from", "indirect"});
+    const auto groups = field(dispatch, "groups");
+    CHECK(groups.at("kind") == "union");
+    CHECK(groups.at("default") == Json::array({1, 1, 1}));
+    CHECK(groups.at("variants").at(0).at("items").at("min") == 1);
+    CHECK(names(groups.at("variants").at(1)) == std::vector<std::string>{"x", "y", "z"});
+    CHECK(field(groups.at("variants").at(1), "x").at("default") == 1);
+    CHECK(field(dispatch, "rays").at("items").at("kind") == "integer");
+    CHECK(field(dispatch, "rays").at("items").at("min") == 1);
+    for (const auto *from : {"groups_from", "rays_from"}) {
+        INFO(from);
+        CHECK(names(field(dispatch, from)) == std::vector<std::string>{"port"});
+        CHECK(field(field(dispatch, from), "port").at("required") == true);
+    }
+    const auto indirect = field(dispatch, "indirect");
+    CHECK(field(indirect, "buffer").at("choices_from") ==
+          Json{{"graph_nodes", Json::array({"render.buffer", "render.attribute"})},
+               {"where", {{"command_layout", Json::array({"compute_dispatch", "ray_dispatch"})}}}});
+    CHECK(field(indirect, "offset").at("min") == 0);
+    CHECK(field(indirect, "offset").at("default") == 0);
+
+    // 3. A wrong kind or range inside them is refused by name.
+    const auto resolve = [](Json parameters) {
+        parameters["ports"] = Json::object();
+        try {
+            (void)builtinGraphModuleRegistry().resolveOperation(
+                Json{{"id", "trace"}, {"op", "render.compute"}, {"parameters", std::move(parameters)}});
+        } catch (const GraphRegistryError &error) {
+            return std::pair{error.code(), error.detail()};
+        }
+        return std::pair{std::string{}, Json{}};
+    };
+    const Json rays_from{{"rays_from", {{"port", "mask"}}}};
+    auto [code, detail] = resolve({{"ray_tracing", {{"raygen", 3}, {"miss", "m"}, {"closesthit", "c"}}},
+                                   {"dispatch", rays_from}});
+    CHECK(code == "graph.render_node_parameter_invalid@1");
+    CHECK(detail == Json{{"node", "trace"}, {"op", "render.compute"}, {"parameter", "ray_tracing.raygen"},
+                         {"expected", "shader"}, {"reason", "type"}});
+    std::tie(code, detail) = resolve(
+        {{"ray_tracing", {{"raygen", "r"}, {"miss", "m"}, {"closesthit", "c"}, {"max_recursion", 0}}},
+         {"dispatch", rays_from}});
+    CHECK(detail.at("parameter") == "ray_tracing.max_recursion");
+    CHECK(detail.at("reason") == "range");
+    CHECK(detail.at("min") == 1);
+    std::tie(code, detail) =
+        resolve({{"ray_tracing", {{"raygen", "r"}, {"traced_ray_types", Json::array({"primary"})},
+                                  {"misses", {{"sky", "m"}}},
+                                  {"hit_shaders", {{"primary", {{"sphere", {{"closesthit", 7}}}}}}}}},
+                 {"dispatch", rays_from}});
+    CHECK(detail.at("parameter") == "ray_tracing.hit_shaders.primary.sphere.closesthit");
+    CHECK(detail.at("expected") == "shader");
+    std::tie(code, detail) = resolve({{"shader", "c"}, {"dispatch", {{"rays", Json::array({64, 0, 1})}}}});
+    CHECK(detail.at("parameter") == "dispatch.rays[1]");
+    CHECK(detail.at("reason") == "range");
+    std::tie(code, detail) = resolve({{"shader", "c"}, {"dispatch", {{"groups_from", {{"port", 2}}}}}});
+    CHECK(detail.at("parameter") == "dispatch.groups_from.port");
+    CHECK(detail.at("expected") == "string");
+    std::tie(code, detail) =
+        resolve({{"shader", "c"}, {"dispatch", {{"indirect", {{"buffer", "args"}, {"offset", -4}}}}}});
+    CHECK(detail.at("parameter") == "dispatch.indirect.offset");
+    CHECK(detail.at("reason") == "range");
+
+    // 4. What is written today is taken: Studio's engine pipeline
+    // (graphcanvasmodel.cpp), the legacy lists with callables, the ray group
+    // layout's form (projects/pathtrace_demo), and every dispatch form.
+    const std::vector<Json> taken{
+        {{"ray_tracing", {{"raygen", "engine://rt_shadow_mask_pipeline"},
+                          {"miss", "engine://rt_shadow_mask_pipeline"},
+                          {"closesthit", "engine://rt_shadow_mask_pipeline"}}},
+         {"dispatch", rays_from}},
+        {{"ray_tracing", {{"raygen", "project://shaders/a"},
+                          {"miss", Json::array({"project://shaders/a", "project://shaders/b"})},
+                          {"closesthit", Json::array({"project://shaders/a"})},
+                          {"callable", Json::array({"project://shaders/tint"})},
+                          {"callable_record", Json::array({Json{{"name", "tint"}, {"type", "vec3"}}})},
+                          {"callable_records", Json::array({Json{{"tint", Json::array({1.0, 0.5, 0.0})}}})},
+                          {"max_recursion", 2},
+                          {"acceleration_structure", "actors"}}},
+         {"dispatch", {{"rays", Json::array({64, 32, 1})}}}},
+        {{"ray_tracing", Json::parse(R"({
+            "raygen": "project://shaders/pt", "traced_ray_types": ["radiance", "shadow"],
+            "misses": {"sky": "project://shaders/pt_radiance", "shadow": "project://shaders/pt_shadow"},
+            "hit_shaders": {
+              "radiance": {"sphere": {"closesthit": "project://shaders/pt", "intersection": "project://shaders/sphere"},
+                           "mesh": {"closesthit": "project://shaders/pt_mesh"}},
+              "shadow": {"sphere": {"closesthit": "project://shaders/pt_shadow",
+                                    "intersection": "project://shaders/sphere"},
+                         "mesh": {"closesthit": "project://shaders/pt_shadow"}}},
+            "max_recursion": 1})")},
+         {"dispatch", {{"indirect", {{"buffer", "rays"}}}}}},
+        {{"shader", "project://shaders/c"}, {"dispatch", {{"groups", Json::array({1, 1, 1})}}}},
+        {{"shader", "project://shaders/c"}, {"dispatch", {{"groups", {{"x", 8}}}}}},
+        {{"shader", "project://shaders/c"}, {"dispatch", {{"groups_from", {{"port", "h0"}}}}}},
+        {{"shader", "project://shaders/c"}, {"dispatch", {{"indirect", {{"buffer", "args"}, {"offset", 16}}}}}},
+    };
+    for (const auto &parameters : taken) {
+        INFO(parameters.dump());
+        std::tie(code, detail) = resolve(parameters);
+        CHECK(code.empty());
+    }
+}
+
 TEST_CASE("a build without the animation unit rejects a pose document by name",
           "[curve][graph-composition][graph-module]") {
     using namespace Pelican;

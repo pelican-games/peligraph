@@ -270,6 +270,98 @@ P shaderDefines() {
     return array("defines", string("").expression()).describe("NAME or NAME=VALUE defines.");
 }
 
+// --- CT-6: render.compute's ray_tracing and dispatch
+// (computetaskdefinitionjson.cpp). ---
+
+// One shader's path, or several (parseRayTracingShaderList).
+P rayShaderList(std::string name) {
+    return union_(std::move(name)).variant(shader("")).variant(array("", shader("")));
+}
+
+// parseRayTracingShaders without a project ray_group_layout reads raygen,
+// miss and closesthit; parseLayoutRayTracingShaders with one reads raygen,
+// traced_ray_types, misses and hit_shaders and refuses miss / closesthit.
+// Either reads callable, callable_record / callable_records
+// (parseCallableRecords, parseRayCallableRecordLayout, encodeRayCallableRecords),
+// max_recursion (parseRayTracingRecursion) and acceleration_structure
+// (parseComputeTaskDefinitionsFromConfigJson). The defaults are
+// RayTracingTaskShaderDefinition's.
+P rayTracing() {
+    return object("ray_tracing")
+        .field(shader("raygen").required().describe("The ray generation shader."))
+        .field(rayShaderList("miss").describe("The miss shaders, in index order (required without a ray group "
+                                              "layout; refused with one)."))
+        .field(rayShaderList("closesthit").describe("The closest-hit shaders, in index order (required without a "
+                                                    "ray group layout; refused with one)."))
+        .field(array("traced_ray_types", string(""))
+                   .describe("The layout's ray types this task traces, each once (required with a ray group "
+                             "layout)."))
+        .field(object("misses")
+                   .item(shader(""))
+                   .describe("The layout's miss name to its shader, one for every miss (required with a ray group "
+                             "layout)."))
+        .field(object("hit_shaders")
+                   .item(object("").item(object("")
+                                             .field(shader("closesthit").required())
+                                             .field(shader("anyhit"))
+                                             .field(shader("intersection")
+                                                        .describe("Required in a procedural group, refused in a "
+                                                                  "triangles one."))))
+                   .describe("Traced ray type to layout group to its hit shaders, for every traced type and every "
+                             "group (required with a ray group layout)."))
+        .field(rayShaderList("callable").describe("The callable shaders, in index order."))
+        .field(array("callable_record",
+                     object("")
+                         .field(string("name").required().describe("Matches ^[A-Za-z0-9_]{1,64}$, each once."))
+                         .field(enumeration("type", {"i32", "u32", "f32", "vec2", "vec3", "vec4"}).required()))
+                   .describe("The callable record's members, in order (with callable and callable_records)."))
+        .field(array("callable_records",
+                     object("").item(union_("").variant(number("")).variant(array("", number("")))))
+                   .describe("One record per callable: each member of callable_record by name, a number or a "
+                             "vector's numbers."))
+        .field(uint32("max_recursion").range(1.0, uint32_max).fallback(1))
+        .field(string("acceleration_structure").fallback("scene").choicesFrom(authoring_context,
+                                                                              "acceleration_structures")
+                   .describe("The acceleration structure it traces: \"scene\" or a composed "
+                             "scene_acceleration_structures name."))
+        .describe("A ray tracing pipeline (excludes shader).");
+}
+
+// parseDispatch. A ray tracing task takes exactly one of rays, rays_from or
+// indirect; a compute task groups or groups_from, or indirect alone
+// (local_size is refused). Absent: one group.
+P computeDispatch() {
+    const auto count = [](std::string name) {
+        return uint32(std::move(name)).range(1.0, uint32_max).fallback(1);
+    };
+    return object("dispatch")
+        .field(union_("groups")
+                   .fallback(Json::array({1, 1, 1}))
+                   .variant(array("", uint32("").range(1.0, uint32_max)))
+                   .variant(object("").field(count("x")).field(count("y")).field(count("z")))
+                   .describe("Workgroup counts: [x, y, z] or {x, y, z}, each positive (a compute task)."))
+        .field(object("groups_from")
+                   .field(string("port").required().describe("An image port of this task."))
+                   .describe("As many groups as the port's image needs at the shader's workgroup size (a compute "
+                             "task; excludes groups)."))
+        .field(array("rays", uint32("").range(1.0, uint32_max))
+                   .describe("The launch dimensions: three positive integers [x, y, z] (a ray tracing task; "
+                             "alone)."))
+        .field(object("rays_from")
+                   .field(string("port").required().describe("An image port of this task."))
+                   .describe("One ray per pixel of the port's image (a ray tracing task; alone)."))
+        .field(object("indirect")
+                   .field(string("buffer").required()
+                              .choicesFromGraph({"render.buffer", "render.attribute"})
+                              .where("command_layout", {"compute_dispatch", "ray_dispatch"})
+                              .describe("A buffer the task does not write, of command_layout compute_dispatch "
+                                        "(a compute task) or ray_dispatch (a ray tracing task)."))
+                   .field(integer("offset").range(0.0, std::nullopt).fallback(0)
+                              .describe("Where the command starts, in bytes (a multiple of 4)."))
+                   .describe("The counts a buffer holds (excludes the others)."))
+        .describe("How many groups or rays the task launches.");
+}
+
 P wrap() { return enumeration("wrap", {"once", "repeat", "ping_pong"}).fallback("once"); }
 
 // A value.playback / audio.playback time-map number: a literal here, or the
@@ -440,8 +532,8 @@ Table makeTable() {
         {nodeRef("snapshot_after").required().describe("The pass the copy runs after."), viewFamily(), viewSelect(),
          regionTags(), passSet(), order("after"), order("before"), insert(false), canonicalAnchor()});
 
-    // Passes and tasks. Incomplete: the pass JSON parsers read more than is
-    // traced here (raster_state, dispatch, ray_tracing, the draw source).
+    // Passes. Incomplete: the pass JSON parsers read more than is traced here
+    // (raster_state, the draw source).
     std::vector<std::string> contracts;
     for (const auto contract : materialPassContracts) contracts.emplace_back(materialPassContractName(contract));
     {
@@ -488,12 +580,14 @@ Table makeTable() {
          loadOp("depth_load_op"), storeOp("depth_store_op"), clearColor(), clearColors(), resolutionDomain("unclassified"), viewFamily(),
          viewSelect(), regionTags(), regions(), passSet(), order("after"), order("before"), insert(true),
          canonicalAnchor()});
-    add(table, "render.compute", false,
+    // CT-6: ray_tracing and dispatch typed, every key the task JSON parser
+    // and the composition read is listed.
+    add(table, "render.compute", true,
         {object("ports").required().describe("Port name to its declaration."),
          shader("shader").required({"ray_tracing"}).describe("The compute shader's path."),
-         json("ray_tracing").describe("A ray tracing pipeline (excludes shader)."),
+         rayTracing(),
          object("ray_query").field(accelerationStructure()),
-         json("dispatch"),
+         computeDispatch(),
          enumeration("schedule", {"per_frame", "per_view", "once"}).fallback("per_frame")
              .describe("When the task runs."),
          viewFamily(), viewSelect(), regionTags(), regions(), order("after"), order("before")});
