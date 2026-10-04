@@ -6,7 +6,10 @@
 
 #include "../src/devstudio/model/inspectormodel.hpp"
 #include "../src/devstudio/model/renderfallback.hpp"
+#include "problemsdock.hpp"
 #include "renderfallbacknotice.hpp"
+
+#include <QTreeWidget>
 
 #include <QApplication>
 #include <QDialog>
@@ -209,23 +212,43 @@ TEST_CASE("BS-1s decision 3: Reload from disk asks the reload; a reload or an ed
     CHECK(rig.notice.isHidden());
 }
 
-TEST_CASE("BS-1s decision 4: a fixed setup whose feature needs a module the engine started without says "
-          "Restart the engine to enable it, and Restart engine restarts it",
-          "[devstudio][render-fallback][bs1s]") {
+TEST_CASE("BS-1s decision 4 / PB-1s decision 6: a fixed setup whose feature needs a module the engine started "
+          "without is told by its code, render_feature_requires_restart@1, and its feature -- on the row above "
+          "the viewport, in the reload's refusal and on the Problems row -- and Restart engine restarts it",
+          "[devstudio][render-fallback][bs1s][pb1s]") {
     application();
     Rig rig;
     rig.notice.observeStatus(fallbackStatus());
     // Another refusal is not this one.
     rig.notice.observeReloadRefusal(Json{{"code", "graph.port_field_missing@1"}, {"message", "x"}});
     CHECK_FALSE(rig.showing("pelican.renderFallbackNotice.restart"));
+    // Nor are the words alone: the module graph's own sentence, without the
+    // code, says nothing Studio reads (PB-1s, decision 6).
+    const Json words{{"code", "render_pipeline_preflight_failed"},
+                     {"message", "Module 'struct Pelican::UiSystem' was first requested after the runtime module "
+                                 "graph was frozen"}};
+    CHECK(renderRestartFeature(words).empty());
+    rig.notice.observeReloadRefusal(words);
+    CHECK_FALSE(rig.showing("pelican.renderFallbackNotice.restart"));
 
-    const Json frozen{{"code", "render_pipeline_preflight_failed"},
-                      {"message", "Module 'struct Pelican::UiSystem' was first requested after the runtime module "
-                                  "graph was frozen"}};
-    CHECK(renderRestartFeature(frozen) == "UiSystem");
+    // The reload's refusal as engine PB-1 answers it: the code, the feature
+    // and the module beside it.
+    const Json frozen{{"code", "render_feature_requires_restart@1"},
+                      {"feature", "debug_draw"},
+                      {"module", "DebugDraw"},
+                      {"message", "Render pipeline hot reload cannot enable feature 'debug_draw': feature "
+                                  "'debug_draw' needs runtime module DebugDraw, which this engine was started "
+                                  "without; restart the engine"}};
+    CHECK(renderRestartFeature(frozen) == "debug_draw");
+    // Relayed as error_fields, or quoted after the code, it is the same.
+    CHECK(renderRestartFeature(Json{{"code", "render_feature_requires_restart@1"},
+                                    {"error_fields", {{"feature", "ui"}, {"module", "UiRenderer"}}}}) == "ui");
+    CHECK(renderRestartFeature(Json{{"code", "render_pipeline_preflight_failed"},
+                                    {"message", "render_feature_requires_restart@1: {\"feature\":\"ui\","
+                                                "\"module\":\"UiRenderer\"}"}}) == "ui");
     rig.notice.observeReloadRefusal(frozen);
     CHECK(rig.notice.line()->text() ==
-          QStringLiteral("Restart the engine to enable UiSystem: the rendering setup needs it, and this engine "
+          QStringLiteral("Restart the engine to enable debug_draw: the rendering setup needs it, and this engine "
                          "was started without it."));
     CHECK(rig.showing("pelican.renderFallbackNotice.restart"));
     CHECK_FALSE(rig.showing("pelican.renderFallbackNotice.reload"));
@@ -234,7 +257,50 @@ TEST_CASE("BS-1s decision 4: a fixed setup whose feature needs a module the engi
     CHECK(rig.showing("pelican.renderFallbackNotice.restart"));
     rig.named<QPushButton>("pelican.renderFallbackNotice.restart")->click();
     REQUIRE(rig.restarts.size() == 1);
-    CHECK(rig.restarts.back().contains(QStringLiteral("UiSystem")));
+    CHECK(rig.restarts.back().contains(QStringLiteral("debug_draw")));
+
+    // The same problem in the engine's list is a row whose fix is a restart:
+    // a click goes nowhere, Restart engine under the list restarts.
+    std::vector<ProblemRow> opened;
+    std::vector<QString> restarts;
+    std::vector<qint64> asked;
+    ProblemsDock problems{ProblemsDock::Hooks{
+        .send = [&](const QString &, const QJsonObject &, QString *) -> qint64 {
+            asked.push_back(static_cast<qint64>(asked.size()) + 700);
+            return asked.back();
+        },
+        .open = [&](const ProblemRow &row) { opened.push_back(row); },
+        .restart = [&](const QString &reason) { restarts.push_back(reason); },
+    }};
+    problems.engineAvailable();
+    problems.observeStatus(Json{{"problems", {{"revision", 3}, {"count", 1}}}});
+    REQUIRE(asked.size() == 1);
+    REQUIRE(problems.receiveResult(
+        asked.back(),
+        QByteArray::fromStdString(
+            Json{{"revision", 3},
+                 {"problems", Json::array({{{"id", "0123456789abcdef"},
+                                            {"severity", "error"},
+                                            {"source", "reload_rpc"},
+                                            {"code", "render_feature_requires_restart@1"},
+                                            {"message", frozen.at("message")},
+                                            {"fields", {{"feature", "debug_draw"}, {"module", "DebugDraw"}}}}})}}
+                .dump())));
+    const auto &rows = problems.session().rows();
+    REQUIRE(rows.size() == 1);
+    CHECK(rows.front().place == ProblemRow::Place::Restart);
+    CHECK(rows.front().restart_feature == "debug_draw");
+    CHECK(rows.front().place_text == "Restart the engine");
+    CHECK(rows.front().sentence ==
+          "The rendering setup turns on debug_draw, whose runtime module DebugDraw this engine was started "
+          "without; restart the engine (render_feature_requires_restart@1).");
+    problems.openProblem(QStringLiteral("0123456789abcdef"));
+    CHECK(opened.empty());
+    problems.list()->setCurrentItem(problems.list()->topLevelItem(0));
+    REQUIRE(problems.restartButton()->isVisibleTo(&problems));
+    problems.restartButton()->click();
+    REQUIRE(restarts.size() == 1);
+    CHECK(restarts.back().contains(QStringLiteral("debug_draw")));
     // The restart takes the engine away; the new one starts ready.
     rig.notice.engineGone();
     rig.notice.observeStatus(readyStatus());

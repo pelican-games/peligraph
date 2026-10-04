@@ -1,6 +1,8 @@
 #include "embeddedviewport.hpp"
 #include "enginefailuremodel.hpp"
 #include "frameplanwidget.hpp"
+#include "problemsdock.hpp"
+#include "renderfallbacknotice.hpp"
 #include "../src/devstudio/model/inspectormodel.hpp"
 
 #include "../src/core/asset/model.hpp"
@@ -19,11 +21,13 @@
 #include "vulkan_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <nlohmann/json.hpp>
 
 #include <QApplication>
 #include <QByteArray>
+#include <QDialog>
 #include <QDir>
 #include <QEventLoop>
 #include <QJsonDocument>
@@ -39,6 +43,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace PelicanStudio {
 namespace {
@@ -409,15 +414,24 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
     EnvironmentVariableGuard player_path{
         "PELICAN_STUDIO_PLAYER", player.toLocal8Bit()};
 
+    // PB-1s (engines BS-1 and PB-1): Studio starts its engine with
+    // --render-fallback, and a start whose materials find no pass for their
+    // route (material_route_unserved@1) is a start that falls back now. The
+    // engine keeps running on its placeholder; the row above the viewport
+    // and the Frame Plan's status say why, and the engine's list holds it as
+    // one problem met at start -- the Problems dock's row.
     ViewportObservation broken;
     QString not_started_status;
     QString broken_status;
-    QString broken_detail;
+    nlohmann::json broken_reading;
+    QString notice_line;
+    std::vector<ProblemRow> problem_rows;
+    bool running_after = false;
     {
         EnvironmentVariableGuard player_arguments{
             // Exercise Studio's windowed launch path. A headless child can
             // never satisfy native-window discovery, so loading large models
-            // may kill it before the intended material-pass failure occurs.
+            // may kill it before the intended material-pass refusal occurs.
             "PELICAN_STUDIO_PLAYER_ARGUMENTS", QByteArray{"--size 320x180"}};
         EmbeddedViewport viewport;
         FramePlanWidget frame_plan{&viewport};
@@ -425,58 +439,108 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
             QStringLiteral("pelican.framePlanStatus"));
         REQUIRE(status != nullptr);
         not_started_status = status->text();
+        RenderFallbackNotice notice{RenderFallbackNotice::Hooks{}};
+        notice.setSeeProblems(true);
+        ProblemsDock problems{ProblemsDock::Hooks{
+            .send = [&viewport](const QString &method, const QJsonObject &params, QString *error) {
+                return viewport.requestRpc(method, params, error);
+            },
+            .read_status = [&viewport] {
+                (void)viewport.requestRpc(QStringLiteral("get_status"), QJsonObject{});
+            },
+        }};
         QEventLoop ready_loop;
         QEventLoop rpc_loop;
         QEventLoop stopped_loop;
         QObject connection_context;
         observeViewport(viewport, broken, ready_loop, rpc_loop, stopped_loop,
                         connection_context);
+        // What the window does with every get_status and every reply.
+        QObject::connect(&viewport, &EmbeddedViewport::engineStatusParsed, &connection_context,
+                         [&](qint64, const nlohmann::json &parsed) {
+                             if (broken_reading.is_null() && parsed.contains("render_pipeline"))
+                                 broken_reading = parsed;
+                             notice.observeStatus(parsed);
+                             problems.observeStatus(parsed);
+                         });
+        QObject::connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded, &connection_context,
+                         [&](qint64 request_id, const QByteArray &result_json) {
+                             (void)problems.receiveResult(request_id, result_json);
+                         });
+        QObject::connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable, &connection_context,
+                         [&] { problems.engineAvailable(); });
 
         viewport.resize(640, 480);
         viewport.show();
         viewport.openProject(displayPath(test_project));
-        QTimer::singleShot(30000, &stopped_loop, &QEventLoop::quit);
-        if (!broken.stopped) {
-            stopped_loop.exec();
-        }
+        QTimer::singleShot(60000, &ready_loop, &QEventLoop::quit);
+        if (!broken.rpc_available && !broken.stopped) ready_loop.exec();
+        // The Problems row (get_problems, read once the revision is seen)
+        // and the Frame Plan's status (its plan of the placeholder).
+        QEventLoop listed_loop;
+        QTimer poll;
+        QObject::connect(&poll, &QTimer::timeout, &listed_loop, [&] {
+            if (broken.stopped ||
+                (!problems.session().rows().empty() &&
+                 status->text().startsWith(QStringLiteral("Showing a placeholder"))))
+                listed_loop.quit();
+        });
+        poll.start(50);
+        QTimer::singleShot(30000, &listed_loop, &QEventLoop::quit);
+        listed_loop.exec();
         QApplication::processEvents();
         broken_status = status->text();
-        broken_detail = status->toolTip();
+        notice_line = notice.line()->text();
+        problem_rows = problems.session().rows();
+        running_after = viewport.engineRunning();
     }
 
-    REQUIRE(broken.stopped);
-    const QString engine_fatal = lastFatalLine(broken.standard_error);
     INFO("engine stderr: " << broken.standard_error.toStdString());
     INFO("Studio process output: " << broken.studio_output.toStdString());
-    INFO("running engine fatal line: " << engine_fatal.toStdString());
+    INFO("first get_status: " << broken_reading.dump().substr(0, 2000));
     INFO("Frame Plan status: " << broken_status.toStdString());
-    INFO("Frame Plan detail: " << broken_detail.toStdString());
-    REQUIRE_FALSE(engine_fatal.isEmpty());
-    REQUIRE(engine_fatal.contains(QStringLiteral("forward_transparent")));
-    // G-4: the load-time refusal carries the same named code and route hint
-    // as an edit ticket's rejection.
-    REQUIRE(engine_fatal.contains(QStringLiteral("material_route_unserved@1")));
-    REQUIRE(engine_fatal.contains(QStringLiteral(
-        "add a forward_transparent_v1 material pass")));
-    // This is EmbeddedViewport's production signal, not a test-side model.
-    REQUIRE(broken.fatal_error_line == engine_fatal);
-    // N-7 keeps a long diagnostic in the tooltip and shows its leading text
-    // in one bounded status row. Logger metadata can make this fatal line
-    // much longer than the short message used by the isolated view test.
-    REQUIRE(broken_detail == engine_fatal);
-    REQUIRE_FALSE(broken_status.isEmpty());
-    REQUIRE(broken_status.size() <= 90);
-    REQUIRE(broken_status.endsWith(QStringLiteral("…")));
-    REQUIRE(engine_fatal.startsWith(broken_status.chopped(1)));
-    REQUIRE(broken_status != not_started_status);
-    // With no pending RPC response, equality means stdout contributed zero bytes.
+    INFO("placeholder row: " << notice_line.toStdString());
+    // The engine did not stop: it answered, and still ran when let go.
+    REQUIRE(broken.rpc_available);
+    CHECK_FALSE(broken.stopped);
+    CHECK(running_after);
+    CHECK(broken.fatal_error_line.isEmpty());
+    CHECK(lastFatalLine(broken.standard_error).isEmpty());
+    // It draws its placeholder for the refusal the load names (G-4: the
+    // same code and route hint as an edit ticket's rejection).
+    const auto reading = readRenderPipeline(broken_reading);
+    REQUIRE(reading.state == RenderPipelineReading::State::Fallback);
+    CHECK(reading.refusal.value("code", std::string{}) == "material_route_unserved@1");
+    CHECK_THAT(reading.refusal.dump(), Catch::Matchers::ContainsSubstring("forward_transparent"));
+    // The row above the viewport and the Frame Plan's status say which
+    // route no pass draws and what to add.
+    CHECK(notice_line.startsWith(QStringLiteral("Showing a placeholder: the rendering setup was refused")));
+    CHECK(notice_line.contains(QStringLiteral("add a forward_transparent_v1 material pass")));
+    CHECK(notice_line.contains(QStringLiteral("(material_route_unserved@1)")));
+    CHECK(notice_line.endsWith(QStringLiteral("See Problems.")));
+    CHECK(broken_status.startsWith(QStringLiteral("Showing a placeholder")));
+    CHECK(broken_status.contains(QStringLiteral("material_route_unserved@1")));
+    CHECK(broken_status != not_started_status);
+    // The engine's list: one problem, met at start, fixed in the rendering
+    // section of the root.
+    REQUIRE(problem_rows.size() == 1);
+    const auto &row = problem_rows.front();
+    CHECK(row.code == "material_route_unserved@1");
+    CHECK(row.source == "startup");
+    CHECK(row.error());
+    CHECK(row.document_kind == "root_rendering");
+    CHECK(row.document == "passes/main_rendering_config.json");
+    CHECK(row.place == ProblemRow::Place::RenderingSettings);
+    CHECK_THAT(row.sentence, Catch::Matchers::ContainsSubstring("add a forward_transparent_v1 material pass"));
+    // The RPC replies were consumed by EngineProcess: stdout contributed no
+    // byte to what Studio forwards.
     REQUIRE(broken.studio_output == broken.standard_error);
 
     // Studio gives each project's player its own log, truncated per run.
     const fs::path player_log =
         test_project / ".pelican" / "logs" / "player.log";
     REQUIRE(fs::is_regular_file(player_log));
-    REQUIRE(QString::fromStdString(readText(player_log)).contains(engine_fatal));
+    const std::string broken_log = readText(player_log);
 
     // Restore the deliberately broken example before running the control.
     writeText(rendering_config, original_config);
@@ -541,7 +605,7 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
     // The control run truncated the file: it holds this run, not the failed one.
     const QString control_log = QString::fromStdString(readText(player_log));
     REQUIRE(control_log.contains(QStringLiteral("starting main loop")));
-    REQUIRE_FALSE(control_log.contains(engine_fatal));
+    REQUIRE(QString::fromStdString(broken_log) != control_log);
 }
 
 // UX-9, decision 5 (engine CT-1) -> BS-1s, decision 4 (engine BS-1): a

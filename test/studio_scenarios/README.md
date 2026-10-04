@@ -585,6 +585,20 @@ be broken before Studio opens it is made by the scenario's `<name>.prepare.py`
 (with `pelican_cli project init`) in `{artifacts}/incoming/`;
 `gui_render_fallback` is the example.
 
+PB-1s: the Problems dock (`pelican.problemsDock`, View > Problems is
+`pelican.view.problems`, a tab beside the Engine Log) lists what is wrong
+now -- the engine's `get_problems` (engine PB-1, read when
+`get_status.problems.revision` moves) and the Assets dock's contents check.
+The list is `pelican.problems.list`; its rows are found by their first
+column, `row#Error` / `row#Warning`, or `select`ed by `index`, and a click on
+one goes where it is fixed (the Graph's node for a start's refusal, Show the
+document at the line, or at the node of a refused reload). Beside it:
+`.severity` (All / Errors / Warnings), `.filter`, `.count` ("1 error"),
+`.detail` (the selected row: `<document>:<line>:<column> — <sentence>`) and
+`.restart`. The status bar's `pelican.problemsCount` says the same count and
+brings the dock forward; the placeholder's row ends "See Problems."
+`gui_problems_window` is the example.
+
 ## Gestures a canvas is driven with
 
 `press`, `move` and `release` share one piece of state: which buttons this

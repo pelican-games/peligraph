@@ -54,6 +54,10 @@ add_library(pelican_studio_inspector_model STATIC
     # MT-1s: the material editor's reads, writes and Undo (engine MT-1).
     materialsmodel.cpp
     materialsmodel.hpp
+    # PB-1s: the Problems window's list (engine PB-1's get_problems and the
+    # contents check).
+    problemsmodel.cpp
+    problemsmodel.hpp
 )
 
 set_target_properties(pelican_studio_inspector_model PROPERTIES CXX_STANDARD 20)

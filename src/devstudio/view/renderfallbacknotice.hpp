@@ -52,6 +52,9 @@ class RenderFallbackNotice final : public QFrame {
         std::function<void(int milliseconds, std::function<void()> task)> schedule;
         // The document's restore committed (restore_render_documents).
         std::function<void(const nlohmann::json &commit)> restored;
+        // PB-1s: writes a document's file whole (showDocumentAt's `to_file`);
+        // the error, empty when it was written.
+        std::function<std::string(const std::string &reference, const std::string &content)> write_file;
         // The notice appeared (true) or went away (false), with its line.
         std::function<void(bool shown, const QString &line)> shown_changed;
     };
@@ -81,6 +84,18 @@ class RenderFallbackNotice final : public QFrame {
     [[nodiscard]] QDialog *documentDialog() const noexcept { return dialog_.data(); }
     // Show the document (the button's click).
     void showDocument();
+    // PB-1s, decision 3: the same window on any render document the engine
+    // lists, from a row of the Problems dock -- the cursor at line / column
+    // (1-based), or, without a line, at the first `find` in the text (a
+    // node's id), else at the end.
+    // `to_file`: the engine runs the version before the file (a refused
+    // reload), so Save writes the file (Hooks::write_file) rather than
+    // restoring through the engine.
+    void showDocumentAt(const QString &document, std::int64_t line, std::int64_t column,
+                        const QString &find = {}, bool to_file = false);
+    // PB-1s, decision 4: the sentence ends "See Problems." while the window
+    // has the Problems dock.
+    void setSeeProblems(bool see);
 
   private:
     Hooks hooks_;
@@ -101,6 +116,9 @@ class RenderFallbackNotice final : public QFrame {
     bool dialog_crlf_ = false;
     // What the editor was filled with last (the repair's content).
     bool dialog_filled_ = false;
+    // Where the cursor goes without a line (showDocumentAt).
+    QString dialog_find_;
+    bool see_problems_ = false;
 
     void present(bool changed);
     void presentRepair();

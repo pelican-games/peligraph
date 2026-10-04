@@ -140,6 +140,9 @@ add_library(pelican_studio_view STATIC
     # BS-1s: the row above the viewport while the engine draws its placeholder.
     renderfallbacknotice.cpp
     renderfallbacknotice.hpp
+    # PB-1s: the Problems dock.
+    problemsdock.cpp
+    problemsdock.hpp
     studioscreen.cpp
     studioscreen.hpp
 )

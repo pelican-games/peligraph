@@ -131,8 +131,10 @@ void RenderDocumentRepair::notify() {
     if (changed) changed();
 }
 
-bool RenderDocumentRepair::open(const std::string &document, std::int64_t line, std::int64_t column) {
+bool RenderDocumentRepair::open(const std::string &document, std::int64_t line, std::int64_t column,
+                                bool to_file) {
     ++epoch_;
+    to_file_ = to_file;
     wanted_ = graphRefusalSource(Json{{"document", document}}, "document");
     reference_.clear();
     digest_.clear();
@@ -160,6 +162,21 @@ bool RenderDocumentRepair::save(const std::string &content) {
         return false;
     }
     notice_.clear();
+    if (to_file_) {
+        // PB-1s: written as the person's own editor would; the reload of
+        // saved files takes it in.
+        auto error = transport_.write_file ? transport_.write_file(reference_, content)
+                                           : std::string{"this window cannot write files"};
+        if (!error.empty()) {
+            notice_ = "Could not write " + reference_ + ": " + error;
+            notify();
+            return false;
+        }
+        state_ = State::Closed;
+        if (written) written(reference_);
+        notify();
+        return true;
+    }
     restore_request_ = send("restore_render_documents",
                             Json{{"documents", Json::array({Json{{"reference", reference_},
                                                                  {"base_digest", digest_},

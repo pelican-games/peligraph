@@ -1,0 +1,426 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "gui_problems_window",
+  "description": "PB-1s, from Blank with the GUI only. File > New Project > Blank; View > Problems shows the dock beside the Engine Log, and the status bar says No problems. The root saved outside Studio without its last }: Studio's reload is refused (RL-1s), and the engine's list (engine PB-1, get_problems, read when get_status.problems.revision moves) is one row -- the document, the line and the column, what is wrong -- counted on the status bar. A click on it opens Show the document at that line; the } typed and Save (the file written as an editor writes it, since the engine runs the version before) take the row away. A compute node without its buffer port's element saved into the root: one row naming the node; the engine keeps the version before the save, so a click opens the file's text at the node. Opened again, the engine starts on that root and falls back (BS-1s): the row above the viewport ends See Problems, the count brings Problems forward, and a click on the row (met at start) selects the node on the Graph tab. The node taken out outside Studio: the row goes. Typed: the } in the document's window, and New Project's folder and name.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "File > New Project...",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts, never the repository",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "problems_project"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed, because the template is on disk",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the new project's frame plan has the pass the template authored",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers editor RPC and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "decision 1: View > Problems brings the dock beside the Engine Log to the front",
+      "cmd": "action",
+      "name": "pelican.view.problems"
+    },
+    {
+      "label": "the list is on screen",
+      "cmd": "wait",
+      "name": "pelican.problems.list",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "decision 4: the status bar counts nothing wrong",
+      "cmd": "wait",
+      "name": "pelican.problemsCount",
+      "text": "No problems",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and so does the dock",
+      "expect": "text_equals",
+      "name": "pelican.problems.count",
+      "value": "No problems"
+    },
+    {
+      "label": "the root saved outside Studio without its last }",
+      "file": "replace",
+      "path": "{artifacts}/problems_project/passes/main_rendering_config.json",
+      "old": "    ]\n  }\n}",
+      "new": "    ]\n  }\n"
+    },
+    {
+      "label": "decision 2: Studio's reload is refused, and the engine's list has it at once",
+      "cmd": "wait",
+      "name": "pelican.problems.count",
+      "text": "1 error",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "decision 4: the status bar says it too",
+      "cmd": "wait",
+      "name": "pelican.problemsCount",
+      "text": "1 error",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the engine lists it as the reload's",
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems[0].source",
+      "value": "reload_rpc"
+    },
+    {
+      "label": "by the code of a document that is not JSON",
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems[0].code",
+      "value": "render_document_syntax@1"
+    },
+    {
+      "label": "the engine keeps drawing the version before",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "render_pipeline.state",
+      "value": "ready"
+    },
+    {
+      "label": "a picture of the window with its one problem",
+      "expect": "screenshot",
+      "path": "gui_problems_window_syntax.png"
+    },
+    {
+      "label": "decision 3: a click on the row",
+      "cmd": "select",
+      "name": "pelican.problems.list",
+      "index": 0
+    },
+    {
+      "label": "the row says the document, the line and the column",
+      "cmd": "wait",
+      "name": "pelican.problems.detail",
+      "contains": "passes/main_rendering_config.json:",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "and what is wrong, with its code",
+      "cmd": "wait",
+      "name": "pelican.problems.detail",
+      "contains": "is not valid JSON at line ",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Show the document opens on it",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "as it is on disk: not JSON yet, at the line the engine named",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog.notice",
+      "contains": "Not valid JSON yet at line ",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "to the end of the text",
+      "cmd": "key",
+      "name": "pelican.renderDocumentDialog.text",
+      "sequence": "Ctrl+End"
+    },
+    {
+      "label": "the } that was lost, typed",
+      "cmd": "type",
+      "name": "pelican.renderDocumentDialog.text",
+      "text": "}",
+      "select_all": false
+    },
+    {
+      "label": "it is JSON now",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog.notice",
+      "contains": "Valid JSON",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Save: the engine runs the version before the file, so Studio writes the file",
+      "cmd": "click",
+      "name": "pelican.renderDocumentDialog.save"
+    },
+    {
+      "label": "the window closes",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog",
+      "missing": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "decision 5: Studio's reload of the saved file is taken in, and the row goes",
+      "cmd": "wait",
+      "name": "pelican.problems.count",
+      "text": "No problems",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the engine lists nothing",
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems.$len",
+      "value": 0
+    },
+    {
+      "label": "and nothing is selected",
+      "cmd": "wait",
+      "name": "pelican.problems.detail",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "a compute node whose buffer port has no element, saved into the root outside Studio",
+      "file": "replace",
+      "path": "{artifacts}/problems_project/passes/main_rendering_config.json",
+      "old": "\"nodes\": [],",
+      "new": "\"nodes\": [{\"id\": \"sim\", \"op\": \"render.compute\", \"parameters\": {\"ports\": {\"data\": {\"kind\": \"buffer\", \"access\": \"read_write\"}}, \"shader\": \"shaders/sim.comp\"}, \"outputs\": []}],"
+    },
+    {
+      "label": "the reload's refusal is one row",
+      "cmd": "wait",
+      "name": "pelican.problems.count",
+      "text": "1 error",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "for the node",
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems[0].node",
+      "value": "sim"
+    },
+    {
+      "label": "of the root's graph",
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems[0].document_kind",
+      "value": "root_graph"
+    },
+    {
+      "label": "decision 3: a click on the row",
+      "cmd": "select",
+      "name": "pelican.problems.list",
+      "index": 0
+    },
+    {
+      "label": "the row names the node",
+      "cmd": "wait",
+      "name": "pelican.problems.detail",
+      "contains": "node sim",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the engine runs the version before the save, so the node is fixed in the file's text: Show the document opens on it",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the file is JSON",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog.notice",
+      "contains": "Valid JSON",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "a picture of the document open at the node",
+      "expect": "screenshot",
+      "path": "gui_problems_window_node_text.png"
+    },
+    {
+      "label": "Cancel",
+      "cmd": "click",
+      "name": "pelican.renderDocumentDialog.cancel"
+    },
+    {
+      "label": "the window closes",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "open another project, so the next open is a real one",
+      "cmd": "open_project",
+      "dir": "{other_project}"
+    },
+    {
+      "label": "that engine answers",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "open the project again: its engine starts on the broken root",
+      "cmd": "open_project",
+      "dir": "{artifacts}/problems_project"
+    },
+    {
+      "label": "the engine does not stop; the row above the viewport says why",
+      "cmd": "wait",
+      "name": "pelican.renderFallbackNotice.text",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "decision 4: and says See Problems",
+      "cmd": "wait",
+      "name": "pelican.renderFallbackNotice.text",
+      "contains": "Fix it, then Reload from disk. See Problems.",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the status bar counts the one problem",
+      "cmd": "wait",
+      "name": "pelican.problemsCount",
+      "text": "1 error",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "met at start",
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems[0].source",
+      "value": "startup"
+    },
+    {
+      "label": "decision 4: the count brings Problems to the front",
+      "cmd": "click",
+      "name": "pelican.problemsCount"
+    },
+    {
+      "label": "the list is on screen",
+      "cmd": "wait",
+      "name": "pelican.problems.list",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "a picture of the window on the placeholder with Problems",
+      "expect": "screenshot",
+      "path": "gui_problems_window_startup.png"
+    },
+    {
+      "label": "decision 3: a click on the row",
+      "cmd": "select",
+      "name": "pelican.problems.list",
+      "index": 0
+    },
+    {
+      "label": "the Graph shows the node the problem names",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#sim",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "a picture of the Graph on the node",
+      "expect": "screenshot",
+      "path": "gui_problems_window_graph.png"
+    },
+    {
+      "label": "the node taken out of the root outside Studio",
+      "file": "replace",
+      "path": "{artifacts}/problems_project/passes/main_rendering_config.json",
+      "old": "{\"id\": \"sim\", \"op\": \"render.compute\", \"parameters\": {\"ports\": {\"data\": {\"kind\": \"buffer\", \"access\": \"read_write\"}}, \"shader\": \"shaders/sim.comp\"}, \"outputs\": []}",
+      "new": ""
+    },
+    {
+      "label": "the engine runs the project's rendering setup",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "render_pipeline.state",
+      "value": "ready",
+      "retry_ms": 60000
+    },
+    {
+      "label": "decision 5: the row goes",
+      "cmd": "wait",
+      "name": "pelican.problemsCount",
+      "text": "No problems",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and so does the row above the viewport",
+      "cmd": "wait",
+      "name": "pelican.renderFallbackNotice",
+      "visible": false,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "a picture of the window with nothing wrong",
+      "expect": "screenshot",
+      "path": "gui_problems_window_fixed.png"
+    }
+  ]
+}

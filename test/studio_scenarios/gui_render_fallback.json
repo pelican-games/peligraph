@@ -32,7 +32,7 @@
       "label": "one sentence: the code's, the node, the port, the field and the file",
       "expect": "text_equals",
       "name": "pelican.renderFallbackNotice.text",
-      "value": "Showing a placeholder: the rendering setup was refused — Port data of sim needs element (graph.port_field_missing@1) in passes/main_rendering_config.json. Fix it, then Reload from disk."
+      "value": "Showing a placeholder: the rendering setup was refused — Port data of sim needs element (graph.port_field_missing@1) in passes/main_rendering_config.json. Fix it, then Reload from disk. See Problems."
     },
     {
       "label": "the engine says it draws its placeholder",

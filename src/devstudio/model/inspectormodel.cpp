@@ -1,4 +1,5 @@
 #include "inspectormodel.hpp"
+#include "frameplanmodel.hpp"
 #include "playstatemodel.hpp"
 #include "renderdocumentreload.hpp"
 
@@ -1869,6 +1870,13 @@ std::string renderFallbackSentence(const RenderPipelineReading &reading) {
     }
     auto sentence = graphLoopRefusalDescription(refusal, false);
     if (sentence.empty()) sentence = knownRefusalDescription(code, message, false);
+    // PB-1s (engine PB-1): a start whose materials find no pass for their
+    // route falls back too; the Frame Plan's notice for it says which.
+    if (sentence.empty() && code == "material_route_unserved@1")
+        if (auto route = materialRouteUnservedNotice(refusal); !route.empty()) {
+            while (!route.empty() && (route.back() == '.' || route.back() == ' ')) route.pop_back();
+            sentence = route + " (" + code + ")";
+        }
     if (sentence.empty()) {
         // A refusal Studio has no sentence for reads as the engine wrote it,
         // with its code when the message does not start with it.
@@ -1910,23 +1918,12 @@ std::string renderDocumentSyntaxDescription(const nlohmann::json &error) {
 }
 
 std::string renderRestartFeature(const nlohmann::json &error) {
-    if (!error.is_object()) return {};
-    constexpr std::string_view frozen = "was first requested after the runtime module graph was frozen";
-    constexpr std::string_view module = "Module '";
-    const auto message = error.value("message", std::string{});
-    const auto at = message.find(frozen);
-    if (at == std::string::npos) return {};
-    const auto open = message.rfind(module, at);
-    if (open == std::string::npos) return {};
-    const auto begin = open + module.size();
-    const auto close = message.find('\'', begin);
-    if (close == std::string::npos || close > at) return {};
-    std::string name = message.substr(begin, close - begin);
-    // The type's name as the compiler spells it: "struct Pelican::UiSystem".
-    for (const std::string_view keyword : {"struct ", "class "})
-        if (name.starts_with(keyword)) name.erase(0, keyword.size());
-    if (const auto scope = name.rfind("::"); scope != std::string::npos) name.erase(0, scope + 2);
-    return name.empty() ? std::string{"the feature"} : name;
+    // PB-1s, decision 6 (engine PB-1): the refusal has a code of its own and
+    // names the feature; its words are not read.
+    const auto fields = graphRefusalFields(error, RenderFeatureRequiresRestartCode);
+    if (!fields || !fields->is_object()) return {};
+    auto feature = graphRefusalSource(*fields, "feature");
+    return feature.empty() ? std::string{"the feature"} : feature;
 }
 
 std::string graphRefusalVariant(const nlohmann::json &error) {

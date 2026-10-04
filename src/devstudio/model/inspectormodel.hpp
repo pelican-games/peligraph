@@ -432,10 +432,14 @@ struct RenderPipelineReading {
 // refusal. knownRefusalDescription answers it too.
 [[nodiscard]] std::string renderDocumentSyntaxDescription(const nlohmann::json &error);
 // BS-1s, decision 4: a configuration the engine refuses only because the
-// feature it turns on needs a module the running engine was started without
-// ("Module '<type>' was first requested after the runtime module graph was
-// frozen"): the module's short name ("UiSystem"); empty for any other
-// refusal. `error` is a rejection's {code, message, ...}.
+// feature it turns on needs a module the running engine was started without.
+// PB-1s, decision 6 (engine PB-1): read by its code,
+// render_feature_requires_restart@1 {feature, module} -- the fields beside
+// the code, in error_fields or after the code in the message -- and answered
+// with `feature` ("debug_draw"); empty for any other refusal. The words of
+// the message are not read. `error` is a rejection's {code, message, ...}, or
+// a problem's fields with its code.
+inline constexpr std::string_view RenderFeatureRequiresRestartCode = "render_feature_requires_restart@1";
 [[nodiscard]] std::string renderRestartFeature(const nlohmann::json &error);
 // LP-0d: the graph variant (preview, XR) that refused an edit, named by
 // `variant` beside the code; empty when the main graph did. LP-4d2: always --

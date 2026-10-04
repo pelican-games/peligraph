@@ -966,6 +966,26 @@ void MaterialsDock::engineUnavailable() { impl_->session.engineGone(); }
 
 void MaterialsDock::selectedObjectChanged() { impl_->presentAssign(); }
 
+bool MaterialsDock::revealMaterial(const std::string &document, const std::string &name) {
+    const auto relative = [](std::string path) {
+        constexpr std::string_view project = "project://";
+        if (path.starts_with(project)) path.erase(0, project.size());
+        return path;
+    };
+    const auto wanted = relative(document);
+    for (QTreeWidgetItemIterator it{impl_->tree}; *it; ++it) {
+        QTreeWidgetItem *item = *it;
+        const auto path = relative(item->data(0, MaterialPathRole).toString().toStdString());
+        const auto material = item->data(0, MaterialNameRole).toString().toStdString();
+        const bool document_matches = wanted.empty() || path == wanted;
+        if (!document_matches || (name.empty() ? !material.empty() : material != name)) continue;
+        impl_->tree->setCurrentItem(item);
+        impl_->tree->scrollToItem(item);
+        return true;
+    }
+    return false;
+}
+
 bool MaterialsDock::receiveResult(qint64 request_id, const QByteArray &result_json) {
     if (!impl_->session.owns(request_id)) return false;
     const auto result =

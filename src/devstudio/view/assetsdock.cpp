@@ -714,6 +714,7 @@ struct AssetsDock::Impl {
         if (!differs && details->isChecked()) details->setChecked(false);
         presentIssues();
         presentStores();
+        if (hooks.checked) hooks.checked(session.verificationDetail());
         if (scanned) {
             // A new store's mount, or the rows of missing files, change the
             // rows themselves; anything else only their marks.
@@ -789,6 +790,20 @@ bool AssetsDock::receiveFailure(qint64 request_id, const QString &message) {
 }
 
 void AssetsDock::rescan() { impl_->rescan(); }
+
+bool AssetsDock::revealFile(const std::filesystem::path &path) {
+    const auto key = qtext(assetPathKey(path));
+    for (QTreeWidgetItemIterator it{impl_->tree}; *it; ++it) {
+        QTreeWidgetItem *item = *it;
+        if (item->data(NameColumn, AssetPhysicalKeyRole).toString() != key) continue;
+        for (QTreeWidgetItem *parent = item->parent(); parent != nullptr; parent = parent->parent())
+            parent->setExpanded(true);
+        impl_->tree->setCurrentItem(item);
+        impl_->tree->scrollToItem(item);
+        return true;
+    }
+    return false;
+}
 
 AssetsDockSession &AssetsDock::session() noexcept { return impl_->session; }
 QTreeWidget *AssetsDock::tree() const noexcept { return impl_->tree; }

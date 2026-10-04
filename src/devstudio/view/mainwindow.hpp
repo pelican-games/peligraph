@@ -41,6 +41,7 @@ class QTreeWidgetItem;
 class QTimer;
 class QFrame;
 class QToolBar;
+class QPushButton;
 
 namespace PelicanStudio {
 
@@ -54,6 +55,8 @@ class FullscreenPassWidget;
 class InspectorWidget;
 class OutlinerTree;
 class PlayControls;
+class ProblemsDock;
+struct ProblemRow;
 class ProjectMigrationWidget;
 class RenderConfigDigest;
 class RenderFeaturesWidget;
@@ -113,6 +116,8 @@ class MainWindow : public QMainWindow {
         AssetsPanelDock,
         // MT-1s: beside Assets.
         MaterialsPanelDock,
+        // PB-1s: beside Output and the Engine Log.
+        ProblemsPanelDock,
         DockCount,
     };
 
@@ -125,6 +130,10 @@ class MainWindow : public QMainWindow {
     AssetsDock *assets_dock_ = nullptr;
     // MT-1s: the project's materials and their editor.
     MaterialsDock *materials_dock_ = nullptr;
+    // PB-1s: what is wrong with the project now, and its count on the
+    // status bar (a click brings the dock forward).
+    ProblemsDock *problems_dock_ = nullptr;
+    QPushButton *problems_count_ = nullptr;
     OutlinerTree *outliner_ = nullptr;
     // Q-7: one line under the Outliner for what became of an Add object.
     QLabel *outliner_notice_ = nullptr;
@@ -250,6 +259,9 @@ class MainWindow : public QMainWindow {
     void renderDocumentsRestored(const nlohmann::json &commit, bool restart_required);
     void createRenderReload();
     void renderDocumentsReloaded(const nlohmann::json &commit);
+    // PB-1s, decision 3: a click on a row of Problems goes where it is fixed.
+    void openProblem(const ProblemRow &row);
+    void showProblems();
     void createMenus();
     void createPlayControls(QToolBar *band);
     void updatePlayPresentation();

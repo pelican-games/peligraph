@@ -499,7 +499,11 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/view/studiotheme.cpp)
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/studiotheme.cpp
+    # PB-1s: WP298's example falls back now; the row above the viewport and
+    # the Problems row say so.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/renderfallbacknotice.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/problemsdock.cpp)
   target_link_libraries(pelican_test_devstudio_engine_failure_test PRIVATE
     pelican_studio_resources)
   target_include_directories(pelican_test_devstudio_engine_failure_test PRIVATE
@@ -934,6 +938,24 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   # (engine BS-1), on the real widget with the test answering through its
   # hooks.
   pelican_define_test(devstudio_render_fallback_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+
+  # PB-1s: the Problems dock -- the engine's list (engine PB-1) and the
+  # contents check, its count, its filters and where a click on a row goes --
+  # on the real widget with the test answering through its hooks.
+  pelican_define_test(devstudio_problems_test QT QT_OFFSCREEN
     pelican_studio_view
     pelican_studio_viewport
     pelican_studio_frame_plan

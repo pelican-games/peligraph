@@ -111,6 +111,10 @@ class RenderDocumentRepair {
         std::function<std::int64_t(const std::string &method, const Json &params, std::string *error)> request;
         // Runs `task` after `milliseconds`.
         std::function<void(int milliseconds, std::function<void()> task)> schedule;
+        // PB-1s: writes the document's file (`reference` as the engine names
+        // it) whole, as an editor of the person's own would; the error, empty
+        // when it was written.
+        std::function<std::string(const std::string &reference, const std::string &content)> write_file;
     };
 
     enum class State { Closed, Reading, Editing, Saving };
@@ -120,7 +124,12 @@ class RenderDocumentRepair {
     // Show the document: get_render_documents, then the one `document` names
     // (as the project names it, or project://...). line / column: where the
     // editor puts the cursor.
-    bool open(const std::string &document, std::int64_t line, std::int64_t column);
+    // PB-1s: `to_file` -- the engine runs the version before the file was
+    // saved (a reload of it was refused), and restore_render_documents
+    // compares against that version and the file being the same: Save
+    // writes the file itself (Transport::write_file), and Studio's reload of
+    // saved files (RL-1s) takes it in.
+    bool open(const std::string &document, std::int64_t line, std::int64_t column, bool to_file = false);
     // Save: refused (false, with notice()) while `content` is not JSON;
     // otherwise restore_render_documents against the digest read.
     bool save(const std::string &content);
@@ -148,6 +157,8 @@ class RenderDocumentRepair {
     std::function<void()> changed;
     // The restore committed (its result).
     std::function<void(const Json &commit)> restored;
+    // PB-1s: the file was written (open's `to_file`).
+    std::function<void(const std::string &reference)> written;
 
   private:
     Transport transport_;
@@ -158,6 +169,7 @@ class RenderDocumentRepair {
     std::string content_;
     std::int64_t line_ = 0;
     std::int64_t column_ = 0;
+    bool to_file_ = false;
     std::string notice_;
     std::string ticket_;
     std::int64_t list_request_ = 0;

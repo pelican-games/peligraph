@@ -66,6 +66,10 @@ class MaterialsDock final : public QWidget {
     void engineUnavailable();
     // The Outliner's selection moved: Assign to selected object follows it.
     void selectedObjectChanged();
+    // PB-1s, decision 3: the material `name` of `document` (with or without
+    // project://) selected, its editor below; without a name, the document's
+    // row. False when the list has neither.
+    bool revealMaterial(const std::string &document, const std::string &name);
 
     // The replies to what this dock sent. False for an id that is not its own.
     bool receiveResult(qint64 request_id, const QByteArray &result_json);

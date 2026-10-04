@@ -49,6 +49,9 @@ class AssetsDock final : public QWidget {
         // The render documents the engine reads (RL-1s), for their rows'
         // tooltip: the watch does not apply them.
         std::function<std::vector<std::filesystem::path>()> render_documents;
+        // PB-1s: what the contents check found, each time the dock shows it
+        // (the Problems dock lists its warnings and errors).
+        std::function<void(const std::vector<AssetStoreVerification> &stores)> checked;
     };
 
     static constexpr int RescanDebounceMs = 250;
@@ -73,6 +76,9 @@ class AssetsDock final : public QWidget {
 
     // Reads the folders again now (what the watcher does after its debounce).
     void rescan();
+    // PB-1s, decision 3: the row of the file at `path` (on disk) selected and
+    // scrolled to, its folders opened. False when the tree has no such row.
+    bool revealFile(const std::filesystem::path &path);
 
     [[nodiscard]] AssetsDockSession &session() noexcept;
     [[nodiscard]] QTreeWidget *tree() const noexcept;

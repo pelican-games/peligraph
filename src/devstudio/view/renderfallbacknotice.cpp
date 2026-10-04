@@ -10,6 +10,7 @@
 #include <QPushButton>
 #include <QTextBlock>
 #include <QTextCursor>
+#include <QTextDocument>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -24,7 +25,8 @@ QString qtext(const std::string &value) { return QString::fromStdString(value); 
 
 RenderFallbackNotice::RenderFallbackNotice(Hooks hooks, QWidget *parent)
     : QFrame(parent), hooks_{std::move(hooks)},
-      repair_{RenderDocumentRepair::Transport{.request = hooks_.request, .schedule = hooks_.schedule}} {
+      repair_{RenderDocumentRepair::Transport{
+          .request = hooks_.request, .schedule = hooks_.schedule, .write_file = hooks_.write_file}} {
     setObjectName(QStringLiteral("pelican.renderFallbackNotice"));
     setFrameShape(QFrame::StyledPanel);
     auto *layout = new QHBoxLayout(this);
@@ -126,8 +128,25 @@ void RenderFallbackNotice::showDocument() {
     const auto &notice = session_.notice();
     if (!notice.syntax || notice.document.empty()) return;
     dialog_filled_ = false;
+    dialog_find_.clear();
     if (repair_.open(notice.document, notice.syntax_line, notice.syntax_column)) buildDialog();
     presentRepair();
+}
+
+void RenderFallbackNotice::showDocumentAt(const QString &document, std::int64_t line, std::int64_t column,
+                                          const QString &find, bool to_file) {
+    if (document.isEmpty()) return;
+    dialog_filled_ = false;
+    dialog_find_ = find;
+    if (repair_.open(document.toStdString(), line, column, to_file && static_cast<bool>(hooks_.write_file)))
+        buildDialog();
+    presentRepair();
+}
+
+void RenderFallbackNotice::setSeeProblems(bool see) {
+    if (see_problems_ == see) return;
+    see_problems_ = see;
+    present(true);
 }
 
 void RenderFallbackNotice::buildDialog() {
@@ -241,6 +260,11 @@ void RenderFallbackNotice::presentRepair() {
         if (block.isValid()) {
             const int column = static_cast<int>(std::max<std::int64_t>(repair_.column(), 1)) - 1;
             cursor.setPosition(block.position() + std::min(column, std::max(0, block.length() - 1)));
+        } else if (const QTextCursor found = dialog_find_.isEmpty()
+                                                 ? QTextCursor{}
+                                                 : dialog_text_->document()->find(dialog_find_);
+                   !found.isNull()) {
+            cursor.setPosition(found.selectionStart());
         } else {
             cursor.movePosition(QTextCursor::End);
         }
@@ -259,7 +283,10 @@ void RenderFallbackNotice::presentRepair() {
 void RenderFallbackNotice::present(bool changed) {
     if (!changed) return;
     const auto &notice = session_.notice();
-    setPanelNotice(text_, qtext(notice.line),
+    // PB-1s, decision 4: the row says where the whole list is.
+    const QString line = notice.shown && see_problems_ ? qtext(notice.line) + tr(" See Problems.")
+                                                       : qtext(notice.line);
+    setPanelNotice(text_, line,
                    notice.detail.empty() ? qtext(notice.line)
                                          : qtext(notice.line) + QLatin1Char('\n') + qtext(notice.detail));
     const bool restart = !notice.restart_feature.empty();
