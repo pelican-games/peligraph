@@ -46,6 +46,8 @@ std::string diagnostic(const Json &response) {
     const auto code_text = error.contains("code") && error.at("code").is_string()
                                ? error.at("code").get<std::string>()
                                : std::string{};
+    // RTL-2s, decision 3: a ray tracing refusal says where, from its fields.
+    if (auto ray = rayTracingRefusalDescription(error); !ray.empty()) return prefix + ray;
     if (auto known = knownRefusalDescription(code_text, message); !known.empty())
         return prefix + known;
     if (error.contains("code")) {
@@ -843,6 +845,7 @@ void GraphCanvasModel::requestLoopReports() {
         plan_graph_.clear();
         plan_buffers_.clear();
         render_authoring_ = Json::object();
+        ray_layout_read_.reset();
         ++authoring_revision_;
         plan_retry_wanted_ = false;
         return;
@@ -1040,7 +1043,8 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
         // UX-5b: nor is one without get_engine_shaders: the lists stay the
         // fixed ones.
         if (kind == RequestKind::Loops || kind == RequestKind::Templates ||
-            kind == RequestKind::Authoring || kind == RequestKind::EngineShaders)
+            kind == RequestKind::Authoring || kind == RequestKind::EngineShaders ||
+            kind == RequestKind::RayLayout)
             return;
         if (kind == RequestKind::LoopPage) {
             loop_pages_done_.insert(std::exchange(loop_page_node_, {}));
@@ -1120,7 +1124,8 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             if (response.contains("error") && !shaders_failed) {
                 if (pending.kind == RequestKind::Templates ||
                     pending.kind == RequestKind::Authoring ||
-                    pending.kind == RequestKind::EngineShaders)
+                    pending.kind == RequestKind::EngineShaders ||
+                    pending.kind == RequestKind::RayLayout)
                     return;
                 if (pending.kind == RequestKind::Loops) {
                     // Q-19: an engine with no plan yet is asked again --
@@ -1204,7 +1209,12 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 return;
             }
             if (pending.kind == RequestKind::Authoring) {
-                render_authoring_ = response.is_object() ? response : Json::object();
+                takeRenderAuthoring(response.is_object() ? response : Json::object());
+                ++report_revision_;
+                return;
+            }
+            if (pending.kind == RequestKind::RayLayout) {
+                ray_layout_read_ = parseRayLayoutRead(response);
                 ++authoring_revision_;
                 ++report_revision_;
                 return;
@@ -4727,6 +4737,61 @@ std::string GraphCanvasModel::showLoopOrigin(std::string_view loop, std::int64_t
     return body;
 }
 
+namespace {
+
+// RTL-2s, decision 3: the place of render.compute's parameters a ray
+// tracing refusal names, as the fields name a parameter
+// ("ray_tracing.hit_shaders.<ray type>.<group>[.<stage>]",
+// "ray_tracing.misses.<miss>", "ray_tracing.traced_ray_types[.<ray type>]",
+// "ray_tracing.raygen", ...); empty for a code that is not the ray tracing
+// task parser's (rtl1b's table).
+std::string rayTracingRefusalParameter(const std::string &code, const Json &fields) {
+    const bool ray = code.starts_with("pelican.ray_tracing.") || code == "pelican.ray_group_name_unknown@1" ||
+                     code == "pelican.procedural_group_requires_intersection@1" ||
+                     code == "pelican.ray_group_type_declared_in_task@1" ||
+                     code == "pelican.ray_profile_authored_anyhit@1";
+    if (!ray || !fields.is_object()) return {};
+    const auto ray_type = text(fields, "ray_type");
+    const auto group = text(fields, "group");
+    const auto miss = text(fields, "miss");
+    const auto stage = text(fields, "stage");
+    std::string place = "ray_tracing";
+    if (code == "pelican.ray_group_name_unknown@1") {
+        const auto kind = text(fields, "kind");
+        const auto name = text(fields, "name");
+        if (kind == "miss") return place + ".misses" + (name.empty() ? "" : "." + name);
+        if (kind == "ray_type") return place + ".traced_ray_types" + (name.empty() ? "" : "." + name);
+        if (kind == "group") return place + ".hit_shaders";
+        return place;
+    }
+    if (code == "pelican.ray_tracing.traced_ray_types_invalid@1")
+        return place + ".traced_ray_types" + (ray_type.empty() ? "" : "." + ray_type);
+    if (code == "pelican.ray_tracing.invalid_recursion@1") return place + ".max_recursion";
+    if (code == "pelican.ray_tracing.callable_records_invalid@1") return place + ".callable_records";
+    if (!miss.empty()) return place + ".misses." + miss;
+    if (code.starts_with("pelican.ray_tracing.miss_shader_")) return place + ".misses";
+    if (!ray_type.empty()) {
+        place += ".hit_shaders." + ray_type;
+        if (!group.empty()) place += "." + group;
+        if (code == "pelican.procedural_group_requires_intersection@1" || stage == "intersection")
+            place += ".intersection";
+        if (code == "pelican.ray_profile_authored_anyhit@1") place += ".anyhit";
+        return place;
+    }
+    if (code == "pelican.ray_tracing.hit_shader_missing@1") return place + ".hit_shaders";
+    if (stage == "raygen") return place + ".raygen";
+    return place;
+}
+
+} // namespace
+
+void GraphCanvasModel::markRayTracingRefusal(const Json &error, const std::string &sentence) {
+    markRefusal(error, sentence, {});
+    // RTL-2s-c: met elsewhere (the Ray layout section's edit), so the canvas
+    // and the node's fields draw it on their next look.
+    ++report_revision_;
+}
+
 void GraphCanvasModel::markRefusal(const Json &error, const std::string &reason,
                                    const std::string &scope) {
     refusal_marks_.clear();
@@ -4776,6 +4841,20 @@ void GraphCanvasModel::markRefusal(const Json &error, const std::string &reason,
     if (const auto missing = graphRefusalFields(error, "graph.render_node_parameters_missing@1")) {
         mark(scope, text(*missing, "node"));
         return;
+    }
+    // RTL-2s, decision 3 (engine RTL-1b / RTL-1c): the ray tracing task
+    // parser's refusal names its task -- a graph node's also its `node` --
+    // and the ray type, group, miss or stage: the node is marked and its ray
+    // tracing red at that place.
+    if (const auto place = rayTracingRefusalParameter(code, fields); !place.empty()) {
+        auto node = text(fields, "node");
+        if (node.empty()) node = text(fields, "task");
+        const auto in = findNode(scope, node) != nullptr ? scope : std::string{};
+        if (!node.empty() && findNode(in, node) != nullptr) {
+            mark(in, node);
+            parameter_refusal_ = GraphCanvasParameterRefusal{in, node, place, reason};
+            return;
+        }
     }
     // UX-13b, decision 3 (engine CT-5): a buffer a render.scalar cannot
     // write. Named with its sink, it is the graph's: one edit makes it what
@@ -5957,6 +6036,28 @@ void GraphCanvasModel::requestRenderAuthoring() {
     read(RequestKind::Authoring, "get_render_authoring_context", Json::object());
 }
 
+void GraphCanvasModel::takeRenderAuthoring(Json context) {
+    render_authoring_ = std::move(context);
+    ++authoring_revision_;
+    // RTL-2s-c: the ray layout's names are get_ray_layout's (the Ray layout
+    // section's reading); the context only says whether there is one.
+    const auto found = render_authoring_.find("ray_layout");
+    if (found == render_authoring_.end() || !found->is_object()) {
+        ray_layout_read_.reset();
+        return;
+    }
+    const auto reference = found->find("reference");
+    if (reference != found->end() && reference->is_string()) {
+        read(RequestKind::RayLayout, "get_ray_layout", Json::object());
+        return;
+    }
+    // No layout: nothing to ask.
+    RayLayoutRead none;
+    if (const auto mode = found->find("mode"); mode != found->end() && mode->is_string())
+        none.mode = mode->get<std::string>();
+    ray_layout_read_ = std::move(none);
+}
+
 FramePlanModel GraphCanvasModel::passInputPlan() const {
     FramePlanModel plan;
     plan.graph = plan_graph_;
@@ -6497,6 +6598,40 @@ std::vector<GraphCanvasLayerRow> GraphCanvasModel::layerRows(std::string_view ca
         const auto *pass = planPass(name);
         if (!pass->backend.empty() && pass->backend != graph)
             rows.push_back({"L3", "backend", "backend " + pass->backend + " (" + name + ")", name});
+    }
+    // RTL-2s-c (RTL-2s decision 4): a ray tracing task's shader binding
+    // table as its ray layout lays it out -- the hit groups (one record per
+    // group and ray type), the ray types it traces, its misses -- and the
+    // acceleration structure its rays are traced against.
+    if (const auto *node = findNode({}, canvas_node); node != nullptr && text(*node, "op") == "render.compute") {
+        const auto parameters = node->value("parameters", Json::object());
+        const auto rt = parameters.is_object() ? parameters.value("ray_tracing", Json(nullptr)) : Json(nullptr);
+        if (rt.is_object() && ray_layout_read_ && ray_layout_read_->layout.usable() && rayTracingUsesLayout(rt)) {
+            const auto &layout = ray_layout_read_->layout.document;
+            const auto join = [](const std::vector<std::string> &names) {
+                std::string line;
+                for (const auto &name : names) line += (line.empty() ? "" : ", ") + name;
+                return line;
+            };
+            std::vector<std::string> groups;
+            for (const auto &group : rayLayoutGroups(layout))
+                groups.push_back(group.name + (group.type == "procedural" ? " (procedural)" : "") +
+                                 (group.name == rayLayoutDefaultGroup(layout) ? " (default)" : ""));
+            std::vector<std::string> traced;
+            for (const auto &type : rt.value("traced_ray_types", Json::array()))
+                if (type.is_string()) traced.push_back(type.get<std::string>());
+            rows.push_back({"L3", "ray_layout", "hit groups " + join(groups), {}});
+            rows.push_back({"L3", "ray_layout",
+                            "ray types traced " + join(traced) + " of " + join(rayLayoutRayTypes(layout)), {}});
+            rows.push_back({"L3", "ray_layout", "misses " + join(rayLayoutMisses(layout)), {}});
+            const auto structure = rt.value("acceleration_structure", Json(nullptr));
+            rows.push_back({"L3", "ray_layout",
+                            "acceleration structure " +
+                                (structure.is_string() ? structure.get<std::string>()
+                                 : structure.is_null() ? std::string{"scene"}
+                                                       : structure.dump()),
+                            {}});
+        }
     }
     return rows;
 }
@@ -8568,6 +8703,22 @@ std::vector<std::string> GraphCanvasModel::computeOpenSockets(std::string_view s
     return open;
 }
 
+namespace {
+
+// RTL-2s, decision 1: the ray tracing a project stem makes. Without a ray
+// group layout, the stem's raygen, miss and closest hit; with one, the
+// layout's form by the rule Enable hit groups uses (rayTracingInLayoutForm,
+// RTL-2s-c): the first ray type traced, every miss and every group's cell
+// the stem (a procedural group's intersection too), so the task the palette
+// places is whole. The fields' grid changes each place afterwards.
+Json rayTracingOfStem(const std::optional<RayLayoutRead> &read, const std::string &reference) {
+    Json legacy{{"raygen", reference}, {"miss", reference}, {"closesthit", reference}};
+    if (!read || !read->layout.usable() || rayLayoutRayTypes(read->layout.document).empty()) return legacy;
+    return rayTracingInLayoutForm(legacy, read->layout.document, reference);
+}
+
+} // namespace
+
 Json GraphCanvasModel::computeShaderOps(std::string_view scope, const std::string &node,
                                         const std::string &reference) const {
     const auto known = shaderInterface(reference);
@@ -8644,7 +8795,7 @@ Json GraphCanvasModel::computeShaderOps(std::string_view scope, const std::strin
     parameters.erase("shader");
     parameters.erase("ray_tracing");
     if (ray_tracing)
-        parameters["ray_tracing"] = Json{{"raygen", reference}, {"miss", reference}, {"closesthit", reference}};
+        parameters["ray_tracing"] = rayTracingOfStem(ray_layout_read_, reference);
     else
         parameters["shader"] = reference;
     parameters["ports"] = ports;

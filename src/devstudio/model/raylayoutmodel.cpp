@@ -196,6 +196,16 @@ std::string groupTypeOf(const Json &layout, const std::string &group) {
     return {};
 }
 
+// RTL-2s-c: a plan that changes the layout's record writes the record block
+// of every hit shader the tasks trace with, before the edit (the engine
+// checks each against the record at the commit).
+void fitRecords(RayLayoutPlan &plan, const std::vector<RayTracingTask> &tasks, const std::filesystem::path &root) {
+    if (root.empty() || !plan.layout.is_object()) return;
+    auto fit = fitRayShaderRecords(rayTracedHitShaderFiles(tasks, root), plan.layout, root);
+    for (auto &write : fit.writes) addWrite(plan, write.path, std::move(write.content));
+    for (auto &problem : fit.problems) plan.notes.push_back(std::move(problem));
+}
+
 } // namespace
 
 // --- get_ray_layout.
@@ -401,6 +411,130 @@ bool rayTracingUsesLayout(const Json &ray_tracing) {
             ray_tracing.contains("traced_ray_types"));
 }
 
+RayLayoutTemplateNames rayLayoutTemplateNames(const Json &layout) {
+    if (auto names = rayLayoutTemplateNamesFromDocument(layout)) return std::move(*names);
+    return {};
+}
+
+Json rayTracingInLayoutForm(const Json &legacy, const Json &layout, const std::string &intersection) {
+    Json converted = legacy.is_object() ? legacy : Json::object();
+    const auto hits = referenceList(converted.value("closesthit", Json(nullptr)));
+    const auto misses = referenceList(converted.value("miss", Json(nullptr)));
+    converted.erase("miss");
+    converted.erase("closesthit");
+    const auto ray_types = rayLayoutRayTypes(layout);
+    Json traced = Json::array();
+    Json hit_shaders = Json::object();
+    for (std::size_t k = 0; k < hits.size() && k < ray_types.size(); ++k) {
+        traced.push_back(ray_types[k]);
+        Json row = Json::object();
+        for (const auto &group : rayLayoutGroups(layout)) {
+            Json cell{{"closesthit", hits[k]}};
+            if (group.type == "procedural" && !intersection.empty()) cell["intersection"] = intersection;
+            row[group.name] = std::move(cell);
+        }
+        hit_shaders[ray_types[k]] = std::move(row);
+    }
+    Json miss_map = Json::object();
+    if (!misses.empty()) {
+        const auto names = rayLayoutMisses(layout);
+        for (std::size_t j = 0; j < names.size(); ++j) miss_map[names[j]] = misses[std::min(j, misses.size() - 1)];
+    }
+    converted["traced_ray_types"] = std::move(traced);
+    converted["misses"] = std::move(miss_map);
+    converted["hit_shaders"] = std::move(hit_shaders);
+    return converted;
+}
+
+std::vector<std::filesystem::path> rayTracedHitShaderFiles(const std::vector<RayTracingTask> &tasks,
+                                                           const std::filesystem::path &root) {
+    std::vector<std::filesystem::path> files;
+    const auto add = [&](const std::string &reference, const char *stage) {
+        const auto file = rayShaderFile(root, reference, stage);
+        if (file && std::find(files.begin(), files.end(), *file) == files.end()) files.push_back(*file);
+    };
+    for (const auto &task : tasks) {
+        const auto &rt = task.rayTracing();
+        if (!rayTracingUsesLayout(rt)) continue;
+        const auto hit_shaders = objectAt(rt, "hit_shaders");
+        for (const auto &traced : arrayAt(rt, "traced_ray_types")) {
+            if (!traced.is_string()) continue;
+            // Held: items() of a temporary would outlive it.
+            const auto row = objectAt(hit_shaders, traced.get<std::string>().c_str());
+            for (const auto &[group, cell] : row.items()) {
+                (void)group;
+                if (const auto reference = stringAt(cell, "closesthit"); !reference.empty()) add(reference, "closesthit");
+                if (const auto reference = stringAt(cell, "anyhit"); !reference.empty()) add(reference, "anyhit");
+                if (const auto reference = stringAt(cell, "intersection"); !reference.empty())
+                    add(reference, "intersection");
+            }
+        }
+    }
+    return files;
+}
+
+RayRecordFit fitRayShaderRecords(const std::vector<std::filesystem::path> &files, const Json &layout,
+                                 const std::filesystem::path &root) {
+    RayRecordFit fit;
+    const auto names = rayLayoutTemplateNames(layout);
+    const bool needs_record = !names.engine_record.empty() || !names.record.empty();
+    std::string fields = names.engine_record.empty() ? std::string{} : std::string{"the engine record"};
+    for (const auto &[field, type] : names.record) fields += (fields.empty() ? "" : ", ") + field + " (" + type + ")";
+    std::vector<std::filesystem::path> seen;
+    for (const auto &file : files) {
+        if (std::find(seen.begin(), seen.end(), file) != seen.end()) continue;
+        seen.push_back(file);
+        const auto text = readText(file);
+        if (!text) continue;
+        if (auto rewritten = rewriteRayRecordBlock(*text, names)) {
+            if (*rewritten != *text) fit.writes.push_back({file, std::move(*rewritten), *text});
+            continue;
+        }
+        const bool intersection = file.extension() == ".rint";
+        if (declaresRayShaderRecord(*text)) {
+            fit.problems.push_back(writeFileName(root, file) +
+                                   " declares its own shader record: give it the ray layout's fields in order (" +
+                                   (fields.empty() ? std::string{"none"} : fields) + "), or take it out.");
+        } else if (needs_record && !intersection) {
+            fit.problems.push_back(writeFileName(root, file) +
+                                   " has no shader record, which a hit shader of a traced ray type needs: declare "
+                                   "layout(shaderRecordEXT, std430) buffer with " + fields + ".");
+        }
+    }
+    return fit;
+}
+
+std::vector<std::string> rayTracedRowNotes(const Json &ray_tracing, const std::string &ray_type, const Json &layout,
+                                           const std::filesystem::path &root) {
+    std::vector<std::string> notes;
+    const auto traced = arrayAt(ray_tracing, "traced_ray_types");
+    if (traced.empty() || !traced.front().is_string()) return notes;
+    const auto first = traced.front().get<std::string>();
+    if (first == ray_type) return notes;
+    // Held: items() of a temporary would outlive it.
+    const auto hit_shaders = objectAt(ray_tracing, "hit_shaders");
+    const auto row = objectAt(hit_shaders, first.c_str());
+    std::vector<std::filesystem::path> files;
+    std::string names;
+    for (const auto &[group, cell] : row.items()) {
+        (void)group;
+        for (const char *stage : {"closesthit", "anyhit", "intersection"}) {
+            const auto reference = stringAt(cell, stage);
+            if (reference.empty()) continue;
+            const auto file = rayShaderFile(root, reference, stage);
+            if (!file || std::find(files.begin(), files.end(), *file) != files.end()) continue;
+            files.push_back(*file);
+            if (std::string_view{stage} != "intersection")
+                names += (names.empty() ? "" : ", ") + writeFileName(root, *file);
+        }
+    }
+    if (!names.empty())
+        notes.push_back(ray_type + "'s row took " + first + "'s hit shaders (" + names + "), which answer in " +
+                        first + "'s payload: New... in each " + ray_type + " cell writes one for " + ray_type + ".");
+    for (auto &problem : fitRayShaderRecords(files, layout, root).problems) notes.push_back(std::move(problem));
+    return notes;
+}
+
 // --- Shaders.
 
 std::string_view rayStageExtension(std::string_view stage) {
@@ -422,149 +556,6 @@ std::optional<std::filesystem::path> rayShaderFile(const std::filesystem::path &
     const auto parts = splitReference(reference);
     if (parts.extension.empty()) relative += std::string{rayStageExtension(stage)};
     return project_root / std::filesystem::path{relative};
-}
-
-std::string rayLayoutRaygenTemplate(std::string_view name, std::string_view ray_type, std::string_view miss) {
-    const std::string port = "color";
-    return "#version 460\n"
-           "#extension GL_GOOGLE_include_directive : enable\n"
-           "#extension GL_EXT_ray_tracing : require\n"
-           "\n"
-           "// " + std::string{name} + ".rgen: a ray tracing set Studio wrote for a ray layout.\n"
-           "// One ray per pixel of the image it writes (the task's dispatch.rays_from),\n"
-           "// from the camera through that pixel. The hit group the object is assigned\n"
-           "// to answers with the colour; the miss shader with the sky.\n"
-           "\n"
-           "// The ray layout's names: PELICAN_RAY_TYPE_<ray type>, PELICAN_MISS_<miss>\n"
-           "// and pelican_ray_type_count, generated from the project's ray layout.\n"
-           "#include \"__pelican_ray_group_layout.glsl\"\n"
-           "#include \"pelican_sets.glsl\"\n"
-           "#include \"pelican_frame.glsl\"\n"
-           "\n"
-           "layout(rgba16f, set = PELICAN_SET_PASS_INPUT, binding = 0)\n"
-           "    writeonly uniform image2D pelican_resource_" + port + ";\n"
-           "\n"
-           "layout(set = PELICAN_SET_FRAME, binding = PELICAN_RAY_QUERY_TLAS_BINDING)\n"
-           "    uniform accelerationStructureEXT pelicanRayTracingScene;\n"
-           "\n"
-           "// The payload: rgb is the colour, w is 1 on a hit and 0 when the miss ran.\n"
-           "layout(location = 0) rayPayloadEXT vec4 hit;\n"
-           "\n"
-           "void main() {\n"
-           "    vec2 pixel = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);\n"
-           "    vec2 ndc = pixel / vec2(gl_LaunchSizeEXT.xy) * 2.0 - 1.0;\n"
-           "    vec4 target = inverse(pelicanFrame.projection) * vec4(ndc, 0.5, 1.0);\n"
-           "    vec3 direction = normalize((inverse(pelicanFrame.view) *\n"
-           "                                vec4(normalize(target.xyz / target.w), 0.0)).xyz);\n"
-           "    vec3 origin = (inverse(pelicanFrame.view) * vec4(0.0, 0.0, 0.0, 1.0)).xyz;\n"
-           "    hit = vec4(0.0);\n"
-           "    // A second ray type (a shadow ray, say) is traced the same way with its\n"
-           "    // own PELICAN_RAY_TYPE_ and PELICAN_MISS_ names.\n"
-           "    traceRayEXT(pelicanRayTracingScene, gl_RayFlagsOpaqueEXT, 0xff,\n"
-           "                PELICAN_RAY_TYPE_" + std::string{ray_type} + ", pelican_ray_type_count,\n"
-           "                PELICAN_MISS_" + std::string{miss} + ", origin, 0.001, direction, 10000.0, 0);\n"
-           "    vec3 color = hit.w > 0.5 ? hit.rgb\n"
-           "                             : mix(vec3(0.04, 0.05, 0.07), vec3(0.18, 0.26, 0.36),\n"
-           "                                   clamp(direction.y * 0.5 + 0.5, 0.0, 1.0));\n"
-           "    imageStore(pelican_resource_" + port + ", ivec2(gl_LaunchIDEXT.xy), vec4(color, 1.0));\n"
-           "}\n";
-}
-
-std::string rayLayoutMissTemplate(std::string_view name) {
-    return "#version 460\n"
-           "#extension GL_EXT_ray_tracing : require\n"
-           "\n"
-           "// " + std::string{name} + ".rmiss: runs where a ray hits nothing.\n"
-           "layout(location = 0) rayPayloadInEXT vec4 hit;\n"
-           "\n"
-           "void main() {\n"
-           "    hit = vec4(0.0);\n"
-           "}\n";
-}
-
-std::array<double, 3> rayGroupTint(std::size_t index) {
-    static const std::array<std::array<double, 3>, 6> tints{{{1.0, 0.55, 0.1},
-                                                             {0.25, 0.85, 0.3},
-                                                             {0.3, 0.5, 1.0},
-                                                             {0.95, 0.25, 0.6},
-                                                             {0.95, 0.9, 0.2},
-                                                             {0.3, 0.9, 0.9}}};
-    return tints[index % tints.size()];
-}
-
-namespace {
-std::string vec3Text(const std::array<double, 3> &value) {
-    std::ostringstream text;
-    text.setf(std::ios::fixed);
-    text.precision(2);
-    text << "vec3(" << value[0] << ", " << value[1] << ", " << value[2] << ")";
-    return text.str();
-}
-} // namespace
-
-std::string rayLayoutClosestHitTemplate(std::string_view name, bool engine_record,
-                                        const std::array<double, 3> &tint) {
-    std::string text =
-        "#version 460\n"
-        "#extension GL_GOOGLE_include_directive : enable\n"
-        "#extension GL_EXT_ray_tracing : require\n";
-    if (engine_record)
-        text += "#extension GL_EXT_nonuniform_qualifier : require\n"
-                "#extension GL_EXT_buffer_reference2 : require\n";
-    text += "\n// " + std::string{name} +
-            ".rchit: runs at the nearest surface a ray hits, for the objects\n"
-            "// assigned to this hit group. It answers with the surface's normal as a\n"
-            "// colour, tinted with the group's colour.\n"
-            "#include \"__pelican_ray_group_layout.glsl\"\n"
-            "\n"
-            "layout(location = 0) rayPayloadInEXT vec4 hit;\n"
-            "\n"
-            "// This hit group's colour.\n"
-            "const vec3 GROUP_TINT = " + vec3Text(tint) + ";\n\n";
-    if (engine_record) {
-        text += "hitAttributeEXT vec2 hit_attribute;\n"
-                "// The engine's record: which geometry and material the ray hit.\n"
-                "layout(shaderRecordEXT, std430) buffer HitRecord {\n"
-                "    PELICAN_RAY_ENGINE_RECORD_MEMBERS\n"
-                "} hit_record;\n"
-                "\n"
-                "void main() {\n"
-                "    vec3 object_normal = pelicanRayFetchNormal(hit_record.geometry_index,\n"
-                "                                               gl_PrimitiveID, hit_attribute);\n"
-                "    vec3 normal = normalize(transpose(mat3(gl_WorldToObjectEXT)) * object_normal);\n"
-                "    hit = vec4((normal * 0.5 + 0.5) * GROUP_TINT, 1.0);\n"
-                "}\n";
-    } else {
-        text += "void main() {\n"
-                "    // Without an engine record the normal cannot be read: the depth shades it.\n"
-                "    hit = vec4(GROUP_TINT * clamp(1.5 - gl_HitTEXT * 0.1, 0.2, 1.0), 1.0);\n"
-                "}\n";
-    }
-    return text;
-}
-
-std::string rayLayoutIntersectionTemplate(std::string_view name) {
-    return "#version 460\n"
-           "#extension GL_EXT_ray_tracing : require\n"
-           "\n"
-           "// " + std::string{name} + ".rint: a sphere of radius 0.5 about the geometry's origin.\n"
-           "hitAttributeEXT vec2 hit_attribute;\n"
-           "\n"
-           "void main() {\n"
-           "    vec3 origin = gl_ObjectRayOriginEXT;\n"
-           "    vec3 direction = gl_ObjectRayDirectionEXT;\n"
-           "    float a = dot(direction, direction);\n"
-           "    float b = dot(origin, direction);\n"
-           "    float c = dot(origin, origin) - 0.25;\n"
-           "    float d = b * b - a * c;\n"
-           "    if (d < 0.0) return;\n"
-           "    float t = (-b - sqrt(d)) / a;\n"
-           "    if (t < gl_RayTminEXT || t > gl_RayTmaxEXT) t = (-b + sqrt(d)) / a;\n"
-           "    if (t >= gl_RayTminEXT && t <= gl_RayTmaxEXT) {\n"
-           "        hit_attribute = vec2(0.0);\n"
-           "        reportIntersectionEXT(t, 0u);\n"
-           "    }\n"
-           "}\n";
 }
 
 namespace {
@@ -831,19 +822,23 @@ RayLayoutPlan planEnableHitGroups(const RayLayoutRead &read, const std::vector<R
                                 task_misses.size() == 1 && task_hits.size() == 1;
         if (studio_set) {
             auto parts = splitReference(raygen);
-            const auto probe_name = parts.stem + "_layout";
-            const std::vector<std::pair<std::string, std::string>> wanted{
-                {"raygen", rayLayoutRaygenTemplate(probe_name, ray_types.front(), misses.front())},
-                {"miss", rayLayoutMissTemplate(probe_name)},
-                {"closesthit", rayLayoutClosestHitTemplate(probe_name, true, {1.0, 1.0, 1.0})}};
-            auto stem = freshStem(root, parts, "layout", wanted);
+            // RTL-2s-c: the Graph tab's templates (raylayouttemplate), for
+            // the layout's first ray type, first miss and default group.
+            const auto names = rayLayoutTemplateNames(layout);
+            const auto set = [&](const std::string &stem) {
+                return std::vector<std::pair<std::string, std::string>>{
+                    {"raygen", rayLayoutShaderTemplate(names, {RayLayoutTemplateStage::raygen, {}, {}, {}}, stem)},
+                    {"miss", rayLayoutShaderTemplate(names, {RayLayoutTemplateStage::miss, {}, {}, misses.front()},
+                                                     stem)},
+                    {"closesthit",
+                     rayLayoutShaderTemplate(names, {RayLayoutTemplateStage::closest_hit, ray_types.front(), group, {}},
+                                             stem)}};
+            };
+            auto stem = freshStem(root, parts, "layout", set(parts.stem + "_layout"));
             parts.stem = stem;
             parts.extension.clear();
             const auto reference = joinReference(parts);
-            const std::vector<std::pair<std::string, std::string>> contents{
-                {"raygen", rayLayoutRaygenTemplate(stem, ray_types.front(), misses.front())},
-                {"miss", rayLayoutMissTemplate(stem)},
-                {"closesthit", rayLayoutClosestHitTemplate(stem, true, {1.0, 1.0, 1.0})}};
+            const auto contents = set(stem);
             for (const auto &[stage, content] : contents)
                 if (const auto path = rayShaderFile(root, reference, stage)) addWrite(plan, *path, content);
             raygen = reference;
@@ -887,23 +882,19 @@ RayLayoutPlan planEnableHitGroups(const RayLayoutRead &read, const std::vector<R
             raygen = rewrite(raygen, "raygen");
             for (auto &hit : task_hits) hit = rewrite(hit, "closesthit");
         }
-        Json converted = rt;
-        converted.erase("miss");
-        converted.erase("closesthit");
-        converted["raygen"] = raygen;
-        Json traced = Json::array();
-        Json hit_shaders = Json::object();
-        for (std::size_t k = 0; k < task_hits.size(); ++k) {
-            traced.push_back(ray_types[k]);
-            hit_shaders[ray_types[k]] = {{group, {{"closesthit", task_hits[k]}}}};
+        // RTL-2s-c: the same rule the Graph's palette places a task with.
+        Json legacy = rt;
+        legacy["raygen"] = raygen;
+        legacy["miss"] = task_misses;
+        legacy["closesthit"] = task_hits;
+        plan.tasks.emplace_back(index, rayTracingInLayoutForm(legacy, layout));
+        // A closest hit somebody wrote has no shader record yet: named.
+        if (!studio_set) {
+            std::vector<std::filesystem::path> hits;
+            for (const auto &hit : task_hits)
+                if (const auto file = rayShaderFile(root, hit, "closesthit")) hits.push_back(*file);
+            for (auto &problem : fitRayShaderRecords(hits, layout, root).problems) plan.notes.push_back(problem);
         }
-        Json miss_map = Json::object();
-        for (std::size_t j = 0; j < misses.size(); ++j)
-            miss_map[misses[j]] = task_misses[std::min(j, task_misses.size() - 1)];
-        converted["traced_ray_types"] = traced;
-        converted["misses"] = miss_map;
-        converted["hit_shaders"] = hit_shaders;
-        plan.tasks.emplace_back(index, std::move(converted));
     }
     return plan;
 }
@@ -991,7 +982,7 @@ RayLayoutPlan planDisableHitGroups(const RayLayoutRead &read, const std::vector<
 }
 
 RayLayoutPlan planAddRayType(const RayLayoutRead &read, const std::vector<RayTracingTask> &tasks,
-                             const std::string &name) {
+                             const std::string &name, const std::filesystem::path &root, RayFillMode mode) {
     RayLayoutPlan plan;
     plan.label = "Add ray type " + name;
     if (!layoutReady(read, plan)) return plan;
@@ -1003,15 +994,39 @@ RayLayoutPlan planAddRayType(const RayLayoutRead &read, const std::vector<RayTra
     }
     layout["ray_types"].push_back(name);
     plan.layout = layout;
+    // RTL-2s-c: from the template, a closest hit of this ray type for each
+    // hit group -- its payload (location = its index) and the record.
+    Json made_row = nullptr;
+    if (mode == RayFillMode::from_template && !root.empty()) {
+        const auto names = rayLayoutTemplateNames(layout);
+        made_row = Json::object();
+        for (const auto &group : rayLayoutGroups(layout)) {
+            const auto stem = templateStem(root, name + "_" + group.name, {".rchit"});
+            addWrite(plan, root / "shaders" / (stem + ".rchit"),
+                     rayLayoutShaderTemplate(names, {RayLayoutTemplateStage::closest_hit, name, group.name, {}}, stem));
+            made_row[group.name] = {{"closesthit", "project://shaders/" + stem}};
+        }
+        plan.notes.push_back("The closest hits of " + name + " are shaders/" + name + "_<hit group>.rchit.");
+    }
     // Each task traces it too, its row copied from the first ray type it
-    // traces.
+    // traces (or the template's, with the first row's intersections).
     for (const auto index : layoutTasks(tasks)) {
         auto rt = tasks[index].rayTracing();
         auto traced = arrayAt(rt, "traced_ray_types");
         const auto first = traced.empty() ? std::string{} : traced.front().get<std::string>();
         traced.push_back(name);
         rt["traced_ray_types"] = traced;
-        rt["hit_shaders"][name] = objectAt(objectAt(rt, "hit_shaders"), first.c_str());
+        const auto first_row = objectAt(objectAt(rt, "hit_shaders"), first.c_str());
+        if (made_row.is_object()) {
+            auto row = made_row;
+            for (auto &[group, cell] : row.items())
+                if (const auto intersection = stringAt(objectAt(first_row, group.c_str()), "intersection");
+                    !intersection.empty())
+                    cell["intersection"] = intersection;
+            rt["hit_shaders"][name] = row;
+        } else {
+            rt["hit_shaders"][name] = first_row;
+        }
         plan.tasks.emplace_back(index, std::move(rt));
     }
     return plan;
@@ -1042,21 +1057,40 @@ RayLayoutPlan planAddGroup(const RayLayoutRead &read, const std::vector<RayTraci
     for (const auto &group : groups)
         if (source.empty() && group.type == type) source = group.name;
     if (mode == RayFillMode::copy && source.empty()) mode = RayFillMode::from_template;
-    Json cell = nullptr;
+    // RTL-2s-c: from the template (raylayouttemplate), a closest hit for each
+    // ray type a task traces -- the first ray type's under hit_<name>, a later
+    // one's under hit_<name>_<ray type>, each in its payload -- and a
+    // procedural group's intersection.
+    std::map<std::string, Json> made;
     if (mode == RayFillMode::from_template) {
         const bool procedural = type == "procedural";
-        const auto stem = templateStem(root, "hit_" + name,
-                                       procedural ? std::vector<std::string>{".rchit", ".rint"}
-                                                  : std::vector<std::string>{".rchit"});
-        const auto tint = rayGroupTint(groups.size() - 1);
-        addWrite(plan, root / "shaders" / (stem + ".rchit"),
-                 rayLayoutClosestHitTemplate(stem, !procedural && !rayLayoutEngineRecord(layout).empty(), tint));
-        cell = {{"closesthit", "project://shaders/" + stem}};
+        const auto names = rayLayoutTemplateNames(layout);
+        const auto ray_types = rayLayoutRayTypes(layout);
+        std::string intersection;
         if (procedural) {
-            addWrite(plan, root / "shaders" / (stem + ".rint"), rayLayoutIntersectionTemplate(stem));
-            cell["intersection"] = "project://shaders/" + stem;
+            const auto stem = templateStem(root, "hit_" + name, {".rint"});
+            addWrite(plan, root / "shaders" / (stem + ".rint"),
+                     rayLayoutShaderTemplate(names, {RayLayoutTemplateStage::intersection, {}, name, {}}, stem));
+            intersection = "project://shaders/" + stem;
         }
-        plan.notes.push_back("The closest hit of " + name + " is shaders/" + stem + ".rchit.");
+        std::vector<std::string> traced_types;
+        for (const auto index : layoutTasks(tasks))
+            for (const auto &traced : arrayAt(tasks[index].rayTracing(), "traced_ray_types"))
+                if (traced.is_string() && !contains(traced_types, traced.get<std::string>()))
+                    traced_types.push_back(traced.get<std::string>());
+        // No task yet: the first ray type's, for the next one.
+        if (traced_types.empty() && !ray_types.empty()) traced_types.push_back(ray_types.front());
+        for (const auto &ray_type : traced_types) {
+            const bool first = !ray_types.empty() && ray_types.front() == ray_type;
+            const auto stem =
+                templateStem(root, first ? "hit_" + name : "hit_" + name + "_" + ray_type, {".rchit"});
+            addWrite(plan, root / "shaders" / (stem + ".rchit"),
+                     rayLayoutShaderTemplate(names, {RayLayoutTemplateStage::closest_hit, ray_type, name, {}}, stem));
+            Json cell{{"closesthit", "project://shaders/" + stem}};
+            if (!intersection.empty()) cell["intersection"] = intersection;
+            made[ray_type] = std::move(cell);
+            if (first) plan.notes.push_back("The closest hit of " + name + " is shaders/" + stem + ".rchit.");
+        }
     }
     for (const auto index : layoutTasks(tasks)) {
         auto rt = tasks[index].rayTracing();
@@ -1064,7 +1098,8 @@ RayLayoutPlan planAddGroup(const RayLayoutRead &read, const std::vector<RayTraci
             if (!traced.is_string()) continue;
             const auto type_name = traced.get<std::string>();
             auto row = objectAt(objectAt(rt, "hit_shaders"), type_name.c_str());
-            row[name] = cell.is_null() ? objectAt(row, source.c_str()) : cell;
+            const auto found = made.find(type_name);
+            row[name] = found != made.end() ? found->second : objectAt(row, source.c_str());
             rt["hit_shaders"][type_name] = row;
         }
         plan.tasks.emplace_back(index, std::move(rt));
@@ -1088,7 +1123,10 @@ RayLayoutPlan planAddMiss(const RayLayoutRead &read, const std::vector<RayTracin
     std::string made;
     if (mode == RayFillMode::from_template || misses.empty()) {
         const auto stem = templateStem(root, "miss_" + name, {".rmiss"});
-        addWrite(plan, root / "shaders" / (stem + ".rmiss"), rayLayoutMissTemplate(stem));
+        // RTL-2s-c: miss i answers ray type i's payload (raylayouttemplate).
+        addWrite(plan, root / "shaders" / (stem + ".rmiss"),
+                 rayLayoutShaderTemplate(rayLayoutTemplateNames(layout), {RayLayoutTemplateStage::miss, {}, {}, name},
+                                         stem));
         made = "project://shaders/" + stem;
     }
     for (const auto index : layoutTasks(tasks)) {
@@ -1371,7 +1409,8 @@ RayLayoutPlan planSetGroupType(const RayLayoutRead &read, const std::vector<RayT
     return plan;
 }
 
-RayLayoutPlan planAddRecordField(const RayLayoutRead &read, const std::string &name, const std::string &type) {
+RayLayoutPlan planAddRecordField(const RayLayoutRead &read, const std::string &name, const std::string &type,
+                                 const std::vector<RayTracingTask> &tasks, const std::filesystem::path &root) {
     RayLayoutPlan plan;
     plan.label = "Add record field " + name;
     if (!layoutReady(read, plan)) return plan;
@@ -1407,10 +1446,12 @@ RayLayoutPlan planAddRecordField(const RayLayoutRead &read, const std::string &n
             plan.procedural_records[asset.asset] = record;
         }
     }
+    fitRecords(plan, tasks, root);
     return plan;
 }
 
-RayLayoutPlan planRemoveRecordField(const RayLayoutRead &read, const std::string &name) {
+RayLayoutPlan planRemoveRecordField(const RayLayoutRead &read, const std::string &name,
+                                    const std::vector<RayTracingTask> &tasks, const std::filesystem::path &root) {
     RayLayoutPlan plan;
     plan.label = "Remove record field " + name;
     if (!layoutReady(read, plan)) return plan;
@@ -1440,10 +1481,12 @@ RayLayoutPlan planRemoveRecordField(const RayLayoutRead &read, const std::string
     }
     plan.confirm = "Remove record field " + name + "? Every assignment's value of it goes; a shader that reads it "
                    "from its shader record has to change too.";
+    fitRecords(plan, tasks, root);
     return plan;
 }
 
-RayLayoutPlan planSetEngineRecord(const RayLayoutRead &read, const std::vector<std::string> &fields) {
+RayLayoutPlan planSetEngineRecord(const RayLayoutRead &read, const std::vector<std::string> &fields,
+                                  const std::vector<RayTracingTask> &tasks, const std::filesystem::path &root) {
     RayLayoutPlan plan;
     plan.label = "Engine record";
     if (!layoutReady(read, plan)) return plan;
@@ -1453,6 +1496,7 @@ RayLayoutPlan planSetEngineRecord(const RayLayoutRead &read, const std::vector<s
     else
         layout["engine_record"] = fields;
     plan.layout = layout;
+    fitRecords(plan, tasks, root);
     return plan;
 }
 

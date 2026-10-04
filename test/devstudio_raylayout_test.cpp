@@ -199,6 +199,10 @@ TEST_CASE("RTL-2s decision 2: Enable hit groups writes the layout and every ray 
     CHECK(written.contains("ray_tracing_layout.rgen"));
     CHECK(written.contains("ray_tracing_layout.rmiss"));
     CHECK(written.at("ray_tracing_layout.rchit").find("pelicanRayFetchNormal") != std::string::npos);
+    // RTL-2s-c: the Graph tab's templates (raylayouttemplate): the record
+    // block Studio owns, the raygen's switches.
+    CHECK(written.at("ray_tracing_layout.rchit").find("// pelican: shader record") != std::string::npos);
+    CHECK(written.at("ray_tracing_layout.rgen").find("#define TRACE_SECOND_RAY_TYPE 0") != std::string::npos);
     const auto &own = written.at("own_layout.rgen");
     CHECK(own.find("PELICAN_RAY_TYPE_primary, pelican_ray_type_count, PELICAN_MISS_miss,") != std::string::npos);
     CHECK(own.find("PELICAN_RAY_TYPE_ray_2, pelican_ray_type_count, PELICAN_MISS_miss_2,") != std::string::npos);
@@ -374,4 +378,90 @@ TEST_CASE("RTL-2s decision 7: an edit that rewrites procedural records is taken 
     CHECK(back.layout == layout);
     CHECK(back.procedural_records == Json{{"ball", Json::object()}});
     CHECK(rayLayoutRequest(now, {}, back).method == "edit_ray_layout");
+}
+
+TEST_CASE("RTL-2s-c one rule for a task's layout form, the templates' ray type and record block, and the "
+          "raygen's switches",
+          "[rtl2s][ray-layout]") {
+    TempProject project;
+    // The rule the palette and Enable share: closesthit[k] is ray type k in
+    // every group's cell (a procedural one's intersection too), every miss
+    // the task's miss j.
+    auto layout = defaultRayLayout();
+    layout["groups"].push_back({{"name", "ball"}, {"type", "procedural"}});
+    const auto stem = "project://shaders/s";
+    const auto form = rayTracingInLayoutForm(Json{{"raygen", stem}, {"miss", stem}, {"closesthit", stem},
+                                                  {"max_recursion", 2}},
+                                             layout, stem);
+    CHECK(form == Json{{"raygen", stem},
+                       {"max_recursion", 2},
+                       {"traced_ray_types", Json::array({"primary"})},
+                       {"misses", {{"miss", stem}}},
+                       {"hit_shaders",
+                        {{"primary", {{"default", {{"closesthit", stem}}},
+                                      {"ball", {{"closesthit", stem}, {"intersection", stem}}}}}}}});
+
+    // A ray type from the template: a closest hit of its payload for each
+    // hit group, the procedural group's intersection kept.
+    auto root = Json::parse(enabledRoot()["documents"][0]["content"].get<std::string>());
+    root["nodes"][0]["parameters"]["ray_tracing"]["hit_shaders"]["primary"]["ball"] = {
+        {"closesthit", "project://shaders/ray_tracing_layout"}, {"intersection", "project://shaders/sphere"}};
+    auto documents = enabledRoot();
+    documents["documents"][0]["content"] = root.dump();
+    const auto tasks = rayTracingTasks(documents);
+    const auto read = parseRayLayoutRead(layoutAnswer(layout, nullptr, "layout"));
+    const auto shadow = planAddRayType(read, tasks, "shadow", project.root, RayFillMode::from_template);
+    REQUIRE_FALSE(shadow.problem);
+    const auto &row = shadow.tasks.at(0).second.at("hit_shaders").at("shadow");
+    CHECK(row.at("default") == Json{{"closesthit", "project://shaders/shadow_default"}});
+    CHECK(row.at("ball") ==
+          Json{{"closesthit", "project://shaders/shadow_ball"}, {"intersection", "project://shaders/sphere"}});
+    REQUIRE(shadow.shaders.size() == 2);
+    CHECK(shadow.shaders[0].content.find("layout(location = 1) rayPayloadInEXT float occluded;") != std::string::npos);
+    CHECK(shadow.shaders[0].content.find("PELICAN_RAY_ENGINE_RECORD_MEMBERS") != std::string::npos);
+
+    // A record field writes the block of every hit shader a task traces
+    // with; one that declares its own record is named.
+    const auto names = rayLayoutTemplateNames(layout);
+    write(project.root / "shaders/ray_tracing_layout.rchit",
+          rayLayoutShaderTemplate(names, {RayLayoutTemplateStage::closest_hit, "primary", "default", {}}, "x"));
+    write(project.root / "shaders/sphere.rint",
+          "#version 460\nlayout(shaderRecordEXT, std430) buffer R { uint material_index; } r;\nvoid main() {}\n");
+    const auto value = planAddRecordField(read, "value", "f32", tasks, project.root);
+    REQUIRE_FALSE(value.problem);
+    REQUIRE(value.shaders.size() == 1);
+    CHECK(value.shaders[0].path.filename() == "ray_tracing_layout.rchit");
+    CHECK(value.shaders[0].content.find("    float value;\n} record;") != std::string::npos);
+    CHECK(value.shaders[0].content.find("return color + vec3(record.value);") != std::string::npos);
+    REQUIRE(value.notes.size() == 1);
+    CHECK(value.notes[0].find("shaders/sphere.rint declares its own shader record") != std::string::npos);
+    // Without the record the block holds the engine's fields alone again.
+    CHECK(rewriteRayRecordBlock(value.shaders[0].content, names) ==
+          readFile(project.root / "shaders/ray_tracing_layout.rchit"));
+
+    // The raygen's switches: a line Studio wrote, set without any typing.
+    const auto raygen = rayLayoutShaderTemplate(names, {RayLayoutTemplateStage::raygen, {}, {}, {}}, "r");
+    CHECK(rayLayoutRaygenSwitch(raygen, RayCallCallableSwitch) == false);
+    const auto on = setRayLayoutRaygenSwitch(raygen, RayCallCallableSwitch, true);
+    REQUIRE(on);
+    CHECK(rayLayoutRaygenSwitch(*on, RayCallCallableSwitch) == true);
+    CHECK_FALSE(rayLayoutRaygenSwitch("void main() {}", RayTraceSecondSwitch));
+    RayLayoutTemplatePlace second{RayLayoutTemplateStage::raygen, {}, {}, {}};
+    second.second_ray_type = "shadow";
+    second.second_miss = "miss";
+    second.trace_second = true;
+    const auto traced = rayLayoutShaderTemplate(names, second, "r");
+    CHECK(traced.find("#define TRACE_SECOND_RAY_TYPE 1") != std::string::npos);
+    CHECK(traced.find("PELICAN_RAY_TYPE_shadow, pelican_ray_type_count, PELICAN_MISS_miss") != std::string::npos);
+
+    // A ray type checked in the Graph's Traced ray types: its row took the
+    // first traced type's hit shaders -- named, with what to do -- and a
+    // shader whose record Studio cannot write is named too.
+    const auto row_notes = rayTracedRowNotes(tasks.at(0).rayTracing(), "shadow", layout, project.root);
+    REQUIRE(row_notes.size() == 2);
+    CHECK(row_notes[0].find("shadow's row took primary's hit shaders (shaders/ray_tracing_layout.rchit)") !=
+          std::string::npos);
+    CHECK(row_notes[0].find("New... in each shadow cell writes one for shadow.") != std::string::npos);
+    CHECK(row_notes[1].find("shaders/sphere.rint declares its own shader record") != std::string::npos);
+    CHECK(rayTracedRowNotes(tasks.at(0).rayTracing(), "primary", layout, project.root).empty());
 }

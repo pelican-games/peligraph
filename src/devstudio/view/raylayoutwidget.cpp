@@ -1,6 +1,7 @@
 #include "raylayoutwidget.hpp"
 
 #include "panelhelp.hpp"
+#include "inspectormodel.hpp"
 #include "raylayoutmodel.hpp"
 #include "renderconfigdigest.hpp"
 #include "rendereditcompletion.hpp"
@@ -23,6 +24,7 @@
 #include <QPushButton>
 #include <QRadioButton>
 #include <QScrollArea>
+#include <QShowEvent>
 #include <QSpinBox>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -88,10 +90,28 @@ bool writeFile(const std::filesystem::path &path, const std::string &content) {
     return static_cast<bool>(output);
 }
 
+// The refusal's error object.
+Json refusalError(const Json &response) {
+    Json error = response.is_object() ? response.value("error", Json::object()) : Json::object();
+    return error.is_object() ? error : Json::object();
+}
+
+// RTL-2s-c: the refusal as one sentence -- the Graph's and the Problems
+// window's table (rayTracingRefusalDescription, knownRefusalDescription) --
+// else the parser's message, its code and what it names.
+std::string refusalSentence(const Json &response) {
+    const auto error = refusalError(response);
+    if (auto ray = rayTracingRefusalDescription(error); !ray.empty()) return ray;
+    if (auto known = knownRefusalDescription(error.value("code", std::string{}), error.value("message", std::string{}));
+        !known.empty())
+        return known;
+    return {};
+}
+
 // The refusal as one line: the parser's code, and what it names.
 QString refusalLine(const Json &response) {
-    Json error = response.is_object() ? response.value("error", Json::object()) : Json::object();
-    if (!error.is_object()) error = Json::object();
+    if (const auto sentence = refusalSentence(response); !sentence.empty()) return text(sentence);
+    Json error = refusalError(response);
     QString where;
     for (const auto *key : {"task", "node", "ray_type", "group", "miss", "asset"}) {
         const auto found = error.find(key);
@@ -116,6 +136,8 @@ struct RayLayoutWidget::Impl {
     std::function<void(const QString &)> engine_restart_action;
     std::function<void(const QString &)> show_document_action;
     std::function<void()> acceleration_action;
+    std::function<void(const Json &, const std::string &)> refusal_action;
+    std::function<void(std::vector<RenderEditHistory::FileChange>)> shader_history_action;
     bool restart_asked = false;
 
     QLabel *state_line = nullptr;
@@ -326,6 +348,14 @@ struct RayLayoutWidget::Impl {
                 return;
             }
         const auto request = rayLayoutRequest(*read_state, tasks, plan);
+        // RTL-2s-c: the shaders it rewrote go with the edit's history entry,
+        // so one Undo takes the names and the shaders back together.
+        if (shader_history_action && !plan.shaders.empty()) {
+            std::vector<RenderEditHistory::FileChange> files;
+            for (const auto &write : plan.shaders)
+                files.push_back({write.path.string(), write.previous, write.content});
+            shader_history_action(std::move(files));
+        }
         QString error;
         const auto id = viewport.requestRpc(text(request.method), toQt(request.params), &error);
         if (id == 0) {
@@ -408,6 +438,14 @@ struct RayLayoutWidget::Impl {
         submitted_from.reset();
         undoing = false;
         showError(refusalLine(response));
+        // RTL-2s-c: a task's refusal marks its node and the cell its fields
+        // name in the Graph, with the same sentence.
+        const auto error = refusalError(response);
+        if (refusal_action && error.contains("task")) {
+            auto sentence = refusalSentence(response);
+            if (sentence.empty()) sentence = refusalLine(response).toStdString();
+            refusal_action(error, sentence);
+        }
         read();
     }
 
@@ -586,14 +624,20 @@ struct RayLayoutWidget::Impl {
         }
         QRadioButton *copy = nullptr;
         QRadioButton *from_template = nullptr;
-        if (kind == AddKind::group || kind == AddKind::miss) {
-            copy = new QRadioButton(kind == AddKind::group ? owner.tr("Copy the shaders of the default group")
-                                                           : owner.tr("Copy the first miss shader"),
+        if (kind == AddKind::group || kind == AddKind::miss || kind == AddKind::ray_type) {
+            copy = new QRadioButton(kind == AddKind::group  ? owner.tr("Copy the shaders of the default group")
+                                    : kind == AddKind::miss ? owner.tr("Copy the first miss shader")
+                                                            : owner.tr("Copy the first ray type's hit shaders"),
                                     box);
             copy->setObjectName(Prefix + QStringLiteral("addDialog.copy"));
-            from_template = new QRadioButton(owner.tr("New shader from the template"), box);
+            from_template = new QRadioButton(kind == AddKind::ray_type
+                                                 ? owner.tr("New hit shaders from the template (one per hit group)")
+                                                 : owner.tr("New shader from the template"),
+                                             box);
             from_template->setObjectName(Prefix + QStringLiteral("addDialog.template"));
-            copy->setChecked(true);
+            // RTL-2s-c: a ray type's copied row would answer in the first ray
+            // type's payload: the template is its default.
+            (kind == AddKind::ray_type ? from_template : copy)->setChecked(true);
             form->addRow(copy);
             form->addRow(from_template);
         }
@@ -623,12 +667,14 @@ struct RayLayoutWidget::Impl {
             box->accept();
             if (!read_state) return;
             switch (kind) {
-            case AddKind::ray_type: apply(planAddRayType(*read_state, tasks, chosen)); break;
+            case AddKind::ray_type: apply(planAddRayType(*read_state, tasks, chosen, projectRoot(), mode)); break;
             case AddKind::group:
                 apply(planAddGroup(*read_state, tasks, projectRoot(), chosen, chosen_type, mode));
                 break;
             case AddKind::miss: apply(planAddMiss(*read_state, tasks, projectRoot(), chosen, mode)); break;
-            case AddKind::record_field: apply(planAddRecordField(*read_state, chosen, chosen_type)); break;
+            case AddKind::record_field:
+                apply(planAddRecordField(*read_state, chosen, chosen_type, tasks, projectRoot()));
+                break;
             }
         });
         box->open();
@@ -830,7 +876,7 @@ struct RayLayoutWidget::Impl {
             layout->addLayout(row);
             const auto name = field.name;
             QObject::connect(remove, &QPushButton::clicked, &owner, [this, name] {
-                if (read_state) apply(planRemoveRecordField(*read_state, name));
+                if (read_state) apply(planRemoveRecordField(*read_state, name, tasks, projectRoot()));
             });
         }
         auto *add = new QPushButton(QStringLiteral("+"), tables);
@@ -860,7 +906,7 @@ struct RayLayoutWidget::Impl {
                             ordered.push_back(known);
                     fields = ordered;
                 }
-                apply(planSetEngineRecord(*read_state, fields));
+                apply(planSetEngineRecord(*read_state, fields, tasks, projectRoot()));
             });
         }
         engine->addStretch(1);
@@ -1088,5 +1134,31 @@ void RayLayoutWidget::revealMaterial(const QString &material) {
 }
 
 void RayLayoutWidget::refresh() { impl_->read(); }
+
+void RayLayoutWidget::showEvent(QShowEvent *event) {
+    QWidget::showEvent(event);
+    if (!event->spontaneous()) impl_->read();
+}
+
+void RayLayoutWidget::revealEnable() {
+    auto *button = impl_->enable_button;
+    for (QWidget *parent = parentWidget(); parent != nullptr; parent = parent->parentWidget())
+        if (auto *scroll = qobject_cast<QScrollArea *>(parent)) {
+            scroll->ensureWidgetVisible(button);
+            break;
+        }
+    if (button->isVisible()) {
+        button->setFocus();
+        impl_->showInformation(tr("Enable hit groups gives the project a ray layout; Ray geometry needs one."));
+    }
+}
+
+void RayLayoutWidget::setRefusalAction(std::function<void(const nlohmann::json &, const std::string &)> action) {
+    impl_->refusal_action = std::move(action);
+}
+
+void RayLayoutWidget::setShaderHistoryAction(std::function<void(std::vector<RenderEditHistory::FileChange>)> action) {
+    impl_->shader_history_action = std::move(action);
+}
 
 } // namespace PelicanStudio

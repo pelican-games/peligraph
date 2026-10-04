@@ -7,7 +7,12 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
+
+#include <nlohmann/json.hpp>
+
+#include "../model/raylayouttemplate.hpp"
 
 namespace PelicanStudio {
 
@@ -325,5 +330,33 @@ struct RayTracingTemplateWrite {
 // invalid name or a write that fails; never overwrites.
 RayTracingTemplateWrite writeRayTracingTemplate(
     const std::filesystem::path &project_root, std::string_view name);
+
+// --- RTL-2s, decision 2: the shaders of a project with a ray group layout --
+// the templates are raylayouttemplate's (the model's); New... writes them.
+// The name New... proposes for one stage: `base` folded (else the stage's
+// word), then _2, _3... past every name whose file of that stage exists.
+std::string rayLayoutTemplateName(const std::filesystem::path &project_root,
+                                  RayLayoutTemplateStage stage, std::string_view base);
+struct RayLayoutTemplateWrite {
+    std::filesystem::path path;
+    // project://shaders/<name>: the stage picks the file.
+    std::string reference;
+    // False when the file was already there: it is left as it is.
+    bool created = false;
+};
+// Writes shaders/<name><extension> unless it is there. Throws for an invalid
+// name or a write that fails.
+RayLayoutTemplateWrite writeRayLayoutTemplate(const std::filesystem::path &project_root,
+                                              std::string_view name,
+                                              const RayLayoutTemplateNames &layout,
+                                              const RayLayoutTemplatePlace &place);
+// CT-6s's set (raygen + miss + closest hit under one stem) in a project
+// with a ray group layout: the three in the layout's form, for its first ray
+// type, its first miss and its default group -- and an intersection (.rint)
+// too when the layout has a procedural group, so the stem fills every cell.
+// Written whole or not at all, as writeRayTracingTemplate.
+RayTracingTemplateWrite writeRayTracingTemplate(const std::filesystem::path &project_root,
+                                                std::string_view name,
+                                                const RayLayoutTemplateNames &layout);
 
 } // namespace PelicanStudio

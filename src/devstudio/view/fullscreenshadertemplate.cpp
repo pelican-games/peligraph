@@ -1061,4 +1061,83 @@ RayTracingTemplateWrite writeRayTracingTemplate(const std::filesystem::path &pro
     return result;
 }
 
+// --- RTL-2s, decision 2: a project with a ray group layout. The templates
+// themselves are the model's (raylayouttemplate); these write them.
+
+namespace {
+
+std::filesystem::path rayLayoutTemplatePath(const std::filesystem::path &project_root, std::string_view name,
+                                            RayLayoutTemplateStage stage) {
+    if (!isValidShaderTemplateName(name))
+        throw std::invalid_argument("a shader name is letters, digits, '_' and '-': " + std::string{name});
+    return project_root / "shaders" / (std::string{name} + std::string{rayLayoutTemplateExtension(stage)});
+}
+
+void writeTemplateFile(const std::filesystem::path &path, const std::string &contents) {
+    std::error_code error;
+    std::filesystem::create_directories(path.parent_path(), error);
+    if (error)
+        throw std::runtime_error("could not create " + path.parent_path().string() + ": " + error.message());
+    std::ofstream output{path, std::ios::binary};
+    output.write(contents.data(), static_cast<std::streamsize>(contents.size()));
+    output.close();
+    if (!output) throw std::runtime_error("could not write " + path.string());
+}
+
+} // namespace
+
+std::string rayLayoutTemplateName(const std::filesystem::path &project_root, RayLayoutTemplateStage stage,
+                                  std::string_view base) {
+    auto folded = suggestedShaderTemplateName(base);
+    if (folded.empty()) {
+        static constexpr std::array<std::string_view, 6> words{"raygen",   "miss",         "closest_hit",
+                                                               "any_hit",  "intersection", "callable"};
+        folded = std::string{words[static_cast<std::size_t>(stage)]};
+    }
+    std::error_code error;
+    auto candidate = folded;
+    for (int index = 2; std::filesystem::exists(rayLayoutTemplatePath(project_root, candidate, stage), error);
+         ++index)
+        candidate = folded + "_" + std::to_string(index);
+    return candidate;
+}
+
+RayLayoutTemplateWrite writeRayLayoutTemplate(const std::filesystem::path &project_root, std::string_view name,
+                                              const RayLayoutTemplateNames &layout,
+                                              const RayLayoutTemplatePlace &place) {
+    RayLayoutTemplateWrite result;
+    result.path = rayLayoutTemplatePath(project_root, name, place.stage);
+    result.reference = shaderTemplateReference(name);
+    std::error_code error;
+    if (std::filesystem::exists(result.path, error)) return result;
+    writeTemplateFile(result.path, rayLayoutShaderTemplate(layout, place, name));
+    result.created = true;
+    return result;
+}
+
+RayTracingTemplateWrite writeRayTracingTemplate(const std::filesystem::path &project_root, std::string_view name,
+                                                const RayLayoutTemplateNames &layout) {
+    std::vector<RayLayoutTemplatePlace> places;
+    places.push_back({RayLayoutTemplateStage::raygen, {}, {}, {}});
+    places.push_back({RayLayoutTemplateStage::miss, {}, {},
+                      layout.misses.empty() ? std::string{} : layout.misses.front()});
+    places.push_back({RayLayoutTemplateStage::closest_hit,
+                      layout.ray_types.empty() ? std::string{} : layout.ray_types.front(), layout.default_group,
+                      {}});
+    if (const auto procedural = std::ranges::find_if(
+            layout.groups, [](const auto &group) { return group.second == "procedural"; });
+        procedural != layout.groups.end())
+        places.push_back({RayLayoutTemplateStage::intersection, {}, procedural->first, {}});
+    RayTracingTemplateWrite result;
+    for (const auto &place : places) result.paths.push_back(rayLayoutTemplatePath(project_root, name, place.stage));
+    result.reference = shaderTemplateReference(name);
+    std::error_code error;
+    if (std::ranges::any_of(result.paths, [&](const auto &path) { return std::filesystem::exists(path, error); }))
+        return result;
+    for (std::size_t index = 0; index < places.size(); ++index)
+        writeTemplateFile(result.paths[index], rayLayoutShaderTemplate(layout, places[index], name));
+    result.created = true;
+    return result;
+}
+
 } // namespace PelicanStudio

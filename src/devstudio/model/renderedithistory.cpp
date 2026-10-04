@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
+#include <fstream>
 #include <set>
 #include <string_view>
 #include <utility>
@@ -415,7 +417,11 @@ void RenderEditHistory::say(std::string line) {
 }
 
 void RenderEditHistory::beforeRequest(const std::string &method, const Json &params) {
-    if (own_request_ || !recordsMethod(method)) return;
+    if (own_request_) return;
+    // RTL-2s-c: the files handed over for this request, whether it is
+    // recorded or not.
+    auto files = std::exchange(next_files_, {});
+    if (!recordsMethod(method)) return;
     // RTL-2s, decision 7: an edit that rewrites procedural records writes
     // asset_data, which restore_render_documents does not take back; the
     // Ray layout panel's own Undo sends the records before it again.
@@ -423,6 +429,7 @@ void RenderEditHistory::beforeRequest(const std::string &method, const Json &par
     PendingEdit edit;
     edit.method = method;
     edit.label = labelFor(method, params);
+    edit.files = std::move(files);
     // The documents as they are before the edit: asked for first, so the
     // engine answers it before it takes the edit. Read without names, the
     // engine answers the root and the preset and features the composition
@@ -595,6 +602,7 @@ void RenderEditHistory::finishEdit(PendingEdit edit, const Json &commit) {
     Entry entry;
     entry.label = edit.label;
     entry.serial = next_serial_++;
+    entry.files = std::move(edit.files);
     entry.restart_required = readRenderEditCompletion(commit).restart_required;
     if (!edit.snapshot_received) {
         entry.barrier = true;
@@ -758,11 +766,29 @@ void RenderEditHistory::sendRestore() {
         operation_->sent[reference] = std::move(content);
     }
     operation_->stage = Stage::Restore;
+    // RTL-2s-c: the files first -- the restore's commit compiles the shaders
+    // the documents name.
+    writeFiles(entry, undoing);
     std::string error;
     operation_->request =
         send("restore_render_documents", Json{{"documents", std::move(documents)}}, &error);
     if (operation_->request == 0)
         failOperation(error.empty() ? std::string{"the request could not be sent"} : error);
+}
+
+void RenderEditHistory::writeFiles(const Entry &entry, bool undoing) {
+    for (const auto &file : entry.files) {
+        const std::filesystem::path path{file.path};
+        const std::optional<std::string> content = undoing ? file.before : std::optional<std::string>{file.after};
+        std::error_code error;
+        if (!content) {
+            std::filesystem::remove(path, error);
+            continue;
+        }
+        std::filesystem::create_directories(path.parent_path(), error);
+        std::ofstream output{path, std::ios::binary | std::ios::trunc};
+        output.write(content->data(), static_cast<std::streamsize>(content->size()));
+    }
 }
 
 void RenderEditHistory::pollOperation() {
@@ -855,12 +881,16 @@ void RenderEditHistory::refuseOperation(const Json &result) {
                 (message.empty() ? (code.empty() ? std::string{"the engine refused it"} : code)
                                  : message));
     }
+    // RTL-2s-c: not restored: the files back as the documents still are.
+    if (operation_->stage != Stage::Read) writeFiles(entry, operation_->direction != Direction::Undo);
     operation_.reset();
     notify();
 }
 
 void RenderEditHistory::failOperation(const std::string &message) {
     say("\"" + operationEntry().label + "\" cannot be " + verb() + ": " + message);
+    if (operation_->stage != Stage::Read)
+        writeFiles(operationEntry(), operation_->direction != Direction::Undo);
     operation_.reset();
     notify();
 }

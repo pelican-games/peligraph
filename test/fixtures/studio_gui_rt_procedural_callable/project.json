@@ -1,0 +1,25 @@
+{
+  "schema": "pelican.project",
+  "version": 1,
+  "name": "studio_gui_rt_procedural_callable",
+  "engine_min_version": "0.1.0",
+  "basic_config": {
+    "window_title": "Pelican Studio RTL-2s fixture",
+    "window_size": {
+      "width": 320,
+      "height": 240
+    },
+    "fullscreen": false,
+    "framerate": 60,
+    "camera": {
+      "yfov": 0.7853981633974483,
+      "znear": 0.1,
+      "zfar": 1000
+    },
+    "default_scene_id": "default_scene",
+    "scene_data_json": "scenes/main.scene.json",
+    "asset_data_json": "assets/asset_data.json",
+    "rendering_config_json": "passes/main_rendering_config.json",
+    "default_rendering_pass": "main_render"
+  }
+}

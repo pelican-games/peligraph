@@ -84,6 +84,9 @@ class InspectorWidget final : public QWidget {
     // RTL-2s, decision 4: Assign hit group... on the Material rows, with the
     // material they show (its name).
     void setAssignHitGroupAction(std::function<void(const QString &material)> action);
+    // RTL-2s-c (RTL-2s decision 5): Add component's Ray geometry, which needs
+    // a ray layout, offers Enable hit groups... -- the Ray layout section.
+    void setEnableHitGroupsAction(std::function<void()> action);
     // Where "Open the source" on a graph input row goes. The Inspector names
     // the producing node; the composition root decides which view shows it.
     void setGraphSourceRevealAction(

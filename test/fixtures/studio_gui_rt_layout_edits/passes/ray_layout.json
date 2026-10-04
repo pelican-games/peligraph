@@ -1,0 +1,32 @@
+{
+  "schema": "pelican.ray_group_layout",
+  "version": 3,
+  "ray_types": [
+    "primary",
+    "shadow"
+  ],
+  "default_group": "default",
+  "groups": [
+    {
+      "name": "default",
+      "type": "triangles"
+    },
+    {
+      "name": "extra",
+      "type": "triangles"
+    }
+  ],
+  "misses": [
+    {
+      "name": "miss"
+    },
+    {
+      "name": "miss_2"
+    }
+  ],
+  "engine_record": [
+    "material_index",
+    "geometry_index"
+  ],
+  "record": []
+}

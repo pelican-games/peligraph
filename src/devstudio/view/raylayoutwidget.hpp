@@ -1,9 +1,15 @@
 #pragma once
 
+#include "../model/renderedithistory.hpp"
+
 #include <QWidget>
+
+#include <nlohmann/json.hpp>
 
 #include <functional>
 #include <memory>
+#include <string>
+#include <vector>
 
 class QString;
 
@@ -47,7 +53,25 @@ class RayLayoutWidget final : public QWidget {
     // Decision 4: brings the assignment row of the material `material`
     // (a document path, or a name) forward and opens its hit group list.
     void revealMaterial(const QString &material);
+    // RTL-2s-c: Enable hit groups brought into view and focused (the
+    // Inspector's Add component, for a Ray geometry).
+    void revealEnable();
     void refresh();
+
+  protected:
+    // RTL-2s-c: shown again (its tab brought forward), the section reads the
+    // project's layout again -- a document changed on disk, or broken there,
+    // is what it shows.
+    void showEvent(QShowEvent *event) override;
+
+  public:
+    // RTL-2s-c: an edit refused at its commit -- the error as the engine
+    // answered it and its sentence (CT-6s's table) -- for the Graph's model
+    // to mark the task's node and the place its fields name.
+    void setRefusalAction(std::function<void(const nlohmann::json &error, const std::string &sentence)> action);
+    // RTL-2s-c: the shader files an edit rewrote, handed to the render
+    // history right before the edit is sent, so its Undo puts them back.
+    void setShaderHistoryAction(std::function<void(std::vector<RenderEditHistory::FileChange>)> action);
 };
 
 } // namespace PelicanStudio

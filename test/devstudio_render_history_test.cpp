@@ -16,7 +16,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <chrono>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <string>
 #include <vector>
@@ -920,6 +923,60 @@ TEST_CASE("LP-4f2 the entry is named for the template until the engine names the
     CHECK(RenderEditHistory::graphTemplateLabel(Json{{"status", "accepted"}}).empty());
     CHECK(RenderEditHistory::graphTemplateTitle("engine://graphs/planar_mip_chain_loop.json") ==
           "Planar mip chain loop");
+}
+
+// RTL-2s-c: a ray type renamed in the Ray layout section rewrites the
+// shaders that name it (PELICAN_RAY_TYPE_<name>) beside the documents. The
+// files ride on the edit's entry: Undo writes them back before the restore
+// is sent (the restore's commit compiles them), Redo writes them again, and
+// a request the history does not record drops them.
+TEST_CASE("RTL-2s-c a rename's shaders ride on its history entry: Undo writes them back before the "
+          "restore, Redo writes them again",
+          "[devstudio][render-history][rtl2s]") {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_rtl2sc_h_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    const auto raygen = root / "trace.rgen";
+    const auto read = [&] {
+        std::ifstream file{raygen, std::ios::binary};
+        return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+    };
+    const auto put = [&](const std::string &text) { std::ofstream{raygen, std::ios::binary} << text; };
+    const auto made = root / "made.rchit";
+    put("PELICAN_RAY_TYPE_sun");
+    std::ofstream{made, std::ios::binary} << "new";
+    Rig rig;
+    // A request the history does not record drops what was handed over.
+    rig.history.attachFiles({{raygen.string(), "dropped", "dropped"}});
+    rig.history.beforeRequest("get_ray_layout", Json::object());
+    rig.history.attachFiles({{raygen.string(), std::string{"PELICAN_RAY_TYPE_shadow"}, "PELICAN_RAY_TYPE_sun"},
+                             {made.string(), std::nullopt, "new"}});
+    rig.edit("edit_batch", Json{{"base_source_digest", RootA}, {"edits", Json::array()}}, rootBefore(),
+             committed({{Root, std::string(64, 'e')}}));
+    REQUIRE(rig.history.undoStack().size() == 1);
+    REQUIRE(rig.history.undoStack().back().files.size() == 2);
+    // Undo: nothing written while the documents are read ...
+    REQUIRE(rig.history.undo());
+    CHECK(read() == "PELICAN_RAY_TYPE_sun");
+    rig.answer(rig.last().id, Json{{"documents", Json::array({document(Root, "root", std::string(64, 'e'), "now")})}});
+    // ... and the shader back (the new file gone) as the restore is sent.
+    REQUIRE(rig.last().method == "restore_render_documents");
+    CHECK(read() == "PELICAN_RAY_TYPE_shadow");
+    CHECK_FALSE(std::filesystem::exists(made));
+    rig.answer(rig.last().id, Json{{"status", "accepted"}, {"ticket", "undo"}});
+    rig.answer(rig.last().id, committed({{Root, RootA}}));
+    // Redo writes them again.
+    REQUIRE(rig.history.redo());
+    rig.answer(rig.last().id, Json{{"documents", Json::array({document(Root, "root", RootA, "root bytes")})}});
+    REQUIRE(rig.last().method == "restore_render_documents");
+    CHECK(read() == "PELICAN_RAY_TYPE_sun");
+    CHECK(std::filesystem::exists(made));
+    // A refused restore puts the files back as the documents still are.
+    rig.answer(rig.last().id, Json{{"status", "rejected"}, {"error", {{"code", "external_modification"}}}});
+    CHECK(read() == "PELICAN_RAY_TYPE_shadow");
+    CHECK_FALSE(std::filesystem::exists(made));
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
 }
 
 } // namespace PelicanStudio

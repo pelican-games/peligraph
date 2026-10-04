@@ -87,6 +87,10 @@ struct GraphCanvasReadCapability {
     // the shared builder made), answered with a ticket get_edit_result polls.
     // Either may be left empty: the pass then takes no lines here.
     std::function<qint64(QString *error)> requestRenderAuthoringContext;
+    // RTL-2s-c: get_ray_layout, the ray group layout as the Ray layout
+    // section reads it, for a ray tracing task's fields and templates. Left
+    // empty, a task shows the form without a layout.
+    std::function<qint64(QString *error)> requestRayLayout;
     std::function<qint64(const QJsonObject &params, QString *error)>
         requestEditPresetPass;
     // GL-3a: the root's fold groups. get_fold_groups reads their state, the

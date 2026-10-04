@@ -7624,6 +7624,8 @@ struct GraphCanvasWidget::Impl {
             else if (request.method == "get_render_authoring_context" &&
                      graph.requestRenderAuthoringContext)
                 transport = graph.requestRenderAuthoringContext(&error);
+            else if (request.method == "get_ray_layout" && graph.requestRayLayout)
+                transport = graph.requestRayLayout(&error);
             else if (request.method == "set_time" && graph.requestSetTime)
                 transport = graph.requestSetTime(
                     request.params.value("t", 0.0), &error);
@@ -8424,6 +8426,33 @@ struct GraphCanvasWidget::Impl {
             std::error_code error;
             if (std::filesystem::exists(path, error)) files.push_back(std::move(path));
         }
+        // RTL-2s: a ray group layout's task names a stem per place (its
+        // misses, each cell of hit_shaders, its callables): those are read
+        // again on a write too.
+        std::vector<std::string> stems;
+        const std::function<void(const nlohmann::json &)> collect = [&](const nlohmann::json &value) {
+            if (value.is_string()) {
+                const auto &reference = value.get_ref<const std::string &>();
+                if (reference.starts_with(prefix) && reference != stem &&
+                    std::ranges::find(stems, reference) == stems.end())
+                    stems.push_back(reference);
+            } else if (value.is_object() || value.is_array()) {
+                for (const auto &each : value) collect(each);
+            }
+        };
+        if (const auto tracing = parameters.find("ray_tracing");
+            parameters.is_object() && tracing != parameters.end())
+            collect(*tracing);
+        for (const auto &other : stems) {
+            const auto other_base =
+                (project_root / std::filesystem::path{other.substr(prefix.size())}).lexically_normal();
+            for (const char *extension : {".rgen", ".rmiss", ".rchit", ".rahit", ".rint", ".rcall"}) {
+                auto path = other_base;
+                path += extension;
+                std::error_code error;
+                if (std::filesystem::exists(path, error)) files.push_back(std::move(path));
+            }
+        }
         return files;
     }
 
@@ -9154,8 +9183,14 @@ struct GraphCanvasWidget::Impl {
                              RayTracingTemplateWrite written;
                              QString failure;
                              try {
-                                 written = writeRayTracingTemplate(
-                                     project_root, rayTracingTemplateName(project_root));
+                                 // RTL-2s, decision 2: the layout's form in a
+                                 // project with a ray group layout.
+                                 if (const auto layout = rayLayoutTemplateNamesFor(model))
+                                     written = writeRayTracingTemplate(
+                                         project_root, rayTracingTemplateName(project_root), *layout);
+                                 else
+                                     written = writeRayTracingTemplate(
+                                         project_root, rayTracingTemplateName(project_root));
                              } catch (const std::exception &error) {
                                  failure = QString::fromUtf8(error.what());
                              }
@@ -10290,6 +10325,14 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
     impl_->derived_digest.clear();
     impl_->readDerivedIfMoved(true);
     impl_->showDetails();
+}
+
+void GraphCanvasWidget::setOpenCallableRecords(std::function<void()> open) {
+    impl_->compute_fields->setOpenCallableRecords(std::move(open));
+}
+
+void GraphCanvasWidget::setOpenRayLayout(std::function<void()> open) {
+    impl_->compute_fields->setOpenRayLayout(std::move(open));
 }
 
 void GraphCanvasWidget::setRenderConfigDigest(

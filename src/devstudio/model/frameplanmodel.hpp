@@ -772,6 +772,12 @@ struct FramePlanRayQueryStructures {
     std::uint64_t tlas_instance_count = 0;
     std::vector<std::pair<std::string, std::uint64_t>> named_tlas_instance_counts;
     std::vector<FramePlanBlasKey> resident_blas_keys;
+    // RTL-2s b, decision 4 (engine RTL-1b): each named TLAS's BLAS, in
+    // resident_blas_keys' form (named_tlas_blas), and what the scene kept
+    // out of the structures (excluded: its counts by reason, the names).
+    std::vector<std::pair<std::string, std::vector<FramePlanBlasKey>>> named_tlas_blas;
+    std::vector<std::pair<std::string, std::uint64_t>> excluded_counts;
+    std::vector<std::string> excluded_names;
 
     // A project without ray tracing asks for no scene and keeps no BLAS.
     [[nodiscard]] bool shown() const noexcept {

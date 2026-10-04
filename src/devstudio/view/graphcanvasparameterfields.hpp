@@ -131,6 +131,10 @@ class GraphParameterEditor final : public QWidget {
     void buildObject();
     void buildRows();
     void addRow(const nlohmann::json &value, const std::string &key);
+    // RTL-2s, decision 1: the keys a map's `key_choices_from` lists, and a
+    // row's key combo filled with them (the key written kept, listed or not).
+    [[nodiscard]] std::vector<std::string> keyChoices() const;
+    void fillKeyChoice(QComboBox &combo, const std::string &key) const;
     void load();
     void fillCombo();
     void changed(bool continuous);

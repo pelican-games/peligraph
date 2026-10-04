@@ -1,6 +1,7 @@
 #include "graphcanvasparameterfields.hpp"
 
 #include "featureparameterform.hpp"
+#include "graphcanvascomputefields.hpp"
 #include "graphcanvasposefields.hpp"
 #include "graphcanvasrenderfields.hpp"
 #include "studiotheme.hpp"
@@ -370,6 +371,9 @@ struct GraphParameterEditor::Parts {
     struct RowParts {
         QWidget *row = nullptr;
         QLineEdit *key = nullptr;
+        // RTL-2s, decision 1: a map whose keys the table lists
+        // (key_choices_from): the key is picked, `key` its line.
+        QComboBox *key_choice = nullptr;
         GraphParameterEditor *editor = nullptr;
     };
     QVBoxLayout *rows_layout = nullptr;
@@ -970,6 +974,13 @@ void GraphParameterEditor::buildRows() {
             std::set<std::string> taken;
             for (const auto &row : parts_->rows)
                 if (row.key != nullptr) taken.insert(row.key->text().toStdString());
+            // RTL-2s, decision 1: the first name the table lists that no row
+            // has yet, so nothing has to be typed.
+            for (const auto &listed : keyChoices())
+                if (!taken.contains(listed)) {
+                    key = listed;
+                    break;
+                }
             for (int index = 1; key.empty() || taken.contains(key); ++index) key = "key" + std::to_string(index);
         }
         addRow(itemFallback(items), key);
@@ -986,7 +997,27 @@ void GraphParameterEditor::addRow(const Json &value, const std::string &key) {
     line->setContentsMargins(0, 0, 0, 0);
     Parts::RowParts entry;
     entry.row = row;
-    if (kind() != "array") {
+    if (kind() != "array" && schema_.contains("key_choices_from")) {
+        // RTL-2s, decision 1 (engine RTL-1b): the key picked from the names
+        // the source lists (a miss, a ray type, a hit group), or typed.
+        entry.key_choice = new QComboBox(row);
+        entry.key_choice->setObjectName(child(QString::number(index) + QStringLiteral(".key")));
+        entry.key_choice->setEditable(true);
+        entry.key_choice->setInsertPolicy(QComboBox::NoInsert);
+        entry.key_choice->setMaximumWidth(140);
+        entry.key_choice->setToolTip(tr("Picked from the names the engine lists here, or typed."));
+        entry.key = entry.key_choice->lineEdit();
+        fillKeyChoice(*entry.key_choice, key);
+        line->addWidget(entry.key_choice);
+        connect(entry.key_choice, &QComboBox::currentIndexChanged, this, [this] {
+            if (!loading_) changed(false);
+        });
+        connect(entry.key, &QLineEdit::editingFinished, this, [this, field = entry.key] {
+            if (!field->isModified()) return;
+            field->setModified(false);
+            changed(false);
+        });
+    } else if (kind() != "array") {
         entry.key = new QLineEdit(qtext(key), row);
         entry.key->setObjectName(child(QString::number(index) + QStringLiteral(".key")));
         entry.key->setMaximumWidth(110);
@@ -1019,6 +1050,29 @@ void GraphParameterEditor::addRow(const Json &value, const std::string &key) {
     });
     parts.rows_layout->addWidget(row);
     parts.rows.push_back(entry);
+}
+
+std::vector<std::string> GraphParameterEditor::keyChoices() const {
+    const auto from = schema_.find("key_choices_from");
+    if (from == schema_.end() || !from->is_object() || choices_ == nullptr || choices_->model == nullptr) return {};
+    const auto rpc = textOf(*from, "rpc");
+    const auto where = from->value("where", Json{});
+    if (rpc == "get_render_authoring_context")
+        return graphParameterChoicesFromReply(choices_->model->renderAuthoringContext(), textOf(*from, "key"),
+                                              textOf(*from, "field"), where);
+    if (rpc == "get_graph_catalog")
+        return graphParameterChoicesFromReply(choices_->model->catalogChoices(), textOf(*from, "key"),
+                                              textOf(*from, "field"), where);
+    return {};
+}
+
+void GraphParameterEditor::fillKeyChoice(QComboBox &combo, const std::string &key) const {
+    const QSignalBlocker block{combo};
+    combo.clear();
+    for (const auto &listed : keyChoices()) combo.addItem(qtext(listed), qtext(listed));
+    const auto index = combo.findData(qtext(key));
+    combo.setCurrentIndex(index);
+    combo.setEditText(qtext(key));
 }
 
 std::vector<std::pair<std::string, std::string>> GraphParameterEditor::comboChoices() const {
@@ -1206,7 +1260,12 @@ void GraphParameterEditor::refreshChoices(const Json &around) {
     for (const auto &[name, editor] : parts_->fields) editor->refreshChoices(around);
     // UX-12e, decision 1: a list's rows (usage, format_candidates) and a
     // union's shapes read their lists again too.
-    for (const auto &row : parts_->rows) row.editor->refreshChoices(around);
+    for (const auto &row : parts_->rows) {
+        // RTL-2s, decision 1: and a map's keys (not the one being typed).
+        if (row.key_choice != nullptr && !row.key->hasFocus())
+            fillKeyChoice(*row.key_choice, row.key->text().toStdString());
+        row.editor->refreshChoices(around);
+    }
     for (const auto &shape : parts_->shapes)
         if (shape.editor != nullptr) shape.editor->refreshChoices(around);
     // UX-13b, decision 5: a required union not written starts on its listed
@@ -1577,6 +1636,10 @@ bool listsFromRpc(const Json &entry) {
     if (const auto from = entry.find("choices_from");
         from != entry.end() && from->is_object() && textOf(*from, "rpc") == "get_render_authoring_context")
         return true;
+    // RTL-2s, decision 1: a map's keys too (ray_tracing's misses, hit_shaders).
+    if (const auto from = entry.find("key_choices_from");
+        from != entry.end() && from->is_object() && textOf(*from, "rpc") == "get_render_authoring_context")
+        return true;
     for (const char *under : {"fields", "items", "variants"})
         if (const auto found = entry.find(under); found != entry.end() && listsFromRpc(*found)) return true;
     return false;
@@ -1711,8 +1774,12 @@ void GraphCanvasParameterFields::showNode(const GraphCanvasNode *node, const std
         if (row.name == "view_select") form_->setRowVisible(row.label, !view);
         // CT-6s, decision 1: a compute task that runs a shader has no ray
         // tracing to show (the two exclude each other; Shader picks which).
+        // RTL-2s, decision 1: with a ray group layout, the compute fields'
+        // ray tracing section shows it in the layout's terms instead.
         if (row.name == "ray_tracing" && node->op == "render.compute")
-            form_->setRowVisible(row.label, node->parameters.is_object() && node->parameters.contains("ray_tracing"));
+            form_->setRowVisible(row.label, node->parameters.is_object() &&
+                                                node->parameters.contains("ray_tracing") &&
+                                                !rayLayoutSectionShown(model_, node->parameters));
     }
     load(*node);
     followEditable();

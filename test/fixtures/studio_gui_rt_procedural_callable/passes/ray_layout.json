@@ -1,0 +1,15 @@
+{
+  "schema": "pelican.ray_group_layout",
+  "version": 3,
+  "ray_types": ["primary"],
+  "default_group": "mesh",
+  "groups": [
+    {"name": "mesh", "type": "triangles"},
+    {"name": "ball", "type": "procedural"}
+  ],
+  "misses": [
+    {"name": "sky"}
+  ],
+  "engine_record": ["material_index", "geometry_index"],
+  "record": []
+}

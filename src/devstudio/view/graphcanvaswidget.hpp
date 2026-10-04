@@ -1100,6 +1100,13 @@ class GraphCanvasWidget final : public QWidget {
     // Q-8. The project whose UI document names the nodes a ui.* sink can
     // write. Read again whenever the list is about to be offered.
     void setProjectRoot(const std::filesystem::path &project_root);
+    // RTL-2s, decision 1: a ray tracing task's Enable hit groups… (a project
+    // without a ray group layout) opens the Ray layout.
+    void setOpenRayLayout(std::function<void()> open);
+    // RTL-2s-c: a ray tracing task's Callable records... opens the callable
+    // record initial values (get/edit_ray_callable_records, Render Features'
+    // Records).
+    void setOpenCallableRecords(std::function<void()> open);
     // UX-8, decision 9: File > Import Sound… and the Sound list's Import…:
     // the files picked (or dropped) are copied into the project's
     // assets/audio, `_2` beside a name already there, and the first is

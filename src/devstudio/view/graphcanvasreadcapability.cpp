@@ -120,6 +120,9 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
             return viewport.requestRpc(QStringLiteral("get_render_authoring_context"),
                                        QJsonObject{}, error);
         },
+        .requestRayLayout = [&viewport](QString *error) {
+            return viewport.requestRpc(QStringLiteral("get_ray_layout"), QJsonObject{}, error);
+        },
         .requestEditPresetPass = [&viewport](const QJsonObject &params, QString *error) {
             return viewport.requestRpc(QStringLiteral("edit_preset_pass"), params, error);
         },

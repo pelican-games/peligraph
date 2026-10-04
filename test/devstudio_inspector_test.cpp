@@ -2309,8 +2309,9 @@ TEST_CASE("Q-6 a component this build cannot take reads as a sentence and its co
         {"vat.module_unavailable@1", "This build has no VAT module", "not in this build"},
         {"seqplayer.module_unavailable@1", "This build has no sequence player module", "not in this build"},
         // MG-2a: layouts are v3 only; the code now means "no layout at all".
-        {"pelican.ray_instance_requires_layout_v2@1", "This project has no ray group layout",
-         "needs a ray layout"},
+        {"pelican.ray_instance_requires_layout_v2@1",
+         "No ray group layout: enable hit groups first",
+         "needs hit groups"},
     };
     for (const auto &entry : known) {
         CAPTURE(entry.code);
@@ -2370,9 +2371,10 @@ TEST_CASE("Q-6 a component this build cannot take reads as a sentence and its co
     CHECK(rows.at(3).label == "physics_body " + dash + " not in this build");
     CHECK_FALSE(rows.at(3).addable);
     CHECK(rows.at(3).blocked == "This build has no physics module (physics.module_unavailable@1)");
-    CHECK(rows.at(4).label == "pelican_ray_instance " + dash + " needs a ray layout");
+    CHECK(rows.at(4).label == "pelican_ray_instance " + dash + " needs hit groups");
     CHECK(rows.at(4).blocked ==
-          "This project has no ray group layout (pelican.ray_instance_requires_layout_v2@1)");
+          "No ray group layout: enable hit groups first "
+          "(pelican.ray_instance_requires_layout_v2@1)");
     CHECK_FALSE(rows.at(4).addable);
     CHECK(rows.at(5).label == "animator " + dash + " unavailable");
     CHECK(rows.at(5).blocked == "teleport.module_unavailable@2");

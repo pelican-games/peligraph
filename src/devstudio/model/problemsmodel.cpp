@@ -91,6 +91,9 @@ std::string problemSentence(const ProblemRow &row) {
     }
     if (auto syntax = renderDocumentSyntaxDescription(error); !syntax.empty()) return syntax;
     if (auto graph = graphLoopRefusalDescription(error, false); !graph.empty()) return graph;
+    // RTL-2s, decision 3 (engine RTL-1b): a ray tracing refusal's fields say
+    // where (the ray type, the hit group, the miss).
+    if (auto ray = rayTracingRefusalDescription(error); !ray.empty()) return ray;
     if (auto known = knownRefusalDescription(row.code, row.message, false); !known.empty()) return known;
     if (auto material = materialRefusalDescription(error); !material.empty()) return material;
     auto sentence = row.message;
@@ -141,6 +144,16 @@ void placeOf(ProblemRow &row) {
             row.model = std::move(model);
             return;
         }
+    }
+    // RTL-2s, decision 3 (engine RTL-1b): a ray tracing task's refusal at
+    // start or on a reload names its task, not a node; a task of the root's
+    // graph is the node of that id.
+    if (row.node.empty() && (kind.empty() || kind == "root" || kind == "root_graph") &&
+        !stringOf(row.fields, "task").empty() && !rayTracingRefusalDescription(error).empty()) {
+        row.node = stringOf(row.fields, "task");
+        row.place = Place::GraphNode;
+        row.place_text = "Graph: " + row.node;
+        return;
     }
     if (!row.node.empty() && (kind.empty() || kind == "root_graph" || kind == "definition")) {
         const auto node = row.definition.empty() ? row.node : row.definition + " / " + row.node;

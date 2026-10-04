@@ -1,0 +1,66 @@
+#version 460
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_ray_tracing : require
+
+// ray_tracing.rgen: a ray tracing set Studio wrote (raygen + miss + closest hit).
+// One ray per pixel of the image it writes (the task's dispatch.rays_from),
+// from the camera through that pixel; the colour is the normal of the
+// surface it hits, or a dim sky where it hits nothing.
+
+#include "pelican_sets.glsl"
+#include "pelican_frame.glsl"
+
+// The image the task writes, port "color": an image of this format (STORAGE and
+// SAMPLED) is made beside the task when it is placed.
+layout(rgba16f, set = PELICAN_SET_PASS_INPUT, binding = 0)
+    writeonly uniform image2D pelican_resource_color;
+
+// The scene's acceleration structure (the task's acceleration_structure).
+layout(set = PELICAN_SET_FRAME, binding = PELICAN_RAY_QUERY_TLAS_BINDING)
+    uniform accelerationStructureEXT pelicanRayTracingScene;
+
+// The payload the three stages share: xyz is where the ray hit, w is 1
+// on a hit and 0 when the miss shader ran.
+layout(location = 0) rayPayloadEXT vec4 hit;
+
+const float RAY_MIN_DISTANCE = 0.001;
+const float RAY_MAX_DISTANCE = 10000.0;
+
+// The direction from the camera through a point of the image, in pixels.
+vec3 cameraRay(vec2 pixel) {
+    vec2 ndc = pixel / vec2(gl_LaunchSizeEXT.xy) * 2.0 - 1.0;
+    vec4 target = inverse(pelicanFrame.projection) * vec4(ndc, 0.5, 1.0);
+    vec3 direction = normalize(target.xyz / target.w);
+    return normalize((inverse(pelicanFrame.view) * vec4(direction, 0.0)).xyz);
+}
+
+vec4 trace(vec3 origin, vec3 direction) {
+    hit = vec4(0.0);
+    traceRayEXT(pelicanRayTracingScene, gl_RayFlagsOpaqueEXT, 0xff, 0, 0, 0,
+                origin, RAY_MIN_DISTANCE, direction, RAY_MAX_DISTANCE, 0);
+    return hit;
+}
+
+void main() {
+    vec2 pixel = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
+    vec3 origin = (inverse(pelicanFrame.view) * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+    vec3 direction = cameraRay(pixel);
+    vec4 center = trace(origin, direction);
+    vec3 color;
+    if (center.w < 0.5) {
+        // Nothing hit: a dim sky, lighter upwards.
+        color = mix(vec3(0.04, 0.05, 0.07), vec3(0.18, 0.26, 0.36),
+                    clamp(direction.y * 0.5 + 0.5, 0.0, 1.0));
+    } else {
+        // The surface's normal: the two rays beside this one span it.
+        vec4 right = trace(origin, cameraRay(pixel + vec2(1.0, 0.0)));
+        vec4 below = trace(origin, cameraRay(pixel + vec2(0.0, 1.0)));
+        vec3 normal = -direction;
+        vec3 spanned = cross(right.xyz - center.xyz, below.xyz - center.xyz);
+        if (right.w > 0.5 && below.w > 0.5 && dot(spanned, spanned) > 1e-14)
+            normal = normalize(spanned);
+        if (dot(normal, direction) > 0.0) normal = -normal;
+        color = normal * 0.5 + 0.5;
+    }
+    imageStore(pelican_resource_color, ivec2(gl_LaunchIDEXT.xy), vec4(color, 1.0));
+}

@@ -174,6 +174,9 @@ struct InspectorWidget::Impl {
     QHash<QString, QString> component_drafts;
     QString displayed_component;
     QPushButton *confirm_add_component = nullptr;
+    // RTL-2s-c: Enable hit groups..., beside a Ray geometry that needs it.
+    QPushButton *component_enable_hit_groups = nullptr;
+    std::function<void()> enable_hit_groups_action;
     QPushButton *refresh_component_types = nullptr;
     std::optional<Json> displayed_candidates;
     std::string adding_scene;
@@ -1087,6 +1090,19 @@ struct InspectorWidget::Impl {
         layout->addWidget(component_types);
         component_description = plainLabel(owner.tr("Loading component types..."), dialog);
         layout->addWidget(component_description);
+        // RTL-2s-c (RTL-2s decision 5): a Ray geometry needs a ray layout;
+        // the way to one is the Ray layout section's Enable hit groups.
+        component_enable_hit_groups = new QPushButton(owner.tr("Enable hit groups..."), dialog);
+        component_enable_hit_groups->setObjectName(QStringLiteral("pelican.componentAddEnableHitGroups"));
+        component_enable_hit_groups->setToolTip(
+            owner.tr("Open the Ray layout section (Rendering settings), where hit groups are enabled"));
+        component_enable_hit_groups->hide();
+        layout->addWidget(component_enable_hit_groups, 0, Qt::AlignLeft);
+        QObject::connect(component_enable_hit_groups, &QPushButton::clicked, dialog, [this, dialog] {
+            if (!enable_hit_groups_action) return;
+            dialog->close();
+            enable_hit_groups_action();
+        });
         component_declaration = new QPlainTextEdit(dialog);
         component_declaration->setObjectName(QStringLiteral("pelican.componentAddDeclaration"));
         layout->addWidget(component_declaration);
@@ -1279,6 +1295,8 @@ struct InspectorWidget::Impl {
         }
         const auto &candidate = catalog->at("candidates").at(row->candidate);
         synchronizeComponentAssets(candidate, ready && row->addable);
+        component_enable_hit_groups->setVisible(!row->addable && row->key == "pelican_ray_instance" &&
+                                                static_cast<bool>(enable_hit_groups_action));
         const auto name = QString::fromStdString(candidate.at("key").get<std::string>());
         if (displayed_component != name || !component_drafts.contains(name)) {
             displayed_component = name;
@@ -2718,6 +2736,10 @@ void InspectorWidget::materialBindingsChanged() { impl_->material_assign->bindin
 
 void InspectorWidget::setRayGroupAction(std::function<void(const QString &)> action) {
     impl_->ray_group_action = std::move(action);
+}
+
+void InspectorWidget::setEnableHitGroupsAction(std::function<void()> action) {
+    impl_->enable_hit_groups_action = std::move(action);
 }
 
 void InspectorWidget::setAssignHitGroupAction(std::function<void(const QString &material)> action) {

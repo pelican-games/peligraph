@@ -15,6 +15,7 @@
 #include "graphmodule.hpp"
 #include "graphpartition.hpp"
 #include "panelhelp.hpp"
+#include "problemsmodel.hpp"
 #include "studiotheme.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -8389,11 +8390,17 @@ struct Ux2Tab {
 
     explicit Ux2Tab(bool authoring) {
         auto capability = transport.capability();
-        if (authoring)
+        if (authoring) {
             capability.requestRenderAuthoringContext = [this](QString *) {
                 transport.calls.push_back({QStringLiteral("get_render_authoring_context")});
                 return transport.next++;
             };
+            // RTL-2s-c: asked after a context that names a ray layout.
+            capability.requestRayLayout = [this](QString *) {
+                transport.calls.push_back({QStringLiteral("get_ray_layout")});
+                return transport.next++;
+            };
+        }
         widget = std::make_unique<PelicanStudio::GraphCanvasWidget>(capability);
         widget->resize(1100, 800);
         widget->show();
@@ -13150,6 +13157,402 @@ TEST_CASE("CT-6s decision 5: a ray tracing task's refusal reads as one sentence 
           "Whether the project has a ray group layout changes only when the engine restarts: restart it to "
           "apply this (pelican.ray_layout_mode_change_requires_restart@1).");
     CHECK(PelicanStudio::rayTracingRefusalDescription({}, "graph.something_else@1: no").empty());
+}
+
+// --- RTL-2s b (engine RTL-1a / RTL-1b / RTL-1c): a ray tracing task of a
+// project with a ray group layout, in the layout's terms.
+
+namespace {
+
+// Two ray types, two misses, a triangles group (the default) and a
+// procedural one, the engine's record of normals.
+Json rtl2sLayoutDocument() {
+    return Json{{"schema", "pelican.ray_group_layout"},
+                {"version", 3},
+                {"ray_types", {"primary", "shadow"}},
+                {"default_group", "mesh"},
+                {"groups", {{{"name", "mesh"}, {"type", "triangles"}}, {{"name", "ball"}, {"type", "procedural"}}}},
+                {"misses", {{{"name", "sky"}}, {{"name", "shadow"}}}},
+                {"engine_record", {"material_index", "geometry_index"}},
+                {"record", Json::array()}};
+}
+
+// get_render_authoring_context's ray_layout for it (engine RTL-1b).
+Json rtl2sAuthoring(bool layout) {
+    auto context = ux2Authoring();
+    context["ray_layout"] =
+        layout ? Json{{"mode", "layout"},
+                      {"reference", "project://passes/ray_layout.json"},
+                      {"ray_types", {"primary", "shadow"}},
+                      {"groups", {{{"name", "mesh"}, {"type", "triangles"}}, {{"name", "ball"}, {"type", "procedural"}}}},
+                      {"misses", {"sky", "shadow"}},
+                      {"default_group", "mesh"}}
+               : Json{{"mode", "none"},
+                      {"reference", nullptr},
+                      {"ray_types", Json::array()},
+                      {"groups", Json::array()},
+                      {"misses", Json::array()},
+                      {"default_group", nullptr}};
+    return context;
+}
+
+// get_ray_layout for it (engine RTL-1a / RTL-1c): the Graph's section reads
+// the names from here (RTL-2s-c), as the Ray layout section does.
+Json rtl2sRayLayout() {
+    return Json{{"source_digest", {{"algorithm", "sha256"}, {"hex", std::string(64, 'c')}}},
+                {"mode", "layout"},
+                {"layout",
+                 {{"reference", "project://passes/ray_layout.json"},
+                  {"digest", std::string(64, 'd')},
+                  {"document", rtl2sLayoutDocument()}}},
+                {"bindings", nullptr},
+                {"selectable_materials", Json::array()},
+                {"selectable_procedural_assets", Json::array()},
+                {"unresolved_bindings", Json::array()}};
+}
+
+Json rtl2sRayTracing() {
+    const std::string a = "project://shaders/a";
+    return Json{{"raygen", a},
+                {"traced_ray_types", {"primary"}},
+                {"misses", {{"sky", a}, {"shadow", a}}},
+                {"hit_shaders", {{"primary", {{"mesh", {{"closesthit", a}}}, {"ball", {{"closesthit", a}}}}}}}};
+}
+
+std::filesystem::path rtl2sProject() {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_rtl2s_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "shaders");
+    std::filesystem::create_directories(root / "passes");
+    for (const char *file : {"a.rgen", "a.rmiss", "a.rchit", "b.rchit", "s.rint", "c.rcall"})
+        std::ofstream{root / "shaders" / file} << "x";
+    std::ofstream{root / "passes" / "ray_layout.json"} << rtl2sLayoutDocument().dump(2);
+    return root;
+}
+
+} // namespace
+
+TEST_CASE("RTL-2s b decision 1: with a ray group layout a ray tracing task's fields are its raygen, a "
+          "check per ray type, a row per miss and the hit shaders' grid, each change one edit of the "
+          "layout's form; without one the generic fields pick a map's keys from the layout's names",
+          "[devstudio][graph-canvas][scene][rtl2s]") {
+    (void)application();
+    const auto root = rtl2sProject();
+    {
+        Ux2Tab tab{true};
+        tab.widget->setProjectRoot(root);
+        auto parameters = Json{{"ports", ct6sPorts()},
+                               {"ray_tracing", rtl2sRayTracing()},
+                               {"dispatch", {{"rays_from", {{"port", "color"}}}}}};
+        tab.read(ct6sDocument(parameters), "rtl2s-0");
+        tab.answer("get_graph_catalog", engineCatalog());
+        const auto pick = [&] {
+            tab.widget->scene().selectNode("trace");
+            QCoreApplication::processEvents();
+        };
+        pick();
+        tab.widget->poll();
+        REQUIRE(tab.reads("get_render_authoring_context") == 1);
+        tab.answer("get_render_authoring_context", rtl2sAuthoring(true));
+        tab.widget->poll();
+        // RTL-2s-c: the names are get_ray_layout's, asked for the layout the
+        // context names.
+        REQUIRE(tab.reads("get_ray_layout") == 1);
+        tab.answer("get_ray_layout", rtl2sRayLayout());
+        pick();
+        // The section, not the generic row.
+        CHECK(tab.field<QLabel>("pelican.graphCanvasParameters.ray_tracing.label")->isHidden());
+        CHECK(tab.field<QWidget>("pelican.graphCanvasRayTracing")->isVisible());
+        auto *raygen = tab.field<QComboBox>("pelican.graphCanvasRayTracing.raygen");
+        CHECK(raygen->currentData().toString() == QStringLiteral("project://shaders/a"));
+        CHECK(ux2Items(*raygen) == QStringList{"project://shaders/a"});
+        CHECK(tab.field<QCheckBox>("pelican.graphCanvasRayTracing.traced.primary")->isChecked());
+        CHECK_FALSE(tab.field<QCheckBox>("pelican.graphCanvasRayTracing.traced.shadow")->isChecked());
+        CHECK(tab.field<QComboBox>("pelican.graphCanvasRayTracing.miss.shadow")->currentData().toString() ==
+              QStringLiteral("project://shaders/a"));
+        // The grid: the traced row, a column per group; the procedural one has
+        // an intersection, red while it has none.
+        auto *closest = tab.field<QComboBox>("pelican.graphCanvasRayTracing.hit.primary.mesh.closesthit");
+        CHECK(ux2Items(*closest) == QStringList{"project://shaders/a", "project://shaders/b"});
+        auto *intersection = tab.field<QComboBox>("pelican.graphCanvasRayTracing.hit.primary.ball.intersection");
+        CHECK(intersection->property("pelicanInvalid").toBool());
+        CHECK(ux2Items(*intersection) == QStringList{"(choose intersection)", "project://shaders/s"});
+        CHECK(tab.widget->findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRayTracing.hit.primary.mesh."
+                                                                "intersection")) == nullptr);
+        CHECK(tab.widget->findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasRayTracing.hit.shadow.mesh."
+                                                                "closesthit")) == nullptr);
+
+        // A cell: one edit, the rest kept.
+        tab.pick(intersection, QStringLiteral("project://shaders/s"));
+        REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == 1; }));
+        auto expected = parameters;
+        expected["ray_tracing"]["hit_shaders"]["primary"]["ball"]["intersection"] = "project://shaders/s";
+        CHECK(tab.sent(1).at("parameters") == expected);
+        tab.commit(ct6sDocument(expected), "rtl2s-1");
+        pick();
+
+        // A ray type checked takes the first one's cells, so the task is whole.
+        tab.field<QCheckBox>("pelican.graphCanvasRayTracing.traced.shadow")->click();
+        REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == 2; }));
+        expected["ray_tracing"]["traced_ray_types"] = Json::array({"primary", "shadow"});
+        expected["ray_tracing"]["hit_shaders"]["shadow"] = expected["ray_tracing"]["hit_shaders"]["primary"];
+        CHECK(tab.sent(2).at("parameters") == expected);
+        tab.commit(ct6sDocument(expected), "rtl2s-2");
+        pick();
+        CHECK(tab.field<QComboBox>("pelican.graphCanvasRayTracing.hit.shadow.mesh.closesthit") != nullptr);
+
+        // New... in a cell writes that stage's shader for that place and puts
+        // it there.
+        tab.field<QPushButton>("pelican.graphCanvasRayTracing.hit.shadow.mesh.closesthit.new")->click();
+        REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == 3; }));
+        CHECK(std::filesystem::exists(root / "shaders" / "trace_shadow_mesh.rchit"));
+        expected["ray_tracing"]["hit_shaders"]["shadow"]["mesh"]["closesthit"] =
+            "project://shaders/trace_shadow_mesh";
+        CHECK(tab.sent(3).at("parameters") == expected);
+        tab.commit(ct6sDocument(expected), "rtl2s-3");
+        pick();
+        tab.field<QPushButton>("pelican.graphCanvasRayTracing.miss.shadow.new")->click();
+        REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == 4; }));
+        std::ifstream miss_file{root / "shaders" / "trace_shadow.rmiss"};
+        const std::string miss_text{std::istreambuf_iterator<char>{miss_file}, {}};
+        CHECK(miss_text.find("occluded = 0.0;") != std::string::npos);
+        expected["ray_tracing"]["misses"]["shadow"] = "project://shaders/trace_shadow";
+        CHECK(tab.sent(4).at("parameters") == expected);
+        tab.commit(ct6sDocument(expected), "rtl2s-4");
+        pick();
+
+        // A ray type unchecked loses its row.
+        tab.field<QCheckBox>("pelican.graphCanvasRayTracing.traced.shadow")->click();
+        REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == 5; }));
+        auto unchecked = expected;
+        unchecked["ray_tracing"]["traced_ray_types"] = Json::array({"primary"});
+        unchecked["ray_tracing"]["hit_shaders"].erase("shadow");
+        CHECK(tab.sent(5).at("parameters") == unchecked);
+        tab.commit(ct6sDocument(expected), "rtl2s-5");
+        pick();
+
+        // A callable: + and New... add one, in index order.
+        tab.field<QPushButton>("pelican.graphCanvasRayTracing.callable.new")->click();
+        REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == 6; }));
+        CHECK(std::filesystem::exists(root / "shaders" / "trace_callable.rcall"));
+        CHECK(tab.sent(6).at("parameters").at("ray_tracing").at("callable") == "project://shaders/trace_callable");
+        // RTL-2s-c: Callable records... waits for a callable_record schema
+        // (and a way to the records' dialog).
+        CHECK_FALSE(tab.field<QPushButton>("pelican.graphCanvasRayTracing.callableRecords")->isEnabled());
+        // RTL-2s-c: the raygen's switches read the raygen file; "a" is not
+        // one Studio wrote, so neither is offered.
+        CHECK_FALSE(tab.field<QCheckBox>("pelican.graphCanvasRayTracing.traceSecond")->isEnabled());
+        CHECK_FALSE(tab.field<QCheckBox>("pelican.graphCanvasRayTracing.callCallable")->isEnabled());
+        // Max recursion: the catalog's editor, in the section.
+        CHECK(tab.field<QDoubleSpinBox>("pelican.graphCanvasRayTracing.max_recursion")->value() == 1.0);
+    }
+    {
+        // No layout: the generic fields, one line pointing at hit groups;
+        // a map's keys are picked from the names the layout lists.
+        Ux2Tab tab{true};
+        tab.widget->setProjectRoot(root);
+        int opened = 0;
+        auto *compute = dynamic_cast<PelicanStudio::GraphCanvasComputeFields *>(
+            tab.field<QWidget>("pelican.graphCanvasCompute"));
+        REQUIRE(compute != nullptr);
+        compute->setOpenRayLayout([&] { ++opened; });
+        const std::string a = "project://shaders/a";
+        auto parameters = Json{{"ports", ct6sPorts()},
+                               {"ray_tracing", {{"raygen", a}, {"miss", a}, {"closesthit", a}}},
+                               {"dispatch", {{"rays_from", {{"port", "color"}}}}}};
+        tab.read(ct6sDocument(parameters), "rtl2s-n0");
+        tab.answer("get_graph_catalog", engineCatalog());
+        tab.widget->scene().selectNode("trace");
+        QCoreApplication::processEvents();
+        tab.widget->poll();
+        // An engine that lists names without a layout to read them from
+        // (they come with a layout): the keys' lists are the names.
+        auto context = rtl2sAuthoring(false);
+        context["ray_layout"]["misses"] = Json::array({"sky", "shadow"});
+        tab.answer("get_render_authoring_context", context);
+        tab.widget->scene().selectNode("trace");
+        QCoreApplication::processEvents();
+        CHECK_FALSE(tab.field<QLabel>("pelican.graphCanvasParameters.ray_tracing.label")->isHidden());
+        CHECK(tab.field<QLabel>("pelican.graphCanvasRayTracing.noLayout")->isVisible());
+        tab.field<QPushButton>("pelican.graphCanvasRayTracing.enableHitGroups")->click();
+        CHECK(opened == 1);
+        tab.field<QToolButton>("pelican.graphCanvasParameters.more")->click();
+        tab.field<QToolButton>("pelican.graphCanvasParameters.ray_tracing.fold")->click();
+        tab.field<QPushButton>("pelican.graphCanvasParameters.ray_tracing.misses.add")->click();
+        REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == 1; }));
+        // The first listed name no row has, not "key1".
+        CHECK(tab.sent(1).at("parameters").at("ray_tracing").at("misses") == Json{{"sky", ""}});
+        auto *key = tab.field<QComboBox>("pelican.graphCanvasParameters.ray_tracing.misses.0.key");
+        CHECK(ux2Items(*key) == QStringList{"sky", "shadow"});
+        CHECK(key->currentText() == QStringLiteral("sky"));
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+TEST_CASE("RTL-2s b decision 3: a ray tracing refusal reads as one sentence saying where, and the Graph's "
+          "section has that place red; the Problems window's row goes to the task's node",
+          "[devstudio][graph-canvas][scene][rtl2s]") {
+    (void)application();
+    using PelicanStudio::rayTracingRefusalDescription;
+    // The fields beside the code (engine RTL-1b / RTL-1c).
+    const Json missing{{"code", "pelican.ray_tracing.hit_shader_missing@1"},
+                       {"task", "trace"},
+                       {"node", "trace"},
+                       {"ray_type", "shadow"},
+                       {"group", "mesh"},
+                       {"message", "pelican.ray_tracing.hit_shader_missing@1: compute task 'trace' group='mesh' "
+                                   "ray_type='shadow' available=[]"}};
+    CHECK(rayTracingRefusalDescription(missing) ==
+          "Task trace needs a closest-hit shader for every ray type it traces and every hit group (ray type "
+          "shadow, hit group mesh) (pelican.ray_tracing.hit_shader_missing@1).");
+    // The message alone says where too.
+    CHECK(PelicanStudio::knownRefusalDescription({}, missing.at("message").get<std::string>()) ==
+          rayTracingRefusalDescription(missing));
+    // The layout's and the assignments' parsers; a rolled-back generation by
+    // its own code, not the one it quotes.
+    CHECK(rayTracingRefusalDescription(
+              Json{{"code", "pelican.procedural_group_requires_intersection@1"}, {"task", "trace"},
+                   {"ray_type", "primary"}, {"group", "ball"}, {"message", "x"}}) ==
+          "A procedural hit group needs an intersection shader and a closest-hit shader (ray type primary, hit "
+          "group ball) (pelican.procedural_group_requires_intersection@1).");
+    CHECK(PelicanStudio::knownRefusalDescription(
+              "pelican.ray_tracing.generation_rolled_back@1",
+              "pelican.ray_tracing.generation_rolled_back@1: staged authored render pipeline generation was not "
+              "published: pelican.ray_binding_record_invalid@1: record member set does not match layout")
+              .starts_with("The engine could not draw the first frame with the new ray tracing setup"));
+    CHECK(PelicanStudio::knownRefusalDescription("pelican.ray_bindings_invalid@1", "no") ==
+          "The hit group assignments are not ones the engine reads (pelican.ray_bindings_invalid@1).");
+    CHECK(rayTracingRefusalDescription(Json{{"code", "pelican.ray_group_name_unknown@1"},
+                                            {"name", "shadow"},
+                                            {"kind", "miss"},
+                                            {"message", "pelican.ray_group_name_unknown@1: miss 'shadow'"}}) ==
+          "The ray group layout has no such name (miss shadow) (pelican.ray_group_name_unknown@1).");
+
+    // The Problems window: a task of the root's graph is its node.
+    const auto row = PelicanStudio::readEngineProblem(
+        Json{{"id", "p1"}, {"severity", "error"}, {"source", "startup"},
+             {"code", "pelican.ray_tracing.hit_shader_missing@1"}, {"message", missing.at("message")},
+             {"fields", {{"task", "trace"}, {"ray_type", "shadow"}, {"group", "mesh"}}}});
+    REQUIRE(row.has_value());
+    CHECK(row->place == PelicanStudio::ProblemRow::Place::GraphNode);
+    CHECK(row->node == "trace");
+    CHECK(row->sentence.find("(ray type shadow, hit group mesh)") != std::string::npos);
+
+    // The Graph: an edit refused at commit marks the node, and the section
+    // has the cell red with the sentence.
+    const auto root = rtl2sProject();
+    {
+        Ux2Tab tab{true};
+        tab.widget->setProjectRoot(root);
+        // Shadow traced, its row whole: the red is the refusal's.
+        auto parameters = Json{{"ports", ct6sPorts()},
+                               {"ray_tracing", rtl2sRayTracing()},
+                               {"dispatch", {{"rays_from", {{"port", "color"}}}}}};
+        parameters["ray_tracing"]["traced_ray_types"] = Json::array({"primary", "shadow"});
+        parameters["ray_tracing"]["hit_shaders"]["shadow"] = parameters["ray_tracing"]["hit_shaders"]["primary"];
+        tab.read(ct6sDocument(parameters), "rtl2s-r0");
+        tab.answer("get_graph_catalog", engineCatalog());
+        tab.widget->scene().selectNode("trace");
+        QCoreApplication::processEvents();
+        tab.widget->poll();
+        tab.answer("get_render_authoring_context", rtl2sAuthoring(true));
+        tab.widget->poll();
+        tab.answer("get_ray_layout", rtl2sRayLayout());
+        tab.widget->scene().selectNode("trace");
+        QCoreApplication::processEvents();
+        tab.pick(tab.field<QComboBox>("pelican.graphCanvasRayTracing.hit.shadow.mesh.closesthit"),
+                 QStringLiteral("project://shaders/b"));
+        REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == 1; }));
+        auto refused = missing;
+        refused["participant"] = "pelican.render_pipeline";
+        refused["document"] = "passes/main_rendering_config.json";
+        tab.answer("edit_graph_document", Json{{"status", "rejected"}, {"committed", false}, {"error", refused}});
+        tab.widget->scene().selectNode("trace");
+        QCoreApplication::processEvents();
+        // The canvas's notice (elided to its width) is the sentence too.
+        CHECK(tab.field<QLabel>("pelican.graphCanvasNotice")
+                  ->text()
+                  .startsWith(QStringLiteral("Task trace needs a closest-hit shader")));
+        auto *problem = tab.field<QLabel>("pelican.graphCanvasRayTracing.problem");
+        CHECK(problem->isVisible());
+        CHECK(problem->text().contains(QStringLiteral("(ray type shadow, hit group mesh)")));
+        auto *cell = tab.field<QComboBox>("pelican.graphCanvasRayTracing.hit.shadow.mesh.closesthit");
+        CHECK(cell->property("pelicanInvalid").toBool());
+        CHECK_FALSE(tab.field<QComboBox>("pelican.graphCanvasRayTracing.hit.primary.mesh.closesthit")
+                        ->property("pelicanInvalid")
+                        .toBool());
+    }
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+TEST_CASE("RTL-2s b decision 2: New... in a project with a ray group layout writes the layout's form -- "
+          "the generated header, its ray type and miss by name, the payload of the ray type a place "
+          "is for, the normal from the engine's tables, a sphere for an intersection",
+          "[devstudio][graph-canvas][scene][rtl2s]") {
+    using PelicanStudio::RayLayoutTemplatePlace;
+    using PelicanStudio::RayLayoutTemplateStage;
+    const auto layout = PelicanStudio::rayLayoutTemplateNamesFromDocument(rtl2sLayoutDocument());
+    REQUIRE(layout.has_value());
+    const auto source = [&](RayLayoutTemplateStage stage, std::string ray_type, std::string group, std::string miss) {
+        return PelicanStudio::rayLayoutShaderTemplate(*layout, RayLayoutTemplatePlace{stage, ray_type, group, miss},
+                                                      "t");
+    };
+    const auto raygen = source(RayLayoutTemplateStage::raygen, {}, {}, {});
+    for (const char *part : {"#include \"__pelican_ray_group_layout.glsl\"", "PELICAN_RAY_TYPE_primary",
+                             "pelican_ray_type_count", "PELICAN_MISS_sky", "#define TRACE_SECOND_RAY_TYPE 0",
+                             "PELICAN_RAY_TYPE_shadow", "PELICAN_MISS_shadow", "#define CALL_CALLABLE_0 0",
+                             "executeCallableEXT(0, 0)", "pelican_resource_color"})
+        CHECK(raygen.find(part) != std::string::npos);
+    // The layout's header before anything it might need to come first.
+    CHECK(raygen.find("__pelican_ray_group_layout.glsl") < raygen.find("pelican_sets.glsl"));
+    const auto closest = source(RayLayoutTemplateStage::closest_hit, "primary", "mesh", {});
+    CHECK(closest.find("pelicanRayFetchNormal(record.geometry_index") != std::string::npos);
+    CHECK(closest.find("PELICAN_RAY_ENGINE_RECORD_MEMBERS") != std::string::npos);
+    CHECK(closest.find("rayPayloadInEXT vec4 hit") != std::string::npos);
+    CHECK(closest.find("const vec3 GROUP_TINT = vec3(1.0);") != std::string::npos);
+    // Another group reads apart; a later ray type's says it is occluded.
+    CHECK(source(RayLayoutTemplateStage::closest_hit, "primary", "ball", {}).find("GROUP_TINT = vec3(1.0)") ==
+          std::string::npos);
+    const auto shadow = source(RayLayoutTemplateStage::closest_hit, "shadow", "mesh", {});
+    CHECK(shadow.find("layout(location = 1) rayPayloadInEXT float occluded;") != std::string::npos);
+    CHECK(shadow.find("occluded = 1.0;") != std::string::npos);
+    CHECK(source(RayLayoutTemplateStage::miss, {}, {}, "sky").find("hit = vec4(0.0);") != std::string::npos);
+    CHECK(source(RayLayoutTemplateStage::intersection, {}, "ball", {}).find("reportIntersectionEXT") !=
+          std::string::npos);
+    CHECK(source(RayLayoutTemplateStage::any_hit, "primary", "mesh", {}).find("ignoreIntersectionEXT") !=
+          std::string::npos);
+    CHECK(source(RayLayoutTemplateStage::callable, {}, {}, {}).find("callableDataInEXT vec4 callable_color") !=
+          std::string::npos);
+    // Without the engine's record: the position it hit, no shader record.
+    auto plain = *layout;
+    plain.engine_record.clear();
+    const auto position = PelicanStudio::rayLayoutShaderTemplate(
+        plain, RayLayoutTemplatePlace{RayLayoutTemplateStage::closest_hit, "primary", "mesh", {}}, "t");
+    CHECK(position.find("pelicanRayFetchNormal") == std::string::npos);
+    CHECK(position.find("shaderRecordEXT") == std::string::npos);
+
+    // Written only when the file is not there; the set fills every cell.
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_rtl2s_t_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    CHECK(PelicanStudio::rayLayoutTemplateName(root, RayLayoutTemplateStage::closest_hit, "x") == "x");
+    CHECK(PelicanStudio::writeRayLayoutTemplate(root, "x", *layout,
+                                                {RayLayoutTemplateStage::closest_hit, "primary", "mesh", {}})
+              .created);
+    CHECK_FALSE(PelicanStudio::writeRayLayoutTemplate(root, "x", *layout,
+                                                      {RayLayoutTemplateStage::closest_hit, "primary", "mesh", {}})
+                    .created);
+    CHECK(PelicanStudio::rayLayoutTemplateName(root, RayLayoutTemplateStage::closest_hit, "x") == "x_2");
+    CHECK(PelicanStudio::rayLayoutTemplateName(root, RayLayoutTemplateStage::miss, "x") == "x");
+    const auto set = PelicanStudio::writeRayTracingTemplate(root, "set", *layout);
+    CHECK(set.created);
+    for (const char *file : {"set.rgen", "set.rmiss", "set.rchit", "set.rint"})
+        CHECK(std::filesystem::exists(root / "shaders" / file));
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
 }
 
 // --- GL-5e: what was left only on the Frame Plan, on the Graph.

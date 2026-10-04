@@ -642,6 +642,14 @@ void MainWindow::createWorkspace() {
                 QStringLiteral("pelican.renderFeatures.sceneAccelerationStructures")))
             open->click();
     });
+    // RTL-2s-c: a task's refusal of the section's edit marks the Graph's
+    // cell; the shaders an edit rewrites ride on its render history entry.
+    ray_layout_->setRefusalAction([this](const nlohmann::json &error, const std::string &sentence) {
+        if (graph_canvas_ != nullptr) graph_canvas_->model().markRayTracingRefusal(error, sentence);
+    });
+    ray_layout_->setShaderHistoryAction([this](std::vector<RenderEditHistory::FileChange> files) {
+        if (render_history_) render_history_->attachFiles(std::move(files));
+    });
     docks_[FramePlanDock] = makeDock(
         this, tr("Frame Plan"), QStringLiteral("pelican.framePlanDock"),
         withRenderBanner(render_tabs, QStringLiteral("renderTools")));
@@ -892,6 +900,14 @@ void MainWindow::createWorkspace() {
         docks_[FramePlanDock]->raise();
         render_tabs->setCurrentWidget(rendering_settings_);
         ray_layout_->revealMaterial(material);
+    });
+    // RTL-2s-c (RTL-2s decision 5): Add component's Ray geometry without a
+    // ray layout opens the section that enables one.
+    inspector_->setEnableHitGroupsAction([this, render_tabs] {
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        render_tabs->setCurrentWidget(rendering_settings_);
+        ray_layout_->revealEnable();
     });
     // GL-5d, decisions 1 and 2: the Graph's Order… / Fix sockets / Make
     // sockets variadic are the Frame Plan's own, which reads the plan and the
@@ -1533,6 +1549,15 @@ void MainWindow::createRenderReload() {
         if (render_reload_) render_reload_->reloadNow();
     });
     graph_canvas_->setReloadFromDiskAction(reload_from_disk_action_);
+    // RTL-2s b: a ray tracing task's Enable hit groups… opens the Rendering
+    // settings, where the Ray layout is (RTL-2s a).
+    graph_canvas_->setOpenRayLayout([this] { (void)showRenderToolsTab(QStringLiteral("rendering_settings")); });
+    // RTL-2s-c: and its Callable records... the Render Features' Records dialog.
+    graph_canvas_->setOpenCallableRecords([this] {
+        if (auto *open = render_features_->findChild<QPushButton *>(
+                QStringLiteral("pelican.renderFeatures.callableRecords")))
+            open->click();
+    });
 }
 
 void MainWindow::showProblems() {
@@ -1552,6 +1577,15 @@ void MainWindow::openProblem(const ProblemRow &row) {
         if (graph_canvas_ == nullptr || !showRenderToolsTab(QStringLiteral("graph"))) return;
         const QString node = text(row.node);
         const QString scope = row.definition.empty() ? QStringLiteral("root") : text(row.definition);
+        // RTL-2s b, decision 3: a ray tracing task's refusal is marked on
+        // its node, the place its fields name red in its fields.
+        if (row.definition.empty() && !rayTracingRefusalDescription(nlohmann::json{{"code", row.code}}).empty()) {
+            auto error = row.fields.is_object() ? row.fields : nlohmann::json::object();
+            error["code"] = row.code;
+            error["message"] = row.message;
+            if (!error.contains("task")) error["task"] = row.node;
+            graph_canvas_->model().markRayTracingRefusal(error, row.sentence);
+        }
         if (graph_canvas_->canRevealGraphNode(scope, node)) {
             (void)graph_canvas_->revealGraphNode(scope, node, {});
             return;

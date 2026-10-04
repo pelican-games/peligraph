@@ -2,6 +2,7 @@
 
 #include "frameplanmodel.hpp"
 #include "inspectormodel.hpp"
+#include "raylayoutmodel.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -1009,6 +1010,9 @@ class GraphCanvasModel {
         EngineShaders,
         // PS-1s, decision 4: rerun_once {node?}.
         RerunOnce,
+        // RTL-2s-c: get_ray_layout, read after a context that names a ray
+        // layout (the Ray tracing section's names and the templates').
+        RayLayout,
     };
     struct PendingRequest {
         std::uint64_t id = 0;
@@ -1294,6 +1298,9 @@ class GraphCanvasModel {
     nlohmann::json render_authoring_ = nlohmann::json::object();
     std::uint64_t authoring_revision_ = 0;
     void requestRenderAuthoring();
+    // RTL-2s-c: get_ray_layout as it last arrived; nullopt while unknown.
+    std::optional<RayLayoutRead> ray_layout_read_;
+    void takeRenderAuthoring(nlohmann::json context);
     // UX-2: the context was asked for once for its render_target_vocabulary
     // (askRenderTargetVocabulary), on this connection.
     bool vocabulary_asked_ = false;
@@ -2204,6 +2211,14 @@ class GraphCanvasModel {
         return render_authoring_;
     }
     [[nodiscard]] std::uint64_t authoringRevision() const noexcept { return authoring_revision_; }
+    // RTL-2s-c: the project's ray group layout as get_ray_layout answers it
+    // (parseRayLayoutRead, the Ray layout section's reading): asked after a
+    // context whose ray_layout names a document, a read without a layout
+    // when it names none, nullopt until either (or from an engine without
+    // ray layouts). Moves the authoring revision when it arrives.
+    [[nodiscard]] const std::optional<RayLayoutRead> &rayLayoutRead() const noexcept {
+        return ray_layout_read_;
+    }
     // GL-5a, decision 1: whether the context lists `pass` of the plan's graph
     // as one the root's rendering section declares (editable_root_pass).
     [[nodiscard]] bool renderingSectionPass(std::string_view pass) const;
@@ -2920,6 +2935,11 @@ class GraphCanvasModel {
     [[nodiscard]] const std::optional<GraphCanvasParameterRefusal> &parameterRefusal() const noexcept {
         return parameter_refusal_;
     }
+    // RTL-2s, decision 3: a ray tracing refusal met elsewhere (the Problems
+    // window's row, the Ray layout's edit) marked as an edit's own is: the
+    // node its task names (`node`, else `task`) in the root, and
+    // parameterRefusal() at the ray type / group / miss its fields name.
+    void markRayTracingRefusal(const nlohmann::json &error, const std::string &sentence);
 };
 
 // UX-8, decision 9: sound files copied into a project's assets/audio. Each

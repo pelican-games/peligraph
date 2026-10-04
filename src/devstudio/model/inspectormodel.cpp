@@ -742,8 +742,10 @@ constexpr std::array<UnavailableComponentText, 8> UnavailableComponentTexts{{
     {"seqplayer.module_unavailable@1", "This build has no sequence player module", NotInThisBuild},
     // MG-2a: ray group layouts are v3 only. The code keeps its old name; what
     // it means now is that the project declares no ray group layout at all.
-    {"pelican.ray_instance_requires_layout_v2@1", "This project has no ray group layout",
-     "needs a ray layout"},
+    // RTL-2s b, decision 5: the way to one is Enable hit groups.
+    {"pelican.ray_instance_requires_layout_v2@1",
+     "No ray group layout: enable hit groups first",
+     "needs hit groups"},
     // AU-2: a sound plays only when its extension and its first bytes both
     // say WAV, or both say Ogg Vorbis.
     {"audio.format_unsupported@1", "Sound extension and contents disagree (WAV or Ogg Vorbis)",
@@ -797,6 +799,77 @@ struct RayTracingRefusalText {
     std::string_view sentence;
     std::string_view quoted;
 };
+// RTL-2s, decision 3 (engine RTL-1a / RTL-1b): the rest of the task
+// parser's codes, and the layout's and the assignments' parsers'.
+constexpr RayTracingRefusalText RayLayoutRefusalTexts[] = {
+    {"pelican.ray_tracing.generation_rolled_back@1",
+     "The engine could not draw the first frame with the new ray tracing setup and kept the one before", ""},
+    {"pelican.ray_tracing.shader_record_abi_mismatch@1",
+     "Shader {name}'s shader record does not match the ray group layout's: every hit shader of a traced ray "
+     "type declares the engine's fields (engine_record), then the layout's record, in order",
+     "shader '"},
+    {"pelican.ray_tracing.payload_mismatch@1",
+     "A ray's payload is not the payload its miss or its hit group's shaders take (a ray type's shaders share "
+     "one payload type)",
+     ""},
+    {"pelican.ray_tracing.ray_hit_group_invalid@1",
+     "{task}'s hit shaders do not fit the hit group's type: a triangles group takes a closest hit and an any "
+     "hit, a procedural one an intersection too",
+     ""},
+    {"pelican.ray_group_type_declared_in_task@1",
+     "A hit group's type (triangles or procedural) is the ray group layout's: a task names only its shaders",
+     ""},
+    {"pelican.procedural_group_requires_intersection@1",
+     "A procedural hit group needs an intersection shader and a closest-hit shader", ""},
+    {"pelican.ray_profile_authored_anyhit@1",
+     "The layout's material alpha profile makes the any-hit shader itself: {task} cannot name one", ""},
+    {"pelican.ray_group_name_unknown@1", "The ray group layout has no such name", ""},
+    {"pelican.ray_tracing.layout_shader_invalid@1", "{task}'s ray tracing places must each name a shader", ""},
+    {"pelican.ray_tracing.layout_source_only@1",
+     "With a ray group layout, {task}'s shaders are GLSL sources the engine compiles, not SPIR-V", ""},
+    {"pelican.ray_tracing.callable_records_invalid@1",
+     "{task} needs callable, callable_record and callable_records together, one record per callable", ""},
+    {"pelican.ray_tracing.invalid_pipeline_declaration@1",
+     "{task}'s ray_tracing is not a ray tracing pipeline the engine reads", ""},
+    {"pelican.ray_tracing.ambiguous_pipeline_declaration@1",
+     "{task} names a shader and a ray tracing pipeline both: it runs one of them", ""},
+    {"pelican.ray_tracing.layout_requires_runtime_compiler@1",
+     "A ray group layout needs the engine's runtime shader compiler, which this build does not have", ""},
+    {"pelican.ray_tracing.bindings_without_layout@1",
+     "Hit group assignments need a ray group layout: the root names assignments and no layout", ""},
+    {"pelican.ray_group_layout.version_unsupported@1",
+     "The ray group layout's version is not one this engine reads", ""},
+    {"pelican.ray_group_layout_invalid@1", "The ray group layout is not one the engine reads", ""},
+    {"pelican.ray_record_name_reserved@1", "A record field of the ray group layout has a name the engine keeps", ""},
+    {"pelican.ray_record_type_unsupported@1",
+     "A record field of the ray group layout has a type other than i32, u32, f32, vec2, vec3 or vec4", ""},
+    {"pelican.ray_engine_record_unknown@1",
+     "The layout's engine_record names a field the engine does not have (material_index, geometry_index, "
+     "geometry_kind, procedural_transform)",
+     ""},
+    {"pelican.ray_engine_record_duplicate@1", "The layout's engine_record names a field twice", ""},
+    {"pelican.ray_layout_destination_exists@1",
+     "A file is already where the ray layout's document would be written, and the root does not name it", ""},
+    {"pelican.ray_bindings.version_unsupported@1",
+     "The hit group assignments' version is not one this engine reads", ""},
+    {"pelican.ray_binding_record_invalid@1",
+     "A hit group assignment's record (or a procedural asset's) does not have exactly the layout's record fields",
+     ""},
+    {"pelican.ray_binding_selector_exactly_one@1",
+     "A hit group assignment selects a material or a procedural asset, exactly one", ""},
+    {"pelican.ray_binding_selector_duplicate@1", "Two hit group assignments select the same material", ""},
+    {"pelican.ray_row_binding_ambiguous@1",
+     "Objects of one material are assigned to different hit groups or records", ""},
+    {"pelican.procedural_selector_duplicate@1", "A procedural asset is assigned to a hit group twice", ""},
+    {"pelican.procedural_binding_record_forbidden@1",
+     "A procedural asset's record is the asset's own, not its assignment's", ""},
+    {"pelican.procedural_group_unresolved@1",
+     "A procedural object has no procedural hit group: assign its asset to one", ""},
+    {"pelican.procedural_group_kind_conflict@1",
+     "A procedural asset is assigned to a hit group that is not procedural", ""},
+    {"pelican.ray_bindings_invalid@1", "The hit group assignments are not ones the engine reads", ""},
+};
+
 constexpr std::array<RayTracingRefusalText, 16> RayTracingRefusalTexts{{
     {"pelican.ray_layout_mode_change_requires_restart@1",
      "Whether the project has a ray group layout changes only when the engine restarts: restart "
@@ -851,17 +924,84 @@ std::string quotedAfter(std::string_view message, std::string_view marker) {
 
 } // namespace
 
+namespace {
+std::string rayTracingRefusalSentence(const RayTracingRefusalText &found, std::string_view message,
+                                      const nlohmann::json &error);
+} // namespace
+
 std::string rayTracingRefusalDescription(std::string_view code, std::string_view message) {
+    return rayTracingRefusalDescription(nlohmann::json{{"code", std::string{code}}, {"message", std::string{message}}});
+}
+
+std::string rayTracingRefusalDescription(const nlohmann::json &error) {
+    const auto code_text = error.is_object() ? error.value("code", std::string{}) : std::string{};
+    const auto message_text = error.is_object() ? error.value("message", std::string{}) : std::string{};
+    const std::string_view code = code_text;
+    const std::string_view message = message_text;
     const RayTracingRefusalText *entry = nullptr;
-    for (const auto &candidate : RayTracingRefusalTexts)
-        if (code == candidate.code || message.find(candidate.code) != std::string_view::npos) {
-            entry = &candidate;
-            break;
-        }
+    // RTL-2s: the refusal's own code first (a rolled-back generation quotes
+    // the code that rolled it back), then a code its message carries.
+    const auto find = [&](auto matches) {
+        for (const auto &candidate : RayLayoutRefusalTexts)
+            if (matches(candidate)) return &candidate;
+        for (const auto &candidate : RayTracingRefusalTexts)
+            if (matches(candidate)) return &candidate;
+        return static_cast<const RayTracingRefusalText *>(nullptr);
+    };
+    entry = find([&](const RayTracingRefusalText &candidate) { return code == candidate.code; });
+    if (entry == nullptr)
+        entry = find([&](const RayTracingRefusalText &candidate) {
+            return message.find(candidate.code) != std::string_view::npos;
+        });
     if (entry == nullptr) return {};
-    // The parser's own message, from its code on: the task and what it quotes.
+    // RTL-2s, decision 3 (engine RTL-1b): where, from the refusal's fields
+    // (beside its code), else from what the parser's message quotes.
+    const auto field = [&](const char *key, std::string_view marker) {
+        auto value = error.is_object() && error.contains(key) && error.at(key).is_string()
+                         ? error.at(key).get<std::string>()
+                         : std::string{};
+        if (value.empty() && !marker.empty()) {
+            const auto own = message.substr(std::min(message.size(), message.find(entry->code)));
+            value = quotedAfter(own, marker);
+        }
+        return value == "<all>" ? std::string{} : value;
+    };
+    std::vector<std::string> where;
+    if (const auto ray_type = field("ray_type", "ray_type='"); !ray_type.empty())
+        where.push_back("ray type " + ray_type);
+    if (const auto group = field("group", "group='"); !group.empty()) where.push_back("hit group " + group);
+    if (const auto miss = field("miss", "miss='"); !miss.empty()) where.push_back("miss " + miss);
+    if (const auto stage = field("stage", {}); !stage.empty()) where.push_back("stage " + stage);
+    if (entry->code == "pelican.ray_group_name_unknown@1")
+        if (const auto name = field("name", {}); !name.empty()) {
+            const auto kind = field("kind", {});
+            where.push_back((kind == "ray_type" ? std::string{"ray type"} : kind == "group" ? "hit group" : kind) +
+                            " " + name);
+        }
+    auto described = rayTracingRefusalSentence(*entry, message, error);
+    std::string at;
+    for (const auto &part : where) {
+        // A name the sentence already says is not said again.
+        const auto value = part.substr(part.rfind(' ') + 1);
+        if (described.find(value) != std::string::npos) continue;
+        at += (at.empty() ? "" : ", ") + part;
+    }
+    if (!at.empty()) described += " (" + at + ")";
+    return described + " (" + std::string{entry->code} + ").";
+}
+
+namespace {
+
+std::string rayTracingRefusalSentence(const RayTracingRefusalText &found, std::string_view message,
+                                      const nlohmann::json &error) {
+    const auto *entry = &found;
+    // The parser's own message, from its code on: the task and what it quotes
+    // (RTL-2s: the task the refusal's fields name, when it has them).
     const auto own = message.substr(std::min(message.size(), message.find(entry->code)));
-    const auto task = quotedAfter(own, "task '");
+    auto task = error.is_object() && error.contains("task") && error.at("task").is_string()
+                    ? error.at("task").get<std::string>()
+                    : std::string{};
+    if (task.empty()) task = quotedAfter(own, "task '");
     const auto name = quotedAfter(own, entry->quoted);
     std::string pattern{entry->sentence};
     // A layout's fields where the project has none: the other form.
@@ -885,8 +1025,10 @@ std::string rayTracingRefusalDescription(std::string_view code, std::string_view
             sentence += name.empty() ? "?" : name;
         at = close + 1;
     }
-    return sentence + " (" + std::string{entry->code} + ").";
+    return sentence;
 }
+
+} // namespace
 
 std::string knownRefusalDescription(std::string_view code, std::string_view message,
                                     bool name_document) {

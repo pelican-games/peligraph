@@ -76,6 +76,18 @@ class RenderEditHistory {
         std::optional<std::string> content;
     };
 
+    // RTL-2s-c: a file an edit rewrote beside its documents -- a shader the
+    // Ray layout section rewrote with a rename (PELICAN_RAY_TYPE_*), its
+    // record block with a record field. Undo writes `before` back (removes
+    // the file when there was none), Redo writes `after`, each just before
+    // the restore is sent, so the commit compiles the shaders it goes with;
+    // a refused restore writes the other side back.
+    struct FileChange {
+        std::string path;
+        std::optional<std::string> before;
+        std::string after;
+    };
+
     // One item of the history, as the UI names it.
     struct Entry {
         std::string label;
@@ -95,6 +107,8 @@ class RenderEditHistory {
         bool restart_required = false;
         // Names the entry for the read that follows the edit's commit.
         std::uint64_t serial = 0;
+        // RTL-2s-c: the files the edit rewrote beside its documents.
+        std::vector<FileChange> files;
     };
 
     explicit RenderEditHistory(Transport transport);
@@ -139,6 +153,12 @@ class RenderEditHistory {
     // sent). The history's own requests pass here too and are ignored.
     void beforeRequest(const std::string &method, const Json &params);
     void requestSent(std::int64_t id, const std::string &method, const Json &params);
+
+    // RTL-2s-c: the files the next request rewrote beside its documents,
+    // handed over right before it is sent. The next beforeRequest takes
+    // them -- into its entry when the history records that request, and
+    // drops them otherwise.
+    void attachFiles(std::vector<FileChange> files) { next_files_ = std::move(files); }
 
     // Whether a reply under `id` is one the history is waiting for.
     [[nodiscard]] bool waitingFor(std::int64_t id) const noexcept;
@@ -192,6 +212,8 @@ class RenderEditHistory {
         std::int64_t edit_request = 0;
         std::string ticket;
         std::int64_t poll_request = 0;
+        // RTL-2s-c: attachFiles's, for the entry.
+        std::vector<FileChange> files;
     };
     // The read of what an edit's commit wrote, for decision 3.
     struct AfterRead {
@@ -226,6 +248,10 @@ class RenderEditHistory {
     bool own_request_ = false;
     // Bumped by clear / abandon: a scheduled poll from before is stale.
     std::uint64_t epoch_ = 0;
+    // RTL-2s-c: attachFiles's, until the next beforeRequest.
+    std::vector<FileChange> next_files_;
+    // Writes an entry's files as Undo (`undoing`) or Redo leaves them.
+    static void writeFiles(const Entry &entry, bool undoing);
 
     std::int64_t send(const std::string &method, const Json &params, std::string *error);
     void notify();

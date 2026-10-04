@@ -544,6 +544,23 @@ struct FramePlanWidget::Impl {
     static constexpr int max_unpublished_plan_retries = 40;
     static constexpr int unpublished_plan_retry_ms = 250;
     qint64 pending_gpu_timing_request = 0;
+    // RTL-2s b, decision 4: the SBT table -- which hit group each object's
+    // geometry lands in, and its record (get_ray_occurrences per object of
+    // scene_tree). Asked again when the ray-query scene's shape moves.
+    struct SbtRow {
+        std::string object;
+        std::string group;
+        std::string source;
+        std::string record;
+    };
+    qint64 pending_sbt_tree = 0;
+    std::map<qint64, std::string> pending_sbt_objects;
+    std::vector<SbtRow> sbt_collected;
+    std::vector<SbtRow> sbt_rows;
+    std::string sbt_asked_for;
+    bool sbt_known = false;
+    // RTL-2s-c: objects past the first 64 the table did not ask about.
+    std::size_t sbt_not_asked = 0;
     // Half of what gates the GPU timing clock: whether the engine still has
     // anything to report. The other half is whether anyone is looking at the
     // panel, and either can change without the other.
@@ -3798,8 +3815,83 @@ struct FramePlanWidget::Impl {
         }
     }
 
+    // RTL-2s b, decision 4.
+    void requestSbtTable(const std::string &shape) {
+        if (pending_sbt_tree != 0 || !pending_sbt_objects.empty() || shape == sbt_asked_for ||
+            !viewport.rpcReady())
+            return;
+        sbt_asked_for = shape;
+        pending_sbt_tree = viewport.requestRpc(QStringLiteral("scene_tree"), QJsonObject{}, nullptr);
+    }
+
+    bool receiveSbt(qint64 request_id, const QByteArray &result_json) {
+        if (request_id == 0) return false;
+        const auto reply = nlohmann::json::parse(result_json.toStdString(), nullptr, false);
+        if (request_id == pending_sbt_tree) {
+            pending_sbt_tree = 0;
+            sbt_collected.clear();
+            sbt_not_asked = 0;
+            const auto objects = reply.is_object() ? reply.value("objects", nlohmann::json::array())
+                                                   : nlohmann::json::array();
+            for (const auto &object : objects) {
+                if (!object.is_object() || !object.contains("name") || !object.at("name").is_string()) continue;
+                // get_ray_occurrences answers one object; past 64 the table
+                // says how many it left out rather than asking hundreds.
+                if (pending_sbt_objects.size() >= 64) {
+                    ++sbt_not_asked;
+                    continue;
+                }
+                const auto name = object.at("name").get<std::string>();
+                const auto id = viewport.requestRpc(QStringLiteral("get_ray_occurrences"),
+                                                    QJsonObject{{QStringLiteral("name"), text(name)}}, nullptr);
+                if (id != 0) pending_sbt_objects.emplace(id, name);
+            }
+            if (pending_sbt_objects.empty()) finishSbt();
+            return true;
+        }
+        const auto found = pending_sbt_objects.find(request_id);
+        if (found == pending_sbt_objects.end()) return false;
+        const auto object = found->second;
+        pending_sbt_objects.erase(found);
+        const auto entries = reply.is_object() ? reply.value("entries", nlohmann::json::array())
+                                               : nlohmann::json::array();
+        for (const auto &entry : entries) {
+            const auto binding = entry.is_object() ? entry.value("binding", nlohmann::json{}) : nlohmann::json{};
+            if (!binding.is_object()) continue;
+            SbtRow row{object, binding.value("group_name", std::string{}), binding.value("group_source", std::string{}),
+                       {}};
+            const auto fields = binding.value("record_fields", nlohmann::json{});
+            if (fields.is_array()) {
+                for (const auto &field : fields) {
+                    if (!row.record.empty()) row.record += ", ";
+                    row.record += field.is_object() && field.contains("name")
+                                      ? field.value("name", std::string{}) + "=" +
+                                            field.value("value", nlohmann::json{}).dump()
+                                      : field.dump();
+                }
+            } else if (fields.is_object()) {
+                for (const auto &[name, value] : fields.items())
+                    row.record += (row.record.empty() ? "" : ", ") + name + "=" + value.dump();
+            }
+            sbt_collected.push_back(std::move(row));
+        }
+        if (pending_sbt_objects.empty()) finishSbt();
+        return true;
+    }
+
+    void finishSbt() {
+        sbt_rows = std::move(sbt_collected);
+        sbt_collected.clear();
+        sbt_known = true;
+        if (model) {
+            physical->clear();
+            populatePhysicalPlan();
+        }
+    }
+
     void receiveRpcResult(qint64 request_id, const QByteArray &result_json) {
         if (reload_follower->receive(request_id, result_json)) return;
+        if (receiveSbt(request_id, result_json)) return;
         if (request_id == pending_gpu_timing_request) {
             pending_gpu_timing_request = 0;
             consumeGpuTimingResult(result_json);
@@ -3921,6 +4013,16 @@ struct FramePlanWidget::Impl {
 
     void receiveFailure(qint64 request_id, const QString &message) {
         if (reload_follower->fail(request_id, message)) return;
+        // RTL-2s b, decision 4: an object the engine could not answer for is
+        // left out of the SBT table.
+        if (request_id != 0 && request_id == pending_sbt_tree) {
+            pending_sbt_tree = 0;
+            return;
+        }
+        if (pending_sbt_objects.erase(request_id) > 0) {
+            if (pending_sbt_objects.empty()) finishSbt();
+            return;
+        }
         if (request_id == pending_gpu_timing_request) {
             pending_gpu_timing_request = 0;
             logical_scene->setGpuTiming(FramePlanGpuTimingSnapshot{
@@ -5002,6 +5104,56 @@ struct FramePlanWidget::Impl {
             item->setText(3, owner.tr("%1 geometries, flags 0x%2")
                                  .arg(static_cast<qulonglong>(key.geometry_count))
                                  .arg(static_cast<qulonglong>(key.geometry_flags), 0, 16));
+        }
+        // RTL-2s b, decision 4: which hit group each object's geometry lands
+        // in (the SBT's rows), and its record; a row no assignment picked is
+        // in the layout's default group.
+        requestSbtTable(std::to_string(scene.tlas_instance_count) + "|" +
+                        std::to_string(scene.resident_blas_keys.size()) + "|" +
+                        std::to_string(scene.active_blas_count));
+        if (sbt_known) {
+            auto *sbt = groupItem(group, owner.tr("Hit groups (SBT)"), sbt_rows.size());
+            sbt->setToolTip(1, owner.tr("Each object's geometry, the hit group its rays reach and the "
+                                        "record that group reads (get_ray_occurrences)."));
+            for (const auto &row : sbt_rows) {
+                auto *item = new QTreeWidgetItem(sbt);
+                item->setText(0, text(row.object));
+                item->setText(1, row.source == "layout_default"
+                                     ? owner.tr("%1 (default group, no assignment)").arg(text(row.group))
+                                     : text(row.group));
+                item->setText(2, row.record.empty() ? owner.tr("no record") : text(row.record));
+                // RTL-2s-c: the columns are narrow; the whole line on hover.
+                for (int column = 0; column < 3; ++column) item->setToolTip(column, item->text(column));
+            }
+            if (sbt_not_asked > 0) {
+                auto *more = new QTreeWidgetItem(sbt);
+                more->setText(0, owner.tr("%1 more objects").arg(static_cast<qulonglong>(sbt_not_asked)));
+                more->setText(1, owner.tr("not listed: the table asks the first 64 objects, one request each"));
+            }
+            // RTL-2s-c: open, so the rows are what a person sees first.
+            sbt->setExpanded(true);
+        }
+        // RTL-2s b, decision 4 (engine RTL-1b): each named TLAS's own BLAS,
+        // and what the scene kept out.
+        for (const auto &[name, listed] : scene.named_tlas_blas) {
+            auto *named = groupItem(group, owner.tr("TLAS %1: BLAS").arg(text(name)), listed.size());
+            for (const auto &key : listed) {
+                auto *item = new QTreeWidgetItem(named);
+                item->setText(0, text(key.geometry_kind));
+                item->setText(1, owner.tr("allocation %1")
+                                     .arg(static_cast<qulonglong>(key.geometry_allocation_id)));
+                item->setText(2, owner.tr("%1 geometries, flags 0x%2")
+                                     .arg(static_cast<qulonglong>(key.geometry_count))
+                                     .arg(static_cast<qulonglong>(key.geometry_flags), 0, 16));
+            }
+        }
+        if (!scene.excluded_counts.empty() || !scene.excluded_names.empty()) {
+            auto *excluded = groupItem(group, owner.tr("Excluded"), scene.excluded_counts.size());
+            excluded->setToolTip(1, owner.tr("Kept out of the acceleration structures: skinned, morphed or "
+                                             "VAT geometry, and what a BLAS cannot hold."));
+            for (const auto &[reason, count] : scene.excluded_counts)
+                addFact(excluded, text(reason), QString::number(static_cast<qulonglong>(count)));
+            for (const auto &name : scene.excluded_names) addFact(excluded, owner.tr("object"), text(name));
         }
         group->setExpanded(true);
     }

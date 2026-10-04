@@ -1,5 +1,7 @@
 #pragma once
 
+#include "raylayouttemplate.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <array>
@@ -182,23 +184,45 @@ struct RayShaderWrite {
     std::optional<std::string> previous;
 };
 
-// The starting set in the layout's form (RTL-2s keeps a minimal copy here
-// until the Graph tab's templates (b) are merged; then these come from
-// fullscreenshadertemplate's). The raygen traces `ray_type` with `miss`
-// through the generated header; the colour is the payload's rgb.
-[[nodiscard]] std::string rayLayoutRaygenTemplate(std::string_view name, std::string_view ray_type,
-                                                  std::string_view miss);
-[[nodiscard]] std::string rayLayoutMissTemplate(std::string_view name);
-// The closest hit of a group: the surface's normal as a colour (through the
-// engine record's pelicanRayFetchNormal when the layout has one), tinted by
-// the group's `tint` (white for none).
-[[nodiscard]] std::string rayLayoutClosestHitTemplate(std::string_view name, bool engine_record,
-                                                      const std::array<double, 3> &tint);
-// A procedural group's intersection: a sphere of radius 0.5 about the
-// geometry's origin.
-[[nodiscard]] std::string rayLayoutIntersectionTemplate(std::string_view name);
-// The tint a new group's closest hit takes, by how many groups there are.
-[[nodiscard]] std::array<double, 3> rayGroupTint(std::size_t index);
+// RTL-2s-c: the templates are raylayouttemplate's -- the Graph tab's New...
+// and this model's plans write the same ones. The names a layout document
+// gives them (an empty set for anything that is not a layout).
+[[nodiscard]] RayLayoutTemplateNames rayLayoutTemplateNames(const RayJson &layout);
+
+// RTL-2s-c: the one rule that puts a task's ray tracing in the layout's form,
+// for Enable hit groups and for a task the Graph's palette places. `legacy`'s
+// raygen stays; its closesthit[k] (a reference or a list) becomes traced ray
+// type k (the layout's k-th, in order) with that closest hit in every hit
+// group's cell -- a procedural group's with `intersection` too, when given;
+// every miss of the layout takes the task's miss j (the last one past its
+// list). Every other key is kept.
+[[nodiscard]] RayJson rayTracingInLayoutForm(const RayJson &legacy, const RayJson &layout,
+                                             const std::string &intersection = {});
+
+// RTL-2s-c: the hit shader files the layout's tasks name in their traced
+// cells (closest hit, any hit, intersection), each once.
+[[nodiscard]] std::vector<std::filesystem::path>
+rayTracedHitShaderFiles(const std::vector<RayTracingTask> &tasks, const std::filesystem::path &project_root);
+// What a hit shader of a traced ray type has to change for `layout`'s
+// record: its Studio block written again (a RayShaderWrite), or one sentence
+// naming it when it declares the record itself (or not at all) and Studio
+// cannot write it.
+struct RayRecordFit {
+    std::vector<RayShaderWrite> writes;
+    std::vector<std::string> problems;
+};
+[[nodiscard]] RayRecordFit fitRayShaderRecords(const std::vector<std::filesystem::path> &files,
+                                               const RayJson &layout, const std::filesystem::path &project_root);
+
+// RTL-2s-c: what checking `ray_type` in a task's Traced ray types leaves to
+// do, as sentences naming the shaders. The new row takes the first traced
+// ray type's cells (`ray_tracing` is the task before the check), whose hit
+// shaders answer in that ray type's payload; and a hit shader of a traced
+// ray type has to declare the layout's record (fitRayShaderRecords). Empty
+// when nothing is left.
+[[nodiscard]] std::vector<std::string> rayTracedRowNotes(const RayJson &ray_tracing, const std::string &ray_type,
+                                                         const RayJson &layout,
+                                                         const std::filesystem::path &project_root);
 
 // Rewrites the literal traceRayEXT routing of a shader written without a
 // layout -- sbtRecordOffset k, stride, missIndex j -- into the layout's
@@ -292,9 +316,14 @@ enum class RayFillMode { copy, from_template };
                                                  const std::vector<RayTracingTask> &tasks,
                                                  const std::filesystem::path &project_root);
 
+// A ray type: every task traces it too. Copied, its row is the first traced
+// one's cells; from the template, a closest hit of that ray type for each
+// hit group (a procedural group's intersection copied).
 [[nodiscard]] RayLayoutPlan planAddRayType(const RayLayoutRead &read,
                                            const std::vector<RayTracingTask> &tasks,
-                                           const std::string &name);
+                                           const std::string &name,
+                                           const std::filesystem::path &project_root = {},
+                                           RayFillMode mode = RayFillMode::copy);
 [[nodiscard]] RayLayoutPlan planAddGroup(const RayLayoutRead &read,
                                          const std::vector<RayTracingTask> &tasks,
                                          const std::filesystem::path &project_root,
@@ -329,13 +358,20 @@ enum class RayEntryKind { ray_type, group, miss };
                                              const std::vector<RayTracingTask> &tasks,
                                              const std::string &name, const std::string &type);
 // Record fields: every material row and every procedural asset's record
-// with it (a new field's value 0).
+// with it (a new field's value 0). RTL-2s-c: and the record block of every
+// hit shader the tasks trace with, written again (fitRayShaderRecords).
 [[nodiscard]] RayLayoutPlan planAddRecordField(const RayLayoutRead &read, const std::string &name,
-                                               const std::string &type);
+                                               const std::string &type,
+                                               const std::vector<RayTracingTask> &tasks = {},
+                                               const std::filesystem::path &project_root = {});
 [[nodiscard]] RayLayoutPlan planRemoveRecordField(const RayLayoutRead &read,
-                                                  const std::string &name);
+                                                  const std::string &name,
+                                                  const std::vector<RayTracingTask> &tasks = {},
+                                                  const std::filesystem::path &project_root = {});
 [[nodiscard]] RayLayoutPlan planSetEngineRecord(const RayLayoutRead &read,
-                                                const std::vector<std::string> &fields);
+                                                const std::vector<std::string> &fields,
+                                                const std::vector<RayTracingTask> &tasks = {},
+                                                const std::filesystem::path &project_root = {});
 
 // --- Hit group assignments (bindings).
 

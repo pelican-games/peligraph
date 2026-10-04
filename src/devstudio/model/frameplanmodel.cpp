@@ -697,6 +697,31 @@ std::optional<FramePlanRayQueryStructures> readRayQueryStructures(const Json &ro
                     .geometry_flags = unsignedOr(key, "geometry_flags"),
                     .geometry_count = unsignedOr(key, "geometry_count"),
                 });
+    // RTL-2s b, decision 4 (engine RTL-1b).
+    const auto blasKey = [](const Json &key) {
+        return FramePlanBlasKey{
+            .geometry_kind = stringOr(key, "geometry_kind"),
+            .geometry_allocation_id = unsignedOr(key, "geometry_allocation_id"),
+            .geometry_flags = unsignedOr(key, "geometry_flags"),
+            .geometry_count = unsignedOr(key, "geometry_count"),
+        };
+    };
+    if (const auto named = value.find("named_tlas_blas"); named != value.end() && named->is_object())
+        for (const auto &[name, keys] : named->items()) {
+            std::vector<FramePlanBlasKey> listed;
+            if (keys.is_array())
+                for (const auto &key : keys)
+                    if (key.is_object()) listed.push_back(blasKey(key));
+            result.named_tlas_blas.emplace_back(name, std::move(listed));
+        }
+    if (const auto excluded = value.find("excluded"); excluded != value.end() && excluded->is_object())
+        for (const auto &[name, entry] : excluded->items()) {
+            if (entry.is_number_unsigned() && entry.get<std::uint64_t>() > 0)
+                result.excluded_counts.emplace_back(name, entry.get<std::uint64_t>());
+            else if (entry.is_array())
+                for (const auto &each : entry)
+                    if (each.is_string()) result.excluded_names.push_back(each.get<std::string>());
+        }
     return result;
 }
 

@@ -277,6 +277,14 @@ modelReferenceChoices(std::string_view current,
 // knownRefusalDescription answers it too.
 [[nodiscard]] std::string rayTracingRefusalDescription(std::string_view code,
                                                        std::string_view message);
+// RTL-2s, decision 3 (engine RTL-1b / RTL-1c): the same, from a refusal's
+// error object, whose fields sit beside its code (task, ray_type, group,
+// miss, stage; name and kind for pelican.ray_group_name_unknown@1). The
+// codes of the layout's and the assignments' parsers read as a sentence too
+// (RTL-1a), and a refusal's own code goes before one its message quotes (a
+// rolled-back generation). The place is said after the sentence: "(ray type
+// shadow, hit group mesh)".
+[[nodiscard]] std::string rayTracingRefusalDescription(const nlohmann::json &error);
 // LP-4a: the four view_select refusals (LP-Va) are sentences made from the
 // refusal's own fields -- the pass, the view family, the axis, and for a
 // value past the axis its value and length:

@@ -2686,6 +2686,8 @@ struct RenderFeaturesWidget::Impl {
         });
         auto *scene_as = new QPushButton(owner.tr("Scene AS"), &owner);
         auto *callable_records = new QPushButton(owner.tr("Records"), &owner);
+        // RTL-2s-c: the Graph's ray tracing section opens this one too.
+        callable_records->setObjectName(QStringLiteral("pelican.renderFeatures.callableRecords"));
         actions->addWidget(callable_records);
         QObject::connect(callable_records, &QPushButton::clicked, &owner, [this] {
             auto *dialog = new CallableRecordsDialog(viewport, &owner);
