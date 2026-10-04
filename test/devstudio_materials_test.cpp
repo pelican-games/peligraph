@@ -1878,3 +1878,81 @@ TEST_CASE("MR-1s decision 3: a registered document the engine's watch refused af
     CHECK(dock.session().selection()->name == "paint");
     CHECK(engine.restarts.empty());
 }
+
+TEST_CASE("QA-1: the Material rows go with their object -- switched off and naming no model while the next "
+          "object is read, so a wait for the rows to be read is not answered by the previous object's",
+          "[devstudio][materials][qa1]") {
+    application();
+    FakeEngine engine;
+    MaterialAssignWidget rows{engine.assignHooks()};
+    readyCube(rows, engine);
+    auto *target = named<QComboBox>(rows, QStringLiteral("pelican.inspectorMaterialTarget"));
+    auto *choice = named<QComboBox>(rows, QStringLiteral("pelican.inspectorMaterialChoice"));
+    CHECK(target->itemText(1) == QStringLiteral("Every Cube"));
+    CHECK(target->isEnabled());
+    CHECK(choice->isEnabled());
+
+    // Another object picked in the Outliner: the Inspector drops what it had
+    // read and asks for the new one, so for a while there is no subject.
+    rows.setSubject({});
+    CHECK(rows.isHidden());
+    CHECK_FALSE(target->isEnabled());
+    CHECK_FALSE(choice->isEnabled());
+    CHECK(target->findText(QStringLiteral("Every Cube")) < 0);
+
+    // The sphere's object is read: the rows name it at once, and can be
+    // chosen in once its materials are read -- not before.
+    constexpr const char *Sphere = "engine://primitives/sphere";
+    rows.setSubject(subjectOf(Sphere, "Sphere", 8));
+    CHECK_FALSE(rows.isHidden());
+    CHECK(target->itemText(1) == QStringLiteral("Every Sphere"));
+    CHECK_FALSE(choice->isEnabled());
+    answer(rows, engine, "list_materials", listResult());
+    Json bindings = cubeBindings(1);
+    bindings["model"] = Sphere;
+    answer(rows, engine, "get_material_bindings", bindings);
+    CHECK_FALSE(choice->isEnabled());
+    Json object = cubeObject();
+    object["object"] = 8;
+    object["model"] = Sphere;
+    answer(rows, engine, "get_object_materials", object);
+    CHECK(target->isEnabled());
+    CHECK(choice->isEnabled());
+}
+
+TEST_CASE("QA-1: New material…'s surfaces follow an answer of as many surfaces but other ones",
+          "[devstudio][materials][qa1]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    FakeEngine engine;
+    MaterialsDock dock{engine.dockHooks()};
+    dock.open(project(temporary));
+    dock.engineAvailable();
+    answer(dock, engine, "list_materials", listResult());
+    answer(dock, engine, "list_surfaces", surfaces());
+
+    // The person fixed the broken surface's file under another name while the
+    // dock was open: the list is as long as before, and not the same.
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.newMaterial"))->click();
+    auto *surface = named<QComboBox>(dock, QStringLiteral("pelican.materials.new.surface"));
+    REQUIRE(surface->count() == 2);
+    CHECK(surface->itemText(0) == QStringLiteral("shaders/broken"));
+    Json fixed = surfaces();
+    fixed["surfaces"][0] = Json{{"reference", "project://shaders/query.surface"},
+                                {"source", "project"},
+                                {"params", 0},
+                                {"textures", 0}};
+    answer(dock, engine, "list_surfaces", fixed);
+    REQUIRE(surface->count() == 2);
+    CHECK(surface->itemText(0) == QStringLiteral("shaders/query"));
+    CHECK(qobject_cast<QStandardItemModel *>(surface->model())->item(0)->isEnabled());
+    CHECK(surface->itemData(0, Qt::ToolTipRole).toString() == QStringLiteral("project://shaders/query.surface"));
+
+    // What is chosen is what Create sends.
+    surface->setCurrentIndex(0);
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.new.create"))->click();
+    const auto sent = engine.take("create_material");
+    REQUIRE(sent.has_value());
+    CHECK(sent->params.value("surface", std::string{}) == "project://shaders/query.surface");
+}

@@ -28,10 +28,13 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDockWidget>
+#include <QElapsedTimer>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QString>
 #include <QStringList>
+#include <QTest>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
@@ -710,11 +713,13 @@ TEST_CASE("AG-3b: select picks a row of a tree with a real click",
     CHECK(by_index.value(QStringLiteral("text")).toString() ==
           QStringLiteral("Anchor"));
 
-    // A row this tree does not hold is refused by code, with the name in it.
+    // A row this tree does not hold is refused by code, with the name in it
+    // (after the wait QA-1 gave select, kept short here).
     const AutomationReply missing = fixture.run(
         QStringLiteral("select"),
         QJsonObject{{QStringLiteral("name"), QStringLiteral("pelican.testOutliner")},
-                    {QStringLiteral("text"), QStringLiteral("Hero")}});
+                    {QStringLiteral("text"), QStringLiteral("Hero")},
+                    {QStringLiteral("timeout_ms"), 50}});
     CHECK_FALSE(missing.ok);
     CHECK(missing.code == QStringLiteral("automation.bad_request@1"));
     CHECK(missing.message.contains(QStringLiteral("Hero")));
@@ -739,7 +744,8 @@ TEST_CASE("AG-3b: select picks a combo entry without opening its popup",
     const AutomationReply missing = fixture.run(
         QStringLiteral("select"),
         QJsonObject{{QStringLiteral("name"), QStringLiteral("pelican.testScopes")},
-                    {QStringLiteral("text"), QStringLiteral("nowhere")}});
+                    {QStringLiteral("text"), QStringLiteral("nowhere")},
+                    {QStringLiteral("timeout_ms"), 50}});
     CHECK_FALSE(missing.ok);
     CHECK(missing.code == QStringLiteral("automation.bad_request@1"));
 
@@ -917,6 +923,88 @@ TEST_CASE("Q-17: select refuses a disabled widget, and fails when the choice doe
     });
     CHECK(choose("pelican.testPicker", "tonemap").ok);
     CHECK(picked == QStringLiteral("tonemap"));
+}
+
+// QA-1: a combo or a list filled by an engine's answer gets its entries a few
+// milliseconds after the row it sits in is on screen. A select that refused
+// the moment the entry was not there failed the scenario now and then, and
+// passed when it was run again.
+TEST_CASE("QA-1: select waits for an entry, a row or a widget that comes late, and says what it held when "
+          "none comes",
+          "[devstudio][automation][qa1]") {
+    Fixture fixture;
+    const auto select = [&fixture](const QString &name, const QString &text, int timeout_ms = 0) {
+        QJsonObject fields{{QStringLiteral("name"), name}, {QStringLiteral("text"), text}};
+        if (timeout_ms > 0) fields.insert(QStringLiteral("timeout_ms"), timeout_ms);
+        return fixture.run(QStringLiteral("select"), fields);
+    };
+
+    // An entry the panel adds when its answer comes, 200 ms later.
+    QTimer::singleShot(200, fixture.combo, [&fixture] {
+        fixture.combo->addItem(QStringLiteral("late_curve"), QStringLiteral("late_curve"));
+    });
+    const AutomationReply late = select(QStringLiteral("pelican.testScopes"), QStringLiteral("late_curve"));
+    INFO(describe(late).toStdString());
+    REQUIRE(late.ok);
+    CHECK(fixture.combo->currentText() == QStringLiteral("late_curve"));
+    CHECK(fixture.combo_selections == QStringList{QStringLiteral("late_curve")});
+    CHECK(late.result.toObject().value(QStringLiteral("waited_ms")).toDouble() >= 150.0);
+
+    // A row of a tree, the same.
+    QTimer::singleShot(200, fixture.tree, [&fixture] {
+        new QTreeWidgetItem(fixture.tree->topLevelItem(0), QStringList{QStringLiteral("Sphere")});
+    });
+    const AutomationReply row = select(QStringLiteral("pelican.testOutliner"), QStringLiteral("Sphere"));
+    INFO(describe(row).toStdString());
+    REQUIRE(row.ok);
+    REQUIRE(fixture.tree->currentItem() != nullptr);
+    CHECK(fixture.tree->currentItem()->text(0) == QStringLiteral("Sphere"));
+
+    // A combo whose panel is built when its answer comes.
+    QTimer::singleShot(200, &fixture.window, [&fixture] {
+        auto *built = new QComboBox(fixture.window.centralWidget());
+        built->setObjectName(QStringLiteral("pelican.testLateCombo"));
+        built->addItems({QStringLiteral("draw"), QStringLiteral("skip")});
+        fixture.window.centralWidget()->layout()->addWidget(built);
+    });
+    const AutomationReply built = select(QStringLiteral("pelican.testLateCombo"), QStringLiteral("skip"));
+    INFO(describe(built).toStdString());
+    CHECK(built.ok);
+
+    // None comes: refused once the time is up, saying how long it waited and
+    // what the combo held -- the two things a reader of the failure needs.
+    QElapsedTimer clock;
+    clock.start();
+    const AutomationReply never = select(QStringLiteral("pelican.testScopes"), QStringLiteral("never"), 300);
+    CHECK(clock.elapsed() >= 290);
+    CHECK_FALSE(never.ok);
+    CHECK(never.code == QStringLiteral("automation.bad_request@1"));
+    INFO(never.message.toStdString());
+    CHECK(never.message.contains(QStringLiteral("\"pelican.testScopes\" has no entry never")));
+    CHECK(never.message.contains(QStringLiteral("waited 3")));
+    CHECK(never.message.contains(QStringLiteral("\"root\", \"gain_curve\", \"late_curve\"")));
+    const AutomationReply no_row = select(QStringLiteral("pelican.testOutliner"), QStringLiteral("Hero"), 100);
+    CHECK_FALSE(no_row.ok);
+    CHECK(no_row.message.contains(QStringLiteral("holds no row Hero")));
+    CHECK(no_row.message.contains(QStringLiteral("\"Camera\"")));
+    const AutomationReply nobody = select(QStringLiteral("pelican.testNobody"), QStringLiteral("draw"), 100);
+    CHECK_FALSE(nobody.ok);
+    CHECK(nobody.code == QStringLiteral("automation.widget_missing@1"));
+
+    // Switched off is not waited for (Q-17): a person could not pick in it
+    // now, and a wait that let the pick through once it came on would hide
+    // that. Refused at once, though its entry is on the way.
+    fixture.combo->setEnabled(false);
+    QTimer::singleShot(100, fixture.combo, [&fixture] {
+        fixture.combo->addItem(QStringLiteral("later"));
+        fixture.combo->setEnabled(true);
+    });
+    clock.restart();
+    const AutomationReply off = select(QStringLiteral("pelican.testScopes"), QStringLiteral("later"));
+    CHECK(clock.elapsed() < 90);
+    CHECK_FALSE(off.ok);
+    CHECK(off.message.contains(QStringLiteral("disabled")));
+    QTest::qWait(150);
 }
 
 // --------------------------------------------------------------------------

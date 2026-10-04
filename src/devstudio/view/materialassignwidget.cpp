@@ -269,7 +269,19 @@ struct MaterialAssignWidget::Impl {
     void present() {
         const bool shown = !session.model().empty();
         owner.setVisible(shown);
-        if (!shown) return;
+        if (!shown) {
+            // QA-1: no object, nothing to choose. The rows go with the panel
+            // switched off and naming no model: left as they were, they kept
+            // the last object's entries ("Every Cube") and said they could be
+            // chosen in while the next object's were still being read, so a
+            // wait for "the rows are read" was answered by the previous
+            // object's.
+            const QSignalBlocker block{target};
+            target->setItemText(1, owner.tr("Every model"));
+            target->setEnabled(false);
+            choice->setEnabled(false);
+            return;
+        }
         const bool object_scope = session.scope() == Scope::Object;
         const auto model_name = qtext(modelShortName(session.model()));
         {

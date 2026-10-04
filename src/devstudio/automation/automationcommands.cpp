@@ -1569,122 +1569,193 @@ AutomationReply commandText(const AutomationHost &host,
 // menu. setCurrentIndex emits the combo's own currentIndexChanged, which is
 // the signal a popup choice emits too, so the receiving code cannot tell the
 // two apart.
+//
+// QA-1: many combos and lists are filled by an answer of the engine's
+// (list_surfaces, get_material_bindings, ...), and the answer arrives on the
+// engine's clock, not the driver's. A select that refused the moment the
+// entry was not there lost a race the scenario could not see: the step before
+// had waited for the row to be on screen, and its entries came a few
+// milliseconds later. So a widget that is not there yet, or an entry it does
+// not hold yet, is waited for with the event loop running -- as `wait` does --
+// up to timeout_ms (SelectWaitMs by default), and the refusal says how long it
+// waited and what the widget held then. A widget that is there and switched
+// off is still refused at once (Q-17): waiting for it to come on would let a
+// select through at a moment a person could not have made it.
+constexpr int SelectWaitMs = 5000;
+
+// What a combo or a list holds, for a refusal: the first entries, in order.
+QString entriesOf(const QStringList &entries) {
+    constexpr int Shown = 40;
+    if (entries.isEmpty()) return QStringLiteral("nothing");
+    QStringList quoted;
+    for (int at = 0; at < entries.size() && at < Shown; ++at)
+        quoted.push_back(QStringLiteral("\"%1\"").arg(entries[at]));
+    QString line = quoted.join(QStringLiteral(", "));
+    if (entries.size() > Shown)
+        line += QStringLiteral(" and %1 more").arg(entries.size() - Shown);
+    return line;
+}
+
 AutomationReply commandSelect(const AutomationHost &host,
                               const QJsonObject &request) {
     const QString name = request.value(QStringLiteral("name")).toString();
     if (name.isEmpty())
         return AutomationReply::failure(BadRequest,
                                         QStringLiteral("name is required"));
-    QWidget *widget = findWidget(host, name);
-    if (widget == nullptr)
-        return AutomationReply::failure(
-            WidgetMissing,
-            QStringLiteral("no widget is named \"%1\"").arg(name));
     const QJsonValue text = request.value(QStringLiteral("text"));
     const QJsonValue index = request.value(QStringLiteral("index"));
     if (!text.isString() && !index.isDouble())
         return AutomationReply::failure(
             BadRequest, QStringLiteral("select needs text or index"));
-    // Q-17: a switched-off widget is refused by name, as click refuses one
-    // (Q-16). A person cannot pick in it; setCurrentIndex could, and the
-    // panel behind it had said "not now" by switching it off.
-    if (!widget->isEnabled())
-        return AutomationReply::failure(
-            BadRequest,
-            QStringLiteral("the widget named \"%1\" is disabled").arg(name));
+    const QString wanted_entry =
+        text.isString() ? text.toString() : QString::number(index.toInt());
+    const int timeout = timeoutOf(request, SelectWaitMs);
+    QElapsedTimer elapsed;
+    elapsed.start();
 
-    if (auto *combo = qobject_cast<QComboBox *>(widget)) {
-        int row = index.isDouble() ? index.toInt(-1)
-                                   : combo->findText(text.toString());
-        if (row < 0 || row >= combo->count())
-            return AutomationReply::failure(
-                BadRequest,
-                QStringLiteral("\"%1\" has no entry %2")
-                    .arg(name, text.isString() ? text.toString()
-                                               : QString::number(index.toInt())));
-        const QString wanted = combo->itemText(row);
-        // The combo is held while its own signal runs: a panel that rebuilds
-        // its rows from here leaves this one to go when the event loop comes
-        // back, and it is read below.
-        const QPointer<QComboBox> held{combo};
-        combo->setCurrentIndex(row);
-        // Q-17: the choice has to still be there once the panel has heard
-        // it. A panel that refused it puts the value it holds back, and a
-        // select that answered "ok" over that let the scenario go on as if
-        // it had chosen, and fail steps later on what the choice never did.
-        // A picker -- a list that hands its entry to a field and goes back to
-        // its placeholder, "Pick..." -- holds no entry afterwards (index -1):
-        // it took the choice by using it. Any other entry is not the one
-        // chosen.
-        if (!held.isNull() && held->currentIndex() >= 0 &&
-            (held->currentIndex() != row || held->currentText() != wanted))
-            return AutomationReply::failure(
-                BadRequest, QStringLiteral("\"%1\" did not take \"%2\"; it holds \"%3\"")
-                                .arg(name, wanted, held->currentText()));
-        return AutomationReply::success(QJsonObject{
-            {QStringLiteral("name"), name},
-            {QStringLiteral("index"), row},
-            {QStringLiteral("text"), combo->itemText(row)},
-        });
-    }
+    // What the last look found, for the refusal once the time is up.
+    bool found = false;
+    bool is_combo = false;
+    QStringList held;
+    for (;;) {
+        // waited_ms is the time until the entry was found, not counting what
+        // the choice itself then set off in the panel.
+        const double waited = static_cast<double>(elapsed.elapsed());
+        QWidget *widget = findWidget(host, name);
+        found = widget != nullptr;
+        if (widget != nullptr) {
+            // Q-17: a switched-off widget is refused by name, as click refuses
+            // one (Q-16). A person cannot pick in it; setCurrentIndex could,
+            // and the panel behind it had said "not now" by switching it off.
+            if (!widget->isEnabled())
+                return AutomationReply::failure(
+                    BadRequest,
+                    QStringLiteral("the widget named \"%1\" is disabled").arg(name));
 
-    auto *view = qobject_cast<QAbstractItemView *>(widget);
-    if (view == nullptr || view->model() == nullptr)
-        return AutomationReply::failure(
-            BadRequest,
-            QStringLiteral("\"%1\" is not a list, a tree or a combo box")
-                .arg(name));
-    // Every index the view can show, in the order it shows them, so `index`
-    // means the row a reader counts down the panel rather than a row of some
-    // one level of the tree.
-    // Only a tree has folded rows; a flat view's children are all there is.
-    auto *tree = qobject_cast<QTreeView *>(view);
-    std::vector<QModelIndex> rows;
-    const std::function<void(const QModelIndex &)> walk =
-        [&](const QModelIndex &parent) {
-            const int count = view->model()->rowCount(parent);
-            for (int row = 0; row < count; ++row) {
-                const QModelIndex child = view->model()->index(row, 0, parent);
-                if (!child.isValid()) continue;
-                rows.push_back(child);
-                if (tree != nullptr && tree->isExpanded(child)) walk(child);
+            if (auto *combo = qobject_cast<QComboBox *>(widget)) {
+                is_combo = true;
+                const int row = index.isDouble()
+                                    ? index.toInt(-1)
+                                    : combo->findText(text.toString());
+                if (row >= 0 && row < combo->count()) {
+                    const QString wanted = combo->itemText(row);
+                    // The combo is held while its own signal runs: a panel
+                    // that rebuilds its rows from here leaves this one to go
+                    // when the event loop comes back, and it is read below.
+                    const QPointer<QComboBox> kept{combo};
+                    combo->setCurrentIndex(row);
+                    // Q-17: the choice has to still be there once the panel
+                    // has heard it. A panel that refused it puts the value it
+                    // holds back, and a select that answered "ok" over that
+                    // let the scenario go on as if it had chosen, and fail
+                    // steps later on what the choice never did. A picker -- a
+                    // list that hands its entry to a field and goes back to
+                    // its placeholder, "Pick..." -- holds no entry afterwards
+                    // (index -1): it took the choice by using it. Any other
+                    // entry is not the one chosen.
+                    if (!kept.isNull() && kept->currentIndex() >= 0 &&
+                        (kept->currentIndex() != row ||
+                         kept->currentText() != wanted))
+                        return AutomationReply::failure(
+                            BadRequest,
+                            QStringLiteral("\"%1\" did not take \"%2\"; it holds \"%3\"")
+                                .arg(name, wanted, kept->currentText()));
+                    return AutomationReply::success(QJsonObject{
+                        {QStringLiteral("name"), name},
+                        {QStringLiteral("index"), row},
+                        {QStringLiteral("text"), wanted},
+                        {QStringLiteral("waited_ms"), waited},
+                    });
+                }
+                held.clear();
+                for (int at = 0; at < combo->count(); ++at)
+                    held.push_back(combo->itemText(at));
+            } else {
+                is_combo = false;
+                auto *view = qobject_cast<QAbstractItemView *>(widget);
+                if (view == nullptr || view->model() == nullptr)
+                    return AutomationReply::failure(
+                        BadRequest,
+                        QStringLiteral("\"%1\" is not a list, a tree or a combo box")
+                            .arg(name));
+                // Every index the view can show, in the order it shows them,
+                // so `index` means the row a reader counts down the panel
+                // rather than a row of some one level of the tree. Only a
+                // tree has folded rows; a flat view's children are all there
+                // is.
+                auto *tree = qobject_cast<QTreeView *>(view);
+                std::vector<QModelIndex> rows;
+                const std::function<void(const QModelIndex &)> walk =
+                    [&](const QModelIndex &parent) {
+                        const int count = view->model()->rowCount(parent);
+                        for (int row = 0; row < count; ++row) {
+                            const QModelIndex child =
+                                view->model()->index(row, 0, parent);
+                            if (!child.isValid()) continue;
+                            rows.push_back(child);
+                            if (tree != nullptr && tree->isExpanded(child))
+                                walk(child);
+                        }
+                    };
+                walk(QModelIndex{});
+                QModelIndex chosen;
+                if (index.isDouble()) {
+                    const int wanted = index.toInt(-1);
+                    if (wanted >= 0 && wanted < static_cast<int>(rows.size()))
+                        chosen = rows[static_cast<std::size_t>(wanted)];
+                } else {
+                    for (const QModelIndex &row : rows)
+                        if (row.data(Qt::DisplayRole).toString() ==
+                            text.toString()) {
+                            chosen = row;
+                            break;
+                        }
+                }
+                if (chosen.isValid()) {
+                    view->scrollTo(chosen);
+                    const QRect rect = view->visualRect(chosen);
+                    if (rect.isEmpty())
+                        return AutomationReply::failure(
+                            BadRequest,
+                            QStringLiteral("the row \"%1\" of \"%2\" is not on screen")
+                                .arg(chosen.data(Qt::DisplayRole).toString(), name));
+                    const QPoint point = rect.center();
+                    QTest::mouseClick(view->viewport(), Qt::LeftButton,
+                                      Qt::NoModifier, point);
+                    return AutomationReply::success(QJsonObject{
+                        {QStringLiteral("name"), name},
+                        {QStringLiteral("text"),
+                         chosen.data(Qt::DisplayRole).toString()},
+                        {QStringLiteral("point"),
+                         QJsonArray{point.x(), point.y()}},
+                        {QStringLiteral("selected"),
+                         view->currentIndex() == chosen},
+                        {QStringLiteral("waited_ms"), waited},
+                    });
+                }
+                held.clear();
+                for (const QModelIndex &row : rows)
+                    held.push_back(row.data(Qt::DisplayRole).toString());
             }
-        };
-    walk(QModelIndex{});
-    QModelIndex chosen;
-    if (index.isDouble()) {
-        const int wanted = index.toInt(-1);
-        if (wanted >= 0 && wanted < static_cast<int>(rows.size()))
-            chosen = rows[static_cast<std::size_t>(wanted)];
-    } else {
-        for (const QModelIndex &row : rows)
-            if (row.data(Qt::DisplayRole).toString() == text.toString()) {
-                chosen = row;
-                break;
-            }
+        }
+        if (elapsed.elapsed() >= timeout) break;
+        QTest::qWait(25);
     }
-    if (!chosen.isValid())
+    if (!found)
         return AutomationReply::failure(
-            BadRequest,
-            QStringLiteral("\"%1\" holds no row %2")
-                .arg(name, text.isString() ? text.toString()
-                                           : QString::number(index.toInt())));
-    view->scrollTo(chosen);
-    const QRect rect = view->visualRect(chosen);
-    if (rect.isEmpty())
-        return AutomationReply::failure(
-            BadRequest,
-            QStringLiteral("the row \"%1\" of \"%2\" is not on screen")
-                .arg(chosen.data(Qt::DisplayRole).toString(), name));
-    const QPoint point = rect.center();
-    QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, point);
-    return AutomationReply::success(QJsonObject{
-        {QStringLiteral("name"), name},
-        {QStringLiteral("text"), chosen.data(Qt::DisplayRole).toString()},
-        {QStringLiteral("point"), QJsonArray{point.x(), point.y()}},
-        {QStringLiteral("selected"),
-         view->currentIndex() == chosen},
-    });
+            WidgetMissing,
+            QStringLiteral("no widget is named \"%1\" (waited %2 ms)")
+                .arg(name)
+                .arg(elapsed.elapsed()));
+    return AutomationReply::failure(
+        BadRequest,
+        QStringLiteral("\"%1\" %2 %3 (waited %4 ms; it holds %5)")
+            .arg(name,
+                 is_combo ? QStringLiteral("has no entry")
+                          : QStringLiteral("holds no row"),
+                 wanted_entry)
+            .arg(elapsed.elapsed())
+            .arg(entriesOf(held)));
 }
 
 AutomationReply commandWait(const AutomationHost &host,

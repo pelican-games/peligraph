@@ -408,7 +408,7 @@ window the desktop happens to have activated.
 | `key`          | `sequence` (`"Return"`, `"Ctrl+A"`), `name?`, `route?` (`widget` \| `window`) |
 | `type`         | `text`, `name?`, `select_all?` (default true)                 |
 | `text`         | `name`                                                        |
-| `select`       | `name`, and `text` (the row or entry as a person reads it) or `index` |
+| `select`       | `name`, and `text` (the row or entry as a person reads it) or `index`, `timeout_ms?` (default 5000: how long a widget or an entry that is not there yet is waited for) |
 | `action`       | `name` \| `text`, `menu?` -- fires one menu or toolbar entry  |
 | `menu_list`    | `name?` (scope to one widget), `pattern?` -- the entries, with `text`, `shortcut`, `enabled`, `checked`, `menu` |
 | `view_state`   | `name` -- a QGraphicsView's `scale`, `transform`, `center`, `scroll`, `visible_scene`, `viewport` |
@@ -456,6 +456,19 @@ choice: when it then holds another entry -- a panel that refused the choice
 puts its value back -- the step fails with `"…" did not take "…"`. A picker
 that hands its entry on and goes back to its placeholder ("Pick...", no entry)
 took the choice.
+
+QA-1: many combos and lists are filled by an answer of the engine's
+(`list_surfaces`, `get_material_bindings`, ...), which comes a few milliseconds
+after the row they sit in is on screen, and `wait` has no way to say "until it
+holds this entry". So `select` waits, with the event loop running, for a widget
+that is not there yet or an entry or row it does not hold yet, up to
+`timeout_ms` (5000 by default); the reply's `waited_ms` says how long. When none
+comes the step fails with `"…" has no entry …` (a combo) or `"…" holds no row …`
+(a list or tree), how long it waited and what the widget held then. A
+switched-off widget is not waited for: it is refused at once, as above --
+waiting for it to come on would let a choice through at a moment a person could
+not have made it. No other command waits like this: what they need (a widget on
+screen, switched on) is what `wait` already says, and a scenario says it there.
 
 OL-1 named the rows themselves, for a gesture that starts or ends on one: `<list or tree>::row#<text>` is the row a person reads as `<text>`, among the rows the view shows (a folded branch's rows are not on screen, so they are not found). The view is scrolled to it first; a press lands in the middle of it. `drag` from one row to another is how `outliner_edit_roundtrip` moves an object under another, and `wait` with `missing` is how it sees a row go:
 

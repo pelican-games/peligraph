@@ -382,6 +382,29 @@ struct MaterialsDock::Impl {
         new_name->setFocus();
     }
 
+    static QString surfaceChoiceTip(const SurfaceChoice &surface) {
+        QString tip = qtext(surface.reference);
+        if (!surface.error.empty()) tip += QLatin1Char('\n') + qtext(surface.error);
+        return tip;
+    }
+
+    // QA-1: whether New material…'s combo shows the session's surfaces, entry
+    // for entry. Its entries carry indices into session.surfaces(); a check of
+    // the count alone left an answer of as many surfaces but other ones (a
+    // file renamed, one fixed or broken since) under the old labels, and
+    // Create would have made the material on a surface the row did not show.
+    bool newSurfaceChoicesCurrent() const {
+        const auto &surfaces = session.surfaces();
+        if (new_surface->count() != static_cast<int>(surfaces.size())) return false;
+        for (std::size_t index = 0; index < surfaces.size(); ++index) {
+            const int row = static_cast<int>(index);
+            if (new_surface->itemText(row) != qtext(surfaceChoiceLabel(surfaces[index])) ||
+                new_surface->itemData(row, Qt::ToolTipRole).toString() != surfaceChoiceTip(surfaces[index]))
+                return false;
+        }
+        return true;
+    }
+
     // The engine's surfaces, as the combo shows them; one that cannot be read
     // is listed greyed, with the reason, and cannot be chosen.
     void fillSurfaceChoices(QComboBox &choices, const std::string &current, bool pick_default) {
@@ -393,13 +416,10 @@ struct MaterialsDock::Impl {
             const auto &surface = surfaces[index];
             choices.addItem(qtext(surfaceChoiceLabel(surface)), static_cast<int>(index));
             const int row = choices.count() - 1;
-            QString tip = qtext(surface.reference);
-            if (!surface.error.empty()) {
-                tip += QLatin1Char('\n') + qtext(surface.error);
+            if (!surface.error.empty())
                 if (auto *model = qobject_cast<QStandardItemModel *>(choices.model()))
                     if (auto *item = model->item(row)) item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
-            }
-            choices.setItemData(row, tip, Qt::ToolTipRole);
+            choices.setItemData(row, surfaceChoiceTip(surface), Qt::ToolTipRole);
         }
         int wanted = -1;
         if (!current.empty()) {
@@ -422,8 +442,7 @@ struct MaterialsDock::Impl {
 
     void presentNewRow() {
         if (new_row->isHidden()) return;
-        if (new_surface->count() != static_cast<int>(session.surfaces().size()))
-            fillSurfaceChoices(*new_surface, {}, true);
+        if (!newSurfaceChoicesCurrent()) fillSurfaceChoices(*new_surface, {}, true);
         const auto name = new_name->text().trimmed().toStdString();
         new_path->setText(name.empty() ? QString{} : qtext(materialDocumentPath(name)));
         QString line;
