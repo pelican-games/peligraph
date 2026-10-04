@@ -182,7 +182,7 @@ asset が `id [status]` で並びます。
 `pelican.inspectorVector.<component>.<field>.<列>`(例: `pelican.inspectorVector.transform.scale.2`)、数 1 つは
 `pelican.inspectorNumeric.<component>.<field>` です([数値欄の名前の付け方](../../src/devstudio/view/inspectorwidget.cpp#L2173))。
 G-5 より前は、どの vector も最初の列が同じ名前でした。シナリオは欄が有効になるのを待って打ち、Return で commit し、
-欄がその値を持つまで待ちます([シナリオの README](../../test/studio_scenarios/README.md#L558))。
+欄がその値を持つまで待ちます([シナリオの README](../../test/studio_scenarios/README.md#L567))。
 
 **回転は角度で入れます(✅T-1)。**`transform.rotation` は X / Y / Z の 3 欄(度、小数 2 桁、自動化面の名前は
 `pelican.inspectorEuler.transform.rotation.0` 〜 `.2`)で見せて編集します([回転の欄を作る所](../../src/devstudio/view/inspectorwidget.cpp#L2235))。
@@ -1167,6 +1167,8 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 ([登録](../../src/core/communication/editorrpchandlers.cpp#L315))。`edit_procedural_asset` は
 `base_source_digest` と `asset_name` を取り、編集は `aabb` / `record`、新規は `operation: "create"` と両方の値、
 削除は `operation: "delete"` だけです。実行モデルはレンダー設定側(§13.5)と同じ digest CAS です。
+✅MI-1 から、ほかの RPC が asset_data を書いて engine が publish した後も `external_modification` になりません(§13.5 の
+「project の中の model ファイルを登録する・外す」)。
 
 **JSON pointer**(RFC 6901)は `/intensity` や `/pos/1` のように `/` 区切りで JSON 内の位置を指す文字列です。配列は 0 始まりの添字で指し、鍵に含まれる `/` と `~` はそれぞれ `~1` / `~0` と書きます。
 
@@ -1215,11 +1217,11 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
    {"object_id":6,"scene_id":"main","declaration_index":4,"name":"Leaf_copy1","source_object_id":3}]}
 ```
 
-(`ticket` / `base_revision` / `committed_revision` / `transaction_id` の値は説明用です。鍵と並びは [実装](../../src/core/communication/editorjournal.cpp#L2603) のとおり。)
+(`ticket` / `base_revision` / `committed_revision` / `transaction_id` の値は説明用です。鍵と並びは [実装](../../src/core/communication/editorjournal.cpp#L2610) のとおり。)
 
 #### committed の応答に付く 2 つの鍵(✅OL-1)
 
-`edit` / `undo` / `redo` の committed の応答には、どの op でも次の 2 つが付きます([`appendCommittedIdentities()`](../../src/core/communication/editorjournal.cpp#L2603))。
+`edit` / `undo` / `redo` の committed の応答には、どの op でも次の 2 つが付きます([`appendCommittedIdentities()`](../../src/core/communication/editorjournal.cpp#L2610))。
 
 - `affected_authoring_ids` — その編集が触った object の `AuthoringObjectId` の配列。
 - `created_objects` — その編集で**新しく現れた** object の配列。1 要素は `{object_id, scene_id, declaration_index, name}` で、`duplicate` の copy には `source_object_id` も付きます。対象は `spawn`、`duplicate`、そして undo が戻した object(`destroy` の undo)です。何も作らない編集では空配列です。`duplicate` の undo も空で、redo は最初の応答と同じ列を返します。
@@ -1597,7 +1599,7 @@ project.json を手で書いて engine を起こし直さないと効きませ�
 
 MT-1(`976c410d`)の前は、Blank の project で物体の色を変えるには JSON を 3 つ手で書いて engine を起こし直すしかありませんでした
 (仕様書の記述)。7 本は material 文書・`.surface` の宣言・model の割り当てを engine に読ませて書かせます
-([MT-1 の 7 method の登録](../../src/core/communication/materialdocumentrpc.cpp#L1741))。
+([MT-1 の 7 method の登録](../../src/core/communication/materialdocumentrpc.cpp#L1979))。
 
 - 書く 3 本は、読んだときの digest を CAS に project の文書の transaction で書き、返る前に engine に当てます。
   当てられないときは書いたうえで `applied: "restart_required"` と `restart_required: {reason}` を返します。
@@ -1613,7 +1615,7 @@ MT-1(`976c410d`)の前は、Blank の project で物体の色を変えるには 
 - **`surface` か `routing` の片方だけなら、もう片方を合わせます(✅VR-1、`45864d55`)**: engine の OpenPBR の surface は manifest の
   variant ごとに routing と組で、合わない組は `material.document_invalid@1` です。`surface` だけを送ると、その surface が manifest に載り
   material が `routing` を持つとき `routing` をその variant の値に、`routing` だけ(object)を送ると、今の surface が manifest に載るとき
-  同じ manifest でその routing の variant の surface に替えて、同じ edit で書きます([`pairSurfaceVariant()`](../../src/core/communication/materialdocumentrpc.cpp#L931))。
+  同じ manifest でその routing の variant の surface に替えて、同じ edit で書きます([`pairSurfaceVariant()`](../../src/core/communication/materialdocumentrpc.cpp#L935))。
   補った鍵も `previous` に入るので、送り返すと両方が戻ります。補った routing が前と違えば MT-3 の binding の書き直しと `rebuilt` も
   今までどおりです。両方を送ったときは送られたとおりで、組でなければ断り、何も書きません。project の surface と、`routing` を持たない
   material には補いません。VR-1 の前は片方だけの変更が同じ code で断られ、Studio から surface を替えられませんでした(実装者の報告)。
@@ -1647,6 +1649,65 @@ MT-1(`976c410d`)の前は、Blank の project で物体の色を変えるには 
 各鍵の意味・拒否の条件の表・実例は [第10章](10_tools.md) §10.3 の「material 文書を読み書きする」、live / rebuilt / restart_required の
 規則と残る穴は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、engine が書くファイルの形は
 [第5章](05_assets.md) §5.2 です。
+
+### project の中の model ファイルを登録する・外す(✅MI-1)
+
+| メソッド | params | 返すもの | 拒否(`error.data` の `{error_code, error_fields}`) |
+|---|---|---|---|
+| `register_model` | `{path, name?}`(ほかの鍵は `-32602`) | `{committed: true, name, path, asset_data_digest, previous_asset_data_digest, applied: "live" \| "restart_required", restart_required: {reason} \| null}` | `model.path_invalid@1` / `model.format_unsupported@1` / `model.file_missing@1` / `model.path_conflict@1` / `model.name_invalid@1` / `model.name_conflict@1` / `model.load_failed@1` / `model.transaction_busy@1` / `external_modification` |
+| `unregister_model` | `{name}`(ほかの鍵は `-32602`) | `{committed: true, name, removed: {name, path, material_bindings?}, asset_data_digest, previous_asset_data_digest, applied, restart_required}` | `model.name_invalid@1` / `model.unknown@1` / `model.in_use@1` / `model.transaction_busy@1` / `external_modification` |
+
+MI-1(`61600f9e`)の前は、Blank から GUI で置ける model は engine の基本形(cube / plane / sphere)だけで、外の glb を使うには
+ファイルを手でコピーし、asset_data の `models[]` を手で書いて engine を起こし直すしかありませんでした(仕様書の記述)。2 本は、
+**project の中に既にある** `.glb` / `.gltf` / `.vrm` を `models[]` に載せて engine にその場で登録し、外すときは `models[]` から外して
+engine からも外します([MI-1 の 2 method の登録](../../src/core/communication/materialdocumentrpc.cpp#L2009))。
+
+- **ファイルのコピーは呼び手の役目です**(D0。Studio は project の文書を直接書かず RPC だけを使い、ファイルのコピーは Studio がする。
+  音・画像の取り込みと同じ分担。仕様書の記述)。engine は project の外の path を受けず、model のファイルを書きも消しもしません。
+- `path` は project 相対(`project://` は外して書く)。`name` を省くとファイル名の stem で、既にある名前と重なれば
+  `model.name_conflict@1` です(番号を振るのは呼び手)。同じファイルが既に登録されていれば `model.path_conflict@1 {path, name}` の
+  `name` が既にある登録の名前なので、呼び手はそれをそのまま使えます。
+- 書く前に、起動時に `models[]` の entry を読むのと同じ検査([`ModelAssetContainer::preflightModel()`](../../src/core/asset/model.cpp#L936)。
+  宣言を解き、ファイルを読み、`GltfLoader::inspect()`、glTF の material の名前と project の material の照合。GPU は確保しない)を
+  通します。壊れた glb は `model.load_failed@1` で、asset_data は変わりません。
+- 書き込みは asset_data の置き換え 1 件の transaction で、CAS の digest は handler が読んだものです(呼び手は渡さない)。
+  鍵の順と改行コードは保ちます。
+- **live と restart_required**:
+  - `register_model` は、書いた後に engine の asset_data の写しを替え、[`ModelAssetContainer::registerModel()`](../../src/core/asset/model.cpp#L943)
+    で 1 件登録できれば `applied: "live"` です(container がまだ無い host は、替えた写しから container を作るので live)。
+    写しを替えられないか登録が失敗すれば、書いたうえで `restart_required` です。
+  - `unregister_model` は、model に animation の rig が無く、生きている instance が描いていなければ engine から外して live です
+    ([`ModelAssetContainer::unregisterModel()`](../../src/core/asset/model.cpp#L970))。rig のある model(skin を持つ model。VRM はほぼこれ)と、
+    文書に無い instance(game logic が spawn したものなど)が描いている model は、外さずに `restart_required`
+    (`the engine keeps the model until it starts again: …`)です。どちらでも `list_assets` からは消えます。
+  - 前の `unregister_model` が restart_required で engine に残っている model を、同じ名前・同じファイルで登録し直すと、残っているものを使って live です。
+- **戻し方**: `unregister_model` の答えの `removed` から `register_model {path: removed.path, name: removed.name}` を呼びます。
+  `removed.material_bindings` は戻りません(bindings を持つ model は `bind_material` を呼び直す)。scene の object が描いている model の
+  `unregister_model` は `model.in_use@1 {name, count, objects}` で断られるので、先に object を消します。
+- **edit の ticket の `payload.model`**: `models[]` に無い名前を `simplemodelview.model` に書いた `edit`(`spawn` など)は、今までどおり
+  ticket の後に `error.code: "method_unavailable"` で失敗します。✅MI-1 から、その `error.payload` に `model` と `reason: "model_unknown"` が
+  付きます([`editorjournal.cpp` の MI-1 の payload](../../src/core/communication/editorjournal.cpp#L1715))。code の名前は変えていないので、
+  呼び手は文(`unknown model asset: <name>`)を読まずに `reason` で「model が未登録」と分かります。実例(test。登録する前の `checker_box` を spawn):
+
+  ```json
+  {"status": "failed", "error": {"code": "method_unavailable", "message": "unknown model asset: checker_box",
+   "payload": {"adapter": "/adapters/object_lifecycle.default_scene.3", "method": "spawn",
+               "model": "checker_box", "reason": "model_unknown"}}}
+  ```
+
+- **procedural asset の editor が publish 済みの asset_data を採る**: `get_procedural_assets` / `edit_procedural_asset`(§13.3)の editor は、
+  asset_data の bytes を editor を作ったときに 1 回だけ持ち、ファイルの digest と比べていました。そのため、ほかの RPC
+  (MT-1 の `create_material` / `bind_material` も)が asset_data を書いた後は、`edit_procedural_asset` が `external_modification` で
+  断られ続けていました(実装者がコードで確かめた)。✅MI-1 から、`get` / `edit` の前にファイルを読み、その bytes を読み込んだものが
+  engine の publish 済みの写しと同じなら、それを新しい元として採ります([`adoptPublishedSource()`](../../src/core/communication/proceduralasseteditor.cpp#L25))。
+  engine が publish していない外からの書き換えは、今までどおり `external_modification` です。test では `register_model` の後の
+  `get_procedural_assets` が `external_modification: false` と新しい digest を返し、その digest の `edit_procedural_asset` が digest の
+  検査を通ります。
+- `edit_batch` の対象ではありません。
+- **Studio からこの 2 本を呼ぶ画面はまだありません**(MI-1s で足す予定)。
+
+各鍵・拒否の条件の表・実例・残る穴は [第10章](10_tools.md) §10.3 の「project の中の model ファイルを登録する・外す」、asset_data の
+`models[]` の形は [第5章](05_assets.md) §5.2 です。
 
 ### レンダー設定を編集する
 
@@ -2286,7 +2347,7 @@ ticket を次の結果で終えます([型付きの拒否のときだけ commit 
   `restore_render_documents` で戻せます。印の ticket は、既に並んでいる ticket より先に commit されます([`harvestFoldVerifies()`](../../src/core/communication/renderconfigeditor.cpp#L3224))。
 - **すぐ断るもの**:
   - **`fold_verify_unavailable`**(`reason`): `headless` / `golden` / `replay`(`--replay` か入力の再生中)/ `executable_unknown`(自分の exe の path を取れない。Windows 以外は常にこれ)/
-    `no_runner`(子を起こす口を持たない構成)([判定](../../src/core/communication/editorruntimefactory.cpp#L2358))。コードには engine の終了で止めた run の `shutdown` もありますが、
+    `no_runner`(子を起こす口を持たない構成)([判定](../../src/core/communication/editorruntimefactory.cpp#L2364))。コードには engine の終了で止めた run の `shutdown` もありますが、
     終了の時は editor ごと消えるので、答えとして読む道は見当たりません(コードの読み)。
   - **`fold_verify_busy`**(`group`・`ticket`): 同じ group を検査している間。ほかの group と、ほかの編集は止めません。
   - `gate_closed`・`external_modification`(ほかの編集と同じ)。
@@ -2297,7 +2358,7 @@ ticket を次の結果で終えます([型付きの拒否のときだけ commit 
     開いた形 ×2(対照)、決定ありの形 ×1。終われば写しを消します。
   - 子の引数は `--headless --project <写し> --frames <frames> --fps <親の fps> [--size <project の窓の大きさ>] [--start-time <warmup_seconds>] --render-out <run>/frame_%d.png
     --vulkan-validation on --log-file <run>/pelican.log` で、親が `--allow-absolute-paths` / `--game-logic` で起きていればそれも付けます
-    ([組み立て](../../src/core/communication/graphfoldverify.cpp#L291)、[親から読む所](../../src/core/communication/editorruntimefactory.cpp#L1970))。
+    ([組み立て](../../src/core/communication/graphfoldverify.cpp#L291)、[親から読む所](../../src/core/communication/editorruntimefactory.cpp#L1976))。
     warm-up は player の `--start-time` で、その時刻までの fixed-step の frame を描いて捨てます(時刻ではなく frame の数で数えます)。
 - **比べ方**([`judgeFoldVerifyRuns()`](../../src/core/communication/graphfoldverify.cpp#L388)): 各 frame の PNG を RGBA8 に読み、4 byte のどれかが違う画素を数えます(大きさが違えば
   大きい方の全画素)。validation の error は、子の stdout と stderr にある `Validation Error` の数です。判定は次の順で、最初に当たったものが答えです。
@@ -4148,7 +4209,7 @@ Outputs の区は body に出力があるときだけ、Carry の区は body に
 - 聞く op と欄は、✅UX-12a から catalog の各 op の `parameters` のうち `required` の付いたものです([`GraphCanvasModel::requiredParametersFor()`](../../src/devstudio/model/graphcanvasvalues.cpp#L754))。palette が自分で種を入れる op(`value.curve` の keys、`audio.playback` の asset、`ui.*` の node、`render.scalar` 以外の `render.*` と `draw.*`)は今までどおり聞きません。欄は node の欄と同じ部品(下の「node の欄を catalog の表から作る(✅UX-12a)」の `GraphParameterEditor`)を表の kind で選び、Studio が表より多くを知る 3 つだけ自分の部品にします: `render.scalar` の `target`(buffer の combo)、`value.input` の `name`(名前の combo。catalog の `input_names` から。[`GraphCanvasModel::valueInputNamesFor()`](../../src/devstudio/model/graphcanvasvalues.cpp#L841))、`pose.clip_sample` の `clip`(rig の animation)。`default` の無い数は 0(`integer` は表の `min`)、bool は false から始まるので、OK で見えている値のまま置けます([必須のダイアログを作る所](../../src/devstudio/view/graphcanvasrenderfields.cpp#L2406))。`alternatives` を持つ必須は「どちらか 1 つ」の radio で、op の入力 port の名前でもある候補(`voice`)は線で満たします。OK は、選んだ側の欄が空の間は押せません。
 - UX-12a の前は、`required_parameters`(✅CT-1)を名前の規則で欄にしていて(`value.morph_weight` の `node` / `target` も数の spin になる規則でした)、catalog がそれを出さない engine では UX-7 の Studio の表(`render.scalar` / `value.constant` / `value.input` の 3 つ)を使っていました。UX-12a でこの表は消え、catalog が `parameters` を出さない engine ではダイアログは出ません(コードの読み)。今の規則では `value.morph_weight` の `node` / `target` は `integer` の spin(表の `min` の 0 から)です。CT-4 から `value.morph_weight` は owner のある instance の中にしか置けない op です(engine の CT-4 の commit の記録)。palette での見え方は確かめていません(未確認)。
 - UX-7 の前は、palette から置いたこれらの node は parameters が空で、engine に名前で断られ(RS-15 からは `graph.render_node_parameters_missing@1`)、GUI で書く欄が無いので `gui_build_ltc` は面光源の角を shader の定数にしていました(シナリオの description の記録)。
-- **自動化での書き方**: graph の node の parameter は、canvas の値の帯に打って書くか、✅UX-12a から右の欄(`pelican.graphCanvasParameters.<名前>`、`pose.clip_sample` は `pelican.graphCanvasPose.<名前>`)で書きます。詳細表の行の編集欄は自動化から開きません(表の editor は名前を持たないため)。UX-12a の前は、まだ持っていない鍵には帯が無いので、render node の鍵は専用の欄で、上の 3 つはこのダイアログで書いていました(UX-7 の決定 8。[README の「A node's parameters」](../../test/studio_scenarios/README.md#L633)。README は UX-12a で変わっていません)。
+- **自動化での書き方**: graph の node の parameter は、canvas の値の帯に打って書くか、✅UX-12a から右の欄(`pelican.graphCanvasParameters.<名前>`、`pose.clip_sample` は `pelican.graphCanvasPose.<名前>`)で書きます。詳細表の行の編集欄は自動化から開きません(表の editor は名前を持たないため)。UX-12a の前は、まだ持っていない鍵には帯が無いので、render node の鍵は専用の欄で、上の 3 つはこのダイアログで書いていました(UX-7 の決定 8。[README の「A node's parameters」](../../test/studio_scenarios/README.md#L642)。README は UX-12a で変わっていません)。
 - test: [「UX-7 decision 5: render.scalar, value.constant and value.input ask for what they cannot be placed without, and are placed with it」](../../test/devstudio_graphcanvas_scene_test.cpp#L10255)、✅UX-12a から [「UX-12a decision 2: the palette's dialog is made from the table -- pose.clip_sample asks for its rig among the project's glTF files and its clip among the rig's animations, and is placed with them」](../../test/devstudio_graphcanvas_scene_test.cpp#L11528)。
 
 **ループと分岐の後に足した node も描きます(✅UX-7)**: GB-3 で、ループと分岐を組んだ後に palette で足した `render.raster` が、文書にも frame plan にも入るのに canvas に描かれず、Refresh でも出ないことが 3 回ありました。canvas は値の帯のその場編集の editor が開いている間は描き直しを待っていて、その pick が帯に当たって editor が開いたままになっていたためです(シナリオの description の記録)。今は、文書の中身が変わった読みなら editor が開いていても描き直し、editor と打った字を新しい描画へ持ち越します([描き直しの判定](../../src/devstudio/view/graphcanvaswidget.cpp#L8596))。中身の変わらない読み(配置や報告だけ)は今までどおり editor を待ちます。test は [「UX-7 decision 7: a node the document gains is drawn while a pill's editor is open, the editor carried over the new drawing」](../../test/devstudio_graphcanvas_scene_test.cpp#L10350) です。
@@ -5379,7 +5440,7 @@ Stop ボタンや project の切り替えのような普通の停止は、proces
 widget ではないので、`<view の objectName>::<種類>#<ノード id>[/<port>]` の合成名で指します ——
 例: `pelican.graphCanvasView::graph_value_pill#left/gain`([名前の生成](../../src/devstudio/automation/automationcommands.cpp#L280))。
 `list` は widget 名と合成名の両方を返すので、**ソースを読まずに一覧からシナリオを書けます**。
-`type` / `key` / `text` は item が抱えている埋め込み widget へ届きます。`select{name, text|index}` は item view の行を本物の click で、combo は index を直接置いて選び、`wait{enabled}` は有効化を待ちます(AG-3b)。✅Q-17 から、`select` は無効な widget(祖先が無効なものを含む)を断り、combo が選んだ項目のままでなければ `"<name>" did not take "<text>"; it holds "<今の値>"` で失敗します(規則の正は [README の Q-17 の段落](../../test/studio_scenarios/README.md#L443))。出力 port の帯は `graph_value_band#<node>/<port>`([経路](../../src/devstudio/automation/automationcommands.cpp#L541))。
+`type` / `key` / `text` は item が抱えている埋め込み widget へ届きます。`select{name, text|index}` は item view の行を本物の click で、combo は index を直接置いて選び、`wait{enabled}` は有効化を待ちます(AG-3b)。✅Q-17 から、`select` は無効な widget(祖先が無効なものを含む)を断り、combo が選んだ項目のままでなければ `"<name>" did not take "<text>"; it holds "<今の値>"` で失敗します(規則の正は [README の Q-17 の段落](../../test/studio_scenarios/README.md#L452))。出力 port の帯は `graph_value_band#<node>/<port>`([経路](../../src/devstudio/automation/automationcommands.cpp#L541))。
 list や tree の行そのものは **`<view の objectName>::row#<表示の文字>`**(✅OL-1)で指します。対象は画面に出ている行だけで
 (閉じた枝の中の行は見つかりません)、view をその行まで scroll してから行の中央を押すので、`drag` の始点・終点や
 `wait{missing}` に使えます(例: `pelican.outliner::row#Floor`。[行の名前を引く所](../../src/devstudio/automation/automationcommands.cpp#L445))。
@@ -5416,7 +5477,7 @@ engine が描くものは engine の時計で届くので、`fullscreen_pass_fro
 ([問い直し](../../tools/studio_drive.py#L966))。
 ✅PM-3a から、`result` は `value_of` に数を足す **`plus`**(`"value_of": "frame", "plus": 1` は 1 歩後)と、覚えた値から比べる
 文を作る **`value_format`**(`"Paused · frame {paused_frame}"`)も受けます([`plus` を足す所](../../tools/studio_drive.py#L950)。
-書式の正は [README](../../test/studio_scenarios/README.md#L120))。
+書式の正は [README](../../test/studio_scenarios/README.md#L129))。
 3 つ目の種類の **`file` step**(✅F-3)は Studio へ送らず、driver 自身が run の持つ directory の中の file を 1 つ読み書きします ——
 人が Studio の操作の合間に自分のエディタで file を直す、の代わりです。`write` / `replace`(`old` がちょうど 1 か所のときだけ)/
 `contains` / `exists` と、✅IA-1s の `copy`(`from` の file を `path` へ byte のまま写して上書きする。`write` は UTF-8 の文字しか書けないので、人が外で焼き直した binary の file を project の file に上書きする代わり。[copy の所](../../tools/studio_drive.py#L820))の 5 つです。書ける範囲は **`{project}`(fixture の複製)と `{artifacts}`(その run の成果物の置き場)の
@@ -5431,7 +5492,7 @@ driver の stdout / stderr は、cp932 の console で出せない文字があ�
 **回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L1336)(Python 3.11以上、標準ライブラリだけ)が Studio を
 `--automation --project --tab` で起動し、✅PX-2 から Studio とつないだ直後・最初の step の前に `viewport_size` で viewport を 720x450 に固定し
 ([固定する所](../../tools/studio_drive.py#L1443))、step を順に送り、`report.json` を書きます。ctest からは
-`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3636)) —— **実物の窓が要るので
+`studio_scenario_<名前>` として GPU lane で走ります([登録](../../test/CMakeLists.txt#L3646)) —— **実物の窓が要るので
 `QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
 文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../../test/run_studio_scenario.cmake#L30))。✅IA-1s から、シナリオの隣に `<名前>.prepare.py` があれば、ctest の口([prepare の script を走らせる所](../../test/run_studio_scenario.cmake#L68))が driver を起こす前に`<名前>.prepare.py --out <run の directory>/incoming --cli <pelican_cli>` を走らせます。人が Studio を開く前に外で作る file の代わりで、シナリオは `{artifacts}/incoming/` の file を Studio の Import で取り込みます(今は `gui_build_ltc` と ✅AB-1s の `gui_build_audio_reactive` の 2 本。[第10章](10_tools.md) §10.7)。
 CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。
@@ -5961,7 +6022,7 @@ message に ` (<code>)` を付けたものです([拒否を読む所](../../src/
 - **ただし `edit_render_features` はこの区別に従いません。**フレーム境界の preflight で落ちた場合も `status` は `"rejected"` です。また **追加情報は `payload` の中ではなく `error` の直下**に置かれます。
 - **シーン編集**の安定コードは **43 種**です(正は
   [`EditorEditErrorCode`](../../src/core/communication/editorjournal.hpp#L50) と、その名前を返す
-  [`editorEditErrorCodeName()`](../../src/core/communication/editorjournal.cpp#L3108)。**列挙子の名前とワイヤ上の
+  [`editorEditErrorCodeName()`](../../src/core/communication/editorjournal.cpp#L3115)。**列挙子の名前とワイヤ上の
   コード名は一致しません** —— 新しいものは `@1` 付きです)。内訳:
   - 基本 21 種: `stale_revision` / `gate_closed` / `preview_lease_conflict` / `preview_lease_busy` / `not_lease_owner` / `ticket_not_found` / `undo_conflict` / `not_editable` / `schema_violation` / `component_unknown@1` / `duplicate_component` / `missing_component` / `name_conflict` / `parent_not_found` / `closure_unresolvable` / `cycle_detected` / `zero_scale` / `non_finite_transform` / `trs_unrepresentable` / `preserve_missing` / `method_unavailable`
   - preview: `editor_preview_unsupported@1`(✅WP375c。列挙子は `preview_unsupported`。**inactive なシーンの add / remove / reparent プレビュー**と、`duplicate` のプレビュー(✅OL-1)はこれで拒否されます)

@@ -27,14 +27,13 @@
 ## 5.2 モデルを追加する(基本フロー)
 
 1. `.glb` / `.gltf` / `.vrm` を `assets/models/` に置く(VRM は glTF 拡張としてそのまま受理)。※`.vrma`(VRM Animation)はここに含まれません — `asset_data.json` に登録する経路がありません(後述の「`.vrma`」)。
-2. `assets/asset_data.json` に登録する。実物([../../projects/example/assets/asset_data.json](../../projects/example/assets/asset_data.json) 全文):
+2. `assets/asset_data.json` に登録する。実物([../../projects/example/assets/asset_data.json](../../projects/example/assets/asset_data.json) 全文。字下げは詰めています):
 
 ```json
 {
   "schema": "pelican.asset_data",
   "version": 2,
   "models": [
-    { "name": "alicia",        "path": "assets/models/AliciaSolid.vrm" },
     { "name": "DamagedHelmet", "path": "assets/models/DamagedHelmet.glb" },
     { "name": "sponza",        "path": "assets/models/sponza.glb" },
     { "name": "sotai",         "path": "assets/models/Sotai_D.glb" },
@@ -43,7 +42,18 @@
 }
 ```
 
+   VRM も同じ形で登録します。実物([../../projects/vrm_xr_demo/assets/asset_data.json](../../projects/vrm_xr_demo/assets/asset_data.json) の `models`):
+   `{"name": "vrm_xr_character", "path": "assets/vrm_xr_character.vrm"}`(置き場所は `assets/models/` でなくても、project 相対の path なら読めます)。
+
 3. シーンから `{"name": "simplemodelview", "model": "sotai"}` のように **name で**参照する([第4章](04_scene_ecs.md))。
+
+**動いている engine に登録する(✅MI-1、`61600f9e`)**: 上の 2 は手で書いて engine を起こし直す道です。engine が `--rpc` で動いているときは、
+1 のファイルを project の中に置いた後、RPC `register_model {path, name?}` で `models[]` に `{name, path}` を足させ、その場で登録させられます
+(`name` を省くとファイル名の stem。起動時と同じ読み込みの検査を通らないファイルは断られ、asset_data は変わりません)。
+外すのは `unregister_model {name}` で、`models[]` から外しますが、ファイルは消しません。ファイルを project にコピーするのは
+呼び手の役目です。rig を持つ model(VRM の大半)を外したときと、登録できなかったときは、書いたうえで `restart_required` を返し、
+engine を起こし直すと効きます。引数・拒否・live になる条件は [第10章](10_tools.md) §10.3 の「project の中の model ファイルを登録する・外す」です。
+Studio からこの RPC を呼ぶ画面はまだありません(MI-1s で足す予定)。
 
 仕様上の注意:
 
@@ -51,7 +61,7 @@
 - `models` 配列は必須、各要素は `name` と `path`(プロジェクトルート基準)の両方が必須です。`path` には `#` フラグメント(§5.6)も書けます: `{"name":"selected","path":"assets/models/city.glb#mesh/LampPost"}`。任意キー `material_bindings`(`pelican.material_bindings` v1 への参照 — プリミティブ → マテリアルの whole-model 契約。✅WP116、fragment モデルには不可)も書けます。
 - **起動時に全件ロード**されます(✅WP82 で CPU 側は並列化・GPU 登録は宣言順直列 = 決定的)。ここでいう**宣言順**は上の `models` 配列に書いた順のことです。パース(CPU)は複数スレッドで走りますが、結果は添字順の配列に置かれ、GPU への登録は全ジョブの合流後にこの順で 1 件ずつ行われます([parallel_prepare.hpp](../../src/core/parallel_prepare.hpp#L20))。スレッドの完了順が実行ごとに揺れても GPU に載る順序は変わらない、というのが「決定的」の中身です([用語集](14_glossary.md))。ファイルが無ければ解決後の絶対パス入りで fail-fast。
 - **rendering config が壊れているとモデルは 1 件も upload されません(✅WP380a-fix)**: 起動時、レンダーグラフの検証と publish は scene の prepare より**前**に走ります([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp#L161))。マテリアル経路の誤りのような config の失敗が常に最初の起動エラーになり、頂点プールを消費しません。
-- **失敗した load は GPU 資源を返します**: ロード途中で例外が出ると、その候補モデル(と登録済みモデル)の index / vertex / skinned vertex / morph delta / material / texture が解放されます([model.cpp](../../src/core/asset/model.cpp#L551))。**失敗した候補を warm cache として残さない**ので、同じプロセスで再試行しても頂点プールの使用量は増えません。解放そのものに失敗した分は固定容量 8 の報告([modelresourcerelease.hpp](../../src/core/model/modelresourcerelease.hpp#L36))へ畳まれ、scene load 失敗の結果に `release_errors`(stage 名の列。溢れた分は `overflow:N`)として現れます([sceneload.hpp](../../src/core/loader/sceneload.hpp#L142))。呼び元へ返せないデストラクタ経路の分は `ReleaseErrorSink` の累積カウンタに積まれます。
+- **失敗した load は GPU 資源を返します**: ロード途中で例外が出ると、その候補モデル(と登録済みモデル)の index / vertex / skinned vertex / morph delta / material / texture が解放されます([model.cpp](../../src/core/asset/model.cpp#L555))。**失敗した候補を warm cache として残さない**ので、同じプロセスで再試行しても頂点プールの使用量は増えません。解放そのものに失敗した分は固定容量 8 の報告([modelresourcerelease.hpp](../../src/core/model/modelresourcerelease.hpp#L36))へ畳まれ、scene load 失敗の結果に `release_errors`(stage 名の列。溢れた分は `overflow:N`)として現れます([sceneload.hpp](../../src/core/loader/sceneload.hpp#L142))。呼び元へ返せないデストラクタ経路の分は `ReleaseErrorSink` の累積カウンタに積まれます。
 - 静的メッシュはノード階層の変換が**頂点に焼き込まれて平坦化**されます。glTF は「親ノードの行列 × 子ノードの行列 × …」の木で頂点位置を決めますが、ロード時にその積を頂点座標そのものへ掛けてしまい、ランタイムには親子関係のない 1 枚の頂点列だけが残る、という意味です(親を動かして子が付いてくる、という表現はできません。動かしたい単位はシーン側のオブジェクトに分けます)。マテリアルは 5 テクスチャ(baseColor / metallicRoughness / normal / emissive / occlusion)として登録されます。occlusion は metallicRoughness の R から推測せず、glTF の独立した `occlusionTexture` を使います(色テクスチャは SRGB view、metallicRoughness / normal / occlusion は UNORM view — [第6章](06_rendering.md) §6.3)。
 - **スケルタルアニメーションは ✅WP38 で実装済み**: glTF の `skins` + `animations` を読み、シーンの `animation` コンポーネント([第4章](04_scene_ecs.md))で再生します。skinned プリミティブはスケルトンを保持します(焼き込まない)。制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128、クリップはモデルと同一 glb のみ。※この 3 つの制限は **glb 内蔵クリップ + `animation` コンポーネントの経路に限った話**です。`.vrma` は別経路で、CUBICSPLINE も受理します(後述)。
 - **モーフターゲットは ✅WP121 で描画対応**: `primitive.targets` の POSITION/NORMAL/TANGENT delta をデコードし、初期 weight(node > mesh > 0)で material / shadow / velocity の全経路に適用します(変形順は morph → skinning → model)。制限: sparse morph accessor 非対応(名指しエラー。glTF の **sparse accessor** は「既定値からの差分だけを (添字, 値) の対で持つ」省サイズ表現で、通常の accessor が全要素を並べるのと形式が違います — [ソースコード読解ガイド §10.2](../source-code-guide/10_background_knowledge.md#sparse-accessor))、target 64/primitive・weight 256/instance、同一 primitive の **morph + VAT 併用は拒否**。**アニメクリップの `weights` チャネルは今もロードエラー**で、実行時に weight を動かす公開経路は VRM expression service([第8章](08_gameplay.md) §8.13)だけです。

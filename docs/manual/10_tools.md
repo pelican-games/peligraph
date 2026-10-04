@@ -188,6 +188,8 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 | `bind_material` | `{model, material, primitive?\|slot?}` か `{model, bindings}` | model の material_bindings を書き、model を読み直す(✅MT-1。同上) |
 | `set_object_material` | `{actor_id, object, scene_id?, base_scene_revision?, material\|null, primitive?\|slot?}` か `{actor_id, object, scene_id?, base_scene_revision?, materials}` | scene の object 1 つだけの material を、その `simplemodelview.materials` に 1 つの scene の編集で書く(CAS・undo / redo。✅MT-2。同上) |
 | `get_object_materials` | `{object, scene_id?}` | object の primitive ごとの実効の material と、その出所(`object` / `model`)(✅MT-2。同上) |
+| `register_model` | `{path, name?}` | project の中に既にある `.glb` / `.gltf` / `.vrm` を asset_data の `models[]` に足し、動いている engine にその場で登録する(✅MI-1。下の「project の中の model ファイルを登録する・外す」) |
+| `unregister_model` | `{name}` | `models[]` からその model を外し、engine からも外す。ファイルは消さない(✅MI-1。同上) |
 | `set_input_profile` | `{name}` | 入力プロファイル切替(✅WP91) |
 | `start_input_record` | `{path}` | input_seq 収録開始(✅WP89。v2 で書く) |
 | `stop_input_record` | `{}` | 収録停止。`{path, frames, events}` |
@@ -510,7 +512,7 @@ params は `get_assets_verification` / `verify_assets` が空の object だけ�
 
 ### material 文書を読み書きする(✅MT-1)
 
-7 本(✅MT-1、`976c410d`)は、material 文書(`pelican.material`)・`.surface` の宣言・model の material_bindings を、動いている engine に読ませて書かせます([MT-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L14)。[MT-1 の handler の登録](../../src/core/communication/materialdocumentrpc.cpp#L1741))。書く 3 本は project の文書の transaction と digest の CAS で書き、返る前に engine に当てます。どの鍵の変更が live で、どれが rebuilt / restart_required かの規則は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、engine が書くファイルの形は [第5章](05_assets.md) §5.2 です。✅MT-1b の `list_surfaces` と、✅MT-2 の object ごとの上書きの 2 本(`set_object_material` / `get_object_materials`)もこの節に書きます。
+7 本(✅MT-1、`976c410d`)は、material 文書(`pelican.material`)・`.surface` の宣言・model の material_bindings を、動いている engine に読ませて書かせます([MT-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L14)。[MT-1 の handler の登録](../../src/core/communication/materialdocumentrpc.cpp#L1979))。書く 3 本は project の文書の transaction と digest の CAS で書き、返る前に engine に当てます。どの鍵の変更が live で、どれが rebuilt / restart_required かの規則は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、engine が書くファイルの形は [第5章](05_assets.md) §5.2 です。✅MT-1b の `list_surfaces` と、✅MT-2 の object ごとの上書きの 2 本(`set_object_material` / `get_object_materials`)もこの節に書きます。
 
 **読む 4 本と `list_surfaces`**(状態を変えません)
 
@@ -518,7 +520,7 @@ params は `get_assets_verification` / `verify_assets` が空の object だけ�
 - **`get_material {path, name?}`** → `{path, material_digest, name, names, registered, material}`。`material` は文書に書かれているままの object で、鍵の順も文書のままです(ordered の handler)。`path` は asset_data に書かれたままか、正規化して同じになる参照です。文書が 1 つの material だけを持つなら `name` は省けます。
 - **`get_surface_schema {surface}`** → `{surface, params: [{name, type, default, min?, max?, hint?, encoding}], textures: [{name, default, color_space, role, dimension}]}`。`.surface` の `//!` の宣言そのままで、何も足しません。`surface` は `.surface` で終わる参照です。
 - **`get_material_bindings {model}`** → `{model, material_bindings, bindings_digest, primitives: [{mesh, primitive, slot, material, usd_path}], objects, object_overrides}`。`model` は asset_data の `models[]` の名前か、engine の基本形の参照です。`slot` は model のファイル(基本形なら生成した形)が primitive に付けている glTF の material の名前、`material` は今の割り当て(binding が無ければ `slot` と同じ)です。material_bindings の文書が無ければ `material_bindings` / `bindings_digest` / `usd_path` は `null` です。
-  - `objects` / `object_overrides`(✅MT-2): `objects` は、その model を `simplemodelview` で描く scene の object の数です。エディタが持つ文書の全部の scene を数え、prefab から生成された object も含みます。`object_overrides` はそのうち `simplemodelview.materials` に行を持つ(自分の material を持つ)数です([object を数える所 MT-2](../../src/core/communication/materialdocumentrpc.cpp#L1354))。
+  - `objects` / `object_overrides`(✅MT-2): `objects` は、その model を `simplemodelview` で描く scene の object の数です。エディタが持つ文書の全部の scene を数え、prefab から生成された object も含みます。`object_overrides` はそのうち `simplemodelview.materials` に行を持つ(自分の material を持つ)数です([object を数える所 MT-2](../../src/core/communication/materialdocumentrpc.cpp#L1358))。
 - **`list_surfaces {}`**(✅MT-1b、`a6373c01`)→ `{surfaces: [{reference, source: "engine" | "project", name?, params, textures, routing?, render_state?, error?}]}`([MT-1b の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L38))。引数は取りません(`{}` 以外は `-32602`)。
   - 並び: engine の資源に登録された `surfaces/**.surface`(`engine://`、整列)が先で、その後に project のディレクトリの下の全部の `*.surface`(`project://`、整列)です。project の走査は再帰で、名前が `.` で始まるディレクトリと symlink のディレクトリには入りません。asset store の実体のディレクトリを別に辿る処理はありません。
   - `params` / `textures` は数で、`get_surface_schema` と同じ読み方で数えます。読めない・parse できない surface は落とさず、数の代わりに `error`(例外の文)を付けて並べます。
@@ -536,7 +538,7 @@ params は `get_assets_verification` / `verify_assets` が空の object だけ�
 
 **書く 3 本**(どれも返り値に `committed: true`・`changed`・`applied: "live" | "restart_required"`・`restart_required: {reason} | null`。`edit_material` の `applied` は ✅MT-3 から `"rebuilt"` も)
 
-- **`edit_material {base_material_digest, path, name?, values?, textures?, tags?, routing?, variants?, surface?}`**(edit_material の本体 [`editMaterial()`](../../src/core/communication/materialdocumentrpc.cpp#L963))
+- **`edit_material {base_material_digest, path, name?, values?, textures?, tags?, routing?, variants?, surface?}`**(edit_material の本体 [`editMaterial()`](../../src/core/communication/materialdocumentrpc.cpp#L967))
   - `values` / `textures` は `{param: 値 | null}` で今の値に重ねます(`null` はその上書きを外す)。`tags` / `routing` / `variants` は値の全体で置き換え(`null` は鍵ごと消す)、`surface` は参照を替えます。`surface` を替えるときは、material が既に書いている `values` / `textures` の名前が新しい surface に宣言されている必要があります(無ければ `material.param_unknown@1`)。
   - 返り値に `path`・`name`・`material_digest`・`previous_material_digest`・`previous`。`previous` は渡した鍵ごとの前の値です(`values` / `textures` は `{param: 前の値 | null}`、ほかは前の値か `null`)。`previous` を新しい `material_digest` と一緒に同じ RPC で送れば戻ります。
   - `values` だけが変わったときは live です。`textures` / `tags` / `routing` / `variants` / `surface` のどれかが実際に変わったときは(✅MT-3、`c6f94eb7`)、書いた後に engine がその文書の material を登録し直し、前の登録で描いていた model をその場で組み直して `applied: "rebuilt"`・`restart_required: null`・`rebuilt_models: [model]` を返します。MT-3 の前は書いたうえで restart_required でした。その material をこの engine が登録していない、host に要る container か reload service が無い、登録し直しか組み直しが失敗した、のどれかなら、書いたうえで restart_required です(文書は書かれたまま)。規則の全体は第6章です。
@@ -554,19 +556,19 @@ params は `get_assets_verification` / `verify_assets` が空の object だけ�
     ```
 
   - 続けて `surface: "engine://surfaces/openpbr/blend_single.surface"`・`routing: {"alpha_mode": "blend", "double_sided": false}`・`values: {"geometry_opacity": 0.5}` を送ると、`rewritten_bindings` に箱の bindings の文書が 1 つ(`bindings_digest` は直後の `get_material_bindings` と同じ)、`previous.routing` は `{"alpha_mode": "opaque", "double_sided": false}` で、次の frame の画素は白が透ける青です(test の project は `forward_transparent_v1` の material pass を持つ)。
-- **`create_material {path, surface, name?, values?, tags?, routing?}`**([create_material の本体](../../src/core/communication/materialdocumentrpc.cpp#L1183))
+- **`create_material {path, surface, name?, values?, tags?, routing?}`**([create_material の本体](../../src/core/communication/materialdocumentrpc.cpp#L1187))
   - 1 つの material の文書を作り、asset_data の `materials[]` に足して(1 つの transaction)、live で登録します。`name` の既定はファイル名、`routing` の既定は `{alpha_mode: "opaque", double_sided: false}` です。
   - 返り値に `path`・`name`・`material_digest`・`asset_data_digest`・`previous_asset_data_digest`。
-- **`bind_material {model, material, primitive?: {mesh, primitive} | slot?}`** または **`{model, bindings: [{mesh, primitive, material}]}`**([bind_material の本体](../../src/core/communication/materialdocumentrpc.cpp#L1522))
+- **`bind_material {model, material, primitive?: {mesh, primitive} | slot?}`** または **`{model, bindings: [{mesh, primitive, material}]}`**([bind_material の本体](../../src/core/communication/materialdocumentrpc.cpp#L1526))
   - `primitive` はその 1 つ、`slot` はその glTF の material を持つ primitive の全部、どちらも無ければ model の全 primitive に割り当てます。`primitive` と `slot` の両方、`bindings` と `material` / `primitive` / `slot` の両方は `-32602` です。
   - `material` は、その model の glTF の material の名前か project material の名前です。両方にあれば `material.binding_invalid@1`(曖昧)、どちらにも無ければ `material.name_unknown@1`、`routing` の無い project material は `material.binding_invalid@1` です。
   - model の material_bindings の文書を書き(無ければ作り、asset_data の `models[]` に `material_bindings` を足す。基本形は `models[]` に宣言ごと足す)、model を読み直します。割り当ては model 単位です。
   - 返り値に `model`・`material_bindings`・`bindings_digest`・`previous_bindings_digest`(文書が無かったなら `null`)・`previous: {bindings: [{mesh, primitive, material}]}`(変わった primitive の前の material)、asset_data を書いたときは `asset_data_digest` / `previous_asset_data_digest`。`previous.bindings` を `bindings` に送れば戻ります。
   - 実例(test): 箱に `{model: "engine://primitives/cube", slot: "pelican.primitive.default", material: "paint"}` → `applied: "live"`、`previous: {"bindings": [{"mesh": 0, "primitive": 0, "material": "pelican.primitive.default"}]}`。
-  - **戻しの規則(✅MT-2b、`213562bb`)**: 要求を当てた結果、全 primitive が model の元の material(glTF の slot、基本形は `pelican.primitive.default`)になるときは、binding を書かずに外します。bindings の文書を消す・asset_data の `material_bindings` の鍵を外す・MT-1 が基本形に足した `models[]` の項目を外す、の 3 つを 1 つの transaction で書き、model を読み直します([bind_material の戻しで外す所 MT-2b](../../src/core/communication/materialdocumentrpc.cpp#L1459))。返り値は `material_bindings: null`・`bindings_digest: null` と、`previous` / `previous_bindings_digest`(asset_data を書いたときは `asset_data_digest` / `previous_asset_data_digest` も)です。宣言が無い状態で同じものを送ると、何も書かず `changed: false` です。
+  - **戻しの規則(✅MT-2b、`213562bb`)**: 要求を当てた結果、全 primitive が model の元の material(glTF の slot、基本形は `pelican.primitive.default`)になるときは、binding を書かずに外します。bindings の文書を消す・asset_data の `material_bindings` の鍵を外す・MT-1 が基本形に足した `models[]` の項目を外す、の 3 つを 1 つの transaction で書き、model を読み直します([bind_material の戻しで外す所 MT-2b](../../src/core/communication/materialdocumentrpc.cpp#L1463))。返り値は `material_bindings: null`・`bindings_digest: null` と、`previous` / `previous_bindings_digest`(asset_data を書いたときは `asset_data_digest` / `previous_asset_data_digest` も)です。宣言が無い状態で同じものを送ると、何も書かず `changed: false` です。
   - 上の実例の `previous` を `bindings` に送り返すと、この道で箱が灰に戻ります(test)。外す理由は、bindings の形式が点を含む material 名を行に書けないためです(commit の記述)。一部の primitive だけを既定に戻すときは、今までどおり slot の名前の行を書きます。
 
-params の形が違う(鍵が足りない・知らない鍵・型が違う)ときは `-32602` です。断るとき(`-32000`、`data: {error_code, error_fields}`)は何も書きません([MT-1 の拒否の code の並び](../../src/core/communication/materialdocumentrpc.cpp#L52))。
+params の形が違う(鍵が足りない・知らない鍵・型が違う)ときは `-32602` です。断るとき(`-32000`、`data: {error_code, error_fields}`)は何も書きません([MT-1 の拒否の code の並び](../../src/core/communication/materialdocumentrpc.cpp#L53))。
 
 | `error_code` | いつ | `error_fields` |
 |---|---|---|
@@ -628,6 +630,63 @@ scene の object 1 つだけの material を、その object の `simplemodelvie
   `(N objects, M with their own material)` に使います([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
   ✅MT-2s-b(`9d15ddc0`)から、`material.object_unknown@1` に空でない `name` があれば、Studio の 1 文はその名前で言います
   (`<name> cannot take a material of its own: <理由>`。無ければ今までどおり `Object <object> …`)。
+
+### project の中の model ファイルを登録する・外す(✅MI-1)
+
+`register_model` / `unregister_model`(✅MI-1、`61600f9e`)は、project の中に既にある model のファイルを asset_data の `models[]` に載せ(外し)、動いている engine にその場で登録します(外します)([MI-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L127)。[MI-1 の 2 method の登録](../../src/core/communication/materialdocumentrpc.cpp#L2009))。MI-1 の前は、Blank の project に外の glb を使うには、ファイルを手でコピーし、`models[]` を手で書いて engine を起こし直すしかありませんでした(仕様書の記述)。**ファイルを project にコピーするのは呼び手の役目です**。engine は project の外の path を受けず、ファイルを書きも消しもしません。書き込みは MT-1 と同じ project の文書の transaction で、呼び手は digest を渡しません(handler が読んだ asset_data の digest を CAS に使う)。
+
+- **`register_model {path, name?}`**([register_model の本体](../../src/core/communication/materialdocumentrpc.cpp#L1814))→ `{committed: true, name, path, asset_data_digest, previous_asset_data_digest, applied: "live" | "restart_required", restart_required: {reason} | null}`
+  - `path` は project 相対です。`project://` を付けても受け、外した形で asset_data と返り値に書きます。
+  - `name` を省くとファイル名の stem です(`std::filesystem::path::stem()`。`assets/models/checker_box.glb` → `checker_box`、`a.b.glb` → `a.b`。実装者の報告)。stem が既にある名前と重なっても `model.name_conflict@1` で断り、番号は振りません(番号を振るのは呼び手)。
+  - 検査はこの順で、最初に当たったもので断ります: path の形 → 拡張子(大小を区別しない)→ ファイルがあるか → 同じ path が既に `models[]` にあるか(fragment 付きと基本形の entry は比べない)→ name の形 → name の衝突 → 読み込みの検査。読み込みの検査は起動時に `models[]` の entry を読むのと同じで、宣言を解き、ファイルを読み、`GltfLoader::inspect()` で検査し(GPU は確保しない)、glTF の material の名前を project の material と照らします([`ModelAssetContainer::preflightModel()`](../../src/core/asset/model.cpp#L936))。
+  - 通れば `models[]` の末尾に `{name, path}` を足し、asset_data の読み込みの検査(`parseAssetDataFormatJson()`)に通してから 1 つの transaction で書きます。鍵の順と改行コードは保ちます。
+  - 書いた後に engine の asset_data の写しを替え、`waitIdle()` の後に model を 1 件登録して `applied: "live"` です。model の container がまだ無い host では、替えた写しから container を作るので、この model も入って live です。
+  - 写しを替えられなかったとき(`restart_required.reason` は `the engine's copy of asset_data was not refreshed: …`)と、登録が失敗したとき(`the model could not be registered in place: …`)は、書いたうえで `restart_required` です。登録が失敗する例は、前の `unregister_model` が restart_required で engine に残っている同じ名前を、別のファイルで登録し直したときです。同じ名前・同じファイルなら、残っている model をそのまま使って live です。
+  - 実例(test。Blank 相当の project に `test/fixtures/studio_material_pass_authoring/checker_box.glb` を `assets/models/` に写して。digest は略):
+
+    ```json
+    {"applied":"live","asset_data_digest":"66bec13f…","committed":true,"name":"checker_box",
+     "path":"assets/models/checker_box.glb","previous_asset_data_digest":"99284ff8…","restart_required":null}
+    ```
+
+    この後、`list_assets` に `id: "checker_box"`・`kind: "model"`・`status: "loaded"` で出て、`simplemodelview.model` にこの名前を書いた object を `edit` で足すと、起こし直さずに描かれます。engine を起こし直しても同じ object が描かれます(test)。`asset_data_digest` は `get_procedural_assets` の `source_digest.hex` と同じ値です(どちらも asset_data の bytes の sha256。実装者の報告)。
+- **`unregister_model {name}`**([unregister_model の本体](../../src/core/communication/materialdocumentrpc.cpp#L1901))→ `{committed: true, name, removed, asset_data_digest, previous_asset_data_digest, applied, restart_required}`
+  - `removed` は外した `models[]` の entry そのままです(`material_bindings` があればそれも)。model のファイルも、bindings の文書のファイルも消しません。
+  - scene の object がその model を描いていれば `model.in_use@1` で断り、何も書きません。数えるのはエディタが持つ文書の全部の scene の `simplemodelview` で、prefab から生成された object も含みます(`get_material_bindings` の `objects` と同じ数え方)。
+  - 書いた後に写しを替え、engine の model の container から外せれば live です。外すのは、その model に animation の rig が無く、生きている instance が描いていないときだけです。どちらかがあると外さずに `restart_required` で、reason は `the engine keeps the model until it starts again: ` の後に `the model has an animation rig, which the animation service may still hold`(skin を持つ model。VRM はほぼこれ)か `a live instance still draws the model`(game logic が spawn した object など、文書に無い instance)が続きます。restart_required でも `list_assets` からは消えます(写しは替わっている)。container が無い host は live、写しを替えられないときと外すのが例外で失敗したとき(`the model could not be released in place: …`)は restart_required です。
+  - 実例(test。skin を持つ VRM 1.0 を `assets/models/character.vrm` に置いて登録した後):
+
+    ```json
+    {"applied":"restart_required","asset_data_digest":"66bec13f…","committed":true,"name":"character",
+     "previous_asset_data_digest":"d44e8320…",
+     "removed":{"name":"character","path":"assets/models/character.vrm"},
+     "restart_required":{"reason":"the engine keeps the model until it starts again: the model has an animation rig, which the animation service may still hold"}}
+    ```
+
+  - 戻すときは `register_model {path: removed.path, name: removed.name}` を呼びます。`removed.material_bindings` はこれでは戻りません(下の「残る穴」)。静的な glb を、object を消してから外し、同じ名前で登録し直すと live で描かれます(test)。
+- `edit_batch` の対象ではありません(仕様書の範囲外。`edit_batch` の側に 2 本の名前はありません)。戻しは上の呼び直しです。
+
+params の形が違う(`path` / `name` が文字列でない、鍵が足りない、知らない鍵)ときは `-32602` で、`data` は付きません。断るとき(`-32000`、`data: {error_code, error_fields}`、message は `<method>: …`)は何も書きません([MI-1 の拒否の code の並び](../../src/core/communication/materialdocumentrpc.cpp#L1745))。
+
+| `error_code` | いつ | `error_fields` |
+|---|---|---|
+| `model.path_invalid@1` | `path` が空、`\` を含む、絶対 path(`/` で始まる・2 文字目が `:`・`project://` を外した後に `://` がある)、`#` を含む(fragment の登録は受けない)、`.` / `..` の段を含む | `{path, reason: "empty" \| "backslash" \| "absolute" \| "fragment" \| "dot_segment"}` |
+| `model.format_unsupported@1` | 拡張子が `.glb` / `.gltf` / `.vrm` でない | `{path, extension, supported: [".glb", ".gltf", ".vrm"]}` |
+| `model.file_missing@1` | ファイルが project に無い | `{path}` |
+| `model.path_conflict@1` | 同じ path(正規化して同じものを含む)が既に `models[]` にある。`name` は既にある登録の名前で、呼び手はそのまま使える | `{path, name}` |
+| `model.name_invalid@1` | `register_model` の名前が空、`#` を含む、`engine://` で始まる。`unregister_model` の名前が engine の基本形(`engine://` で始まるか、entry の path が基本形) | `{name, reason: "empty" \| "fragment" \| "engine_reference" \| "engine_primitive"}` |
+| `model.name_conflict@1` | その名前(省いたときは stem)が既に `models[]` にある | `{name}` |
+| `model.load_failed@1` | 読み込みの検査が通らない(壊れた glb など)、足した後の asset_data が読み込みの検査を通らない | `{path, message}` |
+| `model.unknown@1` | `unregister_model` の名前が `models[]` に無い | `{name}` |
+| `model.in_use@1` | `unregister_model` の model を scene の object が描いている。`objects` は先頭 8 件の object の名前(名前の無い object は `#<authoring_object_id>`) | `{name, count, objects}` |
+| `model.transaction_busy@1` | 別の書き手が project の文書の transaction を持っている | `{path}` |
+| `external_modification` | 読んだ後、書く直前に asset_data が外から書き換えられた | `{path, expected: null, actual: null}` |
+
+- 実例(test): `assets/models/none.glb` は `model.file_missing@1`(message `register_model: 'assets/models/none.glb' is not a file in the project: …`)、`assets/models/thing.fbx` は `model.format_unsupported@1`、`../outside.glb` は `reason: "dot_segment"`、壊れた glb は `model.load_failed@1`。どれも asset_data の bytes は変わりません。描いている object が 1 つの `checker_box` の `unregister_model` は `{"name": "checker_box", "count": 1, "objects": ["Crate"]}`。
+- `unregister_model` で外した後の asset_data が読み込みの検査を通らないときは、MT-1 の `material.document_invalid@1 {path, reason}` で断ります(コードの読み。test はありません)。
+- **edit の ticket の `payload.model`**: `models[]` に無い名前を `simplemodelview.model` に書いた `edit` は、今までどおり ticket の後に `method_unavailable` で失敗します。✅MI-1 から、その `error.payload` に `model` と `reason: "model_unknown"` が付くので、文を読まずに「model が未登録」と分かります(第13章 §13.5)。
+- 残る穴(着地時の記録): `removed.material_bindings` を `register_model` で戻す口は無く、bindings を持つ model を外して登録し直すと bindings は失われます(`bind_material` を呼び直す)。`unregister_model` の live の判定は生きている instance の slot だけを見ます(edit の staging 中の instance は見ない。RPC がフレームの境目で動く前提)。`pelican_cli import` は asset_data を鍵の順を保たずに書くので、`register_model` の書き方(順を保つ)と揃っていません。
+- Studio からこの 2 本を呼ぶ画面はまだありません(MI-1s で足す予定)。
 
 ### 移行の 2 method と移行専用 endpoint(✅MG-1)
 
@@ -1160,7 +1219,7 @@ pan が書け、`key` は `route`(`widget` 既定 / `window`)を取って **`win
 ✅IA-1s で、シナリオが Studio の外の作業を代わりにする口が 2 つ増えました。
 
 - **`file` step の `copy`**: `{"file": "copy", "path": "{project}/x", "from": "{artifacts}/y"}` は `from` の file を `path` へ byte のまま写します(あれば上書きします。[file step の copy](../../tools/studio_drive.py#L820))。`write` は UTF-8 の文字しか書けないので、人が外で焼き直した binary の file を project の file に上書きする、の代わりです。`path` と `from` のどちらも run の持つ 2 つの directory(`{project}` と `{artifacts}`)の中でなければ step の失敗です(ほかの `file` step と同じ範囲。[第13章](13_editor.md) §13.5「Studio の自動化面」)。
-- **`<名前>.prepare.py`**: `test/studio_scenarios/<名前>.json` の隣に `<名前>.prepare.py` があると、ctest の `run_studio_scenario.cmake`([prepare の script を走らせる cmake の口](../../test/run_studio_scenario.cmake#L68))は driver を起こす前に `<python> -B <名前>.prepare.py --out <run の directory>/incoming --cli <pelican_cli>` を走らせます(120 秒で打ち切り)。人が Studio を開く前に外で作る file(自分の script で書いて CLI で焼いた資産など)の代わりで、シナリオは `{artifacts}/incoming/` の file を Studio の Import で取り込みます(`{artifacts}` がその run の directory です)。`pelican_cli` は ctest の登録が target から `-DCLI=` で渡し([prepare に CLI を渡す登録](../../test/CMakeLists.txt#L3669))、target が無いか file が無ければ、prepare を持つシナリオは失敗です。prepare が 0 以外で終わっても、その stderr を付けて失敗です。`tools/studio_drive.py` を直接回すときは prepare は走りません(ctest の cmake の口のため)。
+- **`<名前>.prepare.py`**: `test/studio_scenarios/<名前>.json` の隣に `<名前>.prepare.py` があると、ctest の `run_studio_scenario.cmake`([prepare の script を走らせる cmake の口](../../test/run_studio_scenario.cmake#L68))は driver を起こす前に `<python> -B <名前>.prepare.py --out <run の directory>/incoming --cli <pelican_cli>` を走らせます(120 秒で打ち切り)。人が Studio を開く前に外で作る file(自分の script で書いて CLI で焼いた資産など)の代わりで、シナリオは `{artifacts}/incoming/` の file を Studio の Import で取り込みます(`{artifacts}` がその run の directory です)。`pelican_cli` は ctest の登録が target から `-DCLI=` で渡し([prepare に CLI を渡す登録](../../test/CMakeLists.txt#L3679))、target が無いか file が無ければ、prepare を持つシナリオは失敗です。prepare が 0 以外で終わっても、その stderr を付けて失敗です。`tools/studio_drive.py` を直接回すときは prepare は走りません(ctest の cmake の口のため)。
   - 今 prepare を持つのは `gui_build_ltc` と、✅AB-1s の `gui_build_audio_reactive`(音量が時間で変わる 1 秒の小さな WAV 2 つを書く。`--cli` は受けるが使わない)の 2 本です。[`gui_build_ltc.prepare.py`](../../test/studio_scenarios/gui_build_ltc.prepare.py) は LTC の表 2 枚と焼き直した 1 枚を raw の float で書き、`pelican_cli image ktx2 --format R32G32B32A32_SFLOAT --raw … --width 64 --height 64`(§10.4)で `.ktx2` にします。
   - 書式の正の [README](../../test/studio_scenarios/README.md) には、`copy` と prepare はまだ書かれていません(IA-1s の commit は README を変えていません)。
 
@@ -1386,7 +1445,7 @@ HEAD が動くと configure が再実行される。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。2026-07-10 以降の追加: `run_devcli_assets`(WP66)/ `run_event_schema_compile`(WP71)/ `run_dump_lowered_material`(WP76)/ `run_devcli_gltf_extract`(WP79)/ `run_spvlink_golden`(WP80)/ `run_devcli_rules_import`(WP84)/ `run_devcli_bake_camera` + `run_input_record_replay_headless`(WP89)/ `run_ui_u2_rpc_replay`(WP93)など。
 - 2026-09 の追加: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(ctest 名 `devcli_graph_catalog`。`pelican_cli graph-catalog` の出力を検査し、**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` / `:end` のコメントで区切られていて、誰も比べない写しを 2 つ目の正にしないための仕掛けです)、`package_install_smoke`(X-1。install → カタログ → 描画 → uninstall を実 player で。`gpu` ラベル)、[`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(出荷 project の走査。`project.json` の `requires` が満たせない project は**名前を出して skip** し、player の中で落ちません)。
 - **Studio のシナリオ(Q-1)**: `test/studio_scenarios/*.json` は 1 本が 1 つの ctest `studio_scenario_<名前>` になり
-([登録](../../test/CMakeLists.txt#L3636))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
+([登録](../../test/CMakeLists.txt#L3646))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
 実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。Studio target と Python 製テストを有効にし、
 Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate はシナリオの未登録・skip を失敗にするため、
 `SKIP_DEVSTUDIO=OFF` と `PELICAN_PYTHON_TESTS=ON` を指定します。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L30) が fixture

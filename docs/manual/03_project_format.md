@@ -472,7 +472,7 @@ example の README にあった手書き sha256 表の役目は、この manifes
 
 ### transform を 1 つ変える編集は、受付の検査を実行時に使い回す(`8bde3c2f`)
 
-利用者の codex が書いた変更です(handoff 01)。編集(`edit`)の ticket は、受付の時に操作を使い捨ての文書へ当ててみて検査し、フレーム境界で実行するときにもう一度同じ検査をしていました。次の条件をすべて満たす編集では、受付で作った検査済みの結果を実行時にそのまま使います([受付で検査結果を残す所](../../src/core/communication/editorjournal.cpp#L4506)、[実行時に使い回す所](../../src/core/communication/editorjournal.cpp#L4181))。
+利用者の codex が書いた変更です(handoff 01)。編集(`edit`)の ticket は、受付の時に操作を使い捨ての文書へ当ててみて検査し、フレーム境界で実行するときにもう一度同じ検査をしていました。次の条件をすべて満たす編集では、受付で作った検査済みの結果を実行時にそのまま使います([受付で検査結果を残す所](../../src/core/communication/editorjournal.cpp#L4513)、[実行時に使い回す所](../../src/core/communication/editorjournal.cpp#L4188))。
 
 - 操作が 1 つで、`set_component_value` の `component_slot: "transform"`、宛先を `object_id` で指す(`address` ではない)
 - シーン文書が prefab を使っていない

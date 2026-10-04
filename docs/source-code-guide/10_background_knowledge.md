@@ -675,7 +675,7 @@ C++ のムーブは、移動元を「有効だが未規定の状態」にしま�
 
 `std::variant` の中身で分岐する定型は、`std::visit` に総称ラムダを渡し、その中で `using T = std::decay_t<decltype(value)>;` として `if constexpr (std::same_as<T, X>)` で枝を書く形です。`std::visit` は全ての候補型を扱えることをコンパイル時に要求するので、型を足したときに「その枝を書き忘れた」がコンパイルエラーになります(`switch` の default と違って取りこぼせません)。`std::monostate` は「値が入っていない」を表すための空の型で、必ず別扱いの枝が要ります。総称ラムダの中で `if constexpr` を使うと、偽の枝は実体化されないので、その型に無いメンバを参照する枝も書けます。これは同じ理由でテンプレート引数ごとのコード生成一般に使われ、依存名の中でメンバーテンプレートを呼ぶときは `obj.template f<...>()` の `.template` 修飾が要ります(パーサに「これはテンプレート」と教えるため)。
 
-**使用場所**: [numericRange()](../../src/core/imgui/inspector.cpp#L38) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L1958) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1906) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
+**使用場所**: [numericRange()](../../src/core/imgui/inspector.cpp#L38) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L1965) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1906) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
 
 ### fold 式と std::apply(タプルライク型の全要素処理)
 
@@ -985,7 +985,7 @@ SPIR-V モジュールは 32bit ワードの列です。先頭 5 ワードがヘ
 
 `/a/b/0` の形でJSON 文書内の 1 か所を指す標準記法が **JSON Pointer(RFC 6901)** です。`/` 区切りの各トークンはオブジェクトのキーか配列の添字で、空文字列のポインタは文書全体を指します。キーに `/` や `~` が含まれる場合のエスケープがあり、**`~0` が `~`、`~1` が `/`** です。復号は RFC 6901 が順序まで規定していて、**先に `~1` → `/`、後から `~0` → `~`** の順でなければなりません。逆順にすると `~01` が `~1`(正解)ではなく `/` になります。nlohmann::json では `json::json_pointer` 型で表現し、`at(pointer)` は不在で例外、`operator[]` は不在の位置を作ってしまう、という違いがあります。エラー報告の「どのフィールドが悪いか」を機械可読に返す用途で広く使われます。
 
-**使用場所**: [prepareSet()](../../src/core/communication/editorjournalops.cpp#L648)(`Json::json_pointer{field_path}` でフィールド位置を解決) / [parseEditorMutationRequest()](../../src/core/communication/editorjournal.cpp#L2952)(構築できるかだけを検査する) / [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L163)(エラーに `/resolver_inputs/<field>` を載せる)
+**使用場所**: [prepareSet()](../../src/core/communication/editorjournalops.cpp#L648)(`Json::json_pointer{field_path}` でフィールド位置を解決) / [parseEditorMutationRequest()](../../src/core/communication/editorjournal.cpp#L2959)(構築できるかだけを検査する) / [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L163)(エラーに `/resolver_inputs/<field>` を載せる)
 
 ### nlohmann::json の型判定・キー順・JSON null
 
@@ -1124,7 +1124,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 親の world 変換から子の local を復元するときは、この逆を逆順に当てます — 並進を引き、親回転の逆を掛け、親スケールで割る。スケールで割る以上、**成分が 0 に近い親スケールでは逆算が発散します**ので、閾値を置いて拒否するのが定石です。非一様スケールと回転が混ざると local の scale が一意に決まらない(せん断が生じる)ことにも注意が要ります。
 
-**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2386)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L682)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
+**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2392)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L682)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
 
 ### 法線の変換は transpose(inverse(M))
 
