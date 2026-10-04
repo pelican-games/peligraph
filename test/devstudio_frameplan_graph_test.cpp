@@ -12829,4 +12829,99 @@ TEST_CASE("UX-15b decisions 4 and 5: the resident BLAS only for a ray-query scen
     CHECK(rows.front()->toolTip(1) ==
           QStringLiteral("Replaced by subgraph replacement bloom_region by pelican.test.bloom (fused)"));
 }
+TEST_CASE("GL-5d the Graph's Order... and Fix sockets are the Frame Plan's own, run out of view once "
+          "the plan and the context are read again; a graph node's pass takes the copy through "
+          "the Graph",
+          "[devstudio][frame-plan][gl5d]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = vi3bProjectRoot(temporary);
+    EditingFixture fixture;
+    fixture.widget.setProjectRoot(root);
+    setVi3aPassInputs(fixture.wire, vi3bPassthroughInputs());
+    fixture.wire["runtime_generation"] = 5;
+    fixture.tweak_context = [](Json &context) { setVi3aInputs(context, {"t_a", "t_b"}); };
+    std::vector<qint64> reads;
+    qint64 next = 9300;
+    fixture.widget.setPlanRequest([&](QString *) {
+        reads.push_back(next);
+        return next++;
+    });
+    QString ordered_graph;
+    QStringList ordered;
+    quint64 generation = 0;
+    fixture.widget.setNodeOrderAction(
+        [&](const QString &graph, const QStringList &names, quint64 published) {
+            ordered_graph = graph;
+            ordered = names;
+            generation = published;
+        });
+    fixture.open();
+    // Behind the Graph tab: the panel reads nothing on its own.
+    fixture.widget.hide();
+    QApplication::processEvents();
+    QStringList said;
+    const auto hear = [&](const QString &line) { said << line; };
+    // The plan, then the context, as the engine answers them.
+    const auto answer = [&] {
+        REQUIRE_FALSE(reads.empty());
+        Q_EMIT fixture.viewport.inspectorRpcSucceeded(reads.back(),
+                                                      QByteArray::fromStdString(fixture.wire.dump()));
+        QApplication::processEvents();
+        auto context = mixedAuthoringContext(fixture.graph);
+        fixture.tweak_context(context);
+        fixture.recorder.result(fixture.recorder.context_id,
+                                QByteArray::fromStdString(context.dump()));
+        QApplication::processEvents();
+    };
+
+    // Decision 1: Order... waits for both reads, then opens on the plan.
+    const auto plan_reads = reads.size();
+    const auto contexts = fixture.recorder.context_id;
+    fixture.widget.whenRead([&] { fixture.widget.orderNodes(); }, hear);
+    QApplication::processEvents();
+    CHECK(reads.size() == plan_reads + 1);
+    CHECK(fixture.recorder.context_id != contexts);
+    CHECK(ordered.isEmpty());
+    answer();
+    CHECK(ordered_graph == QString::fromStdString(fixture.graph));
+    CHECK(generation == 5);
+    QStringList names;
+    for (const auto &node : fixture.wire.at("nodes"))
+        names << QString::fromStdString(node.at("name").get<std::string>());
+    CHECK(ordered == names);
+
+    // Decision 2: Fix sockets on a pass a graph node draws: the copy is
+    // written, and the Graph -- not edit_preset_pass -- moves the node onto it.
+    QStringList moved;
+    fixture.widget.whenRead(
+        [&] {
+            fixture.widget.fixSockets(QString::fromStdString(fixture.graph),
+                                      QString::fromLatin1(Vi3aPass),
+                                      [&](const QString &reference) {
+                                          moved << reference;
+                                          return true;
+                                      });
+        },
+        hear);
+    QApplication::processEvents();
+    CHECK(moved.isEmpty());
+    answer();
+    CHECK(moved == QStringList{QStringLiteral("project://shaders/wp343_mixed_a")});
+    CHECK(fixture.recorder.submits == 0);
+    CHECK(vi3bRead(root / "shaders" / "wp343_mixed_a.frag").find("uniform sampler2D in_t_b;") !=
+          std::string::npos);
+    // What it said is the Graph's line too.
+    REQUIRE_FALSE(said.isEmpty());
+    CHECK(said.back().startsWith(QStringLiteral("Copied engine://passthrough to shaders/wp343_mixed_a.frag")));
+
+    // Decision 6: the Frame Plan's entries say the Graph has the same.
+    auto *order = fixture.widget.findChild<QPushButton *>(QStringLiteral("pelican.framePlanOrderNodes"));
+    REQUIRE(order != nullptr);
+    CHECK(order->toolTip().contains(QStringLiteral("in the Graph")));
+    auto *fix = fixture.widget.findChild<QAction *>(QStringLiteral("pelican.framePlan.fixSockets"));
+    REQUIRE(fix != nullptr);
+    CHECK(fix->toolTip().contains(QStringLiteral("in the Graph")));
+}
 } // namespace PelicanStudio

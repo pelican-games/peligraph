@@ -2947,6 +2947,22 @@ TEST_CASE("GL-1 the plan's passes no graph node made are folded nodes, read only
     REQUIRE(model.leaveScope());
     CHECK_FALSE(model.foldedView());
     CHECK(folded(model.foldedNodes(), "feature:bloom").decomposable);
+    // GL-5d, decision 4: what Expand to edit… runs, from the root -- the
+    // folded node's right-click -- as from inside it: a material pass no
+    // feature made is decomposed, a feature with a template replaced, and a
+    // graph node has neither.
+    const auto decompose = model.foldedNodeExpand("gbuffer");
+    CHECK(decompose.kind == "decompose");
+    CHECK(decompose.graph == "main_render");
+    CHECK(decompose.pass == "gbuffer");
+    const auto replace = model.foldedNodeExpand("feature:bloom");
+    CHECK(replace.kind == "replace");
+    CHECK(replace.feature == "engine://features/bloom.json");
+    CHECK(model.foldedNodeExpand("blur").kind.empty());
+    // Inside a folded view the trail decides, not the id.
+    REQUIRE(model.enterFolded("gbuffer"));
+    CHECK(model.foldedNodeExpand("gbuffer").kind.empty());
+    REQUIRE(model.leaveScope());
 }
 
 // GL-2b (design_graph_layers 3.2, 4, 5.1). A frame plan from an engine that

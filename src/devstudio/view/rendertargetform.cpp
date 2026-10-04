@@ -280,4 +280,23 @@ void presentNewRenderTarget(RenderTargetForm &form,
                  authoring.render_target_usages);
 }
 
+bool presentRenderTargetEdit(RenderTargetForm &form, const FramePlanAuthoring &authoring,
+                             const std::string &name) {
+    const auto *row = authoring.findRenderTarget(name);
+    if (row == nullptr) return false;
+    if (row->editable) {
+        form.present(RenderTargetForm::Mode::edit,
+                     renderTargetFormValues(row->authored.empty() ? row->declaration
+                                                                  : row->authored),
+                     authoring.render_target_formats, authoring.render_target_usages);
+        return true;
+    }
+    form.present(RenderTargetForm::Mode::read_only, renderTargetFormValues(row->declaration),
+                 authoring.render_target_formats, authoring.render_target_usages,
+                 QObject::tr("Read-only: %1.")
+                     .arg(QString::fromStdString(framePlanRenderTargetOrigin(
+                         row->source, name, authoring.preset_name))));
+    return true;
+}
+
 } // namespace PelicanStudio

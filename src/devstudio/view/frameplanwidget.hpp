@@ -203,6 +203,27 @@ class FramePlanWidget final : public QWidget {
     // connected input (engine://passthrough is copied into the project
     // first). The Pass Editor's Fix sockets comes here.
     void fixSockets(const QString &graph, const QString &pass);
+    // GL-5d, decision 2: the same, for a pass a graph node draws. When
+    // engine://passthrough is copied, `graph_fragment` moves the node onto the
+    // copy (its shader.fragment, the Graph tab's edit) instead of the
+    // edit_preset_pass a pass of the rendering section takes; false when it
+    // could not.
+    void fixSockets(const QString &graph, const QString &pass,
+                    std::function<bool(const QString &reference)> graph_fragment);
+    // VI-3b. Make sockets variadic on one pass, as the canvas menu's entry: the
+    // block Fix sockets wrote, back to the line it replaced.
+    void makeSocketsVariadic(const QString &graph, const QString &pass);
+    // Order...: the node order dialog (the Features tab's, through
+    // setNodeOrderAction) on the plan this panel holds. The toolbar's button
+    // and the Graph's Order… (GL-5d, decision 1) come here.
+    void orderNodes();
+    // GL-5d. Run `action` once this panel has read the plan and the authoring
+    // context again -- the Graph tab runs this panel's Fix sockets, Make
+    // sockets variadic and Order... through it while the panel may be out of
+    // view (it reads nothing then, N-8). The status lines the action leaves,
+    // and the one its edit ends with, are handed to `said` too.
+    void whenRead(std::function<void()> action,
+                  std::function<void(const QString &line)> said = {});
     // LP-4b. The view axes (view_axes) of the node that runs `task` in the
     // current frame plan, for the Task Editor's View field. Empty when the
     // plan holds no such task or its family has no axes.

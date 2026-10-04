@@ -2672,6 +2672,11 @@ class GraphCanvasModel {
     // leaving it), and what "Expand to edit…" runs from here.
     [[nodiscard]] bool foldedEditRefused() const noexcept { return folded_refused_; }
     [[nodiscard]] GraphCanvasFoldedExpand foldedExpand() const;
+    // GL-5d, decision 4: the same for a folded node of the root canvas, by
+    // its id (its right-click): a material pass no feature made is decomposed,
+    // a feature's fold -- or a pass inside one -- is replaced by the feature's
+    // loop version when the engine ships one. Empty kind for anything else.
+    [[nodiscard]] GraphCanvasFoldedExpand foldedNodeExpand(std::string_view id) const;
     static constexpr std::string_view foldedEditNotice =
         "This is the engine's folded implementation: expand it to edit.";
 

@@ -625,6 +625,11 @@ class GraphCanvasScene final : public QGraphicsScene {
     std::function<bool(QGraphicsItem &item, const QPoint &screen)> foldItemMenu;
     // The canvas menu's entries for the picked nodes (Fold into group…).
     std::function<void(QMenu &menu)> foldMenuEntries;
+    // GL-5d: the canvas menu over node `node` of `scope` (a folded node's id
+    // at the root), or -- `line` -- over a line into that pass: the owner
+    // picks it and adds the entries that act on it.
+    std::function<void(QMenu &menu, const std::string &scope, const std::string &node, bool line)>
+        nodeMenuEntries;
     // Let go of everything picked on the canvas (a group's heading was
     // picked instead).
     void clearPicks();
@@ -998,6 +1003,25 @@ class GraphCanvasWidget final : public QWidget {
     void setFoldedExpandActions(
         std::function<void(const QString &graph, const QString &pass)> decompose,
         std::function<void(const QString &feature)> replace);
+    // GL-5d, decisions 1 and 2. What only the Frame Plan offered, on the node
+    // picked here -- its right-click and a row of buttons in the detail
+    // column fire the named actions pelican.graphCanvas.orderPasses,
+    // .fixSockets, .makeSocketsVariadic (and .editTarget, .deleteTarget,
+    // .expandToEdit, which this tab carries out itself). `order` is the Frame
+    // Plan's Order... (offered on a pass of the rendering section);
+    // `fix_sockets` / `variadic_sockets` its Fix sockets / Make sockets
+    // variadic on the plan's pass (`graph` is the plan's): the rendering
+    // section's, or the one a root fullscreen or raster node made, for which
+    // `graph_fragment` moves the node onto a copied shader.
+    void setFramePlanPassActions(
+        std::function<void()> order,
+        std::function<void(const QString &graph, const QString &pass,
+                           std::function<bool(const QString &reference)> graph_fragment)>
+            fix_sockets,
+        std::function<void(const QString &graph, const QString &pass)> variadic_sockets);
+    // GL-5d: a line one of those left on the Frame Plan's status row, on
+    // this tab's notice.
+    void showFramePlanLine(const QString &line);
     // The same ingestion boundary the production RPC callback uses.
     void receiveResult(qint64 request_id, const QByteArray &result_json);
     void receiveFailure(qint64 request_id, const QString &message);

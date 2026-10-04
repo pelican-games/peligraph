@@ -260,6 +260,8 @@ public:
     nodes->addItems(names);
     layout->addWidget(nodes);
     notice = new QLabel(tr("Loading saved orders..."), this);
+    // GL-5d: named, so a scenario reads what the engine said of Apply.
+    notice->setObjectName("pelican.frameNodeOrder.notice");
     notice->setWordWrap(true);
     layout->addWidget(notice);
     auto *buttons = new QHBoxLayout;

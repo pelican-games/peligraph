@@ -1,0 +1,86 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {},
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "render_targets": [
+      {
+        "name": "left_color",
+        "extent_scale": 1,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "explicit(R16G16B16A16_SFLOAT)",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      },
+      {
+        "name": "right_color",
+        "extent_scale": 1,
+        "format": "R16G16B16A16_SFLOAT",
+        "format_class": "explicit(R16G16B16A16_SFLOAT)",
+        "usage": [
+          "COLOR_ATTACHMENT",
+          "SAMPLED"
+        ]
+      }
+    ],
+    "rendering_passes": [
+      {
+        "name": "main_render",
+        "passes": [
+          {
+            "name": "left",
+            "type": "fullscreen",
+            "input": [],
+            "output": {
+              "color": [
+                "left_color"
+              ],
+              "depth": null
+            },
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://passthrough"
+            }
+          },
+          {
+            "name": "right",
+            "type": "fullscreen",
+            "input": [],
+            "output": {
+              "color": [
+                "right_color"
+              ],
+              "depth": null
+            },
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://passthrough"
+            }
+          },
+          {
+            "name": "present",
+            "type": "fullscreen",
+            "input": [
+              "left_color",
+              "right_color"
+            ],
+            "output": {
+              "color": [
+                "display"
+              ],
+              "depth": null
+            },
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://passthrough"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

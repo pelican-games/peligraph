@@ -8,6 +8,7 @@
 #include "graphcanvasrenderfields.hpp"
 #include "graphcanvasvaluefields.hpp"
 #include "graphcanvaswidget.hpp"
+#include "rendertargetform.hpp"
 #include "graphfoldgroups.hpp"
 #include "inspectormodel.hpp"
 #include "graphcomposition.hpp"
@@ -37,6 +38,7 @@
 #include <QPainter>
 #include <QGraphicsScene>
 #include <QGraphicsProxyWidget>
+#include <QGraphicsSceneContextMenuEvent>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsView>
@@ -7032,8 +7034,9 @@ namespace {
 
 // Blank's context with the engine's display, a target the project declared,
 // any `extra` names, and the vocabulary the form offers.
-Json gl5bAuthoring(const std::vector<std::string> &extra = {}) {
-    auto context = gl1eAuthoring({});
+Json gl5bAuthoring(const std::vector<std::string> &extra = {},
+                   const std::vector<std::string> &inputs = {}) {
+    auto context = gl1eAuthoring(inputs);
     auto targets = Json::array(
         {Json{{"name", "display"},
               {"declaration", {{"name", "display"}, {"format_class", "display"}}},
@@ -7047,7 +7050,8 @@ Json gl5bAuthoring(const std::vector<std::string> &extra = {}) {
     for (const auto &name : extra)
         targets.push_back({{"name", name},
                            {"declaration", {{"name", name}, {"format", "R16G16B16A16_SFLOAT"},
-                                            {"format_class", "scene"}}},
+                                            {"format_class", "scene"},
+                                            {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}},
                            {"editable", true},
                            {"source", "authoring"}});
     context["render_targets"] = std::move(targets);
@@ -7062,8 +7066,30 @@ Json gl5bAuthoring(const std::vector<std::string> &extra = {}) {
 struct Gl5bTab {
     RecordedCapability transport;
     std::vector<std::string> extra;
+    // GL-5d: present's `input`, the declarations the plan publishes for the
+    // graph's pass `shade` (none when null) and what it reads, and nodes the
+    // root holds beside gl1eRead's.
+    std::vector<std::string> inputs;
+    Json shade_inputs;
+    Json shade_reads = Json::array();
+    Json nodes = Json::array();
     std::set<qint64> answered;
     std::unique_ptr<PelicanStudio::GraphCanvasWidget> widget;
+
+    Json document() const {
+        auto read = gl1eRead();
+        for (const auto &node : nodes) read["nodes"].push_back(node);
+        return read;
+    }
+
+    Json plan() const {
+        auto plan = gl1ePlan(inputs);
+        if (!shade_inputs.is_null()) {
+            plan["nodes"][0]["pass_inputs"] = shade_inputs;
+            plan["nodes"][0]["reads"] = shade_reads;
+        }
+        return plan;
+    }
 
     qint64 record(const char *method, const QJsonObject &params) {
         RecordedCapability::Call call{QString::fromLatin1(method)};
@@ -7073,7 +7099,10 @@ struct Gl5bTab {
     }
 
     // GL-5c: `operations` the catalog offers beside the visual one's.
-    explicit Gl5bTab(const std::vector<std::string> &operations = {}) {
+    // GL-5d: `configure` sets the members above before anything is read.
+    explicit Gl5bTab(const std::vector<std::string> &operations = {},
+                     const std::function<void(Gl5bTab &)> &configure = {}) {
+        if (configure) configure(*this);
         auto capability = transport.capability();
         capability.requestFramePlan = [this](QString *) {
             transport.calls.push_back({QStringLiteral("get_frame_plan")});
@@ -7122,10 +7151,10 @@ struct Gl5bTab {
                 const auto &method = transport.calls[index].method;
                 if (answered.contains(id)) continue;
                 Json reply;
-                if (method == QLatin1String{"get_graph_instances"}) reply = gl1eRead();
-                else if (method == QLatin1String{"get_frame_plan"}) reply = gl1ePlan({});
+                if (method == QLatin1String{"get_graph_instances"}) reply = document();
+                else if (method == QLatin1String{"get_frame_plan"}) reply = plan();
                 else if (method == QLatin1String{"get_render_authoring_context"})
-                    reply = gl5bAuthoring(extra);
+                    reply = gl5bAuthoring(extra, inputs);
                 else continue;
                 answered.insert(id);
                 transport.deliver(id, QByteArray::fromStdString(reply.dump()));
@@ -7161,7 +7190,8 @@ struct Gl5bTab {
         values.name = name;
         CHECK(sent("edit_render_targets") ==
               PelicanStudio::framePlanRenderTargetAddRequest(
-                  PelicanStudio::framePlanAuthoringFromContext(gl5bAuthoring(extra)), values)
+                  PelicanStudio::framePlanAuthoringFromContext(gl5bAuthoring(extra, inputs)),
+                  values)
                   .params);
         answer("edit_render_targets", Json{{"status", "accepted"}, {"ticket", "gl5b-target"}});
         answer("get_edit_result", Json{{"status", "committed"},
@@ -7389,6 +7419,251 @@ TEST_CASE("GL-5c decisions 1, 3 and 4: the Frame Plan's Add opens the palette in
     CHECK(kind->currentData().toString() == QStringLiteral("explicit"));
     CHECK(format->currentText() == QStringLiteral("R16G16B16A16_SFLOAT"));
     tab.form()->close();
+}
+
+// --- GL-5d: what only the Frame Plan offered, on the Graph.
+
+namespace {
+
+// The objectNames of the canvas menu a right-click over `item` opens (it is
+// closed again at once).
+QStringList canvasMenuOver(QGraphicsScene &scene, QGraphicsItem &item) {
+    QStringList names;
+    bool seen = false;
+    QTimer reader;
+    reader.setInterval(0);
+    QObject::connect(&reader, &QTimer::timeout, &scene, [&] {
+        for (QWidget *widget : QApplication::topLevelWidgets()) {
+            auto *menu = qobject_cast<QMenu *>(widget);
+            if (menu == nullptr || !menu->isVisible()) continue;
+            for (QAction *action : menu->actions())
+                if (!action->objectName().isEmpty()) names << action->objectName();
+            seen = true;
+            menu->close();
+        }
+    });
+    reader.start();
+    QGraphicsSceneContextMenuEvent event{QEvent::GraphicsSceneContextMenu};
+    event.setScenePos(item.sceneBoundingRect().center());
+    event.setScreenPos(QPoint{100, 100});
+    QApplication::sendEvent(&scene, &event);
+    reader.stop();
+    QCoreApplication::processEvents();
+    REQUIRE(seen);
+    return names;
+}
+
+} // namespace
+
+TEST_CASE("GL-5d Order..., Fix sockets and Make sockets variadic are the Frame Plan's on the picked "
+          "pass's right-click and detail column; Edit target... and Delete target send the Frame "
+          "Plan's edit_render_targets",
+          "[devstudio][graph-canvas][scene][gl5d]") {
+    (void)application();
+    const auto root = std::filesystem::temp_directory_path() / "pelican_gl5d_scene";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "shaders");
+    // shade draws with a project shader whose sockets Fix sockets wrote.
+    {
+        const auto fixed = PelicanStudio::fixShaderSockets(
+            *PelicanStudio::engineFragmentSource(PelicanStudio::EnginePassthroughFragment), 0,
+            {"old_image"});
+        REQUIRE(fixed.ok());
+        std::ofstream{root / "shaders" / "shade.frag", std::ios::binary} << fixed.source;
+    }
+    const auto reference = [](const char *id, const char *target) {
+        return Json{{"id", id},
+                    {"op", "render.target_ref"},
+                    {"parameters", {{"name", target}}},
+                    {"outputs", Json::array({"resource"})}};
+    };
+    Gl5bTab tab{{}, [&](Gl5bTab &self) {
+                    // present reads shade's image and other_color; spare is
+                    // declared and nothing reads it.
+                    self.inputs = {"shade__color", "other_color"};
+                    self.extra = {"spare"};
+                    self.shade_inputs = gl1ePassthrough();
+                    self.shade_inputs["fragment"] = "project://shaders/shade";
+                    self.shade_reads = Json::array({"old_image"});
+                    self.nodes = Json::array(
+                        {reference("other_ref", "other_color"), reference("spare_ref", "spare")});
+                }};
+    auto &widget = *tab.widget;
+    widget.setProjectRoot(root);
+    int ordered = 0;
+    std::vector<std::pair<QString, QString>> fixed;
+    std::vector<std::pair<QString, QString>> variadic;
+    std::function<bool(const QString &)> fragment;
+    widget.setFramePlanPassActions(
+        [&] { ++ordered; },
+        [&](const QString &graph, const QString &pass,
+            std::function<bool(const QString &)> graph_fragment) {
+            fixed.emplace_back(graph, pass);
+            fragment = std::move(graph_fragment);
+        },
+        [&](const QString &graph, const QString &pass) { variadic.emplace_back(graph, pass); });
+    auto &scene = widget.scene();
+    const auto action = [&](const char *name) {
+        auto *found = widget.findChild<QAction *>(QString::fromLatin1(name));
+        REQUIRE(found != nullptr);
+        return found;
+    };
+    const auto button = [&](const char *name) {
+        auto *found = widget.findChild<QPushButton *>(
+            QStringLiteral("pelican.graphCanvasNodeActions.") + QString::fromLatin1(name));
+        REQUIRE(found != nullptr);
+        return found;
+    };
+    const auto pick = [&](const char *node) {
+        scene.selectNode(node);
+        QCoreApplication::processEvents();
+    };
+    const auto fire = [&](const char *name) {
+        REQUIRE(action(name)->isEnabled());
+        action(name)->trigger();
+        // Queued: a dialog may open, and a menu may still be dispatching.
+        QCoreApplication::processEvents();
+    };
+    auto *notice = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasNotice"));
+    REQUIRE(notice != nullptr);
+
+    // Decision 1: Order… on the rendering section's pass, not on a graph node.
+    pick("present");
+    CHECK(button("orderPasses")->isVisible());
+    fire("pelican.graphCanvas.orderPasses");
+    CHECK(ordered == 1);
+    // Decision 2: and Fix sockets on it, the Frame Plan's on the plan's pass.
+    CHECK(button("fixSockets")->isVisible());
+    fire("pelican.graphCanvas.fixSockets");
+    REQUIRE(fixed.size() == 1);
+    CHECK(fixed[0] == std::pair{QStringLiteral("main_render"), QStringLiteral("present")});
+    CHECK_FALSE(fragment);
+    {
+        auto *item = nodeItem(scene, QStringLiteral("present"));
+        REQUIRE(item != nullptr);
+        const auto names = canvasMenuOver(scene, *item);
+        CHECK(names.contains(QStringLiteral("pelican.graphCanvas.orderPasses")));
+        CHECK(names.contains(QStringLiteral("pelican.graphCanvas.fixSockets")));
+        CHECK_FALSE(names.contains(QStringLiteral("pelican.graphCanvas.expandToEdit")));
+    }
+    // A line into present offers Fix sockets beside its Delete.
+    {
+        QGraphicsItem *line = nullptr;
+        for (QGraphicsItem *item : scene.items())
+            if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasPassInputEdgeItem})
+                line = item;
+        REQUIRE(line != nullptr);
+        const auto names = canvasMenuOver(scene, *line);
+        CHECK(names.contains(QStringLiteral("pelican.graphCanvas.fixSockets")));
+        CHECK(names.contains(QStringLiteral("pelican.graphCanvas.deletePassInput")));
+        CHECK_FALSE(names.contains(QStringLiteral("pelican.graphCanvas.orderPasses")));
+    }
+
+    // The graph's own pass: no Order…; Fix sockets moves the node onto the
+    // copy with one set_node_parameters; its fixed shader can be variadic again.
+    pick("shade");
+    CHECK_FALSE(button("orderPasses")->isVisible());
+    CHECK_FALSE(action("pelican.graphCanvas.orderPasses")->isEnabled());
+    fire("pelican.graphCanvas.fixSockets");
+    REQUIRE(fixed.size() == 2);
+    CHECK(fixed[1] == std::pair{QStringLiteral("main_render"), QStringLiteral("shade")});
+    REQUIRE(fragment);
+    const int edits = tab.transport.countOf(QStringLiteral("edit_graph_document"));
+    CHECK(fragment(QStringLiteral("project://shaders/shade_2")));
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_graph_document")) == edits + 1);
+    const auto moved = tab.sent("edit_graph_document");
+    REQUIRE(moved.size() == 1);
+    CHECK(moved[0].value("op", std::string{}) == "set_node_parameters");
+    CHECK(moved[0].value("node", std::string{}) == "shade");
+    CHECK(moved[0].at("parameters").at("shader").at("fragment") == "project://shaders/shade_2");
+    tab.answer("edit_graph_document", Json{{"status", "accepted"}, {"ticket", "gl5d-shade"}});
+    tab.answer("get_edit_result", Json{{"status", "committed"},
+                                       {"committed", true},
+                                       {"source_digest", {{"hex", "gl1e-root"}}}});
+    tab.reads();
+    pick("shade");
+    CHECK(button("makeSocketsVariadic")->isVisible());
+    fire("pelican.graphCanvas.makeSocketsVariadic");
+    REQUIRE(variadic.size() == 1);
+    CHECK(variadic[0] == std::pair{QStringLiteral("main_render"), QStringLiteral("shade")});
+
+    // Decision 3: Edit target… opens the Frame Plan's form in edit mode, and
+    // OK sends its replace request.
+    pick("spare_ref");
+    CHECK(button("editTarget")->isVisible());
+    CHECK(button("deleteTarget")->isVisible());
+    CHECK_FALSE(button("fixSockets")->isVisible());
+    {
+        auto *item = nodeItem(scene, QStringLiteral("spare_ref"));
+        REQUIRE(item != nullptr);
+        const auto names = canvasMenuOver(scene, *item);
+        CHECK(names.contains(QStringLiteral("pelican.graphCanvas.editTarget")));
+        CHECK(names.contains(QStringLiteral("pelican.graphCanvas.deleteTarget")));
+    }
+    fire("pelican.graphCanvas.editTarget");
+    REQUIRE(tab.form() != nullptr);
+    CHECK(tab.form()->isVisible());
+    auto *name = tab.form()->findChild<QLineEdit *>(QStringLiteral("pelican.renderTargetForm.name"));
+    REQUIRE(name != nullptr);
+    CHECK(name->text() == QStringLiteral("spare"));
+    auto *ok = tab.form()->findChild<QPushButton *>(QStringLiteral("pelican.renderTargetForm.ok"));
+    REQUIRE(ok != nullptr);
+    ok->click();
+    QCoreApplication::processEvents();
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_render_targets")) == 1);
+    const auto authoring =
+        PelicanStudio::framePlanAuthoringFromContext(gl5bAuthoring(tab.extra, tab.inputs));
+    PelicanStudio::RenderTargetFormValues values;
+    QString unread;
+    REQUIRE(static_cast<PelicanStudio::RenderTargetForm *>(tab.form())->readValues(values, unread));
+    CHECK(tab.sent("edit_render_targets") ==
+          PelicanStudio::framePlanRenderTargetReplaceRequest(authoring, "spare", values).params);
+    tab.answer("edit_render_targets", Json{{"status", "accepted"}, {"ticket", "gl5d-edit"}});
+    tab.answer("get_edit_result", Json{{"status", "committed"},
+                                       {"committed", true},
+                                       {"source_digest", {{"hex", "gl1e-root"}}}});
+    CHECK(notice->text() == QStringLiteral("Render target spare saved."));
+    tab.reads();
+
+    // Delete target on a target present reads: the Frame Plan's remove
+    // request goes as it is, and the engine's refusal is the line.
+    pick("other_ref");
+    fire("pelican.graphCanvas.deleteTarget");
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_render_targets")) == 2);
+    CHECK(tab.sent("edit_render_targets") ==
+          PelicanStudio::framePlanRenderTargetRemoveRequest(authoring, "other_color").params);
+    CHECK(tab.transport.countOf(QStringLiteral("edit_graph_document")) == edits + 1);
+    tab.answer("edit_render_targets",
+               Json{{"status", "rejected"},
+                    {"error", {{"code", "render_target_referenced"},
+                               {"message", "other_color is still used by present"},
+                               {"name", "other_color"},
+                               {"users", Json::array({"present"})}}}});
+    CHECK(notice->toolTip().startsWith(QStringLiteral("other_color is still used by present")));
+
+    // Delete target on one nothing uses: its reference goes first, then,
+    // once that committed, the declaration.
+    pick("spare_ref");
+    fire("pelican.graphCanvas.deleteTarget");
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_graph_document")) == edits + 2);
+    const auto removed = tab.sent("edit_graph_document");
+    REQUIRE(removed.size() == 1);
+    CHECK(removed[0].value("op", std::string{}) == "remove_node");
+    CHECK(removed[0].value("node", std::string{}) == "spare_ref");
+    CHECK(tab.transport.countOf(QStringLiteral("edit_render_targets")) == 2);
+    tab.answer("edit_graph_document", Json{{"status", "accepted"}, {"ticket", "gl5d-ref"}});
+    tab.answer("get_edit_result", Json{{"status", "committed"},
+                                       {"committed", true},
+                                       {"source_digest", {{"hex", "gl1e-root"}}}});
+    tab.nodes = Json::array({reference("other_ref", "other_color")});
+    tab.reads();
+    widget.poll();
+    QCoreApplication::processEvents();
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_render_targets")) == 3);
+    CHECK(tab.sent("edit_render_targets") ==
+          PelicanStudio::framePlanRenderTargetRemoveRequest(authoring, "spare").params);
+    std::filesystem::remove_all(root);
 }
 
 // --- UX-1: how the Graph feels in the hand.

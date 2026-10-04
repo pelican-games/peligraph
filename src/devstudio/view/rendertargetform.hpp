@@ -99,4 +99,14 @@ void presentNewRenderTarget(RenderTargetForm &form,
                             const std::string &name = {},
                             const std::optional<RenderTargetFormValues> &kind = std::nullopt);
 
+// GL-5d, decision 3. A declared target opened in the form, wherever it is
+// opened -- a double-click on the Frame Plan's resource, the Graph's Edit
+// target… on a render.target_ref: in edit mode on what the project wrote for
+// it (the authored declaration, else the composed one) when the editor owns it,
+// read only with the line that says where it was declared otherwise. OK hands
+// the submit the values; the RPC is framePlanRenderTargetReplaceRequest's.
+// False, with nothing shown, when the context declares no target `name`.
+bool presentRenderTargetEdit(RenderTargetForm &form, const FramePlanAuthoring &authoring,
+                             const std::string &name);
+
 } // namespace PelicanStudio

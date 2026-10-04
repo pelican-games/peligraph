@@ -1518,6 +1518,14 @@ std::string framePlanRenderTargetRejection(const Json &error,
         return name + " is still used by " + join(users) +
                ": disconnect it there before deleting or renaming it.";
     }
+    // GL-5d, decision 3: a graph's render.target_ref still names it (the
+    // composition refuses the candidate, graph.target_ref_unknown@1).
+    if (code == "graph.target_ref_unknown@1") {
+        const auto node = textOr(error, "node");
+        return name + " is still named by the Graph's render.target_ref " +
+               (node.empty() ? std::string{"node"} : node) +
+               ": delete that node before deleting or renaming the target.";
+    }
     if (code == "render_target_not_editable")
         return name + " cannot be changed here: it is " +
                framePlanRenderTargetOrigin(textOr(error, "source"), name,

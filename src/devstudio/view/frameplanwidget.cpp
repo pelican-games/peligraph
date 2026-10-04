@@ -741,17 +741,13 @@ struct FramePlanWidget::Impl {
         // N-7 rule 1: the gesture is described where the gesture is made.
         auto *order_nodes = new QPushButton(owner.tr("Order..."), &owner);
         order_nodes->setObjectName(QStringLiteral("pelican.framePlanOrderNodes"));
+        // GL-5d, decision 6: the Graph's Order… on a rendering-section pass
+        // is this one.
+        order_nodes->setToolTip(owner.tr(
+            "The order of the plan's nodes (data dependencies still decide). The same as "
+            "Order… on a pass of the rendering section in the Graph."));
         toolbar->addWidget(order_nodes);
-        QObject::connect(order_nodes, &QPushButton::clicked, &owner, [this] {
-            if (!model || !node_order_action) return;
-            if (!model->runtime_generation || *model->runtime_generation == 0) {
-                showStatus(owner.tr("Node ordering needs a published runtime generation"), owner.tr("Node ordering requires a published runtime generation. Refresh the Frame Plan first."));
-                return;
-            }
-            QStringList names;
-            for (const auto &node : model->nodes) names.push_back(QString::fromStdString(node.name));
-            node_order_action(QString::fromStdString(model->graph), names, *model->runtime_generation);
-        });
+        QObject::connect(order_nodes, &QPushButton::clicked, &owner, [this] { orderNodes(); });
         auto *edit_task = new QPushButton(owner.tr("Edit task"), &owner);
         edit_task->setObjectName(QStringLiteral("pelican.framePlanEditTask"));
         edit_task_button = edit_task;
@@ -789,6 +785,11 @@ struct FramePlanWidget::Impl {
         auto *new_target = new QPushButton(owner.tr("New render target..."), &owner);
         new_target->setObjectName(
             QStringLiteral("pelican.framePlanNewRenderTarget"));
+        // GL-5d, decision 6.
+        new_target->setToolTip(owner.tr(
+            "Declare a render target. The same form as the Graph's New render target… (a "
+            "render.target_ref's combo); a double-click on a resource edits it, as Edit "
+            "target… on its reference in the Graph does."));
         toolbar->addWidget(new_target);
         auto *new_material_pass =
             new QPushButton(owner.tr("Add material pass..."), &owner);
@@ -1119,6 +1120,10 @@ struct FramePlanWidget::Impl {
         // entries and acting on the node right-clicked (or picked).
         auto *fix_sockets = new QAction(QStringLiteral("Fix sockets"), &owner);
         fix_sockets->setObjectName(QStringLiteral("pelican.framePlan.fixSockets"));
+        // GL-5d, decision 6: the Graph offers the same on the pass.
+        fix_sockets->setToolTip(owner.tr(
+            "One fixed declaration per connected input, in the pass's shader. The same as "
+            "Fix sockets on the pass in the Graph (its right-click or its detail column)."));
         owner.addAction(fix_sockets);
         QObject::connect(fix_sockets, &QAction::triggered, &owner, [this] {
             if (const auto node = logical_scene->insertAnchor()) fixSockets(*node);
@@ -1128,6 +1133,9 @@ struct FramePlanWidget::Impl {
             new QAction(QStringLiteral("Make sockets variadic"), &owner);
         variadic_sockets->setObjectName(
             QStringLiteral("pelican.framePlan.makeSocketsVariadic"));
+        variadic_sockets->setToolTip(owner.tr(
+            "Put back the line Fix sockets replaced. The same as Make sockets variadic on the "
+            "pass in the Graph."));
         owner.addAction(variadic_sockets);
         QObject::connect(variadic_sockets, &QAction::triggered, &owner, [this] {
             if (const auto node = logical_scene->insertAnchor())
@@ -1677,6 +1685,13 @@ struct FramePlanWidget::Impl {
     // the long form as its tooltip, and an empty line takes the row with it.
     void showStatus(const QString &line, const QString &detail = {}) {
         setPanelNotice(status, line, detail.isEmpty() ? line : detail);
+        // GL-5d: an action the Graph tab ran here says it there too.
+        if (status_said) {
+            const auto said = status_said;
+            if (!running_when_read && pending_edit_request == 0 && pending_ticket.isEmpty())
+                status_said = {};
+            said(line);
+        }
     }
 
     // --- F-3. A shader that failed to reload is marked on the node that
@@ -2116,6 +2131,8 @@ struct FramePlanWidget::Impl {
                     showStatus(text(name + " is not a render target in the "
                                            "current authoring context."));
             }
+            // GL-5d: the Graph's action that waited for this context.
+            runWhenRead();
             return true;
         }
         if (request_id != 0 && request_id == pending_task_request) {
@@ -2292,15 +2309,26 @@ struct FramePlanWidget::Impl {
     // with `source` as its text (the engine's own, or it with its sockets
     // fixed), and the edit that makes the pass draw with the copy. The
     // pass's shader.defines stay as they are. Returns the file written.
-    std::optional<QString> copyEngineShader(const std::string &graph,
-                                            const std::string &pass,
-                                            std::string_view source) {
+    // GL-5d: a pass a graph node draws takes the copy through `graph_fragment`
+    // (the node's shader.fragment, the Graph tab's edit), not edit_preset_pass,
+    // which only reaches a pass the rendering section declares.
+    std::optional<QString> copyEngineShader(
+        const std::string &graph, const std::string &pass, std::string_view source,
+        const std::function<bool(const QString &reference)> &graph_fragment = {}) {
         try {
             const auto name = engineShaderCopyName(*project_root, pass);
             const auto written = writeShaderTemplate(*project_root, name, source);
             if (!written.created)
                 throw std::runtime_error(written.path.string() +
                                          " is already there");
+            if (graph_fragment) {
+                if (graph_fragment(text(written.reference)))
+                    return QStringLiteral("shaders/%1.frag").arg(text(name));
+                showStatus(owner.tr("Wrote %1, but the Graph could not move %2 onto it.")
+                               .arg(QStringLiteral("shaders/%1.frag").arg(text(name)),
+                                    text(pass)));
+                return std::nullopt;
+            }
             submitBuilt([this, graph, pass, reference = written.reference] {
                 return framePlanPassShaderRequest(authoring, graph, pass,
                                                   "fragment", reference);
@@ -2340,8 +2368,12 @@ struct FramePlanWidget::Impl {
 
     // --- VI-3b. Fix sockets: the variadic group becomes one fixed
     // declaration per connected input, in the pass's shader file.
-    void fixSockets(const FramePlanNodeKey &node) {
-        if (!model || node.graph != model->graph) return;
+    void fixSockets(const FramePlanNodeKey &node,
+                    const std::function<bool(const QString &reference)> &graph_fragment = {}) {
+        if (!model || node.graph != model->graph) {
+            showStatus(owner.tr("The frame plan has no pass %1: refresh it.").arg(text(node.name)));
+            return;
+        }
         const auto fix = framePlanSocketFix(authoring, *model, node.graph, node.name);
         if (!fix.refusal.empty()) {
             status->setStyleSheet({});
@@ -2362,8 +2394,8 @@ struct FramePlanWidget::Impl {
                 return;
             }
             const auto file = copyEngineShader(node.graph, node.name,
-                                               rewritten.source);
-            if (file && pending_edit_request != 0)
+                                               rewritten.source, graph_fragment);
+            if (file && (pending_edit_request != 0 || graph_fragment))
                 showStatus(owner.tr("Copied engine://passthrough to %1 with "
                                     "its sockets fixed; sending the new "
                                     "fragment...")
@@ -2405,7 +2437,10 @@ struct FramePlanWidget::Impl {
     // Make sockets variadic: the block Fix sockets wrote, back to the line it
     // replaced. A declaration written by hand is never touched.
     void makeSocketsVariadic(const FramePlanNodeKey &node) {
-        if (!model || node.graph != model->graph) return;
+        if (!model || node.graph != model->graph) {
+            showStatus(owner.tr("The frame plan has no pass %1: refresh it.").arg(text(node.name)));
+            return;
+        }
         const auto found = fixedSocketsSource(node);
         if (!found) {
             showStatus(owner.tr("%1's shader has no sockets Studio fixed.")
@@ -2711,6 +2746,7 @@ struct FramePlanWidget::Impl {
             authoring = {};
             authoring_reread = false;
             resumeRetry();
+            runWhenRead();
             return true;
         }
         if (request_id == pending_task_request) {
@@ -3018,30 +3054,15 @@ struct FramePlanWidget::Impl {
     }
 
     void openRenderTargetForm(const std::string &name) {
-        const auto *row = authoring.findRenderTarget(name);
-        if (row == nullptr) {
+        if (authoring.findRenderTarget(name) == nullptr) {
             // The context may simply be older than the plan on screen: ask
             // for it once and open the form when it answers.
             pending_form_target = name;
             requestAuthoringContext();
             return;
         }
-        if (row->editable) {
-            renderTargetForm().present(
-                RenderTargetForm::Mode::edit,
-                renderTargetFormValues(row->authored.empty() ? row->declaration
-                                                             : row->authored),
-                authoring.render_target_formats,
-                authoring.render_target_usages);
-            return;
-        }
-        renderTargetForm().present(
-            RenderTargetForm::Mode::read_only,
-            renderTargetFormValues(row->declaration),
-            authoring.render_target_formats, authoring.render_target_usages,
-            owner.tr("Read-only: %1.")
-                .arg(text(framePlanRenderTargetOrigin(row->source, name,
-                                                      authoring.preset_name))));
+        // GL-5d, decision 3: the Graph's Edit target… opens it the same way.
+        (void)presentRenderTargetEdit(renderTargetForm(), authoring, name);
     }
 
     // Q-12. The node that made this Frame Plan node's task, when a
@@ -3465,6 +3486,62 @@ struct FramePlanWidget::Impl {
         if (own) own();
     }
 
+    // --- GL-5d: the Graph's Order… / Fix sockets / Make sockets variadic are
+    // this panel's own, run from the Graph tab -- while this panel may be out
+    // of view, when it reads nothing on its own (N-8). Each waits for the plan
+    // and the authoring context read again, and the status lines it leaves go
+    // to `said` (the Graph's notice) as well as to this panel's row.
+
+    // Order...: the plan's nodes, in the plan's order, for the Features tab's
+    // node order dialog.
+    void orderNodes() {
+        if (!model || !node_order_action) {
+            showStatus(owner.tr("Node ordering is unavailable: no frame plan has been read."));
+            return;
+        }
+        if (!model->runtime_generation || *model->runtime_generation == 0) {
+            showStatus(owner.tr("Node ordering needs a published runtime generation"), owner.tr("Node ordering requires a published runtime generation. Refresh the Frame Plan first."));
+            return;
+        }
+        QStringList names;
+        for (const auto &node : model->nodes) names.push_back(QString::fromStdString(node.name));
+        node_order_action(QString::fromStdString(model->graph), names, *model->runtime_generation);
+    }
+
+    struct WhenRead {
+        std::function<void()> action;
+        std::function<void(const QString &)> said;
+    };
+    std::vector<WhenRead> when_read;
+    // Who hears this panel's status lines: the caller of the action running,
+    // and of the edit it sent, until that edit is done.
+    std::function<void(const QString &)> status_said;
+    bool running_when_read = false;
+
+    void whenRead(std::function<void()> action, std::function<void(const QString &)> said) {
+        when_read.push_back({std::move(action), std::move(said)});
+        if (planReadable()) readPlanAgain();
+        if (pending_authoring_request != 0) authoring_reread = true;
+        else requestAuthoringContext(true);
+        // Whatever could not be asked for, what is in hand is all there is.
+        runWhenRead();
+    }
+
+    // Once neither read is on its way.
+    void runWhenRead() {
+        if (when_read.empty() || pending_request != 0 || plan_reread ||
+            pending_authoring_request != 0 || authoring_reread)
+            return;
+        auto actions = std::exchange(when_read, {});
+        for (auto &entry : actions) {
+            status_said = std::move(entry.said);
+            running_when_read = true;
+            if (entry.action) entry.action();
+            running_when_read = false;
+            if (pending_edit_request == 0 && pending_ticket.isEmpty()) status_said = {};
+        }
+    }
+
     // Decision 3. What Edit pass / Edit task and a double-click open on the
     // Graph tab: a loop's copy (its body node), a task a render.compute node
     // made, and a pass the Graph edits (a graph node's, or the rendering
@@ -3728,6 +3805,8 @@ struct FramePlanWidget::Impl {
         owner.receiveResult(result_json);
         // Q-18: a commit landed while this read was out; it may predate it.
         if (std::exchange(plan_reread, false)) requestRefresh();
+        // GL-5d: the Graph's action that waited for this read.
+        runWhenRead();
     }
 
     void consumeGpuTimingResult(const QByteArray &result_json) {
@@ -3865,6 +3944,9 @@ struct FramePlanWidget::Impl {
             return;
         }
         showFailure(message);
+        // GL-5d: an action that waited runs on what is in hand, and says why
+        // it cannot.
+        runWhenRead();
     }
 
     // F-7: the Target combo's first entry is the whole frame, not a target;
@@ -5152,6 +5234,22 @@ void FramePlanWidget::observeEngineStatus(const nlohmann::json &status) {
 
 void FramePlanWidget::fixSockets(const QString &graph, const QString &pass) {
     impl_->fixSockets(FramePlanNodeKey{graph.toStdString(), pass.toStdString()});
+}
+
+void FramePlanWidget::fixSockets(const QString &graph, const QString &pass,
+                                 std::function<bool(const QString &reference)> graph_fragment) {
+    impl_->fixSockets(FramePlanNodeKey{graph.toStdString(), pass.toStdString()}, graph_fragment);
+}
+
+void FramePlanWidget::makeSocketsVariadic(const QString &graph, const QString &pass) {
+    impl_->makeSocketsVariadic(FramePlanNodeKey{graph.toStdString(), pass.toStdString()});
+}
+
+void FramePlanWidget::orderNodes() { impl_->orderNodes(); }
+
+void FramePlanWidget::whenRead(std::function<void()> action,
+                               std::function<void(const QString &line)> said) {
+    impl_->whenRead(std::move(action), std::move(said));
 }
 
 std::vector<FramePlanViewAxis> FramePlanWidget::taskViewAxes(

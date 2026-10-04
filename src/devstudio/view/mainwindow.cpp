@@ -841,6 +841,27 @@ void MainWindow::createWorkspace() {
             render_tabs->setCurrentWidget(render_features_);
             render_features_->replaceWithLoopVersion(feature);
         });
+    // GL-5d, decisions 1 and 2: the Graph's Order… / Fix sockets / Make
+    // sockets variadic are the Frame Plan's own, which reads the plan and the
+    // context again first (it may be behind the Graph tab) and says on the
+    // Graph's line what it did.
+    {
+        const auto said = [this](const QString &line) { graph_canvas_->showFramePlanLine(line); };
+        graph_canvas_->setFramePlanPassActions(
+            [this, said] { frame_plan_->whenRead([this] { frame_plan_->orderNodes(); }, said); },
+            [this, said](const QString &graph, const QString &pass,
+                         std::function<bool(const QString &)> graph_fragment) {
+                frame_plan_->whenRead(
+                    [this, graph, pass, graph_fragment = std::move(graph_fragment)] {
+                        frame_plan_->fixSockets(graph, pass, graph_fragment);
+                    },
+                    said);
+            },
+            [this, said](const QString &graph, const QString &pass) {
+                frame_plan_->whenRead(
+                    [this, graph, pass] { frame_plan_->makeSocketsVariadic(graph, pass); }, said);
+            });
+    }
     inspector_->setRayGroupAction([this, render_tabs](const QString &group) {
         docks_[FramePlanDock]->show();
         docks_[FramePlanDock]->raise();

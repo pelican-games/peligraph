@@ -6709,6 +6709,26 @@ GraphCanvasFoldedExpand GraphCanvasModel::foldedExpand() const {
     return expand;
 }
 
+GraphCanvasFoldedExpand GraphCanvasModel::foldedNodeExpand(std::string_view id) const {
+    GraphCanvasFoldedExpand expand;
+    if (folded_stash_ || !currentScope().empty()) return expand;
+    for (const auto &node : foldedNodes()) {
+        if (node.id != id) continue;
+        // As foldedExpand reads the trail: a material pass is its own step
+        // when no feature made it, else its feature's.
+        if (node.material && !node.feature_group && node.feature.empty()) {
+            expand.kind = "decompose";
+            expand.graph = plan_graph_;
+            expand.pass = node.id;
+        } else if (!node.feature.empty() && templates_.contains(node.feature)) {
+            expand.kind = "replace";
+            expand.feature = node.feature;
+        }
+        break;
+    }
+    return expand;
+}
+
 bool GraphCanvasModel::refuseFoldedEdit(const Json &ops) {
     // A drag inside the view moves nothing that is kept, and says nothing.
     const bool placement = ops.is_array() && std::ranges::all_of(ops, [](const Json &op) {
