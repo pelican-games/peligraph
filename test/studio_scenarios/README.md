@@ -66,8 +66,17 @@ includes the shutdown reason.
       "tab": "graph",                     // --tab, brought to the front at launch
       "probe_no_automation": true,        // first launch a Studio without the
                                           // flag and check no channel exists
+      "viewport": [720, 450],             // optional; the engine viewport's size
+                                          // in picture pixels (default 720x450),
+                                          // null to leave it free
       "steps": [ ... ]
     }
+
+The runner sends `viewport_size` right after connecting, before the first
+step, so the engine viewport keeps the same size whatever panels open or
+close and pixel points land on the same pixels from run to run (PX-2). The
+pixel-reading scenarios were measured at the default; changing it means
+measuring their points again.
 
 A step is either a **command**, sent to Studio as-is:
 
