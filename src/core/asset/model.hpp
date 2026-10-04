@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <span>
+#include <stdexcept>
 #include <vector>
 
 namespace Pelican::watch {
@@ -22,6 +23,18 @@ class ReloadTransactionGroup;
 namespace Pelican {
 
 struct PrimitiveMaterialBindingDocument;
+
+// MI-1: getModelTemplateByName of a name the container does not hold (and
+// that is no engine primitive or fragment reference). An edit that fails on
+// it names the model to the editor.
+class UnknownModelAssetError final : public std::out_of_range {
+    std::string model_;
+
+  public:
+    explicit UnknownModelAssetError(std::string model)
+        : std::out_of_range{"unknown model asset: " + model}, model_{std::move(model)} {}
+    const std::string &model() const noexcept { return model_; }
+};
 
 // MT-1: one primitive of a model as its file (or generated shape) declares it:
 // its stable GLB coordinates and the glTF material it carries there (`slot`,
@@ -87,6 +100,24 @@ DECLARE_MODULE(ModelAssetContainer) {
     // `materials` -- their template's primitives (bindings included), or a
     // live instance's own material (MT-2) -- by name.
     std::vector<std::string> modelsDrawingMaterials(std::span<const GlobalMaterialId> materials) const;
+
+    // MI-1 (register_model): whether the project file `reference` loads as a
+    // model named `name` the way a models[] entry loads at start -- resolved,
+    // read, inspected (no GPU allocation) and its glTF materials checked
+    // against the project's. Registers nothing; throws with the reason.
+    static void preflightModel(const std::string &name, const std::string &reference);
+    // MI-1: registers the models[] entry `name` of the asset_data the engine
+    // has published (ProjectBasicConfig::assetDataJson), as the constructor
+    // registers each entry at start: the same declaration, reload sources and
+    // logical resource. A template of that name held already from the same
+    // file is kept as it is. Throws (nothing registered) when the entry is
+    // not published, the name is held by another file, or it does not load.
+    void registerModel(const std::string &name);
+    // MI-1 (unregister_model): releases the template `name` and its reload
+    // declaration. nullopt: released, or not held. Otherwise the reason it is
+    // kept until the engine starts again (a live instance still draws it, or
+    // its animation rig may still be referenced); nothing is changed then.
+    std::optional<std::string> unregisterModel(const std::string &name);
 
     ModelAssetId assetIdForTesting(const std::string &name) const;
     std::uint64_t contentRevisionForTesting(const std::string &name) const;

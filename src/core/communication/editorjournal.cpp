@@ -1710,9 +1710,16 @@ EditFailure projectionFailure(const EditorProjectionResult &result,
             result.error ? result.error->data : OrderedJson::object(),
             message};
     case EditorProjectionErrorCode::AdapterPrepareFailed:
-    case EditorProjectionErrorCode::AdapterPublishFailed:
-        return EditFailure{EditorEditErrorCode::method_unavailable,
-                           OrderedJson{{"method", method}, {"adapter", path}}, message};
+    case EditorProjectionErrorCode::AdapterPublishFailed: {
+        OrderedJson fields{{"method", method}, {"adapter", path}};
+        // MI-1: a simplemodelview naming a model that is not registered.
+        if (result.error && result.error->data.is_object() &&
+            result.error->data.value("reason", std::string{}) == "model_unknown") {
+            fields["model"] = result.error->data.at("model");
+            fields["reason"] = "model_unknown";
+        }
+        return EditFailure{EditorEditErrorCode::method_unavailable, std::move(fields), message};
+    }
     case EditorProjectionErrorCode::CommandInvalid:
         if (message.starts_with("editor_preview_unsupported@1")) {
             return EditFailure{

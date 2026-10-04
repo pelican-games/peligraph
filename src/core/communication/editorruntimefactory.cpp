@@ -1956,6 +1956,12 @@ EditorProjectionResult materializeEditorProjection(
             binding_state.bindings = std::move(runtime_bindings);
         }
         return result;
+    } catch (const UnknownModelAssetError &error) {
+        // MI-1: as the transaction reports it (errorFromException).
+        return reject(EditorProjectionStatus::Failed,
+                      EditorProjectionErrorCode::AdapterPrepareFailed,
+                      error.what(), "/",
+                      {{"model", error.model()}, {"reason", "model_unknown"}});
     } catch (const std::exception &error) {
         return reject(EditorProjectionStatus::Failed,
                       EditorProjectionErrorCode::AdapterPrepareFailed,
@@ -2401,6 +2407,15 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         GET_MODULE(ProceduralGeometryContainer), runtime->modules.polygon_instances,
                         FastModuleContainer::tryGet<VulkanManageCore>(), runtime->modules.scene_loader.currentScene(), bytes);
                     prepared->commit(source_commit);
+                },
+                .source_published = [runtime](std::string_view bytes) {
+                    try {
+                        return runtime->modules.project_config.prepareAssetDataJson(
+                                   bytes, runtime->modules.path_resolver) ==
+                               runtime->modules.project_config.assetDataJson();
+                    } catch (const std::exception &) {
+                        return false;
+                    }
                 }});
         }
     }

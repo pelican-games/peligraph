@@ -1077,6 +1077,12 @@ std::vector<ModelAssetId> PolygonInstanceContainer::modelsDrawingMaterials(
     return result;
 }
 
+bool PolygonInstanceContainer::hasModelInstances(ModelAssetId asset_id) const {
+    for (std::uint32_t index = 0; index < slots.model_asset_ids.size(); ++index)
+        if (slots.instance_slots.alive(index) && slots.model_asset_ids[index] == asset_id) return true;
+    return false;
+}
+
 void PolygonInstanceContainer::resetSlot(std::uint32_t index) {
     slots.clearSlot(index);
     material_override_frames.erase(index);

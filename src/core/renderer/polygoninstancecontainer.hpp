@@ -552,6 +552,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     // MT-3: the models of the live instances that draw a primitive with one
     // of `materials` (a scene object's own material included).
     std::vector<ModelAssetId> modelsDrawingMaterials(std::span<const GlobalMaterialId> materials) const;
+    // MI-1 (unregister_model): whether a live instance draws the model.
+    bool hasModelInstances(ModelAssetId asset_id) const;
     bool removeModelInstance(ModelInstanceId id);
     void clear();
     void triggerUpdate();

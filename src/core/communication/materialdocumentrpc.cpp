@@ -25,6 +25,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -514,14 +515,17 @@ ProjectCandidateDocument creation(const std::string &reference, const std::files
 
 // asset_data.json is the engine's cached copy too (list_assets, the model
 // and material containers read it); a write publishes the new bytes to it.
-void publishAssetData(PathResolver &paths, std::string_view bytes) {
+// The answer is why the copy was not refreshed (nullopt: it was).
+std::optional<std::string> publishAssetData(PathResolver &paths, std::string_view bytes) {
     auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>();
-    if (config == nullptr) return;
+    if (config == nullptr) return "no project is open";
     try {
         config->publishAssetDataJson(config->prepareAssetDataJson(bytes, paths));
     } catch (const std::exception &error) {
         LOG_WARNING(logger, "asset_data.json written; the engine's copy was not refreshed: {}", error.what());
+        return error.what();
     }
+    return std::nullopt;
 }
 
 Json appliedLive(Json answer) {
@@ -533,7 +537,7 @@ Json appliedLive(Json answer) {
 Json appliedAtRestart(Json answer, const std::string &reason) {
     answer["applied"] = "restart_required";
     answer["restart_required"] = {{"reason", reason}};
-    LOG_WARNING(logger, "material document written; restart required: {}", reason);
+    LOG_WARNING(logger, "project document written; restart required: {}", reason);
     return answer;
 }
 
@@ -1736,6 +1740,240 @@ Json bindMaterial(const Json &params, PathResolver &paths, watch::ReloadService 
     return appliedLive(std::move(answer));
 }
 
+// --- MI-1: register_model / unregister_model.
+
+constexpr std::string_view modelPathInvalidCode = "model.path_invalid@1";
+constexpr std::string_view modelFormatUnsupportedCode = "model.format_unsupported@1";
+constexpr std::string_view modelFileMissingCode = "model.file_missing@1";
+constexpr std::string_view modelPathConflictCode = "model.path_conflict@1";
+constexpr std::string_view modelNameInvalidCode = "model.name_invalid@1";
+constexpr std::string_view modelNameConflictCode = "model.name_conflict@1";
+constexpr std::string_view modelLoadFailedCode = "model.load_failed@1";
+constexpr std::string_view modelUnknownNameCode = "model.unknown@1";
+constexpr std::string_view modelInUseCode = "model.in_use@1";
+constexpr std::string_view modelTransactionBusyCode = "model.transaction_busy@1";
+
+constexpr std::array<std::string_view, 3> modelExtensions{".glb", ".gltf", ".vrm"};
+
+void commitModelDocument(std::string_view method, const std::filesystem::path &project_root,
+                         const ProjectCandidateDocument &document) {
+    try {
+        (void)commitProjectDocuments(project_root, std::span{&document, std::size_t{1}});
+    } catch (const ProjectDocumentExternalModification &error) {
+        refuse(method, error.what(), externalModificationCode,
+               {{"path", document.reference}, {"expected", nullptr}, {"actual", nullptr}});
+    } catch (const ProjectDocumentTransactionBusy &error) {
+        refuse(method, error.what(), modelTransactionBusyCode, {{"path", error.path().generic_string()}});
+    }
+}
+
+// A project-relative model file as asset_data writes it (project:// taken
+// off), checked for its form only.
+std::string modelRelativePath(std::string_view method, const std::string &path) {
+    std::string relative = path;
+    if (relative.starts_with("project://")) relative = relative.substr(std::string_view{"project://"}.size());
+    const auto invalid = [&](const std::string &reason, const std::string &detail) {
+        refuse(method, "'" + path + "' " + detail, modelPathInvalidCode, {{"path", path}, {"reason", reason}});
+    };
+    if (relative.empty()) invalid("empty", "names no file");
+    if (relative.find('\\') != std::string::npos) invalid("backslash", "must use forward slashes");
+    if (relative.find("://") != std::string::npos || relative.front() == '/' ||
+        (relative.size() > 1 && relative[1] == ':'))
+        invalid("absolute", "must be a project:// or project-relative path");
+    if (relative.find('#') != std::string::npos)
+        invalid("fragment", "names a fragment; a model is registered by its whole file");
+    for (const auto &part : std::filesystem::path{relative})
+        if (part == ".." || part == ".") invalid("dot_segment", "must not contain '.' or '..' segments");
+    return relative;
+}
+
+std::string lowerModelExtension(const std::string &relative) {
+    auto extension = std::filesystem::path{relative}.extension().generic_string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    return extension;
+}
+
+void requireModelName(std::string_view method, const std::string &name) {
+    const auto invalid = [&](const std::string &reason, const std::string &detail) {
+        refuse(method, "model name '" + name + "' " + detail, modelNameInvalidCode,
+               {{"name", name}, {"reason", reason}});
+    };
+    if (name.empty()) invalid("empty", "is empty");
+    if (name.find('#') != std::string::npos) invalid("fragment", "must not contain '#'");
+    if (name.starts_with("engine://")) invalid("engine_reference", "must not be an engine:// reference");
+}
+
+// The asset_data models[] entries, or an empty array.
+const OrderedJson &listedModels(const AssetDataFile &asset_data) {
+    static const OrderedJson empty = OrderedJson::array();
+    const auto models = asset_data.json.find("models");
+    return models != asset_data.json.end() && models->is_array() ? *models : empty;
+}
+
+Json registerModelDocument(const Json &params, PathResolver &paths) {
+    constexpr std::string_view method = "register_model";
+    requireOnly(method, params, {"path", "name"});
+    const auto path = requireString(method, params, "path");
+    if (params.contains("name") && !params.at("name").is_string()) invalidParams(method, "'name' must be a string");
+
+    const auto relative = modelRelativePath(method, path);
+    const auto extension = lowerModelExtension(relative);
+    if (std::find(modelExtensions.begin(), modelExtensions.end(), extension) == modelExtensions.end()) {
+        auto supported = Json::array();
+        for (const auto value : modelExtensions) supported.push_back(std::string{value});
+        refuse(method, "'" + relative + "' is not a .glb, .gltf or .vrm file", modelFormatUnsupportedCode,
+               {{"path", relative}, {"extension", extension}, {"supported", std::move(supported)}});
+    }
+    try {
+        (void)paths.resolveExistingFile(relative);
+    } catch (const std::exception &error) {
+        refuse(method, "'" + relative + "' is not a file in the project: " + error.what(), modelFileMissingCode,
+               {{"path", relative}});
+    }
+
+    const auto asset_data = readAssetData(paths);
+    const auto normalized = normalizedOrNull(paths, relative);
+    for (const auto &entry : listedModels(asset_data)) {
+        if (!entry.is_object() || !entry.contains("path") || !entry.at("path").is_string()) continue;
+        auto listed = entry.at("path").get<std::string>();
+        if (listed.find('#') != std::string::npos || isEnginePrimitiveReference(listed)) continue;
+        if (listed.starts_with("project://")) listed = listed.substr(std::string_view{"project://"}.size());
+        if (listed == relative || (normalized && normalizedOrNull(paths, listed) == normalized)) {
+            const auto holder = entry.value("name", std::string{});
+            refuse(method, "'" + relative + "' is registered already as model '" + holder + "'",
+                   modelPathConflictCode, {{"path", relative}, {"name", holder}});
+        }
+    }
+
+    const auto name = params.contains("name") ? params.at("name").get<std::string>()
+                                              : std::filesystem::path{relative}.stem().generic_string();
+    requireModelName(method, name);
+    for (const auto &entry : listedModels(asset_data))
+        if (entry.is_object() && entry.value("name", std::string{}) == name)
+            refuse(method, "model '" + name + "' exists already", modelNameConflictCode, {{"name", name}});
+
+    // Read as the engine reads it at start, before anything is written.
+    try {
+        ModelAssetContainer::preflightModel(name, relative);
+    } catch (const std::exception &error) {
+        refuse(method, "'" + relative + "' does not load: " + error.what(), modelLoadFailedCode,
+               {{"path", relative}, {"message", error.what()}});
+    }
+
+    auto asset_json = asset_data.json;
+    if (!asset_json.contains("models") || !asset_json.at("models").is_array()) asset_json["models"] = OrderedJson::array();
+    asset_json["models"].push_back({{"name", name}, {"path", relative}});
+    try {
+        (void)parseAssetDataFormatJson(toJson(asset_json));
+    } catch (const std::exception &error) {
+        refuse(method, std::string{"asset_data would not load: "} + error.what(), modelLoadFailedCode,
+               {{"path", relative}, {"message", error.what()}});
+    }
+    const auto asset_bytes = renderJsonDocument(asset_json, asset_data.bytes);
+    commitModelDocument(method, paths.projectRoot(),
+                        replacement(asset_data.reference, asset_data.path, asset_data.digest, asset_bytes));
+    LOG_INFO(logger, "model '{}' registered from '{}'", name, relative);
+
+    Json answer{{"committed", true},
+                {"name", name},
+                {"path", relative},
+                {"asset_data_digest", projectDocumentDigest(asset_bytes)},
+                {"previous_asset_data_digest", asset_data.digest}};
+    if (const auto reason = publishAssetData(paths, asset_bytes))
+        return appliedAtRestart(std::move(answer), "the engine's copy of asset_data was not refreshed: " + *reason);
+    try {
+        if (auto *core = FastModuleContainer::tryGet<VulkanManageCore>()) core->waitIdle();
+        if (auto *models = FastModuleContainer::tryGet<ModelAssetContainer>()) {
+            models->registerModel(name);
+        } else {
+            // Made now, from the asset_data just published: it registers
+            // every listed model, this one with them.
+            (void)GET_MODULE(ModelAssetContainer);
+        }
+    } catch (const std::exception &error) {
+        return appliedAtRestart(std::move(answer),
+                                std::string{"the model could not be registered in place: "} + error.what());
+    }
+    return appliedLive(std::move(answer));
+}
+
+Json unregisterModelDocument(const Json &params, PathResolver &paths) {
+    constexpr std::string_view method = "unregister_model";
+    requireOnly(method, params, {"name"});
+    if (!params.contains("name") || !params.at("name").is_string()) invalidParams(method, "requires a string 'name'");
+    const auto name = params.at("name").get<std::string>();
+    const auto primitive = [&] {
+        refuse(method, "model '" + name + "' is an engine primitive; it is not unregistered", modelNameInvalidCode,
+               {{"name", name}, {"reason", "engine_primitive"}});
+    };
+    if (name.starts_with("engine://")) primitive();
+
+    const auto asset_data = readAssetData(paths);
+    const auto &models = listedModels(asset_data);
+    std::optional<std::size_t> index;
+    for (std::size_t candidate = 0; candidate < models.size(); ++candidate)
+        if (models.at(candidate).is_object() && models.at(candidate).value("name", std::string{}) == name)
+            index = candidate;
+    if (!index)
+        refuse(method, "asset_data declares no model '" + name + "'", modelUnknownNameCode, {{"name", name}});
+    const auto removed = models.at(*index);
+    if (isEnginePrimitiveReference(removed.value("path", std::string{}))) primitive();
+
+    // Every scene of the document as the editor holds it (prefab-generated
+    // objects included), as get_material_bindings counts `objects`.
+    std::size_t count = 0;
+    auto objects = Json::array();
+    if (const auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>()) {
+        for (const auto &scene : config->resolvedScene().scenes())
+            for (const auto &object : scene.objects)
+                for (const auto &component : object.components) {
+                    if (component.name != "simplemodelview" || !component.effective_json.is_object() ||
+                        component.effective_json.value("model", std::string{}) != name)
+                        continue;
+                    if (count++ < 8)
+                        objects.push_back(object.name.value_or(
+                            "#" + std::to_string(object.authoring_object_id.value)));
+                    break;
+                }
+    }
+    if (count != 0)
+        refuse(method, "model '" + name + "' is drawn by " + std::to_string(count) + " scene object(s)",
+               modelInUseCode, {{"name", name}, {"count", count}, {"objects", std::move(objects)}});
+
+    auto asset_json = asset_data.json;
+    asset_json.at("models").erase(*index);
+    try {
+        (void)parseAssetDataFormatJson(toJson(asset_json));
+    } catch (const std::exception &error) {
+        refuse(method, std::string{"asset_data would not load: "} + error.what(), documentInvalidCode,
+               {{"path", asset_data.reference}, {"reason", error.what()}});
+    }
+    const auto asset_bytes = renderJsonDocument(asset_json, asset_data.bytes);
+    commitModelDocument(method, paths.projectRoot(),
+                        replacement(asset_data.reference, asset_data.path, asset_data.digest, asset_bytes));
+    LOG_INFO(logger, "model '{}' unregistered", name);
+
+    Json answer{{"committed", true},
+                {"name", name},
+                {"removed", toJson(removed)},
+                {"asset_data_digest", projectDocumentDigest(asset_bytes)},
+                {"previous_asset_data_digest", asset_data.digest}};
+    if (const auto reason = publishAssetData(paths, asset_bytes))
+        return appliedAtRestart(std::move(answer), "the engine's copy of asset_data was not refreshed: " + *reason);
+    auto *container = FastModuleContainer::tryGet<ModelAssetContainer>();
+    if (container == nullptr) return appliedLive(std::move(answer));
+    try {
+        if (auto *core = FastModuleContainer::tryGet<VulkanManageCore>()) core->waitIdle();
+        if (const auto kept = container->unregisterModel(name))
+            return appliedAtRestart(std::move(answer), "the engine keeps the model until it starts again: " + *kept);
+    } catch (const std::exception &error) {
+        return appliedAtRestart(std::move(answer),
+                                std::string{"the model could not be released in place: "} + error.what());
+    }
+    return appliedLive(std::move(answer));
+}
+
 } // namespace
 
 void configureMaterialDocumentRpcHandlers(RpcServer &server, PathResolver &path_resolver,
@@ -1765,6 +2003,14 @@ void configureMaterialDocumentRpcHandlers(RpcServer &server, PathResolver &path_
     });
     server.setHandler("bind_material", [&path_resolver, reload_service](const Json &params) {
         return bindMaterial(params, path_resolver, reload_service);
+    });
+    // MI-1: a model file already in the project, listed in (or taken off)
+    // asset_data models[] and registered in (or released from) the engine.
+    server.setHandler("register_model", [&path_resolver](const Json &params) {
+        return registerModelDocument(params, path_resolver);
+    });
+    server.setHandler("unregister_model", [&path_resolver](const Json &params) {
+        return unregisterModelDocument(params, path_resolver);
     });
 }
 

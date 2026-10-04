@@ -123,6 +123,33 @@ class ReloadService;
 // material.binding_invalid@1 {model, reason},
 // material.transaction_busy@1 {path}, material.routing_conflict@1 {path,
 // material, routing: null, bound_by: [{model, routing}]}.
+//
+// MI-1: model files the editor has put in the project, registered and taken
+// back over RPC (the editor copies the file; the engine only lists it).
+//   register_model {path, name?} ->
+//     {committed, name, path, asset_data_digest, previous_asset_data_digest,
+//      applied: "live" | "restart_required", restart_required: {reason} | null}
+//     `path`: project-relative (project:// is taken off), a .glb / .gltf /
+//     .vrm file in the project; `name` defaults to the file name's stem.
+//     The file is read as a models[] entry is read at start before anything
+//     is written; then {name, path} is appended to asset_data models[] (one
+//     transaction, on the digest the handler read) and the model registered
+//     live (ModelAssetContainer::registerModel).
+//   unregister_model {name} ->
+//     {committed, name, removed: {name, path, material_bindings?},
+//      asset_data_digest, previous_asset_data_digest, applied, restart_required}
+//     Takes the entry off asset_data models[] (no file is erased) and
+//     releases the template; restart_required when a live instance or an
+//     animation rig keeps it.
+//   Refusals (nothing written): model.path_invalid@1 {path, reason:
+//   "empty" | "backslash" | "absolute" | "fragment" | "dot_segment"},
+//   model.format_unsupported@1 {path, extension, supported},
+//   model.file_missing@1 {path}, model.path_conflict@1 {path, name},
+//   model.name_invalid@1 {name, reason: "empty" | "fragment" |
+//   "engine_reference" | "engine_primitive"}, model.name_conflict@1 {name},
+//   model.load_failed@1 {path, message}, model.unknown@1 {name},
+//   model.in_use@1 {name, count, objects}, model.transaction_busy@1 {path},
+//   external_modification {path, expected, actual}.
 void configureMaterialDocumentRpcHandlers(RpcServer &server,
                                           PathResolver &path_resolver,
                                           watch::ReloadService *reload_service);

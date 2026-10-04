@@ -2272,6 +2272,16 @@ target_link_libraries(pelican_test_materialdocumentrpc_test PRIVATE pelican_shad
 if(COMMAND pelican_copy_shaderc_runtime)
     pelican_copy_test_shaderc_runtime(pelican_test_materialdocumentrpc_test)
 endif()
+# MI-1: a glb in a Blank project registered over RPC (register_model), drawn
+# live and by the next start, and taken back (unregister_model).
+pelican_define_test(modelregistrationrpc_test GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
+target_include_directories(pelican_test_modelregistrationrpc_test PRIVATE ${stb_SOURCE_DIR})
+target_compile_definitions(pelican_test_modelregistrationrpc_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+target_link_libraries(pelican_test_modelregistrationrpc_test PRIVATE pelican_shaderc)
+if(COMMAND pelican_copy_shaderc_runtime)
+    pelican_copy_test_shaderc_runtime(pelican_test_modelregistrationrpc_test)
+endif()
 # MT-2: a scene object's own material over RPC; two Blank boxes, one recoloured
 # live (set_object_material), undone, saved and drawn by the next start.
 pelican_define_test(mt2_object_material_test GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
