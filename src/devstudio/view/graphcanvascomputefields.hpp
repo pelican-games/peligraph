@@ -73,6 +73,10 @@ class GraphCanvasRayTracingFields final : public QWidget {
     void setShadersChanged(std::function<void()> changed) { shaders_changed_ = std::move(changed); }
     void setOpenRayLayout(std::function<void()> open);
     void setOpenCallableRecords(std::function<void()> open) { open_callable_records_ = std::move(open); }
+    // RTL-3s, decision 4: a raygen switch's file write goes on the render
+    // history (Undo writes `before` back, Redo `after`).
+    using FileHistory = std::function<void(const std::string &label, const std::string &path, const std::string &before, const std::string &after)>;
+    void setFileHistoryAction(FileHistory record) { file_history_ = std::move(record); }
 
   private:
     struct Parts;
@@ -90,6 +94,7 @@ class GraphCanvasRayTracingFields final : public QWidget {
     std::function<void()> shaders_changed_;
     std::function<void()> open_ray_layout_;
     std::function<void()> open_callable_records_;
+    FileHistory file_history_;
     std::filesystem::path project_root_;
     std::string node_;
     std::string scope_;
@@ -167,6 +172,9 @@ class GraphCanvasComputeFields final : public QWidget {
     // RTL-2s-c: Callable records... opens the callable records' values.
     void setOpenCallableRecords(std::function<void()> open) {
         ray_tracing_->setOpenCallableRecords(std::move(open));
+    }
+    void setFileHistoryAction(GraphCanvasRayTracingFields::FileHistory record) {
+        ray_tracing_->setFileHistoryAction(std::move(record));
     }
 };
 

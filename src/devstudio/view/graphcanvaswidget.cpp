@@ -10383,6 +10383,12 @@ void GraphCanvasWidget::setOpenCallableRecords(std::function<void()> open) {
     impl_->compute_fields->setOpenCallableRecords(std::move(open));
 }
 
+void GraphCanvasWidget::setFileHistoryAction(
+    std::function<void(const std::string &, const std::string &, const std::string &, const std::string &)>
+        record) {
+    impl_->compute_fields->setFileHistoryAction(std::move(record));
+}
+
 void GraphCanvasWidget::setOpenRayLayout(std::function<void()> open) {
     impl_->compute_fields->setOpenRayLayout(std::move(open));
 }

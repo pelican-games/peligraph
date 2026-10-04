@@ -1,0 +1,902 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "gui_material_ray_query_from_blank",
+  "description": "RTL-3s decisions 8 and 9 (engine FO-2), from Blank with the GUI only. File > New Project > Blank; Add Object > Cube and a Forward opaque material pass read by present (gui_material_from_blank's way). A surface that queries the scene's acceleration structure is written into the project's shaders (a person's own editor); New material on OpenPBR, bound to every Cube, New material on that surface: the pass does not declare ray_query, so the engine asks for a restart. Started again, the engine lists material.pass_contract_unmet@1 for the root's graph node render_material_pass and list_materials says unusable. The Materials dock's row says the pass and what to do there and offers Open the pass, which picks the pass on the Graph; the Problems row goes to the same pass (not to the Materials dock). Ray query On in the pass's fields: without a restart the engine takes the material in and the problems go; bound to every Cube, the box takes the surface's green. Typed: the project folder and its name in New Project; the surface's text is written by the scenario as a person's own editor would.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "File > New Project...",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts, never the repository",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "rq_project"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed, because the template is on disk",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the new project's frame plan has its one pass",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers editor RPC and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "before: present's gradient, read at the middle of the viewport",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/before_gradient.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "gradient_middle"
+    },
+    {
+      "label": "the Outliner has the template's objects before anything is added",
+      "cmd": "wait",
+      "name": "pelican.outliner",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the blank scene holds the template's two objects, the camera and the light",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects.$len",
+      "value": 2
+    },
+    {
+      "label": "Add Object > Cube, fired by name as the Outliner's right-click menu and the Scene toolbar both hold it",
+      "cmd": "action",
+      "name": "pelican.outliner.addObject.cube"
+    },
+    {
+      "label": "the engine has a third object, named Cube",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[2].name",
+      "value": "Cube",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the new object is selected: the Inspector names it",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and the Outliner holds a row named Cube",
+      "expect": "result",
+      "command": {
+        "cmd": "select",
+        "name": "pelican.outliner",
+        "text": "Cube"
+      },
+      "path": "text",
+      "value": "Cube"
+    },
+    {
+      "label": "the Inspector's model field reads the engine primitive, by its built-in name",
+      "cmd": "wait",
+      "name": "pelican.inspectorModelChoice",
+      "text": "Cube (built-in)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the model field lists the primitives: choosing the one it holds is a choice that exists",
+      "expect": "result",
+      "command": {
+        "cmd": "select",
+        "name": "pelican.inspectorModelChoice",
+        "text": "Cube (built-in)"
+      },
+      "path": "index",
+      "value": 0
+    },
+    {
+      "label": "File > Save Scene",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "the save is done",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "contains": "Scene saved",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the saved scene holds the spawn's shape: a transform and the primitive's reference",
+      "file": "contains",
+      "path": "{artifacts}/rq_project/scenes/main.scene.json",
+      "text": "engine://primitives/cube",
+      "value": true
+    },
+    {
+      "label": "Add material pass..., fired by name with nothing picked",
+      "cmd": "action",
+      "name": "pelican.framePlan.addMaterialPass"
+    },
+    {
+      "label": "the Graph tab comes forward with its palette open on the material pass (GL-5c: the root is a graph that selects no preset)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the palette is on render.material_pass",
+      "expect": "text_equals",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "value": "render.material_pass"
+    },
+    {
+      "label": "the contract combo is offered for it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteContract",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the contract: forward_opaque_v1",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPaletteContract",
+      "text": "forward_opaque_v1"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the palette closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the pass's draw loop is drawn as a zone on the Graph (after a restart, if the route default asks for one)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the material pass is drawn, and picked: its detail column shows its contract",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasDraw.contract",
+      "visible": true,
+      "text": "forward_opaque_v1",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the pass is the graph's node (GL-5c), not a managed fragment",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].id",
+      "value": "render_material_pass",
+      "retry_ms": 60000
+    },
+    {
+      "label": "no pass-<id>.json was made",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "managed_fragments.$len",
+      "value": 0
+    },
+    {
+      "label": "the root now routes the project's automatic materials forward (sent with the pass: no pass takes deferred materials)",
+      "file": "contains",
+      "path": "{artifacts}/rq_project/passes/main_rendering_config.json",
+      "text": "material_route_default",
+      "value": true
+    },
+    {
+      "label": "the Cube is in the scene the restarted engine loaded: it was saved before the pass was added",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[2].name",
+      "value": "Cube",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit the graph so both ends of the drag are on screen",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "present's engine://passthrough takes variadic inputs: its + input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "drag the pass's colour output onto present's + input: one edit_preset_pass on the root",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_material_pass/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+"
+      },
+      "steps": 8
+    },
+    {
+      "label": "edit_preset_pass on present committed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Pass inputs saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the Frame Plan tab is in front again",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "the viewport now holds a shape: a handful of colours, not a gradient's thousands",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/grey_box.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "distinct_colors",
+      "op": "le",
+      "value": 64,
+      "retry_ms": 120000
+    },
+    {
+      "label": "read the background in a corner",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/grey_box.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "remember": "background"
+    },
+    {
+      "label": "the box covers the middle, in a colour the background is not",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/grey_box.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "background"
+    },
+    {
+      "label": "and not the gradient's colour there before",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/grey_box.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "gradient_middle"
+    },
+    {
+      "label": "RTL-3s decision 9: a surface that queries the scene's acceleration structure, written in the person's own editor",
+      "file": "write",
+      "path": "{artifacts}/rq_project/shaders/query.surface",
+      "text": "//! pelican.surface v1\n//! language: glsl\n//! render_state: { blend: opaque, cull: back, depth: read_write }\n#extension GL_EXT_ray_query : require\n// A surface that asks the scene's acceleration structure: two rays along +z,\n// one each side of the origin; green with what they hit in red and blue.\nlayout(set=0,binding=6) uniform accelerationStructureEXT queryScene;\nvoid pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {\n    vec2 hits = vec2(0);\n    for (int lane = 0; lane < 2; ++lane) {\n        rayQueryEXT query;\n        rayQueryInitializeEXT(query, queryScene, gl_RayFlagsOpaqueEXT, 255u, vec3(lane == 0 ? -2 : 2,0,0), 0.001, vec3(0,0,1), 100.0);\n        while (rayQueryProceedEXT(query)) {}\n        hits[lane] = rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT\n            ? 0.0 : float(rayQueryGetIntersectionInstanceCustomIndexEXT(query, true));\n    }\n    s.base_color = vec4(hits.x, 1.0, hits.y, 1.0);\n}\nvec3 pelican_lighting_v1(in PelicanSurfaceV1 s, in PelicanSurfaceInputV1 i) {\n    return s.base_color.rgb;\n}\n"
+    },
+    {
+      "label": "View > Materials",
+      "cmd": "action",
+      "name": "pelican.view.materials"
+    },
+    {
+      "label": "the dock is on screen",
+      "cmd": "wait",
+      "name": "pelican.materials.list",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "New material...",
+      "cmd": "click",
+      "name": "pelican.materials.newMaterial"
+    },
+    {
+      "label": "the row under it is open",
+      "cmd": "wait",
+      "name": "pelican.materials.new.surface",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the surface that queries the scene, from the project's shaders",
+      "cmd": "select",
+      "name": "pelican.materials.new.surface",
+      "text": "shaders/query"
+    },
+    {
+      "label": "the name is proposed, nothing typed",
+      "expect": "text_equals",
+      "name": "pelican.materials.new.name",
+      "value": "material"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.materials.new.create"
+    },
+    {
+      "label": "the engine lists it",
+      "expect": "rpc_equals",
+      "method": "list_materials",
+      "params": {},
+      "path": "documents[0].path",
+      "value": "materials/material.material.json",
+      "retry_ms": 30000
+    },
+    {
+      "label": "on that surface",
+      "file": "contains",
+      "path": "{artifacts}/rq_project/materials/material.material.json",
+      "text": "project://shaders/query.surface",
+      "value": true
+    },
+    {
+      "label": "the pass that would draw it does not declare ray_query: the engine cannot take it in place, and asks for a restart",
+      "cmd": "wait",
+      "name": "pelican.materials.restartEngine",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Restart engine",
+      "cmd": "click",
+      "name": "pelican.materials.restartEngine"
+    },
+    {
+      "label": "the new engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "engine FO-2: started again, the document reads and its pass does not declare what it uses",
+      "expect": "rpc_equals",
+      "method": "list_materials",
+      "params": {},
+      "path": "documents[0].status",
+      "value": "unusable",
+      "retry_ms": 60000
+    },
+    {
+      "label": "by the pass's name",
+      "expect": "rpc_equals",
+      "method": "list_materials",
+      "params": {},
+      "path": "documents[0].pass",
+      "value": "render_material_pass"
+    },
+    {
+      "label": "the engine lists the problem first",
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems[0].code",
+      "value": "material.pass_contract_unmet@1",
+      "retry_ms": 30000
+    },
+    {
+      "label": "its document is the root, as the root's graph made the pass",
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems[0].document_kind",
+      "value": "root_graph"
+    },
+    {
+      "label": "and its node",
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems[0].node",
+      "value": "render_material_pass"
+    },
+    {
+      "label": "the box draws with the cube's own material: its green",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/refused.png",
+        "pixels": [
+          [
+            0.42,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][1]",
+      "remember": "green_before"
+    },
+    {
+      "label": "decision 8: the Materials dock's row",
+      "cmd": "action",
+      "name": "pelican.view.materials"
+    },
+    {
+      "label": "the document's row, picked",
+      "cmd": "select",
+      "name": "pelican.materials.list",
+      "text": "material.material.json"
+    },
+    {
+      "label": "says the pass and what to do there",
+      "cmd": "wait",
+      "name": "pelican.materials.broken",
+      "contains": "pass render_material_pass, which draws it, does not declare ray_query: turn Ray query on for the pass",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Open the pass is offered, not the document's repair",
+      "cmd": "wait",
+      "name": "pelican.materials.openPass",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Show the document is not",
+      "cmd": "wait",
+      "name": "pelican.materials.showDocument",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "a picture of the dock",
+      "expect": "screenshot",
+      "name": "pelican.materialsDock",
+      "path": "gui_material_ray_query_materials.png"
+    },
+    {
+      "label": "Open the pass",
+      "cmd": "click",
+      "name": "pelican.materials.openPass"
+    },
+    {
+      "label": "the Graph shows the pass, picked: its details name it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLayersToggle",
+      "contains": "Layers: render_material_pass",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "its Ray query field (in the details column, below the fold)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasParameters.ray_query",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick present on the Graph, so the row's click is what picks the pass",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#present"
+    },
+    {
+      "label": "the details name present",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLayersToggle",
+      "contains": "Layers: present",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Frame Plan tab in front again",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "decision 8: View > Problems",
+      "cmd": "action",
+      "name": "pelican.view.problems"
+    },
+    {
+      "label": "the list is on screen",
+      "cmd": "wait",
+      "name": "pelican.problems.list",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "it holds the error",
+      "cmd": "wait",
+      "name": "pelican.problems.count",
+      "contains": "1 error",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "a click on its row",
+      "cmd": "select",
+      "name": "pelican.problems.list",
+      "index": 0
+    },
+    {
+      "label": "the row names the material, the pass and what to do",
+      "cmd": "wait",
+      "name": "pelican.problems.detail",
+      "contains": "Material material queries the scene's acceleration structure, and pass render_material_pass, which draws it, does not declare ray_query: turn Ray query on for the pass",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "it goes to the Graph, not the Materials dock: the pass picked",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLayersToggle",
+      "contains": "Layers: render_material_pass",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "its Ray query field",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasParameters.ray_query",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Ray query is off",
+      "expect": "text_equals",
+      "name": "pelican.graphCanvasParameters.ray_query",
+      "value": "Off"
+    },
+    {
+      "label": "a picture of the window with the row and the pass",
+      "expect": "screenshot",
+      "path": "gui_material_ray_query_problem.png"
+    },
+    {
+      "label": "the engine running now",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.instance_id",
+      "remember": "engine_second"
+    },
+    {
+      "label": "Ray query on",
+      "cmd": "select",
+      "name": "pelican.graphCanvasParameters.ray_query",
+      "text": "On"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the pass declares it",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].parameters.ray_query",
+      "value": true,
+      "retry_ms": 60000
+    },
+    {
+      "label": "the engine takes the material in on its own: loaded",
+      "expect": "rpc_equals",
+      "method": "list_materials",
+      "params": {},
+      "path": "documents[0].status",
+      "value": "loaded",
+      "retry_ms": 60000
+    },
+    {
+      "label": "without a restart: the same engine",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.instance_id",
+      "op": "eq",
+      "value_of": "engine_second"
+    },
+    {
+      "label": "the engine lists nothing",
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems.$len",
+      "value": 0,
+      "retry_ms": 60000
+    },
+    {
+      "label": "and so does the Problems window",
+      "cmd": "wait",
+      "name": "pelican.problems.count",
+      "text": "No problems",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Materials dock's row is the material again",
+      "cmd": "action",
+      "name": "pelican.view.materials"
+    },
+    {
+      "label": "its material row",
+      "cmd": "wait",
+      "name": "pelican.materials.list::row#material",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "pick the Cube",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "Cube"
+    },
+    {
+      "label": "the Inspector names it",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "its Material rows are read",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialChoice",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "every Cube",
+      "cmd": "select",
+      "name": "pelican.inspectorMaterialTarget",
+      "text": "Every Cube"
+    },
+    {
+      "label": "the material, taken in now",
+      "cmd": "select",
+      "name": "pelican.inspectorMaterialChoice",
+      "text": "material"
+    },
+    {
+      "label": "the engine binds it",
+      "expect": "rpc_equals",
+      "method": "get_material_bindings",
+      "params": {
+        "model": "engine://primitives/cube"
+      },
+      "path": "primitives[0].material",
+      "value": "material",
+      "retry_ms": 30000
+    },
+    {
+      "label": "pick the camera, so no gizmo is drawn over the box",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "MainCamera"
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the box now in the surface's colour: green well above what it was",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/taken_in.png",
+        "pixels": [
+          [
+            0.42,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][1]",
+      "op": "gt",
+      "value_of": "green_before",
+      "plus": 30,
+      "retry_ms": 30000
+    },
+    {
+      "label": "its red",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/taken_in.png",
+        "pixels": [
+          [
+            0.42,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "remember": "red_after"
+    },
+    {
+      "label": "green well above red: the surface's colour",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/taken_in.png",
+        "pixels": [
+          [
+            0.42,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][1]",
+      "op": "gt",
+      "value_of": "red_after",
+      "plus": 60
+    },
+    {
+      "label": "a picture of the window",
+      "expect": "screenshot",
+      "path": "gui_material_ray_query_window.png"
+    }
+  ]
+}

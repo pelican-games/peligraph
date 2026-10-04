@@ -228,8 +228,16 @@ RayLayoutRead parseRayLayoutRead(const Json &response) {
     read.layout = parseDocument(response.value("layout", Json(nullptr)));
     read.bindings = parseDocument(response.value("bindings", Json(nullptr)));
     for (const auto &entry : arrayAt(response, "selectable_materials"))
-        if (entry.is_object() && entry.contains("selector"))
-            read.materials.push_back({stringAt(entry, "label"), stringAt(entry, "name"), entry.at("selector")});
+        if (entry.is_object() && entry.contains("selector")) {
+            RaySelectableMaterial material{stringAt(entry, "label"), stringAt(entry, "name"), entry.at("selector")};
+            if (const auto used = entry.find("used_by"); used != entry.end() && used->is_object()) {
+                material.used_count = used->value("count", std::int64_t{0});
+                for (const auto &object : arrayAt(*used, "objects"))
+                    if (object.is_string()) material.used_by.push_back(object.get<std::string>());
+            }
+            material.model = stringAt(entry, "model");
+            read.materials.push_back(std::move(material));
+        }
     for (const auto &entry : arrayAt(response, "selectable_procedural_assets"))
         if (entry.is_object())
             read.procedurals.push_back({stringAt(entry, "asset"), objectAt(entry, "record_fields")});
@@ -238,6 +246,41 @@ RayLayoutRead parseRayLayoutRead(const Json &response) {
             read.unresolved.push_back({entry.value("index", std::int64_t{0}),
                                        entry.value("selector", Json(nullptr)), stringAt(entry, "group")});
     return read;
+}
+
+RayMaterialRowLabel rayMaterialRowLabel(const RaySelectableMaterial &material) {
+    RayMaterialRowLabel label;
+    if (!material.used_count) {
+        label.text = material.label.empty() ? material.name : material.label;
+        return label;
+    }
+    // A primitive's own material reads as what it is.
+    std::string name = material.name == "pelican.primitive.default" ? std::string{"Default"} : material.name;
+    if (!material.model.empty()) {
+        auto model = material.model;
+        if (const auto slash = model.find_last_of('/'); slash != std::string::npos) model.erase(0, slash + 1);
+        name += " (" + model + ")";
+    } else if (material.selector.is_object()) {
+        // A document's material: its file, when the name alone repeats.
+        if (const auto document = stringAt(material.selector, "document"); !document.empty()) {
+            auto file = document;
+            if (const auto slash = file.find_last_of('/'); slash != std::string::npos) file.erase(0, slash + 1);
+            if (file.rfind(material.name, 0) != 0) name += " (" + file + ")";
+        }
+    }
+    const auto count = *material.used_count;
+    label.used = count > 0;
+    if (count <= 0) {
+        label.text = name + " \xE2\x80\x94 used by nothing";
+        return label;
+    }
+    std::string objects;
+    for (std::size_t index = 0; index < material.used_by.size(); ++index)
+        objects += (index == 0 ? "" : ", ") + material.used_by[index];
+    if (const auto rest = count - static_cast<std::int64_t>(material.used_by.size()); rest > 0)
+        objects += (objects.empty() ? "" : " and ") + std::to_string(rest) + " more";
+    label.text = name + " \xE2\x80\x94 used by " + objects;
+    return label;
 }
 
 // --- Names.
@@ -475,64 +518,104 @@ std::vector<std::filesystem::path> rayTracedHitShaderFiles(const std::vector<Ray
 
 RayRecordFit fitRayShaderRecords(const std::vector<std::filesystem::path> &files, const Json &layout,
                                  const std::filesystem::path &root) {
+    (void)root;
     RayRecordFit fit;
     const auto names = rayLayoutTemplateNames(layout);
-    const bool needs_record = !names.engine_record.empty() || !names.record.empty();
-    std::string fields = names.engine_record.empty() ? std::string{} : std::string{"the engine record"};
-    for (const auto &[field, type] : names.record) fields += (fields.empty() ? "" : ", ") + field + " (" + type + ")";
     std::vector<std::filesystem::path> seen;
     for (const auto &file : files) {
         if (std::find(seen.begin(), seen.end(), file) != seen.end()) continue;
         seen.push_back(file);
         const auto text = readText(file);
         if (!text) continue;
-        if (auto rewritten = rewriteRayRecordBlock(*text, names)) {
+        // RTL-3s, decision 5 (engine EB-3): a shader without Studio's block
+        // is left as it is -- one that declares no record is taken, and one
+        // whose own declaration no longer fits is named by the engine's
+        // refusal (shader_record_abi_mismatch's expected).
+        if (auto rewritten = rewriteRayRecordBlock(*text, names))
             if (*rewritten != *text) fit.writes.push_back({file, std::move(*rewritten), *text});
-            continue;
-        }
-        const bool intersection = file.extension() == ".rint";
-        if (declaresRayShaderRecord(*text)) {
-            fit.problems.push_back(writeFileName(root, file) +
-                                   " declares its own shader record: give it the ray layout's fields in order (" +
-                                   (fields.empty() ? std::string{"none"} : fields) + "), or take it out.");
-        } else if (needs_record && !intersection) {
-            fit.problems.push_back(writeFileName(root, file) +
-                                   " has no shader record, which a hit shader of a traced ray type needs: declare "
-                                   "layout(shaderRecordEXT, std430) buffer with " + fields + ".");
-        }
     }
     return fit;
 }
 
-std::vector<std::string> rayTracedRowNotes(const Json &ray_tracing, const std::string &ray_type, const Json &layout,
-                                           const std::filesystem::path &root) {
-    std::vector<std::string> notes;
-    const auto traced = arrayAt(ray_tracing, "traced_ray_types");
-    if (traced.empty() || !traced.front().is_string()) return notes;
-    const auto first = traced.front().get<std::string>();
-    if (first == ray_type) return notes;
+RayTracedRowFill rayTracedRowFill(const Json &ray_tracing, const std::string &ray_type, const Json &layout,
+                                  const std::filesystem::path &root) {
+    RayTracedRowFill fill;
+    const auto types = rayLayoutRayTypes(layout);
+    const auto names = rayLayoutTemplateNames(layout);
+    const auto indexOf = [&](const std::string &type) {
+        return static_cast<std::size_t>(std::find(types.begin(), types.end(), type) - types.begin());
+    };
+    // The payload a ray type's hit shaders answer in: ray type 0's colour, a
+    // later one's "occluded" (the templates' rule).
+    const auto colour = [&](const std::string &type) { return indexOf(type) == 0; };
     // Held: items() of a temporary would outlive it.
     const auto hit_shaders = objectAt(ray_tracing, "hit_shaders");
-    const auto row = objectAt(hit_shaders, first.c_str());
-    std::vector<std::filesystem::path> files;
-    std::string names;
-    for (const auto &[group, cell] : row.items()) {
-        (void)group;
-        for (const char *stage : {"closesthit", "anyhit", "intersection"}) {
-            const auto reference = stringAt(cell, stage);
-            if (reference.empty()) continue;
-            const auto file = rayShaderFile(root, reference, stage);
-            if (!file || std::find(files.begin(), files.end(), *file) != files.end()) continue;
-            files.push_back(*file);
-            if (std::string_view{stage} != "intersection")
-                names += (names.empty() ? "" : ", ") + writeFileName(root, *file);
+    std::string first;
+    for (const auto &traced : arrayAt(ray_tracing, "traced_ray_types"))
+        if (traced.is_string() && traced.get<std::string>() != ray_type) {
+            first = traced.get<std::string>();
+            break;
         }
+    const auto first_row = objectAt(hit_shaders, first.c_str());
+    const bool copies = !first.empty() && colour(first) == colour(ray_type);
+    std::vector<std::string> written;
+    for (const auto &group : rayLayoutGroups(layout)) {
+        const auto first_cell = objectAt(first_row, group.name.c_str());
+        Json cell = Json::object();
+        if (copies && !stringAt(first_cell, "closesthit").empty()) {
+            // The same payload: the first traced type's cell as it is.
+            cell = first_cell;
+        } else {
+            // Another payload: a closest hit of this ray type's from the
+            // template -- the one a file already holds when it is that.
+            const RayLayoutTemplatePlace place{RayLayoutTemplateStage::closest_hit, ray_type, group.name, {}};
+            const auto base = ray_type + "_" + group.name;
+            std::string stem;
+            for (int index = 1; stem.empty(); ++index) {
+                const auto candidate = index == 1 ? base : base + "_" + std::to_string(index);
+                const auto path = root / "shaders" / (candidate + ".rchit");
+                const auto text = readText(path);
+                if (!text) {
+                    stem = candidate;
+                    fill.writes.push_back({path, rayLayoutShaderTemplate(names, place, candidate), std::nullopt});
+                    written.push_back("shaders/" + candidate + ".rchit");
+                } else if (*text == rayLayoutShaderTemplate(names, place, candidate)) {
+                    stem = candidate;
+                }
+            }
+            cell["closesthit"] = "project://shaders/" + stem;
+            if (const auto intersection = stringAt(first_cell, "intersection"); !intersection.empty())
+                cell["intersection"] = intersection;
+        }
+        if (group.type == "procedural" && stringAt(cell, "intersection").empty()) {
+            // Any row's intersection of the group, else the template's sphere.
+            for (const auto &[type, row] : hit_shaders.items()) {
+                (void)type;
+                if (const auto intersection = stringAt(objectAt(row, group.name.c_str()), "intersection");
+                    !intersection.empty()) {
+                    cell["intersection"] = intersection;
+                    break;
+                }
+            }
+            if (stringAt(cell, "intersection").empty()) {
+                const auto stem = templateStem(root, "intersection_" + group.name, {".rint"});
+                fill.writes.push_back(
+                    {root / "shaders" / (stem + ".rint"),
+                     rayLayoutShaderTemplate(names, {RayLayoutTemplateStage::intersection, ray_type, group.name, {}},
+                                             stem),
+                     std::nullopt});
+                written.push_back("shaders/" + stem + ".rint");
+                cell["intersection"] = "project://shaders/" + stem;
+            }
+        }
+        fill.row[group.name] = std::move(cell);
     }
-    if (!names.empty())
-        notes.push_back(ray_type + "'s row took " + first + "'s hit shaders (" + names + "), which answer in " +
-                        first + "'s payload: New... in each " + ray_type + " cell writes one for " + ray_type + ".");
-    for (auto &problem : fitRayShaderRecords(files, layout, root).problems) notes.push_back(std::move(problem));
-    return notes;
+    if (!written.empty()) {
+        std::string list;
+        for (const auto &file : written) list += (list.empty() ? "" : ", ") + file;
+        fill.notes.push_back(ray_type + "'s hit shaders are written from the template: " + list + ".");
+    }
+    return fill;
 }
 
 // --- Shaders.

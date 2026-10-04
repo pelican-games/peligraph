@@ -1,0 +1,23 @@
+#version 460
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_ray_tracing : require
+// The ball: a sphere of radius 1 at the procedural geometry's origin.
+#include "__pelican_ray_group_layout.glsl"
+hitAttributeEXT vec2 sphere_hit;
+void main() {
+    vec3 origin = gl_ObjectRayOriginEXT;
+    vec3 direction = gl_ObjectRayDirectionEXT;
+    float a = dot(direction, direction);
+    float half_b = dot(origin, direction);
+    float c = dot(origin, origin) - 1.0;
+    float discriminant = half_b * half_b - a * c;
+    if (discriminant < 0.0) return;
+    float root = sqrt(discriminant);
+    float t = (-half_b - root) / a;
+    if (t < gl_RayTminEXT || t > gl_RayTmaxEXT) {
+        t = (-half_b + root) / a;
+        if (t < gl_RayTminEXT || t > gl_RayTmaxEXT) return;
+    }
+    sphere_hit = vec2(t, 0.0);
+    reportIntersectionEXT(t, 0u);
+}

@@ -41,9 +41,14 @@ struct MaterialListMaterial {
 struct MaterialListDocument {
     std::string path;
     std::string digest;
-    // "loaded", "missing" or "invalid" (then `reason` says why).
+    // "loaded", "missing" or "invalid" (then `reason` says why). RTL-3s,
+    // decision 8 (engine FO-2): "unusable" -- the document reads, and the
+    // pass that draws its materials does not declare what they use (`pass`,
+    // `requirement`: ray_query); fixed on that pass, not here.
     std::string status;
     std::string reason;
+    std::string pass;
+    std::string requirement;
     // FO-1s, decision 2 (engine FO-1): where the parser stopped in a
     // document that is not JSON (1-based; 0 when not said).
     std::int64_t line = 0;
@@ -57,6 +62,10 @@ struct MaterialList {
     bool operator==(const MaterialList &) const = default;
 };
 [[nodiscard]] MaterialList parseMaterialList(const nlohmann::json &result);
+// RTL-3s, decision 8 (engine FO-2): material.pass_contract_unmet@1's fields
+// ({material?, pass | passes, requirement}) in one sentence, what to do on the
+// pass; empty without a pass.
+[[nodiscard]] std::string materialPassContractSentence(const nlohmann::json &fields);
 // Every material name of the loaded documents, in the list's order.
 [[nodiscard]] std::vector<std::string> materialNames(const MaterialList &list);
 // Every tag a listed material carries, sorted, once each.

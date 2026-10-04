@@ -753,27 +753,35 @@ void GraphCanvasRayTracingFields::rebuild(const RayLayoutRead &read, const Json 
         parts.traced.emplace_back(type, check);
         connect(check, &QCheckBox::toggled, this, [this, later, type](bool on) {
             const auto order = parts_->ray_types;
-            // RTL-2s-c: the shaders the new row took that do not fit it yet
-            // (another ray type's payload, a record the layout does not
-            // have), named with what to do.
+            // RTL-3s, decision 5 (engine EB-3): checked, the ray type's row
+            // is whole in the same edit -- a cell per hit group, in its own
+            // payload (rayTracedRowFill writes the template's closest hits
+            // it needs first); unchecked, its row goes with it.
+            Json row = Json::object();
             if (on) {
-                const auto notes =
-                    rayTracedRowNotes(current(), type, parts_->read.layout.document, project_root_);
+                auto fill = rayTracedRowFill(current(), type, parts_->read.layout.document, project_root_);
+                for (const auto &write : fill.writes) {
+                    std::error_code ignored;
+                    std::filesystem::create_directories(write.path.parent_path(), ignored);
+                    std::ofstream output{write.path, std::ios::binary | std::ios::trunc};
+                    output.write(write.content.data(), static_cast<std::streamsize>(write.content.size()));
+                    if (!output) fill.notes.push_back("Could not write " + write.path.filename().string() + ".");
+                }
+                if (!fill.writes.empty() && shaders_changed_) shaders_changed_();
                 QStringList lines;
-                for (const auto &note : notes) lines << qtext(note);
+                for (const auto &note : fill.notes) lines << qtext(note);
                 parts_->notice->setText(lines.join(QLatin1Char('\n')));
                 parts_->notice->setVisible(!lines.isEmpty());
+                row = std::move(fill.row);
             }
-            later([order, type, on](Json value) {
+            later([order, type, on, row](Json value) {
                 std::vector<std::string> now;
                 for (const auto &each : value.value("traced_ray_types", Json::array()))
                     if (each.is_string()) now.push_back(each.get<std::string>());
                 auto hits = value.value("hit_shaders", Json::object());
                 if (!hits.is_object()) hits = Json::object();
                 if (on && std::ranges::find(now, type) == now.end()) {
-                    // The new row takes the first traced type's cells, so the
-                    // task stays whole; New... in a cell writes its own.
-                    if (!now.empty() && hits.contains(now.front())) hits[type] = hits.at(now.front());
+                    hits[type] = row;
                     now.push_back(type);
                 } else if (!on) {
                     std::erase(now, type);
@@ -1185,6 +1193,10 @@ void GraphCanvasRayTracingFields::setRaygenSwitch(std::string_view name, bool on
         return;
     }
     say(line);
+    // RTL-3s, decision 4: on the render history, as a rename's shaders are.
+    if (file_history_)
+        file_history_(std::string{name} + (on ? " on" : " off") + " in " + file->filename().string(),
+                      file->string(), source, *written);
     // The node's files are watched: the engine compiles the raygen again.
     if (shaders_changed_) shaders_changed_();
 }

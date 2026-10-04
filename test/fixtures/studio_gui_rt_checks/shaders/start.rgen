@@ -1,0 +1,44 @@
+#version 460
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_ray_tracing : require
+// The fixture's raygen: one primary ray per pixel, the colour its closest hit
+// gives, a flat sky where nothing is hit. Its two switches are the lines
+// Studio's raygen template has, so the Graph's checks turn them on.
+#include "__pelican_ray_group_layout.glsl"
+#include "pelican_sets.glsl"
+#include "pelican_frame.glsl"
+// 1: also trace a ray of type shadow from the point hit toward the light.
+#define TRACE_SECOND_RAY_TYPE 0
+// 1: pass the colour through the task's callable 0.
+#define CALL_CALLABLE_0 0
+layout(rgba16f, set = PELICAN_SET_PASS_INPUT, binding = 0) writeonly uniform image2D pelican_resource_color;
+layout(set = PELICAN_SET_FRAME, binding = PELICAN_RAY_QUERY_TLAS_BINDING) uniform accelerationStructureEXT pelicanRayTracingScene;
+layout(location = 0) rayPayloadEXT vec4 hit;
+layout(location = 1) rayPayloadEXT float occluded;
+layout(location = 0) callableDataEXT vec4 callable_color;
+void main() {
+    vec2 pixel = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
+    vec2 ndc = pixel / vec2(gl_LaunchSizeEXT.xy) * 2.0 - 1.0;
+    vec4 target = inverse(pelicanFrame.projection) * vec4(ndc, 0.5, 1.0);
+    vec3 direction = normalize((inverse(pelicanFrame.view) * vec4(normalize(target.xyz / target.w), 0.0)).xyz);
+    vec3 origin = (inverse(pelicanFrame.view) * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+    hit = vec4(0.0);
+    traceRayEXT(pelicanRayTracingScene, gl_RayFlagsOpaqueEXT, 0xff, PELICAN_RAY_TYPE_primary,
+                pelican_ray_type_count, PELICAN_MISS_sky, origin, 0.001, direction, 1000.0, 0);
+    vec3 color = hit.a > 0.0 ? hit.rgb : vec3(0.1, 0.12, 0.18);
+#if TRACE_SECOND_RAY_TYPE
+    if (hit.a > 0.0) {
+        occluded = 1.0;
+        traceRayEXT(pelicanRayTracingScene, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT, 0xff,
+                    PELICAN_RAY_TYPE_shadow, pelican_ray_type_count, PELICAN_MISS_shadow_miss,
+                    origin + direction * (hit.a - 0.001), 0.001, normalize(vec3(0.5, 1.0, 0.25)), 1000.0, 1);
+        if (occluded > 0.5) color *= 0.3;
+    }
+#endif
+#if CALL_CALLABLE_0
+    callable_color = vec4(color, 1.0);
+    executeCallableEXT(0, 0);
+    color = callable_color.rgb;
+#endif
+    imageStore(pelican_resource_color, ivec2(gl_LaunchIDEXT.xy), vec4(color, 1.0));
+}

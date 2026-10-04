@@ -66,6 +66,10 @@ class MaterialsDock final : public QWidget {
         // MR-1s, decision 1: a document came back without a restart -- the
         // problem list is read now.
         std::function<void()> problems_changed;
+        // RTL-3s, decision 8: Open the pass of a document whose pass does not
+        // declare what its materials use (list_materials' unusable) -- the
+        // Graph tab with the pass picked, where its Problems row goes.
+        std::function<void(const std::string &pass)> open_pass;
     };
 
     explicit MaterialsDock(Hooks hooks, QWidget *parent = nullptr);

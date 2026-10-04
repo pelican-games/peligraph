@@ -1111,6 +1111,11 @@ class GraphCanvasWidget final : public QWidget {
     // record initial values (get/edit_ray_callable_records, Render Features'
     // Records).
     void setOpenCallableRecords(std::function<void()> open);
+    // RTL-3s, decision 4: the raygen switches' file writes, for the render
+    // history (label, path, before, after).
+    void setFileHistoryAction(std::function<void(const std::string &, const std::string &, const std::string &,
+                                                 const std::string &)>
+                                  record);
     // UX-8, decision 9: File > Import Sound… and the Sound list's Import…:
     // the files picked (or dropped) are copied into the project's
     // assets/audio, `_2` beside a name already there, and the first is

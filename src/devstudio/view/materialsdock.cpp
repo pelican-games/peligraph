@@ -744,6 +744,23 @@ struct MaterialsDock::Impl {
         again->setVisible(stale == nullptr);
         buttons->addWidget(show);
         buttons->addWidget(again);
+        // RTL-3s, decision 8 (engine FO-2): the document reads, the pass that
+        // draws it does not declare what it uses -- fixed on the pass, where
+        // a Problems row of it goes too.
+        if (document.status == "unusable" && stale == nullptr) {
+            show->hide();
+            again->hide();
+            auto *open_pass = new QPushButton(owner.tr("Open the pass"), editor);
+            open_pass->setObjectName(QStringLiteral("pelican.materials.openPass"));
+            open_pass->setToolTip(owner.tr("The pass %1 on the Graph tab, where Ray query is turned on")
+                                      .arg(qtext(document.pass)));
+            open_pass->setEnabled(!document.pass.empty() && static_cast<bool>(hooks.open_pass));
+            buttons->addWidget(open_pass);
+            const auto pass = document.pass;
+            QObject::connect(open_pass, &QPushButton::clicked, &owner, [this, pass] {
+                if (hooks.open_pass) hooks.open_pass(pass);
+            });
+        }
         buttons->addStretch();
         layout.addLayout(buttons);
         layout.addStretch();
@@ -934,7 +951,8 @@ struct MaterialsDock::Impl {
                 row->setForeground(0, dim);
                 // FO-1s, decision 2: a document that would not load is picked
                 // to be fixed (its line, Show the document, Register again).
-                row->setFlags(document.status == "invalid" || stale != nullptr ? Qt::ItemIsEnabled | Qt::ItemIsSelectable
+                row->setFlags(document.status == "invalid" || document.status == "unusable" || stale != nullptr
+                                  ? Qt::ItemIsEnabled | Qt::ItemIsSelectable
                                                            : Qt::ItemIsEnabled);
                 if (session.broken() && *session.broken() == document.path) current = row;
                 continue;
@@ -972,7 +990,9 @@ struct MaterialsDock::Impl {
             // A document's row: its first material.
             if (item->childCount() > 0) tree->setCurrentItem(item->child(0));
             // FO-1s, decision 2: one that would not load, to be fixed.
-            else if (item->data(0, MaterialStatusRole).toString() == QStringLiteral("invalid"))
+            // RTL-3s, decision 8: one its pass cannot draw, to open the pass.
+            else if (item->data(0, MaterialStatusRole).toString() == QStringLiteral("invalid") ||
+                     item->data(0, MaterialStatusRole).toString() == QStringLiteral("unusable"))
                 session.selectBroken(path);
             return;
         }
@@ -1606,7 +1626,8 @@ bool MaterialsDock::revealMaterial(const std::string &document, const std::strin
         // row was the current one already.
         const auto listed_path = item->data(0, MaterialPathRole).toString().toStdString();
         if (material.empty() &&
-            ((item->childCount() == 0 && item->data(0, MaterialStatusRole).toString() == QStringLiteral("invalid")) ||
+            ((item->childCount() == 0 && (item->data(0, MaterialStatusRole).toString() == QStringLiteral("invalid") ||
+                                          item->data(0, MaterialStatusRole).toString() == QStringLiteral("unusable"))) ||
              impl_->session.staleOf(listed_path) != nullptr))
             impl_->session.selectBroken(listed_path);
         return true;

@@ -821,6 +821,11 @@ constexpr RayTracingRefusalText RayLayoutRefusalTexts[] = {
      ""},
     {"pelican.procedural_group_requires_intersection@1",
      "A procedural hit group needs an intersection shader and a closest-hit shader", ""},
+    // RTL-3s: met by a hit shader without the intersection's hitAttributeEXT.
+    {"pelican.procedural_hit_attribute_mismatch@1",
+     "Shader {name}'s hit attribute is not its procedural hit group's intersection's: the group's hit shaders "
+     "declare one hitAttributeEXT of the intersection's type",
+     "shader '"},
     {"pelican.ray_profile_authored_anyhit@1",
      "The layout's material alpha profile makes the any-hit shader itself: {task} cannot name one", ""},
     {"pelican.ray_group_name_unknown@1", "The ray group layout has no such name", ""},
@@ -933,7 +938,14 @@ std::string rayTracingRefusalDescription(std::string_view code, std::string_view
     return rayTracingRefusalDescription(nlohmann::json{{"code", std::string{code}}, {"message", std::string{message}}});
 }
 
-std::string rayTracingRefusalDescription(const nlohmann::json &error) {
+std::string rayTracingRefusalDescription(const nlohmann::json &relayed) {
+    // A relayed refusal may carry its fields as error_fields (an edit's
+    // reply); the engine's own puts them beside its code.
+    nlohmann::json error = relayed;
+    if (relayed.is_object())
+        if (const auto inner = relayed.find("error_fields"); inner != relayed.end() && inner->is_object())
+            for (const auto &[key, value] : inner->items())
+                if (!error.contains(key)) error[key] = value;
     const auto code_text = error.is_object() ? error.value("code", std::string{}) : std::string{};
     const auto message_text = error.is_object() ? error.value("message", std::string{}) : std::string{};
     const std::string_view code = code_text;
@@ -992,9 +1004,75 @@ std::string rayTracingRefusalDescription(const nlohmann::json &error) {
 
 namespace {
 
+// RTL-3s, decision 6 (engine EB-3): a shader's file as a sentence names it --
+// project://shaders/x.rchit is shaders/x.rchit.
+std::string refusalShaderName(const nlohmann::json &shader) {
+    if (!shader.is_string()) return {};
+    auto name = shader.get<std::string>();
+    if (name.starts_with("project://")) name.erase(0, std::string_view{"project://"}.size());
+    return name;
+}
+
+// The record fields a refusal's expected lists, "material_index u32, ...".
+std::string refusalRecordFields(const nlohmann::json &fields) {
+    std::string listed;
+    for (const auto &field : fields) {
+        if (!field.is_object()) continue;
+        const auto name = field.value("name", std::string{});
+        const auto type = field.value("type", std::string{});
+        listed += (listed.empty() ? "" : ", ") + (name.empty() ? "?" : name) + (type.empty() ? "" : " " + type);
+    }
+    return listed;
+}
+
+// shader_record_abi_mismatch and payload_mismatch from their fields
+// (shader, stage, expected, actual): what to do to which shader. Empty when
+// the refusal has no fields (an engine before EB-3): the table's sentence.
+std::string rayShaderContractSentence(std::string_view code, const nlohmann::json &error) {
+    if (!error.is_object() || !error.contains("expected")) return {};
+    const auto &expected = error.at("expected");
+    const auto shader = refusalShaderName(error.value("shader", nlohmann::json{}));
+    const auto stage = error.value("stage", std::string{});
+    if (code == "pelican.ray_tracing.shader_record_abi_mismatch@1") {
+        const auto named = shader.empty() ? std::string{"The shader"} : "Shader " + shader;
+        if (expected.is_array() && !expected.empty())
+            return named + " declares a shader record that is not the ray group layout's: declare its fields in "
+                           "order (" + refusalRecordFields(expected) + "), or take the shaderRecordEXT declaration out";
+        if (expected.is_array())
+            return named + " declares a shader record and the ray group layout has none: take its shaderRecordEXT "
+                           "declaration out";
+        return named + " declares a shader record where none is written (" +
+               (stage.empty() ? std::string{"a raygen, a miss or an untraced ray type"} : "its stage " + stage) +
+               "): take its shaderRecordEXT declaration out";
+    }
+    if (code == "pelican.ray_tracing.payload_mismatch@1") {
+        const auto wanted = expected.is_string() ? expected.get<std::string>() : std::string{"?"};
+        const auto &actual = error.contains("actual") ? error.at("actual") : nlohmann::json{};
+        if (shader.empty())
+            return "No " + (stage.empty() ? std::string{"hit"} : stage) + " shader takes the ray's payload (" +
+                   wanted + ") here: pick one";
+        if (stage == "anyhit" && error.contains("closesthit"))
+            return "Any hit " + shader + " takes the payload as " +
+                   (actual.is_string() ? actual.get<std::string>() : std::string{"nothing"}) +
+                   " and the closest hit beside it (" +
+                   refusalShaderName(error.at("closesthit")) + ") as " + wanted + ": make them one type";
+        std::string caller;
+        if (const auto found = error.find("caller"); found != error.end() && found->is_object())
+            caller = refusalShaderName(found->value("shader", nlohmann::json{}));
+        const auto by = caller.empty() ? std::string{} : " (traced by " + caller + ")";
+        if (!actual.is_string())
+            return "Shader " + shader + " declares no incoming payload, and the ray it answers carries " + wanted +
+                   by + ": declare rayPayloadInEXT " + wanted;
+        return "Shader " + shader + " takes the payload as " + actual.get<std::string>() +
+               ", and the ray it answers carries " + wanted + by + ": make them one type";
+    }
+    return {};
+}
+
 std::string rayTracingRefusalSentence(const RayTracingRefusalText &found, std::string_view message,
                                       const nlohmann::json &error) {
     const auto *entry = &found;
+    if (auto contract = rayShaderContractSentence(entry->code, error); !contract.empty()) return contract;
     // The parser's own message, from its code on: the task and what it quotes
     // (RTL-2s: the task the refusal's fields name, when it has them).
     const auto own = message.substr(std::min(message.size(), message.find(entry->code)));

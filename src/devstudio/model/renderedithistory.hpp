@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <set>
 #include <optional>
 #include <string>
 #include <vector>
@@ -109,6 +110,13 @@ class RenderEditHistory {
         std::uint64_t serial = 0;
         // RTL-2s-c: the files the edit rewrote beside its documents.
         std::vector<FileChange> files;
+        // RTL-3s, decision 3 (engine EB-2): asset_data an edit_ray_layout's
+        // procedural_records wrote. It is no render document: not read, and
+        // restored by its digest alone ({reference, base_digest, content:
+        // null}), which takes its procedural records back (and forward). The
+        // engine keeps those digests while it runs; after a restart the
+        // restore is refused (procedural_records_only) and the entry stops.
+        std::set<std::string> records_only;
     };
 
     explicit RenderEditHistory(Transport transport);
@@ -118,8 +126,9 @@ class RenderEditHistory {
     // ignores.
     [[nodiscard]] static bool recordsMethod(const std::string &method);
     // RTL-2s, decision 7: an edit_ray_layout (alone or in an edit_batch)
-    // that rewrites procedural records -- asset_data, which no restore takes
-    // back. Not recorded: the Ray layout panel takes it back itself.
+    // that rewrites procedural records -- asset_data. RTL-3s, decision 3
+    // (engine EB-2): recorded; its asset_data is restored by digest
+    // (Entry::records_only).
     [[nodiscard]] static bool rewritesProceduralRecords(const std::string &method, const Json &params);
     // A request the history has to hear about (the same set).
     [[nodiscard]] static bool followsMethod(const std::string &method);
@@ -159,6 +168,10 @@ class RenderEditHistory {
     // them -- into its entry when the history records that request, and
     // drops them otherwise.
     void attachFiles(std::vector<FileChange> files) { next_files_ = std::move(files); }
+    // RTL-3s, decision 4: an entry of files alone (a raygen's switch Studio
+    // wrote): no document is restored -- Undo writes each file's `before`
+    // back, Redo its `after` -- and the shaders' watch compiles them again.
+    void recordFiles(std::string label, std::vector<FileChange> files);
 
     // Whether a reply under `id` is one the history is waiting for.
     [[nodiscard]] bool waitingFor(std::int64_t id) const noexcept;
@@ -214,6 +227,8 @@ class RenderEditHistory {
         std::int64_t poll_request = 0;
         // RTL-2s-c: attachFiles's, for the entry.
         std::vector<FileChange> files;
+        // RTL-3s, decision 3: it rewrites procedural records (asset_data).
+        bool records = false;
     };
     // The read of what an edit's commit wrote, for decision 3.
     struct AfterRead {

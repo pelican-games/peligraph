@@ -422,12 +422,11 @@ void RenderEditHistory::beforeRequest(const std::string &method, const Json &par
     // recorded or not.
     auto files = std::exchange(next_files_, {});
     if (!recordsMethod(method)) return;
-    // RTL-2s, decision 7: an edit that rewrites procedural records writes
-    // asset_data, which restore_render_documents does not take back; the
-    // Ray layout panel's own Undo sends the records before it again.
-    if (rewritesProceduralRecords(method, params)) return;
     PendingEdit edit;
     edit.method = method;
+    // RTL-3s, decision 3 (engine EB-2): asset_data it writes is restored by
+    // its digest (Entry::records_only).
+    edit.records = rewritesProceduralRecords(method, params);
     edit.label = labelFor(method, params);
     edit.files = std::move(files);
     // The documents as they are before the edit: asked for first, so the
@@ -611,6 +610,15 @@ void RenderEditHistory::finishEdit(PendingEdit edit, const Json &commit) {
     auto references = Json::array();
     for (const auto &[reference, digest] : written.items()) {
         const auto before = edit.snapshot.find(reference);
+        // RTL-3s, decision 3: not a render document -- the asset_data the
+        // edit's procedural_records wrote (no render document is made by
+        // one). Restored by digest, content null; never read.
+        if (edit.records && before == edit.snapshot.end() && digest.is_string()) {
+            entry.records_only.insert(reference);
+            entry.before[reference] = std::nullopt;
+            entry.written[reference] = Written{digest.get<std::string>(), std::nullopt};
+            continue;
+        }
         // Not read before the edit: the edit created it (RD-1b: Undo deletes
         // it). Erased (null): the edit removed it, and Undo writes it again
         // from what was read -- if it was.
@@ -710,7 +718,30 @@ std::string RenderEditHistory::verb() const {
     return operation_ && operation_->direction == Direction::Redo ? "redone" : "undone";
 }
 
+void RenderEditHistory::recordFiles(std::string label, std::vector<FileChange> files) {
+    if (files.empty()) return;
+    Entry entry;
+    entry.label = std::move(label);
+    entry.serial = next_serial_++;
+    entry.files = std::move(files);
+    undo_.push_back(std::move(entry));
+    redo_.clear();
+    notify();
+}
+
 bool RenderEditHistory::startRestore(Direction direction) {
+    // RTL-3s, decision 4: files alone -- written now, nothing to restore.
+    if (auto &files_only = direction == Direction::Undo ? undo_.back() : redo_.back();
+        files_only.written.empty() && files_only.before.empty() && !files_only.files.empty()) {
+        const bool undoing = direction == Direction::Undo;
+        writeFiles(files_only, undoing);
+        auto entry = std::move(files_only);
+        (undoing ? undo_ : redo_).pop_back();
+        say(std::string{undoing ? "Undid" : "Redid"} + " \"" + entry.label + "\".");
+        (undoing ? redo_ : undo_).push_back(std::move(entry));
+        notify();
+        return true;
+    }
     operation_ = Operation{};
     operation_->direction = direction;
     operation_->stage = Stage::Read;
@@ -719,7 +750,7 @@ bool RenderEditHistory::startRestore(Direction direction) {
     // document the last commit removed is not there to read.
     auto references = Json::array();
     for (const auto &[reference, written] : entry.written)
-        if (written) references.push_back(reference);
+        if (written && !entry.records_only.contains(reference)) references.push_back(reference);
     std::string error;
     operation_->request =
         send("get_render_documents", Json{{"references", std::move(references)}}, &error);
@@ -873,6 +904,13 @@ void RenderEditHistory::refuseOperation(const Json &result) {
                       stringAt(error, "location") +
                       ", where the project keeps documents that are not render documents"
                 : "it would delete the root " + reference;
+        say("\"" + label + "\" cannot be " + verb() + ": " + entry.barrier_reason + ".");
+    } else if (code == "render_document_not_writable" && reason == "procedural_records_only") {
+        // RTL-3s, decision 3 (engine EB-2): the engine keeps the procedural
+        // records an edit replaced only while it runs.
+        entry.barrier = true;
+        entry.barrier_reason = "the engine started again since, and it keeps the procedural records an edit "
+                               "replaced only while it runs; set them again in the Ray layout section";
         say("\"" + label + "\" cannot be " + verb() + ": " + entry.barrier_reason + ".");
     } else if (code == "render_pipeline_preflight_failed" && !message.empty()) {
         say(message);

@@ -211,7 +211,7 @@
     {"label": "every assignment has it, at 0", "expect": "rpc_equals", "method": "get_ray_layout", "params": {}, "path": "bindings.document.bindings[0].record.value", "value": 0.0},
     {"label": "the cube's closest hit declares it", "file": "contains", "path": "{artifacts}/gb_full/shaders/ray_tracing_layout.rchit", "text": "    float value;", "value": true},
     {"label": "and adds it to its colour", "file": "contains", "path": "{artifacts}/gb_full/shaders/ray_tracing_layout.rchit", "text": "return color + vec3(record.value);", "value": true},
-    {"label": "the shadow ray's closest hits declare it too", "file": "contains", "path": "{artifacts}/gb_full/shaders/shadow_group_2.rchit", "text": "    float value;", "value": true},
+    {"label": "RTL-3s decision 5: the shadow ray's closest hits read no record, so they declare none (engine EB-3)", "file": "contains", "path": "{artifacts}/gb_full/shaders/shadow_group_2.rchit", "text": "shaderRecordEXT", "value": false},
     {"label": "nothing refused: the pipeline is ready", "expect": "rpc_equals", "method": "get_status", "params": {}, "path": "render_pipeline.state", "value": "ready", "retry_ms": 60000},
     {"label": "the cube's material's value field", "cmd": "wait", "name": "pelican.rayLayout.assign.material.record.value", "visible": true, "enabled": true, "timeout_ms": 60000},
     {"label": "one step up: 1 for the cube's material", "cmd": "key", "name": "pelican.rayLayout.assign.material.record.value", "sequence": "Up"},

@@ -252,10 +252,14 @@ std::string rayLayoutClosestHit(const RayLayoutTemplateNames &layout, const RayL
                                   " of the ray group layout. It runs at the nearest surface\n"
                                   "// of the group such a ray hits.") +
                 "\n" + payloadIn(type_index);
-    // The engine checks that every hit shader of a traced ray type declares
-    // the layout's shader record (pelican.ray_tracing.shader_record_abi_mismatch@1).
+    // RTL-3s, decision 5 (engine EB-3): a hit shader that reads no record
+    // declares none -- one that does declares the layout's exactly
+    // (pelican.ray_tracing.shader_record_abi_mismatch@1).
+    // The hit attribute every hit shader of a procedural group shares with
+    // its intersection (pelican.procedural_hit_attribute_mismatch@1): the
+    // templates' vec2, in a triangles group the barycentrics.
     if (type_index != 0)
-        return text + "\n" + rayRecordBlock(layout) + "\nvoid main() {\n    occluded = 1.0;\n}\n";
+        return text + "hitAttributeEXT vec2 barycentric;\n\nvoid main() {\n    occluded = 1.0;\n}\n";
     const bool normals = fetchesNormals(layout);
     text += "hitAttributeEXT vec2 barycentric;\n\n" + rayRecordBlock(layout) +
             "\n"
@@ -309,8 +313,7 @@ std::string rayLayoutAnyHit(const RayLayoutTemplateNames &layout, const RayLayou
            // The same payload as the closest hit beside it (the engine checks
            // the pair).
            payloadIn(indexIn(layout.ray_types, place.ray_type)) + "hitAttributeEXT vec2 barycentric;\n\n" +
-           rayRecordBlock(layout) +
-           "\n"
+           // RTL-3s, decision 5: it reads no record, so it declares none.
            "void main() {\n"
            "    // Every candidate is accepted. To let the ray pass through this surface, end\n"
            "    // here with: ignoreIntersectionEXT;\n"
@@ -329,8 +332,11 @@ std::string rayLayoutIntersection(const RayLayoutTemplateNames &layout, const Ra
                              "ray enters it.") +
            "\n"
            "hitAttributeEXT vec2 sphere_hit;\n\n" +
-           rayRecordBlock(layout) +
-           "\n"
+           // RTL-3s, decision 5: the record only when the sphere is read
+           // from it.
+           (hasRecordField(layout, "center", "vec3") || hasRecordField(layout, "radius", "f32")
+                ? rayRecordBlock(layout) + "\n"
+                : std::string{}) +
            "void main() {\n" +
            sphereLines(layout) +
            "    vec3 origin = gl_ObjectRayOriginEXT - center;\n"

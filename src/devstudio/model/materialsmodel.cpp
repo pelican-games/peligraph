@@ -91,6 +91,8 @@ MaterialList parseMaterialList(const Json &result) {
         entry.digest = text(document, "material_digest");
         entry.status = text(document, "status");
         entry.reason = text(document, "reason");
+        entry.pass = text(document, "pass");
+        entry.requirement = text(document, "requirement");
         entry.line = static_cast<std::int64_t>(counter(document, "line"));
         entry.column = static_cast<std::int64_t>(counter(document, "column"));
         if (const auto materials = document.find("materials");
@@ -133,8 +135,33 @@ const MaterialListDocument *materialDocumentOf(const MaterialList &list, std::st
 
 // --- FO-1s
 
+std::string materialPassContractSentence(const Json &fields) {
+    if (!fields.is_object()) return {};
+    std::vector<std::string> passes;
+    if (const auto pass = text(fields, "pass"); !pass.empty()) passes.push_back(pass);
+    if (const auto found = fields.find("passes"); passes.empty() && found != fields.end() && found->is_array())
+        passes = strings(*found);
+    if (passes.empty()) return {};
+    std::string named;
+    for (std::size_t index = 0; index < passes.size(); ++index)
+        named += (index == 0 ? "" : index + 1 == passes.size() ? " and " : ", ") + passes[index];
+    const auto material = text(fields, "material");
+    const auto who = material.empty() ? std::string{"The material"} : "Material " + material;
+    const auto requirement = text(fields, "requirement");
+    const auto pass_word = passes.size() == 1 ? std::string{"pass "} : std::string{"passes "};
+    if (requirement.empty() || requirement == "ray_query")
+        return who + " queries the scene's acceleration structure, and " + pass_word + named +
+               (passes.size() == 1 ? ", which draws it, does" : ", which draw it, do") +
+               " not declare ray_query: turn Ray query on for " + (passes.size() == 1 ? "the pass" : "them");
+    return who + " needs " + requirement + " of " + pass_word + named + ", which " +
+           (passes.size() == 1 ? "does" : "do") + " not declare it";
+}
+
 std::string materialDocumentProblemLine(const MaterialListDocument &document) {
     if (document.status == "loaded" || document.status.empty()) return {};
+    if (document.status == "unusable" && !document.pass.empty())
+        return document.path + ": " +
+               materialPassContractSentence(Json{{"pass", document.pass}, {"requirement", document.requirement}}) + ".";
     if (document.status == "missing")
         return document.path + " is not on disk" + (document.reason.empty() ? "" : ": " + document.reason);
     std::string line = document.path + " would not load";

@@ -979,4 +979,81 @@ TEST_CASE("RTL-2s-c a rename's shaders ride on its history entry: Undo writes th
     std::filesystem::remove_all(root, ignored);
 }
 
+TEST_CASE("RTL-3s decision 3: an edit that rewrote procedural records is recorded -- Undo restores its asset data "
+          "by digest with the layout, Redo takes it forward, and a restore the engine cannot make after a restart "
+          "stops there",
+          "[devstudio][render-history][rtl3s]") {
+    Rig rig;
+    const std::string Layout = "project://passes/ray_layout.json";
+    const std::string Assets = "project://assets/asset_data.json";
+    const std::string L1(64, '1'), L2(64, '2'), A1(64, 'b'), A2(64, 'c'), A3(64, 'd');
+    const Json params{{"base_source_digest", RootA},
+                      {"layout", Json::object()},
+                      {"procedural_records", {{"ball", {{"value", 1.0}}}}}};
+    const auto before = rig.sent.size();
+    const auto panel = rig.panelSends("edit_ray_layout", params);
+    REQUIRE(rig.sent.size() == before + 1);
+    rig.answer(rig.sent[before].id,
+               Json{{"documents", Json::array({document(Root, "root", RootA, "root bytes"),
+                                               document(Layout, "layout", L1, "layout before")})}});
+    rig.answer(panel, committed({{Layout, L2}, {Assets, A2}}));
+    // The asset data is no render document: not read after the commit.
+    REQUIRE(rig.last().method == "get_render_documents");
+    CHECK(rig.last().params == Json{{"references", Json::array({Layout})}});
+    rig.answer(rig.last().id, Json{{"documents", Json::array({document(Layout, "layout", L2, "layout after")})}});
+    REQUIRE(rig.history.undoStack().size() == 1);
+    CHECK(rig.history.undoStack().back().records_only == std::set<std::string>{Assets});
+    // Undo: the asset data by the digest the commit wrote, content null.
+    const auto undone = rig.restore(true, Json::array({document(Layout, "layout", L2, "layout after")}),
+                                    committed({{Layout, L1}, {Assets, A1}}));
+    CHECK(undone == Json::array({restored(Assets, A2, nullptr), restored(Layout, L2, "layout before")}));
+    // Redo: forward again from the digest the Undo answered.
+    const auto redone = rig.restore(false, Json::array({document(Layout, "layout", L1, "layout before")}),
+                                    committed({{Layout, L2}, {Assets, A3}}));
+    CHECK(redone == Json::array({restored(Assets, A1, nullptr), restored(Layout, L1, "layout after")}));
+    // After the engine started again it no longer knows the digest: one
+    // sentence, and Undo stops at the entry.
+    REQUIRE(rig.history.undo());
+    rig.answer(rig.last().id, Json{{"documents", Json::array({document(Layout, "layout", L2, "layout after")})}});
+    REQUIRE(rig.last().method == "restore_render_documents");
+    rig.answer(rig.last().id, Json{{"status", "rejected"},
+                                   {"error", {{"code", "render_document_not_writable"},
+                                              {"reference", Assets},
+                                              {"reason", "procedural_records_only"}}}});
+    CHECK(rig.history.line().find("keeps the procedural records an edit replaced only while it runs") !=
+          std::string::npos);
+    CHECK(rig.history.undoStack().back().barrier);
+}
+
+TEST_CASE("RTL-3s decision 4: a raygen switch Studio wrote is an entry of its own -- Undo writes the file back "
+          "and Redo writes it again, with no restore sent",
+          "[devstudio][render-history][rtl3s]") {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_rtl3s_h_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    const auto raygen = root / "start.rgen";
+    const auto read = [&] {
+        std::ifstream file{raygen, std::ios::binary};
+        return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+    };
+    std::ofstream{raygen, std::ios::binary} << "#define TRACE_SECOND_RAY_TYPE 1";
+    Rig rig;
+    rig.history.recordFiles("TRACE_SECOND_RAY_TYPE on in start.rgen",
+                            {{raygen.string(), std::string{"#define TRACE_SECOND_RAY_TYPE 0"},
+                              "#define TRACE_SECOND_RAY_TYPE 1"}});
+    REQUIRE(rig.history.canUndo());
+    CHECK(rig.history.undoLabel() == "TRACE_SECOND_RAY_TYPE on in start.rgen");
+    const auto sent = rig.sent.size();
+    REQUIRE(rig.history.undo());
+    CHECK(read() == "#define TRACE_SECOND_RAY_TYPE 0");
+    CHECK(rig.sent.size() == sent);
+    CHECK(rig.history.canRedo());
+    REQUIRE(rig.history.redo());
+    CHECK(read() == "#define TRACE_SECOND_RAY_TYPE 1");
+    CHECK(rig.sent.size() == sent);
+    CHECK(rig.history.line() == "Redid \"TRACE_SECOND_RAY_TYPE on in start.rgen\".");
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
 } // namespace PelicanStudio

@@ -56,6 +56,12 @@ struct RaySelectableMaterial {
     std::string name;
     // Sent as it came: {document} or {asset, source_material_index}.
     RayJson selector;
+    // RTL-3s, decision 2 (engine EB-2): the scene objects drawn with it
+    // (`used_by`: how many, the first names) and an asset selector's model;
+    // nullopt from an engine before EB-2.
+    std::optional<std::int64_t> used_count;
+    std::vector<std::string> used_by;
+    std::string model;
 };
 
 struct RayProceduralAsset {
@@ -86,6 +92,16 @@ struct RayLayoutRead {
 };
 
 [[nodiscard]] RayLayoutRead parseRayLayoutRead(const RayJson &get_ray_layout);
+// RTL-3s, decision 2: an assignment row's label that tells two rows of one
+// name apart -- "Default (cube) — used by Cube", "material — used by Cube,
+// Sphere and 3 more", "material — used by nothing" -- and whether anything
+// uses it (the row is grey when nothing does). The engine's label without
+// used_by.
+struct RayMaterialRowLabel {
+    std::string text;
+    bool used = true;
+};
+[[nodiscard]] RayMaterialRowLabel rayMaterialRowLabel(const RaySelectableMaterial &material);
 
 // --- Names.
 
@@ -204,9 +220,11 @@ struct RayShaderWrite {
 [[nodiscard]] std::vector<std::filesystem::path>
 rayTracedHitShaderFiles(const std::vector<RayTracingTask> &tasks, const std::filesystem::path &project_root);
 // What a hit shader of a traced ray type has to change for `layout`'s
-// record: its Studio block written again (a RayShaderWrite), or one sentence
-// naming it when it declares the record itself (or not at all) and Studio
-// cannot write it.
+// record: its Studio block written again (a RayShaderWrite). RTL-3s (engine
+// EB-3): a shader without the block is left alone -- declaring no record is
+// taken, and a declaration of its own that does not fit is the engine's
+// refusal to name (shader_record_abi_mismatch's expected). `problems` stays
+// empty.
 struct RayRecordFit {
     std::vector<RayShaderWrite> writes;
     std::vector<std::string> problems;
@@ -214,15 +232,23 @@ struct RayRecordFit {
 [[nodiscard]] RayRecordFit fitRayShaderRecords(const std::vector<std::filesystem::path> &files,
                                                const RayJson &layout, const std::filesystem::path &project_root);
 
-// RTL-2s-c: what checking `ray_type` in a task's Traced ray types leaves to
-// do, as sentences naming the shaders. The new row takes the first traced
-// ray type's cells (`ray_tracing` is the task before the check), whose hit
-// shaders answer in that ray type's payload; and a hit shader of a traced
-// ray type has to declare the layout's record (fitRayShaderRecords). Empty
-// when nothing is left.
-[[nodiscard]] std::vector<std::string> rayTracedRowNotes(const RayJson &ray_tracing, const std::string &ray_type,
-                                                         const RayJson &layout,
-                                                         const std::filesystem::path &project_root);
+// RTL-3s, decision 5: the row of hit_shaders checking `ray_type` in a
+// task's Traced ray types gives it (`ray_tracing` is the task before the
+// check), one cell per hit group of the layout, so the task stays whole.
+// When the first other traced ray type answers in the same payload (the
+// templates': ray type 0 a colour, a later one "occluded"), its cells as
+// they are; otherwise a closest hit of `ray_type` from the template for
+// each group -- shaders/<ray type>_<group>.rchit, the file there when it
+// holds that template already, else written (`writes`) -- with the group's
+// intersection kept. Unchecking takes the row out in the same edit (an
+// untraced ray type's row is refused: hit_shader_untraced).
+struct RayTracedRowFill {
+    RayJson row = RayJson::object();
+    std::vector<RayShaderWrite> writes;
+    std::vector<std::string> notes;
+};
+[[nodiscard]] RayTracedRowFill rayTracedRowFill(const RayJson &ray_tracing, const std::string &ray_type,
+                                                const RayJson &layout, const std::filesystem::path &project_root);
 
 // Rewrites the literal traceRayEXT routing of a shader written without a
 // layout -- sbtRecordOffset k, stride, missIndex j -- into the layout's

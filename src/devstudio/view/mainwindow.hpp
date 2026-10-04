@@ -278,6 +278,8 @@ class MainWindow : public QMainWindow {
     void renderDocumentsReloaded(const nlohmann::json &commit);
     // PB-1s, decision 3: a click on a row of Problems goes where it is fixed.
     void openProblem(const ProblemRow &row);
+    // RTL-3s, decision 8: the Graph tab with a pass of the frame plan picked.
+    void openPlanPassOnGraph(const QString &pass);
     void showProblems();
     void createMenus();
     void createPlayControls(QToolBar *band);

@@ -13294,11 +13294,16 @@ TEST_CASE("RTL-2s b decision 1: with a ray group layout a ray tracing task's fie
         tab.commit(ct6sDocument(expected), "rtl2s-1");
         pick();
 
-        // A ray type checked takes the first one's cells, so the task is whole.
+        // A ray type checked takes a whole row, so the task is whole --
+        // RTL-3s, decision 5: in its own payload, the template's closest hits
+        // of shadow written for it, the ball's intersection kept.
         tab.field<QCheckBox>("pelican.graphCanvasRayTracing.traced.shadow")->click();
         REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == 2; }));
         expected["ray_tracing"]["traced_ray_types"] = Json::array({"primary", "shadow"});
-        expected["ray_tracing"]["hit_shaders"]["shadow"] = expected["ray_tracing"]["hit_shaders"]["primary"];
+        expected["ray_tracing"]["hit_shaders"]["shadow"] = {
+            {"mesh", {{"closesthit", "project://shaders/shadow_mesh"}}},
+            {"ball", {{"closesthit", "project://shaders/shadow_ball"}, {"intersection", "project://shaders/s"}}}};
+        CHECK(std::filesystem::exists(root / "shaders/shadow_mesh.rchit"));
         CHECK(tab.sent(2).at("parameters") == expected);
         tab.commit(ct6sDocument(expected), "rtl2s-2");
         pick();

@@ -72,6 +72,11 @@ std::string problemSentence(const ProblemRow &row) {
         if (const auto newline = first.find('\n'); newline != std::string::npos) first.erase(newline);
         return file + " does not compile" + (first.empty() ? std::string{} : ": " + first) + " (" + row.code + ").";
     }
+    // RTL-3s, decision 8 (engine FO-2): the material is whole; the pass
+    // drawing it does not declare what it uses.
+    if (row.code == "material.pass_contract_unmet@1")
+        if (auto sentence = materialPassContractSentence(row.fields); !sentence.empty())
+            return sentence + " (" + row.code + ").";
     // FO-1s, decision 2 (engine FO-1): a model whose bindings name a material
     // of a document the engine did not load.
     if (row.code == "material.binding_unresolved@1") {
@@ -123,6 +128,44 @@ void placeOf(ProblemRow &row) {
         row.place_text = "Shader file";
         return;
     }
+    // RTL-3s, decision 8 (engine FO-2): a material the pass that draws it
+    // does not declare enough for is fixed on that pass, not in the material
+    // -- the document is the pass's (document_kind: preset, feature,
+    // root_graph with its node, root_rendering).
+    if (row.code == "material.pass_contract_unmet@1") {
+        row.pass = stringOf(row.fields, "pass");
+        if (row.pass.empty())
+            if (const auto passes = row.fields.find("passes");
+                passes != row.fields.end() && passes->is_array() && !passes->empty() && passes->front().is_string())
+                row.pass = passes->front().get<std::string>();
+        if (kind == "root_graph" && !row.node.empty()) {
+            row.place = Place::GraphNode;
+            row.place_text = "Graph: " + row.node;
+            return;
+        }
+        if (!row.pass.empty()) {
+            row.place = Place::GraphPass;
+            row.place_text = "Graph: " + row.pass;
+            return;
+        }
+        if (kind == "root_rendering") {
+            row.place = Place::RenderingSettings;
+            row.place_text = "Rendering settings";
+            return;
+        }
+        if (kind == "feature") {
+            row.place = Place::Features;
+            row.place_text = "Features";
+            return;
+        }
+        if (!row.document.empty() && !row.document.starts_with("engine://")) {
+            row.place = Place::DocumentText;
+            row.place_text = "Text";
+            return;
+        }
+        row.place = Place::None;
+        return;
+    }
     if (kind == "material" || row.code.starts_with("material.")) {
         auto name = stringOf(row.fields, "name");
         if (name.empty()) name = stringOf(row.fields, "material");
@@ -147,10 +190,13 @@ void placeOf(ProblemRow &row) {
     }
     // RTL-2s, decision 3 (engine RTL-1b): a ray tracing task's refusal at
     // start or on a reload names its task, not a node; a task of the root's
-    // graph is the node of that id.
-    if (row.node.empty() && (kind.empty() || kind == "root" || kind == "root_graph") &&
+    // graph is the node of that id. RTL-3s, decision 6: a reload's refusal
+    // of a root graph's task names the root's rendering section as its
+    // document (root_rendering); the node of that id is tried first there too.
+    if (row.definition.empty() &&
+        (kind.empty() || kind == "root" || kind == "root_graph" || kind == "root_rendering") &&
         !stringOf(row.fields, "task").empty() && !rayTracingRefusalDescription(error).empty()) {
-        row.node = stringOf(row.fields, "task");
+        if (row.node.empty()) row.node = stringOf(row.fields, "task");
         row.place = Place::GraphNode;
         row.place_text = "Graph: " + row.node;
         return;

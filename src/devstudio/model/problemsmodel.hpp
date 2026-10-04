@@ -59,6 +59,10 @@ struct ProblemRow {
         Features,
         // Only a restart of the engine fixes it.
         Restart,
+        // RTL-3s, decision 8 (engine FO-2): a pass of the frame plan on the
+        // Graph tab -- a preset's or a feature's folded pass, or the node of
+        // the root's graph that made it -- picked, its fields open. `pass`.
+        GraphPass,
     };
 
     std::string id;
@@ -96,6 +100,8 @@ struct ProblemRow {
     std::string model;
     // Place::AssetFile: the file on disk.
     std::filesystem::path asset_path;
+    // Place::GraphPass: the pass's authored name (fields.pass).
+    std::string pass;
 
     [[nodiscard]] bool error() const noexcept { return severity == Severity::Error; }
     // "12:5", "12", or empty without a line.

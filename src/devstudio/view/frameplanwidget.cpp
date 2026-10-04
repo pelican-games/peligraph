@@ -545,22 +545,23 @@ struct FramePlanWidget::Impl {
     static constexpr int unpublished_plan_retry_ms = 250;
     qint64 pending_gpu_timing_request = 0;
     // RTL-2s b, decision 4: the SBT table -- which hit group each object's
-    // geometry lands in, and its record (get_ray_occurrences per object of
-    // scene_tree). Asked again when the ray-query scene's shape moves.
+    // geometry lands in, and its record. RTL-3s, decision 1 (engine EB-3):
+    // every object's rows in one get_ray_table, a page of SbtPage rows at a
+    // time (Show more asks for the next). Asked again when the ray-query
+    // scene's shape moves.
     struct SbtRow {
         std::string object;
         std::string group;
         std::string source;
         std::string record;
     };
-    qint64 pending_sbt_tree = 0;
-    std::map<qint64, std::string> pending_sbt_objects;
-    std::vector<SbtRow> sbt_collected;
+    static constexpr std::size_t SbtPage = 256;
+    qint64 pending_sbt = 0;
     std::vector<SbtRow> sbt_rows;
     std::string sbt_asked_for;
     bool sbt_known = false;
-    // RTL-2s-c: objects past the first 64 the table did not ask about.
-    std::size_t sbt_not_asked = 0;
+    // The rows the engine has past the ones read (truncated).
+    std::size_t sbt_total = 0;
     // Half of what gates the GPU timing clock: whether the engine still has
     // anything to report. The other half is whether anyone is looking at the
     // panel, and either can change without the other.
@@ -1442,8 +1443,12 @@ struct FramePlanWidget::Impl {
 
         QObject::connect(tabs, &QTabWidget::currentChanged, &owner,
                          [this](int) { refreshRawJson(); });
-        QObject::connect(refresh, &QPushButton::clicked, &owner,
-                         [this] { requestRefresh(); });
+        QObject::connect(refresh, &QPushButton::clicked, &owner, [this] {
+            // RTL-3s, decision 1: Refresh reads the SBT table again too (a
+            // record value changes no count the table is keyed on).
+            sbt_asked_for.clear();
+            requestRefresh();
+        });
         QObject::connect(logical_scene, &QGraphicsScene::selectionChanged,
                          &owner,
                          [this] {
@@ -3815,73 +3820,72 @@ struct FramePlanWidget::Impl {
         }
     }
 
-    // RTL-2s b, decision 4.
+    // RTL-2s b, decision 4; RTL-3s, decision 1.
     void requestSbtTable(const std::string &shape) {
-        if (pending_sbt_tree != 0 || !pending_sbt_objects.empty() || shape == sbt_asked_for ||
-            !viewport.rpcReady())
-            return;
+        if (pending_sbt != 0 || shape == sbt_asked_for || !viewport.rpcReady()) return;
         sbt_asked_for = shape;
-        pending_sbt_tree = viewport.requestRpc(QStringLiteral("scene_tree"), QJsonObject{}, nullptr);
+        sbt_rows.clear();
+        sbt_total = 0;
+        requestSbtPage(0);
+    }
+
+    void requestSbtPage(std::size_t offset) {
+        pending_sbt = viewport.requestRpc(
+            QStringLiteral("get_ray_table"),
+            QJsonObject{{QStringLiteral("limit"), static_cast<qint64>(SbtPage)},
+                        {QStringLiteral("offset"), static_cast<qint64>(offset)}},
+            nullptr);
+    }
+
+    // Show more: the next page after the rows read.
+    void requestMoreSbt() {
+        if (pending_sbt != 0 || !viewport.rpcReady() || sbt_rows.size() >= sbt_total) return;
+        requestSbtPage(sbt_rows.size());
+    }
+
+    static std::string sbtRecordText(const nlohmann::json &fields) {
+        std::string record;
+        if (fields.is_array()) {
+            for (const auto &field : fields) {
+                if (!record.empty()) record += ", ";
+                record += field.is_object() && field.contains("name")
+                              ? field.value("name", std::string{}) + "=" + field.value("value", nlohmann::json{}).dump()
+                              : field.dump();
+            }
+        } else if (fields.is_object()) {
+            for (const auto &[name, value] : fields.items())
+                record += (record.empty() ? "" : ", ") + name + "=" + value.dump();
+        }
+        return record;
     }
 
     bool receiveSbt(qint64 request_id, const QByteArray &result_json) {
-        if (request_id == 0) return false;
+        if (request_id == 0 || request_id != pending_sbt) return false;
+        pending_sbt = 0;
         const auto reply = nlohmann::json::parse(result_json.toStdString(), nullptr, false);
-        if (request_id == pending_sbt_tree) {
-            pending_sbt_tree = 0;
-            sbt_collected.clear();
-            sbt_not_asked = 0;
-            const auto objects = reply.is_object() ? reply.value("objects", nlohmann::json::array())
-                                                   : nlohmann::json::array();
-            for (const auto &object : objects) {
-                if (!object.is_object() || !object.contains("name") || !object.at("name").is_string()) continue;
-                // get_ray_occurrences answers one object; past 64 the table
-                // says how many it left out rather than asking hundreds.
-                if (pending_sbt_objects.size() >= 64) {
-                    ++sbt_not_asked;
-                    continue;
-                }
-                const auto name = object.at("name").get<std::string>();
-                const auto id = viewport.requestRpc(QStringLiteral("get_ray_occurrences"),
-                                                    QJsonObject{{QStringLiteral("name"), text(name)}}, nullptr);
-                if (id != 0) pending_sbt_objects.emplace(id, name);
-            }
-            if (pending_sbt_objects.empty()) finishSbt();
-            return true;
+        const auto rows = reply.is_object() ? reply.value("rows", nlohmann::json::array()) : nlohmann::json::array();
+        for (const auto &entry : rows) {
+            if (!entry.is_object()) continue;
+            const auto text_of = [&](const char *key) {
+                const auto found = entry.find(key);
+                return found != entry.end() && found->is_string() ? found->get<std::string>() : std::string{};
+            };
+            SbtRow row{text_of("object"), text_of("group"), {}, sbtRecordText(entry.value("record_fields", nlohmann::json{}))};
+            // A row no assignment picked answers from the layout's default
+            // group (no binding of its own).
+            const auto binding = entry.find("binding_index");
+            if (!row.group.empty() && (binding == entry.end() || binding->is_null())) row.source = "layout_default";
+            if (row.object.empty()) row.object = "#" + std::to_string(entry.value("authoring_object_id", 0));
+            sbt_rows.push_back(std::move(row));
         }
-        const auto found = pending_sbt_objects.find(request_id);
-        if (found == pending_sbt_objects.end()) return false;
-        const auto object = found->second;
-        pending_sbt_objects.erase(found);
-        const auto entries = reply.is_object() ? reply.value("entries", nlohmann::json::array())
-                                               : nlohmann::json::array();
-        for (const auto &entry : entries) {
-            const auto binding = entry.is_object() ? entry.value("binding", nlohmann::json{}) : nlohmann::json{};
-            if (!binding.is_object()) continue;
-            SbtRow row{object, binding.value("group_name", std::string{}), binding.value("group_source", std::string{}),
-                       {}};
-            const auto fields = binding.value("record_fields", nlohmann::json{});
-            if (fields.is_array()) {
-                for (const auto &field : fields) {
-                    if (!row.record.empty()) row.record += ", ";
-                    row.record += field.is_object() && field.contains("name")
-                                      ? field.value("name", std::string{}) + "=" +
-                                            field.value("value", nlohmann::json{}).dump()
-                                      : field.dump();
-                }
-            } else if (fields.is_object()) {
-                for (const auto &[name, value] : fields.items())
-                    row.record += (row.record.empty() ? "" : ", ") + name + "=" + value.dump();
-            }
-            sbt_collected.push_back(std::move(row));
-        }
-        if (pending_sbt_objects.empty()) finishSbt();
+        sbt_total = reply.is_object() && reply.value("total", nlohmann::json{}).is_number_unsigned()
+                        ? reply.at("total").get<std::size_t>()
+                        : sbt_rows.size();
+        finishSbt();
         return true;
     }
 
     void finishSbt() {
-        sbt_rows = std::move(sbt_collected);
-        sbt_collected.clear();
         sbt_known = true;
         if (model) {
             physical->clear();
@@ -4015,12 +4019,9 @@ struct FramePlanWidget::Impl {
         if (reload_follower->fail(request_id, message)) return;
         // RTL-2s b, decision 4: an object the engine could not answer for is
         // left out of the SBT table.
-        if (request_id != 0 && request_id == pending_sbt_tree) {
-            pending_sbt_tree = 0;
-            return;
-        }
-        if (pending_sbt_objects.erase(request_id) > 0) {
-            if (pending_sbt_objects.empty()) finishSbt();
+        // RTL-3s, decision 1: an engine without get_ray_table lists none.
+        if (request_id != 0 && request_id == pending_sbt) {
+            pending_sbt = 0;
             return;
         }
         if (request_id == pending_gpu_timing_request) {
@@ -5114,7 +5115,7 @@ struct FramePlanWidget::Impl {
         if (sbt_known) {
             auto *sbt = groupItem(group, owner.tr("Hit groups (SBT)"), sbt_rows.size());
             sbt->setToolTip(1, owner.tr("Each object's geometry, the hit group its rays reach and the "
-                                        "record that group reads (get_ray_occurrences)."));
+                                        "record that group reads (get_ray_table)."));
             for (const auto &row : sbt_rows) {
                 auto *item = new QTreeWidgetItem(sbt);
                 item->setText(0, text(row.object));
@@ -5125,10 +5126,16 @@ struct FramePlanWidget::Impl {
                 // RTL-2s-c: the columns are narrow; the whole line on hover.
                 for (int column = 0; column < 3; ++column) item->setToolTip(column, item->text(column));
             }
-            if (sbt_not_asked > 0) {
+            // RTL-3s, decision 1: the engine's rows past the ones read.
+            if (sbt_total > sbt_rows.size()) {
                 auto *more = new QTreeWidgetItem(sbt);
-                more->setText(0, owner.tr("%1 more objects").arg(static_cast<qulonglong>(sbt_not_asked)));
-                more->setText(1, owner.tr("not listed: the table asks the first 64 objects, one request each"));
+                more->setText(0, owner.tr("%1 more rows").arg(static_cast<qulonglong>(sbt_total - sbt_rows.size())));
+                auto *button = new QPushButton(owner.tr("Show more"));
+                button->setObjectName(QStringLiteral("pelican.framePlan.sbtShowMore"));
+                button->setToolTip(owner.tr("The next %1 rows of the table (get_ray_table's offset)")
+                                       .arg(static_cast<qulonglong>(SbtPage)));
+                QObject::connect(button, &QPushButton::clicked, &owner, [this] { requestMoreSbt(); });
+                physical->setItemWidget(more, 1, button);
             }
             // RTL-2s-c: open, so the rows are what a person sees first.
             sbt->setExpanded(true);
@@ -5137,6 +5144,9 @@ struct FramePlanWidget::Impl {
         // and what the scene kept out.
         for (const auto &[name, listed] : scene.named_tlas_blas) {
             auto *named = groupItem(group, owner.tr("TLAS %1: BLAS").arg(text(name)), listed.size());
+            // RTL-3s: read by its name in the first column, and open.
+            named->setText(0, owner.tr("TLAS %1").arg(text(name)));
+            named->setExpanded(true);
             for (const auto &key : listed) {
                 auto *item = new QTreeWidgetItem(named);
                 item->setText(0, text(key.geometry_kind));
@@ -5156,6 +5166,8 @@ struct FramePlanWidget::Impl {
             for (const auto &name : scene.excluded_names) addFact(excluded, owner.tr("object"), text(name));
         }
         group->setExpanded(true);
+        // RTL-3s, decision 1: the object and the hit group read whole.
+        for (int column = 0; column < 2; ++column) physical->resizeColumnToContents(column);
     }
 
     // UX-6a, decision 4: an image the planner keeps out of aliasing that has

@@ -472,6 +472,8 @@ void MainWindow::createWorkspace() {
                 [this] {
                     if (problems_dock_ != nullptr) problems_dock_->readNow();
                 },
+            // RTL-3s, decision 8: where a Problems row of the same goes.
+            .open_pass = [this](const std::string &pass) { openPlanPassOnGraph(QString::fromStdString(pass)); },
         },
         this);
     materials_dock_->setObjectName(QStringLiteral("pelican.materialsPanel"));
@@ -1570,6 +1572,11 @@ void MainWindow::createRenderReload() {
                 QStringLiteral("pelican.renderFeatures.callableRecords")))
             open->click();
     });
+    // RTL-3s, decision 4: a raygen switch is one entry of the render history.
+    graph_canvas_->setFileHistoryAction(
+        [this](const std::string &label, const std::string &path, const std::string &before, const std::string &after) {
+            if (render_history_) render_history_->recordFiles(label, {{path, before, after}});
+        });
 }
 
 void MainWindow::showProblems() {
@@ -1661,10 +1668,25 @@ void MainWindow::openProblem(const ProblemRow &row) {
     case Place::Features:
         (void)showRenderToolsTab(QStringLiteral("render_features"));
         return;
+    case Place::GraphPass:
+        openPlanPassOnGraph(text(row.pass));
+        return;
     case Place::Restart:
     case Place::None:
         return;
     }
+}
+
+void MainWindow::openPlanPassOnGraph(const QString &pass) {
+    // RTL-3s, decision 8 (engine FO-2): the pass a material needs more of --
+    // the node that made it, or its preset's / feature's folded pass.
+    if (graph_canvas_ == nullptr || pass.isEmpty() || !showRenderToolsTab(QStringLiteral("graph"))) return;
+    if (graph_canvas_->revealPlanPass(pass)) return;
+    if (graph_canvas_->canRevealGraphNode(QStringLiteral("root"), pass)) {
+        (void)graph_canvas_->revealGraphNode(QStringLiteral("root"), pass, {});
+        return;
+    }
+    statusBar()->showMessage(tr("The Graph does not show the pass %1.").arg(pass), 8000);
 }
 
 void MainWindow::renderDocumentsReloaded(const nlohmann::json &commit) {

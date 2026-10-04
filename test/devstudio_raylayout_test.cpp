@@ -418,10 +418,12 @@ TEST_CASE("RTL-2s-c one rule for a task's layout form, the templates' ray type a
           Json{{"closesthit", "project://shaders/shadow_ball"}, {"intersection", "project://shaders/sphere"}});
     REQUIRE(shadow.shaders.size() == 2);
     CHECK(shadow.shaders[0].content.find("layout(location = 1) rayPayloadInEXT float occluded;") != std::string::npos);
-    CHECK(shadow.shaders[0].content.find("PELICAN_RAY_ENGINE_RECORD_MEMBERS") != std::string::npos);
+    // RTL-3s, decision 5 (engine EB-3): it reads no record, so it declares none.
+    CHECK(shadow.shaders[0].content.find("shaderRecordEXT") == std::string::npos);
 
     // A record field writes the block of every hit shader a task traces
-    // with; one that declares its own record is named.
+    // with; RTL-3s: one that declares its own record is left to the engine's
+    // refusal (shader_record_abi_mismatch names it with the fields).
     const auto names = rayLayoutTemplateNames(layout);
     write(project.root / "shaders/ray_tracing_layout.rchit",
           rayLayoutShaderTemplate(names, {RayLayoutTemplateStage::closest_hit, "primary", "default", {}}, "x"));
@@ -433,8 +435,7 @@ TEST_CASE("RTL-2s-c one rule for a task's layout form, the templates' ray type a
     CHECK(value.shaders[0].path.filename() == "ray_tracing_layout.rchit");
     CHECK(value.shaders[0].content.find("    float value;\n} record;") != std::string::npos);
     CHECK(value.shaders[0].content.find("return color + vec3(record.value);") != std::string::npos);
-    REQUIRE(value.notes.size() == 1);
-    CHECK(value.notes[0].find("shaders/sphere.rint declares its own shader record") != std::string::npos);
+    CHECK(value.notes.empty());
     // Without the record the block holds the engine's fields alone again.
     CHECK(rewriteRayRecordBlock(value.shaders[0].content, names) ==
           readFile(project.root / "shaders/ray_tracing_layout.rchit"));
@@ -454,14 +455,111 @@ TEST_CASE("RTL-2s-c one rule for a task's layout form, the templates' ray type a
     CHECK(traced.find("#define TRACE_SECOND_RAY_TYPE 1") != std::string::npos);
     CHECK(traced.find("PELICAN_RAY_TYPE_shadow, pelican_ray_type_count, PELICAN_MISS_miss") != std::string::npos);
 
-    // A ray type checked in the Graph's Traced ray types: its row took the
-    // first traced type's hit shaders -- named, with what to do -- and a
-    // shader whose record Studio cannot write is named too.
-    const auto row_notes = rayTracedRowNotes(tasks.at(0).rayTracing(), "shadow", layout, project.root);
-    REQUIRE(row_notes.size() == 2);
-    CHECK(row_notes[0].find("shadow's row took primary's hit shaders (shaders/ray_tracing_layout.rchit)") !=
+}
+
+TEST_CASE("RTL-3s decision 5: a ray type checked in Traced ray types takes a whole row in its own payload, the "
+          "templates that read no record declare none, and unchecking takes the row out",
+          "[rtl3s][ray-layout]") {
+    TempProject project;
+    auto layout = defaultRayLayout();
+    layout["ray_types"].push_back("shadow");
+    layout["ray_types"].push_back("sun");
+    layout["groups"].push_back({{"name", "ball"}, {"type", "procedural"}});
+    const auto names = rayLayoutTemplateNames(layout);
+    // The templates: a later ray type's closest hit, an any hit and an
+    // intersection without the record's center / radius declare no record;
+    // ray type 0's closest hit (it reads the engine's fields) does.
+    const auto shader = [&](RayLayoutTemplateStage stage, const char *type, const char *group) {
+        return rayLayoutShaderTemplate(names, {stage, type, group, {}}, "t");
+    };
+    CHECK(shader(RayLayoutTemplateStage::closest_hit, "shadow", "default").find("shaderRecordEXT") ==
           std::string::npos);
-    CHECK(row_notes[0].find("New... in each shadow cell writes one for shadow.") != std::string::npos);
-    CHECK(row_notes[1].find("shaders/sphere.rint declares its own shader record") != std::string::npos);
-    CHECK(rayTracedRowNotes(tasks.at(0).rayTracing(), "primary", layout, project.root).empty());
+    CHECK(shader(RayLayoutTemplateStage::any_hit, "primary", "default").find("shaderRecordEXT") == std::string::npos);
+    CHECK(shader(RayLayoutTemplateStage::intersection, "primary", "ball").find("shaderRecordEXT") ==
+          std::string::npos);
+    CHECK(shader(RayLayoutTemplateStage::closest_hit, "primary", "default").find("shaderRecordEXT") !=
+          std::string::npos);
+    auto with_radius = layout;
+    with_radius["record"] = Json::array({{{"name", "radius"}, {"type", "f32"}}});
+    CHECK(rayLayoutShaderTemplate(rayLayoutTemplateNames(with_radius),
+                                  {RayLayoutTemplateStage::intersection, "primary", "ball", {}}, "t")
+              .find("record.radius") != std::string::npos);
+
+    const Json primary_only{{"raygen", "project://shaders/r"},
+                            {"traced_ray_types", Json::array({"primary"})},
+                            {"misses", {{"miss", "project://shaders/m"}}},
+                            {"hit_shaders",
+                             {{"primary",
+                               {{"default", {{"closesthit", "project://shaders/hit"}}},
+                                {"ball", {{"closesthit", "project://shaders/hit"},
+                                          {"intersection", "project://shaders/sphere"}}}}}}}};
+    // Another payload: the template's closest hit of shadow for each group,
+    // written, the ball's intersection kept.
+    const auto shadow = rayTracedRowFill(primary_only, "shadow", layout, project.root);
+    CHECK(shadow.row == Json{{"default", {{"closesthit", "project://shaders/shadow_default"}}},
+                             {"ball", {{"closesthit", "project://shaders/shadow_ball"},
+                                       {"intersection", "project://shaders/sphere"}}}});
+    REQUIRE(shadow.writes.size() == 2);
+    CHECK(shadow.writes[0].path == project.root / "shaders/shadow_default.rchit");
+    CHECK(shadow.writes[0].content.find("layout(location = 1) rayPayloadInEXT float occluded;") != std::string::npos);
+    REQUIRE(shadow.notes.size() == 1);
+    CHECK(shadow.notes[0] ==
+          "shadow's hit shaders are written from the template: shaders/shadow_default.rchit, "
+          "shaders/shadow_ball.rchit.");
+    // Checked again after it was unchecked: the files already hold that
+    // template, so nothing is written; another file in the way is not
+    // touched (the next name).
+    for (const auto &each : shadow.writes) write(each.path, each.content);
+    write(project.root / "shaders/shadow_ball.rchit", "// somebody's\n");
+    const auto again = rayTracedRowFill(primary_only, "shadow", layout, project.root);
+    CHECK(again.row.at("default") == Json{{"closesthit", "project://shaders/shadow_default"}});
+    CHECK(again.row.at("ball").at("closesthit") == "project://shaders/shadow_ball_2");
+    REQUIRE(again.writes.size() == 1);
+    CHECK(again.writes[0].path.filename() == "shadow_ball_2.rchit");
+    // The same payload as the first other traced ray type: its cells.
+    auto both = primary_only;
+    both["traced_ray_types"].push_back("shadow");
+    both["hit_shaders"]["shadow"] = shadow.row;
+    const auto sun = rayTracedRowFill(both, "sun", layout, project.root);
+    CHECK(sun.row.at("default").at("closesthit") == "project://shaders/sun_default");
+    auto shadow_first = both;
+    shadow_first["traced_ray_types"] = Json::array({"shadow", "primary"});
+    CHECK(rayTracedRowFill(shadow_first, "sun", layout, project.root).row == shadow.row);
+    CHECK(rayTracedRowFill(shadow_first, "sun", layout, project.root).writes.empty());
+}
+
+TEST_CASE("RTL-3s decision 2: assignment rows of one name read apart by their model and the objects using them, "
+          "and one nothing uses is grey",
+          "[rtl3s][ray-layout]") {
+    auto answer = layoutAnswer(defaultRayLayout(), nullptr, "layout");
+    answer["selectable_materials"] = Json::array(
+        {{{"label", "pelican.primitive.default (engine://primitives/cube #0)"},
+          {"name", "pelican.primitive.default"},
+          {"selector", {{"asset", "engine://primitives/cube"}, {"source_material_index", 0}}},
+          {"used_by", {{"count", 1}, {"objects", Json::array({"Cube"})}}},
+          {"model", "engine://primitives/cube"}},
+         {{"label", "pelican.primitive.default (engine://primitives/sphere #0)"},
+          {"name", "pelican.primitive.default"},
+          {"selector", {{"asset", "engine://primitives/sphere"}, {"source_material_index", 0}}},
+          {"used_by", {{"count", 10}, {"objects", Json::array({"A", "B"})}}},
+          {"model", "engine://primitives/sphere"}},
+         {{"label", "material_2"},
+          {"name", "material_2"},
+          {"selector", {{"document", "materials/material_2.material.json"}}},
+          {"used_by", {{"count", 0}, {"objects", Json::array()}}}}});
+    const auto read = parseRayLayoutRead(answer);
+    REQUIRE(read.materials.size() == 3);
+    CHECK(read.materials[0].used_count == 1);
+    CHECK(read.materials[0].model == "engine://primitives/cube");
+    const auto cube = rayMaterialRowLabel(read.materials[0]);
+    CHECK(cube.text == "Default (cube) \xE2\x80\x94 used by Cube");
+    CHECK(cube.used);
+    CHECK(rayMaterialRowLabel(read.materials[1]).text == "Default (sphere) \xE2\x80\x94 used by A, B and 8 more");
+    const auto nothing = rayMaterialRowLabel(read.materials[2]);
+    CHECK(nothing.text == "material_2 \xE2\x80\x94 used by nothing");
+    CHECK_FALSE(nothing.used);
+    // An engine before EB-2: its label as it is.
+    answer["selectable_materials"][0].erase("used_by");
+    CHECK(rayMaterialRowLabel(parseRayLayoutRead(answer).materials[0]).text ==
+          "pelican.primitive.default (engine://primitives/cube #0)");
 }

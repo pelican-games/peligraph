@@ -146,7 +146,6 @@ struct RayLayoutWidget::Impl {
     QPushButton *restart_button = nullptr;
     QPushButton *show_document = nullptr;
     QPushButton *acceleration_button = nullptr;
-    QPushButton *undo_button = nullptr;
     QWidget *tables_host = nullptr;
     QVBoxLayout *tables_layout = nullptr;
     QWidget *tables = nullptr;
@@ -170,8 +169,6 @@ struct RayLayoutWidget::Impl {
     std::optional<RayLayoutPlan> submitted;
     std::optional<RayLayoutRead> submitted_from;
     // Decision 7: the reads before the edits that rewrote procedural records.
-    std::vector<RayLayoutRead> record_undo;
-    bool undoing = false;
     QString pending_reveal;
 
     Impl(RayLayoutWidget &widget, EmbeddedViewport &embedded) : owner{widget}, viewport{embedded} {
@@ -212,12 +209,9 @@ struct RayLayoutWidget::Impl {
         acceleration_button->setObjectName(Prefix + QStringLiteral("accelerationStructures"));
         acceleration_button->setToolTip(owner.tr("The scene's acceleration structure settings (defaults, "
                                                  "rules, space) in the Task Editor"));
-        undo_button = new QPushButton(owner.tr("Undo record change"), &owner);
-        undo_button->setObjectName(Prefix + QStringLiteral("undo"));
-        undo_button->setToolTip(owner.tr("Procedural assets' records are asset data, which the render "
-                                         "history does not take back: this sends them as they were"));
-        for (auto *button : {enable_button, disable_button, restart_button, show_document, acceleration_button,
-                             undo_button})
+        // RTL-3s, decision 3 (engine EB-2): a procedural asset's record is
+        // taken back by the render history's Undo, as the rest is.
+        for (auto *button : {enable_button, disable_button, restart_button, show_document, acceleration_button})
             buttons->addWidget(button);
         buttons->addStretch(1);
         layout->addLayout(buttons);
@@ -245,7 +239,6 @@ struct RayLayoutWidget::Impl {
         QObject::connect(acceleration_button, &QPushButton::clicked, &owner, [this] {
             if (acceleration_action) acceleration_action();
         });
-        QObject::connect(undo_button, &QPushButton::clicked, &owner, [this] { undoRecords(); });
 
         poll = new QTimer(&owner);
         poll->setInterval(25);
@@ -419,10 +412,7 @@ struct RayLayoutWidget::Impl {
             return;
         }
         auto plan = std::exchange(submitted, std::nullopt);
-        auto before = std::exchange(submitted_from, std::nullopt);
-        if (plan && before && !undoing && plan->procedural_records.is_object() && !plan->procedural_records.empty())
-            record_undo.push_back(std::move(*before));
-        undoing = false;
+        submitted_from.reset();
         if (!completion.source_digest.empty() && digest_hub) digest_hub->publish(completion.source_digest, &owner);
         if (completion.restart_required) return;
         QString line = plan ? owner.tr("Saved: %1.").arg(text(plan->label)) : owner.tr("Saved.");
@@ -436,7 +426,6 @@ struct RayLayoutWidget::Impl {
         if (submitted) revertShaders(*submitted);
         submitted.reset();
         submitted_from.reset();
-        undoing = false;
         showError(refusalLine(response));
         // RTL-2s-c: a task's refusal marks its node and the cell its fields
         // name in the Graph, with the same sentence.
@@ -497,7 +486,6 @@ struct RayLayoutWidget::Impl {
         if (submitted) revertShaders(*submitted);
         submitted.reset();
         submitted_from.reset();
-        undoing = false;
         showError(message);
         read();
         controls();
@@ -515,20 +503,6 @@ struct RayLayoutWidget::Impl {
             plan.confirm = "Disable hit groups? The ray layout is taken out of the project, every object answers "
                            "with the same closest hit, and the engine starts again.";
         apply(std::move(plan));
-    }
-
-    // Decision 7.
-    void undoRecords() {
-        if (record_undo.empty() || !read_state) return;
-        auto before = record_undo.back();
-        auto plan = planPutBack(before, *read_state);
-        record_undo.pop_back();
-        if (plan.empty()) {
-            controls();
-            return;
-        }
-        undoing = true;
-        apply(std::move(plan), true);
     }
 
     // --- The confirmation and the add dialog.
@@ -701,8 +675,6 @@ struct RayLayoutWidget::Impl {
         show_document->setVisible(has_layout && !read_state->layout.usable());
         acceleration_button->setVisible(has_layout && read_state->layout.usable());
         acceleration_button->setEnabled(ready && static_cast<bool>(acceleration_action));
-        undo_button->setVisible(!record_undo.empty());
-        undo_button->setEnabled(ready);
         if (tables) tables->setEnabled(ready);
     }
 
@@ -970,8 +942,13 @@ struct RayLayoutWidget::Impl {
             const auto &material = read.materials[index];
             const auto prefix = Prefix + QStringLiteral("assign.") +
                                 namePart(material.name.empty() ? std::to_string(index) : material.name);
-            auto *label = new QLabel(text(material.label.empty() ? material.name : material.label), tables);
+            // RTL-3s, decision 2 (engine EB-2): two rows of one name told apart
+            // by their model and the objects drawn with them; grey when none is.
+            const auto row_label = rayMaterialRowLabel(material);
+            auto *label = new QLabel(text(row_label.text), tables);
             label->setObjectName(prefix + QStringLiteral(".material"));
+            label->setToolTip(text(material.label));
+            if (!row_label.used) label->setStyleSheet(QStringLiteral("color: palette(mid);"));
             grid->addWidget(label, line, 0);
             auto *combo = new QComboBox(tables);
             combo->setObjectName(prefix + QStringLiteral(".group"));

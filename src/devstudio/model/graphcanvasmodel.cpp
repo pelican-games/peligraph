@@ -4780,10 +4780,14 @@ std::string rayTracingRefusalParameter(const std::string &code, const Json &fiel
     if (code.starts_with("pelican.ray_tracing.miss_shader_")) return place + ".misses";
     if (!ray_type.empty()) {
         place += ".hit_shaders." + ray_type;
-        if (!group.empty()) place += "." + group;
+        if (group.empty()) return place;
+        place += "." + group;
         if (code == "pelican.procedural_group_requires_intersection@1" || stage == "intersection")
-            place += ".intersection";
-        if (code == "pelican.ray_profile_authored_anyhit@1") place += ".anyhit";
+            return place + ".intersection";
+        if (code == "pelican.ray_profile_authored_anyhit@1") return place + ".anyhit";
+        // RTL-3s, decision 6 (engine EB-3): the record's and the payload's
+        // refusals name the stage of the cell.
+        if (stage == "closesthit" || stage == "anyhit") return place + "." + stage;
         return place;
     }
     if (code == "pelican.ray_tracing.hit_shader_missing@1") return place + ".hit_shaders";

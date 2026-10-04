@@ -39,12 +39,15 @@ namespace PelicanStudio {
 //   - any hit accepts every candidate; intersection is a sphere of radius 1
 //     at the procedural geometry's origin (or the record's `center` /
 //     `radius`); callable tints the colour it is given.
-// A hit shader declares the shader record in a block Studio owns, between
-// `// pelican: shader record` and `// pelican: end shader record`: the
-// engine's fields (PELICAN_RAY_ENGINE_RECORD_MEMBERS), then the record's in
-// order, and recordColor(). The engine requires every hit shader of a traced
-// ray type to declare exactly that record, so Studio writes the block again
-// whenever the layout's record changes (rewriteRayRecordBlock).
+// A hit shader that reads the shader record declares it in a block Studio
+// owns, between `// pelican: shader record` and `// pelican: end shader
+// record`: the engine's fields (PELICAN_RAY_ENGINE_RECORD_MEMBERS), then the
+// record's in order, and recordColor(). RTL-3s (engine EB-3): a hit shader of
+// a traced ray type may declare no record, and one that declares it declares
+// exactly that one, so Studio writes the block again whenever the layout's
+// record changes (rewriteRayRecordBlock); the templates that read no record
+// (a later ray type's closest hit, any hit, an intersection without the
+// record's center / radius) hold no block.
 struct RayLayoutTemplateNames {
     std::vector<std::string> ray_types;
     std::vector<std::string> misses;

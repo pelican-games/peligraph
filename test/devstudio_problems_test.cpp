@@ -3,6 +3,8 @@
 // check -- on the real widget, with the test answering for the engine
 // through the dock's own hooks.
 
+#include "../src/devstudio/model/inspectormodel.hpp"
+#include "../src/devstudio/model/materialsmodel.hpp"
 #include "../src/devstudio/model/problemsmodel.hpp"
 #include "problemsdock.hpp"
 #include "renderfallbacknotice.hpp"
@@ -457,4 +459,100 @@ TEST_CASE("PB-1s decision 5: a row the engine no longer lists goes, and so does 
     rig.answer(10, Json::array());
     CHECK(rig.tree()->topLevelItemCount() == 0);
     CHECK(rig.dock.countLine()->text() == QStringLiteral("No problems"));
+}
+
+TEST_CASE("RTL-3s decision 6: a shader record's and a payload's refusal read their fields -- the shader, what "
+          "the layout wants -- and the row goes to the task's node with the cell's stage",
+          "[devstudio][problems][rtl3s]") {
+    // engine EB-3's fields, as the problem list carries them.
+    const Json fields{{"task", "trace"},
+                      {"ray_type", "shadow"},
+                      {"group", "mesh"},
+                      {"stage", "closesthit"},
+                      {"shader", "project://shaders/wrong_record.rchit"},
+                      {"expected", Json::array({{{"name", "material_index"}, {"offset", 0}, {"type", "u32"}},
+                                                {{"name", "geometry_index"}, {"offset", 4}, {"type", "u32"}}})},
+                      {"actual", Json::array({{{"offset", 0}, {"type", "u32"}}})}};
+    // The message quotes another shader: the sentence is the fields'.
+    const auto row = readEngineProblem(
+        Json{{"id", "p1"}, {"severity", "error"}, {"source", "startup"},
+             {"code", "pelican.ray_tracing.shader_record_abi_mismatch@1"},
+             {"message", "pelican.ray_tracing.shader_record_abi_mismatch@1: shader 'other.rchit' entry 'main'"},
+             // A reload's refusal of the root graph's task (engine EB-3).
+             {"document_kind", "root_rendering"},
+             {"node", "trace"},
+             {"fields", fields}});
+    REQUIRE(row.has_value());
+    CHECK(row->sentence ==
+          "Shader shaders/wrong_record.rchit declares a shader record that is not the ray group layout's: declare its "
+          "fields in order (material_index u32, geometry_index u32), or take the shaderRecordEXT declaration out "
+          "(ray type shadow, hit group mesh, stage closesthit) (pelican.ray_tracing.shader_record_abi_mismatch@1).");
+    CHECK(row->place == ProblemRow::Place::GraphNode);
+    CHECK(row->node == "trace");
+    // A layout without a record, and a place no record is written.
+    auto empty = fields;
+    empty["expected"] = Json::array();
+    empty["code"] = "pelican.ray_tracing.shader_record_abi_mismatch@1";
+    CHECK(rayTracingRefusalDescription(empty).starts_with(
+        "Shader shaders/wrong_record.rchit declares a shader record and the ray group layout has none: take its "
+        "shaderRecordEXT declaration out"));
+    auto nowhere = Json{{"code", "pelican.ray_tracing.shader_record_abi_mismatch@1"},
+                        {"error_fields", {{"stage", "miss"}, {"miss", "sky"}, {"shader", "project://shaders/s.rmiss"},
+                                          {"expected", nullptr}, {"actual", Json::array()}}}};
+    CHECK(rayTracingRefusalDescription(nowhere) ==
+          "Shader shaders/s.rmiss declares a shader record where none is written (its stage miss): take its "
+          "shaderRecordEXT declaration out (miss sky) (pelican.ray_tracing.shader_record_abi_mismatch@1).");
+    // The payload: the receiving shader and the caller.
+    CHECK(rayTracingRefusalDescription(Json{{"code", "pelican.ray_tracing.payload_mismatch@1"},
+                                            {"task", "trace"}, {"stage", "closesthit"},
+                                            {"shader", "uvec.rchit"}, {"ray_type", "primary"},
+                                            {"group", "foliage"}, {"expected", "vec4<f32>"},
+                                            {"actual", "vec4<u32>"},
+                                            {"caller", {{"stage", "raygen"}, {"shader", "eb3.rgen"}}}}) ==
+          "Shader uvec.rchit takes the payload as vec4<u32>, and the ray it answers carries vec4<f32> (traced by "
+          "eb3.rgen): make them one type (ray type primary, hit group foliage, stage closesthit) "
+          "(pelican.ray_tracing.payload_mismatch@1).");
+    // An engine before EB-3 (no expected): the table's sentence.
+    CHECK(rayTracingRefusalDescription(Json{{"code", "pelican.ray_tracing.shader_record_abi_mismatch@1"},
+                                            {"message", "pelican.ray_tracing.shader_record_abi_mismatch@1: shader 'a.rchit' entry 'main'"}})
+              .starts_with("Shader a.rchit's shader record does not match"));
+}
+
+TEST_CASE("RTL-3s decision 8: a material its pass does not declare enough for goes to the pass -- the node "
+          "of the root's graph, or the pass by name -- and the Materials list reads unusable",
+          "[devstudio][problems][rtl3s]") {
+    const Json fields{{"material", "QueryMaterial"},
+                      {"material_document", "materials/query.material.json"},
+                      {"pass", "forward_opaque"},
+                      {"requirement", "ray_query"},
+                      {"reason", "Raster pass uses the scene acceleration structure but does not declare ray_query"}};
+    const auto problem = [&](const char *kind, const char *node) {
+        Json value{{"id", std::string{"p-"} + kind}, {"severity", "error"}, {"source", "startup"},
+                   {"code", "material.pass_contract_unmet@1"}, {"message", "material.pass_contract_unmet@1: ..."},
+                   {"document", "project://material_pipeline.json"}, {"document_kind", kind}, {"fields", fields}};
+        if (node != nullptr) value["node"] = node;
+        return readEngineProblem(value).value();
+    };
+    const auto preset = problem("preset", nullptr);
+    CHECK(preset.sentence ==
+          "Material QueryMaterial queries the scene's acceleration structure, and pass forward_opaque, which draws "
+          "it, does not declare ray_query: turn Ray query on for the pass (material.pass_contract_unmet@1).");
+    // Not the Materials dock: the pass.
+    CHECK(preset.place == ProblemRow::Place::GraphPass);
+    CHECK(preset.pass == "forward_opaque");
+    CHECK(preset.place_text == "Graph: forward_opaque");
+    const auto graph_node = problem("root_graph", "material_pass");
+    CHECK(graph_node.place == ProblemRow::Place::GraphNode);
+    CHECK(graph_node.node == "material_pass");
+    CHECK(problem("feature", nullptr).place == ProblemRow::Place::GraphPass);
+    // list_materials' unusable entry.
+    const auto list = parseMaterialList(Json{
+        {"documents", Json::array({{{"path", "materials/query.material.json"}, {"status", "unusable"},
+                                    {"reason", "r"}, {"pass", "forward_opaque"}, {"requirement", "ray_query"},
+                                    {"materials", Json::array()}}})}});
+    REQUIRE(list.documents.size() == 1);
+    CHECK(list.documents[0].pass == "forward_opaque");
+    CHECK(materialDocumentProblemLine(list.documents[0]) ==
+          "materials/query.material.json: The material queries the scene's acceleration structure, and pass "
+          "forward_opaque, which draws it, does not declare ray_query: turn Ray query on for the pass.");
 }
