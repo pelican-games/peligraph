@@ -1,0 +1,484 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "gui_frameplan_delegates",
+  "description": "GL-5c, from File > New Project > Blank with Studio's GUI only. Blank's root is a graph that selects no preset, so the Frame Plan's Add material pass... is the Graph's palette (decision 1): the Graph tab comes forward with the palette open on render.material_pass, forward_opaque_v1 is picked, and the pass goes into the graph's nodes with its draw loop -- no managed fragment (pass-<id>.json) is made -- and is picked on the Graph once the engine (restarted for the route default) has it, its detail column open. Its colour output dragged onto present's + input puts what it draws on screen. Back on the Frame Plan, a double-click on present's row opens it on the Graph in the detail column (decision 3), and on the material pass's row the pass's own fields. A render.target_ref placed beside the picked forward pass with New render target... opens the form on Explicit format R16G16B16A16_SFLOAT, which a forward pass's colour takes (decision 4); it is cancelled. Typed: the project folder and name in New Project.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "File > New Project...",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "delegates"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the blank project's present is on the Frame Plan canvas",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "Add Object > Cube, something for the pass to draw",
+      "cmd": "action",
+      "name": "pelican.outliner.addObject.cube"
+    },
+    {
+      "label": "the engine has a third object, named Cube",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[2].name",
+      "value": "Cube",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the Inspector has read the Cube before Save (Save waits for an idle editor session)",
+      "cmd": "wait",
+      "name": "pelican.inspectorModelChoice",
+      "text": "Cube (built-in)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "File > Save Scene, so the restart the material pass asks for has nothing to ask",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "the save is done",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "contains": "Scene saved",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick the camera in the Outliner, so no gizmo is drawn over the box",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "MainCamera"
+    },
+    {
+      "label": "the Inspector holds the camera",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "MainCamera\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the picture before: present reads nothing and passthrough draws its gradient",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/gui_frameplan_delegates_before.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "before"
+    },
+    {
+      "label": "the Frame Plan tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "decision 1: the Frame Plan's Add material pass... (its toolbar button)",
+      "cmd": "click",
+      "name": "pelican.framePlanAddMaterialPass"
+    },
+    {
+      "label": "the Graph tab comes forward with its palette, not the material pass form",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the palette is open on the material pass",
+      "expect": "text_equals",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "value": "render.material_pass"
+    },
+    {
+      "label": "the contract combo is offered for it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteContract",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "a forward pass (Studio sends the route default; the engine restarts)",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPaletteContract",
+      "text": "forward_opaque_v1"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the palette closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the material pass form never opened",
+      "expect": "visible",
+      "name": "pelican.materialPassForm",
+      "value": false
+    },
+    {
+      "label": "the pass's draw loop is drawn as a zone (after the engine restarts)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the material pass is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_material_pass",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "it is picked: the detail column shows the material pass's contract",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasDraw.contract",
+      "visible": true,
+      "text": "forward_opaque_v1",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the pass is the graph's: last of the nodes it added, its images between",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].id",
+      "value": "render_material_pass",
+      "retry_ms": 60000
+    },
+    {
+      "label": "a render.material_pass",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].op",
+      "value": "render.material_pass"
+    },
+    {
+      "label": "no managed fragment was made (the Frame Plan's old way wrote pass-<id>.json)",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "managed_fragments.$len",
+      "value": 0
+    },
+    {
+      "label": "and the root's file holds the pass",
+      "file": "contains",
+      "path": "{artifacts}/delegates/passes/main_rendering_config.json",
+      "text": "render.material_pass",
+      "value": true
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit the graph, so both ends of the line are on screen",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "present, the rendering section's pass, offers an empty + input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the material pass's own colour output onto present's + input",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_material_pass/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+"
+      },
+      "steps": 8
+    },
+    {
+      "label": "edit_preset_pass on present committed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Pass inputs saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the line is the document's: solid, from the material pass to present",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_pass_input_edge#render_material_pass->present",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "what the pass draws is on screen: the middle is not the gradient",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/gui_frameplan_delegates_drawn.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "before",
+      "retry_ms": 120000
+    },
+    {
+      "label": "a picture of the window",
+      "expect": "screenshot",
+      "path": "gui_frameplan_delegates_window.png"
+    },
+    {
+      "label": "the Frame Plan tab is in front again",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "the Frame Plan has the material pass",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#render_material_pass",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit the graph so the rows can be picked",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "decision 3: a double-click on present's row",
+      "cmd": "double_click",
+      "name": "pelican.framePlanLogicalView::node_header#present"
+    },
+    {
+      "label": "present opens on the Graph, in its detail column (its output), not in the Pass Editor",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFoldedPass.output.0",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "its summary says it is edited here",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFoldedSummary",
+      "contains": "From the rendering section: edit it here.",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Pass Editor did not open on it: it holds no pass named present",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.fullscreenPass.name"
+      },
+      "path": "text",
+      "op": "ne",
+      "value": "present"
+    },
+    {
+      "label": "the Frame Plan tab is in front again",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "fit the graph so the rows can be picked",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
+    },
+    {
+      "label": "a double-click on the material pass's row",
+      "cmd": "double_click",
+      "name": "pelican.framePlanLogicalView::node_header#render_material_pass"
+    },
+    {
+      "label": "the graph node is picked on the Graph: its own fields, not present's",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasDraw.contract",
+      "visible": true,
+      "text": "forward_opaque_v1",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "present's column has gone with its pick",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFoldedPass.output.0",
+      "visible": false,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "decision 4: Add beside the picked forward pass: the palette opens",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the target reference",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "target_ref"
+    },
+    {
+      "label": "the target combo is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteTarget",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "New render target… in the combo",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPaletteTarget",
+      "text": "New render target…"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the Frame Plan's form opens",
+      "cmd": "wait",
+      "name": "pelican.renderTargetForm.name",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "on the kind a forward pass's colour takes: Explicit format, not Scene color",
+      "expect": "text_equals",
+      "name": "pelican.renderTargetForm.kind",
+      "value": "Explicit format"
+    },
+    {
+      "label": "R16G16B16A16_SFLOAT",
+      "expect": "text_equals",
+      "name": "pelican.renderTargetForm.format",
+      "value": "R16G16B16A16_SFLOAT"
+    },
+    {
+      "label": "Cancel: nothing is declared",
+      "cmd": "click",
+      "name": "pelican.renderTargetForm.cancel"
+    },
+    {
+      "label": "the form closed",
+      "cmd": "wait",
+      "name": "pelican.renderTargetForm.name",
+      "visible": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "no target was declared",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "managed_fragments.$len",
+      "value": 0
+    }
+  ]
+}

@@ -30,6 +30,7 @@
 #include "renderconfigdigest.hpp"
 #include "materialpassedit.hpp"
 #include "materialpassform.hpp"
+#include "rendertargetform.hpp"
 #include "shaderreloadfollower.hpp"
 #include "jsonrpcrequest.hpp"
 #include "taskconnectiongraphics.hpp"
@@ -8395,6 +8396,157 @@ TEST_CASE("N-8 add and delete reach the right form and the right RPC",
     }
 }
 
+TEST_CASE("GL-5c decisions 1, 2 and 5: on a root that selects no preset the Adds hand the "
+          "Graph the palette's op and say so; on a preset's root they keep their forms",
+          "[devstudio][frame-plan][gl5c]") {
+    application();
+    EditingFixture fixture;
+    QStringList placed;
+    const auto action = [&](const char *name) {
+        auto *found = fixture.widget.findChild<QAction *>(QString::fromLatin1(name));
+        REQUIRE(found != nullptr);
+        return found;
+    };
+    const auto materialForm = [&] {
+        auto *form = fixture.widget.findChild<QDialog *>(QStringLiteral("pelican.materialPassForm"));
+        return form != nullptr && form->isVisible();
+    };
+
+    SECTION("a graph root (config_kind direct): the Graph places them") {
+        fixture.tweak_context = [](Json &context) {
+            context["config_kind"] = "direct";
+            context.erase("pipeline_preset");
+        };
+        fixture.widget.setGraphPlaceAction([&](const QString &op) {
+            placed << op;
+            return true;
+        });
+        bool own_pass = false;
+        bool own_task = false;
+        fixture.widget.setPassInsertAction([&](const QString &, const QString &) { own_pass = true; });
+        fixture.widget.setTaskInsertAction([&] { own_task = true; });
+        fixture.open();
+        // Nothing picked: a palette node needs no anchor.
+        action("pelican.framePlan.addMaterialPass")->trigger();
+        action("pelican.framePlan.addFullscreenPass")->trigger();
+        action("pelican.framePlan.addComputeTask")->trigger();
+        auto *button = fixture.widget.findChild<QPushButton *>(
+            QStringLiteral("pelican.framePlanAddMaterialPass"));
+        REQUIRE(button != nullptr);
+        button->click();
+        QApplication::processEvents();
+        CHECK(placed == QStringList{QStringLiteral("render.material_pass"),
+                                    QStringLiteral("render.fullscreen"),
+                                    QStringLiteral("render.compute"),
+                                    QStringLiteral("render.material_pass")});
+        CHECK_FALSE(materialForm());
+        CHECK_FALSE(own_pass);
+        CHECK_FALSE(own_task);
+        CHECK(fixture.recorder.submits == 0);
+        // Decision 5: the entries say where they open.
+        CHECK(button->toolTip().startsWith(QStringLiteral("Opens in the Graph")));
+        CHECK(action("pelican.framePlan.addFullscreenPass")
+                  ->toolTip()
+                  .contains(QStringLiteral("render.fullscreen")));
+        CHECK(action("pelican.framePlan.addComputeTask")
+                  ->toolTip()
+                  .startsWith(QStringLiteral("Opens in the Graph")));
+    }
+
+    SECTION("a root the Graph tab cannot place on: the Frame Plan's own form") {
+        fixture.tweak_context = [](Json &context) {
+            context["config_kind"] = "direct";
+            context.erase("pipeline_preset");
+        };
+        fixture.widget.setGraphPlaceAction([&](const QString &op) {
+            placed << op;
+            return false;
+        });
+        fixture.open();
+        action("pelican.framePlan.addMaterialPass")->trigger();
+        QApplication::processEvents();
+        CHECK(placed == QStringList{QStringLiteral("render.material_pass")});
+        CHECK(materialForm());
+    }
+
+    SECTION("a root that selects a preset: the forms, as before") {
+        fixture.widget.setGraphPlaceAction([&](const QString &op) {
+            placed << op;
+            return true;
+        });
+        QString after;
+        bool own_task = false;
+        fixture.widget.setPassInsertAction([&](const QString &, const QString &a) { after = a; });
+        fixture.widget.setTaskInsertAction([&] { own_task = true; });
+        fixture.open();
+        action("pelican.framePlan.addMaterialPass")->trigger();
+        QApplication::processEvents();
+        CHECK(materialForm());
+        QGraphicsItem *anchor = nodeItem(fixture.logical(), "wp343_mixed_c");
+        REQUIRE(anchor != nullptr);
+        anchor->setSelected(true);
+        QApplication::processEvents();
+        action("pelican.framePlan.addFullscreenPass")->trigger();
+        action("pelican.framePlan.addComputeTask")->trigger();
+        QApplication::processEvents();
+        CHECK(placed.isEmpty());
+        CHECK(after == QStringLiteral("wp343_mixed_c"));
+        CHECK(own_task);
+        CHECK_FALSE(action("pelican.framePlan.addMaterialPass")
+                        ->toolTip()
+                        .contains(QStringLiteral("Opens in the Graph")));
+    }
+}
+
+TEST_CASE("GL-5c decision 3: Edit pass and a double-click open a pass the Graph edits there; a "
+          "pass it reads only opens in the Pass Editor",
+          "[devstudio][frame-plan][gl5c]") {
+    application();
+    EditingFixture fixture;
+    QStringList in_graph;
+    QStringList in_pass_editor;
+    fixture.widget.setGraphPassOpenAction([&](const QString &pass) {
+        in_graph << pass;
+        return true;
+    });
+    fixture.widget.setPresetPassEditAction(
+        [&](const QString &, const QString &pass) { in_pass_editor << pass; });
+    fixture.open();
+    auto &logical = fixture.logical();
+    REQUIRE(logical.nodeEditRequested);
+    const FramePlanNodeKey edited{fixture.graph, "wp343_mixed_c"};
+    const FramePlanNodeKey read_only{fixture.graph, "wp343_mixed_a"};
+
+    // No Graph to ask (as before GL-5c): the Pass Editor for both.
+    logical.nodeEditRequested(edited);
+    CHECK(in_graph.isEmpty());
+    CHECK(in_pass_editor == QStringList{QStringLiteral("wp343_mixed_c")});
+    in_pass_editor.clear();
+
+    // The Graph says which passes it edits.
+    fixture.widget.setGraphEditsPassQuery(
+        [](const QString &pass) { return pass == QStringLiteral("wp343_mixed_c"); });
+    logical.nodeEditRequested(edited);
+    logical.nodeEditRequested(read_only);
+    CHECK(in_graph == QStringList{QStringLiteral("wp343_mixed_c")});
+    CHECK(in_pass_editor == QStringList{QStringLiteral("wp343_mixed_a")});
+
+    // Edit pass on the toolbar, by the same rule.
+    auto *edit_pass = fixture.widget.findChild<QPushButton *>(
+        QStringLiteral("pelican.framePlanEditPresetPass"));
+    REQUIRE(edit_pass != nullptr);
+    QGraphicsItem *node = nodeItem(logical, "wp343_mixed_c");
+    REQUIRE(node != nullptr);
+    node->setSelected(true);
+    QApplication::processEvents();
+    edit_pass->click();
+    QApplication::processEvents();
+    CHECK(in_graph == QStringList{QStringLiteral("wp343_mixed_c"), QStringLiteral("wp343_mixed_c")});
+    // Decision 5: it says where it opens.
+    CHECK(edit_pass->toolTip().startsWith(QStringLiteral("Opens in the Graph")));
+    CHECK(in_pass_editor == QStringList{QStringLiteral("wp343_mixed_a")});
+}
+
 TEST_CASE("N-8 a node drag writes one frame_plan placement, and a legacy root writes none",
           "[devstudio][frame-plan][n8][placement]") {
     application();
@@ -9529,6 +9681,59 @@ TEST_CASE("T-1 Add material pass... opens with its outputs filled, reusing a "
     CHECK(materialPassInitialTargets(authoring, "deferred_geometry_v1") ==
           std::vector<std::string>{"gbuffer_albedo", "gbuffer_normal_2", "gbuffer_material_2",
                                    "gbuffer_worldpos", "gbuffer_emissive", "scene_depth_2"});
+}
+
+TEST_CASE("GL-5c decision 4: New render target for a material pass's colour output opens on "
+          "the kind the contract's table gives it, not on the Scene color default",
+          "[devstudio][frame-plan][gl5c][material-pass]") {
+    application();
+    FramePlanAuthoring authoring;
+    authoring.received = true;
+    authoring.enabled_features_known = true;
+    authoring.render_target_formats = {"R8G8B8A8_UNORM", "R16G16B16A16_SFLOAT"};
+    authoring.render_target_usages = {"COLOR_ATTACHMENT", "SAMPLED", "STORAGE"};
+    // A forward pass's colour: R16G16B16A16_SFLOAT by its class, the declaration
+    // Add material pass's Create missing targets makes for the same slot.
+    const auto forward = materialPassColorTargetValues(authoring, "forward_opaque_v1", 0);
+    REQUIRE(forward);
+    CHECK(forward->name.empty());
+    CHECK(forward->kind == "explicit");
+    CHECK(forward->format == "R16G16B16A16_SFLOAT");
+    const auto slot = materialPassSlots("forward_opaque_v1", false).front();
+    CHECK(renderTargetDeclaration(*forward).at("format_class") == slot.format_class);
+    CHECK(forward->usage == slot.usage);
+    // The default the form had is the one the engine refused for it.
+    CHECK(renderTargetDeclaration(RenderTargetFormValues{}).at("format_class") != slot.format_class);
+    // Only colour outputs; a G-buffer's by its own slot (SDR: albedo is a
+    // scene-class target, material eight bits of data).
+    CHECK_FALSE(materialPassColorTargetValues(authoring, "forward_opaque_v1", 1));
+    const auto albedo = materialPassColorTargetValues(authoring, "deferred_geometry_v1", 0);
+    REQUIRE(albedo);
+    CHECK(albedo->kind == "scene");
+    const auto material = materialPassColorTargetValues(authoring, "deferred_geometry_v1", 2);
+    REQUIRE(material);
+    CHECK(material->kind == "data");
+    CHECK(material->format == "R8G8B8A8_UNORM");
+    CHECK_FALSE(materialPassColorTargetValues(authoring, "no_such_contract", 0));
+
+    // The form opens on it, under the name it was asked for.
+    RenderTargetForm form;
+    presentNewRenderTarget(form, authoring, "forward_color", forward);
+    QApplication::processEvents();
+    auto *name = form.findChild<QLineEdit *>(QStringLiteral("pelican.renderTargetForm.name"));
+    auto *kind = form.findChild<QComboBox *>(QStringLiteral("pelican.renderTargetForm.kind"));
+    auto *format = form.findChild<QComboBox *>(QStringLiteral("pelican.renderTargetForm.format"));
+    REQUIRE(name != nullptr);
+    REQUIRE(kind != nullptr);
+    REQUIRE(format != nullptr);
+    CHECK(name->text() == QStringLiteral("forward_color"));
+    CHECK(kind->currentData().toString() == QStringLiteral("explicit"));
+    CHECK(format->currentText() == QStringLiteral("R16G16B16A16_SFLOAT"));
+    // Without one: the defaults, as before.
+    presentNewRenderTarget(form, authoring);
+    QApplication::processEvents();
+    CHECK(kind->currentData().toString() == QStringLiteral("scene"));
+    form.close();
 }
 
 TEST_CASE("G-1 a material contract lays out its outputs, and the missing "

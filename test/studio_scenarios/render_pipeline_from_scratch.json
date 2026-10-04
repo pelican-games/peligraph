@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "render_pipeline_from_scratch",
-  "description": "F-4: the first 'build it from zero' story, done with Studio. File > New Project... makes a Blank pipeline project, whose present draws a gradient to display with the engine's engine://passthrough (VI-2). New render target... declares scene_color with only a name. Add fullscreen pass... puts draw_pattern before present, writing scene_color, with a fragment shader New... writes and the author's editor turns into stripes; saving the pass compiles it. Then present reads scene_color: F-6 lets the Pass Editor edit a pass the blank project's direct root declares, so scene_color is added to present's inputs there and Save writes the root; engine://passthrough shows its input 0, so no shader is written for present. The viewport then shows stripes -- a few colours, the same colour down a stripe, another across it -- and opening the project once more gives the same canvas and the same picture, because it is all in the document.",
+  "description": "F-4: the first 'build it from zero' story, done with Studio. File > New Project... makes a Blank pipeline project, whose present draws a gradient to display with the engine's engine://passthrough (VI-2). New render target... declares scene_color with only a name. The Pass Editor's own New pass (on this graph root the Frame Plan's Add fullscreen pass is the Graph's, GL-5c) puts draw_pattern before present, writing scene_color, with a fragment shader New... writes and the author's editor turns into stripes; saving the pass compiles it. Then present reads scene_color: F-6 lets the canvas edit a pass the blank project's direct root declares, so scene_color dragged onto present's band writes the root; engine://passthrough shows its input 0, so no shader is written for present. The viewport then shows stripes -- a few colours, the same colour down a stripe, another across it -- and opening the project once more gives the same canvas and the same picture, because it is all in the document.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -220,31 +220,36 @@
       "name": "pelican.framePlan.fitView"
     },
     {
-      "label": "pick present by its heading (F-6: its middle is now the shader band, which a press edits)",
-      "cmd": "click",
-      "name": "pelican.framePlanLogicalView::node_header#present"
+      "label": "View > Pass Editor: on a graph root the Frame Plan's Add fullscreen pass... is the Graph's (GL-5c), so the Pass Editor's own New pass adds this one",
+      "cmd": "action",
+      "name": "pelican.view.passEditor"
     },
     {
-      "label": "Add fullscreen pass..., fired by name",
-      "cmd": "action",
-      "name": "pelican.framePlan.addFullscreenPass"
+      "label": "New pass: the form is a new pass's",
+      "cmd": "click",
+      "name": "pelican.fullscreenPass.new"
+    },
+    {
+      "label": "Refresh: the Pass Editor reads the frame plan whose targets it offers",
+      "cmd": "click",
+      "name": "pelican.fullscreenPass.refresh"
+    },
+    {
+      "label": "and has it",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.planStatus",
+      "contains": "resources",
+      "timeout_ms": 60000
     },
     {
       "label": "the Pass Editor has the engine's authoring context",
       "cmd": "wait",
       "name": "pelican.fullscreenPass.authoringStatus",
       "contains": "graph(s)",
-      "timeout_ms": 180000
-    },
-    {
-      "label": "it stands after present, where the canvas asked",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.position",
-      "text": "1",
       "timeout_ms": 60000
     },
     {
-      "label": "move it before present: the engine's own anchor 0",
+      "label": "the position: the engine's anchor after none: before present, the engine's own anchor 0",
       "cmd": "type",
       "name": "pelican.fullscreenPass.position",
       "text": "0"
@@ -400,53 +405,33 @@
       "name": "pelican.framePlan.fitView"
     },
     {
-      "label": "open present in the Pass Editor by its heading, to add scene_color as its input",
-      "cmd": "double_click",
-      "name": "pelican.framePlanLogicalView::node_header#present"
-    },
-    {
-      "label": "the Pass Editor holds present, declared in the blank project's own root",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.name",
-      "text": "present",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "Save writes the root, not a preset",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.save",
-      "value": "Save"
-    },
-    {
-      "label": "the engine offers present as the root's own pass",
-      "expect": "rpc_equals",
-      "method": "get_render_authoring_context",
-      "params": {},
-      "path": "graphs[0].passes[1].editable_root_pass",
-      "value": true
-    },
-    {
-      "label": "choose scene_color among the inputs",
+      "label": "look at the whole frame: draw_pattern and present on one canvas",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.inputTarget",
-      "text": "scene_color"
+      "name": "pelican.framePlanTarget",
+      "text": "Whole frame"
     },
     {
-      "label": "Add it as input 0",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addInput"
+      "label": "fit the graph so both ends of the drag are on screen",
+      "cmd": "action",
+      "name": "pelican.framePlan.fitView"
     },
     {
-      "label": "Save is ready",
+      "label": "the input socket the drag ends on: present's engine://passthrough band",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.save",
-      "enabled": true,
+      "name": "pelican.framePlanLogicalView::node_socket#present/in:variadic",
+      "visible": true,
       "timeout_ms": 60000
     },
     {
-      "label": "save present: edit_preset_pass on the root",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.save"
+      "label": "F-6 on the canvas: scene_color from draw_pattern onto present's band, one edit_preset_pass on the root present the blank project declares (a double-click opens present on the Graph now, GL-5c)",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.framePlanLogicalView::node_socket#draw_pattern/out:scene_color"
+      },
+      "to": {
+        "name": "pelican.framePlanLogicalView::node_socket#present/in:variadic"
+      },
+      "steps": 8
     },
     {
       "label": "the engine's present reads scene_color",
@@ -480,14 +465,10 @@
       "text": "\"scene_color\""
     },
     {
-      "label": "a picture of the saved Pass Editor",
+      "label": "a picture of the Frame Plan after present's edit",
       "expect": "screenshot",
-      "path": "step4_saved.png"
-    },
-    {
-      "label": "close the Pass Editor (View > Panels) to look at the Frame Plan",
-      "cmd": "action",
-      "name": "pelican.view.panels.fullscreenPassDock"
+      "path": "step4_saved.png",
+      "name": "pelican.framePlan"
     },
     {
       "label": "step 5: the viewport holds a handful of colours, not a gradient's thousands",

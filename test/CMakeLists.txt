@@ -599,6 +599,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/presetpassedit.cpp
     # GL-5b: New render target... from the Graph is the Frame Plan's form.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/rendertargetform.cpp
+    # GL-5c: and opens on the kind a material pass's colour output takes.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassedit.cpp
     # AB-1s: Bake analysis, Use in Graph / in a shader, Re-bake.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasaudioanalysis.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
@@ -660,6 +662,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/presetpassedit.cpp
     # GL-5b: New render target... from the Graph is the Frame Plan's form.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/rendertargetform.cpp
+    # GL-5c: and opens on the kind a material pass's colour output takes.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/materialpassedit.cpp
     # AB-1s: Bake analysis, Use in Graph / in a shader, Re-bake.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasaudioanalysis.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp

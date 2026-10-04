@@ -544,6 +544,13 @@ class GraphCanvasScene final : public QGraphicsScene {
     // The palette the canvas menu asked for is about the scope the menu was
     // opened over; the owner lets go of it when the palette closes.
     void clearPaletteScope() { palette_scope_.reset(); }
+    // GL-5c: the palette another panel asked for is about `scope` (the root's
+    // for the Frame Plan's Add).
+    void setPaletteScope(std::string scope) { palette_scope_ = std::move(scope); }
+    // The scope and id of the node the last palette addition placed.
+    [[nodiscard]] const std::optional<std::pair<std::string, std::string>> &lastAdded() const noexcept {
+        return last_added_;
+    }
     // LP-4c: a loop over `body`, or over a new definition of that name.
     bool addLoop(const std::string &body, const std::string &new_definition);
     // LP-4c: descend into an instance's definition or a loop's body, as a
@@ -963,6 +970,21 @@ class GraphCanvasWidget final : public QWidget {
     // reached through that instance. False, with nothing changed, when the
     // plan the tab last read has no such pass.
     bool revealPlanPass(const QString &pass);
+    // GL-5c, decision 3. Whether the pass of the plan is edited on this tab --
+    // a graph node made it (in the root, an instance's body or a loop's), or
+    // it is a pass of the rendering section, which the detail column edits
+    // (GL-5a) -- rather than read only here (a preset's or a feature's).
+    [[nodiscard]] bool editsPlanPass(const QString &pass) const;
+    // GL-5c, decisions 1 and 2. The Frame Plan's Add material pass... / Add
+    // fullscreen pass... / Add compute task... on a graph root: the palette
+    // opens in the root on `op` (render.material_pass, render.compute) -- at
+    // once, or as soon as the tab holds a document it can add to -- and what
+    // it places is picked, its detail column open, once the document holds
+    // it. The palette is the one Add node... opens; the node goes into the
+    // graph's `nodes` through the same addFromPalette. render.fullscreen has
+    // nothing to pick beside it and is placed at once, as the tab's own Add
+    // fullscreen pass places it.
+    void placeFromPalette(const QString &op);
     // GL-2b, decision 3: what a click on an L1 row of the Layers section does
     // -- the owner brings the Frame Plan forward with that plan node picked.
     void setFramePlanNodeAction(std::function<void(const QString &node)> action);

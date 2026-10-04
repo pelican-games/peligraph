@@ -38,26 +38,39 @@
       "timeout_ms": 60000
     },
     {
-      "label": "fit the graph so the node can be picked",
+      "label": "View > Pass Editor: on a graph root the Frame Plan's Add fullscreen pass... is the Graph's (GL-5c), so the Pass Editor's own New pass adds this one",
       "cmd": "action",
-      "name": "pelican.framePlan.fitView"
+      "name": "pelican.view.passEditor"
     },
     {
-      "label": "pick the lighting pass",
+      "label": "New pass: the form is a new pass's",
       "cmd": "click",
-      "name": "pelican.framePlanLogicalView::node#lighting_pass"
+      "name": "pelican.fullscreenPass.new"
     },
     {
-      "label": "Add fullscreen pass after it",
-      "cmd": "action",
-      "name": "pelican.framePlan.addFullscreenPass"
+      "label": "Refresh: the Pass Editor reads the frame plan whose targets it offers",
+      "cmd": "click",
+      "name": "pelican.fullscreenPass.refresh"
+    },
+    {
+      "label": "and has it",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.planStatus",
+      "contains": "resources",
+      "timeout_ms": 60000
     },
     {
       "label": "the Pass Editor has the engine's authoring context",
       "cmd": "wait",
       "name": "pelican.fullscreenPass.authoringStatus",
       "contains": "graph(s)",
-      "timeout_ms": 180000
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the position: the engine's anchor after the lighting pass",
+      "cmd": "type",
+      "name": "pelican.fullscreenPass.position",
+      "text": "4"
     },
     {
       "label": "and the frame plan whose targets it offers",

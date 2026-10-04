@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "frameplan_layout_then_edit",
-  "description": "Q-13: moving a node saves its placement with set_layout, which is a commit of the rendering document like any other and moves its digest. The panel that edits next must send the new digest. On the fixture, a node dragged in the Graph tab is followed by New render target... on the Frame Plan; on a Blank pipeline project, the Frame Plan's own present node is dragged and Add material pass... > Deferred geometry > OK then makes the pass and its targets, where it used to be refused as external_modification until the project was opened again.",
+  "description": "Q-13: moving a node saves its placement with set_layout, which is a commit of the rendering document like any other and moves its digest. The panel that edits next must send the new digest. On the fixture, a node dragged in the Graph tab is followed by New render target... on the Frame Plan; on a Blank pipeline project, the Frame Plan's own present node is dragged and Add material pass... -- on Blank's graph root the Graph's palette (GL-5c) -- > deferred_geometry_v1 > OK then makes the pass in the graph's nodes, with the digest the placement left (it used to be refused as external_modification until the project was opened again).",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -224,52 +224,98 @@
       "retry_ms": 60000
     },
     {
-      "label": "Add material pass..., right after the placement's commit",
+      "label": "Add material pass..., right after the placement's commit: on Blank's graph root, the Graph's palette (GL-5c)",
       "cmd": "action",
       "name": "pelican.framePlan.addMaterialPass"
     },
     {
-      "label": "the form is open",
+      "label": "the Graph tab comes forward with its palette open on the material pass (GL-5c: the root is a graph that selects no preset)",
       "cmd": "wait",
-      "name": "pelican.materialPassForm.name",
+      "name": "pelican.graphCanvasPalette",
       "visible": true,
       "timeout_ms": 60000
     },
     {
-      "label": "Deferred geometry",
-      "cmd": "select",
-      "name": "pelican.materialPassForm.contract",
-      "text": "Deferred geometry (G-buffer)"
-    },
-    {
-      "label": "the pass is named after it, with nothing typed",
+      "label": "the palette is on render.material_pass",
       "expect": "text_equals",
-      "name": "pelican.materialPassForm.name",
-      "value": "deferred_geometry"
+      "name": "pelican.graphCanvasPaletteFilter",
+      "value": "render.material_pass"
     },
     {
-      "label": "OK: the six targets, then the pass",
-      "cmd": "click",
-      "name": "pelican.materialPassForm.ok"
-    },
-    {
-      "label": "the form closed",
+      "label": "the contract combo is offered for it",
       "cmd": "wait",
-      "name": "pelican.materialPassForm.name",
-      "visible": false,
+      "name": "pelican.graphCanvasPaletteContract",
+      "visible": true,
       "timeout_ms": 10000
     },
     {
-      "label": "the engine runs deferred_geometry after present, the node the drag picked",
+      "label": "the contract: deferred_geometry_v1",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPaletteContract",
+      "text": "deferred_geometry_v1"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the palette closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the pass's draw loop is drawn as a zone on the Graph (after a restart, if the route default asks for one)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the material pass is drawn, and picked: its detail column shows its contract",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasDraw.contract",
+      "visible": true,
+      "text": "deferred_geometry_v1",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the pass is the graph's node (GL-5c), not a managed fragment",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[7].id",
+      "value": "render_material_pass",
+      "retry_ms": 60000
+    },
+    {
+      "label": "no pass-<id>.json was made",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "managed_fragments.$len",
+      "value": 0
+    },
+    {
+      "label": "the engine runs the graph's material pass after present, which reads nothing yet (its document edit took the digest the placement left)",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
       "path": "graphs[0].passes[1].name",
-      "value": "deferred_geometry",
+      "value": "render_material_pass",
       "retry_ms": 120000
     },
     {
-      "label": "with its six targets declared, beside the display the engine provides",
+      "label": "with its six images composed as targets, beside the display the engine provides",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
@@ -277,9 +323,14 @@
       "value": 7
     },
     {
+      "label": "the Frame Plan tab is in front again",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
       "label": "the canvas draws it",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#deferred_geometry",
+      "name": "pelican.framePlanLogicalView::node#render_material_pass",
       "visible": true,
       "timeout_ms": 120000
     },

@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "forward_loop_from_scratch",
-  "description": "G-5, story A, with T-1's defaults: a forward material loop built from a Blank pipeline with Studio alone. New Project (F-2) takes the folder and proposes the name (project_001); Add Object puts a Cube and a Floor (G-2 / T-1), the Floor already under the box and wide; Add material pass... opens with its outputs filled and adds Forward opaque with the forward default (G-1 / G-4 / T-1). The scene is unsaved at that point, so before the engine restarts Studio asks Save / Discard / Cancel (G-5) and Save keeps the box and the floor. present reads scene_color through the Blank pipeline's engine://passthrough, which shows its input 0 with no shader written (VI-2). The viewport then shows three colours where there was a gradient: the box, the floor and the background. Another project opened and this one opened again, the engine reads it all from disk and draws the same.",
+  "description": "G-5, story A, with T-1's defaults: a forward material loop built from a Blank pipeline with Studio alone. New Project (F-2) takes the folder and proposes the name (project_001); Add Object puts a Cube and a Floor (G-2 / T-1), the Floor already under the box and wide; Add material pass... on Blank's graph root is the Graph's palette (GL-5c): forward_opaque_v1 goes into the graph's nodes with its draw loop and its own images, and the forward route default goes with the edit. The scene is unsaved at that point, so before the engine restarts Studio asks Save / Discard / Cancel (G-5) and Save keeps the box and the floor. present reads the pass's colour image (its output dragged onto present's + input on the Graph) through the Blank pipeline's engine://passthrough, which shows its input 0 with no shader written (VI-2). The viewport then shows three colours where there was a gradient: the box, the floor and the background. Another project opened and this one opened again, the engine reads it all from disk and draws the same.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -185,64 +185,42 @@
       "name": "pelican.framePlan.addMaterialPass"
     },
     {
-      "label": "the form is open",
+      "label": "the Graph tab comes forward with its palette open on the material pass (GL-5c: the root is a graph that selects no preset)",
       "cmd": "wait",
-      "name": "pelican.materialPassForm.name",
+      "name": "pelican.graphCanvasPalette",
       "visible": true,
       "timeout_ms": 60000
     },
     {
-      "label": "Forward opaque is the contract it opens on",
+      "label": "the palette is on render.material_pass",
       "expect": "text_equals",
-      "name": "pelican.materialPassForm.contract",
-      "value": "Forward opaque"
+      "name": "pelican.graphCanvasPaletteFilter",
+      "value": "render.material_pass"
     },
     {
-      "label": "the pass is named after it, with nothing typed",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.name",
-      "value": "forward_opaque"
-    },
-    {
-      "label": "the color output is a new scene_color, filled as the form opened",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.color",
-      "value": "scene_color"
-    },
-    {
-      "label": "the depth output a new scene_depth, likewise",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.depth",
-      "value": "scene_depth"
-    },
-    {
-      "label": "no pass takes deferred materials, so the form offers to draw them forward",
+      "label": "the contract combo is offered for it",
       "cmd": "wait",
-      "name": "pelican.materialPassForm.forwardDefault",
+      "name": "pelican.graphCanvasPaletteContract",
       "visible": true,
       "timeout_ms": 10000
     },
     {
-      "label": "checked: the form says the engine restarts",
-      "expect": "result",
-      "command": {
-        "cmd": "text",
-        "name": "pelican.materialPassForm.notice"
-      },
-      "path": "text",
-      "op": "contains",
-      "value": "the engine restarts"
+      "label": "the contract: forward_opaque_v1",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPaletteContract",
+      "text": "forward_opaque_v1"
     },
     {
-      "label": "Save: the targets, then the pass carrying material_route_default",
-      "cmd": "click",
-      "name": "pelican.materialPassForm.ok"
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
     },
     {
-      "label": "the form closed",
+      "label": "the palette closed",
       "cmd": "wait",
-      "name": "pelican.materialPassForm.name",
-      "visible": false,
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
       "timeout_ms": 10000
     },
     {
@@ -282,6 +260,44 @@
       "frames": 30
     },
     {
+      "label": "the pass's draw loop is drawn as a zone on the Graph (after a restart, if the route default asks for one)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the material pass is drawn, and picked: its detail column shows its contract",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasDraw.contract",
+      "visible": true,
+      "text": "forward_opaque_v1",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the pass is the graph's node (GL-5c), not a managed fragment",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].id",
+      "value": "render_material_pass",
+      "retry_ms": 60000
+    },
+    {
+      "label": "no pass-<id>.json was made",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "managed_fragments.$len",
+      "value": 0
+    },
+    {
       "label": "the saved scene holds the floor",
       "file": "contains",
       "path": "{artifacts}/project_001/scenes/main.scene.json",
@@ -303,12 +319,12 @@
       "value": true
     },
     {
-      "label": "the engine runs forward_opaque first",
+      "label": "the engine runs the graph's material pass after present, which reads nothing yet",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
-      "path": "graphs[0].passes[0].name",
-      "value": "forward_opaque",
+      "path": "graphs[0].passes[1].name",
+      "value": "render_material_pass",
       "retry_ms": 120000
     },
     {
@@ -323,64 +339,49 @@
       "retry_ms": 60000
     },
     {
-      "label": "step 4: close nothing yet; show the whole graph",
-      "cmd": "action",
-      "name": "pelican.framePlan.fitView"
-    },
-    {
-      "label": "fit the graph so present can be picked",
-      "cmd": "action",
-      "name": "pelican.framePlan.fitView"
-    },
-    {
-      "label": "present is drawn",
+      "label": "step 4: the Graph tab; the canvas can edit again",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#present",
-      "visible": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "open present in the Pass Editor by its heading",
-      "cmd": "double_click",
-      "name": "pelican.framePlanLogicalView::node_header#present"
-    },
-    {
-      "label": "the Pass Editor holds present",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.name",
-      "text": "present",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "present reads scene_color",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.inputTarget",
-      "text": "scene_color"
-    },
-    {
-      "label": "as input 0",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addInput"
-    },
-    {
-      "label": "Save is ready",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.save",
+      "name": "pelican.graphCanvasAddNode",
       "enabled": true,
-      "timeout_ms": 60000
+      "timeout_ms": 120000
     },
     {
-      "label": "save present: edit_preset_pass on the root",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.save"
+      "label": "fit the graph so both ends of the drag are on screen",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
     },
     {
-      "label": "the root's present reads scene_color",
+      "label": "present offers an empty + input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "present reads the pass's colour: its output dragged onto present's + input (GL-1e), one edit_preset_pass on the root",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_material_pass/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+"
+      },
+      "steps": 8
+    },
+    {
+      "label": "edit_preset_pass on present committed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Pass inputs saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the root's present reads the pass's colour image",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
       "path": "graphs[0].passes[1].root_declaration.input[0]",
-      "value": "scene_color",
+      "value": "render_material_pass__color",
       "retry_ms": 120000
     },
     {
@@ -392,14 +393,14 @@
       "value": "engine://passthrough"
     },
     {
-      "label": "close the Pass Editor (View > Panels) to look at the viewport",
+      "label": "the Frame Plan tab is in front",
       "cmd": "action",
-      "name": "pelican.view.panels.fullscreenPassDock"
+      "name": "pelican.view.renderTools.frame_plan"
     },
     {
-      "label": "the canvas draws the read",
+      "label": "the Frame Plan draws the read",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_socket#present/in:scene_color",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in:render_material_pass__color",
       "visible": true,
       "timeout_ms": 120000
     },
@@ -728,21 +729,21 @@
       "timeout_ms": 180000
     },
     {
-      "label": "step 6: forward_opaque is still first",
+      "label": "step 6: the graph's material pass is still first",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
       "path": "graphs[0].passes[0].name",
-      "value": "forward_opaque",
+      "value": "render_material_pass",
       "retry_ms": 120000
     },
     {
-      "label": "step 6: and present still reads scene_color",
+      "label": "step 6: and present still reads its colour image",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
       "path": "graphs[0].passes[1].root_declaration.input[0]",
-      "value": "scene_color",
+      "value": "render_material_pass__color",
       "retry_ms": 120000
     },
     {
@@ -755,16 +756,16 @@
       "retry_ms": 120000
     },
     {
-      "label": "step 6: the canvas draws forward_opaque writing scene_color",
+      "label": "step 6: the canvas draws the material pass writing its colour image",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_socket#forward_opaque/out:scene_color",
+      "name": "pelican.framePlanLogicalView::node_socket#render_material_pass/out:render_material_pass__color",
       "visible": true,
       "timeout_ms": 120000
     },
     {
       "label": "step 6: and present reading it",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_socket#present/in:scene_color",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in:render_material_pass__color",
       "visible": true,
       "timeout_ms": 120000
     },

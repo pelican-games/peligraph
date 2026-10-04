@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "deferred_loop_from_scratch",
-  "description": "G-5, story B, with T-1's defaults: a deferred material loop built from a Blank pipeline with Studio alone. New Project (F-2) proposes the name; a Cube turned 45 degrees about the vertical, typed as one angle, so two faces meet the camera, and a Floor from Add Object (G-2 / T-1). Add material pass... adds Deferred geometry with its five G-buffer targets and depth filled as it opens (G-1 / T-1). Add fullscreen pass... after the geometry, New... > Deferred lighting (G-3), which fills the five inputs from the G-buffer names and turns on Uses scene lights and Camera position (T-1); its colour output is made from the output list's New target: deferred_lighting_color... (T-1). present reads it through a Tone map shader New... writes (G-3): the Blank pipeline's present draws with engine://passthrough (VI-2), so the proposal is the pass's own name, and the fragment list offers the new shader (T-1). The light paints the two faces in different colours; turning the light in the Inspector changes them.",
+  "description": "G-5, story B, with T-1's defaults: a deferred material loop built from a Blank pipeline with Studio alone. New Project (F-2) proposes the name; a Cube turned 45 degrees about the vertical, typed as one angle, so two faces meet the camera, and a Floor from Add Object (G-2 / T-1). On Blank's graph root the Frame Plan's Add material pass... is the Graph's palette (GL-5c): deferred_geometry_v1 with its five G-buffer images and depth in the graph's nodes. Add fullscreen pass... places the palette's render.fullscreen on the Graph and picks it; its Pass fields' New... > Deferred lighting (G-3) writes the template and puts it on the pass with Uses scene lights, Camera position and a line from each G-buffer output (UX-5a). Its colour output dragged onto present's + input is shown through the Blank pipeline's engine://passthrough (VI-2). The light paints the two faces in different colours; turning the light in the Inspector changes them.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -234,86 +234,114 @@
       "name": "pelican.framePlan.addMaterialPass"
     },
     {
-      "label": "the form is open",
+      "label": "the Graph tab comes forward with its palette open on the material pass (GL-5c: the root is a graph that selects no preset)",
       "cmd": "wait",
-      "name": "pelican.materialPassForm.name",
+      "name": "pelican.graphCanvasPalette",
       "visible": true,
       "timeout_ms": 60000
     },
     {
-      "label": "Deferred geometry",
+      "label": "the palette is on render.material_pass",
+      "expect": "text_equals",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "value": "render.material_pass"
+    },
+    {
+      "label": "the contract combo is offered for it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteContract",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the contract: deferred_geometry_v1",
       "cmd": "select",
-      "name": "pelican.materialPassForm.contract",
-      "text": "Deferred geometry (G-buffer)"
+      "name": "pelican.graphCanvasPaletteContract",
+      "text": "deferred_geometry_v1"
     },
     {
-      "label": "the pass is named after it, with nothing typed",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.name",
-      "value": "deferred_geometry"
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
     },
     {
-      "label": "the albedo output is a new gbuffer_albedo, filled as the form opened",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.albedo",
-      "value": "gbuffer_albedo"
-    },
-    {
-      "label": "the normal output is a new gbuffer_normal",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.normal",
-      "value": "gbuffer_normal"
-    },
-    {
-      "label": "the material output is a new gbuffer_material",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.material",
-      "value": "gbuffer_material"
-    },
-    {
-      "label": "the world_position output is a new gbuffer_worldpos",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.world_position",
-      "value": "gbuffer_worldpos"
-    },
-    {
-      "label": "the emissive output is a new gbuffer_emissive",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.emissive",
-      "value": "gbuffer_emissive"
-    },
-    {
-      "label": "and the depth output a new scene_depth",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.depth",
-      "value": "scene_depth"
-    },
-    {
-      "label": "a deferred pass takes deferred materials: no forward default is offered",
+      "label": "the palette closed",
       "cmd": "wait",
-      "name": "pelican.materialPassForm.forwardDefault",
-      "visible": false,
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
       "timeout_ms": 10000
     },
     {
-      "label": "Save: the six targets, then the pass",
+      "label": "the deferred pass changes the material passes' physical contract, so the engine restarts; the Cube is not saved, so Studio asks first (G-5)",
+      "cmd": "wait",
+      "name": "pelican.unsavedScenePrompt",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Save",
       "cmd": "click",
-      "name": "pelican.materialPassForm.ok"
+      "name": "pelican.unsavedScenePrompt.save"
     },
     {
-      "label": "the form closed",
+      "label": "the scene is saved, and only then is a new engine started",
       "cmd": "wait",
-      "name": "pelican.materialPassForm.name",
-      "visible": false,
-      "timeout_ms": 10000
+      "name": "pelican.viewportStatus",
+      "contains": "started; waiting for its window",
+      "timeout_ms": 120000
     },
     {
-      "label": "the engine runs deferred_geometry first",
+      "label": "the restarted engine answers editor RPC and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the pass's draw loop is drawn as a zone on the Graph (after a restart, if the route default asks for one)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the material pass is drawn, and picked: its detail column shows its contract",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasDraw.contract",
+      "visible": true,
+      "text": "deferred_geometry_v1",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the pass is the graph's node (GL-5c), not a managed fragment",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[7].id",
+      "value": "render_material_pass",
+      "retry_ms": 60000
+    },
+    {
+      "label": "no pass-<id>.json was made",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
-      "path": "graphs[0].passes[0].name",
-      "value": "deferred_geometry",
+      "path": "managed_fragments.$len",
+      "value": 0
+    },
+    {
+      "label": "the engine runs the graph's deferred pass",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].name",
+      "value": "render_material_pass",
       "retry_ms": 120000
     },
     {
@@ -321,325 +349,214 @@
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
-      "path": "graphs[0].passes[0].declaration.material_contract",
+      "path": "graphs[0].passes[1].declaration.material_contract",
       "value": "deferred_geometry_v1"
     },
     {
-      "label": "the automatic materials already go to a deferred pass: no restart was asked for",
-      "expect": "result",
-      "command": {
-        "cmd": "text",
-        "name": "pelican.viewportStatus"
-      },
-      "path": "text",
-      "op": "excludes",
-      "value": "Restarting the engine"
+      "label": "step 4: the Frame Plan tab is in front again",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
     },
     {
-      "label": "step 4: look at the whole frame, where the geometry pass is drawn",
+      "label": "look at the whole frame, where the geometry pass is drawn",
       "cmd": "select",
       "name": "pelican.framePlanTarget",
       "text": "Whole frame"
     },
     {
-      "label": "deferred_geometry is drawn",
+      "label": "the graph's deferred pass is drawn",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#deferred_geometry",
+      "name": "pelican.framePlanLogicalView::node#render_material_pass",
       "visible": true,
       "timeout_ms": 120000
     },
     {
-      "label": "fit the graph so the node can be picked",
-      "cmd": "action",
-      "name": "pelican.framePlan.fitView"
-    },
-    {
-      "label": "pick deferred_geometry by its heading: the lighting pass goes after the pass another fragment added (G-6)",
-      "cmd": "click",
-      "name": "pelican.framePlanLogicalView::node_header#deferred_geometry"
-    },
-    {
-      "label": "Add fullscreen pass after it",
+      "label": "Add fullscreen pass...: on Blank's graph root the Graph places the palette's render.fullscreen (GL-5c) and picks it",
       "cmd": "action",
       "name": "pelican.framePlan.addFullscreenPass"
     },
     {
-      "label": "the Pass Editor has the engine's authoring context",
+      "label": "the pass is on the Graph",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.authoringStatus",
-      "contains": "graph(s)",
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the new pass is the document's tenth node: in the graph's nodes, not a managed fragment",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[9].id",
+      "value": "render_fullscreen",
+      "retry_ms": 60000
+    },
+    {
+      "label": "no pass-<id>.json was made",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "managed_fragments.$len",
+      "value": 0
+    },
+    {
+      "label": "it is picked: its Pass fields offer New... beside the fragment, once the graph takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.newFragmentShader",
+      "visible": true,
+      "enabled": true,
       "timeout_ms": 180000
     },
     {
-      "label": "and the frame plan whose targets it offers",
+      "label": "it draws with the engine's passthrough until then",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.planStatus",
-      "contains": "resources",
-      "timeout_ms": 180000
+      "name": "pelican.graphCanvasPass.shader.fragment",
+      "text": "engine://passthrough",
+      "timeout_ms": 60000
     },
     {
       "label": "New... beside the fragment stem",
       "cmd": "click",
-      "name": "pelican.fullscreenPass.newFragmentShader"
+      "name": "pelican.graphCanvasPass.newFragmentShader"
     },
     {
-      "label": "start from Deferred lighting",
+      "label": "the Pass Editor's templates, once the graph takes edits again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.shaderTemplateKind",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from Deferred lighting (G-3)",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.shaderTemplateKind",
+      "name": "pelican.graphCanvasPass.shaderTemplateKind",
       "text": "Deferred lighting"
     },
     {
-      "label": "the inputs say what the shader reads them as",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.inputRoles",
-      "contains": "3 world position",
-      "timeout_ms": 10000
-    },
-    {
-      "label": "T-1: the five inputs filled themselves from the G-buffer names, in the order the shader reads them",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.json",
-      "contains": "\"gbuffer_albedo\",\n    \"gbuffer_normal\",\n    \"gbuffer_material\",\n    \"gbuffer_worldpos\",\n    \"gbuffer_emissive\"",
-      "timeout_ms": 10000
-    },
-    {
-      "label": "Uses scene lights and Camera position are on: the pass asks for the camera position",
+      "label": "named after it, nothing typed",
       "expect": "text_equals",
-      "name": "pelican.fullscreenPass.pushConstants",
-      "value": "Camera position"
-    },
-    {
-      "label": "the pass is named after what it is",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.name",
+      "name": "pelican.graphCanvasPass.shaderTemplateName",
       "value": "deferred_lighting"
     },
     {
-      "label": "T-1: the colour output is a new target, picked from the output list",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.colorTarget",
-      "text": "New target: deferred_lighting_color..."
-    },
-    {
-      "label": "New render target opens with the name in it",
-      "cmd": "wait",
-      "name": "pelican.renderTargetForm.name",
-      "visible": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "the pass's name and _color, with nothing typed",
-      "expect": "text_equals",
-      "name": "pelican.renderTargetForm.name",
-      "value": "deferred_lighting_color"
-    },
-    {
-      "label": "OK",
+      "label": "Create",
       "cmd": "click",
-      "name": "pelican.renderTargetForm.ok"
+      "name": "pelican.graphCanvasPass.createFragmentShader"
     },
     {
-      "label": "the engine declares deferred_lighting_color",
+      "label": "the shader is written and the pass takes it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.shaderTemplateNotice",
+      "contains": "the pass draws with project://shaders/deferred_lighting",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "saved, as one edit",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the pass draws with the new shader",
       "expect": "rpc_equals",
-      "method": "get_render_authoring_context",
+      "method": "get_graph_instances",
       "params": {},
-      "path": "render_targets[6].name",
-      "value": "deferred_lighting_color",
+      "path": "nodes[9].parameters.shader.fragment",
+      "value": "project://shaders/deferred_lighting",
       "retry_ms": 60000
-    },
-    {
-      "label": "and the Pass Editor's draft writes it, the rest of the draft as it was",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.json",
-      "contains": "\"deferred_lighting_color\"",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "the name is still the pass's",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.name",
-      "value": "deferred_lighting"
-    },
-    {
-      "label": "create the shader",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.createFragmentShader"
-    },
-    {
-      "label": "the fragment field holds its stem",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.shader.fragment",
-      "value": "project://shaders/deferred_lighting"
-    },
-    {
-      "label": "T-1: the fragment list offers it: picking it puts the same stem in the field",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.shader.fragmentChoice",
-      "text": "project://shaders/deferred_lighting"
-    },
-    {
-      "label": "the field holds the picked stem",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.shader.fragment",
-      "value": "project://shaders/deferred_lighting"
-    },
-    {
-      "label": "the shader reads the world position at input 3",
-      "file": "contains",
-      "path": "{artifacts}/project_001/shaders/deferred_lighting.frag",
-      "text": "PELICAN_DECLARE_INPUT_3(in_gbuffer_worldpos);  // gbuffer_worldpos: world position",
-      "value": true
-    },
-    {
-      "label": "Save is ready",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.save",
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "save the pass",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.save"
-    },
-    {
-      "label": "the engine runs deferred_lighting between the geometry and present, in flat and in the preview it composes with it",
-      "expect": "rpc_equals",
-      "method": "get_render_authoring_context",
-      "params": {},
-      "path": "graphs[0].passes[1].name",
-      "value": "deferred_lighting",
-      "retry_ms": 180000
     },
     {
       "label": "with the scene lights",
       "expect": "rpc_equals",
-      "method": "get_render_authoring_context",
+      "method": "get_graph_instances",
       "params": {},
-      "path": "graphs[0].passes[1].declaration.uses_light_data",
-      "value": true,
-      "retry_ms": 60000
+      "path": "nodes[9].parameters.uses_light_data",
+      "value": true
     },
     {
-      "label": "step 5: look at what reaches the screen",
-      "cmd": "select",
-      "name": "pelican.framePlanTarget",
-      "text": "display"
+      "label": "and the camera position",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[9].parameters.push_constants",
+      "value": "camera_position"
     },
     {
-      "label": "fit the graph so present can be picked",
+      "label": "a line from the material pass's worldpos output: the inputs filled themselves from the G-buffer (UX-5a's match)",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[9].inputs.worldpos.port",
+      "value": "worldpos"
+    },
+    {
+      "label": "from the material pass",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[9].inputs.worldpos.node",
+      "value": "render_material_pass"
+    },
+    {
+      "label": "the shader reads the world position",
+      "file": "contains",
+      "path": "{artifacts}/project_001/shaders/deferred_lighting.frag",
+      "text": "worldpos",
+      "value": true
+    },
+    {
+      "label": "step 5: fit the graph so both ends of the drag are on screen",
       "cmd": "action",
-      "name": "pelican.framePlan.fitView"
+      "name": "pelican.graphCanvas.fitView"
     },
     {
-      "label": "present is drawn",
+      "label": "present offers an empty + input",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#present",
+      "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the lit colour onto present's + input: present's engine://passthrough shows it (VI-2)",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+"
+      },
+      "steps": 8
+    },
+    {
+      "label": "present's inputs saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Pass inputs saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the line is the document's",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_pass_input_edge#render_fullscreen->present",
       "visible": true,
       "timeout_ms": 60000
     },
     {
-      "label": "open present in the Pass Editor by its heading",
-      "cmd": "double_click",
-      "name": "pelican.framePlanLogicalView::node_header#present"
-    },
-    {
-      "label": "the Pass Editor holds present",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.name",
-      "text": "present",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "present reads deferred_lighting_color",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.inputTarget",
-      "text": "deferred_lighting_color"
-    },
-    {
-      "label": "as input 0",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addInput"
-    },
-    {
-      "label": "New... beside the fragment stem",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.newFragmentShader"
-    },
-    {
-      "label": "start from Tone map",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.shaderTemplateKind",
-      "text": "Tone map"
-    },
-    {
-      "label": "present draws with engine://passthrough, so the new shader is named after the pass, with nothing typed",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.shaderTemplateName",
-      "value": "present"
-    },
-    {
-      "label": "create the shader",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.createFragmentShader"
-    },
-    {
-      "label": "the fragment field holds present's new stem",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.shader.fragment",
-      "value": "project://shaders/present"
-    },
-    {
-      "label": "T-1: the fragment list offers it: picking it puts the same stem in the field",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.shader.fragmentChoice",
-      "text": "project://shaders/present"
-    },
-    {
-      "label": "the field holds the picked stem",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.shader.fragment",
-      "value": "project://shaders/present"
-    },
-    {
-      "label": "the shader reads deferred_lighting_color as the scene colour",
-      "file": "contains",
-      "path": "{artifacts}/project_001/shaders/present.frag",
-      "text": "PELICAN_DECLARE_INPUT_0(in_deferred_lighting_color);  // deferred_lighting_color: scene colour",
-      "value": true
-    },
-    {
-      "label": "Save is ready",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.save",
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "save present: edit_preset_pass on the root",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.save"
-    },
-    {
-      "label": "the root's present reads deferred_lighting_color",
+      "label": "the root's present reads the lit colour",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
       "path": "graphs[0].passes[2].root_declaration.input[0]",
-      "value": "deferred_lighting_color",
+      "value": "render_fullscreen__color",
       "retry_ms": 120000
     },
     {
-      "label": "close the Pass Editor (View > Panels) to look at the viewport",
-      "cmd": "action",
-      "name": "pelican.view.panels.fullscreenPassDock"
-    },
-    {
-      "label": "the canvas draws the read",
-      "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_socket#present/in:deferred_lighting_color",
-      "visible": true,
-      "timeout_ms": 120000
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
     },
     {
       "label": "pick the camera in the Outliner, so no gizmo is drawn over the box",

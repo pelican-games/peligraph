@@ -6,6 +6,7 @@
 #include <QString>
 
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -90,8 +91,12 @@ class RenderTargetForm final : public QDialog {
 // (RenderTargetFormValues), and the engine's vocabulary from `authoring`. OK
 // hands the form's submit the values; the RPC is
 // framePlanRenderTargetAddRequest's one edit_render_targets, whoever sends it.
+// GL-5c, decision 4: `kind`, when the place it was opened from knows what the
+// target is for (a material pass's colour output: materialPassColorTargetValues),
+// is what the form opens on instead of the defaults; the name is still `name`.
 void presentNewRenderTarget(RenderTargetForm &form,
                             const FramePlanAuthoring &authoring,
-                            const std::string &name = {});
+                            const std::string &name = {},
+                            const std::optional<RenderTargetFormValues> &kind = std::nullopt);
 
 } // namespace PelicanStudio

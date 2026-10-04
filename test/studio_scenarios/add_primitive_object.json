@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "add_primitive_object",
-  "description": "G-2: a Blank pipeline project (F-2) gets a shape without an asset. Add Object > Cube sends one spawn of engine://primitives/cube; the Outliner shows Cube and selects it, and the Inspector's model field reads the primitive. Add material pass... (G-1, Create missing targets) adds a Forward opaque pass; the Blank pipeline has no pass for deferred materials and the primitive's default grey is automatic, so the form offers the forward default (G-4), checked, Save carries it with the pass and Studio restarts the engine on the same project. present reading the pass's output (F-6) through the Blank pipeline's engine://passthrough (VI-2), with no shader written, then puts a grey box on screen. A second Cube is named Cube_001.",
+  "description": "G-2: a Blank pipeline project (F-2) gets a shape without an asset. Add Object > Cube sends one spawn of engine://primitives/cube; the Outliner shows Cube and selects it, and the Inspector's model field reads the primitive. Add material pass... on Blank's graph root is the Graph's palette (GL-5c): forward_opaque_v1 goes into the graph's nodes with its draw loop and its own images; the Blank pipeline has no pass for deferred materials and the primitive's default grey is automatic, so the forward route default goes with the edit and Studio restarts the engine on the same project. present reading the pass's colour output (dragged onto its + input on the Graph) through the Blank pipeline's engine://passthrough (VI-2), with no shader written, then puts a grey box on screen. A second Cube is named Cube_001.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -187,100 +187,88 @@
       "name": "pelican.framePlan.addMaterialPass"
     },
     {
-      "label": "the form is open",
+      "label": "the Graph tab comes forward with its palette open on the material pass (GL-5c: the root is a graph that selects no preset)",
       "cmd": "wait",
-      "name": "pelican.materialPassForm.name",
+      "name": "pelican.graphCanvasPalette",
       "visible": true,
       "timeout_ms": 60000
     },
     {
-      "label": "Forward opaque is the contract it opens on",
+      "label": "the palette is on render.material_pass",
       "expect": "text_equals",
-      "name": "pelican.materialPassForm.contract",
-      "value": "Forward opaque"
+      "name": "pelican.graphCanvasPaletteFilter",
+      "value": "render.material_pass"
     },
     {
-      "label": "the pass is named after the contract, with nothing typed",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.name",
-      "value": "forward_opaque"
-    },
-    {
-      "label": "Create missing targets",
-      "cmd": "click",
-      "name": "pelican.materialPassForm.createMissing"
-    },
-    {
-      "label": "the color output is a new scene_color",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.color",
-      "value": "scene_color"
-    },
-    {
-      "label": "no pass takes deferred materials, so the form offers the forward default",
+      "label": "the contract combo is offered for it",
       "cmd": "wait",
-      "name": "pelican.materialPassForm.forwardDefault",
+      "name": "pelican.graphCanvasPaletteContract",
       "visible": true,
       "timeout_ms": 10000
     },
     {
-      "label": "checked: the form says the engine restarts to apply it",
-      "expect": "result",
-      "command": {
-        "cmd": "text",
-        "name": "pelican.materialPassForm.notice"
-      },
-      "path": "text",
-      "op": "contains",
-      "value": "the engine restarts"
+      "label": "the contract: forward_opaque_v1",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPaletteContract",
+      "text": "forward_opaque_v1"
     },
     {
-      "label": "Save: edit_render_targets, then one add_authored_pass carrying material_route_default",
-      "cmd": "click",
-      "name": "pelican.materialPassForm.ok"
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
     },
     {
-      "label": "the form closed",
+      "label": "the palette closed",
       "cmd": "wait",
-      "name": "pelican.materialPassForm.name",
-      "visible": false,
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
       "timeout_ms": 10000
     },
     {
-      "label": "the commit asks for a restart, and Studio restarts the engine on the same project",
+      "label": "the pass's draw loop is drawn as a zone on the Graph (after a restart, if the route default asks for one)",
       "cmd": "wait",
-      "name": "pelican.framePlanStatus",
-      "contains": "Restarting the engine",
-      "timeout_ms": 120000
+      "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
+      "visible": true,
+      "timeout_ms": 180000
     },
     {
-      "label": "the restarted engine answers editor RPC and has presented frames",
+      "label": "the engine answers and has presented frames",
       "cmd": "wait_engine",
       "timeout_ms": 180000,
       "frames": 30
     },
     {
-      "label": "the root now routes the project's automatic materials forward",
+      "label": "the material pass is drawn, and picked: its detail column shows its contract",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasDraw.contract",
+      "visible": true,
+      "text": "forward_opaque_v1",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the pass is the graph's node (GL-5c), not a managed fragment",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].id",
+      "value": "render_material_pass",
+      "retry_ms": 60000
+    },
+    {
+      "label": "no pass-<id>.json was made",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "managed_fragments.$len",
+      "value": 0
+    },
+    {
+      "label": "the root now routes the project's automatic materials forward (sent with the pass: no pass takes deferred materials)",
       "file": "contains",
       "path": "{artifacts}/primitive_project/passes/main_rendering_config.json",
       "text": "material_route_default",
       "value": true
-    },
-    {
-      "label": "the engine runs forward_opaque first",
-      "expect": "rpc_equals",
-      "method": "get_render_authoring_context",
-      "params": {},
-      "path": "graphs[0].passes[0].name",
-      "value": "forward_opaque",
-      "retry_ms": 120000
-    },
-    {
-      "label": "the canvas draws it, writing scene_color",
-      "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_socket#forward_opaque/out:scene_color",
-      "visible": true,
-      "timeout_ms": 120000
     },
     {
       "label": "the Cube is in the scene the restarted engine loaded: it was saved before the pass was added",
@@ -294,41 +282,47 @@
       "retry_ms": 60000
     },
     {
-      "label": "show the whole graph so both ends of the drag are on screen",
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit the graph so both ends of the drag are on screen",
       "cmd": "action",
-      "name": "pelican.framePlan.fitView"
+      "name": "pelican.graphCanvas.fitView"
     },
     {
-      "label": "present is drawn",
+      "label": "present's engine://passthrough takes variadic inputs: its + input",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#present",
+      "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+",
       "visible": true,
-      "timeout_ms": 60000
+      "timeout_ms": 120000
     },
     {
-      "label": "present's engine://passthrough takes variadic inputs: its socket is the band's empty end (VI-3a)",
-      "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_socket#present/in:variadic",
-      "visible": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "drag scene_color from forward_opaque onto present's band: one edit_preset_pass on the root",
+      "label": "drag the pass's colour output onto present's + input: one edit_preset_pass on the root",
       "cmd": "drag",
       "from": {
-        "name": "pelican.framePlanLogicalView::node_socket#forward_opaque/out:scene_color"
+        "name": "pelican.graphCanvasView::graph_socket#render_material_pass/out:color"
       },
       "to": {
-        "name": "pelican.framePlanLogicalView::node_socket#present/in:variadic"
+        "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+"
       },
       "steps": 8
     },
     {
-      "label": "the canvas draws the read",
+      "label": "edit_preset_pass on present committed",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_socket#present/in:scene_color",
-      "visible": true,
+      "name": "pelican.graphCanvasNotice",
+      "text": "Pass inputs saved.",
       "timeout_ms": 120000
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
     },
     {
       "label": "the viewport now holds a shape: a handful of colours, not a gradient's thousands",

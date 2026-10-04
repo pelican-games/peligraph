@@ -101,6 +101,23 @@ bool materialPassHdr(const FramePlanAuthoring &authoring) {
            authoring.enabled_features.end();
 }
 
+std::optional<RenderTargetFormValues> materialPassColorTargetValues(
+    const FramePlanAuthoring &authoring, const std::string &contract,
+    std::size_t color_index) {
+    std::vector<MaterialPassSlot> colors;
+    for (auto &slot : materialPassSlots(contract, materialPassHdr(authoring)))
+        if (!slot.depth) colors.push_back(std::move(slot));
+    if (color_index >= colors.size()) return std::nullopt;
+    const auto &slot = colors[color_index];
+    // The slot as a declaration, read the way the form reads one: an
+    // "explicit(<format>)" class is Explicit format with that format.
+    auto values = renderTargetFormValues(Json{{"format", slot.format},
+                                              {"format_class", slot.format_class},
+                                              {"usage", slot.usage}});
+    values.name.clear();
+    return values;
+}
+
 std::string materialPassDefaultName(const FramePlanAuthoring &authoring,
                                     const std::string &graph,
                                     const std::string &contract) {

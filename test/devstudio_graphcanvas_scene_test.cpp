@@ -3519,8 +3519,9 @@ void sendKey(QWidget *to, int key, const QString &text = {}) {
     QCoreApplication::sendEvent(to, &release);
 }
 
-// Clicks Add and runs `inside` while the modal palette it opens is up.
-bool whilePaletteOpen(QPushButton &add, const std::function<void(QDialog &)> &inside) {
+// Runs `open` and then `inside` while the modal palette it opens is up.
+bool whilePaletteOpenAfter(const std::function<void()> &open,
+                           const std::function<void(QDialog &)> &inside) {
     bool ran = false;
     int ticks = 0;
     QTimer poll;
@@ -3536,10 +3537,15 @@ bool whilePaletteOpen(QPushButton &add, const std::function<void(QDialog &)> &in
         }
     });
     poll.start();
-    add.click();
+    open();
     while (poll.isActive()) QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
     QCoreApplication::processEvents();
     return ran;
+}
+
+// Clicks Add and runs `inside` while the modal palette it opens is up.
+bool whilePaletteOpen(QPushButton &add, const std::function<void(QDialog &)> &inside) {
+    return whilePaletteOpenAfter([&add] { add.click(); }, inside);
 }
 } // namespace
 
@@ -7066,7 +7072,8 @@ struct Gl5bTab {
         return transport.next++;
     }
 
-    Gl5bTab() {
+    // GL-5c: `operations` the catalog offers beside the visual one's.
+    explicit Gl5bTab(const std::vector<std::string> &operations = {}) {
         auto capability = transport.capability();
         capability.requestFramePlan = [this](QString *) {
             transport.calls.push_back({QStringLiteral("get_frame_plan")});
@@ -7090,6 +7097,10 @@ struct Gl5bTab {
         catalog["modules"][1]["operations"].push_back(
             {{"op", "render.target_ref"}, {"domain", "rendering"}, {"evaluation", "direct"},
              {"sink", false}, {"ports", "parameter_dependent"}});
+        for (const auto &op : operations)
+            catalog["modules"][1]["operations"].push_back(
+                {{"op", op}, {"domain", "rendering"}, {"evaluation", "direct"},
+                 {"sink", false}, {"ports", "parameter_dependent"}});
         answer("get_graph_catalog", catalog);
         reads();
     }
@@ -7275,6 +7286,109 @@ TEST_CASE("GL-5b a rendering-section pass's output is picked again from the decl
     CHECK(notice->text() == QStringLiteral("present: saving..."));
     REQUIRE(tab.transport.countOf(QStringLiteral("edit_preset_pass")) == 2);
     CHECK(tab.sent("edit_preset_pass") == saved("present_color"));
+}
+
+// --- GL-5c: the Frame Plan's Add and Edit, on the Graph.
+
+TEST_CASE("GL-5c decisions 1, 3 and 4: the Frame Plan's Add opens the palette in the root on "
+          "its op, what it places goes into the graph's nodes and is picked once the document "
+          "holds it; New render target beside that forward pass opens on the kind it writes",
+          "[devstudio][graph-canvas][scene][gl5c]") {
+    (void)application();
+    Gl5bTab tab{{"render.material_pass", "draw.material"}};
+    auto &widget = *tab.widget;
+    // Decision 3: the graph node's pass and the rendering section's are
+    // edited here; a pass the plan does not hold is not.
+    CHECK(widget.editsPlanPass(QStringLiteral("shade")));
+    CHECK(widget.editsPlanPass(QStringLiteral("present")));
+    CHECK_FALSE(widget.editsPlanPass(QStringLiteral("no_such_pass")));
+
+    // Decision 1: the palette, on the op the Frame Plan's entry names.
+    QString filter;
+    QString row;
+    bool contract_offered = false;
+    REQUIRE(whilePaletteOpenAfter(
+        [&] { widget.placeFromPalette(QStringLiteral("render.material_pass")); },
+        [&](QDialog &dialog) {
+            auto *search = dialog.findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasPaletteFilter"));
+            auto *list = dialog.findChild<QListWidget *>(QStringLiteral("pelican.graphCanvasPaletteList"));
+            auto *contracts =
+                dialog.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasPaletteContract"));
+            REQUIRE(search != nullptr);
+            REQUIRE(list != nullptr);
+            REQUIRE(contracts != nullptr);
+            filter = search->text();
+            REQUIRE(list->currentItem() != nullptr);
+            row = list->currentItem()->data(Qt::UserRole).toString();
+            contract_offered = contracts->isVisible();
+            contracts->setCurrentIndex(contracts->findData(QStringLiteral("forward_opaque_v1")));
+            dialog.accept();
+        }));
+    CHECK(filter == QStringLiteral("render.material_pass"));
+    CHECK(row == QStringLiteral("render.material_pass"));
+    CHECK(contract_offered);
+    QCoreApplication::processEvents();
+    // The palette's edit: the pass and its draw loop in the root's nodes.
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_graph_document")) == 1);
+    const auto ops = tab.sent("edit_graph_document");
+    CHECK(std::ranges::any_of(ops, [](const Json &op) {
+        return op.value("op", std::string{}) == "add_node" && op.value("scope", std::string{}) == "root" &&
+               op.at("node").value("id", std::string{}) == "render_material_pass" &&
+               op.at("node").value("op", std::string{}) == "render.material_pass";
+    }));
+    CHECK(tab.transport.countOf(QStringLiteral("edit_preset_pass")) == 0);
+    CHECK(tab.transport.countOf(QStringLiteral("edit_render_targets")) == 0);
+    // Not picked before the document holds it.
+    const auto picked = [&] {
+        const auto &selected = widget.scene().selectedNode();
+        return selected ? *selected : std::string{};
+    };
+    CHECK(picked() != "render_material_pass");
+    tab.answer("edit_graph_document", Json{{"status", "accepted"}, {"ticket", "gl5c"}});
+    tab.answer("get_edit_result", Json{{"status", "committed"},
+                                       {"committed", true},
+                                       {"source_digest", {{"hex", "gl1e-root"}}}});
+    auto document = gl1eRead();
+    for (const auto &op : ops) {
+        if (op.value("op", std::string{}) == "add_node" && op.value("scope", std::string{}) == "root")
+            document["nodes"].push_back(op.at("node"));
+        if (op.value("op", std::string{}) == "add_definition")
+            document["definitions"][op.at("name").get<std::string>()] = op.at("definition");
+    }
+    tab.answer("get_graph_instances", document);
+    tab.reads();
+    // Picked, its detail column open on the pass's fields.
+    CHECK(picked() == "render_material_pass");
+    auto *contract = widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasDraw.contract"));
+    REQUIRE(contract != nullptr);
+    CHECK(contract->isVisible());
+
+    // Decision 4: a reference placed beside it, New render target…: the form
+    // opens on what the forward pass's colour output takes.
+    auto *add = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasAddNode"));
+    REQUIRE(add != nullptr);
+    REQUIRE(add->isEnabled());
+    REQUIRE(whilePaletteOpen(*add, [&](QDialog &dialog) {
+        auto *search = dialog.findChild<QLineEdit *>(QStringLiteral("pelican.graphCanvasPaletteFilter"));
+        REQUIRE(search != nullptr);
+        search->setText(QStringLiteral("target_ref"));
+        QCoreApplication::processEvents();
+        auto *targets = dialog.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasPaletteTarget"));
+        REQUIRE(targets != nullptr);
+        targets->setCurrentIndex(targets->count() - 1);
+        QCoreApplication::processEvents();
+        dialog.accept();
+    }));
+    QCoreApplication::processEvents();
+    REQUIRE(tab.form() != nullptr);
+    CHECK(tab.form()->isVisible());
+    auto *kind = tab.form()->findChild<QComboBox *>(QStringLiteral("pelican.renderTargetForm.kind"));
+    auto *format = tab.form()->findChild<QComboBox *>(QStringLiteral("pelican.renderTargetForm.format"));
+    REQUIRE(kind != nullptr);
+    REQUIRE(format != nullptr);
+    CHECK(kind->currentData().toString() == QStringLiteral("explicit"));
+    CHECK(format->currentText() == QStringLiteral("R16G16B16A16_SFLOAT"));
+    tab.form()->close();
 }
 
 // --- UX-1: how the Graph feels in the hand.

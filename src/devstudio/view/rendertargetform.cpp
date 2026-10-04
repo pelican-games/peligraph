@@ -271,8 +271,9 @@ void RenderTargetForm::updateEnabled() {
 
 void presentNewRenderTarget(RenderTargetForm &form,
                             const FramePlanAuthoring &authoring,
-                            const std::string &name) {
-    RenderTargetFormValues values;
+                            const std::string &name,
+                            const std::optional<RenderTargetFormValues> &kind) {
+    RenderTargetFormValues values = kind.value_or(RenderTargetFormValues{});
     values.name = name.empty() ? proposedRenderTargetName(authoring) : name;
     form.present(RenderTargetForm::Mode::create, values,
                  authoring.render_target_formats,

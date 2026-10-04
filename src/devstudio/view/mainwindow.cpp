@@ -615,6 +615,23 @@ void MainWindow::createWorkspace() {
         docks_[FramePlanDock]->raise();
         return true;
     });
+    // GL-5c, decision 3: Edit pass / Edit task and a double-click open what
+    // the Graph tab edits there (through the Open in Graph above).
+    frame_plan_->setGraphEditsPassQuery(
+        [this](const QString &pass) { return graph_canvas_->editsPlanPass(pass); });
+    // GL-5c, decisions 1 and 2: on a graph root, the Frame Plan's Add material
+    // pass / fullscreen pass / compute task is the Graph's palette, on its op.
+    // A root the Graph tab has read and found not to be a graph keeps the
+    // Frame Plan's own forms.
+    frame_plan_->setGraphPlaceAction([this, render_tabs](const QString &op) {
+        const GraphCanvasModel &model = graph_canvas_->model();
+        if (model.contextReceived() && !model.graphRoot()) return false;
+        render_tabs->setCurrentWidget(graph_canvas_);
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        graph_canvas_->placeFromPalette(op);
+        return true;
+    });
     // GL-2b, decision 3: a pass row of the Graph tab's Layers section picks
     // that plan node in the Frame Plan.
     graph_canvas_->setFramePlanNodeAction([this, render_tabs](const QString &node) {
@@ -1321,6 +1338,15 @@ void MainWindow::createMenus() {
     connect(show_assets, &QAction::triggered, this, [this] {
         docks_[AssetsPanelDock]->show();
         docks_[AssetsPanelDock]->raise();
+    });
+    // GL-5c: and the Pass Editor, which the Frame Plan's Add no longer opens
+    // on a graph root (its Add goes to the Graph's palette); its own New pass
+    // and Save still add a pass there, and a preset root's Add still opens it.
+    QAction *show_pass_editor = view_menu->addAction(tr("Pass &Editor"));
+    show_pass_editor->setObjectName(QStringLiteral("pelican.view.passEditor"));
+    connect(show_pass_editor, &QAction::triggered, this, [this] {
+        docks_[FullscreenPassDock]->show();
+        docks_[FullscreenPassDock]->raise();
     });
     // MT-1s: and the Materials dock, the tab after it.
     QAction *show_materials = view_menu->addAction(tr("&Materials"));

@@ -6256,6 +6256,16 @@ GraphCanvasPlanTarget GraphCanvasModel::planNodeTarget(std::string_view name) co
     return target;
 }
 
+bool GraphCanvasModel::planPassEditedHere(std::string_view name) const {
+    const auto target = planNodeTarget(name);
+    if (target.kind.empty()) return false;
+    // A node in a body: an instance's, or a loop's copy.
+    if (target.kind != "root") return true;
+    // A graph node of the root, or a folded node standing for the pass.
+    if (findNode({}, target.node) != nullptr) return true;
+    return renderingSectionPass(name);
+}
+
 std::vector<std::string> GraphCanvasModel::planNodesOf(std::string_view canvas_node) const {
     std::vector<std::string> result;
     if (canvas_node.empty()) return result;

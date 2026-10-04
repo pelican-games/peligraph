@@ -3,6 +3,7 @@
 #include "frameplanedit.hpp"
 #include "frameplanmodel.hpp"
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,17 @@ std::vector<MaterialPassSlot> materialPassSlots(const std::string &contract,
 // Whether the running pipeline renders scene color in HDR: "hdr" is among the
 // features it enabled. A context that does not say is read as HDR.
 bool materialPassHdr(const FramePlanAuthoring &authoring);
+
+// GL-5c, decision 4. What New render target opens on when the target is for
+// colour output `color_index` of a material pass of `contract`: the kind,
+// format and usage the contract's table gives that attachment (the slot's
+// format and format_class, read as the form reads a declaration), so the
+// engine takes the target as that output -- a forward pass's colour is
+// Explicit format R16G16B16A16_SFLOAT, which the Scene color default is not.
+// No name. Nullopt for an unknown contract or an output it does not have.
+std::optional<RenderTargetFormValues> materialPassColorTargetValues(
+    const FramePlanAuthoring &authoring, const std::string &contract,
+    std::size_t color_index);
 
 // A pass name nothing in `graph` uses yet, from the contract's own name.
 std::string materialPassDefaultName(const FramePlanAuthoring &authoring,

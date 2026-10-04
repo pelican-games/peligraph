@@ -6,6 +6,7 @@
 #include "graphcanvasfoldgroups.hpp"
 #include "graphcanvasloopfields.hpp"
 #include "graphcanvasmaterialfields.hpp"
+#include "materialpassedit.hpp"
 #include "graphcanvasrenderfields.hpp"
 #include "graphcanvasvaluefields.hpp"
 #include "graphcanvasparameterfields.hpp"
@@ -4873,6 +4874,8 @@ struct GraphCanvasWidget::Impl {
         nlohmann::json seed;
         std::string reference;
         std::chrono::steady_clock::time_point deadline;
+        // GL-5c: picked once it is placed (placeFromPalette's).
+        bool reveal = false;
     };
     std::optional<PendingComputePlacement> pending_compute_placement;
     // UX-9, decisions 1 and 3: what the palette chose, read as it closed --
@@ -4885,8 +4888,16 @@ struct GraphCanvasWidget::Impl {
         std::string definition;
         bool new_body = false;
         nlohmann::json seed = nlohmann::json::object();
+        // GL-5c, decision 1: the node placed is picked once the document
+        // holds it, its detail column open (placeFromPalette's palette).
+        bool reveal = false;
     };
     std::optional<PaletteChoice> pending_palette_choice;
+    // GL-5c, decisions 1 and 2: the Frame Plan's Add on a graph root -- the
+    // palette opened on this op in the root, once the document is in hand --
+    // and whether the palette on screen is that one.
+    std::string pending_palette_op;
+    bool reveal_palette_placement = false;
     QTreeWidget *details = nullptr;
     // UX-2, decision 5: the parameter row of the details whose value is
     // being typed as JSON, and the node it belongs to. A redraw waits for it,
@@ -5029,6 +5040,9 @@ struct GraphCanvasWidget::Impl {
     // What follows once the target is declared, given "" when none was made.
     std::function<void(const std::string &target)> new_target_made;
     std::string new_target_name;
+    // GL-5c, decision 4: what the form opens on when the output it is for is
+    // known (a material pass's colour), instead of the defaults.
+    std::optional<RenderTargetFormValues> new_target_kind;
     // The form waits for the context (its vocabulary); the name sent waits
     // to be among the context's targets.
     bool new_target_context_wanted = false;
@@ -5516,10 +5530,13 @@ struct GraphCanvasWidget::Impl {
         // New render target, and the output writes what it made.
         folded_pass_fields->setNewTargetAction(
             [this](const std::string &pass, std::size_t output, const std::string &name) {
-                openNewRenderTarget(name, [this, pass, output](const std::string &target) {
-                    if (!target.empty() && folded_pass_fields != nullptr)
-                        folded_pass_fields->outputTargetCreated(pass, output, target);
-                });
+                openNewRenderTarget(
+                    name,
+                    [this, pass, output](const std::string &target) {
+                        if (!target.empty() && folded_pass_fields != nullptr)
+                            folded_pass_fields->outputTargetCreated(pass, output, target);
+                    },
+                    passOutputTargetKind(pass, output));
             });
         side_layout->addWidget(folded_pass_fields);
         // UX-6b, decision 4.
@@ -6216,7 +6233,8 @@ struct GraphCanvasWidget::Impl {
     // (framePlanRenderTargetAddRequest), sent the way the tab sends a pass's
     // edit: one at a time, its ticket, RU-1's Undo. `made` is told the
     // target once the context names it, or "" when none was made.
-    void openNewRenderTarget(std::string name, std::function<void(const std::string &)> made) {
+    void openNewRenderTarget(std::string name, std::function<void(const std::string &)> made,
+                             std::optional<RenderTargetFormValues> kind = std::nullopt) {
         const auto refuse = [this, &made](std::string line) {
             model.setEditNotice({InspectorNoticeKind::Error, std::move(line)});
             showNotice();
@@ -6230,6 +6248,7 @@ struct GraphCanvasWidget::Impl {
         newTargetDone({});
         new_target_made = std::move(made);
         new_target_name = std::move(name);
+        new_target_kind = std::move(kind);
         const auto authoring = framePlanAuthoringFromContext(model.renderAuthoringContext());
         if (!authoring.received) {
             // Opened as soon as the context that names the vocabulary arrives.
@@ -6241,7 +6260,7 @@ struct GraphCanvasWidget::Impl {
             showNotice();
             return;
         }
-        presentNewRenderTarget(newTargetForm(), authoring, new_target_name);
+        presentNewRenderTarget(newTargetForm(), authoring, new_target_name, new_target_kind);
     }
 
     RenderTargetForm &newTargetForm() {
@@ -6286,7 +6305,8 @@ struct GraphCanvasWidget::Impl {
             const auto authoring = framePlanAuthoringFromContext(model.renderAuthoringContext());
             if (authoring.received) {
                 new_target_context_wanted = false;
-                presentNewRenderTarget(newTargetForm(), authoring, new_target_name);
+                presentNewRenderTarget(newTargetForm(), authoring, new_target_name,
+                                       new_target_kind);
             }
         }
         if (new_target_sent.empty() || pass_edit_request != 0 || !pass_ticket.isEmpty()) return;
@@ -6298,18 +6318,56 @@ struct GraphCanvasWidget::Impl {
 
     // GL-5b, decision 2 (a): the palette's New render target…. The reference
     // is placed once the target is declared, as a picked one is.
-    void newTargetReference(const std::string &scope) {
-        openNewRenderTarget({}, [this, scope](const std::string &target) {
-            if (target.empty()) {
-                scene->clearPaletteScope();
-                return;
-            }
-            PaletteChoice choice;
-            choice.scope = scope;
-            choice.op = "render.target_ref";
-            choice.seed["name"] = target;
-            placeWhenEditable(std::move(choice));
-        });
+    void newTargetReference(const std::string &scope,
+                            std::optional<RenderTargetFormValues> kind = std::nullopt) {
+        openNewRenderTarget(
+            {},
+            [this, scope](const std::string &target) {
+                if (target.empty()) {
+                    scene->clearPaletteScope();
+                    return;
+                }
+                PaletteChoice choice;
+                choice.scope = scope;
+                choice.op = "render.target_ref";
+                choice.seed["name"] = target;
+                placeWhenEditable(std::move(choice));
+            },
+            std::move(kind));
+    }
+
+    // --- GL-5c, decision 4: the kind New render target opens on, from the
+    // output the target is for. The contract's table decides a material
+    // pass's colour (materialPassColorTargetValues); for anything else the
+    // form's defaults stand.
+
+    // Colour output `output` of the rendering section's pass `pass` (the
+    // detail column's New target: <pass>_color…).
+    [[nodiscard]] std::optional<RenderTargetFormValues> passOutputTargetKind(
+        const std::string &pass, std::size_t output) const {
+        const auto authoring = framePlanAuthoringFromContext(model.renderAuthoringContext());
+        const auto *row = authoring.find(model.planGraph(), pass);
+        if (row == nullptr || row->declaration.value("type", std::string{}) != "material")
+            return std::nullopt;
+        return materialPassColorTargetValues(
+            authoring, row->declaration.value("material_contract", std::string{}), output);
+    }
+
+    // The palette's render.target_ref, placed beside the material pass picked
+    // in `scope`: when that pass has one colour output (a forward one), the
+    // reference is for it.
+    [[nodiscard]] std::optional<RenderTargetFormValues> besideMaterialPassTargetKind(
+        const std::string &scope) const {
+        const auto &selected = scene->selectedNode();
+        if (!selected || scene->selectedScope() != scope) return std::nullopt;
+        const auto nodes = model.nodes(scope);
+        const auto found = std::ranges::find(nodes, *selected, &GraphCanvasNode::id);
+        if (found == nodes.end() || found->op != "render.material_pass") return std::nullopt;
+        const auto contract =
+            model.nodeParameters(scope, *selected).value("material_contract", std::string{});
+        const auto authoring = framePlanAuthoringFromContext(model.renderAuthoringContext());
+        if (materialPassColorTargetValues(authoring, contract, 1)) return std::nullopt;
+        return materialPassColorTargetValues(authoring, contract, 0);
     }
 
     // GL-3a: a fold_nodes committed. What any render edit of this tab does
@@ -6405,6 +6463,8 @@ struct GraphCanvasWidget::Impl {
         revealPending();
         placePending();
         scopePending();
+        // GL-5c: the Frame Plan's Add, waiting for a document to add to.
+        paletteOpPending();
         // GL-1e: an edit refused for a moved document, once the context
         // read after it has arrived.
         resumePassRetry();
@@ -7276,14 +7336,17 @@ struct GraphCanvasWidget::Impl {
     // Decision 1. The palette's pick of a project shader: the engine is asked
     // for its ports (an answer it has for the same files comes at once), and
     // the node is placed with them when it answers. False for anything else.
-    bool placeComputeWhenRead(const std::string &scope, const nlohmann::json &seed) {
+    bool placeComputeWhenRead(const std::string &scope, const nlohmann::json &seed,
+                              bool reveal = false) {
         if (!graph.requestShaderInterface) return false;
         auto reference = seed.value("shader", std::string{});
         if (reference.empty()) reference = seed.value("ray_tracing", std::string{});
         if (!reference.starts_with("project://")) return false;
         model.askShaderInterface(reference);
-        pending_compute_placement = PendingComputePlacement{
-            scope, seed, reference, std::chrono::steady_clock::now() + std::chrono::seconds{120}};
+        pending_compute_placement =
+            PendingComputePlacement{scope, seed, reference,
+                                    std::chrono::steady_clock::now() + std::chrono::seconds{120},
+                                    reveal};
         model.setEditNotice({InspectorNoticeKind::Information,
                              "Reading " + reference + "'s ports..."});
         dispatch();
@@ -7313,11 +7376,14 @@ struct GraphCanvasWidget::Impl {
                                      (known ? known->error : std::string{"no answer"})});
             return;
         }
-        if (!scene->addFromPalette(placing.scope, "render.compute", {}, placing.seed))
+        if (!scene->addFromPalette(placing.scope, "render.compute", {}, placing.seed)) {
             model.setEditNotice({InspectorNoticeKind::Error,
                                  placing.reference + " declares nothing a compute task can run: "
                                                      "no compute stage, or a ray tracing set that "
                                                      "writes no image."});
+            return;
+        }
+        placed(true, placing.scope, placing.reveal);
     }
 
     // Q-10. The project's sounds, read again whenever they are about to be
@@ -8037,6 +8103,8 @@ struct GraphCanvasWidget::Impl {
             dialog, &QDialog::finished, &view,
             [this, scope, list, definitions, new_definition_data, new_name, contracts, targets,
              snapshot_after, compute_shader, element, attribute_domain, count](int result) {
+                // GL-5c: only the palette placeFromPalette opened picks what it placed.
+                const bool reveal = std::exchange(reveal_palette_placement, false);
                 auto *row = result == QDialog::Accepted ? list->currentItem() : nullptr;
                 if (row == nullptr) {
                     scene->clearPaletteScope();
@@ -8054,6 +8122,7 @@ struct GraphCanvasWidget::Impl {
                 choice.scope = scope;
                 choice.op = row->data(Qt::UserRole).toString().toStdString();
                 choice.definition = definitions->currentData().toString().toStdString();
+                choice.reveal = reveal;
                 if (choice.op == "graph.loop" &&
                     definitions->currentData().toString() == new_definition_data) {
                     choice.new_body = true;
@@ -8066,7 +8135,11 @@ struct GraphCanvasWidget::Impl {
                 if (choice.op == "render.target_ref" &&
                     targets->currentData().toString() == QLatin1String{kPaletteNewTarget}) {
                     QMetaObject::invokeMethod(
-                        &view, [this, scope] { newTargetReference(scope); }, Qt::QueuedConnection);
+                        &view,
+                        [this, scope, kind = besideMaterialPassTargetKind(scope)] {
+                            newTargetReference(scope, kind);
+                        },
+                        Qt::QueuedConnection);
                     return;
                 }
                 // UX-3, decision 1: what was picked beside the op.
@@ -8163,18 +8236,60 @@ struct GraphCanvasWidget::Impl {
         }
         // LP-4e: a material pass's second argument is its contract.
         if (choice.op == "render.material_pass") {
-            scene->addFromPalette(choice.scope, choice.op, choice.definition);
+            placed(scene->addFromPalette(choice.scope, choice.op, choice.definition), choice.scope,
+                   choice.reveal);
             return;
         }
         // EL-5s, decision 1: a project shader is placed with its ports once
         // the engine has read them (get_shader_interface), from the poll.
-        if (choice.op == "render.compute" && placeComputeWhenRead(choice.scope, choice.seed))
+        if (choice.op == "render.compute" &&
+            placeComputeWhenRead(choice.scope, choice.seed, choice.reveal))
             return;
         if (!choice.seed.empty()) {
-            scene->addFromPalette(choice.scope, choice.op, {}, choice.seed);
+            placed(scene->addFromPalette(choice.scope, choice.op, {}, choice.seed), choice.scope,
+                   choice.reveal);
             return;
         }
-        scene->addFromPalette(choice.scope, choice.op, choice.definition);
+        placed(scene->addFromPalette(choice.scope, choice.op, choice.definition), choice.scope,
+               choice.reveal);
+    }
+
+    // GL-5c, decision 1: what the palette just placed in the root is picked,
+    // its detail column open, once a document that holds it is read (the
+    // edit commits first; a material pass may restart the engine on the way).
+    void placed(bool added, const std::string &scope, bool reveal) {
+        if (!added || !reveal || !scope.empty()) return;
+        const auto last = scene->lastAdded();
+        if (!last || !last->first.empty()) return;
+        pending_reveal = last->second;
+        revealPending();
+    }
+
+    // GL-5c, decisions 1 and 2: the palette placeFromPalette asked for, in the
+    // root on its op, as soon as the tab holds a document it can add to.
+    void paletteOpPending() {
+        if (pending_palette_op.empty() || !model.canEdit()) return;
+        const auto op = std::exchange(pending_palette_op, {});
+        // The Frame Plan's passes are the root's, whatever the tab showed.
+        model.leaveFolded();
+        model.selectScope({});
+        scene->repopulate();
+        syncScopeControls();
+        syncValueControls();
+        showDetails();
+        // A fullscreen pass has nothing to pick beside it: placed at once,
+        // as the tab's own Add fullscreen pass places it.
+        if (op == "render.fullscreen") {
+            PaletteChoice choice;
+            choice.op = op;
+            choice.reveal = true;
+            placeWhenEditable(std::move(choice));
+            return;
+        }
+        scene->setPaletteScope({});
+        palette_filter_next = op;
+        reveal_palette_placement = true;
+        QMetaObject::invokeMethod(&view, [this] { openPalette(); }, Qt::QueuedConnection);
     }
 
     void showDetails() {
@@ -8711,6 +8826,21 @@ void GraphCanvasWidget::setFoldedExpandActions(
     std::function<void(const QString &feature)> replace) {
     impl_->decompose_action = std::move(decompose);
     impl_->replace_action = std::move(replace);
+}
+
+bool GraphCanvasWidget::editsPlanPass(const QString &pass) const {
+    return impl_->model.planPassEditedHere(pass.toStdString());
+}
+
+void GraphCanvasWidget::placeFromPalette(const QString &op) {
+    impl_->pending_palette_op = op.toStdString();
+    impl_->paletteOpPending();
+    // Not in hand yet: read it, now or when what is in flight lands.
+    if (!impl_->pending_palette_op.empty() && impl_->model.canRefresh() &&
+        impl_->model.digest().empty()) {
+        impl_->model.refresh();
+        impl_->dispatch();
+    }
 }
 
 bool GraphCanvasWidget::placeNamedFullscreenPass(const QString &name) {

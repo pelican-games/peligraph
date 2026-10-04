@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "render_undo_roundtrip",
-  "description": "RU-1 and RU-1b: Undo and Redo of render edits, on RD-1 and RD-1b. A Pass Editor edit (present draws the fixture's inverting fragment, which the viewport shows) is taken back with the Frame Plan's Undo -- the picture and get_render_authoring_context are what they were -- and put again with its Redo. Decompose into loop is taken back with Edit > Undo Render Edit (the Frame Plan draws the material pass again, the graph holds no loop), put again with Redo, and taken back once more. Add fullscreen pass writes a fragment file of its own: Undo takes the pass and the file away (get_render_documents and the file say so), the same name can be added again, and after another Undo, Redo writes it back. Last, a Pass Editor edit followed by moving present on the Frame Plan (which rewrites the root's layout) is still undone, and the placement stays.",
+  "description": "RU-1 and RU-1b: Undo and Redo of render edits, on RD-1 and RD-1b. A Pass Editor edit (present draws the fixture's inverting fragment, which the viewport shows) is taken back with the Frame Plan's Undo -- the picture and get_render_authoring_context are what they were -- and put again with its Redo. Decompose into loop is taken back with Edit > Undo Render Edit (the Frame Plan draws the material pass again, the graph holds no loop), put again with Redo, and taken back once more. Add fullscreen pass writes a fragment file of its own: Undo takes the pass and the file away (get_render_documents and the file say so), the same name can be added again, and after another Undo, Redo writes it back. Last, a Pass Editor edit followed by moving present on the Frame Plan (which rewrites the root's layout) is still undone, and the placement stays. GL-5c: present's fragment is picked in the Graph's detail column, where a double-click on present opens it, and ru1_tint is added with the Pass Editor's own New pass (the Frame Plan's Add fullscreen pass is the Graph's on this graph root).",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -127,34 +127,29 @@
       "name": "pelican.framePlan.fitView"
     },
     {
-      "label": "open present in the Pass Editor by its heading",
+      "label": "a double-click on present's heading opens it on the Graph, in its detail column (GL-5c)",
       "cmd": "double_click",
       "name": "pelican.framePlanLogicalView::node_header#present"
     },
     {
-      "label": "the Pass Editor holds the pass",
+      "label": "the column shows present's Fragment",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.name",
-      "text": "present",
+      "name": "pelican.graphCanvasFoldedPass.fragment",
+      "visible": true,
       "timeout_ms": 60000
     },
     {
-      "label": "pick the fixture's inverting fragment from the list: no key is typed",
+      "label": "pick project://shaders/ru1_invert from the list: one edit_preset_pass on the root",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.shader.fragmentChoice",
+      "name": "pelican.graphCanvasFoldedPass.fragment",
       "text": "project://shaders/ru1_invert"
     },
     {
-      "label": "Save is ready",
+      "label": "the edit committed",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.save",
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "save: edit_preset_pass",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.save"
+      "name": "pelican.graphCanvasNotice",
+      "text": "present saved.",
+      "timeout_ms": 120000
     },
     {
       "label": "the root's present draws the inverting fragment",
@@ -488,33 +483,39 @@
       "timeout_ms": 120000
     },
     {
-      "label": "fit the graph so the pass can be picked",
+      "label": "View > Pass Editor: on a graph root the Frame Plan's Add fullscreen pass... is the Graph's (GL-5c), so the Pass Editor's own New pass adds this one",
       "cmd": "action",
-      "name": "pelican.framePlan.fitView"
+      "name": "pelican.view.passEditor"
     },
     {
-      "label": "pick the forward pass",
+      "label": "New pass: the form is a new pass's",
       "cmd": "click",
-      "name": "pelican.framePlanLogicalView::node#forward_opaque"
+      "name": "pelican.fullscreenPass.new"
     },
     {
-      "label": "Add fullscreen pass after it",
-      "cmd": "action",
-      "name": "pelican.framePlan.addFullscreenPass"
+      "label": "Refresh: the Pass Editor reads the frame plan whose targets it offers",
+      "cmd": "click",
+      "name": "pelican.fullscreenPass.refresh"
+    },
+    {
+      "label": "and has it",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.planStatus",
+      "contains": "resources",
+      "timeout_ms": 60000
     },
     {
       "label": "the Pass Editor has the engine's authoring context",
       "cmd": "wait",
       "name": "pelican.fullscreenPass.authoringStatus",
       "contains": "graph(s)",
-      "timeout_ms": 180000
+      "timeout_ms": 60000
     },
     {
-      "label": "the Pass Editor stands after the forward pass: the insert has read its context",
-      "cmd": "wait",
+      "label": "the position: the engine's anchor after the forward pass",
+      "cmd": "type",
       "name": "pelican.fullscreenPass.position",
-      "text": "1",
-      "timeout_ms": 180000
+      "text": "1"
     },
     {
       "label": "the new pass has no name yet",
@@ -655,33 +656,39 @@
       "timeout_ms": 120000
     },
     {
-      "label": "fit the graph so the pass can be picked (again, the same name)",
+      "label": "View > Pass Editor: on a graph root the Frame Plan's Add fullscreen pass... is the Graph's (GL-5c), so the Pass Editor's own New pass adds this one",
       "cmd": "action",
-      "name": "pelican.framePlan.fitView"
+      "name": "pelican.view.passEditor"
     },
     {
-      "label": "pick the forward pass (again, the same name)",
+      "label": "New pass: the form is a new pass's",
       "cmd": "click",
-      "name": "pelican.framePlanLogicalView::node#forward_opaque"
+      "name": "pelican.fullscreenPass.new"
     },
     {
-      "label": "Add fullscreen pass after it (again, the same name)",
-      "cmd": "action",
-      "name": "pelican.framePlan.addFullscreenPass"
+      "label": "Refresh: the Pass Editor reads the frame plan whose targets it offers",
+      "cmd": "click",
+      "name": "pelican.fullscreenPass.refresh"
     },
     {
-      "label": "the Pass Editor has the engine's authoring context (again, the same name)",
+      "label": "and has it",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.planStatus",
+      "contains": "resources",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the Pass Editor has the engine's authoring context",
       "cmd": "wait",
       "name": "pelican.fullscreenPass.authoringStatus",
       "contains": "graph(s)",
-      "timeout_ms": 180000
+      "timeout_ms": 60000
     },
     {
-      "label": "the Pass Editor stands after the forward pass: the insert has read its context (again, the same name)",
-      "cmd": "wait",
+      "label": "the position: the engine's anchor after the forward pass",
+      "cmd": "type",
       "name": "pelican.fullscreenPass.position",
-      "text": "1",
-      "timeout_ms": 180000
+      "text": "1"
     },
     {
       "label": "the new pass has no name yet (again, the same name)",
@@ -851,34 +858,29 @@
       "name": "pelican.framePlan.fitView"
     },
     {
-      "label": "open present in the Pass Editor by its heading",
+      "label": "a double-click on present's heading opens it on the Graph, in its detail column (GL-5c)",
       "cmd": "double_click",
       "name": "pelican.framePlanLogicalView::node_header#present"
     },
     {
-      "label": "the Pass Editor holds present",
+      "label": "the column shows present's Fragment",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.name",
-      "text": "present",
+      "name": "pelican.graphCanvasFoldedPass.fragment",
+      "visible": true,
       "timeout_ms": 60000
     },
     {
-      "label": "pick the engine's passthrough again, from the list",
+      "label": "pick engine://passthrough from the list: one edit_preset_pass on the root",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.shader.fragmentChoice",
+      "name": "pelican.graphCanvasFoldedPass.fragment",
       "text": "engine://passthrough"
     },
     {
-      "label": "Save is ready",
+      "label": "the edit committed",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.save",
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "save: edit_preset_pass, which writes the root",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.save"
+      "name": "pelican.graphCanvasNotice",
+      "text": "present saved.",
+      "timeout_ms": 120000
     },
     {
       "label": "present draws with passthrough",

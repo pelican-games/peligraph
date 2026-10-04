@@ -78,6 +78,20 @@ class FramePlanWidget final : public QWidget {
     // folded node, or its own). False when the Graph tab could not.
     using GraphPassOpenAction = std::function<bool(const QString &pass)>;
     void setGraphPassOpenAction(GraphPassOpenAction action);
+    // GL-5c, decisions 1 and 2. On a root that is a graph and selects no
+    // preset (the context's config_kind "direct", as Blank's), Add material
+    // pass... / Add fullscreen pass... / Add compute task... hand `action`
+    // the palette's op (render.material_pass, render.fullscreen,
+    // render.compute): the Graph tab places it as its palette does. False
+    // when the Graph tab cannot (its root is not a graph): the Frame Plan's
+    // own form opens, as it does on a root that selects a preset.
+    using GraphPlaceAction = std::function<bool(const QString &op)>;
+    void setGraphPlaceAction(GraphPlaceAction action);
+    // GL-5c, decision 3. Whether the Graph tab edits a pass of the plan (a
+    // graph node's, or the rendering section's in its detail column): Edit
+    // pass and a double-click then open it there, through Open in Graph,
+    // instead of the Pass Editor. Unset: the Pass Editor, as before.
+    void setGraphEditsPassQuery(std::function<bool(const QString &pass)> query);
     // GL-2b, decision 3. The Graph tab's Layers row names a plan node: the
     // Logical graph comes forward with it picked (its group opened).
     void showPlanNode(const QString &node);

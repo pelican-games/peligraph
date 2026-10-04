@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "sockets_from_shader",
-  "description": "VI-3a: a pass's input sockets come from its shader's declarations and a drop connects by binding number. On a Blank pipeline project, present draws with engine://passthrough, whose inputs are all variadic: its only socket is the empty end of the variadic band. With a Cube and a Deferred geometry pass, gbuffer_albedo dropped on the band becomes present's input 0 -- a socket of its own inside the band -- and the viewport shows the G-buffer instead of the gradient. A drop on present's heading adds nothing and says where to drop. The author writes a shader with two fixed inputs and picks it in the Pass Editor; binding 1 is an empty socket, and gbuffer_normal dropped on it becomes input 1. The author then deletes binding 1 from the shader: the engine refuses the reload for present, which keeps drawing with its previous shader; the status line names the binding it lost, with Disconnect and Open the shader beside it. Disconnect takes the input out, and the refusal and binding 1's socket go with it.",
+  "description": "VI-3a: a pass's input sockets come from its shader's declarations and a drop connects by binding number. On a Blank pipeline project, present draws with engine://passthrough, whose inputs are all variadic: its only socket is the empty end of the variadic band. With a Cube and a Deferred geometry pass (the Graph's palette from Add material pass..., GL-5c), its albedo image dropped on the band becomes present's input 0 -- a socket of its own inside the band -- and the viewport shows the G-buffer instead of the gradient. A drop on present's heading adds nothing and says where to drop. The author writes a shader with two fixed inputs and picks it in the Graph's detail column, where a double-click on present opens it (GL-5c); binding 1 is an empty socket, and the normal image dropped on it becomes input 1. The author then deletes binding 1 from the shader: the engine refuses the reload for present, which keeps drawing with its previous shader; the status line names the binding it lost, with Disconnect and Open the shader beside it. Disconnect takes the input out, and the refusal and binding 1's socket go with it.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -153,86 +153,114 @@
       "name": "pelican.framePlan.addMaterialPass"
     },
     {
-      "label": "the form is open",
+      "label": "the Graph tab comes forward with its palette open on the material pass (GL-5c: the root is a graph that selects no preset)",
       "cmd": "wait",
-      "name": "pelican.materialPassForm.name",
+      "name": "pelican.graphCanvasPalette",
       "visible": true,
       "timeout_ms": 60000
     },
     {
-      "label": "Deferred geometry",
+      "label": "the palette is on render.material_pass",
+      "expect": "text_equals",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "value": "render.material_pass"
+    },
+    {
+      "label": "the contract combo is offered for it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteContract",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the contract: deferred_geometry_v1",
       "cmd": "select",
-      "name": "pelican.materialPassForm.contract",
-      "text": "Deferred geometry (G-buffer)"
+      "name": "pelican.graphCanvasPaletteContract",
+      "text": "deferred_geometry_v1"
     },
     {
-      "label": "the pass is named after it, with nothing typed",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.name",
-      "value": "deferred_geometry"
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
     },
     {
-      "label": "the albedo output is a new gbuffer_albedo, filled as the form opened",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.albedo",
-      "value": "gbuffer_albedo"
-    },
-    {
-      "label": "the normal output is a new gbuffer_normal",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.normal",
-      "value": "gbuffer_normal"
-    },
-    {
-      "label": "the material output is a new gbuffer_material",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.material",
-      "value": "gbuffer_material"
-    },
-    {
-      "label": "the world_position output is a new gbuffer_worldpos",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.world_position",
-      "value": "gbuffer_worldpos"
-    },
-    {
-      "label": "the emissive output is a new gbuffer_emissive",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.emissive",
-      "value": "gbuffer_emissive"
-    },
-    {
-      "label": "and the depth output a new scene_depth",
-      "expect": "text_equals",
-      "name": "pelican.materialPassForm.target.depth",
-      "value": "scene_depth"
-    },
-    {
-      "label": "a deferred pass takes deferred materials: no forward default is offered",
+      "label": "the palette closed",
       "cmd": "wait",
-      "name": "pelican.materialPassForm.forwardDefault",
-      "visible": false,
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
       "timeout_ms": 10000
     },
     {
-      "label": "Save: the six targets, then the pass",
+      "label": "the deferred pass changes the material passes' physical contract, so the engine restarts; the Cube is not saved, so Studio asks first (G-5)",
+      "cmd": "wait",
+      "name": "pelican.unsavedScenePrompt",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Save",
       "cmd": "click",
-      "name": "pelican.materialPassForm.ok"
+      "name": "pelican.unsavedScenePrompt.save"
     },
     {
-      "label": "the form closed",
+      "label": "the scene is saved, and only then is a new engine started",
       "cmd": "wait",
-      "name": "pelican.materialPassForm.name",
-      "visible": false,
-      "timeout_ms": 10000
+      "name": "pelican.viewportStatus",
+      "contains": "started; waiting for its window",
+      "timeout_ms": 120000
     },
     {
-      "label": "the engine runs deferred_geometry first",
+      "label": "the restarted engine answers editor RPC and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the pass's draw loop is drawn as a zone on the Graph (after a restart, if the route default asks for one)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the material pass is drawn, and picked: its detail column shows its contract",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasDraw.contract",
+      "visible": true,
+      "text": "deferred_geometry_v1",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the pass is the graph's node (GL-5c), not a managed fragment",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[7].id",
+      "value": "render_material_pass",
+      "retry_ms": 60000
+    },
+    {
+      "label": "no pass-<id>.json was made",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
-      "path": "graphs[0].passes[0].name",
-      "value": "deferred_geometry",
+      "path": "managed_fragments.$len",
+      "value": 0
+    },
+    {
+      "label": "the engine runs the graph's material pass after present, which reads nothing yet",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "graphs[0].passes[1].name",
+      "value": "render_material_pass",
       "retry_ms": 120000
     },
     {
@@ -240,19 +268,13 @@
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
-      "path": "graphs[0].passes[0].declaration.material_contract",
+      "path": "graphs[0].passes[1].declaration.material_contract",
       "value": "deferred_geometry_v1"
     },
     {
-      "label": "the automatic materials already go to a deferred pass: no restart was asked for",
-      "expect": "result",
-      "command": {
-        "cmd": "text",
-        "name": "pelican.viewportStatus"
-      },
-      "path": "text",
-      "op": "excludes",
-      "value": "Restarting the engine"
+      "label": "the Frame Plan tab is in front again",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
     },
     {
       "label": "look at the whole frame, where the geometry pass and its targets are drawn",
@@ -261,9 +283,9 @@
       "text": "Whole frame"
     },
     {
-      "label": "deferred_geometry is drawn",
+      "label": "the graph's deferred pass is drawn",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#deferred_geometry",
+      "name": "pelican.framePlanLogicalView::node#render_material_pass",
       "visible": true,
       "timeout_ms": 120000
     },
@@ -280,18 +302,18 @@
       "name": "pelican.framePlan.fitView"
     },
     {
-      "label": "the gbuffer_albedo output socket the drag starts from",
+      "label": "the render_material_pass__albedo output socket the drag starts from",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_socket#deferred_geometry/out:gbuffer_albedo",
+      "name": "pelican.framePlanLogicalView::node_socket#render_material_pass/out:render_material_pass__albedo",
       "visible": true,
       "timeout_ms": 60000
     },
     {
-      "label": "present is the frame plan's second node, after deferred_geometry (the rpc checks below read it there)",
+      "label": "present is the frame plan's first node while it reads nothing (the graph's pass comes before it once it does)",
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[1].name",
+      "path": "nodes[0].name",
       "value": "present"
     },
     {
@@ -299,14 +321,14 @@
       "expect": "rpc_equals",
       "method": "get_frame_plan",
       "params": {},
-      "path": "nodes[1].pass_inputs.variadic_range.max",
+      "path": "nodes[0].pass_inputs.variadic_range.max",
       "value": 8
     },
     {
-      "label": "drop gbuffer_albedo on the band's empty end",
+      "label": "drop render_material_pass__albedo on the band's empty end",
       "cmd": "drag",
       "from": {
-        "name": "pelican.framePlanLogicalView::node_socket#deferred_geometry/out:gbuffer_albedo"
+        "name": "pelican.framePlanLogicalView::node_socket#render_material_pass/out:render_material_pass__albedo"
       },
       "to": {
         "name": "pelican.framePlanLogicalView::node_socket#present/in:variadic"
@@ -314,12 +336,12 @@
       "steps": 8
     },
     {
-      "label": "present reads gbuffer_albedo",
+      "label": "present reads render_material_pass__albedo",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
       "path": "graphs[0].passes[1].root_declaration.input[0]",
-      "value": "gbuffer_albedo",
+      "value": "render_material_pass__albedo",
       "retry_ms": 120000
     },
     {
@@ -340,7 +362,7 @@
     {
       "label": "the name a read had before VI-3a still reaches it",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node_socket#present/in:gbuffer_albedo",
+      "name": "pelican.framePlanLogicalView::node_socket#present/in:render_material_pass__albedo",
       "timeout_ms": 60000,
       "visible": true
     },
@@ -451,10 +473,10 @@
       "name": "pelican.framePlan.fitView"
     },
     {
-      "label": "drop gbuffer_normal on present's heading, not on a socket",
+      "label": "drop render_material_pass__normal on present's heading, not on a socket",
       "cmd": "drag",
       "from": {
-        "name": "pelican.framePlanLogicalView::node_socket#deferred_geometry/out:gbuffer_normal"
+        "name": "pelican.framePlanLogicalView::node_socket#render_material_pass/out:render_material_pass__normal"
       },
       "to": {
         "name": "pelican.framePlanLogicalView::node_header#present"
@@ -483,34 +505,30 @@
       "text": "#version 460\n#extension GL_GOOGLE_include_directive : require\n#include \"pelican_sets.glsl\"\n#include \"pelican_view.glsl\"\n\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n\nPELICAN_DECLARE_INPUT_0(in_gbuffer_albedo);\nPELICAN_DECLARE_INPUT_1(in_gbuffer_normal);\n\nvoid main() {\n    outColor = PELICAN_TEXTURE_2D_0(in_gbuffer_albedo, inUV) +\n               0.0 * PELICAN_TEXTURE_2D_1(in_gbuffer_normal, inUV);\n}\n"
     },
     {
-      "label": "open present in the Pass Editor by its heading",
+      "label": "a double-click on present's heading opens it on the Graph, in its detail column (GL-5c)",
       "cmd": "double_click",
       "name": "pelican.framePlanLogicalView::node_header#present"
     },
     {
-      "label": "the Pass Editor holds present",
+      "label": "the column shows present's Fragment",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.name",
-      "timeout_ms": 60000,
-      "text": "present"
+      "name": "pelican.graphCanvasFoldedPass.fragment",
+      "visible": true,
+      "text": "engine://passthrough",
+      "timeout_ms": 60000
     },
     {
-      "label": "pick the two-input shader for present",
+      "label": "pick the two-input shader for present (one edit_preset_pass on the root)",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.shader.fragmentChoice",
+      "name": "pelican.graphCanvasFoldedPass.fragment",
       "text": "project://shaders/two"
     },
     {
-      "label": "Save is ready",
+      "label": "the edit committed",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.save",
-      "timeout_ms": 60000,
-      "enabled": true
-    },
-    {
-      "label": "save present",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.save"
+      "name": "pelican.graphCanvasNotice",
+      "text": "present saved.",
+      "timeout_ms": 120000
     },
     {
       "label": "present draws with the two-input shader",
@@ -522,9 +540,9 @@
       "retry_ms": 120000
     },
     {
-      "label": "close the Pass Editor (View > Panels)",
+      "label": "the Frame Plan tab is in front again",
       "cmd": "action",
-      "name": "pelican.view.panels.fullscreenPassDock"
+      "name": "pelican.view.renderTools.frame_plan"
     },
     {
       "label": "the second declaration is an empty socket, binding 1",
@@ -544,7 +562,7 @@
       "label": "the first socket is named for its declaration and what feeds it",
       "expect": "text_equals",
       "name": "pelican.framePlanLogicalView::node_row_label#present/in@0",
-      "value": "in_gbuffer_albedo ← gbuffer_albedo"
+      "value": "in_gbuffer_albedo ← render_material_pass__albedo"
     },
     {
       "label": "fit the graph again",
@@ -552,10 +570,10 @@
       "name": "pelican.framePlan.fitView"
     },
     {
-      "label": "drop gbuffer_normal on binding 1",
+      "label": "drop render_material_pass__normal on binding 1",
       "cmd": "drag",
       "from": {
-        "name": "pelican.framePlanLogicalView::node_socket#deferred_geometry/out:gbuffer_normal"
+        "name": "pelican.framePlanLogicalView::node_socket#render_material_pass/out:render_material_pass__normal"
       },
       "to": {
         "name": "pelican.framePlanLogicalView::node_socket#present/in@1"
@@ -563,12 +581,12 @@
       "steps": 8
     },
     {
-      "label": "present reads gbuffer_normal second",
+      "label": "present reads render_material_pass__normal second",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
       "path": "graphs[0].passes[1].root_declaration.input[1]",
-      "value": "gbuffer_normal",
+      "value": "render_material_pass__normal",
       "retry_ms": 120000
     },
     {
@@ -576,12 +594,12 @@
       "cmd": "wait",
       "name": "pelican.framePlanLogicalView::node_row_label#present/in@1",
       "timeout_ms": 120000,
-      "text": "in_gbuffer_normal ← gbuffer_normal"
+      "text": "in_gbuffer_normal ← render_material_pass__normal"
     },
     {
-      "label": "one line from deferred_geometry to each socket it feeds: two",
+      "label": "one line from the material pass to each socket it feeds: two",
       "expect": "list_count",
-      "pattern": "::edge#deferred_geometry->present",
+      "pattern": "::edge#render_material_pass->present",
       "value": 2
     },
     {
@@ -595,7 +613,7 @@
       "cmd": "wait",
       "name": "pelican.framePlanStatus",
       "timeout_ms": 120000,
-      "contains": "present keeps drawing with its previous shader: the new one no longer declares binding 1 (gbuffer_normal)."
+      "contains": "present keeps drawing with its previous shader: the new one no longer declares binding 1 (render_material_pass__normal)."
     },
     {
       "label": "Disconnect is offered",
@@ -661,7 +679,7 @@
       "method": "get_render_authoring_context",
       "params": {},
       "path": "graphs[0].passes[1].root_declaration.input[0]",
-      "value": "gbuffer_albedo"
+      "value": "render_material_pass__albedo"
     },
     {
       "label": "the refusal is gone: the edit made the pass again with the new shader",
@@ -697,7 +715,7 @@
     {
       "label": "and its line: one left",
       "expect": "list_count",
-      "pattern": "::edge#deferred_geometry->present",
+      "pattern": "::edge#render_material_pass->present",
       "value": 1
     },
     {

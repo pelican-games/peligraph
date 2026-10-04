@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "fullscreen_pass_from_template",
-  "description": "F-3 / F-5: build a fullscreen pass shader and all from Studio, then change it the way a person does, in their own editor. Add fullscreen pass opens the Pass Editor after a node; New... writes the fragment shader for the chosen input into the project and puts its stem in the form; a syntax error written into that file is refused by the engine's preflight and shown whole under the form, which keeps what was typed; the repaired file saves and the pass, which writes the lit colour the viewport shows, appears on the canvas. Then the file is edited: Studio notices the write and asks the engine to reload its shaders (reload_shaders), and the viewport changes. A syntax error saved the same way marks the pass on the canvas and puts the log under the Pass Editor's form while the engine keeps drawing what it had; fixed, the mark and the log go.",
+  "description": "F-3 / F-5: build a fullscreen pass shader and all from Studio, then change it the way a person does, in their own editor. The Pass Editor's own New pass, after the lighting pass (on this graph root the Frame Plan's Add fullscreen pass is the Graph's, GL-5c); New... writes the fragment shader for the chosen input into the project and puts its stem in the form; a syntax error written into that file is refused by the engine's preflight and shown whole under the form, which keeps what was typed; the repaired file saves and the pass, which writes the lit colour the viewport shows, appears on the canvas. Then the file is edited: Studio notices the write and asks the engine to reload its shaders (reload_shaders), and the viewport changes. A syntax error saved the same way marks the pass on the canvas and puts the log under the Pass Editor's form while the engine keeps drawing what it had; fixed, the mark and the log go.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -38,26 +38,39 @@
       "timeout_ms": 60000
     },
     {
-      "label": "fit the graph so the node can be picked",
+      "label": "View > Pass Editor: on a graph root the Frame Plan's Add fullscreen pass... is the Graph's (GL-5c), so the Pass Editor's own New pass adds this one",
       "cmd": "action",
-      "name": "pelican.framePlan.fitView"
+      "name": "pelican.view.passEditor"
     },
     {
-      "label": "pick the lighting pass",
+      "label": "New pass: the form is a new pass's",
       "cmd": "click",
-      "name": "pelican.framePlanLogicalView::node#lighting_pass"
+      "name": "pelican.fullscreenPass.new"
     },
     {
-      "label": "Add fullscreen pass after it",
-      "cmd": "action",
-      "name": "pelican.framePlan.addFullscreenPass"
+      "label": "Refresh: the Pass Editor reads the frame plan whose targets it offers",
+      "cmd": "click",
+      "name": "pelican.fullscreenPass.refresh"
+    },
+    {
+      "label": "and has it",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.planStatus",
+      "contains": "resources",
+      "timeout_ms": 60000
     },
     {
       "label": "the Pass Editor has the engine's authoring context",
       "cmd": "wait",
       "name": "pelican.fullscreenPass.authoringStatus",
       "contains": "graph(s)",
-      "timeout_ms": 180000
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the position: the engine's anchor after the lighting pass",
+      "cmd": "type",
+      "name": "pelican.fullscreenPass.position",
+      "text": "4"
     },
     {
       "label": "name the pass",

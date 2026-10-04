@@ -2608,6 +2608,12 @@ class GraphCanvasModel {
     [[nodiscard]] bool planOriginAware() const noexcept { return plan_origin_aware_; }
     // Decision 4: where Open in Graph lands for one frame plan node.
     [[nodiscard]] GraphCanvasPlanTarget planNodeTarget(std::string_view plan_node) const;
+    // GL-5c, decision 3. Whether this tab edits the plan node: a graph node
+    // made it (planNodeTarget names a node in a body, or a root node the
+    // document holds), or it is a pass of the rendering section, which the
+    // detail column edits (GL-5a). False for a preset's or a feature's pass,
+    // read only here, and for a node the last plan does not hold.
+    [[nodiscard]] bool planPassEditedHere(std::string_view plan_node) const;
     // The frame plan nodes drawn under one root canvas node, in plan order.
     [[nodiscard]] std::vector<std::string> planNodesOf(std::string_view canvas_node) const;
     // Decision 2: bands and the Layers section are shown on the real root,

@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "frameplan_edit_roundtrip",
-  "description": "N-8: connect a resource on the Frame Plan canvas by dragging one socket onto a pass, watch the read appear, cut it again by dragging the input away, move a node and follow the placement out through set_layout and back in from disk, then open the Pass Editor after a named node.",
+  "description": "N-8: connect a resource on the Frame Plan canvas by dragging one socket onto a pass, watch the read appear, cut it again by dragging the input away, move a node and follow the placement out through set_layout and back in from disk, then Add fullscreen pass..., which on this graph root places the Graph's render.fullscreen (GL-5c).",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -150,16 +150,28 @@
       "name": "pelican.framePlanLogicalView::node#gbuffer_pass"
     },
     {
-      "label": "Add fullscreen pass, fired by name rather than through a popup",
+      "label": "Add fullscreen pass, fired by name rather than through a popup: the root is a graph that selects no preset, so the Graph places the palette's render.fullscreen (GL-5c)",
       "cmd": "action",
       "name": "pelican.framePlan.addFullscreenPass"
     },
     {
-      "label": "the Pass Editor stands at the engine's anchor after the first pass, not at the end",
+      "label": "the pass is on the Graph, in the graph's nodes",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.position",
-      "text": "1",
-      "timeout_ms": 180000
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "and picked: its Pass fields show the engine's passthrough it starts from",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.shader.fragment",
+      "text": "engine://passthrough",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the Frame Plan tab is in front again",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
     },
     {
       "label": "open a second, untouched copy of the same fixture",

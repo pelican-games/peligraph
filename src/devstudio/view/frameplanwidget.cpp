@@ -492,6 +492,22 @@ struct FramePlanWidget::Impl {
     FramePlanWidget::GraphNodeOpenAction graph_node_open_action;
     FramePlanWidget::GraphLoopNodeOpenAction graph_loop_node_open_action;
     FramePlanWidget::GraphPassOpenAction graph_pass_open_action;
+    // GL-5c, decisions 1 and 2: who places the palette's node on the Graph
+    // tab for an Add on a graph root, and the Add that waits for the context
+    // to say whether the root selects a preset (with what it does if so).
+    FramePlanWidget::GraphPlaceAction graph_place_action;
+    std::string pending_graph_place;
+    std::function<void()> pending_graph_fallback;
+    // GL-5c, decision 3: whether the Graph tab edits a pass of the plan.
+    std::function<bool(const QString &pass)> graph_edits_pass;
+    // GL-5c, decision 5: the entries that open in the Graph, whose tooltips
+    // say so once the context says where they go.
+    QPushButton *edit_task_button = nullptr;
+    QPushButton *edit_pass_button = nullptr;
+    QPushButton *add_material_button = nullptr;
+    QAction *add_material_action = nullptr;
+    QAction *add_fullscreen_action = nullptr;
+    QAction *add_task_action = nullptr;
     // LP-4e: who hears that a decompose committed, and the loop it made.
     std::function<void(const QString &loop)> loop_decomposed_action;
     std::string decomposed_loop;
@@ -736,9 +752,16 @@ struct FramePlanWidget::Impl {
         });
         auto *edit_task = new QPushButton(owner.tr("Edit task"), &owner);
         edit_task->setObjectName(QStringLiteral("pelican.framePlanEditTask"));
+        edit_task_button = edit_task;
         toolbar->addWidget(edit_task);
         QObject::connect(edit_task, &QPushButton::clicked, &owner, [this] {
             const auto &selected = logical_scene->selectedNode();
+            // GL-5c, decision 3: a task a render.compute node made is the
+            // Graph's to edit.
+            if (selected && editsInGraph(*selected)) {
+                openInGraph(*selected);
+                return;
+            }
             if (!selected || !model || !task_edit_action) return;
             const auto node = std::ranges::find(model->nodes, selected->name, &FramePlanNode::name);
             if (node == model->nodes.end() || node->kind != "compute" || node->authored_name.empty()) {
@@ -749,9 +772,15 @@ struct FramePlanWidget::Impl {
         });
         auto *edit_pass = new QPushButton(owner.tr("Edit pass"), &owner);
         edit_pass->setObjectName(QStringLiteral("pelican.framePlanEditPresetPass"));
+        edit_pass_button = edit_pass;
         toolbar->addWidget(edit_pass);
         QObject::connect(edit_pass, &QPushButton::clicked, &owner, [this] {
             const auto &selected = logical_scene->selectedNode();
+            // GL-5c, decision 3: a pass the Graph edits opens there.
+            if (selected && editsInGraph(*selected)) {
+                openInGraph(*selected);
+                return;
+            }
             if (selected && preset_pass_edit_action)
                 preset_pass_edit_action(QString::fromStdString(selected->graph), QString::fromStdString(selected->name));
         });
@@ -763,6 +792,7 @@ struct FramePlanWidget::Impl {
             new QPushButton(owner.tr("Add material pass..."), &owner);
         new_material_pass->setObjectName(
             QStringLiteral("pelican.framePlanAddMaterialPass"));
+        add_material_button = new_material_pass;
         toolbar->addWidget(new_material_pass);
         toolbar->addWidget(makePanelHelpButton(
             &owner, "pelican.framePlan.help", ManualFramePlanAnchor,
@@ -977,6 +1007,11 @@ struct FramePlanWidget::Impl {
         // bands do not carry lives in the two forms that already exist.
         logical_scene->nodeEditRequested =
             [this](const FramePlanNodeKey &node) {
+                // GL-5c, decision 3: what the Graph edits opens there.
+                if (editsInGraph(node)) {
+                    openInGraph(node);
+                    return;
+                }
                 const auto task = authoredTask(node.name);
                 if (!task.empty()) {
                     if (task_edit_action) task_edit_action(text(task));
@@ -1040,30 +1075,39 @@ struct FramePlanWidget::Impl {
         add_pass->setObjectName(
             QStringLiteral("pelican.framePlan.addFullscreenPass"));
         owner.addAction(add_pass);
+        add_fullscreen_action = add_pass;
         QObject::connect(add_pass, &QAction::triggered, &owner, [this] {
-            const auto anchor = logical_scene->insertAnchor();
-            if (!anchor) {
-                showStatus(owner.tr(
-                    "Select the node the new pass should follow first."));
-                return;
-            }
-            if (logical_scene->nodeAddRequested)
-                logical_scene->nodeAddRequested(*anchor, false);
+            // GL-5c, decision 1: on a graph root, the palette's fullscreen pass.
+            addThrough("render.fullscreen", [this] {
+                const auto anchor = logical_scene->insertAnchor();
+                if (!anchor) {
+                    showStatus(owner.tr(
+                        "Select the node the new pass should follow first."));
+                    return;
+                }
+                if (logical_scene->nodeAddRequested)
+                    logical_scene->nodeAddRequested(*anchor, false);
+            });
         });
         auto *add_task = new QAction(
             QStringLiteral("Add compute task..."), &owner);
         add_task->setObjectName(
             QStringLiteral("pelican.framePlan.addComputeTask"));
         owner.addAction(add_task);
+        add_task_action = add_task;
         QObject::connect(add_task, &QAction::triggered, &owner, [this] {
-            const auto anchor = logical_scene->insertAnchor();
-            if (logical_scene->nodeAddRequested)
-                logical_scene->nodeAddRequested(
-                    anchor ? *anchor
-                           : FramePlanNodeKey{model ? model->graph
-                                                    : std::string{},
-                                              std::string{}},
-                    true);
+            // GL-5c, decision 2: on a graph root, the palette's compute task
+            // (the root's rendering section declares no compute_tasks, MG-2b).
+            addThrough("render.compute", [this] {
+                const auto anchor = logical_scene->insertAnchor();
+                if (logical_scene->nodeAddRequested)
+                    logical_scene->nodeAddRequested(
+                        anchor ? *anchor
+                               : FramePlanNodeKey{model ? model->graph
+                                                        : std::string{},
+                                                  std::string{}},
+                        true);
+            });
         });
         logical_scene->setInsertActions(add_pass, add_task);
         // Q-12: a task a render.compute node made is edited in the Graph
@@ -1174,8 +1218,11 @@ struct FramePlanWidget::Impl {
         add_material->setObjectName(
             QStringLiteral("pelican.framePlan.addMaterialPass"));
         owner.addAction(add_material);
-        QObject::connect(add_material, &QAction::triggered, &owner,
-                         [this] { openMaterialPassForm(); });
+        add_material_action = add_material;
+        // GL-5c, decision 1: on a graph root, the palette's material pass.
+        QObject::connect(add_material, &QAction::triggered, &owner, [this] {
+            addThrough("render.material_pass", [this] { openMaterialPassForm(); });
+        });
         QObject::connect(new_material_pass, &QPushButton::clicked,
                          add_material, &QAction::trigger);
         logical_scene->setMaterialPassAction(add_material);
@@ -2016,6 +2063,15 @@ struct FramePlanWidget::Impl {
             if (std::exchange(pending_material_form, false) &&
                 authoring.received)
                 openMaterialPassForm();
+            // GL-5c: an Add that waited to know whether the root selects a
+            // preset, and the tooltips that say where the Adds go.
+            if (authoring.received) {
+                syncDelegationTips();
+                if (!pending_graph_place.empty()) {
+                    const auto op = std::exchange(pending_graph_place, {});
+                    addThrough(op, std::exchange(pending_graph_fallback, {}));
+                }
+            }
             if (pending_material_pass) {
                 if (std::exchange(material_context_stale, false))
                     requestAuthoringContext(true);
@@ -3356,6 +3412,77 @@ struct FramePlanWidget::Impl {
                                       : item->sceneBoundingRect();
         if (picked.isValid()) logical->centerOn(picked.center());
         showStatus(owner.tr("%1 is picked.").arg(text(name)));
+    }
+
+    // --- GL-5c: the Frame Plan as a mode of the Graph.
+
+    // Decisions 1 and 2. An Add on a root that is a graph and selects no
+    // preset (Blank's) places the palette's node -- `op` -- on the Graph tab,
+    // in the graph's `nodes`, as the palette does; on a root that selects a
+    // preset, `own` runs: the Frame Plan's form, as before. A context not
+    // read yet is read first.
+    void addThrough(const std::string &op, std::function<void()> own) {
+        if (graph_place_action) {
+            if (!authoring.received) {
+                pending_graph_place = op;
+                pending_graph_fallback = std::move(own);
+                requestAuthoringContext();
+                showStatus(owner.tr("Reading the render authoring context..."));
+                return;
+            }
+            if (authoring.direct && graph_place_action(text(op))) return;
+        }
+        if (own) own();
+    }
+
+    // Decision 3. What Edit pass / Edit task and a double-click open on the
+    // Graph tab: a loop's copy (its body node), a task a render.compute node
+    // made, and a pass the Graph edits (a graph node's, or the rendering
+    // section's in its detail column). A preset's or a feature's pass, read
+    // only there, opens in the Pass Editor as before.
+    bool editsInGraph(const FramePlanNodeKey &node) const {
+        if (!graph_edits_pass) return false;
+        if (loopOriginOf(node) != nullptr || graphNodeOf(node) != nullptr) return true;
+        const auto *pass = planPassOf(node);
+        return pass != nullptr && pass->kind != "compute" && graph_edits_pass(text(pass->name));
+    }
+
+    // Decision 5: the entries that go to the Graph say so.
+    void syncDelegationTips() {
+        const bool graph = graph_place_action && authoring.received && authoring.direct;
+        const auto tip = [graph](const QString &op, const QString &own) {
+            return graph ? QObject::tr("Opens in the Graph: the palette's %1, placed in the "
+                                       "graph's nodes and picked there.")
+                               .arg(op)
+                         : own;
+        };
+        const QString material = tip(QStringLiteral("render.material_pass"),
+                                     QObject::tr("The material pass form: the pass goes into "
+                                                 "a fragment of the project."));
+        if (add_material_button) add_material_button->setToolTip(material);
+        if (add_material_action) add_material_action->setToolTip(material);
+        if (add_fullscreen_action)
+            add_fullscreen_action->setToolTip(
+                tip(QStringLiteral("render.fullscreen"),
+                    QObject::tr("The Pass Editor, on a new pass after the node picked.")));
+        if (add_task_action)
+            add_task_action->setToolTip(tip(QStringLiteral("render.compute"),
+                                            QObject::tr("The Task Editor, on a new task.")));
+        // Decision 3: Edit pass / Edit task go where the pass is edited.
+        if (edit_pass_button)
+            edit_pass_button->setToolTip(
+                graph_edits_pass
+                    ? QObject::tr("Opens in the Graph: a pass the Graph edits (a graph node's, "
+                                  "or the rendering section's) is picked there, its detail "
+                                  "column open. A preset's or a feature's pass opens in the "
+                                  "Pass Editor.")
+                    : QObject::tr("Opens the picked pass in the Pass Editor."));
+        if (edit_task_button)
+            edit_task_button->setToolTip(
+                graph_edits_pass
+                    ? QObject::tr("Opens in the Graph: a task a render.compute node made is "
+                                  "picked there. Any other task opens in the Task Editor.")
+                    : QObject::tr("Opens the picked task in the Task Editor."));
     }
 
     void openInGraph(const std::optional<FramePlanNodeKey> &node) {
@@ -5102,6 +5229,16 @@ void FramePlanWidget::showPlanNode(const QString &node) {
 
 void FramePlanWidget::showMaterialRoutes(const QString &pass) {
     impl_->showMaterialRoutes(pass);
+}
+
+void FramePlanWidget::setGraphPlaceAction(GraphPlaceAction action) {
+    impl_->graph_place_action = std::move(action);
+    if (impl_->authoring.received) impl_->syncDelegationTips();
+}
+
+void FramePlanWidget::setGraphEditsPassQuery(std::function<bool(const QString &pass)> query) {
+    impl_->graph_edits_pass = std::move(query);
+    impl_->syncDelegationTips();
 }
 
 void FramePlanWidget::setGraphPassOpenAction(GraphPassOpenAction action) {
