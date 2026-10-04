@@ -31,6 +31,13 @@ struct RendererRuntimeGeneration;
 namespace Pelican::watch {
 
 inline constexpr std::string_view materialReloadParticipantName = "pelican.materials";
+// EB-2. A material document asset_data lists that the engine refused at start
+// (ProjectMaterialAssetContainer::refusedDocument): a change of its file the
+// watch sees reads it again and, when it registers, takes it in
+// (ProjectMaterialAssetContainer::recoverDocument). A registered document's
+// change stays with pelican.materials (the values reload).
+inline constexpr std::string_view materialDocumentReloadParticipantName =
+    "pelican.material_documents";
 inline constexpr std::string_view shaderReloadParticipantName = "pelican.shaders";
 // F-5. The reload_shaders RPC's refusals.
 inline constexpr std::string_view shaderReloadFailedErrorCode =

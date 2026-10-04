@@ -2,6 +2,7 @@
 
 #include "../container.hpp"
 #include "../model/modeltemplate.hpp"
+#include "../watch/assetkey.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -94,8 +95,43 @@ DECLARE_MODULE(ProjectMaterialAssetContainer) {
     //   {severity: "warning", source: "startup", code:
     //    "material.binding_unresolved@1", message, document_kind: "material",
     //    fields: {model, materials: [...]}}
+    // FO-1 / EB-2: `materials` empty takes the model's warning off (its
+    // bindings resolve again).
     void noteUnresolvedBindings(const std::string &model,
                                 std::vector<std::string> materials);
+
+    // EB-2: a document refused at start, read again and registered now that
+    // it reads (register_material {path} on a listed document, or the file
+    // watch when `hot_reload` covers it). Throws, changing nothing (the
+    // document stays refused and listed), when it still does not register.
+    // Otherwise its problem leaves the list, and the models whose bindings
+    // kept their own material for want of its materials are rebuilt in place
+    // (ReloadService::reloadModelsNow), their warnings leaving with it;
+    // `restart_reason` says why they could not be (the registration stays).
+    struct Recovered {
+        std::vector<std::string> names;
+        std::vector<std::string> rebuilt_models;
+        std::optional<std::string> restart_reason;
+    };
+    Recovered recoverDocument(const std::string &reference);
+    // EB-2: the references of the documents refused at start.
+    std::vector<std::string> refusedReferences() const;
+    // EB-2: the refused document whose file the watch key names.
+    std::optional<std::string> refusedReferenceOf(
+        const watch::AssetKey &key) const;
+
+    // EB-2: a registered document whose file was rewritten after start into
+    // one that does not read (the values reload refused it; the engine keeps
+    // what it read before) is listed as
+    //   {severity: "error", source: "hot_reload", code:
+    //    "material.document_invalid@1" | "material.document_unknown@1",
+    //    message, document, document_kind: "material", line?, column?,
+    //    fields: {path, reason, line?, column?}}
+    // until a reload of it commits. A key that is no registered document of
+    // this container is passed over.
+    void noteReloadFailure(const watch::AssetKey &key,
+                           const std::string &error);
+    void clearReloadFailure(const watch::AssetKey &key) noexcept;
 };
 
 } // namespace Pelican

@@ -24,7 +24,9 @@ class ReloadService;
 //       materials: [{name, surface | null, tags, id, registered}]}]}
 //     FO-1: `status` is the engine's for a document it refused at start
 //     (ProjectMaterialAssetContainer::refusedDocument: none of its materials
-//     are registered until the engine starts again), with its reason and,
+//     are registered until the engine starts again, or EB-2 until
+//     register_material {path} or the file watch takes it in), with its
+//     reason and,
 //     for a document that is not JSON, the line and column; otherwise it is
 //     the file as it reads now.
 //     Every asset_data materials[] entry, in its order (list_assets lists
@@ -176,6 +178,18 @@ class ReloadService;
 //     removed.path) in asset_data materials[] and registers it live.
 //     material.path_conflict@1 when listed already, material.name_conflict@1
 //     when one of its names is held.
+//     EB-2: a listed document the engine refused at start (list_materials
+//     status "invalid" / "missing" from the engine) is read again as the
+//     file is now instead: refused by the parser's code when it still does
+//     not read (material.document_unknown@1 / material.document_invalid@1
+//     {path, reason}; it stays refused and listed in get_problems), and
+//     otherwise registered (ProjectMaterialAssetContainer::recoverDocument):
+//     its problem and the material.binding_unresolved@1 warnings of the
+//     models it resolves leave the list, and those models are rebuilt in
+//     place. Nothing is written: the answer has recovered: true,
+//     rebuilt_models: [model], and asset_data_digest ==
+//     previous_asset_data_digest; restart_required when the models could
+//     not be rebuilt in place (the document stays registered).
 //   rename_material {name, new_name} ->
 //     {committed, changed, path, name: new_name, previous_name,
 //      material_digest, previous_material_digest, rewritten_bindings: [{model,

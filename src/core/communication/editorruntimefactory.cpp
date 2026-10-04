@@ -53,6 +53,7 @@
 #include <array>
 #include <concepts>
 #include <filesystem>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -2458,17 +2459,51 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                 MaterialContainer>())
                             return result;
                         const auto &materials = GET_MODULE(MaterialContainer);
+                        // EB-2: the scene objects drawing each model, as
+                        // get_material_bindings counts them (every scene of
+                        // the document, prefab-generated ones included).
+                        std::map<std::string, std::vector<RaySelectableMaterial::User>> objects_by_model;
+                        if (const auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>()) {
+                            for (const auto &scene : config->resolvedScene().scenes()) {
+                                for (const auto &object : scene.objects) {
+                                    for (const auto &component : object.components) {
+                                        if (component.name != "simplemodelview" ||
+                                            !component.effective_json.is_object())
+                                            continue;
+                                        const auto model =
+                                            component.effective_json.value("model", std::string{});
+                                        if (model.empty()) break;
+                                        const auto id = std::to_string(object.authoring_object_id.value);
+                                        objects_by_model[model].push_back(
+                                            {.key = scene.scene_id + "/" + id,
+                                             .label = object.name.value_or("#" + id)});
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>();
                         for (const auto material :
                              materials.drawLoopMaterials()) {
                             const auto identity =
                                 materials.rayBindingIdentity(material);
-                            result.push_back({
+                            RaySelectableMaterial selectable{
                                 .name = materials.materialName(material),
                                 .document = identity.document,
                                 .asset = identity.asset,
                                 .source_material_index =
                                     identity.source_material_index,
-                            });
+                            };
+                            if (models != nullptr) {
+                                selectable.models = models->modelsDrawingMaterials(
+                                    std::span<const GlobalMaterialId>{&material, 1});
+                                for (const auto &model : selectable.models)
+                                    if (const auto found = objects_by_model.find(model);
+                                        found != objects_by_model.end())
+                                        selectable.users.insert(selectable.users.end(),
+                                                                found->second.begin(), found->second.end());
+                            }
+                            result.push_back(std::move(selectable));
                         }
                         return result;
                     },

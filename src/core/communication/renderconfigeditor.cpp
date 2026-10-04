@@ -2783,9 +2783,27 @@ OrderedJson RenderConfigEditorService::getRayLayout(const Json &params) const {
 
     // What a binding may select, spelled as a scene row is matched. A
     // document selector names the document only, so one entry per document.
+    // EB-2: used_by {count, objects: [first 8 object names]} -- the objects
+    // drawing a model that draws the material (merged over an entry's
+    // materials) -- and, for an asset selector, `model`: the model's
+    // registered name.
     auto materials = OrderedJson::array();
     if (dependencies_.ray_selectable_materials) {
-        std::set<std::string> seen;
+        struct Entry {
+            OrderedJson json;
+            std::vector<std::string> models;
+            std::vector<RaySelectableMaterial::User> users;
+            std::set<std::string> user_keys;
+        };
+        std::vector<Entry> entries;
+        std::map<std::string, std::size_t> by_selector;
+        const auto addUsers = [](Entry &entry, const RaySelectableMaterial &material) {
+            for (const auto &model : material.models)
+                if (std::find(entry.models.begin(), entry.models.end(), model) == entry.models.end())
+                    entry.models.push_back(model);
+            for (const auto &user : material.users)
+                if (entry.user_keys.insert(user.key).second) entry.users.push_back(user);
+        };
         for (const auto &material : dependencies_.ray_selectable_materials()) {
             OrderedJson selector;
             std::string label = material.name;
@@ -2800,10 +2818,25 @@ OrderedJson RenderConfigEditorService::getRayLayout(const Json &params) const {
             } else {
                 continue;
             }
-            if (!seen.insert(selector.dump()).second) continue;
-            materials.push_back({{"label", std::move(label)},
+            const auto [found, inserted] = by_selector.emplace(selector.dump(), entries.size());
+            if (!inserted) {
+                addUsers(entries.at(found->second), material);
+                continue;
+            }
+            Entry entry{.json = {{"label", std::move(label)},
                                  {"name", material.name},
-                                 {"selector", std::move(selector)}});
+                                 {"selector", std::move(selector)}}};
+            addUsers(entry, material);
+            entries.push_back(std::move(entry));
+        }
+        for (auto &entry : entries) {
+            auto objects = OrderedJson::array();
+            for (std::size_t index = 0; index < entry.users.size() && index < 8; ++index)
+                objects.push_back(entry.users[index].label);
+            entry.json["used_by"] = {{"count", entry.users.size()}, {"objects", std::move(objects)}};
+            if (entry.json.at("selector").contains("asset"))
+                entry.json["model"] = entry.models.empty() ? OrderedJson(nullptr) : OrderedJson(entry.models.front());
+            materials.push_back(std::move(entry.json));
         }
     }
     auto procedurals = OrderedJson::array();
@@ -3087,6 +3120,8 @@ OrderedJson RenderConfigEditorService::editRayLayout(const Json &params) {
     // the same ticket. Every procedural record must have exactly the layout's
     // fields after the edit.
     std::optional<RenderConfigCandidateDocument> asset_data_write;
+    // EB-2: the records the edit replaces, for restore_render_documents.
+    OrderedJson previous_records = OrderedJson::object();
     if (edits_records) {
         const auto asset_data = dependencies_.ray_asset_data ? dependencies_.ray_asset_data()
                                                              : std::nullopt;
@@ -3123,6 +3158,7 @@ OrderedJson RenderConfigEditorService::editRayLayout(const Json &params) {
                                  details({{"asset", name}}));
             const OrderedJson previous =
                 found->contains("record") ? found->at("record") : OrderedJson(OrderedJson::value_t::discarded);
+            previous_records[name] = previous.is_discarded() ? OrderedJson(nullptr) : previous;
             (*found)["record"] = orderedLike(record, previous.is_discarded() ? nullptr : &previous);
         }
         for (const auto &asset : assets) {
@@ -3148,6 +3184,9 @@ OrderedJson RenderConfigEditorService::editRayLayout(const Json &params) {
             };
     }
 
+    const auto records_digest = asset_data_write ? std::optional<std::string>{renderConfigSourceDigest(
+                                                       asset_data_write->bytes)}
+                                                 : std::nullopt;
     std::vector<RenderConfigCandidateDocument> documents;
     // A document goes before the root that names it.
     for (auto *write : {&layout_edit.write, &bindings_edit.write, &asset_data_write})
@@ -3167,6 +3206,8 @@ OrderedJson RenderConfigEditorService::editRayLayout(const Json &params) {
         },
         documents);
     if (answer.value("status", std::string{}) != "accepted") return answer;
+    // EB-2: these bytes, once committed, restore to the records they replaced.
+    if (records_digest) procedural_record_versions_.insert_or_assign(*records_digest, std::move(previous_records));
     const auto digest_of = [](const RayDocumentEdit &edit) {
         return edit.bytes && !edit.unname_it ? OrderedJson(renderConfigSourceDigest(*edit.bytes))
                                              : OrderedJson(nullptr);
@@ -6897,6 +6938,85 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
                           {"reason", primaryReason(gate.reasons)},
                           {"gate_epoch", gate.epoch}});
     }
+
+    // EB-2: asset_data is no render document. It is restored only as the
+    // procedural records edit_ray_layout (or a restore of them) wrote: from
+    // exactly the bytes base_digest names (the digest the commit's documents
+    // answered for it), with content null -- the engine puts the records back
+    // and leaves every other section as it is. A digest it did not write, or
+    // content, is render_document_not_writable {reason:
+    // "procedural_records_only"}; the file changed since is
+    // external_modification.
+    std::optional<RenderConfigCandidateDocument> asset_data_restore;
+    OrderedJson asset_data_replaced = OrderedJson::object();
+    if (const auto asset_data = dependencies_.ray_asset_data ? dependencies_.ray_asset_data()
+                                                             : std::optional<RayAssetDataDocument>{}) {
+        const auto normalized_of = [&](const std::string &reference) -> std::optional<std::string> {
+            try {
+                return dependencies_.normalize_reference(reference);
+            } catch (const std::exception &) {
+                return std::nullopt;
+            }
+        };
+        const auto normalized = normalized_of(asset_data->reference);
+        for (auto it = restores.begin(); normalized && it != restores.end();) {
+            if (it->reference.starts_with("engine://") || normalized_of(it->reference) != normalized) {
+                ++it;
+                continue;
+            }
+            if (asset_data_restore)
+                throw std::invalid_argument("restore_render_documents names " + it->reference + " more than once");
+            const auto version = it->base_digest ? procedural_record_versions_.find(*it->base_digest)
+                                                 : procedural_record_versions_.end();
+            if (it->content || version == procedural_record_versions_.end())
+                return rejection(std::string{renderDocumentNotWritableCode},
+                                 "asset_data " + it->reference +
+                                     " is restored only as the procedural records edit_ray_layout wrote: name "
+                                     "the digest its commit answered, with content null",
+                                 {{"method", std::string{method}},
+                                  {"reference", it->reference},
+                                  {"reason", "procedural_records_only"}});
+            std::optional<std::string> bytes;
+            try {
+                bytes = readFileBytes(asset_data->path);
+            } catch (const std::exception &) {
+            }
+            const auto current = bytes ? std::optional<std::string>{renderConfigSourceDigest(*bytes)} : std::nullopt;
+            if (current != it->base_digest) {
+                const OrderedJson mismatch{{"reference", it->reference},
+                                           {"expected_digest", current ? OrderedJson(*current) : OrderedJson(nullptr)},
+                                           {"provided_digest", *it->base_digest}};
+                return rejection("external_modification",
+                                 "Render document " + it->reference + " changed since it was read",
+                                 {{"method", std::string{method}},
+                                  {"reference", it->reference},
+                                  {"expected_digest", mismatch.at("expected_digest")},
+                                  {"provided_digest", *it->base_digest},
+                                  {"mismatches", OrderedJson::array({mismatch})}});
+            }
+            auto document = OrderedJson::parse(*bytes);
+            auto &assets = document["procedural_geometry"];
+            for (const auto &[name, record] : version->second.items()) {
+                const auto found = std::find_if(assets.begin(), assets.end(), [&](const auto &asset) {
+                    return asset.is_object() && asset.value("name", std::string{}) == name;
+                });
+                if (found == assets.end()) continue;
+                asset_data_replaced[name] = found->contains("record") ? found->at("record") : OrderedJson(nullptr);
+                if (record.is_null()) found->erase("record");
+                else (*found)["record"] = record;
+            }
+            asset_data_restore = RenderConfigCandidateDocument{
+                .reference = asset_data->reference,
+                .normalized_reference = *normalized,
+                .path = asset_data->path,
+                .operation = RenderConfigDocumentOperation::replace,
+                .expected = {RenderConfigDocumentExistence::present, *it->base_digest},
+                .bytes = renderJsonDocument(document, *bytes),
+            };
+            it = restores.erase(it);
+        }
+    }
+
     std::vector<WritableRenderDocument> writable;
     try {
         writable = writableRenderDocuments();
@@ -7210,6 +7330,35 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
         if (existing != candidate_documents.end()) *existing = std::move(document);
         else candidate_documents.push_back(std::move(document));
     }
+    // EB-2: the procedural records put back, judged with the layout the
+    // restored root names (as edit_ray_layout judges them); the runtime
+    // publishes them with the candidate (RTL-1a stage D).
+    std::optional<std::string> asset_data_restored_digest;
+    if (asset_data_restore) {
+        if (const auto layout = restored_ray_layout()) {
+            const auto document = OrderedJson::parse(asset_data_restore->bytes);
+            for (const auto &asset : document.value("procedural_geometry", OrderedJson::array())) {
+                if (!asset.is_object()) continue;
+                const auto name = asset.value("name", std::string{});
+                try {
+                    requireRayRecordMatches(Json::parse(asset.value("record", OrderedJson::object()).dump()),
+                                            *layout, asset_data_restore->reference + "#" + name);
+                } catch (const std::exception &error) {
+                    return rejection(rayParserCode(error.what(), "pelican.ray_binding_record_invalid@1"),
+                                     error.what(),
+                                     {{"method", std::string{method}},
+                                      {"reference", asset_data_restore->reference},
+                                      {"asset", name}});
+                }
+            }
+        }
+        asset_data_restored_digest = renderConfigSourceDigest(asset_data_restore->bytes);
+        const auto existing = std::find_if(
+            candidate_documents.begin(), candidate_documents.end(),
+            [&](const auto &entry) { return entry.normalized_reference == asset_data_restore->normalized_reference; });
+        if (existing != candidate_documents.end()) *existing = std::move(*asset_data_restore);
+        else candidate_documents.push_back(std::move(*asset_data_restore));
+    }
     // As add_authored_pass and remove_authored_pass order them: a created
     // document exists before a root names it, and a deleted one goes after
     // the root has stopped naming it. The transaction is atomic either way;
@@ -7245,8 +7394,13 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
         std::string{method}, gate, document_.sourceDigest(), std::move(root),
         std::move(candidate_set), std::string{},
         /*edits_additional_documents=*/true, {}, restart_required);
-    if (result.value("status", std::string{}) == "accepted")
+    if (result.value("status", std::string{}) == "accepted") {
         pending_.back().reload_managed_baselines = true;
+        // EB-2: restoring these bytes in turn puts back what this replaced.
+        if (asset_data_restored_digest)
+            procedural_record_versions_.insert_or_assign(*asset_data_restored_digest,
+                                                         std::move(asset_data_replaced));
+    }
     return result;
 }
 

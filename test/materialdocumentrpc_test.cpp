@@ -9,6 +9,8 @@
 #include "../src/core/log.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
+#include "../src/core/watch/reloadgate.hpp"
+#include "../src/core/watch/reloadservice.hpp"
 #include "../src/project/projecttemplate.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "vulkan_test_support.hpp"
@@ -29,6 +31,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 #include <string>
+#include <thread>
 #include <vector>
 
 // MT-1. A Blank project's box takes a material made, bound and recoloured over
@@ -120,14 +123,17 @@ std::filesystem::path makeBlankBoxProject(const std::filesystem::path &dir, bool
     return root;
 }
 
-void configureHeadless(const std::filesystem::path &root) {
-    GET_MODULE(PathResolver).setup(root, false);
+// EB-2 `watched`: the resolver reads project.json's hot_reload and the engine
+// asks for the watch (as a windowed one, Studio's, does).
+void configureHeadless(const std::filesystem::path &root, bool watched = false) {
+    if (watched) GET_MODULE(PathResolver).setup(root, false, readFile(root / "project.json"));
+    else GET_MODULE(PathResolver).setup(root, false);
     GET_MODULE(ProjectSource).setProjectData(readFile(root / "project.json"));
     auto &launch = GET_MODULE(EngineLaunchConfig);
     launch.headless = true;
     launch.rpc = true;
     launch.headless_extent = vk::Extent2D{64, 64};
-    launch.shader_hot_reload = false;
+    launch.shader_hot_reload = watched;
     GET_MODULE(EngineTime).setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
     TestSupport::requireVulkanDevice("MT-1 material documents");
     GET_MODULE(ECSPredefinedRegistration).reg();
@@ -1194,6 +1200,235 @@ TEST_CASE("FO-1 a Blank box whose material document is broken starts, is listed 
         CHECK_THROWS((void)GET_MODULE(ProjectMaterialAssetContainer));
         GET_MODULE(VulkanManageCore).waitIdle();
     }
+}
+
+namespace {
+
+// EB-2: a Blank box bound to a red material (as FO-1 makes it), saved; the
+// document's bytes as written.
+std::string makeRedBoxProject(const std::filesystem::path &root, const std::filesystem::path &capture,
+                              const std::string &path) {
+    FastModuleContainer modules;
+    configureHeadless(root);
+    (void)GET_MODULE(Renderer);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    const auto actor =
+        rpc.result("open_editor_session", {{"display_name", "EB-2"}}).at("actor_id").get<std::uint64_t>();
+    REQUIRE(rpc.edit(actor, spawnCube()).at("status") == "committed");
+    const Json red{1.0, 0.0, 0.0, 1.0};
+    REQUIRE(rpc.result("create_material",
+                       {{"path", path},
+                        {"surface", openPbrOpaque},
+                        {"values", {{"base_color", red}, {"emission_color", red}, {"emission_luminance", 1.0}}}})
+                .at("applied") == "live");
+    REQUIRE(rpc.result("bind_material", {{"model", cube}, {"material", "paint"}}).at("applied") == "live");
+    const auto pixel = rpc.centre(capture);
+    INFO("bound " << pixel);
+    REQUIRE(reddish(pixel));
+    (void)rpc.result("save_scene");
+    GET_MODULE(VulkanManageCore).waitIdle();
+    return readFile(root / path);
+}
+
+Json problemsWithCode(Rpc &rpc, std::string_view code) {
+    auto found = Json::array();
+    const auto listed = rpc.result("get_problems");
+    for (const auto &problem : listed.at("problems"))
+        if (problem.at("code") == std::string{code}) found.push_back(problem);
+    return found;
+}
+
+// The engine started on a broken document: the box draws its own grey, the
+// document and the binding are listed, list_materials says invalid.
+void requireStartedBroken(Rpc &rpc, const std::filesystem::path &capture, const std::string &path) {
+    const auto pixel = rpc.centre(capture);
+    INFO("broken " << pixel);
+    CHECK_FALSE(reddish(pixel));
+    CHECK(pixel.r < 230);
+    INFO(rpc.result("get_problems").dump(2));
+    REQUIRE(problemsWithCode(rpc, "material.document_invalid@1").size() == 1);
+    REQUIRE(problemsWithCode(rpc, "material.binding_unresolved@1").size() == 1);
+    const auto listed = rpc.result("list_materials").at("documents");
+    REQUIRE(listed.size() == 1);
+    CHECK(listed.at(0).at("path") == path);
+    CHECK(listed.at(0).at("status") == "invalid");
+}
+
+// Taken in: list_materials loaded, the problem list empty, the box red.
+void requireRecovered(Rpc &rpc, const std::filesystem::path &capture) {
+    const auto listed = rpc.result("list_materials").at("documents");
+    REQUIRE(listed.size() == 1);
+    CHECK(listed.at(0).at("status") == "loaded");
+    REQUIRE(listed.at(0).at("materials").size() == 1);
+    CHECK(listed.at(0).at("materials").at(0).at("registered") == true);
+    const auto problems = rpc.result("get_problems");
+    INFO(problems.dump(2));
+    CHECK(problems.at("problems").empty());
+    const auto summary = rpc.result("get_status").at("problems");
+    CHECK(summary.at("errors") == 0);
+    CHECK(summary.at("warnings") == 0);
+    const auto pixel = rpc.centre(capture);
+    INFO("taken in " << pixel);
+    CHECK(reddish(pixel));
+}
+
+} // namespace
+
+// EB-2. A material document refused at start is taken in by register_material
+// once the file is fixed, without a restart: the problem and the binding's
+// warning leave the list and the box draws the material. Called on the file
+// still broken, it is refused by the parser's code and nothing changes.
+TEST_CASE("EB-2 a material document refused at start is taken in by register_material once fixed, without a restart",
+          "[eb2][material][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("eb2");
+    const auto root = makeBlankBoxProject(dir.root);
+    const auto capture = dir.root / "capture.png";
+    const std::string path = "materials/paint.material.json";
+    const auto document = makeRedBoxProject(root, capture, path);
+    const auto asset_data = readFile(root / "assets/asset_data.json");
+    writeFile(root / path, document.substr(0, document.size() / 2));
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    (void)GET_MODULE(Renderer);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    requireStartedBroken(rpc, capture, path);
+
+    // Still broken: refused by the parser's code, the list and the box as they were.
+    const auto refused = rpc.refusal("register_material", {{"path", path}});
+    INFO(refused.dump(2));
+    CHECK(refused.at("error_code") == "material.document_invalid@1");
+    CHECK(refused.at("error_fields").at("path") == path);
+    CHECK_FALSE(refused.at("error_fields").at("reason").get<std::string>().empty());
+    requireStartedBroken(rpc, capture, path);
+
+    // Fixed on disk, taken in live.
+    writeFile(root / path, document);
+    const auto recovered = rpc.result("register_material", {{"path", path}});
+    INFO(recovered.dump(2));
+    CHECK(recovered.at("recovered") == true);
+    CHECK(recovered.at("committed") == true);
+    CHECK(recovered.at("applied") == "live");
+    CHECK(recovered.at("restart_required").is_null());
+    CHECK(recovered.at("path") == path);
+    CHECK(recovered.at("names") == Json::array({"paint"}));
+    CHECK(recovered.at("rebuilt_models") == Json::array({std::string{cube}}));
+    CHECK(recovered.at("asset_data_digest") == recovered.at("previous_asset_data_digest"));
+    requireRecovered(rpc, capture);
+    CHECK(rpc.result("get_material_bindings", {{"model", cube}}).at("primitives").at(0).at("material") == "paint");
+    // asset_data is not written; the document is listed already now.
+    CHECK(readFile(root / "assets/asset_data.json") == asset_data);
+    CHECK(rpc.refusal("register_material", {{"path", path}}).at("error_code") == "material.path_conflict@1");
+    // The material edits as any registered one.
+    const auto digest = rpc.result("get_material", {{"path", path}}).at("material_digest");
+    const Json blue{0.0, 0.0, 1.0, 1.0};
+    CHECK(rpc.result("edit_material", {{"base_material_digest", digest},
+                                       {"path", path},
+                                       {"values", {{"base_color", blue}, {"emission_color", blue}}}})
+              .at("applied") == "live");
+    {
+        const auto pixel = rpc.centre(capture);
+        INFO("edited " << pixel);
+        CHECK(bluish(pixel));
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+// EB-2. The same through the file watch: a project whose hot_reload covers
+// the material folder (Studio's --rpc engine watches what is declared, HW-1)
+// takes the fixed document in when the file is saved. A registered document
+// rewritten after start into one that does not read is refused by the values
+// reload -- the box keeps the values read before -- and listed until a save
+// that reads.
+TEST_CASE("EB-2 a declared watch takes a fixed material document in, and lists one broken after start",
+          "[eb2][material][rpc][hw1][gpu]") {
+    using namespace std::chrono_literals;
+    setupLogger(true);
+    const auto dir = makeTempDir("eb2_watch");
+    const auto root = makeBlankBoxProject(dir.root);
+    const auto capture = dir.root / "capture.png";
+    const std::string path = "materials/paint.material.json";
+    const auto document = makeRedBoxProject(root, capture, path);
+    auto project = Json::parse(readFile(root / "project.json"));
+    project["hot_reload"] = Json::array({"materials"});
+    writeFile(root / "project.json", project.dump(2));
+    writeFile(root / path, document.substr(0, document.size() / 2));
+    // Older than any write below, so the watch's first inventory is not
+    // confused with them.
+    std::filesystem::last_write_time(root / path,
+                                     std::filesystem::file_time_type::clock::now() - std::chrono::minutes{60});
+
+    FastModuleContainer modules;
+    // The declaration opens the watch under --rpc.
+    configureHeadless(root, true);
+    GET_MODULE(watch::ReloadGate).configureFromLaunch(GET_MODULE(EngineLaunchConfig));
+    (void)GET_MODULE(Renderer);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    // As the player does once the startup resources are loaded.
+    (void)GET_MODULE(ProjectMaterialAssetContainer);
+    auto &reload = GET_MODULE(watch::ReloadService);
+    reload.setup(GET_MODULE(PathResolver));
+    const auto wait = [&](auto predicate) {
+        const auto deadline = std::chrono::steady_clock::now() + 15s;
+        while (std::chrono::steady_clock::now() < deadline) {
+            (void)rpc.result("step_frame");
+            if (predicate()) return true;
+            std::this_thread::sleep_for(50ms);
+        }
+        return predicate();
+    };
+    REQUIRE(wait([&] { return reload.statusJson().at("state") == "watching"; }));
+    CHECK(reload.statusJson().at("watch") == Json::array({"materials"}));
+    requireStartedBroken(rpc, capture, path);
+
+    // Saved fixed: the watch takes it in.
+    writeFile(root / path, document);
+    REQUIRE(wait([&] {
+        return rpc.result("list_materials").at("documents").at(0).at("status") == "loaded";
+    }));
+    requireRecovered(rpc, capture);
+
+    // Broken after start: the values reload refuses it, the box keeps red,
+    // and the problem list has it (source hot_reload).
+    writeFile(root / path, document.substr(0, document.size() / 2));
+    REQUIRE(wait([&] { return !problemsWithCode(rpc, "material.document_invalid@1").empty(); }));
+    {
+        const auto problems = problemsWithCode(rpc, "material.document_invalid@1");
+        INFO(problems.dump(2));
+        REQUIRE(problems.size() == 1);
+        CHECK(problems.at(0).at("source") == "hot_reload");
+        CHECK(problems.at(0).at("severity") == "error");
+        CHECK(problems.at(0).at("document") == "project://" + path);
+        CHECK(problems.at(0).at("document_kind") == "material");
+        CHECK(problems.at(0).at("line").get<int>() >= 1);
+        CHECK(problems.at(0).at("fields").at("path") == path);
+        CHECK(problemsWithCode(rpc, "material.binding_unresolved@1").empty());
+        const auto pixel = rpc.centre(capture);
+        INFO("broken after start " << pixel);
+        CHECK(reddish(pixel));
+    }
+
+    // Saved again in a form that reads (blue): taken in, the problem gone.
+    auto blue = Json::parse(document);
+    blue.at("materials").at(0).at("values")["base_color"] = Json{0.0, 0.0, 1.0, 1.0};
+    blue.at("materials").at(0).at("values")["emission_color"] = Json{0.0, 0.0, 1.0, 1.0};
+    writeFile(root / path, blue.dump(2));
+    REQUIRE(wait([&] { return problemsWithCode(rpc, "material.document_invalid@1").empty(); }));
+    CHECK(rpc.result("get_problems").at("problems").empty());
+    {
+        const auto pixel = rpc.centre(capture);
+        INFO("fixed again " << pixel);
+        CHECK(bluish(pixel));
+    }
+    reload.watcherForTesting()->stop();
+    GET_MODULE(VulkanManageCore).waitIdle();
 }
 
 } // namespace Pelican

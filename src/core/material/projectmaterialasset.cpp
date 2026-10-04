@@ -6,13 +6,16 @@
 #include "../../project/renderconfigdocument.hpp"
 #include "../../project/materiallowering.hpp"
 #include "../../project/surfaceformat.hpp"
+#include "../asset/model.hpp"
 #include "../launchconfig.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
 #include "../shader/shaderlibrary.hpp"
+#include "../vkcore/core.hpp"
 #include "../watch/assetkey.hpp"
 #include "../watch/problemlist.hpp"
+#include "../watch/reloadservice.hpp"
 #include "materialcontainer.hpp"
 #include "material.hpp"
 #include "materialshaderconfig.hpp"
@@ -251,6 +254,11 @@ struct ProjectMaterialAssetContainer::Impl {
     // whose bindings kept their own material for want of them.
     std::map<std::string, RefusedDocument, std::less<>> refused;
     std::map<std::string, std::vector<std::string>> unresolved_bindings;
+    // EB-2: registered documents whose last values reload did not read, by
+    // reference.
+    std::map<std::string, RefusedDocument, std::less<>> reload_failures;
+    // EB-2: the registered document (or the refused one) the key names.
+    std::optional<std::string> registeredReferenceOf(const watch::AssetKey &key) const;
     // The material problems as they are now, in the problem list.
     void publishProblems() const;
 };
@@ -286,16 +294,21 @@ ProjectMaterialAssetContainer::RefusedDocument refusedDocumentOf(
     return refused;
 }
 
+// `after_start` (EB-2): a registered document a values reload could not read;
+// the engine keeps what it read before.
 nlohmann::json documentProblem(const std::string &reference,
-                               const ProjectMaterialAssetContainer::RefusedDocument &refused) {
+                               const ProjectMaterialAssetContainer::RefusedDocument &refused,
+                               bool after_start = false) {
     nlohmann::json fields{{"path", reference}, {"reason", refused.reason}};
     nlohmann::json problem{
         {"severity", std::string{problemSeverityError}},
-        {"source", std::string{problemSourceStartup}},
+        {"source", std::string{after_start ? problemSourceHotReload : problemSourceStartup}},
         {"code", refused.code},
         {"message", refused.code + ": the material document '" + reference + "' " +
                         (refused.status == "missing" ? "is missing" : "could not be read") +
-                        "; the engine started without its materials: " + refused.reason},
+                        (after_start ? "; the engine keeps drawing its materials as it read them before: "
+                                     : "; the engine started without its materials: ") +
+                        refused.reason},
         {"document_kind", std::string{problemKindMaterial}},
     };
     if (const auto document = graphDocumentReference(reference)) problem["document"] = *document;
@@ -316,6 +329,8 @@ nlohmann::json documentProblem(const std::string &reference,
 void ProjectMaterialAssetContainer::Impl::publishProblems() const {
     std::vector<nlohmann::json> problems;
     for (const auto &[reference, document] : refused) problems.push_back(documentProblem(reference, document));
+    for (const auto &[reference, document] : reload_failures)
+        problems.push_back(documentProblem(reference, document, true));
     for (const auto &[model, materials] : unresolved_bindings) {
         std::string names;
         for (const auto &material : materials) names += (names.empty() ? "'" : ", '") + material + "'";
@@ -697,6 +712,8 @@ ProjectMaterialAssetContainer::reregisterDocument(
     result.names = impl_->registerDocuments(
         std::span<const std::string>{&reference, 1}, true,
         &result.previous);
+    // EB-2: what it reads now is registered; a failed reload of it is over.
+    if (impl_->reload_failures.erase(reference) != 0) impl_->publishProblems();
     return result;
 }
 
@@ -722,6 +739,7 @@ ProjectMaterialAssetContainer::unregisterDocument(
             .forgetReloadableMaterialValuesFile(
                 watch::makeAssetKey(reference));
     }
+    if (impl_->reload_failures.erase(reference) != 0) impl_->publishProblems();
     return released;
 }
 
@@ -752,10 +770,119 @@ void ProjectMaterialAssetContainer::noteUnresolvedBindings(
     const std::string &model, std::vector<std::string> materials) {
     std::sort(materials.begin(), materials.end());
     materials.erase(std::unique(materials.begin(), materials.end()), materials.end());
+    if (materials.empty()) {
+        // EB-2: the model's bindings resolve again.
+        if (impl_->unresolved_bindings.erase(model) != 0) impl_->publishProblems();
+        return;
+    }
     auto &noted = impl_->unresolved_bindings[model];
     if (noted == materials) return;
     noted = std::move(materials);
     impl_->publishProblems();
+}
+
+std::optional<std::string> ProjectMaterialAssetContainer::Impl::registeredReferenceOf(
+    const watch::AssetKey &key) const {
+    for (const auto &[name, reference] : material_documents) {
+        (void)name;
+        if (watch::makeAssetKey(reference) == key) return reference;
+    }
+    return std::nullopt;
+}
+
+std::vector<std::string> ProjectMaterialAssetContainer::refusedReferences() const {
+    std::vector<std::string> references;
+    for (const auto &[reference, refused] : impl_->refused) {
+        (void)refused;
+        references.push_back(reference);
+    }
+    return references;
+}
+
+std::optional<std::string> ProjectMaterialAssetContainer::refusedReferenceOf(
+    const watch::AssetKey &key) const {
+    for (const auto &[reference, refused] : impl_->refused) {
+        (void)refused;
+        try {
+            if (watch::makeAssetKey(reference) == key) return reference;
+        } catch (const std::exception &) {
+            // A reference the watch cannot name is never a watched file.
+        }
+    }
+    return std::nullopt;
+}
+
+ProjectMaterialAssetContainer::Recovered
+ProjectMaterialAssetContainer::recoverDocument(const std::string &reference) {
+    const auto refused = impl_->refused.find(reference);
+    if (refused == impl_->refused.end())
+        throw std::logic_error("material document '" + reference + "' was not refused at start");
+    // As register_material does: nothing in flight draws while the material
+    // container takes the new registration.
+    if (auto *core = FastModuleContainer::tryGet<VulkanManageCore>()) core->waitIdle();
+    Recovered result;
+    // Throws, registering nothing, when the document still does not register;
+    // its refusal and problem stay as they were.
+    result.names = impl_->registerDocuments(std::span<const std::string>{&reference, 1});
+    impl_->refused.erase(refused);
+    LOG_INFO(logger, "material document '{}' refused at start is registered now ({} material(s))", reference,
+             result.names.size());
+
+    // The models whose bindings kept their own material for want of one of
+    // the names now registered: rebuilt so their primitives draw it.
+    std::vector<std::string> models;
+    for (const auto &[model, materials] : impl_->unresolved_bindings)
+        if (std::any_of(materials.begin(), materials.end(), [&](const std::string &material) {
+                return std::find(result.names.begin(), result.names.end(), material) != result.names.end();
+            }))
+            models.push_back(model);
+    if (!models.empty()) {
+        auto *container = FastModuleContainer::tryGet<ModelAssetContainer>();
+        auto *reload = FastModuleContainer::tryGet<watch::ReloadService>();
+        if (container == nullptr || reload == nullptr) {
+            result.restart_reason = "the models binding its materials are rebuilt when the engine starts again "
+                                    "(this host cannot rebuild them in place)";
+        } else {
+            // A rebuild that throws leaves the models as they were: their
+            // warnings come back with them.
+            const auto noted = impl_->unresolved_bindings;
+            try {
+                std::vector<watch::AssetKey> keys;
+                for (const auto &model : models) {
+                    if (!container->hasModel(model)) continue;
+                    keys.push_back(container->reloadKey(model));
+                    result.rebuilt_models.push_back(model);
+                }
+                if (!keys.empty()) reload->reloadModelsNow(keys);
+            } catch (const std::exception &error) {
+                result.rebuilt_models.clear();
+                impl_->unresolved_bindings = noted;
+                result.restart_reason = "the material document is registered, but the models binding its materials "
+                                        "could not be rebuilt in place: " +
+                                        std::string{error.what()};
+                LOG_WARNING(logger, "material document '{}': {}", reference, *result.restart_reason);
+            }
+        }
+    }
+    impl_->publishProblems();
+    return result;
+}
+
+void ProjectMaterialAssetContainer::noteReloadFailure(const watch::AssetKey &key, const std::string &error) {
+    const auto reference = impl_->registeredReferenceOf(key);
+    if (!reference) return;
+    impl_->reload_failures.insert_or_assign(*reference, refusedDocumentOf(*reference, error));
+    impl_->publishProblems();
+}
+
+void ProjectMaterialAssetContainer::clearReloadFailure(const watch::AssetKey &key) noexcept {
+    try {
+        const auto reference = impl_->registeredReferenceOf(key);
+        if (!reference || impl_->reload_failures.erase(*reference) == 0) return;
+        impl_->publishProblems();
+    } catch (const std::exception &error) {
+        LOG_WARNING(logger, "material problem list not updated: {}", error.what());
+    }
 }
 
 } // namespace Pelican

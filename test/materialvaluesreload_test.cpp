@@ -753,14 +753,38 @@ TEST_CASE("WP240c project material names are unique across documents",
         box.root / "second.material.json", 3.0, false);
     GET_MODULE(PathResolver).setup(box.root, false);
 
-    REQUIRE_THROWS_WITH(
-        GET_MODULE(ProjectMaterialAssetContainer),
-        Catch::Matchers::ContainsSubstring(
-            "duplicate project material name 'live'") &&
+    // FO-1: --strict-assets stops the start on the duplicate name; otherwise
+    // the engine starts with the first document and refuses the second, its
+    // reason naming the name and both documents.
+    SECTION("--strict-assets stops the start") {
+        GET_MODULE(EngineLaunchConfig).strict_assets = true;
+        REQUIRE_THROWS_WITH(
+            GET_MODULE(ProjectMaterialAssetContainer),
             Catch::Matchers::ContainsSubstring(
-                "first.material.json") &&
+                "duplicate project material name 'live'") &&
+                Catch::Matchers::ContainsSubstring(
+                    "first.material.json") &&
+                Catch::Matchers::ContainsSubstring(
+                    "second.material.json"));
+    }
+    SECTION("otherwise the second document is refused") {
+        const auto &project =
+            GET_MODULE(ProjectMaterialAssetContainer);
+        CHECK_FALSE(project.refusedDocument(
+            "first.material.json"));
+        const auto refused =
+            project.refusedDocument("second.material.json");
+        REQUIRE(refused);
+        CHECK(refused->code == "material.document_invalid@1");
+        CHECK_THAT(
+            refused->reason,
             Catch::Matchers::ContainsSubstring(
-                "second.material.json"));
+                "duplicate project material name 'live'") &&
+                Catch::Matchers::ContainsSubstring(
+                    "first.material.json") &&
+                Catch::Matchers::ContainsSubstring(
+                    "second.material.json"));
+    }
 }
 
 TEST_CASE("HR1-M watcher gate and 1000 reloads keep resources bounded",

@@ -99,6 +99,17 @@ struct RaySelectableMaterial {
     std::string document;
     std::string asset;
     std::optional<std::uint32_t> source_material_index;
+    // EB-2: the models that draw the material (registered names) and the
+    // scene objects (every scene of the document, as get_material_bindings
+    // counts `objects`) whose simplemodelview draws one of them: `key` tells
+    // two objects apart (scene and authoring id), `label` is the object's
+    // name, or "#<authoring_object_id>" for one without a name.
+    struct User {
+        std::string key;
+        std::string label;
+    };
+    std::vector<std::string> models;
+    std::vector<User> users;
 };
 
 // RTL-1a: the bindings of the last scene row resolution that matched no
@@ -395,6 +406,11 @@ class RenderConfigEditorService {
     // editor last wrote or reloaded it, {normalized reference: sha256 hex}.
     // A document absent here is compared with published_documents.
     std::map<std::string, std::string> known_document_digests_;
+    // EB-2: asset_data as edit_ray_layout's procedural_records (or a restore
+    // of them) wrote it, {sha256 hex of the bytes written: {asset name: the
+    // record it had before, null for none}}. restore_render_documents
+    // takes asset_data back to those records from exactly those bytes.
+    std::map<std::string, nlohmann::ordered_json> procedural_record_versions_;
     // RR-1: a reload refused the documents on disk, and the editor holds
     // them (the root's bytes and digest, the managed fragments, the other
     // documents' digests) as the base of the next restore or edit while the

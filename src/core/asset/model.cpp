@@ -235,8 +235,10 @@ void applyDeclarationBindings(ModelTemplate &model,
                     "model '{}': its material bindings name material(s) no registered document holds; "
                     "those primitives draw with the model's own material",
                     declaration.name);
-        project.noteUnresolvedBindings(declaration.name, std::move(unresolved));
     }
+    // EB-2: empty takes a warning noted before off (a document refused at
+    // start registered since, and the model rebuilt).
+    project.noteUnresolvedBindings(declaration.name, std::move(unresolved));
 }
 
 std::set<std::string> occurrenceIds(const ModelTemplate &model) {

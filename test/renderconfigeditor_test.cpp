@@ -12719,6 +12719,15 @@ struct Rtl1aHarness {
     // What the unresolved-bindings dependency answers (empty digest: none).
     std::vector<std::size_t> unresolved;
     std::string unresolved_digest;
+    // What the selectable-materials dependency answers.
+    std::vector<RaySelectableMaterial> selectable{
+        {.name = "Red", .document = "materials/red.json"},
+        {.name = "Seat", .asset = "models/chair.glb", .source_material_index = 1},
+        // A registered material nothing can select by.
+        {.name = "engine_default"},
+        // The same document again is one selector.
+        {.name = "Red", .document = "materials/red.json"},
+    };
 
     explicit Rtl1aHarness(bool bindings = true, bool procedural_transform = false) {
         layout_path = project.root / "ray_layout.json";
@@ -12742,16 +12751,7 @@ struct Rtl1aHarness {
         service = makeProjectService(
             project, resolver, runtime, {}, {}, {}, {},
             [this](RenderConfigEditorDependencies &dependencies) {
-                dependencies.ray_selectable_materials = [] {
-                    return std::vector<RaySelectableMaterial>{
-                        {.name = "Red", .document = "materials/red.json"},
-                        {.name = "Seat", .asset = "models/chair.glb", .source_material_index = 1},
-                        // A registered material nothing can select by.
-                        {.name = "engine_default"},
-                        // The same document again is one selector.
-                        {.name = "Red", .document = "materials/red.json"},
-                    };
-                };
+                dependencies.ray_selectable_materials = [this] { return selectable; };
                 dependencies.ray_unresolved_bindings =
                     [this]() -> std::optional<RayUnresolvedBindingsObservation> {
                     if (unresolved_digest.empty()) return std::nullopt;
@@ -12798,9 +12798,12 @@ TEST_CASE("RTL-1a get_ray_layout reads the layout and bindings the root names, w
     CHECK(names.at("engine_record") == Json::array());
     CHECK(Json(read.at("selectable_materials")) ==
           Json::array({{{"label", "Red (materials/red.json)"}, {"name", "Red"},
-                        {"selector", {{"document", "materials/red.json"}}}},
+                        {"selector", {{"document", "materials/red.json"}}},
+                        {"used_by", {{"count", 0}, {"objects", Json::array()}}}},
                        {{"label", "Seat (models/chair.glb #1)"}, {"name", "Seat"},
-                        {"selector", {{"asset", "models/chair.glb"}, {"source_material_index", 1}}}}}));
+                        {"selector", {{"asset", "models/chair.glb"}, {"source_material_index", 1}}},
+                        {"used_by", {{"count", 0}, {"objects", Json::array()}}},
+                        {"model", nullptr}}}));
     CHECK(Json(read.at("selectable_procedural_assets")) ==
           Json::array({{{"asset", "sphere_asset"}, {"record_fields", {{"tint", {0.0, 0.0, 1.0, 1.0}}}}}}));
     CHECK(read.at("unresolved_bindings").empty());
@@ -13183,6 +13186,146 @@ TEST_CASE("RTL-1a edit_ray_layout rewrites asset_data's procedural records with 
         CHECK(assets.at("procedural_geometry").at(0).at("kind") == "aabb_v1");
         CHECK(Json::parse(readBytes(harness.layout_path)) == layout);
         CHECK(Json::parse(readBytes(harness.bindings_path)) == bindings);
+    }
+}
+
+// EB-2. Two engine primitives' default materials share a name: each row of
+// selectable_materials says which objects draw it and, for an asset
+// selector, which model it is, so the rows can be told apart.
+TEST_CASE("EB-2 get_ray_layout's selectable_materials say which objects use each, and an asset's model",
+          "[render-config-editor][rtl1a][eb2]") {
+    Rtl1aHarness harness;
+    std::vector<RaySelectableMaterial::User> many;
+    for (int index = 0; index < 10; ++index)
+        many.push_back({.key = "main/" + std::to_string(10 + index), .label = "O" + std::to_string(index)});
+    harness.selectable = {
+        {.name = "pelican.primitive.default",
+         .asset = "engine://primitives/cube",
+         .source_material_index = 0,
+         .models = {"engine://primitives/cube"},
+         .users = {{.key = "main/1", .label = "Box"}, {.key = "main/2", .label = "#2"}}},
+        {.name = "pelican.primitive.default",
+         .asset = "engine://primitives/sphere",
+         .source_material_index = 0,
+         .models = {"engine://primitives/sphere"},
+         .users = {{.key = "main/3", .label = "Ball"}}},
+        {.name = "Red", .document = "materials/red.json", .models = {"chair"}, .users = many},
+        // A second material of the same document: one row, its users merged
+        // (an object counted once).
+        {.name = "Blue",
+         .document = "materials/red.json",
+         .models = {"table"},
+         .users = {{.key = "main/10", .label = "O0"}, {.key = "other/10", .label = "Table"}}},
+    };
+    const auto read = Json(harness.read().at("selectable_materials"));
+    INFO(read.dump(2));
+    REQUIRE(read.size() == 3);
+    CHECK(read.at(0).at("label") == "pelican.primitive.default (engine://primitives/cube #0)");
+    CHECK(read.at(0).at("used_by") == Json{{"count", 2}, {"objects", Json::array({"Box", "#2"})}});
+    CHECK(read.at(0).at("model") == "engine://primitives/cube");
+    CHECK(read.at(1).at("label") == "pelican.primitive.default (engine://primitives/sphere #0)");
+    CHECK(read.at(1).at("used_by") == Json{{"count", 1}, {"objects", Json::array({"Ball"})}});
+    CHECK(read.at(1).at("model") == "engine://primitives/sphere");
+    CHECK(read.at(2).at("selector") == Json{{"document", "materials/red.json"}});
+    CHECK(read.at(2).at("used_by").at("count") == 11);
+    CHECK(read.at(2).at("used_by").at("objects") == Json::array({"O0", "O1", "O2", "O3", "O4", "O5", "O6", "O7"}));
+    // A document selector names no model.
+    CHECK_FALSE(read.at(2).contains("model"));
+}
+
+// EB-2. edit_ray_layout's procedural_records write asset_data in the layout's
+// ticket; restore_render_documents takes them back in one call with the
+// layout and the bindings: asset_data named by the digest the commit
+// answered, content null.
+TEST_CASE("EB-2 restore_render_documents takes asset_data's procedural records back with the layout",
+          "[render-config-editor][rtl1a][procedural][eb2]") {
+    Rtl1aHarness harness;
+    const auto layout_bytes = readBytes(harness.layout_path);
+    const auto bindings_bytes = readBytes(harness.bindings_path);
+    const auto assets_bytes = readBytes(harness.assets_path);
+    auto layout = rtl1aLayout();
+    layout["record"].push_back({{"name", "scale"}, {"type", "f32"}});
+    auto bindings = rtl1aBindings();
+    bindings["bindings"][0]["record"]["scale"] = 1.0;
+    const auto edited = rtl1aCommit(
+        *harness.service,
+        harness.service->editRayLayout(
+            {{"base_source_digest", harness.digest()},
+             {"layout", layout}, {"base_layout_digest", renderConfigSourceDigest(layout_bytes)},
+             {"bindings", bindings}, {"base_bindings_digest", renderConfigSourceDigest(bindings_bytes)},
+             {"procedural_records", {{"sphere_asset", {{"tint", {0.0, 0.0, 1.0, 1.0}}, {"scale", 2.0}}}}}}));
+    const auto written = Json(edited.at("documents"));
+    INFO(written.dump());
+    REQUIRE(written.contains("project://assets.json"));
+    const auto edited_assets = readBytes(harness.assets_path);
+    const auto assets_digest = written.at("project://assets.json").get<std::string>();
+    CHECK(assets_digest == renderConfigSourceDigest(edited_assets));
+    const auto asset_entry = [](const Json &digest, const Json &content) {
+        return Json{{"reference", "project://assets.json"}, {"base_digest", digest}, {"content", content}};
+    };
+    const auto undo = [&](const Json &assets) {
+        return Json{{"documents",
+                     Json::array({rd1Document("ray_layout.json", written.at("ray_layout.json"), layout_bytes),
+                                  rd1Document("ray_bindings.json", written.at("ray_bindings.json"), bindings_bytes),
+                                  assets})}};
+    };
+    const auto unchanged = [&] {
+        CHECK(readBytes(harness.assets_path) == edited_assets);
+        CHECK(Json::parse(readBytes(harness.layout_path)) == layout);
+    };
+
+    SECTION("one restore puts the layout, the bindings and the records back, and the next takes them forward") {
+        const auto restored =
+            rtl1aCommit(*harness.service, harness.service->restoreRenderDocuments(undo(asset_entry(assets_digest, nullptr))));
+        CHECK(readBytes(harness.assets_path) == assets_bytes);
+        CHECK(readBytes(harness.layout_path) == layout_bytes);
+        CHECK(readBytes(harness.bindings_path) == bindings_bytes);
+        const auto documents = Json(restored.at("documents"));
+        INFO(documents.dump());
+        REQUIRE(documents.contains("project://assets.json"));
+        CHECK(documents.at("project://assets.json") == renderConfigSourceDigest(assets_bytes));
+        // Redo: the restored bytes' digest takes the records forward again.
+        rtl1aCommit(*harness.service,
+                    harness.service->restoreRenderDocuments(
+                        {{"documents",
+                          Json::array({rd1Document("ray_layout.json", documents.at("ray_layout.json"),
+                                                   layout.dump(2)),
+                                       rd1Document("ray_bindings.json", documents.at("ray_bindings.json"),
+                                                   bindings.dump(2)),
+                                       asset_entry(documents.at("project://assets.json"), nullptr)})}}));
+        CHECK(Json::parse(readBytes(harness.assets_path)).at("procedural_geometry").at(0).at("record") ==
+              Json{{"tint", {0.0, 0.0, 1.0, 1.0}}, {"scale", 2.0}});
+        CHECK(Json::parse(readBytes(harness.layout_path)) == layout);
+    }
+    SECTION("asset_data is restored only from bytes procedural_records wrote, with content null") {
+        const auto content = rd1Error(
+            harness.service->restoreRenderDocuments(undo(asset_entry(assets_digest, assets_bytes))));
+        CHECK(content.at("code") == "render_document_not_writable");
+        CHECK(content.at("reason") == "procedural_records_only");
+        const auto unknown = rd1Error(harness.service->restoreRenderDocuments(
+            undo(asset_entry(renderConfigSourceDigest(assets_bytes), nullptr))));
+        CHECK(unknown.at("code") == "render_document_not_writable");
+        CHECK(unknown.at("reference") == "project://assets.json");
+        unchanged();
+    }
+    SECTION("asset_data changed since is external_modification, and nothing is written") {
+        auto outside = Json::parse(edited_assets);
+        outside["models"].push_back({{"name", "crate"}, {"path", "models/crate.glb"}});
+        writeBytes(harness.assets_path, outside.dump(2) + "\n");
+        const auto refused =
+            rd1Error(harness.service->restoreRenderDocuments(undo(asset_entry(assets_digest, nullptr))));
+        CHECK(refused.at("code") == "external_modification");
+        CHECK(refused.at("reference") == "project://assets.json");
+        CHECK(Json::parse(readBytes(harness.assets_path)) == outside);
+        CHECK(Json::parse(readBytes(harness.layout_path)) == layout);
+    }
+    SECTION("the records put back are judged with the layout the restore leaves") {
+        // The records alone, while the layout keeps its new field.
+        const auto refused = rd1Error(harness.service->restoreRenderDocuments(
+            {{"documents", Json::array({asset_entry(assets_digest, nullptr)})}}));
+        CHECK(refused.at("code") == "pelican.ray_binding_record_invalid@1");
+        CHECK(refused.at("asset") == "sphere_asset");
+        unchanged();
     }
 }
 

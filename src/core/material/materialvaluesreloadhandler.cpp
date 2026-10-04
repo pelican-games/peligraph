@@ -2,6 +2,7 @@
 
 #include "../log.hpp"
 #include "material.hpp"
+#include "projectmaterialasset.hpp"
 #include "../vkcore/core.hpp"
 
 #include <algorithm>
@@ -451,11 +452,19 @@ bool MaterialValuesReloadHandler::enqueue(const watch::ReloadRequest &request,
         .name = "material document",
         .target = tracked.document_resource,
         .parse = [pending, request, path = tracked.path, surfaces = tracked.surfaces] {
-            if (request.kind == watch::ReloadKind::removed) {
-                throw std::runtime_error("material values file is missing: " + path.string());
+            try {
+                if (request.kind == watch::ReloadKind::removed) {
+                    throw std::runtime_error("material values file is missing: " + path.string());
+                }
+                pending->document = parseMaterialFormatJson(readJsonFile(path), surfaces);
+                pending->file_bytes = static_cast<std::size_t>(std::filesystem::file_size(path));
+            } catch (const std::exception &error) {
+                // EB-2: a project document rewritten into one that does not
+                // read is refused (the values read before stay) and listed.
+                if (auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>())
+                    project->noteReloadFailure(request.key, error.what());
+                throw;
             }
-            pending->document = parseMaterialFormatJson(readJsonFile(path), surfaces);
-            pending->file_bytes = static_cast<std::size_t>(std::filesystem::file_size(path));
         },
         .stage = [pending, key = request.key] {
             return watch::StagedResourceData{
@@ -546,6 +555,12 @@ bool MaterialValuesReloadHandler::enqueue(const watch::ReloadRequest &request,
         });
     }
 
+    // EB-2: a reload of the document that commits ends a failure listed
+    // before.
+    group.setPublish([key = request.key]() noexcept {
+        if (auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>())
+            project->clearReloadFailure(key);
+    });
     coordinator_.enqueue(std::move(group));
     return true;
 }

@@ -2243,6 +2243,64 @@ Json deleteMaterial(const Json &params, PathResolver &paths) {
     return appliedLive(std::move(answer));
 }
 
+// EB-2: the asset_data materials[] entry `listed` names a document the
+// engine refused at start (as the refusal is keyed).
+std::optional<std::string> refusedAtStart(const PathResolver &paths, const std::string &listed) {
+    const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
+    if (project == nullptr) return std::nullopt;
+    if (project->refusedDocument(listed)) return listed;
+    const auto normalized = normalizedOrNull(paths, listed);
+    if (!normalized) return std::nullopt;
+    for (const auto &reference : project->refusedReferences())
+        if (normalizedOrNull(paths, reference) == normalized) return reference;
+    return std::nullopt;
+}
+
+// EB-2: register_material on a listed document the engine refused at start:
+// read again as the file is now (refused by the parser's code when it still
+// does not read, nothing changing) and registered; the models whose bindings
+// kept their own material for want of it are rebuilt. Nothing is written.
+Json recoverMaterial(const std::string &reference, const AssetDataFile &asset_data, PathResolver &paths) {
+    constexpr std::string_view method = "register_material";
+    const auto document = readMaterialDocument(method, paths, reference);
+    const auto names = materialNames(document.json);
+    auto &project = GET_MODULE(ProjectMaterialAssetContainer);
+    for (const auto &name : names) {
+        if (const auto holder = project.documentOf(name); holder && *holder != reference)
+            refuse(method, "material '" + name + "' exists already", nameConflictCode,
+                   {{"name", name}, {"path", *holder}});
+        if (const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>())
+            if (const auto holder = models->modelDeclaringMaterial(name))
+                refuse(method, "model '" + *holder + "' has a glTF material named '" + name + "'", nameConflictCode,
+                       {{"name", name}, {"model", *holder}});
+    }
+    SurfaceCache surfaces{paths};
+    checkCandidateDocument(method, reference, document.json, surfaces);
+
+    Json answer{{"committed", true},
+                {"recovered", true},
+                {"path", reference},
+                {"names", names},
+                {"material_digest", document.digest},
+                {"asset_data_digest", asset_data.digest},
+                {"previous_asset_data_digest", asset_data.digest}};
+    if (FastModuleContainer::tryGet<MaterialContainer>() == nullptr)
+        return appliedAtRestart(std::move(answer), "this host runs no material container");
+    ProjectMaterialAssetContainer::Recovered recovered;
+    try {
+        recovered = project.recoverDocument(reference);
+    } catch (const std::exception &error) {
+        refuse(method, "'" + reference + "' would not load: " + error.what(), documentInvalidCode,
+               {{"path", reference}, {"reason", error.what()}});
+    }
+    answer["names"] = recovered.names;
+    answer["rebuilt_models"] = recovered.rebuilt_models;
+    LOG_INFO(logger, "material document '{}' refused at start registered; {} model(s) rebuilt", reference,
+             recovered.rebuilt_models.size());
+    if (recovered.restart_reason) return appliedAtRestart(std::move(answer), *recovered.restart_reason);
+    return appliedLive(std::move(answer));
+}
+
 // register_material {path}: a material document already in the project,
 // listed in asset_data materials[] and registered (delete_material's way
 // back: its removed.path).
@@ -2251,8 +2309,11 @@ Json registerMaterial(const Json &params, PathResolver &paths) {
     requireOnly(method, params, {"path"});
     const auto relative = projectRelative(method, requireString(method, params, "path"));
     const auto asset_data = readAssetData(paths);
-    if (findListedMaterial(asset_data, paths, relative))
+    if (const auto listed = findListedMaterial(asset_data, paths, relative)) {
+        // EB-2: listed, but refused at start -- read again and taken in.
+        if (auto refused = refusedAtStart(paths, *listed)) return recoverMaterial(*refused, asset_data, paths);
         refuse(method, "'" + relative + "' is listed already", pathConflictCode, {{"path", relative}});
+    }
     const auto document = readMaterialDocument(method, paths, relative);
     const auto names = materialNames(document.json);
     for (const auto &name : names) {

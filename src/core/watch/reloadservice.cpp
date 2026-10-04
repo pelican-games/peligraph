@@ -8,6 +8,7 @@
 #include "../launchconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../material/materialcontainer.hpp"
+#include "../material/projectmaterialasset.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "reloadgate.hpp"
@@ -829,6 +830,41 @@ void ReloadService::ensureBuiltInParticipants() {
                                            : nlohmann::json(status.error_code)},
                         {"error_fields", status.error_fields},
                     };
+                },
+            },
+        });
+    }
+
+    // EB-2: a material document refused at start, fixed on disk.
+    if (!has_participant(materialDocumentReloadParticipantName)) {
+        registerParticipant(ReloadParticipant{
+            .name = std::string{materialDocumentReloadParticipantName},
+            .file = FileReloadRole{
+                .claims = [](const ReloadRequest &request) {
+                    const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
+                    return project != nullptr && project->refusedReferenceOf(request.key).has_value();
+                },
+                .apply = BatchReloadApply{
+                    .apply_batch = [](std::span<const ReloadRequest> requests) {
+                        auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
+                        if (project == nullptr) return false;
+                        std::string errors;
+                        for (const auto &request : requests) {
+                            // A refused document that is gone stays refused.
+                            const auto reference = project->refusedReferenceOf(request.key);
+                            if (!reference || request.kind == ReloadKind::removed) continue;
+                            try {
+                                const auto recovered = project->recoverDocument(*reference);
+                                if (recovered.restart_reason) appendReloadError(errors, *recovered.restart_reason);
+                            } catch (const std::exception &error) {
+                                // Still refused: the problem it has stays.
+                                appendReloadError(errors, "material document '" + *reference +
+                                                              "' still does not register: " + error.what());
+                            }
+                        }
+                        if (!errors.empty()) throw std::runtime_error(errors);
+                        return true;
+                    },
                 },
             },
         });
