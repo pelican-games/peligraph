@@ -1105,9 +1105,10 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 
 `--automation <名前>` は **GUI を外から駆動するための口**です(Q-1)。指定すると `QLocalServer`(Windows では
 `\\.\pipe\<名前>`)が開き、**改行区切りの JSON 1 行 = 1 命令**で `list` / `click` / `double_click` / `drag` /
-`wheel` / `move` / `press` / `release` / `key` / `type` / `text` / `action` / `menu_list` / `view_state` /
-`wait` / `wait_engine` / `rpc` / `open_project` / `screenshot` / `quit` の **20 命令**を受けます
-([一覧](../../src/devstudio/automation/automationcommands.cpp#L2233))。**flag が無い起動では server object が
+`wheel` / `move` / `press` / `release` / `key` / `type` / `text` / `select` / `action` / `menu_list` / `view_state` /
+`layout_stats` / `wait` / `wait_engine` / `rpc` / `open_project` / `screenshot` / `viewport_size` / `quit` の **23 命令**を受けます
+([一覧](../../src/devstudio/automation/automationcommands.cpp#L2233))。この節は長く 20 命令と書いていましたが、一覧には `select`(AG-3b)と
+`layout_stats` が既にあり、✅PX-2(`28bc5ef9`)で `viewport_size` が増えました。**flag が無い起動では server object が
 作られないので socket は存在しません**([構築](../../src/devstudio/view/uimain.cpp#L41)) —— 出荷時の挙動は
 変わりません。listen できたときだけ `automation listening: <endpoint>` を標準出力に出します
 ([その 1 行](../../src/devstudio/view/uimain.cpp#L71))。開けなかったときは理由を出して **終了コード 3** です。
@@ -1121,6 +1122,16 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1336)(`uv run`、標準ライブラリだけ)です。
 Studio を `--automation --project --tab` で起動し、シナリオ JSON(`test/studio_scenarios/<名前>.json`)の step を
 順に送り、期待を検査して `report.json` を書きます。
+
+**viewport の大きさ(✅PX-2、`28bc5ef9`)**: driver は Studio とつないだ直後・最初の step の前に
+`{"cmd": "viewport_size", "width": 720, "height": 450}` を送り、engine の viewport(`pelican.viewportHost`)を画の画素で 720x450 に固定します
+([`fix_viewport()`](../../tools/studio_drive.py#L1250)、既定の [`DEFAULT_VIEWPORT`](../../tools/studio_drive.py#L55))。
+Studio は viewport に固定の大きさをかけ、窓を差の分だけ伸び縮みさせ、ドックの大きさはそのままにします。後でドックを開け閉めしても viewport の大きさは変わりません
+([`commandViewportSize()`](../../src/devstudio/automation/automationcommands.cpp#L1969)。`{"free": true}` で外します)。
+シナリオの最上位に `"viewport": [w, h]` と書けばその大きさ、`"viewport": null` なら固定しません(今は `whole_frame_first_steps` だけ)。
+答えの大きさが要求から 1 画素を超えてずれるか断られたら、その run は step を送らずに赤です。画素を読むシナリオの点は 720x450 の絵で選んであるので、
+**既定の大きさを変えると、画素を読む 33 本の点を全部測り直すことになります**。理由・`screen` の screenshot が 719x449 になる件・点の測り直しは
+[第13章](13_editor.md) §13.5「Studio の自動化面」の「viewport の大きさを決める(✅PX-2)」です。
 
 ```sh
 uv run tools/studio_drive.py --studio build/dist/Debug/pelican_studio.exe \
@@ -1237,7 +1248,7 @@ overlay が用意しますが、overlay の feature 一覧を scene や project 
 
 `View > Panels > Frame Plan` の dock(`pelican.framePlanDock`)には **Frame Plan・Features・Graph の
 3 つのタブ**が同居します(タブ widget の object name は `pelican.renderTools`。
-[構築](../../src/devstudio/view/mainwindow.cpp#L540))。**Graph は新しい dock ではなくこの dock の 3 枚目**です ——
+[構築](../../src/devstudio/view/mainwindow.cpp#L537))。**Graph は新しい dock ではなくこの dock の 3 枚目**です ——
 dock を増やすことは「見失う場所」を増やすことなので、同じレンダー設定を語る 3 つの見方を 1 箇所に置いています。
 
 **Frame Plan タブ**は実行中 player の公開 `get_frame_plan` を読む調査面で、**9 枚のタブ**を持ちます ——
