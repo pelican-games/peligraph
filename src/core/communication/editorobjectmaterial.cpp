@@ -105,10 +105,17 @@ ObjectModel requireObjectModel(std::string_view method, const AuthoringSceneDocu
     if (found == objects.end())
         refuse(method, "no authored object " + std::to_string(object_id), objectUnknownCode,
                {{"object", object_id}, {"reason", "no authored object has this id"}});
+    // MT-2b: an object that is there is named by its authoring name (when it
+    // has one) and its scene.
+    const auto fields = [&](std::string reason) {
+        Json result{{"object", object_id}, {"scene_id", found->scene_id}};
+        if (found->name) result["name"] = *found->name;
+        result["reason"] = std::move(reason);
+        return result;
+    };
     if (scene_id && *scene_id != found->scene_id)
         refuse(method, "object " + std::to_string(object_id) + " is in scene '" + found->scene_id + "'",
-               objectUnknownCode,
-               {{"object", object_id}, {"reason", "the object is in scene '" + found->scene_id + "'"}});
+               objectUnknownCode, fields("the object is in scene '" + found->scene_id + "'"));
     ObjectModel result{.object = *found};
     const auto &components = found->authored.contains("components") ? found->authored.at("components")
                                                                      : Json::array();
@@ -121,7 +128,7 @@ ObjectModel requireObjectModel(std::string_view method, const AuthoringSceneDocu
         return result;
     }
     refuse(method, "object " + std::to_string(object_id) + " draws no model", objectUnknownCode,
-           {{"object", object_id}, {"reason", "the object has no simplemodelview"}});
+           fields("the object has no simplemodelview"));
 }
 
 // The model's primitives (with the glTF material each carries) and its

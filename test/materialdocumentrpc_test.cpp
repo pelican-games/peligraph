@@ -15,6 +15,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <cmath>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -519,6 +520,86 @@ TEST_CASE("MT-1b list_surfaces lists the engine's OpenPBR surfaces and the proje
     const auto refused = rpc.call("list_surfaces", {{"filter", "x"}});
     CHECK(refused.contains("error"));
 
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+// MT-2b. The previous a bind_material answers, sent back as `bindings`, takes
+// an engine primitive back to its own default: the box is grey again and
+// asset_data is what it was before the bind (no models[] entry, no bindings
+// document), so a later bind makes the same document again.
+TEST_CASE("MT-2b bind_material's previous takes a Blank box back to the primitive's default over RPC",
+          "[mt2b][material][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("unbind");
+    const auto root = makeBlankBoxProject(dir.root);
+    const auto capture = dir.root / "capture.png";
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    (void)GET_MODULE(Renderer);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    const auto actor =
+        rpc.result("open_editor_session", {{"display_name", "MT-2b"}}).at("actor_id").get<std::uint64_t>();
+    REQUIRE(rpc.edit(actor, spawnCube()).at("status") == "committed");
+    const auto grey = rpc.centre(capture);
+    INFO("grey " << grey);
+    CHECK(grey.r < 230);
+    CHECK_FALSE(reddish(grey));
+
+    const Json red{1.0, 0.0, 0.0, 1.0};
+    REQUIRE(rpc.result("create_material", {{"path", "materials/paint.material.json"},
+                                           {"surface", openPbrOpaque},
+                                           {"values", {{"base_color", red}, {"emission_color", red}}}})
+                .at("applied") == "live");
+    const auto asset_data_before = readFile(root / "assets/asset_data.json");
+    const auto unbound = rpc.result("get_material_bindings", {{"model", cube}});
+    CHECK(unbound.at("material_bindings").is_null());
+
+    const auto bound = rpc.result("bind_material", {{"model", cube}, {"material", "paint"}});
+    REQUIRE(bound.at("applied") == "live");
+    const auto reference = bound.at("material_bindings").get<std::string>();
+    CHECK(std::filesystem::exists(root / reference));
+    {
+        const auto pixel = rpc.centre(capture);
+        INFO("bound " << pixel);
+        CHECK(reddish(pixel));
+    }
+
+    // previous sent back as it was answered.
+    const auto previous = bound.at("previous").at("bindings");
+    CHECK(previous ==
+          Json::array({{{"mesh", 0}, {"primitive", 0}, {"material", "pelican.primitive.default"}}}));
+    const auto undone = rpc.result("bind_material", {{"model", cube}, {"bindings", previous}});
+    CHECK(undone.at("applied") == "live");
+    CHECK(undone.at("changed") == true);
+    CHECK(undone.at("material_bindings").is_null());
+    CHECK(undone.at("previous") ==
+          Json{{"bindings", Json::array({{{"mesh", 0}, {"primitive", 0}, {"material", "paint"}}})}});
+    {
+        const auto pixel = rpc.centre(capture);
+        INFO("undone " << pixel << " grey " << grey);
+        CHECK(std::abs(pixel.r - grey.r) <= 2);
+        CHECK(std::abs(pixel.g - grey.g) <= 2);
+        CHECK(std::abs(pixel.b - grey.b) <= 2);
+    }
+    // The documents are what they were before the bind.
+    CHECK(readFile(root / "assets/asset_data.json") == asset_data_before);
+    CHECK_FALSE(std::filesystem::exists(root / reference));
+    const auto after = rpc.result("get_material_bindings", {{"model", cube}});
+    CHECK(after.at("material_bindings").is_null());
+    CHECK(after.at("primitives") == unbound.at("primitives"));
+
+    // Sending it again changes nothing; a new bind makes the same document.
+    CHECK(rpc.result("bind_material", {{"model", cube}, {"bindings", previous}}).at("changed") == false);
+    const auto again = rpc.result("bind_material", {{"model", cube}, {"material", "paint"}});
+    CHECK(again.at("material_bindings") == reference);
+    {
+        const auto pixel = rpc.centre(capture);
+        INFO("bound again " << pixel);
+        CHECK(reddish(pixel));
+    }
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

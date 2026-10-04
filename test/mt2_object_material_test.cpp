@@ -289,8 +289,18 @@ TEST_CASE("MT-2 one of two Blank boxes takes its own material over RPC, drawn in
             rpc.refusal("set_object_material", {{"actor_id", actor}, {"object", camera}, {"material", "paint"}});
         CHECK(no_model.at("error_code") == "material.object_unknown@1");
         CHECK(no_model.at("error_fields").at("reason") == "the object has no simplemodelview");
-        CHECK(rpc.refusal("get_object_materials", {{"object", 999999}}).at("error_code") ==
-              "material.object_unknown@1");
+        // MT-2b: the object is named by its authoring name and its scene.
+        CHECK(no_model.at("error_fields").at("name") == "MainCamera");
+        CHECK(no_model.at("error_fields").at("scene_id") == "default_scene");
+        const auto other_scene = rpc.refusal(
+            "set_object_material", {{"actor_id", actor}, {"object", right}, {"scene_id", "other"}, {"material", "paint"}});
+        CHECK(other_scene.at("error_code") == "material.object_unknown@1");
+        CHECK(other_scene.at("error_fields").at("name") == "Right");
+        CHECK(other_scene.at("error_fields").at("scene_id") == "default_scene");
+        const auto missing = rpc.refusal("get_object_materials", {{"object", 999999}});
+        CHECK(missing.at("error_code") == "material.object_unknown@1");
+        CHECK_FALSE(missing.at("error_fields").contains("name"));
+        CHECK_FALSE(missing.at("error_fields").contains("scene_id"));
         CHECK(rpc.result("get_scene_revision").at("scene_revision") == revision);
 
         // The right box alone takes the material, in the next frame.

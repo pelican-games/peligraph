@@ -1263,6 +1263,73 @@ std::string bindingsBaseName(const std::string &model) {
     return base.empty() ? std::string{"model"} : base;
 }
 
+// MT-2b: bind_material whose result is the model's own materials. The model's
+// material_bindings document is erased and its asset_data declaration taken
+// off (an engine primitive's entry, which only the bind made, goes with it),
+// and the model is rebuilt without bindings.
+Json unbindModel(std::string_view method, const ModelBindingState &state, const AssetDataFile &asset_data,
+                 PathResolver &paths, watch::ReloadService *reload_service, Json previous) {
+    const auto &model = state.model;
+    Json answer{{"committed", true},
+                {"model", model},
+                {"previous_bindings_digest", state.bindings_reference ? Json(state.bindings_digest) : Json(nullptr)},
+                {"previous", {{"bindings", std::move(previous)}}},
+                {"material_bindings", nullptr},
+                {"bindings_digest", nullptr}};
+    if (!state.bindings_reference) {
+        answer["changed"] = false;
+        return appliedLive(std::move(answer));
+    }
+    auto asset_json = asset_data.json;
+    auto &models_json = asset_json.at("models");
+    auto &entry = models_json.at(*state.asset_index);
+    entry.erase("material_bindings");
+    if (isEnginePrimitiveReference(model) && entry.size() == 2 && entry.value("path", std::string{}) == model)
+        models_json.erase(models_json.begin() + static_cast<std::ptrdiff_t>(*state.asset_index));
+    try {
+        (void)parseAssetDataFormatJson(toJson(asset_json));
+    } catch (const std::exception &error) {
+        refuse(method, std::string{"asset_data would not load: "} + error.what(), documentInvalidCode,
+               {{"path", asset_data.reference}, {"reason", error.what()}});
+    }
+    const auto asset_bytes = renderJsonDocument(asset_json, asset_data.bytes);
+    const std::array documents{
+        ProjectCandidateDocument{
+            .reference = *state.bindings_reference,
+            .normalized_reference = *state.bindings_reference,
+            .path = state.bindings_path,
+            .operation = ProjectDocumentOperation::erase,
+            .expected = {ProjectDocumentExistence::present, state.bindings_digest},
+            .bytes = {},
+        },
+        replacement(asset_data.reference, asset_data.path, asset_data.digest, asset_bytes),
+    };
+    commitDocuments(method, paths.projectRoot(), documents, *state.bindings_reference);
+    publishAssetData(paths, asset_bytes);
+    answer["asset_data_digest"] = projectDocumentDigest(asset_bytes);
+    answer["previous_asset_data_digest"] = asset_data.digest;
+    answer["changed"] = true;
+    LOG_INFO(logger, "material bindings of model '{}' taken off ('{}' erased)", model, *state.bindings_reference);
+
+    if (reload_service == nullptr) reload_service = FastModuleContainer::tryGet<watch::ReloadService>();
+    if (reload_service == nullptr)
+        return appliedAtRestart(std::move(answer),
+                                "this host has no reload service; the model's own materials apply when the engine starts");
+    auto &models = GET_MODULE(ModelAssetContainer);
+    auto replaced = models.declaredMaterialBindings(model);
+    models.restoreMaterialBindings(model, std::nullopt);
+    try {
+        if (auto *core = FastModuleContainer::tryGet<VulkanManageCore>()) core->waitIdle();
+        const std::array keys{models.reloadKey(model)};
+        reload_service->reloadModelsNow(keys);
+    } catch (const std::exception &error) {
+        models.restoreMaterialBindings(model, std::move(replaced));
+        return appliedAtRestart(std::move(answer),
+                                std::string{"the model could not be rebuilt in place: "} + error.what());
+    }
+    return appliedLive(std::move(answer));
+}
+
 Json bindMaterial(const Json &params, PathResolver &paths, watch::ReloadService *reload_service) {
     constexpr std::string_view method = "bind_material";
     requireOnly(method, params, {"model", "material", "primitive", "slot", "bindings"});
@@ -1337,6 +1404,16 @@ Json bindMaterial(const Json &params, PathResolver &paths, watch::ReloadService 
         entry.material = material;
         entry.routing = found->second.routing;
     }
+
+    // MT-2b: every primitive back on the material its model file (or engine
+    // primitive) gives it is the model with no bindings: the declaration and
+    // its document are taken off instead of written (a binding document could
+    // not even name the engine primitive's pelican.primitive.default).
+    const bool model_default = std::all_of(state.slots.begin(), state.slots.end(), [&](const ModelMaterialSlot &slot) {
+        const auto &entry = state.current.at({slot.mesh, slot.primitive});
+        return !slot.slot.empty() && entry.material == slot.slot && entry.routing == slot.routing;
+    });
+    if (model_default) return unbindModel(method, state, asset_data, paths, reload_service, std::move(previous));
 
     // The document: the one asset_data names, rewritten in place, or a new
     // one covering every primitive (a binding document is whole-model).

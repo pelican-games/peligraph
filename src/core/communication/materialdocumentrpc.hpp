@@ -85,6 +85,12 @@ class ReloadService;
 //     rebuilds the model live through a model reload. With neither primitive
 //     nor slot every primitive is bound. -> previous: {bindings: [{mesh,
 //     primitive, material}]} (send it as `bindings` to take it back).
+//     MT-2b: when every primitive ends on the material its model file (or
+//     engine primitive) gives it -- an engine primitive's
+//     pelican.primitive.default included -- nothing is written: the
+//     bindings document is erased and asset_data's material_bindings taken
+//     off (with the engine primitive's models[] entry the bind made), and the
+//     answer's material_bindings and bindings_digest are null.
 //
 // Refusals (application errors, data {error_code, error_fields}; nothing is
 // written): external_modification {path, expected, actual},
