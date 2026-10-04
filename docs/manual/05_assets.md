@@ -50,7 +50,7 @@
 - `schema: "pelican.asset_data"` と `version: 2` は必須です。`2` 以外は `pelican.asset_data.version_unsupported@1` で拒否します(✅MG-2b。[assetdataformat.cpp](../../src/project/assetdataformat.cpp#L110))。MG-2b より前にあった version `1` は「`procedural_geometry` を受けない」ことだけが違う版で、今は読めません。手元に `1` のファイルがあれば `version` を `2` に書き換えるだけで読めます。旧い未版形式も受理しません。
 - `models` 配列は必須、各要素は `name` と `path`(プロジェクトルート基準)の両方が必須です。`path` には `#` フラグメント(§5.6)も書けます: `{"name":"selected","path":"assets/models/city.glb#mesh/LampPost"}`。任意キー `material_bindings`(`pelican.material_bindings` v1 への参照 — プリミティブ → マテリアルの whole-model 契約。✅WP116、fragment モデルには不可)も書けます。
 - **起動時に全件ロード**されます(✅WP82 で CPU 側は並列化・GPU 登録は宣言順直列 = 決定的)。ここでいう**宣言順**は上の `models` 配列に書いた順のことです。パース(CPU)は複数スレッドで走りますが、結果は添字順の配列に置かれ、GPU への登録は全ジョブの合流後にこの順で 1 件ずつ行われます([parallel_prepare.hpp](../../src/core/parallel_prepare.hpp#L20))。スレッドの完了順が実行ごとに揺れても GPU に載る順序は変わらない、というのが「決定的」の中身です([用語集](14_glossary.md))。ファイルが無ければ解決後の絶対パス入りで fail-fast。
-- **rendering config が壊れているとモデルは 1 件も upload されません(✅WP380a-fix)**: 起動時、レンダーグラフの検証と publish は scene の prepare より**前**に走ります([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp#L142))。マテリアル経路の誤りのような config の失敗が常に最初の起動エラーになり、頂点プールを消費しません。
+- **rendering config が壊れているとモデルは 1 件も upload されません(✅WP380a-fix)**: 起動時、レンダーグラフの検証と publish は scene の prepare より**前**に走ります([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp#L161))。マテリアル経路の誤りのような config の失敗が常に最初の起動エラーになり、頂点プールを消費しません。
 - **失敗した load は GPU 資源を返します**: ロード途中で例外が出ると、その候補モデル(と登録済みモデル)の index / vertex / skinned vertex / morph delta / material / texture が解放されます([model.cpp](../../src/core/asset/model.cpp#L551))。**失敗した候補を warm cache として残さない**ので、同じプロセスで再試行しても頂点プールの使用量は増えません。解放そのものに失敗した分は固定容量 8 の報告([modelresourcerelease.hpp](../../src/core/model/modelresourcerelease.hpp#L36))へ畳まれ、scene load 失敗の結果に `release_errors`(stage 名の列。溢れた分は `overflow:N`)として現れます([sceneload.hpp](../../src/core/loader/sceneload.hpp#L142))。呼び元へ返せないデストラクタ経路の分は `ReleaseErrorSink` の累積カウンタに積まれます。
 - 静的メッシュはノード階層の変換が**頂点に焼き込まれて平坦化**されます。glTF は「親ノードの行列 × 子ノードの行列 × …」の木で頂点位置を決めますが、ロード時にその積を頂点座標そのものへ掛けてしまい、ランタイムには親子関係のない 1 枚の頂点列だけが残る、という意味です(親を動かして子が付いてくる、という表現はできません。動かしたい単位はシーン側のオブジェクトに分けます)。マテリアルは 5 テクスチャ(baseColor / metallicRoughness / normal / emissive / occlusion)として登録されます。occlusion は metallicRoughness の R から推測せず、glTF の独立した `occlusionTexture` を使います(色テクスチャは SRGB view、metallicRoughness / normal / occlusion は UNORM view — [第6章](06_rendering.md) §6.3)。
 - **スケルタルアニメーションは ✅WP38 で実装済み**: glTF の `skins` + `animations` を読み、シーンの `animation` コンポーネント([第4章](04_scene_ecs.md))で再生します。skinned プリミティブはスケルトンを保持します(焼き込まない)。制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128、クリップはモデルと同一 glb のみ。※この 3 つの制限は **glb 内蔵クリップ + `animation` コンポーネントの経路に限った話**です。`.vrma` は別経路で、CUBICSPLINE も受理します(後述)。
@@ -126,9 +126,10 @@
 - `binding.routing` は実行時にも照合されます。OpenPBR の
   `{opaque,mask,blend}_{single,double}` と一致しない binding は拒否されます。
 - material values と参照 texture は既存のファイル監視経路へ登録され、実行中の
-  hot reload 対象です。surface/routing/文書構造の変更は values reload の範囲外です。
+  hot reload 対象です。surface/routing/文書構造の変更は values reload の範囲外です(ファイルの変更の場合。RPC の
+  `edit_material` は ✅MT-3 から、これらの変更で material を登録し直します。第6章 §6.7)。
 - **RPC で書かせる(✅MT-1、`976c410d`)**: 動いている engine に、この節の 3 つ(material 文書・`materials[]`・
-  `pelican.material_bindings`)を書かせられます。RPC の一覧と「values だけが live、ほかは restart_required」の
+  `pelican.material_bindings`)を書かせられます。RPC の一覧と「values だけなら live、ほかの鍵は登録し直して rebuilt(✅MT-3)」の
   規則は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、引数と拒否の表は [第10章](10_tools.md) §10.3 です。
   engine が書くファイルの形は次のとおりです(コードの読み)。
   - `create_material {path, surface, name?, values?, tags?, routing?}` は、`schema` / `version: 1` / 1 つの material の
@@ -150,6 +151,9 @@
     全部同じ material になります。1 つの物体だけを変えるのは、asset_data ではなく scene の
     `simplemodelview.materials` です(✅MT-2、`set_object_material`。[第4章](04_scene_ecs.md) §4.2)。Studio の Inspector の Material の行は
     ✅MT-2s から既定でこちら(This object)に書き、Every <model> に切り替えたときだけ `bind_material` です([第13章](13_editor.md) §13.1)。
+  - `edit_material` で material の `routing` が変わると(✅MT-3、`c6f94eb7`)、その material の名前を `material` に持つ
+    `pelican.material_bindings` の行(asset_data の `models[]` の `material_bindings` が指す文書)の `routing` を新しい値に書き換え、
+    material の文書と 1 つの transaction で書きます(上の「`binding.routing` は実行時にも照合」でずれないように)。
   - engine が書く JSON は 2 空白の indent で、既存のファイルは鍵の順と改行コードを保ち、新しいファイルは LF です。
   - asset_data を書いたときは、engine が持つ asset_data の写しも新しい bytes に置き換えます(`list_assets` などが読む写し)。
   - `list_assets` は `name` の無い entry を飛ばすので、`materials[]` の entry は出ません([name の無い entry を飛ばす所](../../src/core/communication/editorassetqueryruntime.cpp#L63))。material の一覧は `list_materials` で読みます。

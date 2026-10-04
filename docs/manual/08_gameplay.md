@@ -859,7 +859,7 @@ ctx.audio().stopSound(h);
 
 AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは **rpc で動いていても窓があれば `device`** です(Studio の埋め込み player で音が出るのはこのため)。
 
-**起動で名指しする(✅AU-3)。** player は次の順でバックエンドを決めます([引数と環境変数の読み取り](../../src/player/main.cpp#L479)、[`EngineLaunchConfig::audio_backend`](../../src/core/launchconfig.hpp#L68))。
+**起動で名指しする(✅AU-3)。** player は次の順でバックエンドを決めます([引数と環境変数の読み取り](../../src/player/main.cpp#L490)、[`EngineLaunchConfig::audio_backend`](../../src/core/launchconfig.hpp#L75))。
 
 | 優先 | 指定 | 値 |
 |---|---|---|
