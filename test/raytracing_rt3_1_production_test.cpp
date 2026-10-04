@@ -8013,6 +8013,113 @@ void main() { occluded = float(ray_record.geometry_kind); }
 #endif
 }
 
+// EB-7: a procedural group's closest hit whose hit attribute is not its
+// intersection's, read from disk by reload_render_documents: refused by its
+// code with its place (RayTracingRefusal fields, as EB-3's record refusal),
+// listed with them, and the feature saved back as it was clears it.
+TEST_CASE("EB-7 a procedural closest hit whose hit attribute is not its intersection's is refused with its place, "
+          "and the feature saved back clears it",
+          "[eb7][ray-tracing][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_RPC
+    setupLogger();
+    Wp374aProjectRoot project{"eb7_attribute"};
+    writeWp386aProceduralProject(project.path);
+    // The layout's record, as the primary closest hit declares it; the hit
+    // attribute is a vec3 where the intersection reports a vec2.
+    writeWp374aText(project.path / "shaders" / "eb7_vec3.rchit", R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+struct Payload { uint marker; uint q; uint flags; uint tint; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec3 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord {
+    uint material_index;
+    uint geometry_index;
+    uint geometry_kind;
+    float radius;
+} ray_record;
+void main() { payload.marker = 0xdead386au; }
+)glsl");
+    const auto feature_path = project.path / "features" / "wp386_procedural.json";
+    const auto feature_bytes = readWp374aText(feature_path);
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    REQUIRE(rtl1aFrame().empty());
+    auto service = makeEditorRuntimeService(
+        EditorRuntimeServiceOptions{.render_config_editing = true});
+    std::uint64_t rpc_id = 94000;
+    const auto rpc = [&](std::string_view method, Json params) {
+        return runWp374aRpcBytes(*service, rpc_id++, method, std::move(params));
+    };
+    REQUIRE(rtl1aFrame().empty());
+    const auto finish = [&](const Json &answer) {
+        INFO(answer.dump());
+        if (answer.value("status", std::string{}) == "rejected") return answer;
+        REQUIRE(answer.at("status") == "accepted");
+        service->commitPendingEdits();
+        auto result = rpc("get_edit_result", {{"ticket", answer.at("ticket")}});
+        for (int frame = 0; frame < 4 && result.value("status", std::string{}) == "pending"; ++frame) {
+            (void)rtl1aFrame();
+            result = rpc("get_edit_result", {{"ticket", answer.at("ticket")}});
+        }
+        INFO(result.dump());
+        REQUIRE(result.value("status", std::string{}) != "pending");
+        return result;
+    };
+    const auto require_place = [](const Json &fields) {
+        INFO(fields.dump(2));
+        CHECK(fields.at("task") == "wp386_trace");
+        CHECK(fields.at("stage") == "closesthit");
+        CHECK_THAT(fields.at("shader").get<std::string>(), ContainsSubstring("eb7_vec3"));
+        CHECK(fields.at("ray_type") == "primary");
+        CHECK(fields.at("group") == "sphere");
+        CHECK(fields.at("expected") == "vec2<f32>");
+        CHECK(fields.at("actual") == "vec3<f32>");
+        CHECK_THAT(fields.at("intersection").get<std::string>(), ContainsSubstring("procedural_no_report"));
+    };
+
+    auto feature = Json::parse(feature_bytes);
+    feature["compute_tasks"][0]["ray_tracing"]["hit_shaders"]["primary"]["sphere"]["closesthit"] =
+        "project://shaders/eb7_vec3";
+    writeWp374aText(feature_path, feature.dump(2));
+    {
+        const auto result = finish(rpc("reload_render_documents", Json::object()));
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "rejected");
+        const auto &error = result.at("error");
+        CHECK(error.at("code") == "pelican.procedural_hit_attribute_mismatch@1");
+        CHECK(error.at("document") == "project://features/wp386_procedural.json");
+        CHECK_THAT(error.at("message").get<std::string>(),
+                   ContainsSubstring("pelican.procedural_hit_attribute_mismatch@1: shader '") &&
+                       ContainsSubstring(" must declare the same hit attribute as "));
+        require_place(error);
+        const auto list = problemListJson(FastModuleContainer::tryGet<ProblemList>());
+        INFO(list.dump(2));
+        const auto &problems = list.at("problems");
+        REQUIRE(problems.size() == 1u);
+        CHECK(problems.at(0).at("code") == "pelican.procedural_hit_attribute_mismatch@1");
+        CHECK(problems.at(0).at("document_kind") == "feature");
+        require_place(problems.at(0).at("fields"));
+        REQUIRE(rtl1aFrame().empty());
+        CHECK(rtl1aFirstPixel("wp386_out")[0] == 0x386au);
+    }
+    // Saved back as it was: the next reload takes it in and nothing is listed.
+    writeWp374aText(feature_path, feature_bytes);
+    {
+        const auto result = finish(rpc("reload_render_documents", Json::object()));
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "committed");
+        const auto list = problemListJson(FastModuleContainer::tryGet<ProblemList>());
+        INFO(list.dump(2));
+        CHECK(list.at("problems").empty());
+        REQUIRE(rtl1aFrame().empty());
+        CHECK(rtl1aFirstPixel("wp386_out")[0] == 0x386au);
+    }
+#else
+    SUCCEED("EB-7 production reloads require the runtime shader compiler and the RPC service");
+#endif
+}
+
 // EB-3: get_ray_table answers in one call what get_ray_occurrences answers
 // object by object, from the same occurrences and the same binding function.
 TEST_CASE("EB-3 get_ray_table lists every row in one call, as get_ray_occurrences reads each object's",

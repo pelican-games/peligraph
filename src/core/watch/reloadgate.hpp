@@ -58,4 +58,15 @@ DECLARE_MODULE(ReloadGate) {
     std::string reason_ = "not configured";
 };
 
+// EB-7: whether a file the engine has read already is looked at again on
+// disk (stat: its write time, its size) so that a change is taken in. A hot
+// reload build does, each time it would use the file; a distribution build
+// (PELICAN_WITH_HOT_RELOAD=OFF) looks at it the first time it reads it and
+// never again. `hot_reload_build` is the build's PELICAN_WITH_HOT_RELOAD;
+// the callers pass it so both answers are tested in either build.
+[[nodiscard]] constexpr bool looksAgainAtReadFile(bool hot_reload_build,
+                                                  bool read_before) noexcept {
+    return hot_reload_build || !read_before;
+}
+
 } // namespace Pelican::watch

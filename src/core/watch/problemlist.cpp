@@ -247,7 +247,10 @@ Json renderPipelineProblem(std::string_view source, const Json &refusal,
                 kind = problemKindRoot;
             else if (fields.contains("definition"))
                 kind = problemKindDefinition;
-            else if (code.starts_with("graph."))
+            // EB-7: or any refusal that names the root graph's node (a ray
+            // tracing task a render.compute node made).
+            else if (code.starts_with("graph.") ||
+                     (fields.contains("node") && !fields.at("node").is_null()))
                 kind = problemKindRootGraph;
             else
                 kind = problemKindRootRendering;

@@ -495,6 +495,26 @@ nlohmann::json renderPipelineRefusalJson(
         // the fields it was raised with; the message is the parser's.
         if (ray->fields().is_object()) refusal = ray->fields();
         code = ray->code();
+        // EB-7: a task the root graph's own node made (a render.compute node
+        // of that id at the root's top level) is that node's, as the
+        // editor's reload refusal says it. A task of a feature, a preset or
+        // a definition's instance is left without: telling those apart needs
+        // the composition, which this refusal does not have.
+        if (const auto task = refusal.find("task");
+            task != refusal.end() && task->is_string() &&
+            !refusal.contains("document") && !refusal.contains("node") &&
+            root.is_object())
+            if (const auto nodes = root.find("nodes");
+                nodes != root.end() && nodes->is_array())
+                for (const auto &node : *nodes)
+                    if (node.is_object() &&
+                        node.value("id", std::string{}) == task->get<std::string>() &&
+                        node.value("op", std::string{}) == "render.compute") {
+                        refusal["document"] = graphDocumentReference(root_reference)
+                                                  .value_or(std::string{root_reference});
+                        refusal["node"] = task->get<std::string>();
+                        break;
+                    }
     } else if (auto coded = splitCodedRefusalMessage(error.what())) {
         if (coded->fields.is_object()) refusal = coded->fields;
         code = coded->code;

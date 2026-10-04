@@ -851,6 +851,209 @@ TEST_CASE("RR-1 a reload refused for a root that is not JSON holds its bytes, th
     player.close();
     CHECK(player.exit_code == 0u);
 }
+
+TEST_CASE("EB-7 a root broken on disk, refused by a reload, then saved back as the live bytes: the next reload "
+          "commits, the problem goes and the reads are live again",
+          "[eb7][rr1][render-fallback][rpc]") {
+    TempProject project{"eb7_back"};
+    const auto capture_path = project.root / "capture.png";
+    const auto live_root = withFillNodes(project.fixed_root, true);
+    writeFile(project.rootPath(), live_root);
+    PlayerRpc player{project.root, project.stderrLog("eb7_back")};
+    REQUIRE(player.result("get_status").at("render_pipeline").at("state") == "ready");
+    const auto generation = publishedGeneration(player);
+    const auto live_digest =
+        player.result("get_graph_instances").at("source_digest").at("hex").get<std::string>();
+    const auto live_problems_revision =
+        player.result("get_status").at("problems").at("revision").get<std::uint64_t>();
+
+    (void)requireRefusedReloadHeld(player, project, withFillNodes(project.fixed_root, false), capture_path,
+                                   generation);
+    const auto refused_revision =
+        player.result("get_status").at("problems").at("revision").get<std::uint64_t>();
+    CHECK(refused_revision > live_problems_revision);
+
+    // Put back outside, byte for byte what is live: nothing is wrong any more.
+    writeFile(project.rootPath(), live_root);
+    const auto result = player.settle(player.result("reload_render_documents"));
+    INFO(result.dump(2));
+    REQUIRE(result.at("status") == "committed");
+    {
+        const auto problems = problemsOf(player);
+        INFO(problems.dump(2));
+        CHECK(problems.empty());
+        const auto status = player.result("get_status");
+        CHECK(status.at("problems").at("count") == 0);
+        CHECK(status.at("problems").at("revision").get<std::uint64_t>() > refused_revision);
+        CHECK(status.at("render_pipeline").at("state") == "ready");
+    }
+    const auto graph = player.result("get_graph_instances");
+    CHECK(graph.at("live") == true);
+    CHECK_FALSE(graph.contains("held_unparsed"));
+    CHECK(graph.at("source_digest").at("hex") == live_digest);
+    CHECK(player.result("get_render_documents").at("live") == true);
+    requireBlankGradient(capture(player, capture_path));
+
+    // A reload of the same bytes again finds nothing to do.
+    const auto again = player.settle(player.result("reload_render_documents"));
+    INFO(again.dump(2));
+    REQUIRE(again.at("status") == "committed");
+    CHECK(again.value("no_change", false));
+    CHECK(problemsOf(player).empty());
+
+    // An edit on the live digest goes through (the editor's base is the live
+    // root again, not the refused one).
+    const auto edited = player.settle(player.result(
+        "edit_graph_document",
+        {{"base_source_digest", live_digest},
+         {"ops", Json::array({{{"op", "set_node_label"}, {"node", "rr1_fill"}, {"label", "Fill"}}})}}));
+    INFO(edited.dump(2));
+    CHECK(edited.at("status") == "committed");
+    player.close();
+    CHECK(player.exit_code == 0u);
+}
+
+namespace {
+
+// EB-7: RTL-3s's scenario fixture (studio_gui_rt_checks), copied: the root
+// graph's ray tracing task `trace` (render.compute) with a ray group layout.
+struct RtChecksProject {
+    std::filesystem::path root;
+    std::string live_root;
+
+    RtChecksProject() {
+        root = std::filesystem::temp_directory_path() /
+               ("pelican_eb7_rt_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::copy(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" /
+                                  "studio_gui_rt_checks",
+                              root, std::filesystem::copy_options::recursive);
+        live_root = readFile(rootPath());
+    }
+    ~RtChecksProject() {
+        std::error_code ec;
+        std::filesystem::remove_all(root, ec);
+    }
+    std::filesystem::path rootPath() const { return root / root_reference; }
+    std::filesystem::path stderrLog(std::string_view run) const {
+        return root / ("eb7." + std::string{run} + ".stderr.log");
+    }
+    // The primary ray's mesh cell given the closest hit whose shader record is
+    // not the layout's (the scenario's wrong_record).
+    std::string refusedRoot() const {
+        auto text = live_root;
+        const std::string cell = "\"closesthit\": \"project://shaders/start\"";
+        const auto at = text.find(cell);
+        REQUIRE(at != std::string::npos);
+        text.replace(at, cell.size(), "\"closesthit\": \"project://shaders/wrong_record\"");
+        return text;
+    }
+};
+
+// The record refusal of the root graph's node `trace`, where a refusal or a
+// problem carries its fields.
+void requireTraceRecordRefusal(const Json &fields) {
+    INFO(fields.dump(2));
+    CHECK(fields.at("task") == "trace");
+    CHECK(fields.at("stage") == "closesthit");
+    CHECK(fields.at("ray_type") == "primary");
+    CHECK(fields.at("group") == "mesh");
+    CHECK_THAT(fields.at("shader").get<std::string>(), Catch::Matchers::ContainsSubstring("wrong_record"));
+}
+
+// The root graph's node's problem: document_kind root_graph and the node.
+void requireTraceNodeProblem(const Json &problem, std::string_view source) {
+    INFO(problem.dump(2));
+    CHECK(problem.at("source") == std::string{source});
+    CHECK(problem.at("code") == "pelican.ray_tracing.shader_record_abi_mismatch@1");
+    CHECK(problem.at("document") == std::string{"project://"} + root_reference);
+    CHECK(problem.at("document_kind") == "root_graph");
+    CHECK(problem.at("node") == "trace");
+    requireTraceRecordRefusal(problem.at("fields"));
+}
+
+} // namespace
+
+TEST_CASE("EB-7 the root graph's ray tracing task refused by a reload or at start is its node's problem, and the "
+          "root saved back as the live bytes clears it",
+          "[eb7][rr1][render-fallback][rpc]") {
+    RtChecksProject project;
+    const auto refused_root = project.refusedRoot();
+    {
+        PlayerRpc player{project.root, project.stderrLog("reload")};
+        REQUIRE(player.result("get_status").at("render_pipeline").at("state") == "ready");
+        (void)player.result("step_frame");
+        (void)player.result("step_frame");
+        const auto live_digest =
+            player.result("get_graph_instances").at("source_digest").at("hex").get<std::string>();
+
+        // Broken outside: the reload is refused by the record's code, at the
+        // node, and listed as the node's problem.
+        writeFile(project.rootPath(), refused_root);
+        {
+            const auto result = player.settle(player.result("reload_render_documents"));
+            INFO(result.dump(2));
+            REQUIRE(result.at("status") == "rejected");
+            const auto &error = result.at("error");
+            CHECK(error.at("code") == "pelican.ray_tracing.shader_record_abi_mismatch@1");
+            // The editor names the root as RTL-1c fixed it (the source
+            // reference as the project names it).
+            CHECK(error.at("document") == root_reference);
+            CHECK(error.at("node") == "trace");
+            requireTraceRecordRefusal(error);
+        }
+        {
+            const auto problems = problemsOf(player);
+            INFO(problems.dump(2));
+            REQUIRE(problems.size() == 1u);
+            requireTraceNodeProblem(problems.at(0), "reload_rpc");
+        }
+        CHECK(player.result("get_render_documents").at("live") == false);
+        CHECK(player.result("get_status").at("render_pipeline").at("state") == "ready");
+
+        // Put back outside, byte for byte what is live: the next reload takes
+        // it in, and nothing is wrong any more.
+        writeFile(project.rootPath(), project.live_root);
+        const auto result = player.settle(player.result("reload_render_documents"));
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK(problemsOf(player).empty());
+        CHECK(player.result("get_status").at("problems").at("count") == 0);
+        const auto graph = player.result("get_graph_instances");
+        CHECK(graph.at("live") == true);
+        CHECK(graph.at("source_digest").at("hex") == live_digest);
+        CHECK(player.result("get_render_documents").at("live") == true);
+        CHECK(player.result("get_status").at("render_pipeline").at("state") == "ready");
+        player.close();
+        CHECK(player.exit_code == 0u);
+    }
+
+    // At start (the fallback): the same problem, by the same node.
+    writeFile(project.rootPath(), refused_root);
+    PlayerRpc player{project.root, project.stderrLog("startup")};
+    {
+        const auto status = player.result("get_status").at("render_pipeline");
+        INFO(status.dump(2));
+        REQUIRE(status.at("state") == "fallback");
+        CHECK(status.at("refusal").at("code") == "pelican.ray_tracing.shader_record_abi_mismatch@1");
+        CHECK(status.at("refusal").at("node") == "trace");
+        // At start, as CT-2's graph refusals name the root.
+        CHECK(status.at("refusal").at("document") == std::string{"project://"} + root_reference);
+    }
+    {
+        const auto problems = problemsOf(player);
+        INFO(problems.dump(2));
+        REQUIRE(problems.size() == 1u);
+        requireTraceNodeProblem(problems.at(0), "startup");
+    }
+    writeFile(project.rootPath(), project.live_root);
+    const auto result = player.settle(player.result("reload_render_documents"));
+    INFO(result.dump(2));
+    REQUIRE(result.at("status") == "committed");
+    CHECK(problemsOf(player).empty());
+    CHECK(player.result("get_status").at("render_pipeline").at("state") == "ready");
+    player.close();
+    CHECK(player.exit_code == 0u);
+}
 #endif
 
 #ifdef _WIN32

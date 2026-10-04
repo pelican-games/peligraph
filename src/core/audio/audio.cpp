@@ -3,6 +3,7 @@
 #include "../launchconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
+#include "../watch/reloadgate.hpp"
 #include "../../project/graphcomposition.hpp"
 
 // AU-2: Ogg Vorbis through the stb_vorbis that ships with miniaudio. Its
@@ -518,18 +519,34 @@ Audio::PreparedSound Audio::prepareSound(std::string_view path, AudioBus bus) co
     // its write time and size, so an asset edited in place decodes again.
     std::string key{path};
     std::optional<std::pair<std::int64_t, std::uintmax_t>> stamp;
+    bool normalized = false;
     try {
         key = resolver.normalizedReference(path);
-        const auto file = resolver.resolveExistingFile(path);
-        stamp = std::pair{static_cast<std::int64_t>(std::filesystem::last_write_time(file).time_since_epoch().count()),
-                          std::filesystem::file_size(file)};
+        normalized = true;
     } catch (const std::exception &) {
-        // Embedded or missing: loadBytes below reads it or says why it cannot.
+    }
+    // EB-7: a distribution build looks at the file on disk only when it
+    // first decodes it; a hot reload build looks each time it plays.
+    bool read_before = false;
+    {
+        std::lock_guard lock{decode_mutex};
+        read_before = decoded_sounds.contains(key);
+    }
+    const bool look = watch::looksAgainAtReadFile(PELICAN_WITH_HOT_RELOAD != 0, read_before);
+    if (normalized && look) {
+        try {
+            const auto file = resolver.resolveExistingFile(path);
+            stamp = std::pair{
+                static_cast<std::int64_t>(std::filesystem::last_write_time(file).time_since_epoch().count()),
+                std::filesystem::file_size(file)};
+        } catch (const std::exception &) {
+            // Embedded or missing: loadBytes below reads it or says why it cannot.
+        }
     }
     {
         std::lock_guard lock{decode_mutex};
         const auto found = decoded_sounds.find(key);
-        if (found != decoded_sounds.end() && found->second.stamp == stamp)
+        if (found != decoded_sounds.end() && (!look || found->second.stamp == stamp))
             return PreparedSound{found->second.decoded, std::string{path}, bus};
     }
     auto bytes = resolver.loadBytes(path);

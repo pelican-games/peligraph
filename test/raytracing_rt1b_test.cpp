@@ -1957,6 +1957,176 @@ TEST_CASE("EB-3 a traced hit shader may leave the shader record undeclared, a de
             {"closesthit", "record.rchit"}});
     }
 }
+
+// EB-7: the pipeline check's hit attribute refusals carry their place as
+// RayTracingRefusal fields, as EB-3's record and payload refusals do, with
+// the messages they always had. The layout's foliage group is procedural:
+// its closest hits declare the intersection's hit attribute (vec2).
+TEST_CASE("EB-7 a hit shader whose hit attribute is not its procedural intersection's, or not a triangle's, is "
+          "refused with its place",
+          "[eb7][ray-tracing][rt1b][spirv][abi]") {
+    using nlohmann::json;
+    ShaderCompiler compiler;
+    const auto compile = [&](std::string_view source,
+                             vk::ShaderStageFlagBits stage,
+                             std::string_view name) {
+        const auto result = compiler.compileSource(source, stage, name);
+        INFO(result.log);
+        REQUIRE(result.ok);
+        return inspectRayTracingSpirv(result.spirv, name);
+    };
+    const auto raygen = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(set=0,binding=6) uniform accelerationStructureEXT frame_tlas;
+      layout(location=0) rayPayloadEXT vec4 payload;
+      void main() {
+        traceRayEXT(frame_tlas, gl_RayFlagsOpaqueEXT, 0xffu, 0u, 2u, 0u,
+                    vec3(0.0), 0.001, vec3(0.0,0.0,1.0), 100.0, 0);
+      }
+    )glsl", vk::ShaderStageFlagBits::eRaygenKHR, "eb7.rgen");
+    const auto miss = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT vec4 payload;
+      void main() { payload = vec4(0.0); }
+    )glsl", vk::ShaderStageFlagBits::eMissKHR, "eb7.rmiss");
+    const auto hit = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT vec4 payload;
+      hitAttributeEXT vec2 attributes;
+      void main() { payload = vec4(attributes, 0.0, 1.0); }
+    )glsl", vk::ShaderStageFlagBits::eClosestHitKHR, "vec2.rchit");
+    const auto vec3_hit = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT vec4 payload;
+      hitAttributeEXT vec3 attributes;
+      void main() { payload = vec4(attributes, 1.0); }
+    )glsl", vk::ShaderStageFlagBits::eClosestHitKHR, "vec3.rchit");
+    // RTL-3s's case: a closest hit without the intersection's hitAttributeEXT.
+    const auto bare_hit = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT vec4 payload;
+      void main() { payload = vec4(1.0); }
+    )glsl", vk::ShaderStageFlagBits::eClosestHitKHR, "bare.rchit");
+    const auto intersection = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      hitAttributeEXT vec2 attributes;
+      void main() { attributes = vec2(0.5); reportIntersectionEXT(1.0, 0u); }
+    )glsl", vk::ShaderStageFlagBits::eIntersectionKHR, "sphere.rint");
+
+    const auto occurrence = [](
+        const RayTracingModuleReflection &module, ShaderStage stage,
+        std::uint32_t group, std::string_view uri) {
+        return RayTracingShaderOccurrence{
+            .stage = stage,
+            .group_index = group,
+            .diagnostic_uri = uri,
+            .entry = &selectRayTracingEntryPoint(module, stage, "main", uri)};
+    };
+    // ray types [primary, shadow] x groups [opaque (triangles), foliage
+    // (procedural)], no record; slot = group * 2 + ray; primary traced.
+    auto layout_json = json::parse(layoutJson);
+    layout_json["groups"][1]["type"] = "procedural";
+    layout_json["record"] = json::array();
+    const auto layout = parseRayGroupLayout(layout_json.dump());
+    const std::array<std::uint32_t, 1> traced{0};
+    const RayTracingRuntimeFacts facts{
+        .max_ray_recursion_depth = 1,
+        .max_shader_group_stride = 4096,
+        .max_ray_hit_attribute_size = 32,
+        .max_ray_dispatch_invocation_count = 1,
+        .max_dispatch_dimensions = {1, 1, 1},
+        .device_name = "fixture"};
+    const std::array misses{occurrence(miss, ShaderStage::miss, 1, "eb7.rmiss"),
+                            occurrence(miss, ShaderStage::miss, 2, "eb7.rmiss")};
+    std::array pairs{
+        RayTracingHitGroupOccurrence{.closest_hit = occurrence(hit, ShaderStage::closesthit, 3, "vec2.rchit")},
+        RayTracingHitGroupOccurrence{.closest_hit = occurrence(hit, ShaderStage::closesthit, 4, "vec2.rchit")},
+        RayTracingHitGroupOccurrence{
+            .closest_hit = occurrence(hit, ShaderStage::closesthit, 5, "vec2.rchit"),
+            .intersection = occurrence(intersection, ShaderStage::intersection, 5, "sphere.rint")},
+        RayTracingHitGroupOccurrence{
+            .closest_hit = occurrence(hit, ShaderStage::closesthit, 6, "vec2.rchit"),
+            .intersection = occurrence(intersection, ShaderStage::intersection, 6, "sphere.rint")},
+    };
+    const auto refusal = [&]() -> std::optional<RayTracingRefusal> {
+        try {
+            (void)validateRayTracingPipelineInterfaces(
+                {.raygen = occurrence(raygen, ShaderStage::raygen, 0, "eb7.rgen"),
+                 .misses = misses,
+                 .group_layout = &layout,
+                 .traced_ray_type_indices = traced,
+                 .hit_group_occurrences = pairs},
+                facts);
+        } catch (const RayTracingRefusal &refused) {
+            return refused;
+        }
+        return std::nullopt;
+    };
+    REQUIRE_FALSE(refusal().has_value());
+
+    SECTION("a procedural closest hit with another hit attribute names it, the intersection's and its own") {
+        pairs[2].closest_hit = occurrence(vec3_hit, ShaderStage::closesthit, 5, "vec3.rchit");
+        const auto refused = refusal();
+        REQUIRE(refused.has_value());
+        CHECK(refused->code() == "pelican.procedural_hit_attribute_mismatch@1");
+        CHECK(std::string{refused->what()} ==
+              "pelican.procedural_hit_attribute_mismatch@1: shader 'vec3.rchit' entry 'main' group=5 must declare "
+              "the same hit attribute as shader 'sphere.rint' entry 'main' group=5");
+        CHECK(refused->fields() == json{
+            {"stage", "closesthit"}, {"shader", "vec3.rchit"},
+            {"ray_type", "primary"}, {"group", "foliage"},
+            {"expected", "vec2<f32>"}, {"actual", "vec3<f32>"},
+            {"intersection", "sphere.rint"}});
+    }
+    SECTION("a procedural closest hit that declares no hit attribute: actual is null") {
+        pairs[3].closest_hit = occurrence(bare_hit, ShaderStage::closesthit, 6, "bare.rchit");
+        const auto refused = refusal();
+        REQUIRE(refused.has_value());
+        CHECK(refused->code() == "pelican.procedural_hit_attribute_mismatch@1");
+        CHECK(refused->fields() == json{
+            {"stage", "closesthit"}, {"shader", "bare.rchit"},
+            {"ray_type", "shadow"}, {"group", "foliage"},
+            {"expected", "vec2<f32>"}, {"actual", nullptr},
+            {"intersection", "sphere.rint"}});
+    }
+    SECTION("a procedural slot without an intersection names the slot, as the task parser does") {
+        pairs[2].intersection.reset();
+        const auto refused = refusal();
+        REQUIRE(refused.has_value());
+        CHECK(refused->code() == "pelican.procedural_group_requires_intersection@1");
+        CHECK(std::string{refused->what()} ==
+              "pelican.procedural_group_requires_intersection@1: procedural hit group has no intersection stage");
+        CHECK(refused->fields() == json{{"ray_type", "primary"}, {"group", "foliage"}});
+    }
+    SECTION("a triangles closest hit with a vec3 hit attribute names it and what a triangle's is") {
+        pairs[0].closest_hit = occurrence(vec3_hit, ShaderStage::closesthit, 3, "vec3.rchit");
+        const auto refused = refusal();
+        REQUIRE(refused.has_value());
+        CHECK(refused->code() == "pelican.ray_tracing.hit_attribute_forbidden@1");
+        CHECK(std::string{refused->what()} ==
+              "pelican.ray_tracing.hit_attribute_forbidden@1: shader 'vec3.rchit' entry 'main' group=3 triangle "
+              "hit attribute must be vec2<f32>; actual=vec3<f32>");
+        CHECK(refused->fields() == json{
+            {"stage", "closesthit"}, {"shader", "vec3.rchit"},
+            {"ray_type", "primary"}, {"group", "opaque"},
+            {"expected", "vec2<f32>"}, {"actual", "vec3<f32>"}});
+    }
+    SECTION("an intersection in a triangles slot names it, as the task parser does") {
+        pairs[1].intersection = occurrence(intersection, ShaderStage::intersection, 4, "sphere.rint");
+        const auto refused = refusal();
+        REQUIRE(refused.has_value());
+        CHECK(refused->code() == "pelican.ray_tracing.unsupported_shader_stage@1");
+        CHECK(refused->fields() == json{
+            {"stage", "intersection"}, {"shader", "sphere.rint"},
+            {"ray_type", "shadow"}, {"group", "opaque"}});
+    }
+}
 #endif
 
 TEST_CASE("Callable record schema packs std430 values and rejects malformed updates",

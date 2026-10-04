@@ -22,6 +22,7 @@
 #include "../../renderingpass/graphinputs.hpp"
 #include "../../renderingpass/graphmodelsource.hpp"
 #include "../../renderingpass/renderingpasscontainer.hpp"
+#include "../../watch/reloadgate.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -191,9 +192,16 @@ void AnimationSystem::updateGraphs() {
         auto &model = GET_MODULE(ModelAssetContainer).getModelTemplateByName(view->model_name);
         if (!model.skeletal) throw std::runtime_error("animation graph requires a skinned model");
         auto &resolver = GET_MODULE(PathResolver);
-        const auto path = resolver.resolveExistingFile(animation->graph);
-        const auto modified = std::filesystem::last_write_time(path);
         auto found = state->graphs.find(entity);
+        // EB-7: a hot reload build looks at the graph file every frame and
+        // reads it again when it changed; a distribution build looks once,
+        // when it first reads the file, and keeps that write time.
+        const bool read_before =
+            found != state->graphs.end() && found->second->reference == animation->graph;
+        const auto modified =
+            watch::looksAgainAtReadFile(PELICAN_WITH_HOT_RELOAD != 0, read_before)
+                ? std::filesystem::last_write_time(resolver.resolveExistingFile(animation->graph))
+                : found->second->modified;
         const auto epoch = scene.runtimeSceneEpoch();
         const auto named = scene.objectName(entity);
         const auto object_name = named.value_or("__animation_component:" +
