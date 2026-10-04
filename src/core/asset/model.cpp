@@ -209,19 +209,34 @@ PrimitiveMaterialBindingDocument loadMaterialBindings(std::string_view reference
 
 void applyDeclarationBindings(ModelTemplate &model,
                               const ModelDeclaration &declaration) {
-    const auto project_materials =
-        GET_MODULE(ProjectMaterialAssetContainer)
-            .namedMaterials();
+    auto &project = GET_MODULE(ProjectMaterialAssetContainer);
+    const auto project_materials = project.namedMaterials();
     validateNamedMaterialResolutionDomains(
         model, project_materials,
         declaration.name);
     if (!declaration.material_bindings) return;
     const auto fragment = fragmentText(declaration.fragment);
+    // FO-1: while a listed material document was refused at start, a binding
+    // to a material nothing registered keeps the primitive's own material
+    // (a warning in the problem list) instead of refusing the model.
+    std::vector<std::string> unresolved;
     applyPrimitiveMaterialBindings(
         model, *declaration.material_bindings, declaration.name,
         fragment.empty() ? std::nullopt
                          : std::optional<std::string_view>{fragment},
-        project_materials);
+        project_materials,
+        [&](const PrimitiveMaterialBinding &binding) {
+            if (!project.hasRefusedDocuments()) return false;
+            unresolved.push_back(binding.material);
+            return true;
+        });
+    if (!unresolved.empty()) {
+        LOG_WARNING(logger,
+                    "model '{}': its material bindings name material(s) no registered document holds; "
+                    "those primitives draw with the model's own material",
+                    declaration.name);
+        project.noteUnresolvedBindings(declaration.name, std::move(unresolved));
+    }
 }
 
 std::set<std::string> occurrenceIds(const ModelTemplate &model) {

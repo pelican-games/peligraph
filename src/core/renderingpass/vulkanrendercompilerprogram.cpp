@@ -11,12 +11,15 @@
 #include "../loader/pathresolver.hpp"
 #include "../shader/raygrouplayout.hpp"
 #include "../renderer/viewfamilyproviderregistry.hpp"
+#include "../../project/graphcomposition.hpp"
 #include "../../project/graphvariantpolicy.hpp"
 #include "../../project/renderconfigsection.hpp"
 
 #include <algorithm>
 #include <array>
+#include <deque>
 #include <iterator>
+#include <optional>
 #include <ranges>
 #include <set>
 #include <span>
@@ -334,6 +337,108 @@ void detail::insertSceneAccelerationStructureNodes(
     }
 }
 
+namespace {
+
+// FO-1: why one node of a frame graph waits on another, as the frame planner
+// orders them: a read of what the last earlier writer wrote (in declaration
+// order), or an `after` / `before` the node carries (written, or added by the
+// composer: the canonical buckets' anchors and chains, compute task waits).
+struct FrameNodeDependency {
+    std::size_t to = 0;
+    std::string_view reason;
+    std::string resource;
+};
+
+std::vector<std::vector<FrameNodeDependency>> frameNodeDependencies(
+    const FrameGraphDefinition &graph) {
+    std::unordered_map<std::string, std::size_t> index;
+    for (std::size_t i = 0; i < graph.nodes.size(); ++i) index.emplace(graph.nodes[i].name, i);
+    std::vector<std::vector<FrameNodeDependency>> waits(graph.nodes.size());
+    std::unordered_map<std::string, std::size_t> last_writer;
+    for (std::size_t i = 0; i < graph.nodes.size(); ++i) {
+        const auto &node = graph.nodes[i];
+        for (const auto &resource : node.reads)
+            if (const auto writer = last_writer.find(resource);
+                writer != last_writer.end() && writer->second != i)
+                waits[writer->second].push_back({i, "reads", resource});
+        for (const auto &resource : node.writes)
+            if (!resource.empty()) last_writer[resource] = i;
+        for (const auto &name : node.after)
+            if (const auto found = index.find(name); found != index.end() && found->second != i)
+                waits[found->second].push_back({i, "after", {}});
+        for (const auto &name : node.before)
+            if (const auto found = index.find(name); found != index.end() && found->second != i)
+                waits[i].push_back({found->second, "before", {}});
+    }
+    return waits;
+}
+
+// FO-1: frame_node_order.conflicts_dependency@1 when the list puts `first`
+// before `second` but `second` must run before `first`:
+//   {graph, first, second, reason: "reads" | "after" | "before" | "canonical_order",
+//    resource? (reads), via? (the nodes between, when the wait is not direct),
+//    anchor? (canonical_order: the canonical anchor between them)}
+// `reason` (and `resource`) say why the first node after `second` on the
+// shortest such path waits on it; "canonical_order" is a path through a
+// canonical anchor or the output transform (the buckets' fixed order).
+void requireFrameNodeOrderAgreesWithDependencies(const FrameGraphDefinition &graph,
+                                                 const std::vector<std::size_t> &listed) {
+    if (listed.size() < 2) return;
+    const auto waits = frameNodeDependencies(graph);
+    std::unordered_map<std::size_t, std::size_t> position;
+    for (std::size_t i = 0; i < listed.size(); ++i) position.emplace(listed[i], i);
+    for (std::size_t later = 1; later < listed.size(); ++later) {
+        // Breadth first from the node the list puts later: an earlier listed
+        // node it reaches must run after it.
+        const auto start = listed[later];
+        std::vector<std::optional<std::pair<std::size_t, std::size_t>>> came_from(graph.nodes.size());
+        std::vector<bool> seen(graph.nodes.size(), false);
+        std::deque<std::size_t> frontier{start};
+        seen[start] = true;
+        std::optional<std::size_t> reached;
+        while (!frontier.empty() && !reached) {
+            const auto current = frontier.front();
+            frontier.pop_front();
+            for (std::size_t edge = 0; edge < waits[current].size(); ++edge) {
+                const auto next = waits[current][edge].to;
+                if (seen[next]) continue;
+                seen[next] = true;
+                came_from[next] = std::pair{current, edge};
+                if (const auto found = position.find(next); found != position.end() && found->second < later) {
+                    reached = next;
+                    break;
+                }
+                frontier.push_back(next);
+            }
+        }
+        if (!reached) continue;
+        std::vector<std::pair<std::size_t, std::size_t>> path; // (from, edge index)
+        for (auto at = *reached; at != start; at = came_from[at]->first) path.push_back(*came_from[at]);
+        std::reverse(path.begin(), path.end());
+        const auto &step = waits[path.front().first][path.front().second];
+        nlohmann::json fields{{"graph", graph.name},
+                              {"first", graph.nodes[*reached].name},
+                              {"second", graph.nodes[start].name},
+                              {"reason", std::string{step.reason}}};
+        if (step.reason == "reads") fields["resource"] = step.resource;
+        nlohmann::json via = nlohmann::json::array();
+        for (std::size_t i = 1; i < path.size(); ++i) {
+            const auto &node = graph.nodes[path[i].first];
+            via.push_back(node.name);
+            if ((node.kind == FramePlanNodeKind::anchor || node.kind == FramePlanNodeKind::output_transform) &&
+                fields.at("reason") != "canonical_order") {
+                fields["reason"] = "canonical_order";
+                fields.erase("resource");
+                fields["anchor"] = node.name;
+            }
+        }
+        if (!via.empty()) fields["via"] = std::move(via);
+        throw GraphRegistryError("frame_node_order.conflicts_dependency@1", std::move(fields));
+    }
+}
+
+} // namespace
+
 void detail::applyFrameNodeOrder(
     std::vector<FrameGraphDefinition> &graphs,
     const nlohmann::json &order,
@@ -366,6 +471,10 @@ void detail::applyFrameNodeOrder(
                 throw std::runtime_error("frame_node_order unknown node: " + graph_name + "/" + name);
             indices.push_back(static_cast<std::size_t>(node - graph->nodes.begin()));
         }
+        if (graph == graphs.end()) continue;
+        // FO-1: a list that contradicts a dependency is refused by name
+        // instead of as the cycle its edges would make.
+        requireFrameNodeOrderAgreesWithDependencies(*graph, indices);
         for (std::size_t index = 1; index < indices.size(); ++index) {
             auto &node = graph->nodes[indices[index]];
             const auto &previous = graph->nodes[indices[index - 1]].name;

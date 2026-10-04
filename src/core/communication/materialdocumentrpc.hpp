@@ -20,8 +20,13 @@ class ReloadService;
 // Reads:
 //   list_materials {} ->
 //     {asset_data_digest, documents: [{path, material_digest | null,
-//       status: "loaded" | "missing" | "invalid", reason?,
+//       status: "loaded" | "missing" | "invalid", reason?, line?, column?,
 //       materials: [{name, surface | null, tags, id, registered}]}]}
+//     FO-1: `status` is the engine's for a document it refused at start
+//     (ProjectMaterialAssetContainer::refusedDocument: none of its materials
+//     are registered until the engine starts again), with its reason and,
+//     for a document that is not JSON, the line and column; otherwise it is
+//     the file as it reads now.
 //     Every asset_data materials[] entry, in its order (list_assets lists
 //     each material by its name, EB-1). `id` is the
 //     draw-loop key get_render_authoring_context's materials[] carry;

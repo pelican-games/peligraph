@@ -102,8 +102,9 @@ TEST_CASE("scene AS operation follows variant-wide ray requirements", "[renderco
         CHECK(plan.nodes[0].name == "independent");
         CHECK(plan.nodes[1].name == "__scene_acceleration_structure");
         CHECK(plan.nodes[2].name == "draw");
-        detail::applyFrameNodeOrder(graphs, {{"main", {"draw", "__scene_acceleration_structure"}}});
-        CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
+        // FO-1: the order is refused by name before it becomes a cycle.
+        CHECK_THROWS_WITH(detail::applyFrameNodeOrder(graphs, {{"main", {"draw", "__scene_acceleration_structure"}}}),
+                          Catch::Matchers::ContainsSubstring("frame_node_order.conflicts_dependency@1"));
     }
     SECTION("ray task creates operations") {
         ComputeTaskDefinition task;
@@ -186,8 +187,9 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
         detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, false, definitions);
         detail::applyFrameNodeOrder(graphs, {{"main", {"independent", "__scene_acceleration_structure", "__scene_acceleration_structure:actors", "query"}}});
         CHECK(planFrameGraph(graphs[0]).nodes[0].name == "independent");
-        detail::applyFrameNodeOrder(graphs, {{"main", {"query", "__scene_acceleration_structure:actors"}}});
-        CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
+        // FO-1: the order is refused by name before it becomes a cycle.
+        CHECK_THROWS_WITH(detail::applyFrameNodeOrder(graphs, {{"main", {"query", "__scene_acceleration_structure:actors"}}}),
+                          Catch::Matchers::ContainsSubstring("frame_node_order.conflicts_dependency@1"));
     }
     SECTION("auxiliary drawing declares its query dependency in JSON and typed graphs") {
       for (const auto type : {RenderPassType::debug_draw, RenderPassType::debug_text, RenderPassType::gizmo,
@@ -250,8 +252,9 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
             const auto plan = planFrameGraph(graphs[0]);
             CHECK(plan.nodes.front().name == "independent");
             CHECK(plan.nodes.back().name == "query");
-            detail::applyFrameNodeOrder(graphs, {{"main", {"query", "__scene_acceleration_structure:actors"}}});
-            CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
+            // FO-1: the order is refused by name before it becomes a cycle.
+            CHECK_THROWS_WITH(detail::applyFrameNodeOrder(graphs, {{"main", {"query", "__scene_acceleration_structure:actors"}}}),
+                              Catch::Matchers::ContainsSubstring("frame_node_order.conflicts_dependency@1"));
         }
       }
     }
@@ -286,8 +289,9 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
         task.name = "trace";
         task.ray_query_acceleration_structure = "actors";
         detail::insertSceneAccelerationStructureNodes(graphs, {}, {task}, true, definitions);
-        detail::applyFrameNodeOrder(graphs, {{"main", {"trace", "__scene_acceleration_structure:actors"}}});
-        CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
+        // FO-1: the order is refused by name before it becomes a cycle.
+        CHECK_THROWS_WITH(detail::applyFrameNodeOrder(graphs, {{"main", {"trace", "__scene_acceleration_structure:actors"}}}),
+                          Catch::Matchers::ContainsSubstring("frame_node_order.conflicts_dependency@1"));
     }
     SECTION("generated named operation cannot collide with an authored node") {
         graphs[0].nodes[0].name = "__scene_acceleration_structure:actors";
@@ -301,8 +305,9 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
         node.ray_query_acceleration_structure = *parseRasterRayQuery({{"ray_query", {{"acceleration_structure", "actors"}}}});
         detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, false, definitions);
         CHECK(graphs[0].nodes.back().after == std::vector<std::string>{"__scene_acceleration_structure", "__scene_acceleration_structure:actors"});
-        detail::applyFrameNodeOrder(graphs, {{"main", {"trace", "__scene_acceleration_structure:actors"}}});
-        CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
+        // FO-1: the order is refused by name before it becomes a cycle.
+        CHECK_THROWS_WITH(detail::applyFrameNodeOrder(graphs, {{"main", {"trace", "__scene_acceleration_structure:actors"}}}),
+                          Catch::Matchers::ContainsSubstring("frame_node_order.conflicts_dependency@1"));
         CHECK(parseRasterRayQuery({{"ray_query", true}}) == "scene");
         CHECK_FALSE(parseRasterRayQuery({{"ray_query", false}}));
         for (const auto &bad : nlohmann::json::array({42, "actors", nlohmann::json::object(),
@@ -337,8 +342,9 @@ TEST_CASE("frame node ordering adds constraints without rewriting resource depen
         graphs[0].declared_resources = {"result"};
         graphs[0].nodes[0].writes = {"result"};
         graphs[0].nodes[1].reads = {"result"};
-        detail::applyFrameNodeOrder(graphs, {{"main", {"second", "first"}}});
-        CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
+        // FO-1: the order is refused by name before it becomes a cycle.
+        CHECK_THROWS_WITH(detail::applyFrameNodeOrder(graphs, {{"main", {"second", "first"}}}),
+                          Catch::Matchers::ContainsSubstring("frame_node_order.conflicts_dependency@1"));
     }
     SECTION("named AS order changes within the shared publication boundary") {
         const std::vector<SceneAccelerationStructureDefinition> definitions{{.name = "left"}, {.name = "right"}};
@@ -355,8 +361,9 @@ TEST_CASE("frame node ordering adds constraints without rewriting resource depen
         task.name = "first";
         task.ray_query_acceleration_structure = "scene";
         detail::insertSceneAccelerationStructureNodes(graphs, {}, {task}, true);
-        detail::applyFrameNodeOrder(graphs, {{"main", {"first", "__scene_acceleration_structure"}}});
-        CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
+        // FO-1: the order is refused by name before it becomes a cycle.
+        CHECK_THROWS_WITH(detail::applyFrameNodeOrder(graphs, {{"main", {"first", "__scene_acceleration_structure"}}}),
+                          Catch::Matchers::ContainsSubstring("frame_node_order.conflicts_dependency@1"));
     }
     SECTION("independent compute can precede shared AS construction") {
         ComputeTaskDefinition task;

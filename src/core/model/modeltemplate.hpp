@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <limits>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string>
@@ -172,10 +173,15 @@ void validateNamedMaterialResolutionDomains(
 // A non-empty mapping is a whole-model contract: every loaded primitive must
 // occur exactly once. Fragment loads cannot satisfy that contract and are
 // rejected instead of silently applying a partial mapping.
+// FO-1 `keep_own_material`: asked for a binding whose material neither
+// registry holds; true keeps the primitive's own material (the model's)
+// instead of refusing the model.
 void applyPrimitiveMaterialBindings(
     ModelTemplate &model, const PrimitiveMaterialBindingDocument &document,
     std::string_view model_name, std::optional<std::string_view> fragment = std::nullopt,
     std::span<const ModelTemplate::NamedMaterial>
-        project_materials = {});
+        project_materials = {},
+    const std::function<bool(const PrimitiveMaterialBinding &)>
+        &keep_own_material = {});
 
 } // namespace Pelican

@@ -658,6 +658,16 @@ Json listMaterials(const Json &params, PathResolver &paths) {
         }
         documents.push_back(std::move(entry));
     }
+    // FO-1: a document the engine refused at start is what the engine holds
+    // of it -- none of its materials -- whatever the file now says.
+    if (const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>())
+        for (auto &entry : documents)
+            if (const auto refused = project->refusedDocument(entry.at("path").get<std::string>())) {
+                entry["status"] = refused->status;
+                entry["reason"] = refused->reason;
+                if (refused->line) entry["line"] = *refused->line;
+                if (refused->column) entry["column"] = *refused->column;
+            }
     return {{"asset_data_digest", asset_data.digest}, {"documents", std::move(documents)}};
 }
 

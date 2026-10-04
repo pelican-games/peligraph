@@ -90,6 +90,33 @@ void requireKnownFrameGraphBufferKeys(const nlohmann::json &buffer,
     }
 }
 
+// FO-1: the same for an image: every key a render target entry is read by
+// (parseRenderTargetDefinitionsFromJson and the format resolver, IA-1's
+// `initial`, a feature parameter's binding constraints' `sample_count`). An
+// entry of the composed config's render_targets[] -- a rendering section's, a
+// preset's or a feature's, or a graph's render.image node lowered into one --
+// names no other: graph.image_key_unknown@1 {image, key, allowed}.
+constexpr std::array<std::string_view, 17> frame_graph_image_keys{
+    "name", "format", "format_class", "format_candidates", "extent_scale",
+    "width", "height", "layers", "mip_levels", "dimension", "usage",
+    "history", "clear_color", "role", "lifetime", "initial", "sample_count"};
+
+void requireKnownFrameGraphImageKeys(const nlohmann::json &image,
+                                     const std::string &name) {
+    for (auto it = image.begin(); it != image.end(); ++it) {
+        if (std::find(frame_graph_image_keys.begin(),
+                      frame_graph_image_keys.end(), it.key()) !=
+            frame_graph_image_keys.end())
+            continue;
+        auto allowed = nlohmann::json::array();
+        for (const auto key : frame_graph_image_keys)
+            allowed.push_back(std::string{key});
+        throw GraphRegistryError(
+            "graph.image_key_unknown@1",
+            {{"image", name}, {"key", it.key()}, {"allowed", std::move(allowed)}});
+    }
+}
+
 std::string requireString(const nlohmann::json &object, std::string_view key,
                           std::string_view context) {
     const auto found = object.find(key);
@@ -2241,6 +2268,7 @@ void synchronizeRenderPipelineProvenance(
                 requireString(target, "name", "render target");
             validateAuthoredRenderResourceName(
                 name, "render target");
+            requireKnownFrameGraphImageKeys(target, name);
             append_resource(
                 name,
                 "render_target",

@@ -14,6 +14,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -25,6 +26,7 @@
 #include <optional>
 #include <ostream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -848,5 +850,126 @@ TEST_CASE("RR-1 a reload refused for a root that is not JSON holds its bytes, th
     requireFixedAndLive(player, capture_path, generation);
     player.close();
     CHECK(player.exit_code == 0u);
+}
+#endif
+
+#ifdef _WIN32
+namespace {
+
+// FO-1: GL-5d's studio_gui_graph_order root: `left` and `right` draw the
+// gradient into images of their own and read nothing; `present` reads both and
+// shows the first (Blank's gradient).
+std::string fo1OrderRoot() {
+    const auto target = [](const char *name) {
+        return Json{{"name", name},
+                    {"extent_scale", 1},
+                    {"format", "R16G16B16A16_SFLOAT"},
+                    {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+                    {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}};
+    };
+    const auto pass = [](const char *name, Json input, const char *output) {
+        return Json{{"name", name},
+                    {"type", "fullscreen"},
+                    {"input", std::move(input)},
+                    {"output", {{"color", {output}}, {"depth", nullptr}}},
+                    {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}};
+    };
+    return Json{{"schema", "pelican.graph"},
+                {"version", 1},
+                {"definitions", Json::object()},
+                {"nodes", Json::array()},
+                {"outputs", Json::object()},
+                {"rendering",
+                 {{"render_targets", Json::array({target("left_color"), target("right_color")})},
+                  {"rendering_passes",
+                   Json::array({{{"name", "main_render"},
+                                 {"passes", Json::array({pass("left", Json::array(), "left_color"),
+                                                         pass("right", Json::array(), "right_color"),
+                                                         pass("present", {"left_color", "right_color"},
+                                                              "display")})}}})}}}}
+               .dump(2) +
+           "\n";
+}
+
+std::vector<std::string> framePlanNames(PlayerRpc &player) {
+    std::vector<std::string> names;
+    const auto plan = player.result("get_frame_plan");
+    for (const auto &node : plan.at("nodes"))
+        names.push_back(node.at("name").get<std::string>());
+    return names;
+}
+
+std::ptrdiff_t positionOf(const std::vector<std::string> &names, std::string_view name) {
+    const auto found = std::find(names.begin(), names.end(), name);
+    REQUIRE(found != names.end());
+    return found - names.begin();
+}
+
+} // namespace
+
+TEST_CASE("FO-1 Order... swaps two passes of the rendering section with no dependency through edit_frame_node_order, "
+          "and an order against a read is refused by name",
+          "[fo1][frame-node-order][rpc]") {
+    TempProject project{"fo1_order"};
+    writeFile(project.rootPath(), fo1OrderRoot());
+    const auto capture_path = project.root / "capture.png";
+    PlayerRpc player{project.root, project.stderrLog("fo1_order")};
+    REQUIRE(player.result("get_status").at("render_pipeline").at("state") == "ready");
+    auto names = framePlanNames(player);
+    REQUIRE(positionOf(names, "left") < positionOf(names, "right"));
+    REQUIRE(positionOf(names, "right") < positionOf(names, "present"));
+    const auto generation = publishedGeneration(player);
+    const auto edit = [&](const Json &orders) {
+        const auto context = player.result("get_frame_node_order");
+        return player.settle(player.result(
+            "edit_frame_node_order",
+            {{"base_source_digest", context.at("source_digest").at("hex")}, {"orders", orders}}));
+    };
+
+    // 1. The plan's whole list with left and right swapped, as Order... sends
+    // it: committed, published, and the plan runs right first.
+    auto swapped = names;
+    std::iter_swap(swapped.begin() + positionOf(names, "left"), swapped.begin() + positionOf(names, "right"));
+    {
+        const auto result = edit({{"main_render", swapped}});
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+    }
+    CHECK(publishedGeneration(player) > generation);
+    names = framePlanNames(player);
+    CHECK(positionOf(names, "right") < positionOf(names, "left"));
+    CHECK(positionOf(names, "left") < positionOf(names, "present"));
+    CHECK(Json::parse(readFile(project.rootPath())).at("rendering").at("frame_node_order") ==
+          Json{{"main_render", swapped}});
+    requireBlankGradient(capture(player, capture_path));
+
+    // 2. present before left, whose image it reads: refused by name, nothing
+    // written, the plan as it was.
+    const auto written = readFile(project.rootPath());
+    {
+        const auto result = edit({{"main_render", {"present", "left"}}});
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "rejected");
+        const auto &error = result.at("error");
+        CHECK(error.at("code") == "frame_node_order.conflicts_dependency@1");
+        CHECK(error.at("graph") == "main_render");
+        CHECK(error.at("first") == "present");
+        CHECK(error.at("second") == "left");
+        CHECK(error.at("reason") == "reads");
+        CHECK(error.at("resource") == "left_color");
+    }
+    CHECK(readFile(project.rootPath()) == written);
+    names = framePlanNames(player);
+    CHECK(positionOf(names, "right") < positionOf(names, "left"));
+
+    // 3. Started again on the written order: the same plan.
+    player.close();
+    CHECK(player.exit_code == 0u);
+    PlayerRpc again{project.root, project.stderrLog("fo1_order_again")};
+    REQUIRE(again.result("get_status").at("render_pipeline").at("state") == "ready");
+    names = framePlanNames(again);
+    CHECK(positionOf(names, "right") < positionOf(names, "left"));
+    again.close();
+    CHECK(again.exit_code == 0u);
 }
 #endif

@@ -73,7 +73,9 @@ void applyPrimitiveMaterialBindings(
     ModelTemplate &model, const PrimitiveMaterialBindingDocument &document,
     std::string_view model_name, std::optional<std::string_view> fragment,
     std::span<const ModelTemplate::NamedMaterial>
-        project_materials) {
+        project_materials,
+    const std::function<bool(const PrimitiveMaterialBinding &)>
+        &keep_own_material) {
     const auto context = "material bindings for model '" + std::string{model_name} + "'";
     validateNamedMaterialResolutionDomains(
         model, project_materials, model_name);
@@ -87,12 +89,15 @@ void applyPrimitiveMaterialBindings(
     }
 
     std::unordered_map<std::uint64_t, const ModelPrimitiveRefInfo *> available;
+    // FO-1: the material each primitive draws with before the bindings.
+    std::unordered_map<std::uint64_t, GlobalMaterialId> own_material;
     for (const auto &group : model.material_primitives) {
         for (const auto &primitive : group.primitives) {
             const auto key = primitiveKey(primitive.mesh_index, primitive.primitive_index);
             // A GLB mesh may be instanced by several nodes. One stable
             // mesh/primitive binding intentionally applies to every occurrence.
             available.try_emplace(key, &primitive);
+            own_material.try_emplace(key, group.material);
         }
     }
 
@@ -135,6 +140,10 @@ void applyPrimitiveMaterialBindings(
             gltf_material != nullptr
                 ? gltf_material
                 : project_material;
+        if (material == nullptr && keep_own_material && keep_own_material(binding)) {
+            resolved.emplace(key, own_material.at(key));
+            continue;
+        }
         if (material == nullptr) {
             throw std::runtime_error(context + " USD path '" + binding.usd_path +
                                      "' references missing material '" +

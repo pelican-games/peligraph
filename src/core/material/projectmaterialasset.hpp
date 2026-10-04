@@ -3,6 +3,7 @@
 #include "../container.hpp"
 #include "../model/modeltemplate.hpp"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -64,6 +65,37 @@ DECLARE_MODULE(ProjectMaterialAssetContainer) {
     // materials[] reference), or nullopt for a name that is not registered.
     std::optional<std::string> documentOf(
         std::string_view name) const;
+
+    // FO-1: a listed document the engine could not register at start. Without
+    // --strict-assets the engine starts without its materials (the others are
+    // registered as before) and lists it in the problem list:
+    //   {severity: "error", source: "startup", code, message,
+    //    document: "project://<path>", document_kind: "material",
+    //    line?, column?, fields: {path, reason, line?, column?}}
+    // code material.document_unknown@1 when the file is not there (status
+    // "missing"), material.document_invalid@1 when it is not JSON (line and
+    // column of the error), not a pelican.material document, or does not
+    // register (a field the schema refuses, a surface that does not load, a
+    // name another document holds; the reason says which) (status "invalid").
+    // With --strict-assets the start fails as before.
+    struct RefusedDocument {
+        std::string status;
+        std::string code;
+        std::string reason;
+        std::optional<std::uint64_t> line;
+        std::optional<std::uint64_t> column;
+    };
+    std::optional<RefusedDocument> refusedDocument(
+        std::string_view reference) const;
+    bool hasRefusedDocuments() const noexcept;
+    // FO-1: a model whose material bindings name materials no registered
+    // document holds while a listed document was refused: its primitives keep
+    // the model's own material, and the problem list has one warning for it:
+    //   {severity: "warning", source: "startup", code:
+    //    "material.binding_unresolved@1", message, document_kind: "material",
+    //    fields: {model, materials: [...]}}
+    void noteUnresolvedBindings(const std::string &model,
+                                std::vector<std::string> materials);
 };
 
 } // namespace Pelican

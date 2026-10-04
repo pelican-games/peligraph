@@ -4780,6 +4780,160 @@ TEST_CASE("Frame node order edits persist and preserve the old state on invalid 
     }
 }
 
+namespace {
+
+// FO-1: GL-5d's studio_gui_graph_order root: a graph root whose rendering
+// section draws `left` and `right` (each into an image of its own, reading
+// nothing) and `present`, which reads both and writes the display. `edit`
+// changes the passes before the root is written.
+std::string fo1OrderRoot(const std::function<void(Json &passes, Json &targets)> &edit = {}) {
+    const auto target = [](const char *name) {
+        return Json{{"name", name},
+                    {"extent_scale", 1},
+                    {"format", "R16G16B16A16_SFLOAT"},
+                    {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+                    {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}};
+    };
+    const auto pass = [](const char *name, Json input, const char *output) {
+        return Json{{"name", name},
+                    {"type", "fullscreen"},
+                    {"input", std::move(input)},
+                    {"output", {{"color", {output}}, {"depth", nullptr}}},
+                    {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}};
+    };
+    Json targets = Json::array({target("left_color"), target("right_color")});
+    Json passes = Json::array({pass("left", Json::array(), "left_color"), pass("right", Json::array(), "right_color"),
+                               pass("present", {"left_color", "right_color"}, "display")});
+    if (edit) edit(passes, targets);
+    return Json{{"schema", "pelican.graph"},
+                {"version", 1},
+                {"definitions", Json::object()},
+                {"nodes", Json::array()},
+                {"outputs", Json::object()},
+                {"rendering",
+                 {{"render_targets", targets},
+                  {"rendering_passes", Json::array({{{"name", "main_render"}, {"passes", passes}}})}}}}
+               .dump(2) +
+           "\n";
+}
+
+} // namespace
+
+TEST_CASE("FO-1 frame_node_order swaps two passes of the rendering section with no dependency, and an order that "
+          "contradicts a dependency is refused naming the two passes and the relation",
+          "[render-config-editor][frame-node-order][fo1]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    std::unique_ptr<RenderConfigEditorService> service;
+    std::string before;
+    const auto start = [&](const std::string &root) {
+        writeBytes(project.render_config, root);
+        before = root;
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+    };
+    const auto position = [&](std::string_view name) {
+        const auto &nodes = runtime.frame_plan.at("nodes");
+        const auto found = std::find_if(nodes.begin(), nodes.end(), [&](const auto &node) {
+            return node.at("name").template get_ref<const std::string &>() == name;
+        });
+        REQUIRE(found != nodes.end());
+        return found - nodes.begin();
+    };
+    // edit_frame_node_order as Order... sends it, settled.
+    const auto order = [&](const Json &orders) {
+        const auto accepted = service->editFrameNodeOrder(
+            {{"base_source_digest", service->getFrameNodeOrder(Json::object()).at("source_digest").at("hex")},
+             {"orders", orders}});
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        return Json::parse(service->getResult({{"ticket", accepted.at("ticket")}}).dump());
+    };
+    const auto requireConflict = [&](const Json &result, std::string_view first, std::string_view second,
+                                     std::string_view reason) {
+        INFO(result.dump(2));
+        REQUIRE(result.at("committed") == false);
+        const auto &error = result.at("error");
+        CHECK(error.at("code") == "frame_node_order.conflicts_dependency@1");
+        CHECK(error.at("graph") == "main_render");
+        CHECK(error.at("first") == std::string{first});
+        CHECK(error.at("second") == std::string{second});
+        CHECK(error.at("reason") == std::string{reason});
+        // Nothing was written and the plan is the one before.
+        CHECK(readBytes(project.render_config) == before);
+        CHECK(position("left") < position("right"));
+    };
+
+    SECTION("two passes with no dependency are swapped, the whole list as Order... sends it or the two alone") {
+        start(fo1OrderRoot());
+        REQUIRE(position("left") < position("right"));
+        REQUIRE(position("right") < position("present"));
+        Json names = Json::array();
+        for (const auto &node : runtime.frame_plan.at("nodes")) names.push_back(node.at("name"));
+        const auto left = std::find(names.begin(), names.end(), Json("left"));
+        const auto right = std::find(names.begin(), names.end(), Json("right"));
+        std::iter_swap(left, right);
+        const auto whole = order({{"main_render", names}});
+        INFO(whole.dump(2));
+        REQUIRE(whole.at("committed") == true);
+        CHECK(position("right") < position("left"));
+        CHECK(position("left") < position("present"));
+        CHECK(Json::parse(readBytes(project.render_config)).at("rendering").at("frame_node_order") ==
+              Json{{"main_render", names}});
+        // Back to the declared order by the two alone.
+        const auto back = order({{"main_render", {"left", "right"}}});
+        REQUIRE(back.at("committed") == true);
+        CHECK(position("left") < position("right"));
+        const auto again = order({{"main_render", {"right", "left"}}});
+        REQUIRE(again.at("committed") == true);
+        CHECK(position("right") < position("left"));
+        // Reopened: the plan keeps the order.
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        CHECK(position("right") < position("left"));
+    }
+    SECTION("a pass before the pass whose image it reads: reads, with the image") {
+        start(fo1OrderRoot());
+        const auto result = order({{"main_render", {"present", "left"}}});
+        requireConflict(result, "present", "left", "reads");
+        CHECK(result.at("error").at("resource") == "left_color");
+        CHECK_FALSE(result.at("error").contains("via"));
+    }
+    SECTION("against a written after: after") {
+        start(fo1OrderRoot([](Json &passes, Json &) { passes.at(1)["after"] = {"left"}; }));
+        requireConflict(order({{"main_render", {"right", "left"}}}), "right", "left", "after");
+    }
+    SECTION("against a written before: before") {
+        start(fo1OrderRoot([](Json &passes, Json &) { passes.at(0)["before"] = {"right"}; }));
+        requireConflict(order({{"main_render", {"right", "left"}}}), "right", "left", "before");
+    }
+    SECTION("a pass of a later canonical bucket before a scene pass: canonical_order, with the anchor") {
+        // `tint` is in the post_main bucket; `present` reads it, so it is no
+        // pass nothing reads.
+        start(fo1OrderRoot([](Json &passes, Json &targets) {
+            targets.push_back(targets.at(0));
+            targets.back()["name"] = "tint_color";
+            Json tint = passes.at(0);
+            tint["name"] = "tint";
+            tint["output"]["color"] = {"tint_color"};
+            tint["canonical_anchor"] = "post_main";
+            passes.at(2)["input"].push_back("tint_color");
+            passes.insert(passes.begin() + 2, tint);
+        }));
+        REQUIRE(position("right") < position("tint"));
+        const auto result = order({{"main_render", {"tint", "left"}}});
+        requireConflict(result, "tint", "left", "canonical_order");
+        CHECK(result.at("error").at("anchor").get<std::string>().starts_with("__anchor_"));
+        CHECK_FALSE(result.at("error").at("via").empty());
+        // In the buckets' order, the same two are accepted.
+        const auto agreed = order({{"main_render", {"left", "tint"}}});
+        CHECK(agreed.at("committed") == true);
+    }
+}
+
 TEST_CASE("Compute task creation and removal publish project features transactionally",
           "[render-config-editor][compute-task-create]") {
     TemporaryAnimgraphProject project;
@@ -10208,7 +10362,7 @@ TEST_CASE("RD-1b restore_render_documents creates and deletes only what a compos
         CHECK(error.at("code") == "render_document_not_writable");
         CHECK(error.at("method") == "restore_render_documents");
         CHECK(error.at("reference") == reference);
-        CHECK(error.at("reason") == reason);
+        CHECK(error.at("reason") == std::string{reason});
     };
 
     SECTION("a document outside the project is not created, even when the restored root names it") {

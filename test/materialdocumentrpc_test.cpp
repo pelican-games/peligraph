@@ -4,6 +4,7 @@
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -1070,6 +1071,129 @@ TEST_CASE("EB-1 a Blank box's material is renamed while bound, deleted once unbo
         CHECK(reddish(pixel));
     }
     GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+// FO-1. A material document asset_data lists that does not read does not stop
+// the engine: it starts without that document's materials, lists it in the
+// problem list (and list_materials says so), and the box bound to its material
+// draws with its own. --strict-assets keeps the start failing.
+TEST_CASE("FO-1 a Blank box whose material document is broken starts, is listed in get_problems and draws with "
+          "its own material",
+          "[fo1][material][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("fo1");
+    const auto root = makeBlankBoxProject(dir.root);
+    const auto capture = dir.root / "capture.png";
+    const std::string path = "materials/paint.material.json";
+
+    // A red material bound to the box, written as MT-1 writes it.
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        const auto actor =
+            rpc.result("open_editor_session", {{"display_name", "FO-1"}}).at("actor_id").get<std::uint64_t>();
+        REQUIRE(rpc.edit(actor, spawnCube()).at("status") == "committed");
+        const Json red{1.0, 0.0, 0.0, 1.0};
+        REQUIRE(rpc.result("create_material", {{"path", path},
+                                               {"surface", openPbrOpaque},
+                                               {"values", {{"base_color", red}, {"emission_color", red}}}})
+                    .at("applied") == "live");
+        REQUIRE(rpc.result("bind_material", {{"model", cube}, {"material", "paint"}}).at("applied") == "live");
+        const auto pixel = rpc.centre(capture);
+        INFO("bound " << pixel);
+        REQUIRE(reddish(pixel));
+        (void)rpc.result("save_scene");
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    const auto document = readFile(root / path);
+    const auto problemsOf = [](Rpc &rpc, std::string_view code) {
+        auto found = Json::array();
+        const auto listed = rpc.result("get_problems");
+        for (const auto &problem : listed.at("problems"))
+            if (problem.at("code") == std::string{code}) found.push_back(problem);
+        return found;
+    };
+    // Started on the documents as they are: the box draws grey, with the
+    // primitive's own material, and the problem list has the document and the
+    // binding that could not be kept.
+    const auto startBroken = [&](std::string_view status, std::string_view code) {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        CHECK(rpc.result("scene_tree").dump().find("Box") != std::string::npos);
+        {
+            const auto pixel = rpc.centre(capture);
+            INFO("broken " << pixel);
+            CHECK_FALSE(reddish(pixel));
+            CHECK(pixel.r < 230);
+        }
+        // The bindings document is kept as it is written.
+        CHECK(rpc.result("get_material_bindings", {{"model", cube}}).at("primitives").at(0).at("material") ==
+              "paint");
+
+        const auto refused = problemsOf(rpc, code);
+        INFO(rpc.result("get_problems").dump(2));
+        REQUIRE(refused.size() == 1);
+        const auto &problem = refused.at(0);
+        CHECK(problem.at("severity") == "error");
+        CHECK(problem.at("source") == "startup");
+        CHECK(problem.at("document") == "project://" + path);
+        CHECK(problem.at("document_kind") == "material");
+        CHECK(problem.at("fields").at("path") == path);
+        CHECK_FALSE(problem.at("fields").at("reason").get<std::string>().empty());
+        const auto binding = problemsOf(rpc, "material.binding_unresolved@1");
+        REQUIRE(binding.size() == 1);
+        CHECK(binding.at(0).at("severity") == "warning");
+        CHECK(binding.at(0).at("document_kind") == "material");
+        CHECK(binding.at(0).at("fields").at("model") == std::string{cube});
+        CHECK(binding.at(0).at("fields").at("materials") == Json::array({"paint"}));
+        const auto summary = rpc.result("get_status").at("problems");
+        CHECK(summary.at("errors") == 1);
+        CHECK(summary.at("warnings") == 1);
+
+        const auto listed = rpc.result("list_materials").at("documents");
+        REQUIRE(listed.size() == 1);
+        CHECK(listed.at(0).at("path") == path);
+        CHECK(listed.at(0).at("status") == std::string{status});
+        CHECK(listed.at(0).at("reason") == problem.at("fields").at("reason"));
+        GET_MODULE(VulkanManageCore).waitIdle();
+        return problem;
+    };
+
+    SECTION("not JSON: invalid, with the line and column") {
+        writeFile(root / path, document.substr(0, document.size() / 2));
+        const auto problem = startBroken("invalid", "material.document_invalid@1");
+        CHECK(problem.at("line").get<int>() >= 1);
+        CHECK(problem.at("column").get<int>() >= 1);
+    }
+    SECTION("a surface that does not load: invalid, with the registration's reason") {
+        auto broken = Json::parse(document);
+        broken.at("materials").at(0)["surface"] = "engine://surfaces/openpbr/nothing_here.surface";
+        writeFile(root / path, broken.dump(2));
+        const auto problem = startBroken("invalid", "material.document_invalid@1");
+        CHECK_FALSE(problem.contains("line"));
+        CHECK(problem.at("fields").at("reason").get<std::string>().find("nothing_here") != std::string::npos);
+    }
+    SECTION("gone: missing") {
+        std::filesystem::remove(root / path);
+        (void)startBroken("missing", "material.document_unknown@1");
+    }
+    SECTION("--strict-assets: the start fails as before") {
+        writeFile(root / path, document.substr(0, document.size() / 2));
+        FastModuleContainer modules;
+        configureHeadless(root);
+        GET_MODULE(EngineLaunchConfig).strict_assets = true;
+        (void)GET_MODULE(Renderer);
+        CHECK_THROWS((void)GET_MODULE(ProjectMaterialAssetContainer));
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
 }
 
 } // namespace Pelican

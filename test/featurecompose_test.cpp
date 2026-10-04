@@ -4657,6 +4657,85 @@ TEST_CASE("EB-1 a buffer entry with a key the frame graph does not read is refus
     REQUIRE_NOTHROW(resolveRenderPipeline(RenderPipelineRequest{graph}, {}));
 }
 
+TEST_CASE("FO-1 an image entry with a key the frame graph does not read is refused by name",
+          "[render-feature][graph-composition][fo1]") {
+    using Json = nlohmann::json;
+    const Json allowed{"name", "format", "format_class", "format_candidates", "extent_scale", "width",
+                       "height", "layers", "mip_levels", "dimension", "usage", "history",
+                       "clear_color", "role", "lifetime", "initial", "sample_count"};
+    const auto refusal = [](const auto &resolve) -> Json {
+        try {
+            (void)resolve();
+        } catch (const GraphRegistryError &error) {
+            CHECK(error.code() == "graph.image_key_unknown@1");
+            return error.detail();
+        } catch (const std::exception &error) {
+            FAIL("expected graph.image_key_unknown@1, got: " << error.what());
+        }
+        FAIL("expected graph.image_key_unknown@1");
+        return nullptr;
+    };
+    const auto noFeature = RenderFeatureComposeDependencies{[](std::string_view) -> std::string {
+        throw std::runtime_error("no feature is read");
+    }, true};
+
+    // A rendering section's render_targets[].
+    auto config = baseConfigWithFeature("unused.json");
+    config["features"] = Json::array();
+    REQUIRE_NOTHROW(composeRenderFeatureConfig(config, noFeature));
+    auto &target = config.at("render_targets").at(0);
+    const auto name = target.at("name").get<std::string>();
+    target["extnet_scale"] = target.value("extent_scale", 1.0);
+    const auto section = refusal([&] { return composeRenderFeatureConfig(config, noFeature); });
+    CHECK(section.at("image") == name);
+    CHECK(section.at("key") == "extnet_scale");
+    CHECK(section.at("allowed") == allowed);
+
+    // A feature's render_targets[].
+    const auto composeWith = [](Json image) {
+        const Json feature{{"schema", "pelican.render_feature"},
+                           {"version", 1},
+                           {"name", "tinted"},
+                           {"render_targets", Json::array({std::move(image)})}};
+        auto with_feature = baseConfigWithFeature("tinted.json");
+        with_feature["features"] = Json::array({"tinted.json"});
+        return composeRenderFeatureConfig(
+            with_feature,
+            RenderFeatureComposeDependencies{[text = feature.dump()](std::string_view) { return text; }, true});
+    };
+    const Json tint{{"name", "tinted.tint"}, {"extent_scale", 0.5}, {"format", "R16G16B16A16_SFLOAT"},
+                    {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}};
+    REQUIRE_NOTHROW(composeWith(tint));
+    auto misspelled = tint;
+    misspelled["histroy"] = true;
+    const auto feature = refusal([&] { return composeWith(misspelled); });
+    CHECK(feature.at("image") == "tinted.tint");
+    CHECK(feature.at("key") == "histroy");
+
+    // A graph's render.image node.
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    Json graph{{"schema", "pelican.graph"}, {"version", 1},
+        {"nodes", Json::array({
+            {{"id", "image"}, {"op", "render.image"},
+             {"parameters", {{"type", type}, {"format", "R32G32B32A32_SFLOAT"}, {"extent_scale", 1.0},
+                             {"lifetme", "persistent"}}},
+             {"outputs", {"resource"}}},
+            {{"id", "draw"}, {"op", "render.fullscreen"},
+             {"parameters", {{"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "project://custom"}}},
+                 {"color_load_op", "dont_care"},
+                 {"ports", {{"color", {{"kind", "image"}, {"type", type}, {"access", "write"},
+                                       {"attachment", "color"}, {"location", 0}}}}}}},
+             {"inputs", {{"color", {{"node", "image"}, {"port", "resource"}}}}}, {"outputs", {"color"}}}
+        })}, {"outputs", {{"color", {{"node", "draw"}, {"port", "color"}}}}},
+        {"rendering", {{"render_targets", Json::array()}, {"rendering_passes", Json::array()}}}};
+    const auto node = refusal([&] { return resolveRenderPipeline(RenderPipelineRequest{graph}, {}); });
+    CHECK(node.at("image") == "image");
+    CHECK(node.at("key") == "lifetme");
+    graph.at("nodes").at(0).at("parameters").erase("lifetme");
+    REQUIRE_NOTHROW(resolveRenderPipeline(RenderPipelineRequest{graph}, {}));
+}
+
 TEST_CASE("common graph buffer ports lower into native compute declarations", "[render-feature][graph-composition]") {
     auto document = nlohmann::json::parse(R"({
       "schema":"pelican.graph","version":1,

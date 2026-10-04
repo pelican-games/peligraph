@@ -52,6 +52,9 @@ inline constexpr std::string_view problemSeverityWarning = "warning";
 //   preset          the pipeline preset the root selects
 //   feature         a render feature document the root (or its preset) enables
 //   shader          a shader source file
+//   material        a material document asset_data lists (FO-1), or a
+//                   model's material bindings that name a material no
+//                   registered document holds (fields.model)
 inline constexpr std::string_view problemKindRoot = "root";
 inline constexpr std::string_view problemKindRootGraph = "root_graph";
 inline constexpr std::string_view problemKindDefinition = "definition";
@@ -59,12 +62,16 @@ inline constexpr std::string_view problemKindRootRendering = "root_rendering";
 inline constexpr std::string_view problemKindPreset = "preset";
 inline constexpr std::string_view problemKindFeature = "feature";
 inline constexpr std::string_view problemKindShader = "shader";
+inline constexpr std::string_view problemKindMaterial = "material";
 
 // The owner of a set of problems: a new attempt of the same owner replaces
 // its problems (a failure) or clears them (a commit).
 inline constexpr std::string_view renderPipelineProblemDomain =
     "render_pipeline";
 inline constexpr std::string_view shaderProblemDomain = "shaders";
+// FO-1: the material documents refused at start and the bindings that kept
+// their model's material for want of them (ProjectMaterialAssetContainer).
+inline constexpr std::string_view materialProblemDomain = "materials";
 
 // One "Shader compile failed: <path>\n<log>" the shader library wrote
 // (shaderlibrary.cpp); a reload's error joins several with "; ".

@@ -1,14 +1,18 @@
 #include "projectmaterialasset.hpp"
 
 #include "../../project/assetdataformat.hpp"
+#include "../../project/graphcomposition.hpp"
 #include "../../project/materialformat.hpp"
+#include "../../project/renderconfigdocument.hpp"
 #include "../../project/materiallowering.hpp"
 #include "../../project/surfaceformat.hpp"
+#include "../launchconfig.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../watch/assetkey.hpp"
+#include "../watch/problemlist.hpp"
 #include "materialcontainer.hpp"
 #include "material.hpp"
 #include "materialshaderconfig.hpp"
@@ -19,6 +23,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <nlohmann/json.hpp>
 #include <set>
@@ -241,7 +246,101 @@ struct ProjectMaterialAssetContainer::Impl {
         std::span<const std::string> references,
         bool replace = false,
         std::vector<GlobalMaterialId> *previous = nullptr);
+
+    // FO-1: the documents refused at start, by reference, and the models
+    // whose bindings kept their own material for want of them.
+    std::map<std::string, RefusedDocument, std::less<>> refused;
+    std::map<std::string, std::vector<std::string>> unresolved_bindings;
+    // The material problems as they are now, in the problem list.
+    void publishProblems() const;
 };
+
+namespace {
+
+// FO-1: what a listed document that did not register is: not there, not
+// JSON (where), or what registering it said.
+ProjectMaterialAssetContainer::RefusedDocument refusedDocumentOf(
+    const std::string &reference, std::string registration_error) {
+    ProjectMaterialAssetContainer::RefusedDocument refused{
+        .status = "invalid",
+        .code = "material.document_invalid@1",
+        .reason = std::move(registration_error),
+    };
+    std::string bytes;
+    try {
+        const auto path = GET_MODULE(PathResolver).resolveExistingFile(reference);
+        std::ifstream input{path, std::ios::binary};
+        if (!input.is_open()) throw std::runtime_error("project material document is missing: " + path.string());
+        bytes.assign(std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{});
+    } catch (const std::exception &error) {
+        refused.status = "missing";
+        refused.code = "material.document_unknown@1";
+        refused.reason = error.what();
+        return refused;
+    }
+    if (const auto syntax = renderDocumentSyntax(bytes, reference)) {
+        refused.reason = syntax->value("reason", refused.reason);
+        if (syntax->contains("line")) refused.line = syntax->at("line").get<std::uint64_t>();
+        if (syntax->contains("column")) refused.column = syntax->at("column").get<std::uint64_t>();
+    }
+    return refused;
+}
+
+nlohmann::json documentProblem(const std::string &reference,
+                               const ProjectMaterialAssetContainer::RefusedDocument &refused) {
+    nlohmann::json fields{{"path", reference}, {"reason", refused.reason}};
+    nlohmann::json problem{
+        {"severity", std::string{problemSeverityError}},
+        {"source", std::string{problemSourceStartup}},
+        {"code", refused.code},
+        {"message", refused.code + ": the material document '" + reference + "' " +
+                        (refused.status == "missing" ? "is missing" : "could not be read") +
+                        "; the engine started without its materials: " + refused.reason},
+        {"document_kind", std::string{problemKindMaterial}},
+    };
+    if (const auto document = graphDocumentReference(reference)) problem["document"] = *document;
+    if (refused.line) {
+        problem["line"] = *refused.line;
+        fields["line"] = *refused.line;
+    }
+    if (refused.column) {
+        problem["column"] = *refused.column;
+        fields["column"] = *refused.column;
+    }
+    problem["fields"] = std::move(fields);
+    return problem;
+}
+
+} // namespace
+
+void ProjectMaterialAssetContainer::Impl::publishProblems() const {
+    std::vector<nlohmann::json> problems;
+    for (const auto &[reference, document] : refused) problems.push_back(documentProblem(reference, document));
+    for (const auto &[model, materials] : unresolved_bindings) {
+        std::string names;
+        for (const auto &material : materials) names += (names.empty() ? "'" : ", '") + material + "'";
+        problems.push_back({
+            {"severity", std::string{problemSeverityWarning}},
+            {"source", std::string{problemSourceStartup}},
+            {"code", "material.binding_unresolved@1"},
+            {"message", "material.binding_unresolved@1: model '" + model + "' binds " + names +
+                            ", which no registered material document holds; its primitives draw with the "
+                            "model's own material"},
+            {"document_kind", std::string{problemKindMaterial}},
+            {"fields", {{"model", model}, {"materials", materials}}},
+        });
+    }
+    auto *list = FastModuleContainer::tryGet<ProblemList>();
+    if (list == nullptr) {
+        if (problems.empty()) return;
+        try {
+            list = &GET_MODULE(ProblemList);
+        } catch (const std::exception &) {
+            return;
+        }
+    }
+    list->replace(materialProblemDomain, std::move(problems));
+}
 
 std::vector<std::string>
 ProjectMaterialAssetContainer::Impl::registerDocuments(
@@ -528,7 +627,34 @@ ProjectMaterialAssetContainer::
          asset_data.materials) {
         references.push_back(declaration.path);
     }
-    (void)impl_->registerDocuments(references);
+    // FO-1: --strict-assets keeps a document that does not register fatal.
+    const auto *launch = FastModuleContainer::tryGet<EngineLaunchConfig>();
+    if (launch != nullptr && launch->strict_assets) {
+        (void)impl_->registerDocuments(references);
+        return;
+    }
+    try {
+        (void)impl_->registerDocuments(references);
+        return;
+    } catch (const std::exception &) {
+        // Taken back whole (registerDocuments registers all or nothing);
+        // registered again one document at a time below.
+    }
+    // FO-1: a document that does not register is left out and listed; the
+    // engine starts with the others' materials.
+    for (const auto &reference : references) {
+        try {
+            (void)impl_->registerDocuments(std::span<const std::string>{&reference, 1});
+        } catch (const std::exception &error) {
+            auto refused = refusedDocumentOf(reference, error.what());
+            LOG_ERROR(logger,
+                      "{}: the material document '{}' did not register; the engine starts without its "
+                      "materials (pass --strict-assets to stop instead): {}",
+                      refused.code, reference, refused.reason);
+            impl_->refused.insert_or_assign(reference, std::move(refused));
+        }
+    }
+    impl_->publishProblems();
 }
 
 ProjectMaterialAssetContainer::
@@ -608,6 +734,28 @@ ProjectMaterialAssetContainer::documentOf(
         return std::nullopt;
     }
     return found->second;
+}
+
+std::optional<ProjectMaterialAssetContainer::RefusedDocument>
+ProjectMaterialAssetContainer::refusedDocument(
+    std::string_view reference) const {
+    const auto found = impl_->refused.find(reference);
+    if (found == impl_->refused.end()) return std::nullopt;
+    return found->second;
+}
+
+bool ProjectMaterialAssetContainer::hasRefusedDocuments() const noexcept {
+    return !impl_->refused.empty();
+}
+
+void ProjectMaterialAssetContainer::noteUnresolvedBindings(
+    const std::string &model, std::vector<std::string> materials) {
+    std::sort(materials.begin(), materials.end());
+    materials.erase(std::unique(materials.begin(), materials.end()), materials.end());
+    auto &noted = impl_->unresolved_bindings[model];
+    if (noted == materials) return;
+    noted = std::move(materials);
+    impl_->publishProblems();
 }
 
 } // namespace Pelican
