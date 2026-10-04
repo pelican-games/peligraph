@@ -221,8 +221,12 @@ void collectFullscreenManifestEntries(
     std::string_view relative_path,
     std::vector<FullscreenManifestEntry> &entries) {
     if (node.is_object()) {
-        if (node.value("type", std::string{}) ==
-                "fullscreen" &&
+        // FR-4: a feature's required_targets entry carries a logical image
+        // `type` object ({semantic, arguments}); only a string `type` names
+        // a pass type.
+        const auto type = node.find("type");
+        if (type != node.end() && type->is_string() &&
+            *type == "fullscreen" &&
             node.contains("name") &&
             node.at("name").is_string()) {
             entries.push_back({

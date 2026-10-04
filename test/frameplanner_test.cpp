@@ -241,6 +241,17 @@ std::vector<ConfigCase> staticRenderingConfigCases() {
                 it.disable_recursion_pending();
                 continue;
             }
+            // GL-5e's studio_gui_graph_folded_edits draws its section's
+            // face_tint into cube_capture_color, a target only the project's
+            // features/cube_capture.json declares, so the section is not a
+            // flat config without feature composition (which the resolvers
+            // below leave out). Its scenario, gui_graph_folded_edits, opens
+            // it through the production composition.
+            if (entry.is_directory() &&
+                entry.path().filename() == "studio_gui_graph_folded_edits") {
+                it.disable_recursion_pending();
+                continue;
+            }
             if (!entry.is_regular_file() || entry.path().extension() != ".json") {
                 continue;
             }
@@ -252,6 +263,18 @@ std::vector<ConfigCase> staticRenderingConfigCases() {
             // passes live in the `rendering` section, and the shadow cases
             // below are legacy-shaped configs, so take the section. The
             // fixtures also hold flat configs that are not authored roots.
+            // A root with render.* nodes is not legacy-shaped: its section
+            // names resources (RTL-2s's studio_gui_rt_*: present reads the
+            // render.image `trace__color`) that exist only once the graph is
+            // lowered, which these cases do not do. Such a root is composed
+            // by production when its scenario opens it.
+            if (isRenderGraphRoot(json) && json.contains("nodes") &&
+                std::any_of(json.at("nodes").begin(), json.at("nodes").end(),
+                            [](const nlohmann::json &node) {
+                                return node.value("op", std::string{}).starts_with("render.");
+                            })) {
+                continue;
+            }
             const auto &section = sectionOrComposed(json);
             if (section.contains("rendering_passes")) {
                 cases.push_back(ConfigCase{
