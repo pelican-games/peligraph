@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
 #include <span>
@@ -13,6 +14,8 @@
 #include <vector>
 
 namespace Pelican {
+
+class PassContractRefusal;
 
 // Runtime owner of material documents declared by pelican.asset_data v1.
 // The exported span is the additive binding-resolution domain consumed by
@@ -79,12 +82,35 @@ DECLARE_MODULE(ProjectMaterialAssetContainer) {
     // register (a field the schema refuses, a surface that does not load, a
     // name another document holds; the reason says which) (status "invalid").
     // With --strict-assets the start fails as before.
+    //
+    // FO-2: a document that reads, but whose material a pass it is drawn by
+    // cannot draw because the pass does not declare what the material's
+    // surface uses (a surface querying the scene acceleration structure, a
+    // pass without ray_query: true), is status "unusable" and is listed as
+    //   {severity: "error", source: "startup", code:
+    //    "material.pass_contract_unmet@1", message, document?,
+    //    document_kind?, node?, fields: {material, material_document, pass,
+    //    passes?, requirement, reason}}
+    // `document` is where the pass is declared: the preset the root selects
+    // (document_kind "preset"), a feature (feature), the root's graph
+    // (root_graph, with `node`) or the root's rendering section
+    // (root_rendering); absent when that is not known or is an engine://
+    // document. `passes` only when more than one pass does not declare it.
+    // Once the published render pipeline changes, the document is registered
+    // again at the next frame (retryPassContractRefusals).
     struct RefusedDocument {
         std::string status;
         std::string code;
         std::string reason;
         std::optional<std::uint64_t> line;
         std::optional<std::uint64_t> column;
+        // FO-2: status "unusable" only.
+        std::string material;
+        std::vector<std::string> passes;
+        std::string requirement;
+        std::optional<std::string> pass_document;
+        std::optional<std::string> pass_document_kind;
+        std::optional<std::string> pass_node;
     };
     std::optional<RefusedDocument> refusedDocument(
         std::string_view reference) const;
@@ -114,6 +140,14 @@ DECLARE_MODULE(ProjectMaterialAssetContainer) {
         std::optional<std::string> restart_reason;
     };
     Recovered recoverDocument(const std::string &reference);
+    // FO-2: the documents refused for a pass's declaration (status
+    // "unusable"), registered again when the generation the material passes
+    // are read from is not the one they were refused in (a render edit or
+    // reload published since). One that registers leaves the list as
+    // recoverDocument says; one that still does not is listed by what it says
+    // now. The reload service calls it at the start of every frame; it does
+    // nothing while no document is refused that way.
+    void retryPassContractRefusals();
     // EB-2: the references of the documents refused at start.
     std::vector<std::string> refusedReferences() const;
     // EB-2: the refused document whose file the watch key names.
@@ -133,5 +167,20 @@ DECLARE_MODULE(ProjectMaterialAssetContainer) {
                            const std::string &error);
     void clearReloadFailure(const watch::AssetKey &key) noexcept;
 };
+
+// FO-2: material.pass_contract_unmet@1.
+inline constexpr std::string_view materialPassContractUnmetCode = "material.pass_contract_unmet@1";
+// The refusal (status "unusable") of the document `reference` a pass
+// refused to draw a material of, with where the pass is declared as far as
+// the published render pipeline knows it.
+ProjectMaterialAssetContainer::RefusedDocument materialPassContractRefusal(
+    const std::string &reference, const PassContractRefusal &refusal);
+// Its sentence (code first, as the problem list has it) and its fields
+// {material, material_document, pass, passes?, requirement, reason}.
+std::string materialPassContractUnmetMessage(
+    const ProjectMaterialAssetContainer::RefusedDocument &refused);
+nlohmann::json materialPassContractUnmetFields(
+    const std::string &reference,
+    const ProjectMaterialAssetContainer::RefusedDocument &refused);
 
 } // namespace Pelican

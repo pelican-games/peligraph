@@ -987,6 +987,17 @@ RayOccurrenceResolution EditorCommandService::resolveRayOccurrence(
     return dependencies_.resolve_ray_occurrence(occurrence_id);
 }
 
+EditorRayTableResult EditorCommandService::getRayTable() const {
+    if (!dependencies_.ray_table) return {};
+    auto result = dependencies_.ray_table();
+    if (dependencies_.resolved_scene) {
+        const auto &scene = selectScene(resolved().scenes(), std::nullopt);
+        for (const auto &object : scene.objects)
+            if (object.name) result.object_names.emplace(object.authoring_object_id.value, *object.name);
+    }
+    return result;
+}
+
 EditorListAssetsResult EditorCommandService::listAssets(const EditorListAssetsRequest &request) const {
     EditorListAssetsResult result;
     if (!dependencies_.assets) return result;
@@ -2146,6 +2157,43 @@ OrderedJson rayOccurrenceJson(const RayOccurrenceCatalogEntry &entry) {
     };
 }
 
+// The binding of a resolved row, as get_ray_occurrences reports it. EB-3:
+// get_ray_table reads its rows' group, binding and record from the same
+// function, so the two cannot differ.
+OrderedJson rayRowBindingJson(const RaySceneRow &row, const RaySceneRowSnapshot &plan) {
+    return {
+        {"group_index", row.group_index},
+        {"group_name", plan.group_names.at(row.group_index)},
+        {"group_source", row.binding_index ? "binding" : "layout_default"},
+        {"layout_reference", plan.layout_reference},
+        {"binding_reference", row.binding_index ? OrderedJson(plan.bindings_reference) : OrderedJson(nullptr)},
+        {"binding_index", row.binding_index ? OrderedJson(*row.binding_index) : OrderedJson(nullptr)},
+        {"record_value_source", row.geometry_kind == RayGeometryKind::aabbs
+            ? "procedural_record" : row.binding_index ? "binding" : "zero_default"},
+        {"material_reference", row.material_reference},
+        {"material_name", row.material_name},
+        {"material_index", row.material_index == std::numeric_limits<std::uint32_t>::max()
+            ? OrderedJson(nullptr) : OrderedJson(row.material_index)},
+        {"geometry_index", row.geometry_index == std::numeric_limits<std::uint32_t>::max()
+            ? OrderedJson(nullptr) : OrderedJson(row.geometry_index)},
+        {"geometry_flags", row.geometry_flags},
+        {"mask", row.instance_mask},
+        {"instance_flags", row.instance_flags},
+        {"custom_index", row.instance_custom_index},
+        {"setting_sources", {
+            {"mask", row.setting_sources.mask},
+            {"instance_flags", row.setting_sources.instance_flags},
+            {"custom_index", row.setting_sources.custom_index},
+            {"geometry_flags", row.setting_sources.geometry_flags},
+            {"geometry_rule_index", row.setting_sources.geometry_rule_index
+                ? OrderedJson(*row.setting_sources.geometry_rule_index) : OrderedJson(nullptr)},
+            {"override_row_id", row.setting_sources.override_row_id
+                ? OrderedJson(*row.setting_sources.override_row_id) : OrderedJson(nullptr)}}},
+        {"record_bytes", row.record_data.size()},
+        {"record_source", "scene_plan"},
+        {"record_fields", rayRecordFieldsJson(plan.record_members, row.record_data)}};
+}
+
 } // namespace
 
 
@@ -2163,40 +2211,8 @@ OrderedJson EditorCommandRpcAdapter::getRayOccurrences(
         encoded["binding"] = nullptr;
         if (entry.q) {
             const auto found = rows_by_q.find(*entry.q);
-            if (found != rows_by_q.end()) {
-                const auto &row = *found->second;
-                encoded["binding"] = {
-                    {"group_index", row.group_index},
-                    {"group_name", inventory.plan->group_names.at(row.group_index)},
-                    {"group_source", row.binding_index ? "binding" : "layout_default"},
-                    {"layout_reference", inventory.plan->layout_reference},
-                    {"binding_reference", row.binding_index ? OrderedJson(inventory.plan->bindings_reference) : OrderedJson(nullptr)},
-                    {"binding_index", row.binding_index ? OrderedJson(*row.binding_index) : OrderedJson(nullptr)},
-                    {"record_value_source", row.geometry_kind == RayGeometryKind::aabbs
-                        ? "procedural_record" : row.binding_index ? "binding" : "zero_default"},
-                    {"material_reference", row.material_reference},
-                    {"material_name", row.material_name},
-                    {"material_index", row.material_index == std::numeric_limits<std::uint32_t>::max()
-                        ? OrderedJson(nullptr) : OrderedJson(row.material_index)},
-                    {"geometry_index", row.geometry_index == std::numeric_limits<std::uint32_t>::max()
-                        ? OrderedJson(nullptr) : OrderedJson(row.geometry_index)},
-                    {"geometry_flags", row.geometry_flags},
-                    {"mask", row.instance_mask},
-                    {"instance_flags", row.instance_flags},
-                    {"custom_index", row.instance_custom_index},
-                    {"setting_sources", {
-                        {"mask", row.setting_sources.mask},
-                        {"instance_flags", row.setting_sources.instance_flags},
-                        {"custom_index", row.setting_sources.custom_index},
-                        {"geometry_flags", row.setting_sources.geometry_flags},
-                        {"geometry_rule_index", row.setting_sources.geometry_rule_index
-                            ? OrderedJson(*row.setting_sources.geometry_rule_index) : OrderedJson(nullptr)},
-                        {"override_row_id", row.setting_sources.override_row_id
-                            ? OrderedJson(*row.setting_sources.override_row_id) : OrderedJson(nullptr)}}},
-                    {"record_bytes", row.record_data.size()},
-                    {"record_source", "scene_plan"},
-                    {"record_fields", rayRecordFieldsJson(inventory.plan->record_members, row.record_data)}};
-            }
+            if (found != rows_by_q.end())
+                encoded["binding"] = rayRowBindingJson(*found->second, *inventory.plan);
         }
         entries.push_back(std::move(encoded));
     }
@@ -2226,6 +2242,128 @@ OrderedJson EditorCommandRpcAdapter::getRayOccurrences(
                        {"rejected_rows", std::move(rejected_rows)},
                        {"generation", inventory.plan ? OrderedJson(inventory.plan->generation)
                                                       : OrderedJson(nullptr)}};
+}
+
+// EB-3: the SBT table in one call -- every row of the scene's ray plan:
+// which object, model and material it is, the hit group it lands in, its
+// binding and record, and the TLASes it is an instance of. The triangle
+// rows are get_ray_occurrences' entries (same occurrences, same binding
+// function); procedural rows follow, by q. {limit, offset} page the rows.
+OrderedJson EditorCommandRpcAdapter::getRayTable(const Json &params) const {
+    constexpr std::string_view method = "get_ray_table";
+    requireObjectParams(params, method);
+    requireOnlyFields(params, {"limit", "offset"}, method);
+    constexpr std::uint64_t default_limit = 1024;
+    constexpr std::uint64_t max_limit = 65536;
+    std::uint64_t limit = default_limit;
+    std::uint64_t offset = 0;
+    if (const auto found = params.find("limit"); found != params.end()) {
+        limit = exactUnsignedInteger(*found, "get_ray_table limit");
+        if (limit == 0 || limit > max_limit)
+            invalidParams("get_ray_table limit must be in [1, " + std::to_string(max_limit) + "]");
+    }
+    if (const auto found = params.find("offset"); found != params.end())
+        offset = exactUnsignedInteger(*found, "get_ray_table offset");
+
+    const auto table = service_.getRayTable();
+    auto result = OrderedJson{
+        {"mode", table.mode ? OrderedJson(*table.mode) : OrderedJson(nullptr)},
+        {"generation", table.plan ? OrderedJson(table.plan->generation) : OrderedJson(nullptr)},
+        {"layout_reference", table.plan ? OrderedJson(table.plan->layout_reference) : OrderedJson(nullptr)},
+        {"bindings_reference", table.plan && !table.plan->bindings_reference.empty()
+            ? OrderedJson(table.plan->bindings_reference) : OrderedJson(nullptr)},
+    };
+    auto groups = OrderedJson::array();
+    auto acceleration_structures = OrderedJson::array();
+    auto rows = OrderedJson::array();
+    if (table.plan) {
+        const auto &plan = *table.plan;
+        for (std::size_t index = 0; index < plan.group_names.size(); ++index)
+            groups.push_back({{"index", index}, {"name", plan.group_names[index]},
+                              {"type", index < table.group_types.size()
+                                  ? OrderedJson(table.group_types[index]) : OrderedJson(nullptr)}});
+        acceleration_structures.push_back({{"name", "scene"}, {"instance_mask", nullptr}});
+        for (const auto &[name, mask] : table.named_acceleration_structures)
+            acceleration_structures.push_back({{"name", name}, {"instance_mask", mask}});
+        std::map<std::uint32_t, const RaySceneRow *> rows_by_q;
+        for (const auto &row : plan.rows) rows_by_q.emplace(row.q, &row);
+        const auto object_name = [&](std::uint64_t id) {
+            const auto found = table.object_names.find(id);
+            return found == table.object_names.end() ? OrderedJson(nullptr) : OrderedJson(found->second);
+        };
+        // Group, binding, record and TLASes of a row, or nulls for an
+        // occurrence the plan has no row for.
+        const auto place = [&](OrderedJson &encoded, const RaySceneRow *row) {
+            encoded["q"] = row ? OrderedJson(row->q) : OrderedJson(nullptr);
+            encoded["group"] = nullptr;
+            encoded["group_type"] = nullptr;
+            encoded["binding_index"] = nullptr;
+            encoded["record_fields"] = nullptr;
+            encoded["material_reference"] = nullptr;
+            encoded["mask"] = nullptr;
+            auto tlas = OrderedJson::array();
+            if (row) {
+                const auto binding = rayRowBindingJson(*row, plan);
+                encoded["group"] = binding.at("group_name");
+                encoded["group_type"] = row->group_index < table.group_types.size()
+                    ? OrderedJson(table.group_types[row->group_index]) : OrderedJson(nullptr);
+                encoded["binding_index"] = binding.at("binding_index");
+                encoded["record_fields"] = binding.at("record_fields");
+                encoded["material_reference"] = binding.at("material_reference");
+                encoded["mask"] = binding.at("mask");
+                // The scene TLAS holds every row; a named one the rows whose
+                // instance mask meets its own (FrameBuild::recordNamedTopLevel).
+                tlas.push_back("scene");
+                for (const auto &[name, mask] : table.named_acceleration_structures)
+                    if ((row->instance_mask & mask) != 0) tlas.push_back(name);
+            }
+            encoded["tlas"] = std::move(tlas);
+        };
+        for (const auto &entry : table.entries) {
+            const auto occurrence = rayOccurrenceJson(entry);
+            OrderedJson encoded{
+                {"object", object_name(entry.authoring_object_id)},
+                {"authoring_object_id", entry.authoring_object_id},
+                {"occurrence_id", occurrence.at("occurrence_id")},
+                {"geometry", "triangles"},
+                {"model", occurrence.at("asset")},
+                {"mesh", entry.mesh},
+                {"primitive", entry.primitive},
+                {"material", entry.material},
+                {"eligibility", occurrence.at("eligibility")},
+            };
+            const auto found = entry.q ? rows_by_q.find(*entry.q) : rows_by_q.end();
+            place(encoded, found == rows_by_q.end() ? nullptr : found->second);
+            rows.push_back(std::move(encoded));
+        }
+        for (const auto &row : plan.rows) {
+            if (row.geometry_kind != RayGeometryKind::aabbs) continue;
+            const auto asset = table.procedural_assets.find(row.q);
+            OrderedJson encoded{
+                {"object", object_name(row.authoring_object_id)},
+                {"authoring_object_id", row.authoring_object_id},
+                {"occurrence_id", nullptr},
+                {"geometry", "procedural"},
+                {"model", asset == table.procedural_assets.end()
+                    ? OrderedJson(nullptr) : OrderedJson(asset->second)},
+                {"material", row.material_name.empty() ? OrderedJson(nullptr) : OrderedJson(row.material_name)},
+                {"eligibility", "ok"},
+            };
+            place(encoded, &row);
+            rows.push_back(std::move(encoded));
+        }
+    }
+    const auto total = static_cast<std::uint64_t>(rows.size());
+    auto page = OrderedJson::array();
+    for (std::uint64_t index = offset; index < total && index - offset < limit; ++index)
+        page.push_back(std::move(rows[static_cast<std::size_t>(index)]));
+    result["groups"] = std::move(groups);
+    result["acceleration_structures"] = std::move(acceleration_structures);
+    result["rows"] = std::move(page);
+    result["total"] = total;
+    result["offset"] = offset;
+    result["truncated"] = offset < total && total - offset > limit;
+    return result;
 }
 
 OrderedJson EditorCommandRpcAdapter::resolveRayOccurrence(

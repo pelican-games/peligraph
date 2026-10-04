@@ -1,4 +1,5 @@
 #include "raytracingvalidation.hpp"
+#include "raytracingrefusal.hpp"
 
 #include <iomanip>
 #include <limits>
@@ -67,13 +68,54 @@ std::string occurrenceName(
            "' group=" + std::to_string(occurrence.group_index);
 }
 
+// EB-3: where a refused occurrence sits, as RayTracingRefusal fields: its
+// stage and shader, and in a layout pipeline the ray type and group of its
+// hit slot (slot = group * ray_types + ray) or the name of its miss. The
+// compute task registration adds the task (it alone knows it).
+nlohmann::json occurrenceFields(
+    const RayTracingShaderOccurrence &occurrence,
+    const RayGroupLayout *layout,
+    std::optional<std::size_t> hit_slot,
+    std::optional<std::size_t> miss = std::nullopt) {
+    nlohmann::json fields{
+        {"stage", shaderStageName(occurrence.stage)},
+        {"shader", std::string{occurrence.diagnostic_uri}}};
+    if (layout == nullptr) return fields;
+    if (hit_slot && !layout->ray_types.empty()) {
+        const auto rays = layout->ray_types.size();
+        fields["ray_type"] = layout->ray_types[*hit_slot % rays];
+        if (*hit_slot / rays < layout->groups.size())
+            fields["group"] = layout->groups[*hit_slot / rays];
+    }
+    if (miss && *miss < layout->misses.size())
+        fields["miss"] = layout->misses[*miss];
+    return fields;
+}
+
+nlohmann::json describedType(const RayTracingCanonicalType *type) {
+    return type ? nlohmann::json(describeRayTracingCanonicalType(*type))
+                : nlohmann::json(nullptr);
+}
+
+// EB-3: fields name the shader that receives the payload (stage, shader and
+// its slot; with no shader in the slot, stage alone and shader null), the
+// caller, expected = the caller's outgoing type, actual = the receiver's
+// incoming type (null when it declares none).
 [[noreturn]] void failPayload(
     const RayTracingShaderOccurrence &caller,
     const RayTracingTraceCall &trace, std::string_view domain,
     std::uint32_t target_index,
     const RayTracingCanonicalType *outgoing,
-    const RayTracingCanonicalType *incoming) {
-    throw std::runtime_error(
+    const RayTracingCanonicalType *incoming,
+    nlohmann::json target_fields) {
+    target_fields["caller"] = {
+        {"stage", shaderStageName(caller.stage)},
+        {"shader", std::string{caller.diagnostic_uri}},
+        {"instruction", trace.instruction_number}};
+    target_fields["expected"] = describedType(outgoing);
+    target_fields["actual"] = describedType(incoming);
+    throw RayTracingRefusal(
+        "pelican.ray_tracing.payload_mismatch@1", std::move(target_fields),
         "pelican.ray_tracing.payload_mismatch@1: caller " +
         occurrenceName(caller) + " instruction=" +
         std::to_string(trace.instruction_number) + " " +
@@ -86,13 +128,21 @@ std::string occurrenceName(
                   : "<missing>"));
 }
 
+// EB-3: the anyhit is the refused shader; expected is its closest hit's
+// incoming type, which is the slot's payload.
 [[noreturn]] void failHitPairPayload(
     std::size_t hit_slot,
     const RayTracingShaderOccurrence &closest_hit,
     const RayTracingShaderOccurrence &any_hit,
     const RayTracingCanonicalType *closest_incoming,
-    const RayTracingCanonicalType *any_incoming) {
-    throw std::runtime_error(
+    const RayTracingCanonicalType *any_incoming,
+    const RayGroupLayout *layout) {
+    auto fields = occurrenceFields(any_hit, layout, hit_slot);
+    fields["expected"] = describedType(closest_incoming);
+    fields["actual"] = describedType(any_incoming);
+    fields["closesthit"] = std::string{closest_hit.diagnostic_uri};
+    throw RayTracingRefusal(
+        "pelican.ray_tracing.payload_mismatch@1", std::move(fields),
         "pelican.ray_tracing.payload_mismatch@1: physical hit_slot=" +
         std::to_string(hit_slot) + " closesthit " +
         occurrenceName(closest_hit) + " incoming=" +
@@ -143,21 +193,47 @@ RayTracingCanonicalType canonicalRecordType(RayRecordType type) {
     throw std::logic_error("unknown ray record type");
 }
 
+// EB-3: expected = the record the occurrence may declare, in order,
+// [{name, offset, type}] (null: it may declare none, as no record bytes are
+// written for it); actual = what it declares, [{offset, type}]. Types are
+// spelled canonically on both sides (u32, f32, vec3<f32>).
 [[noreturn]] void failShaderRecord(
     const RayTracingShaderOccurrence &occurrence,
+    nlohmann::json fields,
+    const RayTracingShaderRecordReflection &actual,
+    const std::span<const RayRecordMemberLayout> *expected,
     std::string message) {
-    throw std::runtime_error(
+    auto expected_json = nlohmann::json(nullptr);
+    if (expected != nullptr) {
+        expected_json = nlohmann::json::array();
+        for (const auto &member : *expected)
+            expected_json.push_back(
+                {{"name", member.name},
+                 {"offset", member.offset},
+                 {"type", describeRayTracingCanonicalType(
+                              canonicalRecordType(member.type))}});
+    }
+    auto actual_json = nlohmann::json::array();
+    for (const auto &member : actual.members)
+        actual_json.push_back(
+            {{"offset", member.offset},
+             {"type", describeRayTracingCanonicalType(member.type)}});
+    fields["expected"] = std::move(expected_json);
+    fields["actual"] = std::move(actual_json);
+    throw RayTracingRefusal(
+        "pelican.ray_tracing.shader_record_abi_mismatch@1", std::move(fields),
         "pelican.ray_tracing.shader_record_abi_mismatch@1: " +
-        occurrenceName(occurrence) + " " + std::move(message));
+            occurrenceName(occurrence) + " " + std::move(message));
 }
 
 void validateRecordMembers(
     const RayTracingShaderOccurrence &occurrence,
     const RayTracingShaderRecordReflection &actual,
-    std::span<const RayRecordMemberLayout> expected) {
+    std::span<const RayRecordMemberLayout> expected,
+    nlohmann::json fields) {
     if (actual.members.size() != expected.size()) {
         failShaderRecord(
-            occurrence, "member_count=" +
+            occurrence, std::move(fields), actual, &expected, "member_count=" +
                             std::to_string(actual.members.size()) +
                             " expected=" +
                             std::to_string(expected.size()));
@@ -170,7 +246,8 @@ void validateRecordMembers(
                 expected[member].offset ||
             actual.members[member].type != expected_type) {
             failShaderRecord(
-                occurrence, "member=" + std::to_string(member) +
+                occurrence, std::move(fields), actual, &expected,
+                "member=" + std::to_string(member) +
                                 " offset=" +
                                 std::to_string(actual.members[member].offset) +
                                 " expected_offset=" +
@@ -308,7 +385,8 @@ std::string validateRayTracingPipelineInterfaces(
         if (record) {
             if (request.callable_record_layout) {
                 validateRecordMembers(occurrence, *record,
-                                      request.callable_record_layout->members);
+                                      request.callable_record_layout->members,
+                                      occurrenceFields(occurrence, nullptr, std::nullopt));
             } else if (!record->members.empty()) {
                 throw std::runtime_error(
                     "pelican.ray_tracing.callable_record_unsupported@1: " +
@@ -447,7 +525,8 @@ std::string validateRayTracingPipelineInterfaces(
                     closest_incoming
                         ? &closest_incoming->type
                         : nullptr,
-                    any_incoming ? &any_incoming->type : nullptr);
+                    any_incoming ? &any_incoming->type : nullptr,
+                    request.group_layout);
             }
         }
         hit_payload_types.push_back(
@@ -462,46 +541,50 @@ std::string validateRayTracingPipelineInterfaces(
             throw std::runtime_error(
                 "pelican.ray_tracing.hit_grid_invalid@1: hit group count does not equal groups*ray_types");
         }
+        // EB-3: a stage that declares no shader record reads none of it, so
+        // leaving it undeclared is always safe (as for an intersection or a
+        // callable): a traced ray type's hit shader no longer has to declare
+        // a record it does not use. Where record bytes are written (a traced
+        // hit slot), a declared record must be the layout's physical record
+        // exactly. Raygen, miss and untraced slots get no record bytes
+        // (packRayTracingHitTable), so storage there is refused. A task
+        // cannot name an untraced row (hit_shader_untraced), so in production
+        // only the engine's no-op closest hit and no-report intersection sit
+        // there.
         const auto validate_record =
             [&](const RayTracingShaderOccurrence &occurrence,
-                bool allowed, bool required) {
+                bool allowed, nlohmann::json fields) {
                 const auto &actual = occurrence.entry->shader_record;
-                if (!actual) {
-                    if (required && !layout.physical_record.empty()) {
-                        failShaderRecord(
-                            occurrence,
-                            "has no shader-record storage; expected " +
-                                std::to_string(layout.physical_record.size()) +
-                                " members");
-                    }
-                    return;
-                }
+                if (!actual) return;
                 if (!allowed) {
                     failShaderRecord(
-                        occurrence,
+                        occurrence, std::move(fields), *actual, nullptr,
                         "declares shader-record storage where it is forbidden");
                 }
-                validateRecordMembers(occurrence, *actual, layout.physical_record);
+                validateRecordMembers(occurrence, *actual,
+                                      layout.physical_record, std::move(fields));
             };
-        validate_record(request.raygen, false, false);
-        for (const auto &miss : request.misses)
-            validate_record(miss, false, false);
+        validate_record(request.raygen, false,
+                        occurrenceFields(request.raygen, &layout, std::nullopt));
+        for (std::size_t index = 0; index < request.misses.size(); ++index)
+            validate_record(request.misses[index], false,
+                            occurrenceFields(request.misses[index], &layout,
+                                             std::nullopt, index));
         for (std::size_t index = 0; index < hit_groups.size(); ++index) {
             const auto ray = static_cast<std::uint32_t>(index % ray_count);
             const auto traced =
                 std::find(request.traced_ray_type_indices.begin(),
                           request.traced_ray_type_indices.end(), ray) !=
                 request.traced_ray_type_indices.end();
-            validate_record(hit_groups[index], traced, traced);
+            validate_record(hit_groups[index], traced,
+                            occurrenceFields(hit_groups[index], &layout, index));
             if (any_hits[index]) {
-                validate_record(*any_hits[index], traced, traced);
+                validate_record(*any_hits[index], traced,
+                                occurrenceFields(*any_hits[index], &layout, index));
             }
             if (intersections[index]) {
-                // An intersection shader may consume the hit-group record,
-                // but a generic implementation (including the engine's
-                // no-report procedural control shader) need not declare it.
-                // If present, keep enforcing the same physical ABI.
-                validate_record(*intersections[index], traced, false);
+                validate_record(*intersections[index], traced,
+                                occurrenceFields(*intersections[index], &layout, index));
             }
         }
     }
@@ -509,12 +592,17 @@ std::string validateRayTracingPipelineInterfaces(
     const auto validate_trace = [&](const auto &caller,
                                     const auto &trace) {
         const auto *outgoing = &trace.payload_type;
+        // EB-3: a slot no shader fills is named by its stage alone.
+        const auto empty_slot = [](ShaderStage stage) {
+            return nlohmann::json{{"stage", shaderStageName(stage)},
+                                  {"shader", nullptr}};
+        };
         const auto compare_target = [&](std::string_view domain,
                                         std::uint32_t index,
                                         auto targets) {
             if (index >= targets.size()) {
                 failPayload(caller, trace, domain, index,
-                            outgoing, nullptr);
+                            outgoing, nullptr, empty_slot(ShaderStage::miss));
             }
             const auto &target = targets[index];
             const auto *incoming = findInterface(
@@ -523,18 +611,22 @@ std::string validateRayTracingPipelineInterfaces(
             if (incoming == nullptr || *outgoing != incoming->type) {
                 failPayload(caller, trace, domain, index,
                             outgoing,
-                            incoming ? &incoming->type : nullptr);
+                            incoming ? &incoming->type : nullptr,
+                            occurrenceFields(target, request.group_layout,
+                                             std::nullopt, index));
             }
         };
         const auto compare_hit_target = [&](std::uint32_t index) {
             if (index >= hit_groups.size()) {
                 failPayload(caller, trace, "hit", index,
-                            outgoing, nullptr);
+                            outgoing, nullptr, empty_slot(ShaderStage::closesthit));
             }
             const auto *incoming = hit_payload_types[index];
             if (incoming == nullptr || *outgoing != *incoming) {
                 failPayload(caller, trace, "hit", index, outgoing,
-                            incoming);
+                            incoming,
+                            occurrenceFields(hit_groups[index],
+                                             request.group_layout, index));
             }
         };
         if (request.group_layout == nullptr) {

@@ -993,6 +993,16 @@ void ReloadService::applyFrame() {
         });
     }
     transactions_.applyFrame(retireSink());
+    // FO-2: a material document refused because a pass does not declare what
+    // its material uses is registered again once the published render
+    // pipeline changes (a render edit or reload may have declared it).
+    if (auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>()) {
+        try {
+            project->retryPassContractRefusals();
+        } catch (const std::exception &error) {
+            if (logger) LOG_WARNING(logger, "material documents refused for a pass were not tried again: {}", error.what());
+        }
+    }
 }
 
 ReloadCoordinator::RetireSink ReloadService::retireSink() {

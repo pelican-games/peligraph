@@ -2866,6 +2866,31 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
             return runtime->modules.polygon_instances
                 .resolveRayOccurrence(occurrence_id);
         },
+        // EB-3: get_ray_table. The occurrences and rows get_ray_occurrences
+        // reads, for every object; the procedural rows' assets come from the
+        // inventory those rows were resolved from.
+        .ray_table = [runtime] {
+            const auto &instances = runtime->modules.polygon_instances;
+            EditorRayTableResult result{
+                .entries = instances.rayOccurrences(),
+                .plan = instances.rayAsPlan(),
+            };
+            if (const auto inventory = instances.rayAsInventory(); inventory && result.plan)
+                for (const auto &row : result.plan->rows)
+                    if (row.geometry_kind == RayGeometryKind::aabbs &&
+                        row.source_index < inventory->instances.size())
+                        result.procedural_assets.emplace(
+                            row.q, inventory->instances[row.source_index].procedural_asset);
+            if (const auto project = instances.rayAsProject())
+                for (const auto type : project->layout.group_types)
+                    result.group_types.emplace_back(
+                        type == RayGroupType::procedural ? "procedural" : "triangles");
+            if (const auto *renderer = FastModuleContainer::tryGet<Renderer>())
+                result.named_acceleration_structures = renderer->sceneAccelerationStructureMasks();
+            if (const auto mode = currentRayLayoutMode())
+                result.mode = std::string{rayLayoutModeName(*mode)};
+            return result;
+        },
     });
 }
 

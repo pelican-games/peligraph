@@ -828,6 +828,30 @@ TEST_CASE("ray occurrence production RPC exposes inventory and tri-state resolut
                            "ffffffffffffffffffffffffffffffff"}});
 }
 
+// EB-3: a project without a ray group layout has no ray rows; get_ray_table
+// says so by its mode, with empty rows and groups.
+TEST_CASE("EB-3 get_ray_table without a ray group layout answers mode none and no rows",
+          "[editor-command][rpc][eb3]") {
+    auto document = AuthoringSceneDocument::load(
+        readJson(authoringFixturePath()).dump(), SceneRevision{1});
+    const EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&document]() -> const AuthoringSceneDocument & {
+            return document;
+        },
+        .resolved_scene = explicitResolvedProvider(document),
+        .current_scene_id = [] { return std::string{"main"}; },
+        .ray_table = [] { return EditorRayTableResult{.mode = "none"}; },
+    }};
+    const EditorCommandRpcAdapter rpc{service};
+    const auto table = rpc.getRayTable(nlohmann::json::object());
+    CHECK(table.at("mode") == "none");
+    CHECK(table.at("rows") == nlohmann::ordered_json::array());
+    CHECK(table.at("groups") == nlohmann::ordered_json::array());
+    CHECK(table.at("generation").is_null());
+    CHECK(table.at("total") == 0);
+    CHECK(table.at("truncated") == false);
+}
+
 TEST_CASE("get_components publishes recursive v3 component catalog nodes",
           "[editor-command][query][wp382a][schema-v3]") {
     const auto owner = internal::allocateRegistrationOwner();

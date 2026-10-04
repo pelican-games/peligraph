@@ -318,6 +318,10 @@ DECLARE_MODULE(Renderer) {
              RenderingPassId rendering_pass_id);
     ~Renderer();
     nlohmann::json currentFramePlanJson() const;
+    // EB-3: the current generation's named scene TLASes, {name, instance
+    // mask}, in declaration order (get_ray_table's tlas column).
+    std::vector<std::pair<std::string, std::uint32_t>>
+    sceneAccelerationStructureMasks() const;
     // PS-1: rerun_once. Asks the next frame to run the once nodes `node`
     // made (a pass or task's graph node; a graph.loop runs all its copies'),
     // or every once node when `node` is empty. Returns the names asked for,

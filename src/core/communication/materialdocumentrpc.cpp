@@ -12,6 +12,7 @@
 #include "../material/materialcontainer.hpp"
 #include "../material/projectmaterialasset.hpp"
 #include "../model/engineprimitives.hpp"
+#include "../shader/passcontractrefusal.hpp"
 #include "../vkcore/core.hpp"
 #include "../watch/assetkey.hpp"
 #include "../watch/reloadservice.hpp"
@@ -660,6 +661,9 @@ Json listMaterials(const Json &params, PathResolver &paths) {
     }
     // FO-1: a document the engine refused at start is what the engine holds
     // of it -- none of its materials -- whatever the file now says.
+    // FO-2: "unusable" when it reads but a pass does not declare what a
+    // material of it uses; `pass` and `requirement` say which and what (the
+    // reason is the problem's sentence: the pass is where it is fixed).
     if (const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>())
         for (auto &entry : documents)
             if (const auto refused = project->refusedDocument(entry.at("path").get<std::string>())) {
@@ -667,6 +671,13 @@ Json listMaterials(const Json &params, PathResolver &paths) {
                 entry["reason"] = refused->reason;
                 if (refused->line) entry["line"] = *refused->line;
                 if (refused->column) entry["column"] = *refused->column;
+                if (refused->status == "unusable") {
+                    const auto fields =
+                        materialPassContractUnmetFields(entry.at("path").get<std::string>(), *refused);
+                    entry["reason"] = materialPassContractUnmetMessage(*refused);
+                    entry["pass"] = fields.at("pass");
+                    entry["requirement"] = refused->requirement;
+                }
             }
     return {{"asset_data_digest", asset_data.digest}, {"documents", std::move(documents)}};
 }
@@ -2289,6 +2300,11 @@ Json recoverMaterial(const std::string &reference, const AssetDataFile &asset_da
     ProjectMaterialAssetContainer::Recovered recovered;
     try {
         recovered = project.recoverDocument(reference);
+    } catch (const PassContractRefusal &refusal) {
+        // FO-2: it reads; a pass still does not declare what it uses.
+        const auto refused = materialPassContractRefusal(reference, refusal);
+        refuse(method, materialPassContractUnmetMessage(refused), materialPassContractUnmetCode,
+               materialPassContractUnmetFields(reference, refused));
     } catch (const std::exception &error) {
         refuse(method, "'" + reference + "' would not load: " + error.what(), documentInvalidCode,
                {{"path", reference}, {"reason", error.what()}});

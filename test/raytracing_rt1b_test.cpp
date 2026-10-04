@@ -33,6 +33,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -1699,6 +1700,263 @@ TEST_CASE("WP366/WP367 final SPIR-V hit-pair ABI is a load-time invariant",
     }
 }
 
+#endif
+
+#if PELICAN_RUNTIME_SHADER_COMPILER
+// EB-3: which shader-record declarations the hit grid takes. A hit stage in a
+// traced slot may leave the record undeclared (it reads none of it, as an
+// intersection or a callable may); a declared record must be the layout's
+// exactly; storage where no record bytes are written (raygen, miss, an
+// untraced slot) is refused. Both refusals of the pipeline check carry their
+// place as RayTracingRefusal fields, with the message they always had.
+TEST_CASE("EB-3 a traced hit shader may leave the shader record undeclared, a declared one must match, and both refusals name their place",
+          "[eb3][ray-tracing][rt1b][spirv][abi]") {
+    using nlohmann::json;
+    ShaderCompiler compiler;
+    const auto compile = [&](std::string_view source,
+                             vk::ShaderStageFlagBits stage,
+                             std::string_view name) {
+        const auto result = compiler.compileSource(source, stage, name);
+        INFO(result.log);
+        REQUIRE(result.ok);
+        return inspectRayTracingSpirv(result.spirv, name);
+    };
+    const auto raygen = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(set=0,binding=6) uniform accelerationStructureEXT frame_tlas;
+      layout(location=0) rayPayloadEXT vec4 payload;
+      void main() {
+        traceRayEXT(frame_tlas, gl_RayFlagsOpaqueEXT, 0xffu, 0u, 2u, 0u,
+                    vec3(0.0), 0.001, vec3(0.0,0.0,1.0), 100.0, 0);
+      }
+    )glsl", vk::ShaderStageFlagBits::eRaygenKHR, "eb3.rgen");
+    const auto miss = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT vec4 payload;
+      void main() { payload = vec4(0.0); }
+    )glsl", vk::ShaderStageFlagBits::eMissKHR, "eb3.rmiss");
+    const auto record_miss = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT vec4 payload;
+      layout(shaderRecordEXT, std430) buffer Record { vec3 tint; float flags; } record_data;
+      void main() { payload = vec4(record_data.tint, record_data.flags); }
+    )glsl", vk::ShaderStageFlagBits::eMissKHR, "record.rmiss");
+    const auto uvec_miss = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT uvec4 payload;
+      void main() { payload = uvec4(0u); }
+    )glsl", vk::ShaderStageFlagBits::eMissKHR, "uvec.rmiss");
+    const auto hit = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT vec4 payload;
+      hitAttributeEXT vec2 attributes;
+      layout(shaderRecordEXT, std430) buffer Record { vec3 tint; float flags; } record_data;
+      void main() { payload = vec4(record_data.tint, record_data.flags); }
+    )glsl", vk::ShaderStageFlagBits::eClosestHitKHR, "record.rchit");
+    // The shadow shader the Studio's template writes: no record.
+    const auto bare = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT vec4 payload;
+      hitAttributeEXT vec2 attributes;
+      void main() { payload = vec4(1.0); }
+    )glsl", vk::ShaderStageFlagBits::eClosestHitKHR, "bare.rchit");
+    const auto bare_anyhit = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT vec4 payload;
+      hitAttributeEXT vec2 attributes;
+      void main() { if (payload.x > 1.0) { ignoreIntersectionEXT; } }
+    )glsl", vk::ShaderStageFlagBits::eAnyHitKHR, "bare.rahit");
+    const auto wrong = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT vec4 payload;
+      hitAttributeEXT vec2 attributes;
+      layout(shaderRecordEXT, std430) buffer Record { vec4 tint; float flags; } record_data;
+      void main() { payload = record_data.tint; }
+    )glsl", vk::ShaderStageFlagBits::eClosestHitKHR, "wrong.rchit");
+    const auto uvec_hit = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT uvec4 payload;
+      hitAttributeEXT vec2 attributes;
+      layout(shaderRecordEXT, std430) buffer Record { vec3 tint; float flags; } record_data;
+      void main() { payload = uvec4(record_data.flags); }
+    )glsl", vk::ShaderStageFlagBits::eClosestHitKHR, "uvec.rchit");
+    const auto uvec_anyhit = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT uvec4 payload;
+      hitAttributeEXT vec2 attributes;
+      void main() { if (payload.x == 7u) { ignoreIntersectionEXT; } }
+    )glsl", vk::ShaderStageFlagBits::eAnyHitKHR, "uvec.rahit");
+
+    const auto occurrence = [](
+        const RayTracingModuleReflection &module, ShaderStage stage,
+        std::uint32_t group, std::string_view uri) {
+        return RayTracingShaderOccurrence{
+            .stage = stage,
+            .group_index = group,
+            .diagnostic_uri = uri,
+            .entry = &selectRayTracingEntryPoint(module, stage, "main", uri)};
+    };
+    // ray types [primary, shadow] x groups [opaque, foliage]; slot =
+    // group * 2 + ray; primary is traced, shadow is not.
+    const auto layout = parseRayGroupLayout(layoutJson);
+    auto no_record_json = json::parse(layoutJson);
+    no_record_json["record"] = json::array();
+    const auto no_record_layout = parseRayGroupLayout(no_record_json.dump());
+    const std::array<std::uint32_t, 1> traced{0};
+    const RayTracingRuntimeFacts facts{
+        .max_ray_recursion_depth = 1,
+        .max_shader_group_stride = 4096,
+        .max_ray_hit_attribute_size = 32,
+        .max_ray_dispatch_invocation_count = 1,
+        .max_dispatch_dimensions = {1, 1, 1},
+        .device_name = "fixture"};
+    std::array misses{occurrence(miss, ShaderStage::miss, 1, "eb3.rmiss"),
+                      occurrence(miss, ShaderStage::miss, 2, "eb3.rmiss")};
+    std::array pairs{
+        RayTracingHitGroupOccurrence{.closest_hit = occurrence(hit, ShaderStage::closesthit, 3, "record.rchit")},
+        RayTracingHitGroupOccurrence{.closest_hit = occurrence(bare, ShaderStage::closesthit, 4, "bare.rchit")},
+        RayTracingHitGroupOccurrence{.closest_hit = occurrence(hit, ShaderStage::closesthit, 5, "record.rchit")},
+        RayTracingHitGroupOccurrence{.closest_hit = occurrence(bare, ShaderStage::closesthit, 6, "bare.rchit")},
+    };
+    const RayGroupLayout *group_layout = &layout;
+    const auto refusal = [&]() -> std::optional<RayTracingRefusal> {
+        try {
+            (void)validateRayTracingPipelineInterfaces(
+                {.raygen = occurrence(raygen, ShaderStage::raygen, 0, "eb3.rgen"),
+                 .misses = misses,
+                 .group_layout = group_layout,
+                 .traced_ray_type_indices = traced,
+                 .hit_group_occurrences = pairs},
+                facts);
+        } catch (const RayTracingRefusal &refused) {
+            return refused;
+        }
+        return std::nullopt;
+    };
+    const json layout_record = json::array({
+        {{"name", "tint"}, {"offset", 0}, {"type", "vec3<f32>"}},
+        {{"name", "flags"}, {"offset", 12}, {"type", "f32"}}});
+    const json declared_record = json::array({
+        {{"offset", 0}, {"type", "vec3<f32>"}}, {{"offset", 12}, {"type", "f32"}}});
+
+    REQUIRE_FALSE(refusal().has_value());
+
+    SECTION("traced closest hits and an anyhit without a record are taken") {
+        pairs[0].closest_hit = occurrence(bare, ShaderStage::closesthit, 3, "bare.rchit");
+        pairs[2].closest_hit = occurrence(bare, ShaderStage::closesthit, 5, "bare.rchit");
+        pairs[2].any_hit = occurrence(bare_anyhit, ShaderStage::anyhit, 5, "bare.rahit");
+        CHECK_FALSE(refusal().has_value());
+        // ... and so is a layout without a record.
+        group_layout = &no_record_layout;
+        CHECK_FALSE(refusal().has_value());
+    }
+    SECTION("a declared record that differs from the layout's is refused with its place") {
+        pairs[2].closest_hit = occurrence(wrong, ShaderStage::closesthit, 5, "wrong.rchit");
+        const auto refused = refusal();
+        REQUIRE(refused.has_value());
+        CHECK(refused->code() == "pelican.ray_tracing.shader_record_abi_mismatch@1");
+        CHECK(std::string{refused->what()} ==
+              "pelican.ray_tracing.shader_record_abi_mismatch@1: shader 'wrong.rchit' entry 'main' group=5 "
+              "member=0 offset=0 expected_offset=0 type=vec4<f32> expected_type=vec3<f32>");
+        CHECK(refused->fields() == json{
+            {"stage", "closesthit"}, {"shader", "wrong.rchit"},
+            {"ray_type", "primary"}, {"group", "foliage"},
+            {"expected", layout_record},
+            {"actual", json::array({{{"offset", 0}, {"type", "vec4<f32>"}},
+                                    {{"offset", 16}, {"type", "f32"}}})}});
+    }
+    SECTION("a record where the layout has none is refused") {
+        group_layout = &no_record_layout;
+        const auto refused = refusal();
+        REQUIRE(refused.has_value());
+        CHECK(refused->code() == "pelican.ray_tracing.shader_record_abi_mismatch@1");
+        CHECK(std::string{refused->what()} ==
+              "pelican.ray_tracing.shader_record_abi_mismatch@1: shader 'record.rchit' entry 'main' group=3 "
+              "member_count=2 expected=0");
+        CHECK(refused->fields() == json{
+            {"stage", "closesthit"}, {"shader", "record.rchit"},
+            {"ray_type", "primary"}, {"group", "opaque"},
+            {"expected", json::array()}, {"actual", declared_record}});
+    }
+    SECTION("record storage where no record bytes are written is refused: expected is null") {
+        misses[0] = occurrence(record_miss, ShaderStage::miss, 1, "record.rmiss");
+        auto refused = refusal();
+        REQUIRE(refused.has_value());
+        CHECK(refused->code() == "pelican.ray_tracing.shader_record_abi_mismatch@1");
+        CHECK(refused->fields() == json{
+            {"stage", "miss"}, {"shader", "record.rmiss"}, {"miss", "sky"},
+            {"expected", nullptr}, {"actual", declared_record}});
+        // An untraced slot holds the engine's no-op shader in production (a
+        // task cannot name an untraced row: hit_shader_untraced); a record
+        // there is still refused.
+        misses[0] = occurrence(miss, ShaderStage::miss, 1, "eb3.rmiss");
+        pairs[1].closest_hit = occurrence(hit, ShaderStage::closesthit, 4, "record.rchit");
+        refused = refusal();
+        REQUIRE(refused.has_value());
+        CHECK(std::string{refused->what()} ==
+              "pelican.ray_tracing.shader_record_abi_mismatch@1: shader 'record.rchit' entry 'main' group=4 "
+              "declares shader-record storage where it is forbidden");
+        CHECK(refused->fields() == json{
+            {"stage", "closesthit"}, {"shader", "record.rchit"},
+            {"ray_type", "shadow"}, {"group", "opaque"},
+            {"expected", nullptr}, {"actual", declared_record}});
+    }
+    SECTION("a hit payload mismatch names the shader that receives it and its caller") {
+        pairs[2].closest_hit = occurrence(uvec_hit, ShaderStage::closesthit, 5, "uvec.rchit");
+        const auto refused = refusal();
+        REQUIRE(refused.has_value());
+        CHECK(refused->code() == "pelican.ray_tracing.payload_mismatch@1");
+        CHECK_THAT(std::string{refused->what()},
+                   Catch::Matchers::StartsWith(
+                       "pelican.ray_tracing.payload_mismatch@1: caller shader 'eb3.rgen' entry 'main' group=0 instruction="));
+        CHECK_THAT(std::string{refused->what()},
+                   Catch::Matchers::EndsWith(" hit_group=2 outgoing=vec4<f32> incoming=vec4<u32>"));
+        auto fields = refused->fields();
+        REQUIRE(fields.contains("caller"));
+        CHECK(fields.at("caller").at("stage") == "raygen");
+        CHECK(fields.at("caller").at("shader") == "eb3.rgen");
+        CHECK(fields.at("caller").at("instruction").is_number_unsigned());
+        fields.erase("caller");
+        CHECK(fields == json{
+            {"stage", "closesthit"}, {"shader", "uvec.rchit"},
+            {"ray_type", "primary"}, {"group", "foliage"},
+            {"expected", "vec4<f32>"}, {"actual", "vec4<u32>"}});
+    }
+    SECTION("a miss payload mismatch names the miss") {
+        misses[0] = occurrence(uvec_miss, ShaderStage::miss, 1, "uvec.rmiss");
+        auto refused = refusal();
+        REQUIRE(refused.has_value());
+        CHECK(refused->code() == "pelican.ray_tracing.payload_mismatch@1");
+        auto fields = refused->fields();
+        fields.erase("caller");
+        CHECK(fields == json{
+            {"stage", "miss"}, {"shader", "uvec.rmiss"}, {"miss", "sky"},
+            {"expected", "vec4<f32>"}, {"actual", "vec4<u32>"}});
+    }
+    SECTION("an anyhit whose payload is not its closest hit's names both") {
+        pairs[0].any_hit = occurrence(uvec_anyhit, ShaderStage::anyhit, 3, "uvec.rahit");
+        const auto refused = refusal();
+        REQUIRE(refused.has_value());
+        CHECK(refused->code() == "pelican.ray_tracing.payload_mismatch@1");
+        CHECK_THAT(std::string{refused->what()},
+                   Catch::Matchers::StartsWith("pelican.ray_tracing.payload_mismatch@1: physical hit_slot=0 closesthit "));
+        CHECK(refused->fields() == json{
+            {"stage", "anyhit"}, {"shader", "uvec.rahit"},
+            {"ray_type", "primary"}, {"group", "opaque"},
+            {"expected", "vec4<f32>"}, {"actual", "vec4<u32>"},
+            {"closesthit", "record.rchit"}});
+    }
+}
 #endif
 
 TEST_CASE("Callable record schema packs std430 values and rejects malformed updates",

@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -16,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <schema.hpp>
 
@@ -257,6 +259,25 @@ struct EditorRayOccurrencesResult {
     std::uint64_t authoring_object_id = 0;
 };
 
+// EB-3: what get_ray_table reads in one call. entries are the occurrences
+// get_ray_occurrences reads (the same rayOccurrences, for every object at
+// once) and plan the same resolved rows; procedural_assets names each
+// procedural row's asset by its q; group_types are the running layout's
+// ("triangles" / "procedural", by group index); named_acceleration_structures
+// are the published generation's named TLASes with their instance masks;
+// mode is the process's ray layout mode ("none" / "layout", nullopt while
+// not configured).
+struct EditorRayTableResult {
+    std::vector<RayOccurrenceCatalogEntry> entries;
+    std::shared_ptr<const RaySceneRowSnapshot> plan;
+    std::map<std::uint32_t, std::string> procedural_assets;
+    std::vector<std::string> group_types;
+    std::vector<std::pair<std::string, std::uint32_t>> named_acceleration_structures;
+    std::optional<std::string> mode;
+    // Filled by the service: the current scene's object names by id.
+    std::map<std::uint64_t, std::string> object_names;
+};
+
 struct EditorCommandServiceDependencies {
     std::function<const AuthoringSceneDocument &()> document;
     std::function<const ResolvedScene &()> resolved_scene;
@@ -277,6 +298,7 @@ struct EditorCommandServiceDependencies {
         ray_occurrences;
     std::function<RayOccurrenceResolution(std::string_view)>
         resolve_ray_occurrence;
+    std::function<EditorRayTableResult()> ray_table;
 };
 
 class EditorCommandService {
@@ -330,6 +352,7 @@ class EditorCommandService {
         const EditorGetComponentsRequest &request) const;
     RayOccurrenceResolution resolveRayOccurrence(
         std::string_view occurrence_id) const;
+    EditorRayTableResult getRayTable() const;
     EditorListAssetsResult listAssets(const EditorListAssetsRequest &request = {}) const;
     ExportSceneSnapshotResponseV2 exportSceneSnapshotV2(
         const ExportSceneSnapshotRequestV2 &request) const;
@@ -464,6 +487,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getComponentAddCandidates(const nlohmann::json &params) const;
     nlohmann::ordered_json getRayOccurrences(const nlohmann::json &params) const;
     nlohmann::ordered_json resolveRayOccurrence(const nlohmann::json &params) const;
+    nlohmann::ordered_json getRayTable(const nlohmann::json &params) const;
     nlohmann::ordered_json listAssets(const nlohmann::json &params) const;
     nlohmann::ordered_json exportSceneSnapshot(const nlohmann::json &params) const;
     nlohmann::ordered_json importSceneSnapshot(const nlohmann::json &params) const;

@@ -583,6 +583,10 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::shared_ptr<const RaySceneInventorySnapshot> rayAsInventory() const noexcept {
         return ray_scene_plan ? ray_scene_plan->inventory : nullptr;
     }
+    // EB-3: the layout and bindings the published rows were resolved with.
+    std::shared_ptr<const RayTracingProjectConfig> rayAsProject() const noexcept {
+        return ray_scene_plan ? ray_scene_plan->project : nullptr;
+    }
     std::shared_ptr<const RayScenePlanState> prepareFrameRayScenePlan(
         std::shared_ptr<const RayTracingProjectConfig> project,
         std::shared_ptr<const RaySceneInventorySnapshot> inventory,

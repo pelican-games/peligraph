@@ -9,6 +9,7 @@
 #include "../renderingpass/rendertargetimageviewresolver.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/pipelinefactory.hpp"
+#include "../shader/passcontractrefusal.hpp"
 #include "../shader/surfacecompiler.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
@@ -855,11 +856,24 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         makePipelineKey(info, rendering, allow_ray_query);
     auto pipeline_it = pipelines.find(pipeline_key);
     if (pipeline_it == pipelines.end() || GET_MODULE(PipelineFactory).graphicsDesc(pipeline_it->second).allow_ray_query != allow_ray_query) {
-        const auto pipeline_handle =
-            GET_MODULE(PipelineFactory)
-                .create(makeMaterialPipelineDesc(
-                    info, rendering,
-                    resource_interface, allow_ray_query));
+        const auto pipeline_handle = [&] {
+            try {
+                return GET_MODULE(PipelineFactory)
+                    .create(makeMaterialPipelineDesc(
+                        info, rendering,
+                        resource_interface, allow_ray_query));
+            } catch (const PassContractRefusal &refusal) {
+                // FO-2: named by the material and the passes that do not
+                // declare what its surface uses; the sentence stays.
+                std::vector<std::string> passes;
+                for (const auto &binding : pass_bindings)
+                    if (refusal.requirement() != "ray_query" || !binding.ray_query)
+                        if (std::find(passes.begin(), passes.end(), binding.pass_name) == passes.end())
+                            passes.push_back(binding.pass_name);
+                throw PassContractRefusal(refusal.requirement(), std::move(passes), info.name,
+                                          refusal.what());
+            }
+        }();
         pipeline_it = pipelines.insert_or_assign(pipeline_key, pipeline_handle).first;
         if (!default_pipeline) {
             default_pipeline = pipeline_handle;

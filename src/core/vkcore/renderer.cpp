@@ -5359,6 +5359,22 @@ Renderer::rayQueryAccelerationStructureDiagnostics() const {
     return diagnostics;
 }
 
+std::vector<std::pair<std::string, std::uint32_t>>
+Renderer::sceneAccelerationStructureMasks() const {
+    std::vector<std::pair<std::string, std::uint32_t>> result;
+    const auto *frame_graph_runtime =
+        FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
+    const auto generation =
+        frame_graph_runtime != nullptr ? frame_graph_runtime->snapshot() : nullptr;
+    const auto *program =
+        generation != nullptr ? generation->find(current_rendering_pass_id) : nullptr;
+    if (program == nullptr || !program->frame_graph.render_pipeline) return result;
+    for (const auto &definition :
+         program->frame_graph.render_pipeline->scene_acceleration_structures)
+        result.emplace_back(definition.name, definition.instance_mask);
+    return result;
+}
+
 void Renderer::recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent) {
     auto modules = resolveRenderFrameModules();
     auto prepared =

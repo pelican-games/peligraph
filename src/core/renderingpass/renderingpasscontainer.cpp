@@ -1,5 +1,6 @@
 #include "renderingpasscontainer.hpp"
 #include "framegraphruntime.hpp"
+#include "../../project/renderpipeline.hpp"
 #include <algorithm>
 #include <stdexcept>
 #include <utility>
@@ -137,6 +138,42 @@ RenderingPassContainer::preparationGeneration() const noexcept {
     if (publication && runtime && runtime->publicationState() == publication)
         return runtime->renderingSnapshot();
     return nullptr;
+}
+
+std::optional<MaterialPassDeclaration>
+RenderingPassContainer::materialPassDeclaration(
+    std::string_view pass_name) const {
+    const auto generation = preparationGeneration();
+    if (!generation) return std::nullopt;
+    for (const auto rendering_pass_id : generation->rendering_pass_ids) {
+        const auto *program = generation->find(rendering_pass_id);
+        if (program == nullptr) continue;
+        const auto &pipeline = program->frame_graph.render_pipeline;
+        if (!pipeline) continue;
+        const auto found = std::find_if(
+            pipeline->pass_provenance.begin(), pipeline->pass_provenance.end(),
+            [&](const RenderPassProvenance &entry) { return entry.name == pass_name; });
+        if (found == pipeline->pass_provenance.end()) continue;
+        MaterialPassDeclaration declaration{
+            .name = found->authored_name.empty() ? found->name : found->authored_name,
+            .source = found->source == RenderPipelineProvenanceSource::feature   ? "feature"
+                      : found->source == RenderPipelineProvenanceSource::engine ? "engine"
+                                                                                : "project",
+            .provider_reference = found->provider_reference,
+        };
+        if (found->graph_origin && found->graph_origin->loop.empty() && !found->loop_origin)
+            declaration.graph_node = found->graph_origin->node;
+        if (pipeline->pipeline_preset)
+            declaration.preset_reference = pipeline->pipeline_preset->reference;
+        return declaration;
+    }
+    return std::nullopt;
+}
+
+std::uint64_t
+RenderingPassContainer::materialPassGeneration() const noexcept {
+    const auto generation = preparationGeneration();
+    return generation ? generation->generation : 0;
 }
 
 bool RenderingPassContainer::hasMaterialPasses() const {

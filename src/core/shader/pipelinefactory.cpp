@@ -2,6 +2,7 @@
 #include <set>
 #include "raygrouplayout.hpp"
 #include "raytracingvalidation.hpp"
+#include "passcontractrefusal.hpp"
 #include "../vkcore/buf.hpp"
 #include "pelican_sets.hpp"
 #include "../log.hpp"
@@ -1006,8 +1007,11 @@ PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const Gra
     const auto ray_query_frame_set =
         shaderReflectionUsesRayQueryFrameSet(
             merged_reflection);
+    // FO-2: typed, so a material's registration can tell the pass's missing
+    // declaration from a document it could not read.
     if (ray_query_frame_set && !desc.allow_ray_query)
-        throw std::runtime_error(
+        throw PassContractRefusal(
+            "ray_query", {}, {},
             "Raster pass uses the scene acceleration structure but does not declare ray_query: true");
     if (ray_query_frame_set &&
         !GET_MODULE(VulkanManageCore)

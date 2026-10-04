@@ -11,6 +11,8 @@
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
+#include "../renderingpass/renderingpasscontainer.hpp"
+#include "../shader/passcontractrefusal.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../vkcore/core.hpp"
 #include "../watch/assetkey.hpp"
@@ -257,6 +259,9 @@ struct ProjectMaterialAssetContainer::Impl {
     // EB-2: registered documents whose last values reload did not read, by
     // reference.
     std::map<std::string, RefusedDocument, std::less<>> reload_failures;
+    // FO-2: the generation of the material passes the "unusable" documents
+    // were last tried against.
+    std::uint64_t pass_contract_generation = 0;
     // EB-2: the registered document (or the refused one) the key names.
     std::optional<std::string> registeredReferenceOf(const watch::AssetKey &key) const;
     // The material problems as they are now, in the problem list.
@@ -299,6 +304,22 @@ ProjectMaterialAssetContainer::RefusedDocument refusedDocumentOf(
 nlohmann::json documentProblem(const std::string &reference,
                                const ProjectMaterialAssetContainer::RefusedDocument &refused,
                                bool after_start = false) {
+    if (refused.status == "unusable") {
+        nlohmann::json problem{
+            {"severity", std::string{problemSeverityError}},
+            {"source", std::string{after_start ? problemSourceHotReload : problemSourceStartup}},
+            {"code", refused.code},
+            {"message", materialPassContractUnmetMessage(refused)},
+            {"fields", materialPassContractUnmetFields(reference, refused)},
+        };
+        // Where it is fixed: the document that declares the pass.
+        if (refused.pass_document) {
+            problem["document"] = *refused.pass_document;
+            if (refused.pass_document_kind) problem["document_kind"] = *refused.pass_document_kind;
+        }
+        if (refused.pass_node) problem["node"] = *refused.pass_node;
+        return problem;
+    }
     nlohmann::json fields{{"path", reference}, {"reason", refused.reason}};
     nlohmann::json problem{
         {"severity", std::string{problemSeverityError}},
@@ -325,6 +346,96 @@ nlohmann::json documentProblem(const std::string &reference,
 }
 
 } // namespace
+
+ProjectMaterialAssetContainer::RefusedDocument materialPassContractRefusal(
+    const std::string &reference, const PassContractRefusal &refusal) {
+    (void)reference;
+    ProjectMaterialAssetContainer::RefusedDocument refused{
+        .status = "unusable",
+        .code = std::string{materialPassContractUnmetCode},
+        .reason = refusal.what(),
+        .material = refusal.material(),
+        .requirement = refusal.requirement(),
+    };
+    const auto *passes = FastModuleContainer::tryGet<RenderingPassContainer>();
+    std::optional<MaterialPassDeclaration> first;
+    for (const auto &pass : refusal.passes()) {
+        auto name = pass;
+        if (passes != nullptr)
+            if (auto declaration = passes->materialPassDeclaration(pass)) {
+                name = declaration->name;
+                if (!first) first = std::move(declaration);
+            }
+        if (std::find(refused.passes.begin(), refused.passes.end(), name) == refused.passes.end())
+            refused.passes.push_back(std::move(name));
+    }
+    if (!first) return refused;
+    // Where the pass is declared, read as get_compute_task_authoring reads a
+    // task's: a feature's own document, the root for a node of its graph, the
+    // preset the root selects, or else the root's rendering section.
+    std::string root;
+    if (const auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>())
+        root = config->renderingConfigReference();
+    std::string document;
+    std::string_view kind;
+    if (first->source == "feature") {
+        document = first->provider_reference;
+        kind = problemKindFeature;
+    } else if (first->graph_node) {
+        document = root;
+        kind = problemKindRootGraph;
+        refused.pass_node = *first->graph_node;
+    } else if (first->preset_reference) {
+        document = *first->preset_reference;
+        kind = problemKindPreset;
+    } else {
+        document = root;
+        kind = problemKindRootRendering;
+    }
+    // An engine:// document is not the project's to edit: the fields say
+    // which pass, and the problem names no document.
+    if (auto spelled = graphDocumentReference(document); spelled && !spelled->starts_with("engine://")) {
+        refused.pass_document = std::move(*spelled);
+        refused.pass_document_kind = std::string{kind};
+        return refused;
+    }
+    refused.pass_node.reset();
+    return refused;
+}
+
+std::string materialPassContractUnmetMessage(
+    const ProjectMaterialAssetContainer::RefusedDocument &refused) {
+    const auto material =
+        refused.material.empty() ? std::string{"a material"} : "material '" + refused.material + "'";
+    std::string passes;
+    for (std::size_t index = 0; index < refused.passes.size(); ++index)
+        passes += std::string{index == 0 ? "" : index + 1 == refused.passes.size() ? " and " : ", "} + "'" +
+                  refused.passes[index] + "'";
+    const bool several = refused.passes.size() > 1;
+    const auto pass = refused.passes.empty() ? std::string{"the pass that draws it"}
+                                             : std::string{several ? "passes " : "pass "} + passes;
+    const std::string text = std::string{materialPassContractUnmetCode} + ": ";
+    if (refused.requirement == "ray_query")
+        return text + material + " queries the scene acceleration structure, but " + pass +
+               (several ? " do" : " does") + " not declare ray_query: true; declare it on the " +
+               (several ? "passes" : "pass") + ", or remove the query from the material's surface";
+    return text + material + " needs " + refused.requirement + " of " + pass + ", which " +
+           (several ? "they do" : "it does") + " not declare: " + refused.reason;
+}
+
+nlohmann::json materialPassContractUnmetFields(
+    const std::string &reference,
+    const ProjectMaterialAssetContainer::RefusedDocument &refused) {
+    nlohmann::json fields{
+        {"material", refused.material.empty() ? nlohmann::json(nullptr) : nlohmann::json(refused.material)},
+        {"material_document", reference},
+        {"pass", refused.passes.empty() ? nlohmann::json(nullptr) : nlohmann::json(refused.passes.front())},
+        {"requirement", refused.requirement},
+        {"reason", refused.reason},
+    };
+    if (refused.passes.size() > 1) fields["passes"] = refused.passes;
+    return fields;
+}
 
 void ProjectMaterialAssetContainer::Impl::publishProblems() const {
     std::vector<nlohmann::json> problems;
@@ -660,6 +771,17 @@ ProjectMaterialAssetContainer::
     for (const auto &reference : references) {
         try {
             (void)impl_->registerDocuments(std::span<const std::string>{&reference, 1});
+        } catch (const PassContractRefusal &refusal) {
+            // FO-2: the document reads; a pass it is drawn by does not declare
+            // what its material uses. Listed where the pass is declared.
+            auto refused = materialPassContractRefusal(reference, refusal);
+            LOG_ERROR(logger,
+                      "{}: the material document '{}' did not register; the engine starts without its "
+                      "materials (pass --strict-assets to stop instead): {}",
+                      refused.code, reference, materialPassContractUnmetMessage(refused));
+            impl_->refused.insert_or_assign(reference, std::move(refused));
+            if (const auto *passes = FastModuleContainer::tryGet<RenderingPassContainer>())
+                impl_->pass_contract_generation = passes->materialPassGeneration();
         } catch (const std::exception &error) {
             auto refused = refusedDocumentOf(reference, error.what());
             LOG_ERROR(logger,
@@ -866,6 +988,37 @@ ProjectMaterialAssetContainer::recoverDocument(const std::string &reference) {
     }
     impl_->publishProblems();
     return result;
+}
+
+void ProjectMaterialAssetContainer::retryPassContractRefusals() {
+    std::vector<std::string> references;
+    for (const auto &[reference, refused] : impl_->refused)
+        if (refused.status == "unusable") references.push_back(reference);
+    if (references.empty()) return;
+    const auto *passes = FastModuleContainer::tryGet<RenderingPassContainer>();
+    if (passes == nullptr) return;
+    const auto generation = passes->materialPassGeneration();
+    if (generation == impl_->pass_contract_generation) return;
+    impl_->pass_contract_generation = generation;
+    bool changed = false;
+    for (const auto &reference : references) {
+        try {
+            // Takes the problem off and rebuilds the models that kept their
+            // own material for want of it.
+            (void)recoverDocument(reference);
+        } catch (const PassContractRefusal &refusal) {
+            auto refused = materialPassContractRefusal(reference, refusal);
+            LOG_INFO(logger, "material document '{}' still does not register: {}", reference,
+                     materialPassContractUnmetMessage(refused));
+            impl_->refused.insert_or_assign(reference, std::move(refused));
+            changed = true;
+        } catch (const std::exception &error) {
+            LOG_WARNING(logger, "material document '{}' still does not register: {}", reference, error.what());
+            impl_->refused.insert_or_assign(reference, refusedDocumentOf(reference, error.what()));
+            changed = true;
+        }
+    }
+    if (changed) impl_->publishProblems();
 }
 
 void ProjectMaterialAssetContainer::noteReloadFailure(const watch::AssetKey &key, const std::string &error) {

@@ -6,6 +6,7 @@
 #include "../log.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../shader/raygrouplayout.hpp"
+#include "../shader/raytracingrefusal.hpp"
 #include "../shader/raytracingvalidation.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../renderer/frameresources.hpp"
@@ -1412,25 +1413,34 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                 resource_interface, merge(stages),
                 PELICAN_SET_PASS_INPUT);
         }
-        pipeline = pipeline_factory.createRayTracing(
-            RayTracingPipelineDesc{
-                .max_recursion =
-                    definition.ray_tracing->max_recursion,
-                .raygen = shaders.raygen,
-                .misses = std::move(shaders.misses),
-                .closest_hits = std::move(shaders.closest_hits),
-                .callables = std::move(shaders.callables),
-                .callable_record_layout = definition.ray_tracing->callable_record_layout,
-                .any_hits = std::move(shaders.any_hits),
-                .intersections = std::move(shaders.intersections),
-                .shader_defines = shader_recipe.defines,
-                .resource_interface = resource_interface,
-                .ray_tracing_project =
-                    dependencies.ray_tracing_project,
-                .traced_ray_type_indices =
-                    definition.ray_tracing
-                        ->traced_ray_type_indices,
-            });
+        try {
+            pipeline = pipeline_factory.createRayTracing(
+                RayTracingPipelineDesc{
+                    .max_recursion =
+                        definition.ray_tracing->max_recursion,
+                    .raygen = shaders.raygen,
+                    .misses = std::move(shaders.misses),
+                    .closest_hits = std::move(shaders.closest_hits),
+                    .callables = std::move(shaders.callables),
+                    .callable_record_layout = definition.ray_tracing->callable_record_layout,
+                    .any_hits = std::move(shaders.any_hits),
+                    .intersections = std::move(shaders.intersections),
+                    .shader_defines = shader_recipe.defines,
+                    .resource_interface = resource_interface,
+                    .ray_tracing_project =
+                        dependencies.ray_tracing_project,
+                    .traced_ray_type_indices =
+                        definition.ray_tracing
+                            ->traced_ray_type_indices,
+                });
+        } catch (const RayTracingRefusal &refusal) {
+            // EB-3: the pipeline check's typed refusals (shader record ABI,
+            // payload) name their shader and slot; the task is named here.
+            auto fields = refusal.fields();
+            if (fields.is_object() && !fields.contains("task"))
+                fields["task"] = definition.name;
+            throw RayTracingRefusal(refusal.code(), std::move(fields), refusal.what());
+        }
     } else {
         const auto shader = loadComputeTaskShader(
             definition.shader, definition,
