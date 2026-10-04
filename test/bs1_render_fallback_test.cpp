@@ -71,6 +71,40 @@ std::string withoutLastBrace(std::string text) {
     return text;
 }
 
+// RR-1: a fullscreen pass in the root graph that writes an image of its own
+// with the engine's passthrough (Blank's present still draws the gradient).
+// Without `location` its color port is what CT-1 names:
+// graph.port_field_missing@1 {node: rr1_fill, port: color, field: location}.
+Json rr1FillParameters(bool location) {
+    const Json color_type{{"semantic", "pelican.render.color_signal@1"},
+                          {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    Json color{{"kind", "image"}, {"type", color_type}, {"access", "write"}, {"attachment", "color"}};
+    if (location) color["location"] = 0;
+    return {{"pass_set", "main_render"},
+            {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}},
+            {"ports", {{"color", color}}}};
+}
+
+std::string withFillNodes(const std::string &blank_root, bool location) {
+    const Json color_type{{"semantic", "pelican.render.color_signal@1"},
+                          {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    auto document = Json::parse(blank_root);
+    document.at("nodes").push_back({{"id", "rr1_canvas"},
+                                    {"op", "render.image"},
+                                    {"parameters",
+                                     {{"type", color_type},
+                                      {"format", "R16G16B16A16_SFLOAT"},
+                                      {"extent_scale", 1.0},
+                                      {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}},
+                                    {"outputs", Json::array({"resource"})}});
+    document.at("nodes").push_back({{"id", "rr1_fill"},
+                                    {"op", "render.fullscreen"},
+                                    {"parameters", rr1FillParameters(location)},
+                                    {"inputs", {{"color", {{"node", "rr1_canvas"}, {"port", "resource"}}}}},
+                                    {"outputs", Json::array({"color"})}});
+    return document.dump(2) + "\n";
+}
+
 struct TempProject {
     std::filesystem::path root;
     std::string fixed_root;
@@ -579,6 +613,239 @@ TEST_CASE("BS-1b a root that is not JSON starts the fallback, is listed as its b
     CHECK(player.result("get_status").at("render_pipeline").at("state") == "ready");
     requireBlankGradient(capture(player, capture_path));
     CHECK(readFile(project.rootPath()) == project.fixed_root);
+    player.close();
+    CHECK(player.exit_code == 0u);
+}
+
+namespace {
+
+// RR-1: the problems get_problems lists now.
+Json problemsOf(PlayerRpc &player) {
+    return player.result("get_problems").at("problems");
+}
+
+std::uint64_t publishedGeneration(PlayerRpc &player) {
+    return player.result("get_frame_node_order").at("published_generation").get<std::uint64_t>();
+}
+
+// RR-1: a player started normally on `live_root` (rr1_fill with its location),
+// whose disk root is then saved as `broken` and reloaded. The reload is refused
+// for the documents; the generation before goes on drawing, and the editor
+// holds what is on disk: the reads return it, marked not live. Returns the held
+// root's digest.
+std::string requireRefusedReloadHeld(PlayerRpc &player, const TempProject &project, const std::string &broken,
+                                     const std::filesystem::path &capture_path, std::uint64_t generation) {
+    writeFile(project.rootPath(), broken);
+    const auto result = player.settle(player.result("reload_render_documents"));
+    INFO(result.dump(2));
+    REQUIRE(result.at("status") == "rejected");
+    const auto refusal = result.at("error");
+    CHECK(refusal.at("code") == "graph.port_field_missing@1");
+    CHECK(refusal.at("node") == "rr1_fill");
+    CHECK(refusal.at("port") == "color");
+    CHECK(refusal.at("field") == "location");
+
+    // The live generation is the one before: ready, not republished, Blank's
+    // gradient.
+    CHECK(player.result("get_status").at("render_pipeline").at("state") == "ready");
+    CHECK(publishedGeneration(player) == generation);
+    requireBlankGradient(capture(player, capture_path));
+
+    // The reads are the disk's version, marked not live.
+    const auto documents = player.result("get_render_documents");
+    CHECK(documents.at("live") == false);
+    const auto root = documents.at("documents").at(0);
+    CHECK(root.at("content").get<std::string>() == broken);
+    const auto digest = root.at("digest").get<std::string>();
+    const auto graph = player.result("get_graph_instances");
+    CHECK(graph.at("live") == false);
+    CHECK_FALSE(graph.contains("held_unparsed"));
+    CHECK(graph.at("source_digest").at("hex") == digest);
+    bool found = false;
+    for (const auto &node : graph.at("nodes"))
+        if (node.at("id") == "rr1_fill") {
+            found = true;
+            CHECK_FALSE(node.at("parameters").at("ports").at("color").contains("location"));
+        }
+    CHECK(found);
+
+    // PB-1: the refusal is listed.
+    const auto problems = problemsOf(player);
+    INFO(problems.dump(2));
+    REQUIRE(problems.size() == 1u);
+    CHECK(problems.at(0).at("code") == "graph.port_field_missing@1");
+    CHECK(problems.at(0).at("source") == "reload_rpc");
+    return digest;
+}
+
+// RR-1: what the documents published again look like: no problem, the reads
+// live, the project's own frames with rr1_fill in the plan.
+void requireFixedAndLive(PlayerRpc &player, const std::filesystem::path &capture_path, std::uint64_t generation) {
+    CHECK(problemsOf(player).empty());
+    CHECK(player.result("get_status").at("render_pipeline").at("state") == "ready");
+    const auto graph = player.result("get_graph_instances");
+    CHECK(graph.at("live") == true);
+    CHECK_FALSE(graph.contains("held_unparsed"));
+    CHECK(player.result("get_render_documents").at("live") == true);
+    CHECK(publishedGeneration(player) > generation);
+    requireBlankGradient(capture(player, capture_path));
+    CHECK(player.result("get_frame_plan").dump().find("rr1_fill") != std::string::npos);
+}
+
+} // namespace
+
+TEST_CASE("RR-1 a reload refused after a normal start makes the disk's root the editor's base: the reads return it "
+          "marked not live, a reload as it is stays refused, and a restore on its digest fixes it",
+          "[rr1][render-fallback][rpc]") {
+    TempProject project{"rr1_restore"};
+    const auto capture_path = project.root / "capture.png";
+    const auto live_root = withFillNodes(project.fixed_root, true);
+    writeFile(project.rootPath(), live_root);
+    PlayerRpc player{project.root, project.stderrLog("rr1_restore")};
+    REQUIRE(player.result("get_status").at("render_pipeline").at("state") == "ready");
+    CHECK(player.result("get_graph_instances").at("live") == true);
+    const auto generation = publishedGeneration(player);
+
+    const auto broken = withFillNodes(project.fixed_root, false);
+    const auto digest = requireRefusedReloadHeld(player, project, broken, capture_path, generation);
+
+    // Reloaded as it still is: composed again (what the editor holds is not
+    // live), refused again, still listed. Not a no_change that would clear it.
+    {
+        const auto result = player.settle(player.result("reload_render_documents"));
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(result.at("error").at("code") == "graph.port_field_missing@1");
+        CHECK(problemsOf(player).size() == 1u);
+    }
+
+    // The root restored on the held digest: committed, written, published.
+    const auto result = player.settle(player.result(
+        "restore_render_documents",
+        {{"documents", Json::array({{{"reference", root_reference},
+                                     {"base_digest", digest},
+                                     {"content", live_root}}})}}));
+    INFO(result.dump(2));
+    REQUIRE(result.at("status") == "committed");
+    CHECK(readFile(project.rootPath()) == live_root);
+    requireFixedAndLive(player, capture_path, generation);
+    player.close();
+    CHECK(player.exit_code == 0u);
+}
+
+TEST_CASE("RR-1 a structural edit on the refused root's digest adds the missing field, publishes, and the problem "
+          "goes",
+          "[rr1][render-fallback][rpc]") {
+    TempProject project{"rr1_edit"};
+    const auto capture_path = project.root / "capture.png";
+    writeFile(project.rootPath(), withFillNodes(project.fixed_root, true));
+    PlayerRpc player{project.root, project.stderrLog("rr1_edit")};
+    REQUIRE(player.result("get_status").at("render_pipeline").at("state") == "ready");
+    const auto generation = publishedGeneration(player);
+    const auto digest = requireRefusedReloadHeld(player, project, withFillNodes(project.fixed_root, false),
+                                                 capture_path, generation);
+
+    // An edit that leaves the field out is refused by name and writes nothing.
+    {
+        const auto result = player.settle(player.result(
+            "edit_graph_document",
+            {{"base_source_digest", digest},
+             {"ops", Json::array({{{"op", "set_node_label"}, {"node", "rr1_fill"}, {"label", "Fill"}}})}}));
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "rejected");
+        CHECK(result.at("error").at("code") == "graph.port_field_missing@1");
+        CHECK(readFile(project.rootPath()) == withFillNodes(project.fixed_root, false));
+        CHECK(problemsOf(player).size() == 1u);
+    }
+
+    Json fix = Json::object();
+    fix["op"] = "set_node_parameters";
+    fix["node"] = "rr1_fill";
+    fix["parameters"] = rr1FillParameters(true);
+    Json params = Json::object();
+    params["base_source_digest"] = digest;
+    params["ops"] = Json::array({fix});
+    const auto accepted = player.result("edit_graph_document", params);
+    INFO(accepted.dump(2));
+    const auto result = player.settle(accepted);
+    INFO(result.dump(2));
+    REQUIRE(result.at("status") == "committed");
+    const auto written = Json::parse(readFile(project.rootPath()));
+    for (const auto &node : written.at("nodes"))
+        if (node.at("id") == "rr1_fill")
+            CHECK(node.at("parameters").at("ports").at("color").at("location") == 0);
+    requireFixedAndLive(player, capture_path, generation);
+    player.close();
+    CHECK(player.exit_code == 0u);
+}
+
+TEST_CASE("RR-1 a reload refused for a root that is not JSON holds its bytes, the Graph reads keep the root before, "
+          "and a restore on the bytes' digest fixes it",
+          "[rr1][render-fallback][rpc]") {
+    TempProject project{"rr1_syntax"};
+    const auto capture_path = project.root / "capture.png";
+    const auto live_root = withFillNodes(project.fixed_root, true);
+    writeFile(project.rootPath(), live_root);
+    PlayerRpc player{project.root, project.stderrLog("rr1_syntax")};
+    REQUIRE(player.result("get_status").at("render_pipeline").at("state") == "ready");
+    const auto generation = publishedGeneration(player);
+    const auto live_digest =
+        player.result("get_graph_instances").at("source_digest").at("hex").get<std::string>();
+
+    const auto broken = withoutLastBrace(live_root);
+    writeFile(project.rootPath(), broken);
+    {
+        const auto result = player.settle(player.result("reload_render_documents"));
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "rejected");
+        requireSyntaxRefusal(result.at("error"));
+    }
+    // The generation before goes on.
+    CHECK(player.result("get_status").at("render_pipeline").at("state") == "ready");
+    CHECK(publishedGeneration(player) == generation);
+    requireBlankGradient(capture(player, capture_path));
+    // The documents are the bytes on disk, not live; the structural reads go on
+    // answering from the root before (the live one), marked held_unparsed.
+    const auto documents = player.result("get_render_documents");
+    CHECK(documents.at("live") == false);
+    const auto root = documents.at("documents").at(0);
+    CHECK(root.at("content").get<std::string>() == broken);
+    {
+        const auto graph = player.result("get_graph_instances");
+        INFO(graph.dump(2).substr(0, 2000));
+        CHECK(graph.at("live") == true);
+        CHECK(graph.at("held_unparsed") == true);
+        CHECK(graph.at("source_digest").at("hex") == live_digest);
+        CHECK(graph.at("nodes").dump().find("rr1_fill") != std::string::npos);
+    }
+    CHECK(problemsOf(player).size() == 1u);
+
+    // A structural edit writes nothing: on the held bytes' digest it is
+    // refused for their syntax (BS-1b's name); on the live root's digest the
+    // reads return it is external_modification, which Studio reads as the
+    // file on disk that could not be loaded (RL-1s decision 5).
+    for (const auto &base : {root.at("digest").get<std::string>(), live_digest}) {
+        const auto result = player.result(
+            "edit_graph_document", {{"base_source_digest", base},
+                                    {"ops", Json::array({{{"op", "remove_node"}, {"node", "rr1_fill"}}})}});
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "rejected");
+        if (base == live_digest)
+            CHECK(result.at("error").at("code") == "external_modification");
+        else
+            requireSyntaxRefusal(result.at("error"));
+        CHECK(readFile(project.rootPath()) == broken);
+    }
+
+    const auto result = player.settle(player.result(
+        "restore_render_documents",
+        {{"documents", Json::array({{{"reference", root.at("reference")},
+                                     {"base_digest", root.at("digest")},
+                                     {"content", live_root}}})}}));
+    INFO(result.dump(2));
+    REQUIRE(result.at("status") == "committed");
+    CHECK(readFile(project.rootPath()) == live_root);
+    requireFixedAndLive(player, capture_path, generation);
     player.close();
     CHECK(player.exit_code == 0u);
 }

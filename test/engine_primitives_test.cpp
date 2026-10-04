@@ -2391,9 +2391,11 @@ TEST_CASE("RL-1 reload_render_documents takes in a root rewritten on disk, and r
         CHECK_FALSE(aliased(physical()));
     }
 
-    // 3. What cannot compose is refused by name; the live frame and the
-    // editor's document stay, the disk keeps the bytes, and once the file is
-    // put back an edit on the previous digest goes through.
+    // 3. What cannot compose is refused by name; the live frame stays and the
+    // disk keeps the bytes. RR-1: the editor holds the refused bytes as its
+    // base (get_render_documents says they are not live), so once the file is
+    // put back a reload publishes it again and an edit on the previous digest
+    // goes through.
     const auto before_refusals = digest();
     const auto before_bytes = readFile(rendering_path);
     const auto refused = [&](const std::string &bytes) {
@@ -2402,7 +2404,9 @@ TEST_CASE("RL-1 reload_render_documents takes in a root rewritten on disk, and r
         INFO(result.dump(2));
         REQUIRE(result.at("status") == "rejected");
         CHECK_FALSE(result.at("error").value("code", std::string{}).empty());
-        CHECK(digest() == before_refusals);
+        const auto held = rpc.result("get_render_documents");
+        CHECK(held.at("live") == false);
+        CHECK(held.at("documents").at(0).at("content") == bytes);
         CHECK(readFile(rendering_path) == bytes);
         CHECK_FALSE(aliased(physical()));
         return result.at("error");
@@ -2422,6 +2426,14 @@ TEST_CASE("RL-1 reload_render_documents takes in a root rewritten on disk, and r
         CHECK(refused(missing.dump(2)).at("code") == "render_pipeline_preflight_failed");
     }
     writeFile(rendering_path, before_bytes);
+    {
+        const auto result = reload();
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK_FALSE(result.contains("no_change"));
+        CHECK(result.at("source_digest").at("hex") == before_refusals);
+        CHECK(rpc.result("get_render_documents").at("live") == true);
+    }
     {
         const auto result = settle(rpc.result(
             "edit_target_planning", {{"base_source_digest", before_refusals},

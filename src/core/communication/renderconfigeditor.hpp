@@ -348,6 +348,19 @@ class RenderConfigEditorService {
     // editor last wrote or reloaded it, {normalized reference: sha256 hex}.
     // A document absent here is compared with published_documents.
     std::map<std::string, std::string> known_document_digests_;
+    // RR-1: a reload refused the documents on disk, and the editor holds
+    // them (the root's bytes and digest, the managed fragments, the other
+    // documents' digests) as the base of the next restore or edit while the
+    // live generation stays the one before. Cleared when a ticket publishes
+    // a generation composed from what the editor holds.
+    bool holds_refused_documents_ = false;
+    // RR-1: while the held root is bytes that are not JSON (a reload refused
+    // with render_document_syntax@1), the newest root the editor held that
+    // reads, and whether it was the live one. The structural reads answer
+    // from it (readDocument); the managed baselines stay this root's. Empty
+    // otherwise, and on a fallback that started on such bytes.
+    std::optional<AuthoredRenderConfigDocument> readable_document_;
+    bool readable_document_live_ = false;
     std::uint64_t next_ticket_ = 1;
     EditorGateEpoch<RenderConfigEditorGateObservation> gate_tracker_;
     std::shared_ptr<const void> lifetime_ =
@@ -417,6 +430,37 @@ class RenderConfigEditorService {
     // render pipeline's problems. An edit's refusal is the answer's alone.
     void noteProblems(bool reload, bool source_only,
                       const nlohmann::ordered_json &result) const;
+    // RR-1: whether a reload's refusal is one of the documents (what
+    // noteProblems lists), not of the moment (a busy editor, a closed gate,
+    // a file that changed again, a stale digest).
+    static bool refusesDocuments(const nlohmann::ordered_json &result);
+    // RR-1: the documents a refused reload read become the editor's base
+    // (`root` the root as read; `digests` {normalized reference: sha256 hex}
+    // of every document it read), and holds_refused_documents_ is set.
+    // `unparsed`: the root is bytes that are not JSON; the root held before
+    // stays readable (readable_document_).
+    void holdRefusedDocuments(AuthoredRenderConfigDocument root,
+                              const std::map<std::string, std::string> &digests,
+                              bool unparsed = false);
+    // RR-1: the root the structural reads answer from -- the held one, or
+    // readable_document_ while the held one is not JSON -- with the managed
+    // fragments, whether it is live, and the fields that say which it is:
+    // {live} and, while the held root is not JSON, held_unparsed: true.
+    const AuthoredRenderConfigDocument &readDocument() const;
+    RenderConfigCandidateDocumentSet readDocumentSet() const;
+    bool readLive() const;
+    nlohmann::ordered_json markRead(nlohmann::ordered_json read) const;
+    // RR-1: what a finished ticket does to holds_refused_documents_: a
+    // reload refused for its documents holds them; a commit that cleared the
+    // render pipeline's problems (noteProblems) composed and published what
+    // the editor holds.
+    void noteHeldDocuments(const Ticket &ticket,
+                           const nlohmann::ordered_json &result);
+    // RR-1: whether the documents the editor holds are the ones the live
+    // generation was composed from: false on the engine's fallback (BS-1)
+    // and after a reload refused them, until a ticket publishes them.
+    // Reads that answer from the held root carry it as `live`.
+    bool documentsLive() const;
     nlohmann::ordered_json reloadRenderDocumentsUnnoted(
         const nlohmann::json &params, bool preview_open);
     // The authored-pass tail shared by addAuthoredPass and
@@ -539,6 +583,9 @@ class RenderConfigEditorService {
     const RenderFeatureCatalogEntry *findCatalogReference(
         std::string_view reference) const noexcept;
     RenderConfigCandidateDocumentSet currentDocumentSet() const;
+    // RR-1: currentDocumentSet with `root` in the root's place.
+    RenderConfigCandidateDocumentSet documentSetOf(
+        const AuthoredRenderConfigDocument &root) const;
     // RD-1: every render document the current composition can write, root
     // first. Nothing outside the project root, nothing engine://, and nothing
     // that is not a render document of the kind the composition reads it as.
@@ -799,9 +846,15 @@ class RenderConfigEditorService {
     // the assets (published_assets: images' initial assets, IA-3 the
     // value.sample_table tables) whose bytes on disk differ from what the
     // live generation read; one is enough to publish
-    // a new generation with the same documents. A refusal leaves the live generation and the
-    // editor's documents as they were. A pending or in-flight ticket, or
-    // `preview_open`, is reload_busy.
+    // a new generation with the same documents. A refusal leaves the live
+    // generation as it was; RR-1: one of the documents (not reload_busy,
+    // gate_closed, external_modification or stale_source_digest) makes what
+    // it read the editor's base (holdRefusedDocuments), so a restore or an
+    // edit on the disk's digest fixes it, and the reads say `live: false`.
+    // While the editor holds such documents (or the engine runs its
+    // fallback) a reload composes them even when nothing changed. A root
+    // that is JSON but not a pelican.graph object is not held. A pending or
+    // in-flight ticket, or `preview_open`, is reload_busy.
     nlohmann::ordered_json reloadRenderDocuments(
         const nlohmann::json &params, bool preview_open = false);
     nlohmann::ordered_json getResult(

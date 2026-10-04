@@ -1040,6 +1040,16 @@ void RenderConfigEditorService::loadManagedDocumentBaselines() {
 
 RenderConfigCandidateDocumentSet
 RenderConfigEditorService::currentDocumentSet() const {
+    return documentSetOf(document_);
+}
+
+RenderConfigCandidateDocumentSet
+RenderConfigEditorService::readDocumentSet() const {
+    return documentSetOf(readDocument());
+}
+
+RenderConfigCandidateDocumentSet RenderConfigEditorService::documentSetOf(
+    const AuthoredRenderConfigDocument &root) const {
     std::vector<RenderConfigCandidateDocument> documents;
     documents.reserve(managed_documents_.size() + 1);
     documents.push_back(RenderConfigCandidateDocument{
@@ -1049,8 +1059,8 @@ RenderConfigEditorService::currentDocumentSet() const {
         .operation = RenderConfigDocumentOperation::replace,
         .expected =
             {RenderConfigDocumentExistence::present,
-             document_.sourceDigest()},
-        .bytes = document_.bytes(),
+             root.sourceDigest()},
+        .bytes = root.bytes(),
     });
     for (const auto &[key, managed] : managed_documents_) {
         (void)key;
@@ -1174,9 +1184,9 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
     const Json &params) const {
     requireOnly(params, {}, "get_render_features");
     const auto uneditable_entries =
-        document_.uneditableFeatureEntryCount();
+        readDocument().uneditableFeatureEntryCount();
     auto instances = OrderedJson::array();
-    const auto root = Json::parse(document_.bytes());
+    const auto root = Json::parse(readDocument().bytes());
     const auto append_instances = [&](const Json &features, std::string_view scope,
                                       const std::string &source_reference, const std::string &source_digest,
                                       bool source_editable) {
@@ -1237,9 +1247,9 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
     }
     };
     append_instances(renderingSectionOrEmpty(root).value("features", Json::array()), "root",
-                     dependencies_.source_reference, document_.sourceDigest(), true);
+                     dependencies_.source_reference, readDocument().sourceDigest(), true);
     if (dependencies_.resolve_authoring_context) {
-        const auto current = dependencies_.resolve_authoring_context(currentDocumentSet());
+        const auto current = dependencies_.resolve_authoring_context(readDocumentSet());
         if (current.pipeline_preset && current.pipeline_preset_bytes) {
             const auto preset = Json::parse(*current.pipeline_preset_bytes);
             append_instances(preset.at("config").value("features", Json::array()), "preset",
@@ -1247,15 +1257,15 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
                              current.pipeline_preset->reference.starts_with("project://"));
         }
     }
-    return {{"source_reference", dependencies_.source_reference},
-            {"source_digest", digestJson(document_.sourceDigest())},
-            {"features", document_.featureReferences()},
+    return markRead(OrderedJson{{"source_reference", dependencies_.source_reference},
+            {"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()},
+            {"features", readDocument().featureReferences()},
             {"feature_instances", std::move(instances)},
             {"has_uneditable_feature_entries",
              uneditable_entries != 0},
             {"uneditable_feature_entry_count",
              uneditable_entries},
-            {"runtime", runtimeJson(dependencies_.runtime_snapshot())}};
+            {"runtime", runtimeJson(dependencies_.runtime_snapshot())}});
 }
 
 OrderedJson RenderConfigEditorService::listRenderFeatures(
@@ -1859,6 +1869,10 @@ RenderConfigEditorService::checkAuthoringPreconditions(
              {"reason", primaryReason(gate.reasons)},
              {"gate_epoch", gate.epoch}});
     }
+    // RR-1: while the held root is not JSON, an edit on the root the reads
+    // answer from (readable_document_) is external_modification, as an edit
+    // on a digest from before a reload always was: the disk is not that root.
+    // On the held bytes' digest it is render_document_syntax@1 (below).
     if (base_digest != document_.sourceDigest()) {
         return rejection(
             "external_modification",
@@ -2265,9 +2279,9 @@ OrderedJson RenderConfigEditorService::editBatch(const Json &params) {
 
 OrderedJson RenderConfigEditorService::getRayCallableRecords(const Json &params) const {
     requireOnly(params, {}, "get_ray_callable_records");
-    const auto root = Json::parse(document_.bytes());
+    const auto root = Json::parse(readDocument().bytes());
     const auto config = dependencies_.resolve_authoring_context
-        ? dependencies_.resolve_authoring_context(currentDocumentSet()).config
+        ? dependencies_.resolve_authoring_context(readDocumentSet()).config
         : renderingSectionOrEmpty(root);
     const auto overrides = renderingSectionOrEmpty(root).value("ray_task_callable_records", Json::object());
     auto tasks = Json::array();
@@ -2282,8 +2296,8 @@ OrderedJson RenderConfigEditorService::getRayCallableRecords(const Json &params)
             {"callables", callables}, {"authored_records", ray.at("callable_records")},
             {"records", overrides.value(name, ray.at("callable_records"))}});
     }
-    return {{"source_reference", dependencies_.source_reference},
-            {"source_digest", digestJson(document_.sourceDigest())}, {"tasks", tasks}};
+    return markRead(OrderedJson{{"source_reference", dependencies_.source_reference},
+            {"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()}, {"tasks", tasks}});
 }
 
 OrderedJson RenderConfigEditorService::editRayCallableRecords(const Json &params) {
@@ -2315,10 +2329,10 @@ OrderedJson RenderConfigEditorService::editRayCallableRecords(const Json &params
 
 OrderedJson RenderConfigEditorService::getSceneAccelerationStructures(const Json &params) const {
     requireOnly(params, {}, "get_scene_acceleration_structures");
-    const auto root = Json::parse(document_.bytes());
+    const auto root = Json::parse(readDocument().bytes());
     Json connections = Json::array();
     const auto config = dependencies_.resolve_authoring_context
-        ? dependencies_.resolve_authoring_context(currentDocumentSet()).config
+        ? dependencies_.resolve_authoring_context(readDocumentSet()).config
         : renderingSectionOrEmpty(root);
     const auto overrides = renderingSectionOrEmpty(root).value("ray_task_acceleration_structures", Json::object());
     for (const auto &task : config.value("compute_tasks", Json::array())) {
@@ -2329,12 +2343,12 @@ OrderedJson RenderConfigEditorService::getSceneAccelerationStructures(const Json
         connections.push_back({{"name", name}, {"authored_acceleration_structure", authored},
             {"acceleration_structure", overrides.value(name, authored)}});
     }
-    return {{"source_reference", dependencies_.source_reference},
-            {"source_digest", digestJson(document_.sourceDigest())},
+    return markRead(OrderedJson{{"source_reference", dependencies_.source_reference},
+            {"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()},
             {"task_connections", connections},
             {"triangle_geometry", geometrySpaceDocument(config, dependencies_).info},
             {"procedural_geometry", geometrySpaceDocument(config, dependencies_, true).info},
-            {"definitions", renderingSectionOrEmpty(root).value("scene_acceleration_structures", Json::array())}};
+            {"definitions", renderingSectionOrEmpty(root).value("scene_acceleration_structures", Json::array())}});
 }
 
 OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Json &params) {
@@ -2422,7 +2436,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
             "render authoring context resolver is unavailable");
     }
     const auto resolved =
-        dependencies_.resolve_authoring_context(currentDocumentSet());
+        dependencies_.resolve_authoring_context(readDocumentSet());
     const auto runtime = dependencies_.runtime_snapshot();
 
     std::optional<OrderedJson> editable_preset;
@@ -2435,7 +2449,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
     std::optional<OrderedJson> editable_root;
     if (!resolved.pipeline_preset) {
         try {
-            editable_root = OrderedJson::parse(document_.bytes());
+            editable_root = OrderedJson::parse(readDocument().bytes());
         } catch (const std::exception &) {
             editable_root.reset();
         }
@@ -2600,7 +2614,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
 
     OrderedJson result{
         {"source_reference", dependencies_.source_reference},
-        {"source_digest", digestJson(document_.sourceDigest())},
+        {"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()},
         {"published_generation", runtime.published_generation},
         // G-1: what the running pipeline enabled. A scene-class target is
         // R16G16B16A16_SFLOAT only with "hdr" among them, which decides the
@@ -2630,7 +2644,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         }
     }
     const auto origins =
-        renderTargetOrigins(resolved, document_.bytes(), fragment_targets);
+        renderTargetOrigins(resolved, readDocument().bytes(), fragment_targets);
     auto editable_targets = OrderedJson::array();
     auto other_targets = OrderedJson::array();
     for (const auto &declaration :
@@ -2746,7 +2760,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         if (resolved.pipeline_preset_bytes)
             result["pipeline_preset"]["source_digest"] = digestJson(renderConfigSourceDigest(*resolved.pipeline_preset_bytes));
     }
-    return result;
+    return markRead(std::move(result));
 }
 
 OrderedJson RenderConfigEditorService::forkRenderPipeline(const Json &params) {
@@ -2799,7 +2813,7 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
     requireOnly(params, {}, "get_compute_task_authoring");
     if (!dependencies_.resolve_authoring_context)
         throw std::logic_error("render authoring context resolver is unavailable");
-    const auto context = dependencies_.resolve_authoring_context(currentDocumentSet());
+    const auto context = dependencies_.resolve_authoring_context(readDocumentSet());
     // MG-3b: the tasks a render.compute node made. GL-2a: the composition
     // says which node made each task (RenderPassProvenance::graph_origin),
     // and where that node is authored, so the editor no longer expands the
@@ -2884,32 +2898,32 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
                                  {"declaration_json", resource.dump(2)}});
         }
     }
-    return {{"source_digest", digestJson(document_.sourceDigest())}, {"tasks", std::move(tasks)},
-            {"resources", std::move(resources)}};
+    return markRead(OrderedJson{{"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()}, {"tasks", std::move(tasks)},
+            {"resources", std::move(resources)}});
 }
 
 OrderedJson RenderConfigEditorService::getFrameNodeOrder(const Json &params) const {
     requireOnly(params, {}, "get_frame_node_order");
-    return {{"source_digest", digestJson(document_.sourceDigest())},
+    return markRead(OrderedJson{{"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()},
             {"published_generation", dependencies_.runtime_snapshot().published_generation},
-            {"orders", renderingSectionOrEmpty(Json::parse(document_.bytes()))
-                           .value("frame_node_order", Json::object())}};
+            {"orders", renderingSectionOrEmpty(Json::parse(readDocument().bytes()))
+                           .value("frame_node_order", Json::object())}});
 }
 
 OrderedJson RenderConfigEditorService::getGraphInstances(const Json &params) const {
     requireOnly(params, {}, "get_graph_instances");
-    const auto root = Json::parse(document_.bytes());
+    const auto root = Json::parse(readDocument().bytes());
     // MG-2b: the document is always a pelican.graph root (anything else is
     // refused as render_config.legacy_root@1 before it becomes document_).
     auto instances = Json::array();
     auto nodes = root.at("nodes");
     for (const auto &node : nodes)
         if (node.at("op") == "graph.instance") instances.push_back(node);
-    return {{"source_reference", dependencies_.source_reference},
+    return markRead(OrderedJson{{"source_reference", dependencies_.source_reference},
         // N-8: what the root document is. Since MG-2b it is always
         // "pelican.graph"; the field stays because Studio reads it.
         {"root_schema", root.value("schema", std::string{})},
-        {"source_digest", digestJson(document_.sourceDigest())},
+        {"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()},
         {"instances", std::move(instances)},
         // The whole root array too: an editor that connects an input has to
         // name a producer that is already there, and has to avoid an id that
@@ -2922,7 +2936,7 @@ OrderedJson RenderConfigEditorService::getGraphInstances(const Json &params) con
         // travels inside its body, so this is the one that needs naming, and
         // reporting it here is what keeps the canvas from needing a read of
         // its own for something the document already carries.
-        {"layout", root.value("layout", Json::object())}};
+        {"layout", root.value("layout", Json::object())}});
 }
 
 OrderedJson RenderConfigEditorService::editGraphInstances(const Json &params) {
@@ -3025,11 +3039,11 @@ OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
 
 OrderedJson RenderConfigEditorService::getFoldGroups(const Json &params) const {
     requireOnly(params, {}, "get_fold_groups");
-    const auto root = Json::parse(document_.bytes());
+    const auto root = Json::parse(readDocument().bytes());
     auto groups = OrderedJson::array();
     for (const auto &report : reportGraphFoldGroups(root, parseGraphFoldGroups(root)))
         groups.push_back(graphFoldGroupReportToJson(report));
-    return {{"source_digest", digestJson(document_.sourceDigest())}, {"fold_groups", std::move(groups)}};
+    return markRead(OrderedJson{{"source_digest", digestJson(readDocument().sourceDigest())}, {"live", readLive()}, {"fold_groups", std::move(groups)}});
 }
 
 OrderedJson RenderConfigEditorService::queueFoldGroupEdit(
@@ -5934,7 +5948,9 @@ OrderedJson RenderConfigEditorService::getRenderDocuments(
                              {"digest", renderConfigSourceDigest(bytes)},
                              {"content", std::move(bytes)}});
     }
-    return {{"documents", std::move(documents)}};
+    // RR-1: whether these are the documents the live generation was composed
+    // from (false on the fallback and after a refused reload).
+    return {{"documents", std::move(documents)}, {"live", documentsLive()}};
 }
 
 OrderedJson RenderConfigEditorService::restoreRenderDocuments(
@@ -6347,17 +6363,88 @@ void RenderConfigEditorService::noteProblems(
             clearRenderPipelineProblems();
         return;
     }
-    if (!reload || status != "rejected") return;
-    const auto error = result.find("error");
-    if (error == result.end() || !error->is_object()) return;
-    const auto code = error->value("code", std::string{});
-    // Refusals of the moment, not of the documents.
-    if (code == reloadBusyCode || code == "gate_closed" ||
-        code == "external_modification" || code == "stale_source_digest")
-        return;
+    if (!reload || !refusesDocuments(result)) return;
     recordRenderPipelineProblem(
         problemSourceReloadRpc,
-        Json::parse(error->dump()), dependencies_.source_reference);
+        Json::parse(result.at("error").dump()), dependencies_.source_reference);
+}
+
+bool RenderConfigEditorService::refusesDocuments(const OrderedJson &result) {
+    if (result.value("status", std::string{}) != "rejected") return false;
+    const auto error = result.find("error");
+    if (error == result.end() || !error->is_object()) return false;
+    const auto code = error->value("code", std::string{});
+    // Refusals of the moment, not of the documents.
+    return !(code == reloadBusyCode || code == "gate_closed" ||
+             code == "external_modification" ||
+             code == "stale_source_digest");
+}
+
+void RenderConfigEditorService::holdRefusedDocuments(
+    AuthoredRenderConfigDocument root,
+    const std::map<std::string, std::string> &digests, bool unparsed) {
+    if (!unparsed) {
+        readable_document_.reset();
+    } else if (!readable_document_ && Json::accept(document_.bytes())) {
+        // The root held until now stays what the structural reads answer
+        // from, with its managed fragments (a root that is not JSON names
+        // none).
+        readable_document_ = document_;
+        readable_document_live_ = documentsLive();
+    }
+    document_ = std::move(root);
+    for (const auto &[normalized, digest] : digests)
+        if (normalized != source_normalized_reference_)
+            known_document_digests_.insert_or_assign(normalized, digest);
+    holds_refused_documents_ = true;
+    // The managed fragments the held root names, as they are on disk.
+    if (!unparsed) loadManagedDocumentBaselines();
+}
+
+const AuthoredRenderConfigDocument &
+RenderConfigEditorService::readDocument() const {
+    return readable_document_ ? *readable_document_ : document_;
+}
+
+bool RenderConfigEditorService::readLive() const {
+    return readable_document_ ? readable_document_live_ : documentsLive();
+}
+
+OrderedJson RenderConfigEditorService::markRead(OrderedJson read) const {
+    if (readable_document_) read["held_unparsed"] = true;
+    return read;
+}
+
+void RenderConfigEditorService::noteHeldDocuments(const Ticket &ticket,
+                                                  const OrderedJson &result) {
+    const auto status = result.value("status", std::string{});
+    if (status == "committed") {
+        // Whatever committed is JSON: the editor holds a root that reads.
+        readable_document_.reset();
+        // As noteProblems clears the render pipeline's problems.
+        if (ticket.reload ||
+            (!ticket.source_only && !result.value("no_change", false)))
+            holds_refused_documents_ = false;
+        return;
+    }
+    if (ticket.reload && refusesDocuments(result)) {
+        try {
+            holdRefusedDocuments(ticket.candidate, ticket.reload_digests);
+        } catch (const std::exception &) {
+            // The refusal is the answer either way; the editor keeps the
+            // documents it held.
+        }
+    }
+}
+
+bool RenderConfigEditorService::documentsLive() const {
+    if (holds_refused_documents_) return false;
+    try {
+        return !(dependencies_.runtime_fallback &&
+                 dependencies_.runtime_fallback());
+    } catch (const std::exception &) {
+        return true;
+    }
 }
 
 OrderedJson RenderConfigEditorService::reloadRenderDocuments(
@@ -6417,10 +6504,17 @@ OrderedJson RenderConfigEditorService::reloadRenderDocumentsUnnoted(
         return rejection("render_pipeline_preflight_failed", error.what(),
                          preflight_details(dependencies_.source_reference));
     }
-    // BS-1b: one that is not JSON, by name.
+    // BS-1b: one that is not JSON, by name. RR-1: held as its bytes, as an
+    // engine on its fallback holds it, so a restore on its digest replaces
+    // it.
     if (auto refused = syntaxRejection(
-            root_bytes, dependencies_.source_reference, method))
+            root_bytes, dependencies_.source_reference, method)) {
+        holdRefusedDocuments(AuthoredRenderConfigDocument::unparsed(root_bytes),
+                             {}, /*unparsed=*/true);
         return *refused;
+    }
+    // A root that is JSON but not a pelican.graph object is refused and not
+    // held: the editor holds a graph root or bytes that are not JSON.
     std::optional<AuthoredRenderConfigDocument> root;
     try {
         root = AuthoredRenderConfigDocument::inspect(root_bytes);
@@ -6451,6 +6545,16 @@ OrderedJson RenderConfigEditorService::reloadRenderDocumentsUnnoted(
             .expected = {RenderConfigDocumentExistence::present, digest},
             .bytes = std::move(bytes),
         });
+    };
+    // RR-1: a refusal of what was read makes the root and every document
+    // read so far the editor's base.
+    const auto held_refusal = [&](OrderedJson refusal) {
+        std::map<std::string, std::string> read;
+        for (const auto &document : documents)
+            read.insert_or_assign(document.normalized_reference,
+                                  document.expected.digest);
+        holdRefusedDocuments(*root, read);
+        return refusal;
     };
     add_document(dependencies_.source_reference, source_normalized_reference_,
                  dependencies_.source_path, root_bytes);
@@ -6486,7 +6590,7 @@ OrderedJson RenderConfigEditorService::reloadRenderDocumentsUnnoted(
                                              documents},
             root_bytes);
     } catch (const std::exception &error) {
-        return preflightRejection(error, preflight_details());
+        return held_refusal(preflightRejection(error, preflight_details()));
     }
 
     std::map<std::string, std::string> published;
@@ -6514,9 +6618,9 @@ OrderedJson RenderConfigEditorService::reloadRenderDocumentsUnnoted(
                 add_document(entry.reference, entry.normalized_reference,
                              entry.path, readFileBytes(entry.path));
             } catch (const std::exception &error) {
-                return rejection("render_pipeline_preflight_failed",
-                                 error.what(),
-                                 preflight_details(entry.reference));
+                return held_refusal(
+                    rejection("render_pipeline_preflight_failed", error.what(),
+                              preflight_details(entry.reference)));
             }
         }
         const std::string digest = documents[index].expected.digest;
@@ -6565,13 +6669,10 @@ OrderedJson RenderConfigEditorService::reloadRenderDocumentsUnnoted(
             if (differs) changed_assets.push_back(asset);
     }
     // BS-1: on the engine's fallback nothing on disk is live, so the
-    // documents are composed whether or not they changed.
-    const bool runtime_fallback =
-        dependencies_.runtime_fallback && dependencies_.runtime_fallback();
+    // documents are composed whether or not they changed. RR-1: nor is what
+    // the editor holds after a refused reload.
     const bool no_change =
-        !runtime_fallback && changed.empty() && changed_assets.empty();
-    RenderConfigCandidateDocumentSet candidate_set{
-        source_normalized_reference_, std::move(documents)};
+        documentsLive() && changed.empty() && changed_assets.empty();
 
     // G-4: material_route_default is read once per engine start.
     bool restart_required = false;
@@ -6581,14 +6682,18 @@ OrderedJson RenderConfigEditorService::reloadRenderDocumentsUnnoted(
             readMaterialRouteDefault(
                 renderingSectionOrEmpty(Json::parse(root->bytes())));
     } catch (const std::exception &error) {
-        return preflightRejection(error, preflight_details());
+        return held_refusal(preflightRejection(error, preflight_details()));
     }
     // G-6: every variant the engine registered composes it first.
     if (!no_change) {
-        if (auto refused =
-                preflightGraphVariants(candidate_set, preflight_details()))
-            return *refused;
+        if (auto refused = preflightGraphVariants(
+                RenderConfigCandidateDocumentSet{source_normalized_reference_,
+                                                 documents},
+                preflight_details()))
+            return held_refusal(std::move(*refused));
     }
+    RenderConfigCandidateDocumentSet candidate_set{
+        source_normalized_reference_, std::move(documents)};
 
     const auto ticket_id =
         "render-config-reload-" + std::to_string(next_ticket_++);
@@ -6646,6 +6751,7 @@ void RenderConfigEditorService::completeCommitTransaction(
         }
         noteProblems(transaction->ticket.reload,
                      transaction->ticket.source_only, result);
+        noteHeldDocuments(transaction->ticket, result);
         results_[transaction->ticket.id] = result;
         completed_.push_back(std::move(result));
     };
@@ -6932,6 +7038,7 @@ void RenderConfigEditorService::commitPending() noexcept {
         auto finish = [&](OrderedJson result) {
             if (!result.contains("ticket")) result["ticket"] = ticket.id;
             noteProblems(ticket.reload, ticket.source_only, result);
+            noteHeldDocuments(ticket, result);
             results_[ticket.id] = result;
             completed_.push_back(std::move(result));
         };
