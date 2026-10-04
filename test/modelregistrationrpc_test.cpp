@@ -300,6 +300,13 @@ TEST_CASE("MI-1 a glb put in a Blank project is registered over RPC, drawn live 
             REQUIRE(listed.is_object());
             CHECK(listed.at("kind") == "model");
             CHECK(listed.at("status") == "loaded");
+            // EB-1: the path as asset_data writes it, the resolved file
+            // beside it.
+            CHECK(listed.at("path") == path);
+            REQUIRE(listed.contains("resolved_path"));
+            const std::filesystem::path resolved{listed.at("resolved_path").get<std::string>()};
+            CHECK(resolved.is_absolute());
+            CHECK(std::filesystem::equivalent(resolved, root / path));
         }
 
         // Conflicts: the same path (its name is given back), the same name.

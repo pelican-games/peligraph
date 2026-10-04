@@ -171,3 +171,83 @@ run_dist_config("vat_asset" "${VAT_ROOT}" ON OFF OFF OFF OFF)
 run_dist_config("exr_ui" "${EXR_ROOT}" OFF ON OFF OFF OFF)
 run_dist_config("vat_manifest" "${MANIFEST_ROOT}" ON OFF OFF OFF OFF)
 run_dist_config("with_overrides" "${PLAIN_ROOT}" OFF OFF ON ON ON "rpc,seqplayer,openxr")
+
+# EB-1: a store that declares a manifest is checked as `assets verify --full`
+# checks it. A difference fails by name (exit 1, each file named, no preset
+# written); --skip-assets-verify writes the preset anyway; a project whose
+# stores declare no manifest passes with a one-line note.
+function(run_dist_config_raw out_result out_stdout out_stderr project_dir preset)
+    execute_process(
+        COMMAND "${CLI}" dist-config "${project_dir}" --out "${preset}" ${ARGN}
+        RESULT_VARIABLE result
+        OUTPUT_VARIABLE stdout
+        ERROR_VARIABLE stderr
+    )
+    set(${out_result} "${result}" PARENT_SCOPE)
+    set(${out_stdout} "${stdout}" PARENT_SCOPE)
+    set(${out_stderr} "${stderr}" PARENT_SCOPE)
+endfunction()
+
+run_dist_config_raw(plain_result plain_stdout plain_stderr "${PLAIN_ROOT}" "${OUT_DIR}/plain_note.cmake")
+if(NOT plain_result EQUAL 0)
+    message(FATAL_ERROR "dist-config without a manifest store failed with ${plain_result}\n${plain_stderr}")
+endif()
+expect_contains("${plain_stdout}" "assets verify: no asset store declares a manifest" "no-manifest note")
+
+make_project(STORE_ROOT asset_store [=[
+{"schema":"pelican.asset_data","version":2,"models":[]}
+]=] [=[
+{"schema":"pelican.ui","version":1,"key":"empty","root":{"id":"root","type":"panel"}}
+]=])
+file(READ "${STORE_ROOT}/project.json" store_json)
+string(REPLACE "\"basic_config\""
+    "\"asset_stores\": {\"main\": {\"mount\": \"store\", \"manifest\": \"store.manifest.json\"}},\n  \"basic_config\""
+    store_json "${store_json}")
+file(WRITE "${STORE_ROOT}/project.json" "${store_json}")
+file(WRITE "${STORE_ROOT}/store/a.bin" "original")
+file(WRITE "${STORE_ROOT}/store/b.bin" "second")
+execute_process(
+    COMMAND "${CLI}" assets manifest --project "${STORE_ROOT}"
+    RESULT_VARIABLE manifest_result
+    OUTPUT_VARIABLE manifest_stdout
+    ERROR_VARIABLE manifest_stderr
+)
+if(NOT manifest_result EQUAL 0)
+    message(FATAL_ERROR "assets manifest failed with ${manifest_result}\n${manifest_stdout}\n${manifest_stderr}")
+endif()
+
+run_dist_config_raw(match_result match_stdout match_stderr "${STORE_ROOT}" "${OUT_DIR}/store_match.cmake")
+if(NOT match_result EQUAL 0)
+    message(FATAL_ERROR "dist-config on a matching store failed with ${match_result}\n${match_stderr}")
+endif()
+expect_contains("${match_stdout}" "assets verify: main: 2 files match" "matching store")
+if(NOT EXISTS "${OUT_DIR}/store_match.cmake")
+    message(FATAL_ERROR "dist-config on a matching store wrote no preset")
+endif()
+
+file(WRITE "${STORE_ROOT}/store/a.bin" "changed!!")
+file(REMOVE "${STORE_ROOT}/store/b.bin")
+file(WRITE "${STORE_ROOT}/store/c.bin" "extra")
+run_dist_config_raw(drift_result drift_stdout drift_stderr "${STORE_ROOT}" "${OUT_DIR}/store_drift.cmake")
+if(NOT drift_result EQUAL 1)
+    message(FATAL_ERROR "dist-config on a drifted store answered ${drift_result}, not 1\nstdout:\n${drift_stdout}\nstderr:\n${drift_stderr}")
+endif()
+expect_contains("${drift_stderr}" "assets_manifest_mismatch@1: asset store 'main'" "drift refusal")
+expect_contains("${drift_stderr}" "content_mismatch: a.bin" "drift content")
+expect_contains("${drift_stderr}" "missing: b.bin" "drift missing")
+expect_contains("${drift_stderr}" "extra: c.bin" "drift extra")
+expect_contains("${drift_stderr}" "--skip-assets-verify" "drift hint")
+if(EXISTS "${OUT_DIR}/store_drift.cmake")
+    message(FATAL_ERROR "dist-config on a drifted store wrote a preset")
+endif()
+file(WRITE "${OUT_DIR}/store_drift_stderr.txt" "${drift_stderr}")
+
+run_dist_config_raw(skip_result skip_stdout skip_stderr "${STORE_ROOT}" "${OUT_DIR}/store_skip.cmake"
+    --skip-assets-verify)
+if(NOT skip_result EQUAL 0)
+    message(FATAL_ERROR "dist-config --skip-assets-verify failed with ${skip_result}\n${skip_stderr}")
+endif()
+expect_contains("${skip_stdout}" "assets verify: skipped (--skip-assets-verify)" "skip note")
+if(NOT EXISTS "${OUT_DIR}/store_skip.cmake")
+    message(FATAL_ERROR "dist-config --skip-assets-verify wrote no preset")
+endif()

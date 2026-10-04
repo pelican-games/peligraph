@@ -251,7 +251,9 @@ nlohmann::json AssetsVerification::detailJson() const {
 }
 
 void AssetsVerification::run() {
+    std::scoped_lock disk_lock{disk};
     {
+        // Held for testing, the run holds the disk as one that is hashing does.
         std::unique_lock lock{mutex};
         changed.wait(lock, [&] { return stop_requested.load() || !held_for_testing; });
         if (stop_requested.load()) {
@@ -260,7 +262,6 @@ void AssetsVerification::run() {
             return;
         }
     }
-    std::scoped_lock disk_lock{disk};
     for (;;) {
         std::vector<AssetStoreStatus> store_list;
         std::filesystem::path cache;
@@ -346,11 +347,23 @@ nlohmann::json AssetsVerification::updateManifest(const std::string &name) {
                                           "' declares no manifest in project.json",
                                       nlohmann::json::object({{"store", name}})};
     }
+    // EB-1: a run in progress reads the store and the hash cache this writes,
+    // and runs as long as hashing takes; the RPC thread (the frame) does not
+    // wait for it. The update is refused until the run is done.
+    const auto refuseRunning = [&] {
+        throw AssetsVerificationError{assetsVerificationRunningErrorCode,
+                                      "update_assets_manifest: the asset stores are being verified; update the "
+                                      "manifest of '" + name + "' once get_status says the verification is done",
+                                      nlohmann::json::object({{"store", name}})};
+    };
+    {
+        std::scoped_lock lock{mutex};
+        if (running) refuseRunning();
+    }
     AssetManifestGenerationResult generated;
     {
-        // A run in progress reads the hash cache this writes: it finishes
-        // first.
-        std::scoped_lock disk_lock{disk};
+        std::unique_lock disk_lock{disk, std::try_to_lock};
+        if (!disk_lock.owns_lock()) refuseRunning();
         try {
             generated = generateAssetsManifest(store->root, *store->manifest, cache, store->name, false);
         } catch (const std::exception &failure) {

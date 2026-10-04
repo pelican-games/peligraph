@@ -893,4 +893,183 @@ TEST_CASE("VR-1 a Blank box's OpenPBR material changes variant from the surface 
     }
 }
 
+// EB-1. A Blank box's material is renamed while it is bound (the bindings
+// follow in the same transaction and the box keeps drawing it), refused
+// deletion while anything names it, deleted once nothing does (list_assets
+// and list_materials stop listing it, the document stays on disk), and put
+// back with register_material.
+TEST_CASE("EB-1 a Blank box's material is renamed while bound, deleted once unbound and put back over RPC",
+          "[eb1][material][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("eb1");
+    const auto root = makeBlankBoxProject(dir.root);
+    const auto capture = dir.root / "capture.png";
+    const std::string path = "materials/paint.material.json";
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    (void)GET_MODULE(Renderer);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    const auto actor =
+        rpc.result("open_editor_session", {{"display_name", "EB-1"}}).at("actor_id").get<std::uint64_t>();
+    REQUIRE(rpc.edit(actor, spawnCube()).at("status") == "committed");
+    const auto grey = rpc.centre(capture);
+    INFO("grey " << grey);
+    CHECK_FALSE(reddish(grey));
+
+    const Json red{1.0, 0.0, 0.0, 1.0};
+    REQUIRE(rpc.result("create_material", {{"path", path},
+                                           {"surface", openPbrOpaque},
+                                           {"values", {{"base_color", red}, {"emission_color", red}}}})
+                .at("applied") == "live");
+    REQUIRE(rpc.result("bind_material", {{"model", cube}, {"material", "paint"}}).at("applied") == "live");
+    {
+        const auto pixel = rpc.centre(capture);
+        INFO("bound " << pixel);
+        CHECK(reddish(pixel));
+    }
+
+    const auto materialAssets = [&] {
+        auto found = Json::array();
+        const auto listed = rpc.result("list_assets");
+        for (const auto &asset : listed.at("assets"))
+            if (asset.at("kind") == "material") found.push_back(asset);
+        return found;
+    };
+    const auto resolved = [&](const std::string &relative) {
+        return std::filesystem::weakly_canonical(root / relative).generic_string();
+    };
+    // list_assets lists the material by its name (EB-1 #2): the path as
+    // asset_data writes it, the file it resolved beside it.
+    {
+        const auto listed = materialAssets();
+        REQUIRE(listed.size() == 1);
+        CHECK(listed.at(0).at("id") == "paint");
+        CHECK(listed.at(0).at("path") == path);
+        CHECK(listed.at(0).at("store") == "project");
+        CHECK(listed.at(0).at("status") == "loaded");
+        CHECK(std::filesystem::weakly_canonical(listed.at(0).at("resolved_path").get<std::string>()).generic_string() ==
+              resolved(path));
+    }
+
+    // Deleting a bound material is refused by name; nothing is written.
+    const auto asset_data_bound = readFile(root / "assets/asset_data.json");
+    const auto in_use = rpc.refusal("delete_material", {{"name", "paint"}});
+    CHECK(in_use.at("error_code") == "material.in_use@1");
+    CHECK(in_use.at("error_fields") == Json{{"name", "paint"},
+                                            {"bindings", Json::array({std::string{cube}})},
+                                            {"objects", Json::array()},
+                                            {"count", 0},
+                                            {"render_documents", Json::array()}});
+    CHECK(readFile(root / "assets/asset_data.json") == asset_data_bound);
+    CHECK(rpc.refusal("delete_material", {{"name", "pelican.primitive.default"}}).at("error_fields") ==
+          Json{{"name", "pelican.primitive.default"}, {"reason", "engine_material"}});
+    CHECK(rpc.refusal("delete_material", {{"name", "nothing"}}).at("error_code") == "material.name_unknown@1");
+
+    // rename_material: the document and the box's bindings in one go; the box
+    // keeps drawing it.
+    const auto bindings_reference =
+        rpc.result("get_material_bindings", {{"model", cube}}).at("material_bindings").get<std::string>();
+    const auto renamed = rpc.result("rename_material", {{"name", "paint"}, {"new_name", "coat"}});
+    CHECK(renamed.at("committed") == true);
+    CHECK(renamed.at("changed") == true);
+    CHECK(renamed.at("name") == "coat");
+    CHECK(renamed.at("previous_name") == "paint");
+    CHECK(renamed.at("path") == path);
+    CHECK(renamed.at("applied") == "rebuilt");
+    CHECK(renamed.at("restart_required").is_null());
+    CHECK(renamed.at("rebuilt_models") == Json::array({std::string{cube}}));
+    REQUIRE(renamed.at("rewritten_bindings").size() == 1);
+    CHECK(renamed.at("rewritten_bindings").at(0).at("model") == std::string{cube});
+    CHECK(renamed.at("rewritten_bindings").at(0).at("material_bindings") == bindings_reference);
+    CHECK(Json::parse(readFile(root / path)).at("materials").at(0).at("name") == "coat");
+    CHECK(Json::parse(readFile(root / bindings_reference)).at("bindings").at(0).at("material") == "coat");
+    CHECK(rpc.result("get_material_bindings", {{"model", cube}}).at("primitives").at(0).at("material") == "coat");
+    CHECK(rpc.result("list_materials").at("documents").at(0).at("materials").at(0).at("registered") == true);
+    {
+        const auto pixel = rpc.centre(capture);
+        INFO("renamed " << pixel);
+        CHECK(reddish(pixel));
+    }
+    CHECK(materialAssets().at(0).at("id") == "coat");
+    // The old name is gone; a name held already and a name that is not one
+    // are refused by name.
+    CHECK(rpc.refusal("rename_material", {{"name", "paint"}, {"new_name", "other"}}).at("error_code") ==
+          "material.name_unknown@1");
+    CHECK(rpc.refusal("rename_material", {{"name", "coat"}, {"new_name", "pelican.x"}}).at("error_code") ==
+          "material.name_invalid@1");
+    REQUIRE(rpc.result("create_material", {{"path", "materials/spare.material.json"}, {"surface", openPbrOpaque}})
+                .at("applied") == "live");
+    const auto conflict = rpc.refusal("rename_material", {{"name", "coat"}, {"new_name", "spare"}});
+    CHECK(conflict.at("error_code") == "material.name_conflict@1");
+    CHECK(conflict.at("error_fields") == Json{{"name", "spare"}, {"path", "materials/spare.material.json"}});
+    CHECK(rpc.result("rename_material", {{"name", "coat"}, {"new_name", "coat"}}).at("changed") == false);
+
+    // A render document that names the material by its matching key holds it
+    // too (a rename would not rewrite it).
+    writeFile(root / "passes/eb1_reference.json",
+              Json{{"schema", "pelican.graph"},
+                   {"version", 1},
+                   {"nodes", Json::array({{{"id", "loop"},
+                                           {"op", "graph.loop"},
+                                           {"parameters", {{"when", {{"material", path + "#coat"}}}}}}})}}
+                  .dump(2));
+    const auto named = rpc.refusal("rename_material", {{"name", "coat"}, {"new_name", "lacquer"}});
+    CHECK(named.at("error_code") == "material.in_use@1");
+    CHECK(named.at("error_fields").at("render_documents") == Json::array({"passes/eb1_reference.json"}));
+    std::filesystem::remove(root / "passes/eb1_reference.json");
+
+    // Unbound (MT-2b), it is deleted: off asset_data and the engine, not off
+    // the disk.
+    REQUIRE(rpc.result("bind_material", {{"model", cube},
+                                         {"slot", "pelican.primitive.default"},
+                                         {"material", "pelican.primitive.default"}})
+                .at("material_bindings")
+                .is_null());
+    const auto deleted = rpc.result("delete_material", {{"name", "coat"}});
+    INFO(deleted.dump(2));
+    CHECK(deleted.at("committed") == true);
+    CHECK(deleted.at("name") == "coat");
+    CHECK(deleted.at("removed") == Json{{"path", path}});
+    CHECK(deleted.at("applied") == "live");
+    CHECK(deleted.at("restart_required").is_null());
+    CHECK(deleted.at("asset_data_digest") != deleted.at("previous_asset_data_digest"));
+    CHECK(std::filesystem::exists(root / path));
+    {
+        const auto documents = rpc.result("list_materials");
+        for (const auto &document : documents.at("documents")) CHECK(document.at("path") != path);
+    }
+    {
+        const auto listed = materialAssets();
+        REQUIRE(listed.size() == 1);
+        CHECK(listed.at(0).at("id") == "spare");
+    }
+    CHECK(rpc.refusal("bind_material", {{"model", cube}, {"material", "coat"}}).at("error_code") ==
+          "material.name_unknown@1");
+    {
+        const auto pixel = rpc.centre(capture);
+        INFO("deleted " << pixel << " grey " << grey);
+        CHECK_FALSE(reddish(pixel));
+    }
+
+    // Put back from what the delete answered: listed, registered and bound
+    // again.
+    const auto restored = rpc.result("register_material", {{"path", deleted.at("removed").at("path")}});
+    CHECK(restored.at("committed") == true);
+    CHECK(restored.at("names") == Json::array({"coat"}));
+    CHECK(restored.at("applied") == "live");
+    CHECK(restored.at("asset_data_digest") != restored.at("previous_asset_data_digest"));
+    CHECK(rpc.refusal("register_material", {{"path", path}}).at("error_code") == "material.path_conflict@1");
+    CHECK(materialAssets().size() == 2);
+    REQUIRE(rpc.result("bind_material", {{"model", cube}, {"material", "coat"}}).at("applied") == "live");
+    {
+        const auto pixel = rpc.centre(capture);
+        INFO("restored " << pixel);
+        CHECK(reddish(pixel));
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
 } // namespace Pelican

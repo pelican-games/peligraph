@@ -64,6 +64,32 @@ void requireOnlyKeys(const nlohmann::json &object,
     }
 }
 
+// EB-1: every key parseFrameGraphBufferDefinitionsFromJson reads. A buffer
+// entry of the composed config -- a rendering section's, a preset's or a
+// feature's buffers[], or a graph's render.buffer / render.attribute node
+// lowered into one -- names no other: graph.buffer_key_unknown@1 {buffer,
+// key, allowed}. A misspelled initial_f32 is refused instead of the buffer
+// starting from zero.
+constexpr std::array<std::string_view, 9> frame_graph_buffer_keys{
+    "name", "size", "size_from_extent", "index_buffer", "host_source",
+    "command_layout", "initial_f32", "view_family", "lifetime"};
+
+void requireKnownFrameGraphBufferKeys(const nlohmann::json &buffer,
+                                      const std::string &name) {
+    for (auto it = buffer.begin(); it != buffer.end(); ++it) {
+        if (std::find(frame_graph_buffer_keys.begin(),
+                      frame_graph_buffer_keys.end(), it.key()) !=
+            frame_graph_buffer_keys.end())
+            continue;
+        auto allowed = nlohmann::json::array();
+        for (const auto key : frame_graph_buffer_keys)
+            allowed.push_back(std::string{key});
+        throw GraphRegistryError(
+            "graph.buffer_key_unknown@1",
+            {{"buffer", name}, {"key", it.key()}, {"allowed", std::move(allowed)}});
+    }
+}
+
 std::string requireString(const nlohmann::json &object, std::string_view key,
                           std::string_view context) {
     const auto found = object.find(key);
@@ -2242,6 +2268,7 @@ void synchronizeRenderPipelineProvenance(
                     requireString(buffer, "name", "buffer");
                 validateAuthoredRenderResourceName(
                     name, "buffer");
+                requireKnownFrameGraphBufferKeys(buffer, name);
                 append_resource(name, "buffer");
             } else {
                 throw std::runtime_error(

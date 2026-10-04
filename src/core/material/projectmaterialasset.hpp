@@ -54,6 +54,12 @@ DECLARE_MODULE(ProjectMaterialAssetContainer) {
         std::vector<GlobalMaterialId> previous;
     };
     Reregistered reregisterDocument(const std::string &reference);
+    // EB-1 (delete_material): takes the document's materials off the names
+    // (and its values off the material values reload) and returns their
+    // registrations, still registered: the caller releases them once nothing
+    // draws with them. Nothing when the document registered nothing here.
+    std::vector<GlobalMaterialId> unregisterDocument(
+        const std::string &reference);
     // MT-1: the document a registered material was read from (its asset_data
     // materials[] reference), or nullopt for a name that is not registered.
     std::optional<std::string> documentOf(

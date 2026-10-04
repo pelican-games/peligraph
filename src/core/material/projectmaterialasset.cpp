@@ -574,6 +574,31 @@ ProjectMaterialAssetContainer::reregisterDocument(
     return result;
 }
 
+std::vector<GlobalMaterialId>
+ProjectMaterialAssetContainer::unregisterDocument(
+    const std::string &reference) {
+    std::vector<GlobalMaterialId> released;
+    auto &named = impl_->named_materials;
+    for (auto it = named.begin(); it != named.end();) {
+        const auto source =
+            impl_->material_documents.find(it->name);
+        if (source != impl_->material_documents.end() &&
+            source->second == reference) {
+            released.push_back(it->material);
+            impl_->material_documents.erase(source);
+            it = named.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (!released.empty()) {
+        GET_MODULE(MaterialContainer)
+            .forgetReloadableMaterialValuesFile(
+                watch::makeAssetKey(reference));
+    }
+    return released;
+}
+
 std::optional<std::string>
 ProjectMaterialAssetContainer::documentOf(
     std::string_view name) const {

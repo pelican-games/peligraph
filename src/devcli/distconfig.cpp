@@ -1,5 +1,6 @@
 #include "distconfig.hpp"
 
+#include "assetscommand.hpp"
 #include "../project/assetdataformat.hpp"
 #include "../project/importmanifest.hpp"
 #include "../project/projectformat.hpp"
@@ -828,6 +829,47 @@ DistConfigOptions parseWithList(std::string_view value) {
     return options;
 }
 
+// EB-1: dist-config's asset check. Prints one line per store that declares a
+// manifest (or one line that none does) and returns nullopt when nothing
+// differs; otherwise names every file that differs, on stderr, and returns 1.
+std::optional<int> verifyAssetsForDistribution(const std::filesystem::path &project_arg) {
+    std::vector<DeclaredAssetStoreVerification> stores;
+    try {
+        stores = verifyDeclaredAssetStores(project_arg);
+    } catch (const std::exception &error) {
+        std::cerr << "dist-config: assets_verify_failed@1: the asset stores could not be verified: "
+                  << error.what() << "\n"
+                  << "dist-config: pass --skip-assets-verify to write the preset without the check" << std::endl;
+        return 1;
+    }
+    if (stores.empty()) {
+        std::cout << "assets verify: no asset store declares a manifest; nothing to verify" << std::endl;
+        return std::nullopt;
+    }
+    int differences = 0;
+    for (const auto &store : stores) {
+        if (store.result.issues.empty()) {
+            std::cout << "assets verify: " << store.name << ": " << store.result.matched
+                      << " files match " << store.manifest.generic_string() << std::endl;
+            continue;
+        }
+        std::cerr << "dist-config: assets_manifest_mismatch@1: asset store '" << store.name << "' ("
+                  << store.root.generic_string() << ") differs from " << store.manifest.generic_string() << "\n";
+        for (const auto &issue : store.result.issues) {
+            std::cerr << "  " << assetManifestIssueKindLabel(issue.kind) << ": "
+                      << (issue.file.empty() ? issue.message : issue.file) << "\n";
+            ++differences;
+        }
+    }
+    if (differences == 0) return std::nullopt;
+    std::cerr << "dist-config: " << differences
+              << " asset file(s) differ from their manifest; no preset was written. If these files are what "
+                 "ships, write the manifest again (pelican_cli assets manifest --project <project>), or pass "
+                 "--skip-assets-verify"
+              << std::endl;
+    return 1;
+}
+
 } // namespace
 
 DistConfigResult deriveDistConfig(const std::filesystem::path &project_arg,
@@ -911,11 +953,22 @@ int runDistConfigCommand(int argc, char *argv[]) {
         .default_value(std::string{"dist-preset.cmake"})
         .metavar("file")
         .help("output CMake cache preset file");
+    program.add_argument("--skip-assets-verify")
+        .flag()
+        .help("do not check the asset stores against their manifests (assets verify --full)");
 
     try {
         program.parse_args(argc, argv);
         const auto options = parseWithList(program.get<std::string>("--with"));
         const auto result = deriveDistConfig(program.get<std::string>("project"), options);
+        // EB-1: a distribution ships the assets its manifests name. Every
+        // store that declares a manifest is checked as `assets verify --full`
+        // checks it, and any difference fails before the preset is written.
+        if (program.get<bool>("--skip-assets-verify")) {
+            std::cout << "assets verify: skipped (--skip-assets-verify)" << std::endl;
+        } else if (const auto failed = verifyAssetsForDistribution(program.get<std::string>("project"))) {
+            return *failed;
+        }
         const auto out_path = absolutePath(program.get<std::string>("--out"));
         writeTextFile(out_path, renderDistConfigPreset(result));
         std::cout << "wrote " << pathString(out_path) << std::endl;

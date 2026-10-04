@@ -973,7 +973,7 @@ EditorRuntimeObjectState queryEditorRuntime(const EditorRuntimeModules &modules,
 }
 
 std::vector<EditorAssetQueryResult> collectEditorAssets(const EditorRuntimeModules &modules) {
-    return collectEditorAssets(modules.project_config.assetDataJson(), modules.path_resolver);
+    return collectProjectEditorAssets(modules.project_config, modules.path_resolver);
 }
 
 struct EditorRuntimeState {

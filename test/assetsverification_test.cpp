@@ -8,6 +8,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iterator>
 #include <sstream>
 #include <string>
@@ -320,6 +321,50 @@ TEST_CASE("AV-1 update_assets_manifest rewrites the manifest and the rerun match
             nlohmann::json{{"error_code", "assets_manifest_undeclared@1"}, {"error_fields", {{"store", "plain"}}}});
 
     REQUIRE(wire.call("update_assets_manifest").at("error").at("code") == JsonRpcErrorCodes::invalidParams);
+}
+
+// EB-1: update_assets_manifest while a rerun is reading the stores is
+// refused at once (the RPC thread, which is the frame's, never waits for the
+// hashing), and goes through once the run is done.
+TEST_CASE("EB-1 update_assets_manifest during a verification run is refused at once and works after it",
+          "[assets-manifest][av1][eb1]") {
+    ensureLogger();
+    DriftedStore sandbox;
+    AssetsVerification verification;
+    (void)verification.verifyAtStartup(sandbox.stores(), sandbox.cache, false);
+    VerificationWire wire{&verification};
+    const auto manifest_before = [&] {
+        std::ifstream file{sandbox.manifest, std::ios::binary};
+        return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+    };
+    const auto before = manifest_before();
+
+    // Held, the worker holds the stores as a run that is hashing does.
+    verification.holdForTesting(true);
+    REQUIRE(wire.call("verify_assets").at("result") == nlohmann::json{{"state", "running"}});
+    auto answer = std::async(std::launch::async, [&] {
+        return wire.call("update_assets_manifest", {{"store", "main"}});
+    });
+    const bool answered = answer.wait_for(std::chrono::seconds{10}) == std::future_status::ready;
+    if (!answered) verification.holdForTesting(false);
+    REQUIRE(answered);
+    const auto refused = answer.get();
+    REQUIRE(refused.contains("error"));
+    CHECK(refused.at("error").at("code") == JsonRpcErrorCodes::applicationError);
+    CHECK(refused.at("error").at("data") ==
+          nlohmann::json{{"error_code", "assets_verification_running@1"}, {"error_fields", {{"store", "main"}}}});
+    CHECK(refused.at("error").at("message").get<std::string>().starts_with("update_assets_manifest: "));
+    CHECK(manifest_before() == before);
+    CHECK(wire.status() == nlohmann::json{{"state", "running"}});
+
+    verification.holdForTesting(false);
+    verification.waitForTesting();
+    const auto written = wire.call("update_assets_manifest", {{"store", "main"}});
+    REQUIRE(written.contains("result"));
+    CHECK(written.at("result").at("files") == 2);
+    verification.waitForTesting();
+    CHECK(wire.status().at("warnings") == 0);
+    CHECK(manifest_before() != before);
 }
 
 } // namespace Pelican

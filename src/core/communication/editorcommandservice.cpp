@@ -1984,11 +1984,13 @@ OrderedJson editorQueryJson(const EditorListAssetsResult &assets) {
     OrderedJson result;
     result["assets"] = OrderedJson::array();
     for (const auto &asset : assets.assets) {
-        result["assets"].push_back(OrderedJson{{"id", asset.id},
-                                               {"kind", asset.kind},
-                                               {"path", asset.path},
-                                               {"store", asset.store},
-                                               {"status", asset.status}});
+        OrderedJson entry{{"id", asset.id},
+                          {"kind", asset.kind},
+                          {"path", asset.path},
+                          {"store", asset.store},
+                          {"status", asset.status}};
+        if (asset.resolved_path) entry["resolved_path"] = *asset.resolved_path;
+        result["assets"].push_back(std::move(entry));
     }
     return result;
 }

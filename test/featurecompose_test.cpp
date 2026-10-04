@@ -4596,6 +4596,67 @@ TEST_CASE("binding buffer scalars seed the feature's runtime_f32 buffer and refu
         Catch::Matchers::ContainsSubstring("one float per declared byte quad"));
 }
 
+// EB-1: a frame graph buffer entry names only the keys the buffer parser
+// reads. A misspelled key -- in a rendering section's buffers[] or on a
+// graph's render.buffer node lowered into one -- is refused by name instead
+// of being ignored (an `initial_f23` used to start the buffer from zero).
+TEST_CASE("EB-1 a buffer entry with a key the frame graph does not read is refused by name",
+          "[render-feature][graph-composition][eb1]") {
+    const auto refusal = [](const auto &resolve) -> nlohmann::json {
+        try {
+            (void)resolve();
+        } catch (const GraphRegistryError &error) {
+            CHECK(error.code() == "graph.buffer_key_unknown@1");
+            return error.detail();
+        } catch (const std::exception &error) {
+            FAIL("expected graph.buffer_key_unknown@1, got: " << error.what());
+        }
+        FAIL("expected graph.buffer_key_unknown@1");
+        return nullptr;
+    };
+    // A feature's buffers[] (composed into the frame graph's buffers).
+    const auto composeWith = [](nlohmann::json buffer) {
+        const nlohmann::json feature{{"schema", "pelican.render_feature"},
+                                     {"version", 1},
+                                     {"name", "levels"},
+                                     {"buffers", nlohmann::json::array({std::move(buffer)})}};
+        auto config = baseConfigWithFeature("levels.json");
+        config["features"] = nlohmann::json::array({"levels.json"});
+        return composeRenderFeatureConfig(
+            config, RenderFeatureComposeDependencies{[text = feature.dump()](std::string_view) { return text; }, true});
+    };
+    const nlohmann::json level{{"name", "levels.level"}, {"size", 4}, {"lifetime", "persistent"},
+                               {"host_source", "runtime_f32"}, {"initial_f32", nlohmann::json::array({0.5})}};
+    REQUIRE_NOTHROW(composeWith(level));
+    auto misspelled = level;
+    misspelled["initial_f23"] = misspelled.at("initial_f32");
+    misspelled.erase("initial_f32");
+    const auto detail = refusal([&] { return composeWith(misspelled); });
+    CHECK(detail.at("buffer") == "levels.level");
+    CHECK(detail.at("key") == "initial_f23");
+    CHECK(detail.at("allowed") == nlohmann::json::array({"name", "size", "size_from_extent", "index_buffer",
+                                                         "host_source", "command_layout", "initial_f32",
+                                                         "view_family", "lifetime"}));
+
+    auto graph = nlohmann::json::parse(R"({
+      "schema":"pelican.graph","version":1,"definitions":{},
+      "nodes":[{"id":"data","op":"render.buffer",
+                "parameters":{"size":16,"element":"float","lifetime":"persistent","lifetme":"transient"},
+                "outputs":["resource"]},
+               {"id":"run","op":"render.compute","parameters":{
+                 "shader":"project://shaders/custom","dispatch":{"groups":[1,1,1]},
+                 "ports":{"values":{"access":"write","element":"float"}}},
+                 "inputs":{"values":{"node":"data","port":"resource"}},"outputs":["values"]}],
+      "outputs":{"data":{"node":"run","port":"values"}},
+      "rendering":{"render_targets":[],"rendering_passes":[]}
+    })");
+    const auto node = refusal([&] { return resolveRenderPipeline(RenderPipelineRequest{graph}, {}); });
+    CHECK(node.at("buffer") == "data");
+    CHECK(node.at("key") == "lifetme");
+    graph.at("nodes").at(0).at("parameters").erase("lifetme");
+    REQUIRE_NOTHROW(resolveRenderPipeline(RenderPipelineRequest{graph}, {}));
+}
+
 TEST_CASE("common graph buffer ports lower into native compute declarations", "[render-feature][graph-composition]") {
     auto document = nlohmann::json::parse(R"({
       "schema":"pelican.graph","version":1,

@@ -1974,6 +1974,429 @@ Json unregisterModelDocument(const Json &params, PathResolver &paths) {
     return appliedLive(std::move(answer));
 }
 
+// --- EB-1: delete_material / rename_material / register_material.
+
+constexpr std::string_view inUseCode = "material.in_use@1";
+constexpr std::string_view documentSharedCode = "material.document_shared@1";
+
+// A listed material document that holds a named material.
+struct HeldMaterial {
+    MaterialDocumentFile document;
+    std::size_t index = 0;
+};
+
+// The listed document holding `name`, read as list_materials reads it: a
+// listed document that does not read is passed over (it holds no name the
+// engine could have registered).
+std::optional<HeldMaterial> findHeldMaterial(const AssetDataFile &asset_data, const PathResolver &paths,
+                                             const std::string &name) {
+    for (const auto &reference : listedMaterialPaths(asset_data.json)) {
+        HeldMaterial held;
+        held.document.reference = reference;
+        try {
+            held.document.path = paths.resolveExistingFile(reference);
+            held.document.bytes = readFileBytes(held.document.path);
+            held.document.json = OrderedJson::parse(held.document.bytes);
+        } catch (const std::exception &) {
+            continue;
+        }
+        if (!held.document.json.is_object() || !held.document.json.contains("materials") ||
+            !held.document.json.at("materials").is_array())
+            continue;
+        const auto &materials = held.document.json.at("materials");
+        for (std::size_t index = 0; index < materials.size(); ++index) {
+            if (!materials.at(index).is_object() || materials.at(index).value("name", std::string{}) != name) continue;
+            held.document.digest = projectDocumentDigest(held.document.bytes);
+            held.index = index;
+            return held;
+        }
+    }
+    return std::nullopt;
+}
+
+// `name` as a delete or a rename sends it: a material a listed document
+// holds. An engine material (pelican.*) and a model's glTF material are
+// refused by name; anything else is unknown.
+HeldMaterial requireHeldMaterial(std::string_view method, const AssetDataFile &asset_data, const PathResolver &paths,
+                                 const std::string &name) {
+    if (name.starts_with("pelican.") || name.starts_with("engine://"))
+        refuse(method, "material '" + name + "' is an engine material; it is not " +
+                           (method == "delete_material" ? "deleted" : "renamed"),
+               nameInvalidCode, {{"name", name}, {"reason", "engine_material"}});
+    if (auto held = findHeldMaterial(asset_data, paths, name)) return std::move(*held);
+    if (const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>())
+        if (const auto holder = models->modelDeclaringMaterial(name))
+            refuse(method, "'" + name + "' is a glTF material of model '" + *holder + "', not a project material",
+                   nameInvalidCode, {{"name", name}, {"reason", "model_material"}, {"model", *holder}});
+    refuse(method, "no document asset_data materials[] lists holds material '" + name + "'", nameUnknownCode,
+           {{"name", name}, {"reason", "not in a listed material document"}});
+}
+
+// MT-2: the scene objects (every scene of the document as the editor holds
+// it, prefab-generated ones included) whose own materials name `name`.
+std::pair<std::size_t, Json> objectsOverridingWith(const std::string &name) {
+    std::size_t count = 0;
+    auto objects = Json::array();
+    const auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>();
+    if (config == nullptr) return {count, std::move(objects)};
+    for (const auto &scene : config->resolvedScene().scenes())
+        for (const auto &object : scene.objects)
+            for (const auto &component : object.components) {
+                if (component.name != "simplemodelview" || !component.effective_json.is_object()) continue;
+                const auto materials = component.effective_json.find("materials");
+                if (materials == component.effective_json.end() || !materials->is_object() ||
+                    !materials->contains("rows") || !materials->at("rows").is_array())
+                    continue;
+                const auto &rows = materials->at("rows");
+                const bool names = std::any_of(rows.begin(), rows.end(), [&](const auto &row) {
+                    return row.is_object() && row.value("material", std::string{}) == name;
+                });
+                if (!names) continue;
+                if (count++ < 8)
+                    objects.push_back(object.name.value_or("#" + std::to_string(object.authoring_object_id.value)));
+                break;
+            }
+    return {count, std::move(objects)};
+}
+
+std::string withoutProjectScheme(std::string_view reference) {
+    if (reference.starts_with("project://")) reference.remove_prefix(std::string_view{"project://"}.size());
+    return std::string{reference};
+}
+
+// Whether `json` (a render document) names the material `name` of `document`:
+// a draw-loop matching key "<document>#<name>" anywhere, or a ray binding
+// rule's material {document, material_name?}. `whole_document`: a rule that
+// names the document without a material_name counts too (the document
+// leaves asset_data).
+bool rendersMaterial(const Json &json, const PathResolver &paths, const std::string &document,
+                     const std::string &name, bool whole_document) {
+    const auto plain = withoutProjectScheme(document);
+    const auto normalized = normalizedOrNull(paths, plain);
+    const auto sameDocument = [&](const std::string &candidate) {
+        const auto other = withoutProjectScheme(candidate);
+        return other == plain || (normalized && normalizedOrNull(paths, other) == normalized);
+    };
+    if (json.is_string()) {
+        const auto &text = json.get_ref<const std::string &>();
+        const auto hash = text.rfind('#');
+        return hash != std::string::npos && text.substr(hash + 1) == name && sameDocument(text.substr(0, hash));
+    }
+    if (json.is_array()) {
+        for (const auto &element : json)
+            if (rendersMaterial(element, paths, document, name, whole_document)) return true;
+        return false;
+    }
+    if (!json.is_object()) return false;
+    const auto material = json.find("material");
+    if (material != json.end() && material->is_object() && material->contains("document") &&
+        material->at("document").is_string() && sameDocument(material->at("document").get<std::string>())) {
+        const auto named = material->find("material_name");
+        if (named == material->end() ? whole_document : (named->is_string() && *named == name)) return true;
+    }
+    for (const auto &[key, value] : json.items()) {
+        (void)key;
+        if (rendersMaterial(value, paths, document, name, whole_document)) return true;
+    }
+    return false;
+}
+
+// Every render document of the project (pelican.graph, pelican.render_pipeline,
+// pelican.render_feature, pelican.ray_bindings; hidden and symlinked
+// directories are not entered) that names the material, project-relative and
+// sorted. These are written by the render document editor, not in a material
+// transaction.
+Json renderDocumentsNaming(const PathResolver &paths, const std::string &document, const std::string &name,
+                           bool whole_document) {
+    auto found = Json::array();
+    if (!paths.isSetup()) return found;
+    const auto root = paths.projectRoot();
+    std::vector<std::string> references;
+    std::error_code error;
+    std::filesystem::recursive_directory_iterator it{root, std::filesystem::directory_options::skip_permission_denied,
+                                                     error};
+    if (error) return found;
+    for (const std::filesystem::recursive_directory_iterator end; it != end; it.increment(error)) {
+        if (error) break;
+        const auto &entry = *it;
+        std::error_code status;
+        if (entry.is_directory(status)) {
+            const auto file = entry.path().filename().generic_u8string();
+            if ((!file.empty() && file.front() == u8'.') || entry.is_symlink(status)) it.disable_recursion_pending();
+            continue;
+        }
+        if (!entry.is_regular_file(status) || entry.path().extension() != ".json") continue;
+        Json json;
+        try {
+            json = Json::parse(readFileBytes(entry.path()));
+        } catch (const std::exception &) {
+            continue;
+        }
+        if (!json.is_object() || !json.contains("schema") || !json.at("schema").is_string()) continue;
+        const auto schema = json.at("schema").get<std::string>();
+        if (schema != "pelican.graph" && schema != "pelican.render_pipeline" && schema != "pelican.render_feature" &&
+            schema != "pelican.ray_bindings")
+            continue;
+        if (!rendersMaterial(json, paths, document, name, whole_document)) continue;
+        const auto relative = entry.path().lexically_relative(root).generic_u8string();
+        references.emplace_back(relative.begin(), relative.end());
+    }
+    std::sort(references.begin(), references.end());
+    for (auto &reference : references) found.push_back(std::move(reference));
+    return found;
+}
+
+Json deleteMaterial(const Json &params, PathResolver &paths) {
+    constexpr std::string_view method = "delete_material";
+    requireOnly(method, params, {"name"});
+    const auto name = requireString(method, params, "name");
+    const auto asset_data = readAssetData(paths);
+    const auto held = requireHeldMaterial(method, asset_data, paths, name);
+    const auto &path = held.document.reference;
+    const auto names = materialNames(held.document.json);
+    if (names.size() != 1)
+        refuse(method,
+               "'" + path + "' holds " + std::to_string(names.size()) +
+                   " materials; delete_material takes a document of one material off asset_data",
+               documentSharedCode, {{"name", name}, {"path", path}, {"names", names}});
+
+    // Everything that names it, by name: nothing is written while any does.
+    auto bindings = Json::array();
+    for (const auto &naming : bindingsNaming(asset_data, paths, name)) bindings.push_back(naming.model);
+    auto [count, objects] = objectsOverridingWith(name);
+    auto render_documents = renderDocumentsNaming(paths, path, name, true);
+    if (!bindings.empty() || count != 0 || !render_documents.empty()) {
+        std::string where;
+        if (!bindings.empty()) where += "bound by " + std::to_string(bindings.size()) + " model(s)";
+        if (count != 0) where += (where.empty() ? "" : ", ") + std::string{"set on "} + std::to_string(count) +
+                                 " scene object(s)";
+        if (!render_documents.empty())
+            where += (where.empty() ? "" : ", ") + std::string{"named by "} +
+                     std::to_string(render_documents.size()) + " render document(s)";
+        refuse(method, "material '" + name + "' is " + where, inUseCode,
+               {{"name", name},
+                {"bindings", std::move(bindings)},
+                {"objects", std::move(objects)},
+                {"count", count},
+                {"render_documents", std::move(render_documents)}});
+    }
+
+    auto asset_json = asset_data.json;
+    auto &listed = asset_json.at("materials");
+    OrderedJson removed;
+    for (auto entry = listed.begin(); entry != listed.end(); ++entry) {
+        if (entry->is_object() && entry->value("path", std::string{}) == path) {
+            removed = *entry;
+            listed.erase(entry);
+            break;
+        }
+    }
+    try {
+        (void)parseAssetDataFormatJson(toJson(asset_json));
+    } catch (const std::exception &error) {
+        refuse(method, std::string{"asset_data would not load: "} + error.what(), documentInvalidCode,
+               {{"path", asset_data.reference}, {"reason", error.what()}});
+    }
+    const auto asset_bytes = renderJsonDocument(asset_json, asset_data.bytes);
+    const std::array documents{replacement(asset_data.reference, asset_data.path, asset_data.digest, asset_bytes)};
+    commitDocuments(method, paths.projectRoot(), documents, asset_data.reference);
+    LOG_INFO(logger, "material '{}' deleted ('{}' left on disk)", name, path);
+
+    Json answer{{"committed", true},
+                {"name", name},
+                {"removed", toJson(removed)},
+                {"asset_data_digest", projectDocumentDigest(asset_bytes)},
+                {"previous_asset_data_digest", asset_data.digest}};
+    if (const auto reason = publishAssetData(paths, asset_bytes))
+        return appliedAtRestart(std::move(answer), "the engine's copy of asset_data was not refreshed: " + *reason);
+    auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
+    if (project == nullptr || !registeredFrom(name, path)) return appliedLive(std::move(answer));
+    // Nothing in the documents names it any more; a model the engine still
+    // draws with it (a runtime instance the documents do not hold) keeps it.
+    if (const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>()) {
+        const std::array ids{project->materialByName(name)};
+        const auto drawing = models->modelsDrawingMaterials(ids);
+        if (!drawing.empty())
+            return appliedAtRestart(std::move(answer), "the engine keeps the material until it starts again: model '" +
+                                                           drawing.front() + "' still draws with it");
+    }
+    try {
+        if (auto *core = FastModuleContainer::tryGet<VulkanManageCore>()) core->waitIdle();
+        auto released = project->unregisterDocument(path);
+        if (auto *materials = FastModuleContainer::tryGet<MaterialContainer>())
+            ReleaseErrorSink::record("deleted material release",
+                                     materials->releaseModelResources(std::move(released), {}, true));
+    } catch (const std::exception &error) {
+        return appliedAtRestart(std::move(answer),
+                                std::string{"the material could not be released in place: "} + error.what());
+    }
+    return appliedLive(std::move(answer));
+}
+
+// register_material {path}: a material document already in the project,
+// listed in asset_data materials[] and registered (delete_material's way
+// back: its removed.path).
+Json registerMaterial(const Json &params, PathResolver &paths) {
+    constexpr std::string_view method = "register_material";
+    requireOnly(method, params, {"path"});
+    const auto relative = projectRelative(method, requireString(method, params, "path"));
+    const auto asset_data = readAssetData(paths);
+    if (findListedMaterial(asset_data, paths, relative))
+        refuse(method, "'" + relative + "' is listed already", pathConflictCode, {{"path", relative}});
+    const auto document = readMaterialDocument(method, paths, relative);
+    const auto names = materialNames(document.json);
+    for (const auto &name : names) {
+        if (auto holder = nameHolder(name, asset_data, paths)) {
+            Json fields{{"name", name}};
+            fields.update(*holder);
+            refuse(method, "material '" + name + "' exists already", nameConflictCode, std::move(fields));
+        }
+        if (const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>())
+            if (const auto holder = models->modelDeclaringMaterial(name))
+                refuse(method, "model '" + *holder + "' has a glTF material named '" + name + "'", nameConflictCode,
+                       {{"name", name}, {"model", *holder}});
+    }
+    SurfaceCache surfaces{paths};
+    checkCandidateDocument(method, relative, document.json, surfaces);
+
+    auto asset_json = asset_data.json;
+    if (!asset_json.contains("materials") || !asset_json.at("materials").is_array())
+        asset_json["materials"] = OrderedJson::array();
+    asset_json["materials"].push_back({{"path", relative}});
+    try {
+        (void)parseAssetDataFormatJson(toJson(asset_json));
+    } catch (const std::exception &error) {
+        refuse(method, std::string{"asset_data would not load: "} + error.what(), documentInvalidCode,
+               {{"path", asset_data.reference}, {"reason", error.what()}});
+    }
+    const auto asset_bytes = renderJsonDocument(asset_json, asset_data.bytes);
+    const std::array documents{replacement(asset_data.reference, asset_data.path, asset_data.digest, asset_bytes)};
+    commitDocuments(method, paths.projectRoot(), documents, relative);
+    LOG_INFO(logger, "material document '{}' registered", relative);
+
+    Json answer{{"committed", true},
+                {"path", relative},
+                {"names", names},
+                {"material_digest", document.digest},
+                {"asset_data_digest", projectDocumentDigest(asset_bytes)},
+                {"previous_asset_data_digest", asset_data.digest}};
+    if (const auto reason = publishAssetData(paths, asset_bytes))
+        return appliedAtRestart(std::move(answer), "the engine's copy of asset_data was not refreshed: " + *reason);
+    if (FastModuleContainer::tryGet<MaterialContainer>() == nullptr)
+        return appliedAtRestart(std::move(answer), "this host runs no material container");
+    try {
+        if (auto *core = FastModuleContainer::tryGet<VulkanManageCore>()) core->waitIdle();
+        if (auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>()) {
+            (void)project->registerDocument(relative);
+        } else {
+            (void)GET_MODULE(ProjectMaterialAssetContainer);
+        }
+    } catch (const std::exception &error) {
+        return appliedAtRestart(std::move(answer),
+                                std::string{"the material could not be registered in place: "} + error.what());
+    }
+    return appliedLive(std::move(answer));
+}
+
+// rename_material {name, new_name}: the material document's name and every
+// model's material_bindings entry naming it, in one transaction. A scene
+// object's own material (the editor journal's) and a render document (the
+// render document editor's) cannot be written with them: a rename they name
+// is refused, material.in_use@1.
+Json renameMaterial(const Json &params, PathResolver &paths, watch::ReloadService *reload_service) {
+    constexpr std::string_view method = "rename_material";
+    requireOnly(method, params, {"name", "new_name"});
+    const auto name = requireString(method, params, "name");
+    const auto new_name = requireString(method, params, "new_name");
+    if (!isIdentifier(new_name))
+        refuse(method, "'" + new_name + "' is not a material name", nameInvalidCode,
+               {{"name", new_name}, {"reason", "a material name is letters, digits and '_'"}});
+    const auto asset_data = readAssetData(paths);
+    const auto held = requireHeldMaterial(method, asset_data, paths, name);
+    const auto &path = held.document.reference;
+    Json answer{{"committed", true},
+                {"path", path},
+                {"name", new_name},
+                {"previous_name", name},
+                {"previous_material_digest", held.document.digest}};
+    if (new_name == name) {
+        answer["changed"] = false;
+        answer["material_digest"] = held.document.digest;
+        answer["rewritten_bindings"] = Json::array();
+        return appliedLive(std::move(answer));
+    }
+    if (auto holder = nameHolder(new_name, asset_data, paths)) {
+        Json fields{{"name", new_name}};
+        fields.update(*holder);
+        refuse(method, "material '" + new_name + "' exists already", nameConflictCode, std::move(fields));
+    }
+    if (const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>())
+        if (const auto holder = models->modelDeclaringMaterial(new_name))
+            refuse(method, "model '" + *holder + "' has a glTF material named '" + new_name + "'", nameConflictCode,
+                   {{"name", new_name}, {"model", *holder}});
+
+    auto [count, objects] = objectsOverridingWith(name);
+    auto render_documents = renderDocumentsNaming(paths, path, name, false);
+    if (count != 0 || !render_documents.empty()) {
+        std::string where;
+        if (count != 0) where += "set on " + std::to_string(count) + " scene object(s)";
+        if (!render_documents.empty())
+            where += (where.empty() ? "" : ", ") + std::string{"named by "} +
+                     std::to_string(render_documents.size()) + " render document(s)";
+        refuse(method, "material '" + name + "' is " + where + ", which a rename does not rewrite", inUseCode,
+               {{"name", name},
+                {"bindings", Json::array()},
+                {"objects", std::move(objects)},
+                {"count", count},
+                {"render_documents", std::move(render_documents)}});
+    }
+
+    auto candidate = held.document.json;
+    candidate.at("materials").at(held.index)["name"] = new_name;
+    SurfaceCache surfaces{paths};
+    checkCandidateDocument(method, path, candidate, surfaces);
+    auto rebound = bindingsNaming(asset_data, paths, name);
+    for (auto &bindings : rebound) {
+        for (const auto entry : bindings.entries) bindings.json.at("bindings").at(entry)["material"] = new_name;
+        try {
+            (void)parsePrimitiveMaterialBindingJson(toJson(bindings.json));
+        } catch (const std::exception &error) {
+            refuse(method, "model '" + bindings.model + "' material bindings would not load: " + error.what(),
+                   bindingInvalidCode, {{"model", bindings.model}, {"reason", error.what()}});
+        }
+    }
+
+    auto bytes = renderJsonDocument(candidate, held.document.bytes);
+    const auto digest = projectDocumentDigest(bytes);
+    std::vector<ProjectCandidateDocument> documents;
+    documents.push_back(replacement(path, held.document.path, held.document.digest, std::move(bytes)));
+    auto rewritten = Json::array();
+    for (const auto &bindings : rebound) {
+        auto rebound_bytes = renderJsonDocument(bindings.json, bindings.bytes);
+        rewritten.push_back({{"model", bindings.model},
+                             {"material_bindings", bindings.reference},
+                             {"bindings_digest", projectDocumentDigest(rebound_bytes)},
+                             {"previous_bindings_digest", bindings.digest}});
+        documents.push_back(replacement(bindings.reference, bindings.path, bindings.digest, std::move(rebound_bytes)));
+    }
+    commitDocuments(method, paths.projectRoot(), documents, path);
+    answer["changed"] = true;
+    answer["material_digest"] = digest;
+    answer["rewritten_bindings"] = std::move(rewritten);
+    LOG_INFO(logger, "material '{}' in '{}' renamed '{}'", name, path, new_name);
+
+    if (!registeredFrom(name, path))
+        return appliedAtRestart(std::move(answer), "material '" + name +
+                                                       "' is not registered in this engine; it is read when the "
+                                                       "engine starts");
+    auto *materials = FastModuleContainer::tryGet<MaterialContainer>();
+    if (materials == nullptr) return appliedAtRestart(std::move(answer), "this host runs no material container");
+    // As an edit outside values (MT-3): registered anew under the new name,
+    // the models drawing it rebuilt with the rewritten bindings.
+    return rebuildMaterial(std::move(answer), path, new_name, std::vector<std::string>{"name"}, rebound, *materials,
+                           reload_service);
+}
+
 } // namespace
 
 void configureMaterialDocumentRpcHandlers(RpcServer &server, PathResolver &path_resolver,
@@ -2011,6 +2434,16 @@ void configureMaterialDocumentRpcHandlers(RpcServer &server, PathResolver &path_
     });
     server.setHandler("unregister_model", [&path_resolver](const Json &params) {
         return unregisterModelDocument(params, path_resolver);
+    });
+    // EB-1: a material taken off asset_data (and put back), and renamed.
+    server.setHandler("delete_material", [&path_resolver](const Json &params) {
+        return deleteMaterial(params, path_resolver);
+    });
+    server.setHandler("register_material", [&path_resolver](const Json &params) {
+        return registerMaterial(params, path_resolver);
+    });
+    server.setHandler("rename_material", [&path_resolver, reload_service](const Json &params) {
+        return renameMaterial(params, path_resolver, reload_service);
     });
 }
 

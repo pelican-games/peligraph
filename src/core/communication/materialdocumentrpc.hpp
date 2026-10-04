@@ -23,7 +23,7 @@ class ReloadService;
 //       status: "loaded" | "missing" | "invalid", reason?,
 //       materials: [{name, surface | null, tags, id, registered}]}]}
 //     Every asset_data materials[] entry, in its order (list_assets lists
-//     only entries with a name, which a material entry has not). `id` is the
+//     each material by its name, EB-1). `id` is the
 //     draw-loop key get_render_authoring_context's materials[] carry;
 //     `registered`: the running engine holds the material.
 //   get_material {path, name?} ->
@@ -150,6 +150,43 @@ class ReloadService;
 //   model.load_failed@1 {path, message}, model.unknown@1 {name},
 //   model.in_use@1 {name, count, objects}, model.transaction_busy@1 {path},
 //   external_modification {path, expected, actual}.
+//
+// EB-1: a material taken off the project, put back, and renamed.
+//   delete_material {name} ->
+//     {committed, name, removed: {path}, asset_data_digest,
+//      previous_asset_data_digest, applied: "live" | "restart_required",
+//      restart_required}
+//     Takes the document holding `name` off asset_data materials[] (the
+//     document file stays) and releases its registration. Refused while
+//     anything names it: material.in_use@1 {name, bindings: [model],
+//     objects: [first 8 scene objects with their own material], count
+//     (objects), render_documents: [project-relative render documents whose
+//     draw loop names "<path>#<name>" or whose ray bindings name the
+//     document]}. A document holding several materials is refused,
+//     material.document_shared@1 {name, path, names}.
+//   register_material {path} ->
+//     {committed, path, names, material_digest, asset_data_digest,
+//      previous_asset_data_digest, applied, restart_required}
+//     Lists a material document already in the project (delete_material's
+//     removed.path) in asset_data materials[] and registers it live.
+//     material.path_conflict@1 when listed already, material.name_conflict@1
+//     when one of its names is held.
+//   rename_material {name, new_name} ->
+//     {committed, changed, path, name: new_name, previous_name,
+//      material_digest, previous_material_digest, rewritten_bindings: [{model,
+//      material_bindings, bindings_digest, previous_bindings_digest}],
+//      applied: "rebuilt" | "live" | "restart_required", restart_required,
+//      rebuilt_models?}
+//     Writes the material's name and every material_bindings entry naming
+//     it in one transaction, then registers it anew and rebuilds the models
+//     drawing it (as edit_material's "rebuilt"). A scene object's own
+//     material and a render document are not rewritten: a rename they name
+//     is refused, material.in_use@1 (bindings: []). The same call with the
+//     names swapped takes it back.
+//   For both delete and rename an engine material (pelican.*) is
+//   material.name_invalid@1 {reason: "engine_material"}, a model's glTF
+//   material {reason: "model_material", model}, and a name no listed
+//   document holds material.name_unknown@1.
 void configureMaterialDocumentRpcHandlers(RpcServer &server,
                                           PathResolver &path_resolver,
                                           watch::ReloadService *reload_service);

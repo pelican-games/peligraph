@@ -57,6 +57,9 @@ std::string_view assetManifestIssueKindName(AssetManifestIssueKind kind);
 inline constexpr std::string_view assetsStoreUnknownErrorCode = "assets_store_unknown@1";
 inline constexpr std::string_view assetsManifestUndeclaredErrorCode = "assets_manifest_undeclared@1";
 inline constexpr std::string_view assetsManifestWriteFailedErrorCode = "assets_manifest_write_failed@1";
+// EB-1: a verification run (verify_assets, edit_project_settings) is reading
+// the stores; update_assets_manifest {store} does not wait for it.
+inline constexpr std::string_view assetsVerificationRunningErrorCode = "assets_verification_running@1";
 // A host that runs no startup verification (no AssetsVerification module).
 inline constexpr std::string_view assetsVerificationUnavailableErrorCode =
     "assets_verification_unavailable@1";
@@ -128,7 +131,9 @@ DECLARE_MODULE(AssetsVerification) {
     nlohmann::json detailJson() const;
     // verify_assets: starts a rerun (or joins the one running).
     nlohmann::json verify();
-    // update_assets_manifest {store}. Throws AssetsVerificationError.
+    // update_assets_manifest {store}. Throws AssetsVerificationError; EB-1:
+    // assets_verification_running@1 {store} while a run is in progress
+    // (refused at once rather than waiting for the run to finish).
     nlohmann::json updateManifest(const std::string &store);
     // PJ-1: project.json's asset stores changed in place
     // (edit_project_settings). Writes the manifest of each store named in
@@ -143,8 +148,9 @@ DECLARE_MODULE(AssetsVerification) {
 
     // Joins the worker; a run in progress finishes first.
     void stop();
-    // Tests: the worker waits before it starts reading while held; wait
-    // returns once no run is in progress.
+    // Tests: the worker waits, holding the stores as a run that reads them
+    // does, before it starts reading while held; wait returns once no run is
+    // in progress.
     void holdForTesting(bool held);
     void waitForTesting();
 };

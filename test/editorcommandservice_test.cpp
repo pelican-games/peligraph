@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -490,6 +491,97 @@ TEST_CASE("list_assets does not call a model declared as an engine primitive mis
     CHECK(std::count_if(assets.begin(), assets.end(), [](const auto &asset) {
               return asset.status == "missing";
           }) == 1);
+}
+
+// EB-1: a model's path is listed as asset_data writes it (the published copy
+// holds it resolved, which goes to resolved_path), and a material document is
+// listed once per material it holds, by name; one that does not read is
+// listed by its path as invalid, one that is not there as missing.
+TEST_CASE("EB-1 list_assets lists project-relative paths beside the resolved file, and materials by name",
+          "[editor-command][asset-picker][eb1]") {
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("pelican_eb1_list_assets_" +
+                       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() {
+            std::error_code ignored;
+            std::filesystem::remove_all(root, ignored);
+        }
+    } cleanup{root};
+    const auto write = [&](const std::string &relative, const std::string &contents) {
+        std::filesystem::create_directories((root / relative).parent_path());
+        std::ofstream{root / relative, std::ios::binary} << contents;
+    };
+    write("models/box.glb", "glTF");
+    write("materials/paint.material.json",
+          R"({"schema":"pelican.material","version":1,"materials":[{"name":"paint"},{"name":"coat"}]})");
+    write("materials/broken.material.json", "not json");
+    PathResolver resolver;
+    resolver.setup(root, false);
+
+    const auto absolute = (root / "models/box.glb").generic_string();
+    const auto materials = nlohmann::json::array({{{"path", "materials/paint.material.json"}},
+                                                  {{"path", "materials/broken.material.json"}},
+                                                  {{"path", "materials/gone.material.json"}}});
+    const auto published =
+        nlohmann::json{{"models", {{{"name", "box"}, {"path", absolute}}}}, {"materials", materials}}.dump();
+    const auto authored =
+        nlohmann::json{{"models", {{{"name", "box"}, {"path", "project://models/box.glb"}}}}, {"materials", materials}}
+            .dump();
+
+    const auto find = [](const std::vector<EditorAssetQueryResult> &assets,
+                         std::string_view id) -> const EditorAssetQueryResult & {
+        const auto found = std::find_if(assets.begin(), assets.end(), [&](const auto &asset) { return asset.id == id; });
+        REQUIRE(found != assets.end());
+        return *found;
+    };
+    // With the document the copy was made from: its spelling.
+    const auto assets = collectEditorAssets(published, resolver, authored);
+    const auto &box = find(assets, "box");
+    CHECK(box.path == "project://models/box.glb");
+    REQUIRE(box.resolved_path);
+    CHECK(std::filesystem::path{*box.resolved_path}.is_absolute());
+    CHECK(std::filesystem::equivalent(*box.resolved_path, root / "models/box.glb"));
+    CHECK(box.status == "loaded");
+    // Without it: project-relative.
+    CHECK(find(collectEditorAssets(published, resolver), "box").path == "models/box.glb");
+
+    for (const auto id : {"paint", "coat"}) {
+        CAPTURE(id);
+        const auto &material = find(assets, id);
+        CHECK(material.kind == "material");
+        CHECK(material.path == "materials/paint.material.json");
+        CHECK(material.store == "project");
+        CHECK(material.status == "loaded");
+        REQUIRE(material.resolved_path);
+        CHECK(std::filesystem::equivalent(*material.resolved_path, root / "materials/paint.material.json"));
+    }
+    const auto &broken = find(assets, "materials/broken.material.json");
+    CHECK(broken.kind == "material");
+    CHECK(broken.status == "invalid");
+    const auto &gone = find(assets, "materials/gone.material.json");
+    CHECK(gone.kind == "material");
+    CHECK(gone.status == "missing");
+    CHECK_FALSE(gone.resolved_path);
+
+    // The wire form: resolved_path only where a file resolved.
+    const auto document = AuthoringSceneDocument::load(readJson(authoringFixturePath()).dump(), SceneRevision{41});
+    const EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&document]() -> const AuthoringSceneDocument & { return document; },
+        .resolved_scene = explicitResolvedProvider(document),
+        .current_scene_id = [] { return std::string{"main"}; },
+        .runtime_query = fakeRuntime,
+        .assets = [&] { return collectEditorAssets(published, resolver, authored); },
+    }};
+    const EditorCommandRpcAdapter rpc{service};
+    const auto listed = rpc.listAssets(nlohmann::json::object());
+    for (const auto &asset : listed.at("assets")) {
+        CAPTURE(asset.dump());
+        const bool engine = asset.at("store") == "engine";
+        const bool missing = asset.at("status") == "missing";
+        CHECK(asset.contains("resolved_path") == (!engine && !missing));
+    }
 }
 
 TEST_CASE("simplemodelview choices offer the engine primitives before the project's models",

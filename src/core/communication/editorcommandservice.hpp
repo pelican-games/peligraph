@@ -135,9 +135,13 @@ struct EditorGetComponentsRequest {
 struct EditorAssetQueryResult {
     std::string id;
     std::string kind;
+    // EB-1: as asset_data writes it (project-relative for a project file).
     std::string path;
     std::string store;
     std::string status;
+    // EB-1: the file `path` resolved to (absolute); absent for an engine
+    // primitive, an inline entry, and a path that does not resolve.
+    std::optional<std::string> resolved_path;
 };
 
 struct EditorListAssetsRequest {
