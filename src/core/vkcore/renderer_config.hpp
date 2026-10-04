@@ -51,6 +51,29 @@ std::span<const RenderFeatureRuntimeModuleRequirement>
 renderFeatureRuntimeModuleRequirements() noexcept;
 bool renderFeatureRequiresRuntimeModule(std::string_view name) noexcept;
 
+// PB-1 (engine_backlog 22): a rendering configuration that enables a feature
+// whose runtime module this engine was started without, after the module
+// graph was frozen. Only a restart creates the module:
+//   render_feature_requires_restart@1 {feature?, module}
+// `module` is the module's name ("UiRenderer"); `feature` the render feature
+// that needs it ("ui"), left out when the module is not one a feature of
+// renderFeatureRuntimeModuleRequirements names. It travels as "<code>:
+// <fields JSON>" (splitCodedRefusalMessage), and a startup refusal, a hot
+// reload, reload_render_documents and an edit ticket all carry the code.
+inline constexpr std::string_view renderFeatureRequiresRestartCode =
+    "render_feature_requires_restart@1";
+std::string renderFeatureRequiresRestartMessage(
+    std::optional<std::string_view> feature, std::string_view module);
+// "render_feature_requires_restart@1: feature 'ui' needs runtime module
+// UiRenderer, which this engine was started without; restart the engine to
+// enable it".
+std::string renderFeatureRequiresRestartText(const nlohmann::json &fields);
+// The fields of a module container's "Module '<type>' was first requested
+// after the runtime module graph was frozen" refusal; nullopt for any other
+// message.
+std::optional<nlohmann::json> frozenModuleRefusalFields(
+    std::string_view message);
+
 void requireRenderFeatureRuntimeAvailability(
     std::string_view feature_name,
     const nlohmann::json &feature_document,

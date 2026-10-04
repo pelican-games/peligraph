@@ -11,6 +11,7 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "reloadgate.hpp"
+#include "problemlist.hpp"
 
 #include <algorithm>
 #include <nlohmann/json.hpp>
@@ -22,6 +23,19 @@ namespace Pelican::watch {
 namespace {
 thread_local RenderPipelineCompanionReloadObserver
     render_pipeline_companion_reload_observer;
+
+// PB-1 stage 4: after a shader reload, the problem list holds the shader
+// files the library still holds as failed. Never in the reload's way.
+void noteShaderProblems(const ShaderLibrary &library, std::string_view source,
+                        std::string_view error) noexcept {
+    try {
+        std::vector<std::string> failed;
+        for (const auto &key : library.failedReloadSources())
+            failed.push_back(assetKeyString(key));
+        syncShaderProblems(source, failed, error);
+    } catch (...) {
+    }
+}
 
 // VI-1b: every shader reload checks each fullscreen / raster candidate
 // against its pass's inputs by the rule edit and load use; a candidate that
@@ -402,6 +416,7 @@ bool ReloadService::applyShaderReloadBatch(
         library->recordReloadFailure(changed_keys, runtime.error);
         addCompileRefusalFields(runtime);
     }
+    noteShaderProblems(*library, problemSourceHotReload, runtime.error);
     mergeShaderRuntimeResult(runtime);
     return runtime.committed;
 }
@@ -556,6 +571,8 @@ void ReloadService::applyRenderPipelineCompanionReload(
         if (!recorded_keys.empty()) {
             library->recordReloadFailure(
                 recorded_keys, runtime.error);
+            noteShaderProblems(*library, problemSourceHotReload,
+                               runtime.error);
         }
         mergeShaderRuntimeResult(
             std::move(runtime));
@@ -567,11 +584,15 @@ void ReloadService::applyRenderPipelineCompanionReload(
         if (!recorded_keys.empty()) {
             library->recordReloadFailure(
                 recorded_keys, runtime.error);
+            noteShaderProblems(*library, problemSourceHotReload,
+                               runtime.error);
         }
         mergeShaderRuntimeResult(
             std::move(runtime));
         throw;
     }
+    if (!shader_keys.empty())
+        noteShaderProblems(*library, problemSourceHotReload, runtime.error);
     mergeShaderRuntimeResult(
         std::move(runtime));
 }
@@ -631,9 +652,11 @@ RuntimeReloadResult ReloadService::forceShaderReload() {
             for (const auto &key : changed_keys) changed.push_back(assetKeyString(key));
             runtime.error_fields["changed"] = std::move(changed);
         }
+        noteShaderProblems(*library, problemSourceReloadRpc, {});
         return runtime;
     }
     library->recordReloadFailure(changed_keys, runtime.error);
+    noteShaderProblems(*library, problemSourceReloadRpc, runtime.error);
     auto changed = nlohmann::ordered_json::array();
     for (const auto &key : changed_keys) changed.push_back(assetKeyString(key));
     runtime.error_code = std::string{shaderReloadFailedErrorCode};

@@ -22,6 +22,8 @@
 #include "../watch/assetkey.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
+#include "../watch/problemlist.hpp"
+#include "../material/materialstartupunserved.hpp"
 #include "../launchconfig.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../loader/basicconfig.hpp"
@@ -161,6 +163,15 @@ void RenderPipelinePublicationTransaction::publish(
             std::move(config_json));
     // BS-1: a published project configuration ends the fallback.
     renderer.render_pipeline_fallback_refusal.reset();
+    // PB-1: what is on disk composed. An authored candidate's ticket clears
+    // the list in the editor, which knows whether it was a reload or an edit
+    // (a recompile for graph ownership is neither).
+    if (!authored) {
+        try {
+            clearRenderPipelineProblems();
+        } catch (...) {
+        }
+    }
 
     try {
         if (auto *targets =
@@ -218,6 +229,17 @@ void RenderPipelinePublicationTransaction::rollback(
         rolled_back.staged_generation = 0;
         rolled_back.last_error = failure;
         ++rolled_back.failed;
+        // PB-1: a hot reload refused after it was staged.
+        if (!authored) {
+            try {
+                recordRenderPipelineProblem(
+                    problemSourceHotReload,
+                    renderPipelineRefusalJson(std::runtime_error{failure}, {},
+                                              rolled_back.source_reference),
+                    rolled_back.source_reference);
+            } catch (...) {
+            }
+        }
     }
     outcome =
         RenderPipelineAuthoringApplyResult{
@@ -3232,12 +3254,18 @@ Renderer::Renderer() {
                 error, root_json, config.renderingConfigReference());
         }
     }
+    // PB-1: the list exists before the module graph is frozen, whether or
+    // not anything is wrong at start.
+    (void)GET_MODULE(ProblemList);
     if (refusal) {
         LOG_ERROR(logger,
                   "render pipeline refused at start; running the engine's "
                   "fallback generation until a fixed configuration is "
                   "published: {}",
                   refusal->dump());
+        // PB-1: the first problem, read against the root on disk.
+        recordRenderPipelineProblem(problemSourceStartup, *refusal,
+                                    config.renderingConfigReference());
         // The fallback stands in for the project's root while it is the
         // published configuration: re-lowering for a new output and the
         // scene's ray plan read it from here, as they read a published
@@ -3265,6 +3293,44 @@ Renderer::Renderer() {
     current_rendering_pass_id = flat_rendering_pass_id;
     internal_render_extent = GET_MODULE(RenderTarget).getExtent();
     installRenderPipelineReloadParticipant();
+    // PB-1 (engine_backlog 23): the project's generation is live; a material
+    // this start registers without a pass for its route is written down
+    // instead of stopping the launch (enterStartupFallbackForUnservedMaterials).
+    if (fallback_allowed && !render_pipeline_fallback_refusal)
+        GET_MODULE(MaterialStartupUnserved).collecting = true;
+}
+
+void Renderer::enterStartupFallbackForUnservedMaterials() {
+    auto *startup = FastModuleContainer::tryGet<MaterialStartupUnserved>();
+    if (startup == nullptr) return;
+    startup->collecting = false;
+    if (startup->unserved.empty() || render_pipeline_fallback_refusal) return;
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    const auto reference = config.renderingConfigReference();
+    std::string root_json;
+    try {
+        root_json = config.renderingConfigJson();
+    } catch (const std::exception &) {
+    }
+    auto refusal = renderPipelineRefusalJson(
+        std::runtime_error{
+            materialRouteUnservedMessage(startup->unserved, reference)},
+        root_json, reference);
+    startup->unserved.clear();
+    LOG_ERROR(logger,
+              "render pipeline refused at start; running the engine's "
+              "fallback generation until a fixed configuration is "
+              "published: {}",
+              refusal.dump());
+    recordRenderPipelineProblem(problemSourceStartup, refusal, reference);
+    // As Renderer() does for a configuration refused when it was composed:
+    // the fallback stands in for the project's root. The materials already
+    // registered keep what they were lowered to; the fallback draws none, so
+    // they are not judged against it.
+    config.publishRenderingConfigJson(
+        renderPipelineFallbackConfigJson(config.defaultRenderingPass()));
+    relowerRenderPipelineForCurrentOutput(/*validate_live_materials=*/false);
+    render_pipeline_fallback_refusal = std::move(refusal);
 }
 
 nlohmann::json Renderer::renderPipelineStatusJson() const {
@@ -3564,9 +3630,14 @@ void Renderer::synchronizeGraphGpuOwnership() {
         LOG_WARNING(logger, "graph GPU ownership update failed: {}", result.error);
 }
 
-void Renderer::relowerRenderPipelineForCurrentOutput() {
+void Renderer::relowerRenderPipelineForCurrentOutput(
+    bool validate_live_materials) {
+    RenderGraphVariantLoadHooks hooks;
+    hooks.validate_live_materials = validate_live_materials;
     auto variants =
-        loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays();
+        loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+            GET_MODULE(ProjectBasicConfig).renderingConfigJson(),
+            std::move(hooks));
     const auto generation =
         GET_MODULE(FrameGraphRuntimeContainer)
             .renderingSnapshot();
@@ -3642,12 +3713,15 @@ Renderer::reloadRenderPipelineFromDisk(
     }
     auto &state = *render_pipeline_reload_state;
     ++state.attempted;
+    // PB-1: the root as this reload read it, to name a refusal against.
+    std::string root_text;
     try {
         auto &config =
             GET_MODULE(ProjectBasicConfig);
         auto json =
             GET_MODULE(PathResolver).loadText(
                 state.source_reference);
+        root_text = json;
         const auto default_pass_name =
             config.defaultRenderingPass();
         auto transaction = std::make_shared<
@@ -3807,6 +3881,16 @@ Renderer::reloadRenderPipelineFromDisk(
     } catch (const std::exception &caught) {
         result = RenderPipelineAuthoringApplyResult{
             .error = caught.what()};
+        // PB-1: the hot reload's refusal stays listed (the live generation
+        // goes on) until what is on disk composes.
+        try {
+            recordRenderPipelineProblem(
+                problemSourceHotReload,
+                renderPipelineRefusalJson(caught, root_text,
+                                          state.source_reference),
+                state.source_reference);
+        } catch (...) {
+        }
     } catch (...) {
         result = RenderPipelineAuthoringApplyResult{
             .error =

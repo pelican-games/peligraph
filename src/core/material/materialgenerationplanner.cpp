@@ -2,6 +2,7 @@
 #include "materialdrawlooptable.hpp"
 #include "materiallimits.hpp"
 #include "materialphysicalcontractchanged.hpp"
+#include "materialstartupunserved.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderingpass/materialpassattachments.hpp"
@@ -247,7 +248,19 @@ resolveMaterialPipelineRenderingContract(
                 info.route, info.shader_contract,
                 info.exact_pass);
     if (bindings.empty()) {
-        if (rendering_passes.hasMaterialPasses()) {
+        // PB-1: the start of a --render-fallback launch writes the material
+        // down and goes on as if no material pass existed; the renderer then
+        // starts the fallback generation with the refusal.
+        auto *startup_unserved =
+            rendering_passes.hasMaterialPasses()
+                ? FastModuleContainer::tryGet<MaterialStartupUnserved>()
+                : nullptr;
+        if (startup_unserved != nullptr && startup_unserved->collecting) {
+            startup_unserved->add(
+                info.route, info.shader_contract,
+                describeUnservedMaterial(info.name, info.source_document,
+                                         info.source_asset));
+        } else if (rendering_passes.hasMaterialPasses()) {
             // G-4: the same rule, code and hint as an edit ticket's
             // candidate check; at load it stays fatal, in readable text.
             auto text = materialRouteUnservedText(

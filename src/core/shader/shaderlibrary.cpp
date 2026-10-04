@@ -1338,6 +1338,15 @@ ShaderReloadTrackingStatus ShaderLibrary::reloadTrackingStatus() const noexcept 
     return {reload_units.size(), unit_by_bundle.size(), units_by_dependency.size()};
 }
 
+std::vector<watch::AssetKey> ShaderLibrary::failedReloadSources() const {
+    std::vector<watch::AssetKey> sources;
+    for (const auto unit : units_failed_since_publish)
+        if (unit < reload_units.size()) sources.push_back(reload_units[unit].primary_source);
+    std::ranges::sort(sources);
+    sources.erase(std::unique(sources.begin(), sources.end()), sources.end());
+    return sources;
+}
+
 bool ShaderLibrary::reload(ShaderBundleId id) {
     auto &current = bundles.get(id);
     if (current.source_path.empty()) {

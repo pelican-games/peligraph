@@ -795,6 +795,9 @@ void Loop::run() {
         modules.camera_bake->start(*launch_config.camera_bake_output, input_sequence.replayFps());
     }
     prepareRuntimeModuleGraph(modules);
+    // PB-1: every material of the start is registered; one a --render-fallback
+    // launch found no pass for starts the fallback generation now.
+    modules.renderer.enterStartupFallbackForUnservedMaterials();
     // Built here rather than inside runInteractive(): the XR objects pull
     // modules, and creation is frozen a few lines below.
     auto xr = createXrRuntime(launch_config);

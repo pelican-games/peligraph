@@ -327,6 +327,9 @@ DECLARE_MODULE(ShaderLibrary) {
     void recordReloadFailure(std::span<const watch::AssetKey> changed_keys,
                              std::string_view error);
     ShaderReloadTrackingStatus reloadTrackingStatus() const noexcept;
+    // PB-1: the primary sources of the units a reload failed on and nothing
+    // has republished since (each once, sorted).
+    std::vector<watch::AssetKey> failedReloadSources() const;
     std::vector<ShaderBundleId> takeDirtyBundles();
 
     RegistrationCheckpoint checkpointRegistrations() const;

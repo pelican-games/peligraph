@@ -287,7 +287,10 @@ DECLARE_MODULE(Renderer) {
     TemporalViewFamilyHistory &activeTemporalHistory();
     const TemporalViewFamilyHistory &activeTemporalHistory() const;
     void installRenderPipelineReloadParticipant();
-    void relowerRenderPipelineForCurrentOutput();
+    // PB-1: `validate_live_materials` false for the switch to the fallback
+    // generation at start, which draws no material.
+    void relowerRenderPipelineForCurrentOutput(
+        bool validate_live_materials = true);
     void synchronizeGraphGpuOwnership();
     std::uint64_t graph_ownership_attempt_generation = 0;
     std::map<std::string, GameObjectId> graph_ownership_attempt_objects;
@@ -359,6 +362,13 @@ DECLARE_MODULE(Renderer) {
     // Resolves every renderer-owned runtime dependency while module creation is
     // still legal. Subsequent render calls only read the frozen module graph.
     void prepareRuntimeModules();
+    // PB-1 (engine_backlog 23): the end of a --render-fallback launch's start,
+    // once every module is built and before the graph is frozen. When a
+    // material registered at start found no material pass for its route
+    // (MaterialStartupUnserved), the run goes on on the fallback generation
+    // with material_route_unserved@1 as its refusal, as a configuration
+    // refused when it was composed does. Otherwise nothing changes.
+    void enterStartupFallbackForUnservedMaterials();
     void renderLogicalFrame(
         ILogicalFrameTarget &target,
         const RenderViewFamily &view_family);

@@ -31,6 +31,7 @@
 #include "../renderingpass/rendertargetnameresolver.hpp"
 #include "../shader/shaderreflection.hpp"
 #include "../vkcore/renderer_config.hpp"
+#include "../watch/problemlist.hpp"
 
 #include <algorithm>
 #include <array>
@@ -88,7 +89,9 @@ bool isCarriedRefusalCode(std::string_view code) {
            // LC-1: a push-constant range partly over the loop index.
            code == shaderLoopPushOverlapCode ||
            // BS-1b: a feature or preset that is not JSON.
-           code == renderDocumentSyntaxCode;
+           code == renderDocumentSyntaxCode ||
+           // PB-1: a feature whose module this engine started without.
+           code == renderFeatureRequiresRestartCode;
 }
 
 // LP-0a: a graph refusal that only composing the candidate can raise (a
@@ -231,6 +234,8 @@ std::string carriedRefusalMessage(const CodedRefusal &refusal) {
     }
     if (refusal.code == renderDocumentSyntaxCode)
         return renderDocumentSyntaxMessage(refusal.fields);
+    if (refusal.code == renderFeatureRequiresRestartCode)
+        return renderFeatureRequiresRestartText(refusal.fields);
     return refusal.code + ": " +
            refusal.fields.value("message", refusal.fields.dump());
 }
@@ -6330,7 +6335,41 @@ void RenderConfigEditorService::verifyReloadedDocuments(
     }
 }
 
+void RenderConfigEditorService::noteProblems(
+    bool reload, bool source_only, const OrderedJson &result) const {
+    const auto status = result.value("status", std::string{});
+    if (status == "committed") {
+        // A reload takes in what is on disk; an edit that published a new
+        // generation composed every render document it reads. An edit that
+        // published nothing (no_change, or only authored bytes the engine
+        // never reads) composed nothing.
+        if (reload || (!source_only && !result.value("no_change", false)))
+            clearRenderPipelineProblems();
+        return;
+    }
+    if (!reload || status != "rejected") return;
+    const auto error = result.find("error");
+    if (error == result.end() || !error->is_object()) return;
+    const auto code = error->value("code", std::string{});
+    // Refusals of the moment, not of the documents.
+    if (code == reloadBusyCode || code == "gate_closed" ||
+        code == "external_modification" || code == "stale_source_digest")
+        return;
+    recordRenderPipelineProblem(
+        problemSourceReloadRpc,
+        Json::parse(error->dump()), dependencies_.source_reference);
+}
+
 OrderedJson RenderConfigEditorService::reloadRenderDocuments(
+    const Json &params, bool preview_open) {
+    auto answer = reloadRenderDocumentsUnnoted(params, preview_open);
+    // A reload refused at once; one accepted is noted when its ticket ends.
+    if (answer.value("status", std::string{}) == "rejected")
+        noteProblems(true, false, answer);
+    return answer;
+}
+
+OrderedJson RenderConfigEditorService::reloadRenderDocumentsUnnoted(
     const Json &params, bool preview_open) {
     constexpr std::string_view method = "reload_render_documents";
     requireOnly(params, {}, method);
@@ -6605,6 +6644,8 @@ void RenderConfigEditorService::completeCommitTransaction(
         if (!result.contains("ticket")) {
             result["ticket"] = transaction->ticket.id;
         }
+        noteProblems(transaction->ticket.reload,
+                     transaction->ticket.source_only, result);
         results_[transaction->ticket.id] = result;
         completed_.push_back(std::move(result));
     };
@@ -6890,6 +6931,7 @@ void RenderConfigEditorService::commitPending() noexcept {
         auto &ticket = *ticket_iterator;
         auto finish = [&](OrderedJson result) {
             if (!result.contains("ticket")) result["ticket"] = ticket.id;
+            noteProblems(ticket.reload, ticket.source_only, result);
             results_[ticket.id] = result;
             completed_.push_back(std::move(result));
         };

@@ -409,6 +409,16 @@ class RenderConfigEditorService {
     std::optional<nlohmann::ordered_json> syntaxRejection(
         std::string_view bytes, std::string_view reference,
         std::string_view method) const;
+    // PB-1: what a finished ticket (or a reload refused at once) leaves in
+    // the engine's problem list. A reload's refusal of the documents is
+    // listed as source reload_rpc (a busy editor, a closed gate or a file
+    // that changed again is not a problem of the documents); a reload that
+    // committed, or an edit that committed a new generation, clears the
+    // render pipeline's problems. An edit's refusal is the answer's alone.
+    void noteProblems(bool reload, bool source_only,
+                      const nlohmann::ordered_json &result) const;
+    nlohmann::ordered_json reloadRenderDocumentsUnnoted(
+        const nlohmann::json &params, bool preview_open);
     // The authored-pass tail shared by addAuthoredPass and
     // removeAuthoredPass: candidate-set preflight -> ticket enqueue ->
     // accepted response.  The operation name is the only difference.

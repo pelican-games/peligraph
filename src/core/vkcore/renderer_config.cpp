@@ -133,12 +133,19 @@ void requireRuntimeFeatureModules(
                                      ? module_initialized(module.module)
                                      : module.initialized();
         if (initialized) continue;
-        throw std::runtime_error(
-            "Render pipeline hot reload cannot enable feature '" +
-            std::string{requirement.feature} +
-            "' after module creation is frozen; missing runtime module " +
-            std::string{module.module});
+        // PB-1: by name (render_feature_requires_restart@1).
+        throw std::runtime_error(renderFeatureRequiresRestartMessage(
+            requirement.feature, module.module));
     }
+}
+
+// The readable text of a refusal that travels as "<code>: <fields>", for a
+// reason shown as words (the feature catalog's unavailable_reason).
+std::string readableRefusal(std::string message) {
+    if (auto coded = splitCodedRefusalMessage(message);
+        coded && coded->code == renderFeatureRequiresRestartCode)
+        return renderFeatureRequiresRestartText(coded->fields);
+    return message;
 }
 
 RenderFeatureRuntimeAvailabilityEnvironment
@@ -234,7 +241,7 @@ RenderFeatureRuntimeAvailability evaluateRenderFeatureRuntimeAvailability(
     } catch (const std::exception &error) {
         return {
             .available = false,
-            .unavailable_reason = error.what(),
+            .unavailable_reason = readableRefusal(error.what()),
         };
     } catch (...) {
         return {
@@ -468,12 +475,64 @@ nlohmann::json renderPipelineRefusalJson(
         // BS-1b: a feature or preset that is not JSON, said in words.
         if (code == renderDocumentSyntaxCode)
             message = renderDocumentSyntaxMessage(refusal);
+        if (code == renderFeatureRequiresRestartCode)
+            message = renderFeatureRequiresRestartText(refusal);
+        // PB-1: as an edit ticket's rejection says it.
+        if (code == materialRouteUnservedCode)
+            message = materialRouteUnservedText(refusal);
+    } else if (auto frozen = frozenModuleRefusalFields(error.what())) {
+        // PB-1: a module first asked for after the freeze, by name.
+        refusal = std::move(*frozen);
+        code = std::string{renderFeatureRequiresRestartCode};
+        message = renderFeatureRequiresRestartText(refusal);
     } else {
         code = std::string{renderPipelineUnnamedRefusalCode};
     }
     refusal["code"] = std::move(code);
     refusal["message"] = std::move(message);
     return refusal;
+}
+
+std::string renderFeatureRequiresRestartMessage(
+    std::optional<std::string_view> feature, std::string_view module) {
+    nlohmann::json fields = nlohmann::json::object();
+    if (feature) fields["feature"] = std::string{*feature};
+    fields["module"] = std::string{module};
+    return std::string{renderFeatureRequiresRestartCode} + ": " +
+           fields.dump();
+}
+
+std::string renderFeatureRequiresRestartText(const nlohmann::json &fields) {
+    const auto module = fields.value("module", std::string{});
+    std::string text = std::string{renderFeatureRequiresRestartCode} + ": ";
+    if (fields.contains("feature"))
+        text += "feature '" + fields.value("feature", std::string{}) + "' needs";
+    else
+        text += "the rendering configuration needs";
+    return text + " runtime module " + module +
+           ", which this engine was started without; restart the engine to "
+           "enable it";
+}
+
+std::optional<nlohmann::json> frozenModuleRefusalFields(
+    std::string_view message) {
+    constexpr std::string_view open = "Module '";
+    constexpr std::string_view frozen =
+        "' was first requested after the runtime module graph was frozen";
+    const auto at = message.find(frozen);
+    if (!message.starts_with(open) || at == std::string_view::npos)
+        return std::nullopt;
+    std::string module{message.substr(open.size(), at - open.size())};
+    // The type as the compiler spells it: "struct Pelican::ui::UiModule".
+    for (const std::string_view prefix : {"struct ", "class ", "Pelican::"})
+        if (module.starts_with(prefix)) module.erase(0, prefix.size());
+    nlohmann::json fields = nlohmann::json::object();
+    for (const auto &requirement : runtime_feature_modules)
+        for (const auto &required : requirement.modules)
+            if (required.module == module)
+                fields["feature"] = std::string{requirement.feature};
+    fields["module"] = std::move(module);
+    return fields;
 }
 
 RenderingPassId loadDefaultRenderingPassFromConfig() {
@@ -708,6 +767,18 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
                     throw named;
                 }
             }
+        }
+        // PB-1: a module the composition asked for first after the module
+        // graph was frozen (one the feature table does not list) is the
+        // same refusal as a listed one: only a restart creates it.
+        if (auto frozen = frozenModuleRefusalFields(error.what())) {
+            const std::runtime_error named{
+                std::string{renderFeatureRequiresRestartCode} + ": " +
+                frozen->dump()};
+            LOG_ERROR(logger,
+                      "Failed to load main rendering configuration: {}",
+                      named.what());
+            throw named;
         }
         LOG_ERROR(
             logger,

@@ -72,6 +72,7 @@
 #include "../vkcore/memorydiagnostics.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
+#include "../watch/problemlist.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1589,6 +1590,15 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     // and written through the project document transaction, applied live.
     configureMaterialDocumentRpcHandlers(server, modules.path_resolver, modules.reload_service);
 
+    // PB-1: the problems that are true now, whole ({revision, problems});
+    // get_status.problems is its summary.
+    server.setHandler("get_problems", [](const nlohmann::json &params) {
+        if (!requireObjectParams(params, "get_problems").empty()) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams, "get_problems takes no parameters");
+        }
+        return problemListJson(FastModuleContainer::tryGet<ProblemList>());
+    });
+
     server.setHandler("get_status", [instance_id, &modules, &editor_service,
                                      &play_session](const nlohmann::json &params) {
         requireObjectParams(params, "get_status");
@@ -1661,6 +1671,9 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             // start ({state: "fallback", refusal: {code, ...fields,
             // message}}), with the rendering root's reference.
             {"render_pipeline", modules.renderer.renderPipelineStatusJson()},
+            // PB-1: {revision, count, errors, warnings} of get_problems'
+            // list; a client reads the list again when revision moves.
+            {"problems", problemListStatusJson(FastModuleContainer::tryGet<ProblemList>())},
             {"seed", GameContext{}.seed()},
             {"xr", openXrStatusJson(modules.launch_config)},
             {"renderdoc", renderdoc.status},
