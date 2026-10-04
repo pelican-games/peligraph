@@ -1929,6 +1929,9 @@ AutomationReply commandWaitEngine(const AutomationHost &host,
     QJsonObject reply{
         {QStringLiteral("ready"), true},
         {QStringLiteral("waited_ms"), static_cast<double>(elapsed.elapsed())},
+        // MR-1s: which engine process answered, so a scenario can say none
+        // was started in between.
+        {QStringLiteral("process_id"), static_cast<double>(host.viewport->engineProcessId())},
     };
     if (frames > 0)
         reply.insert(QStringLiteral("published_frames"), static_cast<double>(published));

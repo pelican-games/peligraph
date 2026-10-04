@@ -63,6 +63,9 @@ class MaterialsDock final : public QWidget {
         // document (its text, at `find`).
         std::function<void(const QString &object)> reveal_object;
         std::function<void(const QString &document, const QString &find)> reveal_document;
+        // MR-1s, decision 1: a document came back without a restart -- the
+        // problem list is read now.
+        std::function<void()> problems_changed;
     };
 
     explicit MaterialsDock(Hooks hooks, QWidget *parent = nullptr);
@@ -81,6 +84,9 @@ class MaterialsDock final : public QWidget {
     // material, bind_material) in the row pelican.materials.model, with
     // `line` above them (what is wrong with them, when something is).
     void revealModel(const std::string &model, const std::string &line);
+    // MR-1s, decisions 2 and 3: the engine's problem list moved (PB-1s's
+    // rows, through materialProblemsOf).
+    void observeProblems(const MaterialProblems &problems);
 
     // The replies to what this dock sent. False for an id that is not its own.
     bool receiveResult(qint64 request_id, const QByteArray &result_json);

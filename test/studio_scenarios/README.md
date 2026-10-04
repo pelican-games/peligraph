@@ -645,6 +645,17 @@ material is used under the notice: `pelican.materials.uses.model#<model>`,
 `pelican.materials.model` (`.heading`, `.notice`, `.choice`, `.close`).
 `gui_material_repair` is the example.
 
+MR-1s (engine EB-2): Save in `pelican.materials.documentDialog` has the engine
+take the document in at once -- `register_material` for one its start refused,
+the engine's own watch (`hot_reload`) for one it refused after start -- and the
+window stays open, with the refusal in `.notice`, until the engine has it; the
+dock then says `<name> is loaded again.` A document the watch refused after
+start is marked on its row ("the file on disk does not load; the engine keeps
+the last values") and in `pelican.materials.broken`, at the line. `wait_engine`
+answers with `process_id`, the engine process that answered: `remember` it and
+compare it later, and a step says no restart happened in between.
+`gui_material_repair` is the example.
+
 ## Gestures a canvas is driven with
 
 `press`, `move` and `release` share one piece of state: which buttons this

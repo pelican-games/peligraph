@@ -260,6 +260,27 @@ std::string problemsCountLine(std::size_t errors, std::size_t warnings) {
     return counted(errors, "error") + ", " + counted(warnings, "warning");
 }
 
+MaterialProblems materialProblemsOf(const std::vector<ProblemRow> &rows) {
+    MaterialProblems problems;
+    for (const auto &row : rows) {
+        if (row.origin != ProblemRow::Origin::Engine) continue;
+        if (row.document_kind != "material" && !row.code.starts_with("material.")) continue;
+        problems.signature += row.id + "" + row.sentence + "";
+        if (row.source != "hot_reload") continue;
+        if (row.code != "material.document_invalid@1" && row.code != "material.document_unknown@1") continue;
+        MaterialFileProblem problem;
+        problem.path = stringOf(row.fields, "path");
+        if (problem.path.empty()) problem.path = row.document;
+        if (problem.path.empty()) continue;
+        problem.code = row.code;
+        problem.reason = stringOf(row.fields, "reason");
+        problem.line = row.line;
+        problem.column = row.column;
+        problems.stale.push_back(std::move(problem));
+    }
+    return problems;
+}
+
 ProblemsSession::ProblemsSession(Transport transport) : transport_{std::move(transport)} {}
 
 void ProblemsSession::observeStatus(const Json &status) {

@@ -167,6 +167,10 @@ struct MaterialsDock::Impl {
     QPushButton *document_save = nullptr;
     std::string document_path;
     bool document_crlf = false;
+    // MR-1s, decision 1: the outcome of the last save the window has shown.
+    std::string repair_shown;
+    // MR-1s, decision 3: the stale documents fillTree last drew.
+    std::vector<MaterialFileProblem> shown_stale;
     // FO-1s, decisions 2 and 3: one model's bindings (pelican.materials.model).
     MaterialAssignSession model_session;
     QFrame *model_row = nullptr;
@@ -215,6 +219,9 @@ struct MaterialsDock::Impl {
         session.bound = [this](const std::string &model) {
             if (hooks.bound) hooks.bound(model);
             if (model == model_session.model()) model_session.bindingsChanged();
+        };
+        session.problemsMayHaveChanged = [this] {
+            if (hooks.problems_changed) hooks.problems_changed();
         };
         model_session.setScope(MaterialAssignSession::Scope::Model);
         model_session.changed = [this] {
@@ -702,29 +709,39 @@ struct MaterialsDock::Impl {
     // --- FO-1s, decision 2: a document the engine did not load
 
     void buildBrokenPanel(QVBoxLayout &layout, const MaterialListDocument &document) {
+        // MR-1s, decision 3: registered, and the file saved since in a form
+        // the engine's watch refused -- it draws what it read before.
+        const auto *stale = session.staleOf(document.path);
         heading = new QLabel(editor);
         heading->setObjectName(QStringLiteral("pelican.materials.heading"));
         QFont bold = heading->font();
         bold.setBold(true);
         heading->setFont(bold);
-        heading->setText(owner.tr("%1 \xE2\x80\x94 not loaded").arg(qtext(document.path)));
+        heading->setText(stale != nullptr
+                             ? owner.tr("%1 \xE2\x80\x94 the engine keeps the last values").arg(qtext(document.path))
+                             : owner.tr("%1 \xE2\x80\x94 not loaded").arg(qtext(document.path)));
         layout.addWidget(heading);
         auto *problem = new QLabel(editor);
         problem->setObjectName(QStringLiteral("pelican.materials.broken"));
         problem->setWordWrap(true);
         problem->setStyleSheet(QStringLiteral("color: #d94c3d;"));
-        problem->setText(qtext(materialDocumentProblemLine(document)));
-        problem->setToolTip(qtext(document.reason));
+        problem->setText(qtext(stale != nullptr ? document.path + ": " + materialFileProblemLine(*stale)
+                                                : materialDocumentProblemLine(document)));
+        problem->setToolTip(qtext(stale != nullptr ? stale->reason : document.reason));
         layout.addWidget(problem);
         auto *buttons = new QHBoxLayout;
         auto *show = new QPushButton(owner.tr("Show the document"), editor);
         show->setObjectName(QStringLiteral("pelican.materials.showDocument"));
-        show->setToolTip(owner.tr("The file as it is on disk; fix it and Save"));
-        show->setEnabled(document.status == "invalid");
+        show->setToolTip(owner.tr("The file as it is on disk; fix it and Save, and the engine takes it in"));
+        show->setEnabled(document.status == "invalid" ||
+                         (stale != nullptr && stale->code == "material.document_invalid@1"));
+        // MR-1s, decision 2: a document fixed in another editor. The engine's
+        // watch takes a stale one in by itself.
         auto *again = new QPushButton(owner.tr("Register again"), editor);
         again->setObjectName(QStringLiteral("pelican.materials.registerAgain"));
-        again->setToolTip(owner.tr("Take the fixed document in again (register_material)"));
+        again->setToolTip(owner.tr("Take the document fixed on disk in (register_material)"));
         again->setEnabled(session.ready());
+        again->setVisible(stale == nullptr);
         buttons->addWidget(show);
         buttons->addWidget(again);
         buttons->addStretch();
@@ -737,6 +754,7 @@ struct MaterialsDock::Impl {
 
     void showDocument(const std::string &path) {
         const auto *listed = session.documentOf(path);
+        const auto *stale = session.staleOf(path);
         const auto file = session.projectRoot() / std::filesystem::path{path};
         std::ifstream in{file, std::ios::binary};
         if (!in) {
@@ -753,8 +771,8 @@ struct MaterialsDock::Impl {
         dialog->setWindowTitle(qtext(path));
         dialog->resize(640, 480);
         auto *layout = new QVBoxLayout(dialog);
-        auto *top = new QLabel(owner.tr("%1 as it is on disk. Fix it and Save: the file is replaced whole; "
-                                        "then Register again.")
+        auto *top = new QLabel(owner.tr("%1 as it is on disk. Fix it and Save: the file is replaced whole "
+                                        "and the engine takes it in.")
                                    .arg(qtext(path)),
                                dialog);
         top->setObjectName(QStringLiteral("pelican.materials.documentDialog.heading"));
@@ -784,13 +802,16 @@ struct MaterialsDock::Impl {
         document_crlf = content.contains(QStringLiteral("\r\n"));
         content.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
         document_text->setPlainText(content);
-        // The cursor where the engine's parser stopped (1-based).
+        // The cursor where the engine's parser stopped (1-based): at start,
+        // or -- MR-1s, decision 3 -- when its watch read the file.
+        const std::int64_t stop_line = stale != nullptr ? stale->line : listed != nullptr ? listed->line : 0;
+        const std::int64_t stop_column = stale != nullptr ? stale->column : listed != nullptr ? listed->column : 0;
         QTextCursor cursor{document_text->document()};
-        const QTextBlock block = listed != nullptr && listed->line > 0
-                                     ? document_text->document()->findBlockByNumber(static_cast<int>(listed->line - 1))
+        const QTextBlock block = stop_line > 0
+                                     ? document_text->document()->findBlockByNumber(static_cast<int>(stop_line - 1))
                                      : QTextBlock{};
         if (block.isValid()) {
-            const int column = static_cast<int>(std::max<std::int64_t>(listed->column, 1)) - 1;
+            const int column = static_cast<int>(std::max<std::int64_t>(stop_column, 1)) - 1;
             cursor.setPosition(block.position() + std::min(column, std::max(0, block.length() - 1)));
         }
         document_text->setTextCursor(cursor);
@@ -813,13 +834,16 @@ struct MaterialsDock::Impl {
                 setPanelNotice(document_notice, owner.tr("%1 could not be written.").arg(qtext(document_path)));
                 return;
             }
-            session.say(owner.tr("Saved %1; Register again takes it in.").arg(qtext(document_path)).toStdString());
-            dialog->close();
+            // MR-1s, decisions 1 and 3: taken in without a restart; the
+            // window stays open until the engine has it, and says why not.
+            repair_shown.clear();
+            session.documentSaved(document_path, materialNamesInText(bytes));
         });
         QObject::connect(dialog, &QObject::destroyed, &owner, [this] {
             document_text = nullptr;
             document_notice = nullptr;
             document_save = nullptr;
+            session.forgetRepair();
         });
         dialog->open();
     }
@@ -840,12 +864,45 @@ struct MaterialsDock::Impl {
         document_save->setEnabled(!spot.has_value());
     }
 
+    // MR-1s, decisions 1 and 3: what became of the save -- the window
+    // closes once the engine has the document, and says why it does not.
+    void presentRepair() {
+        const auto &repair = session.repair();
+        if (!document_dialog || document_text == nullptr || !repair || repair->path != document_path) return;
+        using State = MaterialsDockSession::Repair::State;
+        const std::string shown = std::to_string(static_cast<int>(repair->state)) + "\n" + repair->sentence;
+        if (shown == repair_shown) return;
+        repair_shown = shown;
+        switch (repair->state) {
+        case State::Waiting: {
+            const auto line = repair->watch ? owner.tr("Saved; the engine's watch reads %1 again\xE2\x80\xA6")
+                                                  .arg(qtext(document_path))
+                                            : owner.tr("Saved; the engine takes %1 in\xE2\x80\xA6")
+                                                  .arg(qtext(document_path));
+            setPanelNotice(document_notice, line, line);
+            document_save->setEnabled(false);
+            break;
+        }
+        case State::Refused:
+            setPanelNotice(document_notice, qtext(repair->sentence), qtext(repair->sentence));
+            document_save->setEnabled(!renderDocumentSyntaxOf(document_text->toPlainText().toStdString()));
+            break;
+        case State::Loaded:
+            document_dialog->close();
+            break;
+        }
+    }
+
     // --- the list (decision 1)
 
     void fillTree() {
         const auto &list = session.list();
-        if (list_shown && list == shown_list) return;
+        std::vector<MaterialFileProblem> stale;
+        for (const auto &document : list.documents)
+            if (const auto *problem = session.staleOf(document.path)) stale.push_back(*problem);
+        if (list_shown && list == shown_list && stale == shown_stale) return;
         shown_list = list;
+        shown_stale = std::move(stale);
         list_shown = true;
         const auto selection = session.selection();
         const QBrush dim = owner.palette().brush(QPalette::Disabled, QPalette::Text);
@@ -859,14 +916,25 @@ struct MaterialsDock::Impl {
             row->setToolTip(0, qtext(document.path));
             row->setData(0, MaterialPathRole, qtext(document.path));
             row->setData(0, MaterialStatusRole, qtext(document.status));
+            // MR-1s, decision 3: the engine draws what it read before the
+            // file broke -- marked, whatever list_materials makes of the file.
+            const auto *stale = session.staleOf(document.path);
+            if (stale != nullptr) {
+                row->setText(1, qtext(std::string{MaterialFileStaleMark}));
+                row->setToolTip(1, qtext(materialFileProblemLine(*stale)));
+                row->setForeground(1, QBrush{QColor{0xd9, 0x4c, 0x3d}});
+                if (session.broken() && *session.broken() == document.path) current = row;
+            }
             if (document.status != "loaded") {
-                row->setText(1, qtext(document.status + (document.reason.empty() ? "" : ": " + document.reason)));
-                row->setToolTip(1, qtext(document.reason));
+                if (stale == nullptr) {
+                    row->setText(1, qtext(document.status + (document.reason.empty() ? "" : ": " + document.reason)));
+                    row->setToolTip(1, qtext(document.reason));
+                    row->setForeground(1, dim);
+                }
                 row->setForeground(0, dim);
-                row->setForeground(1, dim);
                 // FO-1s, decision 2: a document that would not load is picked
                 // to be fixed (its line, Show the document, Register again).
-                row->setFlags(document.status == "invalid" ? Qt::ItemIsEnabled | Qt::ItemIsSelectable
+                row->setFlags(document.status == "invalid" || stale != nullptr ? Qt::ItemIsEnabled | Qt::ItemIsSelectable
                                                            : Qt::ItemIsEnabled);
                 if (session.broken() && *session.broken() == document.path) current = row;
                 continue;
@@ -896,6 +964,11 @@ struct MaterialsDock::Impl {
         const auto path = item->data(0, MaterialPathRole).toString().toStdString();
         presentActions();
         if (name.empty()) {
+            // MR-1s, decision 3: a document the engine keeps from before.
+            if (session.staleOf(path) != nullptr) {
+                session.selectBroken(path);
+                return;
+            }
             // A document's row: its first material.
             if (item->childCount() > 0) tree->setCurrentItem(item->child(0));
             // FO-1s, decision 2: one that would not load, to be fixed.
@@ -939,7 +1012,9 @@ struct MaterialsDock::Impl {
         // wrong with it.
         if (const auto &broken = session.broken()) {
             const auto *document = session.documentOf(*broken);
+            const auto *stale = session.staleOf(*broken);
             return "broken\n" + *broken + "\n" + (document == nullptr ? std::string{} : materialDocumentProblemLine(*document)) +
+                   (stale == nullptr ? std::string{} : "\nstale " + materialFileProblemLine(*stale)) +
                    (session.ready() ? "\nready" : "");
         }
         const auto selection = session.selection();
@@ -1460,6 +1535,7 @@ struct MaterialsDock::Impl {
         presentActions();
         presentRename();
         presentUses();
+        presentRepair();
         updatePolling();
     }
 
@@ -1479,6 +1555,7 @@ MaterialsDock::~MaterialsDock() {
     impl_->session.listChanged = nullptr;
     impl_->session.restartRequested = nullptr;
     impl_->session.bound = nullptr;
+    impl_->session.problemsMayHaveChanged = nullptr;
     impl_->model_session.changed = nullptr;
     impl_->model_session.restartRequested = nullptr;
     if (impl_->document_dialog) delete impl_->document_dialog.data();
@@ -1527,13 +1604,17 @@ bool MaterialsDock::revealMaterial(const std::string &document, const std::strin
         impl_->tree->scrollToItem(item);
         // FO-1s, decision 2: a document that would not load, even when its
         // row was the current one already.
-        if (material.empty() && item->childCount() == 0 &&
-            item->data(0, MaterialStatusRole).toString() == QStringLiteral("invalid"))
-            impl_->session.selectBroken(item->data(0, MaterialPathRole).toString().toStdString());
+        const auto listed_path = item->data(0, MaterialPathRole).toString().toStdString();
+        if (material.empty() &&
+            ((item->childCount() == 0 && item->data(0, MaterialStatusRole).toString() == QStringLiteral("invalid")) ||
+             impl_->session.staleOf(listed_path) != nullptr))
+            impl_->session.selectBroken(listed_path);
         return true;
     }
     return false;
 }
+
+void MaterialsDock::observeProblems(const MaterialProblems &problems) { impl_->session.observeProblems(problems); }
 
 void MaterialsDock::revealModel(const std::string &model, const std::string &line) {
     impl_->revealModel(model, line);

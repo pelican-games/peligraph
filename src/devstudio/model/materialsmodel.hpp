@@ -81,6 +81,45 @@ struct MaterialList {
 [[nodiscard]] std::string materialDeleteRefusalDescription(const std::string &error_code,
                                                            const nlohmann::json &fields, bool rename);
 
+// --- MR-1s (engine EB-2): a broken document taken in without a restart
+
+// Decision 3: a registered document whose file was saved in a form that does
+// not load. The engine's watch refused it and draws what it read before
+// (get_problems, source hot_reload, material.document_invalid@1 /
+// material.document_unknown@1).
+struct MaterialFileProblem {
+    std::string path;
+    std::string code;
+    std::string reason;
+    std::int64_t line = 0;
+    std::int64_t column = 0;
+    bool operator==(const MaterialFileProblem &) const = default;
+};
+// What the engine's problem list says of materials, as the Materials dock
+// reads it: `signature` changes whenever a material problem comes or goes
+// (decision 2: the dock reads list_materials again), `stale` the documents of
+// decision 3.
+struct MaterialProblems {
+    std::string signature;
+    std::vector<MaterialFileProblem> stale;
+    bool operator==(const MaterialProblems &) const = default;
+};
+// The mark on such a document's row.
+inline constexpr std::string_view MaterialFileStaleMark =
+    "the file on disk does not load; the engine keeps the last values";
+// "the file on disk does not load; the engine keeps the last values: line 4,
+// column 1: <reason>" ("the file is not on disk; …" for a missing one).
+[[nodiscard]] std::string materialFileProblemLine(const MaterialFileProblem &problem);
+// Decision 1: register_material's refusal in one sentence -- the parser's
+// "parse error at line L, column C: …" read as the line and the column.
+[[nodiscard]] std::string materialRegisterRefusalLine(const std::string &error_code, const std::string &message,
+                                                      const nlohmann::json &fields);
+// "paint is loaded again.", "a, b are loaded again.", "<path> is loaded again."
+[[nodiscard]] std::string materialLoadedAgainLine(const std::vector<std::string> &names, const std::string &path);
+// The names of the materials a document's text holds (empty when it is not
+// a pelican.material document).
+[[nodiscard]] std::vector<std::string> materialNamesInText(std::string_view text);
+
 // --- get_surface_schema
 
 struct SurfaceParam {
@@ -343,10 +382,39 @@ class MaterialsDockSession {
     // The listed document `path`, or nullptr.
     [[nodiscard]] const MaterialListDocument *documentOf(const std::string &path) const;
     // Decision 2 (engine EB-1): register_material {path}, a document fixed on
-    // disk taken in again. One the engine refused at its start is listed
-    // already (material.path_conflict@1): only a restart takes it in then,
-    // and restartReason() says so.
+    // disk taken in again. MR-1s (engine EB-2): one the engine refused at its
+    // start is taken in (recovered: "<name> is loaded again."). A
+    // material.path_conflict@1 for a document that is not loaded is checked
+    // against list_materials once more -- the engine's watch may have taken
+    // it in first -- and otherwise only a restart reads it (restartReason()).
     bool registerAgain(const std::string &path);
+    // MR-1s, decisions 1 and 3: Show the document wrote `path` (holding
+    // `names`). A document the engine's watch refused after start (stale) is
+    // taken in by the watch -- nothing is sent, the outcome comes with the
+    // problem list; any other one with register_material. repair() says how
+    // it went, until forgetRepair().
+    struct Repair {
+        enum class State : std::uint8_t { Waiting, Loaded, Refused };
+        std::string path;
+        std::vector<std::string> names;
+        State state = State::Waiting;
+        // Decision 3: the engine's watch takes it in; what it said at the save.
+        bool watch = false;
+        std::string stale_line;
+        // Refused: why, in one sentence.
+        std::string sentence;
+    };
+    void documentSaved(const std::string &path, std::vector<std::string> names);
+    [[nodiscard]] const std::optional<Repair> &repair() const noexcept { return repair_; }
+    void forgetRepair() noexcept { repair_.reset(); }
+    // Decisions 2 and 3: the engine's problem list moved (PB-1s). A material
+    // problem that came or went reads list_materials again.
+    void observeProblems(MaterialProblems problems);
+    // The stale problem of `path`, or nullptr.
+    [[nodiscard]] const MaterialFileProblem *staleOf(const std::string &path) const;
+    // A document came back (recovered, or the watch took it in): the problem
+    // list is read now.
+    std::function<void()> problemsMayHaveChanged;
     // Decision 3 (engine EB-1): delete_material {name} -- its Undo is
     // register_material of the document taken off -- and rename_material
     // {name, new_name} -- its Undo is the rename the other way.
@@ -454,6 +522,13 @@ class MaterialsDockSession {
     // FO-1s
     std::optional<std::string> broken_;
     std::optional<Uses> uses_;
+    // MR-1s
+    std::optional<Repair> repair_;
+    MaterialProblems problems_;
+    // A register_material refused as listed already, for a document the list
+    // did not hold loaded: decided on the next list_materials.
+    std::optional<std::string> recheck_;
+    void loadedAgain(const std::string &path, std::vector<std::string> names);
     std::deque<Write> queue_;
     std::optional<Write> in_flight_;
     // The requests out.

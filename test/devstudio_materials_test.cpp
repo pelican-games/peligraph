@@ -1377,24 +1377,29 @@ TEST_CASE("FO-1s decision 2: a material document the engine refused at its start
         const std::string bytes{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
         CHECK(bytes == broken + "}\n");
     }
-    CHECK((dialog.isNull() || !dialog->isVisible()));
-    CHECK(dock.noticeLine()->text() ==
-          QStringLiteral("Saved materials/paint.material.json; Register again takes it in."));
-
-    // Register again: a document the engine refused at its start is listed
-    // already -- only a restart takes it in, and the dock offers it.
-    named<QPushButton>(dock, QStringLiteral("pelican.materials.registerAgain"))->click();
+    // MR-1s, decision 1: Save asks the engine to take it in at once. An
+    // engine that holds it listed already, and still not loaded when the
+    // list is read again, reads it only when it starts again.
     const auto first = refuse(dock, engine, "register_material", "material.path_conflict@1",
                               QJsonObject{{QStringLiteral("path"), QString::fromLatin1(Paint)}});
     CHECK(first.params == Json{{"path", Paint}});
-    CHECK(dock.noticeLine()->text() == QStringLiteral("The engine refused materials/paint.material.json at its "
-                                                      "start; only a restart takes it in "
+    answer(dock, engine, "list_materials", refused);
+    CHECK(dock.noticeLine()->text() == QStringLiteral("The engine still holds materials/paint.material.json as it "
+                                                      "read it before; a restart reads the file again "
                                                       "(material.path_conflict@1)."));
+    // The window stays open with the same sentence.
+    REQUIRE_FALSE(dialog.isNull());
+    CHECK(dialog->isVisible());
+    CHECK(named<QLabel>(*dialog, QStringLiteral("pelican.materials.documentDialog.notice"))->text() ==
+          dock.noticeLine()->text());
+    dialog->close();
+    QApplication::processEvents();
     auto *restart = named<QPushButton>(dock, QStringLiteral("pelican.materials.restartEngine"));
     CHECK(restart->isVisibleTo(&dock));
     restart->click();
     REQUIRE(engine.restarts.size() == 1);
     CHECK(engine.restarts.front().contains(QStringLiteral("materials/paint.material.json")));
+    QApplication::processEvents();
 
     // An engine that takes it in: registered, read again, and its material
     // is the one the editor shows.
@@ -1584,4 +1589,292 @@ TEST_CASE("FO-1s decision 3: Delete… and Rename… on a material's row -- in_u
                                            {{"name", "pelican.primitive.default"}, {"reason", "engine_material"}},
                                            false) ==
           "pelican.primitive.default is the engine's own material; it is not deleted (material.name_invalid@1).");
+}
+
+// --- MR-1s (engine EB-2): a broken material document comes back without a
+// restart.
+
+namespace {
+
+// The engine's start refused paint (FO-1): listed, not loaded, nothing in it.
+Json refusedAtStart() {
+    return Json{{"asset_data_digest", "a1"},
+                {"documents", Json::array({{{"path", Paint},
+                                            {"status", "invalid"},
+                                            {"reason", "syntax error while parsing value"},
+                                            {"line", 7},
+                                            {"column", 1},
+                                            {"material_digest", "d0"},
+                                            {"materials", Json::array()}}})}};
+}
+
+std::string paintText() {
+    return "{\n  \"schema\": \"pelican.material\",\n  \"version\": 1,\n  \"materials\": [\n"
+           "    {\"name\": \"paint\", \"surface\": \"" +
+           std::string{OpenPbr} + "\"}\n  ]\n}\n";
+}
+
+std::string readBack(const std::filesystem::path &file) {
+    std::ifstream in{file, std::ios::binary};
+    return {std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+}
+
+Json recovered() {
+    return Json{{"committed", true},           {"recovered", true},
+                {"path", Paint},               {"names", {"paint"}},
+                {"rebuilt_models", {Cube}},    {"material_digest", "d1"},
+                {"asset_data_digest", "a1"},   {"previous_asset_data_digest", "a1"},
+                {"applied", "live"},           {"restart_required", nullptr}};
+}
+
+// engine EB-2: a registered document whose file the watch could not read.
+Json staleProblem(int line) {
+    return Json{{"id", "stale-" + std::to_string(line)},
+                {"severity", "error"},
+                {"source", "hot_reload"},
+                {"code", "material.document_invalid@1"},
+                {"message", "material.document_invalid@1: the material document 'materials/paint.material.json' "
+                            "could not be read; the engine keeps drawing its materials as it read them before: "
+                            "syntax error"},
+                {"document", "project://materials/paint.material.json"},
+                {"document_kind", "material"},
+                {"line", line},
+                {"column", 1},
+                {"fields", {{"path", Paint}, {"reason", "syntax error"}, {"line", line}, {"column", 1}}}};
+}
+
+MaterialProblems problemsOf(const std::vector<Json> &problems) {
+    std::vector<ProblemRow> rows;
+    for (const auto &problem : problems)
+        if (auto row = readEngineProblem(problem)) rows.push_back(std::move(*row));
+    return materialProblemsOf(rows);
+}
+
+} // namespace
+
+TEST_CASE("MR-1s decision 1: Save in Show the document takes a document refused at start in with "
+          "register_material -- a refusal stays in the window at its line and column, recovered closes it",
+          "[devstudio][materials][mr1s]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = project(temporary);
+    const auto fixed = paintText();
+    write(root / "materials" / "paint.material.json", fixed.substr(0, fixed.size() - 2));
+    FakeEngine engine;
+    auto hooks = engine.dockHooks();
+    int problem_reads = 0;
+    hooks.problems_changed = [&] { ++problem_reads; };
+    MaterialsDock dock{hooks};
+    dock.show();
+    dock.open(root);
+    dock.engineAvailable();
+    answer(dock, engine, "list_materials", refusedAtStart());
+    answer(dock, engine, "list_surfaces", surfaces());
+    REQUIRE(dock.revealMaterial(Paint, {}));
+
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.showDocument"))->click();
+    QPointer<QDialog> dialog = named<QDialog>(dock, QStringLiteral("pelican.materials.documentDialog"));
+    auto *text = named<QPlainTextEdit>(*dialog, QStringLiteral("pelican.materials.documentDialog.text"));
+    auto *save = named<QPushButton>(*dialog, QStringLiteral("pelican.materials.documentDialog.save"));
+    auto *notice = named<QLabel>(*dialog, QStringLiteral("pelican.materials.documentDialog.notice"));
+    text->moveCursor(QTextCursor::End);
+    text->insertPlainText(QStringLiteral("}\n"));
+    REQUIRE(save->isEnabled());
+    save->click();
+    CHECK(readBack(root / "materials" / "paint.material.json") == fixed);
+
+    // Saved: register_material of the document, the window open meanwhile.
+    REQUIRE(engine.asked("register_material"));
+    REQUIRE(dialog);
+    CHECK(dialog->isVisible());
+    CHECK(notice->text() == QStringLiteral("Saved; the engine takes materials/paint.material.json in\xE2\x80\xA6"));
+    CHECK_FALSE(save->isEnabled());
+
+    // Still not read: the parser's sentence, at its line and column, in the
+    // window; it stays open and Save can go again.
+    const auto first = refuse(
+        dock, engine, "register_material", "material.document_invalid@1",
+        QJsonObject{{QStringLiteral("path"), QString::fromLatin1(Paint)},
+                    {QStringLiteral("reason"), QStringLiteral("[json.exception.parse_error.101] parse error at line 3, "
+                                                              "column 5: syntax error while parsing value - invalid "
+                                                              "literal")}});
+    CHECK(first.params == Json{{"path", Paint}});
+    REQUIRE(dialog);
+    CHECK(dialog->isVisible());
+    const QString why = QStringLiteral("materials/paint.material.json would not load at line 3, column 5: syntax "
+                                       "error while parsing value - invalid literal (material.document_invalid@1).");
+    CHECK(notice->text() == why);
+    CHECK(save->isEnabled());
+    CHECK(problem_reads == 0);
+    answer(dock, engine, "list_materials", refusedAtStart());
+
+    // Taken in (recovered): the window closes, the dock says so, the list
+    // and the problems are read again and the material is the one shown.
+    save->click();
+    answer(dock, engine, "register_material", recovered());
+    QApplication::processEvents();
+    CHECK((dialog.isNull() || !dialog->isVisible()));
+    CHECK(dock.noticeLine()->text() == QStringLiteral("paint is loaded again."));
+    CHECK(problem_reads == 1);
+    CHECK_FALSE(named<QPushButton>(dock, QStringLiteral("pelican.materials.restartEngine"))->isVisibleTo(&dock));
+    answer(dock, engine, "list_materials", listResult());
+    CHECK_FALSE(dock.session().broken());
+    REQUIRE(dock.session().selection());
+    CHECK(dock.session().selection()->name == "paint");
+    CHECK(engine.restarts.empty());
+}
+
+TEST_CASE("MR-1s decision 2: Register again takes a document fixed in another editor in, the engine's watch "
+          "taking it first reads as loaded, and a material problem that comes or goes reads the list again",
+          "[devstudio][materials][mr1s]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = project(temporary);
+    write(root / "materials" / "paint.material.json", paintText());
+    FakeEngine engine;
+    auto hooks = engine.dockHooks();
+    int problem_reads = 0;
+    hooks.problems_changed = [&] { ++problem_reads; };
+    MaterialsDock dock{hooks};
+    dock.show();
+    dock.open(root);
+    dock.engineAvailable();
+    answer(dock, engine, "list_materials", refusedAtStart());
+    answer(dock, engine, "list_surfaces", surfaces());
+    REQUIRE(dock.revealMaterial(Paint, {}));
+
+    // Fixed outside Studio: Register again, one register_material.
+    auto *again = named<QPushButton>(dock, QStringLiteral("pelican.materials.registerAgain"));
+    CHECK(again->isVisibleTo(&dock));
+    again->click();
+    const auto sent = answer(dock, engine, "register_material", recovered());
+    CHECK(sent.params == Json{{"path", Paint}});
+    CHECK(dock.noticeLine()->text() == QStringLiteral("paint is loaded again."));
+    CHECK(problem_reads == 1);
+    answer(dock, engine, "list_materials", listResult());
+    REQUIRE(dock.session().selection());
+    CHECK(dock.session().selection()->name == "paint");
+
+    // The engine's start refused it again (another run); its watch took the
+    // fixed file in before Register again arrived: listed already, and the
+    // list says loaded -- loaded again, not a restart.
+    dock.open(root);
+    dock.engineAvailable();
+    answer(dock, engine, "list_materials", refusedAtStart());
+    answer(dock, engine, "list_surfaces", surfaces());
+    REQUIRE(dock.revealMaterial(Paint, {}));
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.registerAgain"))->click();
+    refuse(dock, engine, "register_material", "material.path_conflict@1",
+           QJsonObject{{QStringLiteral("path"), QString::fromLatin1(Paint)}});
+    answer(dock, engine, "list_materials", listResult());
+    CHECK(dock.noticeLine()->text() == QStringLiteral("paint is loaded again."));
+    CHECK(problem_reads == 2);
+    CHECK(engine.restarts.empty());
+    CHECK_FALSE(named<QPushButton>(dock, QStringLiteral("pelican.materials.restartEngine"))->isVisibleTo(&dock));
+
+    // With the watch, the engine takes documents in by itself: a material
+    // problem that comes or goes reads list_materials again (PB-1s).
+    CHECK_FALSE(engine.asked("list_materials"));
+    dock.observeProblems(problemsOf({staleProblem(4)}));
+    CHECK(engine.asked("list_materials"));
+    answer(dock, engine, "list_materials", listResult());
+    dock.observeProblems(problemsOf({staleProblem(4)}));
+    CHECK_FALSE(engine.asked("list_materials"));
+    dock.observeProblems(problemsOf({}));
+    CHECK(engine.asked("list_materials"));
+}
+
+TEST_CASE("MR-1s decision 3: a registered document the engine's watch refused after start is marked, its "
+          "Problems row shows why at its line, and a Save the watch takes in reads as loaded again",
+          "[devstudio][materials][mr1s]") {
+    application();
+    // The Problems row: source hot_reload, the document is its row in the
+    // Materials dock, and the dock reads it as a file kept from before.
+    const auto row = readEngineProblem(staleProblem(4));
+    REQUIRE(row);
+    CHECK(row->place == ProblemRow::Place::Material);
+    CHECK(row->document == Paint);
+    const auto problems = problemsOf({staleProblem(4)});
+    REQUIRE(problems.stale.size() == 1);
+    CHECK(problems.stale.front() ==
+          MaterialFileProblem{.path = Paint, .code = "material.document_invalid@1", .reason = "syntax error",
+                              .line = 4, .column = 1});
+    // A start's refusal is not one (FO-1's, decision 1 and 2).
+    CHECK(problemsOf({{{"id", "s"},
+                       {"severity", "error"},
+                       {"source", "startup"},
+                       {"code", "material.document_invalid@1"},
+                       {"document", "project://materials/paint.material.json"},
+                       {"document_kind", "material"},
+                       {"fields", {{"path", Paint}, {"reason", "x"}}}}})
+              .stale.empty());
+
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = project(temporary);
+    const auto fixed = paintText();
+    write(root / "materials" / "paint.material.json", fixed.substr(0, fixed.size() - 2));
+    FakeEngine engine;
+    MaterialsDock dock{engine.dockHooks()};
+    dock.show();
+    readyWithPaint(dock, engine, root);
+    dock.observeProblems(problems);
+    // list_materials reads the file itself: not JSON now.
+    answer(dock, engine, "list_materials",
+           Json{{"asset_data_digest", "a1"},
+                {"documents", Json::array({{{"path", Paint},
+                                            {"status", "invalid"},
+                                            {"reason", "[json.exception.parse_error.101] parse error"},
+                                            {"material_digest", "d9"},
+                                            {"materials", Json::array()}}})}});
+    QTreeWidgetItem *document = rowNamed(*dock.list(), QStringLiteral("paint.material.json"));
+    REQUIRE(document != nullptr);
+    CHECK(document->text(1) == QStringLiteral("the file on disk does not load; the engine keeps the last values"));
+
+    REQUIRE(dock.revealMaterial(row->document, row->material));
+    REQUIRE(dock.session().broken());
+    CHECK(named<QLabel>(dock, QStringLiteral("pelican.materials.broken"))->text() ==
+          QStringLiteral("materials/paint.material.json: the file on disk does not load; the engine keeps the last "
+                         "values: line 4, column 1: syntax error"));
+    CHECK_FALSE(named<QPushButton>(dock, QStringLiteral("pelican.materials.registerAgain"))->isVisibleTo(&dock));
+
+    // Show the document at the watch's line; Save sends nothing -- the watch
+    // reads the file.
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.showDocument"))->click();
+    QPointer<QDialog> dialog = named<QDialog>(dock, QStringLiteral("pelican.materials.documentDialog"));
+    auto *text = named<QPlainTextEdit>(*dialog, QStringLiteral("pelican.materials.documentDialog.text"));
+    auto *save = named<QPushButton>(*dialog, QStringLiteral("pelican.materials.documentDialog.save"));
+    auto *notice = named<QLabel>(*dialog, QStringLiteral("pelican.materials.documentDialog.notice"));
+    CHECK(text->textCursor().blockNumber() == 3);
+    text->moveCursor(QTextCursor::End);
+    text->insertPlainText(QStringLiteral("}\n"));
+    save->click();
+    CHECK(readBack(root / "materials" / "paint.material.json") == fixed);
+    CHECK_FALSE(engine.asked("register_material"));
+    CHECK(dock.noticeLine()->text() ==
+          QStringLiteral("Saved materials/paint.material.json; the engine's watch takes it in."));
+    CHECK(notice->text() ==
+          QStringLiteral("Saved; the engine's watch reads materials/paint.material.json again\xE2\x80\xA6"));
+
+    // The watch refused it again, elsewhere: said in the window.
+    dock.observeProblems(problemsOf({staleProblem(6)}));
+    REQUIRE(dialog);
+    CHECK(dialog->isVisible());
+    CHECK(notice->text() == QStringLiteral("materials/paint.material.json: the file on disk does not load; the "
+                                           "engine keeps the last values: line 6, column 1: syntax error"));
+    answer(dock, engine, "list_materials", listResult());
+
+    // Saved again, and the watch took it in: the problem went.
+    save->click();
+    dock.observeProblems(problemsOf({}));
+    QApplication::processEvents();
+    CHECK((dialog.isNull() || !dialog->isVisible()));
+    CHECK(dock.noticeLine()->text() == QStringLiteral("paint is loaded again."));
+    answer(dock, engine, "list_materials", listResult());
+    CHECK_FALSE(dock.session().broken());
+    REQUIRE(dock.session().selection());
+    CHECK(dock.session().selection()->name == "paint");
+    CHECK(engine.restarts.empty());
 }

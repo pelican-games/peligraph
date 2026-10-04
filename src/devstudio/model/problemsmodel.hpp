@@ -1,6 +1,7 @@
 #pragma once
 
 #include "assetsdockmodel.hpp"
+#include "materialsmodel.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -107,6 +108,11 @@ struct ProblemRow {
 [[nodiscard]] std::vector<ProblemRow> assetProblemRows(const std::vector<AssetStoreVerification> &stores);
 // "2 errors, 1 warning", "1 error", "No problems".
 [[nodiscard]] std::string problemsCountLine(std::size_t errors, std::size_t warnings);
+// MR-1s, decisions 2 and 3: what the rows say of materials, as the Materials
+// dock reads it -- every material row's id and sentence (a change means the
+// engine took a document in or refused one), and the registered documents the
+// engine's watch refused after start (source hot_reload).
+[[nodiscard]] MaterialProblems materialProblemsOf(const std::vector<ProblemRow> &rows);
 
 // The list the Problems window shows, and the reads it takes. Qt-free: the
 // owner hands it every get_status reply, the replies of what it sent, and the

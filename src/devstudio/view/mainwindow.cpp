@@ -467,6 +467,11 @@ void MainWindow::createWorkspace() {
                 [this](const QString &document, const QString &find) {
                     render_fallback_->showDocumentAt(document, 0, 0, find);
                 },
+            // MR-1s, decision 1: a document taken in without a restart.
+            .problems_changed =
+                [this] {
+                    if (problems_dock_ != nullptr) problems_dock_->readNow();
+                },
         },
         this);
     materials_dock_->setObjectName(QStringLiteral("pelican.materialsPanel"));
@@ -591,6 +596,10 @@ void MainWindow::createWorkspace() {
                 // sentence.
                 if (render_fallback_ != nullptr && problems_dock_ != nullptr)
                     render_fallback_->observeProblems(problems_dock_->session().rows());
+                // MR-1s, decisions 2 and 3: the materials the engine took in
+                // or refused on its own, and the files it keeps from before.
+                if (materials_dock_ != nullptr && problems_dock_ != nullptr)
+                    materials_dock_->observeProblems(materialProblemsOf(problems_dock_->session().rows()));
                 if (problems_count_ == nullptr) return;
                 problems_count_->setText(QString::fromStdString(problemsCountLine(errors, warnings)));
             },

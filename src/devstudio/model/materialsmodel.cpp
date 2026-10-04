@@ -199,6 +199,66 @@ std::string materialDeleteRefusalDescription(const std::string &error_code, cons
     return {};
 }
 
+// --- MR-1s
+
+std::string materialFileProblemLine(const MaterialFileProblem &problem) {
+    std::string line = problem.code == "material.document_unknown@1"
+                           ? std::string{"the file is not on disk; the engine keeps the last values"}
+                           : std::string{MaterialFileStaleMark};
+    if (problem.line > 0) {
+        line += ": line " + std::to_string(problem.line);
+        if (problem.column > 0) line += ", column " + std::to_string(problem.column);
+    }
+    if (!problem.reason.empty()) line += ": " + problem.reason;
+    return line;
+}
+
+std::string materialRegisterRefusalLine(const std::string &error_code, const std::string &message,
+                                        const Json &fields) {
+    // "[json.exception.parse_error.101] parse error at line L, column C: <what>"
+    auto reason = text(fields, "reason");
+    constexpr std::string_view at_line = "parse error at line ";
+    const auto at = reason.find(at_line);
+    if (error_code != "material.document_invalid@1" || at == std::string::npos)
+        return sentenceFor(error_code, message, fields);
+    std::size_t cursor = at + at_line.size();
+    const auto digits = [&] {
+        std::string value;
+        while (cursor < reason.size() && std::isdigit(static_cast<unsigned char>(reason[cursor])) != 0)
+            value += reason[cursor++];
+        return value;
+    };
+    const auto line = digits();
+    std::string column;
+    if (reason.compare(cursor, 9, ", column ") == 0) {
+        cursor += 9;
+        column = digits();
+    }
+    if (reason.compare(cursor, 2, ": ") == 0) cursor += 2;
+    auto path = text(fields, "path");
+    if (path.empty()) path = "The document";
+    return path + " would not load at line " + line + (column.empty() ? "" : ", column " + column) + ": " +
+           reason.substr(cursor) + " (" + error_code + ").";
+}
+
+std::string materialLoadedAgainLine(const std::vector<std::string> &names, const std::string &path) {
+    if (names.empty()) return path + " is loaded again.";
+    std::string listed;
+    for (const auto &name : names) listed += (listed.empty() ? "" : ", ") + name;
+    return listed + (names.size() == 1 ? " is" : " are") + " loaded again.";
+}
+
+std::vector<std::string> materialNamesInText(std::string_view bytes) {
+    const auto document = Json::parse(bytes, nullptr, false);
+    std::vector<std::string> names;
+    if (!document.is_object()) return names;
+    const auto materials = document.find("materials");
+    if (materials == document.end() || !materials->is_array()) return names;
+    for (const auto &material : *materials)
+        if (const auto name = text(material, "name"); !name.empty()) names.push_back(name);
+    return names;
+}
+
 // --- get_surface_schema
 
 SurfaceSchema parseSurfaceSchema(const Json &result) {
@@ -550,6 +610,7 @@ std::int64_t MaterialsDockSession::send(const std::string &method, const Json &p
 }
 
 void MaterialsDockSession::forgetRequests() {
+    recheck_.reset();
     list_request_ = 0;
     material_request_ = 0;
     schema_request_ = 0;
@@ -580,6 +641,9 @@ void MaterialsDockSession::open(std::filesystem::path project_root) {
     undo_.clear();
     broken_.reset();
     uses_.reset();
+    repair_.reset();
+    problems_ = {};
+    recheck_.reset();
     notify();
 }
 
@@ -596,6 +660,11 @@ void MaterialsDockSession::engineReady() {
 void MaterialsDockSession::engineGone() {
     forgetRequests();
     ready_ = false;
+    // MR-1s: a register_material that will not be answered.
+    if (repair_ && repair_->state == Repair::State::Waiting && !repair_->watch) {
+        repair_->state = Repair::State::Refused;
+        repair_->sentence = "The engine stopped; " + repair_->path + " is read when it starts again.";
+    }
     notify();
 }
 
@@ -816,6 +885,84 @@ bool MaterialsDockSession::registerAgain(const std::string &path) {
     return enqueue(std::move(write));
 }
 
+void MaterialsDockSession::documentSaved(const std::string &path, std::vector<std::string> names) {
+    Repair repair;
+    repair.path = path;
+    repair.names = std::move(names);
+    if (const auto *stale = staleOf(path)) {
+        // Decision 3: registered, and refused by the engine's watch after its
+        // start -- the watch reads the saved file; nothing is sent.
+        repair.watch = true;
+        repair.stale_line = materialFileProblemLine(*stale);
+        repair_ = std::move(repair);
+        setNotice("Saved " + path + "; the engine's watch takes it in.");
+        notify();
+        return;
+    }
+    // Decision 1: register_material (engine EB-2's recovered).
+    repair_ = std::move(repair);
+    if (!registerAgain(path)) {
+        repair_->state = Repair::State::Refused;
+        repair_->sentence = "The engine is not running; " + path + " is read when it starts.";
+        setNotice(repair_->sentence);
+    } else {
+        setNotice("Saved " + path + "; the engine takes it in.");
+    }
+    notify();
+}
+
+const MaterialFileProblem *MaterialsDockSession::staleOf(const std::string &path) const {
+    const auto found = std::ranges::find(problems_.stale, path, &MaterialFileProblem::path);
+    return found == problems_.stale.end() ? nullptr : &*found;
+}
+
+void MaterialsDockSession::loadedAgain(const std::string &path, std::vector<std::string> names) {
+    if (names.empty() && repair_ && repair_->path == path) names = repair_->names;
+    if (names.empty())
+        if (const auto *listed = documentOf(path))
+            for (const auto &material : listed->materials) names.push_back(material.name);
+    setNotice(materialLoadedAgainLine(names, path));
+    restart_reason_.clear();
+    if (repair_ && repair_->path == path && repair_->state == Repair::State::Waiting)
+        repair_->state = Repair::State::Loaded;
+    if (problemsMayHaveChanged) problemsMayHaveChanged();
+}
+
+void MaterialsDockSession::observeProblems(MaterialProblems problems) {
+    if (problems == problems_) return;
+    const bool moved = problems.signature != problems_.signature;
+    problems_ = std::move(problems);
+    // Decision 3: the watch read the file Show the document saved -- taken
+    // in (the problem went), or refused again for another reason.
+    if (repair_ && repair_->watch && repair_->state == Repair::State::Waiting) {
+        if (const auto *stale = staleOf(repair_->path)) {
+            if (const auto line = materialFileProblemLine(*stale); line != repair_->stale_line) {
+                repair_->state = Repair::State::Refused;
+                repair_->sentence = repair_->path + ": " + line;
+                setNotice(repair_->sentence);
+            }
+        } else {
+            loadedAgain(repair_->path, {});
+        }
+    }
+    // Decision 3: the document shown as kept from before reads again, and the
+    // list holds it loaded: its first material is selected.
+    if (broken_ && !staleOf(*broken_))
+        if (const auto *listed = documentOf(*broken_);
+            listed != nullptr && listed->status == "loaded" && !listed->materials.empty()) {
+            const Selection first{*broken_, listed->materials.front().name};
+            broken_.reset();
+            select(first);
+        }
+    // Decision 2: the engine took a document in, or refused one, on its own
+    // (its watch): the list is read again.
+    if (moved && ready_) {
+        if (list_request_ != 0) list_request_ = 0;
+        readList();
+    }
+    notify();
+}
+
 bool MaterialsDockSession::remove(const std::string &name) {
     const auto *document = materialDocumentOf(list_, name);
     if (name.empty() || document == nullptr) return false;
@@ -860,6 +1007,28 @@ void MaterialsDockSession::listResult(const Json &result) {
     const auto known = selection_ ? digestOf(selection_->path) : std::string{};
     for (const auto &document : list.documents)
         if (!document.digest.empty()) digests_[document.path] = document.digest;
+    // MR-1s: register_material said listed already for a document that was
+    // not loaded -- the engine's watch took it in first, or the engine holds
+    // it as it read it before the file broke.
+    const bool rechecked = recheck_.has_value();
+    if (recheck_) {
+        const auto path = std::exchange(recheck_, std::nullopt).value();
+        const auto after = std::ranges::find(list.documents, path, &MaterialListDocument::path);
+        if (after != list.documents.end() && after->status == "loaded" && !staleOf(path)) {
+            std::vector<std::string> names;
+            for (const auto &material : after->materials) names.push_back(material.name);
+            loadedAgain(path, std::move(names));
+        } else {
+            const auto own = "The engine still holds " + path +
+                             " as it read it before; a restart reads the file again (material.path_conflict@1).";
+            restart_reason_ = "the engine reads " + path + " again when it starts again";
+            setNotice(own);
+            if (repair_ && repair_->path == path && repair_->state == Repair::State::Waiting) {
+                repair_->state = Repair::State::Refused;
+                repair_->sentence = own;
+            }
+        }
+    }
     if (select_when_listed_) {
         const auto wanted = *select_when_listed_;
         if (materialDocumentOf(list, wanted.name) != nullptr) {
@@ -870,11 +1039,15 @@ void MaterialsDockSession::listResult(const Json &result) {
             return;
         }
     }
-    if (!first && list == list_) return;
+    if (!first && list == list_) {
+        if (rechecked) notify();
+        return;
+    }
     // FO-1s, decision 2: the document shown as not loaded is loaded now (a
     // restart, or Register again): its first material is selected; gone from
-    // the list, nothing is.
-    if (broken_) {
+    // the list, nothing is. MR-1s, decision 3: not while the engine's watch
+    // still refuses its file.
+    if (broken_ && !staleOf(*broken_)) {
         const auto after = std::ranges::find(list.documents, *broken_, &MaterialListDocument::path);
         if (after == list.documents.end() || (after->status == "loaded" && !after->materials.empty())) {
             const auto path = *broken_;
@@ -963,6 +1136,10 @@ void MaterialsDockSession::writeResult(const Write &write, const Json &result) {
         if (write.kind == Write::Kind::UndoDelete) {
             if (!undo_.empty()) undo_.pop_back();
             setNotice("Put " + (names.empty() ? write.name : names.front()) + " back from " + path + ".");
+        } else if (result.value("recovered", false)) {
+            // MR-1s, decisions 1 and 2 (engine EB-2): a document the engine
+            // refused at its start, taken in -- the problem list too.
+            loadedAgain(write.path, names);
         } else {
             std::string listed;
             for (const auto &name : names) listed += (listed.empty() ? "" : ", ") + name;
@@ -1112,17 +1289,29 @@ bool MaterialsDockSession::receiveRefusal(std::int64_t id, int code, const std::
             uses_ = std::move(uses);
         }
         const auto *listed = documentOf(write.path);
-        if ((write.kind == Write::Kind::Register || write.kind == Write::Kind::UndoDelete) &&
-            error_code == "material.path_conflict@1" && listed != nullptr && listed->status != "loaded") {
-            own = "The engine refused " + write.path +
-                  " at its start; only a restart takes it in (material.path_conflict@1).";
-            restart_reason_ = "the engine takes " + write.path + " in again when it starts again";
+        const bool registering = write.kind == Write::Kind::Register || write.kind == Write::Kind::UndoDelete;
+        // MR-1s: listed already, for a document the list did not hold loaded
+        // -- decided on the next list_materials (listResult), read below.
+        const bool rechecking = registering && error_code == "material.path_conflict@1" && listed != nullptr &&
+                                listed->status != "loaded";
+        if (rechecking) {
+            recheck_ = write.path;
+            list_request_ = 0;
+        } else if (registering) {
+            // MR-1s, decision 1: the parser's refusal at its line and column;
+            // Show the document stays open with it.
+            own = materialRegisterRefusalLine(error_code, message, error_fields);
+            if (repair_ && repair_->path == write.path && repair_->state == Repair::State::Waiting &&
+                !repair_->watch) {
+                repair_->state = Repair::State::Refused;
+                repair_->sentence = own;
+            }
         }
         if (error_code == "material.value_invalid@1") {
             field_error_param_ = error_fields.is_object() ? text(error_fields, "param") : std::string{};
             if (field_error_param_.empty()) field_error_param_ = write.param;
             field_error_ = sentence;
-        } else {
+        } else if (!rechecking) {
             setNotice(own.empty() ? sentence : own, message);
         }
         // The digest it was written against is old, or the file is not what
@@ -1161,6 +1350,10 @@ bool MaterialsDockSession::receiveFailure(std::int64_t id, const std::string &me
         in_flight_.reset();
         queue_.clear();
         setNotice("Could not change the material: " + message, message);
+        if (repair_ && repair_->state == Repair::State::Waiting && !repair_->watch) {
+            repair_->state = Repair::State::Refused;
+            repair_->sentence = notice_;
+        }
         readList();
     }
     notify();

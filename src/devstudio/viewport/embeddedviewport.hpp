@@ -91,6 +91,9 @@ class EmbeddedViewport final : public QWidget {
     // The project this viewport runs a player on, and whether one runs.
     const QString &projectRoot() const noexcept { return project_root_; }
     bool engineRunning() const noexcept { return process_.isRunning(); }
+    // MR-1s: the engine process's id (0 when none runs) -- a scenario tells a
+    // restart from none by it.
+    qint64 engineProcessId() const noexcept { return process_.processId(); }
     qint64 requestMigrationRpc(const QString &method,
                                const QJsonObject &params,
                                QString *error = nullptr);
