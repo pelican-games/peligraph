@@ -44,6 +44,10 @@ struct MaterialListDocument {
     // "loaded", "missing" or "invalid" (then `reason` says why).
     std::string status;
     std::string reason;
+    // FO-1s, decision 2 (engine FO-1): where the parser stopped in a
+    // document that is not JSON (1-based; 0 when not said).
+    std::int64_t line = 0;
+    std::int64_t column = 0;
     std::vector<MaterialListMaterial> materials;
     bool operator==(const MaterialListDocument &) const = default;
 };
@@ -60,6 +64,22 @@ struct MaterialList {
 // The document that holds `name`, or nullptr.
 [[nodiscard]] const MaterialListDocument *materialDocumentOf(const MaterialList &list,
                                                              std::string_view name);
+
+// --- FO-1s: a document the engine did not load, and delete / rename
+
+// Decision 2: what is wrong with a document that is not loaded, in one
+// sentence -- "materials/paint.material.json would not load at line 12,
+// column 6: <reason>", "… is not on disk"; empty for a loaded one.
+[[nodiscard]] std::string materialDocumentProblemLine(const MaterialListDocument &document);
+// Decision 3: material.in_use@1 {name, bindings, objects, count,
+// render_documents} -- "<name> is used by the bindings of Cube, 1 object
+// (Cube_001) and render document passes/x.json; take it off them first", or
+// for a rename "<name> is named by …, which a rename does not rewrite";
+// material.document_shared@1 {name, path, names}; an engine's or a model's
+// own material (material.name_invalid@1 reason engine_material /
+// model_material). Empty for any other code.
+[[nodiscard]] std::string materialDeleteRefusalDescription(const std::string &error_code,
+                                                           const nlohmann::json &fields, bool rename);
 
 // --- get_surface_schema
 
@@ -257,8 +277,11 @@ class MaterialsDockSession {
     // One entry of the dock's Undo: an edit_material, taken back by sending
     // its `previous` against the document's digest then; or a
     // bind_material, taken back with its previous.bindings.
+    // FO-1s, decision 3: a delete_material, taken back with register_material
+    // of the document it took off (`path`); a rename_material, taken back
+    // with the rename the other way (`name` the new name, `previous` the old).
     struct UndoEntry {
-        enum class Kind : std::uint8_t { Edit, Bind };
+        enum class Kind : std::uint8_t { Edit, Bind, Delete, Rename };
         Kind kind = Kind::Edit;
         std::string description;
         std::string path;
@@ -311,6 +334,34 @@ class MaterialsDockSession {
     // A line of the dock's own.
     void say(std::string line);
 
+    // --- FO-1s
+    // Decision 2: a listed document that is not loaded, shown in place of
+    // the editor (what is wrong, Show the document, Register again). Once
+    // the list says it is loaded, its first material is selected.
+    void selectBroken(const std::string &path);
+    [[nodiscard]] const std::optional<std::string> &broken() const noexcept { return broken_; }
+    // The listed document `path`, or nullptr.
+    [[nodiscard]] const MaterialListDocument *documentOf(const std::string &path) const;
+    // Decision 2 (engine EB-1): register_material {path}, a document fixed on
+    // disk taken in again. One the engine refused at its start is listed
+    // already (material.path_conflict@1): only a restart takes it in then,
+    // and restartReason() says so.
+    bool registerAgain(const std::string &path);
+    // Decision 3 (engine EB-1): delete_material {name} -- its Undo is
+    // register_material of the document taken off -- and rename_material
+    // {name, new_name} -- its Undo is the rename the other way.
+    bool remove(const std::string &name);
+    bool rename(const std::string &name, const std::string &new_name);
+    // Decision 3: where a refused delete or rename found the material in use
+    // (material.in_use@1), until the next write.
+    struct Uses {
+        std::vector<std::string> models;
+        std::vector<std::string> objects;
+        std::size_t count = 0;
+        std::vector<std::string> documents;
+    };
+    [[nodiscard]] const std::optional<Uses> &uses() const noexcept { return uses_; }
+
     [[nodiscard]] bool owns(std::int64_t id) const noexcept;
     bool receiveResult(std::int64_t id, const Json &result);
     // A JSON-RPC error: its numeric code (-32601 for a method the engine does
@@ -345,7 +396,19 @@ class MaterialsDockSession {
 
   private:
     struct Write {
-        enum class Kind : std::uint8_t { Edit, Create, Bind, UndoEdit, UndoBind };
+        enum class Kind : std::uint8_t {
+            Edit,
+            Create,
+            Bind,
+            UndoEdit,
+            UndoBind,
+            // FO-1s
+            Register,
+            Delete,
+            Rename,
+            UndoDelete,
+            UndoRename,
+        };
         Kind kind = Kind::Edit;
         std::string method;
         std::string path;
@@ -388,6 +451,9 @@ class MaterialsDockSession {
     std::string field_error_;
     std::string restart_reason_;
     std::vector<UndoEntry> undo_;
+    // FO-1s
+    std::optional<std::string> broken_;
+    std::optional<Uses> uses_;
     std::deque<Write> queue_;
     std::optional<Write> in_flight_;
     // The requests out.

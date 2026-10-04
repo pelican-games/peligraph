@@ -90,6 +90,9 @@ struct ProblemRow {
     std::string restart_feature;
     // Place::Material: the material's name.
     std::string material;
+    // FO-1s, decision 2: Place::Material for a model whose bindings name a
+    // material no loaded document holds (material.binding_unresolved@1).
+    std::string model;
     // Place::AssetFile: the file on disk.
     std::filesystem::path asset_path;
 

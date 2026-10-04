@@ -698,6 +698,79 @@ TEST_CASE("MI-1s decision 4: a registered model's row offers Remove from project
     CHECK(projectRelativeAssetPath(root, (root.parent_path() / "elsewhere.glb").string()).empty());
 }
 
+TEST_CASE("FO-1s decision 4: Update manifest refused while a check runs says so in one sentence, and an "
+          "image's or a buffer's key the engine does not read names the nearest one it reads",
+          "[devstudio][assets-dock][fo1s]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = blankProject(temporary);
+    FakeEngine engine;
+    AssetsDock dock{engine.hooks()};
+    dock.show();
+    dock.open(root);
+    const Json declared{{"main", {{"mount", "assets/"}, {"manifest", "assets.manifest.json"}}}};
+    const auto one_extra = Json{{"state", "verified"}, {"stores", 1}, {"matched", 4},
+                                {"info", 0},          {"warnings", 1}, {"errors", 0}};
+    ready(dock, engine, nullptr, declared, status(nullptr, 0, one_extra));
+    answer(dock, engine, "get_assets_verification",
+           {{"state", "verified"},
+            {"stores", Json::array({{{"name", "main"},
+                                     {"root", root.generic_string() + "/assets"},
+                                     {"manifest", root.generic_string() + "/assets.manifest.json"},
+                                     {"matched", 4},
+                                     {"issues", Json::array({{{"kind", "extra"}, {"severity", "warning"},
+                                                              {"file", "textures/rock.ktx2"},
+                                                              {"message", "not listed"}}})}}})}});
+    auto *update = dock.findChild<QPushButton *>(QStringLiteral("pelican.assets.updateManifest.main"));
+    REQUIRE(update != nullptr);
+    QTest::mouseClick(update, Qt::LeftButton);
+    QTest::mouseClick(dock.findChild<QPushButton *>(QStringLiteral("pelican.assets.updateConfirmed")),
+                      Qt::LeftButton);
+    const auto request = engine.take("update_assets_manifest");
+    REQUIRE(request.has_value());
+    // engine EB-1: the stores are being verified (a check the engine started
+    // itself), so it does not wait -- it refuses.
+    REQUIRE(dock.receiveRefusal(
+        request->id, -32000,
+        QStringLiteral("update_assets_manifest: the asset stores are being verified; update the manifest of "
+                       "'main' once get_status says the verification is done"),
+        QJsonObject{{QStringLiteral("error_code"), QStringLiteral("assets_verification_running@1")},
+                    {QStringLiteral("error_fields"), QJsonObject{{QStringLiteral("store"), QStringLiteral("main")}}}}));
+    CHECK(dock.noticeLine()->text() ==
+          QStringLiteral("The verification of main is running \xE2\x80\x94 try again once it is done "
+                         "(assets_verification_running@1)."));
+    CHECK(dock.noticeLine()->isVisible());
+
+    // engine FO-1 / EB-1: the composed image's and buffer's keys.
+    const Json allowed_image = Json::array({"name", "format", "format_class", "format_candidates", "extent_scale",
+                                            "width", "height", "layers", "mip_levels", "dimension", "usage",
+                                            "history", "clear_color", "role", "lifetime", "initial",
+                                            "sample_count"});
+    const Json image{{"code", "graph.image_key_unknown@1"},
+                     {"message", "graph.image_key_unknown@1 " +
+                                     Json{{"image", "tinted.tint"}, {"key", "histroy"}, {"allowed", allowed_image}}
+                                         .dump()}};
+    CHECK(graphLoopRefusalDescription(image, false) ==
+          "Image tinted.tint has a key histroy the engine does not read; the nearest it reads is history "
+          "(graph.image_key_unknown@1).");
+    const Json buffer{{"code", "graph.buffer_key_unknown@1"},
+                      {"buffer", "levels.level"},
+                      {"key", "initial_f23"},
+                      {"allowed", Json::array({"name", "size", "size_from_extent", "index_buffer", "host_source",
+                                               "command_layout", "initial_f32", "view_family", "lifetime"})}};
+    CHECK(graphLoopRefusalDescription(buffer, false) ==
+          "Buffer levels.level has a key initial_f23 the engine does not read; the nearest it reads is "
+          "initial_f32 (graph.buffer_key_unknown@1).");
+    // Nothing near: the keys it reads.
+    const Json far{{"code", "graph.buffer_key_unknown@1"},
+                   {"buffer", "b"},
+                   {"key", "colour"},
+                   {"allowed", Json::array({"name", "size"})}};
+    CHECK(graphLoopRefusalDescription(far, false) ==
+          "Buffer b has a key colour the engine does not read; it reads name, size (graph.buffer_key_unknown@1).");
+}
+
 TEST_CASE("GL-5e decision 9: list_assets' project-relative path (engine EB-1) finds a registered model, "
           "and its material rows are not models") {
     QTemporaryDir directory;

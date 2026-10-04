@@ -4,7 +4,15 @@
 #include "panelhelp.hpp"
 #include "studiotheme.hpp"
 
+#include "../model/renderfallback.hpp"
+
 #include <QAbstractSpinBox>
+#include <QDialog>
+#include <QFontDatabase>
+#include <QMenu>
+#include <QPlainTextEdit>
+#include <QTextBlock>
+#include <QTextCursor>
 #include <QAction>
 #include <QCheckBox>
 #include <QColor>
@@ -38,6 +46,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <string>
 #include <utility>
@@ -131,6 +141,49 @@ struct MaterialsDock::Impl {
     bool filling = false;
     // The project's images, read once per selection of a material.
     std::vector<AssetEntry> images;
+    // FO-1s, decision 3: Delete… and Rename… (the list's right-click), the
+    // row that asks before a delete, the row a new name is typed in, and the
+    // places a refused one found the material in.
+    QAction *delete_action = nullptr;
+    QAction *rename_action = nullptr;
+    QWidget *delete_row = nullptr;
+    QLabel *delete_label = nullptr;
+    std::string delete_name;
+    QWidget *rename_row = nullptr;
+    QLineEdit *rename_name = nullptr;
+    QLabel *rename_notice = nullptr;
+    QPushButton *rename_ok = nullptr;
+    std::string rename_from;
+    // The material the last delete or rename was of (a render document's
+    // text is opened at its name).
+    std::string target;
+    QWidget *uses_row = nullptr;
+    std::string shown_uses;
+    // FO-1s, decision 2: a document the engine did not load -- its text, as
+    // it is on disk, written back whole.
+    QPointer<QDialog> document_dialog;
+    QPlainTextEdit *document_text = nullptr;
+    QLabel *document_notice = nullptr;
+    QPushButton *document_save = nullptr;
+    std::string document_path;
+    bool document_crlf = false;
+    // FO-1s, decisions 2 and 3: one model's bindings (pelican.materials.model).
+    MaterialAssignSession model_session;
+    QFrame *model_row = nullptr;
+    QLabel *model_heading = nullptr;
+    QLabel *model_notice = nullptr;
+    QComboBox *model_choice = nullptr;
+    std::string model_line;
+    bool model_binding = false;
+
+    std::int64_t sendJson(const std::string &method, const Json &params, std::string *error) {
+        if (!hooks.send) return 0;
+        const auto object = QJsonDocument::fromJson(QByteArray::fromStdString(params.dump())).object();
+        QString message;
+        const qint64 id = hooks.send(qtext(method), object, &message);
+        if (id == 0 && error != nullptr) *error = message.toStdString();
+        return id;
+    }
 
     Impl(MaterialsDock &dock, Hooks dock_hooks)
         : owner{dock}, hooks{std::move(dock_hooks)},
@@ -144,6 +197,12 @@ struct MaterialsDock::Impl {
                   if (id == 0 && error != nullptr) *error = message.toStdString();
                   return id;
               },
+          }},
+          model_session{MaterialAssignSession::Transport{
+              .request = [this](const std::string &method, const Json &params, std::string *error) {
+                  return sendJson(method, params, error);
+              },
+              .edit_object = {},
           }} {
         session.changed = [this] { present(); };
         session.restartRequested = [this](const std::string &reason) {
@@ -151,9 +210,23 @@ struct MaterialsDock::Impl {
         };
         session.listChanged = [this] {
             if (hooks.materials_changed) hooks.materials_changed();
+            model_session.materialsChanged();
         };
         session.bound = [this](const std::string &model) {
             if (hooks.bound) hooks.bound(model);
+            if (model == model_session.model()) model_session.bindingsChanged();
+        };
+        model_session.setScope(MaterialAssignSession::Scope::Model);
+        model_session.changed = [this] {
+            // A bind of the model's row came back: the Inspector reads the
+            // model's rows again.
+            const bool pending = model_session.bindPending();
+            if (model_binding && !pending && hooks.bound) hooks.bound(model_session.model());
+            model_binding = pending;
+            presentModelRow();
+        };
+        model_session.restartRequested = [this](const std::string &reason) {
+            if (hooks.restart) hooks.restart(qtext(reason));
         };
         build();
     }
@@ -204,6 +277,7 @@ struct MaterialsDock::Impl {
         QObject::connect(tree, &QTreeWidget::currentItemChanged, &owner,
                          [this](QTreeWidgetItem *current, QTreeWidgetItem *) { picked(current); });
         layout->addWidget(tree, 1);
+        buildDeleteAndRename(*layout);
 
         auto *notice_row = new QHBoxLayout;
         notice = new QLabel(&owner);
@@ -219,6 +293,14 @@ struct MaterialsDock::Impl {
         notice_row->addWidget(notice, 1);
         notice_row->addWidget(restart);
         layout->addLayout(notice_row);
+        uses_row = new QWidget(&owner);
+        uses_row->setObjectName(QStringLiteral("pelican.materials.uses"));
+        auto *uses_layout = new QHBoxLayout(uses_row);
+        uses_layout->setContentsMargins(0, 0, 0, 0);
+        uses_layout->setSpacing(4);
+        uses_row->hide();
+        layout->addWidget(uses_row);
+        buildModelRow(*layout);
 
         editor_scroll = new QScrollArea(&owner);
         editor_scroll->setObjectName(QStringLiteral("pelican.materials.editor"));
@@ -354,6 +436,410 @@ struct MaterialsDock::Impl {
         new_create->setEnabled(line.isEmpty() && surface_chosen && session.ready());
     }
 
+    // --- FO-1s, decision 3: Delete… and Rename…
+
+    // The material of the list's current row (empty on a document's row).
+    std::string currentMaterial() const {
+        auto *item = tree != nullptr ? tree->currentItem() : nullptr;
+        return item == nullptr ? std::string{} : item->data(0, MaterialNameRole).toString().toStdString();
+    }
+
+    void buildDeleteAndRename(QVBoxLayout &layout) {
+        delete_action = new QAction(owner.tr("Delete\xE2\x80\xA6"), &owner);
+        delete_action->setObjectName(QStringLiteral("pelican.materials.delete"));
+        delete_action->setToolTip(owner.tr("Take the material's document off the project's list "
+                                           "(delete_material); the file stays on disk, and Undo puts it back"));
+        rename_action = new QAction(owner.tr("Rename\xE2\x80\xA6"), &owner);
+        rename_action->setObjectName(QStringLiteral("pelican.materials.rename"));
+        rename_action->setToolTip(owner.tr("A new name for the material, and for every model binding that "
+                                           "names it (rename_material)"));
+        QObject::connect(delete_action, &QAction::triggered, &owner, [this] { askDelete(); });
+        QObject::connect(rename_action, &QAction::triggered, &owner, [this] { askRename(); });
+        tree->addAction(delete_action);
+        tree->addAction(rename_action);
+        tree->setContextMenuPolicy(Qt::CustomContextMenu);
+        QObject::connect(tree, &QTreeWidget::customContextMenuRequested, &owner, [this](const QPoint &point) {
+            if (QTreeWidgetItem *item = tree->itemAt(point)) tree->setCurrentItem(item);
+            presentActions();
+            QMenu menu{&owner};
+            menu.addAction(delete_action);
+            menu.addAction(rename_action);
+            menu.addSeparator();
+            menu.addAction(undo_action);
+            menu.exec(tree->viewport()->mapToGlobal(point));
+        });
+
+        delete_row = new QWidget(&owner);
+        auto *delete_layout = new QHBoxLayout(delete_row);
+        delete_layout->setContentsMargins(0, 0, 0, 0);
+        delete_label = new QLabel(delete_row);
+        delete_label->setObjectName(QStringLiteral("pelican.materials.deleteConfirm"));
+        delete_label->setWordWrap(true);
+        auto *delete_confirm = new QPushButton(owner.tr("Delete"), delete_row);
+        delete_confirm->setObjectName(QStringLiteral("pelican.materials.deleteConfirmed"));
+        auto *delete_cancel = new QPushButton(owner.tr("Cancel"), delete_row);
+        delete_cancel->setObjectName(QStringLiteral("pelican.materials.deleteCancel"));
+        delete_layout->addWidget(delete_label, 1);
+        delete_layout->addWidget(delete_confirm);
+        delete_layout->addWidget(delete_cancel);
+        delete_row->hide();
+        QObject::connect(delete_cancel, &QPushButton::clicked, &owner, [this] { delete_row->hide(); });
+        QObject::connect(delete_confirm, &QPushButton::clicked, &owner, [this] {
+            delete_row->hide();
+            target = delete_name;
+            (void)session.remove(delete_name);
+        });
+        layout.addWidget(delete_row);
+
+        rename_row = new QWidget(&owner);
+        auto *rename_form = new QFormLayout(rename_row);
+        rename_form->setContentsMargins(0, 0, 0, 0);
+        rename_name = new QLineEdit(rename_row);
+        rename_name->setObjectName(QStringLiteral("pelican.materials.rename.name"));
+        rename_name->setToolTip(owner.tr("Letters, digits and _"));
+        rename_notice = new QLabel(rename_row);
+        rename_notice->setObjectName(QStringLiteral("pelican.materials.rename.notice"));
+        applyPanelNoticeStyle(rename_notice);
+        rename_notice->hide();
+        auto *rename_buttons = new QHBoxLayout;
+        rename_ok = new QPushButton(owner.tr("Rename"), rename_row);
+        rename_ok->setObjectName(QStringLiteral("pelican.materials.rename.ok"));
+        auto *rename_cancel = new QPushButton(owner.tr("Cancel"), rename_row);
+        rename_cancel->setObjectName(QStringLiteral("pelican.materials.rename.cancel"));
+        rename_buttons->addStretch();
+        rename_buttons->addWidget(rename_ok);
+        rename_buttons->addWidget(rename_cancel);
+        rename_form->addRow(owner.tr("New name"), rename_name);
+        rename_form->addRow(rename_notice);
+        rename_form->addRow(rename_buttons);
+        rename_row->hide();
+        QObject::connect(rename_name, &QLineEdit::textChanged, &owner, [this] { presentRename(); });
+        QObject::connect(rename_name, &QLineEdit::returnPressed, &owner, [this] {
+            if (rename_ok->isEnabled()) rename_ok->click();
+        });
+        QObject::connect(rename_cancel, &QPushButton::clicked, &owner, [this] { rename_row->hide(); });
+        QObject::connect(rename_ok, &QPushButton::clicked, &owner, [this] {
+            const auto name = rename_name->text().trimmed().toStdString();
+            target = rename_from;
+            if (session.rename(rename_from, name)) rename_row->hide();
+        });
+        layout.addWidget(rename_row);
+    }
+
+    void presentActions() {
+        const bool material = !currentMaterial().empty() && session.ready();
+        delete_action->setEnabled(material);
+        rename_action->setEnabled(material);
+    }
+
+    void askDelete() {
+        const auto name = currentMaterial();
+        if (name.empty()) return;
+        rename_row->hide();
+        delete_name = name;
+        const auto *document = materialDocumentOf(session.list(), name);
+        const auto path = document == nullptr ? std::string{} : document->path;
+        delete_label->setText(owner.tr("Delete material %1? %2 is taken off the project's list and stays on "
+                                       "disk; Undo puts it back.")
+                                  .arg(qtext(name), qtext(path)));
+        delete_row->show();
+    }
+
+    void askRename() {
+        const auto name = currentMaterial();
+        if (name.empty()) return;
+        delete_row->hide();
+        rename_from = name;
+        {
+            const QSignalBlocker block{rename_name};
+            rename_name->setText(qtext(name));
+        }
+        rename_row->show();
+        presentRename();
+        rename_name->selectAll();
+        rename_name->setFocus();
+    }
+
+    void presentRename() {
+        if (rename_row->isHidden()) return;
+        const auto name = rename_name->text().trimmed().toStdString();
+        QString line;
+        if (!validMaterialName(name))
+            line = owner.tr("A material name is letters, digits and _.");
+        else if (name != rename_from && materialDocumentOf(session.list(), name) != nullptr)
+            line = owner.tr("A material named %1 exists already.").arg(qtext(name));
+        setPanelNotice(rename_notice, line);
+        rename_ok->setEnabled(line.isEmpty() && name != rename_from && session.ready());
+    }
+
+    // Where a refused delete or rename found the material: a button for each
+    // place, which goes there.
+    void presentUses() {
+        const auto &uses = session.uses();
+        std::string key;
+        if (uses) {
+            for (const auto &model : uses->models) key += "m:" + model + "\n";
+            for (const auto &object : uses->objects) key += "o:" + object + "\n";
+            for (const auto &document : uses->documents) key += "d:" + document + "\n";
+        }
+        if (key == shown_uses) return;
+        shown_uses = key;
+        auto *layout = static_cast<QHBoxLayout *>(uses_row->layout());
+        while (QLayoutItem *item = layout->takeAt(0)) {
+            delete item->widget();
+            delete item;
+        }
+        uses_row->setVisible(!key.empty());
+        if (key.empty()) return;
+        const auto add = [&](const QString &name, const QString &text, const QString &tip, auto go) {
+            auto *button = new QPushButton(text, uses_row);
+            button->setObjectName(name);
+            button->setToolTip(tip);
+            button->setFlat(true);
+            button->setCursor(Qt::PointingHandCursor);
+            QFont font = button->font();
+            font.setUnderline(true);
+            button->setFont(font);
+            QObject::connect(button, &QPushButton::clicked, &owner, go);
+            layout->addWidget(button);
+        };
+        for (const auto &model : uses->models)
+            add(QStringLiteral("pelican.materials.uses.model#") + qtext(model),
+                owner.tr("Bindings of %1").arg(qtext(modelShortName(model))),
+                owner.tr("The materials %1 binds, below: choose another one there").arg(qtext(model)),
+                [this, model] { revealModel(model, {}); });
+        for (const auto &object : uses->objects) {
+            if (object.empty() || object.front() == '#') continue;
+            add(QStringLiteral("pelican.materials.uses.object#") + qtext(object), qtext(object),
+                owner.tr("Select %1 in the Outliner; its Material row is in the Inspector").arg(qtext(object)),
+                [this, object] {
+                    if (hooks.reveal_object) hooks.reveal_object(qtext(object));
+                });
+        }
+        for (const auto &document : uses->documents)
+            add(QStringLiteral("pelican.materials.uses.document#") + qtext(document), qtext(document),
+                owner.tr("Show %1 where it names the material").arg(qtext(document)), [this, document] {
+                    if (hooks.reveal_document)
+                        hooks.reveal_document(qtext(document), QLatin1Char('"') + qtext(target) + QLatin1Char('"'));
+                });
+        layout->addStretch();
+    }
+
+    // --- FO-1s, decisions 2 and 3: one model's bindings
+
+    void buildModelRow(QVBoxLayout &layout) {
+        model_row = new QFrame(&owner);
+        model_row->setObjectName(QStringLiteral("pelican.materials.model"));
+        model_row->setFrameShape(QFrame::StyledPanel);
+        auto *form = new QVBoxLayout(model_row);
+        form->setContentsMargins(4, 4, 4, 4);
+        auto *top = new QHBoxLayout;
+        model_heading = new QLabel(model_row);
+        model_heading->setObjectName(QStringLiteral("pelican.materials.model.heading"));
+        QFont bold = model_heading->font();
+        bold.setBold(true);
+        model_heading->setFont(bold);
+        auto *close = new QPushButton(owner.tr("Close"), model_row);
+        close->setObjectName(QStringLiteral("pelican.materials.model.close"));
+        top->addWidget(model_heading, 1);
+        top->addWidget(close);
+        form->addLayout(top);
+        model_notice = new QLabel(model_row);
+        model_notice->setObjectName(QStringLiteral("pelican.materials.model.notice"));
+        applyPanelNoticeStyle(model_notice);
+        model_notice->setWordWrap(true);
+        model_notice->hide();
+        form->addWidget(model_notice);
+        model_choice = new QComboBox(model_row);
+        model_choice->setObjectName(QStringLiteral("pelican.materials.model.choice"));
+        model_choice->setToolTip(owner.tr("The material every primitive of this model draws with (bind_material); "
+                                          "Model default takes the binding off"));
+        form->addWidget(model_choice);
+        model_row->hide();
+        QObject::connect(close, &QPushButton::clicked, &owner, [this] { model_row->hide(); });
+        QObject::connect(model_choice, &QComboBox::currentIndexChanged, &owner, [this](int index) {
+            if (index < 0) return;
+            const auto value = model_choice->itemData(index).toString().toStdString();
+            const auto shown = model_session.shownMaterial();
+            if (shown && *shown == value) return;
+            model_line.clear();
+            (void)model_session.choose(value);
+        });
+        layout.addWidget(model_row);
+    }
+
+    void revealModel(const std::string &model, const std::string &line) {
+        model_line = line;
+        model_session.setSubject({.model = model, .name = modelShortName(model)});
+        model_row->show();
+        presentModelRow();
+    }
+
+    void presentModelRow() {
+        if (model_row == nullptr || model_row->isHidden()) return;
+        const auto &model = model_session.model();
+        model_heading->setText(owner.tr("Bindings of %1").arg(qtext(modelShortName(model))));
+        model_heading->setToolTip(qtext(model));
+        const auto line = model_line.empty() ? model_session.notice() : model_line;
+        setPanelNotice(model_notice, qtext(line), qtext(line));
+        {
+            const QSignalBlocker block{model_choice};
+            model_choice->clear();
+            model_choice->addItem(owner.tr("Model default"), QString{});
+            for (const auto &name : model_session.materials()) model_choice->addItem(qtext(name), qtext(name));
+            const auto shown = model_session.shownMaterial();
+            int index = shown ? model_choice->findData(qtext(*shown)) : -1;
+            if (shown && index < 0) {
+                model_choice->addItem(owner.tr("%1 (not loaded)").arg(qtext(*shown)), qtext(*shown));
+                index = model_choice->count() - 1;
+            }
+            // Primitives that differ (or bindings not read yet): no entry.
+            model_choice->setCurrentIndex(index);
+        }
+        model_choice->setEnabled(model_session.choosable());
+    }
+
+    // --- FO-1s, decision 2: a document the engine did not load
+
+    void buildBrokenPanel(QVBoxLayout &layout, const MaterialListDocument &document) {
+        heading = new QLabel(editor);
+        heading->setObjectName(QStringLiteral("pelican.materials.heading"));
+        QFont bold = heading->font();
+        bold.setBold(true);
+        heading->setFont(bold);
+        heading->setText(owner.tr("%1 \xE2\x80\x94 not loaded").arg(qtext(document.path)));
+        layout.addWidget(heading);
+        auto *problem = new QLabel(editor);
+        problem->setObjectName(QStringLiteral("pelican.materials.broken"));
+        problem->setWordWrap(true);
+        problem->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+        problem->setText(qtext(materialDocumentProblemLine(document)));
+        problem->setToolTip(qtext(document.reason));
+        layout.addWidget(problem);
+        auto *buttons = new QHBoxLayout;
+        auto *show = new QPushButton(owner.tr("Show the document"), editor);
+        show->setObjectName(QStringLiteral("pelican.materials.showDocument"));
+        show->setToolTip(owner.tr("The file as it is on disk; fix it and Save"));
+        show->setEnabled(document.status == "invalid");
+        auto *again = new QPushButton(owner.tr("Register again"), editor);
+        again->setObjectName(QStringLiteral("pelican.materials.registerAgain"));
+        again->setToolTip(owner.tr("Take the fixed document in again (register_material)"));
+        again->setEnabled(session.ready());
+        buttons->addWidget(show);
+        buttons->addWidget(again);
+        buttons->addStretch();
+        layout.addLayout(buttons);
+        layout.addStretch();
+        const auto path = document.path;
+        QObject::connect(show, &QPushButton::clicked, &owner, [this, path] { showDocument(path); });
+        QObject::connect(again, &QPushButton::clicked, &owner, [this, path] { (void)session.registerAgain(path); });
+    }
+
+    void showDocument(const std::string &path) {
+        const auto *listed = session.documentOf(path);
+        const auto file = session.projectRoot() / std::filesystem::path{path};
+        std::ifstream in{file, std::ios::binary};
+        if (!in) {
+            session.say(owner.tr("%1 could not be read.").arg(qtext(path)).toStdString());
+            return;
+        }
+        std::string bytes{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+        if (document_dialog) document_dialog->close();
+        auto *dialog = new QDialog(owner.window());
+        document_dialog = dialog;
+        document_path = path;
+        dialog->setObjectName(QStringLiteral("pelican.materials.documentDialog"));
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowTitle(qtext(path));
+        dialog->resize(640, 480);
+        auto *layout = new QVBoxLayout(dialog);
+        auto *top = new QLabel(owner.tr("%1 as it is on disk. Fix it and Save: the file is replaced whole; "
+                                        "then Register again.")
+                                   .arg(qtext(path)),
+                               dialog);
+        top->setObjectName(QStringLiteral("pelican.materials.documentDialog.heading"));
+        top->setWordWrap(true);
+        layout->addWidget(top);
+        document_text = new QPlainTextEdit(dialog);
+        document_text->setObjectName(QStringLiteral("pelican.materials.documentDialog.text"));
+        document_text->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        document_text->setLineWrapMode(QPlainTextEdit::NoWrap);
+        layout->addWidget(document_text, 1);
+        document_notice = new QLabel(dialog);
+        document_notice->setObjectName(QStringLiteral("pelican.materials.documentDialog.notice"));
+        applyPanelNoticeStyle(document_notice);
+        document_notice->setWordWrap(true);
+        layout->addWidget(document_notice);
+        auto *buttons = new QHBoxLayout;
+        buttons->addStretch();
+        document_save = new QPushButton(owner.tr("Save"), dialog);
+        document_save->setObjectName(QStringLiteral("pelican.materials.documentDialog.save"));
+        auto *cancel = new QPushButton(owner.tr("Cancel"), dialog);
+        cancel->setObjectName(QStringLiteral("pelican.materials.documentDialog.cancel"));
+        buttons->addWidget(document_save);
+        buttons->addWidget(cancel);
+        layout->addLayout(buttons);
+
+        auto content = QString::fromStdString(bytes);
+        document_crlf = content.contains(QStringLiteral("\r\n"));
+        content.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+        document_text->setPlainText(content);
+        // The cursor where the engine's parser stopped (1-based).
+        QTextCursor cursor{document_text->document()};
+        const QTextBlock block = listed != nullptr && listed->line > 0
+                                     ? document_text->document()->findBlockByNumber(static_cast<int>(listed->line - 1))
+                                     : QTextBlock{};
+        if (block.isValid()) {
+            const int column = static_cast<int>(std::max<std::int64_t>(listed->column, 1)) - 1;
+            cursor.setPosition(block.position() + std::min(column, std::max(0, block.length() - 1)));
+        }
+        document_text->setTextCursor(cursor);
+        document_text->centerCursor();
+        document_text->setFocus(Qt::OtherFocusReason);
+        checkDocumentText();
+
+        QObject::connect(document_text, &QPlainTextEdit::textChanged, dialog, [this] { checkDocumentText(); });
+        QObject::connect(cancel, &QPushButton::clicked, dialog, [dialog] { dialog->close(); });
+        QObject::connect(document_save, &QPushButton::clicked, dialog, [this, dialog] {
+            if (document_text == nullptr || renderDocumentSyntaxOf(document_text->toPlainText().toStdString())) return;
+            auto content = document_text->toPlainText();
+            if (document_crlf) content.replace(QLatin1Char('\n'), QStringLiteral("\r\n"));
+            const auto file = session.projectRoot() / std::filesystem::path{document_path};
+            std::ofstream out{file, std::ios::binary | std::ios::trunc};
+            const auto bytes = content.toStdString();
+            out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+            out.close();
+            if (!out) {
+                setPanelNotice(document_notice, owner.tr("%1 could not be written.").arg(qtext(document_path)));
+                return;
+            }
+            session.say(owner.tr("Saved %1; Register again takes it in.").arg(qtext(document_path)).toStdString());
+            dialog->close();
+        });
+        QObject::connect(dialog, &QObject::destroyed, &owner, [this] {
+            document_text = nullptr;
+            document_notice = nullptr;
+            document_save = nullptr;
+        });
+        dialog->open();
+    }
+
+    void checkDocumentText() {
+        if (document_text == nullptr) return;
+        const auto spot = renderDocumentSyntaxOf(document_text->toPlainText().toStdString());
+        QString line;
+        if (spot)
+            line = spot->line > 0 ? owner.tr("Not valid JSON yet at line %1, column %2: %3")
+                                        .arg(spot->line)
+                                        .arg(spot->column)
+                                        .arg(qtext(spot->reason))
+                                  : owner.tr("Not valid JSON yet: %1").arg(qtext(spot->reason));
+        else
+            line = owner.tr("Valid JSON. Save writes it to %1.").arg(qtext(document_path));
+        setPanelNotice(document_notice, line, line);
+        document_save->setEnabled(!spot.has_value());
+    }
+
     // --- the list (decision 1)
 
     void fillTree() {
@@ -372,12 +858,17 @@ struct MaterialsDock::Impl {
             row->setText(0, qtext(slash == std::string::npos ? document.path : document.path.substr(slash + 1)));
             row->setToolTip(0, qtext(document.path));
             row->setData(0, MaterialPathRole, qtext(document.path));
+            row->setData(0, MaterialStatusRole, qtext(document.status));
             if (document.status != "loaded") {
                 row->setText(1, qtext(document.status + (document.reason.empty() ? "" : ": " + document.reason)));
                 row->setToolTip(1, qtext(document.reason));
                 row->setForeground(0, dim);
                 row->setForeground(1, dim);
-                row->setFlags(Qt::ItemIsEnabled);
+                // FO-1s, decision 2: a document that would not load is picked
+                // to be fixed (its line, Show the document, Register again).
+                row->setFlags(document.status == "invalid" ? Qt::ItemIsEnabled | Qt::ItemIsSelectable
+                                                           : Qt::ItemIsEnabled);
+                if (session.broken() && *session.broken() == document.path) current = row;
                 continue;
             }
             for (const auto &material : document.materials) {
@@ -403,9 +894,13 @@ struct MaterialsDock::Impl {
         if (item == nullptr) return;
         const auto name = item->data(0, MaterialNameRole).toString().toStdString();
         const auto path = item->data(0, MaterialPathRole).toString().toStdString();
+        presentActions();
         if (name.empty()) {
             // A document's row: its first material.
             if (item->childCount() > 0) tree->setCurrentItem(item->child(0));
+            // FO-1s, decision 2: one that would not load, to be fixed.
+            else if (item->data(0, MaterialStatusRole).toString() == QStringLiteral("invalid"))
+                session.selectBroken(path);
             return;
         }
         images.clear();
@@ -414,6 +909,17 @@ struct MaterialsDock::Impl {
 
     void selectInTree() {
         const auto selection = session.selection();
+        if (const auto &broken = session.broken()) {
+            for (QTreeWidgetItemIterator it{tree}; *it; ++it)
+                if ((*it)->data(0, MaterialPathRole).toString().toStdString() == *broken &&
+                    (*it)->data(0, MaterialNameRole).toString().isEmpty()) {
+                    if (tree->currentItem() != *it) {
+                        const QSignalBlocker block{tree};
+                        tree->setCurrentItem(*it);
+                    }
+                    return;
+                }
+        }
         if (!selection) return;
         for (QTreeWidgetItemIterator it{tree}; *it; ++it)
             if ((*it)->data(0, MaterialPathRole).toString().toStdString() == selection->path &&
@@ -429,6 +935,13 @@ struct MaterialsDock::Impl {
     // --- the editor (decisions 2 and 3)
 
     std::string structureOf() const {
+        // FO-1s, decision 2: a document that would not load, and what is
+        // wrong with it.
+        if (const auto &broken = session.broken()) {
+            const auto *document = session.documentOf(*broken);
+            return "broken\n" + *broken + "\n" + (document == nullptr ? std::string{} : materialDocumentProblemLine(*document)) +
+                   (session.ready() ? "\nready" : "");
+        }
         const auto selection = session.selection();
         const auto &schema = session.schema();
         if (!selection || !session.material().is_object() || !schema) return {};
@@ -455,6 +968,18 @@ struct MaterialsDock::Impl {
         layout->setContentsMargins(0, 0, 0, 0);
         layout->setSpacing(6);
         editor_scroll->setWidget(editor);
+        if (const auto &broken = session.broken()) {
+            if (const auto *document = session.documentOf(*broken)) {
+                buildBrokenPanel(*layout, *document);
+            } else {
+                auto *empty = new QLabel(owner.tr("%1 is not listed any more.").arg(qtext(*broken)), editor);
+                empty->setObjectName(QStringLiteral("pelican.materials.empty"));
+                applyPanelNoticeStyle(empty);
+                layout->addWidget(empty);
+                layout->addStretch();
+            }
+            return;
+        }
         const auto selection = session.selection();
         if (built_structure.empty()) {
             auto *empty = new QLabel(editor);
@@ -928,9 +1453,13 @@ struct MaterialsDock::Impl {
         fillTree();
         selectInTree();
         if (structureOf() != built_structure || editor_scroll->widget() == nullptr) buildEditor();
-        if (!built_structure.empty()) applyValues();
+        if (!built_structure.empty() && !session.broken()) applyValues();
         presentNewRow();
         presentAssign();
+        // FO-1s, decisions 2 and 3.
+        presentActions();
+        presentRename();
+        presentUses();
         updatePolling();
     }
 
@@ -950,6 +1479,9 @@ MaterialsDock::~MaterialsDock() {
     impl_->session.listChanged = nullptr;
     impl_->session.restartRequested = nullptr;
     impl_->session.bound = nullptr;
+    impl_->model_session.changed = nullptr;
+    impl_->model_session.restartRequested = nullptr;
+    if (impl_->document_dialog) delete impl_->document_dialog.data();
     for (QObject *child : findChildren<QObject *>()) QObject::disconnect(child, nullptr, this, nullptr);
 }
 
@@ -957,12 +1489,24 @@ void MaterialsDock::open(const std::filesystem::path &project_root) {
     impl_->images.clear();
     impl_->list_shown = false;
     impl_->new_row->hide();
+    // FO-1s
+    impl_->delete_row->hide();
+    impl_->rename_row->hide();
+    impl_->model_row->hide();
+    impl_->model_session.setSubject({});
+    if (impl_->document_dialog) impl_->document_dialog->close();
     impl_->session.open(project_root);
 }
 
-void MaterialsDock::engineAvailable() { impl_->session.engineReady(); }
+void MaterialsDock::engineAvailable() {
+    impl_->session.engineReady();
+    impl_->model_session.engineReady();
+}
 
-void MaterialsDock::engineUnavailable() { impl_->session.engineGone(); }
+void MaterialsDock::engineUnavailable() {
+    impl_->session.engineGone();
+    impl_->model_session.engineGone();
+}
 
 void MaterialsDock::selectedObjectChanged() { impl_->presentAssign(); }
 
@@ -981,31 +1525,47 @@ bool MaterialsDock::revealMaterial(const std::string &document, const std::strin
         if (!document_matches || (name.empty() ? !material.empty() : material != name)) continue;
         impl_->tree->setCurrentItem(item);
         impl_->tree->scrollToItem(item);
+        // FO-1s, decision 2: a document that would not load, even when its
+        // row was the current one already.
+        if (material.empty() && item->childCount() == 0 &&
+            item->data(0, MaterialStatusRole).toString() == QStringLiteral("invalid"))
+            impl_->session.selectBroken(item->data(0, MaterialPathRole).toString().toStdString());
         return true;
     }
     return false;
 }
 
+void MaterialsDock::revealModel(const std::string &model, const std::string &line) {
+    impl_->revealModel(model, line);
+}
+
 bool MaterialsDock::receiveResult(qint64 request_id, const QByteArray &result_json) {
-    if (!impl_->session.owns(request_id)) return false;
+    const bool own = impl_->session.owns(request_id);
+    if (!own && !impl_->model_session.owns(request_id)) return false;
     const auto result =
         Json::parse(result_json.constData(), result_json.constData() + result_json.size(), nullptr, false);
+    if (!own) return impl_->model_session.receiveResult(request_id, result.is_discarded() ? Json{} : result);
     return impl_->session.receiveResult(request_id, result.is_discarded() ? Json{} : result);
 }
 
 bool MaterialsDock::receiveRefusal(qint64 request_id, int code, const QString &message, const QJsonValue &data) {
-    if (!impl_->session.owns(request_id)) return false;
+    const bool own = impl_->session.owns(request_id);
+    if (!own && !impl_->model_session.owns(request_id)) return false;
     const QJsonObject object = data.toObject();
     const auto fields = Json::parse(QJsonDocument(object.value(QStringLiteral("error_fields")).toObject())
                                         .toJson(QJsonDocument::Compact)
                                         .toStdString(),
                                     nullptr, false);
-    return impl_->session.receiveRefusal(request_id, code,
-                                         object.value(QStringLiteral("error_code")).toString().toStdString(),
-                                         message.toStdString(), fields.is_discarded() ? Json::object() : fields);
+    const auto error_code = object.value(QStringLiteral("error_code")).toString().toStdString();
+    if (!own)
+        return impl_->model_session.receiveRefusal(request_id, code, error_code, message.toStdString(),
+                                                   fields.is_discarded() ? Json::object() : fields);
+    return impl_->session.receiveRefusal(request_id, code, error_code, message.toStdString(),
+                                         fields.is_discarded() ? Json::object() : fields);
 }
 
 bool MaterialsDock::receiveFailure(qint64 request_id, const QString &message) {
+    if (impl_->model_session.receiveFailure(request_id, message.toStdString())) return true;
     return impl_->session.receiveFailure(request_id, message.toStdString());
 }
 

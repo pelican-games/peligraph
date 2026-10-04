@@ -2,6 +2,7 @@
 
 #include "frameplanmodel.hpp"
 #include "inspectormodel.hpp"
+#include "materialsmodel.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -71,6 +72,19 @@ std::string problemSentence(const ProblemRow &row) {
         if (const auto newline = first.find('\n'); newline != std::string::npos) first.erase(newline);
         return file + " does not compile" + (first.empty() ? std::string{} : ": " + first) + " (" + row.code + ").";
     }
+    // FO-1s, decision 2 (engine FO-1): a model whose bindings name a material
+    // of a document the engine did not load.
+    if (row.code == "material.binding_unresolved@1") {
+        std::string materials;
+        if (const auto names = row.fields.find("materials"); names != row.fields.end() && names->is_array())
+            for (const auto &name : *names)
+                if (name.is_string()) materials += (materials.empty() ? "" : ", ") + name.get<std::string>();
+        const auto model = stringOf(row.fields, "model");
+        return (model.empty() ? std::string{"A model"} : modelShortName(model)) + " binds " +
+               (materials.empty() ? std::string{"a material"} : materials) +
+               ", which no loaded material document holds; it draws with the model's own material (" + row.code +
+               ").";
+    }
     if (row.code == "material_route_unserved@1") {
         if (auto notice = materialRouteUnservedNotice(error); !notice.empty())
             return withoutFullStop(std::move(notice)) + " (" + row.code + ").";
@@ -112,7 +126,19 @@ void placeOf(ProblemRow &row) {
         if (!name.empty() || !row.document.empty()) {
             row.place = Place::Material;
             row.material = name;
-            row.place_text = name.empty() ? std::string{"Materials"} : "Materials: " + name;
+            // FO-1s, decision 2: a document the engine did not load is its
+            // row in the Materials dock.
+            row.place_text = !name.empty()           ? "Materials: " + name
+                             : !row.document.empty() ? "Materials: " + fileNameOf(row.document)
+                                                     : std::string{"Materials"};
+            return;
+        }
+        // FO-1s, decision 2 (engine FO-1): a model whose bindings name a
+        // material no loaded document holds is fixed on the model's row.
+        if (auto model = stringOf(row.fields, "model"); !model.empty()) {
+            row.place = Place::Material;
+            row.place_text = "Materials: " + modelShortName(model);
+            row.model = std::move(model);
             return;
         }
     }

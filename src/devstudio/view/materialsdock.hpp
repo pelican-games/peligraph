@@ -28,6 +28,8 @@ namespace PelicanStudio {
 // name.
 inline constexpr int MaterialPathRole = Qt::UserRole + 1;
 inline constexpr int MaterialNameRole = Qt::UserRole + 2;
+// FO-1s: a document's row carries its status ("loaded", "missing", "invalid").
+inline constexpr int MaterialStatusRole = Qt::UserRole + 3;
 
 // MT-1s. The Materials dock (beside Assets, View > Materials): the project's
 // material documents and their materials above (list_materials; a document
@@ -56,6 +58,11 @@ class MaterialsDock final : public QWidget {
         std::function<void()> materials_changed;
         // A bind_material of this dock committed.
         std::function<void(const std::string &model)> bound;
+        // FO-1s, decision 3: where a refused delete or rename found the
+        // material -- an object by its name (the Outliner's row), a render
+        // document (its text, at `find`).
+        std::function<void(const QString &object)> reveal_object;
+        std::function<void(const QString &document, const QString &find)> reveal_document;
     };
 
     explicit MaterialsDock(Hooks hooks, QWidget *parent = nullptr);
@@ -70,6 +77,10 @@ class MaterialsDock final : public QWidget {
     // project://) selected, its editor below; without a name, the document's
     // row. False when the list has neither.
     bool revealMaterial(const std::string &document, const std::string &name);
+    // FO-1s, decisions 2 and 3: the bindings of `model` (every primitive's
+    // material, bind_material) in the row pelican.materials.model, with
+    // `line` above them (what is wrong with them, when something is).
+    void revealModel(const std::string &model, const std::string &line);
 
     // The replies to what this dock sent. False for an id that is not its own.
     bool receiveResult(qint64 request_id, const QByteArray &result_json);

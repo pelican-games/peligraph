@@ -7,6 +7,7 @@
 
 #include "../src/devstudio/model/inspectormodel.hpp"
 #include "../src/devstudio/model/materialsmodel.hpp"
+#include "../src/devstudio/model/problemsmodel.hpp"
 #include "graphcanvastagpicker.hpp"
 #include "materialassignwidget.hpp"
 #include "materialsdock.hpp"
@@ -17,10 +18,16 @@
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
+#include <QDialog>
 #include <QDoubleSpinBox>
 #include <QFont>
+#include <QFrame>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPlainTextEdit>
+#include <QPointer>
+#include <QTextCursor>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -38,8 +45,10 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <vector>
@@ -161,6 +170,7 @@ struct FakeEngine {
 
 template <typename Widget>
 FakeEngine::Request answer(Widget &widget, FakeEngine &engine, const std::string &method, const Json &result) {
+    INFO("answering " << method);
     const auto request = engine.take(method);
     REQUIRE(request.has_value());
     REQUIRE(widget.receiveResult(request->id, QByteArray::fromStdString(result.dump())));
@@ -1271,4 +1281,307 @@ TEST_CASE("MT-3s decision 5: an edit the engine rebuilt in place restarts nothin
                                           {{"model", "models/box"}, {"routing", opaque}}})}}}}) ==
           "paint keeps its routing: engine://primitives/cube, models/box draw it through their bindings; bind "
           "them to another material first (material.routing_conflict@1).");
+}
+
+TEST_CASE("FO-1s decision 2: a material document the engine refused at its start is fixed from the Problems "
+          "row -- its row in the Materials dock says the line and the column, Show the document writes the "
+          "text back, Register again takes it in or says a restart does",
+          "[devstudio][materials][fo1s]") {
+    application();
+    // The Problems rows (engine FO-1's get_problems): the document is its row
+    // in the Materials dock; the model whose bindings name it, its bindings.
+    const auto invalid = readEngineProblem(
+        {{"id", "2b52acdd03ac27ff"},
+         {"severity", "error"},
+         {"source", "startup"},
+         {"code", "material.document_invalid@1"},
+         {"message", "material.document_invalid@1: the material document 'materials/paint.material.json' could not "
+                     "be read; the engine started without its materials: syntax error"},
+         {"document", "project://materials/paint.material.json"},
+         {"document_kind", "material"},
+         {"line", 4},
+         {"column", 1},
+         {"fields", {{"path", Paint}, {"reason", "syntax error"}, {"line", 4}, {"column", 1}}}});
+    REQUIRE(invalid);
+    CHECK(invalid->place == ProblemRow::Place::Material);
+    CHECK(invalid->document == Paint);
+    CHECK(invalid->material.empty());
+    CHECK(invalid->place_text == "Materials: paint.material.json");
+    CHECK(invalid->lineText() == "4:1");
+    const auto unresolved = readEngineProblem(
+        {{"id", "5efd70425699e3ac"},
+         {"severity", "warning"},
+         {"source", "startup"},
+         {"code", "material.binding_unresolved@1"},
+         {"message", "material.binding_unresolved@1: model 'engine://primitives/cube' binds 'paint', which no "
+                     "registered material document holds; its primitives draw with the model's own material"},
+         {"document_kind", "material"},
+         {"fields", {{"model", Cube}, {"materials", {"paint"}}}}});
+    REQUIRE(unresolved);
+    CHECK(unresolved->place == ProblemRow::Place::Material);
+    CHECK(unresolved->model == Cube);
+    CHECK(unresolved->place_text == "Materials: Cube");
+    CHECK(unresolved->sentence == "Cube binds paint, which no loaded material document holds; it draws with the "
+                                  "model's own material (material.binding_unresolved@1).");
+
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = project(temporary);
+    const std::string broken = "{\n  \"schema\": \"pelican.material\",\n  \"version\": 1,\n  \"materials\": [\n"
+                               "    {\"name\": \"paint\", \"surface\": \"" +
+                               std::string{OpenPbr} + "\"}\n  ]\n";
+    write(root / "materials" / "paint.material.json", broken);
+    FakeEngine engine;
+    MaterialsDock dock{engine.dockHooks()};
+    dock.show();
+    dock.open(root);
+    dock.engineAvailable();
+    const Json refused{{"asset_data_digest", "a1"},
+                       {"documents", Json::array({{{"path", Paint},
+                                                   {"status", "invalid"},
+                                                   {"reason", "syntax error while parsing value"},
+                                                   {"line", 7},
+                                                   {"column", 1},
+                                                   {"material_digest", "d0"},
+                                                   {"materials", Json::array()}}})}};
+    answer(dock, engine, "list_materials", refused);
+    answer(dock, engine, "list_surfaces", surfaces());
+
+    // The Problems row goes to the document's row: what is wrong, and where.
+    REQUIRE(dock.revealMaterial(invalid->document, invalid->material));
+    REQUIRE(dock.session().broken());
+    CHECK(*dock.session().broken() == Paint);
+    CHECK(named<QLabel>(dock, QStringLiteral("pelican.materials.broken"))->text() ==
+          QStringLiteral("materials/paint.material.json would not load at line 7, column 1: syntax error while "
+                         "parsing value"));
+    CHECK_FALSE(engine.asked("get_material"));
+
+    // Show the document: the bytes on disk, the cursor where the parser
+    // stopped; Save waits for JSON and writes the file whole.
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.showDocument"))->click();
+    QPointer<QDialog> dialog = named<QDialog>(dock, QStringLiteral("pelican.materials.documentDialog"));
+    auto *text = named<QPlainTextEdit>(*dialog, QStringLiteral("pelican.materials.documentDialog.text"));
+    auto *save = named<QPushButton>(*dialog, QStringLiteral("pelican.materials.documentDialog.save"));
+    CHECK(text->textCursor().blockNumber() == 6);
+    CHECK_FALSE(save->isEnabled());
+    CHECK(named<QLabel>(*dialog, QStringLiteral("pelican.materials.documentDialog.notice"))
+              ->text()
+              .startsWith(QStringLiteral("Not valid JSON yet at line ")));
+    text->moveCursor(QTextCursor::End);
+    text->insertPlainText(QStringLiteral("}\n"));
+    REQUIRE(save->isEnabled());
+    save->click();
+    QApplication::processEvents();
+    {
+        std::ifstream in{root / "materials" / "paint.material.json", std::ios::binary};
+        const std::string bytes{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+        CHECK(bytes == broken + "}\n");
+    }
+    CHECK((dialog.isNull() || !dialog->isVisible()));
+    CHECK(dock.noticeLine()->text() ==
+          QStringLiteral("Saved materials/paint.material.json; Register again takes it in."));
+
+    // Register again: a document the engine refused at its start is listed
+    // already -- only a restart takes it in, and the dock offers it.
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.registerAgain"))->click();
+    const auto first = refuse(dock, engine, "register_material", "material.path_conflict@1",
+                              QJsonObject{{QStringLiteral("path"), QString::fromLatin1(Paint)}});
+    CHECK(first.params == Json{{"path", Paint}});
+    CHECK(dock.noticeLine()->text() == QStringLiteral("The engine refused materials/paint.material.json at its "
+                                                      "start; only a restart takes it in "
+                                                      "(material.path_conflict@1)."));
+    auto *restart = named<QPushButton>(dock, QStringLiteral("pelican.materials.restartEngine"));
+    CHECK(restart->isVisibleTo(&dock));
+    restart->click();
+    REQUIRE(engine.restarts.size() == 1);
+    CHECK(engine.restarts.front().contains(QStringLiteral("materials/paint.material.json")));
+
+    // An engine that takes it in: registered, read again, and its material
+    // is the one the editor shows.
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.registerAgain"))->click();
+    (void)answer(dock, engine, "register_material",
+                 Json{{"committed", true}, {"path", Paint}, {"names", {"paint"}}, {"material_digest", "d1"},
+                      {"applied", "live"}, {"restart_required", nullptr}});
+    CHECK(dock.noticeLine()->text() == QStringLiteral("Registered paint from materials/paint.material.json."));
+    answer(dock, engine, "list_materials", listResult());
+    CHECK_FALSE(dock.session().broken());
+    REQUIRE(dock.session().selection());
+    CHECK(dock.session().selection()->name == "paint");
+    CHECK(engine.asked("get_material"));
+
+    // The warning's row: the model's bindings in the dock, what is wrong
+    // above them.
+    dock.revealModel(unresolved->model, unresolved->sentence);
+    CHECK(named<QFrame>(dock, QStringLiteral("pelican.materials.model"))->isVisibleTo(&dock));
+    CHECK(named<QLabel>(dock, QStringLiteral("pelican.materials.model.heading"))->text() ==
+          QStringLiteral("Bindings of Cube"));
+    CHECK(named<QLabel>(dock, QStringLiteral("pelican.materials.model.notice"))->text() ==
+          QString::fromStdString(unresolved->sentence));
+    const auto bindings = engine.take("get_material_bindings");
+    REQUIRE(bindings.has_value());
+    CHECK(bindings->params == Json{{"model", Cube}});
+}
+
+TEST_CASE("FO-1s decision 3: Delete… and Rename… on a material's row -- in_use is one sentence with a button to "
+          "each place, a delete is undone with register_material and a rename with the rename back",
+          "[devstudio][materials][fo1s]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = project(temporary);
+    FakeEngine engine;
+    std::vector<QString> objects;
+    std::vector<std::pair<QString, QString>> documents;
+    auto hooks = engine.dockHooks();
+    hooks.reveal_object = [&objects](const QString &object) { objects.push_back(object); };
+    hooks.reveal_document = [&documents](const QString &document, const QString &find) {
+        documents.emplace_back(document, find);
+    };
+    MaterialsDock dock{std::move(hooks)};
+    dock.show();
+    readyWithPaint(dock, engine, root);
+    auto *remove = named<QAction>(dock, QStringLiteral("pelican.materials.delete"));
+    auto *rename = named<QAction>(dock, QStringLiteral("pelican.materials.rename"));
+    CHECK(remove->isEnabled());
+    CHECK(rename->isEnabled());
+    // A document's row is not a material.
+    dock.list()->setCurrentItem(dock.list()->topLevelItem(1));
+    CHECK_FALSE(remove->isEnabled());
+    dock.list()->setCurrentItem(rowNamed(*dock.list(), QStringLiteral("paint")));
+    REQUIRE(remove->isEnabled());
+
+    // Delete… asks first.
+    remove->trigger();
+    CHECK(named<QLabel>(dock, QStringLiteral("pelican.materials.deleteConfirm"))->text() ==
+          QStringLiteral("Delete material paint? materials/paint.material.json is taken off the project's list and "
+                         "stays on disk; Undo puts it back."));
+    CHECK(engine.pending.empty());
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.deleteConfirmed"))->click();
+    const auto first = refuse(dock, engine, "delete_material", "material.in_use@1",
+                              QJsonObject{{QStringLiteral("name"), QStringLiteral("paint")},
+                                          {QStringLiteral("bindings"), QJsonArray{QString::fromLatin1(Cube)}},
+                                          {QStringLiteral("objects"), QJsonArray{QStringLiteral("Cube_001")}},
+                                          {QStringLiteral("count"), 1},
+                                          {QStringLiteral("render_documents"),
+                                           QJsonArray{QStringLiteral("passes/x.json")}}},
+                              QStringLiteral("delete_material: material 'paint' is bound by 1 model(s)"));
+    CHECK(first.params == Json{{"name", "paint"}});
+    CHECK(dock.noticeLine()->text() ==
+          QStringLiteral("paint is used by the bindings of Cube, 1 object (Cube_001) and render document "
+                         "passes/x.json; take it off them first (material.in_use@1)."));
+    // A button to each place.
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.uses.object#Cube_001"))->click();
+    REQUIRE(objects.size() == 1);
+    CHECK(objects.front() == QStringLiteral("Cube_001"));
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.uses.document#passes/x.json"))->click();
+    REQUIRE(documents.size() == 1);
+    CHECK(documents.front() == std::pair{QStringLiteral("passes/x.json"), QStringLiteral("\"paint\"")});
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.uses.model#engine://primitives/cube"))->click();
+    CHECK(named<QFrame>(dock, QStringLiteral("pelican.materials.model"))->isVisibleTo(&dock));
+    // The dock read its list again after the refusal, and the model's row
+    // reads it too.
+    (void)answer(dock, engine, "list_materials", listResult());
+    (void)answer(dock, engine, "list_materials", listResult());
+    (void)answer(dock, engine, "get_material_bindings",
+                 Json{{"model", Cube},
+                      {"material_bindings", "materials/cube.bindings.json"},
+                      {"primitives", Json::array({{{"mesh", 0},
+                                                   {"primitive", 0},
+                                                   {"slot", "pelican.primitive.default"},
+                                                   {"material", "paint"}}})}});
+    auto *choice = named<QComboBox>(dock, QStringLiteral("pelican.materials.model.choice"));
+    CHECK(choice->currentText() == QStringLiteral("paint"));
+    REQUIRE(choice->isEnabled());
+    // Model default: every primitive back on its own material.
+    choice->setCurrentIndex(choice->findText(QStringLiteral("Model default")));
+    const auto unbind = engine.take("bind_material");
+    REQUIRE(unbind.has_value());
+    CHECK(unbind->params ==
+          Json{{"model", Cube},
+               {"bindings", Json::array({{{"mesh", 0}, {"primitive", 0}, {"material", "pelican.primitive.default"}}})}});
+
+    // Taken off them, the delete goes; Undo registers the document again.
+    remove->trigger();
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.deleteConfirmed"))->click();
+    CHECK_FALSE(named<QWidget>(dock, QStringLiteral("pelican.materials.uses"))->isVisibleTo(&dock));
+    (void)answer(dock, engine, "delete_material",
+                 Json{{"committed", true}, {"name", "paint"}, {"removed", {{"path", Paint}}},
+                      {"applied", "live"}, {"restart_required", nullptr}});
+    CHECK(dock.noticeLine()->text() ==
+          QStringLiteral("Deleted paint; materials/paint.material.json stays on disk."));
+    CHECK(dock.undoAction()->text() == QStringLiteral("Undo Delete paint"));
+    // Every list read: the model's row reads the list too.
+    const auto lists = [&](const Json &result) {
+        while (engine.asked("list_materials")) answer(dock, engine, "list_materials", result);
+    };
+    lists(Json{{"asset_data_digest", "a2"}, {"documents", Json::array()}});
+    dock.undoAction()->trigger();
+    const auto back = answer(dock, engine, "register_material",
+                             Json{{"committed", true}, {"path", Paint}, {"names", {"paint"}},
+                                  {"applied", "live"}, {"restart_required", nullptr}});
+    CHECK(back.params == Json{{"path", Paint}});
+    CHECK(dock.noticeLine()->text() == QStringLiteral("Put paint back from materials/paint.material.json."));
+    CHECK(dock.session().undoEntries().empty());
+    lists(listResult());
+    REQUIRE(dock.session().selection());
+    CHECK(dock.session().selection()->name == "paint");
+    // The last read of the material is the one the dock waits for.
+    std::optional<FakeEngine::Request> read;
+    while (auto next = engine.take("get_material")) read = next;
+    REQUIRE(read.has_value());
+    REQUIRE(dock.receiveResult(read->id, QByteArray::fromStdString(paintMaterial().dump())));
+
+    // Rename…: the name typed, checked before it is sent.
+    dock.list()->setCurrentItem(rowNamed(*dock.list(), QStringLiteral("paint")));
+    rename->trigger();
+    auto *field = named<QLineEdit>(dock, QStringLiteral("pelican.materials.rename.name"));
+    auto *ok = named<QPushButton>(dock, QStringLiteral("pelican.materials.rename.ok"));
+    CHECK(field->text() == QStringLiteral("paint"));
+    CHECK_FALSE(ok->isEnabled());
+    field->setText(QStringLiteral("not ok"));
+    CHECK_FALSE(ok->isEnabled());
+    CHECK(named<QLabel>(dock, QStringLiteral("pelican.materials.rename.notice"))->text() ==
+          QStringLiteral("A material name is letters, digits and _."));
+    field->setText(QStringLiteral("coat"));
+    REQUIRE(ok->isEnabled());
+    ok->click();
+    const auto renamed = answer(dock, engine, "rename_material",
+                                Json{{"committed", true},
+                                     {"changed", true},
+                                     {"path", Paint},
+                                     {"name", "coat"},
+                                     {"previous_name", "paint"},
+                                     {"material_digest", "d5"},
+                                     {"rewritten_bindings", Json::array({{{"model", Cube}}})},
+                                     {"applied", "rebuilt"},
+                                     {"restart_required", nullptr},
+                                     {"rebuilt_models", Json::array({Cube})}});
+    CHECK(renamed.params == Json{{"name", "paint"}, {"new_name", "coat"}});
+    CHECK(dock.noticeLine()->text() == QStringLiteral("Renamed paint to coat."));
+    CHECK(std::ranges::find(engine.bound, std::string{Cube}) != engine.bound.end());
+    CHECK(dock.undoAction()->text() == QStringLiteral("Undo Rename paint to coat"));
+    dock.undoAction()->trigger();
+    const auto undone = refuse(dock, engine, "rename_material", "material.in_use@1",
+                               QJsonObject{{QStringLiteral("name"), QStringLiteral("coat")},
+                                           {QStringLiteral("bindings"), QJsonArray{}},
+                                           {QStringLiteral("objects"), QJsonArray{}},
+                                           {QStringLiteral("count"), 0},
+                                           {QStringLiteral("render_documents"),
+                                            QJsonArray{QStringLiteral("passes/eb1_reference.json")}}});
+    CHECK(undone.params == Json{{"name", "coat"}, {"new_name", "paint"}});
+    CHECK(dock.noticeLine()->text() ==
+          QStringLiteral("coat is named by render document passes/eb1_reference.json, which a rename does not "
+                         "rewrite (material.in_use@1)."));
+
+    // The other refusals of a delete.
+    CHECK(materialDeleteRefusalDescription("material.document_shared@1",
+                                           {{"name", "a"}, {"path", "materials/two.material.json"},
+                                            {"names", {"a", "b"}}},
+                                           false) ==
+          "materials/two.material.json holds a and b: only a document of one material is deleted, so a stays "
+          "(material.document_shared@1).");
+    CHECK(materialDeleteRefusalDescription("material.name_invalid@1",
+                                           {{"name", "pelican.primitive.default"}, {"reason", "engine_material"}},
+                                           false) ==
+          "pelican.primitive.default is the engine's own material; it is not deleted (material.name_invalid@1).");
 }

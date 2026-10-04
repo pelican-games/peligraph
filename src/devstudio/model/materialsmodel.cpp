@@ -91,6 +91,8 @@ MaterialList parseMaterialList(const Json &result) {
         entry.digest = text(document, "material_digest");
         entry.status = text(document, "status");
         entry.reason = text(document, "reason");
+        entry.line = static_cast<std::int64_t>(counter(document, "line"));
+        entry.column = static_cast<std::int64_t>(counter(document, "column"));
         if (const auto materials = document.find("materials");
             materials != document.end() && materials->is_array())
             for (const auto &material : *materials) {
@@ -127,6 +129,74 @@ const MaterialListDocument *materialDocumentOf(const MaterialList &list, std::st
         for (const auto &material : document.materials)
             if (material.name == name) return &document;
     return nullptr;
+}
+
+// --- FO-1s
+
+std::string materialDocumentProblemLine(const MaterialListDocument &document) {
+    if (document.status == "loaded" || document.status.empty()) return {};
+    if (document.status == "missing")
+        return document.path + " is not on disk" + (document.reason.empty() ? "" : ": " + document.reason);
+    std::string line = document.path + " would not load";
+    if (document.line > 0) {
+        line += " at line " + std::to_string(document.line);
+        if (document.column > 0) line += ", column " + std::to_string(document.column);
+    }
+    if (!document.reason.empty()) line += ": " + document.reason;
+    return line;
+}
+
+std::string materialDeleteRefusalDescription(const std::string &error_code, const Json &fields, bool rename) {
+    const auto joined = [](const std::vector<std::string> &names) {
+        std::string line;
+        for (std::size_t index = 0; index < names.size(); ++index)
+            line += (index == 0 ? "" : index + 1 == names.size() ? " and " : ", ") + names[index];
+        return line;
+    };
+    auto name = text(fields, "name");
+    if (name.empty()) name = "The material";
+    if (error_code == "material.in_use@1") {
+        std::vector<std::string> places;
+        std::vector<std::string> models;
+        for (const auto &model : strings(fields.value("bindings", Json::array())))
+            models.push_back(modelShortName(model));
+        if (!models.empty()) places.push_back("the bindings of " + joined(models));
+        const auto objects = strings(fields.value("objects", Json::array()));
+        const auto count = std::max<std::uint64_t>(counter(fields, "count"), objects.size());
+        if (count > 0) {
+            std::string line = std::to_string(count) + (count == 1 ? " object" : " objects");
+            if (!objects.empty()) {
+                std::string names;
+                for (const auto &object : objects) names += (names.empty() ? "" : ", ") + object;
+                // The engine names the first 8.
+                if (count > objects.size()) names += ", \xE2\x80\xA6";
+                line += " (" + names + ")";
+            }
+            places.push_back(line);
+        }
+        const auto documents = strings(fields.value("render_documents", Json::array()));
+        if (!documents.empty())
+            places.push_back((documents.size() == 1 ? "render document " : "render documents ") + joined(documents));
+        const auto where = places.empty() ? std::string{"the project"} : joined(places);
+        return rename ? name + " is named by " + where + ", which a rename does not rewrite (material.in_use@1)."
+                      : name + " is used by " + where + "; take it off them first (material.in_use@1).";
+    }
+    if (error_code == "material.document_shared@1") {
+        const auto names = strings(fields.value("names", Json::array()));
+        return text(fields, "path") + " holds " + (names.empty() ? std::string{"other materials"} : joined(names)) +
+               ": only a document of one material is deleted, so " + name +
+               " stays (material.document_shared@1).";
+    }
+    if (error_code == "material.name_invalid@1") {
+        const auto reason = text(fields, "reason");
+        if (reason == "engine_material")
+            return name + " is the engine's own material; it is not " + (rename ? "renamed" : "deleted") +
+                   " (material.name_invalid@1).";
+        if (reason == "model_material")
+            return name + " is a material of model " + text(fields, "model") + ", not the project's; it is not " +
+                   (rename ? "renamed" : "deleted") + " (material.name_invalid@1).";
+    }
+    return {};
 }
 
 // --- get_surface_schema
@@ -508,6 +578,8 @@ void MaterialsDockSession::open(std::filesystem::path project_root) {
     field_error_.clear();
     restart_reason_.clear();
     undo_.clear();
+    broken_.reset();
+    uses_.reset();
     notify();
 }
 
@@ -556,7 +628,8 @@ void MaterialsDockSession::readSchema(const std::string &surface) {
 }
 
 void MaterialsDockSession::select(const Selection &selection) {
-    if (selection_ && *selection_ == selection) return;
+    if (selection_ && *selection_ == selection && !broken_) return;
+    broken_.reset();
     selection_ = selection;
     material_ = nullptr;
     schema_.reset();
@@ -586,6 +659,7 @@ std::string MaterialsDockSession::digestOf(const std::string &path) const {
 bool MaterialsDockSession::enqueue(Write write) {
     if (!ready_) return false;
     setNotice({});
+    uses_.reset();
     queue_.push_back(std::move(write));
     if (write_ == 0) sendNext();
     notify();
@@ -685,6 +759,19 @@ bool MaterialsDockSession::undo() {
         write.path = entry.path;
         write.name = entry.name;
         write.params = entry.previous.is_object() ? entry.previous : Json::object();
+    } else if (entry.kind == UndoEntry::Kind::Delete) {
+        // FO-1s, decision 3: the document delete_material took off.
+        write.kind = Write::Kind::UndoDelete;
+        write.method = "register_material";
+        write.path = entry.path;
+        write.name = entry.name;
+        write.params = Json{{"path", entry.path}};
+    } else if (entry.kind == UndoEntry::Kind::Rename) {
+        write.kind = Write::Kind::UndoRename;
+        write.method = "rename_material";
+        write.path = entry.path;
+        write.name = entry.previous.is_string() ? entry.previous.get<std::string>() : std::string{};
+        write.params = Json{{"name", entry.name}, {"new_name", entry.previous}};
     } else {
         write.kind = Write::Kind::UndoBind;
         write.method = "bind_material";
@@ -697,6 +784,66 @@ bool MaterialsDockSession::undo() {
 void MaterialsDockSession::say(std::string line) {
     setNotice(std::move(line));
     notify();
+}
+
+const MaterialListDocument *MaterialsDockSession::documentOf(const std::string &path) const {
+    const auto found = std::ranges::find(list_.documents, path, &MaterialListDocument::path);
+    return found == list_.documents.end() ? nullptr : &*found;
+}
+
+void MaterialsDockSession::selectBroken(const std::string &path) {
+    if (broken_ && *broken_ == path && !selection_) return;
+    selection_.reset();
+    material_ = nullptr;
+    schema_.reset();
+    schema_surface_.clear();
+    material_request_ = 0;
+    schema_request_ = 0;
+    field_error_param_.clear();
+    field_error_.clear();
+    broken_ = path;
+    notify();
+}
+
+bool MaterialsDockSession::registerAgain(const std::string &path) {
+    if (path.empty()) return false;
+    Write write;
+    write.kind = Write::Kind::Register;
+    write.method = "register_material";
+    write.path = path;
+    write.description = "Register " + path;
+    write.params = Json{{"path", path}};
+    return enqueue(std::move(write));
+}
+
+bool MaterialsDockSession::remove(const std::string &name) {
+    const auto *document = materialDocumentOf(list_, name);
+    if (name.empty() || document == nullptr) return false;
+    Write write;
+    write.kind = Write::Kind::Delete;
+    write.method = "delete_material";
+    write.path = document->path;
+    write.name = name;
+    write.description = "Delete " + name;
+    write.params = Json{{"name", name}};
+    return enqueue(std::move(write));
+}
+
+bool MaterialsDockSession::rename(const std::string &name, const std::string &new_name) {
+    const auto *document = materialDocumentOf(list_, name);
+    if (document == nullptr || name == new_name) return false;
+    if (!validMaterialName(new_name)) {
+        say("A material name is letters, digits and _.");
+        return false;
+    }
+    Write write;
+    write.kind = Write::Kind::Rename;
+    write.method = "rename_material";
+    write.path = document->path;
+    write.name = new_name;
+    write.description = "Rename " + name + " to " + new_name;
+    write.params = Json{{"name", name}, {"new_name", new_name}};
+    return enqueue(std::move(write));
 }
 
 bool MaterialsDockSession::owns(std::int64_t id) const noexcept {
@@ -724,6 +871,22 @@ void MaterialsDockSession::listResult(const Json &result) {
         }
     }
     if (!first && list == list_) return;
+    // FO-1s, decision 2: the document shown as not loaded is loaded now (a
+    // restart, or Register again): its first material is selected; gone from
+    // the list, nothing is.
+    if (broken_) {
+        const auto after = std::ranges::find(list.documents, *broken_, &MaterialListDocument::path);
+        if (after == list.documents.end() || (after->status == "loaded" && !after->materials.empty())) {
+            const auto path = *broken_;
+            const auto name = after == list.documents.end() ? std::string{} : after->materials.front().name;
+            broken_.reset();
+            list_ = std::move(list);
+            if (listChanged) listChanged();
+            if (!name.empty()) select({path, name});
+            notify();
+            return;
+        }
+    }
     // The document of the material shown was written by someone else: read
     // it again (a write of this dock reads it on its own reply).
     bool reread = false;
@@ -790,6 +953,63 @@ void MaterialsDockSession::writeResult(const Write &write, const Json &result) {
             }
         }
         if (bound) bound(write.model);
+        break;
+    }
+    // FO-1s, decisions 2 and 3.
+    case Write::Kind::Register:
+    case Write::Kind::UndoDelete: {
+        const auto path = text(result, "path").empty() ? write.path : text(result, "path");
+        const auto names = strings(result.value("names", Json::array()));
+        if (write.kind == Write::Kind::UndoDelete) {
+            if (!undo_.empty()) undo_.pop_back();
+            setNotice("Put " + (names.empty() ? write.name : names.front()) + " back from " + path + ".");
+        } else {
+            std::string listed;
+            for (const auto &name : names) listed += (listed.empty() ? "" : ", ") + name;
+            setNotice("Registered " + (listed.empty() ? path : listed + " from " + path) + ".");
+        }
+        if (!names.empty()) select_when_listed_ = Selection{path, names.front()};
+        if (const auto digest = text(result, "material_digest"); !digest.empty()) digests_[path] = digest;
+        if (broken_ && *broken_ == path) broken_.reset();
+        break;
+    }
+    case Write::Kind::Delete: {
+        const auto removed = result.value("removed", Json::object());
+        const auto path = text(removed, "path").empty() ? write.path : text(removed, "path");
+        UndoEntry entry;
+        entry.kind = UndoEntry::Kind::Delete;
+        entry.description = write.description;
+        entry.path = path;
+        entry.name = write.name;
+        undo_.push_back(std::move(entry));
+        setNotice("Deleted " + write.name + "; " + path + " stays on disk.");
+        if (selection_ && selection_->name == write.name) clearSelection();
+        break;
+    }
+    case Write::Kind::Rename:
+    case Write::Kind::UndoRename: {
+        const auto path = text(result, "path").empty() ? write.path : text(result, "path");
+        const auto name = text(result, "name").empty() ? write.name : text(result, "name");
+        const auto previous = text(result, "previous_name");
+        if (write.kind == Write::Kind::UndoRename) {
+            if (!undo_.empty()) undo_.pop_back();
+        } else if (result.value("changed", true)) {
+            UndoEntry entry;
+            entry.kind = UndoEntry::Kind::Rename;
+            entry.description = write.description;
+            entry.path = path;
+            entry.name = name;
+            entry.previous = previous.empty() ? Json(write.params.value("name", std::string{})) : Json(previous);
+            undo_.push_back(std::move(entry));
+        }
+        setNotice("Renamed " + (previous.empty() ? std::string{"it"} : previous) + " to " + name + ".");
+        if (const auto digest = text(result, "material_digest"); !digest.empty()) digests_[path] = digest;
+        select_when_listed_ = Selection{path, name};
+        // The bindings that named it were rewritten with it.
+        if (const auto rewritten = result.find("rewritten_bindings");
+            rewritten != result.end() && rewritten->is_array())
+            for (const auto &entry : *rewritten)
+                if (const auto model = text(entry, "model"); !model.empty() && bound) bound(model);
         break;
     }
     }
@@ -874,12 +1094,36 @@ bool MaterialsDockSession::receiveRefusal(std::int64_t id, int code, const std::
         in_flight_.reset();
         // What waited behind it was made against what was refused.
         queue_.clear();
+        // FO-1s, decisions 2 and 3: a delete or a rename says where the
+        // material is in use; a document the engine refused at its start is
+        // taken in only by a restart.
+        const bool deleting = write.kind == Write::Kind::Delete || write.kind == Write::Kind::Rename ||
+                              write.kind == Write::Kind::UndoRename;
+        auto own = deleting ? materialDeleteRefusalDescription(error_code, error_fields,
+                                                               write.kind != Write::Kind::Delete)
+                            : std::string{};
+        if (deleting && error_code == "material.in_use@1") {
+            Uses uses;
+            for (const auto &model : strings(error_fields.value("bindings", Json::array())))
+                uses.models.push_back(model);
+            uses.objects = strings(error_fields.value("objects", Json::array()));
+            uses.count = std::max<std::size_t>(counter(error_fields, "count"), uses.objects.size());
+            uses.documents = strings(error_fields.value("render_documents", Json::array()));
+            uses_ = std::move(uses);
+        }
+        const auto *listed = documentOf(write.path);
+        if ((write.kind == Write::Kind::Register || write.kind == Write::Kind::UndoDelete) &&
+            error_code == "material.path_conflict@1" && listed != nullptr && listed->status != "loaded") {
+            own = "The engine refused " + write.path +
+                  " at its start; only a restart takes it in (material.path_conflict@1).";
+            restart_reason_ = "the engine takes " + write.path + " in again when it starts again";
+        }
         if (error_code == "material.value_invalid@1") {
             field_error_param_ = error_fields.is_object() ? text(error_fields, "param") : std::string{};
             if (field_error_param_.empty()) field_error_param_ = write.param;
             field_error_ = sentence;
         } else {
-            setNotice(sentence, message);
+            setNotice(own.empty() ? sentence : own, message);
         }
         // The digest it was written against is old, or the file is not what
         // the editor shows: read both again.

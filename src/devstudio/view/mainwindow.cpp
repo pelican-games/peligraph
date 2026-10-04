@@ -450,6 +450,23 @@ void MainWindow::createWorkspace() {
                 [this](const std::string &) {
                     if (inspector_ != nullptr) inspector_->materialBindingsChanged();
                 },
+            // FO-1s, decision 3: where a refused delete or rename found the
+            // material -- the object's Outliner row, the render document's
+            // text.
+            .reveal_object =
+                [this](const QString &object) {
+                    const auto rows = outliner_->findItems(object, Qt::MatchExactly | Qt::MatchRecursive);
+                    if (rows.isEmpty()) {
+                        statusBar()->showMessage(tr("The Outliner has no object named %1.").arg(object), 8000);
+                        return;
+                    }
+                    outliner_->setCurrentItem(rows.front());
+                    outliner_->scrollToItem(rows.front());
+                },
+            .reveal_document =
+                [this](const QString &document, const QString &find) {
+                    render_fallback_->showDocumentAt(document, 0, 0, find);
+                },
         },
         this);
     materials_dock_->setObjectName(QStringLiteral("pelican.materialsPanel"));
@@ -1546,6 +1563,12 @@ void MainWindow::openProblem(const ProblemRow &row) {
     case Place::Material:
         docks_[MaterialsPanelDock]->show();
         docks_[MaterialsPanelDock]->raise();
+        // FO-1s, decision 2: a model whose bindings name a material no
+        // loaded document holds -- the model's bindings, with what is wrong.
+        if (!row.model.empty()) {
+            materials_dock_->revealModel(row.model, row.sentence);
+            return;
+        }
         if (!materials_dock_->revealMaterial(row.document, row.material))
             statusBar()->showMessage(tr("The Materials dock does not list %1.")
                                          .arg(row.material.empty() ? document : text(row.material)),

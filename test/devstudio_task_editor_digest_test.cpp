@@ -11,6 +11,7 @@
 
 #include "renderconfigdigest.hpp"
 #include "renderfeatureswidget.hpp"
+#include "../src/devstudio/model/inspectormodel.hpp"
 
 // Everything embeddedviewport.hpp includes, first, so that only its own class
 // is opened up. EmbeddedViewport has no test seam; as in the Inspector widget
@@ -635,5 +636,87 @@ TEST_CASE("LP-4f2 Replace with loop version says why it cannot, before and after
         CHECK(required<QPushButton>(*rig.features, "pelican.renderFeatures.replaceWithLoop")
                   .isEnabled());
     }
+}
+
+TEST_CASE("FO-1s decision 1: a refused node order is one sentence by its reason, and the two rows it put "
+          "the wrong way round are red until a row moves",
+          "[devstudio][frame-node-order][fo1s][widget]") {
+    Rig rig;
+    rig.features->editFrameNodeOrder(QStringLiteral("main_render"),
+                                     {QStringLiteral("left"), QStringLiteral("right"), QStringLiteral("present")},
+                                     5);
+    const auto context = rig.next("get_frame_node_order");
+    REQUIRE(context);
+    rig.answer(*context, {{"published_generation", 5}, {"source_digest", {{"hex", RootA}}}, {"orders", Json::object()}});
+    auto *dialog = rig.features->findChild<QDialog *>(QStringLiteral("pelican.frameNodeOrder"));
+    REQUIRE(dialog != nullptr);
+    auto &nodes = required<QListWidget>(*dialog, "pelican.frameNodeOrder.nodes");
+    auto &notice = required<QLabel>(*dialog, "pelican.frameNodeOrder.notice");
+    auto &apply = required<QPushButton>(*dialog, "pelican.frameNodeOrder.apply");
+
+    // present moved above right, which writes right_color that present reads.
+    nodes.setCurrentRow(2);
+    required<QPushButton>(*dialog, "pelican.frameNodeOrder.up").click();
+    REQUIRE(apply.isEnabled());
+    apply.click();
+    const auto sent = rig.next("edit_frame_node_order");
+    REQUIRE(sent);
+    CHECK(sent->at("params").at("orders") == Json{{"main_render", {"left", "present", "right"}}});
+    rig.answer(*sent, {{"status", "accepted"}, {"ticket", "render-config-edit-2"}});
+    const auto result = rig.next("get_edit_result");
+    REQUIRE(result);
+    // As the engine answers (FO-1's report): the fields beside the code, and
+    // quoted after it in the message.
+    rig.answer(*result,
+               {{"status", "rejected"},
+                {"committed", false},
+                {"ticket", "render-config-edit-2"},
+                {"error",
+                 {{"code", "frame_node_order.conflicts_dependency@1"},
+                  {"graph", "main_render"},
+                  {"first", "present"},
+                  {"second", "right"},
+                  {"reason", "reads"},
+                  {"resource", "right_color"},
+                  {"participant", "pelican.render_pipeline"},
+                  {"message", "frame_node_order.conflicts_dependency@1 {\"first\":\"present\",\"graph\":"
+                              "\"main_render\",\"reason\":\"reads\",\"resource\":\"right_color\","
+                              "\"second\":\"right\"}"}}}});
+    CHECK(notice.text() == QStringLiteral("right must stay before present: present reads right_color, which "
+                                          "right writes (frame_node_order.conflicts_dependency@1)."));
+    const QColor red{0xd9, 0x4c, 0x3d};
+    REQUIRE(nodes.count() == 3);
+    CHECK(nodes.item(0)->text() == QStringLiteral("left"));
+    CHECK(nodes.item(0)->foreground().color() != red);
+    CHECK(nodes.item(1)->foreground().color() == red);  // present
+    CHECK(nodes.item(2)->foreground().color() == red);  // right
+    // The dialog stays, the order is kept for another try.
+    CHECK(rig.features->findChild<QDialog *>(QStringLiteral("pelican.frameNodeOrder")) == dialog);
+    CHECK(apply.isEnabled());
+
+    // A row moved: the red goes.
+    nodes.setCurrentRow(1);
+    required<QPushButton>(*dialog, "pelican.frameNodeOrder.down").click();
+    CHECK(nodes.item(1)->foreground().color() != red);
+    CHECK(nodes.item(2)->foreground().color() != red);
+
+    // The other reasons, each a sentence of its own; a path through other
+    // nodes says the first step and where it ends.
+    const auto sentence = [](Json fields) {
+        fields["code"] = "frame_node_order.conflicts_dependency@1";
+        return graphLoopRefusalDescription(fields, false);
+    };
+    CHECK(sentence({{"first", "b"}, {"second", "a"}, {"reason", "after"}}) ==
+          "a must stay before b: b is set to run after a (frame_node_order.conflicts_dependency@1).");
+    CHECK(sentence({{"first", "b"}, {"second", "a"}, {"reason", "before"}}) ==
+          "a must stay before b: a is set to run before b (frame_node_order.conflicts_dependency@1).");
+    CHECK(sentence({{"first", "c"}, {"second", "a"}, {"reason", "reads"}, {"resource", "a_color"},
+                    {"via", {"b", "d"}}}) ==
+          "a must stay before c: b reads a_color, which a writes, and c waits on b through d "
+          "(frame_node_order.conflicts_dependency@1).");
+    CHECK(sentence({{"first", "sprite"}, {"second", "shade"}, {"reason", "canonical_order"},
+                    {"anchor", "__anchor_sprite"}, {"via", {"__anchor_sprite"}}}) ==
+          "shade must stay before sprite: the stages of a frame run in a fixed order (__anchor_sprite stands "
+          "between them) (frame_node_order.conflicts_dependency@1).");
 }
 } // namespace PelicanStudio

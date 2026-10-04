@@ -1116,7 +1116,7 @@ struct GraphLoopRefusalText {
     std::string_view code;
     std::string_view sentence;
 };
-constexpr std::array<GraphLoopRefusalText, 50> GraphLoopRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 53> GraphLoopRefusalTexts{{
     {"graph.loop_branch_else_missing@1",
      "Loop {node} has no else: its last branch must have no condition"},
     {"graph.loop_branch_interface@1",
@@ -1245,6 +1245,14 @@ constexpr std::array<GraphLoopRefusalText, 50> GraphLoopRefusalTexts{{
     // is "logical_graph" or "automatic_plan" -- is not the plan's any more.
     {"physical_fragment_stale",
      "The frozen plan no longer matches the graph ({fingerprint}); Eject again"},
+    // FO-1s, decisions 1 and 4 (engine FO-1, EB-1). frame_node_order: the
+    // order put `first` before `second`, but `second` must run first; {why}
+    // is said from `reason` (frameNodeOrderWhy). An image's or a buffer's
+    // key the engine does not read: {hint} is the nearest key it does, or
+    // the keys it reads.
+    {"frame_node_order.conflicts_dependency@1", "{second} must stay before {first}: {why}"},
+    {"graph.image_key_unknown@1", "Image {image} has a key {key} the engine does not read{hint}"},
+    {"graph.buffer_key_unknown@1", "Buffer {buffer} has a key {key} the engine does not read{hint}"},
 }};
 
 // IA-1s, decision 2: graph.image_initial_mismatch@1, by `what`. extent reads
@@ -1369,6 +1377,80 @@ bool graphRefusalSentenceNamesDefinition(std::string_view code) {
         if (candidate.code == code)
             return candidate.sentence.find("{definition}") != std::string_view::npos;
     return false;
+}
+
+// FO-1s, decision 1 (engine FO-1): why `second` must run before `first`. The
+// engine names the reason of the first step from `second` on the shortest
+// path it found; `via` is the rest of that path, `first` at its end.
+std::string frameNodeOrderWhy(const nlohmann::json &fields) {
+    const auto first = graphRefusalFieldText(fields, "first");
+    const auto second = graphRefusalFieldText(fields, "second");
+    std::vector<std::string> via;
+    if (const auto found = fields.find("via"); found != fields.end() && found->is_array())
+        for (const auto &node : *found)
+            if (node.is_string()) via.push_back(node.get<std::string>());
+    const auto reason = graphRefusalFieldText(fields, "reason");
+    if (reason == "canonical_order") {
+        const auto anchor = fields.contains("anchor") ? graphRefusalFieldText(fields, "anchor") : std::string{};
+        return "the stages of a frame run in a fixed order" +
+               (anchor.empty() ? std::string{} : " (" + anchor + " stands between them)");
+    }
+    const auto &next = via.empty() ? first : via.front();
+    std::string why;
+    if (reason == "reads")
+        why = next + " reads " + graphRefusalFieldText(fields, "resource") + ", which " + second + " writes";
+    else if (reason == "after")
+        why = next + " is set to run after " + second;
+    else if (reason == "before")
+        why = second + " is set to run before " + next;
+    else
+        why = next + " waits on " + second;
+    if (!via.empty()) {
+        why += ", and " + first + " waits on " + next;
+        if (via.size() > 1) {
+            std::string rest;
+            for (std::size_t index = 1; index < via.size(); ++index) rest += (rest.empty() ? "" : ", ") + via[index];
+            why += " through " + rest;
+        }
+    }
+    return why;
+}
+
+// FO-1s, decision 4 (engines FO-1 / EB-1): an image's or a buffer's key the
+// engine does not read -- the nearest key it reads (a slip of two letters at
+// most), else the keys it reads.
+std::string unknownKeyHint(const nlohmann::json &fields) {
+    const auto key = graphRefusalFieldText(fields, "key");
+    std::vector<std::string> allowed;
+    if (const auto found = fields.find("allowed"); found != fields.end() && found->is_array())
+        for (const auto &name : *found)
+            if (name.is_string()) allowed.push_back(name.get<std::string>());
+    if (allowed.empty()) return {};
+    const auto distance = [](std::string_view from, std::string_view to) {
+        std::vector<std::size_t> row(to.size() + 1);
+        for (std::size_t j = 0; j <= to.size(); ++j) row[j] = j;
+        for (std::size_t i = 1; i <= from.size(); ++i) {
+            std::size_t diagonal = row[0];
+            row[0] = i;
+            for (std::size_t j = 1; j <= to.size(); ++j) {
+                const std::size_t above = row[j];
+                row[j] = std::min({row[j] + 1, row[j - 1] + 1, diagonal + (from[i - 1] == to[j - 1] ? 0u : 1u)});
+                diagonal = above;
+            }
+        }
+        return row[to.size()];
+    };
+    const std::string *nearest = nullptr;
+    std::size_t best = 3;
+    for (const auto &name : allowed)
+        if (const auto d = distance(key, name); d < best) {
+            best = d;
+            nearest = &name;
+        }
+    if (nearest != nullptr) return "; the nearest it reads is " + *nearest;
+    std::string keys;
+    for (const auto &name : allowed) keys += (keys.empty() ? "" : ", ") + name;
+    return "; it reads " + keys;
 }
 
 } // namespace
@@ -1551,6 +1633,10 @@ std::string graphLoopRefusalDescription(const nlohmann::json &error, bool name_d
         fields["actual"] = actual;
         fields["expected"] = expected;
     }
+    // FO-1s, decisions 1 and 4.
+    if (entry->code == "frame_node_order.conflicts_dependency@1") fields["why"] = frameNodeOrderWhy(fields);
+    if (entry->code == "graph.image_key_unknown@1" || entry->code == "graph.buffer_key_unknown@1")
+        fields["hint"] = unknownKeyHint(fields);
     for (std::size_t index = 0; index < pattern.size();) {
         const auto open = pattern.find('{', index);
         if (open == std::string_view::npos) {
@@ -1652,7 +1738,7 @@ std::string audioAnalysisRefusalDescription(const nlohmann::json &error) {
 namespace {
 
 // HW-2s / AV-1s: the Assets dock's refusals (engine PJ-1 and AV-1).
-constexpr std::array<GraphLoopRefusalText, 9> ProjectSettingsRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 10> ProjectSettingsRefusalTexts{{
     {"project.settings_change_unsupported@1",
      "{store} cannot change that way while the engine runs: {reason}"},
     {"external_modification", "project.json changed outside Studio since it was read; try again"},
@@ -1664,6 +1750,9 @@ constexpr std::array<GraphLoopRefusalText, 9> ProjectSettingsRefusalTexts{{
     {"assets_manifest_undeclared@1", "Asset store {store} declares no manifest"},
     {"assets_manifest_write_failed@1", "The manifest of {store} could not be written: {reason}"},
     {"assets_verification_unavailable@1", "This engine does not check asset contents"},
+    // FO-1s, decision 4 (engine EB-1): Update manifest while a check runs.
+    {"assets_verification_running@1",
+     "The verification of {store} is running \xE2\x80\x94 try again once it is done"},
 }};
 
 // An Undo the engine turned back because the store was there when it started.

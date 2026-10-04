@@ -629,6 +629,22 @@ with `.removeModelConfirmed` and `.removeModelCancel`. A file the scenario
 needs from outside the project is copied by its `<name>.prepare.py` into
 `{artifacts}/incoming/`; `gui_model_from_file` is the example.
 
+FO-1s (engines FO-1 and EB-1): a refused node order is one sentence in
+`pelican.frameNodeOrder.notice`, and the two rows it put the wrong way round
+are red until a row moves (`gui_graph_order`). In the Materials dock a
+document the engine did not load is a row that can be picked: its line is
+`pelican.materials.broken`, with `pelican.materials.showDocument` (opens
+`pelican.materials.documentDialog` with `.text`, `.notice`, `.save` and
+`.cancel`; Save writes the file whole) and `pelican.materials.registerAgain`.
+A material's row has the QActions `pelican.materials.delete` (asks in
+`pelican.materials.deleteConfirm` with `.deleteConfirmed` / `.deleteCancel`)
+and `pelican.materials.rename` (`pelican.materials.rename.name`, `.notice`,
+`.ok`, `.cancel`). A refused delete or rename puts a button to each place the
+material is used under the notice: `pelican.materials.uses.model#<model>`,
+`.object#<name>`, `.document#<path>`. A model's bindings are the row
+`pelican.materials.model` (`.heading`, `.notice`, `.choice`, `.close`).
+`gui_material_repair` is the example.
+
 ## Gestures a canvas is driven with
 
 `press`, `move` and `release` share one piece of state: which buttons this

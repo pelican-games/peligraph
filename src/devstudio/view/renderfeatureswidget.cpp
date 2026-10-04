@@ -176,7 +176,42 @@ class FrameNodeOrderDialog final : public QDialog, public RestartsEngine {
     if (!ticket.isEmpty())
       request(Request::Result, "get_edit_result", {{"ticket", ticket}});
   }
+  // FO-1s, decision 1 (engine FO-1): a refused order is one sentence, and
+  // the two rows it put the wrong way round are red until a row moves or the
+  // order is sent again.
+  static constexpr int ConflictRole = Qt::UserRole + 1;
+  void refused(const QJsonObject &response) {
+    const auto error = nlohmann::json::parse(
+        QJsonDocument{response.value("error").toObject()}.toJson(QJsonDocument::Compact).toStdString(),
+        nullptr, false);
+    const auto sentence =
+        error.is_discarded() ? QString{} : QString::fromStdString(graphLoopRefusalDescription(error, false));
+    notice->setText(sentence.isEmpty() ? orderRefusal(response) : sentence);
+    clearConflict();
+    if (error.is_discarded()) return;
+    const auto fields = graphRefusalFields(error, "frame_node_order.conflicts_dependency@1");
+    if (!fields || !fields->is_object()) return;
+    const auto first = QString::fromStdString(fields->value("first", std::string{}));
+    const auto second = QString::fromStdString(fields->value("second", std::string{}));
+    for (int row = 0; row < nodes->count(); ++row) {
+      auto *item = nodes->item(row);
+      if (item->text() != first && item->text() != second) continue;
+      item->setForeground(QColor(0xd9, 0x4c, 0x3d));
+      item->setData(ConflictRole, true);
+      item->setToolTip(notice->text());
+    }
+  }
+  void clearConflict() {
+    for (int row = 0; row < nodes->count(); ++row) {
+      auto *item = nodes->item(row);
+      if (!item->data(ConflictRole).toBool()) continue;
+      item->setData(Qt::ForegroundRole, QVariant{});
+      item->setData(ConflictRole, QVariant{});
+      item->setToolTip({});
+    }
+  }
   void submit(bool dependency_order) {
+    clearConflict();
     auto edited = orders;
     if (dependency_order)
       edited.remove(graph);
@@ -227,7 +262,7 @@ class FrameNodeOrderDialog final : public QDialog, public RestartsEngine {
           readResult();
         }
       } else
-        notice->setText(orderRefusal(*response));
+        refused(*response);
     } else if (response->value("status").toString() != "pending") {
       poll.stop();
       ticket.clear();
@@ -239,7 +274,7 @@ class FrameNodeOrderDialog final : public QDialog, public RestartsEngine {
         close();
         return;
       }
-      notice->setText(orderRefusal(*response));
+      refused(*response);
     }
     controls();
   }
@@ -297,6 +332,7 @@ public:
       const int row = nodes->currentRow();
       if (row < 0 || row + offset < 0 || row + offset >= nodes->count())
         return;
+      clearConflict();
       nodes->insertItem(row + offset, nodes->takeItem(row));
       nodes->setCurrentRow(row + offset);
     };
