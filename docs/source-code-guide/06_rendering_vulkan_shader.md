@@ -81,13 +81,13 @@
 
 ## 6.1 設定から1フレームの実行計画ができるまで
 
-起点は [`loadDefaultRenderingPassFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L467) です。`ProjectBasicConfig` が保持する rendering JSON と現在の出力サイズを使い、[`registerRenderingPassConfigVariantsData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1593) へ入ります。ここから先の合成・変換・計画は、この関数が自分で行うのではなく **1 つの compiler program へ委譲されます**(冒頭の層表)。
+起点は [`loadDefaultRenderingPassFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L479) です。`ProjectBasicConfig` が保持する rendering JSON と現在の出力サイズを使い、[`registerRenderingPassConfigVariantsData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1593) へ入ります。ここから先の合成・変換・計画は、この関数が自分で行うのではなく **1 つの compiler program へ委譲されます**(冒頭の層表)。
 
 ### graph variant: flat、`#xr`、preview
 
 現在の実体は [`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp) です。flat 用の rendering pass に加え、XR active 時は同じ設定から suffix `#xr` 付きの rendering pass をもう一つ合成します。WP192 以降、XR/preview の feature 除外と検証は callback ではなく、project compiler の [`CompiledGraphVariantPolicy`](../../src/project/graphvariantpolicy.hpp) が所有します。`compileGraphVariantPolicy()` は history/jitter、view family/execution、resource layout、terminal、mirror、suffix を一つの値へ解決し、除外には typed reason を残します。除外名は引き続き `xr_excluded_features` として記録されます。`Renderer` は [`flat_rendering_pass_id` / `xr_rendering_pass_id`](../../src/core/vkcore/renderer.hpp) を持ち、[`selectGraphVariant()`](../../src/core/vkcore/renderer.hpp) で切り替えます。
 
-WP172 で **第3の variant「preview」** が加わりました。同じ `loadRenderGraphVariantsFromConfig()` が起動時に [`precompilePreviewGraph()`](../../src/core/renderingpass/previewgraph.hpp#L66) も呼びます([`renderer_config.cpp` 内](../../src/core/vkcore/renderer_config.cpp#L73))。ただし preview は他の 2 つとは**種類が違います**。ヘッダのコメントが規範です([`previewgraph.hpp` 内](../../src/core/renderingpass/previewgraph.hpp#L18))。
+WP172 で **第3の variant「preview」** が加わりました。同じ `loadRenderGraphVariantsFromConfig()` が起動時に [`precompilePreviewGraph()`](../../src/core/renderingpass/previewgraph.hpp#L66) も呼びます([`renderer_config.cpp` 内](../../src/core/vkcore/renderer_config.cpp#L74))。ただし preview は他の 2 つとは**種類が違います**。ヘッダのコメントが規範です([`previewgraph.hpp` 内](../../src/core/renderingpass/previewgraph.hpp#L18))。
 
 > A third, startup-compiled graph program.  Unlike flat/xr RenderingPassId it
 > is data-only: render_preview executes it against request-local resources and
@@ -120,11 +120,11 @@ WP172 で **第3の variant「preview」** が加わりました。同じ `loadR
 
 `pelican_cli project init` が既定(`--template standard`)で書き出す rendering config は、**`pipeline.preset` と `features` の 2 キーだけ**になりました([`projecttemplate.cpp`](../../src/project/projecttemplate.cpp#L199) の `rendering_config_json`。F-2 で雛形は `src/devcli/projectinit.cpp` から `pelican_project` へ移りました)。この 2 キーは `pelican.graph` root の `rendering` 節の中にあります。MG-2b からはリテラル自体が graph root の全文で、[`renderingConfigJson()`](../../src/project/projecttemplate.cpp#L261) はそれをそのまま返します(以前の包み関数 `wrapLegacyRenderingConfig()` は撤去)。参照先は engine 同梱の [`render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json) です。`projects/animgraph_demo` の [`passes/main.json`](../../projects/animgraph_demo/passes/main.json) も同じ 2 キーへ移りました(`features` が 3 本。MG-2b で `pelican.graph` root に包まれました)。これは略記の導入ではなく **既定の描画経路そのものの入れ替え**です — 旧テンプレートは手書き 111 行で、pass は gbuffer / ssao / ssao_blur / present の 4 本、`present` が `uses_light_data: true` でライティングと present を兼ねており、forward 経路も半透明も snapshot も持っていませんでした。既定プロジェクトが踏むコードが変わっているので、「既定は deferred 4 pass だけ」という前提で読むと外します。
 
-展開の実体は [`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L834) で、呼び出し元は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3422) の**冒頭 1 箇所だけ**です([`featurecompose.cpp` 内](../../src/project/featurecompose.cpp#L3458))。つまり preset 展開は下の手順 1(feature 合成)の直前に、同じ関数の中で起きます。(LP-1e から、graph の `pass_set` の既定の family を決める [`defaultGraphPassFamily()`](../../src/project/featurecompose.cpp#L3396) も、preset の最初の family を知るためだけにもう 1 回 preset を展開します。結果は family の名前にしか使いません。)ソースファイルは書き換えません。
+展開の実体は [`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L835) で、呼び出し元は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3424) の**冒頭 1 箇所だけ**です([`featurecompose.cpp` 内](../../src/project/featurecompose.cpp#L3460))。つまり preset 展開は下の手順 1(feature 合成)の直前に、同じ関数の中で起きます。(LP-1e から、graph の `pass_set` の既定の family を決める [`defaultGraphPassFamily()`](../../src/project/featurecompose.cpp#L3398) も、preset の最初の family を知るためだけにもう 1 回 preset を展開します。結果は family の名前にしか使いません。)ソースファイルは書き換えません。
 
 読むうえでの要点は 2 つです。
 
-- **preset と `render_targets` / `rendering_passes` は排他**です。`pipeline` を書いた config で許されるトップレベルキーは `pipeline` / `features` / `snapshots` / `shader_defines` / `draw_sort` / `graph_transforms` / `render_strategy` / `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` / `xr` だけで、それ以外は例外です([`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L834) 内の `requireOnlyKeys`)。理由はコメントが規範で、「preset の更新が deep merge 越しに意味を変えてしまう」ことを避けるためです。構造を変えたいときは preset を copy/eject して verbose config にします。preset 側が既に持つ `render_strategy` / `snapshots` / `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` を上書きしようとした場合も、merge ではなく例外になります。
+- **preset と `render_targets` / `rendering_passes` は排他**です。`pipeline` を書いた config で許されるトップレベルキーは `pipeline` / `features` / `snapshots` / `shader_defines` / `draw_sort` / `graph_transforms` / `render_strategy` / `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` / `xr` だけで、それ以外は例外です([`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L835) 内の `requireOnlyKeys`)。理由はコメントが規範で、「preset の更新が deep merge 越しに意味を変えてしまう」ことを避けるためです。構造を変えたいときは preset を copy/eject して verbose config にします。preset 側が既に持つ `render_strategy` / `snapshots` / `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` を上書きしようとした場合も、merge ではなく例外になります。
 - hybrid_v1 が持つ pass は `deferred_geometry` / `ssao_pass` / `ssao_blur_pass` / `deferred_lighting` / `forward_opaque` / `__snapshot_opaque_color` / `__snapshot_opaque_depth` / `forward_transparent` / `scene_present` の 9 本で、`material_routing.policy` は `hybrid_auto_v1`、`draw_sort` は opaque が `state_batched_v1`、transparent が `back_to_front_v1` です(§6.5 の難所「draw queue は provider に鍵だけ作らせる」の provider 名はここから来ます)。deferred と forward が同じ `lit_color` / `scene_depth` へ `load` で重ねて描き、半透明は `snapshot_copy` node(§6.3)で退避した `opaque_color` / `opaque_depth` を screen input として読みます。
 
 登録処理の順序には意味があります。
@@ -139,7 +139,7 @@ WP172 で **第3の variant「preview」** が加わりました。同じ `loadR
 
 実コードではこの順序が [`renderingpassconfigregistration.cpp` の一続きの処理](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L231) になっています。先に target と buffer を作るのは、pass の format、descriptor image view、compute resource の存在確認に必要だからです。
 
-> 🧩 **難所 — canonical bucket の番兵**([`canonicalBucket()`](../../src/project/featurecompose.cpp#L295) / [`canonicalizePasses()`](../../src/project/featurecompose.cpp#L443))
+> 🧩 **難所 — canonical bucket の番兵**([`canonicalBucket()`](../../src/project/featurecompose.cpp#L297) / [`canonicalizePasses()`](../../src/project/featurecompose.cpp#L445))
 >
 > **何をする所か**: 手順 1 の中身です。base 設定の pass を 8 つの canonical anchor(`sprite` / `post_main` / `tonemap` / `post_ldr` / `pelican_ui` / `debug_draw` / `debug_text` / `imgui`)の区画へ振り分け、`__anchor_*` node と終端 `output_transform` を実体化した 1 本の配列に組み直します。
 >
@@ -148,7 +148,7 @@ WP172 で **第3の variant「preview」** が加わりました。同じ `loadR
 > 1. **番兵**: 戻り値が `size_t` で、**`canonical_anchors.size()`(= 8)が「どの anchor にも属さない = scene pass」の番兵**になっています。配列外の値をわざと返す関数だと気づかないと読めません(index として危険なわけではありません。呼び出し側の `canonicalizePasses()` が `bucket == canonical_anchors.size()` を先に判定して `scene_passes` へ回すので、この値が `buckets[bucket]` の添字に使われる経路はありません)。
 > 2. **振り分け規則**: 「型」「明示 `canonical_anchor` フィールド」「マジックネーム(残るのは `lighting_pass` だけ。Bloom の名前判定は P-2a-1a で撤去し、Bloom は P-2a-1b で `engine://features/bloom.json` になった)」「出力先」の 4 系統混在です。
 > 3. **swapchain へ書く pass は HDR で行き先が変わる**: `canonical_anchor` を持たない pass のうち swapchain を書くものだけが **HDR の有無で別区画に落ちます**(`hdr_enabled ? 1 : 3`)。Bloom の名前判定は P-2a-1a(`60e95f53`)で撤去され、Bloom の 13 pass は `canonical_anchor: post_ldr` を自分で書きます(hdr on で組むなら `post_main` を書く。`example` は hdr off)。
-> 4. **scene 終端はもう一段ややこしい**: HDR では [`prepareHdrSceneOutput()`](../../src/project/featurecompose.cpp#L344) が `canonicalizePasses()` より**前に**その出力を `swapchain` → `scene_ldr_in` へ書き換えるため、`passWritesSwapchain()` がもう当たらず、bucket 3 ではなく **scene 区画にそのまま残ります**(swapchain へ書く役目は、後から `after:tonemap` で挿し込まれる feature 側の `hdr_tonemap` が引き継ぎます)。「HDR にすると終端 pass が bucket 3 から bucket 1 へ移る」ではない、というのがここの読みどころです。
+> 4. **scene 終端はもう一段ややこしい**: HDR では [`prepareHdrSceneOutput()`](../../src/project/featurecompose.cpp#L346) が `canonicalizePasses()` より**前に**その出力を `swapchain` → `scene_ldr_in` へ書き換えるため、`passWritesSwapchain()` がもう当たらず、bucket 3 ではなく **scene 区画にそのまま残ります**(swapchain へ書く役目は、後から `after:tonemap` で挿し込まれる feature 側の `hdr_tonemap` が引き継ぎます)。「HDR にすると終端 pass が bucket 3 から bucket 1 へ移る」ではない、というのがここの読みどころです。
 >
 > **骨子**:
 > ```text
@@ -160,15 +160,15 @@ WP172 で **第3の variant「preview」** が加わりました。同じ `loadR
 >            output_transform      ← display を読み swapchain へ書く
 > ```
 >
-> **手がかり**: bucket に掛かるのは **base 設定の pass だけ**です。feature の pass はこの後で `insertPassByAnchor()` が置くので bucket を通りません(「なぜ `hdr_tonemap` が bucket に出てこないのか」で詰まる所)。[`retargetSwapchainAliases()`](../../src/project/featurecompose.cpp#L482) は `output_transform` **以外**の pass の `swapchain` を `display` に置換するので、合成後に `swapchain` を書くのは終端だけになります。テストは [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp) の "canonical color pipeline is composed even without features"。
+> **手がかり**: bucket に掛かるのは **base 設定の pass だけ**です。feature の pass はこの後で `insertPassByAnchor()` が置くので bucket を通りません(「なぜ `hdr_tonemap` が bucket に出てこないのか」で詰まる所)。[`retargetSwapchainAliases()`](../../src/project/featurecompose.cpp#L484) は `output_transform` **以外**の pass の `swapchain` を `display` に置換するので、合成後に `swapchain` を書くのは終端だけになります。テストは [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp) の "canonical color pipeline is composed even without features"。
 >
 > **不変条件**: pass 名 `output_transform` と `__anchor_` 接頭辞、render target 名 `display` は予約語です(衝突は例外)。
 
-> 🧩 **難所 — anchor 挿入と暗黙 after**([`insertPassByAnchor()`](../../src/project/featurecompose.cpp#L2312) / [`enforceCanonicalOrder()`](../../src/project/featurecompose.cpp#L402))
+> 🧩 **難所 — anchor 挿入と暗黙 after**([`insertPassByAnchor()`](../../src/project/featurecompose.cpp#L2314) / [`enforceCanonicalOrder()`](../../src/project/featurecompose.cpp#L404))
 >
 > **何をする所か**: feature が書いた `insert: "before:X" / "after:X" / "end"` を配列上の実位置へ解決し、合成の最後に配列順から `after` edge を機械的に生やして、planner が読む明示依存へ落とします。
 >
-> **素朴に読むと**: `after:<canonical anchor>` は **anchor node の直後には入りません**。**最初に出会った**次の `canonical_anchor` か `output_transform` の手前まで index を進める(そこで止まるので、区画を跨いで走り続けることはありません)ので、意味は「その区画の**末尾**」です。素朴に `index + 1` で挿入すると、同じ anchor へ複数の feature が刺さったとき後勝ちで順序が反転します(`before:` 側は前進しない非対称)。しかも付く依存は物理的な前後ではなく **anchor node 名**(`__anchor_tonemap`)なので、位置と依存を別々に追わないと最終順序が読めません。`enforceCanonicalOrder()` の暗黙連鎖には逃げ道があり、直前 pass への `after` を足す前に [`hasExplicitRelation()`](../../src/project/featurecompose.cpp#L397) を**両方向**で確認します。これが無いと `before: X` を書いた feature pass に `after: X` が機械的に足されて閉路になり、planner が "Cycle detected" で落ちます。
+> **素朴に読むと**: `after:<canonical anchor>` は **anchor node の直後には入りません**。**最初に出会った**次の `canonical_anchor` か `output_transform` の手前まで index を進める(そこで止まるので、区画を跨いで走り続けることはありません)ので、意味は「その区画の**末尾**」です。素朴に `index + 1` で挿入すると、同じ anchor へ複数の feature が刺さったとき後勝ちで順序が反転します(`before:` 側は前進しない非対称)。しかも付く依存は物理的な前後ではなく **anchor node 名**(`__anchor_tonemap`)なので、位置と依存を別々に追わないと最終順序が読めません。`enforceCanonicalOrder()` の暗黙連鎖には逃げ道があり、直前 pass への `after` を足す前に [`hasExplicitRelation()`](../../src/project/featurecompose.cpp#L399) を**両方向**で確認します。これが無いと `before: X` を書いた feature pass に `after: X` が機械的に足されて閉路になり、planner が "Cycle detected" で落ちます。
 >
 > **骨子**:
 > ```text
@@ -200,7 +200,7 @@ WP172 で **第3の variant「preview」** が加わりました。同じ `loadR
 >
 > 依存名に入るのは**一致した node の `name` フィールド**です(canonical anchor なら `__anchor_post_main`、pass 名一致なら `taa_resolve`)。もし `after:` を素朴に「anchor の位置 + 1」で挿していたら、`after:post_main` を持つ feature が 2 つある構成で後から合成した側が前に入り、宣言順と逆になります。
 >
-> **手がかり**: [`findRenderPassAnchorMatches()`](../../src/project/featurecompose.cpp#L2230) は 2 段構えで、第 1 段が `type == "canonical_anchor"` かつ `anchor` フィールド一致、ヒット 0 のときだけ第 2 段で**任意の pass 名**を見ます(`shadow_directional.json` の `before:lighting_pass`、`taa.json` の `after:taa_resolve` が第 2 段)。複数一致は例外です。`last_active_pass` は配列要素への生ポインタで、`appendAfter()` が要素の中身しか変えないから有効です。ここに `passes.insert` を足すと即ダングリングします。
+> **手がかり**: [`findRenderPassAnchorMatches()`](../../src/project/featurecompose.cpp#L2232) は 2 段構えで、第 1 段が `type == "canonical_anchor"` かつ `anchor` フィールド一致、ヒット 0 のときだけ第 2 段で**任意の pass 名**を見ます(`shadow_directional.json` の `before:lighting_pass`、`taa.json` の `after:taa_resolve` が第 2 段)。複数一致は例外です。`last_active_pass` は配列要素への生ポインタで、`appendAfter()` が要素の中身しか変えないから有効です。ここに `passes.insert` を足すと即ダングリングします。
 >
 > **不変条件**: anchor 解決は「canonical 優先、無ければ pass 名」の順を保つこと(逆にすると feature pass 名が canonical anchor を隠します)。`hasExplicitRelation()` の両方向チェックを削らないこと。
 
@@ -222,7 +222,7 @@ WP172 で **第3の variant「preview」** が加わりました。同じ `loadR
 >                     swapchain が SRGB → そのまま / UNORM → shader が linearToSrgb()
 > ```
 >
-> **手がかり**: つまり **linear → 8bit sRGB → linear → 8bit sRGB** の往復が 1 回入ります(骨子の **OETF / EOTF** は opto-electronic / electro-optical transfer function の略で、前者は linear 値を sRGB のガンマ曲線へ載せる符号化、後者は符号化された値を linear へ戻す復号です。sRGB フォーマットの image へ書く / から読むと、どちらもハードウェアが自動で掛けます)。[`color_pipeline_test.cpp`](../../test/color_pipeline_test.cpp) が hardware 経路と shader fallback 経路の差を **±1 LSB**(least significant bit — 最下位ビット 1 つぶん、つまり 8 bit なら 256 階調で 1 段の差)で許容しているのはこのためで、「無駄だから `display` を UNORM に」と最適化すると中間段の量子化が linear 空間になり暗部が壊れます。`format_class` 省略時の推論 [`inferFormatClass()`](../../src/project/featurecompose.cpp#L246) は **名前の部分一致**(`normal` / `depth` / `shadow` / `ssao` / `worldpos` / `material` を含めば `data`)という素朴な規則なので、target 名を変えると色空間が変わりえます。
+> **手がかり**: つまり **linear → 8bit sRGB → linear → 8bit sRGB** の往復が 1 回入ります(骨子の **OETF / EOTF** は opto-electronic / electro-optical transfer function の略で、前者は linear 値を sRGB のガンマ曲線へ載せる符号化、後者は符号化された値を linear へ戻す復号です。sRGB フォーマットの image へ書く / から読むと、どちらもハードウェアが自動で掛けます)。[`color_pipeline_test.cpp`](../../test/color_pipeline_test.cpp) が hardware 経路と shader fallback 経路の差を **±1 LSB**(least significant bit — 最下位ビット 1 つぶん、つまり 8 bit なら 256 階調で 1 段の差)で許容しているのはこのためで、「無駄だから `display` を UNORM に」と最適化すると中間段の量子化が linear 空間になり暗部が壊れます。`format_class` 省略時の推論 [`inferFormatClass()`](../../src/project/featurecompose.cpp#L248) は **名前の部分一致**(`normal` / `depth` / `shadow` / `ssao` / `worldpos` / `material` を含めば `data`)という素朴な規則なので、target 名を変えると色空間が変わりえます。
 >
 > **不変条件**: `scene` / `display` の実フォーマットを決めるのはこの関数だけです。authored `format` に意味を持たせないこと。中間の `display` は sRGB エンコード済み 8 bit のまま(linear 8 bit にしない)。
 
@@ -253,7 +253,7 @@ flowchart LR
 
 rendering config は、共通グラフ文書(`schema` / `version` / `definitions` / `nodes` / `outputs` の 5 キー)の `rendering` メンバの下に入ります。出荷 project 7 本と雛形はすべてこの形です。
 
-P-2a-4b までは、`features` / `render_targets` / `rendering_passes` … を最上位に直接並べた **legacy root** も受けていました。MG-2b でその読み手を撤去し、legacy root は読み込み・overlay・ray tracing の設定・編集文書のどこでも `render_config.legacy_root@1`([`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L37))で拒否されます。
+P-2a-4b までは、`features` / `render_targets` / `rendering_passes` … を最上位に直接並べた **legacy root** も受けていました。MG-2b でその読み手を撤去し、legacy root は読み込み・overlay・ray tracing の設定・編集文書のどこでも `render_config.legacy_root@1`([`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L39))で拒否されます。
 
 読むときの要点は「authored key の住所を決める `if` を各所が持たない」ことです。住所を決めるのは [`renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L12) の **3 つの名前(4 定義)**だけで(`isRenderGraphRoot()` は `ordered_json` 用の [overload](../../src/project/renderconfigsection.hpp#L27) を持ちます)、他の reader / writer はここを呼びます。
 
@@ -265,11 +265,11 @@ P-2a-4b までは、`features` / `render_targets` / `rendering_passes` … を�
 
 P-2a-4b にあった 4 本目の `wrapLegacyRenderingConfig()`(legacy config を graph root で包む関数)は MG-2b で撤去されました。
 
-つまり **読みは節が無くても失敗せず、編集だけが名前付きで拒否される**という非対称が意図です。編集側の入口は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L691) で、byte を保ったまま `rendering.<key>` を差し替えます(graph root 自身のキーは root に書きます)。その byte 正確な locator の読みどころは [第9章 §9.24](09_black_magic_and_gotchas.md) の難所「byte 正確な節 locator と絶対 offset」にあります。
+つまり **読みは節が無くても失敗せず、編集だけが名前付きで拒否される**という非対称が意図です。編集側の入口は [`AuthoredRenderConfigDocument::withSectionValue()`](../../src/project/renderconfigdocument.cpp#L754) で、byte を保ったまま `rendering.<key>` を差し替えます(graph root 自身のキーは root に書きます)。その byte 正確な locator の読みどころは [第9章 §9.24](09_black_magic_and_gotchas.md) の難所「byte 正確な節 locator と絶対 offset」にあります。
 
 ### feature のスカラーパラメータ: `binding: define` と `binding: buffer`(P-2a-2)
 
-feature は `parameters.scalars[]` で数値パラメータを宣言できます。v0 で足されたのは、その値が**どの経路でシェーダへ届くか**の宣言で、[`ScalarParameterBinding`](../../src/project/featurecompose.cpp#L776) の 2 値です。
+feature は `parameters.scalars[]` で数値パラメータを宣言できます。v0 で足されたのは、その値が**どの経路でシェーダへ届くか**の宣言で、[`ScalarParameterBinding`](../../src/project/featurecompose.cpp#L778) の 2 値です。
 
 - `define`(既定) — 合成時に shader define へ焼き込みます。変更は再コンパイルを伴います。
 - `buffer` — feature 自身が宣言した frame graph buffer を初期化します。値は毎フレーム、共通グラフの `render.scalar` sink が上書きできます。
@@ -278,13 +278,13 @@ feature は `parameters.scalars[]` で数値パラメータを宣言できます
 
 ✅RS-8 / RS-11(`5d065436`)から、bloom の shader は feature の外でも compile できます。`bloom_highpass.frag` は `PELICAN_FEATURE_BLOOM_THRESHOLD` / `PELICAN_FEATURE_BLOOM_KNEE` が無ければ `bloom.json` と同じ既定値 0.4 / 0.7 を自分で定義し([既定値](../../src/core/resources/bloom_highpass.frag#L12))、組み込みの SPIR-V も define を渡さずに作ります(`src/core/resources/CMakeLists.txt` の `embed_shader(bloom_highpass.frag)`)。`bloom_composite.frag` は `bloomIntensity` の port が無ければ既定 2.0 を使います([分岐](../../src/core/resources/bloom_composite.frag#L24))。shader の既定値と `bloom.json` の既定値は 2 か所に書かれているので、一致は test が source から読んで比べます([test](../../test/vi1_variadic_inputs_test.cpp#L1468))。
 
-> 🧩 **難所 — `binding: buffer` は 5 つの宣言が噛み合って初めて成立する**([binding の parse](../../src/project/featurecompose.cpp#L1085) / [buffer の seed](../../src/project/featurecompose.cpp#L1732))
+> 🧩 **難所 — `binding: buffer` は 5 つの宣言が噛み合って初めて成立する**([binding の parse](../../src/project/featurecompose.cpp#L1087) / [buffer の seed](../../src/project/featurecompose.cpp#L1734))
 >
 > **何をする所か**: `binding: "buffer"` と書かれた scalar の解決値を、feature が宣言した frame graph buffer の初期値として書き込みます。
 >
-> **素朴に読むと**: 「`buffer` にすれば実行時に変えられる」で終わりに見えますが、合成器は 5 条件を課し、1 つでも欠けると**無言で効かないのではなく合成時の named error** になります。(1) `shader_define: true` との併用は拒否 — define が、buffer が存在する理由そのものを凍結してしまうからです([コメント](../../src/project/featurecompose.cpp#L1098))。(2) scalar の型が `float` であること(`binding 'buffer' requires scalar type float`、[型の門](../../src/project/featurecompose.cpp#L1110))。(3) feature が `<feature 名>.<scalar 名>` という名前の buffer を宣言していること。この名前は [`featureScalarBufferName()`](../../src/project/featurecompose.cpp#L792) が導出し、`render.scalar{target}` が名指しする文字列と同一です — **二度書かない**のが規約です。(4) その buffer が `host_source: "runtime_f32"` かつ `size` がちょうど 4 であること。(5) 文書が `initial_f32` を**書いていない**こと。初期値は scalar から導出するものなので、authored な二重宣言は [「`initial_f32` is derived from the scalar, not authored」](../../src/project/featurecompose.cpp#L1756) で拒否されます。
+> **素朴に読むと**: 「`buffer` にすれば実行時に変えられる」で終わりに見えますが、合成器は 5 条件を課し、1 つでも欠けると**無言で効かないのではなく合成時の named error** になります。(1) `shader_define: true` との併用は拒否 — define が、buffer が存在する理由そのものを凍結してしまうからです([コメント](../../src/project/featurecompose.cpp#L1100))。(2) scalar の型が `float` であること(`binding 'buffer' requires scalar type float`、[型の門](../../src/project/featurecompose.cpp#L1112))。(3) feature が `<feature 名>.<scalar 名>` という名前の buffer を宣言していること。この名前は [`featureScalarBufferName()`](../../src/project/featurecompose.cpp#L794) が導出し、`render.scalar{target}` が名指しする文字列と同一です — **二度書かない**のが規約です。(4) その buffer が `host_source: "runtime_f32"` かつ `size` がちょうど 4 であること。(5) 文書が `initial_f32` を**書いていない**こと。初期値は scalar から導出するものなので、authored な二重宣言は [「`initial_f32` is derived from the scalar, not authored」](../../src/project/featurecompose.cpp#L1758) で拒否されます。
 >
-> **手がかり**: 解決した値が buffer へ渡る経路は 2 段です。まず [scalar 解決のループ](../../src/project/featurecompose.cpp#L1610)が `(buffer 名, float 値)` を貯め、合成の最後に[その列を feature の `buffers` エントリへ書き戻し](../../src/project/featurecompose.cpp#L1761)ます。したがって「feature 文書を目で読んでも `initial_f32` が無い」のは正常で、**合成後の config にだけ現れます**。
+> **手がかり**: 解決した値が buffer へ渡る経路は 2 段です。まず [scalar 解決のループ](../../src/project/featurecompose.cpp#L1612)が `(buffer 名, float 値)` を貯め、合成の最後に[その列を feature の `buffers` エントリへ書き戻し](../../src/project/featurecompose.cpp#L1763)ます。したがって「feature 文書を目で読んでも `initial_f32` が無い」のは正常で、**合成後の config にだけ現れます**。
 >
 > **不変条件**: `initial_f32` を feature 文書へ手で書かないこと。buffer 名の導出規則を変えるときは `render.scalar{target}` の綴りと同時に変えること(片側だけ変えると、上書きが届かない buffer が黙って残ります)。`shader_define` との排他を緩めないこと。
 
