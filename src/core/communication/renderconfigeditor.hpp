@@ -404,6 +404,11 @@ class RenderConfigEditorService {
         const GateSnapshot &gate, const std::string &base_digest,
         std::string_view method,
         std::string_view gate_closed_message) const;
+    // BS-1b: render_document_syntax@1 {method, document, line?, column?} when
+    // `bytes` (the document `reference`) is not JSON; nullopt otherwise.
+    std::optional<nlohmann::ordered_json> syntaxRejection(
+        std::string_view bytes, std::string_view reference,
+        std::string_view method) const;
     // The authored-pass tail shared by addAuthoredPass and
     // removeAuthoredPass: candidate-set preflight -> ticket enqueue ->
     // accepted response.  The operation name is the only difference.

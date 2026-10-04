@@ -86,7 +86,9 @@ bool isCarriedRefusalCode(std::string_view code) {
            // built (the steps are judged against the loaded materials).
            isMaterialDrawLoopRefusalCode(code) ||
            // LC-1: a push-constant range partly over the loop index.
-           code == shaderLoopPushOverlapCode;
+           code == shaderLoopPushOverlapCode ||
+           // BS-1b: a feature or preset that is not JSON.
+           code == renderDocumentSyntaxCode;
 }
 
 // LP-0a: a graph refusal that only composing the candidate can raise (a
@@ -227,6 +229,8 @@ std::string carriedRefusalMessage(const CodedRefusal &refusal) {
     if (refusal.code == materialRouteUnservedCode) {
         return materialRouteUnservedText(refusal.fields);
     }
+    if (refusal.code == renderDocumentSyntaxCode)
+        return renderDocumentSyntaxMessage(refusal.fields);
     return refusal.code + ": " +
            refusal.fields.value("message", refusal.fields.dump());
 }
@@ -459,6 +463,14 @@ std::vector<std::string> allFeatureReferences(std::string_view bytes) {
         }
     }
     return result;
+}
+
+// G-4's material_route_default of the root the editor holds. BS-1b: one that
+// is not JSON authors none, as the engine on its fallback generation read none.
+MaterialRouteDefault heldRouteDefault(std::string_view held_root) {
+    const auto held = Json::parse(held_root, nullptr, false);
+    if (held.is_discarded()) return readMaterialRouteDefault(Json::object());
+    return readMaterialRouteDefault(renderingSectionOrEmpty(held));
 }
 
 bool hasManagedFragmentMarker(std::string_view bytes) {
@@ -926,8 +938,13 @@ composeRenderFeatureCatalog(
 RenderConfigEditorService::RenderConfigEditorService(
     RenderConfigEditorDependencies dependencies)
     : dependencies_{std::move(dependencies)},
-      document_{AuthoredRenderConfigDocument::inspect(
-          dependencies_.source_bytes)} {
+      // BS-1b: a root that is not JSON (an engine on its fallback generation
+      // was refused it) is held as its bytes, to be listed and replaced.
+      document_{Json::accept(dependencies_.source_bytes)
+                    ? AuthoredRenderConfigDocument::inspect(
+                          dependencies_.source_bytes)
+                    : AuthoredRenderConfigDocument::unparsed(
+                          dependencies_.source_bytes)} {
     if (dependencies_.source_reference.empty() ||
         dependencies_.source_path.empty() || !dependencies_.gate ||
         !dependencies_.runtime_snapshot || !dependencies_.apply_candidate) {
@@ -978,8 +995,10 @@ RenderConfigEditorService::~RenderConfigEditorService() {
 
 void RenderConfigEditorService::loadManagedDocumentBaselines() {
     managed_documents_.clear();
+    // BS-1b: a root that is not JSON names no fragment.
     if (!dependencies_.normalize_reference ||
-        !dependencies_.resolve_document_path) {
+        !dependencies_.resolve_document_path ||
+        !Json::accept(document_.bytes())) {
         return;
     }
     for (const auto &reference : allFeatureReferences(document_.bytes())) {
@@ -1857,7 +1876,22 @@ RenderConfigEditorService::checkAuthoringPreconditions(
     } catch (const std::exception &error) {
         return rejection("external_modification", error.what());
     }
-    return std::nullopt;
+    // BS-1b: nothing in a root that is not JSON can be edited in place; it is
+    // fixed on disk and reloaded, or replaced whole (restore_render_documents).
+    return syntaxRejection(document_.bytes(), dependencies_.source_reference,
+                           method);
+}
+
+std::optional<OrderedJson> RenderConfigEditorService::syntaxRejection(
+    std::string_view bytes, std::string_view reference,
+    std::string_view method) const {
+    const auto fields = renderDocumentSyntax(bytes, reference);
+    if (!fields) return std::nullopt;
+    auto details = OrderedJson::object();
+    details["method"] = std::string{method};
+    for (const auto &[key, value] : fields->items()) details[key] = value;
+    return rejection(std::string{renderDocumentSyntaxCode},
+                     renderDocumentSyntaxMessage(*fields), std::move(details));
 }
 
 OrderedJson RenderConfigEditorService::queueRootEdit(
@@ -5507,8 +5541,12 @@ RenderConfigEditorService::renderDocumentsOf(
         for (auto &entry : namedRenderDocuments(root_bytes, preset_on_disk)) {
             try {
                 std::error_code error;
-                if (!std::filesystem::is_regular_file(entry.path, error) || error ||
-                    !isRenderDocumentOfKind(readFileBytes(entry.path), entry.kind))
+                if (!std::filesystem::is_regular_file(entry.path, error) || error)
+                    continue;
+                // BS-1b: one that is not JSON is listed too, to be fixed.
+                const auto bytes = readFileBytes(entry.path);
+                if (Json::accept(bytes) &&
+                    !isRenderDocumentOfKind(bytes, entry.kind))
                     continue;
             } catch (const std::exception &) {
                 continue;
@@ -6172,6 +6210,11 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
         if (!restore.content) {
             // Deleted: nothing to check but that the composition still
             // composes without it (the candidate's preflight).
+        } else if (auto refused = syntaxRejection(
+                       *restore.content, restore.reference, method)) {
+            // BS-1b: content that is not JSON, by name.
+            (*refused)["error"]["reference"] = restore.reference;
+            return *refused;
         } else if (target.kind == "root") {
             try {
                 root = AuthoredRenderConfigDocument::inspect(*restore.content);
@@ -6238,8 +6281,7 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
     bool restart_required = false;
     try {
         restart_required =
-            readMaterialRouteDefault(
-                renderingSectionOrEmpty(Json::parse(document_.bytes()))) !=
+            heldRouteDefault(document_.bytes()) !=
             readMaterialRouteDefault(
                 renderingSectionOrEmpty(Json::parse(root.bytes())));
     } catch (const std::exception &error) {
@@ -6336,6 +6378,10 @@ OrderedJson RenderConfigEditorService::reloadRenderDocuments(
         return rejection("render_pipeline_preflight_failed", error.what(),
                          preflight_details(dependencies_.source_reference));
     }
+    // BS-1b: one that is not JSON, by name.
+    if (auto refused = syntaxRejection(
+            root_bytes, dependencies_.source_reference, method))
+        return *refused;
     std::optional<AuthoredRenderConfigDocument> root;
     try {
         root = AuthoredRenderConfigDocument::inspect(root_bytes);
@@ -6492,8 +6538,7 @@ OrderedJson RenderConfigEditorService::reloadRenderDocuments(
     bool restart_required = false;
     try {
         restart_required =
-            readMaterialRouteDefault(
-                renderingSectionOrEmpty(Json::parse(document_.bytes()))) !=
+            heldRouteDefault(document_.bytes()) !=
             readMaterialRouteDefault(
                 renderingSectionOrEmpty(Json::parse(root->bytes())));
     } catch (const std::exception &error) {

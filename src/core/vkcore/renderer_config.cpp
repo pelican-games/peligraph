@@ -32,6 +32,7 @@
 #include "../../project/renderfeatureoverlay.hpp"
 #include "../../project/featurecompose.hpp"
 #include "../../project/graphcomposition.hpp"
+#include "../../project/renderconfigdocument.hpp"
 #include "../../project/renderconfigsection.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/vulkanviewplanning.hpp"
@@ -439,6 +440,14 @@ std::string renderPipelineFallbackConfigJson(
 nlohmann::json renderPipelineRefusalJson(
     const std::exception &error, std::string_view root_json,
     std::string_view root_reference) {
+    // BS-1b: a root that is not JSON is refused by that name, whatever
+    // reader met it first.
+    if (!root_json.empty())
+        if (auto fields = renderDocumentSyntax(root_json, root_reference)) {
+            (*fields)["code"] = std::string{renderDocumentSyntaxCode};
+            (*fields)["message"] = renderDocumentSyntaxMessage(*fields);
+            return std::move(*fields);
+        }
     const auto root =
         nlohmann::json::parse(root_json, nullptr, false);
     nlohmann::json refusal = nlohmann::json::object();
@@ -456,6 +465,9 @@ nlohmann::json renderPipelineRefusalJson(
         if (coded->fields.is_object()) refusal = coded->fields;
         code = coded->code;
         addGraphRefusalSource(refusal, code, root, root_reference);
+        // BS-1b: a feature or preset that is not JSON, said in words.
+        if (code == renderDocumentSyntaxCode)
+            message = renderDocumentSyntaxMessage(refusal);
     } else {
         code = std::string{renderPipelineUnnamedRefusalCode};
     }

@@ -2409,7 +2409,8 @@ TEST_CASE("RL-1 reload_render_documents takes in a root rewritten on disk, and r
     };
     {
         const auto error = refused("{ \"schema\": \"pelican.graph\", ");
-        CHECK(error.at("code") == "render_pipeline_preflight_failed");
+        // BS-1b: a root that is not JSON is refused by that name.
+        CHECK(error.at("code") == "render_document_syntax@1");
         CHECK(error.at("method") == "reload_render_documents");
     }
     {

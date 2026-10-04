@@ -2,6 +2,7 @@
 #include "featurecompose.hpp"
 #include "passfieldownership.hpp"
 #include "rasterpass.hpp"
+#include "renderconfigdocument.hpp"
 #include "renderconfigsection.hpp"
 #include "renderresourcename.hpp"
 
@@ -863,7 +864,10 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
 
     nlohmann::json document;
     try {
-        document = nlohmann::json::parse(load_preset_json(reference));
+        document = parseRenderDocument(load_preset_json(reference), reference);
+    } catch (const RenderDocumentSyntaxError &) {
+        // BS-1b: by name, as it was thrown.
+        throw;
     } catch (const std::exception &error) {
         throw std::runtime_error("failed to load render pipeline preset '" + reference +
                                  "': " + error.what());

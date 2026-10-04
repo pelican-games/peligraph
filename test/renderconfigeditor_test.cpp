@@ -9521,8 +9521,10 @@ TEST_CASE("RD-1 restore_render_documents refuses what it may not write, and cont
 
         const auto not_json = rd1Error(restore(Json::array(
             {rd1Document("passes/main.json", root.at("digest"), "{ not json")})));
-        CHECK(not_json.at("code") == "render_pipeline_preflight_failed");
+        // BS-1b: content that is not JSON is refused by that name.
+        CHECK(not_json.at("code") == "render_document_syntax@1");
         CHECK(not_json.at("reference") == "passes/main.json");
+        CHECK(not_json.at("document") == "project://passes/main.json");
 
         const auto legacy_root = rd1Error(restore(Json::array(
             {rd1Document("passes/main.json", root.at("digest"),

@@ -1,5 +1,6 @@
 #include "featurecompose.hpp"
 #include "rendergraphcomposition.hpp"
+#include "renderconfigdocument.hpp"
 #include "featurejitter.hpp"
 #include "materialscreeninput.hpp"
 #include "renderresourcename.hpp"
@@ -137,7 +138,8 @@ nlohmann::json loadFeatureJson(std::string_view ref,
     if (!dependencies.load_feature_json) {
         throw std::runtime_error("render feature loader is not configured: " + std::string{ref});
     }
-    return nlohmann::json::parse(dependencies.load_feature_json(ref));
+    // BS-1b: bytes that are not JSON are refused by name.
+    return parseRenderDocument(dependencies.load_feature_json(ref), ref);
 }
 
 struct FeatureInstance {

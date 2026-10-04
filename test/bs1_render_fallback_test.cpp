@@ -64,19 +64,34 @@ Json brokenNode() {
             {"outputs", Json::array()}};
 }
 
+// BS-1b: the root as a hand edit leaves it when the closing brace is lost:
+// not JSON at all.
+std::string withoutLastBrace(std::string text) {
+    text.erase(text.rfind('}'), 1);
+    return text;
+}
+
 struct TempProject {
     std::filesystem::path root;
     std::string fixed_root;
+    std::string broken_root;
 
-    explicit TempProject(std::string_view name) {
+    // `syntax`: the root loses its last `}` (BS-1b) instead of gaining the
+    // node CT-1 names.
+    explicit TempProject(std::string_view name, bool syntax = false) {
         root = std::filesystem::temp_directory_path() /
                ("pelican_bs1_" + std::string{name} + "_" +
                 std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
         (void)Pelican::initializeProjectTemplate(root, Pelican::ProjectTemplate::Blank);
         fixed_root = readFile(rootPath());
-        auto broken = Json::parse(fixed_root);
-        broken.at("nodes").push_back(brokenNode());
-        writeFile(rootPath(), broken.dump(2) + "\n");
+        if (syntax) {
+            broken_root = withoutLastBrace(fixed_root);
+        } else {
+            auto broken = Json::parse(fixed_root);
+            broken.at("nodes").push_back(brokenNode());
+            broken_root = broken.dump(2) + "\n";
+        }
+        writeFile(rootPath(), broken_root);
     }
     ~TempProject() {
         std::error_code ec;
@@ -342,6 +357,33 @@ void requireFallbackRefusal(const Json &status) {
     CHECK_THAT(refusal.at("message").get<std::string>(),
                Catch::Matchers::ContainsSubstring("graph.port_field_missing@1"));
 }
+
+// BS-1b: the refusal of a root that is not JSON, where it is reported (the
+// startup refusal, or a rejected edit's error).
+void requireSyntaxRefusal(const Json &refusal) {
+    INFO(refusal.dump(2));
+    CHECK(refusal.at("code") == "render_document_syntax@1");
+    CHECK(refusal.at("document") == std::string{"project://"} + root_reference);
+    // Where the parser stopped: past the last line, the brace it expected.
+    CHECK(refusal.at("line").get<int>() > 1);
+    CHECK(refusal.at("column").get<int>() >= 1);
+    CHECK_THAT(refusal.at("message").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("render_document_syntax@1") &&
+                   Catch::Matchers::ContainsSubstring("is not valid JSON"));
+}
+
+// The fallback's frames: they run, and are one flat colour (the engine's, not
+// Blank's gradient).
+void requireFallbackFrames(PlayerRpc &player, const std::filesystem::path &capture_path) {
+    const auto before = player.result("get_status").at("frame").get<std::uint64_t>();
+    (void)player.result("step_frame");
+    (void)player.result("step_frame");
+    CHECK(player.result("get_status").at("frame").get<std::uint64_t>() > before);
+    const auto frame = capture(player, capture_path);
+    INFO("fallback frame " << frame.top_left);
+    CHECK(frame.flat);
+    CHECK(frame.top_left.r > frame.top_left.g);
+}
 #endif
 
 } // namespace
@@ -445,5 +487,99 @@ TEST_CASE("BS-1 without --render-fallback the refusal still stops the player at 
     const auto usage = project.stderrLog("usage");
     CHECK(runToExit(project.root, L"--headless --render-fallback", usage) != 0u);
     CHECK_THAT(readFile(usage), Catch::Matchers::ContainsSubstring("--render-fallback requires --rpc"));
+}
+
+TEST_CASE("BS-1b a root that is not JSON starts the fallback, is listed as its bytes, and a reload of the fixed "
+          "file or a restore of fixed content brings the project's frames back",
+          "[bs1][render-fallback][rpc]") {
+    TempProject project{"syntax", /*syntax=*/true};
+    const auto capture_path = project.root / "capture.png";
+    {
+        PlayerRpc player{project.root, project.stderrLog("syntax")};
+
+        // 1. Up on the fallback, refused by the syntax's name, frames run.
+        const auto status = player.result("get_status").at("render_pipeline");
+        INFO(status.dump(2));
+        REQUIRE(status.at("state") == "fallback");
+        CHECK(status.at("root") == root_reference);
+        requireSyntaxRefusal(status.at("refusal"));
+        requireFallbackFrames(player, capture_path);
+
+        // The root is listed as the bytes on disk, with their digest.
+        const auto root = player.result("get_render_documents").at("documents").at(0);
+        CHECK(root.at("kind") == "root");
+        CHECK(root.at("content").get<std::string>() == project.broken_root);
+        const auto digest = root.at("digest").get<std::string>();
+        CHECK(digest.size() == 64u);
+
+        // A structural edit of it is refused by the same name.
+        {
+            const auto result = player.result(
+                "edit_graph_document",
+                {{"base_source_digest", digest},
+                 {"ops", Json::array({{{"op", "remove_node"}, {"node", "nothing"}}})}});
+            INFO(result.dump(2));
+            REQUIRE(result.at("status") == "rejected");
+            requireSyntaxRefusal(result.at("error"));
+            CHECK(result.at("error").at("method") == "edit_graph_document");
+        }
+        // So is a reload of the file as it still is; the fallback stays.
+        {
+            const auto result = player.settle(player.result("reload_render_documents"));
+            INFO(result.dump(2));
+            REQUIRE(result.at("status") == "rejected");
+            requireSyntaxRefusal(result.at("error"));
+            CHECK(player.result("get_status").at("render_pipeline").at("state") == "fallback");
+        }
+
+        // 2. Fixed on disk and reloaded: committed, ready, Blank's gradient.
+        writeFile(project.rootPath(), project.fixed_root);
+        {
+            const auto result = player.settle(player.result("reload_render_documents"));
+            INFO(result.dump(2));
+            REQUIRE(result.at("status") == "committed");
+        }
+        {
+            const auto ready = player.result("get_status").at("render_pipeline");
+            INFO(ready.dump(2));
+            CHECK(ready.at("state") == "ready");
+            CHECK_FALSE(ready.contains("refusal"));
+        }
+        requireBlankGradient(capture(player, capture_path));
+        player.close();
+        CHECK(player.exit_code == 0u);
+    }
+
+    // 3. Broken again and started again: the root replaced whole through
+    // restore_render_documents. Content that is not JSON is refused by name;
+    // the fixed content is committed and written.
+    writeFile(project.rootPath(), project.broken_root);
+    PlayerRpc player{project.root, project.stderrLog("syntax_restore")};
+    REQUIRE(player.result("get_status").at("render_pipeline").at("state") == "fallback");
+    const auto root = player.result("get_render_documents").at("documents").at(0);
+    const auto restore = [&](const std::string &content) {
+        return player.settle(player.result(
+            "restore_render_documents",
+            {{"documents", Json::array({{{"reference", root.at("reference")},
+                                         {"base_digest", root.at("digest")},
+                                         {"content", content}}})}}));
+    };
+    {
+        const auto result = restore(withoutLastBrace(project.fixed_root) + " ");
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "rejected");
+        requireSyntaxRefusal(result.at("error"));
+        CHECK(result.at("error").at("method") == "restore_render_documents");
+    }
+    {
+        const auto result = restore(project.fixed_root);
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+    }
+    CHECK(player.result("get_status").at("render_pipeline").at("state") == "ready");
+    requireBlankGradient(capture(player, capture_path));
+    CHECK(readFile(project.rootPath()) == project.fixed_root);
+    player.close();
+    CHECK(player.exit_code == 0u);
 }
 #endif

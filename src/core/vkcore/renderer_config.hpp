@@ -124,6 +124,8 @@ inline constexpr std::string_view renderPipelineUnnamedRefusalCode =
 // message (splitCodedRefusalMessage) its code and fields; anything else is
 // render_pipeline_preflight_failed. A graph.* refusal names, as CT-2 does,
 // the root document `root_json` was read from (`root_reference`).
+// BS-1b: a `root_json` that is not JSON is render_document_syntax@1
+// (renderDocumentSyntax) whatever the error was.
 nlohmann::json renderPipelineRefusalJson(
     const std::exception &error, std::string_view root_json,
     std::string_view root_reference);
