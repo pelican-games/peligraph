@@ -3408,34 +3408,39 @@ Json GraphCanvasModel::addNodeOpsIn(std::string_view in_scope, const std::string
                               {"arguments", Json{{"reference", "scene"}, {"transfer", "linear"},
                                                  {"range", "extended"}}}};
         const auto image = [&](const std::string &socket, const Json &type,
-                               const char *format, const char *attachment_usage) {
+                               const MaterialPassSlot &slot) {
             const auto image_id = id + "__" + socket;
             ops.push_back(Json{{"op", "add_node"}, {"scope", scope},
                 {"node", Json{{"id", image_id}, {"op", "render.image"},
-                              {"parameters", Json{{"type", type}, {"format", format},
+                              {"parameters", Json{{"type", type}, {"format", slot.format},
                                                   {"extent_scale", 1.0},
-                                                  {"usage", Json::array({attachment_usage,
-                                                                         "SAMPLED"})}}},
+                                                  {"usage", slot.usage}}},
                               {"outputs", Json::array({"resource"})}}}});
             return Json{{"node", image_id}, {"port", "resource"}};
         };
+        // MC-1s: the formats are the contract's table, the one the Frame
+        // Plan's material pass form makes its targets with. A material pass
+        // without a material_outputs schema is checked against the physical
+        // contract the live materials were registered with, and those follow
+        // the pipeline's HDR switch: without "hdr" among the enabled features
+        // (a Blank project) a G-buffer's albedo and emissive are B8G8R8A8_SRGB.
+        // Any other format changes the contract, and the engine restarts
+        // (material_physical_contract_changed).
+        std::vector<MaterialPassSlot> colors;
+        std::optional<MaterialPassSlot> depth;
+        for (auto &slot : materialPassSlots(contract, materialPassHdr(render_authoring_)))
+            if (slot.depth) depth = std::move(slot);
+            else colors.push_back(std::move(slot));
+        const auto sockets = materialPassColorSockets(parameters);
+        if (!depth || sockets.size() != colors.size()) return Json::array();
         Json inputs = Json::object();
-        for (const auto &socket : materialPassColorSockets(parameters)) {
-            // The engine checks a material pass without a material_outputs
-            // schema against its compatibility formats, choosing the HDR set
-            // when the first attachment is R16G16B16A16_SFLOAT: every G-buffer
-            // attachment is wide there except `material`, which is eight bits
-            // a channel. A forward pass's colour is always wide.
-            const bool wide = socket != "material";
-            inputs[socket] = image(socket, color_type,
-                                   wide ? "R16G16B16A16_SFLOAT" : "R8G8B8A8_UNORM",
-                                   "COLOR_ATTACHMENT");
-        }
+        for (std::size_t index = 0; index < sockets.size(); ++index)
+            inputs[sockets[index]] = image(sockets[index], color_type, colors[index]);
         inputs["depth"] = image("depth",
                                 Json{{"semantic", "pelican.render.depth@1"},
                                      {"arguments", Json{{"representation", "device"},
                                                         {"space", "projection"}}}},
-                                "D32_SFLOAT", "DEPTH_STENCIL_ATTACHMENT");
+                                *depth);
         inputs["draws"] = Json{{"node", loop}, {"port", "draws"}};
         node["parameters"] = std::move(parameters);
         node["inputs"] = std::move(inputs);

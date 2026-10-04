@@ -273,42 +273,28 @@
       "timeout_ms": 10000
     },
     {
-      "label": "the deferred pass changes the material passes' physical contract, so the engine restarts; the Cube is not saved, so Studio asks first (G-5)",
-      "cmd": "wait",
-      "name": "pelican.unsavedScenePrompt",
-      "visible": true,
-      "timeout_ms": 120000
-    },
-    {
-      "label": "Save",
-      "cmd": "click",
-      "name": "pelican.unsavedScenePrompt.save"
-    },
-    {
-      "label": "the scene is saved, and only then is a new engine started",
-      "cmd": "wait",
-      "name": "pelican.viewportStatus",
-      "contains": "started; waiting for its window",
-      "timeout_ms": 120000
-    },
-    {
-      "label": "the restarted engine answers editor RPC and has presented frames",
-      "cmd": "wait_engine",
-      "timeout_ms": 180000,
-      "frames": 30
-    },
-    {
-      "label": "the pass's draw loop is drawn as a zone on the Graph (after a restart, if the route default asks for one)",
+      "label": "the pass's draw loop is drawn as a zone on the Graph",
       "cmd": "wait",
       "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
       "visible": true,
-      "timeout_ms": 180000
+      "timeout_ms": 60000
     },
     {
       "label": "the engine answers and has presented frames",
       "cmd": "wait_engine",
-      "timeout_ms": 180000,
+      "timeout_ms": 60000,
       "frames": 30
+    },
+    {
+      "label": "the G-buffer images have the formats the live materials were registered with (MC-1s): no restart was asked for",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.viewportStatus"
+      },
+      "path": "text",
+      "op": "excludes",
+      "value": "Restarting the engine"
     },
     {
       "label": "the material pass is drawn, and picked: its detail column shows its contract",

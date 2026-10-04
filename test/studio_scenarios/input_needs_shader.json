@@ -181,6 +181,17 @@
       "timeout_ms": 60000
     },
     {
+      "label": "the engine running before the material pass is placed",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.instance_id",
+      "remember": "engine_before_pass"
+    },
+    {
       "label": "Add material pass...",
       "cmd": "action",
       "name": "pelican.framePlan.addMaterialPass"
@@ -225,42 +236,55 @@
       "timeout_ms": 10000
     },
     {
-      "label": "the deferred pass changes the material passes' physical contract, so the engine restarts; the Cube is not saved, so Studio asks first (G-5)",
-      "cmd": "wait",
-      "name": "pelican.unsavedScenePrompt",
-      "visible": true,
-      "timeout_ms": 120000
-    },
-    {
-      "label": "Save",
-      "cmd": "click",
-      "name": "pelican.unsavedScenePrompt.save"
-    },
-    {
-      "label": "the scene is saved, and only then is a new engine started",
-      "cmd": "wait",
-      "name": "pelican.viewportStatus",
-      "contains": "started; waiting for its window",
-      "timeout_ms": 120000
-    },
-    {
-      "label": "the restarted engine answers editor RPC and has presented frames",
-      "cmd": "wait_engine",
-      "timeout_ms": 180000,
-      "frames": 30
-    },
-    {
-      "label": "the pass's draw loop is drawn as a zone on the Graph (after a restart, if the route default asks for one)",
+      "label": "the pass's draw loop is drawn as a zone on the Graph",
       "cmd": "wait",
       "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
       "visible": true,
-      "timeout_ms": 180000
+      "timeout_ms": 60000
     },
     {
       "label": "the engine answers and has presented frames",
       "cmd": "wait_engine",
-      "timeout_ms": 180000,
+      "timeout_ms": 60000,
       "frames": 30
+    },
+    {
+      "label": "MC-1s: the same engine as before the pass -- its images have the G-buffer formats the live materials were registered with (no hdr feature: albedo and emissive B8G8R8A8_SRGB), so the physical contract did not change and nothing restarted",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.instance_id",
+      "value_of": "engine_before_pass"
+    },
+    {
+      "label": "no restart was asked for",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.viewportStatus"
+      },
+      "path": "text",
+      "op": "excludes",
+      "value": "Restarting the engine"
+    },
+    {
+      "label": "the pass's albedo image (the node after its draw loop) ...",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[1].id",
+      "value": "render_material_pass__albedo"
+    },
+    {
+      "label": "... has the SDR column's format, as the Frame Plan's form would make it",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[1].parameters.format",
+      "value": "B8G8R8A8_SRGB"
     },
     {
       "label": "the material pass is drawn, and picked: its detail column shows its contract",

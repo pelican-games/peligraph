@@ -268,17 +268,28 @@
       "timeout_ms": 10000
     },
     {
-      "label": "the pass's draw loop is drawn as a zone on the Graph (after a restart, if the route default asks for one)",
+      "label": "the pass's draw loop is drawn as a zone on the Graph (MC-1s: its G-buffer images keep the materials' physical contract, so the engine is not restarted)",
       "cmd": "wait",
       "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
       "visible": true,
-      "timeout_ms": 180000
+      "timeout_ms": 60000
     },
     {
       "label": "the engine answers and has presented frames",
       "cmd": "wait_engine",
-      "timeout_ms": 180000,
+      "timeout_ms": 60000,
       "frames": 30
+    },
+    {
+      "label": "no restart was asked for",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.viewportStatus"
+      },
+      "path": "text",
+      "op": "excludes",
+      "value": "Restarting the engine"
     },
     {
       "label": "the material pass is drawn, and picked: its detail column shows its contract",

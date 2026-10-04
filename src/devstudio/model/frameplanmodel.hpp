@@ -843,4 +843,45 @@ bool materialRouteOffersForwardDefault(std::string_view contract,
 // pass, on which route, and what to do about it. Empty for any other error.
 std::string materialRouteUnservedNotice(const nlohmann::json &error);
 
+// G-1 / MC-1s: the attachments of a material pass, from its contract -- the
+// one table of formats Studio keeps (the engine's materialpassattachments.hpp,
+// restated). The Frame Plan's material pass form makes its targets with it and
+// the Graph's palette makes a render.material_pass's own images with it, so
+// both write what the live materials were registered with and neither makes
+// the engine restart over a changed physical contract.
+//
+// One output of a material pass: a color attachment, or the depth one.
+struct MaterialPassSlot {
+    // What an object name and a test call it: "albedo", "normal", "material",
+    // "world_position", "emissive", "color", "depth".
+    std::string id;
+    // What a person reads beside the slot.
+    std::string role;
+    // The name "Create missing targets" gives the target it makes.
+    std::string default_name;
+    // The format the contract requires of this attachment, and the declaration
+    // the target is made with. A G-buffer's albedo and emissive are "scene"
+    // targets: their format follows the pipeline's HDR switch exactly as the
+    // contract's own table does, so they stay right when the switch changes.
+    std::string format;
+    std::string format_class;
+    std::vector<std::string> usage;
+    bool depth = false;
+};
+
+// The contract's outputs: its color attachments in location order, then the
+// depth attachment. `hdr` picks the SDR or HDR column of a G-buffer's table
+// (albedo and emissive are B8G8R8A8_SRGB or R16G16B16A16_SFLOAT); a forward
+// pass's color is R16G16B16A16_SFLOAT in both. Empty for an unknown contract.
+std::vector<MaterialPassSlot> materialPassSlots(const std::string &contract,
+                                                bool hdr);
+
+// Whether the running pipeline renders scene color in HDR: "hdr" is among the
+// features it enabled (get_render_authoring_context's enabled_feature_names).
+// A context that does not say is read as HDR.
+bool materialPassHdr(bool enabled_features_known,
+                     const std::vector<std::string> &enabled_features);
+// The same, read off a get_render_authoring_context reply.
+bool materialPassHdr(const nlohmann::json &authoring_context);
+
 } // namespace PelicanStudio

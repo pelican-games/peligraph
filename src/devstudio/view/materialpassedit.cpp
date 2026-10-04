@@ -13,28 +13,11 @@ FramePlanEditRequest refuse(std::string reason) {
     return request;
 }
 
-bool forwardContract(const std::string &contract) {
-    return contract == "forward_opaque_v1" ||
-           contract == "forward_transparent_v1";
-}
-
 bool knownContract(const std::string &contract) {
     const auto &choices = materialPassContracts();
     return std::ranges::any_of(choices, [&](const auto &choice) {
         return choice.contract == contract;
     });
-}
-
-MaterialPassSlot colorSlot(std::string id, std::string role, std::string name,
-                           std::string format, std::string format_class) {
-    return MaterialPassSlot{
-        .id = std::move(id),
-        .role = std::move(role),
-        .default_name = std::move(name),
-        .format = std::move(format),
-        .format_class = std::move(format_class),
-        .usage = {"COLOR_ATTACHMENT", "SAMPLED"},
-    };
 }
 
 std::string join(const std::vector<std::string> &values) {
@@ -58,47 +41,10 @@ const std::vector<MaterialPassContractChoice> &materialPassContracts() {
     return choices;
 }
 
-std::vector<MaterialPassSlot> materialPassSlots(const std::string &contract,
-                                                bool hdr) {
-    std::vector<MaterialPassSlot> outputs;
-    if (!knownContract(contract)) return outputs;
-    if (forwardContract(contract)) {
-        // A forward pass writes scene-linear color that is composed before the
-        // one presentation curve: always R16G16B16A16_SFLOAT, HDR or not.
-        outputs.push_back(colorSlot("color", "scene color", "scene_color",
-                                  "R16G16B16A16_SFLOAT",
-                                  "explicit(R16G16B16A16_SFLOAT)"));
-    } else {
-        // The G-buffer table (materialpassattachments.hpp): the SDR and HDR
-        // columns differ only where the target is a scene-class one.
-        const std::string scene = hdr ? "R16G16B16A16_SFLOAT" : "B8G8R8A8_SRGB";
-        outputs.push_back(colorSlot("albedo", "albedo", "gbuffer_albedo", scene, "scene"));
-        outputs.push_back(colorSlot("normal", "normal", "gbuffer_normal",
-                                  "R16G16B16A16_SFLOAT", "data"));
-        outputs.push_back(colorSlot("material", "material", "gbuffer_material",
-                                  "R8G8B8A8_UNORM", "data"));
-        outputs.push_back(colorSlot("world_position", "world position",
-                                  "gbuffer_worldpos", "R16G16B16A16_SFLOAT",
-                                  "data"));
-        outputs.push_back(colorSlot("emissive", "emissive", "gbuffer_emissive",
-                                  scene, "scene"));
-    }
-    outputs.push_back(MaterialPassSlot{
-        .id = "depth",
-        .role = "depth",
-        .default_name = "scene_depth",
-        .format = "D32_SFLOAT",
-        .format_class = "data",
-        .usage = {"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"},
-        .depth = true,
-    });
-    return outputs;
-}
-
 bool materialPassHdr(const FramePlanAuthoring &authoring) {
-    if (!authoring.enabled_features_known) return true;
-    return std::ranges::find(authoring.enabled_features, "hdr") !=
-           authoring.enabled_features.end();
+    // MC-1s: the judgment is frameplanmodel's, shared with the Graph's palette.
+    return materialPassHdr(authoring.enabled_features_known,
+                           authoring.enabled_features);
 }
 
 std::optional<RenderTargetFormValues> materialPassColorTargetValues(

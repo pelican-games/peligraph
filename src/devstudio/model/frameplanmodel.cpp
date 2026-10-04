@@ -2235,6 +2235,74 @@ bool materialRouteOffersForwardDefault(std::string_view contract,
     return contract == "forward_opaque_v1" && !pipeline_has_deferred_pass;
 }
 
+std::vector<MaterialPassSlot> materialPassSlots(const std::string &contract,
+                                                bool hdr) {
+    const auto color = [](std::string id, std::string role, std::string name,
+                          std::string format, std::string format_class) {
+        return MaterialPassSlot{
+            .id = std::move(id),
+            .role = std::move(role),
+            .default_name = std::move(name),
+            .format = std::move(format),
+            .format_class = std::move(format_class),
+            .usage = {"COLOR_ATTACHMENT", "SAMPLED"},
+        };
+    };
+    std::vector<MaterialPassSlot> outputs;
+    if (contract == "forward_opaque_v1" || contract == "forward_transparent_v1") {
+        // A forward pass writes scene-linear color that is composed before the
+        // one presentation curve: always R16G16B16A16_SFLOAT, HDR or not.
+        outputs.push_back(color("color", "scene color", "scene_color",
+                                "R16G16B16A16_SFLOAT",
+                                "explicit(R16G16B16A16_SFLOAT)"));
+    } else if (contract == "deferred_geometry_v1" ||
+               contract == "legacy_gbuffer_v1") {
+        // The G-buffer table (materialpassattachments.hpp): the SDR and HDR
+        // columns differ only where the target is a scene-class one.
+        const std::string scene = hdr ? "R16G16B16A16_SFLOAT" : "B8G8R8A8_SRGB";
+        outputs.push_back(color("albedo", "albedo", "gbuffer_albedo", scene, "scene"));
+        outputs.push_back(color("normal", "normal", "gbuffer_normal",
+                                "R16G16B16A16_SFLOAT", "data"));
+        outputs.push_back(color("material", "material", "gbuffer_material",
+                                "R8G8B8A8_UNORM", "data"));
+        outputs.push_back(color("world_position", "world position",
+                                "gbuffer_worldpos", "R16G16B16A16_SFLOAT",
+                                "data"));
+        outputs.push_back(color("emissive", "emissive", "gbuffer_emissive",
+                                scene, "scene"));
+    } else {
+        return outputs;
+    }
+    outputs.push_back(MaterialPassSlot{
+        .id = "depth",
+        .role = "depth",
+        .default_name = "scene_depth",
+        .format = "D32_SFLOAT",
+        .format_class = "data",
+        .usage = {"DEPTH_STENCIL_ATTACHMENT", "SAMPLED"},
+        .depth = true,
+    });
+    return outputs;
+}
+
+bool materialPassHdr(bool enabled_features_known,
+                     const std::vector<std::string> &enabled_features) {
+    if (!enabled_features_known) return true;
+    return std::ranges::find(enabled_features, "hdr") != enabled_features.end();
+}
+
+bool materialPassHdr(const Json &authoring_context) {
+    const auto features = authoring_context.is_object()
+                              ? authoring_context.find("enabled_feature_names")
+                              : authoring_context.end();
+    if (features == authoring_context.end() || !features->is_array())
+        return materialPassHdr(false, {});
+    std::vector<std::string> names;
+    for (const auto &feature : *features)
+        if (feature.is_string()) names.push_back(feature.get<std::string>());
+    return materialPassHdr(true, names);
+}
+
 std::string materialRouteUnservedNotice(const Json &error) {
     if (!error.is_object() ||
         error.value("code", std::string{}) != "material_route_unserved@1")

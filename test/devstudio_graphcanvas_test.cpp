@@ -1881,6 +1881,81 @@ TEST_CASE("GL-1d the palette's material pass arrives with its draw loop, body an
     }
 }
 
+// MC-1s, decisions 1 and 3: the palette's material pass makes its images with
+// the formats of the contract's table the Frame Plan's form makes its targets
+// with, in the column the authoring context's enabled features pick. A Blank
+// pipeline (no "hdr") gets B8G8R8A8_SRGB albedo and emissive -- the contract
+// the live materials were registered with, so the engine does not restart --
+// and one with "hdr" gets R16G16B16A16_SFLOAT. Forward colour is wide in both.
+TEST_CASE("MC-1s the palette's material pass images take the form's formats for the "
+          "pipeline's HDR switch",
+          "[studio][graph-canvas][mc1s]") {
+    // The image op a pass's socket is connected to, by the id its input names.
+    const auto imageOf = [](const Json &ops, const Json &pass, const std::string &socket) {
+        const auto id = pass.at("inputs").at(socket).at("node").get<std::string>();
+        for (const auto &op : ops)
+            if (op.at("op") == "add_node" && op.at("node").at("id") == id) return op.at("node");
+        FAIL("no image op for " << socket);
+        return Json{};
+    };
+    const auto check = [&](const Json &context, bool hdr) {
+        CHECK(PelicanStudio::materialPassHdr(context) == hdr);
+        DrawLoopHarness h;
+        h.open();
+        // The context the palette asks for when it opens.
+        h.client.model.readRenderAuthoringAgain();
+        h.client.reply(h.client.take("get_render_authoring_context"), context);
+        for (const std::string contract :
+             {"deferred_geometry_v1", "forward_opaque_v1", "forward_transparent_v1"}) {
+            CAPTURE(contract, hdr);
+            REQUIRE(h.client.model.addNode("render.material_pass", contract));
+            h.commit();
+            const auto &pass = h.last_ops.back().at("node");
+            REQUIRE(pass.at("op") == "render.material_pass");
+            // The form's slots: the colour attachments in location order,
+            // then depth, against the pass's sockets in the same order.
+            const auto slots = PelicanStudio::materialPassSlots(contract, hdr);
+            auto sockets = GraphCanvasModel::materialPassColorSockets(pass.at("parameters"));
+            sockets.push_back("depth");
+            REQUIRE(sockets.size() == slots.size());
+            for (std::size_t index = 0; index < slots.size(); ++index) {
+                CAPTURE(sockets[index]);
+                const auto image = imageOf(h.last_ops, pass, sockets[index]);
+                CHECK(image.at("op") == "render.image");
+                CHECK(image.at("parameters").at("format") == slots[index].format);
+                CHECK(image.at("parameters").at("usage") == Json(slots[index].usage));
+            }
+            // The table itself, read as the engine's live materials have it.
+            const std::string scene = hdr ? "R16G16B16A16_SFLOAT" : "B8G8R8A8_SRGB";
+            if (contract == "deferred_geometry_v1") {
+                CHECK(imageOf(h.last_ops, pass, "albedo").at("parameters").at("format") == scene);
+                CHECK(imageOf(h.last_ops, pass, "emissive").at("parameters").at("format") == scene);
+                CHECK(imageOf(h.last_ops, pass, "normal").at("parameters").at("format") ==
+                      "R16G16B16A16_SFLOAT");
+                CHECK(imageOf(h.last_ops, pass, "worldpos").at("parameters").at("format") ==
+                      "R16G16B16A16_SFLOAT");
+                CHECK(imageOf(h.last_ops, pass, "material").at("parameters").at("format") ==
+                      "R8G8B8A8_UNORM");
+            } else {
+                CHECK(imageOf(h.last_ops, pass, "color").at("parameters").at("format") ==
+                      "R16G16B16A16_SFLOAT");
+            }
+            CHECK(imageOf(h.last_ops, pass, "depth").at("parameters").at("format") == "D32_SFLOAT");
+        }
+    };
+    SECTION("a Blank pipeline: no hdr feature") {
+        check(Json{{"enabled_feature_names", Json::array()}}, false);
+    }
+    SECTION("a pipeline with the hdr feature") {
+        check(Json{{"enabled_feature_names", Json::array({"bloom", "hdr"})}}, true);
+    }
+    SECTION("a context that does not say is read as HDR, as the form reads it") {
+        CHECK(PelicanStudio::materialPassHdr(Json::object()));
+        CHECK(PelicanStudio::materialPassHdr(false, {}));
+        CHECK_FALSE(PelicanStudio::materialPassHdr(true, {"bloom"}));
+    }
+}
+
 // GL-1d, decisions 3 and 4: a Forward opaque pass where no pass draws deferred
 // materials carries material_route_default "forward" in the same ticket (the
 // Frame Plan's judgment); an engine that does not take the field is sent the

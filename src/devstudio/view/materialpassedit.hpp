@@ -17,24 +17,9 @@ namespace PelicanStudio {
 // edit_render_targets (F-1) for the new targets, then add_authored_pass for the
 // pass -- or into the sentence that says why there is no request.
 
-// One output of a material pass: a color attachment, or the depth one.
-struct MaterialPassSlot {
-    // What an object name and a test call it: "albedo", "normal", "material",
-    // "world_position", "emissive", "color", "depth".
-    std::string id;
-    // What a person reads beside the slot.
-    std::string role;
-    // The name "Create missing targets" gives the target it makes.
-    std::string default_name;
-    // The format the contract requires of this attachment, and the declaration
-    // the target is made with. A G-buffer's albedo and emissive are "scene"
-    // targets: their format follows the pipeline's HDR switch exactly as the
-    // contract's own table does, so they stay right when the switch changes.
-    std::string format;
-    std::string format_class;
-    std::vector<std::string> usage;
-    bool depth = false;
-};
+// MaterialPassSlot and materialPassSlots(contract, hdr), the table of a
+// contract's attachments, are frameplanmodel's (MC-1s): the Graph's palette
+// makes a material pass's images from the same table.
 
 struct MaterialPassContractChoice {
     std::string contract;
@@ -44,13 +29,8 @@ struct MaterialPassContractChoice {
 // The contracts the form offers, in the order it offers them.
 const std::vector<MaterialPassContractChoice> &materialPassContracts();
 
-// The contract's outputs: its color attachments in location order, then the
-// depth attachment. `hdr` picks the SDR or HDR column of a G-buffer's table.
-std::vector<MaterialPassSlot> materialPassSlots(const std::string &contract,
-                                                bool hdr);
-
-// Whether the running pipeline renders scene color in HDR: "hdr" is among the
-// features it enabled. A context that does not say is read as HDR.
+// Whether the running pipeline renders scene color in HDR: frameplanmodel's
+// materialPassHdr on the context's enabled features.
 bool materialPassHdr(const FramePlanAuthoring &authoring);
 
 // GL-5c, decision 4. What New render target opens on when the target is for
