@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_material_from_blank",
-  "description": "MT-1s, from Blank with the GUI only. File > New Project > Blank; Add Object > Cube and a Forward opaque material pass read by present put the grey box on screen (add_primitive_object's path). View > Materials; New material… lists the engine's surfaces (list_surfaces) and proposes a name and a file: OpenPBR's opaque one-sided variant, Create (create_material, registered live). The editor is made from the surface's declaration: base_color's swatch opens the colour dialog, red. The Inspector's Material combo binds the material to every primitive of the cube model (bind_material) and says the material is the model's. Without a restart the box's front is red. specular_roughness's spin reaches the engine; the dock's Undo takes it back, then the red: the document no longer sets base_color and the box is not red. MT-2s: the Inspector's Material rows apply to This object first; the MT-1s bind above is chosen on Every Cube. The generic materials list is not drawn. New material… material_2, made red, while every Cube stays on material (grey); a second Cube at x = 1.1 (N = 2, read again on the new revision); This object on Cube_001: set_object_material material_2, and without a restart a red box beside a grey one. Every Cube on material_2 makes both red (2 objects, 1 with their own); Every Cube back on material leaves Cube_001 red (its own beats the model's). Use model default takes it away and the Inspector's Undo (the scene's) puts it back. Save, open another project and this one again: Cube_001 is still red, the Cube grey.",
+  "description": "MT-1s, from Blank with the GUI only. File > New Project > Blank; Add Object > Cube and a Forward opaque material pass read by present put the grey box on screen (add_primitive_object's path). View > Materials; New material… lists the engine's surfaces (list_surfaces) and proposes a name and a file: OpenPBR's opaque one-sided variant, Create (create_material, registered live). The editor is made from the surface's declaration: base_color's swatch opens the colour dialog, red. The Inspector's Material combo binds the material to every primitive of the cube model (bind_material) and says the material is the model's. Without a restart the box's front is red. specular_roughness's spin reaches the engine; the dock's Undo takes it back, then the red: the document no longer sets base_color and the box is not red. MT-2s: the Inspector's Material rows apply to This object first; the MT-1s bind above is chosen on Every Cube. The generic materials list is not drawn. New material… material_2, made red, while every Cube stays on material (grey); a second Cube at x = 1.1 (N = 2, read again on the new revision). MT-2s-b: Every Cube on material_2 makes both red; Every Cube on Model default takes the binding off (engine MT-2b; material_bindings null reads as Model default) and both are grey; the rows' Undo binds material_2 again and both are red; Every Cube back on material. This object on Cube_001: set_object_material material_2, and without a restart a red box beside a grey one (2 objects, 1 with their own). Use model default takes it away and the Inspector's Undo (the scene's) puts it back. Save, open another project and this one again: Cube_001 is still red, the Cube grey.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -1000,6 +1000,637 @@
       "timeout_ms": 60000
     },
     {
+      "label": "the rows have read the model again",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialChoice",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Every Cube on the red material_2: bind_material",
+      "cmd": "select",
+      "name": "pelican.inspectorMaterialChoice",
+      "text": "material_2"
+    },
+    {
+      "label": "the model carries it",
+      "expect": "rpc_equals",
+      "method": "get_material_bindings",
+      "params": {
+        "model": "engine://primitives/cube"
+      },
+      "path": "primitives[0].material",
+      "value": "material_2",
+      "retry_ms": 30000
+    },
+    {
+      "label": "pick MainCamera in the Outliner",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "MainCamera"
+    },
+    {
+      "label": "the Inspector holds MainCamera",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "MainCamera\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "read the green of Cube",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/both_red.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][1]",
+      "remember": "Cube_green"
+    },
+    {
+      "label": "read the blue of Cube",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/both_red.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][2]",
+      "remember": "Cube_blue"
+    },
+    {
+      "label": "Cube is red: red well above green",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/both_red.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "op": "gt",
+      "value_of": "Cube_green",
+      "plus": 40,
+      "retry_ms": 30000
+    },
+    {
+      "label": "and well above blue",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/both_red.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "op": "gt",
+      "value_of": "Cube_blue",
+      "plus": 40
+    },
+    {
+      "label": "read the green of Cube_001",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/both_red.png",
+        "pixels": [
+          [
+            0.88,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][1]",
+      "remember": "Cube_001_green"
+    },
+    {
+      "label": "read the blue of Cube_001",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/both_red.png",
+        "pixels": [
+          [
+            0.88,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][2]",
+      "remember": "Cube_001_blue"
+    },
+    {
+      "label": "Cube_001 is red: red well above green",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/both_red.png",
+        "pixels": [
+          [
+            0.88,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "op": "gt",
+      "value_of": "Cube_001_green",
+      "plus": 40,
+      "retry_ms": 30000
+    },
+    {
+      "label": "and well above blue",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/both_red.png",
+        "pixels": [
+          [
+            0.88,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "op": "gt",
+      "value_of": "Cube_001_blue",
+      "plus": 40
+    },
+    {
+      "label": "pick Cube_001 in the Outliner",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "Cube_001"
+    },
+    {
+      "label": "the Inspector holds Cube_001",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube_001\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Material rows show its model",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialChoice",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and have read it",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialChoice",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the rows apply to Every Cube still",
+      "expect": "text_equals",
+      "name": "pelican.inspectorMaterialTarget",
+      "value": "Every Cube"
+    },
+    {
+      "label": "MT-2s-b decision 2: Model default for every Cube: bind_material of the primitive's own slot",
+      "cmd": "select",
+      "name": "pelican.inspectorMaterialChoice",
+      "text": "Model default"
+    },
+    {
+      "label": "the engine takes the binding off: no material_bindings is declared",
+      "expect": "rpc_equals",
+      "method": "get_material_bindings",
+      "params": {
+        "model": "engine://primitives/cube"
+      },
+      "path": "material_bindings",
+      "value": null,
+      "retry_ms": 30000
+    },
+    {
+      "label": "every primitive draws the primitive's default",
+      "expect": "rpc_equals",
+      "method": "get_material_bindings",
+      "params": {
+        "model": "engine://primitives/cube"
+      },
+      "path": "primitives[0].material",
+      "value": "pelican.primitive.default"
+    },
+    {
+      "label": "the rows take choices again",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialChoice",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Studio reads no declaration as Model default",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialChoice",
+      "text": "Model default",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and the rows' Undo holds it",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialUndo",
+      "contains": "Undo Model default on every Cube",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick MainCamera in the Outliner",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "MainCamera"
+    },
+    {
+      "label": "the Inspector holds MainCamera",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "MainCamera\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "read the green of Cube",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/both_default.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][1]",
+      "remember": "Cube_green"
+    },
+    {
+      "label": "Cube is not red",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/both_default.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "op": "lt",
+      "value_of": "Cube_green",
+      "plus": 40,
+      "retry_ms": 30000
+    },
+    {
+      "label": "read the green of Cube_001",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/both_default.png",
+        "pixels": [
+          [
+            0.88,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][1]",
+      "remember": "Cube_001_green"
+    },
+    {
+      "label": "Cube_001 is not red",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/both_default.png",
+        "pixels": [
+          [
+            0.88,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "op": "lt",
+      "value_of": "Cube_001_green",
+      "plus": 40,
+      "retry_ms": 30000
+    },
+    {
+      "label": "pick Cube_001 in the Outliner",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "Cube_001"
+    },
+    {
+      "label": "the Inspector holds Cube_001",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube_001\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Material rows show its model",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialChoice",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and have read it",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialChoice",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the rows' Undo: bind_material of the previous bindings",
+      "cmd": "click",
+      "name": "pelican.inspectorMaterialUndo"
+    },
+    {
+      "label": "the model carries material_2 again",
+      "expect": "rpc_equals",
+      "method": "get_material_bindings",
+      "params": {
+        "model": "engine://primitives/cube"
+      },
+      "path": "primitives[0].material",
+      "value": "material_2",
+      "retry_ms": 30000
+    },
+    {
+      "label": "the rows' Undo now holds the bind before it",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialUndo",
+      "contains": "Undo material_2 on every Cube",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick MainCamera in the Outliner",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "MainCamera"
+    },
+    {
+      "label": "the Inspector holds MainCamera",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "MainCamera\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "read the green of Cube",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/undo_red.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][1]",
+      "remember": "Cube_green"
+    },
+    {
+      "label": "read the blue of Cube",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/undo_red.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][2]",
+      "remember": "Cube_blue"
+    },
+    {
+      "label": "Cube is red: red well above green",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/undo_red.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "op": "gt",
+      "value_of": "Cube_green",
+      "plus": 40,
+      "retry_ms": 30000
+    },
+    {
+      "label": "and well above blue",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/undo_red.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "op": "gt",
+      "value_of": "Cube_blue",
+      "plus": 40
+    },
+    {
+      "label": "read the green of Cube_001",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/undo_red.png",
+        "pixels": [
+          [
+            0.88,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][1]",
+      "remember": "Cube_001_green"
+    },
+    {
+      "label": "read the blue of Cube_001",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/undo_red.png",
+        "pixels": [
+          [
+            0.88,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][2]",
+      "remember": "Cube_001_blue"
+    },
+    {
+      "label": "Cube_001 is red: red well above green",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/undo_red.png",
+        "pixels": [
+          [
+            0.88,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "op": "gt",
+      "value_of": "Cube_001_green",
+      "plus": 40,
+      "retry_ms": 30000
+    },
+    {
+      "label": "and well above blue",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/undo_red.png",
+        "pixels": [
+          [
+            0.88,
+            0.5
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "op": "gt",
+      "value_of": "Cube_001_blue",
+      "plus": 40
+    },
+    {
+      "label": "pick Cube_001 in the Outliner",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "Cube_001"
+    },
+    {
+      "label": "the Inspector holds Cube_001",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube_001\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Material rows show its model",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialChoice",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "and have read it",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialChoice",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "every Cube back on the grey material",
+      "cmd": "select",
+      "name": "pelican.inspectorMaterialChoice",
+      "text": "material"
+    },
+    {
+      "label": "the model carries material",
+      "expect": "rpc_equals",
+      "method": "get_material_bindings",
+      "params": {
+        "model": "engine://primitives/cube"
+      },
+      "path": "primitives[0].material",
+      "value": "material",
+      "retry_ms": 30000
+    },
+    {
+      "label": "the rows take choices again",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialChoice",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
       "label": "MT-2s decision 1: This object",
       "cmd": "select",
       "name": "pelican.inspectorMaterialTarget",
@@ -1219,241 +1850,6 @@
       "expect": "text_equals",
       "name": "pelican.inspectorMaterialScope",
       "value": "Applies to every Cube in this project (2 objects, 1 with their own material)."
-    },
-    {
-      "label": "material_2 for every Cube: bind_material",
-      "cmd": "select",
-      "name": "pelican.inspectorMaterialChoice",
-      "text": "material_2"
-    },
-    {
-      "label": "the model carries it",
-      "expect": "rpc_equals",
-      "method": "get_material_bindings",
-      "params": {
-        "model": "engine://primitives/cube"
-      },
-      "path": "primitives[0].material",
-      "value": "material_2",
-      "retry_ms": 30000
-    },
-    {
-      "label": "pick MainCamera in the Outliner",
-      "cmd": "select",
-      "name": "pelican.outliner",
-      "text": "MainCamera"
-    },
-    {
-      "label": "the Inspector holds MainCamera",
-      "cmd": "wait",
-      "name": "pelican.inspectorSelection",
-      "contains": "MainCamera\n",
-      "timeout_ms": 30000
-    },
-    {
-      "label": "read the green of Cube",
-      "expect": "result",
-      "command": {
-        "cmd": "screenshot",
-        "name": "pelican.viewportHost",
-        "mode": "screen",
-        "path": "{artifacts}/both_red.png",
-        "pixels": [
-          [
-            0.5,
-            0.5
-          ]
-        ]
-      },
-      "path": "rgb[0][1]",
-      "remember": "Cube_green"
-    },
-    {
-      "label": "read the blue of Cube",
-      "expect": "result",
-      "command": {
-        "cmd": "screenshot",
-        "name": "pelican.viewportHost",
-        "mode": "screen",
-        "path": "{artifacts}/both_red.png",
-        "pixels": [
-          [
-            0.5,
-            0.5
-          ]
-        ]
-      },
-      "path": "rgb[0][2]",
-      "remember": "Cube_blue"
-    },
-    {
-      "label": "Cube is red: red well above green",
-      "expect": "result",
-      "command": {
-        "cmd": "screenshot",
-        "name": "pelican.viewportHost",
-        "mode": "screen",
-        "path": "{artifacts}/both_red.png",
-        "pixels": [
-          [
-            0.5,
-            0.5
-          ]
-        ]
-      },
-      "path": "rgb[0][0]",
-      "op": "gt",
-      "value_of": "Cube_green",
-      "plus": 40,
-      "retry_ms": 30000
-    },
-    {
-      "label": "and well above blue",
-      "expect": "result",
-      "command": {
-        "cmd": "screenshot",
-        "name": "pelican.viewportHost",
-        "mode": "screen",
-        "path": "{artifacts}/both_red.png",
-        "pixels": [
-          [
-            0.5,
-            0.5
-          ]
-        ]
-      },
-      "path": "rgb[0][0]",
-      "op": "gt",
-      "value_of": "Cube_blue",
-      "plus": 40
-    },
-    {
-      "label": "read the green of Cube_001",
-      "expect": "result",
-      "command": {
-        "cmd": "screenshot",
-        "name": "pelican.viewportHost",
-        "mode": "screen",
-        "path": "{artifacts}/both_red.png",
-        "pixels": [
-          [
-            0.88,
-            0.5
-          ]
-        ]
-      },
-      "path": "rgb[0][1]",
-      "remember": "Cube_001_green"
-    },
-    {
-      "label": "read the blue of Cube_001",
-      "expect": "result",
-      "command": {
-        "cmd": "screenshot",
-        "name": "pelican.viewportHost",
-        "mode": "screen",
-        "path": "{artifacts}/both_red.png",
-        "pixels": [
-          [
-            0.88,
-            0.5
-          ]
-        ]
-      },
-      "path": "rgb[0][2]",
-      "remember": "Cube_001_blue"
-    },
-    {
-      "label": "Cube_001 is red: red well above green",
-      "expect": "result",
-      "command": {
-        "cmd": "screenshot",
-        "name": "pelican.viewportHost",
-        "mode": "screen",
-        "path": "{artifacts}/both_red.png",
-        "pixels": [
-          [
-            0.88,
-            0.5
-          ]
-        ]
-      },
-      "path": "rgb[0][0]",
-      "op": "gt",
-      "value_of": "Cube_001_green",
-      "plus": 40,
-      "retry_ms": 30000
-    },
-    {
-      "label": "and well above blue",
-      "expect": "result",
-      "command": {
-        "cmd": "screenshot",
-        "name": "pelican.viewportHost",
-        "mode": "screen",
-        "path": "{artifacts}/both_red.png",
-        "pixels": [
-          [
-            0.88,
-            0.5
-          ]
-        ]
-      },
-      "path": "rgb[0][0]",
-      "op": "gt",
-      "value_of": "Cube_001_blue",
-      "plus": 40
-    },
-    {
-      "label": "pick Cube_001 in the Outliner",
-      "cmd": "select",
-      "name": "pelican.outliner",
-      "text": "Cube_001"
-    },
-    {
-      "label": "the Inspector holds Cube_001",
-      "cmd": "wait",
-      "name": "pelican.inspectorSelection",
-      "contains": "Cube_001\n",
-      "timeout_ms": 30000
-    },
-    {
-      "label": "the Material rows show its model",
-      "cmd": "wait",
-      "name": "pelican.inspectorMaterialChoice",
-      "visible": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "and have read it",
-      "cmd": "wait",
-      "name": "pelican.inspectorMaterialChoice",
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "every Cube back on the grey material",
-      "cmd": "select",
-      "name": "pelican.inspectorMaterialChoice",
-      "text": "material"
-    },
-    {
-      "label": "the model carries material",
-      "expect": "rpc_equals",
-      "method": "get_material_bindings",
-      "params": {
-        "model": "engine://primitives/cube"
-      },
-      "path": "primitives[0].material",
-      "value": "material",
-      "retry_ms": 30000
-    },
-    {
-      "label": "the rows take choices again",
-      "cmd": "wait",
-      "name": "pelican.inspectorMaterialChoice",
-      "enabled": true,
-      "timeout_ms": 60000
     },
     {
       "label": "This object",

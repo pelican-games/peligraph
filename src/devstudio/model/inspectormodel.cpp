@@ -1687,7 +1687,12 @@ std::string materialRefusalDescription(const nlohmann::json &error) {
     if (!fields.contains("path") || !fields["path"].is_string()) fields["path"] = "the material";
     if (!fields.contains("kind") || !fields["kind"].is_string()) fields["kind"] = "value";
     if (!fields.contains("reason")) fields["reason"] = error.value("message", std::string{});
-    return fillRefusalPattern(entry->sentence, fields) + " (" + std::string{entry->code} + ").";
+    // MT-2s-b: an object with a name is called by it (engine MT-2b).
+    std::string_view pattern = entry->sentence;
+    if (code == "material.object_unknown@1" && fields.contains("name") && fields["name"].is_string() &&
+        !fields["name"].get_ref<const std::string &>().empty())
+        pattern = "{name} cannot take a material of its own: {reason}";
+    return fillRefusalPattern(pattern, fields) + " (" + std::string{entry->code} + ").";
 }
 
 bool inspectorListShown(std::string_view component, std::string_view list_path) {

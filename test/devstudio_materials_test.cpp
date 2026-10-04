@@ -1041,3 +1041,131 @@ TEST_CASE("MT-2s decision 7: a refused set_object_material is one sentence in th
                                           {"error_fields", {{"name", "gone"}, {"reason", "not registered"}}}}) ==
           "No material is named gone: not registered (material.name_unknown@1).");
 }
+
+TEST_CASE("MT-2s-b decision 1: a refused object is called by its name when the engine gives one",
+          "[devstudio][materials][mt2s]") {
+    // Engine MT-2b: error_fields are {object, scene_id?, name?, reason}.
+    CHECK(materialRefusalDescription(Json{{"code", "material.object_unknown@1"},
+                                          {"error_fields",
+                                           {{"object", 7},
+                                            {"scene_id", 1},
+                                            {"name", "Cube_001"},
+                                            {"reason", "the object has no simplemodelview"}}}}) ==
+          "Cube_001 cannot take a material of its own: the object has no simplemodelview "
+          "(material.object_unknown@1).");
+    // An object without a name (or an id that is not there) keeps the id.
+    CHECK(materialRefusalDescription(Json{{"code", "material.object_unknown@1"},
+                                          {"error_fields", {{"object", 9}, {"reason", "no such object"}}}}) ==
+          "Object 9 cannot take a material of its own: no such object (material.object_unknown@1).");
+    CHECK(materialRefusalDescription(Json{{"code", "material.object_unknown@1"},
+                                          {"error_fields", {{"object", 9}, {"name", ""}, {"reason", "no such object"}}}}) ==
+          "Object 9 cannot take a material of its own: no such object (material.object_unknown@1).");
+}
+
+namespace {
+
+// Engine MT-2b's answer to a bind_material that puts every primitive back on
+// the model's own material: the declaration is taken off.
+Json unboundResult(bool changed, const Json &previous) {
+    return Json{{"committed", true},
+                {"changed", changed},
+                {"model", Cube},
+                {"material_bindings", nullptr},
+                {"bindings_digest", nullptr},
+                {"previous", {{"bindings", previous}}},
+                {"previous_bindings_digest", changed ? Json("b1") : Json(nullptr)},
+                {"asset_data_digest", "a2"},
+                {"previous_asset_data_digest", "a1"},
+                {"applied", "live"}};
+}
+
+Json redCubeBindings() {
+    auto bindings = cubeBindings();
+    bindings["material_bindings"] = "materials/cube.bindings.json";
+    bindings["bindings_digest"] = "b1";
+    bindings["primitives"][0]["material"] = "paint";
+    return bindings;
+}
+
+} // namespace
+
+TEST_CASE("MT-2s-b decision 2: Model default on Every Cube is taken off (material_bindings null), reads as "
+          "Model default, and its Undo binds the material again",
+          "[devstudio][materials][mt2s]") {
+    application();
+    FakeEngine engine;
+    MaterialAssignWidget rows{engine.assignHooks()};
+    readyCube(rows, engine, cubeObject(), redCubeBindings());
+    rows.session().setScope(MaterialAssignSession::Scope::Model);
+    auto *choice = named<QComboBox>(rows, QStringLiteral("pelican.inspectorMaterialChoice"));
+    CHECK(choice->currentText() == QStringLiteral("paint"));
+
+    choice->setCurrentIndex(choice->findText(QStringLiteral("Model default")));
+    auto sent = engine.take("bind_material");
+    REQUIRE(sent.has_value());
+    CHECK(sent->params ==
+          Json{{"model", Cube},
+               {"bindings", Json::array({{{"mesh", 0}, {"primitive", 0}, {"material", "pelican.primitive.default"}}})}});
+    const Json previous = Json::array({{{"mesh", 0}, {"primitive", 0}, {"material", "paint"}}});
+    REQUIRE(rows.receiveResult(sent->id, QByteArray::fromStdString(unboundResult(true, previous).dump())));
+    REQUIRE(rows.session().undoEntries().size() == 1);
+    CHECK(rows.session().undoEntries().back().bindings == previous);
+    // The model read again has no declaration: Model default.
+    answer(rows, engine, "get_material_bindings", cubeBindings());
+    answer(rows, engine, "get_object_materials", cubeObject());
+    CHECK(rows.session().sharedMaterial() == std::string{});
+    CHECK(choice->currentText() == QStringLiteral("Model default"));
+    CHECK(choice->isEnabled());
+    CHECK(rows.session().notice().empty());
+
+    // Undo: the model's material again, by its previous bindings.
+    auto *undo = named<QToolButton>(rows, QStringLiteral("pelican.inspectorMaterialUndo"));
+    CHECK(undo->text() == QStringLiteral("Undo Model default on every Cube"));
+    undo->click();
+    sent = engine.take("bind_material");
+    REQUIRE(sent.has_value());
+    CHECK(sent->params == Json{{"model", Cube}, {"bindings", previous}});
+    REQUIRE(rows.receiveResult(
+        sent->id,
+        QByteArray::fromStdString(Json{{"committed", true},
+                                       {"changed", true},
+                                       {"model", Cube},
+                                       {"material_bindings", "materials/cube.bindings.json"},
+                                       {"previous",
+                                        {{"bindings", Json::array({{{"mesh", 0},
+                                                                    {"primitive", 0},
+                                                                    {"material", "pelican.primitive.default"}}})}}},
+                                       {"applied", "live"}}
+                                      .dump())));
+    CHECK(rows.session().undoEntries().empty());
+    answer(rows, engine, "get_material_bindings", redCubeBindings());
+    CHECK(choice->currentText() == QStringLiteral("paint"));
+}
+
+TEST_CASE("MT-2s-b decision 3: a Model default the engine has already (changed:false) leaves the rows "
+          "choosable, with nothing to undo",
+          "[devstudio][materials][mt2s]") {
+    application();
+    FakeEngine engine;
+    MaterialAssignWidget rows{engine.assignHooks()};
+    // Read while the cube was bound; another client took it off since.
+    readyCube(rows, engine, cubeObject(), redCubeBindings());
+    rows.session().setScope(MaterialAssignSession::Scope::Model);
+    REQUIRE(rows.session().choose(""));
+    auto sent = engine.take("bind_material");
+    REQUIRE(sent.has_value());
+    CHECK(rows.session().bindPending());
+    REQUIRE(rows.receiveResult(sent->id, QByteArray::fromStdString(unboundResult(false, Json::array()).dump())));
+    CHECK_FALSE(rows.session().bindPending());
+    CHECK(rows.session().undoEntries().empty());
+    CHECK(named<QToolButton>(rows, QStringLiteral("pelican.inspectorMaterialUndo"))->isHidden());
+    // What the engine has now is read again, and the rows take choices.
+    answer(rows, engine, "get_material_bindings", cubeBindings());
+    answer(rows, engine, "get_object_materials", cubeObject());
+    auto *choice = named<QComboBox>(rows, QStringLiteral("pelican.inspectorMaterialChoice"));
+    CHECK(choice->currentText() == QStringLiteral("Model default"));
+    CHECK(choice->isEnabled());
+    CHECK(rows.session().choosable());
+    REQUIRE(rows.session().choose("paint"));
+    CHECK(engine.take("bind_material").has_value());
+}
