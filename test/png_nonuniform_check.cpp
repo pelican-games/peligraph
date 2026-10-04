@@ -41,12 +41,74 @@ std::uint32_t packedRgba(const stbi_uc *pixel) {
     return packed;
 }
 
+// `--changed <first.png> <second.png> <minimum-changed-pixels>`: the two
+// images have the same size and at least that many pixels differ. The catalog
+// smoke uses it to see that a project which declares animation moved, rather
+// than that a single edge row happened to cross a pixel centre.
+int changedPixels(const char *first_path, const char *second_path,
+                  const char *minimum_text) {
+    std::size_t minimum_changed_pixels = 0;
+    if (!parseSize(minimum_text, minimum_changed_pixels) ||
+        minimum_changed_pixels == 0) {
+        std::cerr << "minimum changed pixels must be a positive integer: "
+                  << minimum_text << '\n';
+        return 64;
+    }
+    int widths[2] = {0, 0};
+    int heights[2] = {0, 0};
+    stbi_uc *images[2] = {nullptr, nullptr};
+    const char *paths[2] = {first_path, second_path};
+    for (int index = 0; index < 2; ++index) {
+        int source_channels = 0;
+        images[index] = stbi_load(paths[index], &widths[index], &heights[index],
+                                  &source_channels, rgbaChannels);
+        if (images[index] == nullptr || widths[index] <= 0 ||
+            heights[index] <= 0) {
+            const auto *reason = stbi_failure_reason();
+            std::cerr << "failed to decode PNG '" << paths[index] << "': "
+                      << (reason == nullptr ? "no pixels" : reason) << '\n';
+            for (auto *image : images) stbi_image_free(image);
+            return 65;
+        }
+    }
+    if (widths[0] != widths[1] || heights[0] != heights[1]) {
+        std::cerr << "PNG sizes differ: " << first_path << " is " << widths[0]
+                  << 'x' << heights[0] << ", " << second_path << " is "
+                  << widths[1] << 'x' << heights[1] << '\n';
+        for (auto *image : images) stbi_image_free(image);
+        return 65;
+    }
+    const auto pixel_count = static_cast<std::size_t>(widths[0]) *
+                             static_cast<std::size_t>(heights[0]);
+    std::size_t changed_pixels = 0;
+    for (std::size_t index = 0; index < pixel_count; ++index) {
+        if (packedRgba(images[0] + index * rgbaChannels) !=
+            packedRgba(images[1] + index * rgbaChannels)) {
+            ++changed_pixels;
+        }
+    }
+    for (auto *image : images) stbi_image_free(image);
+
+    const bool moved = changed_pixels >= minimum_changed_pixels;
+    auto &stream = moved ? std::cout : std::cerr;
+    stream << (moved ? "moved" : "unmoved") << " PNG pair: " << first_path
+           << " -> " << second_path << " (" << widths[0] << 'x' << heights[0]
+           << ", changed_pixels=" << changed_pixels
+           << ", minimum_changed_pixels=" << minimum_changed_pixels << ")\n";
+    return moved ? 0 : 2;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
+    if (argc == 5 && std::string_view{argv[1]} == "--changed") {
+        return changedPixels(argv[2], argv[3], argv[4]);
+    }
     if (argc != 4) {
         std::cerr << "usage: png_nonuniform_check <image.png> "
-                     "<minimum-distinct-colors> <minimum-non-modal-ratio>\n";
+                     "<minimum-distinct-colors> <minimum-non-modal-ratio>\n"
+                     "       png_nonuniform_check --changed <first.png> "
+                     "<second.png> <minimum-changed-pixels>\n";
         return 64;
     }
 

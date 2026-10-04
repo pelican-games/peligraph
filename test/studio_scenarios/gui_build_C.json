@@ -788,7 +788,7 @@
       "label": "present's row says both names",
       "expect": "text_equals",
       "name": "pelican.graphCanvasView::graph_node_label#present/loop/3/render_fullscreen__color",
-      "value": "← loop.color → loop/3/render_fullscreen__color"
+      "value": "← loop.color → loop/3/render_fullscreen__color (shown)"
     },
     {
       "label": "the engine has presented frames",
