@@ -20,6 +20,7 @@
 #include "renderfallbacknotice.hpp"
 #include "renderfeatureswidget.hpp"
 #include "renderingsettingswidget.hpp"
+#include "raylayoutwidget.hpp"
 #include "rendereditcompletion.hpp"
 #include "runtimeoutliner.hpp"
 #include "studiotheme.hpp"
@@ -610,6 +611,20 @@ void MainWindow::createWorkspace() {
     // Last, so the tabs before it keep their places (and Ctrl+Tab its steps).
     rendering_settings_ = new RenderingSettingsWidget(viewport_, render_tabs);
     render_tabs->addTab(rendering_settings_, tr("Rendering settings"));
+    // RTL-2s: the ray group layout, a section of the same tab.
+    ray_layout_ = new RayLayoutWidget(viewport_, rendering_settings_);
+    rendering_settings_->addSection(ray_layout_);
+    ray_layout_->setEngineRestartAction([this](const QString &reason) { requestEngineRestart(reason); });
+    ray_layout_->setShowDocumentAction([this](const QString &reference) {
+        render_fallback_->showDocumentAt(reference, 0, 0, {});
+    });
+    // Decision 5: the Task Editor's acceleration structure settings, as its
+    // own button opens them.
+    ray_layout_->setAccelerationStructuresAction([this] {
+        if (auto *open = render_features_->findChild<QPushButton *>(
+                QStringLiteral("pelican.renderFeatures.sceneAccelerationStructures")))
+            open->click();
+    });
     docks_[FramePlanDock] = makeDock(
         this, tr("Frame Plan"), QStringLiteral("pelican.framePlanDock"),
         withRenderBanner(render_tabs, QStringLiteral("renderTools")));
@@ -841,6 +856,14 @@ void MainWindow::createWorkspace() {
             render_tabs->setCurrentWidget(render_features_);
             render_features_->replaceWithLoopVersion(feature);
         });
+    // RTL-2s, decision 4: the Inspector's Assign hit group... opens the Ray
+    // layout section on that material's row.
+    inspector_->setAssignHitGroupAction([this, render_tabs](const QString &material) {
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        render_tabs->setCurrentWidget(rendering_settings_);
+        ray_layout_->revealMaterial(material);
+    });
     // GL-5d, decisions 1 and 2: the Graph's Order… / Fix sockets / Make
     // sockets variadic are the Frame Plan's own, which reads the plan and the
     // context again first (it may be behind the Graph tab) and says on the
@@ -896,6 +919,7 @@ void MainWindow::createWorkspace() {
     graph_canvas_->setRenderConfigDigest(render_digest_);
     render_features_->setRenderConfigDigest(render_digest_);
     rendering_settings_->setRenderConfigDigest(render_digest_);
+    ray_layout_->setRenderConfigDigest(render_digest_);
     // UX-6b: one reader of the frame's GPU time and the plan's size for the
     // two panels that show them; every request passes it (createRenderHistory
     // hands it the observer's calls).
@@ -2146,6 +2170,7 @@ void MainWindow::requestEngineRestart(const QString &reason) {
         graph_canvas_->engineRestartDeclined(declined);
         render_features_->engineRestartDeclined(declined);
         rendering_settings_->engineRestartDeclined(declined);
+        ray_layout_->engineRestartDeclined(declined);
         return;
     }
     // Set first: with nothing unsaved the restart happens inside this call.
@@ -2279,6 +2304,7 @@ void MainWindow::cancelNavigation(const QString &message) {
         graph_canvas_->engineRestartDeclined(declined);
         render_features_->engineRestartDeclined(declined);
         rendering_settings_->engineRestartDeclined(declined);
+        ray_layout_->engineRestartDeclined(declined);
         return;
     }
     if (!message.isEmpty()) statusBar()->showMessage(message, 8000);

@@ -65,6 +65,7 @@ class RenderConfigDigest;
 class RenderFeaturesWidget;
 class RenderFallbackNotice;
 class RenderingSettingsWidget;
+class RayLayoutWidget;
 class RuntimeOutliner;
 enum class AddObjectKind : std::uint8_t;
 struct SceneEditOutcome;
@@ -149,6 +150,8 @@ class MainWindow : public QMainWindow {
     RenderFeaturesWidget *render_features_ = nullptr;
     // RSX: the rendering section's own keys (EL-3), beside Features.
     RenderingSettingsWidget *rendering_settings_ = nullptr;
+    // RTL-2s: the Ray layout section of the Rendering settings tab.
+    RayLayoutWidget *ray_layout_ = nullptr;
     GraphCanvasWidget *graph_canvas_ = nullptr;
     // UX-6b: the frame's GPU time, the plan's size and the last edit's
     // before and after, for the Frame Plan and the Graph tab.

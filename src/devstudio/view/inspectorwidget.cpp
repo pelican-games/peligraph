@@ -153,6 +153,9 @@ struct InspectorWidget::Impl {
     QLabel *ray_notice = nullptr;
     QPushButton *ray_tasks = nullptr;
     std::function<void(const QString &)> ray_group_action;
+    // RTL-2s, decision 4: Assign hit group... on the Material rows.
+    std::function<void(const QString &)> assign_hit_group_action;
+    QPushButton *assign_hit_group = nullptr;
     std::function<void(const QString &, const QString &)> graph_source_reveal_action;
     // RSX: the main window's engine restart.
     std::function<void(const QString &)> engine_restart_action;
@@ -343,6 +346,24 @@ struct InspectorWidget::Impl {
             },
             &owner);
         layout->addWidget(material_assign);
+        // RTL-2s, decision 4: the material picked here, in the Ray layout
+        // section's Hit group assignments.
+        assign_hit_group = new QPushButton(owner.tr("Assign hit group..."), material_assign);
+        assign_hit_group->setObjectName(QStringLiteral("pelican.inspectorAssignHitGroup"));
+        assign_hit_group->setToolTip(owner.tr("The hit group the ray tracing tasks answer this material with "
+                                              "(Rendering settings > Ray layout)"));
+        assign_hit_group->setEnabled(false);
+        if (material_assign->layout() != nullptr) material_assign->layout()->addWidget(assign_hit_group);
+        QObject::connect(assign_hit_group, &QPushButton::clicked, &owner, [this] {
+            if (!assign_hit_group_action) return;
+            auto material = material_assign->choice() != nullptr ? material_assign->choice()->currentText()
+                                                                  : QString{};
+            // "(model default: <name>)" names the model's own material.
+            const QString prefix = QStringLiteral("(model default: ");
+            if (material.startsWith(prefix) && material.endsWith(QLatin1Char(')')))
+                material = material.mid(prefix.size(), material.size() - prefix.size() - 1);
+            assign_hit_group_action(material);
+        });
 
         notice_label = new QLabel(&owner);
         notice_label->setObjectName(QStringLiteral("pelican.inspectorNotice"));
@@ -2697,6 +2718,11 @@ void InspectorWidget::materialBindingsChanged() { impl_->material_assign->bindin
 
 void InspectorWidget::setRayGroupAction(std::function<void(const QString &)> action) {
     impl_->ray_group_action = std::move(action);
+}
+
+void InspectorWidget::setAssignHitGroupAction(std::function<void(const QString &material)> action) {
+    impl_->assign_hit_group_action = std::move(action);
+    impl_->assign_hit_group->setEnabled(static_cast<bool>(impl_->assign_hit_group_action));
 }
 
 void InspectorWidget::setSelection(

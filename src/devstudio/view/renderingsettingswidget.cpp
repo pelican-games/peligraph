@@ -335,6 +335,9 @@ struct RenderingSettingsWidget::Impl {
     QComboBox *xr_view_execution = nullptr;
     QPushButton *xr_advanced = nullptr;
     QTimer *poll = nullptr;
+    // RTL-2s: where another section (the Ray layout) goes, under the form.
+    QVBoxLayout *body_layout = nullptr;
+    int section_at = 0;
 
     // --- What was read: the root's digest and its rendering section.
     std::string digest;
@@ -619,6 +622,8 @@ struct RenderingSettingsWidget::Impl {
             form->addRow(labels.at("xr"), xr_box);
         }
         layout->addLayout(form);
+        body_layout = layout;
+        section_at = layout->count();
         layout->addStretch(1);
 
         notice = new QLabel(body);
@@ -1698,5 +1703,10 @@ void RenderingSettingsWidget::engineRestartDeclined(const QString &message) {
 }
 
 void RenderingSettingsWidget::refresh() { impl_->read(true); }
+
+void RenderingSettingsWidget::addSection(QWidget *section) {
+    if (section == nullptr || impl_->body_layout == nullptr) return;
+    impl_->body_layout->insertWidget(impl_->section_at++, section);
+}
 
 } // namespace PelicanStudio

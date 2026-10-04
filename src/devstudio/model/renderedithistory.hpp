@@ -103,6 +103,10 @@ class RenderEditHistory {
     // documents hold, and those that create or remove them. Anything else it
     // ignores.
     [[nodiscard]] static bool recordsMethod(const std::string &method);
+    // RTL-2s, decision 7: an edit_ray_layout (alone or in an edit_batch)
+    // that rewrites procedural records -- asset_data, which no restore takes
+    // back. Not recorded: the Ray layout panel takes it back itself.
+    [[nodiscard]] static bool rewritesProceduralRecords(const std::string &method, const Json &params);
     // A request the history has to hear about (the same set).
     [[nodiscard]] static bool followsMethod(const std::string &method);
     // "Edit pass present", "Decompose deferred_geometry", ...

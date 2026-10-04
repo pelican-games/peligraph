@@ -80,6 +80,9 @@ class RenderingSettingsWidget final : public QWidget {
     void engineRestartDeclined(const QString &message);
     // Reads the root again (Refresh).
     void refresh();
+    // RTL-2s: a section of its own under the keys (the Ray layout), in the
+    // same scrolled column.
+    void addSection(QWidget *section);
 };
 
 } // namespace PelicanStudio

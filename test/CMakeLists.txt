@@ -945,6 +945,16 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     Qt6::Test
   )
 
+  # RTL-2s (a): the Ray layout section's model -- get_ray_layout read, Enable
+  # hit groups' batch, the tables' plans and the Hit group assignments.
+  pelican_define_test(devstudio_raylayout_test QT QT_OFFSCREEN
+    pelican_studio_inspector_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+  )
+
   # BS-1s: the row above the viewport while the engine draws its placeholder
   # (engine BS-1), on the real widget with the test answering through its
   # hooks.

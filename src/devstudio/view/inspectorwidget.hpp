@@ -81,6 +81,9 @@ class InspectorWidget final : public QWidget {
     // See InspectorModel::adoptRestoredRevisionAsSaved.
     void adoptRestoredRevisionAsSaved();
     void setRayGroupAction(std::function<void(const QString &)> action);
+    // RTL-2s, decision 4: Assign hit group... on the Material rows, with the
+    // material they show (its name).
+    void setAssignHitGroupAction(std::function<void(const QString &material)> action);
     // Where "Open the source" on a graph input row goes. The Inspector names
     // the producing node; the composition root decides which view shows it.
     void setGraphSourceRevealAction(

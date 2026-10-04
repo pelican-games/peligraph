@@ -22,7 +22,7 @@ constexpr int TicketPollMs = 25;
 // The render edits: the ones that replace what documents hold (RD-1), and
 // the ones that create or remove files (RD-1b), which RU-1 could not take
 // back.
-constexpr std::array<std::string_view, 24> RecordedMethods{
+constexpr std::array<std::string_view, 25> RecordedMethods{
     "edit_preset_pass",
     "decompose_material_pass",
     // LP-4f2: a shipped graph template in place of a feature (GT-1).
@@ -55,6 +55,8 @@ constexpr std::array<std::string_view, 24> RecordedMethods{
     "verify_fold",
     // UX-12d: several edits in one ticket (FR-3), taken back as one.
     "edit_batch",
+    // RTL-2s: the ray layout and its bindings (RTL-1a), render documents.
+    "edit_ray_layout",
 };
 
 std::string stringAt(const Json &object, const char *key) {
@@ -166,6 +168,23 @@ std::optional<Json> mergedLayout(const Json *restored, const Json *written, cons
 
 RenderEditHistory::RenderEditHistory(Transport transport)
     : transport_(std::move(transport)) {}
+
+bool RenderEditHistory::rewritesProceduralRecords(const std::string &method, const Json &params) {
+    const auto rewrites = [](const Json &edit_params) {
+        if (!edit_params.is_object()) return false;
+        const auto found = edit_params.find("procedural_records");
+        return found != edit_params.end() && found->is_object() && !found->empty();
+    };
+    if (method == "edit_ray_layout") return rewrites(params);
+    if (method != "edit_batch" || !params.is_object()) return false;
+    const auto edits = params.value("edits", Json::array());
+    if (!edits.is_array()) return false;
+    for (const auto &edit : edits)
+        if (edit.is_object() && stringAt(edit, "method") == "edit_ray_layout" &&
+            rewrites(edit.value("params", Json::object())))
+            return true;
+    return false;
+}
 
 bool RenderEditHistory::recordsMethod(const std::string &method) {
     return std::ranges::find(RecordedMethods, method) != RecordedMethods.end();
@@ -285,6 +304,7 @@ std::string RenderEditHistory::labelFor(const std::string &method, const Json &p
     if (method == "set_material_route_default") return "Set material route default";
     if (method == "edit_ray_callable_records") return "Edit callable records";
     if (method == "edit_scene_acceleration_structures") return "Edit acceleration structures";
+    if (method == "edit_ray_layout") return "Edit ray layout";
     if (method == "edit_region_replacement")
         return named("Replace region ", stringAt(params, "region"), "Replace region");
     if (method == "add_authored_pass")
@@ -396,6 +416,10 @@ void RenderEditHistory::say(std::string line) {
 
 void RenderEditHistory::beforeRequest(const std::string &method, const Json &params) {
     if (own_request_ || !recordsMethod(method)) return;
+    // RTL-2s, decision 7: an edit that rewrites procedural records writes
+    // asset_data, which restore_render_documents does not take back; the
+    // Ray layout panel's own Undo sends the records before it again.
+    if (rewritesProceduralRecords(method, params)) return;
     PendingEdit edit;
     edit.method = method;
     edit.label = labelFor(method, params);
