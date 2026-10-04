@@ -25,6 +25,7 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMouseEvent>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QPushButton>
 #include <QScrollBar>
@@ -614,6 +615,33 @@ TEST_CASE("Q-1b: list carries the shortcut a widget owns",
     CHECK(canvases.at(0).toObject().contains(QStringLiteral("shortcut")));
     CHECK(canvases.at(0).toObject().value(QStringLiteral("shortcut")).toString() ==
           QString{});
+}
+
+// SK-1: a check box's text is its caption, so a scenario reads whether it is
+// ticked from list's `checked`; a widget that cannot be ticked has none.
+TEST_CASE("SK-1: list says whether a check box is ticked",
+          "[devstudio][automation][sk1]") {
+    Fixture fixture;
+    auto *box = new QCheckBox(QStringLiteral("Double sided"),
+                              fixture.window.centralWidget());
+    box->setObjectName(QStringLiteral("pelican.testDoubleSided"));
+    fixture.window.centralWidget()->layout()->addWidget(box);
+    box->show();
+    QApplication::processEvents();
+    const auto checkedOf = [&fixture](const QString &name) {
+        const QJsonArray widgets =
+            fixture
+                .result(QStringLiteral("list"),
+                        QJsonObject{{QStringLiteral("pattern"), name}})
+                .value(QStringLiteral("widgets"))
+                .toArray();
+        REQUIRE(widgets.size() == 1);
+        return widgets.at(0).toObject().value(QStringLiteral("checked"));
+    };
+    CHECK(checkedOf(QStringLiteral("pelican.testDoubleSided")) == QJsonValue{false});
+    box->setChecked(true);
+    CHECK(checkedOf(QStringLiteral("pelican.testDoubleSided")) == QJsonValue{true});
+    CHECK(checkedOf(QStringLiteral("pelican.testRefresh")).isUndefined());
 }
 
 // N-4: what a canvas says about its own automatic placement. The scene

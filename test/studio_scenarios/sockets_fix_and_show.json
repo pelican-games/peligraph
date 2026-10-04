@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "sockets_fix_and_show",
-  "description": "VI-3b: on a Blank pipeline project, present draws with engine://passthrough. With a Cube and a Deferred geometry pass (the Graph's palette from Add material pass..., GL-5c), its albedo and normal images are dropped on present's variadic band. A click on binding 1's socket writes PELICAN_PASSTHROUGH_INPUT=1 into present's shader.defines, and the viewport shows the normals; the socket is marked (shown). Fix sockets copies engine://passthrough into shaders/present.frag with its variadic line replaced by one declaration per connected input, and moves present onto the copy, defines kept: the sockets are named in_render_material_pass_albedo and in_render_material_pass_normal and the viewport shows the same colour. Make sockets variadic puts the line back, and the band returns.",
+  "description": "VI-3b: on a Blank pipeline project, present draws with engine://passthrough. With a Cube and a Deferred geometry pass (the Graph's palette from Add material pass..., GL-5c; the engine keeps running, MC-1s), its albedo and normal images are dropped on present's variadic band. A click on binding 1's socket writes PELICAN_PASSTHROUGH_INPUT=1 into present's shader.defines, and the viewport shows the normals; the socket is marked (shown). Fix sockets copies engine://passthrough into shaders/present.frag with its variadic line replaced by one declaration per connected input, and moves present onto the copy, defines kept: the sockets are named in_render_material_pass_albedo and in_render_material_pass_normal and the viewport shows the same colour. Make sockets variadic puts the line back, and the band returns.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -148,6 +148,17 @@
       "timeout_ms": 60000
     },
     {
+      "label": "the engine running before the material pass is placed",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.instance_id",
+      "remember": "engine_before_pass"
+    },
+    {
       "label": "Add material pass...",
       "cmd": "action",
       "name": "pelican.framePlan.addMaterialPass"
@@ -192,42 +203,39 @@
       "timeout_ms": 10000
     },
     {
-      "label": "the deferred pass changes the material passes' physical contract, so the engine restarts; the Cube is not saved, so Studio asks first (G-5)",
-      "cmd": "wait",
-      "name": "pelican.unsavedScenePrompt",
-      "visible": true,
-      "timeout_ms": 120000
-    },
-    {
-      "label": "Save",
-      "cmd": "click",
-      "name": "pelican.unsavedScenePrompt.save"
-    },
-    {
-      "label": "the scene is saved, and only then is a new engine started",
-      "cmd": "wait",
-      "name": "pelican.viewportStatus",
-      "contains": "started; waiting for its window",
-      "timeout_ms": 120000
-    },
-    {
-      "label": "the restarted engine answers editor RPC and has presented frames",
-      "cmd": "wait_engine",
-      "timeout_ms": 180000,
-      "frames": 30
-    },
-    {
-      "label": "the pass's draw loop is drawn as a zone on the Graph (after a restart, if the route default asks for one)",
+      "label": "the pass's draw loop is drawn as a zone on the Graph",
       "cmd": "wait",
       "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
       "visible": true,
-      "timeout_ms": 180000
+      "timeout_ms": 60000
     },
     {
       "label": "the engine answers and has presented frames",
       "cmd": "wait_engine",
-      "timeout_ms": 180000,
+      "timeout_ms": 60000,
       "frames": 30
+    },
+    {
+      "label": "MC-1s: the same engine as before the pass -- the palette's images have the G-buffer formats the live materials were registered with, so the physical contract did not change and nothing restarted (no unsaved-scene question either)",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.instance_id",
+      "value_of": "engine_before_pass"
+    },
+    {
+      "label": "no restart was asked for",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.viewportStatus"
+      },
+      "path": "text",
+      "op": "excludes",
+      "value": "Restarting the engine"
     },
     {
       "label": "the material pass is drawn, and picked: its detail column shows its contract",

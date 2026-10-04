@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_material_from_blank",
-  "description": "MT-1s, from Blank with the GUI only. File > New Project > Blank; Add Object > Cube and a Forward opaque material pass read by present put the grey box on screen (add_primitive_object's path: Add material pass... is the Graph's palette on Blank's graph root, GL-5c, and the pass's colour output is dragged onto present's + input). View > Materials; New material… lists the engine's surfaces (list_surfaces) and proposes a name and a file: OpenPBR's opaque one-sided variant, Create (create_material, registered live). The editor is made from the surface's declaration: base_color's swatch opens the colour dialog, red. The Inspector's Material combo binds the material to every primitive of the cube model (bind_material) and says the material is the model's. Without a restart the box's front is red. specular_roughness's spin reaches the engine; the dock's Undo takes it back, then the red: the document no longer sets base_color and the box is not red. MT-2s: the Inspector's Material rows apply to This object first; the MT-1s bind above is chosen on Every Cube. The generic materials list is not drawn. New material… material_2, made red, while every Cube stays on material (grey); a second Cube at x = 1.1 (N = 2, read again on the new revision). MT-2s-b: Every Cube on material_2 makes both red; MT-3s: a tag added to material_2 is registered again in place (Applied; rebuilt, no restart: get_status.instance_id is the same) and both boxes stay red; Every Cube on Model default takes the binding off (engine MT-2b; material_bindings null reads as Model default) and both are grey; the rows' Undo binds material_2 again and both are red; Every Cube back on material. This object on Cube_001: set_object_material material_2, and without a restart a red box beside a grey one (2 objects, 1 with their own). Use model default takes it away and the Inspector's Undo (the scene's) puts it back. Save, open another project and this one again: Cube_001 is still red, the Cube grey.",
+  "description": "MT-1s, from Blank with the GUI only. File > New Project > Blank; Add Object > Cube and a Forward opaque material pass read by present put the grey box on screen (add_primitive_object's path: Add material pass... is the Graph's palette on Blank's graph root, GL-5c, and the pass's colour output is dragged onto present's + input). View > Materials; New material… lists the engine's surfaces (list_surfaces) and proposes a name and a file: OpenPBR's opaque one-sided variant, Create (create_material, registered live). The editor is made from the surface's declaration: base_color's swatch opens the colour dialog, red. The Inspector's Material combo binds the material to every primitive of the cube model (bind_material) and says the material is the model's. Without a restart the box's front is red. specular_roughness's spin reaches the engine; the dock's Undo takes it back, then the red: the document no longer sets base_color and the box is not red. VR-1: the dock's Surface box on OpenPBR's opaque double-sided variant sends the surface alone; the engine pairs the routing with it, so the dock's Alpha mode reads opaque and Double sided is ticked, without a restart (get_status.instance_id is the same), and the dock's Undo takes both back. MT-2s: the Inspector's Material rows apply to This object first; the MT-1s bind above is chosen on Every Cube. The generic materials list is not drawn. New material… material_2, made red, while every Cube stays on material (grey); a second Cube at x = 1.1 (N = 2, read again on the new revision). MT-2s-b: Every Cube on material_2 makes both red; MT-3s: a tag added to material_2 is registered again in place (Applied; rebuilt, no restart: get_status.instance_id is the same) and both boxes stay red; Every Cube on Model default takes the binding off (engine MT-2b; material_bindings null reads as Model default) and both are grey; the rows' Undo binds material_2 again and both are red; Every Cube back on material. This object on Cube_001: set_object_material material_2, and without a restart a red box beside a grey one (2 objects, 1 with their own). Use model default takes it away and the Inspector's Undo (the scene's) puts it back. Save, open another project and this one again: Cube_001 is still red, the Cube grey.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -808,6 +808,180 @@
       "value_of": "green_after",
       "plus": 40,
       "retry_ms": 30000
+    },
+    {
+      "label": "VR-1: the engine running before the material's variant changes, by its instance id",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.instance_id",
+      "remember": "engine_before_variant"
+    },
+    {
+      "label": "the dock still shows material, one-sided",
+      "expect": "text_equals",
+      "name": "pelican.materials.surface",
+      "value": "openpbr / opaque_single_sided"
+    },
+    {
+      "label": "and its Double sided box is not ticked",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.materials.doubleSided"
+      },
+      "path": "widgets[0].checked",
+      "value": false
+    },
+    {
+      "label": "VR-1: the Surface box on OpenPBR's double-sided variant: one edit_material of the surface alone",
+      "cmd": "select",
+      "name": "pelican.materials.surface",
+      "text": "openpbr / opaque_double_sided"
+    },
+    {
+      "label": "the document holds the double-sided surface",
+      "expect": "rpc_equals",
+      "method": "get_material",
+      "params": {
+        "path": "materials/material.material.json"
+      },
+      "path": "material.surface",
+      "value": "engine://surfaces/openpbr/opaque_double.surface",
+      "retry_ms": 30000
+    },
+    {
+      "label": "and the engine made its routing the manifest's pair for it: double-sided",
+      "expect": "rpc_equals",
+      "method": "get_material",
+      "params": {
+        "path": "materials/material.material.json"
+      },
+      "path": "material.routing.double_sided",
+      "value": true
+    },
+    {
+      "label": "the engine rebuilt the models drawing it in place, and the dock says so",
+      "cmd": "wait",
+      "name": "pelican.materials.notice",
+      "contains": "Applied; rebuilt",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "no restart is asked for",
+      "cmd": "wait",
+      "name": "pelican.materials.restartEngine",
+      "visible": false,
+      "timeout_ms": 5000
+    },
+    {
+      "label": "the same engine: nothing restarted it",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.instance_id",
+      "op": "eq",
+      "value_of": "engine_before_variant"
+    },
+    {
+      "label": "the dock's Double sided box shows the routing the engine filled in",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.materials.doubleSided"
+      },
+      "path": "widgets[0].checked",
+      "value": true,
+      "retry_ms": 30000
+    },
+    {
+      "label": "and its Alpha mode the variant's, opaque",
+      "cmd": "wait",
+      "name": "pelican.materials.alphaMode",
+      "text": "opaque",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and the Surface box stays on the double-sided variant",
+      "expect": "text_equals",
+      "name": "pelican.materials.surface",
+      "value": "openpbr / opaque_double_sided"
+    },
+    {
+      "label": "the dock's Undo is ready for the variant",
+      "cmd": "wait",
+      "name": "pelican.materials.undoButton",
+      "enabled": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Undo: one edit_material of the previous surface and routing",
+      "cmd": "action",
+      "name": "pelican.materials.undo"
+    },
+    {
+      "label": "the document is one-sided again",
+      "expect": "rpc_equals",
+      "method": "get_material",
+      "params": {
+        "path": "materials/material.material.json"
+      },
+      "path": "material.surface",
+      "value": "engine://surfaces/openpbr/opaque_single.surface",
+      "retry_ms": 30000
+    },
+    {
+      "label": "and its routing with it",
+      "expect": "rpc_equals",
+      "method": "get_material",
+      "params": {
+        "path": "materials/material.material.json"
+      },
+      "path": "material.routing.double_sided",
+      "value": false
+    },
+    {
+      "label": "the dock's Double sided box is not ticked again",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.materials.doubleSided"
+      },
+      "path": "widgets[0].checked",
+      "value": false,
+      "retry_ms": 30000
+    },
+    {
+      "label": "and the Surface box is back on the one-sided variant",
+      "cmd": "wait",
+      "name": "pelican.materials.surface",
+      "text": "openpbr / opaque_single_sided",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "nothing left to undo once more",
+      "cmd": "wait",
+      "name": "pelican.materials.undoButton",
+      "enabled": false,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and still the same engine",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.instance_id",
+      "op": "eq",
+      "value_of": "engine_before_variant"
     },
     {
       "label": "pick Cube in the Outliner",

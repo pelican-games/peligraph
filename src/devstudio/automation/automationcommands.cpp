@@ -946,7 +946,7 @@ AutomationReply commandList(const AutomationHost &host,
             Target target;
             target.widget = widget;
             target.owner = widget;
-            entries.push_back(QJsonObject{
+            QJsonObject entry{
                 {QStringLiteral("name"), name},
                 {QStringLiteral("class"),
                  QString::fromLatin1(widget->metaObject()->className())},
@@ -955,7 +955,13 @@ AutomationReply commandList(const AutomationHost &host,
                 {QStringLiteral("geometry"), rectJson(globalRect(target))},
                 {QStringLiteral("text"), widgetText(*widget)},
                 {QStringLiteral("shortcut"), widgetShortcut(*widget)},
-            });
+            };
+            // SK-1: a check box's text is its caption, so whether it is ticked
+            // is read here, as an action's is.
+            if (const auto *button = qobject_cast<const QAbstractButton *>(widget);
+                button != nullptr && button->isCheckable())
+                entry.insert(QStringLiteral("checked"), button->isChecked());
+            entries.push_back(entry);
         }
         // Drawn items are addressable too: a value pill has no widget of its
         // own, and naming it by node and port is what lets a scenario click it
