@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "render_undo_roundtrip",
-  "description": "RU-1 and RU-1b: Undo and Redo of render edits, on RD-1 and RD-1b. A Pass Editor edit (present draws the fixture's inverting fragment, which the viewport shows) is taken back with the Frame Plan's Undo -- the picture and get_render_authoring_context are what they were -- and put again with its Redo. Decompose into loop is taken back with Edit > Undo Render Edit (the Frame Plan draws the material pass again, the graph holds no loop), put again with Redo, and taken back once more. Add fullscreen pass writes a fragment file of its own: Undo takes the pass and the file away (get_render_documents and the file say so), the same name can be added again, and after another Undo, Redo writes it back. Last, a Pass Editor edit followed by moving present on the Frame Plan (which rewrites the root's layout) is still undone, and the placement stays. GL-5c: present's fragment is picked in the Graph's detail column, where a double-click on present opens it, and ru1_tint is added with the Pass Editor's own New pass (the Frame Plan's Add fullscreen pass is the Graph's on this graph root).",
+  "description": "RU-1 and RU-1b: Undo and Redo of render edits, on RD-1 and RD-1b. A Pass Editor edit (present draws the fixture's inverting fragment, which the viewport shows) is taken back with the Frame Plan's Undo -- the picture and get_render_authoring_context are what they were -- and put again with its Redo. Decompose into loop is taken back with Edit > Undo Render Edit (the Frame Plan draws the material pass again, the graph holds no loop), put again with Redo, and taken back once more. The Pass Editor's New pass on this graph root is the Graph's (GL-5f): a render.fullscreen in the graph's nodes and no fragment file; the Graph tab's Undo takes it back (and not a render edit: present keeps its fragment), its Redo puts it again and the Frame Plan draws it. Last, a Pass Editor edit followed by moving present on the Frame Plan (which rewrites the root's layout) is still undone, and the placement stays. GL-5c: present's fragment is picked in the Graph's detail column, where a double-click on present opens it. (Before GL-5f, New pass wrote a managed fragment with add_authored_pass and RU-1b's Undo and Redo took the file away and wrote it back; on a graph root no pass is added that way any more.)",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -483,164 +483,84 @@
       "timeout_ms": 120000
     },
     {
-      "label": "View > Pass Editor: on a graph root the Frame Plan's Add fullscreen pass... is the Graph's (GL-5c), so the Pass Editor's own New pass adds this one",
+      "label": "View > Pass Editor",
       "cmd": "action",
       "name": "pelican.view.passEditor"
     },
     {
-      "label": "New pass: the form is a new pass's",
+      "label": "the Pass Editor has the engine's authoring context: a root that selects no preset",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.authoringStatus",
+      "contains": "direct",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "New pass: on this graph root it is the Graph's (GL-5f, decision 1)",
       "cmd": "click",
       "name": "pelican.fullscreenPass.new"
     },
     {
-      "label": "Refresh: the Pass Editor reads the frame plan whose targets it offers",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.refresh"
-    },
-    {
-      "label": "and has it",
+      "label": "the Graph places a fullscreen pass and picks it",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.planStatus",
-      "contains": "resources",
-      "timeout_ms": 60000
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen",
+      "visible": true,
+      "timeout_ms": 120000
     },
     {
-      "label": "the Pass Editor has the engine's authoring context",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.authoringStatus",
-      "contains": "graph(s)",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "the position: the engine's anchor after the forward pass",
-      "cmd": "type",
-      "name": "pelican.fullscreenPass.position",
-      "text": "1"
-    },
-    {
-      "label": "the new pass has no name yet",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.name",
-      "text": "",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "name the pass",
-      "cmd": "type",
-      "name": "pelican.fullscreenPass.name",
-      "text": "ru1_tint"
-    },
-    {
-      "label": "the engine's fullscreen triangle, from the list",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.shader.vertexChoice",
-      "text": "engine://fullscreen"
-    },
-    {
-      "label": "the passthrough fragment, from the list: with no input it draws a gradient",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.shader.fragmentChoice",
-      "text": "engine://passthrough"
-    },
-    {
-      "label": "write the scene colour present shows",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.colorTarget",
-      "text": "scene_color"
-    },
-    {
-      "label": "as colour output 0",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addColor"
-    },
-    {
-      "label": "the name is still the one typed",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.name",
-      "value": "ru1_tint"
-    },
-    {
-      "label": "Save is ready",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.save",
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "save: add_authored_pass, which writes a file of its own",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.save"
-    },
-    {
-      "label": "the new pass is drawn on the canvas",
-      "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#ru1_tint",
-      "missing": false,
-      "timeout_ms": 180000
-    },
-    {
-      "label": "the engine writes two render documents now: the root and the pass's own fragment",
+      "label": "the graph holds the pass and the image it writes",
       "expect": "rpc_equals",
-      "method": "get_render_documents",
+      "method": "get_graph_instances",
       "params": {},
-      "path": "documents.$len",
+      "path": "nodes.$len",
       "value": 2,
       "retry_ms": 120000
     },
     {
-      "label": "the fragment is a file in the project",
-      "file": "exists",
-      "path": "{project}/passes/authoring/pass-003698ab3ed9bce40d8a.json",
-      "value": true
+      "label": "the pass",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[1].id",
+      "value": "render_fullscreen"
     },
     {
-      "label": "the Frame Plan is in front again (the Pass Editor shares its dock area)",
-      "cmd": "action",
-      "name": "pelican.view.renderTools.frame_plan"
-    },
-    {
-      "label": "Undo is on",
-      "cmd": "wait",
-      "name": "pelican.framePlan.undoButton",
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "Undo: RU-1b takes back an edit that wrote a file",
-      "cmd": "click",
-      "name": "pelican.framePlan.undoButton"
-    },
-    {
-      "label": "one line says it was undone",
-      "cmd": "wait",
-      "name": "pelican.framePlanStatus",
-      "contains": "Undid \"Add pass ru1_tint\".",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "the pass is gone from the canvas",
-      "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#ru1_tint",
-      "missing": true,
-      "timeout_ms": 180000
-    },
-    {
-      "label": "the engine writes the root alone again",
+      "label": "no fragment file of its own: the engine writes the root alone",
       "expect": "rpc_equals",
       "method": "get_render_documents",
       "params": {},
       "path": "documents.$len",
-      "value": 1,
+      "value": 1
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Undo, on the Graph tab, where the pass was placed",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.undo"
+    },
+    {
+      "label": "the graph is empty again",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 0,
       "retry_ms": 120000
     },
     {
-      "label": "and the fragment file is gone",
-      "file": "exists",
-      "path": "{project}/passes/authoring/pass-003698ab3ed9bce40d8a.json",
-      "value": false
+      "label": "the pass is gone from the Graph",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen",
+      "missing": true,
+      "timeout_ms": 60000
     },
     {
-      "label": "present is the second pass again, and still draws what the edit below the pass made",
+      "label": "the Graph's Undo took the placement back, not a render edit: present still draws the inverting fragment",
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
@@ -649,208 +569,94 @@
       "retry_ms": 120000
     },
     {
-      "label": "the forward pass is drawn (again, the same name)",
+      "label": "Redo is on",
       "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#forward_opaque",
+      "name": "pelican.graphCanvas.redoButton",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Redo, on the Graph tab",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.redo"
+    },
+    {
+      "label": "the pass and its image are back",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 2,
+      "retry_ms": 120000
+    },
+    {
+      "label": "the pass is on the Graph again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen",
       "visible": true,
       "timeout_ms": 120000
     },
     {
-      "label": "View > Pass Editor: on a graph root the Frame Plan's Add fullscreen pass... is the Graph's (GL-5c), so the Pass Editor's own New pass adds this one",
-      "cmd": "action",
-      "name": "pelican.view.passEditor"
-    },
-    {
-      "label": "New pass: the form is a new pass's",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.new"
-    },
-    {
-      "label": "Refresh: the Pass Editor reads the frame plan whose targets it offers",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.refresh"
-    },
-    {
-      "label": "and has it",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.planStatus",
-      "contains": "resources",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "the Pass Editor has the engine's authoring context",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.authoringStatus",
-      "contains": "graph(s)",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "the position: the engine's anchor after the forward pass",
-      "cmd": "type",
-      "name": "pelican.fullscreenPass.position",
-      "text": "1"
-    },
-    {
-      "label": "the new pass has no name yet (again, the same name)",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.name",
-      "text": "",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "name the pass (again, the same name)",
-      "cmd": "type",
-      "name": "pelican.fullscreenPass.name",
-      "text": "ru1_tint"
-    },
-    {
-      "label": "the engine's fullscreen triangle, from the list (again, the same name)",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.shader.vertexChoice",
-      "text": "engine://fullscreen"
-    },
-    {
-      "label": "the passthrough fragment, from the list: with no input it draws a gradient (again, the same name)",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.shader.fragmentChoice",
-      "text": "engine://passthrough"
-    },
-    {
-      "label": "write the scene colour present shows (again, the same name)",
-      "cmd": "select",
-      "name": "pelican.fullscreenPass.colorTarget",
-      "text": "scene_color"
-    },
-    {
-      "label": "as colour output 0 (again, the same name)",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addColor"
-    },
-    {
-      "label": "the name is still the one typed (again, the same name)",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.name",
-      "value": "ru1_tint"
-    },
-    {
-      "label": "Save is ready (again, the same name)",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.save",
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "save: add_authored_pass, which writes a file of its own (again, the same name)",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.save"
-    },
-    {
-      "label": "the new pass is drawn on the canvas (again, the same name)",
-      "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#ru1_tint",
-      "missing": false,
-      "timeout_ms": 180000
-    },
-    {
-      "label": "the fragment is written again",
-      "expect": "rpc_equals",
-      "method": "get_render_documents",
-      "params": {},
-      "path": "documents.$len",
-      "value": 2,
-      "retry_ms": 120000
-    },
-    {
-      "label": "as the same file",
-      "file": "exists",
-      "path": "{project}/passes/authoring/pass-003698ab3ed9bce40d8a.json",
-      "value": true
-    },
-    {
-      "label": "the Frame Plan is in front again (the Pass Editor shares its dock area)",
+      "label": "the Frame Plan tab is in front",
       "cmd": "action",
       "name": "pelican.view.renderTools.frame_plan"
     },
     {
-      "label": "Undo is on",
+      "label": "look at the whole frame",
+      "cmd": "select",
+      "name": "pelican.framePlanTarget",
+      "text": "Whole frame"
+    },
+    {
+      "label": "the Frame Plan draws the Graph's pass",
       "cmd": "wait",
-      "name": "pelican.framePlan.undoButton",
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "Undo the second Add",
-      "cmd": "click",
-      "name": "pelican.framePlan.undoButton"
-    },
-    {
-      "label": "the pass is gone again",
-      "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#ru1_tint",
-      "missing": true,
-      "timeout_ms": 180000
-    },
-    {
-      "label": "the root alone",
-      "expect": "rpc_equals",
-      "method": "get_render_documents",
-      "params": {},
-      "path": "documents.$len",
-      "value": 1,
-      "retry_ms": 120000
-    },
-    {
-      "label": "no fragment file",
-      "file": "exists",
-      "path": "{project}/passes/authoring/pass-003698ab3ed9bce40d8a.json",
-      "value": false
-    },
-    {
-      "label": "Redo is on",
-      "cmd": "wait",
-      "name": "pelican.framePlan.redoButton",
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "Redo: the fragment is written again from what Undo read",
-      "cmd": "click",
-      "name": "pelican.framePlan.redoButton"
-    },
-    {
-      "label": "one line says it was redone",
-      "cmd": "wait",
-      "name": "pelican.framePlanStatus",
-      "contains": "Redid \"Add pass ru1_tint\".",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "the pass is back on the canvas",
-      "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#ru1_tint",
+      "name": "pelican.framePlanLogicalView::node#render_fullscreen",
       "missing": false,
       "timeout_ms": 180000
-    },
-    {
-      "label": "the engine writes the fragment again",
-      "expect": "rpc_equals",
-      "method": "get_render_documents",
-      "params": {},
-      "path": "documents.$len",
-      "value": 2,
-      "retry_ms": 120000
-    },
-    {
-      "label": "and it is on disk",
-      "file": "exists",
-      "path": "{project}/passes/authoring/pass-003698ab3ed9bce40d8a.json",
-      "value": true
     },
     {
       "label": "a picture of the Frame Plan after the Redo",
       "expect": "screenshot",
       "name": "pelican.framePlan",
       "path": "render_undo_add_redone.png"
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Undo on the Graph tab once more, so the rest runs on the root it ran on before",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.undo"
+    },
+    {
+      "label": "the graph is empty again",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 0,
+      "retry_ms": 120000
+    },
+    {
+      "label": "the Frame Plan is in front again",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "the Frame Plan no longer draws the pass",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#render_fullscreen",
+      "missing": true,
+      "timeout_ms": 180000
     },
     {
       "label": "fit the graph so the pass can be picked",
@@ -887,7 +693,7 @@
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
-      "path": "graphs[0].passes[2].declaration.shader.fragment",
+      "path": "graphs[0].passes[1].declaration.shader.fragment",
       "value": "engine://passthrough",
       "retry_ms": 120000
     },
@@ -949,7 +755,7 @@
       "expect": "rpc_equals",
       "method": "get_render_authoring_context",
       "params": {},
-      "path": "graphs[0].passes[2].declaration.shader.fragment",
+      "path": "graphs[0].passes[1].declaration.shader.fragment",
       "value": "project://shaders/ru1_invert",
       "retry_ms": 120000
     },

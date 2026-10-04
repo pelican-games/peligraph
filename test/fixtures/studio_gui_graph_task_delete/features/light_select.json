@@ -1,0 +1,62 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "light_select",
+  "buffers": [
+    {
+      "name": "light_select_inventory",
+      "size": 65568,
+      "lifetime": "persistent",
+      "host_source": "scene_lights_v2"
+    },
+    {
+      "name": "light_select_selection",
+      "lifetime": "persistent",
+      "size_from_extent": {
+        "resource": "lit_color",
+        "tile_width": 32,
+        "tile_height": 32,
+        "header_bytes": 48,
+        "bytes_per_tile": 260,
+        "copies": 2
+      }
+    }
+  ],
+  "compute_tasks": [
+    {
+      "name": "light_select",
+      "shader": "engine://shaders/compute/clustered_light_select",
+      "reads": [
+        "light_select_inventory"
+      ],
+      "writes": [
+        "light_select_selection"
+      ],
+      "schedule": "per_view",
+      "before": [
+        "lighting_pass"
+      ],
+      "resource_ports": {
+        "light_inventory": {
+          "resource": "light_select_inventory",
+          "kind": "buffer",
+          "element": "uvec4",
+          "access": "storage"
+        },
+        "light_selection": {
+          "resource": "light_select_selection",
+          "kind": "buffer",
+          "element": "uint",
+          "access": "storage"
+        }
+      },
+      "dispatch": {
+        "groups": [
+          64,
+          1,
+          1
+        ]
+      }
+    }
+  ]
+}

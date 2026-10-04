@@ -13422,3 +13422,148 @@ TEST_CASE("GL-5e a rendering-section pass's View field, a click on its passthrou
     fire("pelican.graphCanvas.layers.ejectAgain");
     CHECK(freezes == 2);
 }
+
+TEST_CASE("GL-5f Delete task on a compute task the project authored -- inside its feature's fold, "
+          "or the rendering section's -- is the Frame Plan's Delete: its button, its right-click and "
+          "the Delete key; not on an engine feature's task, nor on a feature's fold",
+          "[devstudio][graph-canvas][scene][gl5f]") {
+    (void)application();
+    Gl5bTab tab{{}, [](Gl5bTab &self) {
+                    self.plan_edit = [](Json &plan) {
+                        const auto task = [](const std::string &name, std::size_t order,
+                                             const std::string &source, const std::string &feature,
+                                             const std::string &reference) {
+                            auto pass = gl1bPass(name, order, source, Json::array(),
+                                                 Json::array({name + "_out"}));
+                            pass["kind"] = "compute";
+                            pass["authored_name"] = name;
+                            if (!feature.empty()) pass["provider_feature"] = feature;
+                            if (!reference.empty()) pass["provider_ref"] = reference;
+                            return pass;
+                        };
+                        // A project feature with two tasks, an engine feature's
+                        // task, and one the rendering section declares.
+                        plan["nodes"].push_back(
+                            task("blur_task", 2, "feature:blur", "blur", "project://features/blur.json"));
+                        plan["nodes"].push_back(
+                            task("blur_mix", 3, "feature:blur", "blur", "project://features/blur.json"));
+                        plan["nodes"].push_back(task("bloom_task", 4, "feature:bloom", "bloom",
+                                                     "engine://features/bloom.json"));
+                        plan["nodes"].push_back(task("root_task", 5, "project", "", ""));
+                    };
+                }};
+    auto &widget = *tab.widget;
+    auto &scene = widget.scene();
+    std::vector<std::pair<QString, QString>> removed;
+    PelicanStudio::GraphCanvasWidget::FramePlanEdits edits;
+    edits.remove_pass = [&](const QString &graph, const QString &pass) {
+        removed.emplace_back(graph, pass);
+    };
+    std::vector<QString> edited;
+    edits.edit_task = [&](const QString &task) { edited.push_back(task); };
+    widget.setFramePlanEdits(edits);
+    auto *edit = widget.findChild<QAction *>(QStringLiteral("pelican.graphCanvas.editTask"));
+    REQUIRE(edit != nullptr);
+    auto *remove = widget.findChild<QAction *>(QStringLiteral("pelican.graphCanvas.deletePass"));
+    REQUIRE(remove != nullptr);
+    auto *button = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasNodeActions.deletePass"));
+    REQUIRE(button != nullptr);
+    const auto pick = [&](const char *node) {
+        scene.selectNode(node);
+        QCoreApplication::processEvents();
+    };
+
+    // The rendering section's task, at the root: Delete task.
+    pick("root_task");
+    CHECK(remove->isVisible());
+    CHECK(remove->text() == QStringLiteral("Delete task"));
+    CHECK(button->isVisible());
+    CHECK(button->text() == QStringLiteral("Delete task"));
+    REQUIRE(remove->isEnabled());
+    remove->trigger();
+    QCoreApplication::processEvents();
+    REQUIRE(removed.size() == 1);
+    CHECK(removed[0] == std::pair{QStringLiteral("main_render"), QStringLiteral("root_task")});
+    // And Edit task…: the Frame Plan's Edit task (the Task Editor) on it.
+    pick("root_task");
+    REQUIRE(edit->isVisible());
+    REQUIRE(edit->isEnabled());
+    edit->trigger();
+    QCoreApplication::processEvents();
+    CHECK(edited == std::vector<QString>{QStringLiteral("root_task")});
+    // A feature's fold is the feature, not one of its tasks.
+    pick("feature:blur");
+    CHECK_FALSE(remove->isVisible());
+    {
+        auto *item = nodeItem(scene, QStringLiteral("feature:blur"));
+        REQUIRE(item != nullptr);
+        CHECK_FALSE(canvasMenuOver(scene, *item).contains(QStringLiteral("pelican.graphCanvas.deletePass")));
+    }
+
+    SECTION("inside the project feature's fold: each task, by the right-click and the Delete key too") {
+        REQUIRE(scene.enterFolded("feature:blur"));
+        QCoreApplication::processEvents();
+        pick("blur_mix");
+        CHECK(remove->isVisible());
+        CHECK(remove->text() == QStringLiteral("Delete task"));
+        {
+            auto *item = nodeItem(scene, QStringLiteral("blur_mix"));
+            REQUIRE(item != nullptr);
+            CHECK(canvasMenuOver(scene, *item).contains(QStringLiteral("pelican.graphCanvas.deletePass")));
+        }
+        pick("blur_task");
+        pressKey(scene, Qt::Key_Delete);
+        REQUIRE(removed.size() == 2);
+        CHECK(removed[1] == std::pair{QStringLiteral("main_render"), QStringLiteral("blur_task")});
+    }
+    SECTION("inside an engine feature's fold: its task is read only here") {
+        REQUIRE(scene.enterFolded("feature:bloom"));
+        QCoreApplication::processEvents();
+        pick("bloom_task");
+        CHECK_FALSE(remove->isVisible());
+        CHECK_FALSE(edit->isVisible());
+        pressKey(scene, Qt::Key_Delete);
+        CHECK(removed.size() == 1);
+    }
+}
+
+TEST_CASE("GL-5f with no row in Layers, the heading stays with nothing picked and its right-click "
+          "holds the whole graph's decisions: the Frame Plan's Unpin, Freeze, Eject again and Remove",
+          "[devstudio][graph-canvas][scene][gl5f]") {
+    (void)application();
+    Gl5bTab tab;
+    auto &widget = *tab.widget;
+    int unpins = 0;
+    int freezes = 0;
+    int removes = 0;
+    PelicanStudio::GraphCanvasWidget::FramePlanEdits edits;
+    edits.unpin = [&] { ++unpins; };
+    edits.freeze = [&] { ++freezes; };
+    edits.remove_frozen = [&] { ++removes; };
+    widget.setFramePlanEdits(edits);
+    widget.scene().clearPicks();
+    QCoreApplication::processEvents();
+    auto *toggle = widget.findChild<QPushButton *>(QStringLiteral("pelican.graphCanvasLayersToggle"));
+    REQUIRE(toggle != nullptr);
+    auto *layers = widget.findChild<QTreeWidget *>(QStringLiteral("pelican.graphCanvasLayers"));
+    REQUIRE(layers != nullptr);
+    // Blank's plan: no candidate, no decision -- no row.
+    CHECK(layers->topLevelItemCount() == 0);
+    CHECK_FALSE(layers->isVisible());
+    CHECK(toggle->isVisible());
+    CHECK(toggle->contextMenuPolicy() == Qt::CustomContextMenu);
+    CHECK(toggle->toolTip().contains(QStringLiteral("whole graph")));
+    for (const char *name : {"pelican.graphCanvas.layers.unpin", "pelican.graphCanvas.layers.freeze",
+                             "pelican.graphCanvas.layers.ejectAgain",
+                             "pelican.graphCanvas.layers.removeFrozen"}) {
+        auto *action = widget.findChild<QAction *>(QString::fromLatin1(name));
+        REQUIRE(action != nullptr);
+        INFO(name);
+        REQUIRE(action->isEnabled());
+        action->trigger();
+        QCoreApplication::processEvents();
+    }
+    CHECK(unpins == 1);
+    CHECK(freezes == 2);
+    CHECK(removes == 1);
+}

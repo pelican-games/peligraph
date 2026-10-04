@@ -2149,6 +2149,7 @@ struct FramePlanWidget::Impl {
             if (model) populate();
             if (std::exchange(task_reread, false)) requestTaskAuthoring(true);
             resumeRetry();
+            runWhenRead();  // GL-5f, decision 2
             return true;
         }
         if (request_id != 0 && request_id == pending_edit_request) {
@@ -2754,6 +2755,7 @@ struct FramePlanWidget::Impl {
             task_authoring = {};
             task_reread = false;
             resumeRetry();
+            runWhenRead();  // GL-5f, decision 2
             return true;
         }
         if (request_id != pending_edit_request &&
@@ -3511,6 +3513,7 @@ struct FramePlanWidget::Impl {
     struct WhenRead {
         std::function<void()> action;
         std::function<void(const QString &)> said;
+        bool tasks = false;  // GL-5f, decision 2
     };
     std::vector<WhenRead> when_read;
     // Who hears this panel's status lines: the caller of the action running,
@@ -3518,11 +3521,17 @@ struct FramePlanWidget::Impl {
     std::function<void(const QString &)> status_said;
     bool running_when_read = false;
 
-    void whenRead(std::function<void()> action, std::function<void(const QString &)> said) {
-        when_read.push_back({std::move(action), std::move(said)});
+    void whenRead(std::function<void()> action, std::function<void(const QString &)> said,
+                  bool tasks = false) {
+        when_read.push_back({std::move(action), std::move(said), tasks});
         if (planReadable()) readPlanAgain();
         if (pending_authoring_request != 0) authoring_reread = true;
         else requestAuthoringContext(true);
+        // GL-5f, decision 2: the task catalog, read only while shown otherwise.
+        if (tasks) {
+            if (pending_task_request != 0) task_reread = true;
+            else requestTaskAuthoring(true);
+        }
         // Whatever could not be asked for, what is in hand is all there is.
         runWhenRead();
     }
@@ -3531,6 +3540,10 @@ struct FramePlanWidget::Impl {
     void runWhenRead() {
         if (when_read.empty() || pending_request != 0 || plan_reread ||
             pending_authoring_request != 0 || authoring_reread)
+            return;
+        // GL-5f, decision 2.
+        if ((pending_task_request != 0 || task_reread) &&
+            std::ranges::any_of(when_read, &WhenRead::tasks))
             return;
         auto actions = std::exchange(when_read, {});
         for (auto &entry : actions) {
@@ -5248,8 +5261,8 @@ void FramePlanWidget::makeSocketsVariadic(const QString &graph, const QString &p
 void FramePlanWidget::orderNodes() { impl_->orderNodes(); }
 
 void FramePlanWidget::whenRead(std::function<void()> action,
-                               std::function<void(const QString &line)> said) {
-    impl_->whenRead(std::move(action), std::move(said));
+                               std::function<void(const QString &line)> said, bool tasks) {
+    impl_->whenRead(std::move(action), std::move(said), tasks);
 }
 
 // --- GL-5e: this panel's own functions, run for the Graph tab.

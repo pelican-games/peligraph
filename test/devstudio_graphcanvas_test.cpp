@@ -4799,3 +4799,48 @@ TEST_CASE("UX-13a decision 2: Use in a shader connects the layout by the name th
     CHECK(line.find("pelican_resource_tone_layout.values[0]") != std::string::npos);
     CHECK(line.find("binding") == std::string::npos);
 }
+
+TEST_CASE("GL-5f a loop body's image has Layers rows for the copies the loop made of it, each "
+          "naming the copy's loop origin",
+          "[studio][graph-canvas][gl5f]") {
+    LoopHarness h;
+    h.open();
+    auto plan = lp4cFramePlan();
+    plan["graph"] = "main_render";
+    plan["nodes"] = Json::array(
+        {{{"name", "steps/1/fill"}, {"kind", "fullscreen"},
+          {"loop_origin", {{"loop", "steps"}, {"element", 1}, {"node", "fill"}}}}});
+    const auto copy = [](std::int64_t element) {
+        return Json{{"name", "steps/" + std::to_string(element) + "/image"},
+                    {"kind", "image"},
+                    {"loop_origin", {{"loop", "steps"}, {"element", element}, {"node", "image"}}}};
+    };
+    plan["resources"] =
+        Json::array({copy(0), copy(1), copy(2), {{"name", "lit_color"}, {"kind", "image"}}});
+    plan["physical_target_plan"] = {
+        {"resources", Json::array({{{"logical_resource", "steps/1/image"},
+                                    {"format", "R16G16B16A16_SFLOAT"},
+                                    {"from_nodes", Json::array({"steps/1/fill"})}}})}};
+    h.report(plan);
+    const auto &model = h.client.model;
+    // Elements 1 and 2 run `paint`; element 0 runs `first`.
+    const auto rows = model.bodyLayerRows("paint", "image");
+    REQUIRE(rows.size() == 2);
+    CHECK(rows[0].layer == "L2");
+    CHECK(rows[0].kind == "resource");
+    CHECK(rows[0].subject == "steps/1/image");
+    CHECK(rows[0].text.find("loop steps [1]") != std::string::npos);
+    CHECK(rows[0].text.find("R16G16B16A16_SFLOAT") != std::string::npos);
+    CHECK(rows[1].subject == "steps/2/image");
+    const auto first = model.bodyLayerRows("first", "image");
+    REQUIRE(first.size() == 1);
+    CHECK(first[0].subject == "steps/0/image");
+    CHECK(model.bodyLayerRows("paint", "fill").empty());
+    CHECK(model.bodyLayerRows({}, "image").empty());
+    // What the Remove TRANSFER_SRC of such a row sends with: the Frame Plan's
+    // Physical plan row's loop origin.
+    const auto origin = model.planResourceLoopOrigin("steps/2/image");
+    REQUIRE(origin);
+    CHECK(*origin == PelicanStudio::FramePlanLoopOrigin{"steps", 2, "image"});
+    CHECK_FALSE(model.planResourceLoopOrigin("lit_color"));
+}

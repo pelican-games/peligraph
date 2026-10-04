@@ -1088,6 +1088,9 @@ class GraphCanvasWidget final : public QWidget {
         std::function<void(const QString &task, const QStringList &outputs)> task_connection;
         std::function<void(const QString &graph, const QString &pass, const QStringList &outputs)>
             preset_pass_connection;
+        // GL-5f: the Frame Plan's Edit task -- the Task Editor on an authored
+        // compute task (its dispatch, View, reads and writes).
+        std::function<void(const QString &task)> edit_task;
     };
     void setFramePlanEdits(FramePlanEdits edits);
     // The same ingestion boundary the production RPC callback uses.

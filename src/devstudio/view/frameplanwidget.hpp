@@ -222,8 +222,10 @@ class FramePlanWidget final : public QWidget {
     // sockets variadic and Order... through it while the panel may be out of
     // view (it reads nothing then, N-8). The status lines the action leaves,
     // and the one its edit ends with, are handed to `said` too.
+    // GL-5f, decision 2: with `tasks`, the compute task catalog too (Delete
+    // on an authored task, removePass, builds its edit from it).
     void whenRead(std::function<void()> action,
-                  std::function<void(const QString &line)> said = {});
+                  std::function<void(const QString &line)> said = {}, bool tasks = false);
     // GL-5e. The rest of what only this panel did, for the Graph tab to run
     // (through whenRead) on what is picked there -- each the function this
     // panel's own entry calls:

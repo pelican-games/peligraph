@@ -6075,6 +6075,17 @@ void GraphCanvasModel::readPlanLayers(const Json &plan) {
     plan_diagnostics_.clear();
     deactivated_nodes_.clear();
     plan_fold_decisions_.clear();
+    // GL-5f, decision 3: which resources are a loop's copies.
+    plan_resource_origins_.clear();
+    if (const auto resources = plan.find("resources"); resources != plan.end() && resources->is_array())
+        for (const auto &resource : *resources) {
+            if (!resource.is_object()) continue;
+            const auto origin = resource.find("loop_origin");
+            if (origin == resource.end() || !origin->is_object()) continue;
+            plan_resource_origins_[text(resource, "name")] =
+                FramePlanLoopOrigin{text(*origin, "loop"), origin->value("element", std::int64_t{0}),
+                                    text(*origin, "node")};
+        }
     // An engine with GL-2a always publishes these two, empty or not.
     plan_origin_aware_ = plan.contains("diagnostics") || plan.contains("deactivated_graph_nodes") ||
                          std::ranges::any_of(plan_passes_, [](const GraphCanvasPlanPass &pass) {
@@ -6282,6 +6293,31 @@ std::vector<std::string> GraphCanvasModel::planNodesOf(std::string_view canvas_n
         if (owner == canvas_node) result.push_back(pass.name);
     }
     return result;
+}
+
+// GL-5f, decision 3.
+std::vector<GraphCanvasLayerRow> GraphCanvasModel::bodyLayerRows(std::string_view scope,
+                                                                 std::string_view node) const {
+    std::vector<GraphCanvasLayerRow> rows;
+    if (scope.empty() || node.empty() || folded_stash_ || plan_passes_.empty()) return rows;
+    const std::string dot{kDot};
+    for (const auto &[name, origin] : plan_resource_origins_) {
+        if (origin.node != node || loopOriginScope(origin.loop, origin.element, origin.node) != scope)
+            continue;
+        auto line = "resource " + name + dot + "loop " + origin.loop + " [" +
+                    std::to_string(origin.element) + "]";
+        const auto found = std::ranges::find(plan_resources_, name, &PlanResource::name);
+        if (found != plan_resources_.end() && !found->format.empty()) line += dot + found->format;
+        rows.push_back({"L2", "resource", line, {}, name});
+    }
+    return rows;
+}
+
+std::optional<FramePlanLoopOrigin> GraphCanvasModel::planResourceLoopOrigin(
+    std::string_view resource) const {
+    const auto found = plan_resource_origins_.find(resource);
+    if (found == plan_resource_origins_.end()) return std::nullopt;
+    return found->second;
 }
 
 bool GraphCanvasModel::layersShown() const {

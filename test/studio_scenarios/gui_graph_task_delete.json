@@ -1,0 +1,129 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "gui_graph_task_delete",
+  "description": "GL-5f, decision 2, with the Graph tab only (the Frame Plan's is never brought forward): a compute task a feature of the project declares is deleted on the Graph. Inside the feature's folded node the task is a node of its own; its detail column's Delete task is the Frame Plan's Delete (remove_compute_task), run after the Frame Plan read the plan, the context and the task catalog again although it is out of view. The plan has one node fewer and the feature's document no longer holds the task. An engine feature's task offers no Delete (unit test). Nothing is typed.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "the Graph tab is in front (the Frame Plan's is never brought forward in this run)",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the engine plans the project feature's task",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes.$len",
+      "remember": "planned",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the project's feature is drawn folded",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#feature:light_select",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the feature's document holds its task",
+      "file": "contains",
+      "path": "{project}/features/light_select.json",
+      "text": "clustered_light_select",
+      "value": true
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "a double-click on the feature goes inside it",
+      "cmd": "double_click",
+      "name": "pelican.graphCanvasView::graph_node#feature:light_select"
+    },
+    {
+      "label": "its task is a node of its own",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#light_select",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick the task",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#light_select"
+    },
+    {
+      "label": "decision 2: Delete task in its detail column",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNodeActions.deletePass",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "named for a task",
+      "expect": "text_equals",
+      "name": "pelican.graphCanvasNodeActions.deletePass",
+      "value": "Delete task"
+    },
+    {
+      "label": "Delete task: the Frame Plan's Delete (remove_compute_task), after it read the plan, the context and the task catalog",
+      "cmd": "click",
+      "name": "pelican.graphCanvasNodeActions.deletePass"
+    },
+    {
+      "label": "the engine plans one node fewer",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes.$len",
+      "value_of": "planned",
+      "plus": -1,
+      "retry_ms": 120000
+    },
+    {
+      "label": "the feature's document no longer holds the task",
+      "file": "contains",
+      "path": "{project}/features/light_select.json",
+      "text": "clustered_light_select",
+      "value": false
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "a picture of the window",
+      "expect": "screenshot",
+      "path": "gui_graph_task_delete_window.png"
+    }
+  ]
+}

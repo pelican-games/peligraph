@@ -846,12 +846,18 @@ void MainWindow::createWorkspace() {
         graph_canvas_->placeFromPalette(op);
         return true;
     });
-    // GL-5e, decision 7 (not wired yet): FullscreenPassWidget::setGraphPlaceAction
-    // takes the Frame Plan's place action above for the Pass Editor's New pass
-    // on a direct graph root. Wiring it changes the four scenarios that make
-    // a managed fragment with New pass (fullscreen_pass_from_template,
-    // lighting_pass_template, render_undo_roundtrip,
-    // render_pipeline_from_scratch); it goes in with their rewrite.
+    // GL-5f, decision 1: the Pass Editor's New pass on a root that selects no
+    // preset (the widget checks config_kind) is the Graph's render.fullscreen,
+    // as the Frame Plan's Add fullscreen pass above is.
+    fullscreen_pass_->setGraphPlaceAction([this, render_tabs](const QString &op) {
+        const GraphCanvasModel &model = graph_canvas_->model();
+        if (model.contextReceived() && !model.graphRoot()) return false;
+        render_tabs->setCurrentWidget(graph_canvas_);
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        graph_canvas_->placeFromPalette(op);
+        return true;
+    });
     // GL-2b, decision 3: a pass row of the Graph tab's Layers section picks
     // that plan node in the Frame Plan.
     graph_canvas_->setFramePlanNodeAction([this, render_tabs](const QString &node) {
@@ -914,7 +920,9 @@ void MainWindow::createWorkspace() {
         // setPresetPassConnectionAction below).
         GraphCanvasWidget::FramePlanEdits edits;
         edits.remove_pass = [this, said](const QString &graph, const QString &pass) {
-            frame_plan_->whenRead([this, graph, pass] { frame_plan_->removePass(graph, pass); }, said);
+            // GL-5f, decision 2: and the task catalog (Delete on an authored task).
+            frame_plan_->whenRead([this, graph, pass] { frame_plan_->removePass(graph, pass); }, said,
+                                  true);
         };
         edits.shader_contract = [this, said](const GraphCanvasWidget::ShaderContract &contract,
                                              bool use_passthrough) {
@@ -953,6 +961,8 @@ void MainWindow::createWorkspace() {
             docks_[FullscreenPassDock]->show();
             docks_[FullscreenPassDock]->raise();
         };
+        // GL-5f: the Frame Plan's Edit task (setTaskEditAction above).
+        edits.edit_task = [this](const QString &task) { render_features_->editComputeTask(task); };
         graph_canvas_->setFramePlanEdits(std::move(edits));
     }
     inspector_->setRayGroupAction([this, render_tabs](const QString &group) {

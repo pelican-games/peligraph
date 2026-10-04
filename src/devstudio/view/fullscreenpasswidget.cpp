@@ -343,6 +343,9 @@ struct FullscreenPassWidget::Impl {
     std::shared_ptr<RenderConfigDigest> digest_hub;
     // GL-5e, decision 7.
     std::function<bool(const QString &op)> graph_place_action;
+    // GL-5f, decision 1: New pass was pressed before the context said whether
+    // the root selects a preset; it is answered when the context comes.
+    bool new_pass_waits_for_context = false;
     // Another panel moved the document while this one was busy: read the
     // context again once it is idle.
     bool context_reread = false;
@@ -743,14 +746,14 @@ struct FullscreenPassWidget::Impl {
         authoring_controls->addWidget(new_pass);
         QObject::connect(new_pass, &QPushButton::clicked, &owner, [this] {
             if (pending_authoring_request || !pending_ticket.isEmpty()) return;
-            // GL-5e, decision 7: on a graph root the Graph places it.
-            if (graph_place_action && graph_place_action(QStringLiteral("render.fullscreen")))
+            // GL-5e / GL-5f, decision 1: on a root that selects no preset the
+            // Graph places it (newPass).
+            if (graph_place_action && !authoring_available) {
+                new_pass_waits_for_context = true;
+                requestAuthoringContext(true);
                 return;
-            editing_preset_pass.reset(); load_edit_requested = false;
-            input_filter.reset(); populateRoleCandidates();
-            name->setReadOnly(false); position->setEnabled(true); raster_form->setEnabled(true);
-            save->setText(owner.tr("Save"));
-            clearDraft(); updateDraft();
+            }
+            newPass();
         });
         authoring_controls->addWidget(remove_fragment, 1);
         authoring_controls->addWidget(remove_authored);
@@ -2348,6 +2351,7 @@ struct FullscreenPassWidget::Impl {
     }
 
     void authoringError(const QString &message, const QString &line = {}) {
+        new_pass_waits_for_context = false;  // GL-5f, decision 1
         authoring_status->setStyleSheet(
             QStringLiteral("color: #d94c3d;"));
         setPanelNotice(authoring_status,
@@ -2884,6 +2888,23 @@ struct FullscreenPassWidget::Impl {
         requestSceneStructures();
         loadPresetPass();
         updateDraft();
+        if (std::exchange(new_pass_waits_for_context, false)) newPass();
+    }
+
+    // --- GL-5f, decision 1: New pass. On a root that selects no preset
+    // (config_kind "direct", Blank's) the pass is the Graph's: the palette's
+    // render.fullscreen, placed in the graph's nodes and picked there (the
+    // Frame Plan's Add fullscreen pass does the same). On a preset's root, or
+    // when the Graph cannot place it, the form is a new pass's, as before.
+    void newPass() {
+        if (graph_place_action && authoring_available && config_kind == "direct" &&
+            graph_place_action(QStringLiteral("render.fullscreen")))
+            return;
+        editing_preset_pass.reset(); load_edit_requested = false;
+        input_filter.reset(); populateRoleCandidates();
+        name->setReadOnly(false); position->setEnabled(true); raster_form->setEnabled(true);
+        save->setText(owner.tr("Save"));
+        clearDraft(); updateDraft();
     }
 
     // --- UX-4a: what the forms offer to choose from.

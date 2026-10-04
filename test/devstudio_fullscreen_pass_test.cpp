@@ -5320,4 +5320,85 @@ TEST_CASE("LP-4b the Pass Editor's View field: one row per axis the engine "
         }
     }
 }
+
+TEST_CASE("GL-5f New pass on a root that selects no preset is the Graph's render.fullscreen; "
+          "on a preset's root, or where the Graph does not place it, the form is a new pass's",
+          "[devstudio][fullscreen-pass][gl5f]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    authoring.available = false;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    QStringList placed;
+    bool places = true;
+    form.setGraphPlaceAction([&](const QString &op) {
+        placed.push_back(op);
+        return places;
+    });
+    const auto context = [](const char *kind) {
+        const Json pass{{"name", "present"},
+                        {"type", "fullscreen"},
+                        {"input", Json::array()},
+                        {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+                        {"shader", {{"vertex", "engine://fullscreen"},
+                                    {"fragment", "engine://passthrough"}}}};
+        Json result{{"source_reference", "project://passes/main_rendering_config.json"},
+                    {"source_digest", {{"hex", std::string(64, 'a')}}},
+                    {"config_kind", kind},
+                    {"graphs", Json::array({{{"name", "main_render"},
+                                             {"passes", Json::array({{{"name", "present"},
+                                                                      {"declaration", pass},
+                                                                      {"provenance", {{"source", "project"}}}}})},
+                                             {"anchor_candidates",
+                                              Json::array({{{"position", 0}, {"insert", "before:present"}},
+                                                           {{"position", 1}, {"insert", "after:present"}}})}}})},
+                    {"managed_fragments", Json::array()}};
+        if (std::string_view{kind} == "preset")
+            result["pipeline_preset"] = {{"reference", "engine://pipelines/hybrid_v1.json"},
+                                         {"name", "hybrid_v1"},
+                                         {"version", 1}};
+        return result;
+    };
+    auto &new_pass = required<QPushButton>(form, "pelican.fullscreenPass.new");
+    auto &name = required<QLineEdit>(form, "pelican.fullscreenPass.name");
+
+    // Pressed before the engine said what the root is: nothing is placed and
+    // the form is left alone until the context comes.
+    new_pass.click();
+    CHECK(placed.isEmpty());
+    authoring.available = true;
+    authoring.ready_handler(true, {});
+    REQUIRE_FALSE(authoring.requests.empty());
+    REQUIRE(authoring.requests.back().method == QStringLiteral("get_render_authoring_context"));
+    authoring.succeed(authoring.requests.back().id, context("direct"));
+    // The context says direct: the press is answered by the Graph.
+    CHECK(placed == QStringList{QStringLiteral("render.fullscreen")});
+
+    // With the context in hand, each press is the Graph's at once, and the
+    // form keeps what it held.
+    name.setText(QStringLiteral("kept"));
+    new_pass.click();
+    CHECK(placed.size() == 2);
+    CHECK(name.text() == QStringLiteral("kept"));
+
+    SECTION("the Graph does not place it (a root it read as no graph): the form is a new pass's") {
+        places = false;
+        new_pass.click();
+        CHECK(placed.size() == 3);
+        CHECK(name.text().isEmpty());
+        CHECK_FALSE(name.isReadOnly());
+    }
+    SECTION("a preset's root: the form, and the Graph is not asked") {
+        form.documentRestored();
+        REQUIRE(authoring.requests.back().method == QStringLiteral("get_render_authoring_context"));
+        authoring.succeed(authoring.requests.back().id, context("preset"));
+        REQUIRE(required<QLabel>(form, "pelican.fullscreenPass.authoringStatus")
+                    .text()
+                    .contains(QStringLiteral("preset")));
+        name.setText(QStringLiteral("typed"));
+        new_pass.click();
+        CHECK(placed.size() == 2);
+        CHECK(name.text().isEmpty());
+    }
+}
 } // namespace PelicanStudio

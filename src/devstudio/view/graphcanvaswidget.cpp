@@ -5137,6 +5137,7 @@ struct GraphCanvasWidget::Impl {
     // own functions; each action is offered only when its hook is set.
     GraphCanvasWidget::FramePlanEdits plan_edits;
     QAction *delete_pass_action = nullptr;
+    QAction *edit_task_action = nullptr;  // GL-5f
     QAction *use_passthrough_action = nullptr;
     QAction *open_contract_action = nullptr;
     QAction *disconnect_refused_action = nullptr;
@@ -5590,6 +5591,12 @@ struct GraphCanvasWidget::Impl {
             QObject::tr("Remove this pass the project added (its passes/authoring file goes with "
                         "it): the Frame Plan's Delete. Undo takes it back."),
             &Impl::deletePickedPass);
+        // GL-5f: the Frame Plan's Edit task, on an authored compute task.
+        edit_task_action = nodeAction(
+            QObject::tr("Edit task…"), QStringLiteral("pelican.graphCanvas.editTask"),
+            QObject::tr("The Task Editor on this compute task the project authored (its dispatch, "
+                        "View, reads and writes): the Frame Plan's Edit task."),
+            &Impl::editPickedTask);
         use_passthrough_action = nodeAction(
             QObject::tr("Use engine://passthrough"),
             QStringLiteral("pelican.graphCanvas.usePassthrough"),
@@ -5820,8 +5827,9 @@ struct GraphCanvasWidget::Impl {
             row->setContentsMargins(0, 0, 0, 0);
             for (QAction *action :
                  {order_action, fix_sockets_action, variadic_sockets_action, edit_target_action,
-                  delete_target_action, expand_action, delete_pass_action, use_passthrough_action,
-                  open_contract_action, disconnect_refused_action, open_refused_action}) {
+                  delete_target_action, expand_action, delete_pass_action, edit_task_action,
+                  use_passthrough_action, open_contract_action, disconnect_refused_action,
+                  open_refused_action}) {
                 auto *button = new QPushButton(action->text(), node_actions);
                 // pelican.graphCanvas.fixSockets -> pelican.graphCanvasNodeActions.fixSockets
                 button->setObjectName(QStringLiteral("pelican.graphCanvasNodeActions.") +
@@ -5894,6 +5902,11 @@ struct GraphCanvasWidget::Impl {
         side_layout->addWidget(layers, 1);
         QObject::connect(layers_toggle, &QPushButton::toggled, &view,
                          [this](bool) { syncLayers(); });
+        // GL-5f, decision 4: the heading's right-click holds the whole
+        // graph's decisions, rows or not.
+        layers_toggle->setContextMenuPolicy(Qt::CustomContextMenu);
+        QObject::connect(layers_toggle, &QWidget::customContextMenuRequested, &view,
+                         [this](const QPoint &at) { layersHeadingMenu(at); });
         QObject::connect(layers, &QTreeWidget::itemClicked, &view,
                          [this](QTreeWidgetItem *item, int) {
                              if (item == nullptr || !frame_plan_node_action) return;
@@ -6792,13 +6805,38 @@ struct GraphCanvasWidget::Impl {
         GraphCanvasFoldedExpand expand;
         // GL-5e, decision 3: the one pass a folded node stands for, when the
         // project authored it (a managed fragment, remove_authored_pass).
+        // GL-5f, decision 2: or the one authored compute task it stands for
+        // (`task`; remove_compute_task) -- the Frame Plan's Delete either way.
         std::string managed_pass;
+        bool task = false;
+        std::string task_name;  // its authored name, for Edit task…
     };
+
+    // GL-5f, decision 2: a folded node that is one compute task the project
+    // authored (a project feature's, or the rendering section's) -- not an
+    // engine feature's, which is read only here, and not one a graph node made.
+    void markAuthoredTask(NodeSubject &subject, const GraphCanvasFoldedNode &node) const {
+        // A feature's fold is the feature: its tasks are deleted inside it.
+        if (node.feature_group || node.passes.size() != 1) return;
+        const auto &planned = model.planPasses();
+        const auto pass = std::ranges::find(planned, node.passes.front(), &GraphCanvasPlanPass::name);
+        if (pass == planned.end() || pass->kind != "compute" || pass->authored_name.empty() ||
+            pass->origin || pass->provider_reference.starts_with("engine://") ||
+            pass->feature.starts_with("engine://"))
+            return;
+        subject.managed_pass = pass->name;
+        subject.task = true;
+        subject.task_name = pass->authored_name;
+    }
 
     [[nodiscard]] NodeSubject nodeSubject(const std::string &scope, const std::string &id) const {
         NodeSubject subject;
         subject.scope = scope;
         subject.node = id;
+        // GL-5f, decision 2: inside a feature's fold, its tasks one by one.
+        if (!id.empty() && model.foldedView() && scope.empty())
+            for (const auto &node : model.foldedNodes())
+                if (node.id == id) markAuthoredTask(subject, node);
         if (id.empty() || model.foldedView()) return subject;
         if (scope.empty() && model.currentScope().empty())
             for (const auto &node : model.foldedNodes()) {
@@ -6815,6 +6853,7 @@ struct GraphCanvasWidget::Impl {
                         row != nullptr && row->managed && !row->provider_reference.empty())
                         subject.managed_pass = node.passes.front();
                 }
+                markAuthoredTask(subject, node);
                 return subject;
             }
         const auto nodes = model.nodes(scope);
@@ -6937,7 +6976,7 @@ struct GraphCanvasWidget::Impl {
         bool added = false;
         for (QAction *action : {order_action, fix_sockets_action, variadic_sockets_action,
                                 edit_target_action, delete_target_action, delete_pass_action,
-                                use_passthrough_action, open_contract_action,
+                                edit_task_action, use_passthrough_action, open_contract_action,
                                 disconnect_refused_action, open_refused_action}) {
             if (!action->isVisible()) continue;
             if (line && (action == order_action || action == edit_target_action ||
@@ -7107,6 +7146,21 @@ struct GraphCanvasWidget::Impl {
         if (delete_pass_action == nullptr || notice_actions == nullptr) return;
         delete_pass_action->setVisible(!subject.managed_pass.empty() && plan_edits.remove_pass);
         delete_pass_action->setEnabled(delete_pass_action->isVisible() && model.connected());
+        // GL-5f, decision 2: the same entry on an authored compute task.
+        delete_pass_action->setText(subject.task ? QObject::tr("Delete task")
+                                                 : QObject::tr("Delete pass"));
+        delete_pass_action->setToolTip(
+            subject.task ? QObject::tr("Remove this compute task the project authored "
+                                       "(remove_compute_task): the Frame Plan's Delete. Undo "
+                                       "takes it back.")
+                         : QObject::tr("Remove this pass the project added (its passes/authoring "
+                                       "file goes with it): the Frame Plan's Delete. Undo takes it "
+                                       "back."));
+        for (const auto &[action, button] : node_action_buttons)
+            if (action == delete_pass_action) button->setText(action->text());
+        edit_task_action->setVisible(subject.task && !subject.task_name.empty() &&
+                                     static_cast<bool>(plan_edits.edit_task));
+        edit_task_action->setEnabled(edit_task_action->isVisible() && model.connected());
         // Decision 4: the offer stands for the pass it was about, while that
         // pass is picked (or nothing else is).
         const bool contract = contract_offer && plan_edits.shader_contract &&
@@ -7144,6 +7198,12 @@ struct GraphCanvasWidget::Impl {
         const auto subject = pickedSubject();
         if (subject.managed_pass.empty() || !plan_edits.remove_pass) return;
         plan_edits.remove_pass(qtext(model.planGraph()), qtext(subject.managed_pass));
+    }
+    // GL-5f: Edit task… on the picked authored task.
+    void editPickedTask() {
+        const auto subject = pickedSubject();
+        if (!subject.task || subject.task_name.empty() || !plan_edits.edit_task) return;
+        plan_edits.edit_task(qtext(subject.task_name));
     }
     bool deleteFoldedPass(const std::string &node) {
         const auto subject = nodeSubject({}, node);
@@ -7823,12 +7883,26 @@ struct GraphCanvasWidget::Impl {
         } else if (scene->selectedScope().empty() && model.currentScope().empty()) {
             rows = model.layerRows(*selected);
             heading = QObject::tr("Layers: %1").arg(qtext(*selected));
+        } else {
+            // GL-5f, decision 3: a node of a loop's body, in its zone or with
+            // the body open -- the copies the loop made of it.
+            const auto scope = scene->selectedScope().empty() ? model.currentScope()
+                                                              : scene->selectedScope();
+            rows = model.bodyLayerRows(scope, *selected);
+            heading = QObject::tr("Layers: %1's copies").arg(qtext(*selected));
         }
         const bool open = layers_toggle->isChecked();
         layers_toggle->setText((open ? QStringLiteral("▾ ") : QStringLiteral("▸ ")) +
                                heading);
-        layers_toggle->setVisible(!rows.empty());
+        // GL-5f, decision 4: with nothing picked the heading stays while the
+        // plan is read, rows or none: its right-click is the whole graph's.
+        layers_toggle->setVisible(!rows.empty() || (!selected && model.layersShown()));
+        layers_toggle->setToolTip(
+            !selected ? QObject::tr("Right-click: the whole graph's decisions (Unpin, Freeze, "
+                                    "Eject again, Remove) -- the Frame Plan's.")
+                      : QString{});
         layers->setVisible(!rows.empty() && open);
+        syncLayersActions();  // GL-5f, decision 4: their state with or without rows
         std::string key = heading.toStdString();
         for (const auto &row : rows) key += "\n" + row.layer + row.text + "|" + row.plan_node;
         if (key == layers_shown_key) return;
@@ -7894,7 +7968,33 @@ struct GraphCanvasWidget::Impl {
         layers_eject_action->setEnabled(plan_edits.freeze && connected);
         layers_remove_frozen_action->setEnabled(plan_edits.remove_frozen && connected);
         layers_transfer_action->setEnabled(kind == "resource" && model.canEdit() &&
-                                           rootImageHasTransferSource(subject));
+                                           (rootImageHasTransferSource(subject) ||
+                                            loopCopyHasTransferSource(subject)));
+    }
+    // GL-5f, decision 3: the body's render.image a loop's copy came from
+    // holds TRANSFER_SRC.
+    [[nodiscard]] bool loopCopyHasTransferSource(const std::string &resource) const {
+        const auto origin = model.planResourceLoopOrigin(resource);
+        if (!origin) return false;
+        const auto scope = model.loopOriginScope(origin->loop, origin->element, origin->node);
+        if (scope.empty()) return false;
+        const auto nodes = model.nodes(scope);
+        const auto found = std::ranges::find(nodes, origin->node, &GraphCanvasNode::id);
+        if (found == nodes.end() || found->op != "render.image") return false;
+        const auto usage =
+            model.nodeParameters(scope, origin->node).value("usage", nlohmann::json::array());
+        return usage.is_array() &&
+               std::ranges::find(usage, nlohmann::json("TRANSFER_SRC")) != usage.end();
+    }
+    // GL-5f, decision 4: the heading's right-click.
+    void layersHeadingMenu(const QPoint &at) {
+        syncLayersActions();
+        QMenu menu;
+        menu.setToolTipsVisible(true);
+        for (QAction *action : {layers_unpin_action, layers_freeze_action, layers_eject_action,
+                                layers_remove_frozen_action})
+            menu.addAction(action);
+        menu.exec(layers_toggle->mapToGlobal(at));
     }
     void layersMenu(const QPoint &at) {
         auto *item = layers->itemAt(at);
@@ -7933,6 +8033,18 @@ struct GraphCanvasWidget::Impl {
     void removeLayersTransferSource() {
         const auto [kind, subject] = layersRow();
         if (kind != "resource" || subject.empty()) return;
+        // GL-5f, decision 3: a loop's copy -- the Frame Plan's Physical plan
+        // row sends the same (MainWindow: setDropTransferSourceAction).
+        if (const auto origin = model.planResourceLoopOrigin(subject)) {
+            if (!view.removeImageTransferSource(qtext(subject), qtext(origin->loop), origin->element,
+                                                qtext(origin->node))) {
+                model.setEditNotice({InspectorNoticeKind::Error,
+                                     "Could not take TRANSFER_SRC off " + subject + ": the body's " +
+                                         origin->node + " is not a render.image that has it."});
+                showNotice();
+            }
+            return;
+        }
         if (!view.removeImageTransferSource(qtext(subject), {}, 0, {})) {
             model.setEditNotice({InspectorNoticeKind::Error,
                                  "Could not take TRANSFER_SRC off " + subject +

@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "lighting_pass_template",
-  "description": "G-3: a lighting pass built in Studio from the Deferred lighting starting point. Add fullscreen pass after the engine's lighting pass; the pass reads the five G-buffer targets and writes the lit colour the viewport shows; New... with Deferred lighting names the pass, writes a shader that reads them and the scene lights, and turns on Uses scene lights and Camera position for the pass. Saved, the viewport shows the box lit by the scene's one light: not one colour. The light loop of the shader cut in the author's editor, the picture goes black; restored, the lit box comes back.",
+  "description": "G-3: a lighting pass built in Studio from the Deferred lighting starting point. The Pass Editor's New pass on this graph root is the Graph's (GL-5f): a render.fullscreen in the graph's nodes. render.target_ref nodes from the palette name the five G-buffer targets and the lit colour; the lit colour goes on the pass's colour, so the pass writes what the viewport shows. New... in its Pass fields with Deferred lighting writes a shader that reads the G-buffer and the scene lights, connects the five references to the pass (UX-5a's match) and turns on Uses scene lights and Camera position, in one edit. The viewport then shows the box lit by the scene's one light: not one colour. The light loop of the shader cut in the author's editor, the picture goes black; restored, the lit box comes back.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -19,178 +19,499 @@
       "contains": "main_render"
     },
     {
-      "label": "look at the lit colour the lighting pass writes",
-      "cmd": "select",
-      "name": "pelican.framePlanTarget",
-      "text": "lit_color"
-    },
-    {
-      "label": "and at everything that reaches it",
-      "cmd": "type",
-      "name": "pelican.framePlanDepth",
-      "text": "64"
-    },
-    {
-      "label": "the lighting pass is on the canvas",
-      "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#lighting_pass",
-      "visible": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "View > Pass Editor: on a graph root the Frame Plan's Add fullscreen pass... is the Graph's (GL-5c), so the Pass Editor's own New pass adds this one",
+      "label": "View > Pass Editor",
       "cmd": "action",
       "name": "pelican.view.passEditor"
     },
     {
-      "label": "New pass: the form is a new pass's",
+      "label": "the Pass Editor has the engine's authoring context: a root that selects no preset",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.authoringStatus",
+      "contains": "direct",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "New pass: on this graph root it is the Graph's (GL-5f, decision 1)",
       "cmd": "click",
       "name": "pelican.fullscreenPass.new"
     },
     {
-      "label": "Refresh: the Pass Editor reads the frame plan whose targets it offers",
+      "label": "the Graph places a fullscreen pass",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "in the graph's nodes, after the image it writes",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].id",
+      "value": "render_fullscreen",
+      "retry_ms": 60000
+    },
+    {
+      "label": "not as a managed fragment",
+      "expect": "rpc_equals",
+      "method": "get_render_authoring_context",
+      "params": {},
+      "path": "managed_fragments.$len",
+      "value": 0
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add: the palette opens (a G-buffer target the lighting reads)",
       "cmd": "click",
-      "name": "pelican.fullscreenPass.refresh"
+      "name": "pelican.graphCanvasAddNode"
     },
     {
-      "label": "and has it",
+      "label": "the palette is on screen",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.planStatus",
-      "contains": "resources",
-      "timeout_ms": 60000
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
     },
     {
-      "label": "the Pass Editor has the engine's authoring context",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.authoringStatus",
-      "contains": "graph(s)",
-      "timeout_ms": 60000
-    },
-    {
-      "label": "the position: the engine's anchor after the lighting pass",
+      "label": "the filter narrows the list to the target reference",
       "cmd": "type",
-      "name": "pelican.fullscreenPass.position",
-      "text": "4"
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "target_ref"
     },
     {
-      "label": "and the frame plan whose targets it offers",
+      "label": "the target combo is offered",
       "cmd": "wait",
-      "name": "pelican.fullscreenPass.planStatus",
-      "contains": "resources",
-      "timeout_ms": 180000
+      "name": "pelican.graphCanvasPaletteTarget",
+      "visible": true,
+      "timeout_ms": 10000
     },
     {
-      "label": "input 0: albedo",
+      "label": "gbuffer_albedo, from the declared targets",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.inputTarget",
+      "name": "pelican.graphCanvasPaletteTarget",
       "text": "gbuffer_albedo"
     },
     {
-      "label": "added",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addInput"
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
     },
     {
-      "label": "input 1: normal",
+      "label": "the reference is placed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#gbuffer_albedo_ref",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add: the palette opens (a G-buffer target the lighting reads)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the target reference",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "target_ref"
+    },
+    {
+      "label": "the target combo is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteTarget",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "gbuffer_normal, from the declared targets",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.inputTarget",
+      "name": "pelican.graphCanvasPaletteTarget",
       "text": "gbuffer_normal"
     },
     {
-      "label": "added",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addInput"
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
     },
     {
-      "label": "input 2: material",
+      "label": "the reference is placed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#gbuffer_normal_ref",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add: the palette opens (a G-buffer target the lighting reads)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the target reference",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "target_ref"
+    },
+    {
+      "label": "the target combo is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteTarget",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "gbuffer_material, from the declared targets",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.inputTarget",
+      "name": "pelican.graphCanvasPaletteTarget",
       "text": "gbuffer_material"
     },
     {
-      "label": "added",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addInput"
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
     },
     {
-      "label": "input 3: world position",
+      "label": "the reference is placed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#gbuffer_material_ref",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add: the palette opens (a G-buffer target the lighting reads)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the target reference",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "target_ref"
+    },
+    {
+      "label": "the target combo is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteTarget",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "gbuffer_worldpos, from the declared targets",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.inputTarget",
+      "name": "pelican.graphCanvasPaletteTarget",
       "text": "gbuffer_worldpos"
     },
     {
-      "label": "added",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addInput"
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
     },
     {
-      "label": "input 4: emissive",
+      "label": "the reference is placed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#gbuffer_worldpos_ref",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add: the palette opens (a G-buffer target the lighting reads)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the target reference",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "target_ref"
+    },
+    {
+      "label": "the target combo is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteTarget",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "g_emissive, from the declared targets",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.inputTarget",
+      "name": "pelican.graphCanvasPaletteTarget",
       "text": "g_emissive"
     },
     {
-      "label": "added",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.addInput"
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
     },
     {
-      "label": "write the lit colour, which is what the viewport shows",
+      "label": "the reference is placed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#g_emissive_ref",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add: the palette opens (the lit colour the viewport shows)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the target reference",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "target_ref"
+    },
+    {
+      "label": "the target combo is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteTarget",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "lit_color, from the declared targets",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.colorTarget",
+      "name": "pelican.graphCanvasPaletteTarget",
       "text": "lit_color"
     },
     {
-      "label": "as colour output 0",
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the reference is placed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#lit_color_ref",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "auto layout",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.autoLayout"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the lit colour onto the pass's colour: the pass writes it",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#lit_color_ref/out:resource"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen/in:color"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the document: the pass writes the lit colour",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].inputs.color.node",
+      "value": "lit_color_ref",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "pick the pass",
       "cmd": "click",
-      "name": "pelican.fullscreenPass.addColor"
+      "name": "pelican.graphCanvasView::graph_node#render_fullscreen"
+    },
+    {
+      "label": "its Pass fields offer New... beside the fragment",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.newFragmentShader",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 120000
     },
     {
       "label": "New... beside the fragment stem",
       "cmd": "click",
-      "name": "pelican.fullscreenPass.newFragmentShader"
+      "name": "pelican.graphCanvasPass.newFragmentShader"
+    },
+    {
+      "label": "the templates, once the graph takes edits",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.shaderTemplateKind",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 120000
     },
     {
       "label": "start from Deferred lighting",
       "cmd": "select",
-      "name": "pelican.fullscreenPass.shaderTemplateKind",
+      "name": "pelican.graphCanvasPass.shaderTemplateKind",
       "text": "Deferred lighting"
     },
     {
-      "label": "the inputs say what the shader reads them as",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.inputRoles",
-      "contains": "3 world position",
-      "timeout_ms": 10000
-    },
-    {
-      "label": "the pass asks for the camera position, as a lighting pass does",
+      "label": "the shader is named after what it is, nothing typed",
       "expect": "text_equals",
-      "name": "pelican.fullscreenPass.pushConstants",
-      "value": "Camera position"
-    },
-    {
-      "label": "the pass is named after what it is",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.name",
+      "name": "pelican.graphCanvasPass.shaderTemplateName",
       "value": "deferred_lighting"
     },
     {
-      "label": "the vertex stem is the engine's triangle without typing it",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.shader.vertex",
-      "value": "engine://fullscreen"
-    },
-    {
-      "label": "create the shader",
+      "label": "Create",
       "cmd": "click",
-      "name": "pelican.fullscreenPass.createFragmentShader"
+      "name": "pelican.graphCanvasPass.createFragmentShader"
     },
     {
-      "label": "the fragment field holds its stem",
-      "expect": "text_equals",
-      "name": "pelican.fullscreenPass.shader.fragment",
-      "value": "project://shaders/deferred_lighting"
+      "label": "the shader is written for the five G-buffer targets the references name, and the pass takes it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPass.shaderTemplateNotice",
+      "contains": "reading 5 input(s); the pass draws with project://shaders/deferred_lighting",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "saved, as one edit",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the pass draws with the new shader",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].parameters.shader.fragment",
+      "value": "project://shaders/deferred_lighting",
+      "retry_ms": 60000
+    },
+    {
+      "label": "with the scene lights",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].parameters.uses_light_data",
+      "value": true
+    },
+    {
+      "label": "and the camera position, as a lighting pass does",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].parameters.push_constants",
+      "value": "camera_position"
+    },
+    {
+      "label": "the inputs filled themselves from the references (UX-5a's match): five beside the colour it writes",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].inputs.$len",
+      "value": 6
     },
     {
       "label": "the shader reads the scene lights",
@@ -202,26 +523,7 @@
       "label": "and the world position at input 3",
       "file": "contains",
       "path": "{project}/shaders/deferred_lighting.frag",
-      "text": "PELICAN_DECLARE_INPUT_3(in_gbuffer_worldpos);  // gbuffer_worldpos: world position"
-    },
-    {
-      "label": "Save is ready",
-      "cmd": "wait",
-      "name": "pelican.fullscreenPass.save",
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "save the pass",
-      "cmd": "click",
-      "name": "pelican.fullscreenPass.save"
-    },
-    {
-      "label": "the new pass is drawn on the canvas",
-      "cmd": "wait",
-      "name": "pelican.framePlanLogicalView::node#deferred_lighting",
-      "missing": false,
-      "timeout_ms": 180000
+      "text": "PELICAN_DECLARE_INPUT_3(in_gbuffer_worldpos);"
     },
     {
       "label": "the viewport shows the box the scene's light lights: black around it and its faces in more than one shade",
@@ -280,10 +582,9 @@
       "retry_ms": 30000
     },
     {
-      "label": "a picture of the Pass Editor with the lighting pass",
+      "label": "a picture of the Graph with the lighting pass",
       "expect": "screenshot",
-      "name": "pelican.fullscreenPass",
-      "path": "lighting_pass_template_editor.png"
+      "path": "lighting_pass_template_graph.png"
     }
   ]
 }

@@ -1353,6 +1353,8 @@ class GraphCanvasModel {
     bool plan_origin_aware_ = false;
     std::vector<PlanBarrier> plan_barriers_;
     std::vector<PlanResource> plan_resources_;
+    // GL-5f, decision 3: resources[].loop_origin, by the resource's name.
+    std::map<std::string, FramePlanLoopOrigin, std::less<>> plan_resource_origins_;
     std::vector<PlanAliasGroup> plan_alias_groups_;
     std::vector<PlanScope> plan_scopes_;
     std::vector<PlanDecision> plan_decisions_;
@@ -2643,6 +2645,14 @@ class GraphCanvasModel {
     // What concerns no node: the decisions whose from_nodes is empty and the
     // backend candidates -- the Layers section with nothing picked.
     [[nodiscard]] std::vector<GraphCanvasLayerRow> graphLayerRows() const;
+    // GL-5f, decision 3: node `node` of a loop's body `scope` (an image the
+    // loop copies, picked in its zone or with the body open): the L2 resource
+    // rows of its copies, each row's subject the copy's resource.
+    [[nodiscard]] std::vector<GraphCanvasLayerRow> bodyLayerRows(std::string_view scope,
+                                                                 std::string_view node) const;
+    // The loop copy a plan resource is (get_frame_plan resources[].loop_origin).
+    [[nodiscard]] std::optional<FramePlanLoopOrigin> planResourceLoopOrigin(
+        std::string_view resource) const;
     [[nodiscard]] const std::vector<GraphCanvasPlanDiagnostic> &planDiagnostics() const noexcept {
         return plan_diagnostics_;
     }
