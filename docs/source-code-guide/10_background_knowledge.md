@@ -849,7 +849,7 @@ POSIX と違い、Windows ではファイルを開くときに「他のプロセ
 
 `std::filesystem::canonical(p)` は実在するパスしか正規化できず、存在しなければ例外(または `error_code`)になります。対して `weakly_canonical(p)` は「存在する先頭部分だけを解決し、残りは字句的に正規化する」ので、これから作るファイルのパスにも使えます。Windows 固有の落とし穴が**ルート名**で、`path::has_root_name()` は `C:` や `\\server` の有無を返します。`C:\dir`(ルート名 + ルートディレクトリ)は絶対パスですが、`C:dir` は「ドライブ C の**カレントディレクトリ**からの相対」であり、しかも `current_path()` がドライブごとに存在するため、プロセスのカレントだけでは決まりません。この曖昧な形は受け付けずに拒否するのが安全です。
 
-**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L1108) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L1100) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L1052) / [resolveDeclaration()](../../src/core/asset/model.cpp#L248)
+**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L1108) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L1100) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L1052) / [resolveDeclaration()](../../src/core/asset/model.cpp#L263)
 
 ## 10.5 アルゴリズムとデータ処理の定番
 
