@@ -96,6 +96,16 @@ class InspectorWidget final : public QWidget {
     // the Material rows read them again.
     void materialsChanged();
     void materialBindingsChanged();
+    // MI-1s, decision 2. Import... beside a simplemodelview's model field
+    // (`pelican.inspectorModelImport`, shown once an action is set): the
+    // action chooses a file and registers it, and calls `registered` with
+    // the model's name when it is drawn now (not when the engine has to start
+    // again); the field is then set to that name and committed.
+    void setModelImportAction(
+        std::function<void(std::function<void(const std::string &name)> registered)> action);
+    // A model was registered or taken back elsewhere: the model field's list
+    // is read again.
+    void modelsChanged();
 
   protected:
     bool eventFilter(QObject *watched, QEvent *event) override;

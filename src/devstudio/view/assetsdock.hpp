@@ -13,6 +13,8 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
 class QAction;
@@ -52,6 +54,16 @@ class AssetsDock final : public QWidget {
         // PB-1s: what the contents check found, each time the dock shows it
         // (the Problems dock lists its warnings and errors).
         std::function<void(const std::vector<AssetStoreVerification> &stores)> checked;
+        // MI-1s, decision 4: Remove from project... on a registered model's
+        // row. The model whose file is the row at `logical` (as the project
+        // names it, "assets/models/box.glb"), if any; whether it has material
+        // bindings (`answered` once that is known); and unregister_model,
+        // `said` with the one sentence that tells how it went.
+        std::function<std::optional<std::string>(const std::string &logical)> model_at;
+        std::function<void(const std::string &model, std::function<void(bool bound)> answered)>
+            model_bindings;
+        std::function<void(const std::string &model, std::function<void(const std::string &line)> said)>
+            remove_model;
     };
 
     static constexpr int RescanDebounceMs = 250;
@@ -84,6 +96,7 @@ class AssetsDock final : public QWidget {
     [[nodiscard]] QTreeWidget *tree() const noexcept;
     [[nodiscard]] QAction *reloadAction() const noexcept;
     [[nodiscard]] QAction *undoAction() const noexcept;
+    [[nodiscard]] QAction *removeModelAction() const noexcept;
     [[nodiscard]] QLabel *watchLine() const noexcept;
     [[nodiscard]] QLabel *noticeLine() const noexcept;
     [[nodiscard]] QLabel *verificationLine() const noexcept;

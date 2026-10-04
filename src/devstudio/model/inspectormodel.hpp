@@ -173,6 +173,13 @@ enum class AddObjectKind : std::uint8_t {
 // plane primitive at (0, -0.5, 0), scaled 8 x 1 x 8.
 [[nodiscard]] nlohmann::json addObjectDeclaration(AddObjectKind kind,
                                                   const std::string &name);
+// MI-1s, decision 1: Add Object > Model from file... -- the same spawn with
+// the registered model's name as simplemodelview.model, at the origin.
+[[nodiscard]] nlohmann::json modelObjectDeclaration(const std::string &name,
+                                                    const std::string &model);
+// The object's base name from a model's: [a-zA-Z0-9_] kept, anything else
+// "_" ("a.b" -> "a_b"); "Model" when nothing is left.
+[[nodiscard]] std::string modelObjectBaseName(std::string_view model);
 
 // T-1: the Inspector shows a transform's rotation as three angles in degrees,
 // X then Y then Z (each about the fixed axes, so the rotation is
@@ -375,6 +382,28 @@ modelReferenceChoices(std::string_view current,
 // `error` as for graphLoopRefusalDescription. Answers "<sentence>
 // (<code>).", or empty for any other refusal.
 [[nodiscard]] std::string materialRefusalDescription(const nlohmann::json &error);
+// MI-1s, decision 5 (engine MI-1): the refusals of register_model and
+// unregister_model, one sentence each from their fields --
+//   model.path_invalid@1        {path, reason: fragment | dot_segment | backslash | absolute | empty}
+//   model.format_unsupported@1  {path, extension, supported}
+//   model.file_missing@1        {path}
+//   model.path_conflict@1       {path, name}
+//   model.name_invalid@1        {name, reason: empty | fragment | engine_reference | engine_primitive}
+//   model.name_conflict@1       {name}
+//   model.load_failed@1         {path, message}  (the engine's message, as written)
+//   model.unknown@1             {name}
+//   model.in_use@1              {name, count, objects}  ("<name> is used by N objects: a, b, …")
+//   model.transaction_busy@1    {path?}
+//   external_modification       {path, expected, actual}
+// `error` as for graphLoopRefusalDescription. Answers "<sentence>
+// (<code>).", or empty for any other refusal. knownRefusalDescription
+// answers the model.* ones too.
+[[nodiscard]] std::string modelRefusalDescription(const nlohmann::json &error);
+// An edit ticket's `error` whose payload says reason "model_unknown" (engine
+// MI-1: a spawn or a model field naming a model the project has not
+// registered): "Model <name> is not registered in this project", and where it
+// is registered from. Empty for any other error.
+[[nodiscard]] std::string modelUnknownEditDescription(const nlohmann::json &error);
 // MT-2s, decision 6: whether the Inspector draws a component's list with the
 // generic rows (a table and JSON typed per row). A simplemodelview's
 // `/materials` is not drawn there: the Material rows above choose them.
@@ -575,6 +604,9 @@ class InspectorModel {
     // UX-10: the texture ids of the same answer (asked when an object with a
     // sprite_view is loaded too); they move with the same revision.
     const std::optional<std::vector<std::string>> &textureAssets() const noexcept;
+    // MI-1s: a model was registered or taken back; list_assets is asked
+    // again for the selected object's model field.
+    void refreshModelAssets();
     bool addComponent(std::string_view key);
     bool addComponent(std::string_view key, const nlohmann::json &declaration);
     // G-2: one `edit` carrying one `spawn` op, on the scene revision last

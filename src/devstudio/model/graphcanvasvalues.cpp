@@ -1041,4 +1041,43 @@ GraphCanvasImageImport importProjectImage(const std::filesystem::path &project_r
     return result;
 }
 
+ProjectFileCopy copyIntoProjectAssets(const std::filesystem::path &project_root, std::string_view folder_name,
+                                      const std::filesystem::path &file) {
+    ProjectFileCopy result;
+    if (project_root.empty()) {
+        result.error = "No project is open.";
+        return result;
+    }
+    const auto shown = file.filename().u8string();
+    const std::string shown_name{shown.begin(), shown.end()};
+    const auto folder = project_root / "assets" / std::filesystem::path{std::string{folder_name}};
+    std::error_code error;
+    std::filesystem::create_directories(folder, error);
+    if (error) {
+        result.error = "Could not make " + folder.generic_string() + ": " + error.message();
+        return result;
+    }
+    // The first free `<stem>[_N]<extension>`, kept as a path so a name in
+    // any script survives.
+    auto target = folder / file.filename();
+    for (int index = 2; std::filesystem::exists(target, error) && index < 10000; ++index) {
+        auto name = file.stem();
+        name += "_" + std::to_string(index);
+        name += file.extension();
+        target = folder / name;
+    }
+    if (std::filesystem::exists(target, error)) {
+        result.error = "No free name for " + shown_name + ".";
+        return result;
+    }
+    if (!std::filesystem::copy_file(file, target, std::filesystem::copy_options::none, error) || error) {
+        result.error = "Could not copy " + shown_name + (error ? ": " + error.message() : std::string{"."});
+        return result;
+    }
+    const auto relative = target.lexically_relative(project_root).generic_u8string();
+    result.reference = std::string{relative.begin(), relative.end()};
+    result.copy = target;
+    return result;
+}
+
 } // namespace PelicanStudio

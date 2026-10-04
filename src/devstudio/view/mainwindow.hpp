@@ -3,6 +3,7 @@
 #include "layoutpreset.hpp"
 #include "toollayoutpreset.hpp"
 #include "../model/gizmomodel.hpp"
+#include "../model/modelimport.hpp"
 #include "../model/project.hpp"
 #include "../model/renderdocumentreload.hpp"
 #include "../model/renderedithistory.hpp"
@@ -19,9 +20,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -216,6 +219,17 @@ class MainWindow : public QMainWindow {
     };
     std::optional<OutlinerEdit> pending_outliner_edit_;
     QMenu *outliner_menu_ = nullptr;
+    // MI-1s: register_model / unregister_model (engine MI-1), for Add Object
+    // > Model from file..., the Inspector's Import... and the Assets dock's
+    // Remove from project...; and the Outliner's Restart engine, shown when a
+    // registration waits for the next start.
+    std::unique_ptr<ModelRegistrationSession> model_registration_;
+    QPushButton *outliner_restart_ = nullptr;
+    QString outliner_restart_reason_;
+    // Decision 4: the project's registered models by file (list_assets),
+    // for the Assets dock's rows.
+    std::map<std::string, std::string> registered_model_files_;
+    qint64 pending_models_request_ = 0;
     // RU-1. The one history of render edits, shared by the Frame Plan, the
     // Pass Editor, the Task Editor and Render Features, and its two actions:
     // on the Frame Plan's toolbar, in the Edit menu, and Ctrl+Z / Ctrl+Y
@@ -302,6 +316,21 @@ class MainWindow : public QMainWindow {
     void populateOutliner();
     void createAddObjectMenu();
     void addObject(AddObjectKind kind);
+    // MI-1s, decision 1: Add Object > Model from file...
+    void addModelFromFile();
+    // The file dialog and register_model; `registered` with the name once it
+    // is drawn now (a registration that waits for a restart says so under
+    // the Outliner instead).
+    void chooseModelFile(std::function<void(const std::string &model)> registered);
+    // The spawn of an object whose simplemodelview draws `model`.
+    void addModelObject(const std::string &model);
+    // Add Object's one spawn: the first free name from `base`, its object.
+    void spawnNewObject(std::string_view base,
+                        const std::function<nlohmann::json(const std::string &name)> &declaration);
+    void showOutlinerRestart(const QString &line, const QString &reason);
+    // Decision 4: list_assets, for the registered models' files.
+    void requestRegisteredModels();
+    void modelsChanged();
     // Selects the pending created object once the Outliner holds it.
     void selectCreatedObject();
     // OL-1: Duplicate, Delete, and a row dropped on another.

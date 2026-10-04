@@ -58,6 +58,9 @@ add_library(pelican_studio_inspector_model STATIC
     # contents check).
     problemsmodel.cpp
     problemsmodel.hpp
+    # MI-1s: an outside model placed in the project and registered (engine MI-1).
+    modelimport.cpp
+    modelimport.hpp
 )
 
 set_target_properties(pelican_studio_inspector_model PROPERTIES CXX_STANDARD 20)

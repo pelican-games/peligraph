@@ -24,6 +24,7 @@
 
 #include <QApplication>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QLabel>
@@ -71,6 +72,8 @@ class FakeEngine {
                    {"rotation", Json::array({0.0, 0.0, 0.0, 1.0})},
                    {"scale", Json::array({1.0, 1.0, 1.0})}};
     Json flags{{"enabled", true}};
+    // MI-1s: a simplemodelview on the object, when a test gives it one.
+    std::optional<Json> model_view;
     std::uint64_t revision = 1;
     int spawns = 0;
     // PM-3b: the Transform the game has given the object (get_components'
@@ -89,7 +92,10 @@ class FakeEngine {
             const auto id = request.at("id").get<qint64>();
             // The attached-graphs row beside the fields asks for graphs; the
             // fixture project has none to give.
-            if (request.at("method").get<std::string>().starts_with("get_graph_")) {
+            // MI-1s: and the Material rows beside a model ask for materials.
+            const auto method = request.at("method").get<std::string>();
+            if (method.starts_with("get_graph_") || method == "list_materials" ||
+                method == "get_material_bindings" || method == "get_object_materials") {
                 emit viewport_.inspectorRpcFailed(id, QStringLiteral("no graphs here"));
                 QApplication::processEvents();
                 continue;
@@ -129,6 +135,10 @@ class FakeEngine {
             return;
         }
         if (op != "set_component_value") return;
+        if (operation.at("component_slot") == "simplemodelview" && model_view) {
+            (*model_view)[Json::json_pointer{operation.at("field_path").get<std::string>()}] = operation.at("value");
+            return;
+        }
         Json &component = operation.at("component_slot") == "transform" ? transform : flags;
         component[Json::json_pointer{operation.at("field_path").get<std::string>()}] =
             operation.at("value");
@@ -138,6 +148,20 @@ class FakeEngine {
         const auto schema = [](Json fields) {
             return Json{{"state", "available"}, {"fields", std::move(fields)}};
         };
+        Json result = componentList(schema);
+        if (model_view)
+            result["components"].push_back({{"name", "simplemodelview"},
+                                            {"component_index", 2},
+                                            {"authored_json", *model_view},
+                                            {"editable", true},
+                                            {"pending", false},
+                                            {"codec", {{"state", "registered"}}},
+                                            {"schema", schema(Json::array({{{"name", "model"}, {"type", "string"}}}))}});
+        return result;
+    }
+
+    template <typename Schema>
+    Json componentList(const Schema &schema) const {
         return {{"scene_revision", revision},
                 {"authoring_object_id", 41},
                 {"declaration_index", 2},
@@ -226,7 +250,11 @@ struct Rig {
     FakeEngine engine{viewport};
     std::unique_ptr<InspectorWidget> inspector;
 
-    Rig() {
+    // MI-1s: `model` puts a simplemodelview on the object, and `prepare`
+    // runs on the Inspector before the object is selected.
+    explicit Rig(std::optional<Json> model = std::nullopt,
+                 const std::function<void(InspectorWidget &)> &prepare = {}) {
+        engine.model_view = std::move(model);
         QString error;
         REQUIRE(viewport.process_.start(
             {QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH), {QStringLiteral("rpc-hold")}, {}},
@@ -238,6 +266,7 @@ struct Rig {
         inspector->show();
         inspector->activateWindow();
         REQUIRE(QTest::qWaitForWindowActive(inspector.get()));
+        if (prepare) prepare(*inspector);
         inspector->setSelection(OutlinerObjectKey{.scene_id = "main", .declaration_index = 2},
                                 QStringLiteral("Plane"));
         REQUIRE(pumpUntil([&] { return field("pelican.inspectorVector.transform.pos.1") != nullptr; }));
@@ -551,6 +580,49 @@ TEST_CASE("PM-3c a spawned object's read-only view offers no Take from game",
                                 QStringLiteral("Plane"));
     REQUIRE(rig.pumpUntil([&] { return take() != nullptr && take()->isEnabled(); }));
     CHECK(take()->isVisible());
+}
+
+TEST_CASE("MI-1s decision 2: Import... beside the model field registers a file through the window's action and "
+          "sets the field to the name it was registered as, in one edit",
+          "[devstudio][inspector][mi1s]") {
+    std::function<void(const std::string &)> registered;
+    int imports = 0;
+    Rig rig{Json{{"model", "engine://primitives/cube"}}, [&](InspectorWidget &inspector) {
+                inspector.setModelImportAction([&](std::function<void(const std::string &)> done) {
+                    ++imports;
+                    registered = std::move(done);
+                });
+            }};
+    QPointer<QPushButton> import;
+    REQUIRE(rig.pumpUntil([&] {
+        import = rig.inspector->findChild<QPushButton *>(QStringLiteral("pelican.inspectorModelImport"));
+        return import != nullptr && import->isVisible() && import->isEnabled();
+    }));
+    auto *choices = rig.inspector->findChild<QComboBox *>(QStringLiteral("pelican.inspectorModelChoice"));
+    REQUIRE(choices != nullptr);
+    CHECK(choices->currentText() == QStringLiteral("Cube (built-in)"));
+
+    // The window chooses the file and registers it; nothing is sent until
+    // it says the model is drawn now.
+    const auto edits = rig.engine.transactions;
+    import->click();
+    REQUIRE(imports == 1);
+    rig.pumpFor(100);
+    CHECK(rig.engine.transactions == edits);
+    REQUIRE(registered);
+    registered("checker_box");
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.model_view->at("model") == "checker_box"; }));
+    CHECK(rig.engine.transactions == edits + 1);
+    CHECK(rig.engine.last_operations ==
+          Json::array({{{"op", "set_component_value"},
+                        {"object_id", 41},
+                        {"component_slot", "simplemodelview"},
+                        {"field_path", "/model"},
+                        {"value", "checker_box"}}}));
+    REQUIRE(rig.pumpUntil([&] {
+        auto *field = rig.inspector->findChild<QComboBox *>(QStringLiteral("pelican.inspectorModelChoice"));
+        return field != nullptr && field->currentText() == QStringLiteral("checker_box");
+    }));
 }
 
 } // namespace PelicanStudio

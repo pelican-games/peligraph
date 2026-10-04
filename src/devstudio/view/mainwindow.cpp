@@ -40,6 +40,7 @@
 #include <QFileDialog>
 #include <QFrame>
 #include <QFont>
+#include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -77,6 +78,7 @@
 #include <QVariant>
 
 #include <algorithm>
+#include <cctype>
 #include <exception>
 #include <filesystem>
 #include <optional>
@@ -390,6 +392,36 @@ void MainWindow::createWorkspace() {
                 [this](const std::vector<AssetStoreVerification> &stores) {
                     if (problems_dock_ != nullptr) problems_dock_->setAssetIssues(stores);
                 },
+            // MI-1s, decision 4: Remove from project... on a model's file.
+            .model_at = [this](const std::string &logical) -> std::optional<std::string> {
+                const auto found = registered_model_files_.find(logical);
+                if (found == registered_model_files_.end()) return std::nullopt;
+                return found->second;
+            },
+            .model_bindings =
+                [this](const std::string &model, std::function<void(bool)> answered) {
+                    if (!model_registration_ || !model_registration_->askBindings(model, answered)) answered(false);
+                },
+            .remove_model =
+                [this](const std::string &model, std::function<void(const std::string &)> said) {
+                    model_registration_->unregister(
+                        model,
+                        [this, said](const ModelRegistrationSession::Unregistered &removed) {
+                            modelsChanged();
+                            std::string line = "Removed model " + removed.name + " from the project; " +
+                                               (removed.path.empty() ? std::string{"its file"} : removed.path) +
+                                               " stays on disk.";
+                            // restart_required: the engine's reason, as it is.
+                            if (!removed.live) {
+                                auto reason = removed.restart_reason;
+                                if (!reason.empty())
+                                    reason.front() = static_cast<char>(std::toupper(static_cast<unsigned char>(reason.front())));
+                                line += " " + reason + ".";
+                            }
+                            said(line);
+                        },
+                        said);
+                },
         },
         this);
     assets_dock_->setObjectName(QStringLiteral("pelican.assetsPanel"));
@@ -463,11 +495,45 @@ void MainWindow::createWorkspace() {
     outliner_notice_->setObjectName(QStringLiteral("pelican.outlinerNotice"));
     applyPanelNoticeStyle(outliner_notice_);
     outliner_notice_->hide();
-    outliner_layout->addWidget(outliner_notice_);
+    // MI-1s: a model registered for the next start is drawn after a restart.
+    auto *outliner_notice_row = new QHBoxLayout;
+    outliner_notice_row->setContentsMargins(0, 0, 0, 0);
+    outliner_notice_row->addWidget(outliner_notice_, 1);
+    outliner_restart_ = new QPushButton(tr("Restart engine"), outliner_panel);
+    outliner_restart_->setObjectName(QStringLiteral("pelican.outliner.restartEngine"));
+    outliner_restart_->hide();
+    connect(outliner_restart_, &QPushButton::clicked, this, [this] {
+        const QString reason = std::exchange(outliner_restart_reason_, {});
+        outliner_restart_->hide();
+        setPanelNotice(outliner_notice_, {});
+        requestEngineRestart(reason);
+    });
+    outliner_notice_row->addWidget(outliner_restart_);
+    outliner_layout->addLayout(outliner_notice_row);
     docks_[OutlinerDock] = makeDock(this, tr("Outliner"),
                                     QStringLiteral("pelican.outlinerDock"), outliner_panel);
 
+    // MI-1s: register_model / unregister_model, answered through the
+    // viewport's replies below.
+    model_registration_ = std::make_unique<ModelRegistrationSession>(ModelRegistrationSession::Transport{
+        .request = [this](const std::string &method, const nlohmann::json &params, std::string *error) -> std::int64_t {
+            if (viewport_ == nullptr || !viewport_->rpcReady()) {
+                if (error != nullptr) *error = "the engine is not running";
+                return 0;
+            }
+            QString message;
+            const auto id = viewport_->requestRpc(
+                QString::fromStdString(method),
+                QJsonDocument::fromJson(QByteArray::fromStdString(params.dump())).object(), &message);
+            if (id == 0 && error != nullptr) *error = message.toStdString();
+            return id;
+        },
+    });
+
     inspector_ = new InspectorWidget(viewport_, this);
+    // MI-1s, decision 2: Import... beside the model field.
+    inspector_->setModelImportAction(
+        [this](std::function<void(const std::string &)> registered) { chooseModelFile(std::move(registered)); });
     docks_[InspectorDock] = makeDock(this, tr("Inspector"),
                                      QStringLiteral("pelican.inspectorDock"),
                                      inspector_);
@@ -957,6 +1023,8 @@ void MainWindow::createWorkspace() {
                 assets_dock_->engineAvailable();
                 materials_dock_->engineAvailable();
                 problems_dock_->engineAvailable();
+                // MI-1s, decision 4: which files are registered models.
+                requestRegisteredModels();
                 problems_count_->show();
                 // RR-1s, decision 1: whether the reads answer from the version
                 // the picture was made from.
@@ -972,6 +1040,13 @@ void MainWindow::createWorkspace() {
                 assets_dock_->engineUnavailable();
                 materials_dock_->engineUnavailable();
                 problems_dock_->engineUnavailable();
+                // MI-1s: what was asked went with the engine; a restart
+                // waited for is under way (or the project changed).
+                model_registration_->engineGone();
+                pending_models_request_ = 0;
+                registered_model_files_.clear();
+                outliner_restart_reason_.clear();
+                outliner_restart_->hide();
                 problems_count_->hide();
                 if (pending_navigation_ != Navigation::None) {
                     cancelNavigation(tr("The engine disconnected. The project remains open."));
@@ -1001,6 +1076,29 @@ void MainWindow::createWorkspace() {
                 if (assets_dock_->receiveResult(request_id, result_json)) return;
                 // MT-1s: the Materials dock's reads and writes.
                 if (materials_dock_->receiveResult(request_id, result_json)) return;
+                // MI-1s: register_model, unregister_model, and the registered
+                // models' files.
+                if (model_registration_->owns(request_id) ||
+                    (request_id != 0 && request_id == pending_models_request_)) {
+                    const auto result = nlohmann::json::parse(
+                        result_json.constData(), result_json.constData() + result_json.size(), nullptr, false);
+                    if (request_id == pending_models_request_) {
+                        pending_models_request_ = 0;
+                        registered_model_files_.clear();
+                        const auto assets = result.is_object() ? result.find("assets") : result.end();
+                        if (project_model_ && result.is_object() && assets != result.end() && assets->is_array())
+                            for (const auto &asset : *assets) {
+                                if (!asset.is_object() || asset.value("kind", std::string{}) != "model") continue;
+                                const auto id = asset.value("id", std::string{});
+                                const auto path = projectRelativeAssetPath(project_model_->projectRoot(),
+                                                                           asset.value("path", std::string{}));
+                                if (!path.empty() && !id.empty()) registered_model_files_[path] = id;
+                            }
+                        return;
+                    }
+                    model_registration_->receiveResult(request_id, result.is_discarded() ? nlohmann::json{} : result);
+                    return;
+                }
                 // PB-1s: the engine's list of problems.
                 if (problems_dock_->receiveResult(request_id, result_json)) return;
                 // PM-3a: Pause, Step and the reads that follow them.
@@ -1074,6 +1172,11 @@ void MainWindow::createWorkspace() {
                 if (render_fallback_->receiveFailure(request_id, message)) return;
                 if (assets_dock_->receiveFailure(request_id, message)) return;
                 if (materials_dock_->receiveFailure(request_id, message)) return;
+                if (model_registration_->receiveFailure(request_id, message.toStdString())) return;
+                if (request_id != 0 && request_id == pending_models_request_) {
+                    pending_models_request_ = 0;
+                    return;
+                }
                 if (problems_dock_->receiveFailure(request_id, message)) return;
                 if (play_controls_ &&
                     play_controls_->receiveFailure(request_id, message))
@@ -1748,6 +1851,18 @@ void MainWindow::createPlayControls(QToolBar *band) {
                 play_controls_->receiveRefusal(request_id, code, message, data);
                 assets_dock_->receiveRefusal(request_id, code, message, data);
                 materials_dock_->receiveRefusal(request_id, code, message, data);
+                // MI-1s: register_model's and unregister_model's refusals.
+                if (model_registration_->owns(request_id)) {
+                    const QJsonObject object = data.toObject();
+                    const auto fields = nlohmann::json::parse(
+                        QJsonDocument(object.value(QStringLiteral("error_fields")).toObject())
+                            .toJson(QJsonDocument::Compact)
+                            .toStdString(),
+                        nullptr, false);
+                    model_registration_->receiveRefusal(
+                        request_id, object.value(QStringLiteral("error_code")).toString().toStdString(),
+                        message.toStdString(), fields.is_discarded() ? nlohmann::json::object() : fields);
+                }
                 // UX-13c: an engine without scene_outline (-32601).
                 if (request_id != 0 && request_id == pending_outliner_request_ &&
                     code == -32601)
@@ -2403,6 +2518,11 @@ void MainWindow::createAddObjectMenu() {
         connect(action, &QAction::triggered, this,
                 [this, kind = kind] { addObject(kind); });
     }
+    // MI-1s, decision 1: an outside .glb / .gltf / .vrm, registered and placed.
+    add_object_menu_->addSeparator();
+    QAction *model_from_file = add_object_menu_->addAction(tr("Model from file\xE2\x80\xA6"));
+    model_from_file->setObjectName(QStringLiteral("pelican.outliner.addObject.modelFromFile"));
+    connect(model_from_file, &QAction::triggered, this, [this] { addModelFromFile(); });
 
     // OL-1: the right-click menu is the row's first -- Duplicate and Delete,
     // switched off with nothing selected -- and then Add Object.
@@ -2426,13 +2546,106 @@ void MainWindow::createAddObjectMenu() {
     add_button->setObjectName(QStringLiteral("pelican.outliner.addObjectButton"));
     add_button->setText(tr("Add Object"));
     add_button->setToolTip(tr("Add an empty or a primitive shape at the origin, "
-                              "or a wide floor just under it"));
+                              "a wide floor just under it, or a model from a file"));
     add_button->setMenu(add_object_menu_);
     add_button->setPopupMode(QToolButton::InstantPopup);
     scene_toolbar->addWidget(add_button);
 }
 
 void MainWindow::addObject(AddObjectKind kind) {
+    spawnNewObject(addObjectBaseName(kind),
+                   [kind](const std::string &name) { return addObjectDeclaration(kind, name); });
+}
+
+void MainWindow::addModelObject(const std::string &model) {
+    spawnNewObject(modelObjectBaseName(model),
+                   [model](const std::string &name) { return modelObjectDeclaration(name, model); });
+}
+
+void MainWindow::addModelFromFile() {
+    if (!project_model_ || !viewport_->rpcReady()) {
+        statusBar()->showMessage(
+            tr("Add Object needs an open project with its engine running."), 5000);
+        return;
+    }
+    chooseModelFile([this](const std::string &model) { addModelObject(model); });
+}
+
+void MainWindow::chooseModelFile(std::function<void(const std::string &model)> registered) {
+    if (!project_model_ || !viewport_->rpcReady()) {
+        statusBar()->showMessage(tr("A model is added to an open project with its engine running."), 5000);
+        return;
+    }
+    // Qt's own dialog, as the Graph's Import... opens it, so a scenario can
+    // name its file field; window-modal, answered when it closes.
+    auto *dialog = new QFileDialog{this, tr("Model from file")};
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setObjectName(QStringLiteral("pelican.modelImportDialog"));
+    dialog->setOption(QFileDialog::DontUseNativeDialog, true);
+    dialog->setFileMode(QFileDialog::ExistingFile);
+    dialog->setNameFilter(QString::fromUtf8(ModelFileFilter.data(), static_cast<qsizetype>(ModelFileFilter.size())));
+    if (auto *name = dialog->findChild<QLineEdit *>(QStringLiteral("fileNameEdit")))
+        name->setObjectName(QStringLiteral("pelican.modelImportDialog.fileName"));
+    const auto root = project_model_->projectRoot();
+    connect(dialog, &QFileDialog::fileSelected, this,
+            [this, root, registered = std::move(registered)](const QString &picked) {
+                const std::filesystem::path file{picked.toStdWString()};
+                const auto refused = [this](const std::string &sentence) {
+                    const QString message = QString::fromStdString(sentence);
+                    statusBar()->showMessage(message, 10000);
+                    setPanelNotice(outliner_notice_, oneLine(message), message);
+                };
+                statusBar()->showMessage(tr("Registering %1...").arg(picked), 5000);
+                model_registration_->registerFile(
+                    root, file,
+                    [this, registered](const ModelRegistrationSession::Registered &model) {
+                        modelsChanged();
+                        if (!model.live) {
+                            // The registration is written; the engine draws it
+                            // once it starts again, and nothing is placed now.
+                            showOutlinerRestart(
+                                tr("%1 is registered as model %2; restart the engine to use it: %3")
+                                    .arg(QString::fromStdString(model.path), QString::fromStdString(model.name),
+                                         QString::fromStdString(model.restart_reason)),
+                                QString::fromStdString(model.restart_reason));
+                            return;
+                        }
+                        setPanelNotice(outliner_notice_, {});
+                        statusBar()->showMessage(
+                            model.already ? tr("%1 is model %2 already.")
+                                                .arg(QString::fromStdString(model.path),
+                                                     QString::fromStdString(model.name))
+                                          : tr("Registered %1 as model %2.")
+                                                .arg(QString::fromStdString(model.path),
+                                                     QString::fromStdString(model.name)),
+                            5000);
+                        if (registered) registered(model.name);
+                    },
+                    refused);
+            });
+    dialog->open();
+}
+
+void MainWindow::showOutlinerRestart(const QString &line, const QString &reason) {
+    outliner_restart_reason_ = reason;
+    statusBar()->showMessage(line, 10000);
+    setPanelNotice(outliner_notice_, oneLine(line), line);
+    outliner_restart_->show();
+}
+
+void MainWindow::modelsChanged() {
+    if (inspector_ != nullptr) inspector_->modelsChanged();
+    requestRegisteredModels();
+}
+
+void MainWindow::requestRegisteredModels() {
+    if (!viewport_->rpcReady() || pending_models_request_ != 0) return;
+    QString error;
+    pending_models_request_ = viewport_->requestRpc(QStringLiteral("list_assets"), {}, &error);
+}
+
+void MainWindow::spawnNewObject(std::string_view base,
+                                const std::function<nlohmann::json(const std::string &name)> &declaration) {
     if (!project_model_ || !viewport_->rpcReady()) {
         statusBar()->showMessage(
             tr("Add Object needs an open project with its engine running."), 5000);
@@ -2457,11 +2670,10 @@ void MainWindow::addObject(AddObjectKind kind) {
     // A spawn the Outliner has not shown yet still holds its name.
     if (pending_spawn_name_ && pending_spawn_name_->first == scene->scene_id)
         taken.push_back(pending_spawn_name_->second);
-    const std::string name = uniqueObjectName(addObjectBaseName(kind), taken);
+    const std::string name = uniqueObjectName(base, taken);
 
     QString error;
-    const auto outcome = inspector_->spawnObject(
-        scene->scene_id, addObjectDeclaration(kind, name), &error);
+    const auto outcome = inspector_->spawnObject(scene->scene_id, declaration(name), &error);
     const QString shown_name = QString::fromStdString(name);
     if (outcome == SpawnOutcome::Refused) {
         const QString message = tr("Could not add %1: %2").arg(shown_name, error);

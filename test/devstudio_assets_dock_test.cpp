@@ -8,6 +8,7 @@
 
 #include "../src/devstudio/model/assetsdockmodel.hpp"
 #include "../src/devstudio/model/inspectormodel.hpp"
+#include "../src/devstudio/model/modelimport.hpp"
 #include "assetsdock.hpp"
 #include "shaderreloadfollower.hpp"
 
@@ -611,4 +612,88 @@ TEST_CASE("HW-2s decision 7: with the engine's own watch open, a reload_shaders 
     CHECK(write_and_answer_nothing_new() == ShaderReloadOutcome::Kind::committed);
     QTest::qWait(50);
     CHECK(reads.size() == 1);
+}
+
+TEST_CASE("MI-1s decision 4: a registered model's row offers Remove from project..., which asks first -- "
+          "saying its file stays, and that its material assignments go with it when it has some -- and "
+          "says how unregister_model went in one sentence",
+          "[devstudio][assets-dock][mi1s]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = blankProject(temporary);
+    write(root / "assets" / "models" / "box.glb", "glb");
+    write(root / "assets" / "models" / "loose.glb", "glb");
+    FakeEngine engine;
+    auto hooks = engine.hooks();
+    std::vector<std::string> asked_bindings;
+    std::function<void(bool)> bindings_answer;
+    std::vector<std::string> removed;
+    std::function<void(const std::string &)> removal_said;
+    hooks.model_at = [](const std::string &logical) -> std::optional<std::string> {
+        if (logical == "assets/models/box.glb") return std::string{"box"};
+        return std::nullopt;
+    };
+    hooks.model_bindings = [&](const std::string &model, std::function<void(bool)> answered) {
+        asked_bindings.push_back(model);
+        bindings_answer = std::move(answered);
+    };
+    hooks.remove_model = [&](const std::string &model, std::function<void(const std::string &)> said) {
+        removed.push_back(model);
+        removal_said = std::move(said);
+    };
+    AssetsDock dock{hooks};
+    dock.show();
+    dock.open(root);
+    ready(dock, engine);
+    auto &tree = *dock.tree();
+    QAction *remove = dock.removeModelAction();
+    REQUIRE(remove != nullptr);
+    CHECK(remove->objectName() == QStringLiteral("pelican.assets.removeModel"));
+    auto *confirm = dock.findChild<QLabel *>(QStringLiteral("pelican.assets.removeModelConfirm"));
+    auto *remove_button = dock.findChild<QPushButton *>(QStringLiteral("pelican.assets.removeModelConfirmed"));
+    auto *cancel_button = dock.findChild<QPushButton *>(QStringLiteral("pelican.assets.removeModelCancel"));
+    REQUIRE(confirm != nullptr);
+    REQUIRE(remove_button != nullptr);
+    REQUIRE(cancel_button != nullptr);
+
+    // A file no model is registered from: nothing to remove.
+    tree.setCurrentItem(row(tree, QStringLiteral("assets/models/loose.glb")));
+    CHECK_FALSE(remove->isEnabled());
+    tree.setCurrentItem(row(tree, QStringLiteral("assets/models/box.glb")));
+    REQUIRE(remove->isEnabled());
+
+    // Asked first; the bindings are read before the question is put.
+    remove->trigger();
+    REQUIRE(asked_bindings == std::vector<std::string>{"box"});
+    CHECK_FALSE(confirm->isVisibleTo(&dock));
+    bindings_answer(false);
+    REQUIRE(confirm->isVisibleTo(&dock));
+    CHECK(confirm->text() == QStringLiteral("Remove model box from the project? assets/models/box.glb stays on disk."));
+    cancel_button->click();
+    CHECK_FALSE(confirm->isVisibleTo(&dock));
+    CHECK(removed.empty());
+
+    // With material bindings, the question says they go too, for good.
+    remove->trigger();
+    bindings_answer(true);
+    CHECK(confirm->text() ==
+          QStringLiteral("Remove model box from the project? assets/models/box.glb stays on disk. Its material "
+                         "assignments are removed with it and cannot be put back."));
+    remove_button->click();
+    REQUIRE(removed == std::vector<std::string>{"box"});
+    CHECK_FALSE(confirm->isVisibleTo(&dock));
+    // What the engine answered is the dock's one line.
+    removal_said("box is used by 1 object: Crate (model.in_use@1).");
+    CHECK(dock.noticeLine()->isVisibleTo(&dock));
+    CHECK(dock.noticeLine()->toolTip() == QStringLiteral("box is used by 1 object: Crate (model.in_use@1)."));
+
+    // The window finds a row's model from list_assets, whose path is the
+    // file the engine resolved: read as the project names it.
+    CHECK(projectRelativeAssetPath(root, (root / "assets" / "models" / "box.glb").string()) ==
+          "assets/models/box.glb");
+    CHECK(projectRelativeAssetPath(root, "project://assets/models/box.glb") == "assets/models/box.glb");
+    CHECK(projectRelativeAssetPath(root, "assets/models/box.glb") == "assets/models/box.glb");
+    CHECK(projectRelativeAssetPath(root, "engine://primitives/cube").empty());
+    CHECK(projectRelativeAssetPath(root, (root.parent_path() / "elsewhere.glb").string()).empty());
 }

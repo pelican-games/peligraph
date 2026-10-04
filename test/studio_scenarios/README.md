@@ -613,6 +613,22 @@ is still the previous one — <the list's sentence>", or, while the file is
 not JSON, "<file> is not valid JSON; the Graph shows the last version that
 was."
 
+MI-1s (engine MI-1): Add Object > Model from file... is the QAction
+`pelican.outliner.addObject.modelFromFile`. It opens Qt's own file dialog,
+`pelican.modelImportDialog`, whose file field is
+`pelican.modelImportDialog.fileName` (type the path, press Return). A file
+outside the project is copied into `assets/models` first; it is registered
+with `register_model` and an object drawing it, named after the model, is
+added as Add Object > Cube adds one. The Inspector's model field has
+Import... beside it, `pelican.inspectorModelImport`, which opens the same
+dialog and sets the field. A registration that waits for the engine's next
+start says so under the Outliner, beside `pelican.outliner.restartEngine`.
+The Assets dock's Remove from project... is `pelican.assets.removeModel`
+(a registered model's row), and asks in `pelican.assets.removeModelConfirm`
+with `.removeModelConfirmed` and `.removeModelCancel`. A file the scenario
+needs from outside the project is copied by its `<name>.prepare.py` into
+`{artifacts}/incoming/`; `gui_model_from_file` is the example.
+
 ## Gestures a canvas is driven with
 
 `press`, `move` and `release` share one piece of state: which buttons this

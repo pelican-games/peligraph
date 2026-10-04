@@ -199,14 +199,6 @@ std::optional<std::vector<std::string>> taskPortChoices(const Json &schema, cons
     return ports;
 }
 
-std::filesystem::path freeName(const std::filesystem::path &folder, const std::filesystem::path &file) {
-    auto target = folder / file.filename();
-    std::error_code error;
-    for (int index = 2; std::filesystem::exists(target, error); ++index)
-        target = folder / (file.stem().string() + "_" + std::to_string(index) + file.extension().string());
-    return target;
-}
-
 } // namespace
 
 Json graphParameterDefault(const Json &schema) {
@@ -1476,26 +1468,25 @@ void GraphParameterEditor::importAsset() {
             if (imported.reference.empty() || imported.convert) return;
             reference = "project://" + imported.reference;
         } else {
-            const auto folder = root / "assets" /
-                                (asset_kind == "model"            ? "models"
-                                 : asset_kind == "image"          ? "images"
-                                 : asset_kind == "analysis_table" ? "analysis"
-                                                                  : "files");
-            std::error_code error;
-            std::filesystem::create_directories(folder, error);
-            const auto target = freeName(folder, file);
-            if (error || !std::filesystem::copy_file(file, target, error) || error) return;
+            // MI-1s: the copy Add Object > Model from file... makes too.
+            const auto copied = copyIntoProjectAssets(root,
+                                                      asset_kind == "model"            ? "models"
+                                                      : asset_kind == "image"          ? "images"
+                                                      : asset_kind == "analysis_table" ? "analysis"
+                                                                                       : "files",
+                                                      file);
+            if (!copied.error.empty()) return;
             // A baked table reads its record beside it (`<file>.import.json`).
             if (asset_kind == "analysis_table") {
+                std::error_code error;
                 auto record = file;
                 record += ".import.json";
-                auto copied = target;
-                copied += ".import.json";
+                auto beside = copied.copy;
+                beside += ".import.json";
                 if (std::filesystem::exists(record, error))
-                    std::filesystem::copy_file(record, copied, error);
+                    std::filesystem::copy_file(record, beside, error);
             }
-            const auto relative = target.lexically_relative(root).generic_u8string();
-            reference = "project://" + std::string{relative.begin(), relative.end()};
+            reference = "project://" + copied.reference;
         }
         set_ = true;
         value_ = reference;

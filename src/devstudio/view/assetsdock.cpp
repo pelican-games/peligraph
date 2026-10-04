@@ -89,6 +89,13 @@ struct AssetsDock::Impl {
     std::string confirm_store;
     QAction *reload_action = nullptr;
     QAction *undo_action = nullptr;
+    // MI-1s, decision 4: Remove from project... and the line that asks first.
+    QAction *remove_model_action = nullptr;
+    QWidget *remove_row = nullptr;
+    QLabel *remove_label = nullptr;
+    QPushButton *remove_confirm = nullptr;
+    QPushButton *remove_cancel = nullptr;
+    std::string remove_model;
     QFileSystemWatcher *watcher = nullptr;
     QTimer *rescan_timer = nullptr;
     std::vector<AssetRoot> roots;
@@ -141,6 +148,12 @@ struct AssetsDock::Impl {
         undo_action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
         owner.addAction(undo_action);
         QObject::connect(undo_action, &QAction::triggered, &owner, [this] { session.undo(); });
+        remove_model_action = new QAction(owner.tr("Remove from project\xE2\x80\xA6"), &owner);
+        remove_model_action->setObjectName(QStringLiteral("pelican.assets.removeModel"));
+        remove_model_action->setToolTip(owner.tr(
+            "Take the model off the project's list (unregister_model); its file stays"));
+        remove_model_action->setEnabled(false);
+        QObject::connect(remove_model_action, &QAction::triggered, &owner, [this] { askRemoveModel(); });
 
         auto *top = new QHBoxLayout;
         top->setSpacing(4);
@@ -174,6 +187,7 @@ struct AssetsDock::Impl {
         tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
         tree->setContextMenuPolicy(Qt::CustomContextMenu);
         tree->addAction(reload_action);
+        tree->addAction(remove_model_action);
         QObject::connect(tree, &QTreeWidget::itemChanged, &owner,
                          [this](QTreeWidgetItem *item, int column) { checked(item, column); });
         QObject::connect(tree, &QTreeWidget::currentItemChanged, &owner,
@@ -185,6 +199,7 @@ struct AssetsDock::Impl {
                              updateReloadAction();
                              QMenu menu{&owner};
                              menu.addAction(reload_action);
+                             if (currentModel()) menu.addAction(remove_model_action);
                              menu.addSeparator();
                              menu.addAction(undo_action);
                              menu.exec(tree->viewport()->mapToGlobal(point));
@@ -205,6 +220,36 @@ struct AssetsDock::Impl {
         notice_row->addWidget(notice, 1);
         notice_row->addWidget(restart);
         layout->addLayout(notice_row);
+
+        remove_row = new QWidget(&owner);
+        auto *remove_layout = new QHBoxLayout(remove_row);
+        remove_layout->setContentsMargins(0, 0, 0, 0);
+        remove_label = new QLabel(remove_row);
+        remove_label->setObjectName(QStringLiteral("pelican.assets.removeModelConfirm"));
+        remove_label->setWordWrap(true);
+        remove_confirm = new QPushButton(owner.tr("Remove"), remove_row);
+        remove_confirm->setObjectName(QStringLiteral("pelican.assets.removeModelConfirmed"));
+        remove_cancel = new QPushButton(owner.tr("Cancel"), remove_row);
+        remove_cancel->setObjectName(QStringLiteral("pelican.assets.removeModelCancel"));
+        remove_layout->addWidget(remove_label, 1);
+        remove_layout->addWidget(remove_confirm);
+        remove_layout->addWidget(remove_cancel);
+        remove_row->hide();
+        QObject::connect(remove_confirm, &QPushButton::clicked, &owner, [this] {
+            const auto model = std::exchange(remove_model, {});
+            remove_row->hide();
+            if (model.empty() || !hooks.remove_model) return;
+            const QPointer<QWidget> alive{&owner};
+            hooks.remove_model(model, [this, alive](const std::string &line) {
+                if (!alive) return;
+                session.say(line);
+            });
+        });
+        QObject::connect(remove_cancel, &QPushButton::clicked, &owner, [this] {
+            remove_model.clear();
+            remove_row->hide();
+        });
+        layout->addWidget(remove_row);
 
         track = new QPushButton(owner.tr("Track asset contents\xE2\x80\xA6"), &owner);
         track->setObjectName(QStringLiteral("pelican.assets.trackContents"));
@@ -533,6 +578,40 @@ struct AssetsDock::Impl {
         const QSignalBlocker block{reload_action};
         reload_action->setChecked(state.mark != AssetWatchMark::None);
         reload_action->setEnabled(checkable && session.ready() && !session.editPending());
+        remove_model_action->setEnabled(session.ready() && currentModel().has_value());
+    }
+
+    // MI-1s, decision 4: the registered model whose file the current row is.
+    std::optional<std::string> currentModel() const {
+        QTreeWidgetItem *item = tree->currentItem();
+        if (item == nullptr || !hooks.model_at) return std::nullopt;
+        return hooks.model_at(item->data(NameColumn, AssetLogicalPathRole).toString().toStdString());
+    }
+
+    void askRemoveModel() {
+        QTreeWidgetItem *item = tree->currentItem();
+        const auto model = currentModel();
+        if (item == nullptr || !model) return;
+        const QString path = item->data(NameColumn, AssetLogicalPathRole).toString();
+        const auto confirm = [this, model = *model, path](bool bound) {
+            remove_model = model;
+            QString line = owner.tr("Remove model %1 from the project? %2 stays on disk.")
+                               .arg(qtext(model), path);
+            // engine MI-1: register_model does not put them back.
+            if (bound)
+                line += QLatin1Char(' ') +
+                        owner.tr("Its material assignments are removed with it and cannot be put back.");
+            remove_label->setText(line);
+            remove_row->show();
+        };
+        if (!hooks.model_bindings) {
+            confirm(false);
+            return;
+        }
+        const QPointer<QWidget> alive{&owner};
+        hooks.model_bindings(*model, [alive, confirm](bool bound) {
+            if (alive) confirm(bound);
+        });
     }
 
     void setWatched(QTreeWidgetItem *item, bool on) {
@@ -742,6 +821,8 @@ AssetsDock::~AssetsDock() {
 
 void AssetsDock::open(const std::filesystem::path &project_root) {
     impl_->confirm_store.clear();
+    impl_->remove_model.clear();
+    impl_->remove_row->hide();
     impl_->revealed.clear();
     impl_->scanned = false;
     impl_->entries.clear();
@@ -809,6 +890,7 @@ AssetsDockSession &AssetsDock::session() noexcept { return impl_->session; }
 QTreeWidget *AssetsDock::tree() const noexcept { return impl_->tree; }
 QAction *AssetsDock::reloadAction() const noexcept { return impl_->reload_action; }
 QAction *AssetsDock::undoAction() const noexcept { return impl_->undo_action; }
+QAction *AssetsDock::removeModelAction() const noexcept { return impl_->remove_model_action; }
 QLabel *AssetsDock::watchLine() const noexcept { return impl_->watch_line; }
 QLabel *AssetsDock::noticeLine() const noexcept { return impl_->notice; }
 QLabel *AssetsDock::verificationLine() const noexcept { return impl_->summary; }

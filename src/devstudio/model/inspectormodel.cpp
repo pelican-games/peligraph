@@ -262,6 +262,8 @@ std::string resultErrorMessage(const Json &result) {
     if (error == result.end() || !error->is_object()) {
         return "editor command did not report a committed result";
     }
+    // MI-1s, decision 5 (engine MI-1): a model the project has not registered.
+    if (auto unknown = modelUnknownEditDescription(*error); !unknown.empty()) return unknown;
     const auto message = error->find("message");
     return message != error->end() && message->is_string()
                ? message->get<std::string>()
@@ -271,6 +273,10 @@ std::string resultErrorMessage(const Json &result) {
 std::string describeFailure(const Json &result) {
     const auto code = resultErrorCode(result);
     const auto message = resultErrorMessage(result);
+    // MI-1s: said in words, without method_unavailable in front of it.
+    if (const auto error = result.find("error");
+        error != result.end() && !modelUnknownEditDescription(*error).empty())
+        return message;
     return code.empty() ? message : code + " - " + message;
 }
 
@@ -481,6 +487,20 @@ nlohmann::json addObjectDeclaration(AddObjectKind kind, const std::string &name)
                               {"model", enginePrimitiveModelReferences().at(index)}});
     }
     return Json{{"name", name}, {"components", std::move(components)}};
+}
+
+nlohmann::json modelObjectDeclaration(const std::string &name, const std::string &model) {
+    auto declaration = addObjectDeclaration(AddObjectKind::Cube, name);
+    declaration["components"][1]["model"] = model;
+    return declaration;
+}
+
+std::string modelObjectBaseName(std::string_view model) {
+    std::string name;
+    for (const char c : model)
+        name.push_back(std::isalnum(static_cast<unsigned char>(c)) || c == '_' ? c : '_');
+    if (name.find_first_not_of('_') == std::string::npos) return "Model";
+    return name;
 }
 
 namespace {
@@ -896,6 +916,9 @@ std::string knownRefusalDescription(std::string_view code, std::string_view mess
         return view_select;
     // PM-3a: the play refusals (set_play_state, advance_frames, step_frame).
     if (auto play = playRefusalDescription(error); !play.empty()) return play;
+    // MI-1s, decision 5: register_model / unregister_model (engine MI-1).
+    if (code.starts_with("model."))
+        if (auto model = modelRefusalDescription(error); !model.empty()) return model;
     // LP-4c: and so does a loop's or a definition's.
     return graphLoopRefusalDescription(error, name_document);
 }
@@ -1720,6 +1743,93 @@ std::string materialRefusalDescription(const nlohmann::json &error) {
     return fillRefusalPattern(pattern, fields) + " (" + std::string{entry->code} + ").";
 }
 
+namespace {
+
+// MI-1s, decision 5: register_model's and unregister_model's refusals
+// (engine MI-1). {why} is said from `reason` (ModelRefusalReasonTexts);
+// {objects} is in_use's names, one after another.
+constexpr std::array<GraphLoopRefusalText, 11> ModelRefusalTexts{{
+    {"model.path_invalid@1", "{path} cannot name a model file: {why}"},
+    {"model.format_unsupported@1", "{path} is not a .glb, .gltf or .vrm file"},
+    {"model.file_missing@1", "{path} is not a file in the project"},
+    {"model.path_conflict@1", "{path} is registered already as model {name}"},
+    {"model.name_invalid@1", "{name} cannot be a model name: {why}"},
+    {"model.name_conflict@1", "A model named {name} exists already"},
+    {"model.load_failed@1", "{path} does not load: {message}"},
+    {"model.unknown@1", "No model is named {name} in this project"},
+    {"model.in_use@1", "{name} is used by {count} objects: {objects}"},
+    {"model.transaction_busy@1", "The project's asset list is being written by another edit; try again"},
+    {"external_modification", "{path} changed outside Studio since it was read; try again"},
+}};
+
+struct ModelRefusalReasonText {
+    std::string_view reason;
+    std::string_view words;
+};
+constexpr std::array<ModelRefusalReasonText, 6> ModelRefusalReasonTexts{{
+    {"fragment", "it names a part of a file (#)"},
+    {"dot_segment", "it holds a . or .. folder"},
+    {"backslash", "it uses \\ where / goes"},
+    {"absolute", "it is not inside the project"},
+    {"empty", "it is empty"},
+    {"engine_reference", "engine:// names the engine's own shapes"},
+}};
+
+} // namespace
+
+std::string modelRefusalDescription(const nlohmann::json &error) {
+    if (!error.is_object()) return {};
+    const auto code = error.value("code", std::string{});
+    const auto entry = std::ranges::find(ModelRefusalTexts, code, &GraphLoopRefusalText::code);
+    if (entry == ModelRefusalTexts.end()) return {};
+    auto fields = graphRefusalFields(error, entry->code).value_or(nlohmann::json::object());
+    if (!fields.is_object()) fields = nlohmann::json::object();
+    const auto reason = fields.value("reason", std::string{});
+    std::string_view pattern = entry->sentence;
+    // An engine shape is not taken off (unregister_model).
+    if (code == "model.name_invalid@1" && reason == "engine_primitive")
+        pattern = "{name} is one of the engine's own shapes, which stay";
+    const auto words = std::ranges::find(ModelRefusalReasonTexts, reason, &ModelRefusalReasonText::reason);
+    fields["why"] = words != ModelRefusalReasonTexts.end() ? std::string{words->words}
+                    : reason.empty()                       ? std::string{"the engine does not take it"}
+                                                           : reason;
+    if (!fields.contains("path") || !fields["path"].is_string()) fields["path"] = "The file";
+    if (!fields.contains("name") || !fields["name"].is_string()) fields["name"] = "The model";
+    // load_failed: the engine's own words, as it wrote them.
+    if (!fields.contains("message") || !fields["message"].is_string())
+        fields["message"] = error.value("message", std::string{});
+    if (code == "model.in_use@1") {
+        std::string objects;
+        std::size_t listed = 0;
+        if (const auto names = fields.find("objects"); names != fields.end() && names->is_array())
+            for (const auto &name : *names) {
+                if (!name.is_string()) continue;
+                objects += (objects.empty() ? "" : ", ") + name.get<std::string>();
+                ++listed;
+            }
+        const auto count = fields.value("count", static_cast<std::uint64_t>(listed));
+        // The engine names the first 8.
+        if (count > listed) objects += objects.empty() ? "\xE2\x80\xA6" : ", \xE2\x80\xA6";
+        fields["count"] = count;
+        fields["objects"] = objects;
+        if (count == 1) pattern = "{name} is used by 1 object: {objects}";
+    }
+    return fillRefusalPattern(pattern, fields) + " (" + std::string{entry->code} + ").";
+}
+
+std::string modelUnknownEditDescription(const nlohmann::json &error) {
+    if (!error.is_object()) return {};
+    const auto payload = error.find("payload");
+    if (payload == error.end() || !payload->is_object() ||
+        payload->value("reason", std::string{}) != "model_unknown")
+        return {};
+    auto model = payload->value("model", std::string{});
+    if (model.empty()) model = "?";
+    return "Model " + model +
+           " is not registered in this project. Choose its file with Import\xE2\x80\xA6 beside the "
+           "Inspector's model field, or Add Object > Model from file\xE2\x80\xA6";
+}
+
 bool inspectorListShown(std::string_view component, std::string_view list_path) {
     return !(component == "simplemodelview" && list_path == "/materials");
 }
@@ -2184,6 +2294,10 @@ struct InspectorModel::Impl {
             } else {
                 outcome.code = resultErrorCode(*result);
                 outcome.message = resultErrorMessage(*result);
+                // MI-1s: an unregistered model is said in words alone.
+                if (const auto error = result->find("error");
+                    error != result->end() && !modelUnknownEditDescription(*error).empty())
+                    outcome.code.clear();
             }
         } else {
             outcome.message = std::move(failure);
@@ -4004,6 +4118,8 @@ std::uint64_t InspectorModel::modelAssetsRevision() const noexcept {
 const std::optional<std::vector<std::string>> &InspectorModel::textureAssets() const noexcept {
     return impl_->texture_assets;
 }
+
+void InspectorModel::refreshModelAssets() { impl_->requestModelAssets(); }
 
 bool InspectorModel::addComponent(std::string_view key) {
     if (!impl_->component_add_candidates) return false;

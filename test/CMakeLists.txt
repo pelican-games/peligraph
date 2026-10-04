@@ -934,6 +934,17 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     Qt6::Widgets
   )
 
+  # MI-1s: an outside model placed in the project and registered (engine
+  # MI-1), with the test answering for the engine through the session's
+  # transport; and the refusals' sentences.
+  pelican_define_test(devstudio_model_import_test QT QT_OFFSCREEN
+    pelican_studio_inspector_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+  )
+
   # BS-1s: the row above the viewport while the engine draws its placeholder
   # (engine BS-1), on the real widget with the test answering through its
   # hooks.

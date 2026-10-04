@@ -156,6 +156,8 @@ struct InspectorWidget::Impl {
     std::function<void(const QString &, const QString &)> graph_source_reveal_action;
     // RSX: the main window's engine restart.
     std::function<void(const QString &)> engine_restart_action;
+    // MI-1s, decision 2: Import... beside the model field.
+    std::function<void(std::function<void(const std::string &)>)> model_import_action;
     std::optional<Json> displayed_ray_payload;
     QPointer<QDialog> add_component_dialog;
     QComboBox *component_types = nullptr;
@@ -2130,7 +2132,35 @@ struct InspectorWidget::Impl {
                 synchronize();
                 dispatchRequests();
             });
-        return choices;
+        if (texture) return choices;
+        // MI-1s, decision 2: a model file from outside, registered, and the
+        // field set to the name it was registered as.
+        auto *row = new QWidget(parent);
+        auto *row_layout = new QHBoxLayout(row);
+        row_layout->setContentsMargins(0, 0, 0, 0);
+        row_layout->setSpacing(4);
+        choices->setParent(row);
+        row_layout->addWidget(choices, 1);
+        auto *import = new QPushButton(owner.tr("Import\xE2\x80\xA6"), row);
+        import->setObjectName(QStringLiteral("pelican.inspectorModelImport"));
+        import->setToolTip(owner.tr("Choose a .glb, .gltf or .vrm file: it is copied into "
+                                    "assets/models (unless it is in the project already), "
+                                    "registered as a model, and this field set to it"));
+        import->setVisible(static_cast<bool>(model_import_action));
+        direct_editors.push_back(import);
+        row_layout->addWidget(import);
+        QObject::connect(import, &QPushButton::clicked, &owner, [this, key = descriptor.field_key] {
+            if (!model_import_action) return;
+            const QPointer<QWidget> alive{&owner};
+            model_import_action([this, alive, key](const std::string &name) {
+                if (!alive) return;
+                model.refreshModelAssets();
+                model.commitWidgetValue(key, name);
+                synchronize();
+                dispatchRequests();
+            });
+        });
+        return row;
     }
 
     void configureNumeric(QDoubleSpinBox &editor,
@@ -2649,6 +2679,16 @@ void InspectorWidget::setEngineRestartAction(
 
 std::optional<std::pair<std::string, std::string>> InspectorWidget::materialSubject() const {
     return impl_->materialSubject();
+}
+
+void InspectorWidget::setModelImportAction(
+    std::function<void(std::function<void(const std::string &name)> registered)> action) {
+    impl_->model_import_action = std::move(action);
+}
+
+void InspectorWidget::modelsChanged() {
+    impl_->model.refreshModelAssets();
+    impl_->dispatchRequests();
 }
 
 void InspectorWidget::materialsChanged() { impl_->material_assign->materialsChanged(); }

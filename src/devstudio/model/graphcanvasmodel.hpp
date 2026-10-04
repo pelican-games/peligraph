@@ -2943,4 +2943,18 @@ struct GraphCanvasImageImport {
 GraphCanvasImageImport importProjectImage(const std::filesystem::path &project_root,
                                           const std::filesystem::path &file);
 
+// MI-1s, decision 1: a file copied into the project's assets/<folder>
+// ("models", "images", ...), under its own name or `<stem>_2`, `_3`... when
+// that is taken (nothing is overwritten). `reference` is the copy as the
+// project names it ("assets/models/box.glb"), `copy` where it is on disk.
+// `error` says why nothing was copied. The Graph's parameter Import... and
+// Add Object > Model from file... both copy through this.
+struct ProjectFileCopy {
+    std::string reference;
+    std::filesystem::path copy;
+    std::string error;
+};
+ProjectFileCopy copyIntoProjectAssets(const std::filesystem::path &project_root, std::string_view folder,
+                                      const std::filesystem::path &file);
+
 } // namespace PelicanStudio
