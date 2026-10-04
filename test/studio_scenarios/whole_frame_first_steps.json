@@ -5,6 +5,7 @@
   "description": "F-7: the Frame Plan opens on the whole frame; the Pass Editor opened and closed from View > Panels gives the viewport its height back; File > New Project switches engines without a modal-transform polling failure; and a render target made in the new project is drawn beside the pass that should read it, on the same canvas.",
   "tab": "frame_plan",
   "probe_no_automation": false,
+  "viewport": null,
   "steps": [
     {
       "label": "the fixture's engine is up",

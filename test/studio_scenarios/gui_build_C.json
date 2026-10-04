@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_build_C",
-  "description": "GB-1 target C (bloom loop), from File > New Project > Blank with Studio's GUI only. A forward material pass from the Graph tab's palette and a Cube (as gui_build_A), and the scene's KeyLight at intensity 6 in the Inspector, so the box is bright enough to pass a threshold. Add fullscreen pass in the root is the bright pass, fed the material pass's colour by a drag onto its + input; Add loop, Add fullscreen pass into its body, Count 4 typed, the bright pass's output dropped on the body pass (a loop input), the body's output on the zone's right edge, the carry drawn back onto the boundary input, and the body image's extent_scale pill as 0.5. The engine expands the loop four times, each copy reading the one before. The bright pass then draws with engine://bloom_highpass, picked from the Pass fields' Fragment list (RS-8: no define needed). UX-5c, decision 1: the loop's output dropped on present's + input is sent as loop.color (RS-13), not as an image of the loop's last copy; the engine takes it, puts present after the last copy, and the frame plan's loop_outputs says loop.color read loop/3/render_fullscreen__color, which present's row shows (← loop.color → loop/3/...); the line is drawn from the loop's output, and the viewport shows the bright part of the box. Then a second root fullscreen pass is the composite: the material pass's colour and the loop's output onto its + input in that order, and engine://bloom_composite picked from the Fragment list (RS-11: no intensity port; the shader adds the second input, times 2, to the first). Its output dropped on present's connected input replaces the loop's; the plan runs the composite after the loop's last copy, and the viewport's box is the scene with its bloom added (brighter than the bloom alone). UX-5d: the body's image is then picked, its Size row's f pressed and Half each element pressed (nothing typed): extent_scale becomes {\"$expr\": \"1 / pow2(element + 1)\"}, the copies shrink one by one, and the bloom spreads past the box -- the points just above and below it, the corner's black before, are lit. They are read on the middle column, 0.25 and 0.75 of the picture's height, 4 to 5 pixels outside the box: the run does not fix the window's size, so the viewport's aspect follows the docks (725x426 and 702x566 in two runs a day apart), and only the box's top and bottom stay at the same fraction (0.256 and 0.742, the camera's vertical field of view) -- its sides move with the aspect, so a fixed point beside it lands in the box on a narrower viewport. The spread is the 1/16 image's texels (about 16 pixels) upsampled, at least 8 pixels past the bright edge; before it the half-size images reach 1 or 2. Where it still stops: the body pass draws with engine://passthrough (no blur shader is picked). Typed: the project folder and name, material_pass in the palette filter, 6 in the light's intensity, 4 in Count, and 0.5.",
+  "description": "GB-1 target C (bloom loop), from File > New Project > Blank with Studio's GUI only. A forward material pass from the Graph tab's palette and a Cube (as gui_build_A), and the scene's KeyLight at intensity 6 in the Inspector, so the box is bright enough to pass a threshold. Add fullscreen pass in the root is the bright pass, fed the material pass's colour by a drag onto its + input; Add loop, Add fullscreen pass into its body, Count 4 typed, the bright pass's output dropped on the body pass (a loop input), the body's output on the zone's right edge, the carry drawn back onto the boundary input, and the body image's extent_scale pill as 0.5. The engine expands the loop four times, each copy reading the one before. The bright pass then draws with engine://bloom_highpass, picked from the Pass fields' Fragment list (RS-8: no define needed). UX-5c, decision 1: the loop's output dropped on present's + input is sent as loop.color (RS-13), not as an image of the loop's last copy; the engine takes it, puts present after the last copy, and the frame plan's loop_outputs says loop.color read loop/3/render_fullscreen__color, which present's row shows (← loop.color → loop/3/...); the line is drawn from the loop's output, and the viewport shows the bright part of the box. Then a second root fullscreen pass is the composite: the material pass's colour and the loop's output onto its + input in that order, and engine://bloom_composite picked from the Fragment list (RS-11: no intensity port; the shader adds the second input, times 2, to the first). Its output dropped on present's connected input replaces the loop's; the plan runs the composite after the loop's last copy, and the viewport's box is the scene with its bloom added (brighter than the bloom alone). UX-5d: the body's image is then picked, its Size row's f pressed and Half each element pressed (nothing typed): extent_scale becomes {\"$expr\": \"1 / pow2(element + 1)\"}, the copies shrink one by one, and the bloom spreads past the box -- the points just above and below it, the corner's black before, are lit. They are read on the middle column, 0.243 and 0.756 of the picture's height, in the middle of the spread: the run holds the viewport at 720x450 (studio_drive.py), where the box's top and bottom are rows 116 and 333, the half-size images blur them by 1 pixel before the spread, and the spread reaches 11 pixels past them (the 1/16 image's texels, about 28 pixels, upsampled), so each point is 5 or 6 pixels from both. Where it still stops: the body pass draws with engine://passthrough (no blur shader is picked). Typed: the project folder and name, material_pass in the palette filter, 6 in the light's intensity, 4 in Count, and 0.5.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -1105,11 +1105,11 @@
         "pixels": [
           [
             0.5,
-            0.25
+            0.243
           ],
           [
             0.5,
-            0.75
+            0.756
           ]
         ]
       },
@@ -1127,11 +1127,11 @@
         "pixels": [
           [
             0.5,
-            0.25
+            0.243
           ],
           [
             0.5,
-            0.75
+            0.756
           ]
         ]
       },
@@ -1149,11 +1149,11 @@
         "pixels": [
           [
             0.5,
-            0.25
+            0.243
           ],
           [
             0.5,
-            0.75
+            0.756
           ]
         ]
       },
@@ -1172,11 +1172,11 @@
         "pixels": [
           [
             0.5,
-            0.25
+            0.243
           ],
           [
             0.5,
-            0.75
+            0.756
           ]
         ]
       },
@@ -1259,11 +1259,11 @@
         "pixels": [
           [
             0.5,
-            0.25
+            0.243
           ],
           [
             0.5,
-            0.75
+            0.756
           ]
         ]
       },
@@ -1283,11 +1283,11 @@
         "pixels": [
           [
             0.5,
-            0.25
+            0.243
           ],
           [
             0.5,
-            0.75
+            0.756
           ]
         ]
       },

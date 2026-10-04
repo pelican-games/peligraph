@@ -42,6 +42,17 @@ REPORT_SCHEMA = "pelican.studio_scenario_report"
 REPORT_VERSION = 1
 # The player reads it when no --audio-backend is given (AU-3).
 AUDIO_BACKEND_VARIABLE = "PELICAN_AUDIO_BACKEND"
+# PX-2: the engine's viewport, in picture pixels, for the whole of every run.
+# A scenario reads pixels back as fractions of the picture, and the camera's
+# vertical field of view is fixed, so a point "beside the box" stays beside it
+# only while the picture keeps its shape; left to the layout, the viewport
+# changed shape whenever a panel was added to Studio. 16:10 is the nearest
+# common shape to the 700x426 (1.64) most points were first written against,
+# and this size is about what the default layout gave the viewport anyway, so
+# the window and its panels barely move. A scenario can name another size with
+# a top-level "viewport": [width, height], or "viewport": null to leave the
+# viewport to the layout (one that checks the layout itself).
+DEFAULT_VIEWPORT = (720, 450)
 
 
 class AutomationError(RuntimeError):
@@ -1236,6 +1247,55 @@ def _fail(
     return False
 
 
+def fix_viewport(run: Run, scenario: dict[str, Any]) -> bool:
+    """Hold the viewport at the scenario's size before its first step."""
+
+    wanted = scenario.get("viewport", list(DEFAULT_VIEWPORT))
+    if wanted is None:
+        return True
+    started = time.perf_counter()
+    if not (
+        isinstance(wanted, list)
+        and len(wanted) == 2
+        and all(isinstance(value, int) and value > 0 for value in wanted)
+    ):
+        run.record(
+            "viewport",
+            "the viewport's size",
+            ok=False,
+            request={"viewport": wanted},
+            detail='"viewport" is [width, height] in picture pixels, or null',
+            started=started,
+        )
+        return False
+    request = {"cmd": "viewport_size", "width": wanted[0], "height": wanted[1]}
+    reply = run.call(request, timeout=30.0)
+    result = reply.get("result") or {}
+    got = [result.get("width"), result.get("height")]
+    ok = bool(reply.get("ok"))
+    if ok:
+        detail = f"{got[0]}x{got[1]} picture pixels (window {result.get('window')})"
+        # At a scale that does not divide the size, the picture is a pixel off.
+        if not all(isinstance(g, int) for g in got) or any(
+            abs(g - w) > 1 for g, w in zip(got, wanted)
+        ):
+            ok = False
+            detail = f"asked for {wanted[0]}x{wanted[1]}, the engine is given {got[0]}x{got[1]}"
+    else:
+        error = reply.get("error") or {}
+        detail = f"{error.get('code')}: {error.get('message')}"
+    run.record(
+        "viewport",
+        f"the viewport is held at {wanted[0]}x{wanted[1]}",
+        ok=ok,
+        request=request,
+        response=reply,
+        detail=detail,
+        started=started,
+    )
+    return ok
+
+
 def probe_no_automation(
     run: Run, studio: Path, pipe: str, artifacts: Path, env: dict[str, str]
 ) -> bool:
@@ -1380,7 +1440,10 @@ def main() -> int:
             detail=listening.strip(),
             started=started,
         )
+        viewport_held = fix_viewport(run, scenario)
         for index, raw_step in enumerate(scenario.get("steps", []), start=1):
+            if not viewport_held:
+                break
             step = expand(raw_step, variables)
             label = step_label(step, index)
             if "expect" in step:
@@ -1455,7 +1518,10 @@ def main() -> int:
         "ok": failed == 0 and not launch_error,
         "verdict": "green" if (failed == 0 and not launch_error) else "red",
         "steps_run": len(run.steps),
-        "steps_planned": len(scenario.get("steps", [])) + (1 if scenario.get("probe_no_automation") else 0) + 2,
+        "steps_planned": len(scenario.get("steps", []))
+        + (1 if scenario.get("probe_no_automation") else 0)
+        + (0 if scenario.get("viewport", True) is None else 1)
+        + 2,
         "failed_steps": failed,
         "summary": run.summary,
         "failures": run.failures,

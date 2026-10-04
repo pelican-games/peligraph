@@ -27,6 +27,7 @@
 #include <QMouseEvent>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDockWidget>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QString>
@@ -916,4 +917,86 @@ TEST_CASE("Q-17: select refuses a disabled widget, and fails when the choice doe
     });
     CHECK(choose("pelican.testPicker", "tonemap").ok);
     CHECK(picked == QStringLiteral("tonemap"));
+}
+
+// --------------------------------------------------------------------------
+// PX-2: a scenario holds the viewport at one size, so a point it reads back as
+// a fraction of the picture stays on the same thing however the panels move.
+
+TEST_CASE("PX-2: viewport_size holds the viewport while panels come and go",
+          "[devstudio][automation][px2]") {
+    (void)application();
+    CHECK(automationCommandNames().contains(QStringLiteral("viewport_size")));
+
+    // Studio's shape: the viewport stretches in the middle of a main window
+    // and takes whatever the panels leave it.
+    QMainWindow window;
+    auto *centre = new QWidget(&window);
+    auto *centre_layout = new QVBoxLayout(centre);
+    auto *surface = new QWidget(centre);
+    surface->setObjectName(QStringLiteral("pelican.viewportHost"));
+    surface->setMinimumSize(1, 1);
+    centre_layout->addWidget(surface, 1);
+    window.setCentralWidget(centre);
+    auto *side = new QDockWidget(QStringLiteral("Side"), &window);
+    side->setWidget(new QWidget(side));
+    side->widget()->setMinimumSize(120, 60);
+    window.addDockWidget(Qt::LeftDockWidgetArea, side);
+    window.resize(640, 480);
+    window.show();
+    QApplication::processEvents();
+    AutomationHost host;
+    host.window = &window;
+    const auto run = [&host](const QJsonObject &fields) {
+        return runAutomationCommand(host, request(QStringLiteral("viewport_size"), fields));
+    };
+    const QSize free_size = surface->size();
+    const int side_width = side->width();
+    REQUIRE(free_size != QSize(300, 200));
+
+    const AutomationReply fixed = run(QJsonObject{{QStringLiteral("width"), 300},
+                                                  {QStringLiteral("height"), 200}});
+    INFO(describe(fixed).toStdString());
+    REQUIRE(fixed.ok);
+    // The offscreen platform has a ratio of 1: picture and layout pixels agree.
+    CHECK(fixed.result[QStringLiteral("width")].toInt() == 300);
+    CHECK(fixed.result[QStringLiteral("height")].toInt() == 200);
+    CHECK(fixed.result[QStringLiteral("fixed")].toBool());
+    CHECK(surface->size() == QSize(300, 200));
+    // The window took the difference; the panel beside it kept its width.
+    CHECK(side->width() == side_width);
+
+    // A panel opened below takes its room from the window, not the viewport;
+    // and the viewport is the same size once it is closed again.
+    auto *below = new QDockWidget(QStringLiteral("Below"), &window);
+    below->setWidget(new QWidget(below));
+    below->widget()->setMinimumSize(60, 150);
+    window.addDockWidget(Qt::BottomDockWidgetArea, below);
+    below->show();
+    QApplication::processEvents();
+    CHECK(surface->size() == QSize(300, 200));
+    window.resize(window.width() + 90, window.height() - 40);
+    below->hide();
+    QApplication::processEvents();
+    CHECK(surface->size() == QSize(300, 200));
+
+    // Refusals: no size, or no such widget.
+    const AutomationReply empty = run(QJsonObject{});
+    CHECK_FALSE(empty.ok);
+    CHECK(empty.code == QStringLiteral("automation.bad_request@1"));
+    const AutomationReply missing = run(QJsonObject{{QStringLiteral("name"), QStringLiteral("pelican.noSuchViewport")},
+                                                    {QStringLiteral("width"), 300},
+                                                    {QStringLiteral("height"), 200}});
+    CHECK_FALSE(missing.ok);
+    CHECK(missing.code == QStringLiteral("automation.widget_missing@1"));
+
+    // The control: freed, it follows the window again.
+    const AutomationReply freed = run(QJsonObject{{QStringLiteral("free"), true}});
+    INFO(describe(freed).toStdString());
+    REQUIRE(freed.ok);
+    CHECK_FALSE(freed.result[QStringLiteral("fixed")].toBool());
+    window.resize(window.width() + 50, window.height() + 30);
+    QApplication::processEvents();
+    CHECK(surface->size() != QSize(300, 200));
+    CHECK(surface->minimumSize() == QSize(1, 1));
 }

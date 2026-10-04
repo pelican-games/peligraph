@@ -33,6 +33,59 @@ class StudioDriveTimingTest(unittest.TestCase):
                 (measured["finished_perf_s"] - measured["started_perf_s"]) * 1000, 0.25)
 
 
+def answer_viewport_size(request: dict, timeout: float) -> dict:
+    """What a Studio answers: the size it was asked for, anything else ok."""
+
+    if request.get("cmd") == "viewport_size":
+        return {"ok": True, "result": {"width": request["width"], "height": request["height"]}}
+    return {"ok": True}
+
+
+class StudioDriveViewportTest(unittest.TestCase):
+    """PX-2: every run holds the viewport at one size before its first step."""
+
+    def fix(self, scenario: dict, answer=answer_viewport_size) -> tuple[bool, mock.Mock, list]:
+        with tempfile.TemporaryDirectory() as directory:
+            run = studio_drive.Run(scenario, Path(directory))
+            run.channel = mock.Mock(spec=studio_drive.Channel)
+            run.channel.send.side_effect = answer
+            with contextlib.redirect_stdout(io.StringIO()):
+                held = studio_drive.fix_viewport(run, scenario)
+            return held, run.channel, run.failures
+
+    def test_the_default_size_is_asked_for(self) -> None:
+        held, channel, failures = self.fix({"name": "default"})
+        self.assertTrue(held)
+        self.assertEqual(failures, [])
+        request = channel.send.call_args.args[0]
+        self.assertEqual(request["cmd"], "viewport_size")
+        self.assertEqual((request["width"], request["height"]), studio_drive.DEFAULT_VIEWPORT)
+
+    def test_a_scenario_names_its_own_size_or_none(self) -> None:
+        held, channel, _ = self.fix({"name": "own", "viewport": [640, 400]})
+        self.assertTrue(held)
+        self.assertEqual(channel.send.call_args.args[0]["width"], 640)
+        held, channel, _ = self.fix({"name": "free", "viewport": None})
+        self.assertTrue(held)
+        channel.send.assert_not_called()
+
+    def test_a_size_that_does_not_take_stops_the_run(self) -> None:
+        def short(request: dict, timeout: float) -> dict:
+            return {"ok": True, "result": {"width": request["width"], "height": request["height"] - 40}}
+
+        held, _, failures = self.fix({"name": "short"}, short)
+        self.assertFalse(held)
+        self.assertEqual(failures[0]["kind"], "viewport")
+        held, _, failures = self.fix({"name": "bad", "viewport": [720]})
+        self.assertFalse(held)
+        held, _, failures = self.fix(
+            {"name": "refused"},
+            lambda request, timeout: {"ok": False, "error": {"code": "automation.wait_timeout@1", "message": "no"}},
+        )
+        self.assertFalse(held)
+        self.assertIn("wait_timeout", failures[0]["reason"])
+
+
 class StudioDriveShutdownTest(unittest.TestCase):
     def run_scenario(
         self, exit_code: int | None, *, stopped_code: int = 0,
@@ -50,7 +103,7 @@ class StudioDriveShutdownTest(unittest.TestCase):
             studio.wait_for_exit.return_value = exit_code
             studio.stop.return_value = stopped_code
             channel = mock.Mock(spec=studio_drive.Channel)
-            channel.send.return_value = {"ok": True}
+            channel.send.side_effect = answer_viewport_size
             watchdog = mock.Mock(spec=studio_drive.Watchdog)
             watchdog.tripped = watchdog_trip
             argv = [

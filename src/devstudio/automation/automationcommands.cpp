@@ -5,6 +5,7 @@
 #include "../view/graphcanvaswidget.hpp"
 #include "../view/nodegraphics.hpp"
 #include "../viewport/embeddedviewport.hpp"
+#include "../viewport/viewportgeometry.hpp"
 
 #include <optional>
 #include <cmath>
@@ -1956,6 +1957,87 @@ AutomationReply commandRpc(const AutomationHost &host,
     });
 }
 
+// PX-2: give the engine's viewport one size for a whole scenario. A point a
+// scenario reads back from the picture is a fraction of its width and height,
+// and the camera's vertical field of view is fixed: when the window's panels
+// change the viewport's shape, a point written "beside the box" lands on it.
+// So the viewport is held at `width` x `height` picture pixels -- what the
+// engine draws into, and what a screenshot of it measures -- and the window
+// grows or shrinks by the same amount, leaving every panel around it as it
+// was. Opening or closing a panel later takes its room from the panels or the
+// window, never from the viewport. `free` gives it back to the layout.
+AutomationReply commandViewportSize(const AutomationHost &host,
+                                    const QJsonObject &request) {
+    const QString name = request.value(QStringLiteral("name"))
+                             .toString(QStringLiteral("pelican.viewportHost"));
+    const Target target = resolveTarget(host, name);
+    if (!target.valid() || target.isSceneItem() || target.row)
+        return AutomationReply::failure(
+            WidgetMissing, QStringLiteral("no widget is named \"%1\"").arg(name));
+    QWidget *surface = target.widget;
+    QWidget *window = surface->window();
+    // What the layout gave it before the first fix, so `free` returns that
+    // rather than a guess.
+    const char *kept_minimum = "pelicanAutomationFreeMinimumSize";
+    const char *kept_maximum = "pelicanAutomationFreeMaximumSize";
+    if (!surface->property(kept_minimum).isValid()) {
+        surface->setProperty(kept_minimum, surface->minimumSize());
+        surface->setProperty(kept_maximum, surface->maximumSize());
+    }
+    const QSize before = surface->size();
+    QSize wanted;
+    if (request.value(QStringLiteral("free")).toBool(false)) {
+        surface->setMinimumSize(surface->property(kept_minimum).toSize());
+        surface->setMaximumSize(surface->property(kept_maximum).toSize());
+    } else {
+        const int width = request.value(QStringLiteral("width")).toInt(0);
+        const int height = request.value(QStringLiteral("height")).toInt(0);
+        if (width <= 0 || height <= 0)
+            return AutomationReply::failure(
+                BadRequest,
+                QStringLiteral("width and height are required, in picture "
+                               "pixels, above 0 (or free: true)"));
+        // Picture pixels are physical; the layout is in Qt's logical pixels.
+        const qreal ratio = surface->devicePixelRatioF();
+        wanted = QSize{std::max(1, qRound(width / ratio)),
+                       std::max(1, qRound(height / ratio))};
+        surface->setFixedSize(wanted);
+        if (window != surface && !window->isMaximized() &&
+            !window->isFullScreen())
+            window->resize(window->size() + (wanted - before));
+    }
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const int settle = timeoutOf(request, 5000);
+    QCoreApplication::processEvents();
+    while (wanted.isValid() && surface->size() != wanted &&
+           elapsed.elapsed() < settle)
+        QTest::qWait(25);
+    const QSize logical = surface->size();
+    const QSize picture =
+        embeddedViewportPixelExtent(logical, surface->devicePixelRatioF());
+    const QJsonObject reply{
+        {QStringLiteral("name"), name},
+        {QStringLiteral("fixed"), wanted.isValid()},
+        // The size the engine is given, as embedded_viewport asks for it.
+        {QStringLiteral("width"), picture.width()},
+        {QStringLiteral("height"), picture.height()},
+        {QStringLiteral("logical"), QJsonArray{logical.width(), logical.height()}},
+        {QStringLiteral("device_pixel_ratio"), surface->devicePixelRatioF()},
+        {QStringLiteral("window"),
+         QJsonArray{window->width(), window->height()}},
+    };
+    if (wanted.isValid() && logical != wanted)
+        return AutomationReply::failure(
+            WaitTimeout,
+            QStringLiteral("the viewport stayed %1x%2 instead of %3x%4")
+                .arg(logical.width())
+                .arg(logical.height())
+                .arg(wanted.width())
+                .arg(wanted.height()));
+    return AutomationReply::success(reply);
+}
+
 AutomationReply commandOpenProject(const AutomationHost &host,
                                    const QJsonObject &request) {
     const QString directory = request.value(QStringLiteral("dir")).toString();
@@ -2160,7 +2242,8 @@ QStringList automationCommandNames() {
             QStringLiteral("layout_stats"),
             QStringLiteral("wait"),         QStringLiteral("wait_engine"),
             QStringLiteral("rpc"),          QStringLiteral("open_project"),
-            QStringLiteral("screenshot"),   QStringLiteral("quit")};
+            QStringLiteral("screenshot"),   QStringLiteral("viewport_size"),
+            QStringLiteral("quit")};
 }
 
 AutomationReply runAutomationCommand(const AutomationHost &host,
@@ -2198,6 +2281,8 @@ AutomationReply runAutomationCommand(const AutomationHost &host,
         return commandOpenProject(host, request);
     if (command == QLatin1String("screenshot"))
         return commandScreenshot(host, request);
+    if (command == QLatin1String("viewport_size"))
+        return commandViewportSize(host, request);
     // `quit` is answered by the server: it has to finish writing this reply
     // before the event loop it is running in goes away.
     return AutomationReply::failure(
