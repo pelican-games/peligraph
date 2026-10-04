@@ -516,6 +516,11 @@ material を選ぶと、`get_material` で文書のままの material を、続�
   登録し直して描いている model を組み直し、`applied: "rebuilt"`・`restart_required: null` を返します(§13.5 の規則)。Studio は
   `restart_required` が `null` でないときだけ起こし直すので([`MaterialsDockSession::writeResult()`](../../src/devstudio/model/materialsmodel.cpp#L747))、
   この場合は起こし直しません。Alpha mode の変更は、engine が同じ書き込みでその material を指す binding の routing も書き直します。
+  engine の ✅VR-1(`45864d55`)から、OpenPBR の surface では Surface だけ・Alpha mode / Double sided だけの変更も、engine が
+  もう片方(routing / surface)を manifest の組に合わせて同じ書き込みで書きます(§13.5 の規則)。VR-1 の前は、Surface を別の variant に
+  替えると routing と合わずに断られました(下の「MT-3s の残した穴」)。Studio はドックの書き込みの後に選んでいる material を読み直すので
+  ([書いた答えの後に読み直す所](../../src/devstudio/model/materialsmodel.cpp#L768))、補われた値が Surface / Alpha mode の欄に出る見込みです(コードの読み。
+  Studio の test・シナリオでは通していません。未確認)。
 - **`rebuilt` の答え(✅MT-3s、`19be8983`)**: ドックの書き込み(`edit_material` とその Undo)の答えが `applied: "rebuilt"` なら、ドックの notice が
   `Applied; rebuilt N models.`(N は `rebuilt_models` の数。1 なら `Applied; rebuilt 1 model.`)を言い、Restart engine のボタンは出ません
   ([rebuilt を読む所](../../src/devstudio/model/materialsmodel.cpp#L802))。答えの `rewritten_bindings` に載った model ごとに、Inspector の Material の行が
@@ -709,6 +714,8 @@ material を選ぶと、`get_material` で文書のままの material を、続�
 - ドックの Surface を OpenPBR の別の variant(double-sided など)に替えると、engine が `routing variant 'opaque_single_sided' does not match surface pipeline` で断ります。
   surface と routing は 1 回の `edit_material` で揃わないためです。シナリオは surface の代わりに tag の追加で `rebuilt` を見ています。
   surface を替えるときに routing も一緒に替える道(または create と同じく variant の routing を採る)を engine に回しました。
+  → engine の ✅VR-1(`45864d55`)で済みました。surface だけを送れば routing が、routing だけを送れば surface が manifest の組に合わせて
+  同じ書き込みで書かれます(§13.5 の「`edit_material`」の VR-1 の項)。ドックの Surface を替える道を Studio のシナリオで通したかは未確認です。
 - `rewritten_bindings` で読み直すのは Inspector の Material の行だけです。`material.routing_conflict@1` の 1 文は test だけで、GUI の操作からは作っていません。
 
 - test: `devstudio_materials_test`(`QT_OFFSCREEN`。test が engine の代わりに答えます)の
@@ -1480,6 +1487,13 @@ MT-1(`976c410d`)の前は、Blank の project で物体の色を変えるには 
   (無ければ `[]`)で知らせます。`previous` を送り返すと binding も戻ります。割り当て済みの material の `routing` を外す要求は
   `material.routing_conflict@1 {path, material, routing: null, bound_by: [{model, routing}]}` で断り、何も書きません。
   `bind_material` が binding に書く routing は、MT-3 から material の文書の値です。
+- **`surface` か `routing` の片方だけなら、もう片方を合わせます(✅VR-1、`45864d55`)**: engine の OpenPBR の surface は manifest の
+  variant ごとに routing と組で、合わない組は `material.document_invalid@1` です。`surface` だけを送ると、その surface が manifest に載り
+  material が `routing` を持つとき `routing` をその variant の値に、`routing` だけ(object)を送ると、今の surface が manifest に載るとき
+  同じ manifest でその routing の variant の surface に替えて、同じ edit で書きます([`pairSurfaceVariant()`](../../src/core/communication/materialdocumentrpc.cpp#L931))。
+  補った鍵も `previous` に入るので、送り返すと両方が戻ります。補った routing が前と違えば MT-3 の binding の書き直しと `rebuilt` も
+  今までどおりです。両方を送ったときは送られたとおりで、組でなければ断り、何も書きません。project の surface と、`routing` を持たない
+  material には補いません。VR-1 の前は片方だけの変更が同じ code で断られ、Studio から surface を替えられませんでした(実装者の報告)。
 - `create_material` は文書と asset_data の `materials[]` を 1 つの transaction で書き、live で登録します。
 - `bind_material` は model の material_bindings を書いて model を読み直します。割り当ては **model 単位**で、
   `engine://primitives/cube` のような宣言の無い基本形には asset_data の `models[]` に宣言を足します。

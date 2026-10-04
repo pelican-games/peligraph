@@ -857,6 +857,18 @@ MT-3 は `edit_material` の 2 つの段を足しました。契約は [MT-3 の
 - **`bind_material` の routing**: [`resolveBindingMaterial()` の MT-3 の注記](../../src/core/communication/materialdocumentrpc.cpp#L1412) から、project material の routing は登録済みの `namedMaterials()` ではなく asset_data の `materials[]` の文書から読みます(次の起動で binding が照合される値)。live かどうかは `registeredFrom(名前, 文書)` です。
 - test: [`materialdocumentrpc_test.cpp` の MT-3 の 1 本](../../test/materialdocumentrpc_test.cpp#L629)(GPU。`makeBlankBoxProject()` に `transparent` を足し、forward_transparent の material pass を持つ project を作る。png は `stb_image_write` で test が書く)。MT-1 の 1 本の `tags` の確認は `rebuilt` に変わりました。
 
+#### `edit_material` の surface と routing の組(✅VR-1、`45864d55`)
+
+VR-1 は `materialdocumentrpc.{hpp,cpp}` だけを触り、`edit_material` が surface か routing の片方だけを受けたときに、もう片方を engine の surface の manifest(OpenPBR の `surfaces/openpbr/manifest.json`)の組から補うようにしました。契約は [VR-1 の edit_material の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L84)、規則は manual 第6章 §6.7 です。VR-1 の前は、Studio のドックが surface と routing を別々に送るので、片方だけの変更が lowering の [`validateVariantSurface()`](../../src/project/materiallowering.cpp#L325)(routing の variant の render state と surface の `render_state` を比べる)で断られ、`material.document_invalid@1` になっていました(実装者の報告)。
+
+- **manifest の名前を持つ**: [`EngineSurfaceVariant`](../../src/core/communication/materialdocumentrpc.cpp#L752) に `manifest`(その variant を載せた manifest の engine 資源の id)を足し、[`engineSurfaceVariants()`](../../src/core/communication/materialdocumentrpc.cpp#L759) が入れます(MT-1b の `list_surfaces` と同じ表。surface の参照 → variant)。
+- **補う所**: [`pairSurfaceVariant()`](../../src/core/communication/materialdocumentrpc.cpp#L931) は要求の `params` を直接書き換えます。そのため `editMaterial()` は受けた JSON(`sent`)を写した `params` で動き、material を見つけた後、`previous` を作る前に [VR-1 の組を補う呼び出し](../../src/core/communication/materialdocumentrpc.cpp#L1001) を置きました。補った鍵は送られた鍵と同じ道を通るので、`previous`・値の検査・MT-3 の段 1(binding の書き直し)と段 2(登録し直し)にそのまま乗ります。
+  - `surface` が有って `routing` が object でない、またはその逆のときだけ動きます(両方・どちらも無しは何もしない)。
+  - `surface` の側: 要求に `routing` の鍵がある(`null` を含む)か material が `routing` を持たなければ何もしない。surface が表に無いか、variant に `alpha_mode` / `double_sided` が無ければ何もしない。material の今の routing と違うときだけ `params["routing"]` を入れる(`routingFromJson()` で比べ、`toJson()` で書く)。
+  - `routing` の側: material の `surface` が文字列で表に載り、送った routing が `routingFromJson()` で読めるときだけ。同じ `manifest` の variant から routing が等しいものを探し、今の surface と違えば `params["surface"]` を入れる。
+  - 表は呼ぶたびに `engineSurfaceVariants()` で engine の資源から読み直します(コードの読み)。
+- test: [`materialdocumentrpc_test.cpp` の VR-1 の 1 本](../../test/materialdocumentrpc_test.cpp#L764)(GPU、`[vr1]`。MT-3 と同じ `makeBlankBoxProject(dir.root, true)` の project で、surface だけ・組でない両方・routing だけの 3 段と、起こし直した後の画素)。着地の W1 は 35/35 が緑でした(実装者の報告)。
+
 #### surface の一覧 `list_surfaces`(✅MT-1b、`a6373c01`)
 
 MT-1b は `materialdocumentrpc.{hpp,cpp}` だけを触り、[`listSurfaces()` の本体 MT-1b](../../src/core/communication/materialdocumentrpc.cpp#L838) と、その登録([MT-1b の list_surfaces の登録](../../src/core/communication/materialdocumentrpc.cpp#L1754))を足しました。契約は [MT-1b の list_surfaces の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L38) です。

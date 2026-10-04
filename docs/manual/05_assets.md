@@ -154,6 +154,10 @@
   - `edit_material` で material の `routing` が変わると(✅MT-3、`c6f94eb7`)、その material の名前を `material` に持つ
     `pelican.material_bindings` の行(asset_data の `models[]` の `material_bindings` が指す文書)の `routing` を新しい値に書き換え、
     material の文書と 1 つの transaction で書きます(上の「`binding.routing` は実行時にも照合」でずれないように)。
+  - `edit_material` に OpenPBR の `surface` だけ、または `routing` だけを送ると(✅VR-1、`45864d55`)、engine はもう片方を
+    OpenPBR の `manifest.json` の variant の組(`{opaque,mask,blend}_{single,double}` の surface と `{alpha_mode, double_sided}`)に
+    合わせて material の文書に書きます(routing が変われば上の binding の書き換えも)。project の surface と、`routing` を
+    持たない material には補いません。規則は [第6章](06_rendering.md) §6.7 の「`surface` か `routing` の片方だけを送ると」です。
   - engine が書く JSON は 2 空白の indent で、既存のファイルは鍵の順と改行コードを保ち、新しいファイルは LF です。
   - asset_data を書いたときは、engine が持つ asset_data の写しも新しい bytes に置き換えます(`list_assets` などが読む写し)。
   - `list_assets` は `name` の無い entry を飛ばすので、`materials[]` の entry は出ません([name の無い entry を飛ばす所](../../src/core/communication/editorassetqueryruntime.cpp#L63))。material の一覧は `list_materials` で読みます。
