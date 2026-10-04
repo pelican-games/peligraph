@@ -3160,7 +3160,7 @@ frame は capture で読み、fallback の間は全画素が同じ色、直し�
 
 engine は、自分で出会った rendering の拒否と shader の読み直しの失敗を、直るまで一覧で持ちます([`ProblemList`](../../src/core/watch/problemlist.hpp#L120))。
 BS-1 の `get_status.render_pipeline.refusal` は起動時の 1 件だけで、hot reload の拒否は log に、`reload_render_documents` の拒否はその RPC の答えにしか出ませんでした。
-一覧は Studio の Problems の窓(PB-1s、作業中)が読むためのもので、「どの文書の、何行目か / どの node か、何で断られたか」と、Studio がどこで直すかを決める材料の文書の種類を持ちます
+一覧は Studio の Problems の窓(PB-1s、作業中。→ ✅PB-1s `93934318` で Problems のドックとして着地)が読むためのもので、「どの文書の、何行目か / どの node か、何で断られたか」と、Studio がどこで直すかを決める材料の文書の種類を持ちます
 (利用者の提案、2026-10-04:「rendering の json が壊れてるならそのノードを表示」)。
 
 **読み方**:
@@ -3261,8 +3261,13 @@ route を受ける material pass が無いとき、以前は `material_route_uns
 
 - Studio(`--rpc`)の下では、render 文書を disk で壊しても engine の監視は読み直しません(HW-1)。一覧に出るのは、Studio の RL-1s の監視が `reload_render_documents` を呼んだ後です。
   engine 側で publish しない検査を走らせる案は、PB-1s の結果を見てから決めます(保留)。
+  → ✅PB-1s の実装者の計測では、外で保存してから Studio の一覧に出るまで 397 ms(構文の壊れ)/ 492 ms(node の壊れ)で、大半は RL-1s の 300 ms のまとめでした。
+  実装者は、render 文書については Studio から見てこの案(PB-2)は要らないと判断しています(採るかは未裁定)。
 - material の文書の読み込みの問題(上の「入らないもの」)は別 WP です。
 - Studio の Problems の窓は PB-1s で作業中です([第13章](13_editor.md) §13.5 の「今の問題の一覧を読む」)。
+  → ✅PB-1s(`93934318`)で着地しました。Studio は一覧を Problems のドックで読みます([第13章](13_editor.md) §13.1 の「Studio の Problems のドック」)。
+  PB-1s の実装者の報告では、WP298 の例の起動(`material_route_unserved@1` が致命でなくなった後に、glTF の morph の頂点の上限 262144 で止まる)、
+  reload が断られた後の root を `restore_render_documents` で直せないこと、その間の `get_graph_instances` が保存前の版を返すことを engine に回しています。
 
 test: `pb1_problems_test`(GPU、Windows だけ。BS-1 と同じく `--rpc --headless --render-fallback` の `pelican_player` を子 process で起こし、stdin / stdout の RPC で通す)の 6 本 ——
 [「PB-1 a start refused for a root that is not JSON lists one startup problem; a reload of the file as it is lists it again by the same id, and a reload of the fixed file empties the list」](../../test/pb1_problems_test.cpp#L328)、

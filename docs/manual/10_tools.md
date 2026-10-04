@@ -394,10 +394,13 @@ component に `resolution_error`。
 - 新メソッド `get_problems {}`(✅PB-1、`a55d1eaf`)→ `{revision, problems: [...]}`。`get_status` に `problems: {revision, count, errors, warnings}`。1 件は `{id, severity: "error" | "warning", source: "startup" | "hot_reload" | "reload_rpc", code, message, fields, document?, line?, column?, node?, port?, definition?, scope?, document_kind?, at_frame?}` で、
   `document_kind` は `root` / `root_graph` / `definition` / `root_rendering` / `preset` / `feature` / `shader`。`id` は code と場所の hash の 16 桁(`source` を含まない)。今は `warning` を出すものがありません(コードの読み)。
   編集 RPC の拒否と、`reload_busy`・`gate_closed`・`external_modification`・`stale_source_digest` は入りません。Studio の Problems の窓(PB-1s)は作業中です。
+  → ✅PB-1s(`93934318`)から、Studio は一覧を **Problems のドック**(View > Problems)で読みます。`get_status.problems.revision` が動いたときと読み直しの答えの後に `get_problems` を読み、
+  行を押すと直す場所(Graph の node、Show the document の行、Materials、shader の file、Assets)へ飛びます。status bar に件数が出ます([第13章](13_editor.md) §13.1 の「Studio の Problems のドック」)。
 - 名前付きの拒否 `render_feature_requires_restart@1 {feature?, module}`(✅PB-1)。module の graph が固まった後に、その module の要る feature を初めて有効にする構成(起動し直せば通る)。
   message は `render_feature_requires_restart@1: feature 'debug_draw' needs runtime module DebugDraw, which this engine was started without; restart the engine to enable it`。
   前は code の無い `Render pipeline hot reload cannot enable feature '<feature>' after module creation is frozen; missing runtime module <module>`(と、container の `Module '<型>' was first requested after the runtime module graph was frozen`)で、
   `reload_render_documents` では `render_pipeline_preflight_failed` に畳まれていました(コードの読み)。`feature` は module が feature の表にあるときだけ付きます。
+  Studio は ✅PB-1s から、BS-1s の再起動の案内をこの code と `fields.feature` で出します(前は文面を探していて、本番の文と一致していませんでした)。
 - 名前付きの失敗 `shader_reload_failed@1`(一覧の 1 件の code。`fields: {path, log}`、`document_kind: "shader"`、文書自身の行なら `line`)。`reload_shaders` の失敗の `error_code` と同じ名前です。
 - `--render-fallback` の起動で、起動の間に登録する material の route を受ける pass が無い(`material_route_unserved@1`)ときも、致命にせず fallback の世代に入ります(✅PB-1)。
 
@@ -1086,7 +1089,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 ```
 
 `--tab` が取るのは `frame_plan` / `render_features` / `rendering_settings` / `graph` の 4 つ(`rendering_settings` は ✅RSX から。[第13章](13_editor.md)「Studio の Rendering settings タブ」)
-([一覧](../../src/devstudio/view/mainwindow.cpp#L1794))。**未知の名前は window を作る前に console へ
+([一覧](../../src/devstudio/view/mainwindow.cpp#L1953))。**未知の名前は window を作る前に console へ
 理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L36)) —— window を開いて「たまたま前にあった
 タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます
 ([順序](../../src/devstudio/view/uimain.cpp#L78)) —— project を開くとその project のツール配置が復元され、
@@ -1141,7 +1144,7 @@ pan が書け、`key` は `route`(`widget` 既定 / `window`)を取って **`win
 ✅IA-1s で、シナリオが Studio の外の作業を代わりにする口が 2 つ増えました。
 
 - **`file` step の `copy`**: `{"file": "copy", "path": "{project}/x", "from": "{artifacts}/y"}` は `from` の file を `path` へ byte のまま写します(あれば上書きします。[file step の copy](../../tools/studio_drive.py#L809))。`write` は UTF-8 の文字しか書けないので、人が外で焼き直した binary の file を project の file に上書きする、の代わりです。`path` と `from` のどちらも run の持つ 2 つの directory(`{project}` と `{artifacts}`)の中でなければ step の失敗です(ほかの `file` step と同じ範囲。[第13章](13_editor.md) §13.5「Studio の自動化面」)。
-- **`<名前>.prepare.py`**: `test/studio_scenarios/<名前>.json` の隣に `<名前>.prepare.py` があると、ctest の `run_studio_scenario.cmake`([prepare の script を走らせる cmake の口](../../test/run_studio_scenario.cmake#L68))は driver を起こす前に `<python> -B <名前>.prepare.py --out <run の directory>/incoming --cli <pelican_cli>` を走らせます(120 秒で打ち切り)。人が Studio を開く前に外で作る file(自分の script で書いて CLI で焼いた資産など)の代わりで、シナリオは `{artifacts}/incoming/` の file を Studio の Import で取り込みます(`{artifacts}` がその run の directory です)。`pelican_cli` は ctest の登録が target から `-DCLI=` で渡し([prepare に CLI を渡す登録](../../test/CMakeLists.txt#L3647))、target が無いか file が無ければ、prepare を持つシナリオは失敗です。prepare が 0 以外で終わっても、その stderr を付けて失敗です。`tools/studio_drive.py` を直接回すときは prepare は走りません(ctest の cmake の口のため)。
+- **`<名前>.prepare.py`**: `test/studio_scenarios/<名前>.json` の隣に `<名前>.prepare.py` があると、ctest の `run_studio_scenario.cmake`([prepare の script を走らせる cmake の口](../../test/run_studio_scenario.cmake#L68))は driver を起こす前に `<python> -B <名前>.prepare.py --out <run の directory>/incoming --cli <pelican_cli>` を走らせます(120 秒で打ち切り)。人が Studio を開く前に外で作る file(自分の script で書いて CLI で焼いた資産など)の代わりで、シナリオは `{artifacts}/incoming/` の file を Studio の Import で取り込みます(`{artifacts}` がその run の directory です)。`pelican_cli` は ctest の登録が target から `-DCLI=` で渡し([prepare に CLI を渡す登録](../../test/CMakeLists.txt#L3669))、target が無いか file が無ければ、prepare を持つシナリオは失敗です。prepare が 0 以外で終わっても、その stderr を付けて失敗です。`tools/studio_drive.py` を直接回すときは prepare は走りません(ctest の cmake の口のため)。
   - 今 prepare を持つのは `gui_build_ltc` と、✅AB-1s の `gui_build_audio_reactive`(音量が時間で変わる 1 秒の小さな WAV 2 つを書く。`--cli` は受けるが使わない)の 2 本です。[`gui_build_ltc.prepare.py`](../../test/studio_scenarios/gui_build_ltc.prepare.py) は LTC の表 2 枚と焼き直した 1 枚を raw の float で書き、`pelican_cli image ktx2 --format R32G32B32A32_SFLOAT --raw … --width 64 --height 64`(§10.4)で `.ktx2` にします。
   - 書式の正の [README](../../test/studio_scenarios/README.md) には、`copy` と prepare はまだ書かれていません(IA-1s の commit は README を変えていません)。
 
@@ -1229,7 +1232,7 @@ overlay が用意しますが、overlay の feature 一覧を scene や project 
 
 `View > Panels > Frame Plan` の dock(`pelican.framePlanDock`)には **Frame Plan・Features・Graph の
 3 つのタブ**が同居します(タブ widget の object name は `pelican.renderTools`。
-[構築](../../src/devstudio/view/mainwindow.cpp#L485))。**Graph は新しい dock ではなくこの dock の 3 枚目**です ——
+[構築](../../src/devstudio/view/mainwindow.cpp#L540))。**Graph は新しい dock ではなくこの dock の 3 枚目**です ——
 dock を増やすことは「見失う場所」を増やすことなので、同じレンダー設定を語る 3 つの見方を 1 箇所に置いています。
 
 **Frame Plan タブ**は実行中 player の公開 `get_frame_plan` を読む調査面で、**9 枚のタブ**を持ちます ——
@@ -1367,7 +1370,7 @@ HEAD が動くと configure が再実行される。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。2026-07-10 以降の追加: `run_devcli_assets`(WP66)/ `run_event_schema_compile`(WP71)/ `run_dump_lowered_material`(WP76)/ `run_devcli_gltf_extract`(WP79)/ `run_spvlink_golden`(WP80)/ `run_devcli_rules_import`(WP84)/ `run_devcli_bake_camera` + `run_input_record_replay_headless`(WP89)/ `run_ui_u2_rpc_replay`(WP93)など。
 - 2026-09 の追加: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(ctest 名 `devcli_graph_catalog`。`pelican_cli graph-catalog` の出力を検査し、**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` / `:end` のコメントで区切られていて、誰も比べない写しを 2 つ目の正にしないための仕掛けです)、`package_install_smoke`(X-1。install → カタログ → 描画 → uninstall を実 player で。`gpu` ラベル)、[`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(出荷 project の走査。`project.json` の `requires` が満たせない project は**名前を出して skip** し、player の中で落ちません)。
 - **Studio のシナリオ(Q-1)**: `test/studio_scenarios/*.json` は 1 本が 1 つの ctest `studio_scenario_<名前>` になり
-([登録](../../test/CMakeLists.txt#L3614))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
+([登録](../../test/CMakeLists.txt#L3636))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
 実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。Studio target と Python 製テストを有効にし、
 Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate はシナリオの未登録・skip を失敗にするため、
 `SKIP_DEVSTUDIO=OFF` と `PELICAN_PYTHON_TESTS=ON` を指定します。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L30) が fixture
