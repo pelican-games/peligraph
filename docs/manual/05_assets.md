@@ -53,7 +53,17 @@
 外すのは `unregister_model {name}` で、`models[]` から外しますが、ファイルは消しません。ファイルを project にコピーするのは
 呼び手の役目です。rig を持つ model(VRM の大半)を外したときと、登録できなかったときは、書いたうえで `restart_required` を返し、
 engine を起こし直すと効きます。引数・拒否・live になる条件は [第10章](10_tools.md) §10.3 の「project の中の model ファイルを登録する・外す」です。
-Studio からこの RPC を呼ぶ画面はまだありません(MI-1s で足す予定)。
+Studio の画面からこの RPC を呼ぶ道は下の「Studio から持ち込む」です。
+
+**Studio から持ち込む(✅MI-1s、`70298f88`)**: Studio で project を開いて engine が動いている間に、Outliner の右クリックか Scene の toolbar の
+**Add Object > Model from file…** を押し、ファイルダイアログで `.glb` / `.vrm` を選びます。project の外のファイルは `assets/models/` にコピーされ
+(同じ名前が既にあれば `<stem>_2`…)、上の 2 の登録(`register_model`)と 3 の object(原点に、ファイル名の stem を名前にした model を描く object)を
+Studio がします。名前が既にある model と重なれば `<stem>_001`… で登録します。いま選んでいる object の model を替えるときは、Inspector の
+model 欄の右の **Import…** で同じようにファイルを選ぶと、その欄が登録した model になります。File > Save Scene で scene に残ります。
+外の `.gltf` は隣の `.bin` と画像を読むので選んでも断られます。関連するファイルごと project のフォルダに置いてから選ぶと、その場所のまま登録されます。
+engine が登録を書いたもののその場で使えなかったとき(`restart_required`)は、object は置かれず、Outliner の下に再起動の案内と **Restart engine** が出ます。
+登録を外すのは Assets のドックのそのファイルの行の右クリックの **Remove from project…** で、ファイルは消えません。
+詳しくは [第13章](13_editor.md) §13.1 の「Studio で外の model を持ち込む(✅MI-1s)」です。
 
 仕様上の注意:
 

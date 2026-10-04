@@ -290,6 +290,14 @@ Studio からは File > New Project... で同じ雛形を選べます([第13章]
 
 ### モデルを表示する
 
+**Studio から(✅MI-1s)**: Studio で project を開き(File > New Project... の Blank でも)、engine が動いている間に、Outliner の右クリックか
+Scene の toolbar の **Add Object > Model from file…** を押して `.glb`(か `.vrm`)を選びます。project の外のファイルは `assets/models/` に
+コピーされ、`asset_data.json` への登録と、その model を原点に描く object の追加を Studio がします(object の名前はファイル名の stem から)。
+File > Save Scene で `scenes/main.scene.json` に残ります。画面にはその model を描く pass が要ります(Blank の雛形は gradient を描く
+`present` だけです)。詳しくは [第13章](13_editor.md) §13.1 の「Studio で外の model を持ち込む(✅MI-1s)」、登録の RPC は [第5章](05_assets.md) §5.2 です。
+
+**手で書くとき**:
+
 1. glTF バイナリ(`.glb`)を `mygame/assets/models/` に置く
 2. `assets/asset_data.json` に登録する:
 
