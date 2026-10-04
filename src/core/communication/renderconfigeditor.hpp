@@ -204,6 +204,11 @@ struct RenderConfigEditorDependencies {
     // compared.
     std::function<std::vector<RenderConfigPublishedAsset>()>
         published_assets;
+    // BS-1: whether the live generation is the engine's fallback (the
+    // project's configuration was refused at start). reload_render_documents
+    // then composes what is on disk even when no document changed, since
+    // none of it is live. Unset: never.
+    std::function<bool()> runtime_fallback;
     // FG-2: draws a verify_fold job's three runs on a worker thread
     // (graphfoldverify.hpp; production: runFoldVerifyProcesses). Unset:
     // verify_fold is fold_verify_unavailable {reason: "no_runner"}.

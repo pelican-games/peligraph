@@ -23,6 +23,7 @@
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
 #include "../vkcore/renderer.hpp"
+#include "../vkcore/renderer_config.hpp"
 #include "../communication/renderconfigtransaction.hpp"
 #include "../../project/graphcomposition.hpp"
 #include <components/spriteview.hpp>
@@ -131,7 +132,25 @@ bool PelicanCore::run() {
 #endif
         }
 
-        configureRayLayoutModeBeforeComponentRegistration();
+        try {
+            configureRayLayoutModeBeforeComponentRegistration();
+        } catch (const std::exception &error) {
+            // BS-1: under --render-fallback the root that does not even
+            // preflight starts the fallback generation (Renderer() reads the
+            // refusal), which has no ray layout.
+            if (!launch_config.render_fallback) throw;
+            auto &config = GET_MODULE(ProjectBasicConfig);
+            std::string root_json;
+            try {
+                root_json = config.renderingConfigJson();
+            } catch (const std::exception &) {
+            }
+            GET_MODULE(RenderPipelineStartupRefusal).refusal =
+                renderPipelineRefusalJson(
+                    error, root_json, config.renderingConfigReference());
+            GET_MODULE(RayLayoutRuntimeState)
+                .configure(RayLayoutSemanticMode::LegacyNoLayout);
+        }
         GET_MODULE(ECSPredefinedRegistration).reg();
         if (!initializeConfiguredGameLogic()) {
             const auto status = configuredGameLogicStatus();

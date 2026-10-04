@@ -352,6 +352,11 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     program.add_argument("--rpc")
         .flag()
         .help("enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)");
+    program.add_argument("--render-fallback")
+        .flag()
+        .help("with --rpc: a rendering configuration that cannot be composed at start runs the "
+              "engine's fallback generation (get_status.render_pipeline says why) until "
+              "reload_render_documents or a render edit publishes a fixed one");
     program.add_argument("--xr")
         .default_value(std::string{"off"})
         .metavar("off|auto|on")
@@ -471,6 +476,12 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         config.embedded = program.get<bool>("--embedded");
         if (config.embedded && config.headless) {
             throw std::runtime_error("--embedded cannot be combined with --headless");
+        }
+        // BS-1: only a client can read why the engine is on its fallback and
+        // publish the fixed configuration, so the flag needs RPC.
+        config.render_fallback = program.get<bool>("--render-fallback");
+        if (config.render_fallback && !config.rpc) {
+            throw std::runtime_error("--render-fallback requires --rpc");
         }
         config.xr_mode = parseXrMode(program.get<std::string>("--xr"));
         // AU-3: which mixer the voices reach. The argument wins and leaves the

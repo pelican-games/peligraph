@@ -3759,6 +3759,13 @@ if(PELICAN_WITH_RPC AND WIN32)
         PELICAN_PJ1_PLAYER="$<TARGET_FILE:pelican_player>"
         PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     add_dependencies(pelican_test_projectsettingsrpc_test pelican_player)
+    # BS-1: a refused rendering configuration under --render-fallback, through
+    # a headless --rpc player.
+    pelican_define_test(bs1_render_fallback_test GPU pelican_project stb)
+    target_include_directories(pelican_test_bs1_render_fallback_test PRIVATE ${stb_SOURCE_DIR})
+    target_compile_definitions(pelican_test_bs1_render_fallback_test PRIVATE
+        PELICAN_BS1_PLAYER="$<TARGET_FILE:pelican_player>")
+    add_dependencies(pelican_test_bs1_render_fallback_test pelican_player)
 endif()
 
 add_test(

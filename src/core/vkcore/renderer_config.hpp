@@ -4,6 +4,7 @@
 #include "../renderingpass/previewgraph.hpp"
 #include "../../project/targetplanning.hpp"
 
+#include <exception>
 #include <functional>
 #include <nlohmann/json_fwd.hpp>
 #include <optional>
@@ -100,6 +101,33 @@ std::string renderPipelineVariantGpuOwnerScope(
 
 // Explicit launch/tooling path. The baseline functions above remain solely
 // project-authored and never inspect EngineLaunchConfig overlays.
+// BS-1: the engine's built-in fallback generation, the one a launch with
+// --render-fallback starts on when the project's rendering configuration
+// cannot be composed. One rendering pass named `default_pass_name` (the
+// project's default_rendering_pass, so the renderer selects it as it would the
+// project's) with one fullscreen pass that draws engine://fallback_clear's
+// flat colour to `display`; the engine adds the output transform as it does to
+// every graph. It reads no project document and draws no material.
+inline constexpr std::string_view renderPipelineFallbackPassName =
+    "render_pipeline_fallback";
+std::string renderPipelineFallbackConfigJson(
+    std::string_view default_pass_name);
+
+// BS-1: the code of a startup refusal that carries no name of its own (the
+// one render_pipeline_preflight_failed a reload's ticket gets for it).
+inline constexpr std::string_view renderPipelineUnnamedRefusalCode =
+    "render_pipeline_preflight_failed";
+// BS-1: a rendering configuration refusal as get_status.render_pipeline
+// reports it, the shape a render edit's rejected `error` has:
+//   {code, ...the refusal's fields, message}
+// A GraphRegistryError keeps its code and detail; a "<code>@<n>: <JSON>"
+// message (splitCodedRefusalMessage) its code and fields; anything else is
+// render_pipeline_preflight_failed. A graph.* refusal names, as CT-2 does,
+// the root document `root_json` was read from (`root_reference`).
+nlohmann::json renderPipelineRefusalJson(
+    const std::exception &error, std::string_view root_json,
+    std::string_view root_reference);
+
 RenderGraphVariantConfig
 loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays();
 RenderGraphVariantConfig

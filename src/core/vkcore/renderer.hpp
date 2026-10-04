@@ -158,6 +158,15 @@ class ILogicalFrameTarget {
     }
 };
 
+// BS-1: a rendering configuration refusal met before the renderer exists
+// (PelicanCore::run's ray-layout preflight reads the root first). Under
+// --render-fallback the run records it here instead of stopping, and
+// Renderer() starts on the fallback generation with it. Never set otherwise.
+DECLARE_MODULE(RenderPipelineStartupRefusal) {
+  public:
+    std::optional<nlohmann::json> refusal;
+};
+
 DECLARE_MODULE(Renderer) {
     // One publish()/rollback() pair serves both render pipeline reload paths.
     friend struct RenderPipelinePublicationTransaction;
@@ -193,6 +202,11 @@ DECLARE_MODULE(Renderer) {
     nlohmann::json graph_variant_transition_trace = nlohmann::json::array();
     std::optional<std::size_t> pending_graph_transition;
     PreviewGraphProgram preview_graph_program;
+    // BS-1: set while the published generation is the built-in fallback
+    // (--render-fallback met a refusal at start): the refusal, as
+    // renderPipelineRefusalJson shaped it. The first publication of a
+    // project configuration clears it.
+    std::optional<nlohmann::json> render_pipeline_fallback_refusal;
     std::unique_ptr<RenderPipelineReloadState>
         render_pipeline_reload_state;
     GlobalRenderTargetId last_picking_target = noRenderTargetId();
@@ -333,6 +347,15 @@ DECLARE_MODULE(Renderer) {
         return preview_graph_program;
     }
     nlohmann::ordered_json previewIsolationStateJson() const;
+    // BS-1: whether the published generation is the built-in fallback.
+    bool renderPipelineFallback() const noexcept {
+        return render_pipeline_fallback_refusal.has_value();
+    }
+    // BS-1: get_status.render_pipeline.
+    //   {state: "ready", root}
+    //   {state: "fallback", root, refusal: {code, ...fields, message}}
+    // `root` is the rendering root's reference as project.json names it.
+    nlohmann::json renderPipelineStatusJson() const;
     // Resolves every renderer-owned runtime dependency while module creation is
     // still legal. Subsequent render calls only read the frozen module graph.
     void prepareRuntimeModules();

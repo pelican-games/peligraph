@@ -408,6 +408,62 @@ void registerXrMirrorIntermediate(vk::Extent2D extent) {
 
 } // namespace
 
+std::string renderPipelineFallbackConfigJson(
+    std::string_view default_pass_name) {
+    const nlohmann::json pass{
+        {"name", std::string{renderPipelineFallbackPassName}},
+        {"type", "fullscreen"},
+        {"input", nlohmann::json::array()},
+        {"output",
+         {{"color", nlohmann::json::array({"display"})},
+          {"depth", nullptr}}},
+        {"shader",
+         {{"vertex", "engine://fullscreen"},
+          {"fragment", "engine://fallback_clear"}}},
+    };
+    const nlohmann::json config{
+        {"schema", "pelican.graph"},
+        {"version", 1},
+        {"definitions", nlohmann::json::object()},
+        {"nodes", nlohmann::json::array()},
+        {"outputs", nlohmann::json::object()},
+        {"rendering",
+         {{"rendering_passes",
+           nlohmann::json::array(
+               {{{"name", std::string{default_pass_name}},
+                 {"passes", nlohmann::json::array({pass})}}})}}},
+    };
+    return config.dump(2);
+}
+
+nlohmann::json renderPipelineRefusalJson(
+    const std::exception &error, std::string_view root_json,
+    std::string_view root_reference) {
+    const auto root =
+        nlohmann::json::parse(root_json, nullptr, false);
+    nlohmann::json refusal = nlohmann::json::object();
+    std::string code;
+    std::string message = error.what();
+    if (const auto *graph =
+            dynamic_cast<const GraphRegistryError *>(&error)) {
+        // CT-2: named after the root unless the refusal already is.
+        const auto named = graphRefusalInDocument(
+            *graph, root, root_reference);
+        if (named.detail().is_object()) refusal = named.detail();
+        code = named.code();
+        message = named.what();
+    } else if (auto coded = splitCodedRefusalMessage(error.what())) {
+        if (coded->fields.is_object()) refusal = coded->fields;
+        code = coded->code;
+        addGraphRefusalSource(refusal, code, root, root_reference);
+    } else {
+        code = std::string{renderPipelineUnnamedRefusalCode};
+    }
+    refusal["code"] = std::move(code);
+    refusal["message"] = std::move(message);
+    return refusal;
+}
+
 RenderingPassId loadDefaultRenderingPassFromConfig() {
     return loadRenderGraphVariantsFromConfig().flat;
 }

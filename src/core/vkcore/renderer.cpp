@@ -159,6 +159,8 @@ void RenderPipelinePublicationTransaction::publish(
     GET_MODULE(ProjectBasicConfig)
         .publishRenderingConfigJson(
             std::move(config_json));
+    // BS-1: a published project configuration ends the fallback.
+    renderer.render_pipeline_fallback_refusal.reset();
 
     try {
         if (auto *targets =
@@ -3195,12 +3197,67 @@ struct LogicalFrameSubmissionResources {
 } // namespace
 
 Renderer::Renderer() {
-    // G-4: snapshot `material_route_default` from the rendering document as it
-    // is at engine start, before any material is lowered. A later published
-    // edit does not change it; the editor reports restart_required instead.
-    GET_MODULE(ProjectBasicConfig).snapshotMaterialRouteDefault();
-    const auto variants =
-        loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays();
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    // BS-1: under --render-fallback a refusal of the project's rendering
+    // configuration (met here, or already by the startup preflight) starts
+    // the built-in fallback generation instead of stopping the engine.
+    const bool fallback_allowed =
+        GET_MODULE(EngineLaunchConfig).render_fallback;
+    std::optional<nlohmann::json> refusal;
+    if (fallback_allowed) {
+        if (const auto *startup = FastModuleContainer::tryGet<
+                RenderPipelineStartupRefusal>()) {
+            refusal = startup->refusal;
+        }
+    }
+    std::optional<RenderGraphVariantConfig> loaded;
+    if (!refusal) {
+        try {
+            // G-4: snapshot `material_route_default` from the rendering
+            // document as it is at engine start, before any material is
+            // lowered. A later published edit does not change it; the editor
+            // reports restart_required instead.
+            config.snapshotMaterialRouteDefault();
+            loaded.emplace(
+                loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays());
+        } catch (const std::exception &error) {
+            if (!fallback_allowed) throw;
+            // The root itself may be what could not be read.
+            std::string root_json;
+            try {
+                root_json = config.renderingConfigJson();
+            } catch (const std::exception &) {
+            }
+            refusal = renderPipelineRefusalJson(
+                error, root_json, config.renderingConfigReference());
+        }
+    }
+    if (refusal) {
+        LOG_ERROR(logger,
+                  "render pipeline refused at start; running the engine's "
+                  "fallback generation until a fixed configuration is "
+                  "published: {}",
+                  refusal->dump());
+        // The fallback stands in for the project's root while it is the
+        // published configuration: re-lowering for a new output and the
+        // scene's ray plan read it from here, as they read a published
+        // edit. The documents on disk are untouched; reload and the editor
+        // read those.
+        config.publishRenderingConfigJson(
+            renderPipelineFallbackConfigJson(
+                config.defaultRenderingPass()));
+        // A no-op when the project's root was snapshotted before it failed.
+        config.snapshotMaterialRouteDefault();
+        // With the launch's feature overlays, as every generation of this
+        // run: Studio's editor overlay (gizmo, picking, gpu_timing) makes the
+        // modules those features need now, before the module graph is frozen,
+        // so the project's configuration that replaces the fallback can
+        // enable them.
+        loaded.emplace(
+            loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays());
+        render_pipeline_fallback_refusal = std::move(refusal);
+    }
+    const auto &variants = *loaded;
     flat_rendering_pass_id = variants.flat;
     xr_rendering_pass_id = variants.xr;
     xr_excluded_features = variants.xr_excluded_features;
@@ -3208,6 +3265,20 @@ Renderer::Renderer() {
     current_rendering_pass_id = flat_rendering_pass_id;
     internal_render_extent = GET_MODULE(RenderTarget).getExtent();
     installRenderPipelineReloadParticipant();
+}
+
+nlohmann::json Renderer::renderPipelineStatusJson() const {
+    nlohmann::json status{
+        {"state", render_pipeline_fallback_refusal ? "fallback" : "ready"},
+        {"root", render_pipeline_reload_state != nullptr
+                     ? nlohmann::json(
+                           render_pipeline_reload_state->source_reference)
+                     : nlohmann::json(nullptr)},
+    };
+    if (render_pipeline_fallback_refusal) {
+        status["refusal"] = *render_pipeline_fallback_refusal;
+    }
+    return status;
 }
 
 Renderer::Renderer(RendererFramePlanCpuSeam,

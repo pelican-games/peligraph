@@ -57,6 +57,13 @@ DECLARE_MODULE(EngineLaunchConfig) {
     // window is created hidden, unfocused and never fullscreen. Nothing else
     // changes: time and game behaviour are those of a normal windowed run.
     bool embedded = false;
+    // BS-1 (--render-fallback, needs --rpc): a rendering configuration that
+    // cannot be composed at start does not stop the engine. It starts on the
+    // engine's built-in fallback generation instead, says why in
+    // get_status.render_pipeline, and takes the fixed configuration through
+    // reload_render_documents or a render edit. Without it the refusal stays
+    // the startup fatal error it always was.
+    bool render_fallback = false;
     // Deterministic drivers never run developer-tool callbacks. Replay and
     // golden harnesses set these when they are not already using headless.
     bool input_replay = false;

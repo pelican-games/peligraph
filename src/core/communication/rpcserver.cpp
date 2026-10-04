@@ -1656,6 +1656,11 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             // the published rendering configuration, with the reason when not.
             {"preview", previewGraphStatusJson(
                             modules.renderer.previewGraphProgram())},
+            // BS-1: whether the published generation is the project's
+            // ({state: "ready"}) or the engine's fallback after a refusal at
+            // start ({state: "fallback", refusal: {code, ...fields,
+            // message}}), with the rendering root's reference.
+            {"render_pipeline", modules.renderer.renderPipelineStatusJson()},
             {"seed", GameContext{}.seed()},
             {"xr", openXrStatusJson(modules.launch_config)},
             {"renderdoc", renderdoc.status},
@@ -2440,6 +2445,11 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             throw JsonRpcHandlerError{JsonRpcErrorCodes::invalidParams, error.what()};
         }
         auto plan = modules.renderer.currentFramePlanJson();
+        // BS-1: the plan of the engine's fallback generation says so, and
+        // why; a project generation's plan is unchanged.
+        if (modules.renderer.renderPipelineFallback()) {
+            plan["render_pipeline"] = modules.renderer.renderPipelineStatusJson();
+        }
         if (!pageDrawLoopElements(plan, page)) {
             throw JsonRpcHandlerError{
                 JsonRpcErrorCodes::invalidParams,

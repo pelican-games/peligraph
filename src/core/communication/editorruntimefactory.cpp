@@ -2335,6 +2335,10 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         }
                         return result;
                     },
+                    // BS-1: the live generation is the engine's fallback.
+                    .runtime_fallback = [runtime] {
+                        return runtime->modules.renderer.renderPipelineFallback();
+                    },
                     // FG-2: verify_fold's runs are this executable, headless,
                     // in a copy of the project (graphfoldverify.hpp). What the
                     // children need of this launch is read once, here: the

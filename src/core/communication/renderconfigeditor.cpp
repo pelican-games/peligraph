@@ -5484,7 +5484,40 @@ RenderConfigEditorService::renderDocumentsOf(
         !dependencies_.normalize_reference ||
         !dependencies_.resolve_document_path)
         return documents;
-    const auto current = dependencies_.resolve_authoring_context(candidate);
+    std::optional<ResolvedRenderConfigAuthoringContext> composed;
+    try {
+        composed.emplace(dependencies_.resolve_authoring_context(candidate));
+    } catch (const std::exception &) {
+        // BS-1: a root that does not compose (the one an engine on its
+        // fallback generation was refused) still lists itself and the
+        // documents its rendering section names that are on disk, so a client
+        // can read and fix them. Where it composes, the preflight that
+        // follows says why it does not.
+        const auto preset_on_disk =
+            [&](const std::string &reference) -> std::optional<std::string> {
+            try {
+                const auto path = dependencies_.resolve_document_path(reference);
+                std::error_code error;
+                if (std::filesystem::is_regular_file(path, error) && !error)
+                    return readFileBytes(path);
+            } catch (const std::exception &) {
+            }
+            return std::nullopt;
+        };
+        for (auto &entry : namedRenderDocuments(root_bytes, preset_on_disk)) {
+            try {
+                std::error_code error;
+                if (!std::filesystem::is_regular_file(entry.path, error) || error ||
+                    !isRenderDocumentOfKind(readFileBytes(entry.path), entry.kind))
+                    continue;
+            } catch (const std::exception &) {
+                continue;
+            }
+            documents.push_back(std::move(entry));
+        }
+        return documents;
+    }
+    const auto &current = *composed;
     // A document is writable only when all of these hold: it is not an
     // engine document or a fragment address, it resolves to a regular file
     // inside the project root (symbolic links resolved), and its bytes are the
@@ -6446,7 +6479,12 @@ OrderedJson RenderConfigEditorService::reloadRenderDocuments(
         for (const auto &[asset, differs] : asset_changed)
             if (differs) changed_assets.push_back(asset);
     }
-    const bool no_change = changed.empty() && changed_assets.empty();
+    // BS-1: on the engine's fallback nothing on disk is live, so the
+    // documents are composed whether or not they changed.
+    const bool runtime_fallback =
+        dependencies_.runtime_fallback && dependencies_.runtime_fallback();
+    const bool no_change =
+        !runtime_fallback && changed.empty() && changed_assets.empty();
     RenderConfigCandidateDocumentSet candidate_set{
         source_normalized_reference_, std::move(documents)};
 
