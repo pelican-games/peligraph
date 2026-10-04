@@ -164,7 +164,7 @@ codec の表には 8 個目として `pelican_ray_instance` が並んでいま�
   - `mesh` と `primitive` の片方だけの行。
   - 同じ対象(同じ primitive、または全 primitive)を覆う行が 2 つあるとき。
 - scene を読むときに名前が解けない行は断りません。警告をログに出し、その行が無いものとして描きます(全 primitive の行が解けていればそれ、無ければ model の既定。[名前が解けないときの警告](../../src/core/renderer/polygoninstancecontainer.cpp#L442))。`get_object_materials` ではその行が `resolved: false` です。
-- エディタからは `set_object_material` で書きます([第13章](13_editor.md) §13.5 の「material 文書を読み書きする」)。`get_component_add_candidates` の simplemodelview の `schema_fields` は `[model, materials]` の 2 つになりました。
+- エディタからは `set_object_material` で書きます([第13章](13_editor.md) §13.5 の「material 文書を読み書きする」)。Studio では ✅MT-2s から Inspector の Material の行(範囲 This object)がこれを送ります(§13.1 の「Studio の Materials のドック」。Inspector は `materials` を汎用の list の欄にしません)。`get_component_add_candidates` の simplemodelview の `schema_fields` は `[model, materials]` の 2 つになりました。
 
 ### localtransform(✅)
 

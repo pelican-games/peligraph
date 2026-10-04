@@ -483,7 +483,7 @@ params は `get_assets_verification` / `verify_assets` が空の object だけ�
 
 ### material 文書を読み書きする(✅MT-1)
 
-7 本(✅MT-1、`976c410d`)は、material 文書(`pelican.material`)・`.surface` の宣言・model の material_bindings を、動いている engine に読ませて書かせます([MT-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L14)。[MT-1 の handler の登録](../../src/core/communication/materialdocumentrpc.cpp#L1475))。書く 3 本は project の文書の transaction と digest の CAS で書き、返る前に engine に当てます。どの鍵の変更が live で、どれが restart_required かの規則は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、engine が書くファイルの形は [第5章](05_assets.md) §5.2 です。✅MT-1b の `list_surfaces` と、✅MT-2 の object ごとの上書きの 2 本(`set_object_material` / `get_object_materials`)もこの節に書きます。
+7 本(✅MT-1、`976c410d`)は、material 文書(`pelican.material`)・`.surface` の宣言・model の material_bindings を、動いている engine に読ませて書かせます([MT-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L14)。[MT-1 の handler の登録](../../src/core/communication/materialdocumentrpc.cpp#L1552))。書く 3 本は project の文書の transaction と digest の CAS で書き、返る前に engine に当てます。どの鍵の変更が live で、どれが restart_required かの規則は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、engine が書くファイルの形は [第5章](05_assets.md) §5.2 です。✅MT-1b の `list_surfaces` と、✅MT-2 の object ごとの上書きの 2 本(`set_object_material` / `get_object_materials`)もこの節に書きます。
 
 **読む 4 本と `list_surfaces`**(状態を変えません)
 
@@ -517,7 +517,7 @@ params は `get_assets_verification` / `verify_assets` が空の object だけ�
 - **`create_material {path, surface, name?, values?, tags?, routing?}`**([create_material の本体](../../src/core/communication/materialdocumentrpc.cpp#L968))
   - 1 つの material の文書を作り、asset_data の `materials[]` に足して(1 つの transaction)、live で登録します。`name` の既定はファイル名、`routing` の既定は `{alpha_mode: "opaque", double_sided: false}` です。
   - 返り値に `path`・`name`・`material_digest`・`asset_data_digest`・`previous_asset_data_digest`。
-- **`bind_material {model, material, primitive?: {mesh, primitive} | slot?}`** または **`{model, bindings: [{mesh, primitive, material}]}`**([bind_material の本体](../../src/core/communication/materialdocumentrpc.cpp#L1266))
+- **`bind_material {model, material, primitive?: {mesh, primitive} | slot?}`** または **`{model, bindings: [{mesh, primitive, material}]}`**([bind_material の本体](../../src/core/communication/materialdocumentrpc.cpp#L1333))
   - `primitive` はその 1 つ、`slot` はその glTF の material を持つ primitive の全部、どちらも無ければ model の全 primitive に割り当てます。`primitive` と `slot` の両方、`bindings` と `material` / `primitive` / `slot` の両方は `-32602` です。
   - `material` は、その model の glTF の material の名前か project material の名前です。両方にあれば `material.binding_invalid@1`(曖昧)、どちらにも無ければ `material.name_unknown@1`、`routing` の無い project material は `material.binding_invalid@1` です。
   - model の material_bindings の文書を書き(無ければ作り、asset_data の `models[]` に `material_bindings` を足す。基本形は `models[]` に宣言ごと足す)、model を読み直します。割り当ては model 単位です。
@@ -552,7 +552,7 @@ params の形が違う(鍵が足りない・知らない鍵・型が違う)と�
 
 scene の object 1 つだけの material を、その object の `simplemodelview.materials`(第4章 §4.2)に読み書きします。model の割り当て(`bind_material`)が既定で、object の行がそれを上書きします。効く順は「その primitive の行」>「全 primitive の行」> model の既定です。2 本はエディタの RPC で、`set_object_material` は scene の編集の `edit` を 1 本出します([MT-2 の契約の注記](../../src/core/communication/editorcommandservice.hpp#L345))。
 
-- **`set_object_material {actor_id, object, scene_id?, base_scene_revision?, material: 名前 | null, primitive?: {mesh, primitive} | slot?}`** または **`{actor_id, object, scene_id?, base_scene_revision?, materials: [{material: 名前 | null, primitive?}]}`**([set_object_material の本体](../../src/core/communication/editorobjectmaterial.cpp#L213))
+- **`set_object_material {actor_id, object, scene_id?, base_scene_revision?, material: 名前 | null, primitive?: {mesh, primitive} | slot?}`** または **`{actor_id, object, scene_id?, base_scene_revision?, materials: [{material: 名前 | null, primitive?}]}`**([set_object_material の本体](../../src/core/communication/editorobjectmaterial.cpp#L220))
   - `actor_id` は必須です(`open_editor_session` の actor)。`object` は `authoring_object_id`、`scene_id` を渡すとその scene の object であることも確かめます。`base_scene_revision` を省くと今の revision です。
   - `primitive` はその 1 つ、`slot` はその glTF の material を持つ primitive の全部(primitive の行に展開して保存します)、どちらも無ければ全 primitive の 1 行です。`null` はその対象の行を外します(model の既定に戻る)。
   - 対象ごとに、行の material をその場で替える・行を末尾に足す・行を外す、の操作を作り、まとめて 1 本の `edit` にします(`base_revision` の CAS、undo / redo)。
@@ -560,7 +560,7 @@ scene の object 1 つだけの material を、その object の `simplemodelvie
   - 何も変わらない要求は `edit` を出さず、`{changed: false, object, scene_id, model, previous}` を返します。
   - `material` と `materials` の両方か、どちらも無い・`materials` と `primitive` / `slot` の併記・`primitive` と `slot` の併記・同じ対象を 2 回・空の `materials`・知らない鍵は `-32602` です。
   - 実例(test。Blank の箱 2 つの右の箱): `{actor_id, object: <右>, material: "paint"}` → `changed: true`、`model: "engine://primitives/cube"`、`scene_id: "default_scene"`、`previous: {"materials": [{"material": null}]}`。次の frame で右の箱だけが赤く描かれます。
-- **`get_object_materials {object, scene_id?}`** → `{object, scene_id, model, materials: [{row_id, material, primitive?, resolved}], primitives: [{mesh, primitive, slot, material, source: "object" | "model", model_material, drawn | null}]}`([get_object_materials の本体](../../src/core/communication/editorobjectmaterial.cpp#L351))
+- **`get_object_materials {object, scene_id?}`** → `{object, scene_id, model, materials: [{row_id, material, primitive?, resolved}], primitives: [{mesh, primitive, slot, material, source: "object" | "model", model_material, drawn | null}]}`([get_object_materials の本体](../../src/core/communication/editorobjectmaterial.cpp#L358))
   - `materials` は object の行のままです。`resolved` は、その名前が model の glTF の material か登録済みの project material にあるかです。
   - `primitives` は model の primitive ごとです。`material` は実効の material、`source` はそれが object の行から来たか model から来たか、`model_material` は model の割り当て(material_bindings、無ければ `slot`)です。
   - `drawn` は、生きている instance がその primitive を今描いている material の名前です。instance が無ければ `null` です。
@@ -577,6 +577,10 @@ scene の object 1 つだけの material を、その object の `simplemodelvie
 
 - scene の文書に名前の解けない行があっても(手で書いたなど)、読み込みは断りません。警告を出して、その行が無いものとして描きます(第6章 §6.7 の「object ごとの上書き」)。
 - test の無い所: Play 中の編集、`bind_material` などで model を読み直したときに上書きを解き直す経路、draw_loop の振り分け(第6章の同じ節)。
+- ✅MT-2s(`7112072e`)から、Studio の Inspector の **Material** の行が 2 本を呼びます。既定の範囲 This object で選んだ material を、Inspector の scene の編集の
+  `actor_id` と最後に見た revision を付けた `set_object_material` 1 回で送り(scene の Undo で戻る)、`get_object_materials` の `drawn` と `source` を
+  `<名前> (this object)` / `(model default: <名前>)` で見せ、`get_material_bindings` の `objects` / `object_overrides` を
+  `(N objects, M with their own material)` に使います([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
 
 ### 移行の 2 method と移行専用 endpoint(✅MG-1)
 
@@ -1149,7 +1153,7 @@ viewport の左クリックは child client の物理 pixel 座標を `pick_obje
 現在は選択と toolbar の Move / Rotate / Scale モードを `set_gizmo` で player へ送ります。
 
 Inspector の `Add component...` / `Ray geometry...` の下、properties の一覧より**上**には **Attached graphs** グループが
-あります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L291))。選択オブジェクトを owner とする
+あります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L298))。選択オブジェクトを owner とする
 `graph.instance` の一覧と **Attach...** / **Detach** / **Refresh**、選択した instance の **Instance inputs**
 (port ごとに mode / 著作された値 / 実際に使われた値の 3 列)、そして port ごとの 4 導線 ——
 **Control with a curve** / **Connect to another output** / **Open the source** / **Disconnect** です。

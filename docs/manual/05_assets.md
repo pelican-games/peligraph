@@ -148,7 +148,8 @@
   - `engine://primitives/cube` のように `models[]` に宣言の無い基本形には、`{"name": <参照>, "path": <参照>,
     "material_bindings": <文書>}` を `models[]` に足します。割り当ては model 単位なので、その基本形を使う物体は
     全部同じ material になります。1 つの物体だけを変えるのは、asset_data ではなく scene の
-    `simplemodelview.materials` です(✅MT-2、`set_object_material`。[第4章](04_scene_ecs.md) §4.2)。
+    `simplemodelview.materials` です(✅MT-2、`set_object_material`。[第4章](04_scene_ecs.md) §4.2)。Studio の Inspector の Material の行は
+    ✅MT-2s から既定でこちら(This object)に書き、Every <model> に切り替えたときだけ `bind_material` です([第13章](13_editor.md) §13.1)。
   - engine が書く JSON は 2 空白の indent で、既存のファイルは鍵の順と改行コードを保ち、新しいファイルは LF です。
   - asset_data を書いたときは、engine が持つ asset_data の写しも新しい bytes に置き換えます(`list_assets` などが読む写し)。
   - `list_assets` は `name` の無い entry を飛ばすので、`materials[]` の entry は出ません([name の無い entry を飛ばす所](../../src/core/communication/editorassetqueryruntime.cpp#L63))。material の一覧は `list_materials` で読みます。
