@@ -1347,6 +1347,9 @@ TEST_CASE("EB-2 a material document refused at start is taken in by register_mat
 // that reads.
 TEST_CASE("EB-2 a declared watch takes a fixed material document in, and lists one broken after start",
           "[eb2][material][rpc][hw1][gpu]") {
+#if !PELICAN_WITH_HOT_RELOAD
+    SKIP("PELICAN_WITH_HOT_RELOAD=OFF: there is no file watch; register_material takes a fixed document in (the EB-2 case above)");
+#else
     using namespace std::chrono_literals;
     setupLogger(true);
     const auto dir = makeTempDir("eb2_watch");
@@ -1429,6 +1432,7 @@ TEST_CASE("EB-2 a declared watch takes a fixed material document in, and lists o
     }
     reload.watcherForTesting()->stop();
     GET_MODULE(VulkanManageCore).waitIdle();
+#endif
 }
 
 } // namespace Pelican

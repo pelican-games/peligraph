@@ -239,6 +239,9 @@ TEST_CASE("HR1-T uses watcher gate and survives 1000 same-shape reloads plus KTX
 // material participant.
 TEST_CASE("HW-1 under an RPC driver the watch reloads a texture in the declared folder and not one outside",
           "[hw1][wp100][texture-reload][gpu]") {
+#if !PELICAN_WITH_HOT_RELOAD
+    SKIP("PELICAN_WITH_HOT_RELOAD=OFF: there is no file watch (AV-1 distribution build ReloadService covers it)");
+#else
     setupLogger();
     Sandbox box;
     FastModuleContainer modules;
@@ -306,6 +309,7 @@ TEST_CASE("HW-1 under an RPC driver the watch reloads a texture in the declared 
     reload.watcherForTesting()->stop();
     GET_MODULE(VulkanManageCore).waitIdle();
     GET_MODULE(DeletionQueue).flushAll();
+#endif
 }
 
 } // namespace Pelican

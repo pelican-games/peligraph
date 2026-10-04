@@ -162,10 +162,13 @@ void main(){ uv=vec2((gl_VertexIndex<<1)&2,gl_VertexIndex&2); gl_Position=vec4(u
 
     const int grey = drawn();
     CHECK(near(grey, 188));
-    // The file watch is shut under the RPC driver.
+    // The file watch is shut under the RPC driver (EB-4: in a
+    // PELICAN_WITH_HOT_RELOAD=OFF build by the build first; the explicit
+    // request below works the same).
     const auto initial = shader_status();
     REQUIRE_FALSE(initial.at("details").at("enabled").get<bool>());
-    REQUIRE(initial.at("details").at("gate_reason") == "rpc driver");
+    REQUIRE(initial.at("details").at("gate_reason") ==
+            (PELICAN_WITH_HOT_RELOAD ? "rpc driver" : "hot reload build disabled"));
 
     SECTION("a changed shader is committed at once, and drawn") {
         writeFile(shader, fragment("outColor=vec4(1.0,1.0,1.0,1.0);"));

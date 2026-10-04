@@ -3460,7 +3460,10 @@ TEST_CASE(
     watch::ReloadGate reload_gate;
     reload_gate.configureFromLaunch(launch);
     REQUIRE_FALSE(reload_gate.enabled());
-    REQUIRE(reload_gate.snapshot().reason == "rpc driver");
+    // EB-4: a PELICAN_WITH_HOT_RELOAD=OFF build shuts the gate for the build
+    // first; the editor edits all the same.
+    REQUIRE(reload_gate.snapshot().reason ==
+            (PELICAN_WITH_HOT_RELOAD ? "rpc driver" : "hot reload build disabled"));
 
     TemporaryConfig source{emptyHybridConfig()};
     ActualCpuRenderRuntime runtime;

@@ -497,4 +497,12 @@ struct BuiltinCameraControllerSystemRegistration {
 const BuiltinCameraControllerSystemRegistration builtinCameraControllerSystem_registration;
 } // namespace
 
+namespace internal {
+// pelican_core is a static archive and nothing else refers to this file, so a
+// host that links it without /WHOLEARCHIVE (the player does; the golden
+// harness does not) drops the registration above with it, and the built-in
+// controllers never run there. A call to this anchor keeps the object file.
+void linkBuiltinCameraControllerSystem() noexcept {}
+} // namespace internal
+
 } // namespace Pelican

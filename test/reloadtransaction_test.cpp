@@ -472,6 +472,9 @@ Hw1Run runHw1Watch(bool rpc, std::optional<nlohmann::json> hot_reload) {
 TEST_CASE("HW-1 a declared watch runs under an RPC driver and never reaches the render pipeline",
           "[hw1][reload-service][status]") {
     if (!logger) setupLogger();
+#if !PELICAN_WITH_HOT_RELOAD
+    SKIP("PELICAN_WITH_HOT_RELOAD=OFF: nothing is watched (AV-1 distribution build ReloadService covers it)");
+#else
     const auto declared = nlohmann::json::array({"assets/textures", "passes/"});
 
     SECTION("RPC driver and a declaration: the texture is applied, the render document is not") {
@@ -512,7 +515,31 @@ TEST_CASE("HW-1 a declared watch runs under an RPC driver and never reaches the 
         CHECK(run.status.at("watch") == nlohmann::json::array());
         CHECK(run.status.at("scans") == 0);
     }
+#endif
 }
+
+#if !PELICAN_WITH_HOT_RELOAD
+// EB-4: the same project in a distribution build. ReloadService::setup()
+// makes no watcher whatever the project declares and whoever drives it; the
+// reason is the build.
+TEST_CASE("AV-1 distribution build ReloadService never watches, declared or not, with or without an RPC driver",
+          "[av1][hw1][reload-service][status][eb4]") {
+    if (!logger) setupLogger();
+    const std::optional<nlohmann::json> declarations[] = {
+        nlohmann::json::array({"assets/textures", "passes/"}), std::nullopt, nlohmann::json::array()};
+    for (const bool rpc : {true, false}) {
+        for (const auto &declaration : declarations) {
+            CAPTURE(rpc, declaration.has_value() ? declaration->dump() : std::string{"undeclared"});
+            const auto run = runHw1Watch(rpc, declaration);
+            CHECK(run.status.at("state") == "disabled");
+            CHECK(run.status.at("error") == "hot reload build disabled");
+            CHECK(run.status.at("scans") == 0);
+            CHECK(run.texture_keys.empty());
+            CHECK(run.render_pipeline_batches == 0);
+        }
+    }
+}
+#endif
 
 TEST_CASE("ReloadService routes requests through one named participant",
           "[r7][reload-participant]") {

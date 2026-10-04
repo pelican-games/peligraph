@@ -3884,6 +3884,7 @@ add_test(
     COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
         -DCLI=$<TARGET_FILE:pelican_cli>
         -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DHOT_RELOAD=$<BOOL:${PELICAN_WITH_HOT_RELOAD}>
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_assets
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_assets.cmake
 )

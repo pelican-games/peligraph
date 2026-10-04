@@ -122,6 +122,12 @@
 
 namespace Pelican {
 
+namespace internal {
+// cameracontrollersystem.cpp: keeps the built-in camera controllers in this
+// link (renderOrbitCameraControllerFrame).
+void linkBuiltinCameraControllerSystem() noexcept;
+} // namespace internal
+
 namespace {
 
 constexpr uint32_t goldenWidth = 16;
@@ -6631,6 +6637,10 @@ void renderOrthographicCameraFrame(RenderTarget &render_target) {
 }
 
 void renderOrbitCameraControllerFrame(RenderTarget &render_target) {
+    // EB-4: without this the harness's link drops the built-in controller's
+    // registration, the controller never ran, and the golden was the default
+    // camera's view.
+    internal::linkBuiltinCameraControllerSystem();
     auto &engine_time = GET_MODULE(EngineTime);
     engine_time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
     engine_time.setTime(2.0);
