@@ -53,6 +53,8 @@
 外すのは `unregister_model {name}` で、`models[]` から外しますが、ファイルは消しません。ファイルを project にコピーするのは
 呼び手の役目です。rig を持つ model(VRM の大半)を外したときと、登録できなかったときは、書いたうえで `restart_required` を返し、
 engine を起こし直すと効きます。引数・拒否・live になる条件は [第10章](10_tools.md) §10.3 の「project の中の model ファイルを登録する・外す」です。
+登録した model は `list_assets` に出ます。✅EB-1(`aaa7b2da`)から、その `path` は asset_data に書いた綴り(上の 2 の project 相対の path)のままで、
+解決したファイルの絶対 path は `resolved_path` に分かれています(EB-1 の前は `path` が絶対 path でした)。
 Studio の画面からこの RPC を呼ぶ道は下の「Studio から持ち込む」です。
 
 **Studio から持ち込む(✅MI-1s、`70298f88`)**: Studio で project を開いて engine が動いている間に、Outliner の右クリックか Scene の toolbar の
@@ -181,13 +183,21 @@ engine が登録を書いたもののその場で使えなかったとき(`resta
     持たない material には補いません。規則は [第6章](06_rendering.md) §6.7 の「`surface` か `routing` の片方だけを送ると」です。
   - engine が書く JSON は 2 空白の indent で、既存のファイルは鍵の順と改行コードを保ち、新しいファイルは LF です。
   - asset_data を書いたときは、engine が持つ asset_data の写しも新しい bytes に置き換えます(`list_assets` などが読む写し)。
-  - `list_assets` は `name` の無い entry を飛ばすので、`materials[]` の entry は出ません([name の無い entry を飛ばす所](../../src/core/communication/editorassetqueryruntime.cpp#L63))。material の一覧は `list_materials` で読みます。
+  - MT-1 の時点の `list_assets` は `name` の無い entry を飛ばしたので、`materials[]` の entry は出ませんでした。✅EB-1(`aaa7b2da`)から、`list_assets` は
+    `materials[]` の文書が持つ material を名前ごとに 1 行(`kind: "material"`、`id` は material の名前)で返します。読めない文書は `id` が path で `status: "invalid"`、
+    無いファイルは `status: "missing"` です([material を名前ごとに並べる所](../../src/core/communication/editorassetqueryruntime.cpp#L119))。文書ごとの状態と登録済みかは今も `list_materials` で読みます。
+  - **消す・戻す・改名する(✅EB-1)**: `delete_material {name}` は、その material の文書の entry を `materials[]` から外し、engine の登録も外します。**文書のファイルは残します**。
+    1 つの文書が複数の material を持つときは外しません(`material.document_shared@1`。`create_material` が作る文書は常に 1 material)。model の bindings・scene の object の上書き・
+    render 文書(draw loop と ray bindings)がその名前を指していれば `material.in_use@1` で断り、何も書きません。戻すときは `register_material {path}` で、残っている文書を
+    `materials[]` の末尾に `{"path": <path>}` で載せ直します。`rename_material {name, new_name}` は、文書の `materials[].name` と、その名前を `material` に持つ全 model の
+    `pelican.material_bindings` の行を 1 つの transaction で書き換えます(scene の object の上書きと render 文書は書き換えないので、それらが指していれば断る)。
+    引数と拒否の表は [第10章](10_tools.md) §10.3 の「material を消す・戻す・改名する」です。
 
 ### モデル材質の identity — レイトレの AS 規則が見る値(✅WP383)
 
 レイトレーシングを使うプロジェクトでは、ray layout の `acceleration_structure.rules[]` が **material identity** で描画行を選びます([第6章](06_rendering.md) §6.15)。その identity がモデル側のどこから決まるかだけ、ここに書きます。
 
-identity は下の 3 種のうち**ちょうど 1 つ**の形を取ります(「直和」= どれか 1 つで、2 つを同時に持つことも、どれでもないこともない)。gate(規則を要求するか)と lookup(どの規則に当たるか)は**同じ値**を見ます([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L61)):
+identity は下の 3 種のうち**ちょうど 1 つ**の形を取ります(「直和」= どれか 1 つで、2 つを同時に持つことも、どれでもないこともない)。gate(規則を要求するか)と lookup(どの規則に当たるか)は**同じ値**を見ます([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L62)):
 
 | identity | 成立条件 | 由来 |
 |---|---|---|

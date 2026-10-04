@@ -22,7 +22,7 @@ frame planの`blas_build_count`と`blas_update_count`で、作り直しとrefit�
 
 構築処理はframe graphの`__scene_acceleration_structure` nodeと、名前付きTLASごとの`__scene_acceleration_structure:<name>` nodeで実行します。前者が変形compute・共有BLAS・default TLAS・SBTを用意し、後者が対象TLASを構築します。最後のAS操作でdescriptor bundleをまとめて公開し、全consumerはその完成を待ちます。XRでは論理フレーム内で共有します。ray queryだけをshaderから使う場合も、graphの`required_capabilities`へ`pelican.vulkan.ray_query@1`を宣言して構築依存を明示します。
 
-`scene_acceleration_structures`を宣言すると、同じBLAS群からinstance mask別の名前付きTLASも構築します。RT taskの`ray_tracing.acceleration_structure`で選択し、省略時は全sceneです。qとSBTは共通のまま、TLAS別のdescriptor bundleをbindします。全TLAS・descriptorを同じpublicationで所有し、task間で使用中descriptorを変更しません。`named_tlas_instance_counts`に各集合の件数が出ます。
+`scene_acceleration_structures`を宣言すると、同じBLAS群からinstance mask別の名前付きTLASも構築します。RT taskの`ray_tracing.acceleration_structure`で選択し、省略時は全sceneです。qとSBTは共通のまま、TLAS別のdescriptor bundleをbindします。全TLAS・descriptorを同じpublicationで所有し、task間で使用中descriptorを変更しません。`named_tlas_instance_counts`に各集合の件数が出ます。✅RTL-1b(`8034d096`)から、`named_tlas_blas` に TLAS ごとの BLAS の並び(`resident_blas_keys` と同じ形の要素、`active_blas_inputs` の順)も出ます([TLAS ごとの BLAS を記録する所](../../src/core/renderer/accelerationstructure.cpp#L1033))。診断を返す Renderer の関数は同じ WP で `rayQueryAccelerationStructureDiagnosticsForTesting()` から `rayQueryAccelerationStructureDiagnostics()` に改名しました(`get_frame_plan` が本番で使うため。挙動は同じ)。
 
 加速構造 scope は、物理計画が `pelican.vulkan.ray_query@1` を要求するか、登録したシェーダの reflection が frame set の TLAS binding を検出した場合に `RenderPipelineGpuResourceScope` へ登録されます。後者により、独自パスが feature manifest の能力宣言を経由しなくても TLAS layout だけを作って実行時に欠けることはありません。同じ reflection 判定が拡張 frame-set layout、実デバイスの能力確認、owner scope 登録を決めます。どちらも要求しないプロジェクトでは scope 自体が無く、BLAS / TLAS の構築回数は 0 のままです。scope の差し替えは既存 GPU owner scope の purge に従います。
 
@@ -36,7 +36,7 @@ BLAS が保持するのは大域 index / vertex pool のデバイスアドレス
 
 TLAS の行がどこから来るかは、3つの型を順に読むと追えます。宣言面(mask / flags / custom index / material 鍵規則)そのものは[第6章 §6.20](06_rendering_vulkan_shader.md)にあります。
 
-identity が層ごとに姿を変えるのがこの経路の読みどころです。同じ 1 行を指す identity が、snapshot では**構造化された field 群**、`RaySceneRowInput` では**3 本の文字列**、material 側では**1 つの typed union** になります。名前が似ていて役割が違うので、まず全体をこの形で掴んでから各節へ入ってください。3 本に分かれているのは、`scene_identity` と `geometry_identity` が **canonical sort の第1/第2キー**であるのに対し、3 本目の `geometry_match_identity` は sort キーではなく**曖昧性 guard の等価域**だからで、ヘッダのコメントがその理由を書いています — 「authored 側の asset / mesh / node の別名が、同じ位置にある同じ geometry を別物に見せてはいけない」([`RaySceneRowInput` の `geometry_match_identity` の上](../../src/core/shader/raygrouplayout.hpp#L248))。詳細は §「`RaySceneRowInput` の identity 3 種」。
+identity が層ごとに姿を変えるのがこの経路の読みどころです。同じ 1 行を指す identity が、snapshot では**構造化された field 群**、`RaySceneRowInput` では**3 本の文字列**、material 側では**1 つの typed union** になります。名前が似ていて役割が違うので、まず全体をこの形で掴んでから各節へ入ってください。3 本に分かれているのは、`scene_identity` と `geometry_identity` が **canonical sort の第1/第2キー**であるのに対し、3 本目の `geometry_match_identity` は sort キーではなく**曖昧性 guard の等価域**だからで、ヘッダのコメントがその理由を書いています — 「authored 側の asset / mesh / node の別名が、同じ位置にある同じ geometry を別物に見せてはいけない」([`RaySceneRowInput` の `geometry_match_identity` の上](../../src/core/shader/raygrouplayout.hpp#L285))。詳細は §「`RaySceneRowInput` の identity 3 種」。
 
 ```text
 draw inventory
@@ -83,21 +83,21 @@ RaySceneRow                             q / group / record / 解決済み AS 値
 
 ### `RaySceneRowInput` の identity 3 種
 
-[`RaySceneRowInput`](../../src/core/shader/raygrouplayout.hpp#L242) は identity 文字列を3本持ちます。名前が似ていますが役割は別で、混ぜると壊れます([resolveRayTracingSceneRows()](../../src/core/renderer/accelerationstructure.cpp#L568))。
+[`RaySceneRowInput`](../../src/core/shader/raygrouplayout.hpp#L279) は identity 文字列を3本持ちます。名前が似ていますが役割は別で、混ぜると壊れます([resolveRayTracingSceneRows()](../../src/core/renderer/accelerationstructure.cpp#L568))。
 
 | field | 形 | 役割 |
 |---|---|---|
-| [`scene_identity`](../../src/core/shader/raygrouplayout.hpp#L246) | `asset@<canonical transform>` | 永続的な scene 上の同一性。`q` の canonical sort の第1キー。**draw inventory の publish 順を意図的に含みません**(instance slot / generation / 公開順序を入れると `q` が公開順に依存します) |
+| [`scene_identity`](../../src/core/shader/raygrouplayout.hpp#L283) | `asset@<canonical transform>` | 永続的な scene 上の同一性。`q` の canonical sort の第1キー。**draw inventory の publish 順を意図的に含みません**(instance slot / generation / 公開順序を入れると `q` が公開順に依存します) |
 | `geometry_identity` | `asset#allocation:index_offset:vertex_offset:mesh:primitive:node` | 同一 object 内で primitive を区別する第2キー |
-| [`geometry_match_identity`](../../src/core/shader/raygrouplayout.hpp#L252) | `allocation:index_offset:index_count:vertex_offset:vertex_count@<transform>` | **曖昧性 guard の等価域**。canonical sort キーと違い、物理的な GPU geometry 範囲と canonical transform だけを含みます |
+| [`geometry_match_identity`](../../src/core/shader/raygrouplayout.hpp#L289) | `allocation:index_offset:index_count:vertex_offset:vertex_count@<transform>` | **曖昧性 guard の等価域**。canonical sort キーと違い、物理的な GPU geometry 範囲と canonical transform だけを含みます |
 
-3本目だけ設計意図が違います。コメントが理由を書いています — authored 側の asset / mesh / node の別名が、**同じ位置にある同じ geometry を別物に見せてはいけない**からです。sort 後に隣接行を突き合わせ、`geometry_match_identity` が一致するのに group か record data が違えば [`pelican.ray_row_binding_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1738) で止めます。
+3本目だけ設計意図が違います。コメントが理由を書いています — authored 側の asset / mesh / node の別名が、**同じ位置にある同じ geometry を別物に見せてはいけない**からです。sort 後に隣接行を突き合わせ、`geometry_match_identity` が一致するのに group か record data が違えば [`pelican.ray_row_binding_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1746) で止めます。
 
-`q` は sort 後の添字で、行数が 2^24 を超えると [scene row q の24-bit上限診断](../../src/core/shader/raygrouplayout.cpp#L1750) です(instance SBT offset が 24 bit のため)。
+`q` は sort 後の添字で、行数が 2^24 を超えると [scene row q の24-bit上限診断](../../src/core/shader/raygrouplayout.cpp#L1758) です(instance SBT offset が 24 bit のため)。
 
 ### `MaterialRowIdentity`: gate と lookup が同じ値を見る
 
-material 側は元々 `{document, material_name, asset, source_material_index}` の4 field がバラバラに使われていて、AS rule の gate と material lookup が別の解釈をする組み合わせがありました。WP383 で正準化し、[`MaterialRowIdentity`](../../src/core/shader/raygrouplayout.hpp#L298) という **1つの typed union** に寄せてあります。
+material 側は元々 `{document, material_name, asset, source_material_index}` の4 field がバラバラに使われていて、AS rule の gate と material lookup が別の解釈をする組み合わせがありました。WP383 で正準化し、[`MaterialRowIdentity`](../../src/core/shader/raygrouplayout.hpp#L335) という **1つの typed union** に寄せてあります。
 
 ```cpp
 using MaterialRowIdentity =
@@ -105,20 +105,20 @@ using MaterialRowIdentity =
                  MaterialRowIdentityUnavailable>;
 ```
 
-正準化は [`materialRowIdentity()`](../../src/core/shader/raygrouplayout.cpp#L61) の1関数だけが行い、規則は次です。
+正準化は [`materialRowIdentity()`](../../src/core/shader/raygrouplayout.cpp#L62) の1関数だけが行い、規則は次です。
 
 | 入力 | 結果 |
 |---|---|
-| `material_document` が非空 | [`MaterialRowDocumentIdentity{document, material_name}`](../../src/core/shader/raygrouplayout.hpp#L282)。**document の存在が勝ちます** |
-| document が空、`material_asset` が非空、`source_material_index` が有る | [`MaterialRowAssetIdentity{asset, source_material_index}`](../../src/core/shader/raygrouplayout.hpp#L287) |
-| 同上で index が `UINT32_MAX` | [`pelican.ray_material_index_out_of_range@1`](../../src/core/shader/raygrouplayout.cpp#L72) |
-| それ以外 | [`MaterialRowIdentityUnavailable`](../../src/core/shader/raygrouplayout.hpp#L292) |
+| `material_document` が非空 | [`MaterialRowDocumentIdentity{document, material_name}`](../../src/core/shader/raygrouplayout.hpp#L319)。**document の存在が勝ちます** |
+| document が空、`material_asset` が非空、`source_material_index` が有る | [`MaterialRowAssetIdentity{asset, source_material_index}`](../../src/core/shader/raygrouplayout.hpp#L324) |
+| 同上で index が `UINT32_MAX` | [`pelican.ray_material_index_out_of_range@1`](../../src/core/shader/raygrouplayout.cpp#L73) |
+| それ以外 | [`MaterialRowIdentityUnavailable`](../../src/core/shader/raygrouplayout.hpp#L329) |
 
-**`material_name` は optional**です。単一 material の `.mat.json` のように名前を持たない document material があるので、「document かつ名前あり」を Document の条件にすると、それが Asset か Unavailable へ落ちて document selector が解決できなくなります。document selector 側も、名前が空なら名前を問わず一致し、名前付きなら一致を要求する非対称になっています([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L718))。
+**`material_name` は optional**です。単一 material の `.mat.json` のように名前を持たない document material があるので、「document かつ名前あり」を Document の条件にすると、それが Asset か Unavailable へ落ちて document selector が解決できなくなります。document selector 側も、名前が空なら名前を問わず一致し、名前付きなら一致を要求する非対称になっています([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L724))。
 
 もう1つの要点は `source_material_index` が `RaySceneRowInput` / snapshot の両方で `std::optional` であることです。コメントが規範を書いています — **欠損した index が黙って 0 になってはいけません**。glTF の直読みなどで material が無い primitive は index を持たず、identity は `Unavailable` になります。0 に丸めると、たまたま 0 番 material を指す asset selector が誤って一致します。
 
-この単一 identity は、AS rule の gate([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L718))、ray bindings の selector 照合([`selectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L470))、`material_reference` の生成、material 表の lookup がすべて同じ値を見ます。
+この単一 identity は、AS rule の gate([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L724))、ray bindings の selector 照合([`selectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L476))、`material_reference` の生成、material 表の lookup がすべて同じ値を見ます。
 
 ## `rt_shadow_mask` feature
 
@@ -156,7 +156,7 @@ SBT の byte layout は [`shaderbindingtable.cpp`](../../src/core/shader/shaderb
 
 ## AS 宣言を編集する RPC は「節 locator」を通る
 
-`scene_acceleration_structures` を読み書きする 2 本の RPC — [`getSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L2330) と [`editSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L2354) — は、rendering config の root を直接触りません。読みは [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49)、書きは [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L754) を通します。したがって扱うのは **`pelican.graph` root の `rendering.scene_acceleration_structures`** です。P-2a-4b から MG-2b までは legacy root の最上位の `scene_acceleration_structures` も同じ RPC で扱えましたが、MG-2b で legacy root 自体が `render_config.legacy_root@1` で拒否されるようになりました([第6章 §6.1](06_rendering_vulkan_shader.md) の「rendering config の root は `pelican.graph` だけ」)。
+`scene_acceleration_structures` を読み書きする 2 本の RPC — [`getSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L2564) と [`editSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L2592) — は、rendering config の root を直接触りません。読みは [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49)、書きは [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L754) を通します。したがって扱うのは **`pelican.graph` root の `rendering.scene_acceleration_structures`** です。P-2a-4b から MG-2b までは legacy root の最上位の `scene_acceleration_structures` も同じ RPC で扱えましたが、MG-2b で legacy root 自体が `render_config.legacy_root@1` で拒否されるようになりました([第6章 §6.1](06_rendering_vulkan_shader.md) の「rendering config の root は `pelican.graph` だけ」)。
 
 read が返すのは 6 キーです。
 
@@ -167,12 +167,21 @@ read が返すのは 6 キーです。
 | `task_connections` | ray を使う compute task ごとの `{name, authored_acceleration_structure, acceleration_structure}` |
 | `triangle_geometry` / `procedural_geometry` | ray group layout 側の座標空間情報(`editable` と `source_digest` を含む) |
 
-`task_connections` の 2 本立てが読みどころです。task が文書に書いた名前(省略時は `"scene"`)が `authored_acceleration_structure`、それを節の [`ray_task_acceleration_structures`](../../src/core/communication/renderconfigeditor.cpp#L2337) が上書きした結果が `acceleration_structure` で、**上書きは task の宣言を書き換えずに別のキーへ積まれます**。編集側も同じ形で、[接続の検査](../../src/core/communication/renderconfigeditor.cpp#L2408)が「知らない ray task」と「知らない AS 名」を別々の拒否にしてから `ray_task_acceleration_structures` を書きます([書き込み](../../src/core/communication/renderconfigeditor.cpp#L2424))。ただしこの 1 本目は `task_connections` を渡したときだけで、省くと [`scene_acceleration_structures` の書き込み](../../src/core/communication/renderconfigeditor.cpp#L2426)だけが走ります。
+`task_connections` の 2 本立てが読みどころです。task が文書に書いた名前(省略時は `"scene"`)が `authored_acceleration_structure`、それを節の [`ray_task_acceleration_structures`](../../src/core/communication/renderconfigeditor.cpp#L2571) が上書きした結果が `acceleration_structure` で、**上書きは task の宣言を書き換えずに別のキーへ積まれます**。編集側も同じ形で、[接続の検査](../../src/core/communication/renderconfigeditor.cpp#L2655)が「知らない ray task」と「知らない AS 名」を別々の拒否にしてから `ray_task_acceleration_structures` を書きます([書き込み](../../src/core/communication/renderconfigeditor.cpp#L2671))。ただしこの 1 本目は `task_connections` を渡したときだけで、省くと [`scene_acceleration_structures` の書き込み](../../src/core/communication/renderconfigeditor.cpp#L2673)だけが走ります。
 
-もう一段の読みどころは、この 1 回の編集が**2 種類の文書**を跨ぐことです。`triangle_space` / `procedural_space` を渡すと ray group layout 文書側の `acceleration_structure.triangle_space` / `procedural_space` を書き換えることになるため、rendering config の `base_source_digest` とは別に [`base_layout_digest`](../../src/core/communication/renderconfigeditor.cpp#L2362) が必須になり(片方だけ渡すと拒否)、layout 文書は候補文書として同じ transaction に積まれます([候補の構築](../../src/core/communication/renderconfigeditor.cpp#L2391))。空間を書き換えた bytes は保存前に [`parseRayGroupLayout()` で往復検証](../../src/core/communication/renderconfigeditor.cpp#L2390)されます。`definitions` 自体は「その値だけを持つ config を compile してみる」という形で検証され([検証](../../src/core/communication/renderconfigeditor.cpp#L2401))、通らなければ `invalid_scene_acceleration_structures` です。
+もう一段の読みどころは、この 1 回の編集が**2 種類の文書**を跨ぐことです。`triangle_space` / `procedural_space` を渡すと ray group layout 文書側の `acceleration_structure.triangle_space` / `procedural_space` を書き換えることになるため、rendering config の `base_source_digest` とは別に [`base_layout_digest`](../../src/core/communication/renderconfigeditor.cpp#L2600) が必須になり(片方だけ渡すと拒否)、layout 文書は候補文書として同じ transaction に積まれます([候補の構築](../../src/core/communication/renderconfigeditor.cpp#L2638))。空間を書き換えた bytes は保存前に [`parseRayGroupLayout()` で往復検証](../../src/core/communication/renderconfigeditor.cpp#L2637)されます。`definitions` 自体は「その値だけを持つ config を compile してみる」という形で検証され([検証](../../src/core/communication/renderconfigeditor.cpp#L2648))、通らなければ `invalid_scene_acceleration_structures` です。
+
+✅RTL-1a(`e9f3a333`)から、この編集が layout を読む `geometrySpaceDocument()` は、ファイルを直に読む形から `edit_batch` が持つ文書を読む形になりました。前は同じ batch の 2 回目の AS の編集が 1 回目の layout の書き換えを上書きしていました(レビューの記録)。layout の書き出しも `document.dump(2)` から、鍵の順と改行コードを保つ `renderJsonDocument()` に変わりました。
+
+## ray の layout と bindings を編集する RPC(✅RTL-1a / RTL-1b / RTL-1c)
+
+layout と bindings の文書そのものを読み書きするのは `get_ray_layout` / `edit_ray_layout` で、render 文書の 2 つの kind(`ray_group_layout` / `ray_bindings`)として restore と reload にも乗ります。契約は manual [第13章](../manual/13_editor.md) §13.5 の「ray の layout と bindings を読み書きする」、作りの要点は [第7章](07_tools_rpc_tests.md) §7.7 の「ray の layout と bindings の編集」です。この章の行の解決に関わる変更は 2 つです。
+
+- **行に当たらない binding は記録だけ**: scene の行の解決で、どの行にも当たらなかった binding の番号を [`RaySceneRowSnapshot::unresolved_binding_indices`](../../src/core/shader/raygrouplayout.hpp#L415) に残し、`bindings_digest_sha256` と一緒に持ちます([記録する所(RTL-1a)](../../src/core/shader/raygrouplayout.cpp#L1724))。その行は binding の無い行と同じく既定の group です。前は `ray_binding_selector_unresolved` で世代が巻き戻りました。`pelican.ray_row_binding_ambiguous@1` などの曖昧さの検査はそのままです。
+- **mode の判定は登録の最後**: layout の有無(`LegacyNoLayout` / `LayoutV3`)は起動時に決まり、違う mode の候補は登録の最後に [`RayLayoutModeChanged`](../../src/core/shader/raygrouplayout.hpp#L180) で止まります。editor はそれだけが理由の候補を commit して `restart_required` にします([第2章](02_runtime_lifecycle.md) の `configureRayLayoutModeBeforeComponentRegistration()` の項)。
 
 ## 出荷サンプル `projects/raytracing_demo`
 
 この章の内容を最小構成で読める出荷 project が [`projects/raytracing_demo`](../../projects/raytracing_demo) です。配置・半径 / AABB・shader record・交点・陰影・表示までが 1 プロジェクトに収まっており、rendering config は MG-2b から **`pelican.graph` root** で、[`rendering.json`](../../projects/raytracing_demo/rendering.json) の `rendering` 節の先頭 3 キーが `ray_group_layout` / `ray_bindings` / `features`(`project://features/spheres.json`。出荷 7 project のうち project 側 feature を持つのはこれと `pathtrace_demo` の 2 本)です。文書の版は [`ray_layout.json`](../../projects/raytracing_demo/ray_layout.json) が `pelican.ray_group_layout` v3、[`ray_bindings.json`](../../projects/raytracing_demo/ray_bindings.json) が `pelican.ray_bindings` v2 で、MG-2a からエンジンが読むのはこの版だけです。同じ 2 文書を持つ出荷 project はもう 1 本あり、[`projects/pathtrace_demo`](../../projects/pathtrace_demo)([`ray_layout.json`](../../projects/pathtrace_demo/ray_layout.json) v3 / [`ray_bindings.json`](../../projects/pathtrace_demo/ray_bindings.json) v2)です(版の一覧は [`docs/v0_freeze.md`](../v0_freeze.md) §1.1)。
 
-**以前の既知の穴(解消済み)**: Studio で開くと、埋め込み engine が起動直後に [`Renderer logical frame requires a compiled render pipeline`](../../src/core/vkcore/renderer.cpp#L5606) で落ちることがありました。shader cache が効いて起動が速いと、窓の出力より先に最初の frame が来て、出力待ちで飛ばした frame が staged な起動 generation を巻き戻していたのが原因です。`7cb39996` / `e5995d88` で直り、[v0 凍結一覧 §4.1](../v0_freeze.md) が Studio での起動・capture・開き直し(10 / 10)を確認しています。
+**以前の既知の穴(解消済み)**: Studio で開くと、埋め込み engine が起動直後に [`Renderer logical frame requires a compiled render pipeline`](../../src/core/vkcore/renderer.cpp#L5621) で落ちることがありました。shader cache が効いて起動が速いと、窓の出力より先に最初の frame が来て、出力待ちで飛ばした frame が staged な起動 generation を巻き戻していたのが原因です。`7cb39996` / `e5995d88` で直り、[v0 凍結一覧 §4.1](../v0_freeze.md) が Studio での起動・capture・開き直し(10 / 10)を確認しています。

@@ -200,7 +200,7 @@
 
 **SBT(shader binding table)** — レイトレーシングパイプラインで、「どのレイがどのシェーダ(raygen / miss / closest-hit)に当たるか」を引くための表。`ray_group_layout` の `ray_types` / `groups` / `misses` / `record` がこの表の形を決めます。`acceleration_structure` は SBT の入力ではないので、layout の digest からは取り除いて計算されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayTracingSceneShaderBindingTables](../../src/core/shader/pipelinefactory.hpp#L190))
 
-**`ray_group_layout`(ray layout)** — レイトレの宣言層の入口となる JSON。version は 3 だけを受理し(1 / 2 は MG-2a から `pelican.ray_group_layout.version_unsupported@1`)、**プロセスの実行中は変更できない 2 状態**(layout 無し / 有り)として起動時に確定します。layout があるときだけ `acceleration_structure` 宣言と `pelican_ray_instance` コンポーネントが使えます。プロセス途中でのモード変更は拒否されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayLayoutRuntimeState](../../src/core/shader/raygrouplayout.hpp#L168))
+**`ray_group_layout`(ray layout)** — レイトレの宣言層の入口となる JSON。version は 3 だけを受理し(1 / 2 は MG-2a から `pelican.ray_group_layout.version_unsupported@1`)、**プロセスの実行中は変更できない 2 状態**(layout 無し / 有り)として起動時に確定します。layout があるときだけ `acceleration_structure` 宣言と `pelican_ray_instance` コンポーネントが使えます。プロセスの途中でモードは変わりません。layout の有無を変える編集は、✅RTL-1b から文書を書いたうえで `restart_required`(`ray_layout_mode_changed`)を返し、起こし直した engine が新しいモードで動きます(それまでは拒否でした)。文書は ✅RTL-1a から `get_ray_layout` / `edit_ray_layout` で読み書きできます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayLayoutRuntimeState](../../src/core/shader/raygrouplayout.hpp#L197))
 
 ---
 
@@ -210,7 +210,7 @@
 
 **ホットリロード(hot reload)** — 実行を止めずに、保存されたファイルを反映すること。対象はシェーダ・`.surface`・テクスチャ・マテリアル値・モデルコンテナ・ゲームロジック DLL で、**シーンは対象外**です。1 つの変更に影響する全バリアントを準備してからフレーム境界で一括公開し、どれか 1 つでも失敗すれば全体を破棄して旧世代を維持します(fail-soft)。初出: [第10章 §10.5](10_tools.md#105-ホットリロードwp9096110147162178)。
 
-**チケット(ticket)** — エディタの編集操作を**フレーム境界で適用する**ための受付票。受付時に前提条件を検査し、コミット時にもう一度検査します(受付から適用までの間に世界が動くため)。「トランザクション」という語がシーンロード・作用・編集の 3 か所で使われるので、編集の文脈ではチケットと呼び分けます。初出: [第13章 §13.3](13_editor.md#133-編集の実行モデル--チケットとフレーム境界)。([EditorCommandService](../../src/core/communication/editorcommandservice.hpp#L278))
+**チケット(ticket)** — エディタの編集操作を**フレーム境界で適用する**ための受付票。受付時に前提条件を検査し、コミット時にもう一度検査します(受付から適用までの間に世界が動くため)。「トランザクション」という語がシーンロード・作用・編集の 3 か所で使われるので、編集の文脈ではチケットと呼び分けます。初出: [第13章 §13.3](13_editor.md#133-編集の実行モデル--チケットとフレーム境界)。([EditorCommandService](../../src/core/communication/editorcommandservice.hpp#L282))
 
 **headless(ヘッドレス)** — ウィンドウを開かずに描画・実行するモード。時刻が固定ステップ(dt = 1/fps)になるためリプレイと golden テストの土台になり、CI から PNG を取り出せます。初出: [第2章 §2.5](02_getting_started.md#25-ヘッドレス実行ウィンドウなしで-png-を出す)。
 

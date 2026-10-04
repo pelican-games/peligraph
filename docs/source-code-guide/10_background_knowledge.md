@@ -357,7 +357,7 @@ Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取�
 
 `VK_EXT_descriptor_indexing`(Vulkan 1.2 でコア入り)は、descriptor 配列を「実行時に決まる添字で引く」ための機能群です。`VkDescriptorSetLayoutBindingFlagsCreateInfo` に立てる `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT` は「配列の一部の要素が未書き込みでも、シェーダがその要素を読まない限り有効」という緩和で、テクスチャ枠を N 個ぶん確保しておいて実際には数個しか埋めない bindless 構成には必須です。関連する緩和に `VARIABLE_DESCRIPTOR_COUNT` と `UPDATE_AFTER_BIND` があり、シェーダ側で非一様な添字を使うには `nonuniformEXT()` が要ります。**外部で引くときの名前**は Vulkan 仕様の "Descriptor Set Layout" 節と拡張名 `VK_EXT_descriptor_indexing` です。
 
-**使用場所**: [rayMaterialDescriptorBindingFlags()](../../src/core/shader/pipelinefactory.cpp#L205)(3 binding のうちテクスチャ配列にだけ `ePartiallyBound` を立てる) / [PipelineFactory::descriptorSetLayoutKeysFor()](../../src/core/shader/pipelinefactory.cpp#L494)(ray レイアウトのとき set 3 の `binding_flags` にそれを積み、`vk::DescriptorSetLayoutBindingFlagsCreateInfo` として layout 作成へ渡す) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1232)(生成される GLSL 側の `nonuniformEXT(row.texture_index)`)
+**使用場所**: [rayMaterialDescriptorBindingFlags()](../../src/core/shader/pipelinefactory.cpp#L205)(3 binding のうちテクスチャ配列にだけ `ePartiallyBound` を立てる) / [PipelineFactory::descriptorSetLayoutKeysFor()](../../src/core/shader/pipelinefactory.cpp#L494)(ray レイアウトのとき set 3 の `binding_flags` にそれを積み、`vk::DescriptorSetLayoutBindingFlagsCreateInfo` として layout 作成へ渡す) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1253)(生成される GLSL 側の `nonuniformEXT(row.texture_index)`)
 
 ### descriptor type の使い分け(combined image sampler / storage image / sampled image + sampler)
 
@@ -395,7 +395,7 @@ VMA は Vulkan のメモリタイプ選択とサブアロケーションを引�
 
 GLSL の uniform ブロックは既定で **std140**、storage ブロックは **std430** のレイアウト規則に従います(GLSL 仕様の "Standard Uniform Block Layout" / "Standard Shader Storage Block Layout")。std140 では、スカラーは自身のサイズ、`vec2` は 8、`vec3` と `vec4` は 16 バイト境界に置かれ(`vec3` は**サイズ 12・アラインメント 16**)、**配列の要素と構造体は 16 バイトの倍数へ切り上げられます**。std430 はこの「配列・構造体を 16 へ切り上げる」規則だけが緩み、要素の素のアラインメントがそのまま使われます。C++ 側で同じバイト列を作るには `alignas` を明示し、`offsetof` の `static_assert` で固定するのが定型で、これを怠るとシェーダ側が 1 メンバぶんずれた値を読みます。
 
-**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L48)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L405) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L417)
+**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L48)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L448) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L460)
 
 **このコードベースでの注意**: レイトレーシング側は「profile 有り/無しで別の行構造体」を用意し、profile が無い構成では以前の ABI をバイト単位で保つようにしてあります。同じ意味の行なのに型が 2 つあるのはそのためです。
 
@@ -423,7 +423,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VK_KHR_ray_tracing_pipeline` のパイプラインは、ステージ配列(`pStages`)とグループ配列(`pGroups`)の 2 段でできています。グループは `GENERAL`(raygen / miss / callable)と `TRIANGLES_HIT_GROUP`(closest hit + 任意の any hit)などの種類を持ち、各グループは pStages 内の添字を指します。**グループの並び順がそのまま SBT(Shader Binding Table)の並び順**になります。`vkGetRayTracingShaderGroupHandlesKHR` で取れる不透明ハンドルは 1 個あたり `shaderGroupHandleSize` バイト、SBT の 1 レコードは `shaderGroupHandleAlignment` に、raygen / miss / hit / callable の**各領域の先頭アドレスは `shaderGroupBaseAlignment`** に揃える必要があります(いずれも `VkPhysicalDeviceRayTracingPipelinePropertiesKHR`)。`vkCmdTraceRaysKHR` に渡す 4 つの `VkStridedDeviceAddressRegionKHR` はこの stride で読まれます。
 
-**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L718)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L832)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2294)
+**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L718)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L832)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2304)
 
 **このコードベースでの注意**: base alignment を満たすために `total_size + (base_alignment - 1)` を確保し、実アドレスの余りから内部オフセットを決めています。確保したバッファの先頭が揃っている保証は無い、という前提での書き方です。
 
@@ -431,7 +431,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKHR`)で間違えやすいのが `maxVertex` で、これは頂点数ではなく「**使用しうる最大の頂点インデックス**」、つまり密な配列なら `vertex_count - 1` です。プリミティブ数は三角形リスト前提で `index_count / 3` を `VkAccelerationStructureBuildRangeInfoKHR::primitiveCount` に渡します。TLAS 側では `VkAccelerationStructureInstanceKHR` の配列を**16 バイト境界**に置く必要があり、instance が 0 件でも「有効なアドレス」を渡さなければならない(null は不可)ため、1 件ぶんの空領域を確保しておくのが定型です。ビルド用の scratch バッファは `VkPhysicalDeviceAccelerationStructurePropertiesKHR::minAccelerationStructureScratchOffsetAlignment` に揃えたアドレスを渡します。
 
-**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L1139)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L175)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L116)
+**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L1168)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L175)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L116)
 
 **このコードベースでの注意**: triangles data は名前付きでなく**位置**で集約初期化されているので、format / vertexData / vertexStride / maxVertex / indexType / indexData の順序を知らないと `vertex_count - 1` がどのフィールドか読めません。
 
@@ -439,13 +439,13 @@ BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKH
 
 TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE` は「このインスタンスは不透明として扱う」= **any-hit シェーダを呼ばない**、`FORCE_NO_OPAQUE` はその逆です。両方を同時に立てるのは矛盾なので、宣言側で弾く必要があります。any-hit シェーダは交差**候補**ごとに(順不同で、同じ交差に対して複数回)呼ばれ、`ignoreIntersectionEXT` でその候補を棄却します。三角形の hit attribute は組み込みで `vec2` の重心座標(残り 1 成分は `1 - u - v`)、プリミティブ番号は `gl_PrimitiveID` です。したがってアルファ抜きを any-hit で実装している構成で `FORCE_OPAQUE` を立てると、抜きが丸ごと無効になります。
 
-**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1717)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1232)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
+**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1717)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1253)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
 
 ### in-flight フレームと GPU 資源の寿命
 
 GPU に投入したコマンドバッファは、対応する fence が signal されるまで「まだ実行中かもしれない」ものです。そのコマンドバッファが参照している資源(バッファ・イメージ・acceleration structure・SBT・descriptor set)は、その間は破棄も上書きもできません。CPU が先へ進むために同じ資源を N セット用意して添字で回すのが in-flight frame で、この N はスワップチェーンのイメージ枚数とは**別の数**です。破棄を「fence 完了後」まで遅らせる仕組み(遅延解放キュー)と、フレームが掴んだ資源を型を消して握っておく仕組み(lease)を組むのが定型になります。
 
-**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L5413) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
+**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L5428) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
 
 ## 10.2 glTF / 3D アセット形式の仕様
 
@@ -621,7 +621,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「途中で失敗したら、それまでの副作用を取り消す」を例外安全に書く定型です。ローカルなガード型のデストラクタに巻き戻し処理を書き、正常系の最後で「もう巻き戻さない」印(commit / dismiss と呼ばれることが多い)を立ててガードを無効化します。こうすると、途中のどの `throw` からでも巻き戻しが走り、成功経路でだけ走りません(`std::scope_exit` / `scope_fail` は C++ 標準ライブラリ拡張の同種の道具です)。ガードに「そもそも何もしていない」状態を表す番兵(世代番号が 0、ハンドルが無効など)を持たせて、staging 前に抜けたときに巻き戻しを飛ばす形もよく使われます。
 
-**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3159) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3186) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L406)(`catch (...)` で確保済みの範囲を返す)
+**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3174) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3201) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L406)(`catch (...)` で確保済みの範囲を返す)
 
 ### double-checked locking と acquire / release
 
@@ -731,13 +731,13 @@ DLL 境界を越えて渡す構造体は、両側が同じレイアウトでビ�
 
 C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビット列をそのまま読み替えます(`reinterpret_cast` や union 経由と違い未定義動作になりません)。浮動小数点をハッシュやダイジェストに入れるとき必ず問題になるのが `-0.0` で、`-0.0 == +0.0` は true なのにビット列は違うため、素直にバイト化すると「等しい値なのに違うダイジェスト」が出ます。バイト化の直前に `if (v == 0.0f) v = 0.0f;` と書いて符号を落とすのが定型です(NaN も同様にビット表現が一意でないので、そもそも弾くのが安全です)。
 
-**使用場所**: [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L163)(NaN を例外にし、`0.0F` を代入し直してから `bit_cast`) / [canonicalTransformIdentity()](../../src/core/renderer/accelerationstructure.cpp#L552) / [encodeRecord()](../../src/core/shader/raygrouplayout.cpp#L385)
+**使用場所**: [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L163)(NaN を例外にし、`0.0F` を代入し直してから `bit_cast`) / [canonicalTransformIdentity()](../../src/core/renderer/accelerationstructure.cpp#L552) / [encodeRecord()](../../src/core/shader/raygrouplayout.cpp#L391)
 
 ### 整数オーバーフローの事前検査
 
 符号なし整数の演算は折り返し、符号付きはオーバーフロー自体が未定義動作なので、**起こしてから検出することはできません**。掛け算は `lhs > max / rhs`(rhs が 0 でないとき)、足し算は `lhs > max - rhs` の形で、演算する**前**に判定します。除算に置き換えるのがポイントで、`lhs * rhs > max` と書くと検査そのものが折り返します。サイズ計算(幅 × 高さ × バイト数)のように外から来た値を掛ける経路では、この検査を通した専用のヘルパを 1 つ用意して全部そこを通すのが定型です。
 
-**使用場所**: [checkedMultiply()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L197) / [parseExtentDerivedBufferSize()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L223)
+**使用場所**: [checkedMultiply()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L198) / [parseExtentDerivedBufferSize()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L224)
 
 ### swap-and-pop(末尾要素で穴を埋める削除)
 
@@ -849,7 +849,7 @@ POSIX と違い、Windows ではファイルを開くときに「他のプロセ
 
 `std::filesystem::canonical(p)` は実在するパスしか正規化できず、存在しなければ例外(または `error_code`)になります。対して `weakly_canonical(p)` は「存在する先頭部分だけを解決し、残りは字句的に正規化する」ので、これから作るファイルのパスにも使えます。Windows 固有の落とし穴が**ルート名**で、`path::has_root_name()` は `C:` や `\\server` の有無を返します。`C:\dir`(ルート名 + ルートディレクトリ)は絶対パスですが、`C:dir` は「ドライブ C の**カレントディレクトリ**からの相対」であり、しかも `current_path()` がドライブごとに存在するため、プロセスのカレントだけでは決まりません。この曖昧な形は受け付けずに拒否するのが安全です。
 
-**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L1107) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L1099) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L1051) / [resolveDeclaration()](../../src/core/asset/model.cpp#L248)
+**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L1108) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L1100) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L1052) / [resolveDeclaration()](../../src/core/asset/model.cpp#L248)
 
 ## 10.5 アルゴリズムとデータ処理の定番
 
@@ -991,7 +991,7 @@ SPIR-V モジュールは 32bit ワードの列です。先頭 5 ワードがヘ
 
 nlohmann::json は数値を「符号なし整数 / 符号付き整数 / 浮動小数」の 3 つに区別して保持し、`is_number_unsigned()` / `is_number_integer()` / `is_number_float()` で見分けられます(`is_number_integer()` は符号なしにも true を返すので、負値を拒否したいときは順序に注意が要ります)。`nlohmann::ordered_json` は `std::map` ではなく挿入順を保つ連想コンテナを使う別名で、出力の安定性が要るとき(差分を取る、ダイジェストを取る)に選びます。もう 1 つの落とし穴が `std::optional` の出力で、**値が無いときにキーへ代入しないとキー自体が消えます**。「キーはあるが null」を出したいなら明示的に `nullptr` を代入する必要があり、この 2 つは受け手にとって別物です。
 
-**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L201)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1781)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
+**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L69)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L201)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1791)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
 
 ### IEEE 754 の倍精度と JSON の「安全な整数」2^53−1
 
@@ -1005,7 +1005,7 @@ JSON の数値には型の区別が無く、多くの実装(JavaScript の `JSON
 
 JSON-RPC 2.0 の request は `{"jsonrpc": "2.0", "method": ..., "params": ..., "id": ...}` で、`params` は配列かオブジェクトのみ(スカラーは不可)、`id` を持たないものは **notification** と呼ばれ応答を返してはいけません。response は `result` と `error` の**どちらか一方だけ**を持たなければならず、両方あるものも両方無いものも不正です。この仕様自体には転送方式が定められていないため、行区切り(1 行 1 メッセージ)や `Content-Length` ヘッダ(LSP 方式)といった framing は実装側の取り決めになります。行区切りを採る場合、Windows で生まれたテキストは行末に `\r` が残るので、JSON へ渡す前に落とす必要があります(`\r` は JSON の空白文字なので実害が出ないこともありますが、id の照合や digest には効きます)。予約エラーコードは前掲の項を参照してください。
 
-**使用場所**: [RpcServer::run()](../../src/core/communication/rpcserver.cpp#L1229)(`getline` の後に末尾 `\r` を落として 1 行 1 応答) / [RpcServer::handleLine()](../../src/core/communication/rpcserver.cpp#L1164) / [parseJsonRpcRequest()](../../src/project/jsonrpc.cpp#L148)
+**使用場所**: [RpcServer::run()](../../src/core/communication/rpcserver.cpp#L1230)(`getline` の後に末尾 `\r` を落として 1 行 1 応答) / [RpcServer::handleLine()](../../src/core/communication/rpcserver.cpp#L1165) / [parseJsonRpcRequest()](../../src/project/jsonrpc.cpp#L148)
 
 ## 10.6 座標・数値の約束事
 
@@ -1077,7 +1077,7 @@ Vulkan のラスタライズ規則では、整数のフレームバッファ座�
 
 **このリポジトリでは**: `src/core/phys/physquery.cpp` の `normalizedQuat()`(99 行)と `closestPointOnSegment()`(226 行)、`src/core/phys/physworld.cpp` の `normalized()`(65 行)、`src/core/phys/joltphysicsprovider.cpp` の `normalizeOr()`(143 行)が、正規化の割り算前に `len_sq = dot(v,v)` を `kEpsilon * kEpsilon`(kEpsilon=1e-5)と比べ、下回れば単位クォータニオンや端点・フォールバックベクトルを返して割り算を回避します。`normalizedQuat()` はコライダ変換の `rotateVector()` などが通る要所です。ε を二乗するのが要点で、`len_sq <= kEpsilon` のままだと実効の長さ閾値が `sqrt(1e-5)≈3.2e-3` と約 300 倍緩くなり、ほぼ縮退した回転/線分がガードをすり抜けて極小長で割られ、NaN/inf が raycast や overlap の結果に伝播して決定的物理が壊れます。
 
-**長さそのものが要るときは `std::hypot`**(2026-09-04 追記)。比較ではなく実際の長さが必要な場面では、`sqrt(x*x + y*y + z*z)` は途中の二乗でオーバーフロー / アンダーフローしますが、`std::hypot` は内部で桁を揃えるためその範囲で耐えます(C++17 で 3 引数版が入りました)。RPC `raycast` の [方向の長さを測る所](../../src/core/communication/rpcserver.cpp#L1267) は `direction` の長さを `std::hypot` で測り、0 か有限でなければ invalid params にします(以前の例の `basic_config.camera.up` は CC-1 で撤去されました)。
+**長さそのものが要るときは `std::hypot`**(2026-09-04 追記)。比較ではなく実際の長さが必要な場面では、`sqrt(x*x + y*y + z*z)` は途中の二乗でオーバーフロー / アンダーフローしますが、`std::hypot` は内部で桁を揃えるためその範囲で耐えます(C++17 で 3 引数版が入りました)。RPC `raycast` の [方向の長さを測る所](../../src/core/communication/rpcserver.cpp#L1268) は `direction` の長さを `std::hypot` で測り、0 か有限でなければ invalid params にします(以前の例の `basic_config.camera.up` は CC-1 で撤去されました)。
 
 ### NaN はあらゆる比較で false — `isfinite` を先に置く
 
@@ -1116,7 +1116,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 `glm::quat` のコンストラクタは **`{w, x, y, z}` の順**で成分を取ります(メンバ変数としての `.x .y .z .w` の並びとは別の話です)。一方 glTF の `rotation`、多くのワイヤ形式、そして人が書く JSON は `[x, y, z, w]` の順で格納します。したがって配列から読むときは必ず並べ替えが要り、忘れると「軸と角度が入れ替わった」ような、しかし一見それらしく見える回転になります。型は同じなのでコンパイラは何も言いません。
 
-**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1486) / [requireQuatField()](../../src/core/communication/rpcserver.cpp#L308)(配列の 0,1,2,3 を x,y,z,w に読んでから `glm::quat{w, x, y, z}` を組む)
+**使用場所**: [InternalGltfLoader::nodeTransform()](../../src/core/model/gltf.cpp#L1486) / [requireQuatField()](../../src/core/communication/rpcserver.cpp#L309)(配列の 0,1,2,3 を x,y,z,w に読んでから `glm::quat{w, x, y, z}` を組む)
 
 ### TRS の合成順序と world → local の逆算
 
@@ -1138,7 +1138,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 mip レベル m の寸法は `max(1, n >> m)` です(2 で割ることを右シフトで書いたもの)。`max(1, ...)` が要るのは、一方の辺が先に 1 に達しても mip チェーンは続くためで、これを忘れると 0 サイズのディスパッチや 0 除算になります。
 
-**使用場所**: [parseExtentDerivedBufferSize()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L223)(タイル数の切り上げ) / [imageExtentDispatchGroups()](../../src/core/renderingpass/computetaskcontainer.cpp#L630)(`max(1u, dimension >> mip)` の後に切り上げ除算)
+**使用場所**: [parseExtentDerivedBufferSize()](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L224)(タイル数の切り上げ) / [imageExtentDispatchGroups()](../../src/core/renderingpass/computetaskcontainer.cpp#L630)(`max(1u, dimension >> mip)` の後に切り上げ除算)
 
 ### view 行列の逆行列とカメラの前方軸
 
