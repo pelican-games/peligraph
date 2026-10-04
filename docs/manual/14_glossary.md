@@ -136,7 +136,7 @@
 
 **shadow copy(シャドウコピー)** — 実行中の DLL は Windows では上書きできないため、**原本の複製を作ってそちらをロードする**手口。pelican2 は原本の隣の `.pelican-hot-reload/<プロセス ID>/` へ複製するので、同じプロジェクトを 2 つ起動しても取り合いになりません。初出: [第8章 ゲーム DLL の ABI](08_gameplay.md#ゲーム-dll-の-abiwp381381a382a)。([gamelogicreload.cpp:423](../../src/core/gamelogic/gamelogicreload.cpp#L501))
 
-**PCG32(permuted congruential generator)** — 高速で周期が長い擬似乱数生成器の一種。pelican2 は `std::mt19937` + `std::uniform_*` を**使わず**(処理系によって出る列が違うため)、PCG32 を分布まで自前実装しています。既定シードは 0 固定で、毎回変えたいゲームは自分で種を入れます。初出: [第8章 §8.10](08_gameplay.md#810-決定性--なぜ毎回同じ結果になるのか)。([deterministicrng.cpp:14](../../src/core/userpublic/deterministicrng.cpp#L14))
+**PCG32(permuted congruential generator)** — 高速で周期が長い擬似乱数生成器の一種。pelican2 は `std::mt19937` + `std::uniform_*` を**使わず**(処理系によって出る列が違うため)、PCG32 を分布まで自前実装しています。既定シードは 0 固定で、毎回変えたいゲームは自分で種を入れます。初出: [第8章 §8.10](08_gameplay.md#810-決定性--なぜ毎回同じ結果になるのか)。([deterministicrng.cpp:14](../../src/core/userpublic/deterministicrng.cpp#L24))
 
 **provider(プロバイダ)** — 機能の実装やデータを供給する、差し替え可能な実装です。物理では組み込み実装や Jolt をビルド設定で選べるほか、ゲーム DLL が実行時にプロバイダを登録できます。クエリごとに必要な機能（capability）を見て、対応するゲーム側プロバイダを優先し、なければビルドで選んだ実装を使います。結果の整列や同順位の処理はエンジン側の規則に従いますが、実装を替えても数値結果が完全一致するという意味ではありません。描画でもビューや描画項目を供給する実装にこの語を使います。 初出: [第8章 §8.8](08_gameplay.md#88-物理クエリとトリガーp1p2wp107179)。([ProviderV2](../../src/core/userpublic/physics/abi_v2.hpp#L91))
 

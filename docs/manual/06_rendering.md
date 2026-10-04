@@ -1550,7 +1550,7 @@ root の rendering 節の `frame_node_order` は、frame graph ごとに node �
 
 編集の場合、断るのは ticket の結果(`get_edit_result` の `status: "rejected"`)で、受付の時点ではありません。ファイルは書かれず、plan も前のままです。message は EB-1 の buffer の拒否と同じ `<code> <fields の JSON>` の形です。
 
-test: `renderconfigeditor_test` の [「FO-1 frame_node_order swaps two passes of the rendering section with no dependency, and an order that contradicts a dependency is refused naming the two passes and the relation」](../../test/renderconfigeditor_test.cpp#L4825)(CPU。plan の全部の並び・2 つだけの並び・戻す・開き直し、`reads` / `after` / `before`、区切りをまたぐ `canonical_order` と `anchor` / `via`、区切りの順に沿った並びは通る)と、`bs1_render_fallback_test` の [「FO-1 Order... swaps two passes of the rendering section with no dependency through edit_frame_node_order, and an order against a read is refused by name」](../../test/bs1_render_fallback_test.cpp#L910)(GPU。headless の `pelican_player --rpc` で、入れ替えが committed になり `get_frame_plan` で `right` が `left` より先、root に `frame_node_order` が書かれ、絵はグラデーションのまま。`[present, left]` は `reads` / `left_color` で断られ何も書かれない。起こし直しても順が保たれる)。
+test: `renderconfigeditor_test` の [「FO-1 frame_node_order swaps two passes of the rendering section with no dependency, and an order that contradicts a dependency is refused naming the two passes and the relation」](../../test/renderconfigeditor_test.cpp#L4825)(CPU。plan の全部の並び・2 つだけの並び・戻す・開き直し、`reads` / `after` / `before`、区切りをまたぐ `canonical_order` と `anchor` / `via`、区切りの順に沿った並びは通る)と、`bs1_render_fallback_test` の [「FO-1 Order... swaps two passes of the rendering section with no dependency through edit_frame_node_order, and an order against a read is refused by name」](../../test/bs1_render_fallback_test.cpp#L1113)(GPU。headless の `pelican_player --rpc` で、入れ替えが committed になり `get_frame_plan` で `right` が `left` より先、root に `frame_node_order` が書かれ、絵はグラデーションのまま。`[present, left]` は `reads` / `left_color` で断られ何も書かれない。起こし直しても順が保たれる)。
 
 ### プランダンプ(実行計画の可視化)
 
@@ -1685,7 +1685,7 @@ render / compute / transfer / output / marker のノード本体は provider の
 }
 ```
 
-- profile は `optimized`、`conservative_debug`、`hazard_stress`。3 つの `kind` の意味は次のとおりです([targetplanning.cpp](../../src/project/targetplanning.cpp#L972))。
+- profile は `optimized`、`conservative_debug`、`hazard_stress`。3 つの `kind` の意味は次のとおりです([targetplanning.cpp](../../src/project/targetplanning.cpp#L973))。
   - `optimized`(既定) — 並列化・scope 融合(tile-local)・alias の候補をすべて拾い、安定な順序で採用する。
   - `conservative_debug` — 並列候補を出さず、rendering scope の融合もしない。つまり「順番に 1 つずつ、資源は共有しない」側へ倒す。バリアや融合を疑うときの対照用です。
   - `hazard_stress` — **hazard(ハザード)** は「同じ資源への読み書きが正しい順序で並ばないと壊れる関係」を指す GPU 同期の用語で、この profile はその取りこぼしを探すためのものです([用語集](14_glossary.md))。**依存が許す範囲の任意な選択**(実行可能ノードの取り出し順、並列/融合/alias 候補の並び)を `seed` で撹拌し、alias 候補を半分に間引く。順序に暗黙に依存したバグを揺さぶり出すための profile で、`seed` はここでだけ指定できます(同じ seed なら再現します)。
@@ -2056,7 +2056,7 @@ output schema・format・MSAA(sample 数)・local-read・attachment state で描
   - ⚠ 作り直しが commit した後で、その後ろの準備(XR の variant が残っているかの確認、model の reload の `preparePublication`)が失敗した
     場合に、差し替え済みの material の pipeline が戻るかは確かめていません(未確認)。
   - ReloadService は Renderer を作るときに必ず作られます([reload の参加者を登録する所](../../src/core/vkcore/renderer.cpp#L3411))。
-    ReloadService が無い場合の分岐では照合が効き、今までどおり断ります([照合を切り替える所](../../src/core/vkcore/renderer_config.cpp#L662))。
+    ReloadService が無い場合の分岐では照合が効き、今までどおり断ります([照合を切り替える所](../../src/core/vkcore/renderer_config.cpp#L682))。
     ただし通常の起動でこの分岐を通る道は見当たりません(コードからの推論)。
   - file watcher が動くのは、窓ありで、`--rpc`・`--replay`・`--strict-assets` のどれも付けない起動だけです
     ([gate の条件](../../src/core/watch/reloadgate.cpp#L46)、[headless では読み直しを要求しない所](../../src/player/main.cpp#L513))。
@@ -2569,7 +2569,7 @@ test: `materialdocumentrpc_test` の [「FO-1 a Blank box whose material documen
 
 **pass の宣言漏れは別の code(✅FO-2、`31c390c7`)**: FO-1 の「1 文書ずつ登録し直す」は、登録の失敗を全部「文書が読めない」として握っていました。そのため、**文書は正しいのに、それを描く pass が material の使うものを宣言していない**(surface が scene の acceleration structure を query するのに、material pass が `ray_query: true` を宣言していない)という pass 側の原因まで、`material.document_invalid@1` として起動を続けていました。RT6 の GPU の test(起動の例外を期待していた)が赤になり、後続の EB-3 の実装者が見つけました(台帳の FO-2 の記録)。FO-2 からは別の code で、直す場所(pass)を名指します。
 
-- **見分け方**: pipeline factory の raster の `ray_query` の拒否だけを型付きの例外 `PassContractRefusal` にしました(`what()` は前と同じ文。[投げる所](../../src/core/shader/pipelinefactory.cpp#L1013))。`MaterialContainer::registerMaterial` が受けて material の名前と、宣言していない material pass を足して投げ直します([足す所](../../src/core/material/materialcontainer.cpp#L865))。起動時の 1 文書ずつの登録はこの型を別に受けます([受ける所(FO-2)](../../src/core/material/projectmaterialasset.cpp#L774))。ほかの拒否(device に ray query が無い、compute task 自身の宣言漏れ、multiview の gl_ViewIndex、material の shader input)は今までどおりです。
+- **見分け方**: pipeline factory の raster の `ray_query` の拒否だけを型付きの例外 `PassContractRefusal` にしました(`what()` は前と同じ文。[投げる所](../../src/core/shader/pipelinefactory.cpp#L1014))。`MaterialContainer::registerMaterial` が受けて material の名前と、宣言していない material pass を足して投げ直します([足す所](../../src/core/material/materialcontainer.cpp#L865))。起動時の 1 文書ずつの登録はこの型を別に受けます([受ける所(FO-2)](../../src/core/material/projectmaterialasset.cpp#L774))。ほかの拒否(device に ray query が無い、compute task 自身の宣言漏れ、multiview の gl_ViewIndex、material の shader input)は今までどおりです。
 - **問題の一覧**: 文書 1 つにつき error が 1 件で、`document` / `document_kind` は **pass を宣言している文書**です。RT6 の fixture(preset の `forward_opaque` が `ray_query` を宣言していない)での実例:
 
   ```json
@@ -2884,7 +2884,7 @@ preview graph の合成規則(すべて起動時に検証されます):
 - **出る所**: `get_status` の `preview`([`get_status` の PV-1 の鍵](../../src/core/communication/rpcserver.cpp#L1676))、`get_frame_plan` の最上位の `preview`([frame plan の PV-1 の鍵](../../src/core/vkcore/renderer.cpp#L4547))、render の編集の committed の結果の `preview`(公開した世代の状態。`reload_render_documents` と `edit_batch` の committed も同じ。[committed に preview を足す所](../../src/core/communication/renderconfigeditor.cpp#L8076))。
 - **`render_preview`**: preview が利用できない世代では、capture の中身を読む前に `preview.unavailable@1` で断ります。JSON-RPC の error(`-32000`)の `data` が `{code: "preview.unavailable@1", method: "render_preview", reason: <上の reason>}` です([`checkPreviewAvailable()`](../../src/core/communication/editorpreviewservice.cpp#L134))。
 - **編集**: 編集の preflight は preview を組みません([PV-1 で preview を組まなくなった preflight](../../src/core/renderingpass/previewgraph.cpp#L223))。preview だけが組めない編集も committed になり、`preview` が `available: false` に変わります。逆に history を外す編集で `available: true` に戻ります。
-- **log**: 起動時に、preview が利用できなければ warning を 1 行出します。形は `render preview unavailable (preview.unsupported_authoring@1 feature=history target=accum); normal play continues, render_preview refuses: <message>` で、`target=` は reason に `target` があるときだけです([PV-1 の warning の行](../../src/core/vkcore/renderer_config.cpp#L742))。同じ関数は reload と編集の組み直しでも通るので、そこでも preview が利用できなければ同じ行が出ます(コードの読み。test は起動時の 1 行だけを見ます)。
+- **log**: 起動時に、preview が利用できなければ warning を 1 行出します。形は `render preview unavailable (preview.unsupported_authoring@1 feature=history target=accum); normal play continues, render_preview refuses: <message>` で、`target=` は reason に `target` があるときだけです([PV-1 の warning の行](../../src/core/vkcore/renderer_config.cpp#L762))。同じ関数は reload と編集の組み直しでも通るので、そこでも preview が利用できなければ同じ行が出ます(コードの読み。test は起動時の 1 行だけを見ます)。
 - 例(test。直書きの target `accum` が history を持つ fixture `test/fixtures/pv1_history_accum`): 起動して描け、2 frame の画が違う(history が効く)。`get_status` と `get_frame_plan` の `preview` が `{available: false, reason: {code: "preview.unsupported_authoring@1", feature: "history", target: "accum", message: "preview graph '<config>' rejects authored history target 'accum'"}}`。root から history を外した reload の committed が `preview: {available: true}` で、`render_preview` が `rendered`。`edit_render_targets` で history の target `trail` を足しても preview はその fragment ごと外すので `available: true` のまま。`edit_preset_pass` で `present` に `trail@history` を読ませると committed で、`preview.reason` が `{feature: "history_read", graph: "main_render", pass: "present"}`(PV-1 の前はこの編集が断られていました)。
 - test: `engine_primitives_test` の [「PV-1 an authored history target plays with the one-shot preview unavailable, and edits move preview both ways without refusing」](../../test/engine_primitives_test.cpp#L3661)(GPU。上の例)、ctest `pv1_preview_unavailable_player`(`test/run_pv1_preview_unavailable_player.cmake`。headless の `pelican_player` で起動・2 frame の画が違う・`get_status` / `get_frame_plan` の `preview`・`render_preview` の `preview.unavailable@1`・WARN の行が 1 つ)、`editorpreview_test` の [「PV-1 render_preview refuses an unavailable preview as preview.unavailable@1 with its reason」](../../test/editorpreview_test.cpp#L415)。`renderconfigeditor_test` の G-6 の「preview が組めない編集は ticket の前に断る」test は、PV-1 で「committed になる」test に書き換わりました。
 
@@ -3154,7 +3154,7 @@ layout(無し / 有り)× `acceleration_structure` 宣言 × `pelican_ray_instan
 
 ### shader record の宣言(✅EB-3)
 
-hit shader が `shaderRecordEXT` で宣言する record は、RT pipeline を作るときに layout の**物理 record**(`engine_record` の欄と `record` の欄を、この順に並べたもの)と照らされます。✅EB-3(`31c390c7`)からの規則です([照らす所](../../src/core/shader/raytracingvalidation.cpp#L554))。
+hit shader が `shaderRecordEXT` で宣言する record は、RT pipeline を作るときに layout の**物理 record**(`engine_record` の欄と `record` の欄を、この順に並べたもの)と照らされます。✅EB-3(`31c390c7`)からの規則です([照らす所](../../src/core/shader/raytracingvalidation.cpp#L632))。
 
 | 場所 | record の宣言 | 結果 |
 |---|---|---|
@@ -3363,9 +3363,9 @@ BS-1 の `get_status.render_pipeline.refusal` は起動時の 1 件だけで、h
 **読み方**:
 
 - `get_status.problems` は `{revision, count, errors, warnings}` です([get_status に problems を足す所(PB-1)](../../src/core/communication/rpcserver.cpp#L1685))。
-  `revision` は一覧が変わったときだけ増えます(同じ中身で置き換えても増えません。[`ProblemList::replace()`](../../src/core/watch/problemlist.cpp#L288))。client は `revision` が動いたら全部を読み直します。
+  `revision` は一覧が変わったときだけ増えます(同じ中身で置き換えても増えません。[`ProblemList::replace()`](../../src/core/watch/problemlist.cpp#L291))。client は `revision` が動いたら全部を読み直します。
 - `get_problems {}` → `{revision, problems: [...]}`([`get_problems` の登録](../../src/core/communication/rpcserver.cpp#L1596))。params は空の object だけで、ほかは invalid params です。
-  同じ `id` は 1 件だけ並びます([`ProblemList::problemsJson()`](../../src/core/watch/problemlist.cpp#L320))。`ProblemList` の module が無い host では `{revision: 0, problems: []}` です。
+  同じ `id` は 1 件だけ並びます([`ProblemList::problemsJson()`](../../src/core/watch/problemlist.cpp#L323))。`ProblemList` の module が無い host では `{revision: 0, problems: []}` です。
 
 **1 件の形**: `{id, severity, source, code, message, fields, document?, line?, column?, node?, port?, definition?, scope?, document_kind?, at_frame?}`
 ([`renderPipelineProblem()`](../../src/core/watch/problemlist.cpp#L191))。
@@ -3375,7 +3375,7 @@ BS-1 の `get_status.render_pipeline.refusal` は起動時の 1 件だけで、h
   どれも無く、message が `Shader compile failed: <path>` で始まる shader の失敗なら、その file が project のものであれば file の文書です。
 - `line` / `column` / `node` / `port` / `definition` / `scope` は、拒否の fields が持つときだけ写します。推定はしません(JSON でない文書に `node` は付きません。壊れた位置の手前の `"id"` を拾うことはしません)。
 - `id` は 16 桁の hex で、code と場所(`document`・`definition`・`scope`・`node`・`port`・`field`・`line`・`column`・`feature`・`module`)の SHA-256 の先頭です。場所がどれも無いときだけ message も入れます
-  ([`problemId()`](../../src/core/watch/problemlist.cpp#L268))。`source` は入らないので、同じ問題に別の道で出会っても同じ id です(test: 起動時の 1 件と、直さないままの reload の 1 件が同じ id)。
+  ([`problemId()`](../../src/core/watch/problemlist.cpp#L271))。`source` は入らないので、同じ問題に別の道で出会っても同じ id です(test: 起動時の 1 件と、直さないままの reload の 1 件が同じ id)。
 - `severity` は `error` か `warning` です。今一覧に入れる道(render pipeline と shader)はどれも `error` を書き、`warning` を出すものはまだありません(コードの読み)。
   → ✅FO-1(`a4d7760a`)から、起動時に断られた material 文書のせいで元の material に落とした model が `material.binding_unresolved@1` の `warning` です(下の「material 文書の問題」)。
 - `at_frame` は `EngineTime` の評価の番号です。起動時(`Renderer` の constructor)の拒否には付きません(test)。
@@ -3402,7 +3402,7 @@ BS-1 の `get_status.render_pipeline.refusal` は起動時の 1 件だけで、h
   (`no_change` と、engine が読まない bytes だけを書いた編集は除く)、engine の disk からの読み直しが publish した時([publish で一覧から消す所(PB-1)](../../src/core/vkcore/renderer.cpp#L182))に消えます。
   graph の ownership の組み直しの publish では消えません(コードの注記)。
 - shader の問題は、shader の読み直しのたびに、shader library が「失敗して、まだ公開し直していない」と持つ file の集合([`ShaderLibrary::failedReloadSources()`](../../src/core/shader/shaderlibrary.cpp#L1341))に合わせます
-  ([`syncShaderProblems()`](../../src/core/watch/problemlist.cpp#L386))。今回の失敗が名指す file は新しい 1 件に、名指さない file は前の 1 件のまま、もう失敗していない file は消えます。
+  ([`syncShaderProblems()`](../../src/core/watch/problemlist.cpp#L389))。今回の失敗が名指す file は新しい 1 件に、名指さない file は前の 1 件のまま、もう失敗していない file は消えます。
 - material 文書の問題(✅FO-1)は、起こし直すまで消えません。断られた文書を engine が登録し直す口が無く、元の material に落とした model の記録も消す所が無いためです(コードの読み)。
   → ✅EB-2(`e1ba9058`)から、断られた文書を `register_material` か watch の道で取り込むと、その文書の error と、作り直した model の `material.binding_unresolved@1` が消えます。起動後に壊れた文書の問題(source `hot_reload`)は、読める形で保存し直したとき・登録し直したとき・文書を外したときに消えます(§6.7 の「起こし直さずに取り込む」)。
 
@@ -3430,13 +3430,13 @@ root・preset・feature の判定は、記録する時に disk の root と pres
 - 動いている engine の feature 文書を disk で壊して `reload_render_documents`: `{source: "reload_rpc", code: "render_document_syntax@1", document: "project://features/pb1_text.json", document_kind: "feature"}`。描画は前の世代のままで、`render_pipeline.state` は `ready` です。
 
 **module の要る feature の拒否に名前(engine_backlog 22)**: module の graph が固まった後に、その module の要る feature を初めて有効にする構成は
-`render_feature_requires_restart@1 {feature?, module}` で断られます([`renderFeatureRequiresRestartText()`](../../src/core/vkcore/renderer_config.cpp#L532))。message は
+`render_feature_requires_restart@1 {feature?, module}` で断られます([`renderFeatureRequiresRestartText()`](../../src/core/vkcore/renderer_config.cpp#L552))。message は
 `render_feature_requires_restart@1: feature 'debug_draw' needs runtime module DebugDraw, which this engine was started without; restart the engine to enable it` です(test)。
 
 - 以前の文面は `Render pipeline hot reload cannot enable feature '<feature>' after module creation is frozen; missing runtime module <module>` で、code がありませんでした。
   Studio の BS-1s の再起動の案内が探す文(`was first requested after the runtime module graph was frozen`)とも一致していませんでした([第13章](13_editor.md) の「組めない構成でも engine を止めない(✅BS-1s)」)。
-- module の container の汎用の文 `Module '<型>' was first requested after the runtime module graph was frozen` も、合成の出口([合成の出口で frozen の文を同じ code にする所(PB-1)](../../src/core/vkcore/renderer_config.cpp#L805))と
-  `renderPipelineRefusalJson()` で同じ code にします([`frozenModuleRefusalFields()`](../../src/core/vkcore/renderer_config.cpp#L544))。型の名前から `struct ` / `class ` / `Pelican::` を外し、
+- module の container の汎用の文 `Module '<型>' was first requested after the runtime module graph was frozen` も、合成の出口([合成の出口で frozen の文を同じ code にする所(PB-1)](../../src/core/vkcore/renderer_config.cpp#L825))と
+  `renderPipelineRefusalJson()` で同じ code にします([`frozenModuleRefusalFields()`](../../src/core/vkcore/renderer_config.cpp#L564))。型の名前から `struct ` / `class ` / `Pelican::` を外し、
   `feature` は module が feature の表(`renderFeatureRuntimeModuleRequirements()`)にあるときだけ付きます。無ければ文は `the rendering configuration needs runtime module <module>, …` です。
 - editor はこの code を運ぶ code に加え、編集の rejected・reload の拒否・起動時の拒否のどれでも同じ code です。feature の catalog の `unavailable_reason` も同じ文です。
 - graph の拒否ではないので CT-2 の `document` は付かず、一覧の 1 件にも `document` と `document_kind` は付きません(コードの読み)。
@@ -4020,7 +4020,7 @@ uint count = pelican_loop_count();
   PELICAN_LOOP_FUNCTIONS(push)
   ```
 
-- **engine が渡す所**: fullscreen / raster の pass([渡す所](../../src/core/renderer/fullscreenpassrenderer.cpp#L55))と compute task([渡す所](../../src/core/renderingpass/computetaskcontainer.cpp#L1910))。pipeline の stage のうち push constant の range が `[112, 120)` を丸ごと含むものを集め([`loopIndexPushStages()`](../../src/core/shader/shaderreflection.cpp#L549))、その stage flags の OR で 1 回 `pushConstants` します([`PipelineFactory::pushLoopIndex()`](../../src/core/shader/pipelinefactory.cpp#L1885))。raster で vertex と fragment の両方が include すれば両方に同じ値が入り、どの stage も宣言していなければ何もしません。
+- **engine が渡す所**: fullscreen / raster の pass([渡す所](../../src/core/renderer/fullscreenpassrenderer.cpp#L55))と compute task([渡す所](../../src/core/renderingpass/computetaskcontainer.cpp#L1910))。pipeline の stage のうち push constant の range が `[112, 120)` を丸ごと含むものを集め([`loopIndexPushStages()`](../../src/core/shader/shaderreflection.cpp#L549))、その stage flags の OR で 1 回 `pushConstants` します([`PipelineFactory::pushLoopIndex()`](../../src/core/shader/pipelinefactory.cpp#L1886))。raster で vertex と fragment の両方が include すれば両方に同じ値が入り、どの stage も宣言していなければ何もしません。
 - **値**: element は展開の `element`(集合の値。並べた後の位置 `index` ではない)、count は展開後の回数(`get_frame_plan` の `loops[].count`)です([回ごとに決める所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L471))。ループの外の pass と task は element 0・count 1 です。
 - **compile は増えない**: 回の番号は値で define ではないので、同じ shader と同じ設定の回は同じ compile(同じ cache key)を共有します。pipeline は今までどおり pass ごとです。
 - **断るもの**: push constant の range が `[112, 120)` に**一部だけ**重なる宣言(例: offset 100 から 16 byte)は、graphics と compute の pipeline を作るときに `shader.loop_push_overlap@1` `{shader, stage, range: {offset, size}}` で断ります([断る所](../../src/core/shader/shaderreflection.cpp#L560))。編集 RPC の結果では、draw_loop の code と同じく**その code のまま** fields が並びます(下の一覧の注記)。
@@ -4394,7 +4394,7 @@ feature の instance は object 形で `pass_replacements` を持てます。値
   - **`document`** は rendering の root 文書の参照で、`project://<path>` の形です(project.json の `basic_config.rendering_config_json` が `passes/main.json` なら `project://passes/main.json`)。graph の node を持つのは root 文書だけで、preset と authored pass は pass だけを持つ feature です(graph の template は root に写されます。コードの注記)。なので、どの node でも `document` は root 文書です。
   - **`definition`** は、拒否された node を body に持つ definition の名前です。展開名(`<instance>/<node>`、ループの `<loop>/$<branch>/<node>` / `<loop>/<element>/<node>`)を root の文書で辿るか、編集の `scope` が definition を名指していればその名前です。root の node には付きません。
   - 拒否がもう同じ名前の field を持っていれば、その値を残します(`graph.loop_nested@1` の `definition` など、code 自身の意味の field)。分からない field は出しません(`null` は入れません)。`graph.` 以外の code には付けません。
-  - 載る所: 起動時の致命の行、編集の ticket の rejected の error(field と message の両方)、`reload_render_documents` の message。例: `Pelican fatal error : graph.port_field_missing@1 {"document":"project://passes/main.json","field":"element","node":"sim","port":"data"}`(仕様書の例)。下の項の `<code>: <JSON>` の形で運ばれる code(`view_select` の 4 つと draw_loop の 5 つ)にも同じ規則で付けます([CT-2 で renderer が構成を読む所で足す所](../../src/core/vkcore/renderer_config.cpp#L783))。
+  - 載る所: 起動時の致命の行、編集の ticket の rejected の error(field と message の両方)、`reload_render_documents` の message。例: `Pelican fatal error : graph.port_field_missing@1 {"document":"project://passes/main.json","field":"element","node":"sim","port":"data"}`(仕様書の例)。下の項の `<code>: <JSON>` の形で運ばれる code(`view_select` の 4 つと draw_loop の 5 つ)にも同じ規則で付けます([CT-2 で renderer が構成を読む所で足す所](../../src/core/vkcore/renderer_config.cpp#L803))。
   - 付かないもの(仕様書の記述。CT-2 の差分はこれらの経路を変えていません): `edit_graph_instances` の `invalid_graph_attachment`、scene の読み直しでの graph の拒否、`pelican_cli` の出力。
     - ✅CT-5(`65f3a8a3`)から、`edit_graph_instances` は graph の名前付きの拒否(`GraphRegistryError`)を `invalid_graph_attachment` に畳まず、その code と field のまま CT-2 の `document`(と `definition`)を付けて返します。判定に使う root は edit を当てた後のものです([CT-5 で edit_graph_instances が code を保つ所](../../src/core/communication/renderconfigeditor.cpp#L3764))。`invalid_graph_attachment` に残るのは名前の無い拒否だけです。例(test。root にもうある id の instance を attach): `{code: "graph.node_duplicate@1", node: "left", document: "project://passes/main.json"}`。`graph.op_requires_owned_instance@1` に `edit_graph_document` と `edit_batch` の道でも `document` と `definition` が付くことも、同じ test が見ます([「CT-5 an owned-instance op refused inside a definition names its document on every edit path」](../../test/renderconfigeditor_test.cpp#L1594))。
   - `get_frame_plan` の node の `origin.graph`(✅GL-2a)は、今も `project://` の付かない参照のままで、`document` と書き方が揃っていません。

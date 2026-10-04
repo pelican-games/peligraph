@@ -46,6 +46,7 @@ void validatePreparedScope(
                 static_cast<std::size_t>(key.kind);
             const auto handle =
                 std::hash<std::int64_t>{}(key.handle);
+            // boost::hash_combine's mixing step (Boost Software License 1.0).
             return handle ^ (kind + 0x9e3779b9u +
                              (handle << 6u) +
                              (handle >> 2u));

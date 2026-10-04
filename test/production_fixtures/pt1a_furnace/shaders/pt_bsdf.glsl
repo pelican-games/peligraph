@@ -85,8 +85,9 @@ float ptSmithG2(float cosThetaI, float cosThetaO, float alpha) {
                   ptSmithLambda(abs(cosThetaO), alpha));
 }
 
-// Heitz 2018: sample the GGX distribution of visible normals. v is in the
-// local frame with z up and must satisfy v.z > 0.
+// Sample the GGX distribution of visible normals (isotropic alpha): E. Heitz,
+// "Sampling the GGX Distribution of Visible Normals", JCGT 7(4), 2018. v is in
+// the local frame with z up and must satisfy v.z > 0.
 vec3 ptSampleGgxVndf(vec3 v, float alpha, float u1, float u2) {
     vec3 vh = normalize(vec3(alpha * v.x, alpha * v.y, v.z));
     float lensq = vh.x * vh.x + vh.y * vh.y;

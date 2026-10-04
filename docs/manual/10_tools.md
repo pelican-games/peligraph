@@ -1325,7 +1325,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 `\\.\pipe\<名前>`)が開き、**改行区切りの JSON 1 行 = 1 命令**で `list` / `click` / `double_click` / `drag` /
 `wheel` / `move` / `press` / `release` / `key` / `type` / `text` / `select` / `action` / `menu_list` / `view_state` /
 `layout_stats` / `wait` / `wait_engine` / `rpc` / `open_project` / `screenshot` / `viewport_size` / `quit` の **23 命令**を受けます
-([一覧](../../src/devstudio/automation/automationcommands.cpp#L2236))。この節は長く 20 命令と書いていましたが、一覧には `select`(AG-3b)と
+([一覧](../../src/devstudio/automation/automationcommands.cpp#L2307))。この節は長く 20 命令と書いていましたが、一覧には `select`(AG-3b)と
 `layout_stats` が既にあり、✅PX-2(`28bc5ef9`)で `viewport_size` が増えました。**flag が無い起動では server object が
 作られないので socket は存在しません**([構築](../../src/devstudio/view/uimain.cpp#L41)) —— 出荷時の挙動は
 変わりません。listen できたときだけ `automation listening: <endpoint>` を標準出力に出します
@@ -1334,7 +1334,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 `wait_engine` は engine が editor RPC に答えた時点で返ります。engine は**最初の frame を出す前に** RPC に
 答えるので、描画済みの frame が要る操作(`capture`、公開済みの frame plan)の前には `frames` を付けます。
 `{"cmd": "wait_engine", "frames": 1}` は `get_status` の `render.published_frames` がその数に届くまで待ち、
-応答に `published_frames` を足します([commandWaitEngine()](../../src/devstudio/automation/automationcommands.cpp#L1884))。
+応答に `published_frames` を足します([commandWaitEngine()](../../src/devstudio/automation/automationcommands.cpp#L1955))。
 `published_frames` は renderer がその起動で公開した logical frame の数で、飛ばした frame は数えません。
 ✅MR-1s(`5c26d492`)から、答えに `process_id`(答えた engine の process の id)も付きます。シナリオは覚えておいて後で比べ、その間に engine が起こし直されていないことを言えます([第13章](13_editor.md) §13.5 の「Studio の自動化面」)。
 
@@ -1346,7 +1346,7 @@ Studio を `--automation --project --tab` で起動し、シナリオ JSON(`test
 `{"cmd": "viewport_size", "width": 720, "height": 450}` を送り、engine の viewport(`pelican.viewportHost`)を画の画素で 720x450 に固定します
 ([`fix_viewport()`](../../tools/studio_drive.py#L1250)、既定の [`DEFAULT_VIEWPORT`](../../tools/studio_drive.py#L55))。
 Studio は viewport に固定の大きさをかけ、窓を差の分だけ伸び縮みさせ、ドックの大きさはそのままにします。後でドックを開け閉めしても viewport の大きさは変わりません
-([`commandViewportSize()`](../../src/devstudio/automation/automationcommands.cpp#L1972)。`{"free": true}` で外します)。
+([`commandViewportSize()`](../../src/devstudio/automation/automationcommands.cpp#L2043)。`{"free": true}` で外します)。
 シナリオの最上位に `"viewport": [w, h]` と書けばその大きさ、`"viewport": null` なら固定しません(今は `whole_frame_first_steps` だけ)。
 答えの大きさが要求から 1 画素を超えてずれるか断られたら、その run は step を送らずに赤です。画素を読むシナリオの点は 720x450 の絵で選んであるので、
 **既定の大きさを変えると、画素を読む 33 本の点を全部測り直すことになります**。理由・`screen` の screenshot が 719x449 になる件・点の測り直しは

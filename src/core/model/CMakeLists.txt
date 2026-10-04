@@ -22,7 +22,7 @@ endif()
 FetchContent_Declare(
   tinygltf
   GIT_REPOSITORY https://github.com/syoyo/tinygltf.git
-  GIT_TAG        v2.9.7
+  GIT_TAG        488a70a3df62a4df1a736e9e56fb8836580c4888 # v2.9.7
 )
 FetchContent_MakeAvailable(tinygltf)
 

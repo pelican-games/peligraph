@@ -67,6 +67,7 @@ void validateAuxiliaryDescriptorContract(
     }
 }
 
+// The mixing step of boost::hash_combine (Boost, Boost Software License 1.0).
 size_t hashCombine(size_t seed, size_t value) {
     return seed ^ (value + 0x9e3779b9u + (seed << 6) + (seed >> 2));
 }

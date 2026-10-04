@@ -803,7 +803,7 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 
 ## 8.10 決定性 — なぜ毎回同じ結果になるのか
 
-> **設計決定:** エンジン内部の判定に wall clock・`std::rand`・`random_device` を使わない。乱数は **PCG32**(64 ビットの内部状態を線形合同で進め、ビットを混ぜて 32 ビットを取り出す生成器 — [nextUInt](../../src/core/userpublic/deterministicrng.cpp#L25))**の自前実装**(distribution も自前)で、プラットフォーム・コンパイラに依存しない列を生成する(`std::mt19937` + `std::uniform_*` は処理系差があるため不採用)。シードの既定は **0(固定)** — 「毎回違う」が欲しいゲームは自分で `ctx.setSeed(エントロピー)` を呼ぶ。
+> **設計決定:** エンジン内部の判定に wall clock・`std::rand`・`random_device` を使わない。乱数は **PCG32**(64 ビットの内部状態を線形合同で進め、ビットを混ぜて 32 ビットを取り出す生成器 — [nextUInt](../../src/core/userpublic/deterministicrng.cpp#L35))**の自前実装**(distribution も自前)で、プラットフォーム・コンパイラに依存しない列を生成する(`std::mt19937` + `std::uniform_*` は処理系差があるため不採用)。シードの既定は **0(固定)** — 「毎回違う」が欲しいゲームは自分で `ctx.setSeed(エントロピー)` を呼ぶ。
 
 決定性を構成する要素(✅すべて実装済み):
 
@@ -842,13 +842,13 @@ ctx.audio().stopSound(h);
 - 再生バックエンドは miniaudio(0.11.25)で、Ogg Vorbis の decoder は miniaudio に同梱の stb_vorbis です(`PELICAN_WITH_AUDIO` の中だけで有効)。
 - **10 秒を超える音は streaming で鳴ります**(✅AU-2。長さは header で判断)。全体を decode せず、符号化されたままの bytes を 1 つだけ持ち、voice ごとに自分の decoder で再生しながら読みます。下の「長い音の streaming」を見てください。
 - `playSound(path)` は se バスで鳴ります。**`playSound(path, bus)`**([宣言](../../src/core/userpublic/gamecontext.hpp#L89))は `"se"` か `"bgm"` を受け、それ以外(`"master"` を含む)は `Unknown audio bus: <名前> (a voice plays on se or bgm)` で投げます。master は se と bgm の両方に掛かる音量で、voice を載せる先ではありません。実効音量は master × 各バスです。
-- **同じアセットの decode は 1 回です**(✅AU-1)。decode した結果はアセットの正規化した参照を鍵に保持し、ディスク上のファイルなら更新時刻とサイズも鍵に含めます(置き換えたファイルは decode し直す)。合計の上限は 256 MB で、超えたときは **どの voice も持っていないもの**から捨てます([`decodedCacheBudget`](../../src/core/audio/audio.cpp#L58))。`playSound`、グラフの voice、rendering config 登録時のアセット検査が同じ decode を共有します。streaming の音(10 秒超)も同じ cache に入りますが、持つのは PCM ではなく符号化された bytes で、上限にはその大きさで数えます。
+- **同じアセットの decode は 1 回です**(✅AU-1)。decode した結果はアセットの正規化した参照を鍵に保持し、ディスク上のファイルなら更新時刻とサイズも鍵に含めます(置き換えたファイルは decode し直す)。合計の上限は 256 MB で、超えたときは **どの voice も持っていないもの**から捨てます([`decodedCacheBudget`](../../src/core/audio/audio.cpp#L59))。`playSound`、グラフの voice、rendering config 登録時のアセット検査が同じ decode を共有します。streaming の音(10 秒超)も同じ cache に入りますが、持つのは PCM ではなく符号化された bytes で、上限にはその大きさで数えます。
 - `PELICAN_WITH_AUDIO=OFF` ビルドで音 API を呼ぶと、どのフラグで無効化されたかを言うエラー(`BuildFeatureCallDisabledError`、`code()` = `build_feature_disabled@1`)になります。`onDestroy` の中だけは例外にならず `effect_errors` に積まれます(§8.4「機能を外した build」)。
 - **シーンロード中(behavior の `onInit` / `onDestroy`)に呼ぶと、再生・停止・バス音量はロードの成功後にまとめて適用されます**(§8.4 の囲み・[第4章 §4.3](04_scene_ecs.md))。`isPlaying` / `busVolume` はその予約を反映した値を返します。
 
 ### どのバックエンドで鳴るか(✅AU-1、起動時の指定は ✅AU-3)
 
-起動で名指ししなければ、起動の形でバックエンドが決まります([`preferredAudioBackend`](../../src/core/audio/audio.cpp#L87)、[`Audio::Audio()`](../../src/core/audio/audio.cpp#L457))。
+起動で名指ししなければ、起動の形でバックエンドが決まります([`preferredAudioBackend`](../../src/core/audio/audio.cpp#L88)、[`Audio::Audio()`](../../src/core/audio/audio.cpp#L458))。
 
 | 起動の形 | バックエンド | 音 |
 |---|---|---|
@@ -888,7 +888,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
   - `idle` は voice が無いとき(まだ始まっていない・reset された・scene の commit で止まった)、`paused` は voice が止められているとき(voice 自身の pause、時計や `position` が止まっている、`delay` に届いていない)です。
   - 編集モード(`get_status.play.state` が `edit`)の間は何も鳴らないので、全部 `idle` で 0 です。game を一時停止している間は mix 全体が止まるので、鳴るはずの voice は `paused` になります。
   - `get_graph_node_values` で読める `audio.playback` の node の値(lowering の後の op は `audio_playback`)は、その node の `time` 入力の秒で、`position_seconds`(音源の秒)とは意味が違います([評価する所](../../src/core/userpublic/valuegraph.cpp#L861))。
-  - 例(Play → 数 frame): `"voices": [{"node": "voice", "state": "playing", "position_seconds": <進んだ秒>}]`(test の、`time` に `scene_time` を繋いだ voice では、0 から frame ごとに 1 frame の秒ずつ進む)。Pause の後は `paused` になり、Stop の後は `{"node": "voice", "state": "idle", "position_seconds": 0.0}` です。test: `audio_test` の [「CT-1 get_status lists each graph voice's state and position, the same on the null backend」](../../test/audio_test.cpp#L908)(null backend の headless)。
+  - 例(Play → 数 frame): `"voices": [{"node": "voice", "state": "playing", "position_seconds": <進んだ秒>}]`(test の、`time` に `scene_time` を繋いだ voice では、0 から frame ごとに 1 frame の秒ずつ進む)。Pause の後は `paused` になり、Stop の後は `{"node": "voice", "state": "idle", "position_seconds": 0.0}` です。test: `audio_test` の [「CT-1 get_status lists each graph voice's state and position, the same on the null backend」](../../test/audio_test.cpp#L910)(null backend の headless)。
   - Studio のシナリオ `graph_read` は、`9ca2d3ce` から `audio` の鍵が 3 つ(`available`・`backend`・`voices`)であることを見ます(`audio.$len` が 3。[第13章](13_editor.md) の「シナリオは無音です」)。CT-1 の着地の docs の時点では 2 つを見ていて、鍵の数が合わないはずでした。この docs ではシナリオを走らせて確かめていません(未確認)。
   - Studio の Graph は ✅UX-9 から、`audio.playback` の node の下の帯にこの `state` と `position_seconds` を `playing · 1.2 s` の形で出します(`edit` の間の `idle` は出しません。[第13章](13_editor.md) の「保存中でも palette が開く、確定前の値を送る、voice の帯、起動時の致命の 1 文」)。
 
@@ -1055,7 +1055,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 ### 長い音の streaming(✅AU-2)
 
-- header が言う長さが **10 秒を超える**音は、WAV でも Ogg Vorbis でも streaming で鳴ります(判定は [`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L514)、10 秒は [`defaultStreamingThresholdSeconds`](../../src/core/audio/audio.cpp#L51))。
+- header が言う長さが **10 秒を超える**音は、WAV でも Ogg Vorbis でも streaming で鳴ります(判定は [`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L515)、10 秒は [`defaultStreamingThresholdSeconds`](../../src/core/audio/audio.cpp#L52))。
 - 全体を decode しません。**rendering config 登録時のアセット検査も header だけを読みます**(WAV は短い WAV と同じ chunk の規則、Ogg Vorbis は decoder で header と長さを読む)。
 - decode の cache が持つのは PCM ではなく **符号化された bytes** で、同じアセットを鳴らす voice の間で 1 つを共有します。voice はそれぞれ自分の decoder(`ma_decoder`)を持ち、再生しながら読みます。
 - 一体版のネイティブループも、分解版の seek も、decode 済みの音と同じ意味で動きます(範囲・ループ点・開始位置は同じ frame 番号で指定します)。

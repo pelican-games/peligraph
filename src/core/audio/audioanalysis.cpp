@@ -23,11 +23,15 @@ namespace {
 // In place, radix 2; `twiddles[k]` = exp(-2 pi i k / size), size / 2 of them.
 void fft(std::vector<std::complex<double>> &values, const std::vector<std::complex<double>> &twiddles) {
     const auto size = values.size();
-    for (std::size_t i = 1, j = 0; i < size; ++i) {
-        auto bit = size >> 1;
-        for (; (j & bit) != 0; bit >>= 1) j ^= bit;
-        j ^= bit;
-        if (i < j) std::swap(values[i], values[j]);
+    // Decimation in time wants the input in bit-reversed order: the element
+    // at index n moves to the index whose log2(size) bits are n's reversed.
+    std::size_t index_bits = 0;
+    while ((std::size_t{1} << index_bits) < size) ++index_bits;
+    for (std::size_t index = 0; index < size; ++index) {
+        std::size_t reversed = 0;
+        for (std::size_t bit = 0; bit < index_bits; ++bit)
+            reversed |= ((index >> bit) & 1u) << (index_bits - 1 - bit);
+        if (index < reversed) std::swap(values[index], values[reversed]);
     }
     for (std::size_t length = 2; length <= size; length <<= 1) {
         const auto step = size / length;

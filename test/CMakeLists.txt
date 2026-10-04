@@ -1,7 +1,7 @@
 FetchContent_Declare(
   Catch2
   GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-  GIT_TAG        v3.11.0
+  GIT_TAG        b3fb4b9feafcd8d91c5cb510a4775143fdbef02f # v3.11.0
 )
 FetchContent_MakeAvailable(Catch2)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
@@ -4050,6 +4050,16 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
         --repo-root ${CMAKE_SOURCE_DIR})
     set_property(TEST pelican_public_api_inventory APPEND PROPERTY
         LABELS "WP380b;cpu;contract")
+
+    # F-2: every FetchContent dependency has a row in the third-party notices
+    # generator, so THIRD_PARTY_NOTICES.md can be regenerated when one is added.
+    pelican_define_python_test(
+        third_party_notices_declarations
+        ${CMAKE_SOURCE_DIR}/tools/third_party_notices.py
+        --repo-root ${CMAKE_SOURCE_DIR}
+        --check-declarations)
+    set_property(TEST third_party_notices_declarations APPEND PROPERTY
+        LABELS "cpu;contract")
 
     # WP175 boundary contracts are source/fixture checks and require no GPU.
     foreach(contract_gate IN ITEMS openpbr projection engine-mvp)

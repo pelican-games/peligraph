@@ -373,8 +373,8 @@
     {
      "path": "projects/vrm_xr_demo/assets/ground.glb",
      "eol": "binary",
-     "blob_sha256": "d84c3de963c7e9c274f4aadd5f4539a1fb3098e6566551ea9016cbe2fbd7915b",
-     "blob_bytes": 1948
+     "blob_sha256": "4f752036b3418b2ead6d03530802c3eade32a93ef7f85fae1cd307fe31e1da6a",
+     "blob_bytes": 1964
     },
     {
      "path": "projects/vrm_xr_demo/assets/vrm_xr_character.vrm",

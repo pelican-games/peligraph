@@ -8,13 +8,41 @@
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
 
-// Parameters
-const int KERNEL_SIZE = 32;
-const float KERNEL_RADIUS = 0.5;
-const float BIAS = 0.025;
+// engine://ssao -- screen-space ambient occlusion over the G-buffer.
+//
+// What it computes, per pixel:
+//   p  the pixel's surface point in view space (world G-buffer x view matrix)
+//   n  its view-space normal (normal G-buffer, decoded from [0, 1])
+//   F  an orthonormal frame whose third axis is n; a per-pixel seed direction
+//      picks its rotation about n so neighbouring pixels probe differently
+//   q  for each entry o of PROBE_OFFSETS: q = p + (F o) * PROBE_REACH
+// Each probe q is projected to the screen and the surface the G-buffer holds
+// at that pixel, s, is read back. The camera looks down -Z, so s lies in
+// front of q when s.z > q.z; q is "blocked" when s.z >= q.z + DEPTH_EPSILON.
+// A blocked probe is discounted when s is far from p in depth -- a wall well
+// in front of the pixel does not enclose it -- by
+//   smoothstep(0, 1, PROBE_REACH / |p.z - s.z|).
+// The output is the open fraction 1 - (sum of blocked weights) / PROBE_COUNT
+// in R: 1 is fully open, 0 fully enclosed. engine://ssao_blur smooths it.
+//
+// Method: the screen-space depth-buffer estimate of ambient occlusion of
+// M. Mittring, "Finding Next Gen: CryEngine 2" (SIGGRAPH 2007 course notes)
+// and D. Shanmugam, O. Arikan, "Hardware Accelerated Ambient Occlusion
+// Techniques on GPUs" (I3D 2007), with the probes oriented by the surface
+// normal.
 
-// Hardcoded SSAO sample kernel
-const vec3 SSAO_KERNEL[KERNEL_SIZE] = vec3[32](
+const int PROBE_COUNT = 32;
+// View-space distances: how far the probes reach from the surface, and how
+// far in front of a probe a surface must be to count as blocking it.
+const float PROBE_REACH = 0.5;
+const float DEPTH_EPSILON = 0.025;
+
+// Probe offsets in F's coordinates (x, y across the surface, z along n),
+// inside the unit ball. They are not confined to the half above the surface
+// (some have z < 0), so an open flat surface also reads partly blocked. The
+// table is data that every SSAO image and test/fixtures/wp338_ssao depends
+// on; changing it changes them.
+const vec3 PROBE_OFFSETS[PROBE_COUNT] = vec3[PROBE_COUNT](
     vec3(0.5381, 0.1856, -0.4319), vec3(0.1379, 0.2486, 0.4430),
     vec3(0.3371, 0.5679, -0.0057), vec3(-0.6999, -0.0451, -0.0019),
     vec3(0.0689, -0.1598, -0.8547), vec3(0.0560, 0.0069, -0.1843),
@@ -33,51 +61,55 @@ const vec3 SSAO_KERNEL[KERNEL_SIZE] = vec3[32](
     vec3(0.0000, 0.0016, -0.282), vec3(0.0000, -0.0008, 0.4939)
 );
 
-// Simple pseudo-random noise function
-vec3 random(vec2 co) {
-    return vec3(
-        fract(sin(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453),
-        fract(cos(dot(co.xy, vec2(12.9898, 78.233))) * 43758.5453),
-        fract(sin(dot(co.xy, vec2(4.898, 7.23))) * 23458.5453)
-    );
+// The surface point the G-buffer holds at uv, in view space.
+vec3 viewSpacePointAt(vec2 uv) {
+    vec3 world = pelican_sample_world(uv, pelican_view_index()).xyz;
+    return (pelicanFrame.view * vec4(world, 1.0)).xyz;
+}
+
+// The surface normal the G-buffer holds at uv, in view space.
+vec3 viewSpaceNormalAt(vec2 uv) {
+    vec3 encoded = pelican_sample_normal(uv, pelican_view_index()).xyz;
+    return normalize((pelicanFrame.view * vec4(encoded * 2.0 - 1.0, 0.0)).xyz);
+}
+
+// A value in [0, 1) per component from a 2D coordinate: the widely used
+// fract(sin(x) * large) hash. Only the direction of the result is used.
+vec3 frameSeed(vec2 coordinate) {
+    float phase = dot(coordinate, vec2(12.9898, 78.233));
+    float otherPhase = dot(coordinate, vec2(4.898, 7.23));
+    return vec3(fract(sin(phase) * 43758.5453),
+                fract(cos(phase) * 43758.5453),
+                fract(sin(otherPhase) * 23458.5453));
+}
+
+// The frame F: Gram-Schmidt removes the seed's component along the unit
+// normal, which leaves the first tangent axis.
+mat3 probeFrame(vec3 unitNormal, vec3 seedDirection) {
+    vec3 across = normalize(seedDirection - unitNormal * dot(seedDirection, unitNormal));
+    vec3 along = cross(unitNormal, across);
+    return mat3(across, along, unitNormal);
+}
+
+// The texture coordinate a view-space point projects to.
+vec2 screenUvOf(vec3 viewPoint) {
+    vec4 clip = pelicanFrame.projection * vec4(viewPoint, 1.0);
+    return clip.xy / clip.w * 0.5 + 0.5;
 }
 
 void main() {
-    // Get G-Buffer data
-    vec3 fragPos = (pelicanFrame.view * vec4(pelican_sample_world(inUV, pelican_view_index()).xyz, 1.0)).xyz;
-    vec3 normal = normalize((pelicanFrame.view * vec4(pelican_sample_normal(inUV, pelican_view_index()).xyz * 2.0 - 1.0, 0.0)).xyz);
-    
-    // Random rotation for sampling kernel
-    vec3 randomVec = normalize(random(inUV * 1000.0));
-    vec3 tangent = normalize(randomVec - normal * dot(randomVec, normal));
-    vec3 bitangent = cross(normal, tangent);
-    mat3 TBN = mat3(tangent, bitangent, normal);
+    vec3 surfacePoint = viewSpacePointAt(inUV);
+    mat3 frame = probeFrame(viewSpaceNormalAt(inUV),
+                            normalize(frameSeed(inUV * 1000.0)));
 
-    float occlusion = 0.0;
-    for (int i = 0; i < KERNEL_SIZE; ++i) {
-        // Get sample position
-        vec3 samplePos = TBN * SSAO_KERNEL[i]; // From tangent to view-space
-        samplePos = fragPos + samplePos * KERNEL_RADIUS;
-
-        // Project sample position to screen space
-        vec4 offset = vec4(samplePos, 1.0);
-        offset = pelicanFrame.projection * offset; // from view to clip-space
-        offset.xyz /= offset.w; // perspective divide
-        offset.xyz = offset.xyz * 0.5 + 0.5; // transform to [0,1] range
-
-        // Get sample depth from G-Buffer
-        vec3 occluderPos = (pelicanFrame.view * vec4(pelican_sample_world(offset.xy, pelican_view_index()).xyz, 1.0)).xyz;
-
-        // Check if sample is within range and occluded
-        float occluderDepth = occluderPos.z;
-        float sampleDepth = samplePos.z;
-
-        // Add to occlusion factor (range check helps prevent artifacts from samples outside view frustum)
-        float rangeCheck = smoothstep(0.0, 1.0, KERNEL_RADIUS / abs(fragPos.z - occluderPos.z));
-        occlusion += (occluderDepth >= sampleDepth + BIAS ? 1.0 : 0.0) * rangeCheck;
+    float blockedWeight = 0.0;
+    for (int probeIndex = 0; probeIndex < PROBE_COUNT; ++probeIndex) {
+        vec3 probe = surfacePoint + (frame * PROBE_OFFSETS[probeIndex]) * PROBE_REACH;
+        vec3 seen = viewSpacePointAt(screenUvOf(probe));
+        float nearness = smoothstep(0.0, 1.0, PROBE_REACH / abs(surfacePoint.z - seen.z));
+        blockedWeight += float(seen.z >= probe.z + DEPTH_EPSILON) * nearness;
     }
 
-    occlusion = 1.0 - (occlusion / KERNEL_SIZE);
-    
-    outColor = vec4(occlusion, occlusion, occlusion, 1.0);
+    float openFraction = 1.0 - blockedWeight / float(PROBE_COUNT);
+    outColor = vec4(vec3(openFraction), 1.0);
 }

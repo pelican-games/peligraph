@@ -406,7 +406,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 
 音の大きさや帯域ごとの強さで絵を動かすときは、音を**先に解析して表に焼き**、その表を読みます(`892a1455`)。解析は取り込みのたびには走らず、明示の Bake(RPC `bake_audio_analysis` か `pelican_cli audio analyze`)だけが表を書きます。方針と設計は [design_audio.md](../design_audio.md) §6 です。
 
-**焼く口は 2 つで、中身は同じ関数です**([`bakeAudioAnalysis()`](../../src/core/audio/audioanalysis.cpp#L182))。
+**焼く口は 2 つで、中身は同じ関数です**([`bakeAudioAnalysis()`](../../src/core/audio/audioanalysis.cpp#L186))。
 
 - RPC `bake_audio_analysis {asset, out, settings?}`: render config の ticket で、worker の thread で焼きます([第13章](13_editor.md) §13.5「音の解析を焼く」)。
 - CLI `pelican_cli audio analyze --asset <file> --out <file.ktx2> [...]`([第10章](10_tools.md) §10.4)。
@@ -425,7 +425,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 
 ほかの鍵・型の違い・範囲の外は `audio.analysis_settings_invalid@1` `{field, reason, value?}` で断られ、何も書きません(`field` は `smoothing.attack_ms` のように道筋で)。
 
-**計算**([`analyzeAudio()`](../../src/core/audio/audioanalysis.cpp#L74))
+**計算**([`analyzeAudio()`](../../src/core/audio/audioanalysis.cpp#L78))
 
 - 標本 i は時刻 `i × hop` を中心にした `window_ms` の窓で、標本の数は `floor(frame の数 / hop) + 1` です。窓が音の外にはみ出した所は 0 として数えます。
 - `channels` の `mix` はチャンネルの平均、`left` は 1 本目、`right` は 2 本目(モノラルなら 1 本目)です。

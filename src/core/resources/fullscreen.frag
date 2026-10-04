@@ -5,6 +5,33 @@
 #include "pelican_frame.glsl"
 #include "pelican_features.glsl"
 
+// engine://fullscreen -- the engine's deferred lighting pass.
+//
+// Inputs (G-buffer, by position): 0 albedo, 1 normal (encoded to [0, 1]),
+// 2 material (R roughness, G metallic, B material occlusion, A shading model),
+// 3 world position, 4 emissive, 5 screen-space ambient occlusion and, with the
+// directional shadow feature, 6 the cascade shadow map.
+//
+// Every light adds its direct reflection: a Lambert diffuse lobe for the part
+// the specular lobe does not reflect, plus a microfacet specular lobe
+//   f_spec = D(h) G(l, v) F(v.h) / (4 (n.l)(n.v))
+// (Cook and Torrance 1982, in the form Walter et al. 2007 give it). Two
+// shading models choose the D and G below; F is Schlick's for both:
+//   0 standard: GGX D with alpha = roughness^2 and a separable Smith G built
+//     from Schlick's G1 with k = alpha / 2 (Karis 2013)
+//   1 OpenPBR base: GGX D and the exact separable Smith G1 for GGX
+//     (Walter et al. 2007), with a lower alpha bound
+// Ambient is the sky ambient feature's radiance times albedo and occlusion.
+//
+// References:
+//   R. L. Cook, K. E. Torrance, "A Reflectance Model for Computer Graphics",
+//     ACM TOG 1(1), 1982.
+//   B. Walter, S. R. Marschner, H. Li, K. E. Torrance, "Microfacet Models for
+//     Refraction through Rough Surfaces", EGSR 2007.
+//   C. Schlick, "An Inexpensive BRDF Model for Physically-based Rendering",
+//     Computer Graphics Forum 13(3), 1994.
+//   B. Karis, "Real Shading in Unreal Engine 4", SIGGRAPH 2013 course notes.
+
 layout(location = 0) in vec2 inUV;
 layout(location = 0) out vec4 outColor;
 
@@ -25,40 +52,50 @@ PELICAN_DECLARE_INPUT_6(shadowMapSampler);
 #define PELICAN_PASS_DEFERRED_LIGHTING 1
 #include "pelican_lighting_v1.glsl"
 
-const float PI = 3.14159265359;
+const float kPi = 3.141592653589793;
 
-// GGX法線分布関数
-float DistributionGGX(vec3 N, vec3 H, float roughness) {
-    float a = roughness * roughness;
-    float a2 = a * a;
-    float NdotH = max(dot(N, H), 0.0);
-    float NdotH2 = NdotH * NdotH;
-    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
-    denom = PI * denom * denom;
-    return a2 / max(denom, 0.0001);
+// Normal-incidence reflectance of a dielectric: ((1.5 - 1) / (1.5 + 1))^2 for
+// an index of refraction of 1.5. A metal reflects its albedo instead.
+const float kDielectricF0 = 0.04;
+
+// Direct diffuse light is not darkened by occlusion: glTF's occlusion texture
+// (and the SSAO estimate) attenuates indirect light only.
+const float kDirectDiffuseOcclusion = 1.0;
+
+// Guards of the standard shading model: the GGX denominator's floor and the
+// bias added to the specular denominator 4 (n.l)(n.v).
+const float kStandardNdfFloor = 0.0001;
+const float kStandardSpecularBias = 0.0001;
+
+// --- Shading model 0 (standard) ---------------------------------------------
+
+// GGX / Trowbridge-Reitz distribution of microfacet normals:
+//   D(h) = alpha^2 / (pi ((n.h)^2 (alpha^2 - 1) + 1)^2)
+float standardGgxD(float cosNormalHalf, float alpha) {
+    float alphaSquared = alpha * alpha;
+    float t = cosNormalHalf * cosNormalHalf * (alphaSquared - 1.0) + 1.0;
+    return alphaSquared / max(kPi * t * t, kStandardNdfFloor);
 }
 
-// Smith幾何減衰関数（高さ相関バージョン - より正確）
-float GeometrySchlickGGX(float NdotV, float roughness) {
-    float a = roughness;
-    float k = (a * a) / 2.0;  // direct lighting用
-    return NdotV / (NdotV * (1.0 - k) + k);
+// Schlick's masking term for one direction, G1(x) = x / (x (1 - k) + k).
+float standardSchlickG1(float cosine, float k) {
+    return cosine / (cosine * (1.0 - k) + k);
 }
 
-float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
-    float NdotV = max(dot(N, V), 0.0);
-    float NdotL = max(dot(N, L), 0.0);
-    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
-    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
-    return ggx1 * ggx2;
+// Separable Smith shadowing-masking, G1(l) G1(v), with k = alpha / 2.
+float standardSmithG(float cosNormalLight, float cosNormalView, float roughness) {
+    float k = (roughness * roughness) / 2.0;
+    return standardSchlickG1(cosNormalLight, k) * standardSchlickG1(cosNormalView, k);
 }
+
+// --- Shading model 1 (OpenPBR base) -----------------------------------------
 
 float OpenPbrDistributionGGX(vec3 N, vec3 H, float roughness) {
     float alpha = max(roughness * roughness, 0.0025);
     float alpha2 = alpha * alpha;
     float NdotH = max(dot(N, H), 0.0);
     float denominator = NdotH * NdotH * (alpha2 - 1.0) + 1.0;
-    return alpha2 / max(PI * denominator * denominator, 0.000001);
+    return alpha2 / max(kPi * denominator * denominator, 0.000001);
 }
 
 float OpenPbrSmithG1(float NdotX, float roughness) {
@@ -74,20 +111,62 @@ float OpenPbrGeometrySmith(vec3 N, vec3 V, vec3 L, float roughness) {
     return OpenPbrSmithG1(NdotL, roughness) * OpenPbrSmithG1(NdotV, roughness);
 }
 
-float brdfDenominator(vec3 N, vec3 V, vec3 L, bool openPbrBase) {
-    float value = 4.0 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0);
-    return openPbrBase ? max(value, 0.000001) : value + 0.0001;
+// --- Shared by both models --------------------------------------------------
+
+// Schlick's approximation of the Fresnel reflectance at the angle whose
+// cosine is given: F0 + (1 - F0)(1 - cos)^5.
+vec3 schlickFresnel(float cosine, vec3 normalIncidence) {
+    return normalIncidence +
+           (1.0 - normalIncidence) * pow(clamp(1.0 - cosine, 0.0, 1.0), 5.0);
 }
 
+// 4 (n.l)(n.v), the microfacet specular denominator, kept away from zero.
+float specularDenominator(float cosNormalLight, float cosNormalView, bool openPbrBase) {
+    float value = 4.0 * cosNormalView * cosNormalLight;
+    return openPbrBase ? max(value, 0.000001) : value + kStandardSpecularBias;
+}
+
+// Inverse-square falloff of a point or spot light, softened near the light.
 float distanceAttenuation(float distance, bool openPbrBase) {
     float distanceSquared = distance * distance;
     return openPbrBase ? 1.0 / max(distanceSquared, 0.0001)
                        : 1.0 / (distanceSquared + 0.01);
 }
 
-// Fresnel反射（Schlick近似）
-vec3 fresnelSchlick(float cosTheta, vec3 F0) {
-    return F0 + (1.0 - F0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);
+// What the lights see of the pixel's surface.
+struct LitSurface {
+    vec3 normal;
+    vec3 toCamera;
+    vec3 albedo;
+    float roughness;
+    float metallic;
+    vec3 normalIncidence;  // Fresnel F0
+    bool openPbrBase;
+};
+
+// Radiance reflected toward the camera from light that arrives along the unit
+// direction toLight with the given radiance (shadows already applied).
+vec3 reflectedDirectLight(LitSurface surface, vec3 toLight, vec3 radiance) {
+    vec3 halfway = normalize(surface.toCamera + toLight);
+    float cosNormalView = max(dot(surface.normal, surface.toCamera), 0.0);
+    float cosNormalLight = max(dot(surface.normal, toLight), 0.0);
+
+    float distribution = surface.openPbrBase
+        ? OpenPbrDistributionGGX(surface.normal, halfway, surface.roughness)
+        : standardGgxD(max(dot(surface.normal, halfway), 0.0),
+                       surface.roughness * surface.roughness);
+    float visibility = surface.openPbrBase
+        ? OpenPbrGeometrySmith(surface.normal, surface.toCamera, toLight, surface.roughness)
+        : standardSmithG(cosNormalLight, cosNormalView, surface.roughness);
+    vec3 fresnel = schlickFresnel(max(dot(halfway, surface.toCamera), 0.0),
+                                  surface.normalIncidence);
+
+    vec3 specular = distribution * visibility * fresnel /
+                    specularDenominator(cosNormalLight, cosNormalView, surface.openPbrBase);
+    // Energy the specular lobe does not reflect is diffused; metals diffuse none.
+    vec3 diffuseShare = (vec3(1.0) - fresnel) * (1.0 - surface.metallic);
+    vec3 diffuse = diffuseShare * surface.albedo / kPi * kDirectDiffuseOcclusion;
+    return (diffuse + specular) * radiance * cosNormalLight;
 }
 
 #ifdef PELICAN_FEATURE_SHADOW
@@ -121,204 +200,99 @@ float directionalShadowVisibility(
 #endif
 
 void main() {
-    // G-bufferからデータを読み取る
     vec3 albedo = PELICAN_TEXTURE_2D_0(albedoSampler, inUV).rgb;
     vec3 normal = normalize(PELICAN_TEXTURE_2D_1(normalSampler, inUV).rgb * 2.0 - 1.0);
-    vec4 materialSample = PELICAN_TEXTURE_2D_2(materialSampler, inUV);
-    vec3 material = materialSample.rgb;
-    uint shadingModel = uint(round(materialSample.a * 255.0));
-    bool openPbrBase = shadingModel == 1u;
+    vec4 materialTexel = PELICAN_TEXTURE_2D_2(materialSampler, inUV);
     vec3 worldPos = PELICAN_TEXTURE_2D_3(worldPosSampler, inUV).rgb;
     vec3 emissive = PELICAN_TEXTURE_2D_4(emissiveSampler, inUV).rgb;
-    
-    float roughness = clamp(material.r, 0.04, 1.0);  // material.r = roughness
-    float metallic = clamp(material.g, 0.0, 1.0);   // material.g = metallic
-    float materialAO = material.b;
 
-    // Sample SSAO
-    float ssao = PELICAN_TEXTURE_2D_5(ssaoSampler, inUV).r;
-    
-    // Combine material AO with SSAO
-    // You can adjust the power to control the strength of the SSAO effect.
-    // A higher power will make the shadows darker.
-    float ao = min(materialAO, pow(ssao, 3.0));
-    
-    vec3 cameraPos = pelicanFrame.camera_position.xyz;
-    
-    vec3 V = normalize(cameraPos - worldPos);
-    
-    // F0（表面の基底反射率）- 金属はalbedo色、非金属は0.04
-    vec3 F0 = vec3(0.04);
-    F0 = mix(F0, albedo, metallic);
-    
-    // 反射率方程式
-    vec3 Lo = vec3(0.0);
+    LitSurface surface;
+    surface.normal = normal;
+    surface.toCamera = normalize(pelicanFrame.camera_position.xyz - worldPos);
+    surface.albedo = albedo;
+    surface.roughness = clamp(materialTexel.r, 0.04, 1.0);
+    surface.metallic = clamp(materialTexel.g, 0.0, 1.0);
+    surface.normalIncidence = mix(vec3(kDielectricF0), albedo, surface.metallic);
+    surface.openPbrBase = uint(round(materialTexel.a * 255.0)) == 1u;
+
+    // Occlusion of the ambient term: the material's own, or the screen-space
+    // estimate raised to the third power to deepen it, whichever is darker.
+    float screenSpaceOpen = PELICAN_TEXTURE_2D_5(ssaoSampler, inUV).r;
+    float ambientOcclusion = min(materialTexel.b, pow(screenSpaceOpen, 3.0));
+
+    vec3 direct = vec3(0.0);
 
 #ifdef PELICAN_FEATURE_CLUSTERED_LIGHTING
     uint selectedLightCount = pelican_light_count();
     for (uint i = 0u; i < selectedLightCount; ++i) {
-        PelicanLightV1 light =
-            pelican_light(i, worldPos);
-        vec3 L = light.direction;
-        vec3 H = normalize(V + L);
-        vec3 radiance =
-            light.radiance * light.attenuation;
+        PelicanLightV1 light = pelican_light(i, worldPos);
+        vec3 radiance = light.radiance * light.attenuation;
 #if defined(PELICAN_FEATURE_POINT_SHADOW) || defined(PELICAN_FEATURE_SPOT_SHADOW)
         radiance *= pelican_local_shadow_visibility(i, worldPos);
 #endif
 #ifdef PELICAN_FEATURE_SHADOW
-        radiance *= directionalShadowVisibility(
-            i, worldPos, normal, L);
+        radiance *= directionalShadowVisibility(i, worldPos, normal, light.direction);
 #endif
-
-        float NDF = openPbrBase
-                        ? OpenPbrDistributionGGX(
-                              normal, H, roughness)
-                        : DistributionGGX(
-                              normal, H, roughness);
-        float G = openPbrBase
-                      ? OpenPbrGeometrySmith(
-                            normal, V, L, roughness)
-                      : GeometrySmith(
-                            normal, V, L, roughness);
-        vec3 F =
-            fresnelSchlick(
-                max(dot(H, V), 0.0), F0);
-
-        vec3 kS = F;
-        vec3 kD = vec3(1.0) - kS;
-        kD *= 1.0 - metallic;
-
-        vec3 numerator = NDF * G * F;
-        float denominator =
-            brdfDenominator(
-                normal, V, L, openPbrBase);
-        vec3 specular = numerator / denominator;
-
-        float NdotL =
-            max(dot(normal, L), 0.0);
-        float directDiffuseOcclusion =
-            1.0;
-        Lo +=
-            (kD * albedo / PI *
-                 directDiffuseOcclusion +
-             specular) *
-            radiance * NdotL;
+        direct += reflectedDirectLight(surface, light.direction, radiance);
     }
 #else
-    for(int i = 0; i < pelicanLights.directionalLightCount; ++i) {
-        vec3 L = normalize(-pelicanLights.directionalLights[i].direction);
-        vec3 H = normalize(V + L);
-        vec3 radiance = pelicanLights.directionalLights[i].color * pelicanLights.directionalLights[i].intensity;
+    for (int i = 0; i < pelicanLights.directionalLightCount; ++i) {
+        vec3 toLight = normalize(-pelicanLights.directionalLights[i].direction);
+        vec3 radiance = pelicanLights.directionalLights[i].color *
+                        pelicanLights.directionalLights[i].intensity;
 #ifdef PELICAN_FEATURE_SHADOW
-        radiance *= directionalShadowVisibility(
-            uint(i), worldPos, normal, L);
+        radiance *= directionalShadowVisibility(uint(i), worldPos, normal, toLight);
 #endif
-        
-        // Cook-Torrance BRDF
-        float NDF = openPbrBase ? OpenPbrDistributionGGX(normal, H, roughness)
-                                : DistributionGGX(normal, H, roughness);
-        float G = openPbrBase ? OpenPbrGeometrySmith(normal, V, L, roughness)
-                              : GeometrySmith(normal, V, L, roughness);
-        vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-        
-        vec3 kS = F;
-        vec3 kD = vec3(1.0) - kS;
-        kD *= 1.0 - metallic;
-        
-        vec3 numerator = NDF * G * F;
-        float denominator = brdfDenominator(normal, V, L, openPbrBase);
-        vec3 specular = numerator / denominator;
-        
-        float NdotL = max(dot(normal, L), 0.0);
-        float directDiffuseOcclusion = 1.0;
-        Lo += (kD * albedo / PI * directDiffuseOcclusion + specular) * radiance * NdotL;
+        direct += reflectedDirectLight(surface, toLight, radiance);
     }
 
-    for(int i = 0; i < pelicanLights.pointLightCount; ++i) {
-        vec3 L = normalize(pelicanLights.pointLights[i].position - worldPos);
-        vec3 H = normalize(V + L);
-        float distance = length(pelicanLights.pointLights[i].position - worldPos);
-        float attenuation = distanceAttenuation(distance, openPbrBase);
-        vec3 radiance = pelicanLights.pointLights[i].color * pelicanLights.pointLights[i].intensity * attenuation;
+    for (int i = 0; i < pelicanLights.pointLightCount; ++i) {
+        vec3 toLight = normalize(pelicanLights.pointLights[i].position - worldPos);
+        float lightDistance = length(pelicanLights.pointLights[i].position - worldPos);
+        vec3 radiance = pelicanLights.pointLights[i].color *
+                        pelicanLights.pointLights[i].intensity *
+                        distanceAttenuation(lightDistance, surface.openPbrBase);
 #ifdef PELICAN_FEATURE_POINT_SHADOW
         radiance *= pelican_point_shadow_visibility(uint(i), worldPos);
 #endif
-        
-        // Cook-Torrance BRDF
-        float NDF = openPbrBase ? OpenPbrDistributionGGX(normal, H, roughness)
-                                : DistributionGGX(normal, H, roughness);
-        float G = openPbrBase ? OpenPbrGeometrySmith(normal, V, L, roughness)
-                              : GeometrySmith(normal, V, L, roughness);
-        vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-        
-        vec3 kS = F;
-        vec3 kD = vec3(1.0) - kS;
-        kD *= 1.0 - metallic;
-        
-        vec3 numerator = NDF * G * F;
-        float denominator = brdfDenominator(normal, V, L, openPbrBase);
-        vec3 specular = numerator / denominator;
-        
-        float NdotL = max(dot(normal, L), 0.0);
-        float directDiffuseOcclusion = 1.0;
-        Lo += (kD * albedo / PI * directDiffuseOcclusion + specular) * radiance * NdotL;
+        direct += reflectedDirectLight(surface, toLight, radiance);
     }
 
-    for(int i = 0; i < pelicanLights.spotLightCount; ++i) {
-        vec3 L = normalize(pelicanLights.spotLights[i].position - worldPos);
-        vec3 H = normalize(V + L);
-
-        // Spotlight intensity calculation
-        float spotDirDotL = dot(normalize(-L), normalize(pelicanLights.spotLights[i].direction));
-        float spotFactor = smoothstep(pelicanLights.spotLights[i].outerConeAngle, pelicanLights.spotLights[i].innerConeAngle, spotDirDotL);
-        
-        // Attenuation and radiance
-        float distance = length(pelicanLights.spotLights[i].position - worldPos);
-        float attenuation = distanceAttenuation(distance, openPbrBase);
-        vec3 radiance = pelicanLights.spotLights[i].color * pelicanLights.spotLights[i].intensity * attenuation * spotFactor;
+    for (int i = 0; i < pelicanLights.spotLightCount; ++i) {
+        vec3 toLight = normalize(pelicanLights.spotLights[i].position - worldPos);
+        // The cone: full inside innerConeAngle, none outside outerConeAngle
+        // (both stored as cosines), smooth between.
+        float cosFromAxis = dot(normalize(-toLight),
+                                normalize(pelicanLights.spotLights[i].direction));
+        float cone = smoothstep(pelicanLights.spotLights[i].outerConeAngle,
+                                pelicanLights.spotLights[i].innerConeAngle,
+                                cosFromAxis);
+        float lightDistance = length(pelicanLights.spotLights[i].position - worldPos);
+        vec3 radiance = pelicanLights.spotLights[i].color *
+                        pelicanLights.spotLights[i].intensity *
+                        distanceAttenuation(lightDistance, surface.openPbrBase) *
+                        cone;
 #ifdef PELICAN_FEATURE_SPOT_SHADOW
         radiance *= pelican_spot_shadow_visibility(uint(i), worldPos);
 #endif
-
-        if (spotFactor > 0.0)
-        {
-            // Cook-Torrance BRDF
-            float NDF = openPbrBase ? OpenPbrDistributionGGX(normal, H, roughness)
-                                    : DistributionGGX(normal, H, roughness);
-            float G = openPbrBase ? OpenPbrGeometrySmith(normal, V, L, roughness)
-                                  : GeometrySmith(normal, V, L, roughness);
-            vec3 F = fresnelSchlick(max(dot(H, V), 0.0), F0);
-            
-            vec3 kS = F;
-            vec3 kD = vec3(1.0) - kS;
-            kD *= 1.0 - metallic;
-            
-            vec3 numerator = NDF * G * F;
-            float denominator = brdfDenominator(normal, V, L, openPbrBase);
-            vec3 specular = numerator / denominator;
-            
-            float NdotL = max(dot(normal, L), 0.0);
-            float directDiffuseOcclusion = 1.0;
-            Lo += (kD * albedo / PI * directDiffuseOcclusion + specular) * radiance * NdotL;
+        if (cone > 0.0) {
+            direct += reflectedDirectLight(surface, toLight, radiance);
         }
     }
 #endif
-    
+
     vec3 ambientRadiance = vec3(0.0);
 #ifdef PELICAN_FEATURE_SKY_AMBIENT
-    ambientRadiance =
-        pelicanLights.environmentAmbientRadiance.rgb;
+    ambientRadiance = pelicanLights.environmentAmbientRadiance.rgb;
 #endif
     // The solid fallback intentionally lights metals as well. Directional
     // environment response belongs to the later IBL feature.
-    vec3 ambient = albedo * ao * ambientRadiance;
-    vec3 color = ambient + Lo + emissive;
-    
+    vec3 color = albedo * ambientOcclusion * ambientRadiance + direct + emissive;
+
 #if !defined(PELICAN_FEATURE_HDR) && !defined(PELICAN_HYBRID_SCENE_LINEAR)
     // HDR off owns the single tone curve here. Transfer encoding is terminal-only.
     color = color / (color + vec3(0.155)) * 1.019;
 #endif
-    
+
     outColor = vec4(color, 1.0);
 }

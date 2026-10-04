@@ -571,7 +571,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 
 ## 5.8 決定的乱数
 
-[`DeterministicRng`](../../src/core/userpublic/deterministicrng.cpp#L21) はPCG32（permuted congruential generator の32bit出力版 — 64bitの内部状態を線形合同法で進め、出力段ではその状態の上位ビットが決めた量だけxorshift結果をビット回転させる擬似乱数生成器。状態が小さく、同じseedから同じ列を完全に再現できるので決定性用途に向きます）です。初期seedは`ProjectBasicConfig.seed()`、RPC/GameContextから再設定できます。
+[`DeterministicRng`](../../src/core/userpublic/deterministicrng.cpp#L31) はPCG32（permuted congruential generator の32bit出力版 — 64bitの内部状態を線形合同法で進め、出力段ではその状態の上位ビットが決めた量だけxorshift結果をビット回転させる擬似乱数生成器。状態が小さく、同じseedから同じ列を完全に再現できるので決定性用途に向きます）です。初期seedは`ProjectBasicConfig.seed()`、RPC/GameContextから再設定できます。
 
 - `random()`: 2回の32-bit出力から53-bit精度の`[0,1)` double
 - `randomInt(min,max)`: modulo bias（剰余偏り — 32bit乱数を`% n`で範囲へ丸めると、2^32がnで割り切れない限り一部の値だけ余分に出てしまう偏り）を避けるrejection sampling（棄却サンプリング — nで割り切れる個数からはみ出す端の出力を捨てて引き直し、偏りを消す方式）
@@ -585,7 +585,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 
 ### backend interface
 
-実装内部の [`Audio::Backend`](../../src/core/audio/audio.cpp#L91) がvirtual interfaceで、二実装があります。
+実装内部の [`Audio::Backend`](../../src/core/audio/audio.cpp#L92) がvirtual interfaceで、二実装があります。
 
 - `MiniaudioBackend`: 実deviceへ再生
 - 窓を持つ player(Studio の埋め込みを含む): 実 device。headless: device を開かない offline engine(miniaudio の noDevice。test が `mixOffline` で mix を読む)。`NullAudioBackend`: device を開けなかったときの退避だけ(理由は `backendFallbackReason()`、`get_status` の `audio.fallback_reason`)。AU-1 以前は headless / RPC が Null だった
@@ -594,11 +594,11 @@ headlessでもplay/stop/isPlayingの状態遷移は模倣されるため、ゲ�
 
 ### decodeとvoice
 
-[`Audio::playSound()`](../../src/core/audio/audio.cpp#L501) は`PathResolver`でbytesを読み、形式を判定してfloat sampleへdecodeし、backend voice IDを型付き`SoundHandle`へ包みます。bus は `playSound(path)` が SE、`playSound(path, "bgm")` と graph の `audio.playback{bus:"bgm"}` が BGM です(AU-1)。decode 済みの buffer は asset ごとに cache され、同じ音源の start で decode し直しません。
+[`Audio::playSound()`](../../src/core/audio/audio.cpp#L502) は`PathResolver`でbytesを読み、形式を判定してfloat sampleへdecodeし、backend voice IDを型付き`SoundHandle`へ包みます。bus は `playSound(path)` が SE、`playSound(path, "bgm")` と graph の `audio.playback{bus:"bgm"}` が BGM です(AU-1)。decode 済みの buffer は asset ごとに cache され、同じ音源の start で decode し直しません。
 
 形式は WAV と Ogg Vorbis です(AU-2)。[`detectSoundFormat`](../../src/core/audio/sounddecode.cpp#L263) が拡張子(小文字にしたもの)と先頭 bytes の両方で決め、食い違えば decode の前に `audio.format_unsupported@1` を投げます。Ogg Vorbis の decoder は miniaudio の `extras/stb_vorbis.c` で、ファイルの先頭で宣言だけを miniaudio より前に include し、実装はファイルの末尾で miniaudio の実装の後に include します(コードのコメントによれば miniaudio 自身の tools と同じ並べ方。miniaudio 側は未確認)。これで miniaudio が Vorbis の decoding backend を組み込みます。
 
-header が言う長さが 10 秒を超える音は streaming です。[`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L514) は `readSoundHeader` で長さだけを読み、長ければ PCM を作らず、`DecodedSound::encoded`(符号化 bytes の `shared_ptr`)と header の値だけを cache に入れます。backend の [`play`](../../src/core/audio/audio.cpp#L268) は `streamed()` を見て、voice ごとに `ma_decoder_init_memory` で自分の decoder を開き、それを data source にします(短い音は従来どおり共有 PCM の上の `ma_audio_buffer_ref`)。範囲・ループ点・開始位置はどちらでも同じ data source の API に渡すので、一体版のネイティブループも分解版の seek も同じ意味で動きます。短い WAV は自前の `decodeWav` で、streaming の WAV は miniaudio の WAV decoder で読みますが、登録時の検査は長さによらず同じ `parseWav` の規則を通ります。
+header が言う長さが 10 秒を超える音は streaming です。[`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L515) は `readSoundHeader` で長さだけを読み、長ければ PCM を作らず、`DecodedSound::encoded`(符号化 bytes の `shared_ptr`)と header の値だけを cache に入れます。backend の [`play`](../../src/core/audio/audio.cpp#L269) は `streamed()` を見て、voice ごとに `ma_decoder_init_memory` で自分の decoder を開き、それを data source にします(短い音は従来どおり共有 PCM の上の `ma_audio_buffer_ref`)。範囲・ループ点・開始位置はどちらでも同じ data source の API に渡すので、一体版のネイティブループも分解版の seek も同じ意味で動きます。短い WAV は自前の `decodeWav` で、streaming の WAV は miniaudio の WAV decoder で読みますが、登録時の検査は長さによらず同じ `parseWav` の規則を通ります。
 
 busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更時はlive voice全てへ再適用します。
 
@@ -611,13 +611,13 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 | 層 | 置き場所 | 中身 |
 |---|---|---|
 | 形式(純粋) | [`audioanalysisformat.hpp`](../../src/project/audioanalysisformat.hpp#L12) / `.cpp`(`pelican_project`) | settings の解析 [`parseAudioAnalysisSettings()`](../../src/project/audioanalysisformat.cpp#L91)、表の layout と行の名前、補間 [`sampleTableValue()`](../../src/project/audioanalysisformat.cpp#L207)、manifest を作る [`audioAnalysisManifest()`](../../src/project/audioanalysisformat.cpp#L230)、古さの判定 [`readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250) と走査 [`findDerivedAssets()`](../../src/project/audioanalysisformat.cpp#L336) |
-| 焼く | [`audioanalysis.hpp`](../../src/core/audio/audioanalysis.hpp#L10) / `.cpp`(`PELICAN_WITH_AUDIO` の unit) | [`analyzeAudio()`](../../src/core/audio/audioanalysis.cpp#L74)(窓・自前の radix-2 の [`fft()`](../../src/core/audio/audioanalysis.cpp#L24)・帯・追従)と [`bakeAudioAnalysis()`](../../src/core/audio/audioanalysis.cpp#L182)(decode → 解析 → `writeKtx2` → manifest) |
+| 焼く | [`audioanalysis.hpp`](../../src/core/audio/audioanalysis.hpp#L10) / `.cpp`(`PELICAN_WITH_AUDIO` の unit) | [`analyzeAudio()`](../../src/core/audio/audioanalysis.cpp#L78)(窓・自前の radix-2 の [`fft()`](../../src/core/audio/audioanalysis.cpp#L24)・帯・追従)と [`bakeAudioAnalysis()`](../../src/core/audio/audioanalysis.cpp#L186)(decode → 解析 → `writeKtx2` → manifest) |
 | RPC | [`renderconfigaudioanalysis.cpp`](../../src/core/communication/renderconfigaudioanalysis.cpp#L1) | `bake_audio_analysis` / `list_derived_assets`(第7章 §7.7 の表) |
 | CPU で読む | [`sampletable.hpp`](../../src/core/loader/sampletable.hpp#L10) / `.cpp` と `valuegraph.cpp` | [`loadSampleTable()`](../../src/core/loader/sampletable.cpp#L55) と op `value.sample_table` |
 | GPU で読む | [`pelican_sample_table.glsl`](../../src/core/resources/shaders/include/pelican_sample_table.glsl#L4) | `pelican_sample_table(...)` |
 | CLI | [`audiocommand.cpp`](../../src/devcli/audiocommand.cpp#L84) | `pelican_cli audio analyze` |
 
-**決定性の作り。**同じ bytes と settings からは同じ 2 つの file が書かれます。manifest は `created` を持たず、`settings` は既定を埋めた JSON をそのまま書き、`settings_sha256` はその `dump()` の sha256 です([`audioAnalysisSettingsJson()` と sha256 の所](../../src/project/audioanalysisformat.cpp#L132))。2 つの file は隣の `.tmp` に書いてから rename します。AB-1 のときは `audioanalysis.cpp` の中の `writeReplacing()` が 1 回だけ rename していました。✅AB-2(`b3003b2a`)からは `pelican_project` の共通の [`writeFileReplacing()` を bake が呼ぶ所](../../src/core/audio/audioanalysis.cpp#L206)で、Windows で読む側が出力を開いていれば 50 ms から倍々に合計 2 秒までやり直し、開かれたままなら [`FileReplaceLocked` を `audio.analysis_failed@1` の `reason: "output_locked"` と `path` にする所](../../src/core/audio/audioanalysis.cpp#L214)を通ります。RPC 側は `path` を要求の `out` か `<out>.import.json` の綴りに直します([AB-2 の `path` の直し](../../src/core/communication/renderconfigaudioanalysis.cpp#L90))。置き換えの中身は第3章 §3.9 の「読む側が開いている file の置き換え —— `filereplace`」です。
+**決定性の作り。**同じ bytes と settings からは同じ 2 つの file が書かれます。manifest は `created` を持たず、`settings` は既定を埋めた JSON をそのまま書き、`settings_sha256` はその `dump()` の sha256 です([`audioAnalysisSettingsJson()` と sha256 の所](../../src/project/audioanalysisformat.cpp#L132))。2 つの file は隣の `.tmp` に書いてから rename します。AB-1 のときは `audioanalysis.cpp` の中の `writeReplacing()` が 1 回だけ rename していました。✅AB-2(`b3003b2a`)からは `pelican_project` の共通の [`writeFileReplacing()` を bake が呼ぶ所](../../src/core/audio/audioanalysis.cpp#L210)で、Windows で読む側が出力を開いていれば 50 ms から倍々に合計 2 秒までやり直し、開かれたままなら [`FileReplaceLocked` を `audio.analysis_failed@1` の `reason: "output_locked"` と `path` にする所](../../src/core/audio/audioanalysis.cpp#L218)を通ります。RPC 側は `path` を要求の `out` か `<out>.import.json` の綴りに直します([AB-2 の `path` の直し](../../src/core/communication/renderconfigaudioanalysis.cpp#L90))。置き換えの中身は第3章 §3.9 の「読む側が開いている file の置き換え —— `filereplace`」です。
 
 **bake の ticket の流れ。**[`bakeAudioAnalysis()` の RPC 側](../../src/core/communication/renderconfigaudioanalysis.cpp#L36)は、engine の thread で引数と settings を見て(settings の拒否と `audio.analysis_busy@1` はここですぐ返す)、`asset` / `out` を `resolve_document_path` で解き、`std::async` の thread に bake を渡します。worker は engine の状態を読みません(コードの注記)。結果は `AudioAnalysisBakeOutcome`(committed の fields か、拒否の code・message・fields)で返り、`commitPending()` が frame の境界ごとに最初に呼ぶ [`harvestAudioBakes()`](../../src/core/communication/renderconfigaudioanalysis.cpp#L113) が終わったものを `results_` と `completed_` に移します([呼ぶ所 AB-1](../../src/core/communication/renderconfigeditor.cpp#L8126))。render 文書を書かないので、待っている編集の ticket とは関係なく終わります。editor の destructor は走っている bake を待ちます。この file は audio の有無によらず `pelican_core` に入り、`PELICAN_WITH_AUDIO=OFF` の build では `bake_audio_analysis` が settings を見た後に `audio.analysis_unavailable@1` を返すだけになります(`list_derived_assets` は同じに動きます)。
 
@@ -638,11 +638,11 @@ prepareVoiceSlot(h)    # voices への emplace(= ノード確保)まで。backen
 commitPreparedPlay(h)  # backend->play() の後、既存ノードへ scalar を代入するだけ
 ```
 
-この分割が効くのは §3.5 の effect transaction 経由のときです。`playSound()` が返す `SoundHandle` は **transaction中はまだ鳴っていない予約**で、実際の `backend->play()` は flush で走ります。`commitPreparedPlay()` が最後にやるのは `slot->second.backend_id = backend_id` の1代入だけなので、確保に伴う失敗が commit 後に起きません（[そのコメント](../../src/core/audio/audio.cpp#L623)）。predicate側もoutboxを見ます — transaction中の `isPlaying()` は、outboxに play があれば `true`、stop があれば `false`、どちらも無ければ実 backend へ問い合わせます（[`PreparedEffectTransaction::isPlaying()`](../../src/core/loader/effecttransaction.cpp#L274)）。
+この分割が効くのは §3.5 の effect transaction 経由のときです。`playSound()` が返す `SoundHandle` は **transaction中はまだ鳴っていない予約**で、実際の `backend->play()` は flush で走ります。`commitPreparedPlay()` が最後にやるのは `slot->second.backend_id = backend_id` の1代入だけなので、確保に伴う失敗が commit 後に起きません（[そのコメント](../../src/core/audio/audio.cpp#L640)）。predicate側もoutboxを見ます — transaction中の `isPlaying()` は、outboxに play があれば `true`、stop があれば `false`、どちらも無ければ実 backend へ問い合わせます（[`PreparedEffectTransaction::isPlaying()`](../../src/core/loader/effecttransaction.cpp#L274)）。
 
 `next_handle` のcursorは **rollbackしません**。manifestが `audio.handle_cursor` を `non_rollback` / `u64-gap-named-v1` として明示的に持っている（§3.5 の 7）のはこのためで、失敗した load が消費した番号は欠番として残ります。番号の再利用でハンドルが別の音を指すより、穴が空くほうが安全、という選択です。
 
-失敗の非対称も見ておく価値があります。[`commitPreparedStop()`](../../src/core/audio/audio.cpp#L630) は `voices` から**先に**eraseしてから `backend->destroy()` を呼び、destroyが投げたら「backend voiceが残っているかもしれない」と明記したログ（`audio_stop_failed@1`）を出して投げ直します。エンジン側の帳簿は必ず一貫させ、backend側の取りこぼしは診断で見せる、という向きです。
+失敗の非対称も見ておく価値があります。[`commitPreparedStop()`](../../src/core/audio/audio.cpp#L647) は `voices` から**先に**eraseしてから `backend->destroy()` を呼び、destroyが投げたら「backend voiceが残っているかもしれない」と明記したログ（`audio_stop_failed@1`）を出して投げ直します。エンジン側の帳簿は必ず一貫させ、backend側の取りこぼしは診断で見せる、という向きです。
 
 ## 5.10 Persistence
 
@@ -1056,7 +1056,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 | `covered.deferred-object` | `createObject` / `createSpriteObject` / `removeObject` | behavior callback中なら arena の deferred mutation へ積み、`invalidGameObjectId` を返す |
 | `covered.candidate-or-retired-reject` | `setLocalTransform` / `setSpriteView` / `setSpriteTexture` | 退役済みobject宛なら `false` を返して診断を1件記録。それ以外はcandidateへ書く |
 | `covered.candidate` | light 4本 / `setCamera` | 分岐なし。moduleへ直接書く。`activate` 段は publish 済みなので、書いた先はcandidateであり、rollbackでcandidateごと戻る |
-| `covered.rng-sequence` | `random` / `randomInt` / `randomFloat` / `setSeed` | `DeterministicRng` が自前の [`RngSequenceScope`](../../src/core/userpublic/deterministicrng.cpp#L132) を見て、live stateではなくcandidate側を進める |
+| `covered.rng-sequence` | `random` / `randomInt` / `randomFloat` / `setSeed` | `DeterministicRng` が自前の [`RngSequenceScope`](../../src/core/userpublic/deterministicrng.cpp#L142) を見て、live stateではなくcandidate側を進める |
 | `covered.pending-scene` | `loadScene` | candidateのpending要求へ（§3.6） |
 | `covered.event-outbox` | `emit` | prepared event outbox へ |
 | `shadow_outbox.*` | `playSound` / `stopSound` / `setBusVolume` / `setGameSettings` / `saveSettings` / `saveData` | shadow（transaction内の見かけ）を更新し、実副作用はoutboxへ積んでflushで実行 |
@@ -1119,7 +1119,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L170)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L177)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4047)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4048)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 
@@ -1172,7 +1172,7 @@ resolved_rig  : 連鎖をさかのぼって求めた「この姿勢がどのrig�
 >
 > **何をする所か**: `root_motion: "extract"` の `pose.clip_sample` が、clipの根の移動を「オブジェクトの変位」に変換し、姿勢側の根を固定します。
 >
-> **素朴に読むと**: 「今フレームの根の位置 − 前フレームの根の位置」を足せばよさそうに見えます。しかしclipがループすると、根の位置はclipの末尾から先頭へ**戻る**ので、その差分は1周ぶんの後ろ向きジャンプになります。実際の式は折り返す前の時刻 `u`（unwrapped time）を使った `R(u) = loops(u)·(root(end) − root(start)) + root(canonical(u))` で、`loops` の項が「clipの末尾を越えたことを、先頭への巻き戻しではなく継続として数える」役です。この形にしておくと、負のspeedも1フレームで複数周するのも同じ算術で済みます。ループしないclipはclampされるので何も越えません。変位は `R(u) − R(u_prev)` で、オブジェクト側では**その個体自身の向きで回してから**加算されます（スケールは意図的に掛けません。大きさを変えた個体が同じclipで違う距離を進んでしまうため。[適用側](../../src/core/ecs/predefined/animationsystem.cpp#L317)）。
+> **素朴に読むと**: 「今フレームの根の位置 − 前フレームの根の位置」を足せばよさそうに見えます。しかしclipがループすると、根の位置はclipの末尾から先頭へ**戻る**ので、その差分は1周ぶんの後ろ向きジャンプになります。実際の式は折り返す前の時刻 `u`（unwrapped time）を使った `R(u) = loops(u)·(root(end) − root(start)) + root(canonical(u))` で、`loops` の項が「clipの末尾を越えたことを、先頭への巻き戻しではなく継続として数える」役です。この形にしておくと、負のspeedも1フレームで複数周するのも同じ算術で済みます。ループしないclipはclampされるので何も越えません。変位は `R(u) − R(u_prev)` で、オブジェクト側では**その個体自身の向きで回してから**加算されます（スケールは意図的に掛けません。大きさを変えた個体が同じclipで違う距離を進んでしまうため。[適用側](../../src/core/ecs/predefined/animationsystem.cpp#L325)）。
 >
 > **骨子**:
 > ```text

@@ -185,7 +185,7 @@ asset が `id [status]` で並びます。
 `pelican.inspectorVector.<component>.<field>.<列>`(例: `pelican.inspectorVector.transform.scale.2`)、数 1 つは
 `pelican.inspectorNumeric.<component>.<field>` です([数値欄の名前の付け方](../../src/devstudio/view/inspectorwidget.cpp#L2242))。
 G-5 より前は、どの vector も最初の列が同じ名前でした。シナリオは欄が有効になるのを待って打ち、Return で commit し、
-欄がその値を持つまで待ちます([シナリオの README](../../test/studio_scenarios/README.md#L567))。
+欄がその値を持つまで待ちます([シナリオの README](../../test/studio_scenarios/README.md#L580))。
 
 **回転は角度で入れます(✅T-1)。**`transform.rotation` は X / Y / Z の 3 欄(度、小数 2 桁、自動化面の名前は
 `pelican.inspectorEuler.transform.rotation.0` 〜 `.2`)で見せて編集します([回転の欄を作る所](../../src/devstudio/view/inspectorwidget.cpp#L2304))。
@@ -586,7 +586,7 @@ engine を起こし直していました(仕様書の記述)。
   → ✅MR-1s(`5c26d492`)から、Studio は Show the document の Save の後と Register again でこれを送り、再起動の案内は出しません(下の「壊れた material を直して Save で戻す(✅MR-1s)」)。
   → engine の ✅FO-2(`31c390c7`)から `status` に `unusable`(文書は読めるが、それを描く pass が material の使うものを宣言していない)が加わりました。✅RTL-3s(`c80bc6a1`)から、その行は選べて、理由の 1 文と **Open the pass** が出ます(下の MR-1s の段落の後の「pass が宣言していない material の行(✅RTL-3s)」)。
   この engine にまだ登録されていない material(`registered: false`)は名前が灰色で、tooltip が「engine の起動時に読まれる」と言います
-  ([木を作る所](../../src/devstudio/view/materialsdock.cpp#L915))。文書の行を選ぶと、その最初の material を選びます。
+  ([木を作る所](../../src/devstudio/view/materialsdock.cpp#L934))。文書の行を選ぶと、その最初の material を選びます。
 - **読み直し**: ドックが見えている間だけ、`list_materials` を 1 秒ごとに送ります([`PollMs`](../../src/devstudio/model/materialsmodel.hpp#L312)。
   隠れると止め、見え直したときに 1 回読みます)。答えが前と同じ(digest を含めて)なら何もしません。選んでいる material の文書の digest が、
   このドックの書き込みでないのに動いていれば(外で書かれた)、その material を読み直します([一覧の答えを読む所](../../src/devstudio/model/materialsmodel.cpp#L1028))。
@@ -636,7 +636,7 @@ material を選ぶと、`get_material` で文書のままの material を、続�
   もう片方(routing / surface)を manifest の組に合わせて同じ書き込みで書きます(§13.5 の規則)。VR-1 の前は、Surface を別の variant に
   替えると routing と合わずに断られました(下の「MT-3s の残した穴」)。Studio はドックの書き込みの後に選んでいる material を読み直すので
   ([書いた答えの後に読み直す所](../../src/devstudio/model/materialsmodel.cpp#L1131))、読み直した文書の routing が Alpha mode / Double sided の欄に入ります
-  ([routing を欄に入れる所](../../src/devstudio/view/materialsdock.cpp#L1439))。✅SK-1(`67fd3d29`)のシナリオ `gui_material_from_blank` で確かめました:
+  ([routing を欄に入れる所](../../src/devstudio/view/materialsdock.cpp#L1458))。✅SK-1(`67fd3d29`)のシナリオ `gui_material_from_blank` で確かめました:
   Surface を `openpbr / opaque_double_sided` に替える(送るのは surface だけ)と、起こし直さずに(`get_status` の `instance_id` が同じ)Double sided に
   印が付き、Alpha mode は `opaque`、Surface の欄は double-sided のままです。ドックの Undo で surface と routing が両方戻り、Double sided の印が外れて
   Surface の欄も one-sided に戻ります(§13.5「Studio の自動化面」の SK-1 の段落)。Studio のドックのコードは SK-1 で変えていません。
@@ -646,7 +646,7 @@ material を選ぶと、`get_material` で文書のままの material を、続�
   binding を読み直します(MainWindow が `InspectorWidget::materialBindingsChanged()` を呼ぶ。Undo が前の routing を送ったときも、engine が binding を戻すので同じです)。
   Surface・Tags・Alpha mode・Double sided の tooltip も、MT-3s で「engine がその場で登録し直す / binding も書き直す」旨に直しました(MT-1s では「engine の起動時に読む」)。
   答えを待つ間と、その後に material を読み直す間は、Surface と Alpha mode / Double sided を文書の値で埋め直さず、選んだ値を見せたままにします
-  ([埋め直さない条件](../../src/devstudio/view/materialsdock.cpp#L1426))。MT-1s ではこの間に一瞬前の値へ戻って見え、シナリオの `select` が「値が入らなかった」で
+  ([埋め直さない条件](../../src/devstudio/view/materialsdock.cpp#L1445))。MT-1s ではこの間に一瞬前の値へ戻って見え、シナリオの `select` が「値が入らなかった」で
   落ちていました(実装者の報告)。
 - **`restart_required`**: 書く答えの `restart_required` が `null` でなければ、Studio はその場で engine を起こし直します(RSX と同じ
   `MainWindow::requestEngineRestart()`。未保存の scene があれば今までの Save / Discard / Cancel が出ます)。ドックの notice には
@@ -896,13 +896,13 @@ material を選ぶと、`get_material` で文書のままの material を、続�
 
 **壊れた material を直して Save で戻す(✅MR-1s、`5c26d492`)**: engine の ✅EB-2(`e1ba9058`)の Studio 側です。利用者(2026-10-04)の「壊れた material を直すたびに engine の再起動が要るのは少し面倒」に答えたもので、利用者の操作は「直して Save」だけになりました。下では、確かめ方を「シナリオで通した」「unit test だけ」「未確認」に分けて書きます。
 
-- **起動時に断られた文書**(決定 1): Show the document の窓の見出しは `<path> as it is on disk. Fix it and Save: the file is replaced whole and the engine takes it in.` です([見出し](../../src/devstudio/view/materialsdock.cpp#L791))。Save はファイルを丸ごと書いた後(FO-1s のまま)に `register_material {path}` を送り、窓は開いたまま答えを待ちます(notice `Saved <path>; the engine takes it in.`。[`MaterialsDockSession::documentSaved()`](../../src/devstudio/model/materialsmodel.cpp#L915))。
+- **起動時に断られた文書**(決定 1): Show the document の窓の見出しは `<path> as it is on disk. Fix it and Save: the file is replaced whole and the engine takes it in.` です([見出し](../../src/devstudio/view/materialsdock.cpp#L810))。Save はファイルを丸ごと書いた後(FO-1s のまま)に `register_material {path}` を送り、窓は開いたまま答えを待ちます(notice `Saved <path>; the engine takes it in.`。[`MaterialsDockSession::documentSaved()`](../../src/devstudio/model/materialsmodel.cpp#L915))。
   - `recovered: true` なら窓が閉じ、ドックの notice が `<name> is loaded again.`(複数なら `a, b are loaded again.`。[`materialLoadedAgainLine()`](../../src/devstudio/model/materialsmodel.cpp#L271))になり、`list_materials` と Problems を読み直します([recovered を読む所](../../src/devstudio/model/materialsmodel.cpp#L1166))。再起動の案内は消えます。**シナリオで通した**(`gui_material_repair`。engine の process id が Save の前後で同じ)。
   - まだ読めなければ窓は開いたままで、parser の文を行・列の 1 文にします。例 `materials/paint.material.json would not load at line 3, column 5: syntax error while parsing value - invalid literal (material.document_invalid@1).`([`materialRegisterRefusalLine()`](../../src/devstudio/model/materialsmodel.cpp#L243))。**unit test だけ**です。
   - `material.path_conflict@1`(一覧に載っているのに loaded でない文書)は、`hot_reload` の watch が先に取り込んだ場合があるので、`list_materials` をもう一度読んで決めます。loaded なら「loaded again」、まだなら `The engine still holds <path> as it read it before; a restart reads the file again (material.path_conflict@1).` と Restart engine です([もう一度読んで決める所](../../src/devstudio/model/materialsmodel.cpp#L1040))。**unit test だけ**で、watch と Studio の `register_material` が競う実物は**未確認**です。
 - **Register again**(決定 2): invalid の行に残しました(外のエディタで直した場合)。送るものと答えの扱いは Save と同じです。**ボタンそのものは unit test だけ**です。
   Problems の material の行(`document_kind` が `material` か code が `material.`)の id と文をつないだ signature が変わると、ドックは `list_materials` を読み直します。ドックの 1 秒の poll は見えている間だけなので、隠れていても読むための道です([`materialProblemsOf()`](../../src/devstudio/model/problemsmodel.cpp#L309)、[`observeProblems()`](../../src/devstudio/model/materialsmodel.cpp#L958))。
-- **起動後に壊れた文書**(決定 3): EB-2 の source `hot_reload` の `material.document_invalid@1` / `material.document_unknown@1` を Problems の行から拾い、ドックのその文書の行の 2 列目に赤で `the file on disk does not load; the engine keeps the last values`(tooltip に行・列と理由。[行の印](../../src/devstudio/view/materialsdock.cpp#L940))を出します。直す欄の見出しは `<path> — the engine keeps the last values` で、Register again は出ません。
+- **起動後に壊れた文書**(決定 3): EB-2 の source `hot_reload` の `material.document_invalid@1` / `material.document_unknown@1` を Problems の行から拾い、ドックのその文書の行の 2 列目に赤で `the file on disk does not load; the engine keeps the last values`(tooltip に行・列と理由。[行の印](../../src/devstudio/view/materialsdock.cpp#L959))を出します。直す欄の見出しは `<path> — the engine keeps the last values` で、Register again は出ません。
   - **Save は何も送りません**。登録済みの文書に `register_material` を送ると engine は `material.path_conflict@1` で、同じ値の `edit_material` は `changed: false` で読み直さず、合う RPC がありません。この問題は watch のある project でしか出ない(watch が無ければ engine は壊れたことに気づかない)ので、watch の取り込みを待ちます。その文書の hot_reload の問題が一覧から消えたら「loaded again」で窓を閉じ、文が変われば(別の行で断られた)その 1 文を窓に出します。**シナリオで通した**(Save から窓が閉じるまで 2.2 秒、同じ process id、箱は壊れている間も赤のまま。実装者の報告)。
   - `document_unknown`(ファイルが消えた)の印は **unit test だけ**です。
 - **engine の process id**: シナリオが「再起動していない」を言うために、自動化面の `wait_engine` の答えに `process_id` を足しました(下の「Studio の自動化面」)。
@@ -913,7 +913,7 @@ material を選ぶと、`get_material` で文書のままの material を、続�
 **pass が宣言していない material の行(✅RTL-3s、`c80bc6a1`)**: engine の ✅FO-2(`31c390c7`)で、文書は読めるのにそれを描く pass が material の使うもの(今は ray query)を宣言していないとき、`list_materials` の `status` は `unusable` で、`pass` と `requirement` が付きます([第6章](06_rendering.md) §6.7 の「pass の宣言漏れは別の code(✅FO-2)」)。FO-2 の着地の時点のドックは `unusable` の行を選べず、`unusable: <理由>` を 1 行出すだけでした(FO-2 の実装者のコードの読み)。
 
 - RTL-3s から、その行は選べて、直す欄が `<path>: Material <名前> queries the scene's acceleration structure, and pass <pass>, which draws it, does not declare ray_query: turn Ray query on for the pass.` の 1 文を言います([1 文を作る `materialPassContractSentence()`](../../src/devstudio/model/materialsmodel.cpp#L138))。
-- Show the document と Register again の代わりに **Open the pass**(`pelican.materials.openPass`)が出て、押すと Graph タブでその pass を選びます([Open the pass](../../src/devstudio/view/materialsdock.cpp#L754)、[`openPlanPassOnGraph()`](../../src/devstudio/view/mainwindow.cpp#L1680))。Problems の同じ行も同じ所へ行きます(下の Problems のドックの RTL-3s の項)。
+- Show the document と Register again の代わりに **Open the pass**(`pelican.materials.openPass`)が出て、押すと Graph タブでその pass を選びます([Open the pass](../../src/devstudio/view/materialsdock.cpp#L773)、[`openPlanPassOnGraph()`](../../src/devstudio/view/mainwindow.cpp#L1680))。Problems の同じ行も同じ所へ行きます(下の Problems のドックの RTL-3s の項)。
 - pass の Ray query を On にすると、engine は次の frame で取り込み直し、問題の一覧の変化でドックが `list_materials` を読み直して `loaded` になります(MR-1s の読み直しの道)。シナリオ `gui_material_ray_query_from_blank` で通しました(§13.5「Studio の自動化面」)。
 
 ### Studio の Problems のドック —— 今の問題の一覧と、直す場所へ飛ぶ行(✅PB-1s)
@@ -969,7 +969,7 @@ shader の診断、Assets のドック、Frame Plan の致命の行にばらば�
     BS-1s と同じ窓で、行が無ければ `find`(node の id)の最初の位置、それも無ければ末尾にカーソルを置きます。
   - `document_kind: "root_rendering"`(`material_route_unserved@1` など)は Rendering settings タブ、`feature` は Features タブを前に出します。
   - `shader`: shader の file を外のエディタで開きます(BS-1s の Open file と同じ開き方)。行には飛べないので、status bar が `<document>: line <N>` を言います。
-  - `material` の文書か `material.*` の code: Materials のドックを前に出し、その material を選びます([`MaterialsDock::revealMaterial()`](../../src/devstudio/view/materialsdock.cpp#L1610))。
+  - `material` の文書か `material.*` の code: Materials のドックを前に出し、その material を選びます([`MaterialsDock::revealMaterial()`](../../src/devstudio/view/materialsdock.cpp#L1629))。
   - `material.pass_contract_unmet@1`(engine の ✅FO-2。✅RTL-3s `c80bc6a1` から): material の分岐より先に判定し、**pass の側**へ飛びます([pass の側へ決める所](../../src/devstudio/model/problemsmodel.cpp#L135))。FO-2 の着地の時点では `fields.material` があるので Materials のドックへ飛んでいました(FO-2 の実装者のコードの読み)。
     - `document_kind: "root_graph"` で `node` があれば Graph のその node(Fix in `Graph: <node>`)。
     - `fields.pass`(無ければ `passes` の最初)があれば、新しい行き先 `GraphPass`(Fix in `Graph: <pass>`)で、Graph タブでその pass を選びます(plan の pass を探し、無ければ root の node。[`openPlanPassOnGraph()`](../../src/devstudio/view/mainwindow.cpp#L1680))。
@@ -1691,7 +1691,7 @@ engine を起こし直さずに反映されます([gate の 1 か所](../../src/
 照合と同じ関数です(Q-14e / Q-14f / VI-1 の可変の規則。下の「fullscreen pass の入力と shader の宣言が合わない拒否」。
 [読み直しの候補の照合](../../src/core/fullscreenpass/fullscreenpasscontainer.cpp#L749))。合わない pass の新しい pipeline は
 公開せず、その pass は**前の pipeline と前の descriptor set で描き続けます**。同じ読み直しのほかの pipeline は公開されます
-([候補を外す所](../../src/core/shader/pipelinefactory.cpp#L2018))。照合する経路は 3 つで、`reload_shaders`、file watch の
+([候補を外す所](../../src/core/shader/pipelinefactory.cpp#L2019))。照合する経路は 3 つで、`reload_shaders`、file watch の
 shader の batch、render pipeline の読み直しが shader の変更を一緒に抱える経路のどれも同じ照合を通ります
 ([結果を reload の記録へ渡す所](../../src/core/watch/reloadservice.cpp#L55))。
 
@@ -2582,7 +2582,7 @@ catalog の `render.compute` の `traced_ray_types` / `misses` / `hit_shaders` �
    "message":"pelican.ray_tracing.shader_record_abi_mismatch@1: shader 'project://shaders/eb3_wrong.rchit' entry 'main' group=3 member_count=3 expected=4"}
   ```
 
-  宣言してよい record の規則(traced の ray type の hit shader は宣言しなくてよい)は [第6章](06_rendering.md) §6.15 の「shader record の宣言(✅EB-3)」です([fields を作る `failShaderRecord()`](../../src/core/shader/raytracingvalidation.cpp#L200))。
+  宣言してよい record の規則(traced の ray type の hit shader は宣言しなくてよい)は [第6章](06_rendering.md) §6.15 の「shader record の宣言(✅EB-3)」です([fields を作る `failShaderRecord()`](../../src/core/shader/raytracingvalidation.cpp#L225))。
 
 **SBT の全行を 1 回で読む —— `get_ray_table`(✅EB-3、`31c390c7`)。**RTL-2s の Studio は Frame Plan の SBT の表を、object ごとに `get_ray_occurrences` を問うて作っていました(最大 64 回)。RTL-2s c の engine への要望 3 です。
 `get_ray_table {limit?, offset?}`([`EditorCommandRpcAdapter::getRayTable()`](../../src/core/communication/editorcommandservice.cpp#L2252)、[登録](../../src/core/communication/editorrpchandlers.cpp#L92))は、全行を 1 回で返します。
@@ -2609,7 +2609,7 @@ catalog の `render.compute` の `traced_ray_types` / `misses` / `hit_shaders` �
   ```
 
 - Studio は ✅RTL-3s(`c80bc6a1`)から、Frame Plan の SBT の表をこれで読みます(下の「Studio で RT を組む」)。
-- test: `raytracing_rt3_1_production_test` の [「EB-3 get_ray_table lists every row in one call, as get_ray_occurrences reads each object's」](../../test/raytracing_rt3_1_production_test.cpp#L8018)(GPU。行ごとに occurrence_id で `get_ray_occurrences` と突き合わせ、paging、引数の拒否)、`editorcommandservice_test` の [「EB-3 get_ray_table without a ray group layout answers mode none and no rows」](../../test/editorcommandservice_test.cpp#L833)。
+- test: `raytracing_rt3_1_production_test` の [「EB-3 get_ray_table lists every row in one call, as get_ray_occurrences reads each object's」](../../test/raytracing_rt3_1_production_test.cpp#L8125)(GPU。行ごとに occurrence_id で `get_ray_occurrences` と突き合わせ、paging、引数の拒否)、`editorcommandservice_test` の [「EB-3 get_ray_table without a ray group layout answers mode none and no rows」](../../test/editorcommandservice_test.cpp#L833)。
 
 **巻き戻りの文と行に当たらない binding(✅RTL-1a)。**staged の世代が最初の frame で断られたときの `failure` に、その frame の例外の文が付きます
 (`pelican.ray_tracing.generation_rolled_back@1: staged authored render pipeline generation was not published: <原因>`)。実例(GPU): record に欄を足したのに
@@ -4870,7 +4870,7 @@ Outputs の区は body に出力があるときだけ、Carry の区は body に
 - 聞く op と欄は、✅UX-12a から catalog の各 op の `parameters` のうち `required` の付いたものです([`GraphCanvasModel::requiredParametersFor()`](../../src/devstudio/model/graphcanvasvalues.cpp#L754))。palette が自分で種を入れる op(`value.curve` の keys、`audio.playback` の asset、`ui.*` の node、`render.scalar` 以外の `render.*` と `draw.*`)は今までどおり聞きません。欄は node の欄と同じ部品(下の「node の欄を catalog の表から作る(✅UX-12a)」の `GraphParameterEditor`)を表の kind で選び、Studio が表より多くを知る 3 つだけ自分の部品にします: `render.scalar` の `target`(buffer の combo)、`value.input` の `name`(名前の combo。catalog の `input_names` から。[`GraphCanvasModel::valueInputNamesFor()`](../../src/devstudio/model/graphcanvasvalues.cpp#L841))、`pose.clip_sample` の `clip`(rig の animation)。`default` の無い数は 0(`integer` は表の `min`)、bool は false から始まるので、OK で見えている値のまま置けます([必須のダイアログを作る所](../../src/devstudio/view/graphcanvasrenderfields.cpp#L2406))。`alternatives` を持つ必須は「どちらか 1 つ」の radio で、op の入力 port の名前でもある候補(`voice`)は線で満たします。OK は、選んだ側の欄が空の間は押せません。
 - UX-12a の前は、`required_parameters`(✅CT-1)を名前の規則で欄にしていて(`value.morph_weight` の `node` / `target` も数の spin になる規則でした)、catalog がそれを出さない engine では UX-7 の Studio の表(`render.scalar` / `value.constant` / `value.input` の 3 つ)を使っていました。UX-12a でこの表は消え、catalog が `parameters` を出さない engine ではダイアログは出ません(コードの読み)。今の規則では `value.morph_weight` の `node` / `target` は `integer` の spin(表の `min` の 0 から)です。CT-4 から `value.morph_weight` は owner のある instance の中にしか置けない op です(engine の CT-4 の commit の記録)。palette での見え方は確かめていません(未確認)。
 - UX-7 の前は、palette から置いたこれらの node は parameters が空で、engine に名前で断られ(RS-15 からは `graph.render_node_parameters_missing@1`)、GUI で書く欄が無いので `gui_build_ltc` は面光源の角を shader の定数にしていました(シナリオの description の記録)。
-- **自動化での書き方**: graph の node の parameter は、canvas の値の帯に打って書くか、✅UX-12a から右の欄(`pelican.graphCanvasParameters.<名前>`、`pose.clip_sample` は `pelican.graphCanvasPose.<名前>`)で書きます。詳細表の行の編集欄は自動化から開きません(表の editor は名前を持たないため)。UX-12a の前は、まだ持っていない鍵には帯が無いので、render node の鍵は専用の欄で、上の 3 つはこのダイアログで書いていました(UX-7 の決定 8。[README の「A node's parameters」](../../test/studio_scenarios/README.md#L685)。README は UX-12a で変わっていません)。
+- **自動化での書き方**: graph の node の parameter は、canvas の値の帯に打って書くか、✅UX-12a から右の欄(`pelican.graphCanvasParameters.<名前>`、`pose.clip_sample` は `pelican.graphCanvasPose.<名前>`)で書きます。詳細表の行の編集欄は自動化から開きません(表の editor は名前を持たないため)。UX-12a の前は、まだ持っていない鍵には帯が無いので、render node の鍵は専用の欄で、上の 3 つはこのダイアログで書いていました(UX-7 の決定 8。[README の「A node's parameters」](../../test/studio_scenarios/README.md#L698)。README は UX-12a で変わっていません)。
 - test: [「UX-7 decision 5: render.scalar, value.constant and value.input ask for what they cannot be placed without, and are placed with it」](../../test/devstudio_graphcanvas_scene_test.cpp#L10548)、✅UX-12a から [「UX-12a decision 2: the palette's dialog is made from the table -- pose.clip_sample asks for its rig among the project's glTF files and its clip among the rig's animations, and is placed with them」](../../test/devstudio_graphcanvas_scene_test.cpp#L11821)。
 
 **ループと分岐の後に足した node も描きます(✅UX-7)**: GB-3 で、ループと分岐を組んだ後に palette で足した `render.raster` が、文書にも frame plan にも入るのに canvas に描かれず、Refresh でも出ないことが 3 回ありました。canvas は値の帯のその場編集の editor が開いている間は描き直しを待っていて、その pick が帯に当たって editor が開いたままになっていたためです(シナリオの description の記録)。今は、文書の中身が変わった読みなら editor が開いていても描き直し、editor と打った字を新しい描画へ持ち越します([描き直しの判定](../../src/devstudio/view/graphcanvaswidget.cpp#L9807))。中身の変わらない読み(配置や報告だけ)は今までどおり editor を待ちます。test は [「UX-7 decision 7: a node the document gains is drawn while a pill's editor is open, the editor carried over the new drawing」](../../test/devstudio_graphcanvas_scene_test.cpp#L10643) です。
@@ -6255,7 +6255,7 @@ RPC の名前だけで、params は絞りません。送るのが rendering 節�
 チャネルは**逐次**で、命令の実行中に次の行が来たら `automation.busy@1` で断ります
 ([判定](../../src/devstudio/automation/automationserver.cpp#L102))。認証はありません(flag を付けたときだけ開く口です)。
 
-**命令は 23 個**です([一覧](../../src/devstudio/automation/automationcommands.cpp#L2236)):
+**命令は 23 個**です([一覧](../../src/devstudio/automation/automationcommands.cpp#L2307)):
 `list` / `click` / `double_click` / `drag` / `wheel` / `move` / `press` / `release` / `key` / `type` / `text` / `select` /
 `action` / `menu_list` / `view_state` / `layout_stats` / `wait` / `wait_engine` / `rpc` /
 `open_project` / `screenshot` / `viewport_size` / `quit`。`rpc` は `EmbeddedViewport` 経由で engine へ送り、応答をそのまま返します。
@@ -6270,13 +6270,13 @@ RPC の名前だけで、params は絞りません。送るのが rendering 節�
 前に古い engine へ未保存の編集を問います(G-5)。その往復の間も古い engine は editor RPC に答えるので、以前の `wait_engine` は
 その engine で通り、次の step が止まった engine に当たって `automation.engine_not_ready@1` で落ちていました。今は
 **再起動は頼まれた時点で始まったと数え**、そこから新しい engine の process が最初の `get_status` に答えるまで、`wait_engine` は
-通りません([wait_engine の判定](../../src/devstudio/automation/automationcommands.cpp#L1900)、
+通りません([wait_engine の判定](../../src/devstudio/automation/automationcommands.cpp#L1971)、
 [再起動待ちを立てる所](../../src/devstudio/view/mainwindow.cpp#L2333))。Cancel などで再起動が見送られれば、すぐ今の engine で
 通ります。再起動を待っている間に Studio が送る editor RPC は古い engine に届き(未保存の問いと Save はそこへ届く必要が
 あるため)、engine が止まった後は既存の 1 行 `The engine viewport is not ready for editor RPC requests.` で断られます。
 Stop ボタンや project の切り替えのような普通の停止は、process が終わるまで ready を落としません(`open_project` はその終わりを
 待ちます)。
-✅MR-1s(`5c26d492`)から、`wait_engine` の答えに **`process_id`**(答えた engine の process の id。`ready`・`waited_ms`・`frames` を付けたときの `published_frames` と並ぶ)が付きます([process_id を足す所](../../src/devstudio/automation/automationcommands.cpp#L1934))。
+✅MR-1s(`5c26d492`)から、`wait_engine` の答えに **`process_id`**(答えた engine の process の id。`ready`・`waited_ms`・`frames` を付けたときの `published_frames` と並ぶ)が付きます([process_id を足す所](../../src/devstudio/automation/automationcommands.cpp#L2005))。
 シナリオは `result` の `remember` で覚え、後の `wait_engine` の `process_id` を `value_of` と `op: eq` で比べて「その間に engine を起こし直していない」を言えます(`gui_material_repair`)。
 
 **指し方は objectName です。**キャンバスの中に描かれたもの(ノード、ソケット、値の帯、その場編集の editor)は
@@ -6304,7 +6304,7 @@ check できるボタン(`QAbstractButton` で `isCheckable()` が真のもの�
 ([`checked` を足す所](../../src/devstudio/automation/automationcommands.cpp#L962))。check box の `text` は caption(例 `Double sided`)なので、
 印が付いているかはこちらで読みます(例 `{"cmd": "list", "pattern": "pelican.materials.doubleSided"}` の `widgets[0].checked`)。
 check できない widget の項目には `checked` の鍵がありません。test は `devstudio_automation_input_test` の
-[「SK-1: list says whether a check box is ticked」](../../test/devstudio_automation_input_test.cpp#L623)(`QCheckBox` の false → true が `checked` に出て、
+[「SK-1: list says whether a check box is ticked」](../../test/devstudio_automation_input_test.cpp#L626)(`QCheckBox` の false → true が `checked` に出て、
 `QPushButton` の項目には無い)です。なお今の `list` は、名前の付いた `QAction` も `class` が `QAction` の項目(`visible` / `enabled` / `checked` /
 `text`)で返します([`QAction` の項目](../../src/devstudio/automation/automationcommands.cpp#L993))。上の「`QAction` は `list` には出ません」は
 Q-1b の着地時の記述で、今のコードとは違います(コードの読み)。発火は今も `action` です。
@@ -6387,7 +6387,7 @@ Q-10 の時点では、埋め込んだ player は窓があるので実物の dev
 
 **Play の間の `quit`(✅UX-7)**: 自動化面の `quit` は、閉じる前に MainWindow の [`stopPlayThen()`](../../src/devstudio/view/mainwindow.cpp#L2102) を通ります([渡す所](../../src/devstudio/view/uimain.cpp#L49))。Play の帯が Playing か Paused(か run がある)と言う間は、帯が送れる時に keep なしの Stop を送り(2 秒ごとに送り直します)、run が終わってから閉じます。15 秒たっても終わらなければ、待つのをやめて閉じる処理へ進みます(Stop に engine が答えないときに止まらないため。そのときに確認のダイアログが出るかは確かめていません。未確認)。UX-7 の前は、Play の間の `quit` が窓の close の「再生を終える確認」のダイアログで止まり、30 秒で強制終了になっていました(`gui_build_ocean` の間欠の失敗)。人が窓を閉じるときは今も確認が出ます。
 
-**`get_status` の返事は 1 回だけ parse します(✅UX-7)**: viewport は、誰が送った `get_status` の返事でも、生の bytes の signal `engineStatusRead` の後に、1 回 parse した JSON を `engineStatusParsed(request_id, status)` で渡します([渡す所](../../src/devstudio/viewport/embeddedviewport.cpp#L834))。Play の帯・Outliner の runtime の行・`wait_engine`([`render.published_frames` を読む所](../../src/devstudio/automation/automationcommands.cpp#L1826))はこれを読みます。UX-7 の前はそれぞれが GUI の thread で parse していて、ループを 16 回展開した graph で約 2 MB の返事が GUI を止めていました(仕様の背景。engine の ✅ST-1 で返事自体も小さくなりました)。UX-6b の `PlanPerfHub` は生の bytes を受けて thread pool で parse します。
+**`get_status` の返事は 1 回だけ parse します(✅UX-7)**: viewport は、誰が送った `get_status` の返事でも、生の bytes の signal `engineStatusRead` の後に、1 回 parse した JSON を `engineStatusParsed(request_id, status)` で渡します([渡す所](../../src/devstudio/viewport/embeddedviewport.cpp#L834))。Play の帯・Outliner の runtime の行・`wait_engine`([`render.published_frames` を読む所](../../src/devstudio/automation/automationcommands.cpp#L1897))はこれを読みます。UX-7 の前はそれぞれが GUI の thread で parse していて、ループを 16 回展開した graph で約 2 MB の返事が GUI を止めていました(仕様の背景。engine の ✅ST-1 で返事自体も小さくなりました)。UX-6b の `PlanPerfHub` は生の bytes を受けて thread pool で parse します。
 
 現在のシナリオは **84 本**です(`test/studio_scenarios/*.json` の数。✅RTL-3s の `gui_rt_checks` と `gui_material_ray_query_from_blank` で 84 本になりました。✅MR-1s と ✅GL-5g は新しいシナリオを足さず、MR-1s は `gui_material_repair` を再起動しない流れに書き直し、GL-5g は常に通る確認の 6 本・開き直した後の絵の 2 本・外れた検査を戻す 2 本(`fullscreen_pass_from_template`・`render_undo_roundtrip`)・`gui_graph_only_edits_2` の (e) を直しました(上の「シナリオの確認が常に通る形(✅GL-5g)」)。RTL-3s は `gui_rt_full_from_blank` と `gui_rt_two_rays_two_misses` の期待を新しい雛形に合わせました。2026-10-05 の全数の後に統合側が `gui_build_C` の期待 1 か所(GL-5e の ` (shown)`)を直しました(`85d0b06b`)。それまでの数え方: 着地の順に、✅RTL-2s a の `gui_rt_hit_groups_from_blank` で 74 本、✅GL-5e の `gui_graph_only_edits_2` と `gui_graph_folded_edits` で 76 本、✅FO-1s の `gui_material_repair` で 77 本、✅GL-5f の `gui_graph_task_delete` で 78 本、✅RTL-2s b + c の `gui_rt_two_rays_two_misses`・`gui_rt_procedural_callable`・`gui_rt_full_from_blank`・`gui_rt_layout_edits` で 82 本になりました。GL-5f は既存の 4 本(`fullscreen_pass_from_template`・`lighting_pass_template`・`render_pipeline_from_scratch`・`render_undo_roundtrip`)を書き直し、FO-1s は `gui_graph_order` を広げました。それまでの数え方: ✅GL-5d の `gui_graph_only_edits` と `gui_graph_order` で 73 本になりました。それまでの数え方: ✅MI-1s の `gui_model_from_file` で 71 本になりました。それまでの数え方: ✅PB-1s の `gui_problems_window` で 70 本になりました。✅PX-2 は新しいシナリオを足さず、`gui_settings_choose`・`gui_build_C`・`gui_build_full`・`gui_build_optimize` の画素を読む点を選び直し、`whole_frame_first_steps` に `"viewport": null` を足しました(下の「viewport の大きさを決める(✅PX-2)」)。✅RR-1s も新しいシナリオを足さず、`gui_problems_window` を 64 step から 79 step に延ばしました。PB-1s は `gui_render_fallback` の帯の文の期待も 1 か所直しました(末尾の ` See Problems.`)。✅PX-1 は新しいシナリオを足さず、`gui_build_C` と `gui_settings_choose` の画素を読む点を選び直しました(下の「画素を読む点と窓の大きさ(✅PX-1)」)。それまでの数え方: ✅BS-1s の `gui_render_fallback` で 69 本になりました。✅MC-1s は新しいシナリオを足さず、GL-5c が再起動を前提にした `input_needs_shader`・`deferred_loop_from_scratch`・`frameplan_layout_then_edit` を再起動しない流れに戻しました。✅MT-3s は `gui_material_from_blank` を延ばしました。✅SK-1 も新しいシナリオを足さず、MC-1s が戻さなかった `sockets_from_shader`・`sockets_fix_and_show` を再起動しない流れに戻し、`gui_material_from_blank` を延ばしました。それまでの数え方: ✅GL-5c の `gui_frameplan_delegates` で 68 本になりました。GL-5c は既存の 15 本の期待も変えました(下の `gui_frameplan_delegates` の後の段落)。それまでの数え方: ✅GL-5b の `gui_graph_new_target` で 67 本になりました。✅MT-2s と ✅MT-2s-b は新しいシナリオを足さず、`gui_material_from_blank` を延ばしました。それまでの数え方: ✅MT-1s の `gui_material_from_blank` で 66 本になりました。それまでの数え方: ✅CT-6s の `gui_build_rt_from_blank` で 65 本になりました。✅UX-15b の `gui_lower_layer_pin_freeze` で 63 本に、✅GL-5a の `gui_folded_pass_edit` で 64 本になりました。✅UX-15a は新しいシナリオを足さず、`rendering_settings_from_blank` を延ばしました。それまでの数え方: ✅HW-2s / AV-1s の `gui_assets_watch_verify` で 62 本になりました。それまでの数え方: ✅AB-1s の `gui_build_audio_reactive` で 61 本になりました。✅UX-12e は `gui_node_parameters` を、✅UX-12d と ✅UX-13d は `gui_settings_choose` を延ばしました。✅UX-14 は、CC-1 の後の絵に合わせて `gui_settings_choose`・`gui_build_ocean`・`gui_build_ocean_compute`・`gui_build_ltc` の期待を直しました(`gui_settings_choose` は CC-1c の後に `a954d38c` でもう一度)。それまでの数え方: ✅UX-10 の `gui_settings_choose` で 59 本に、✅UX-12a の `gui_node_parameters` で 60 本になりました。✅UX-12c は `gui_build_D` を、✅UX-12b は `gui_settings_choose` を延ばし、全シナリオの run で古くなっていた 4 本の期待(`deferred_loop_from_scratch` の光の向きの Raw、`menu_actions` の File の 5 項目、`gui_build_optimize` の provider 名の Draw sort、`loop_zone_wire` の Frame Plan の status 行。最後の 1 本は Studio の側を直しました)を直しました。それまでの数え方: ✅UX-8 の `gui_build_curve` で 57 本に、✅EL-5s の `gui_build_ocean_compute` で 58 本になりました。✅PS-1s / IA-1s / UX-11 は新しいシナリオを足さず、`gui_build_ocean`・`gui_build_ocean_compute`・`gui_build_ltc`・`graph_from_blank` を延ばしました。それまでの数え方: ✅GB-3 の `gui_build_ocean` と `gui_build_ltc` で 54 本に、✅RL-1s の `render_reload_external` で 55 本に、✅GB-4 の `gui_build_music` で 56 本になりました。それまでの数え方: ✅UX-3 の `graph_palette_kinds` で 43 本に、✅GB-1 の `gui_build_A`〜`gui_build_E` で 48 本に、✅RSX の `rendering_settings_from_blank` で 49 本に、✅GB-2 の `gui_build_full` と `gui_build_optimize` で 51 本に、✅GL-3a の `graph_fold_decisions` で 52 本になりました。それまでの数え方: ✅LP-4f1 の `loop_view_axis` と ✅LP-4f2 の `graph_template_bloom` で 31 本から 33 本に、✅EW-2 の `engine_window_embedded` で 34 本に、✅Q-19 の `loop_zone_read` で 35 本に、✅PM-3a の `play_pause_step` で 36 本に、✅PM-3b の `play_mode_roundtrip` と `play_view_camera` で 38 本に、✅PM-3c の `play_runtime_objects` で 39 本に、✅PM-3d で `play_view_camera` を `play_mode_roundtrip` にまとめて 38 本に、✅GL-1 の `graph_folded_features` で 39 本に、✅GL-2b の `graph_layers_origin` で 40 本に、✅GL-1d の `graph_from_blank` と `graph_from_blank_forward` で 42 本になりました)。
 `graph_read` は fixture を Graph タブで開き、`list` が objectName を返すこと・無い名前が
@@ -6820,7 +6820,7 @@ RTL-2s c の実装者の run では、この 4 本に `gui_rt_hit_groups_from_bl
 **viewport の大きさを決める(✅PX-2、`28bc5ef9`)**: 上の PX-1 の根本(run が窓と viewport の大きさを固定しない)を直しました。シナリオの run は、engine の viewport を **720x450**(画の画素)に固定します。
 
 - **命令 `viewport_size`**: `{"cmd": "viewport_size", "width": 720, "height": 450}` は、`pelican.viewportHost`(engine の窓を埋め込む native の widget。`name` で別の widget も指せます)に固定の大きさをかけ、
-  窓をその差の分だけ大きく / 小さくします([`commandViewportSize()`](../../src/devstudio/automation/automationcommands.cpp#L1972))。周りのドックの大きさはそのままで、
+  窓をその差の分だけ大きく / 小さくします([`commandViewportSize()`](../../src/devstudio/automation/automationcommands.cpp#L2043))。周りのドックの大きさはそのままで、
   後でドックを開け閉めしても、場所はドックか窓から取られ、viewport からは取られません(unit test)。窓が最大化か全画面のときは窓の大きさを変えません(コードの読み)。
   - width / height は画の画素(物理画素。engine が描く大きさで、`screen` の screenshot が測る単位)で、widget の devicePixelRatio で割って Qt の論理画素にします。
   - widget がその大きさになるまで待ってから答えます(既定 5 秒、`timeout_ms`)。答えは `name`・`fixed`・engine に渡る大きさの `width` / `height`(viewport が engine に渡すのと同じ `embeddedViewportPixelExtent()` の丸め)・`logical`・`device_pixel_ratio`・`window` です。
@@ -6851,7 +6851,7 @@ RTL-2s c の実装者の run では、この 4 本に `gui_rt_hit_groups_from_bl
 - **⚠ 既定の大きさを変えると、画素を読む 33 本の点を全部測り直すことになります。**点は 720x450 の絵の上で選んだ割合なので、`DEFAULT_VIEWPORT` を変えると全部の点が別の画素に落ちます。
   変えるなら、33 本の点を測り直す WP にしてください(実装者の報告の注意)。
 - 実装者の run(`PELICAN_STUDIO_SCREEN=1`、1 本ずつ -j1): 画素を読む 33 本、点を直した 4 本(と点をもう 1 か所直した 2 本)、画素を読まない残り 37 本、つまり 70 本すべてが固定した viewport で緑でした。`ctest -L studio_cpu -LE gpu` は 723 / 723 です。
-- test: `devstudio_automation_input_test` の [「PX-2: viewport_size holds the viewport while panels come and go」](../../test/devstudio_automation_input_test.cpp#L926)
+- test: `devstudio_automation_input_test` の [「PX-2: viewport_size holds the viewport while panels come and go」](../../test/devstudio_automation_input_test.cpp#L1014)
   (左にドックのある `QMainWindow` で 300x200 に固定し、横のドックの幅が変わらないこと、下にドックを足しても窓を変えても閉じても 300x200 のままのこと、width / height の無い要求と無い名前の拒否、
   対照として `free` の後は窓に従って大きさが変わり最小が戻ること)と、`studio_drive_shutdown_unit`(`test/ci/test_studio_drive.py`)の [`StudioDriveViewportTest`](../../test/ci/test_studio_drive.py#L44) の 3 本
   (既定の大きさを送る / シナリオが自分の大きさか `null` を書ける / 大きさが入らない・形が違う・断られたら run を止める)です。既存の shutdown の test の mock は、`viewport_size` に大きさで答える形になりました。
@@ -6876,18 +6876,18 @@ desktop の grab に戻ります。見えているかは、撮る範囲の 5×5 
 viewport の隣の panel を撮っていました。今は窓の client の原点から測った差にだけ倍率を掛け、辺ごとに四捨五入します(Qt と同じ丸め。
 切り捨てると 125 % で隣の panel の 1 行が入ります。[`physicalScreenRect()`](../../src/devstudio/automation/automationcommands.cpp#L85))。→ 今のコードは、端数の倍率で縁が画素の中に落ちるとき、丸ごと中にある画素だけを取ります(左上は切り上げ、右下は切り捨て。コードの読み)。✅PX-2 の 720x450 の viewport が `screen` では 719x449 に写るのはこのためです(上の「viewport の大きさを決める(✅PX-2)」)。PrintWindow からの切り出しと、desktop に窓が
 見えているかの判定も同じ矩形を使います。desktop に戻るときは、`QScreen::grabWindow` ではなく desktop を `BitBlt` で native に読みます
-([`desktopRegion()`](../../src/devstudio/automation/automationcommands.cpp#L125)、[使う所](../../src/devstudio/automation/automationcommands.cpp#L2164))。それも読めなければ、窓のある画面の `grabWindow` を、その画面の左上からの座標で呼びます。
+([`desktopRegion()`](../../src/devstudio/automation/automationcommands.cpp#L125)、[使う所](../../src/devstudio/automation/automationcommands.cpp#L2235))。それも読めなければ、窓のある画面の `grabWindow` を、その画面の左上からの座標で呼びます。
 `screenshot` の応答は `path` / `mode` / `capture` / `width` / `height`(と、上の場合だけ `desktop_obstructed`)に加えて **`distinct_colors`**(絵に含まれる色の数)を返します
-(✅F-2、[screenshot の distinct_colors](../../src/devstudio/automation/automationcommands.cpp#L2207))。消去されただけの viewport は 1 色なので、
+(✅F-2、[screenshot の distinct_colors](../../src/devstudio/automation/automationcommands.cpp#L2278))。消去されただけの viewport は 1 色なので、
 `result` step で `distinct_colors` を読めば「engine が何か描いたか」を PNG を開かずに判定できます。
 **`"pixels": [[x, y], ...]`**(✅F-4)を付けると、応答にその各点の色が `"#rrggbb"` の配列 `pixels` で返ります
-([screenshot の pixels の読み取り](../../src/devstudio/automation/automationcommands.cpp#L2214))。x / y は絵の幅・高さに
+([screenshot の pixels の読み取り](../../src/devstudio/automation/automationcommands.cpp#L2285))。x / y は絵の幅・高さに
 対する 0〜1 の割合なので、窓の大きさを知らずに書けます。配列でない・2 要素でない・範囲外なら `automation.bad_request@1` です。
 ただし run は窓の大きさを固定しないので、viewport の縦横比は dock の配置で変わります。camera の縦の画角が固定の 3D の絵では、物の左右の位置は幅の割合で動きます(✅PX-1。上の「画素を読む点と窓の大きさ」)。
 → ✅PX-2(`28bc5ef9`)から、run は viewport を 720x450 に固定するので、幅の割合の点も毎回同じ画素に落ちます(上の「viewport の大きさを決める(✅PX-2)」)。
 `result` step の `remember` で 1 点の色を覚え、別の点を `value_of` と `op`(`eq` / `ne`)で比べれば「同じ縞の下も同じ色、隣の縞は違う色」の
 ように、output transform がどんな色にしても絵の形を判定できます。
-✅MT-1s から、同じ点の色を `[r, g, b]`(0〜255)で並べた **`rgb`** も返ります([rgb を足す所](../../src/devstudio/automation/automationcommands.cpp#L2229)。
+✅MT-1s から、同じ点の色を `[r, g, b]`(0〜255)で並べた **`rgb`** も返ります([rgb を足す所](../../src/devstudio/automation/automationcommands.cpp#L2300)。
 `pixels` はそのまま)。`rgb[0][1]` を `remember` し、`rgb[0][0]` を `op: gt` と `plus` で比べれば、色の濃さを知らずに「赤が緑より 40 以上大きい」
 を言えます(`gui_material_from_blank`。シナリオの README の screenshot の段落)。
 

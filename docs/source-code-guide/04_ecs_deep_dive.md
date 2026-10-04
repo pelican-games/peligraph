@@ -569,7 +569,7 @@ level実行前に、その段に入っている**全System**の`prepare_func`が
 
 全て `registerSystemForce` です。Component集合は重なるため、内部Systemを追加する場合は依存とread/write競合を明示的に監査してください。監査を忘れても、`automatic_serialization` ならWARNINGで、`strict` ならエラーで気付けます。
 
-`AnimationSystem` の行は、この表が数えている read/write よりも広い範囲を動かします。同じ tick の中で、ECS の `Animation` Component だけでなく**公開中の共通グラフ文書の animation partition**（pose graph）も評価するからです（§4.13）。この経路が触る「書き手」は ECS Chunk ではなく描画側の animation frame で、1 オブジェクトにつき 1 writer しか許されません。clip 経路が既にそのオブジェクトの frame を公開していれば、pose graph の sink は `pose.sink_conflict@1` で名前付きに落ちます（[`frame.component_writer` のコメント](../../src/core/ecs/predefined/animationsystem.cpp#L339)）。つまり依存表に現れない競合が 1 本あり、それは hazard 検出ではなく**名前付きの実行時拒否**で守られています。
+`AnimationSystem` の行は、この表が数えている read/write よりも広い範囲を動かします。同じ tick の中で、ECS の `Animation` Component だけでなく**公開中の共通グラフ文書の animation partition**（pose graph）も評価するからです（§4.13）。この経路が触る「書き手」は ECS Chunk ではなく描画側の animation frame で、1 オブジェクトにつき 1 writer しか許されません。clip 経路が既にそのオブジェクトの frame を公開していれば、pose graph の sink は `pose.sink_conflict@1` で名前付きに落ちます（[`frame.component_writer` のコメント](../../src/core/ecs/predefined/animationsystem.cpp#L347)）。つまり依存表に現れない競合が 1 本あり、それは hazard 検出ではなく**名前付きの実行時拒否**で守られています。
 
 テストは [`test/ecs_scheduler_test.cpp`](../../test/ecs_scheduler_test.cpp) です。
 
@@ -594,20 +594,20 @@ model instance の数は、同時に生きているものが 1,024 まで、物�
 
 ### `AnimationSystem` はComponent以外も駆動する — `updatePoseGraphs()`
 
-上表の `AnimationSystem` 行は `Animation` Componentの経路だけを書いていますが、実体はもう1本あります。[`updateGraphs()` の最終行](../../src/core/ecs/predefined/animationsystem.cpp#L250)が [`updatePoseGraphs()`](../../src/core/ecs/predefined/animationsystem.cpp#L253) を呼び、**公開中の描画世代が持つ共通グラフ文書のanimation partition**（`pose.*` opの集まり）をowner threadで評価します。Queryに現れないのは、この経路の入口がECS Chunkではなく [`RenderingPassContainer` のsnapshot 取得](../../src/core/ecs/predefined/animationsystem.cpp#L256) だからです。
+上表の `AnimationSystem` 行は `Animation` Componentの経路だけを書いていますが、実体はもう1本あります。[`updateGraphs()` の最終行](../../src/core/ecs/predefined/animationsystem.cpp#L258)が [`updatePoseGraphs()`](../../src/core/ecs/predefined/animationsystem.cpp#L261) を呼び、**公開中の描画世代が持つ共通グラフ文書のanimation partition**（`pose.*` opの集まり）をowner threadで評価します。Queryに現れないのは、この経路の入口がECS Chunkではなく [`RenderingPassContainer` のsnapshot 取得](../../src/core/ecs/predefined/animationsystem.cpp#L264) だからです。
 
 読む順序は次のとおりです。
 
-1. 公開中のprogramが持つpose graphだけをlive集合に入れ、`retainOnly(live)` で世代が変わって消えたものを解放します（[live集合の構築](../../src/core/ecs/predefined/animationsystem.cpp#L262)）。退役した状態機械が、後継が掴もうとしているオブジェクトを握ったまま残らないようにするためです。
-2. programごとに `PoseGraphFrame` を組み立てます（[`frame` の構築](../../src/core/ecs/predefined/animationsystem.cpp#L279)）。時刻・dt・frame revisionに加え、owner（`graph.instance` が名指しした authoring オブジェクト）を実オブジェクトへ解決するcallback群を渡します。名前の無いオブジェクトは「writerを渡す安定した identity が無い」として実行時エラーです（[`frame.object_name`](../../src/core/ecs/predefined/animationsystem.cpp#L284)）。
-3. pose側が読むスカラーは、**同じ文書のvalues partitionを別の評価状態で1回評価**して得ます（[`poseGraphEvaluationState()` を使う箇所](../../src/core/ecs/predefined/animationsystem.cpp#L366)）。描画側の評価状態とは別物で、共有するとreplay系のopが1フレームに2回進みます（[第9章 §9.24](09_black_magic_and_gotchas.md) の難所「`$pose/` のスカラー橋と 2 つの EvaluationState」）。
-4. `runtime.synchronize(pose_graph, frame)` で評価器へ渡します（[この呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L376)）。
+1. 公開中のprogramが持つpose graphだけをlive集合に入れ、`retainOnly(live)` で世代が変わって消えたものを解放します（[live集合の構築](../../src/core/ecs/predefined/animationsystem.cpp#L270)）。退役した状態機械が、後継が掴もうとしているオブジェクトを握ったまま残らないようにするためです。
+2. programごとに `PoseGraphFrame` を組み立てます（[`frame` の構築](../../src/core/ecs/predefined/animationsystem.cpp#L287)）。時刻・dt・frame revisionに加え、owner（`graph.instance` が名指しした authoring オブジェクト）を実オブジェクトへ解決するcallback群を渡します。名前の無いオブジェクトは「writerを渡す安定した identity が無い」として実行時エラーです（[`frame.object_name`](../../src/core/ecs/predefined/animationsystem.cpp#L292)）。
+3. pose側が読むスカラーは、**同じ文書のvalues partitionを別の評価状態で1回評価**して得ます（[`poseGraphEvaluationState()` を使う箇所](../../src/core/ecs/predefined/animationsystem.cpp#L374)）。描画側の評価状態とは別物で、共有するとreplay系のopが1フレームに2回進みます（[第9章 §9.24](09_black_magic_and_gotchas.md) の難所「`$pose/` のスカラー橋と 2 つの EvaluationState」）。
+4. `runtime.synchronize(pose_graph, frame)` で評価器へ渡します（[この呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L384)）。
 
-AG-2のroot motionもここに着地します。[`frame.root_transform_object`](../../src/core/ecs/predefined/animationsystem.cpp#L305) が「変位を受け取れるオブジェクト」をattach時に1回だけ解決してtokenにし、[`frame.apply_root_translation`](../../src/core/ecs/predefined/animationsystem.cpp#L317) が毎フレームの差分を**そのオブジェクトの回転で回してから**加算します（scaleは掛けません — 掛けると同じクリップで移動距離が個体ごとに変わります）。`LocalTransformComponent` を持たないオブジェクト(GP-1 以降の scene では `transform` の無い object、ほかに `load_gltf` の transient object など)は `std::nullopt` を返し、変位は黙って捨てられるのではなく名前付きで拒否されます（`pose.root_motion_no_transform@1`、[`posegraph.hpp` の宣言](../../src/core/animation/posegraph.hpp#L105)）。
+AG-2のroot motionもここに着地します。[`frame.root_transform_object`](../../src/core/ecs/predefined/animationsystem.cpp#L313) が「変位を受け取れるオブジェクト」をattach時に1回だけ解決してtokenにし、[`frame.apply_root_translation`](../../src/core/ecs/predefined/animationsystem.cpp#L325) が毎フレームの差分を**そのオブジェクトの回転で回してから**加算します（scaleは掛けません — 掛けると同じクリップで移動距離が個体ごとに変わります）。`LocalTransformComponent` を持たないオブジェクト(GP-1 以降の scene では `transform` の無い object、ほかに `load_gltf` の transient object など)は `std::nullopt` を返し、変位は黙って捨てられるのではなく名前付きで拒否されます（`pose.root_motion_no_transform@1`、[`posegraph.hpp` の宣言](../../src/core/animation/posegraph.hpp#L105)）。
 
 ### `componentTrace()`: 描いた位相をそのまま返す
 
-[`AnimationSystem::componentTrace()`](../../src/core/ecs/predefined/animationsystem.cpp#L381) は、いま姿勢を駆動しているanimation componentをscene object順に1件ずつ返します（[宣言](../../src/core/ecs/predefined/animationsystem.hpp#L69)）。読みどころは**位相の出どころ**です。graph経路のentryは評価器自身のstatusから複写しますが、clip経路のentryはworker threadから記録するのではなく、[同じ時間写像をもう一度解く `sampled` ラムダ](../../src/core/ecs/predefined/animationsystem.cpp#L392)が `start_time` / `speed` / `loop` の3つでその場で作ります。ヘッダのコメントが理由を書いています — 報告する位相は「二重帳簿としてずれうる別の記録」ではなく**描かれた位相そのもの**である、という取り決めです。副作用として、この読み出しはECSのhot pathを一切遅くしません。
+[`AnimationSystem::componentTrace()`](../../src/core/ecs/predefined/animationsystem.cpp#L389) は、いま姿勢を駆動しているanimation componentをscene object順に1件ずつ返します（[宣言](../../src/core/ecs/predefined/animationsystem.hpp#L69)）。読みどころは**位相の出どころ**です。graph経路のentryは評価器自身のstatusから複写しますが、clip経路のentryはworker threadから記録するのではなく、[同じ時間写像をもう一度解く `sampled` ラムダ](../../src/core/ecs/predefined/animationsystem.cpp#L400)が `start_time` / `speed` / `loop` の3つでその場で作ります。ヘッダのコメントが理由を書いています — 報告する位相は「二重帳簿としてずれうる別の記録」ではなく**描かれた位相そのもの**である、という取り決めです。副作用として、この読み出しはECSのhot pathを一切遅くしません。
 
 ## 4.14 ECS Componentとして保存されないもの
 
