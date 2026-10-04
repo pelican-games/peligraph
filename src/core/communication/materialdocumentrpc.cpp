@@ -750,6 +750,7 @@ bool declaresRenderState(std::string_view source, std::size_t code_offset) {
 // The engine's surface manifests (`surfaces/<family>/manifest.json`, e.g.
 // OpenPBR's) name each surface they list and the material routing it is.
 struct EngineSurfaceVariant {
+    std::string manifest;
     std::string name;
     std::optional<std::string> alpha_mode;
     std::optional<bool> double_sided;
@@ -768,7 +769,7 @@ std::map<std::string, EngineSurfaceVariant> engineSurfaceVariants() {
             if (!variant.is_object() || !variant.contains("surface") || !variant.at("surface").is_string() ||
                 !variant.contains("name") || !variant.at("name").is_string())
                 continue;
-            EngineSurfaceVariant entry{.name = variant.at("name").get<std::string>()};
+            EngineSurfaceVariant entry{.manifest = std::string{id}, .name = variant.at("name").get<std::string>()};
             if (variant.contains("alpha_mode") && variant.at("alpha_mode").is_string())
                 entry.alpha_mode = variant.at("alpha_mode").get<std::string>();
             if (variant.contains("double_sided") && variant.at("double_sided").is_boolean())
@@ -919,8 +920,49 @@ Json rebuildMaterial(Json answer, const std::string &path, const std::string &na
     return answer;
 }
 
-Json editMaterial(const Json &params, PathResolver &paths, watch::ReloadService *reload_service) {
+// VR-1: an engine surface manifest (OpenPBR's) pairs each surface it lists
+// with one routing, and a material on such a surface is drawn by that pair
+// (lowering refuses a routing whose pipeline state is not its surface's).
+// Studio sends the surface and the routing each on its own, so the half not
+// sent follows the half sent, in the same edit: a surface alone takes its
+// routing (the material holding one), a routing alone takes the surface of
+// that routing from the manifest of the material's surface. Both sent, or a
+// surface no manifest lists, are taken as they are.
+void pairSurfaceVariant(Json &params, const OrderedJson &material) {
+    const bool surface_sent = params.contains("surface");
+    const bool routing_sent = params.contains("routing") && params.at("routing").is_object();
+    if (surface_sent == routing_sent) return;
+    const auto variants = engineSurfaceVariants();
+    const auto routingOf = [](const EngineSurfaceVariant &variant) -> std::optional<OrderedJson> {
+        if (!variant.alpha_mode || !variant.double_sided) return std::nullopt;
+        return OrderedJson{{"alpha_mode", *variant.alpha_mode}, {"double_sided", *variant.double_sided}};
+    };
+    if (surface_sent) {
+        if (params.contains("routing") || !material.contains("routing")) return;
+        const auto found = variants.find(params.at("surface").get<std::string>());
+        if (found == variants.end()) return;
+        const auto routing = routingOf(found->second);
+        if (!routing) return;
+        const auto held = routingFromJson(material.at("routing"));
+        if (!held || *held != *routingFromJson(*routing)) params["routing"] = toJson(*routing);
+        return;
+    }
+    if (!material.contains("surface") || !material.at("surface").is_string()) return;
+    const auto current = variants.find(material.at("surface").get<std::string>());
+    const auto wanted = routingFromJson(toOrdered(params.at("routing")));
+    if (current == variants.end() || !wanted) return;
+    for (const auto &[reference, variant] : variants) {
+        if (variant.manifest != current->second.manifest) continue;
+        const auto routing = routingOf(variant);
+        if (!routing || *routingFromJson(*routing) != *wanted) continue;
+        if (reference != current->first) params["surface"] = reference;
+        return;
+    }
+}
+
+Json editMaterial(const Json &sent, PathResolver &paths, watch::ReloadService *reload_service) {
     constexpr std::string_view method = "edit_material";
+    Json params = sent;
     requireOnly(method, params,
                 {"base_material_digest", "path", "name", "values", "textures", "tags", "routing", "variants",
                  "surface"});
@@ -956,6 +998,7 @@ Json editMaterial(const Json &params, PathResolver &paths, watch::ReloadService 
     const auto material_name = material.value("name", std::string{});
     auto previous = OrderedJson::object();
     SurfaceCache surfaces{paths};
+    pairSurfaceVariant(params, material);
 
     if (params.contains("surface")) {
         previous["surface"] = material.contains("surface") ? material.at("surface") : OrderedJson(nullptr);

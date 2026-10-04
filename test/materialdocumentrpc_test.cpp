@@ -756,4 +756,141 @@ TEST_CASE("MT-3 a Blank box's material takes a new texture and blend routing ove
     }
 }
 
+// VR-1. Studio's material dock sends the surface and the routing each on its
+// own. An OpenPBR material's surface variant and its routing are one choice
+// (the surface manifest pairs them), so the half not sent follows the half
+// sent, in the same write: the bindings take the routing (MT-3) and the box is
+// rebuilt. Both sent and not a pair is refused by name, nothing written.
+TEST_CASE("VR-1 a Blank box's OpenPBR material changes variant from the surface or the routing alone over RPC",
+          "[vr1][material][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("variant");
+    const auto root = makeBlankBoxProject(dir.root, true);
+    const auto capture = dir.root / "capture.png";
+    const std::string path = "materials/paint.material.json";
+    constexpr std::string_view openPbrBlend = "engine://surfaces/openpbr/blend_single.surface";
+    constexpr std::string_view openPbrOpaqueDouble = "engine://surfaces/openpbr/opaque_double.surface";
+    const Json opaqueSingle{{"alpha_mode", "opaque"}, {"double_sided", false}};
+    const Json blendSingle{{"alpha_mode", "blend"}, {"double_sided", false}};
+    const Json opaqueDouble{{"alpha_mode", "opaque"}, {"double_sided", true}};
+    // The magenta box drawn solid, and half of it over the white clear.
+    const auto solidMagenta = [](const Rgb &rgb) { return rgb.r > rgb.g + 120 && rgb.b > rgb.g + 120; };
+    const auto seeThroughMagenta = [](const Rgb &rgb) {
+        return rgb.g > 60 && rgb.r > rgb.g + 30 && rgb.b > rgb.g + 30;
+    };
+    std::string bindings_reference;
+
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        const auto actor =
+            rpc.result("open_editor_session", {{"display_name", "VR-1"}}).at("actor_id").get<std::uint64_t>();
+        REQUIRE(rpc.edit(actor, spawnCube()).at("status") == "committed");
+        // As Studio's New material makes it: the surface with list_surfaces'
+        // routing for it, half opaque (an opaque surface draws it solid).
+        REQUIRE(rpc.result("create_material", {{"path", path},
+                                               {"surface", openPbrOpaque},
+                                               {"routing", opaqueSingle},
+                                               {"values",
+                                                {{"base_color", {0.0, 0.0, 0.0, 1.0}},
+                                                 {"emission_color", {1.0, 0.0, 1.0, 1.0}},
+                                                 {"emission_luminance", 1.0},
+                                                 {"geometry_opacity", 0.5}}}})
+                    .at("applied") == "live");
+        const auto bound = rpc.result("bind_material", {{"model", cube}, {"material", "paint"}});
+        REQUIRE(bound.at("applied") == "live");
+        bindings_reference = bound.at("material_bindings").get<std::string>();
+        {
+            const auto pixel = rpc.centre(capture);
+            INFO("bound " << pixel);
+            CHECK(solidMagenta(pixel));
+        }
+
+        // (a) The surface alone, as the dock's Surface box sends it: the
+        // routing follows the blend surface, and the binding with it.
+        const auto digest = rpc.result("get_material", {{"path", path}}).at("material_digest").get<std::string>();
+        const auto blended = rpc.result(
+            "edit_material", {{"base_material_digest", digest}, {"path", path}, {"surface", openPbrBlend}});
+        INFO(blended.dump(2));
+        CHECK(blended.at("committed") == true);
+        CHECK(blended.at("applied") == "rebuilt");
+        CHECK(blended.at("restart_required").is_null());
+        CHECK(blended.at("rebuilt_models") == Json::array({std::string{cube}}));
+        CHECK(blended.at("previous") == Json{{"surface", openPbrOpaque}, {"routing", opaqueSingle}});
+        REQUIRE(blended.at("rewritten_bindings").size() == 1);
+        CHECK(blended.at("rewritten_bindings").at(0).at("material_bindings") == bindings_reference);
+        {
+            const auto read = rpc.result("get_material", {{"path", path}});
+            CHECK(read.at("material_digest") == blended.at("material_digest"));
+            CHECK(read.at("material").at("surface") == std::string{openPbrBlend});
+            CHECK(read.at("material").at("routing") == blendSingle);
+            const auto bindings = Json::parse(readFile(root / bindings_reference));
+            CHECK(bindings.at("bindings").at(0).at("routing") == blendSingle);
+            const auto pixel = rpc.centre(capture);
+            INFO("surface alone " << pixel);
+            CHECK(seeThroughMagenta(pixel));
+        }
+
+        // (b) Both sent and not a pair: refused by name, nothing written.
+        const auto bindings_before = readFile(root / bindings_reference);
+        const auto mismatch = rpc.refusal("edit_material", {{"base_material_digest", blended.at("material_digest")},
+                                                            {"path", path},
+                                                            {"surface", openPbrBlend},
+                                                            {"routing", opaqueSingle}});
+        INFO(mismatch.dump(2));
+        CHECK(mismatch.at("error_code") == "material.document_invalid@1");
+        CHECK(mismatch.at("error_fields").at("path") == path);
+        CHECK(mismatch.at("error_fields").at("reason").get<std::string>().find("does not match surface") !=
+              std::string::npos);
+        CHECK(rpc.result("get_material", {{"path", path}}).at("material_digest") == blended.at("material_digest"));
+        CHECK(readFile(root / bindings_reference) == bindings_before);
+
+        // (c) The routing alone, as the dock's Alpha mode row sends it: the
+        // surface follows to the OpenPBR variant of that routing.
+        const auto doubled = rpc.result("edit_material", {{"base_material_digest", blended.at("material_digest")},
+                                                          {"path", path},
+                                                          {"routing", opaqueDouble}});
+        INFO(doubled.dump(2));
+        CHECK(doubled.at("applied") == "rebuilt");
+        CHECK(doubled.at("rebuilt_models") == Json::array({std::string{cube}}));
+        CHECK(doubled.at("previous") == Json{{"surface", openPbrBlend}, {"routing", blendSingle}});
+        REQUIRE(doubled.at("rewritten_bindings").size() == 1);
+        {
+            const auto read = rpc.result("get_material", {{"path", path}});
+            CHECK(read.at("material").at("surface") == std::string{openPbrOpaqueDouble});
+            CHECK(read.at("material").at("routing") == opaqueDouble);
+            const auto bindings = Json::parse(readFile(root / bindings_reference));
+            CHECK(bindings.at("bindings").at(0).at("routing") == opaqueDouble);
+            const auto pixel = rpc.centre(capture);
+            INFO("routing alone " << pixel);
+            CHECK(solidMagenta(pixel));
+        }
+        (void)rpc.result("save_scene");
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+
+    // The next start loads the box with the material and binding written.
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        CHECK(rpc.result("get_material_bindings", {{"model", cube}}).at("primitives").at(0).at("material") == "paint");
+        CHECK(rpc.result("get_material", {{"path", path}}).at("material").at("surface") ==
+              std::string{openPbrOpaqueDouble});
+        {
+            const auto pixel = rpc.centre(capture);
+            INFO("next start " << pixel);
+            CHECK(solidMagenta(pixel));
+        }
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+}
+
 } // namespace Pelican

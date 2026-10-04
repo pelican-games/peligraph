@@ -81,6 +81,14 @@ class ReloadService;
 //     (rewritten_bindings: [{model, material_bindings, bindings_digest,
 //     previous_bindings_digest}], [] when none); a routing taken off a
 //     bound material is refused, material.routing_conflict@1.
+//     VR-1: an engine surface manifest (OpenPBR's) pairs each surface it
+//     lists with a routing; the half of that pair not sent follows the half
+//     sent, in the same edit: `surface` alone takes its manifest routing
+//     (when the material holds a routing), `routing` alone takes the surface
+//     of that routing from the manifest of the material's surface. The key
+//     that followed is in `previous` like a sent one. Both sent are taken as
+//     they are; a routing whose pipeline state is not the surface's is
+//     refused, material.document_invalid@1.
 //   create_material {path, surface, name?, values?, tags?, routing?}
 //     writes a new one-material document and lists it in asset_data
 //     materials[] (one transaction), then registers it live
