@@ -2007,7 +2007,7 @@ output schema・format・MSAA(sample 数)・local-read・attachment state で描
     ✅AV-1 から、`PELICAN_WITH_HOT_RELOAD=OFF` の build(配布 build)では起動のしかたに関係なく動きません([第10章](10_tools.md) §10.5)。
     ✅HW-1 から、project.json に `hot_reload` を宣言すると `--rpc` の下でも watcher は動きますが、`--rpc` の下では watcher の変更は
     この経路(`pelican.render_pipeline` の参加者)に届きません([除外する所](../../src/core/watch/reloadservice.cpp#L920))。
-    Studio が起こす engine には常に `--rpc` が付くので([Studio の起動引数](../../src/devstudio/viewport/studioplayerarguments.cpp#L81))、
+    Studio が起こす engine には常に `--rpc` が付くので([Studio の起動引数](../../src/devstudio/viewport/studioplayerarguments.cpp#L90))、
     Studio の中の engine はこの経路を通りません。Studio の外でディスクの文書を書き換えたときは、`reload_render_documents`(✅RL-1)で取り込みます。
     これは下の「編集 RPC の候補」として組み直します([第13章](13_editor.md)の「ディスクで書き換えた render 文書を取り込む」)。
 - **編集 RPC の候補**(`edit_graph_document` など): 照合を外しません([`validate_live_materials = true` の所](../../src/core/vkcore/renderer.cpp#L3864))。
@@ -2030,6 +2030,8 @@ SDR の表の format で足した deferred の material pass は起こし直さ�
 [「MC-1 the palette's deferred material pass on the graph's nodes is applied without a restart」](../../test/engine_primitives_test.cpp#L1009)
 (GPU。Blank に palette と同じ op で pass を足す。SDR の表では committed・`restart_required` 無し・frame plan に pass が出て、present に albedo を繋ぐと
 spawn した cube が描かれる。HDR の表では `material_physical_contract_changed`・`pass: "render_material_pass"`・`detail: ["color_formats"]`)。
+Studio の Graph の palette は ✅MC-1s(`1d10bd4c`)から、Frame Plan の form と同じ表で `hdr` に合わせた format の image を足すので、Blank で deferred の
+material pass を置いても engine は起こし直しません([第13章](13_editor.md) の「render.material_pass と draw.* の node(✅LP-4e)」)。
 
 outputごとにblendまたは書き込みchannelを変える場合は、同じpassへ
 `material_output_states`を追加します。キーはRT名やlocation番号ではなく
@@ -2335,16 +2337,16 @@ standard / toon に続く**特権なしの standard library surface** として�
 
 ### RPC で material を読み書きする(✅MT-1、`976c410d`)
 
-MT-1 の前は、Blank の project で物体の色を 1 つ変えるのに JSON を 3 つ手で書き(material 文書・asset_data の `materials[]`・material_bindings)、engine を起こし直していました(仕様書の記述)。MT-1 から、動いている engine が material 文書・`.surface` の宣言・model の割り当てを RPC で読み書きします。エディタはファイルを自分で書かず、この RPC を送ります([MT-1 の 7 本を登録する所](../../src/core/communication/materialdocumentrpc.cpp#L1698)。[engine の RPC に MT-1 を足す行](../../src/core/communication/rpcserver.cpp#L1590))。引数・返り値・拒否の表は [第10章](10_tools.md) §10.3 の「material 文書を読み書きする」と [第13章](13_editor.md) §13.5 です。✅MT-1s(`2d81ef51`)から、Studio の Materials のドックと Inspector の Material の行がこの RPC を呼び、Blank の project でも GUI だけで material を作り、色を変え、箱に割り当てられます([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
+MT-1 の前は、Blank の project で物体の色を 1 つ変えるのに JSON を 3 つ手で書き(material 文書・asset_data の `materials[]`・material_bindings)、engine を起こし直していました(仕様書の記述)。MT-1 から、動いている engine が material 文書・`.surface` の宣言・model の割り当てを RPC で読み書きします。エディタはファイルを自分で書かず、この RPC を送ります([MT-1 の 7 本を登録する所](../../src/core/communication/materialdocumentrpc.cpp#L1741)。[engine の RPC に MT-1 を足す行](../../src/core/communication/rpcserver.cpp#L1590))。引数・返り値・拒否の表は [第10章](10_tools.md) §10.3 の「material 文書を読み書きする」と [第13章](13_editor.md) §13.5 です。✅MT-1s(`2d81ef51`)から、Studio の Materials のドックと Inspector の Material の行がこの RPC を呼び、Blank の project でも GUI だけで material を作り、色を変え、箱に割り当てられます([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
 
 - **読む 4 本**: `list_materials`(asset_data の `materials[]` の全部の文書と、その中の material)、`get_material`(1 つの material を文書のまま)、`get_surface_schema`(`.surface` の `//!` の宣言の `params` と `textures`。宣言にあるものだけで、何も足しません)、`get_material_bindings`(model の primitive ごとの material。✅MT-2 から、その model を描く scene の object の数 `objects` と、そのうち自分の material を持つ数 `object_overrides` も)。
 - **surface の一覧(✅MT-1b、`a6373c01`)**: `list_surfaces {}` は、material を作るときに選べる `.surface` を並べます(下の「surface の一覧」)。
 - **書く 3 本**: `edit_material`(文書の 1 つの material を直す)、`create_material`(material 文書を作って asset_data に載せる)、`bind_material`(model の material_bindings を書く)。どれも読んだときの digest を CAS に、project の文書の transaction で書き、返る前に動いている engine に当てます。当てられないときは、書いたうえで `applied: "restart_required"` と `restart_required: {reason}` を返します(当てたときは `applied: "live"`、✅MT-3 から `edit_material` は `"rebuilt"` も。どちらも `restart_required: null`)。
 
-**`edit_material` は values だけなら live、ほかの鍵は material を登録し直して rebuilt です(✅MT-3、`c6f94eb7`)。**決めるのは、その編集で実際に変わった鍵です([live か rebuilt かを決める所 MT-3](../../src/core/communication/materialdocumentrpc.cpp#L1073))。MT-3 の前は、`textures` / `tags` / `routing` / `variants` / `surface` が変われば文書を書いて `restart_required` を返し、engine を起こし直すまで効きませんでした(MT-1 の記録)。
+**`edit_material` は values だけなら live、ほかの鍵は material を登録し直して rebuilt です(✅MT-3、`c6f94eb7`)。**決めるのは、その編集で実際に変わった鍵です([live か rebuilt かを決める所 MT-3](../../src/core/communication/materialdocumentrpc.cpp#L1116))。MT-3 の前は、`textures` / `tags` / `routing` / `variants` / `surface` が変われば文書を書いて `restart_required` を返し、engine を起こし直すまで効きませんでした(MT-1 の記録)。
 
-- `values` だけが変わったときは、WP105 の値の reload と同じ [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L380) でその場に当てます([edit_material が値の reload を呼ぶ所](../../src/core/communication/materialdocumentrpc.cpp#L1090))。`applied: "live"` です。
-- `textures` / `tags` / `routing` / `variants` / `surface` のどれかが実際に変わったときは(`values` が一緒に変わっても)、文書を書いた後に、その material をその場で登録し直します([MT-3 の登録し直しと組み直し `rebuildMaterial`](../../src/core/communication/materialdocumentrpc.cpp#L867))。答えは `applied: "rebuilt"`・`restart_required: null`・`rebuilt_models: [model]` です。
+- `values` だけが変わったときは、WP105 の値の reload と同じ [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L380) でその場に当てます([edit_material が値の reload を呼ぶ所](../../src/core/communication/materialdocumentrpc.cpp#L1133))。`applied: "live"` です。
+- `textures` / `tags` / `routing` / `variants` / `surface` のどれかが実際に変わったときは(`values` が一緒に変わっても)、文書を書いた後に、その material をその場で登録し直します([MT-3 の登録し直しと組み直し `rebuildMaterial`](../../src/core/communication/materialdocumentrpc.cpp#L868))。答えは `applied: "rebuilt"`・`restart_required: null`・`rebuilt_models: [model]` です。
   - 手順: `VulkanManageCore::waitIdle()` → [`ProjectMaterialAssetContainer::reregisterDocument()`](../../src/core/material/projectmaterialasset.cpp#L568) が文書を読み直し、その文書の material を同じ名前で新しく登録します(shader・pipeline・texture・draw の tag・route・variant を文書のとおりに。値の reload もこの文書については新しい登録を追います)→ 前の登録で描いていた model を [`ReloadService::reloadModelsNow()`](../../src/core/watch/reloadservice.cpp#L409) でその場で組み直す → 前の登録を `MaterialContainer::releaseModelResources()` の deferred で解放(Vulkan の object は DeletionQueue に移り、material の slot の再利用は in-flight の窓が過ぎるまで待つ。header の注記)。render config の世代は組み直しません(コードの読み)。
   - 組み直す model([`ModelAssetContainer::modelsDrawingMaterials()`](../../src/core/asset/model.cpp#L913)): template の primitive が前の material を使う model(material_bindings による割り当てを含む)、前の material で描いている生きた instance を持つ model(✅MT-2 の object の上書きを含む。[`PolygonInstanceContainer::modelsDrawingMaterials()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1037) が draw item の material から引く)、この編集が binding を書き直した model(読み込まれているもの)。
 - `restart_required` になるのは次のときです。どれも文書は書かれたままで、`reason` がどれかを言います。
@@ -2357,15 +2359,15 @@ MT-1 の前は、Blank の project で物体の色を 1 つ変えるのに JSON 
 
 **`routing` を変えると、その material を指す binding も同じ書き込みで書き直します(✅MT-3)。**起動時の照合は `binding.routing` と material の routing の不一致を hard error にするので(上の「primitive binding」)、MT-3 の前は割り当て済みの material の routing を変えると、次の起動でその model が読み込めなくなりました(MT-1 の残る穴の記録)。
 
-- `routing` が実際に変わるとき、asset_data の `models[]` の `material_bindings` の文書のうち、その material の名前を `material` に持つ行の `routing` を新しい値にし、material の文書と同じ 1 つの transaction で書きます([MT-3 の binding の書き直し](../../src/core/communication/materialdocumentrpc.cpp#L1000))。読めない bindings の文書は飛ばします(その model は編集に関係なく読み込まれないため。コードの注記)。書き直した文書が読めなくなるなら `material.binding_invalid@1` で、何も書きません。
+- `routing` が実際に変わるとき、asset_data の `models[]` の `material_bindings` の文書のうち、その material の名前を `material` に持つ行の `routing` を新しい値にし、material の文書と同じ 1 つの transaction で書きます([MT-3 の binding の書き直し](../../src/core/communication/materialdocumentrpc.cpp#L1043))。読めない bindings の文書は飛ばします(その model は編集に関係なく読み込まれないため。コードの注記)。書き直した文書が読めなくなるなら `material.binding_invalid@1` で、何も書きません。
 - 答えの `rewritten_bindings: [{model, material_bindings, bindings_digest, previous_bindings_digest}]` が書き直した文書です(書いた答えには必ず付き、無ければ `[]`。`changed: false` の答えには付きません)。答えの `previous` の `routing` を送り返すと、binding も同じ道で前の routing に戻ります。
 - ✅MT-2 の object の上書き(`simplemodelview.materials`)は material の名前だけを持ち routing を持たないので、ずれません。
 - 割り当て済みの material の `routing` を外す(`routing: null`)要求は、binding が routing を要るので `material.routing_conflict@1 {path, material, routing: null, bound_by: [{model, routing}]}` で断り、material も binding も書きません(`bound_by` は bindings の文書ごとに、その material を指す最初の行の routing)。どの binding にも指されていない material の `routing` は外せます(コードの読み)。
 - `bind_material` が binding に書く routing は、✅MT-3 から material の文書の値です(MT-3 の前は engine が登録している値でした)。
 
-**`create_material` は live で登録します。**1 つの material の文書を作り、asset_data の `materials[]` に `{path}` を足すのを 1 つの transaction で書き、[`ProjectMaterialAssetContainer::registerDocument()`](../../src/core/material/projectmaterialasset.cpp#L561) で登録します([create_material が登録を呼ぶ所](../../src/core/communication/materialdocumentrpc.cpp#L1219))。登録できなければ `restart_required` です。
+**`create_material` は live で登録します。**1 つの material の文書を作り、asset_data の `materials[]` に `{path}` を足すのを 1 つの transaction で書き、[`ProjectMaterialAssetContainer::registerDocument()`](../../src/core/material/projectmaterialasset.cpp#L561) で登録します([create_material が登録を呼ぶ所](../../src/core/communication/materialdocumentrpc.cpp#L1262))。登録できなければ `restart_required` です。
 
-**`bind_material` は model を読み直して当てます。**model の `pelican.material_bindings` の文書を書き(無ければ作る)、[`ReloadService::reloadModelsNow()`](../../src/core/watch/reloadservice.cpp#L409) で model の reload の transaction を 1 つ、返る前に commit します([bind_material が model を読み直す所](../../src/core/communication/materialdocumentrpc.cpp#L1687))。
+**`bind_material` は model を読み直して当てます。**model の `pelican.material_bindings` の文書を書き(無ければ作る)、[`ReloadService::reloadModelsNow()`](../../src/core/watch/reloadservice.cpp#L409) で model の reload の transaction を 1 つ、返る前に commit します([bind_material が model を読み直す所](../../src/core/communication/materialdocumentrpc.cpp#L1730))。
 
 - `bind_material` の割り当ては **model 単位**です。`engine://primitives/cube` に割り当てると、その model を使う cube は全部同じ material になります(仕様書の記述)。1 つの object だけを変えるのは ✅MT-2 の `set_object_material` です(下の「object ごとの上書き」)。
 - `engine://primitives/cube` のように asset_data に宣言の無い基本形には、`models[]` に宣言を足します(第5章 §5.2)。
@@ -2374,7 +2376,7 @@ MT-1 の前は、Blank の project で物体の色を 1 つ変えるのに JSON 
 
 **戻し**は、返り値の `previous` を同じ RPC で送ります(`edit_material` は新しい `material_digest` と一緒に、`bind_material` は `previous.bindings` を `bindings` に)。`delete_material` はありません。
 
-- **元の material に戻るときは外す(✅MT-2b、`213562bb`)**: 送り返した bindings で全 primitive が model の元の material(glTF の slot、engine の基本形なら `pelican.primitive.default`)に戻るとき、`bind_material` は binding を書かずに外します。bindings の文書を消す・asset_data の `material_bindings` の鍵を外す・MT-1 が基本形に足した `models[]` の項目を外す、の 3 つを 1 つの transaction で書き、model を読み直します([MT-2b の binding を外して読み直す所](../../src/core/communication/materialdocumentrpc.cpp#L1416))。返り値の `material_bindings` と `bindings_digest` は `null` で、`previous` と digest の組は今までどおりです。宣言が無い状態で同じものを送ると `changed: false` です。
+- **元の material に戻るときは外す(✅MT-2b、`213562bb`)**: 送り返した bindings で全 primitive が model の元の material(glTF の slot、engine の基本形なら `pelican.primitive.default`)に戻るとき、`bind_material` は binding を書かずに外します。bindings の文書を消す・asset_data の `material_bindings` の鍵を外す・MT-1 が基本形に足した `models[]` の項目を外す、の 3 つを 1 つの transaction で書き、model を読み直します([MT-2b の binding を外して読み直す所](../../src/core/communication/materialdocumentrpc.cpp#L1459))。返り値の `material_bindings` と `bindings_digest` は `null` で、`previous` と digest の組は今までどおりです。宣言が無い状態で同じものを送ると `changed: false` です。
 - 行を書かずに外すのは、bindings の形式が点を含む material 名(`pelican.primitive.default`)を行に書けないためです(commit の記述)。MT-2b の前は、基本形で最初の bind の `previous` を送り返すと `material.binding_invalid@1` で断られました(仕様書の記述)。一部の primitive だけを既定に戻すときは、今までどおり slot の名前の行を書きます。
 - test: [`materialdocumentrpc_test` の MT-2b の GPU test](../../test/materialdocumentrpc_test.cpp#L548)(Blank の箱に赤を bind し、`previous` を送り返すと灰に戻る。asset_data が bind の前と同じ内容になり、bindings の文書が無くなる。もう一度送ると `changed: false`)。
 
@@ -2393,11 +2395,11 @@ test: [`materialdocumentrpc_test` の MT-1 の GPU test](../../test/materialdocu
 
 test(✅MT-3): [`materialdocumentrpc_test` の MT-3 の GPU test](../../test/materialdocumentrpc_test.cpp#L629)(Blank の project に forward_opaque と forward_transparent の 2 つの material pass を置き、箱にマゼンタの material を bind。割り当て済みの material の `routing: null` が `material.routing_conflict@1` で断られ、material の digest と bindings の文書が変わらない。`emission_color_map` に青の png を入れると `rebuilt`・`rebuilt_models` に箱・`rewritten_bindings: []` で次の frame に青。surface を `blend_single`・routing を `blend`・`geometry_opacity` を 0.5 にすると、`rewritten_bindings` に箱の bindings の文書 1 つ・その文書の行の routing が blend で、次の frame に白が透ける青。保存して起動し直しても同じに描かれる)。
 
-**surface の一覧(✅MT-1b、`a6373c01`)。**MT-1b の前は、Studio の New material で surface を選ぶ一覧を engine から読む口が無く、Studio はこの章の一覧を写そうとしていました(仕様書の記述)。`list_surfaces {}` は engine が知っている surface と project の surface を並べます([list_surfaces の本体](../../src/core/communication/materialdocumentrpc.cpp#L837))。
+**surface の一覧(✅MT-1b、`a6373c01`)。**MT-1b の前は、Studio の New material で surface を選ぶ一覧を engine から読む口が無く、Studio はこの章の一覧を写そうとしていました(仕様書の記述)。`list_surfaces {}` は engine が知っている surface と project の surface を並べます([list_surfaces の本体](../../src/core/communication/materialdocumentrpc.cpp#L838))。
 
 - **engine の surface**: engine の資源に登録された `surfaces/**.surface` を `engine://` の参照で、整列して先に並べます。今あるのは OpenPBR の 6 つ(`engine://surfaces/openpbr/{opaque,mask,blend}_{single,double}.surface`)です。
-- **OpenPBR の名前と routing**: OpenPBR の `manifest.json` の `variants` が載せている surface には、variant の名前が `name`(例 `opaque_single_sided`)に、`alpha_mode` / `double_sided` が `routing` に付きます([manifest の variant を読む所](../../src/core/communication/materialdocumentrpc.cpp#L758))。`routing` は `create_material` の `routing` にそのまま渡せる形です。
-- **project の surface**: project のディレクトリの下を再帰で走査し、`*.surface` を `project://` の参照で整列して engine の後に並べます。名前が `.` で始まるディレクトリ(`.git`、`.pelican` など)と symlink のディレクトリには入りません([project を走査する所](../../src/core/communication/materialdocumentrpc.cpp#L785))。
+- **OpenPBR の名前と routing**: OpenPBR の `manifest.json` の `variants` が載せている surface には、variant の名前が `name`(例 `opaque_single_sided`)に、`alpha_mode` / `double_sided` が `routing` に付きます([manifest の variant を読む所](../../src/core/communication/materialdocumentrpc.cpp#L759))。`routing` は `create_material` の `routing` にそのまま渡せる形です。
+- **project の surface**: project のディレクトリの下を再帰で走査し、`*.surface` を `project://` の参照で整列して engine の後に並べます。名前が `.` で始まるディレクトリ(`.git`、`.pelican` など)と symlink のディレクトリには入りません([project を走査する所](../../src/core/communication/materialdocumentrpc.cpp#L786))。
   - asset store の実体のディレクトリ(`.pelican/local.json` で project の外に置いたもの)を別に辿る処理はありません。
   - path resolver に project が設定されていない host では、project の surface は並びません(engine の分だけ)。
 - **render_state**: surface の `//!` の宣言に `render_state:` があるときだけ、`render_state: {blend, cull, depth_test, depth_write, depth_compare}` が付きます。
@@ -3130,6 +3132,8 @@ stderr に `--render-fallback requires --rpc` と usage を出し、終了コー
 - fallback のまま RPC を閉じても、終了コードは 0 です(実装者の報告。test は直した後に閉じた 0 だけを見ます)。
 - root が JSON だが object でないもの、`pelican.graph` でない旧い形は、`--render-fallback` を付けても致命のままです(BS-1b の範囲外。実装者の報告で、test はありません)。
 - Studio はまだ `--render-fallback` を付けて engine を起こさず、`get_status.render_pipeline` も読みません(Studio 側は作業中。[第13章](13_editor.md) §13.5)。
+  → ✅BS-1s(`19be8983`)から Studio は engine をいつも `--render-fallback` で起こし、`get_status.render_pipeline` の拒否を viewport の上の帯と Frame Plan の status 行の
+  1 文にし、Reload from disk と、JSON でない root を直す Show the document(`restore_render_documents`)を出します([第13章](13_editor.md) の「組めない構成でも engine を止めない(✅BS-1s)」)。
 
 test: `bs1_render_fallback_test`(GPU、Windows だけ。`--rpc --headless --render-fallback` の `pelican_player` を子 process で起こし、stdin / stdout の RPC で通す)の 4 本 ——
 [「BS-1 a refused rendering configuration starts the fallback, says why, and a reload of the fixed file brings the project's frames back」](../../test/bs1_render_fallback_test.cpp#L392)、
