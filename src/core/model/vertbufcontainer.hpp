@@ -62,6 +62,9 @@ DECLARE_MODULE(VertBufContainer) {
     uint32_t skin_vertices_offset;
     uint32_t skin_vertices_cap;
     std::uint64_t geometry_address_generation = 1;
+    // Moves when a morph metadata buffer is replaced (it grows with its
+    // vertex buffer); descriptor sets that bind it are written again.
+    std::uint64_t morph_metadata_generation = 1;
     std::uint64_t next_geometry_allocation_id = 1;
     BufferWrapper indices_mem_pool;
     BufferWrapper vertices_mem_pool;
@@ -88,6 +91,8 @@ DECLARE_MODULE(VertBufContainer) {
                              uint32_t offset, uint32_t count);
     void ensureIndexCapacity(uint32_t required);
     void ensureVertexCapacity(uint32_t required, bool skinned);
+    static void clearMorphMetadata(const BufferWrapper &buffer, uint32_t first,
+                                   uint32_t count);
     std::vector<MorphTargetDeltaRange>
     uploadMorphData(const CommonPolygonVertData &data, uint32_t vertex_offset,
                     bool skinned, uint32_t &delta_offset, uint32_t &delta_count);
@@ -117,6 +122,9 @@ DECLARE_MODULE(VertBufContainer) {
     }
     std::uint64_t geometryAddressGeneration() const noexcept {
         return geometry_address_generation;
+    }
+    std::uint64_t morphMetadataGeneration() const noexcept {
+        return morph_metadata_generation;
     }
 
     struct CommonVertDataDescription {

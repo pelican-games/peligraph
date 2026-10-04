@@ -8,6 +8,7 @@
 #include "../model/occurrenceidentity.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/deletionqueue.hpp"
 #include "../../project/viewfamilyrelation.hpp"
 #include <algorithm>
 #include <array>
@@ -273,22 +274,26 @@ PolygonInstanceContainer::PolygonInstanceContainer()
       static_deformation_descriptor_layout{createDeformationLayout(device, false, false)},
       skinned_deformation_descriptor_layout{createDeformationLayout(device, true, false)},
       static_material_descriptor_layout{createDeformationLayout(device, false, true)},
-      skinned_material_descriptor_layout{createDeformationLayout(device, true, true)},
-      deformation_descriptor_pool{createDeformationPool(device)} {
+      skinned_material_descriptor_layout{createDeformationLayout(device, true, true)} {
+    refreshDeformationDescriptors();
+}
+
+void PolygonInstanceContainer::refreshDeformationDescriptors() {
+    auto &geometry = GET_MODULE(VertBufContainer);
+    if (deformation_descriptor_pool &&
+        deformation_descriptor_metadata_generation ==
+            geometry.morphMetadataGeneration())
+        return;
+    auto pool = createDeformationPool(device);
     vk::DescriptorSetAllocateInfo allocate;
-    allocate.descriptorPool = deformation_descriptor_pool.get();
+    allocate.descriptorPool = pool.get();
     const std::array layouts{static_deformation_descriptor_layout.get(),
                              skinned_deformation_descriptor_layout.get(),
                              static_material_descriptor_layout.get(),
                              skinned_material_descriptor_layout.get()};
     allocate.setSetLayouts(layouts);
     auto sets = device.allocateDescriptorSetsUnique(allocate);
-    static_deformation_descriptor_set = std::move(sets[0]);
-    skinned_deformation_descriptor_set = std::move(sets[1]);
-    static_material_descriptor_set = std::move(sets[2]);
-    skinned_material_descriptor_set = std::move(sets[3]);
 
-    auto &geometry = GET_MODULE(VertBufContainer);
     const auto update = [&](vk::DescriptorSet set, bool skinned, bool material) {
         std::vector<vk::DescriptorBufferInfo> infos;
         std::vector<vk::WriteDescriptorSet> writes;
@@ -322,10 +327,34 @@ PolygonInstanceContainer::PolygonInstanceContainer()
         }
         device.updateDescriptorSets(writes, {});
     };
-    update(static_deformation_descriptor_set.get(), false, false);
-    update(skinned_deformation_descriptor_set.get(), true, false);
-    update(static_material_descriptor_set.get(), false, true);
-    update(skinned_material_descriptor_set.get(), true, true);
+    update(sets[0].get(), false, false);
+    update(sets[1].get(), true, false);
+    update(sets[2].get(), false, true);
+    update(sets[3].get(), true, true);
+
+    // A frame recorded before the replacement may still read the old sets
+    // (and through them the old metadata buffer, retired the same way).
+    struct RetiredDescriptors {
+        vk::UniqueDescriptorPool pool;
+        // Declared after the pool: freed before it.
+        std::array<vk::UniqueDescriptorSet, 4> sets;
+    };
+    RetiredDescriptors retired{
+        std::move(deformation_descriptor_pool),
+        {std::move(static_deformation_descriptor_set),
+         std::move(skinned_deformation_descriptor_set),
+         std::move(static_material_descriptor_set),
+         std::move(skinned_material_descriptor_set)}};
+    deformation_descriptor_pool = std::move(pool);
+    static_deformation_descriptor_set = std::move(sets[0]);
+    skinned_deformation_descriptor_set = std::move(sets[1]);
+    static_material_descriptor_set = std::move(sets[2]);
+    skinned_material_descriptor_set = std::move(sets[3]);
+    deformation_descriptor_metadata_generation =
+        geometry.morphMetadataGeneration();
+    if (!retired.pool) return;
+    if (auto *queue = FastModuleContainer::tryGet<DeletionQueue>())
+        queue->defer(std::move(retired));
 }
 
 namespace {
@@ -1109,6 +1138,7 @@ void PolygonInstanceContainer::triggerUpdate() {
 void PolygonInstanceContainer::triggerUpdate(
     const DrawQueueFramePlan &frame_plan) {
     drainSceneRetirements();
+    refreshDeformationDescriptors();
     uploadPublishedSceneState();
     // Clear the published view before compiling the next immutable queue.
     compiled_draw_queue = {};

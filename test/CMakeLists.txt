@@ -3716,6 +3716,22 @@ add_test(
 )
 pelican_gpu_test_properties(coordinate_mirror_headless ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 
+# MV-1: a morph model loaded after a large static model starts and deforms;
+# the morph metadata covers the whole shared vertex buffer.
+add_executable(pelican_test_morph_capacity_check morph_capacity_check.cpp)
+set_target_properties(pelican_test_morph_capacity_check PROPERTIES CXX_STANDARD 20)
+target_link_libraries(pelican_test_morph_capacity_check PRIVATE stb nlohmann_json)
+add_test(
+    NAME morph_capacity_headless
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DMORPH_CHECK=$<TARGET_FILE:pelican_test_morph_capacity_check>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/morph_capacity
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_morph_capacity_headless.cmake
+)
+pelican_gpu_test_properties(morph_capacity_headless ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+
 set(PELICAN_TEST_PROJECTS_DIR "" CACHE PATH
     "Project corpus scanned by project_catalog_headless_smoke; empty skips the test")
 

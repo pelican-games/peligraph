@@ -534,9 +534,6 @@ class ValidationGltfResourceSink final : public GltfResourceSink {
         primitive.ray_attribute_presence = attribute_presence;
         std::vector<MorphTargetDeltaRange> ranges;
         if (!data.morph_targets.empty()) {
-            if (vertex_offset > maxMorphVerticesPerPool ||
-                vertex_count > maxMorphVerticesPerPool - vertex_offset)
-                throw std::runtime_error("glTF morph vertex metadata exceeds renderer capacity");
             const auto count64 = static_cast<std::uint64_t>(vertex_count) *
                                  data.morph_targets.size();
             if (count64 > maxMorphDeltaRecords ||

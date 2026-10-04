@@ -378,10 +378,164 @@ TEST_CASE("Frame plan distinguishes not-started guidance from a running engine f
     REQUIRE(status->text() != not_started);
 }
 
-TEST_CASE("Studio receives the running example fatal text while RPC stdout stays framed",
+// WP298: Studio receives the fatal line an engine stops with, and the RPC
+// replies on the engine's stdout are consumed, never forwarded. MV-1: the
+// stop is a small project's own, not the example's: a camera type the engine
+// does not know is refused while the project is read, before any rendering
+// document, so --render-fallback (which Studio always passes) does not turn
+// it into a placeholder.
+TEST_CASE("Studio receives the running engine's fatal text while RPC stdout stays framed",
           "[devstudio][process][failure][rpc][negative-contrast][wp298][WP380c]") {
     int argument_count = 1;
     char application_name[] = "pelican_engine_failure_entry_test";
+    char *arguments[] = {application_name};
+    QApplication application{argument_count, arguments};
+
+    QTemporaryDir sandbox{
+        QDir::temp().filePath(QStringLiteral("pelican_wp298_XXXXXX"))};
+    REQUIRE(sandbox.isValid());
+    const fs::path test_project = filesystemPath(sandbox.path()) / "project";
+    fs::copy(fs::path{PELICAN_UX9_FIXTURE_PROJECT}, test_project,
+             fs::copy_options::recursive);
+    const fs::path project_json = test_project / "project.json";
+    const std::string original_project = readText(project_json);
+    {
+        auto project = nlohmann::json::parse(original_project);
+        project.at("basic_config")["camera"] = {
+            {"type", "fisheye"}, {"yfov", 0.8}, {"znear", 0.1}, {"zfar", 100.0}};
+        writeText(project_json, project.dump(2) + "\n");
+    }
+
+    const QString player = QString::fromUtf8(PELICAN_WP298_PLAYER);
+    EnvironmentVariableGuard player_path{
+        "PELICAN_STUDIO_PLAYER", player.toLocal8Bit()};
+    const QString expected_fatal = QStringLiteral(
+        "Pelican fatal error : basic_config.camera type must be 'perspective' or 'orthographic'");
+
+    ViewportObservation broken;
+    QString not_started_status;
+    QString broken_status;
+    {
+        EnvironmentVariableGuard player_arguments{
+            "PELICAN_STUDIO_PLAYER_ARGUMENTS", QByteArray{"--size 320x180"}};
+        EmbeddedViewport viewport;
+        FramePlanWidget frame_plan{&viewport};
+        auto *status = frame_plan.findChild<QLabel *>(
+            QStringLiteral("pelican.framePlanStatus"));
+        REQUIRE(status != nullptr);
+        not_started_status = status->text();
+        QEventLoop ready_loop;
+        QEventLoop rpc_loop;
+        QEventLoop stopped_loop;
+        QObject connection_context;
+        observeViewport(viewport, broken, ready_loop, rpc_loop, stopped_loop,
+                        connection_context);
+
+        viewport.resize(640, 480);
+        viewport.show();
+        viewport.openProject(displayPath(test_project));
+        QTimer::singleShot(60000, &stopped_loop, &QEventLoop::quit);
+        if (!broken.stopped) stopped_loop.exec();
+        QApplication::processEvents();
+        broken_status = status->text();
+    }
+
+    INFO("engine stderr: " << broken.standard_error.toStdString());
+    INFO("Studio process output: " << broken.studio_output.toStdString());
+    INFO("Frame Plan status: " << broken_status.toStdString());
+    // The engine stopped, and Studio holds the line it stopped with.
+    REQUIRE(broken.stopped);
+    CHECK(broken.fatal_error_line.contains(expected_fatal));
+    CHECK(lastFatalLine(broken.standard_error).contains(expected_fatal));
+    // The Frame Plan's status turned to the line (one line of it, cut to
+    // the width; it has no code to read a sentence from).
+    CHECK(broken_status != not_started_status);
+    // Any RPC reply was consumed by EngineProcess: stdout contributed no
+    // byte to what Studio forwards.
+    REQUIRE(broken.studio_output == broken.standard_error);
+
+    // Studio gives each project's player its own log, truncated per run.
+    const fs::path player_log =
+        test_project / ".pelican" / "logs" / "player.log";
+    REQUIRE(fs::is_regular_file(player_log));
+    const std::string broken_log = readText(player_log);
+    CHECK(QString::fromStdString(broken_log).contains(expected_fatal));
+
+    // The same project with its camera back runs to its frame limit.
+    writeText(project_json, original_project);
+    REQUIRE(readText(project_json) == original_project);
+
+    ViewportObservation normal;
+    QString running_status;
+    QString stopped_status;
+    {
+        EnvironmentVariableGuard player_arguments{
+            "PELICAN_STUDIO_PLAYER_ARGUMENTS",
+            QByteArray{"--frames 600 --fps 120 --size 320x180"}};
+        EmbeddedViewport viewport;
+        FramePlanWidget frame_plan{&viewport};
+        auto *status = frame_plan.findChild<QLabel *>(
+            QStringLiteral("pelican.framePlanStatus"));
+        REQUIRE(status != nullptr);
+        QEventLoop ready_loop;
+        QEventLoop rpc_loop;
+        QEventLoop stopped_loop;
+        QObject connection_context;
+        observeViewport(viewport, normal, ready_loop, rpc_loop, stopped_loop,
+                        connection_context);
+
+        viewport.resize(640, 480);
+        viewport.show();
+        viewport.openProject(displayPath(test_project));
+        QTimer::singleShot(30000, &ready_loop, &QEventLoop::quit);
+        if (!normal.rpc_available && !normal.stopped) {
+            ready_loop.exec();
+        }
+        REQUIRE(normal.rpc_available);
+
+        QTimer::singleShot(10000, &rpc_loop, &QEventLoop::quit);
+        if (!normal.rpc_received && !normal.stopped) {
+            rpc_loop.exec();
+        }
+        REQUIRE(normal.rpc_received);
+        running_status = status->text();
+
+        QTimer::singleShot(30000, &stopped_loop, &QEventLoop::quit);
+        if (!normal.stopped) {
+            stopped_loop.exec();
+        }
+        QApplication::processEvents();
+        stopped_status = status->text();
+    }
+
+    INFO("control engine stderr: " << normal.standard_error.toStdString());
+    REQUIRE(normal.stopped);
+    REQUIRE(normal.fatal_error_line.isEmpty());
+    REQUIRE(lastFatalLine(normal.standard_error).isEmpty());
+    REQUIRE(normal.rpc_result.isObject());
+    // The JSON-RPC response was consumed by EngineProcess. Any extra stdout
+    // byte would be forwarded and make these streams differ.
+    REQUIRE(normal.studio_output == normal.standard_error);
+    REQUIRE_FALSE(running_status.contains(
+        QStringLiteral("Pelican fatal error")));
+    REQUIRE_FALSE(stopped_status.contains(
+        QStringLiteral("Pelican fatal error")));
+    // The control run truncated the file: it holds this run, not the failed one.
+    const QString control_log = QString::fromStdString(readText(player_log));
+    REQUIRE(control_log.contains(QStringLiteral("starting main loop")));
+    REQUIRE(QString::fromStdString(broken_log) != control_log);
+}
+
+// PB-1s on the example (sponza, the other models and Alicia): a start whose
+// materials find no pass for their route (material_route_unserved@1) falls
+// back, keeps running on its placeholder, and the band, the Frame Plan's
+// status and the Problems row say why. MV-1: the example with Alicia starts
+// at all -- Alicia's morph targets are loaded after sponza's static vertices.
+TEST_CASE("The example with Alicia starts on its placeholder for a route no pass serves, and the band and "
+          "the Problems row say why",
+          "[devstudio][process][failure][rpc][wp298][pb1s][mv1]") {
+    int argument_count = 1;
+    char application_name[] = "pelican_engine_failure_example_test";
     char *arguments[] = {application_name};
     QApplication application{argument_count, arguments};
 
@@ -395,7 +549,7 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
     }
 
     QTemporaryDir sandbox{
-        QDir::temp().filePath(QStringLiteral("pelican_wp298_XXXXXX"))};
+        QDir::temp().filePath(QStringLiteral("pelican_wp298_example_XXXXXX"))};
     REQUIRE(sandbox.isValid());
     const fs::path sandbox_root = filesystemPath(sandbox.path());
     const fs::path test_project = sandbox_root / "projects" / "example";
@@ -405,8 +559,6 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
         test_project / "passes" / "main_rendering_config.json";
     const fs::path asset_data =
         test_project / "assets" / "asset_data.json";
-    const std::string original_config = readText(rendering_config);
-    const std::string original_asset_data = readText(asset_data);
     addAliciaModel(asset_data);
     removeForwardTransparentPass(rendering_config);
 
@@ -535,77 +687,6 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
     // The RPC replies were consumed by EngineProcess: stdout contributed no
     // byte to what Studio forwards.
     REQUIRE(broken.studio_output == broken.standard_error);
-
-    // Studio gives each project's player its own log, truncated per run.
-    const fs::path player_log =
-        test_project / ".pelican" / "logs" / "player.log";
-    REQUIRE(fs::is_regular_file(player_log));
-    const std::string broken_log = readText(player_log);
-
-    // Restore the deliberately broken example before running the control.
-    writeText(rendering_config, original_config);
-    writeText(asset_data, original_asset_data);
-    REQUIRE(readText(rendering_config) == original_config);
-    REQUIRE(readText(asset_data) == original_asset_data);
-
-    ViewportObservation normal;
-    QString running_status;
-    QString stopped_status;
-    {
-        EnvironmentVariableGuard player_arguments{
-            "PELICAN_STUDIO_PLAYER_ARGUMENTS",
-            QByteArray{"--frames 600 --fps 120 --size 320x180"}};
-        EmbeddedViewport viewport;
-        FramePlanWidget frame_plan{&viewport};
-        auto *status = frame_plan.findChild<QLabel *>(
-            QStringLiteral("pelican.framePlanStatus"));
-        REQUIRE(status != nullptr);
-        QEventLoop ready_loop;
-        QEventLoop rpc_loop;
-        QEventLoop stopped_loop;
-        QObject connection_context;
-        observeViewport(viewport, normal, ready_loop, rpc_loop, stopped_loop,
-                        connection_context);
-
-        viewport.resize(640, 480);
-        viewport.show();
-        viewport.openProject(displayPath(test_project));
-        QTimer::singleShot(30000, &ready_loop, &QEventLoop::quit);
-        if (!normal.rpc_available && !normal.stopped) {
-            ready_loop.exec();
-        }
-        REQUIRE(normal.rpc_available);
-
-        QTimer::singleShot(10000, &rpc_loop, &QEventLoop::quit);
-        if (!normal.rpc_received && !normal.stopped) {
-            rpc_loop.exec();
-        }
-        REQUIRE(normal.rpc_received);
-        running_status = status->text();
-
-        QTimer::singleShot(30000, &stopped_loop, &QEventLoop::quit);
-        if (!normal.stopped) {
-            stopped_loop.exec();
-        }
-        QApplication::processEvents();
-        stopped_status = status->text();
-    }
-
-    REQUIRE(normal.stopped);
-    REQUIRE(normal.fatal_error_line.isEmpty());
-    REQUIRE(lastFatalLine(normal.standard_error).isEmpty());
-    REQUIRE(normal.rpc_result.isObject());
-    // The JSON-RPC response was consumed by EngineProcess. Any extra stdout
-    // byte would be forwarded and make these streams differ.
-    REQUIRE(normal.studio_output == normal.standard_error);
-    REQUIRE_FALSE(running_status.contains(
-        QStringLiteral("Pelican fatal error")));
-    REQUIRE_FALSE(stopped_status.contains(
-        QStringLiteral("Pelican fatal error")));
-    // The control run truncated the file: it holds this run, not the failed one.
-    const QString control_log = QString::fromStdString(readText(player_log));
-    REQUIRE(control_log.contains(QStringLiteral("starting main loop")));
-    REQUIRE(QString::fromStdString(broken_log) != control_log);
 }
 
 // UX-9, decision 5 (engine CT-1) -> BS-1s, decision 4 (engine BS-1): a

@@ -8,11 +8,14 @@
 namespace Pelican {
 
 // The v1 renderer uses fixed-stride per-instance weights and bounded shared
-// morph storage. Targetless geometry emits zero metadata and no delta records.
-// Morph-bearing assets fail before GPU publication when a limit is exceeded.
+// morph delta storage. Targetless geometry emits zero metadata and no delta
+// records. Morph-bearing assets fail before GPU publication when a limit is
+// exceeded. The per-vertex metadata is indexed by the vertex's place in its
+// shared vertex buffer and has one record for every vertex the buffer can
+// hold (it grows with it), so it sets no limit of its own: a morph model is
+// not refused for the static geometry loaded before it.
 inline constexpr std::uint32_t maxMorphTargetsPerPrimitive = 64;
 inline constexpr std::uint32_t maxMorphWeightsPerInstance = 256;
-inline constexpr std::uint32_t maxMorphVerticesPerPool = 262144;
 inline constexpr std::uint32_t maxMorphDeltaRecords = 524288;
 
 inline constexpr std::uint32_t morphPositionPresent = 1u << 0u;

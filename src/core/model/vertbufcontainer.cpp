@@ -53,8 +53,11 @@ static BufferWrapper createSkinVertBuf(VulkanManageCore &vkcore, size_t num) {
                            vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
 }
 
-static BufferWrapper createMorphMetadataBuf(VulkanManageCore &vkcore) {
-    return vkcore.allocBuf(sizeof(MorphVertexGpuMetadata) * maxMorphVerticesPerPool,
+// One record per vertex of the matching vertex buffer, indexed like it (the
+// shaders read it at gl_VertexIndex, the deformation compute at the vertex's
+// place in the buffer). It grows with that buffer.
+static BufferWrapper createMorphMetadataBuf(VulkanManageCore &vkcore, size_t num) {
+    return vkcore.allocBuf(sizeof(MorphVertexGpuMetadata) * num,
                            vk::BufferUsageFlagBits::eStorageBuffer |
                                vk::BufferUsageFlagBits::eTransferSrc |
                                vk::BufferUsageFlagBits::eTransferDst,
@@ -77,15 +80,20 @@ VertBufContainer::VertBufContainer()
       indices_mem_pool{createIndexBuf(GET_MODULE(VulkanManageCore), indices_cap)},
       vertices_mem_pool{createVertBuf(GET_MODULE(VulkanManageCore), vertices_cap)},
       skin_vertices_mem_pool{createSkinVertBuf(GET_MODULE(VulkanManageCore), skin_vertices_cap)},
-      morph_static_metadata_buffer{createMorphMetadataBuf(GET_MODULE(VulkanManageCore))},
-      morph_skinned_metadata_buffer{createMorphMetadataBuf(GET_MODULE(VulkanManageCore))},
+      morph_static_metadata_buffer{createMorphMetadataBuf(GET_MODULE(VulkanManageCore), vertices_cap)},
+      morph_skinned_metadata_buffer{createMorphMetadataBuf(GET_MODULE(VulkanManageCore), skin_vertices_cap)},
       morph_delta_buffer{createMorphDeltaBuf(GET_MODULE(VulkanManageCore))} {
-    const std::vector<MorphVertexGpuMetadata> empty(maxMorphVerticesPerPool);
-    auto &vkcore = GET_MODULE(VulkanManageCore);
-    vkcore.writeBuf(morph_static_metadata_buffer, empty.data(), 0,
-                    empty.size() * sizeof(MorphVertexGpuMetadata));
-    vkcore.writeBuf(morph_skinned_metadata_buffer, empty.data(), 0,
-                    empty.size() * sizeof(MorphVertexGpuMetadata));
+    clearMorphMetadata(morph_static_metadata_buffer, 0, vertices_cap);
+    clearMorphMetadata(morph_skinned_metadata_buffer, 0, skin_vertices_cap);
+}
+
+void VertBufContainer::clearMorphMetadata(const BufferWrapper &buffer,
+                                          uint32_t first, uint32_t count) {
+    if (count == 0) return;
+    const std::vector<MorphVertexGpuMetadata> empty(count);
+    GET_MODULE(VulkanManageCore).writeBuf(
+        buffer, empty.data(), sizeof(MorphVertexGpuMetadata) * first,
+        sizeof(MorphVertexGpuMetadata) * empty.size());
 }
 
 VertBufContainer::~VertBufContainer() {
@@ -247,11 +255,8 @@ VertBufContainer::uploadMorphData(const CommonPolygonVertData &data,
     delta_count = 0;
     if (data.morph_targets.empty()) return {};
     const auto vertex_count = static_cast<uint32_t>(data.pos.size());
-    if (vertex_offset > maxMorphVerticesPerPool ||
-        vertex_count > maxMorphVerticesPerPool - vertex_offset)
-        throw std::runtime_error("glTF morph vertex metadata exceeds renderer capacity of " +
-                                 std::to_string(maxMorphVerticesPerPool) +
-                                 (skinned ? " skinned vertices" : " static vertices"));
+    // The metadata has a record for every vertex its vertex buffer holds:
+    // ensureVertexCapacity grew both before this upload.
     const auto record_count64 = static_cast<std::uint64_t>(vertex_count) *
                                 data.morph_targets.size();
     if (record_count64 > maxMorphDeltaRecords)
@@ -356,6 +361,13 @@ void VertBufContainer::ensureVertexCapacity(uint32_t required, bool skinned) {
             throw std::runtime_error("model vertex buffer capacity exhausted");
         replacement_cap <<= 1;
     }
+    // The morph metadata is indexed like the vertex buffer: it grows with it,
+    // keeps its records and starts the new vertices with none.
+    auto &metadata = skinned ? morph_skinned_metadata_buffer : morph_static_metadata_buffer;
+    auto metadata_replacement = createMorphMetadataBuf(GET_MODULE(VulkanManageCore), replacement_cap);
+    GET_MODULE(VulkanUtils).bufferCopy(metadata, metadata_replacement, 0, 0,
+                                       sizeof(MorphVertexGpuMetadata) * old_cap);
+    clearMorphMetadata(metadata_replacement, old_cap, replacement_cap - old_cap);
     if (skinned) {
         auto replacement = createSkinVertBuf(GET_MODULE(VulkanManageCore), replacement_cap);
         GET_MODULE(VulkanUtils).bufferCopy(skin_vertices_mem_pool, replacement, 0, 0,
@@ -373,6 +385,10 @@ void VertBufContainer::ensureVertexCapacity(uint32_t required, bool skinned) {
         capacity = replacement_cap;
         deferOldBuffer(std::move(old));
     }
+    auto old_metadata = std::move(metadata);
+    metadata = std::move(metadata_replacement);
+    deferOldBuffer(std::move(old_metadata));
+    ++morph_metadata_generation;
     ++geometry_address_generation;
     LOG_INFO(logger, "VertBufContainer: reallocated {} vertex buffer",
              skinned ? "skinned" : "static");

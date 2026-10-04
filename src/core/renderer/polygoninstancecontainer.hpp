@@ -453,6 +453,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     vk::UniqueDescriptorSet skinned_deformation_descriptor_set;
     vk::UniqueDescriptorSet static_material_descriptor_set;
     vk::UniqueDescriptorSet skinned_material_descriptor_set;
+    // VertBufContainer::morphMetadataGeneration() the sets above bind.
+    std::uint64_t deformation_descriptor_metadata_generation = 0;
     std::vector<std::vector<std::uint32_t>> scene_retirement_queue;
     bool published_scene_gpu_dirty = false;
 
@@ -461,6 +463,11 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void resetSlot(std::uint32_t index);
     void uploadMaterialAbsoluteOverrides();
     void uploadPublishedSceneState();
+    // Writes the four deformation/material sets on a fresh pool when the
+    // morph metadata buffers they bind were replaced (they grow with the
+    // vertex buffers); the old pool and sets retire with the frames that
+    // may still read them.
+    void refreshDeformationDescriptors();
 
   public:
     // The candidate scene: the live state a prepare phase may edit before a

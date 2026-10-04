@@ -4,7 +4,6 @@
 #include "pelican_sets.glsl"
 
 #define PELICAN_MAX_MORPH_WEIGHTS 256
-#define PELICAN_MAX_MORPH_VERTICES 262144
 
 struct PelicanMorphInstance {
     uint weight_count;
@@ -47,6 +46,8 @@ readonly buffer PelicanPreviousMorphWeights {
     float weights[];
 } pelicanPreviousMorphWeights;
 
+// One record per vertex of the bound vertex buffer, at the vertex's place in
+// it (gl_VertexIndex); the engine grows it with that buffer.
 layout(set = PELICAN_SET_FREE, binding = PELICAN_MORPH_METADATA_BINDING, std430)
 readonly buffer PelicanMorphMetadata {
     PelicanMorphVertexMetadata vertices[];
@@ -62,7 +63,7 @@ PelicanMorphedVertex pelican_morph_vertex_for_instance(vec3 position, vec3 norma
     PelicanMorphedVertex result = PelicanMorphedVertex(position, normal, tangent);
     PelicanMorphInstance instance = pelicanMorphInstances.instances[instance_index];
     if (instance.weight_count == 0 || vertex_index < 0 ||
-        uint(vertex_index) >= PELICAN_MAX_MORPH_VERTICES) {
+        uint(vertex_index) >= uint(pelicanMorphMetadata.vertices.length())) {
         return result;
     }
     PelicanMorphVertexMetadata metadata =
