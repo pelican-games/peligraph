@@ -118,17 +118,11 @@ void placeOf(ProblemRow &row) {
     }
     if (!row.node.empty() && (kind.empty() || kind == "root_graph" || kind == "definition")) {
         const auto node = row.definition.empty() ? row.node : row.definition + " / " + row.node;
-        // A start refused: the Graph holds the document the engine was given.
-        // A reload refused: the engine (and so the Graph) keeps the version
-        // before the file was saved, and an edit there is refused until the
-        // file is fixed -- the node is fixed in the file's text.
-        if (row.source == "startup" || row.source.empty() || row.document.empty()) {
-            row.place = Place::GraphNode;
-            row.place_text = "Graph: " + node;
-        } else {
-            row.place = Place::DocumentText;
-            row.place_text = "Text: " + node;
-        }
+        // The Graph holds the document as it is on disk: the one the engine
+        // was given at start, and -- RR-1s, decision 3 (engine RR-1) -- the
+        // one a reload refused, which an edit there is based on.
+        row.place = Place::GraphNode;
+        row.place_text = "Graph: " + node;
         return;
     }
     if (row.line > 0 && !row.document.empty()) {

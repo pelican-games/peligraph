@@ -591,13 +591,18 @@ now -- the engine's `get_problems` (engine PB-1, read when
 `get_status.problems.revision` moves) and the Assets dock's contents check.
 The list is `pelican.problems.list`; its rows are found by their first
 column, `row#Error` / `row#Warning`, or `select`ed by `index`, and a click on
-one goes where it is fixed (the Graph's node for a start's refusal, Show the
-document at the line, or at the node of a refused reload). Beside it:
+one goes where it is fixed (the Graph's node, for a start's refusal and a
+refused reload alike, or Show the document at the line). Beside it:
 `.severity` (All / Errors / Warnings), `.filter`, `.count` ("1 error"),
 `.detail` (the selected row: `<document>:<line>:<column> — <sentence>`) and
 `.restart`. The status bar's `pelican.problemsCount` says the same count and
 brings the dock forward; the placeholder's row ends "See Problems."
-`gui_problems_window` is the example.
+`gui_problems_window` is the example. RR-1s: the same row above the viewport
+says when a refused reload's version is what the panels read
+(get_graph_instances `live: false`): "Showing the saved version; the picture
+is still the previous one — <the list's sentence>", or, while the file is
+not JSON, "<file> is not valid JSON; the Graph shows the last version that
+was."
 
 ## Gestures a canvas is driven with
 

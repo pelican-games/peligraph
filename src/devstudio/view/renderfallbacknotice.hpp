@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
 
 class QDialog;
 class QLabel;
@@ -27,6 +28,9 @@ namespace PelicanStudio {
 // file, Show the document when the document is not JSON at all (engine
 // BS-1b), and Restart engine when only a restart enables what the fixed setup
 // needs. Hidden while there is nothing to say.
+// RR-1s, decision 1: the same row while a reload stands refused and the
+// panels show the version on disk (engine RR-1, `live: false`) -- the
+// placeholder's sentence first when both are true.
 //
 // Named for scenarios: pelican.renderFallbackNotice (the row), .text, .reload,
 // .openGraph, .openFile, .showDocument, .restart; the document's window
@@ -52,9 +56,10 @@ class RenderFallbackNotice final : public QFrame {
         std::function<void(int milliseconds, std::function<void()> task)> schedule;
         // The document's restore committed (restore_render_documents).
         std::function<void(const nlohmann::json &commit)> restored;
-        // PB-1s: writes a document's file whole (showDocumentAt's `to_file`);
-        // the error, empty when it was written.
-        std::function<std::string(const std::string &reference, const std::string &content)> write_file;
+        // RR-1s, decision 4: the digest of the version on disk the engine
+        // holds after a refused reload -- what every structural edit is
+        // based on now (the window's RenderConfigDigest).
+        std::function<void(const std::string &digest)> held_digest;
         // The notice appeared (true) or went away (false), with its line.
         std::function<void(bool shown, const QString &line)> shown_changed;
     };
@@ -71,6 +76,14 @@ class RenderFallbackNotice final : public QFrame {
     void observeReply(const nlohmann::json &reply);
     // A reload committed: the configuration may be the project's again.
     void reloadCommitted();
+    // RR-1s, decision 1: reads get_graph_instances, whose `live` and
+    // held_unparsed say whether the reads answer from the version the picture
+    // was made from (request; its reply comes back through receiveResult).
+    // One read at a time; one asked for meanwhile follows it.
+    void readAuthoring();
+    // RR-1s, decision 1: the Problems list's rows (its sentence for the held
+    // version); a list that changed reads get_graph_instances again.
+    void observeProblems(const std::vector<ProblemRow> &rows);
     void engineGone();
     // Decision 8: the document window's replies. True when nothing else
     // should read the reply (a committed restore is read as every commit).
@@ -88,11 +101,10 @@ class RenderFallbackNotice final : public QFrame {
     // lists, from a row of the Problems dock -- the cursor at line / column
     // (1-based), or, without a line, at the first `find` in the text (a
     // node's id), else at the end.
-    // `to_file`: the engine runs the version before the file (a refused
-    // reload), so Save writes the file (Hooks::write_file) rather than
-    // restoring through the engine.
+    // RR-1s, decision 2: Save restores it against the digest listed, after a
+    // refused reload as on the placeholder.
     void showDocumentAt(const QString &document, std::int64_t line, std::int64_t column,
-                        const QString &find = {}, bool to_file = false);
+                        const QString &find = {});
     // PB-1s, decision 4: the sentence ends "See Problems." while the window
     // has the Problems dock.
     void setSeeProblems(bool see);
@@ -119,6 +131,11 @@ class RenderFallbackNotice final : public QFrame {
     // Where the cursor goes without a line (showDocumentAt).
     QString dialog_find_;
     bool see_problems_ = false;
+    // RR-1s: the get_graph_instances in flight, and whether another follows.
+    std::int64_t authoring_request_ = 0;
+    bool authoring_again_ = false;
+    // The ids of the Problems rows last seen.
+    std::vector<std::string> problem_ids_;
 
     void present(bool changed);
     void presentRepair();

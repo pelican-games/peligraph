@@ -447,6 +447,10 @@ void RenderDocumentReload::refuse(const Json &error) {
         detail += ": " + message;
     }
     setRefused(true);
+    // RR-1s, decision 4 (engine RR-1): a refused version that is JSON is the
+    // editor's base, and an edit on its digest goes through; only while the
+    // file is not JSON is an edit's external_modification the disk's doing.
+    setRenderDocumentsRefusedOnDisk(code == "render_document_syntax@1");
     say(Notice::Kind::Error, "Could not load " + file + ": fix the file and save again.",
         std::move(detail));
     if (refusedWith) refusedWith(error);

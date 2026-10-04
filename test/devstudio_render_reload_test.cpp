@@ -381,9 +381,10 @@ TEST_CASE("RL-1s decision 4: the render undo history is cut at a reload",
     CHECK(history.line() == "\xE2\x80\x94 reloaded from disk \xE2\x80\x94");
 }
 
-TEST_CASE("RL-1s decision 5: while the file stays refused, external_modification reads as "
-          "the disk's sentence",
-          "[devstudio][render_reload]") {
+TEST_CASE("RL-1s decision 5 / RR-1s decision 4: while the file stays refused as not JSON, "
+          "external_modification reads as the disk's sentence; a refused version that is JSON is the "
+          "editor's base, and the engine's words stay",
+          "[devstudio][render_reload][rr1s]") {
     const std::string engine = "render config source changed outside the editor";
     setRenderDocumentsRefusedOnDisk(false);
     // A panel that read before another's commit is told the same code; that
@@ -392,13 +393,29 @@ TEST_CASE("RL-1s decision 5: while the file stays refused, external_modification
 
     Rig rig;
     rig.opened();
+    // RR-1s, decision 4 (engine RR-1): refused, but JSON -- the panels read
+    // the version on disk and edit on its digest; an external_modification
+    // then is not the disk's doing.
     rig.saved(rig.rootPath(), RootB);
     rig.answer(rig.last().id,
                Json{{"status", "rejected"},
                     {"error",
                      {{"code", "render_pipeline_preflight_failed"},
-                      {"message", "syntax error"},
+                      {"message", "graph.port_field_missing@1"},
                       {"reference", Root}}}});
+    CHECK(rig.reload.refused());
+    CHECK_FALSE(renderDocumentsRefusedOnDisk());
+    CHECK(knownRefusalDescription("external_modification", engine).empty());
+
+    // Not JSON: the reads keep the last version that was, whose digest is
+    // not the disk's.
+    rig.reload.reloadNow();
+    rig.answer(rig.last().id,
+               Json{{"status", "rejected"},
+                    {"error",
+                     {{"code", "render_document_syntax@1"},
+                      {"message", "render_document_syntax@1: not valid JSON"},
+                      {"document", Root}}}});
     REQUIRE(renderDocumentsRefusedOnDisk());
     const auto said = knownRefusalDescription("external_modification", engine);
     CHECK(said.starts_with(std::string{renderDiskRefusalSentence}));

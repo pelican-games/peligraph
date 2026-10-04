@@ -1,6 +1,7 @@
 #pragma once
 
 #include "inspectormodel.hpp"
+#include "problemsmodel.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -9,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace PelicanStudio {
 
@@ -27,8 +29,19 @@ namespace PelicanStudio {
 //      started without is refused by the reload: "Restart the engine to
 //      enable <feature>", with the restart.
 //
+// RR-1s, decision 1 (engine RR-1). A reload refused for its documents leaves
+// the picture the one before, while the editor's base -- what the Graph and
+// every structural read show, and what an edit is based on -- is the version
+// on disk; the reads say `live: false`. The same row says so then: "Showing
+// the saved version; the picture is still the previous one -- <the Problems
+// list's sentence>". While the version on disk is not JSON at all the reads
+// keep the last one that was (held_unparsed): "<file> is not valid JSON; the
+// Graph shows the last version that was." The placeholder's sentence comes
+// first: one row says one thing.
+//
 // Qt-free: the owner hands it every get_status reply, the reload's refusals
-// and the replies of render edits, and shows notice().
+// and the replies of render edits, a structural read when one may have
+// changed, the Problems list's rows, and shows notice().
 class RenderFallbackSession {
   public:
     using Json = nlohmann::json;
@@ -50,8 +63,24 @@ class RenderFallbackSession {
         bool syntax = false;
         std::int64_t syntax_line = 0;
         std::int64_t syntax_column = 0;
+        // RR-1s, decision 1: the row is the held version's, not the
+        // placeholder's.
+        bool held = false;
 
         bool operator==(const Notice &) const = default;
+    };
+
+    // RR-1s, decision 1: what the structural reads say about the version
+    // they answer from.
+    struct AuthoringReading {
+        // Not read yet (or an engine before RR-1): nothing said.
+        bool known = false;
+        bool live = true;
+        bool held_unparsed = false;
+        // The root as the project names it ("passes/main.json").
+        std::string root;
+        // The digest of the version the reads answer from (decision 4).
+        std::string digest;
     };
 
     // A get_status (or get_frame_plan) reply. True when the notice changed.
@@ -65,17 +94,39 @@ class RenderFallbackSession {
     [[nodiscard]] bool wantsStatusAfter(const Json &reply) const;
     // The engine went away (stopped, restarted, another project).
     void engineGone();
+    // RR-1s, decision 1: a structural read's reply (get_graph_instances and
+    // the others that carry `live`). True when the notice changed.
+    bool observeAuthoringRead(const Json &reply);
+    // RR-1s, decision 1: the Problems list; its first error a reload met
+    // (not the start's: that one is the placeholder's) is what the held
+    // version's row says. True when the notice changed.
+    bool observeProblems(const std::vector<ProblemRow> &rows);
 
     [[nodiscard]] bool fallback() const noexcept {
         return reading_.state == RenderPipelineReading::State::Fallback;
     }
     [[nodiscard]] const RenderPipelineReading &reading() const noexcept { return reading_; }
+    [[nodiscard]] const AuthoringReading &authoring() const noexcept { return authoring_; }
     [[nodiscard]] const Notice &notice() const noexcept { return notice_; }
     // The reason the restart is asked with (requestEngineRestart's line).
     [[nodiscard]] std::string restartReason() const;
 
   private:
+    // The held version's problem, as the Problems list says it.
+    struct HeldProblem {
+        std::string sentence;
+        std::string code;
+        std::string document;
+        std::string node;
+        std::int64_t line = 0;
+        std::int64_t column = 0;
+
+        bool operator==(const HeldProblem &) const = default;
+    };
+
     RenderPipelineReading reading_;
+    AuthoringReading authoring_;
+    HeldProblem held_problem_;
     std::string restart_feature_;
     std::string restart_message_;
     Notice notice_;
@@ -99,6 +150,9 @@ struct RenderDocumentSyntaxSpot {
 // content}]} -- the engine writes the file too. A restore is a ticket; its
 // commit is not taken here, so the owner reads it as every commit (and reads
 // get_status again). Not the way documents are edited otherwise.
+// RR-1s, decision 2 (engine RR-1): after a reload was refused, too -- the
+// engine's base is then the version on disk, so the digest listed is the one
+// a restore is based on. Studio never writes the file itself (D0).
 class RenderDocumentRepair {
   public:
     using Json = nlohmann::json;
@@ -111,10 +165,6 @@ class RenderDocumentRepair {
         std::function<std::int64_t(const std::string &method, const Json &params, std::string *error)> request;
         // Runs `task` after `milliseconds`.
         std::function<void(int milliseconds, std::function<void()> task)> schedule;
-        // PB-1s: writes the document's file (`reference` as the engine names
-        // it) whole, as an editor of the person's own would; the error, empty
-        // when it was written.
-        std::function<std::string(const std::string &reference, const std::string &content)> write_file;
     };
 
     enum class State { Closed, Reading, Editing, Saving };
@@ -124,12 +174,7 @@ class RenderDocumentRepair {
     // Show the document: get_render_documents, then the one `document` names
     // (as the project names it, or project://...). line / column: where the
     // editor puts the cursor.
-    // PB-1s: `to_file` -- the engine runs the version before the file was
-    // saved (a reload of it was refused), and restore_render_documents
-    // compares against that version and the file being the same: Save
-    // writes the file itself (Transport::write_file), and Studio's reload of
-    // saved files (RL-1s) takes it in.
-    bool open(const std::string &document, std::int64_t line, std::int64_t column, bool to_file = false);
+    bool open(const std::string &document, std::int64_t line, std::int64_t column);
     // Save: refused (false, with notice()) while `content` is not JSON;
     // otherwise restore_render_documents against the digest read.
     bool save(const std::string &content);
@@ -157,8 +202,6 @@ class RenderDocumentRepair {
     std::function<void()> changed;
     // The restore committed (its result).
     std::function<void(const Json &commit)> restored;
-    // PB-1s: the file was written (open's `to_file`).
-    std::function<void(const std::string &reference)> written;
 
   private:
     Transport transport_;
@@ -169,7 +212,6 @@ class RenderDocumentRepair {
     std::string content_;
     std::int64_t line_ = 0;
     std::int64_t column_ = 0;
-    bool to_file_ = false;
     std::string notice_;
     std::string ticket_;
     std::int64_t list_request_ = 0;

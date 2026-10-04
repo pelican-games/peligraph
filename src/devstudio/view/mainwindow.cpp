@@ -331,21 +331,14 @@ void MainWindow::createWorkspace() {
                 renderDocumentsRestored(commit, false);
                 // PB-1s: the restore committed; the list follows.
                 if (problems_dock_ != nullptr) problems_dock_->readNow();
+                // RR-1s: and the held version may be the live one now.
+                if (render_fallback_ != nullptr) render_fallback_->readAuthoring();
             },
-            // PB-1s: a document whose reload was refused is written as the
-            // person's own editor writes it; RL-1s's watch reloads it.
-            .write_file = [this](const std::string &reference, const std::string &content) -> std::string {
-                const QString root = viewport_->projectRoot();
-                std::string relative = reference;
-                constexpr std::string_view project = "project://";
-                if (relative.starts_with(project)) relative.erase(0, project.size());
-                if (root.isEmpty() || relative.empty() || relative.find("://") != std::string::npos)
-                    return "it is not a file of this project";
-                QFile file{QDir{root}.filePath(QString::fromStdString(relative))};
-                if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return file.errorString().toStdString();
-                const auto bytes = QByteArray::fromStdString(content);
-                if (file.write(bytes) != bytes.size()) return file.errorString().toStdString();
-                return {};
+            // RR-1s, decision 4: after a refused reload every structural
+            // edit is based on the version on disk; the panels that hold the
+            // live digest read again.
+            .held_digest = [this](const std::string &digest) {
+                if (render_digest_) render_digest_->publish(digest, nullptr);
             },
             .shown_changed = [this](bool shown, const QString &line) {
                 if (shown) {
@@ -510,6 +503,10 @@ void MainWindow::createWorkspace() {
             .open = [this](const ProblemRow &row) { openProblem(row); },
             .restart = [this](const QString &reason) { requestEngineRestart(reason); },
             .counted = [this](std::size_t errors, std::size_t warnings) {
+                // RR-1s, decision 1: the held version's row says the list's
+                // sentence.
+                if (render_fallback_ != nullptr && problems_dock_ != nullptr)
+                    render_fallback_->observeProblems(problems_dock_->session().rows());
                 if (problems_count_ == nullptr) return;
                 problems_count_->setText(QString::fromStdString(problemsCountLine(errors, warnings)));
             },
@@ -961,6 +958,9 @@ void MainWindow::createWorkspace() {
                 materials_dock_->engineAvailable();
                 problems_dock_->engineAvailable();
                 problems_count_->show();
+                // RR-1s, decision 1: whether the reads answer from the version
+                // the picture was made from.
+                render_fallback_->readAuthoring();
             });
     connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
             [this](const QString &) {
@@ -1320,7 +1320,7 @@ void MainWindow::openProblem(const ProblemRow &row) {
     using Place = ProblemRow::Place;
     const auto text = [](const std::string &value) { return QString::fromStdString(value); };
     const QString document = text(row.document);
-    // A node of a refused reload is found in the text by its id.
+    // A node the Graph cannot show is found in the text by its id.
     const QString node_text =
         row.node.empty() ? QString{} : QLatin1Char('"') + text(row.node) + QLatin1Char('"');
     switch (row.place) {
@@ -1333,13 +1333,14 @@ void MainWindow::openProblem(const ProblemRow &row) {
             return;
         }
         if (row.definition.empty()) {
-            // The Graph has not read the document yet: the node is selected
-            // once it has.
+            // The Graph has not read the document yet -- RR-1s: after a
+            // refused reload it reads the version on disk again -- and the
+            // node is selected once it has.
             graph_canvas_->revealNodeWhenPresent(node);
             return;
         }
         if (!document.isEmpty()) {
-            render_fallback_->showDocumentAt(document, 0, 0, node_text, row.source != "startup");
+            render_fallback_->showDocumentAt(document, 0, 0, node_text);
             return;
         }
         statusBar()->showMessage(tr("The Graph does not show %1 of %2.").arg(node, text(row.definition)), 8000);
@@ -1354,10 +1355,9 @@ void MainWindow::openProblem(const ProblemRow &row) {
                                      8000);
         return;
     case Place::DocumentText:
-        // A start's refusal: the engine holds the file as it is, and restores
-        // it. A reload's: it runs the version before, so the file is written.
-        render_fallback_->showDocumentAt(document, row.line, row.column, row.line > 0 ? QString{} : node_text,
-                                         row.source != "startup");
+        // RR-1s, decision 2: the engine holds the file as it is on disk --
+        // at start and after a refused reload alike -- and restores it.
+        render_fallback_->showDocumentAt(document, row.line, row.column, row.line > 0 ? QString{} : node_text);
         return;
     case Place::ShaderFile: {
         const QString root = viewport_->projectRoot();

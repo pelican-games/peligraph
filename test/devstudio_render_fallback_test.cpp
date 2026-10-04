@@ -83,6 +83,8 @@ struct Rig {
     std::int64_t next_id = 500;
     std::vector<std::function<void()>> tasks;
     std::vector<Json> restored;
+    // RR-1s, decision 4: the digests told to the panels.
+    std::vector<std::string> held;
     RenderFallbackNotice notice;
 
     Rig()
@@ -98,6 +100,7 @@ struct Rig {
               },
               .schedule = [this](int, std::function<void()> task) { tasks.push_back(std::move(task)); },
               .restored = [this](const Json &commit) { restored.push_back(commit); },
+              .held_digest = [this](const std::string &digest) { held.push_back(digest); },
               .shown_changed = [this](bool on, const QString &line) { shown.emplace_back(on, line); },
           }} {}
 
@@ -459,4 +462,169 @@ TEST_CASE("BS-1s decision 8: Show the document opens the bytes on disk at the li
     CHECK(dialog == nullptr);
     // A reply nobody asked for is not this window's.
     CHECK_FALSE(rig.notice.receiveResult(9999, QByteArray{"{}"}));
+}
+
+namespace {
+
+// get_problems rows as engine PB-1 lists a reload's refusals.
+ProblemRow reloadNodeRow() {
+    auto row = readEngineProblem(Json{
+        {"id", "00000000000000b2"},
+        {"severity", "error"},
+        {"source", "reload_rpc"},
+        {"code", "graph.port_field_missing@1"},
+        {"message", "graph.port_field_missing@1"},
+        {"fields",
+         {{"document", "project://passes/main_rendering_config.json"},
+          {"node", "sim"},
+          {"port", "data"},
+          {"field", "element"}}},
+        {"document", "project://passes/main_rendering_config.json"},
+        {"document_kind", "root_graph"},
+        {"node", "sim"},
+        {"port", "data"}});
+    REQUIRE(row.has_value());
+    return *row;
+}
+
+ProblemRow reloadSyntaxRow() {
+    auto row = readEngineProblem(Json{
+        {"id", "00000000000000a1"},
+        {"severity", "error"},
+        {"source", "reload_rpc"},
+        {"code", "render_document_syntax@1"},
+        {"message", "render_document_syntax@1: project://passes/main_rendering_config.json is not valid JSON at "
+                    "line 12, column 1: syntax error while parsing object"},
+        {"fields",
+         {{"document", "project://passes/main_rendering_config.json"},
+          {"line", 12},
+          {"column", 1},
+          {"reason", "syntax error while parsing object"}}},
+        {"document", "project://passes/main_rendering_config.json"},
+        {"document_kind", "root"},
+        {"line", 12},
+        {"column", 1}});
+    REQUIRE(row.has_value());
+    return *row;
+}
+
+// get_graph_instances as engine RR-1 answers it.
+QByteArray graphRead(bool live, const std::string &digest, bool held_unparsed = false) {
+    Json read{{"source_reference", "project://passes/main_rendering_config.json"},
+              {"root_schema", "pelican.graph"},
+              {"source_digest", {{"algorithm", "sha256"}, {"hex", digest}}},
+              {"live", live},
+              {"instances", Json::array()},
+              {"nodes", Json::array()}};
+    if (held_unparsed) read["held_unparsed"] = true;
+    return QByteArray::fromStdString(read.dump());
+}
+
+} // namespace
+
+TEST_CASE("RR-1s decision 1: while a refused version is held the row says the picture is the previous one, with "
+          "the Problems list's sentence; a version that is not JSON says the Graph shows the last one that was; "
+          "the placeholder's sentence comes first",
+          "[devstudio][render-fallback][rr1s]") {
+    application();
+    Rig rig;
+    rig.notice.setSeeProblems(true);
+    // A refused reload: whether the reads are live is asked.
+    rig.notice.observeReloadRefusal(Json{{"code", "graph.port_field_missing@1"}, {"message", "x"}});
+    REQUIRE(rig.requests.size() == 1);
+    CHECK(rig.requests.back().method == "get_graph_instances");
+    CHECK(rig.requests.back().params == Json::object());
+    // The list moved meanwhile: one read in flight, one more after it.
+    const auto node = reloadNodeRow();
+    rig.notice.observeProblems({node});
+    CHECK(rig.requests.size() == 1);
+    CHECK(rig.notice.isHidden());
+    CHECK(rig.notice.receiveResult(rig.requests.back().id, graphRead(false, std::string(64, 'd'))));
+    REQUIRE(rig.requests.size() == 2);
+    CHECK(rig.requests.back().method == "get_graph_instances");
+    CHECK(rig.notice.receiveResult(rig.requests.back().id, graphRead(false, std::string(64, 'd'))));
+    CHECK(rig.requests.size() == 2);
+
+    CHECK_FALSE(rig.notice.isHidden());
+    CHECK(rig.notice.session().notice().held);
+    CHECK(rig.notice.line()->text().toStdString() ==
+          "Showing the saved version; the picture is still the previous one \xE2\x80\x94 " + node.sentence +
+              " See Problems.");
+    CHECK(rig.showing("pelican.renderFallbackNotice.reload"));
+    CHECK(rig.showing("pelican.renderFallbackNotice.openGraph"));
+    CHECK_FALSE(rig.showing("pelican.renderFallbackNotice.showDocument"));
+    REQUIRE_FALSE(rig.shown.empty());
+    CHECK(rig.shown.back().first);
+    // Open in Graph goes to the node (the Graph reads the held version).
+    rig.named<QPushButton>("pelican.renderFallbackNotice.openGraph")->click();
+    REQUIRE(rig.graph_opened.size() == 1);
+    CHECK(rig.graph_opened.back() == QStringLiteral("sim"));
+
+    // The placeholder at the same time: one row, the placeholder's.
+    rig.notice.observeStatus(fallbackStatus());
+    CHECK(rig.notice.line()->text().startsWith(QStringLiteral("Showing a placeholder: ")));
+    CHECK_FALSE(rig.notice.session().notice().held);
+    // It gives way: the reads are asked again, and until they answer
+    // nothing is said.
+    const auto before = rig.requests.size();
+    rig.notice.observeStatus(readyStatus());
+    REQUIRE(rig.requests.size() == before + 1);
+    CHECK(rig.requests.back().method == "get_graph_instances");
+    CHECK(rig.notice.isHidden());
+    CHECK(rig.notice.receiveResult(rig.requests.back().id, graphRead(true, std::string(64, 'e'))));
+    CHECK(rig.notice.isHidden());
+
+    // A version that is not JSON: the reads keep the last one that was.
+    const auto syntax = reloadSyntaxRow();
+    rig.notice.observeProblems({syntax});
+    REQUIRE(rig.requests.back().method == "get_graph_instances");
+    CHECK(rig.notice.receiveResult(rig.requests.back().id, graphRead(true, std::string(64, 'e'), true)));
+    CHECK(rig.notice.line()->text() ==
+          QStringLiteral("passes/main_rendering_config.json is not valid JSON; the Graph shows the last version "
+                         "that was. See Problems."));
+    CHECK(rig.notice.session().notice().held);
+    // Show the document opens it where the engine's parser stopped.
+    CHECK(rig.showing("pelican.renderFallbackNotice.showDocument"));
+    CHECK(rig.notice.session().notice().syntax_line == 12);
+    CHECK(rig.notice.session().notice().syntax_column == 1);
+    CHECK_FALSE(rig.showing("pelican.renderFallbackNotice.openGraph"));
+
+    // An edit that committed while it is held reads again; live takes the
+    // row away.
+    rig.notice.observeReply(Json{{"status", "committed"}});
+    REQUIRE(rig.requests.back().method == "get_graph_instances");
+    rig.notice.observeProblems({});
+    CHECK(rig.notice.receiveResult(rig.requests.back().id, graphRead(true, std::string(64, 'f'))));
+    CHECK(rig.notice.isHidden());
+    CHECK_FALSE(rig.shown.back().first);
+    // An engine before RR-1 says nothing either way.
+    rig.notice.readAuthoring();
+    CHECK(rig.notice.receiveResult(rig.requests.back().id, QByteArray{"{\"instances\": []}"}));
+    CHECK(rig.notice.isHidden());
+}
+
+TEST_CASE("RR-1s decision 4: the digest of the held version is told to every panel, so a structural edit is "
+          "based on it; a live read and a version that is not JSON tell nothing",
+          "[devstudio][render-fallback][rr1s]") {
+    application();
+    Rig rig;
+    rig.notice.readAuthoring();
+    REQUIRE(rig.requests.size() == 1);
+    CHECK(rig.notice.receiveResult(rig.requests.back().id, graphRead(false, std::string(64, 'd'))));
+    REQUIRE(rig.held.size() == 1);
+    CHECK(rig.held.back() == std::string(64, 'd'));
+    // Live: a commit already told it.
+    rig.notice.readAuthoring();
+    CHECK(rig.notice.receiveResult(rig.requests.back().id, graphRead(true, std::string(64, 'e'))));
+    CHECK(rig.held.size() == 1);
+    // Not JSON: the digest read is the last version that was; the panels
+    // keep theirs (an edit is refused either way until the file is fixed).
+    rig.notice.readAuthoring();
+    CHECK(rig.notice.receiveResult(rig.requests.back().id, graphRead(false, std::string(64, 'a'), true)));
+    CHECK(rig.held.size() == 1);
+    // A failed read is the notice's own and asks nothing more.
+    rig.notice.readAuthoring();
+    const auto failed = rig.requests.back().id;
+    CHECK(rig.notice.receiveFailure(failed, QStringLiteral("engine gone")));
+    CHECK(rig.requests.back().id == failed);
 }

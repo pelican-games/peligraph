@@ -13,6 +13,9 @@ bool RenderFallbackSession::observeStatus(const Json &reply) {
     if (reading.state == RenderPipelineReading::State::Ready && fallback()) {
         restart_feature_.clear();
         restart_message_.clear();
+        // RR-1s: what published it published what the editor held; the
+        // reads are asked again (the owner's), and until then say nothing.
+        authoring_ = {};
     }
     reading_ = std::move(reading);
     return compose();
@@ -35,9 +38,51 @@ bool RenderFallbackSession::wantsStatusAfter(const Json &reply) const {
 
 void RenderFallbackSession::engineGone() {
     reading_ = {};
+    authoring_ = {};
+    held_problem_ = {};
     restart_feature_.clear();
     restart_message_.clear();
     (void)compose();
+}
+
+bool RenderFallbackSession::observeAuthoringRead(const Json &reply) {
+    if (!reply.is_object()) return false;
+    const auto live = reply.find("live");
+    // An engine before RR-1 says nothing either way.
+    if (live == reply.end() || !live->is_boolean()) return false;
+    AuthoringReading next;
+    next.known = true;
+    next.live = live->get<bool>();
+    const auto unparsed = reply.find("held_unparsed");
+    next.held_unparsed = unparsed != reply.end() && unparsed->is_boolean() && unparsed->get<bool>();
+    if (const auto root = reply.find("source_reference"); root != reply.end() && root->is_string())
+        next.root = graphRefusalSource(Json{{"document", *root}}, "document");
+    if (const auto digest = reply.find("source_digest"); digest != reply.end()) {
+        if (digest->is_object()) {
+            const auto hex = digest->find("hex");
+            if (hex != digest->end() && hex->is_string()) next.digest = hex->get<std::string>();
+        } else if (digest->is_string()) {
+            next.digest = digest->get<std::string>();
+        }
+    }
+    authoring_ = std::move(next);
+    return compose();
+}
+
+bool RenderFallbackSession::observeProblems(const std::vector<ProblemRow> &rows) {
+    HeldProblem next;
+    for (const auto &row : rows) {
+        // The start's refusal is the placeholder's; a shader's is not one of
+        // the documents the editor holds.
+        if (row.origin != ProblemRow::Origin::Engine || !row.error() || row.source == "startup" ||
+            row.document_kind == "shader")
+            continue;
+        next = HeldProblem{row.sentence, row.code, row.document, row.node, row.line, row.column};
+        break;
+    }
+    if (next == held_problem_) return false;
+    held_problem_ = std::move(next);
+    return compose();
 }
 
 std::string RenderFallbackSession::restartReason() const {
@@ -76,6 +121,32 @@ bool RenderFallbackSession::compose() {
             next.syntax_line = number("line");
             next.syntax_column = number("column");
         }
+    } else if (authoring_.known && authoring_.held_unparsed) {
+        // RR-1s, decision 1: the version on disk is not JSON; the reads keep
+        // the last one that was. Show the document fixes it.
+        next.shown = true;
+        next.held = true;
+        const auto &file = authoring_.root.empty() ? held_problem_.document : authoring_.root;
+        next.line = (file.empty() ? std::string{"The rendering root"} : file) +
+                    " is not valid JSON; the Graph shows the last version that was.";
+        next.document = file;
+        next.syntax = !file.empty();
+        if (held_problem_.code == "render_document_syntax@1") {
+            next.syntax_line = held_problem_.line;
+            next.syntax_column = held_problem_.column;
+        }
+        next.detail = held_problem_.sentence;
+    } else if (authoring_.known && !authoring_.live) {
+        // RR-1s, decision 1: a reload refused the version on disk; the Graph
+        // and every structural read show it, the picture is the one before.
+        next.shown = true;
+        next.held = true;
+        next.line = "Showing the saved version; the picture is still the previous one";
+        next.line += held_problem_.sentence.empty() ? std::string{"."} : " \xE2\x80\x94 " + held_problem_.sentence;
+        next.document = held_problem_.document;
+        next.node = held_problem_.node;
+        next.detail = "The Graph and the other panels show the version on disk and edit it; the engine draws "
+                      "the version before until a fixed version is taken in.";
     }
     if (next == notice_) return false;
     notice_ = std::move(next);
@@ -131,10 +202,8 @@ void RenderDocumentRepair::notify() {
     if (changed) changed();
 }
 
-bool RenderDocumentRepair::open(const std::string &document, std::int64_t line, std::int64_t column,
-                                bool to_file) {
+bool RenderDocumentRepair::open(const std::string &document, std::int64_t line, std::int64_t column) {
     ++epoch_;
-    to_file_ = to_file;
     wanted_ = graphRefusalSource(Json{{"document", document}}, "document");
     reference_.clear();
     digest_.clear();
@@ -162,21 +231,8 @@ bool RenderDocumentRepair::save(const std::string &content) {
         return false;
     }
     notice_.clear();
-    if (to_file_) {
-        // PB-1s: written as the person's own editor would; the reload of
-        // saved files takes it in.
-        auto error = transport_.write_file ? transport_.write_file(reference_, content)
-                                           : std::string{"this window cannot write files"};
-        if (!error.empty()) {
-            notice_ = "Could not write " + reference_ + ": " + error;
-            notify();
-            return false;
-        }
-        state_ = State::Closed;
-        if (written) written(reference_);
-        notify();
-        return true;
-    }
+    // RR-1s, decision 2: after a refused reload as on the placeholder, the
+    // digest listed is the engine's base.
     restore_request_ = send("restore_render_documents",
                             Json{{"documents", Json::array({Json{{"reference", reference_},
                                                                  {"base_digest", digest_},

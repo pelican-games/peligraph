@@ -39,13 +39,14 @@ struct ProblemRow {
     // Where a click on the row goes (decision 3).
     enum class Place {
         None,
-        // The Graph tab, the node selected (inside its definition): a node of
-        // a start's refusal, which is the document the Graph holds.
+        // The Graph tab, the node selected (inside its definition): the Graph
+        // holds the document on disk, at start and after a refused reload
+        // (RR-1s, decision 3).
         GraphNode,
         // The Materials dock, the material selected.
         Material,
-        // The document's text (BS-1s's Show the document), at the line, or at
-        // the node of a refused reload (the Graph holds the version before).
+        // The document's text (BS-1s's Show the document), at the line (a
+        // document that is not JSON, or a problem without a node).
         DocumentText,
         // The shader file, in the desktop's editor.
         ShaderFile,

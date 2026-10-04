@@ -202,6 +202,8 @@ class RenderDocumentReload {
 // Decision 5. The sentence an edit refused as external_modification reads as
 // while the reload of the documents on disk stands refused, and whether it
 // does now. One process, one engine: the flag is the window's reload's.
+// RR-1s, decision 4: only while the file is not JSON (render_document_syntax@1);
+// a refused version that is JSON is what the panels read and edit.
 inline constexpr std::string_view renderDiskRefusalSentence =
     "The file on disk changed and could not be loaded \xE2\x80\x94 fix it or use "
     "Reload from disk.";

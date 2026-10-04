@@ -25,8 +25,7 @@ QString qtext(const std::string &value) { return QString::fromStdString(value); 
 
 RenderFallbackNotice::RenderFallbackNotice(Hooks hooks, QWidget *parent)
     : QFrame(parent), hooks_{std::move(hooks)},
-      repair_{RenderDocumentRepair::Transport{
-          .request = hooks_.request, .schedule = hooks_.schedule, .write_file = hooks_.write_file}} {
+      repair_{RenderDocumentRepair::Transport{.request = hooks_.request, .schedule = hooks_.schedule}} {
     setObjectName(QStringLiteral("pelican.renderFallbackNotice"));
     setFrameShape(QFrame::StyledPanel);
     auto *layout = new QHBoxLayout(this);
@@ -86,41 +85,99 @@ RenderFallbackNotice::~RenderFallbackNotice() {
 }
 
 void RenderFallbackNotice::observeStatus(const nlohmann::json &reply) {
+    const bool was_fallback = session_.fallback();
     present(session_.observeStatus(reply));
+    // RR-1s: the placeholder gave way; whether the reads are live is asked
+    // again.
+    if (was_fallback && !session_.fallback()) readAuthoring();
 }
 
 void RenderFallbackNotice::observeReloadRefusal(const nlohmann::json &error) {
     present(session_.observeReloadRefusal(error));
     // The engine may say more about why it stays on the placeholder.
     if (session_.fallback() && hooks_.read_status) hooks_.read_status();
+    // RR-1s: a refusal of the documents makes the version on disk the
+    // editor's base (engine RR-1).
+    readAuthoring();
 }
 
 void RenderFallbackNotice::observeReply(const nlohmann::json &reply) {
     if (session_.wantsStatusAfter(reply) && hooks_.read_status) hooks_.read_status();
+    // RR-1s: an edit that committed on the held version publishes it.
+    const auto &reading = session_.authoring();
+    if (reading.known && (!reading.live || reading.held_unparsed) && reply.is_object() &&
+        (reply.value("status", std::string{}) == "committed" ||
+         (reply.contains("committed") && reply.at("committed").is_boolean() && reply.at("committed").get<bool>())))
+        readAuthoring();
 }
 
 void RenderFallbackNotice::reloadCommitted() {
     if (session_.fallback() && hooks_.read_status) hooks_.read_status();
+    readAuthoring();
 }
 
 void RenderFallbackNotice::engineGone() {
+    authoring_request_ = 0;
+    authoring_again_ = false;
+    problem_ids_.clear();
     session_.engineGone();
     repair_.engineGone();
     present(true);
 }
 
+void RenderFallbackNotice::readAuthoring() {
+    if (!hooks_.request) return;
+    if (authoring_request_ != 0) {
+        authoring_again_ = true;
+        return;
+    }
+    std::string error;
+    authoring_request_ = hooks_.request("get_graph_instances", nlohmann::json::object(), &error);
+}
+
+void RenderFallbackNotice::observeProblems(const std::vector<ProblemRow> &rows) {
+    present(session_.observeProblems(rows));
+    std::vector<std::string> ids;
+    ids.reserve(rows.size());
+    for (const auto &row : rows)
+        if (row.origin == ProblemRow::Origin::Engine) ids.push_back(row.id);
+    // A reload refused or taken in moves the engine's list: whether the
+    // reads answer from the live version may have changed with it.
+    if (ids != problem_ids_) {
+        problem_ids_ = std::move(ids);
+        readAuthoring();
+    }
+}
+
 bool RenderFallbackNotice::receiveResult(qint64 id, const QByteArray &result_json) {
-    if (!repair_.owns(id)) return false;
+    const bool authoring = id != 0 && id == authoring_request_;
+    if (!authoring && !repair_.owns(id)) return false;
     nlohmann::json result;
     try {
         result = nlohmann::json::parse(result_json.constData(), result_json.constData() + result_json.size());
     } catch (const std::exception &) {
         result = nlohmann::json::object();
     }
-    return repair_.receiveResult(id, result);
+    if (!authoring) return repair_.receiveResult(id, result);
+    authoring_request_ = 0;
+    present(session_.observeAuthoringRead(result));
+    // Decision 4: while a refused version is held, edits are based on its
+    // digest; every panel that holds the live one reads again. (A version
+    // that is not JSON has no reads of its own: the panels keep theirs.)
+    const auto &reading = session_.authoring();
+    if (reading.known && !reading.live && !reading.held_unparsed && !reading.digest.empty() &&
+        hooks_.held_digest)
+        hooks_.held_digest(reading.digest);
+    if (std::exchange(authoring_again_, false)) readAuthoring();
+    return true;
 }
 
 bool RenderFallbackNotice::receiveFailure(qint64 id, const QString &message) {
+    if (id != 0 && id == authoring_request_) {
+        authoring_request_ = 0;
+        if (std::exchange(authoring_again_, false)) readAuthoring();
+        return true;
+    }
     return repair_.receiveFailure(id, message.toStdString());
 }
 
@@ -134,12 +191,11 @@ void RenderFallbackNotice::showDocument() {
 }
 
 void RenderFallbackNotice::showDocumentAt(const QString &document, std::int64_t line, std::int64_t column,
-                                          const QString &find, bool to_file) {
+                                          const QString &find) {
     if (document.isEmpty()) return;
     dialog_filled_ = false;
     dialog_find_ = find;
-    if (repair_.open(document.toStdString(), line, column, to_file && static_cast<bool>(hooks_.write_file)))
-        buildDialog();
+    if (repair_.open(document.toStdString(), line, column)) buildDialog();
     presentRepair();
 }
 

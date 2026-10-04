@@ -292,10 +292,10 @@ TEST_CASE("PB-1s decision 2: get_problems is read when get_status.problems.revis
     CHECK(rig.tree()->topLevelItemCount() == 2);
 }
 
-TEST_CASE("PB-1s decision 3: a click on a row goes where it is fixed -- the Graph's node for a start's refusal, "
-          "the document's text at the line or at the node, the shader file, the asset's row, the material, "
-          "the rendering settings",
-          "[devstudio][problems][pb1s]") {
+TEST_CASE("PB-1s decision 3 / RR-1s decisions 2 and 3: a click on a row goes where it is fixed -- the Graph's "
+          "node for a start's refusal and a reload's alike, the document's text at the line or at the node, the "
+          "shader file, the asset's row, the material, the rendering settings; Save restores the document",
+          "[devstudio][problems][pb1s][rr1s]") {
     application();
     Rig rig;
     rig.dock.engineAvailable();
@@ -314,11 +314,12 @@ TEST_CASE("PB-1s decision 3: a click on a row goes where it is fixed -- the Grap
     CHECK(start.place == ProblemRow::Place::GraphNode);
     CHECK(start.node == "sim");
     CHECK(rig.rowFor("00000000000000b2")->text(4) == QStringLiteral("Graph: sim"));
-    // The engine keeps the version before a refused reload, and so does the
-    // Graph: the node is fixed in the file's text.
+    // RR-1s, decision 3 (engine RR-1): after a refused reload the Graph reads
+    // the version on disk, so a reload's node is fixed there too.
     const auto reload = place("00000000000000b9");
-    CHECK(reload.place == ProblemRow::Place::DocumentText);
-    CHECK(rig.rowFor("00000000000000b9")->text(4) == QStringLiteral("Text: sim"));
+    CHECK(reload.place == ProblemRow::Place::GraphNode);
+    CHECK(reload.node == "sim");
+    CHECK(rig.rowFor("00000000000000b9")->text(4) == QStringLiteral("Graph: sim"));
     const auto syntax = place("00000000000000a1");
     CHECK(syntax.place == ProblemRow::Place::DocumentText);
     CHECK(syntax.document == "passes/main_rendering_config.json");
@@ -338,22 +339,17 @@ TEST_CASE("PB-1s decision 3: a click on a row goes where it is fixed -- the Grap
     // The text it goes to: Show the document, at the line and column -- or,
     // without a line, at the node's id.
     std::vector<std::pair<std::string, Json>> sent;
-    std::vector<std::pair<std::string, std::string>> files_written;
     RenderFallbackNotice notice{RenderFallbackNotice::Hooks{
         .request = [&](const std::string &method, const Json &params, std::string *) -> std::int64_t {
             sent.emplace_back(method, params);
             return static_cast<std::int64_t>(sent.size()) + 900;
         },
         .schedule = [](int, std::function<void()>) {},
-        .write_file = [&](const std::string &reference, const std::string &bytes) -> std::string {
-            files_written.emplace_back(reference, bytes);
-            return {};
-        },
     }};
     const std::string content = "{\n  \"nodes\": [\n    {\"id\": \"sim\", \"op\": \"render.compute\"}\n  ]\n}\n";
-    const auto open = [&](std::int64_t line, std::int64_t column, const QString &find, bool to_file = false) {
+    const auto open = [&](std::int64_t line, std::int64_t column, const QString &find) {
         sent.clear();
-        notice.showDocumentAt(QStringLiteral("passes/main_rendering_config.json"), line, column, find, to_file);
+        notice.showDocumentAt(QStringLiteral("passes/main_rendering_config.json"), line, column, find);
         REQUIRE(sent.size() == 1);
         CHECK(sent.back().first == "get_render_documents");
         REQUIRE(notice.receiveResult(
@@ -374,21 +370,23 @@ TEST_CASE("PB-1s decision 3: a click on a row goes where it is fixed -- the Grap
     CHECK(at_node.positionInBlock() == static_cast<int>(std::string{"    {\"id\": "}.size()));
     notice.documentDialog()->close();
 
-    // A refused reload's document: the engine runs the version before the
-    // file, so Save writes the file (Studio's reload of saved files takes it
-    // in), not restore_render_documents.
-    (void)open(3, 5, {}, true);
+    // RR-1s, decision 2: a refused reload's document too is restored through
+    // the engine, against the digest get_render_documents lists (the engine's
+    // base is the version on disk); Studio writes no file.
+    (void)open(3, 5, {});
     auto *save = notice.documentDialog()->findChild<QPushButton *>(QStringLiteral("pelican.renderDocumentDialog.save"));
     REQUIRE(save != nullptr);
     REQUIRE(save->isEnabled());
     sent.clear();
     save->click();
-    CHECK(sent.empty());
-    REQUIRE(files_written.size() == 1);
-    CHECK(files_written.back().first == "project://passes/main_rendering_config.json");
-    CHECK(files_written.back().second == content);
-    QApplication::processEvents();
-    CHECK(notice.documentDialog() == nullptr);
+    REQUIRE(sent.size() == 1);
+    CHECK(sent.back().first == "restore_render_documents");
+    CHECK(sent.back().second ==
+          Json{{"documents", Json::array({{{"reference", "project://passes/main_rendering_config.json"},
+                                           {"base_digest", "d1"},
+                                           {"content", content}}})}});
+    CHECK(notice.repair().state() == RenderDocumentRepair::State::Saving);
+    CHECK(notice.documentDialog() != nullptr);
 }
 
 TEST_CASE("PB-1s decision 4: the count says how many errors and warnings, and the placeholder's row says See "
