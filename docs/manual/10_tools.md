@@ -523,6 +523,8 @@ params は `get_assets_verification` / `verify_assets` が空の object だけ�
   - model の material_bindings の文書を書き(無ければ作り、asset_data の `models[]` に `material_bindings` を足す。基本形は `models[]` に宣言ごと足す)、model を読み直します。割り当ては model 単位です。
   - 返り値に `model`・`material_bindings`・`bindings_digest`・`previous_bindings_digest`(文書が無かったなら `null`)・`previous: {bindings: [{mesh, primitive, material}]}`(変わった primitive の前の material)、asset_data を書いたときは `asset_data_digest` / `previous_asset_data_digest`。`previous.bindings` を `bindings` に送れば戻ります。
   - 実例(test): 箱に `{model: "engine://primitives/cube", slot: "pelican.primitive.default", material: "paint"}` → `applied: "live"`、`previous: {"bindings": [{"mesh": 0, "primitive": 0, "material": "pelican.primitive.default"}]}`。
+  - **戻しの規則(✅MT-2b、`213562bb`)**: 要求を当てた結果、全 primitive が model の元の material(glTF の slot、基本形は `pelican.primitive.default`)になるときは、binding を書かずに外します。bindings の文書を消す・asset_data の `material_bindings` の鍵を外す・MT-1 が基本形に足した `models[]` の項目を外す、の 3 つを 1 つの transaction で書き、model を読み直します([bind_material の戻しで外す所 MT-2b](../../src/core/communication/materialdocumentrpc.cpp#L1270))。返り値は `material_bindings: null`・`bindings_digest: null` と、`previous` / `previous_bindings_digest`(asset_data を書いたときは `asset_data_digest` / `previous_asset_data_digest` も)です。宣言が無い状態で同じものを送ると、何も書かず `changed: false` です。
+  - 上の実例の `previous` を `bindings` に送り返すと、この道で箱が灰に戻ります(test)。外す理由は、bindings の形式が点を含む material 名を行に書けないためです(commit の記述)。一部の primitive だけを既定に戻すときは、今までどおり slot の名前の行を書きます。
 
 params の形が違う(鍵が足りない・知らない鍵・型が違う)ときは `-32602` です。断るとき(`-32000`、`data: {error_code, error_fields}`)は何も書きません([MT-1 の拒否の code の並び](../../src/core/communication/materialdocumentrpc.cpp#L52))。
 
@@ -570,10 +572,12 @@ scene の object 1 つだけの material を、その object の `simplemodelvie
 
 | `error_code` | いつ | `error_fields` |
 |---|---|---|
-| `material.object_unknown@1` | その id の object が無い、`scene_id` と別の scene にある、`simplemodelview` を持たない | `{object, reason}` |
+| `material.object_unknown@1` | その id の object が無い、`scene_id` と別の scene にある、`simplemodelview` を持たない | `{object, scene_id?, name?, reason}`(✅MT-2b。`scene_id` は object が見つかったとき、`name` はさらに authoring の名前があるとき。id の object が無ければ `{object, reason}`) |
 | `material.model_unknown@1` | object の model が読めない(model の container の無い host、知らない基本形など) | `{model, object, reason}` |
 | `material.name_unknown@1` | `material` が model の glTF の material にも登録済みの project material にも無い | `{name, reason}` |
 | `material.binding_invalid@1` | model に無い primitive、その `slot` を持つ primitive が無い | `{model, object, reason}` |
+
+- `material.object_unknown@1` の `scene_id` / `name` は ✅MT-2b(`213562bb`)で足しました([MT-2b の object_unknown の fields を作る所](../../src/core/communication/editorobjectmaterial.cpp#L110))。[`editorcommandservice.hpp` の MT-2 の拒否の注記](../../src/core/communication/editorcommandservice.hpp#L361) は `{object, reason}` のままです。
 
 - scene の文書に名前の解けない行があっても(手で書いたなど)、読み込みは断りません。警告を出して、その行が無いものとして描きます(第6章 §6.7 の「object ごとの上書き」)。
 - test の無い所: Play 中の編集、`bind_material` などで model を読み直したときに上書きを解き直す経路、draw_loop の振り分け(第6章の同じ節)。

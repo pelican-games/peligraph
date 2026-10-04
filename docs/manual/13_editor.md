@@ -1442,6 +1442,12 @@ MT-1(`976c410d`)の前は、Blank の project で物体の色を変えるには 
   載る surface には `name` と `routing`、`//! render_state:` を宣言する surface には `render_state` が付きます。
 - 戻すときは返り値の `previous` を同じ RPC で送ります(`edit_material` は新しい `material_digest` で、`bind_material` は
   `previous.bindings` を `bindings` に)。`delete_material` はありません。
+- ✅MT-2b(`213562bb`)から、`bind_material` で送り返した bindings が全 primitive を model の元の material(glTF の slot、基本形は
+  `pelican.primitive.default`)に戻すときは、binding を書かずに、bindings の文書・asset_data の `material_bindings` の鍵・MT-1 が基本形に
+  足した `models[]` の項目を 1 つの transaction で外し、model を読み直します(返り値の `material_bindings` / `bindings_digest` は `null`。
+  宣言が無い状態で同じものを送ると `changed: false`)。一部の primitive だけを既定に戻すときは、今までどおり slot の名前の行を書きます。
+- `material.object_unknown@1` の `error_fields` は ✅MT-2b から `{object, scene_id?, name?, reason}` です(`scene_id` は object が
+  見つかったとき、`name` はさらに authoring の名前があるとき)。上の表は code だけで、各 code の fields は [第10章](10_tools.md) §10.3 の表です。
 - `edit_batch` の対象ではありません。material の文書は RD-1 の render 文書の集合の外にあるためです(commit の記録)。
 - ✅MT-1s(`2d81ef51`)から、**Studio の Materials のドックと Inspector の Material の行がこの 7 本を呼びます**(surface の一覧は ✅MT-1b の
   `list_surfaces`。§13.1 の「Studio の Materials のドック」)。MT-1s の前は、`src/devstudio` に呼ぶ所がありませんでした。

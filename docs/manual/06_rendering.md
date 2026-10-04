@@ -2348,6 +2348,10 @@ MT-1 の前は、Blank の project で物体の色を 1 つ変えるのに JSON 
 
 **戻し**は、返り値の `previous` を同じ RPC で送ります(`edit_material` は新しい `material_digest` と一緒に、`bind_material` は `previous.bindings` を `bindings` に)。`delete_material` はありません。
 
+- **元の material に戻るときは外す(✅MT-2b、`213562bb`)**: 送り返した bindings で全 primitive が model の元の material(glTF の slot、engine の基本形なら `pelican.primitive.default`)に戻るとき、`bind_material` は binding を書かずに外します。bindings の文書を消す・asset_data の `material_bindings` の鍵を外す・MT-1 が基本形に足した `models[]` の項目を外す、の 3 つを 1 つの transaction で書き、model を読み直します([MT-2b の binding を外して読み直す所](../../src/core/communication/materialdocumentrpc.cpp#L1270))。返り値の `material_bindings` と `bindings_digest` は `null` で、`previous` と digest の組は今までどおりです。宣言が無い状態で同じものを送ると `changed: false` です。
+- 行を書かずに外すのは、bindings の形式が点を含む material 名(`pelican.primitive.default`)を行に書けないためです(commit の記述)。MT-2b の前は、基本形で最初の bind の `previous` を送り返すと `material.binding_invalid@1` で断られました(仕様書の記述)。一部の primitive だけを既定に戻すときは、今までどおり slot の名前の行を書きます。
+- test: [`materialdocumentrpc_test` の MT-2b の GPU test](../../test/materialdocumentrpc_test.cpp#L530)(Blank の箱に赤を bind し、`previous` を送り返すと灰に戻る。asset_data が bind の前と同じ内容になり、bindings の文書が無くなる。もう一度送ると `changed: false`)。
+
 **やっていないこと**: この 3 本は `edit_batch` の対象ではありません。material の文書は RD-1 の render 文書の集合の外にあるためです(commit の記録)。
 
 **残る穴**(着地時の記録):
