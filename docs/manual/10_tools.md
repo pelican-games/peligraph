@@ -1086,7 +1086,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 `\\.\pipe\<名前>`)が開き、**改行区切りの JSON 1 行 = 1 命令**で `list` / `click` / `double_click` / `drag` /
 `wheel` / `move` / `press` / `release` / `key` / `type` / `text` / `action` / `menu_list` / `view_state` /
 `wait` / `wait_engine` / `rpc` / `open_project` / `screenshot` / `quit` の **20 命令**を受けます
-([一覧](../../src/devstudio/automation/automationcommands.cpp#L2145))。**flag が無い起動では server object が
+([一覧](../../src/devstudio/automation/automationcommands.cpp#L2151))。**flag が無い起動では server object が
 作られないので socket は存在しません**([構築](../../src/devstudio/view/uimain.cpp#L41)) —— 出荷時の挙動は
 変わりません。listen できたときだけ `automation listening: <endpoint>` を標準出力に出します
 ([その 1 行](../../src/devstudio/view/uimain.cpp#L71))。開けなかったときは理由を出して **終了コード 3** です。
@@ -1094,7 +1094,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 `wait_engine` は engine が editor RPC に答えた時点で返ります。engine は**最初の frame を出す前に** RPC に
 答えるので、描画済みの frame が要る操作(`capture`、公開済みの frame plan)の前には `frames` を付けます。
 `{"cmd": "wait_engine", "frames": 1}` は `get_status` の `render.published_frames` がその数に届くまで待ち、
-応答に `published_frames` を足します([commandWaitEngine()](../../src/devstudio/automation/automationcommands.cpp#L1877))。
+応答に `published_frames` を足します([commandWaitEngine()](../../src/devstudio/automation/automationcommands.cpp#L1883))。
 `published_frames` は renderer がその起動で公開した logical frame の数で、飛ばした frame は数えません。
 
 回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1276)(`uv run`、標準ライブラリだけ)です。
@@ -1121,7 +1121,9 @@ report は `verdict`(`green` / `red`)・`summary`(step ごとに 1 行)・`failu
 pan が書け、`key` は `route`(`widget` 既定 / `window`)を取って **`window` のときだけ shortcut map を通ります**。
 `list` の各項目は `shortcut` を返し、メニューバー・dock・gizmo の `QAction` は `pelican.file.*` /
 `pelican.view.panels.*` / `pelican.gizmo.*` という objectName を持ちます —— `QAction` は widget ではないので
-一覧は `menu_list`、発火は `action` です。現在のシナリオと実行条件は §10.9 を参照してください。
+一覧は `menu_list`、発火は `action` です。✅SK-1 から、`list` の check できるボタン(`QCheckBox` など)の項目は
+`checked` も返します(check box の `text` は caption のため。[第13章](13_editor.md) §13.5「Studio の自動化面」の「`list` の `checked`」)。
+現在のシナリオと実行条件は §10.9 を参照してください。
 
 ✅IA-1s で、シナリオが Studio の外の作業を代わりにする口が 2 つ増えました。
 

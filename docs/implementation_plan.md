@@ -27946,6 +27946,25 @@ Graph tab の render node の parameters に書く view_select の欄(LP-4 の�
 - **engine に回したもの(実装者の報告)**: (1) module が frozen の拒否に code と feature 名(例 `render.feature_needs_restart@1 {feature}`)。今は message の文字列を読む。(2) `material_route_unserved@1`(material の登録で起きる起動時の拒否)は `--render-fallback` でも致命のまま。fallback に含めるか。(3) `edit_material` で surface を替えると routing の variant と合わず断られる。surface の variant を替えるときに routing も一緒に替える道(または create と同じく variant の routing を採る) → VR-1(`45864d55`)で済み
 - **手で打つ欄**: Show the document の窓(`pelican.renderDocumentDialog.text`)で壊れた JSON を手で直す(シナリオでは末尾の `}`。既定値はディスクの生の文字列で、カーソルは parser が止まった行・列)。壊れたファイルの逃げ道で普段の編集の道ではない。末尾の括弧の欠けなど決まった形は「足して直す」ボタンにできるが入れていない。(b) で使う tag の `+ new tag`(UX-11 の既存)
 
+### SK-1: MC-1s の後に赤になったシナリオ 2 本を戻す + VR-1 の surface の段(Studio のシナリオ)
+
+**Studio のシナリオ(engine は VR-1 `45864d55`、Studio は MC-1s `1d10bd4c` の続き)。実装者: Claude(Opus)。Studio での見え方は `docs/manual/13_editor.md` の「Surface・Tags・Alpha mode・Variants」、「Studio の自動化面」の「`list` の `checked`」・`sockets_from_shader` / `sockets_fix_and_show` の段落の SK-1 の文・MC-1s の段落の追記・`gui_material_from_blank` の SK-1 の段落。**
+
+#### 前提
+- GL-5c(`9cd89c5c`)は、graph root で deferred の material pass を palette で置くと engine が起こし直す(`material_physical_contract_changed`)ので、4 本のシナリオ(`input_needs_shader` / `deferred_loop_from_scratch` / `sockets_from_shader` / `sockets_fix_and_show`)に「未保存の scene の問い(G-5)を待って Save で答える」手順を足した
+- MC-1s で起こし直しが起きなくなったが、戻したのは前の 2 本だけ(上の MC-1s の節の残した穴 (3))。統合側の run で `sockets_from_shader` と `sockets_fix_and_show` は 2 本とも step 27 で `pelican.unsavedScenePrompt` を 120 s 待って `automation.wait_timeout@1` の赤
+- engine の VR-1: `edit_material` で OpenPBR の surface だけ / routing だけを送ると、もう片方を manifest の組で補う。`previous` を送り返すと両方が戻る
+
+#### 着地(2026-10-04、67fd3d29)
+- **2 本を戻す**: `sockets_from_shader`(95 → 94 step)と `sockets_fix_and_show`(97 → 96 step)から、GL-5c の再起動の 4 手(G-5 の問いを 120 s 待つ、Save、viewport の status の `started; waiting for its window`、再起動後の `wait_engine`)を外した。ゾーン `graph_zone#render_material_pass_draws` の待ち(「after a restart, if …」の 180 s)と後の `wait_engine`(180 s)は 60 s に。MC-1s の `input_needs_shader` と同じ形で、Add material pass… の前(step 19)に `get_status` の `instance_id` を覚え、置いた後も同じこと(step 29)、viewport の status が `Restarting the engine` を含まないこと(step 30)を見る。json の description に「the engine keeps running, MC-1s」
+- **VR-1 の段**: `gui_material_from_blank`(233 → 253 step)に 20 手(step 94〜113)。`instance_id` を覚え、Surface の欄が `openpbr / opaque_single_sided` で Double sided に印が無いことを見て、Surface の欄で `openpbr / opaque_double_sided` を選ぶ(surface だけの `edit_material`)→ `get_material` の `surface` が `engine://surfaces/openpbr/opaque_double.surface`・`routing.double_sided` が `true`、notice が `Applied; rebuilt`、Restart engine が出ない、`instance_id` が同じ → ドックの Double sided に印、Alpha mode が `opaque`、Surface の欄は double のまま → ドックの Undo で `surface` が `opaque_single.surface`・`routing.double_sided` が `false` に戻り、Double sided の印が外れ、Surface の欄が one-sided、Undo が空、`instance_id` が同じ。Materials のドック(`materialsdock` / `materialsmodel`)は変えずに通った(書いた後の読み直しと [routing を欄に入れる所](../src/devstudio/view/materialsdock.cpp#L819) が既にそう動いた)
+- **automation の `list` に `checked`**: シナリオから QCheckBox の印を読む口が無かった(`text` は caption、`checked` は `QAction` の項目にしか無い)ので、`list` の widget の項目に、check できる `QAbstractButton` なら `checked` を足した([所](../src/devstudio/automation/automationcommands.cpp#L961))。check できない widget には付けない。test: `devstudio_automation_input_test` の「SK-1: list says whether a check box is ticked」([所](../test/devstudio_automation_input_test.cpp#L622)。`QCheckBox` の false → true、`QPushButton` には `checked` が無い)
+- **仕様から外れた判断(実装者の報告)**: (1) 仕様は「通らなければ Materials のドックを最小限直す」だったが、ドックは直さずに通り、代わりに automation の `list` を変えた(上)。(2) 「1 か所に」は 2 本それぞれに 1 か所と読み、両方に `instance_id` と `Restarting the engine` の確認を入れた
+- **test の結果(実装者の run)**: `ctest -R "SK-1|Q-1b"` 12 / 12、`ctest -L studio_cpu -LE gpu` 717 / 717。シナリオは `PELICAN_STUDIO_SCREEN=1` で 1 本ずつ: `sockets_from_shader` 28 s・`sockets_fix_and_show` 28 s(automation の変更前の exe で。2 本は `checked` を読まない)・`gui_material_from_blank` 44 s、3 本とも緑。変異はしていない(仕様どおり)
+- **新しいファイル**: なし
+- **残した穴**: VR-1 の段は opaque_single ↔ opaque_double だけ。Alpha mode の欄から routing だけを送る道(engine が surface を替える側)はシナリオでは通していない(engine の unit test だけ)
+- **手で打つ欄**: 足した欄・残した欄は無い
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
