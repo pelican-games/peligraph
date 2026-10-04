@@ -71,6 +71,7 @@
 #include <QPainter>
 #include <QPen>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QScrollArea>
@@ -2797,10 +2798,19 @@ void GraphCanvasScene::selectEdge(const std::string &scope, const GraphCanvasEdg
 void GraphCanvasScene::afterEdit(bool submitted) {
     if (!submitted) return;
     // GL-1e: the tab's last edit is the graph's now.
-    render_edits_ = 0;
-    render_undone_ = 0;
+    noteTabEdit(false);
     // The request is in the model's outbox; only the owner can post it.
     if (editSubmitted) editSubmitted();
+}
+
+void GraphCanvasScene::noteTabEdit(bool render) {
+    tab_edits_.push_back(render);
+    tab_undone_.clear();
+    // A bounded memory: the histories themselves keep no more than this.
+    constexpr std::size_t kept = 256;
+    if (tab_edits_.size() > kept)
+        tab_edits_.erase(tab_edits_.begin(),
+                         tab_edits_.begin() + static_cast<std::ptrdiff_t>(tab_edits_.size() - kept));
 }
 
 void GraphCanvasScene::clearPendingConnection() {
@@ -4237,43 +4247,55 @@ void GraphCanvasScene::undoEdit() {
     // history (RU-1), and the tab's Undo takes it back there while it is
     // the tab's last edit. Any other render edit stays the Frame Plan's and
     // the Pass Editor's to undo: here Ctrl+Z is the graph's (RU-1's keys).
-    if (render_edits_ > 0 && renderUndo && renderUndoAvailable && renderUndoAvailable()) {
+    // GL-5g: the newest of the tab's edits, whichever history it went to.
+    if (!tab_edits_.empty() && tab_edits_.back() && renderUndo && renderUndoAvailable &&
+        renderUndoAvailable()) {
+        model_->keepHistoryThroughNextDigest();
         if (renderUndo()) {
-            --render_edits_;
-            ++render_undone_;
+            tab_edits_.pop_back();
+            tab_undone_.push_back(true);
         }
         return;
     }
-    afterEdit(model_->undo());
+    if (!model_->undo()) return;
+    if (!tab_edits_.empty() && !tab_edits_.back()) tab_edits_.pop_back();
+    tab_undone_.push_back(false);
+    if (editSubmitted) editSubmitted();
 }
 
 void GraphCanvasScene::redoEdit() {
     if (!model_ || editingInline() || dragging() || layoutPending()) return;
-    if (render_undone_ > 0 && renderRedo && renderRedoAvailable && renderRedoAvailable()) {
+    if (!tab_undone_.empty() && tab_undone_.back() && renderRedo && renderRedoAvailable &&
+        renderRedoAvailable()) {
+        model_->keepHistoryThroughNextDigest();
         if (renderRedo()) {
-            --render_undone_;
-            ++render_edits_;
+            tab_undone_.pop_back();
+            tab_edits_.push_back(true);
         }
         return;
     }
-    afterEdit(model_->redo());
+    if (!model_->redo()) return;
+    if (!tab_undone_.empty() && !tab_undone_.back()) tab_undone_.pop_back();
+    tab_edits_.push_back(false);
+    if (editSubmitted) editSubmitted();
 }
 
 void GraphCanvasScene::noteRenderEdit() {
-    ++render_edits_;
-    render_undone_ = 0;
+    noteTabEdit(true);
+    // The commit's digest is the root's; the graph's history stays.
+    if (model_ != nullptr) model_->keepHistoryThroughNextDigest();
 }
 
 bool GraphCanvasScene::canUndoAny() const {
     return model_ != nullptr &&
-           (model_->canUndo() ||
-            (render_edits_ > 0 && renderUndoAvailable && renderUndoAvailable()));
+           (model_->canUndo() || (!tab_edits_.empty() && tab_edits_.back() && renderUndoAvailable &&
+                                  renderUndoAvailable()));
 }
 
 bool GraphCanvasScene::canRedoAny() const {
     return model_ != nullptr &&
-           (model_->canRedo() ||
-            (render_undone_ > 0 && renderRedoAvailable && renderRedoAvailable()));
+           (model_->canRedo() || (!tab_undone_.empty() && tab_undone_.back() &&
+                                  renderRedoAvailable && renderRedoAvailable()));
 }
 
 // --- GL-1e: a pass of the rendering section takes lines.
@@ -8106,13 +8128,43 @@ struct GraphCanvasWidget::Impl {
         if (folded_pass_fields == nullptr) return;
         const auto &selected = scene->selectedNode();
         std::string pass;
-        if (selected && scene->selectedScope().empty() && model.currentScope().empty() &&
-            !model.foldedView())
+        const bool at_root = selected && scene->selectedScope().empty() &&
+                             model.currentScope().empty() && !model.foldedView();
+        if (at_root)
             for (const auto &node : model.foldedNodes())
                 if (node.id == *selected && node.rendering_section) pass = node.id;
+        // GL-5g, decision 2: any other pass the frame plan runs -- a preset's
+        // or a feature's (one folded node, one pass; in a feature's fold
+        // too), or the pass a graph node at the root makes (the plan names it
+        // by the node's id) -- shows the Decisions alone.
+        std::string planning;
+        QString heading;
+        if (pass.empty() && selected) {
+            const auto &passes = model.planPasses();
+            const auto planned = [&passes](const std::string &name) {
+                return std::ranges::find(passes, name, &GraphCanvasPlanPass::name) != passes.end();
+            };
+            for (const auto &node : model.foldedNodes())
+                if (node.id == *selected && !node.rendering_section && !node.feature_group &&
+                    node.passes.size() == 1 && planned(node.passes.front())) {
+                    planning = node.passes.front();
+                    heading = QObject::tr("%1 (%2): its decisions")
+                                  .arg(qtext(planning), qtext(node.source));
+                }
+            if (planning.empty() && at_root && planned(*selected)) {
+                const auto nodes = model.nodes(model.currentScope());
+                if (std::ranges::find(nodes, *selected, &GraphCanvasNode::id) != nodes.end()) {
+                    planning = *selected;
+                    heading = QObject::tr("%1: its decisions").arg(qtext(planning));
+                }
+            }
+        }
         // Its shader lists are the Pass Editor's, read again as it is shown.
         if (!pass.empty() && pass != folded_pass_fields->pass()) refreshShaderChoices();
-        folded_pass_fields->showPass(pass);
+        if (!planning.empty())
+            folded_pass_fields->showPlanningOnly(planning, heading);
+        else
+            folded_pass_fields->showPass(pass);
         folded_pass_fields->followEditable(model.connected() && pass_edit_request == 0 &&
                                            pass_ticket.isEmpty());
     }
@@ -10391,6 +10443,56 @@ void GraphCanvasWidget::showDiskReloadNotice(const InspectorNotice &notice) {
         impl_->model.setEditNotice(notice);
         setProperty(shown_property, QString::fromStdString(notice.message));
     }
+    impl_->showNotice();
+}
+
+void GraphCanvasWidget::showShaderReloadNotice(const QString &log) {
+    static constexpr const char *shown_property = "pelicanShaderReloadNotice";
+    const auto shown = property(shown_property).toString().toStdString();
+    if (log.trimmed().isEmpty()) {
+        if (!shown.empty() && impl_->model.notice().message == shown)
+            impl_->model.setEditNotice({});
+        setProperty(shown_property, QString{});
+        impl_->showNotice();
+        return;
+    }
+    // The nodes whose project shader files the log names (the files this
+    // tab hands the Frame Plan's reload, publishShaderSources).
+    QStringList nodes;
+    if (impl_->published_shader_sources)
+        for (const auto &[node, paths] : *impl_->published_shader_sources)
+            for (const auto &path : paths) {
+                const auto file = QString::fromStdString(path.filename().string());
+                if (!file.isEmpty() && log.contains(file) && !nodes.contains(QString::fromStdString(node)))
+                    nodes.push_back(QString::fromStdString(node));
+            }
+    // The log's first error, its file named without the directories:
+    // "<path>:18: error: ..." -> "render_fullscreen.frag:18: error: ...".
+    QString first;
+    for (const auto &raw : log.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        auto line = raw.trimmed();
+        if (const auto bar = line.indexOf(QStringLiteral(" | ")); bar >= 0)
+            line = line.mid(bar + 3).trimmed();
+        if (first.isEmpty()) first = line;
+        if (line.contains(QStringLiteral("error"), Qt::CaseInsensitive)) {
+            first = line;
+            break;
+        }
+    }
+    static const QRegularExpression path_prefix(QStringLiteral(R"(^.*[\\/])"));
+    if (const auto colon = first.indexOf(QRegularExpression(QStringLiteral(R"(:\d+:)")));
+        colon > 0)
+        first = first.left(colon).remove(path_prefix) + first.mid(colon);
+    const auto subject =
+        nodes.isEmpty()
+            ? tr("A shader the graph draws with")
+            : tr("%1's shader").arg(nodes.join(QStringLiteral(", ")));
+    const auto line =
+        tr("%1 did not reload: %2. The engine keeps drawing the previous version; "
+           "the Problems window lists it.")
+            .arg(subject, first);
+    impl_->model.setEditNotice({InspectorNoticeKind::Error, line.toStdString()});
+    setProperty(shown_property, line);
     impl_->showNotice();
 }
 

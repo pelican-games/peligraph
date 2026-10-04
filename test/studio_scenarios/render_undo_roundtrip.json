@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "render_undo_roundtrip",
-  "description": "RU-1 and RU-1b: Undo and Redo of render edits, on RD-1 and RD-1b. A Pass Editor edit (present draws the fixture's inverting fragment, which the viewport shows) is taken back with the Frame Plan's Undo -- the picture and get_render_authoring_context are what they were -- and put again with its Redo. Decompose into loop is taken back with Edit > Undo Render Edit (the Frame Plan draws the material pass again, the graph holds no loop), put again with Redo, and taken back once more. The Pass Editor's New pass on this graph root is the Graph's (GL-5f): a render.fullscreen in the graph's nodes and no fragment file; the Graph tab's Undo takes it back (and not a render edit: present keeps its fragment), its Redo puts it again and the Frame Plan draws it. Last, a Pass Editor edit followed by moving present on the Frame Plan (which rewrites the root's layout) is still undone, and the placement stays. GL-5c: present's fragment is picked in the Graph's detail column, where a double-click on present opens it. (Before GL-5f, New pass wrote a managed fragment with add_authored_pass and RU-1b's Undo and Redo took the file away and wrote it back; on a graph root no pass is added that way any more.)",
+  "description": "RU-1 and RU-1b: Undo and Redo of render edits, on RD-1 and RD-1b. A Pass Editor edit (present draws the fixture's inverting fragment, which the viewport shows) is taken back with the Frame Plan's Undo -- the picture and get_render_authoring_context are what they were -- and put again with its Redo. Decompose into loop is taken back with Edit > Undo Render Edit (the Frame Plan draws the material pass again, the graph holds no loop), put again with Redo, and taken back once more. The Pass Editor's New pass on this graph root is the Graph's (GL-5f): a render.fullscreen in the graph's nodes and no fragment file; the Graph tab's Undo takes it back (and not a render edit: present keeps its fragment), its Redo puts it again and the Frame Plan draws it. Last, a Pass Editor edit followed by moving present on the Frame Plan (which rewrites the root's layout) is still undone, and the placement stays. GL-5c: present's fragment is picked in the Graph's detail column, where a double-click on present opens it. (Before GL-5f, New pass wrote a managed fragment with add_authored_pass and RU-1b's Undo and Redo took the file away and wrote it back; on a graph root no pass is added that way any more.) GL-5g puts RU-1b back through the Graph: the palette's render.target_ref with New render target… declares the project's first target of its own (the root declares the others), which writes passes/authoring/render-targets.json; the Graph tab's Undo takes the reference back, then the target, and the file is gone and the documents are the ones before; Redo writes it again, then places the reference.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -773,6 +773,325 @@
       "expect": "screenshot",
       "name": "pelican.framePlan",
       "path": "render_undo_layout_kept.png"
+    },
+    {
+      "label": "GL-5g (RU-1b through the Graph): the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the canvas can edit",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the targets the root and the engine declare before the add (read)",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_authoring_context",
+        "params": {}
+      },
+      "path": "result.render_targets.$len",
+      "remember": "targets_before"
+    },
+    {
+      "label": "the project has no targets' document of its own yet",
+      "file": "exists",
+      "path": "{project}/passes/authoring/render-targets.json",
+      "value": false
+    },
+    {
+      "label": "the render documents before the add (read)",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents.$len",
+      "remember": "documents_before"
+    },
+    {
+      "label": "the graph's nodes before the add (read)",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.nodes.$len",
+      "remember": "nodes_before"
+    },
+    {
+      "label": "Add: the palette opens",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the target reference",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "target_ref"
+    },
+    {
+      "label": "the target combo is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteTarget",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "New render target… in the combo (GL-5b)",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPaletteTarget",
+      "text": "New render target…"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the palette closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the form opens",
+      "cmd": "wait",
+      "name": "pelican.renderTargetForm.name",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "on the name Studio proposes, nothing typed",
+      "expect": "text_equals",
+      "name": "pelican.renderTargetForm.name",
+      "value": "render_target"
+    },
+    {
+      "label": "OK: one edit_render_targets, the project's first target",
+      "cmd": "click",
+      "name": "pelican.renderTargetForm.ok"
+    },
+    {
+      "label": "the engine declares it: one target more",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_authoring_context",
+        "params": {}
+      },
+      "path": "result.render_targets.$len",
+      "value_of": "targets_before",
+      "plus": 1,
+      "retry_ms": 120000
+    },
+    {
+      "label": "the add wrote a file: the targets' document",
+      "file": "exists",
+      "path": "{project}/passes/authoring/render-targets.json",
+      "value": true
+    },
+    {
+      "label": "which declares the target",
+      "file": "contains",
+      "path": "{project}/passes/authoring/render-targets.json",
+      "text": "\"render_target\"",
+      "value": true
+    },
+    {
+      "label": "and the reference is placed once it is declared",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_target_ref",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the graph holds the reference",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.nodes.$len",
+      "value_of": "nodes_before",
+      "plus": 1,
+      "retry_ms": 60000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Undo on the Graph tab: the last edit, the reference's placement",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.undo"
+    },
+    {
+      "label": "the reference is gone",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_target_ref",
+      "missing": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the graph's nodes are what they were",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.nodes.$len",
+      "value_of": "nodes_before",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Undo on the Graph tab once more: the target's declaration",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.undo"
+    },
+    {
+      "label": "the engine declares the targets it did before",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_authoring_context",
+        "params": {}
+      },
+      "path": "result.render_targets.$len",
+      "value_of": "targets_before",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the file the add wrote is gone",
+      "file": "exists",
+      "path": "{project}/passes/authoring/render-targets.json",
+      "value": false
+    },
+    {
+      "label": "the render documents are the ones before the add",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents.$len",
+      "value_of": "documents_before",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and the graph's nodes",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.nodes.$len",
+      "value_of": "nodes_before"
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Redo on the Graph tab: the target again",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.redo"
+    },
+    {
+      "label": "the engine declares it again: one target more",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_authoring_context",
+        "params": {}
+      },
+      "path": "result.render_targets.$len",
+      "value_of": "targets_before",
+      "plus": 1,
+      "retry_ms": 120000
+    },
+    {
+      "label": "the targets' document is written again",
+      "file": "exists",
+      "path": "{project}/passes/authoring/render-targets.json",
+      "value": true
+    },
+    {
+      "label": "declaring the target",
+      "file": "contains",
+      "path": "{project}/passes/authoring/render-targets.json",
+      "text": "\"render_target\"",
+      "value": true
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Redo on the Graph tab: the reference again",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.redo"
+    },
+    {
+      "label": "the reference is back",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_target_ref",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the graph holds it as after the add",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.nodes.$len",
+      "value_of": "nodes_before",
+      "plus": 1,
+      "retry_ms": 60000
+    },
+    {
+      "label": "a picture of the Graph after the Redo",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "render_undo_target_redone.png"
     }
   ]
 }

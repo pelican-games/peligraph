@@ -1453,6 +1453,10 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             }
             return scopes;
         };
+        // GL-5g: the graph itself as the history last read it.
+        const bool same_graph = context_received_ && nodes == nodes_ &&
+                                withoutPlacement(incoming_definitions) ==
+                                    withoutPlacement(definitions_);
         const bool placement_only =
             context_received_ && failure_.kind == InspectorNoticeKind::None &&
             reported == definitions_reported_ && nodes == nodes_ &&
@@ -1469,8 +1473,12 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         root_schema_ = std::move(root_schema);
         source_reference_ = std::move(source_reference);
         digest_ = response.value("source_digest", Json::object()).value("hex", std::string{});
-        if (!history_digest_.empty() && digest_ != history_digest_)
-            clearHistory();
+        if (!history_digest_.empty() && digest_ != history_digest_) {
+            if (std::exchange(keep_history_through_digest_, false) && same_graph)
+                history_digest_ = digest_;
+            else
+                clearHistory();
+        }
         context_received_ = true;
         failure_ = {};
         // Q-13: the placement a moved document refused, against this one.

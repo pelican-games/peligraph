@@ -720,6 +720,9 @@ void MainWindow::createWorkspace() {
     // F-5: a shader reload's log also goes under the Pass Editor's form.
     frame_plan_->setShaderReloadLogAction([this](const QString &message) {
         fullscreen_pass_->showShaderReloadLog(message);
+        // GL-5g, decision 3: and on the Graph tab's notice row, which is where
+        // a graph node's shader is made (Pass fields' New…).
+        graph_canvas_->showShaderReloadNotice(message);
     });
     connect(render_features_, &RenderFeaturesWidget::renderConfigCommitted, this, [this] { frame_plan_->refresh(); });
     frame_plan_->setNodeOrderAction([this](const QString &graph, const QStringList &names, quint64 generation) {

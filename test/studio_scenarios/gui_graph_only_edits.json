@@ -143,7 +143,7 @@
     {"label": "Delete target in its detail column", "cmd": "wait", "name": "pelican.graphCanvasNodeActions.deleteTarget", "visible": true, "enabled": true, "timeout_ms": 60000},
     {"label": "Delete target on a target a pass writes: sent as it is", "cmd": "click", "name": "pelican.graphCanvasNodeActions.deleteTarget"},
     {"label": "the engine refuses it, in one sentence", "cmd": "wait", "name": "pelican.graphCanvasNotice", "contains": "render_target is still", "timeout_ms": 120000},
-    {"label": "which says what still uses it", "expect": "result", "command": {"cmd": "text", "name": "pelican.graphCanvasNotice"}, "path": "text", "remember": "refusal"},
+    {"label": "which says what still uses it", "expect": "result", "command": {"cmd": "text", "name": "pelican.graphCanvasNotice"}, "path": "text", "op": "contains", "value": "used by render_fullscreen_2", "remember": "refusal"},
     {"label": "the target is still declared", "expect": "rpc_equals", "method": "get_render_authoring_context", "params": {}, "path": "render_targets[0].name", "value": "render_target"},
     {"label": "and its reference is still there", "cmd": "wait", "name": "pelican.graphCanvasView::graph_node#render_target_ref", "visible": true, "timeout_ms": 10000},
     {"label": "the picture is the same", "expect": "result", "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/gui_graph_only_edits_refused.png", "pixels": [[0.5, 0.5]]}, "path": "pixels[0]", "op": "eq", "value_of": "drawn", "retry_ms": 120000},

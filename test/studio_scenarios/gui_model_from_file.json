@@ -441,6 +441,128 @@
       "retry_ms": 60000
     },
     {
+      "label": "before the save: a tan square of the checker, read away from the gizmo",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/model_saved.png",
+        "pixels": [
+          [
+            0.405,
+            0.408
+          ],
+          [
+            0.592,
+            0.648
+          ],
+          [
+            0.442,
+            0.588
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "saved_tan"
+    },
+    {
+      "label": "before the save: a navy square, a colour the tan one is not",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/model_saved.png",
+        "pixels": [
+          [
+            0.405,
+            0.408
+          ],
+          [
+            0.592,
+            0.648
+          ],
+          [
+            0.442,
+            0.588
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "op": "ne",
+      "value_of": "saved_tan",
+      "remember": "saved_navy"
+    },
+    {
+      "label": "before the save: another tan square, lower down",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/model_saved.png",
+        "pixels": [
+          [
+            0.405,
+            0.408
+          ],
+          [
+            0.592,
+            0.648
+          ],
+          [
+            0.442,
+            0.588
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[2]",
+      "remember": "saved_third"
+    },
+    {
+      "label": "before the save: the corner",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/model_saved.png",
+        "pixels": [
+          [
+            0.405,
+            0.408
+          ],
+          [
+            0.592,
+            0.648
+          ],
+          [
+            0.442,
+            0.588
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[3]",
+      "remember": "saved_corner"
+    },
+    {
       "label": "File > Save Scene",
       "cmd": "action",
       "name": "pelican.file.saveScene"
@@ -531,6 +653,127 @@
       "op": "ne",
       "value_of": "background",
       "retry_ms": 60000
+    },
+    {
+      "label": "reopened: the tan square is the colour it was before the save",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/model_reopened.png",
+        "pixels": [
+          [
+            0.405,
+            0.408
+          ],
+          [
+            0.592,
+            0.648
+          ],
+          [
+            0.442,
+            0.588
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "value_of": "saved_tan",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the navy square too",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/model_reopened.png",
+        "pixels": [
+          [
+            0.405,
+            0.408
+          ],
+          [
+            0.592,
+            0.648
+          ],
+          [
+            0.442,
+            0.588
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[1]",
+      "value_of": "saved_navy"
+    },
+    {
+      "label": "the lower tan square too",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/model_reopened.png",
+        "pixels": [
+          [
+            0.405,
+            0.408
+          ],
+          [
+            0.592,
+            0.648
+          ],
+          [
+            0.442,
+            0.588
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[2]",
+      "value_of": "saved_third"
+    },
+    {
+      "label": "and the corner",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/model_reopened.png",
+        "pixels": [
+          [
+            0.405,
+            0.408
+          ],
+          [
+            0.592,
+            0.648
+          ],
+          [
+            0.442,
+            0.588
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "pixels[3]",
+      "value_of": "saved_corner"
     },
     {
       "label": "a picture of the window for the reader of this report",

@@ -87,6 +87,16 @@
       "remember": "control_y"
     },
     {
+      "label": "where the node sits, before it is dragged",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "graph_node#sum"
+      },
+      "path": "widgets[0].scene[1]",
+      "remember": "sum_y_before"
+    },
+    {
       "label": "drag the node the edge lands on, well away from where it was -- to a place on the canvas, not on the window, so what lies under the next clicks does not depend on how big the window is",
       "cmd": "drag",
       "from": {
@@ -109,6 +119,8 @@
         "pattern": "graph_node#sum"
       },
       "path": "widgets[0].scene[1]",
+      "op": "ne",
+      "value_of": "sum_y_before",
       "remember": "sum_y"
     },
     {

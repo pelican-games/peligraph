@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_graph_only_edits_2",
-  "description": "GL-5e, from File > New Project > Blank with Studio's GUI only, and the Frame Plan's tab never brought forward. (a) A forward material pass from the palette and two of the Graph's fullscreen passes; plain drags on the Graph connect the material pass's colour and the first pass's gradient to the second pass's + input -- what the Frame Plan's Shift-drag was for -- and the second pass to present's + input: the box is on screen. (b) A click on a connected socket of a pass drawing with engine://passthrough shows that input: on the second pass (a graph node) it writes PELICAN_PASSTHROUGH_INPUT into its shader.defines, and the gradient replaces the box, then the box again; on present (the rendering section's) it is the Frame Plan's click, an edit_preset_pass of present's defines. Each step reads the document and the picture. (c) Delete pass and (d) the View field are gui_graph_folded_edits, on a fixture: Blank makes no authored fragment and no view family with axes. Typed: the project folder and name in New Project.",
+  "description": "GL-5e, from File > New Project > Blank with Studio's GUI only, and the Frame Plan's tab never brought forward. (a) A forward material pass from the palette and two of the Graph's fullscreen passes; plain drags on the Graph connect the material pass's colour and the first pass's gradient to the second pass's + input -- what the Frame Plan's Shift-drag was for -- and the second pass to present's + input: the box is on screen. (b) A click on a connected socket of a pass drawing with engine://passthrough shows that input: on the second pass (a graph node) it writes PELICAN_PASSTHROUGH_INPUT into its shader.defines, and the gradient replaces the box, then the box again; on present (the rendering section's) it is the Frame Plan's click, an edit_preset_pass of present's defines. Each step reads the document and the picture. (c) Delete pass and (d) the View field are gui_graph_folded_edits, on a fixture: Blank makes no authored fragment and no view family with axes. (e) GL-5g, decision 2: the second pass, a graph node, picked: the detail column shows its Decisions, and Serial is the Frame Plan's edit_target_planning of the name the plan gives the node; the root holds it. Typed: the project folder and name in New Project.",
   "tab": "graph",
   "probe_no_automation": false,
   "steps": [
@@ -578,7 +578,7 @@
       "timeout_ms": 120000
     },
     {
-      "label": "the document: no define (input 0 is the default)",
+      "label": "the document: no define (input 0 is the default) -- the shader object has no defines key (excludes on an object looks at its keys)",
       "expect": "result",
       "command": {
         "cmd": "rpc",
@@ -587,7 +587,7 @@
       },
       "path": "result.nodes[7].parameters.shader",
       "op": "excludes",
-      "value": "PELICAN_PASSTHROUGH_INPUT",
+      "value": "defines",
       "retry_ms": 60000
     },
     {
@@ -741,6 +741,75 @@
       "op": "ne",
       "value_of": "box",
       "retry_ms": 120000
+    },
+    {
+      "label": "GL-5g (decision 2): the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick the second pass, a graph node",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node_header#render_fullscreen_2"
+    },
+    {
+      "label": "the detail column has its decisions, as a rendering-section pass's",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFoldedPass.heading",
+      "text": "render_fullscreen_2: its decisions",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Serial is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFoldedPass.serial",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the root holds no decision yet",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents[0].content",
+      "op": "excludes",
+      "value": "\"serial\""
+    },
+    {
+      "label": "Serial: the Frame Plan's edit_target_planning of the plan's name for the node",
+      "cmd": "click",
+      "name": "pelican.graphCanvasFoldedPass.serial"
+    },
+    {
+      "label": "the engine takes it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Serial set on render_fullscreen_2.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the root holds the decision, under the graph node's name",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents[0].content",
+      "op": "contains",
+      "value": "\"serial\": true",
+      "retry_ms": 30000
     },
     {
       "label": "a picture of the window",

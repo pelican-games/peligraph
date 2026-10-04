@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "fullscreen_pass_from_template",
-  "description": "F-3 / F-5: build a fullscreen pass shader and all from Studio, then change it the way a person does, in their own editor. The Pass Editor's New pass on this graph root is the Graph's (GL-5f): a render.fullscreen is placed in the graph's nodes and picked, and no managed fragment is made. Two render.target_ref nodes from the palette give it the albedo the G-buffer holds as its input and the lit colour as what it writes, the colour the viewport shows. New... in its Pass fields writes the fragment shader for that input into the project, and the pass draws with it in the same edit. Then the file is edited: Studio notices the write and asks the engine to reload its shaders (reload_shaders), and the viewport changes. A syntax error saved the same way marks the pass on the Frame Plan's canvas and puts the log under the Pass Editor's form while the engine keeps drawing what it had; fixed, the mark and the log go. (Before GL-5f the Pass Editor saved the pass with add_authored_pass, whose preflight showed a typo under the form; on a graph root no pass is saved that way any more.)",
+  "description": "F-3 / F-5: build a fullscreen pass shader and all from Studio, then change it the way a person does, in their own editor. The Pass Editor's New pass on this graph root is the Graph's (GL-5f): a render.fullscreen is placed in the graph's nodes and picked, and no managed fragment is made. Two render.target_ref nodes from the palette give it the albedo the G-buffer holds as its input and the lit colour as what it writes, the colour the viewport shows. New... in its Pass fields writes the fragment shader for that input into the project, and the pass draws with it in the same edit. Then the file is edited: Studio notices the write and asks the engine to reload its shaders (reload_shaders), and the viewport changes. A syntax error saved the same way marks the pass on the Frame Plan's canvas and puts the log under the Pass Editor's form while the engine keeps drawing what it had; fixed, the mark and the log go. (Before GL-5f the Pass Editor saved the pass with add_authored_pass, whose preflight showed a typo under the form; on a graph root no pass is saved that way any more.) GL-5g: the refused shader is also said on the Graph tab's notice row (whose shader, the compiler's line) and is a row of the Problems window, and both go when the file is fixed.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -448,6 +448,71 @@
       "path": "fullscreen_pass_from_template_canvas.png"
     },
     {
+      "label": "GL-5g: the Graph tab, where the shader was made (Pass fields' New...), says it on its notice row: whose shader",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "contains": "render_fullscreen's shader did not reload",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and the compiler's line, the typo named",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "contains": "render_fullscreen.frag:18: error: 'vaule0'",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "View > Problems",
+      "cmd": "action",
+      "name": "pelican.view.problems"
+    },
+    {
+      "label": "the list is on screen",
+      "cmd": "wait",
+      "name": "pelican.problems.list",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the engine's list has the refused shader",
+      "cmd": "wait",
+      "name": "pelican.problems.count",
+      "text": "1 error",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "a click on its row",
+      "cmd": "select",
+      "name": "pelican.problems.list",
+      "index": 0
+    },
+    {
+      "label": "the row names the file that does not compile",
+      "cmd": "wait",
+      "name": "pelican.problems.detail",
+      "contains": "render_fullscreen.frag does not compile",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "and the typo",
+      "cmd": "wait",
+      "name": "pelican.problems.detail",
+      "contains": "vaule0",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the Pass Editor in front again, so its log going is something to see",
+      "cmd": "action",
+      "name": "pelican.view.passEditor"
+    },
+    {
+      "label": "its log is still under the form",
+      "cmd": "wait",
+      "name": "pelican.fullscreenPass.compileLog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
       "label": "the typo, fixed",
       "file": "replace",
       "path": "{project}/shaders/render_fullscreen.frag",
@@ -467,6 +532,25 @@
       "name": "pelican.fullscreenPass.compileLog",
       "visible": false,
       "timeout_ms": 10000
+    },
+    {
+      "label": "GL-5g: the Problems list is empty again",
+      "cmd": "wait",
+      "name": "pelican.problems.count",
+      "text": "No problems",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and the Graph tab's line about the shader is down",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.graphCanvasNotice"
+      },
+      "path": "text",
+      "op": "excludes",
+      "value": "did not reload",
+      "retry_ms": 30000
     },
     {
       "label": "and the viewport draws the gradient",

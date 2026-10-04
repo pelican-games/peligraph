@@ -1181,6 +1181,7 @@ class GraphCanvasModel {
     // History belongs to exactly one committed document. A refresh showing
     // another writer's revision invalidates it instead of overwriting them.
     std::string history_digest_;
+    bool keep_history_through_digest_ = false;
     static constexpr std::size_t historyCapacity = 100;
     // LP-4c, decision 7: each op is inverted against the document the ops
     // before it produced, which a copy of the document is walked through.
@@ -1517,6 +1518,12 @@ class GraphCanvasModel {
     // OT-1: another project is opened. Its document is not the one the
     // history is about, even if its digest happened to match.
     void forgetHistory();
+    // GL-5g: a render edit the tab itself sends, takes back or gives again
+    // moves the root's digest and not its graph. The next read that brings
+    // another digest keeps the history when the nodes and the definitions
+    // (placement aside) are the ones the history was written against; any
+    // other change clears it, as before.
+    void keepHistoryThroughNextDigest() { keep_history_through_digest_ = true; }
 
     void refresh();
     void requestCatalog();

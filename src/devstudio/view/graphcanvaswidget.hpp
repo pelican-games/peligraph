@@ -601,9 +601,11 @@ class GraphCanvasScene final : public QGraphicsScene {
     // Delete on the picked line (or its right-click Delete).
     bool deletePassInput();
     // RU-1: the Graph's Undo and Redo also reach the render edit history,
-    // for the pass edits this tab sent (noteRenderEdit) while they are its
-    // newest edits; Redo gives back what that Undo took. Each hook returns
-    // false when the history had nothing to do.
+    // for the pass edits this tab sent (noteRenderEdit); Redo gives back what
+    // that Undo took. GL-5g: in the order the tab sent its edits, graph and
+    // render alike -- New render target… from the palette is a render edit
+    // and then the reference's placement, and two Undos take back both.
+    // Each hook returns false when the history had nothing to do.
     std::function<bool()> renderUndo;
     std::function<bool()> renderRedo;
     std::function<bool()> renderUndoAvailable;
@@ -782,10 +784,12 @@ class GraphCanvasScene final : public QGraphicsScene {
     // GL-1e: the picked line into a pass, and which history the tab's last
     // edit went to (the render edits' after noteRenderEdit).
     std::optional<PassInputPick> selected_pass_input_;
-    // How many of the render history's newest edits are this tab's, and how
-    // many of those its Undo took back (what its Redo gives back).
-    std::size_t render_edits_ = 0;
-    std::size_t render_undone_ = 0;
+    // GL-5g: the tab's edits in the order it sent them, which history each
+    // went to (true: the render edit history's), and those its Undo took back
+    // (what its Redo gives back), newest last.
+    std::vector<bool> tab_edits_;
+    std::vector<bool> tab_undone_;
+    void noteTabEdit(bool render);
     // The builders' inputs, from the model: the authoring context parsed
     // once per revision, and the plan in the Frame Plan's terms.
     [[nodiscard]] FramePlanAuthoring passAuthoring() const;
@@ -1143,6 +1147,13 @@ class GraphCanvasWidget final : public QWidget {
     // RL-1s. What the reload from disk said, on this tab's notice row
     // (kind None takes down only a line this call put up).
     void showDiskReloadNotice(const InspectorNotice &notice);
+    // GL-5g, decision 3: a shader reload the engine did not take (the log
+    // the Frame Plan hands the Pass Editor too), on this tab's notice row:
+    // which node's shader, the log's first error line, and that the engine
+    // keeps the previous version (the Problems window lists it). An empty
+    // log -- a reload that went through -- takes down only a line this call
+    // put up.
+    void showShaderReloadNotice(const QString &log);
     // RL-1s, decision 5: "Reload from disk" in the canvas menu (the window
     // owns the action, and what it does).
     void setReloadFromDiskAction(QAction *action);

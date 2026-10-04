@@ -29,6 +29,8 @@
 #include <QColor>
 #include <QCoreApplication>
 #include <QDialog>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFocusEvent>
 #include <QFont>
 #include <QGraphicsItem>
@@ -13969,4 +13971,243 @@ TEST_CASE("GL-5f with no row in Layers, the heading stays with nothing picked an
     CHECK(unpins == 1);
     CHECK(freezes == 2);
     CHECK(removes == 1);
+}
+
+// --- GL-5g: a raster pass of the rendering section, and the Decisions of a
+// pass the detail column does not edit.
+
+namespace {
+
+// gl1e's root and plan with a raster pass `tri` the rendering section
+// declares beside present, and shade's image as a render target of the plan
+// (so No alias is offered for it).
+Json gl5gTriangle() {
+    return {{"type", "raster"},
+            {"input", Json::array()},
+            {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+            {"shader", {{"vertex", "project://shaders/tri"}, {"fragment", "project://shaders/tri"}}},
+            {"draw", {{"operation", "direct"}, {"vertex_count", 3}}}};
+}
+
+Json gl5gPlan() {
+    auto plan = gl1ePlan({});
+    plan["nodes"].push_back(gl1bPass("tri", 2, "project", Json::array(), Json::array({"display"})));
+    plan["resources"] = Json::array({{{"name", "shade__color"}, {"kind", "render_target"}},
+                                     {{"name", "display"}, {"kind", "image"}}});
+    return plan;
+}
+
+Json gl5gAuthoring() {
+    auto context = gl1eAuthoring({});
+    const auto tri = gl5gTriangle();
+    context["graphs"][0]["passes"].push_back({{"name", "tri"},
+                                              {"declaration_index", 1},
+                                              {"editable_root_pass", true},
+                                              {"declaration", tri},
+                                              {"root_declaration", tri}});
+    return context;
+}
+
+struct Gl5gTab {
+    RecordedCapability transport;
+    std::unique_ptr<PelicanStudio::GraphCanvasWidget> widget;
+
+    Gl5gTab() {
+        (void)application();
+        auto capability = transport.capability();
+        const auto record = [this](const char *method, const QJsonObject &params) {
+            RecordedCapability::Call call{QString::fromLatin1(method)};
+            call.body = QJsonDocument(params).toJson(QJsonDocument::Compact);
+            transport.calls.push_back(call);
+            return transport.next++;
+        };
+        capability.requestFramePlan = [this](QString *) {
+            transport.calls.push_back({QStringLiteral("get_frame_plan")});
+            return transport.next++;
+        };
+        capability.requestRenderAuthoringContext = [this](QString *) {
+            transport.calls.push_back({QStringLiteral("get_render_authoring_context")});
+            return transport.next++;
+        };
+        capability.requestEditPresetPass = [record](const QJsonObject &params, QString *) {
+            return record("edit_preset_pass", params);
+        };
+        capability.requestEditTargetPlanning = [record](const QJsonObject &params, QString *) {
+            return record("edit_target_planning", params);
+        };
+        capability.requestRootDocument = [this](const QString &reference, QString *) {
+            transport.calls.push_back({QStringLiteral("get_render_documents"), reference});
+            return transport.next++;
+        };
+        widget = std::make_unique<PelicanStudio::GraphCanvasWidget>(capability);
+        widget->resize(1100, 800);
+        widget->show();
+        QCoreApplication::processEvents();
+        answer("get_graph_catalog", visualCatalog());
+        answer("get_graph_instances", gl1eRead());
+        answer("get_frame_plan", gl5gPlan());
+        answer("get_render_authoring_context", gl5gAuthoring());
+    }
+
+    void answer(const char *method, const Json &reply) {
+        const qint64 id = transport.idOf(QString::fromLatin1(method));
+        REQUIRE(id != 0);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        QCoreApplication::processEvents();
+    }
+
+    Json sent(const char *method) const {
+        const auto id = transport.idOf(QString::fromLatin1(method));
+        REQUIRE(id != 0);
+        return Json::parse(transport.calls[static_cast<std::size_t>(id - 1)].body.toStdString());
+    }
+
+    // The root as get_render_documents gives it (no decisions yet).
+    void answerRoot() {
+        const Json content{{"schema", "pelican.graph"}, {"rendering", Json::object()}};
+        answer("get_render_documents",
+               Json{{"documents", Json::array({{{"reference", "fixture"}, {"content", content.dump()}}})}});
+    }
+
+    template <class T> T *child(const char *name) const {
+        return widget->findChild<T *>(QString::fromLatin1(name));
+    }
+};
+
+} // namespace
+
+TEST_CASE("GL-5g a raster pass of the rendering section is edited in the detail column: its "
+          "shaders, defines, raster_state and draw, each change one edit_preset_pass of what changed",
+          "[devstudio][graph-canvas][scene][gl5g]") {
+    Gl5gTab tab;
+    const auto folded = tab.widget->model().foldedNodes();
+    const auto tri = std::ranges::find(folded, std::string{"tri"},
+                                       &PelicanStudio::GraphCanvasFoldedNode::id);
+    REQUIRE(tri != folded.end());
+    CHECK(tri->rendering_section);
+    auto *fields = tab.child<QWidget>("pelican.graphCanvasFoldedPass");
+    REQUIRE(fields != nullptr);
+    tab.widget->scene().selectNode("tri");
+    QCoreApplication::processEvents();
+    // Before GL-5g a raster pass took the column away.
+    REQUIRE(fields->isVisible());
+    auto *vertex = tab.child<QComboBox>("pelican.graphCanvasFoldedPass.vertex");
+    auto *fragment = tab.child<QComboBox>("pelican.graphCanvasFoldedPass.fragment");
+    REQUIRE(vertex != nullptr);
+    REQUIRE(fragment != nullptr);
+    CHECK(vertex->isVisible());
+    CHECK(vertex->currentData().toString() == QStringLiteral("project://shaders/tri"));
+    CHECK(fragment->currentData().toString() == QStringLiteral("project://shaders/tri"));
+    // The Pass Editor's raster parts: raster_state, with its draw.
+    auto *raster = tab.child<QWidget>("pelican.graphCanvasFoldedPass.rasterState");
+    auto *draw = tab.child<QWidget>("pelican.graphCanvasFoldedPass.draw");
+    REQUIRE(raster != nullptr);
+    REQUIRE(draw != nullptr);
+    CHECK(raster->isVisible());
+    CHECK(draw->isVisible());
+    // A fullscreen pass's Frame data is not a raster pass's.
+    auto *present_frame_data = tab.child<QWidget>("pelican.graphCanvasFoldedPass.frameData");
+    if (present_frame_data != nullptr) CHECK_FALSE(present_frame_data->isVisible());
+
+    // A fragment picked is one edit_preset_pass of tri, built as the Pass
+    // Editor's Save builds it (presetPassEditParams): the declaration with
+    // the shader replaced, its draw kept.
+    const int index = fragment->findData(QStringLiteral("engine://fullscreen"));
+    REQUIRE(index >= 0);
+    fragment->setCurrentIndex(index);
+    QCoreApplication::processEvents();
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_preset_pass")) == 1);
+    const auto params = tab.sent("edit_preset_pass");
+    CHECK(params.value("pass_name", std::string{}) == "tri");
+    CHECK(params.value("graph", std::string{}) == "main_render");
+    REQUIRE(params.contains("shader"));
+    CHECK(params["shader"] ==
+          Json{{"vertex", "project://shaders/tri"}, {"fragment", "engine://fullscreen"}});
+    // Only what changed is sent for a pass that is not fullscreen
+    // (presetPassEditParams): the draw and raster_state stay the root's.
+    CHECK_FALSE(params.contains("draw"));
+    CHECK_FALSE(params.contains("raster_state"));
+    // A change of the draw is one edit of the draw.
+    auto *count = tab.child<QSpinBox>("pelican.graphCanvasFoldedPass.draw.vertexCount");
+    REQUIRE(count != nullptr);
+    tab.answer("edit_preset_pass", Json{{"status", "accepted"}, {"ticket", "gl5g-tri"}});
+    tab.answer("get_edit_result", Json{{"status", "committed"},
+                                       {"committed", true},
+                                       {"source_digest", {{"hex", "gl5g-root-2"}}}});
+    count->setValue(6);
+    // A value typed goes when the typing stops (half a second).
+    QElapsedTimer waited;
+    waited.start();
+    while (tab.transport.countOf(QStringLiteral("edit_preset_pass")) < 2 && waited.elapsed() < 5000)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_preset_pass")) == 2);
+    const auto drawn = tab.sent("edit_preset_pass");
+    REQUIRE(drawn.contains("draw"));
+    CHECK(drawn["draw"].value("vertex_count", 0) == 6);
+    // Present, a fullscreen pass, still shows its own fields and no raster
+    // part.
+    tab.widget->scene().selectNode("present");
+    QCoreApplication::processEvents();
+    CHECK(fields->isVisible());
+    CHECK_FALSE(raster->isVisible());
+}
+
+TEST_CASE("GL-5g a graph node's pass shows Serial, Isolate and No alias in the detail column; "
+          "each is the Frame Plan's edit_target_planning of the plan's names",
+          "[devstudio][graph-canvas][scene][gl5g]") {
+    Gl5gTab tab;
+    auto *fields = tab.child<QWidget>("pelican.graphCanvasFoldedPass");
+    REQUIRE(fields != nullptr);
+    CHECK_FALSE(fields->isVisible());
+    // shade is the graph's render.fullscreen; the plan runs it as `shade`.
+    tab.widget->scene().selectNode("shade");
+    QCoreApplication::processEvents();
+    REQUIRE(fields->isVisible());
+    auto *heading = tab.child<QLabel>("pelican.graphCanvasFoldedPass.heading");
+    REQUIRE(heading != nullptr);
+    CHECK(heading->text() == QStringLiteral("shade: its decisions"));
+    // The editing fields are not this column's to show for a graph node (its
+    // Pass fields are).
+    auto *vertex = tab.child<QComboBox>("pelican.graphCanvasFoldedPass.vertex");
+    REQUIRE(vertex != nullptr);
+    CHECK_FALSE(vertex->isVisible());
+    tab.answerRoot();
+    auto *serial = tab.child<QCheckBox>("pelican.graphCanvasFoldedPass.serial");
+    auto *isolate = tab.child<QCheckBox>("pelican.graphCanvasFoldedPass.isolate");
+    auto *no_alias = tab.child<QCheckBox>("pelican.graphCanvasFoldedPass.noAlias.shade__color");
+    REQUIRE(serial != nullptr);
+    REQUIRE(isolate != nullptr);
+    REQUIRE(no_alias != nullptr);
+    CHECK(serial->isVisible());
+    CHECK(no_alias->isVisible());
+    CHECK_FALSE(serial->isChecked());
+
+    serial->click();
+    QCoreApplication::processEvents();
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_target_planning")) == 1);
+    CHECK(tab.sent("edit_target_planning") ==
+          PelicanStudio::graphTargetPlanningParams("gl1e-root", "main_render", "node", "shade",
+                                                   "serial", true));
+    tab.answer("edit_target_planning", Json{{"status", "accepted"}, {"ticket", "gl5g-serial"}});
+    tab.answer("get_edit_result", Json{{"status", "committed"},
+                                       {"committed", true},
+                                       {"source_digest", {{"hex", "gl5g-root-2"}}}});
+    auto *notice = tab.child<QLabel>("pelican.graphCanvasNotice");
+    REQUIRE(notice != nullptr);
+    CHECK(notice->text() == QStringLiteral("Serial set on shade."));
+
+    no_alias->click();
+    QCoreApplication::processEvents();
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_target_planning")) == 2);
+    CHECK(tab.sent("edit_target_planning") ==
+          PelicanStudio::graphTargetPlanningParams("gl1e-root", "main_render", "resource",
+                                                   "shade__color", "no_alias", true));
+
+    // present, the rendering section's pass, is edited here again: its
+    // fields come back with its Decisions.
+    tab.widget->scene().selectNode("present");
+    QCoreApplication::processEvents();
+    CHECK(fields->isVisible());
+    CHECK(vertex->isVisible());
+    CHECK(heading->text() != QStringLiteral("shade: its decisions"));
 }

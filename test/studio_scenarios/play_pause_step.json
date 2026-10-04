@@ -256,7 +256,30 @@
       "remember": "stepped_frame"
     },
     {
-      "label": "and no further",
+      "label": "the evaluation number after the step (read)",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.frame",
+      "remember": "after_step_evaluation"
+    },
+    {
+      "label": "the engine draws 30 more frames, still paused",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status"
+      },
+      "path": "result.frame",
+      "op": "ge",
+      "value_of": "after_step_evaluation",
+      "plus": 30,
+      "retry_ms": 10000
+    },
+    {
+      "label": "and no further, 30 frames later",
       "expect": "result",
       "command": {
         "cmd": "rpc",

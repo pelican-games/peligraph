@@ -68,7 +68,7 @@
     {"label": "the pass's buffer port, with its element", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes[1].parameters.ports.level", "value": {"access": "read", "element": "float", "kind": "buffer"}, "retry_ms": 60000},
     {"label": "and its line", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "nodes[1].inputs.level.node", "value": "render_buffer"},
     {"label": "UX-13a: the include now declares pelican_resource_level, and the reflection shows its binding", "cmd": "wait", "name": "pelican.graphCanvasView::graph_socket#render_fullscreen/in@0", "timeout_ms": 120000, "visible": true},
-    {"label": "scene time 0: the curve's 0", "expect": "result", "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/level.png", "pixels": [[0.5, 0.5], [0.5, 0.03]]}, "path": "pixels[0]", "remember": "ramp0"},
+    {"label": "scene time 0: the curve's 0", "expect": "result", "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/level.png", "pixels": [[0.5, 0.5], [0.5, 0.03]]}, "path": "pixels[0]", "value_of": "black", "retry_ms": 30000, "remember": "ramp0"},
     {"label": "the canvas takes edits", "cmd": "wait", "name": "pelican.graphCanvasAddNode", "timeout_ms": 120000, "enabled": true},
     {"label": "let it settle", "cmd": "wait", "name": "pelican.graphCanvasNotice", "contains": "zz-never-shown", "timeout_ms": 800, "expect_error": "automation.wait_timeout@1"},
     {"label": "pick the curve", "cmd": "click", "name": "pelican.graphCanvasView::graph_node_header#value_curve"},

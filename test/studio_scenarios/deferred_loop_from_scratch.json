@@ -594,6 +594,41 @@
       "retry_ms": 120000
     },
     {
+      "label": "the box stands where the gradient was: the middle is not the gradient's colour there before",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/step5_deferred.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.5,
+            0.92
+          ],
+          [
+            0.5,
+            0.06
+          ],
+          [
+            0.46,
+            0.5
+          ],
+          [
+            0.54,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "gradient_middle"
+    },
+    {
       "label": "the background, read above the box",
       "expect": "result",
       "command": {

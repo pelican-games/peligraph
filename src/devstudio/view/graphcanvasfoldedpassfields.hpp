@@ -24,6 +24,7 @@ namespace PelicanStudio {
 class AttachmentOpsForm;
 class FullscreenPassInterfaceRow;
 class MaterialSettingsForm;
+class RasterStateForm;
 class ShaderDefinesForm;
 class ViewSelectField;
 
@@ -37,7 +38,11 @@ class ViewSelectField;
 //     and clear colour (AttachmentOpsForm). Its inputs are the node's sockets
 //     (GL-1e), listed here;
 //   - a material pass: its ten settings (MaterialSettingsForm) and its
-//     attachments' ops (AttachmentOpsForm, depth too).
+//     attachments' ops (AttachmentOpsForm, depth too);
+//   - GL-5g, decision 1: a raster pass: its Vertex and Fragment shaders and
+//     defines as a fullscreen pass's, its raster_state and draw
+//     (RasterStateForm, depth and draw rows shown, as the Pass Editor shows
+//     them for a raster pass), and its attachments' ops (depth too).
 // A change is one edit_preset_pass, its params presetPassEditParams' -- the
 // Pass Editor's Save's -- handed to the tab (send), which sends it, follows
 // its ticket, puts a refusal on the notice in the inspector model's sentences
@@ -72,6 +77,13 @@ class GraphCanvasFoldedPassFields final : public QWidget {
     // call again: the forms are built anew only when the pass or what the
     // authoring context says of it changed, never under a value being typed.
     void showPass(const std::string &pass);
+    // GL-5g, decision 2: a pass this column does not edit -- a graph node's,
+    // a preset's or a feature's (`pass` its name in the frame plan) -- shows
+    // the heading and the Decisions alone: Serial, Isolate and No alias of
+    // the images it writes, the same edit_target_planning
+    // (graphTargetPlanningParams) the rendering section's passes send.
+    void showPlanningOnly(const std::string &pass, const QString &heading);
+    [[nodiscard]] bool planningOnly() const noexcept { return planning_only_; }
     [[nodiscard]] const std::string &pass() const noexcept { return pass_; }
     // Whether the pass shown is one this column edits.
     [[nodiscard]] bool editing() const noexcept { return editable_; }
@@ -129,6 +141,8 @@ class GraphCanvasFoldedPassFields final : public QWidget {
     std::string pass_;
     std::string type_;
     bool editable_ = false;
+    // GL-5g, decision 2: the Decisions of a pass this column does not edit.
+    bool planning_only_ = false;
     bool loading_ = false;
     bool can_send_ = true;
     // What the forms were built from (the declaration and the lists).
@@ -139,6 +153,8 @@ class GraphCanvasFoldedPassFields final : public QWidget {
     nlohmann::json loaded_draft_ = nullptr;
 
     QLabel *heading_ = nullptr;
+    // The editing fields (everything but the heading and the Decisions).
+    QWidget *fields_ = nullptr;
     QWidget *shaders_ = nullptr;
     QComboBox *vertex_ = nullptr;
     QComboBox *fragment_ = nullptr;
@@ -148,6 +164,9 @@ class GraphCanvasFoldedPassFields final : public QWidget {
     QLabel *ops_caption_ = nullptr;
     AttachmentOpsForm *ops_ = nullptr;
     MaterialSettingsForm *settings_ = nullptr;
+    // GL-5g, decision 1: a raster pass's raster_state and draw.
+    QLabel *raster_caption_ = nullptr;
+    RasterStateForm *raster_ = nullptr;
     QTimer *typing_ = nullptr;
     // GL-5b, decisions 2 and 3: `.output.<n>`, and what they were filled from.
     QWidget *outputs_ = nullptr;

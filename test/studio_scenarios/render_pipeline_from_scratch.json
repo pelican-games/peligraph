@@ -637,7 +637,8 @@
       },
       "path": "pixels[2]",
       "op": "ne",
-      "value_of": "step 5_stripe"
+      "value_of": "step 5_stripe",
+      "remember": "step 5_next_stripe"
     },
     {
       "label": "step 5: and not the colour step 1's gradient had at that point",
@@ -929,6 +930,59 @@
       "path": "pixels[2]",
       "op": "ne",
       "value_of": "step 6_stripe"
+    },
+    {
+      "label": "step 6: the stripe is the colour it was before the project was opened again (step 5)",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/step6_stripes.png",
+        "pixels": [
+          [
+            0.3125,
+            0.3
+          ],
+          [
+            0.3125,
+            0.7
+          ],
+          [
+            0.4375,
+            0.3
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "value_of": "step 5_stripe",
+      "retry_ms": 60000
+    },
+    {
+      "label": "step 6: and so is the next stripe",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/step6_stripes.png",
+        "pixels": [
+          [
+            0.3125,
+            0.3
+          ],
+          [
+            0.3125,
+            0.7
+          ],
+          [
+            0.4375,
+            0.3
+          ]
+        ]
+      },
+      "path": "pixels[2]",
+      "value_of": "step 5_next_stripe"
     },
     {
       "label": "step 6: and not the colour step 1's gradient had at that point",

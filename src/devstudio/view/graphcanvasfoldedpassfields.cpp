@@ -4,6 +4,7 @@
 #include "graphcanvasrenderfields.hpp"
 #include "passforms/attachmentopsform.hpp"
 #include "passforms/materialsettingsform.hpp"
+#include "passforms/rasterstateform.hpp"
 #include "passforms/shaderdefinesform.hpp"
 #include "presetpassedit.hpp"
 #include "studiotheme.hpp"
@@ -83,6 +84,7 @@ GraphCanvasFoldedPassFields::GraphCanvasFoldedPassFields(GraphCanvasModel &model
     layout->addWidget(heading_);
 
     auto *fields = new QWidget(this);
+    fields_ = fields;
     auto *form = new QFormLayout(fields);
     form->setContentsMargins(0, 0, 0, 0);
     // Decision 2: the shaders, picked from the Pass Editor's list.
@@ -115,6 +117,12 @@ GraphCanvasFoldedPassFields::GraphCanvasFoldedPassFields(GraphCanvasModel &model
     form->addRow(caption(tr("Frame data"), fields), interface_);
     settings_ = new MaterialSettingsForm(foldedPrefix(), fields);
     form->addRow(settings_);
+    // GL-5g, decision 1: a raster pass's raster_state and draw, the Pass
+    // Editor's part (`.rasterState.*`, `.draw.*`).
+    raster_ = new RasterStateForm(foldedPrefix(), fields);
+    raster_->setToolTip(tr("raster_state and draw: how the pass rasterizes, blends and draws."));
+    raster_caption_ = caption(tr("Raster"), fields);
+    form->addRow(raster_caption_, raster_);
     ops_ = new AttachmentOpsForm(foldedPrefix(), fields);
     ops_caption_ = caption(tr("Attachments"), fields);
     form->addRow(ops_caption_, ops_);
@@ -167,7 +175,7 @@ GraphCanvasFoldedPassFields::GraphCanvasFoldedPassFields(GraphCanvasModel &model
             typing_->stop();
             commit();
         });
-    for (PassForm *passform : std::initializer_list<PassForm *>{defines_, ops_, settings_})
+    for (PassForm *passform : std::initializer_list<PassForm *>{defines_, ops_, settings_, raster_})
         connect(passform, &PassForm::changed, this, [this] { formChanged(); });
     interface_->setChangedAction([this] { formChanged(); });
     compact(*fields);
@@ -187,10 +195,10 @@ const FramePlanAuthoringPass *GraphCanvasFoldedPassFields::row(
     const FramePlanAuthoring &authoring) const {
     const auto *found = authoring.find(model_.planGraph(), pass_);
     // Decision 1: only what the root's rendering section declares, of the
-    // two kinds whose parts the Pass Editor has here.
+    // kinds whose parts the Pass Editor has here (GL-5g: raster too).
     if (found == nullptr || !found->root) return nullptr;
     const auto type = found->editable_declaration.value("type", std::string{});
-    return type == "fullscreen" || type == "material" ? found : nullptr;
+    return type == "fullscreen" || type == "material" || type == "raster" ? found : nullptr;
 }
 
 void GraphCanvasFoldedPassFields::showPass(const std::string &pass) {
@@ -201,6 +209,8 @@ void GraphCanvasFoldedPassFields::showPass(const std::string &pass) {
         commit();
     }
     pass_ = pass;
+    planning_only_ = false;
+    fields_->show();
     const auto context = authoring();
     const auto *found = pass_.empty() || !model_.currentScope().empty() || model_.foldedView()
                             ? nullptr
@@ -226,35 +236,80 @@ void GraphCanvasFoldedPassFields::showPass(const std::string &pass) {
     show();
 }
 
+void GraphCanvasFoldedPassFields::showPlanningOnly(const std::string &pass, const QString &heading) {
+    if (typing_->isActive()) {
+        typing_->stop();
+        commit();
+    }
+    if (pass != pass_ || !planning_only_) {
+        shown_.clear();
+        choices_shown_.clear();
+    }
+    pass_ = pass;
+    editable_ = false;
+    planning_only_ = true;
+    heading_->setText(heading);
+    heading_->setToolTip(tr("%1's graph-wide decisions: the root's target_planning, the same "
+                            "edit_target_planning the Frame Plan's right-click sends.")
+                             .arg(qtext(pass_)));
+    fields_->hide();
+    showPlanning();
+    readPlanning();
+    show();
+}
+
 void GraphCanvasFoldedPassFields::load(const FramePlanAuthoringPass &row) {
     loading_ = true;
     original_ = row.editable_declaration;
     type_ = original_.value("type", std::string{});
     const bool fullscreen = type_ == "fullscreen";
+    // GL-5g, decision 1: a raster pass has a fullscreen pass's shaders and
+    // defines, and its own raster_state and draw.
+    const bool raster = type_ == "raster";
+    const bool shaded = fullscreen || raster;
     heading_->setText(tr("%1 (%2): from the rendering section").arg(qtext(pass_), qtext(type_)));
     heading_->setToolTip(tr("%1 is declared by the root's rendering section; a change here is "
                             "the Pass Editor's edit_preset_pass of it.")
                              .arg(qtext(pass_)));
-    shaders_->setVisible(fullscreen);
-    defines_->setVisible(fullscreen);
+    shaders_->setVisible(shaded);
+    defines_->setVisible(shaded);
     interface_->setVisible(fullscreen);
-    settings_->setVisible(!fullscreen);
-    inputs_->setVisible(fullscreen);
+    settings_->setVisible(!shaded);
+    inputs_->setVisible(shaded);
+    raster_->setVisible(raster);
     if (auto *form = qobject_cast<QFormLayout *>(defines_->parentWidget()->layout())) {
-        form->setRowVisible(inputs_, fullscreen);
-        form->setRowVisible(defines_, fullscreen);
+        form->setRowVisible(shaders_, shaded);
+        form->setRowVisible(inputs_, shaded);
+        form->setRowVisible(defines_, shaded);
         form->setRowVisible(interface_, fullscreen);
-        form->setRowVisible(settings_, !fullscreen);
+        form->setRowVisible(settings_, !shaded);
+        form->setRowVisible(raster_, raster);
     }
     QStringList inputs;
     for (const auto &input : original_.value("input", Json::array()))
         if (input.is_string()) inputs.push_back(qtext(input.get<std::string>()));
     inputs_->setText(inputs.isEmpty() ? tr("none -- drop an image on the node's + input")
                                       : inputs.join(QStringLiteral(", ")));
-    if (fullscreen) {
+    if (shaded) {
         defines_->setPassName(pass_);
         defines_->load(original_.value("shader", Json::object()).value("defines", Json(nullptr)));
-        interface_->load(original_);
+        if (fullscreen) interface_->load(original_);
+        if (raster) {
+            // As the Pass Editor shows a raster pass's: depth and draw too,
+            // one colour row per colour output.
+            raster_->setDepthShown(true);
+            raster_->setDrawShown(true);
+            std::vector<std::string> colors;
+            const auto color = original_.value("output", Json::object()).value("color", Json::array());
+            for (std::size_t index = 0; color.is_array() && index < color.size(); ++index)
+                colors.push_back(color[index].is_string()
+                                     ? color[index].get<std::string>()
+                                     : tr("Output %1").arg(index).toStdString());
+            if (colors.empty()) colors.push_back(tr("Output").toStdString());
+            raster_->setColorAttachments(colors);
+            raster_->load(original_.value("raster_state", Json(nullptr)),
+                          original_.value("draw", Json(nullptr)));
+        }
     } else {
         settings_->setResourceCandidates(model_.planTargets());
         settings_->setVariantCandidates(model_.materialVariants());
@@ -282,7 +337,7 @@ void GraphCanvasFoldedPassFields::load(const FramePlanAuthoringPass &row) {
 }
 
 void GraphCanvasFoldedPassFields::fillShaderChoices(const Json &declaration) {
-    if (type_ != "fullscreen") return;
+    if (type_ != "fullscreen" && type_ != "raster") return;
     // EL-4b: the lists are on screen; the engine's is asked for (once) and
     // replaces the fixed one when it arrives.
     model_.askEngineShaders();
@@ -309,8 +364,8 @@ void GraphCanvasFoldedPassFields::fillShaderChoices(const Json &declaration) {
 void GraphCanvasFoldedPassFields::followEditable(bool can_send) {
     can_send_ = can_send;
     for (QWidget *widget : std::initializer_list<QWidget *>{vertex_, fragment_, outputs_, defines_,
-                                                          interface_, ops_, settings_, planning_,
-                                                          view_})
+                                                          interface_, ops_, settings_, raster_,
+                                                          planning_, view_})
         widget->setEnabled(can_send);
 }
 
@@ -479,6 +534,40 @@ Json GraphCanvasFoldedPassFields::draftJson(const Json &original) const {
         if (auto clear = ops_->clearColors(); !clear.is_null()) draft["clear_colors"] = std::move(clear);
         return draft;
     }
+    if (type == "raster") {
+        // GL-5g, decision 1: the Pass Editor's draft of a raster pass -- its
+        // declaration, with the shaders, defines, raster_state, draw and
+        // attachments the forms hold written over it.
+        Json draft = original;
+        if (const auto refusal = defines_->refusal(); !refusal.isEmpty())
+            throw std::runtime_error(refusal.toStdString());
+        auto shader = draft.value("shader", Json::object());
+        shader["vertex"] = vertex_->currentData().toString().toStdString();
+        shader["fragment"] = fragment_->currentData().toString().toStdString();
+        if (const auto defines = defines_->defines(); defines.is_null())
+            shader.erase("defines");
+        else
+            shader["defines"] = defines;
+        draft["shader"] = std::move(shader);
+        if (const auto draw = raster_->draw(); draw.is_null())
+            draft.erase("draw");
+        else
+            draft["draw"] = draw;
+        if (const auto raster_state = raster_->rasterState(); raster_state.is_null())
+            draft.erase("raster_state");
+        else
+            draft["raster_state"] = raster_state;
+        auto output = draft.value("output", Json::object());
+        output["color"] = ops_->color();
+        if (const auto depth = output.find("depth"); depth != output.end() && !depth->is_null())
+            output["depth"] = ops_->depth();
+        draft["output"] = std::move(output);
+        if (auto clear = ops_->clearColors(); clear.is_null())
+            draft.erase("clear_colors");
+        else
+            draft["clear_colors"] = std::move(clear);
+        return draft;
+    }
     // A material pass keeps its declaration; the forms' keys are written over it.
     Json draft = original;
     auto output = draft.value("output", Json::object());
@@ -601,7 +690,7 @@ bool GraphCanvasFoldedPassFields::deliverResult(qint64 request_id, const QByteAr
             const auto content = Json::parse(document.value("content", std::string{}), nullptr, false);
             planning_state_ = GraphTargetPlanning::fromRoot(content, model_.planGraph());
         }
-    if (editable_) showPlanning();
+    if (editable_ || planning_only_) showPlanning();
     // The document moved while it was read: read it again.
     readPlanning();
     return true;
@@ -611,7 +700,7 @@ void GraphCanvasFoldedPassFields::editFinished() {
     // A refused box goes back to what the root holds; after a commit the
     // root is read again, whatever its digest says yet.
     planning_read_.clear();
-    if (!editable_) return;
+    if (!editable_ && !planning_only_) return;
     showPlanning();
     readPlanning();
 }
