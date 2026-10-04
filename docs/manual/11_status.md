@@ -585,6 +585,8 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 9. **(一部解消)読めない material 文書で起動が止まらなくなりました** —— ✅FO-1(`a4d7760a`)から、`--strict-assets` を付けない起動では、asset_data の `materials[]` が指す文書が無い・読めないとき、その文書の material を登録せずに起動し、`get_problems` に `document_kind: "material"` の error(`material.document_unknown@1` / `material.document_invalid@1`)を、その material を指していた model に warning(`material.binding_unresolved@1`。その primitive は model の元の material で描く)を載せます。`list_materials` の `status` もその文書は engine の状態です([第6章](06_rendering.md) §6.7 の「起動時に読めない material 文書」)。FO-1 の前は起動が致命で終わりました(`--render-fallback` の対象外)。残るもの:
    - MT-2 の解けない object の上書き(scene の `simplemodelview.materials` の行が解けない名前を指す)は、問題の一覧に載りません。今も log の warning だけで、その行が無いものとして描きます([第6章](06_rendering.md) §6.7 の「object ごとの上書き」)。
    - 断られた文書は、ファイルを直しても engine を起こし直すまで登録されず、問題の一覧からも消えません。
+     → ✅EB-2(`e1ba9058`)で解消しました。直した文書は `register_material {path}`(答えに `recovered: true`)か、`hot_reload` に宣言した文書なら保存で、起こし直さずに取り込まれ、`list_materials` が `loaded` になり、問題の一覧からその文書の error と由来する warning が消えます(Studio 側は MR-1s)。
+   - (✅EB-2 から)watch が見ている登録済みの文書が起動後に読めなくなると、engine は前の値で描き続け、問題の一覧に source `hot_reload` の error が 1 件入ります。このとき `list_materials` のその行は、engine が持つ値ではなくファイルを読んだ結果(`invalid`、`materials: []`、`line` / `column` は無し)です。登録済みの文書を直したファイルから取り込み直す RPC は無く、`hot_reload` の宣言の無い engine は外の書き換えに気づきません([第6章](06_rendering.md) §6.7 の「起こし直さずに取り込む」)。
 
 ### v0 で約束しないもの(2026-09-17)
 

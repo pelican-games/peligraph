@@ -375,7 +375,7 @@ ID 割当を engine-wide schema として管理する必要がある点は変わ
 cannot unregister component '<name>': dependent ECS system '<sys>' remains
 ```
 
-この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2727))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
+この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2729))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
 
 ### custom Component の現状
 
@@ -589,7 +589,7 @@ reflection は descriptor layout と pipeline layout を source/SPIR-V から自
 
 hot reload は shader compile と pipeline rebuild を transactional にします。しかし descriptor layout を変更する edit は、shader body だけの edit より危険です。
 
-- shader reload の runtime 公開は **`RuntimeReloadBoundary::render_start`** の 1 点に集約されています。[`consumeShaderReloadPublication()`](../../src/core/vkcore/renderer.cpp#L2869) が `ReloadService::applyRuntimeBoundary(render_start)` を呼び、**その summary の `committed` が 0 でないときだけ** [`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L2834) が走ります。呼び出しは view の記録へ入る前([`renderer.cpp` の frame 前段](../../src/core/vkcore/renderer.cpp#L6269))で、shader 側の participant がこの boundary を宣言している箇所は [`reloadservice.cpp` の shader participant 登録](../../src/core/watch/reloadservice.cpp#L714) です。
+- shader reload の runtime 公開は **`RuntimeReloadBoundary::render_start`** の 1 点に集約されています。[`consumeShaderReloadPublication()`](../../src/core/vkcore/renderer.cpp#L2869) が `ReloadService::applyRuntimeBoundary(render_start)` を呼び、**その summary の `committed` が 0 でないときだけ** [`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L2834) が走ります。呼び出しは view の記録へ入る前([`renderer.cpp` の frame 前段](../../src/core/vkcore/renderer.cpp#L6269))で、shader 側の participant がこの boundary を宣言している箇所は [`reloadservice.cpp` の shader participant 登録](../../src/core/watch/reloadservice.cpp#L715) です。
 - `rebindFullscreenInputs()` が貼り直すのは 3 系統です — 公開済み generation 内の fullscreen / generic raster pass の input resource、material の screen input、compute task の render target。したがって **reload 専用の処理ではありません**。logical target の extent が変わった直後にも同じ関数が呼ばれます([`renderer.cpp` の extent 変更後](../../src/core/vkcore/renderer.cpp#L2945))。逆に言うと、この 3 系統の外側で descriptor を自前 cache している pass は、reload でも resize でも取り残されます。
 - compute descriptor set は [`registerComputeTask()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1297) 時に一度作り、hot reload path では作り直していません。resource port の binding も同じで、RS-5 から登録のときに shader の反映の名前で決まりますが、hot reload の pipeline の組み直しは保存した desc の binding のまま行い、名前で引き直しません。
 - material は [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L380) により surface/material 連動 reload に対応しました。UI/debug の descriptor ownership は各 container に分散したままです。
@@ -854,7 +854,7 @@ behavior コールバック実行中 / DLL リロード中の追加ゲートは 
 
 その「遷移」は 2 段で数えます。
 
-- reload service の [`transitionFacts()`](../../src/core/watch/reloadservice.hpp#L231) が、watcher の state と epoch、各 runtime participant の reload 結果(requested / attempted / applied / failed / error)を型付きの [`ReloadTransitionFacts`](../../src/core/watch/reloadtransition.hpp#L17) で返します。participant の `details` は**型として入る場所がありません**。
+- reload service の [`transitionFacts()`](../../src/core/watch/reloadservice.hpp#L238) が、watcher の state と epoch、各 runtime participant の reload 結果(requested / attempted / applied / failed / error)を型付きの [`ReloadTransitionFacts`](../../src/core/watch/reloadtransition.hpp#L17) で返します。participant の `details` は**型として入る場所がありません**。
 - editor runtime が 1 つだけ持つ [`internal::EditorTransitionCounter`](../../src/core/communication/editorruntimefactory.hpp#L127) が、現在の scene id とその facts を前回と比べ、違えば数を 1 進めます。これが `transition_epoch` です。hash ではないので衝突せず、元の値に戻る遷移(A→B→A)も遷移として数えます。
 
 受理した編集を commit してよいかの判定は、journal・render config・procedural asset の 3 つの editor が同じ [`EditorGateEpoch`](../../src/core/communication/editorgate.hpp#L18) で行います。gate の観測(開閉・理由・`transition_epoch`)が前回と違えば epoch を進め、受理時の epoch と commit 時の epoch が違えば `gate_closed` です。閉じてから開き直した gate も変化として数えます。
@@ -933,7 +933,7 @@ TEST_CASE("...") {
 | [`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L893) | [`MaterialContainer::validateRuntimeGenerationCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1695) の `render-pipeline candidate has no compatible pass for live material 0 (route 'deferred_geometry', shader contract 'gbuffer_v1')` |
 | [`materialvaluesreload_test.cpp` 内](../../test/materialvaluesreload_test.cpp#L369) | [`validateMaterialTextureReflection()`](../../src/core/material/materialcontainer.cpp#L488) の `material texture 'albedo_detail' is absent from shader reflection at binding 7` |
 | [`materialvaluesreload_test.cpp` 内](../../test/materialvaluesreload_test.cpp#L491) | 同上 |
-| [`HR1-M watcher gate and 1000 reloads keep resources bounded`](../../test/materialvaluesreload_test.cpp#L766) | 同上 |
+| [`HR1-M watcher gate and 1000 reloads keep resources bounded`](../../test/materialvaluesreload_test.cpp#L790) | 同上 |
 
 `try` の位置は 2 通りありました。`materialvaluesreload_test.cpp` の 3 件は `FastModuleContainer modules;` から `waitIdle()` まで**本体まるごと**([`"HR1-M updates one same-layout material and rolls back invalid candidates"`](../../test/materialvaluesreload_test.cpp#L369) の `try` など)、`rpc_color_contract_test.cpp` は engine 起動部だけ([`runEngineRpcServer()`](../../test/rpc_color_contract_test.cpp#L404) を囲む `try`)ですが、fail-fast は起動時に出るので結果は同じです。
 
@@ -1071,7 +1071,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 失敗しうる作業(確保・検証・容量チェック・id 採番)を prepare に全部集め、publish を `noexcept` の swap 列にして「公開後は失敗しない」を型で固定し、finish は「もう巻き戻さない」と決まってから初めて破棄・`deinit` を行う。
 
-**どこに出るか**: loader は [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1650) が prepare → early_publish → publish → activate → commit_metadata の 5 段。ECS は [`ECSArchetypeMigrationAdapter`](../../src/core/ecs/archetypemigration.hpp#L45) のヘッダコメントが「Publication must not fail」を宣言し、**公開済みの実体**に `cb_deinit` を呼ぶのは [`finishPublished()`](../../src/core/ecs/archetypemigration.cpp#L352) とその逆手順の [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229) だけ(未公開の候補側は `discardPrepared()` / `deinitializeStaged()` / `rollbackCreate()` が担当する)。描画は [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L747) が容量検査と確保、物理は [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.cpp#L287)、behavior は [`PreparedBehaviorAttachmentEdits::publish()`](../../src/core/gamelogic/behaviorarena.cpp#L472)、アセットは [`model.cpp` の validate/stage](../../src/core/asset/model.cpp#L676)。
+**どこに出るか**: loader は [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1650) が prepare → early_publish → publish → activate → commit_metadata の 5 段。ECS は [`ECSArchetypeMigrationAdapter`](../../src/core/ecs/archetypemigration.hpp#L45) のヘッダコメントが「Publication must not fail」を宣言し、**公開済みの実体**に `cb_deinit` を呼ぶのは [`finishPublished()`](../../src/core/ecs/archetypemigration.cpp#L352) とその逆手順の [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229) だけ(未公開の候補側は `discardPrepared()` / `deinitializeStaged()` / `rollbackCreate()` が担当する)。描画は [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L747) が容量検査と確保、物理は [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.cpp#L287)、behavior は [`PreparedBehaviorAttachmentEdits::publish()`](../../src/core/gamelogic/behaviorarena.cpp#L472)、アセットは [`model.cpp` の validate/stage](../../src/core/asset/model.cpp#L678)。
 
 **読むときの手順**: まず `publish` の宣言に `noexcept` が付いているかを見て、付いていれば「この関数より前に全ての失敗が済んでいる」と読み替えます。次に、その関数が触るメンバが *candidate* 側か *live* 側かを 1 つずつ確かめてください。
 
@@ -1540,11 +1540,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: デストラクタや deferred 解放経路は `noexcept` で、そこで動的確保すると `bad_alloc` を投げうるため**報告自体が失敗します**。固定 8 要素のインライン配列なら確保も例外もなしに記録でき、溢れは件数だけ残します。同じ設計は §9.21「`ReleaseReport` は heap を使わない」でも扱っています。
 
-#### [parse → validate → stage](../../src/core/asset/model.cpp#L676) — 3 段階と `sameRigLayout`
+#### [parse → validate → stage](../../src/core/asset/model.cpp#L678) — 3 段階と `sameRigLayout`
 
 **分からなくなること**: どの段で GPU に触るのか、どの差分が `compatibility_revision` を進めるのか。
 
-**答え**: parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#L676) は `inspect` で **GPU コミットなしのプレビュー template** を作って `sameRigLayout` でリグ差分を判定、[`stage`](../../src/core/asset/model.cpp#L684) で初めて実 GPU コミットとリビジョン付与です。失敗しても live に触れずに巻き戻せます。rig_changed(joint_nodes・親子・skin_bindings のレイアウト一致)**だけ**が `compatibility_revision` を進めます。
+**答え**: parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#L678) は `inspect` で **GPU コミットなしのプレビュー template** を作って `sameRigLayout` でリグ差分を判定、[`stage`](../../src/core/asset/model.cpp#L686) で初めて実 GPU コミットとリビジョン付与です。失敗しても live に触れずに巻き戻せます。rig_changed(joint_nodes・親子・skin_bindings のレイアウト一致)**だけ**が `compatibility_revision` を進めます。
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
@@ -1555,14 +1555,14 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`allocateRange()`](../../src/core/model/vertbufcontainer.cpp#L103) | free list + high water mark | 2 系統ある理由 | まず free list を first-fit で走査して解放済みレンジを再利用し(**リロード周回でバッファが際限なく伸びるのを防ぐ**)、合う穴が無いときだけ high water mark を進め、そこで初めて `ensure*Capacity` の再確保が起きる |
 | [`content_revision` / `compatibility_revision`](../../src/core/model/modeltemplate.hpp#L160) | 2 本の版 | 分ける理由 | content は毎リロード必ず進む「中身が変わった」印、compatibility はリグレイアウトが変わったときだけ進む「バインドを張り直す必要がある」印。後者だけが staged resource の互換性キーとして公開されるので、**内容だけの更新で依存側の再解決を誘発しない** |
 | [importer mapping の安定座標](../../src/core/model/modeltemplate.hpp#L84) | mesh/primitive/node index | 「regrouping を生き延びる」の意味 | ソース GLB 上の**安定座標**で、GPU 側の allocation offset とは意図的に分離されている。再グループ化で offset が変わっても、それらの座標で addressing されたインポータ由来のマテリアル割当はそのまま解決できる |
-| [`publishBatch()`](../../src/core/asset/model.cpp#L493) / [`retireReloadPayload()`](../../src/core/asset/model.cpp#L845) | 公開と退役 | 逆にできない理由 | WP382c では renderer の rebuild を prepare し、participant の publish で template と instance を新世代へ張り替える。旧 payload は coordinator の退役経路から GPU resource の遅延解放へ渡す。旧 primitive レンジを公開前に解放すると、生きた draw の参照を壊しうる |
+| [`publishBatch()`](../../src/core/asset/model.cpp#L495) / [`retireReloadPayload()`](../../src/core/asset/model.cpp#L847) | 公開と退役 | 逆にできない理由 | WP382c では renderer の rebuild を prepare し、participant の publish で template と instance を新世代へ張り替える。旧 payload は coordinator の退役経路から GPU resource の遅延解放へ渡す。旧 primitive レンジを公開前に解放すると、生きた draw の参照を壊しうる |
 | [`DeferredRelease` の `acquire()`](../../src/core/model/vertbufcontainer.cpp#L604) | lease semantics | null のとき何が起きたか | §9.23.4 の `GpuSubmissionLease` と同じ(フェンス完了まで生かす券)。lease が null なら既に回収済み |
 | [`deferOldBuffer()`](../../src/core/model/vertbufcontainer.cpp#L143) | 旧バッファの遅延破棄 | いつ drain されるか | DeletionQueue(submission fence 完了時)。→ §9.12 |
 | [例外時の morph range](../../src/core/model/vertbufcontainer.cpp#L406) | 部分 cleanup | 解放されない範囲がある | **未執筆**(`vertex_allocated` フラグの cleanup 範囲を確かめる必要がある) |
 | [morph metadata の空 vector 埋め](../../src/core/model/vertbufcontainer.cpp#L578) | ゼロクリア | なぜ空 vector か | **未執筆**(根拠がコードにない) |
 | [`deferred_callbacks` の初期化位置](../../src/core/model/vertbufcontainer.cpp#L77) | メンバ初期化順 | なぜその位置か | **未執筆**(根拠がコードにない) |
-| [`Impl` の所有関係](../../src/core/asset/model.cpp#L378) | PayloadTracker / CommitBatch / ModelPayload / PendingCandidate | 誰が誰を持つか | **未執筆**(3 段階 staging の実装詳細) |
-| [`const void*` での payload 追跡](../../src/core/asset/model.cpp#L665) | 型を消した比較 | なぜ型を消すのか | **未執筆**(根拠がコードにない) |
+| [`Impl` の所有関係](../../src/core/asset/model.cpp#L380) | PayloadTracker / CommitBatch / ModelPayload / PendingCandidate | 誰が誰を持つか | **未執筆**(3 段階 staging の実装詳細) |
+| [`const void*` での payload 追跡](../../src/core/asset/model.cpp#L667) | 型を消した比較 | なぜ型を消すのか | **未執筆**(根拠がコードにない) |
 | [`source_material_index` が optional](../../src/core/model/modeltemplate.hpp#L135) / [bounds](../../src/core/model/modeltemplate.hpp#L71) | 任意性と空間 | bounds は local か world か | **未執筆**。ただし「スキニングは後で現在のパレットから適用」とコメントされているので local space と読める |
 | [material bindings のパス解決](../../src/core/asset/model.cpp#L161) | reference からの解決 | fragment を返しうるか | **未執筆**(根拠がコードにない) |
 
@@ -1675,7 +1675,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: 参加者名の文字列が何なのか(`"game_logic_reload"` に見える資料がある)。
 
-**答え**: 定数は [`watch::gameLogicReloadParticipantName = "pelican.game_logic"`](../../src/core/watch/reloadservice.hpp#L47) です。ReloadService が未登録なら [`registerParticipant` で自己登録](../../src/core/watch/reloadservice.cpp#L776)し(frame_start 境界の RuntimeReloadParticipant)、RPC は [`statusJson()["runtime"][participant]`](../../src/core/communication/rpcserver.cpp#L1295) で照会、`applyRuntimeNow(participant)` で明示適用します。
+**答え**: 定数は [`watch::gameLogicReloadParticipantName = "pelican.game_logic"`](../../src/core/watch/reloadservice.hpp#L54) です。ReloadService が未登録なら [`registerParticipant` で自己登録](../../src/core/watch/reloadservice.cpp#L777)し(frame_start 境界の RuntimeReloadParticipant)、RPC は [`statusJson()["runtime"][participant]`](../../src/core/communication/rpcserver.cpp#L1295) で照会、`applyRuntimeNow(participant)` で明示適用します。
 
 #### [`SceneLoadResult` の受け取り](../../src/core/communication/rpcserver.cpp#L2053) — 状態機械
 
@@ -1704,13 +1704,13 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 9.23.12 reload / watch
 
-#### [`ReloadService::registerParticipant()`](../../src/core/watch/reloadservice.cpp#L150) — 型が言えないことだけを検査する
+#### [`ReloadService::registerParticipant()`](../../src/core/watch/reloadservice.cpp#L151) — 型が言えないことだけを検査する
 
 **分からなくなること**: 「両方あると不正」という検査がどこへ行ったのか。
 
-**答え**: 適用ルートの排他は検査ではなく型になりました。[`FileReloadRole::apply`](../../src/core/watch/reloadservice.hpp#L164) は [`PerRequestReloadApply`](../../src/core/watch/reloadservice.hpp#L128)(1 件ずつ)/ [`BatchReloadApply`](../../src/core/watch/reloadservice.hpp#L136)(まとめて)/ [`CompanionBatchReloadApply`](../../src/core/watch/reloadservice.hpp#L147)(他 participant の request を吸い上げて 1 世代で publish)の `std::variant` で、二つ持つこと自体が書けません。ここに残っているのは**型が言えないことだけ**です — 名前が空でないこと、選ばれたルートの callback が null でないこと、companion apply なら companion 名が 1 つ以上あり空・自己参照・重複でないこと、そして名前が一意であること。batch owner 同士の順序も宣言から導かれます: ある owner が別の owner の companion に名指されていれば、名指した側の**後**に適用されるので、どちらが先に登録されたかで外側のトランザクションが companion を失うことがありません([宣言のコメント](../../src/core/watch/reloadservice.hpp#L144))。
+**答え**: 適用ルートの排他は検査ではなく型になりました。[`FileReloadRole::apply`](../../src/core/watch/reloadservice.hpp#L171) は [`PerRequestReloadApply`](../../src/core/watch/reloadservice.hpp#L135)(1 件ずつ)/ [`BatchReloadApply`](../../src/core/watch/reloadservice.hpp#L143)(まとめて)/ [`CompanionBatchReloadApply`](../../src/core/watch/reloadservice.hpp#L154)(他 participant の request を吸い上げて 1 世代で publish)の `std::variant` で、二つ持つこと自体が書けません。ここに残っているのは**型が言えないことだけ**です — 名前が空でないこと、選ばれたルートの callback が null でないこと、companion apply なら companion 名が 1 つ以上あり空・自己参照・重複でないこと、そして名前が一意であること。batch owner 同士の順序も宣言から導かれます: ある owner が別の owner の companion に名指されていれば、名指した側の**後**に適用されるので、どちらが先に登録されたかで外側のトランザクションが companion を失うことがありません([宣言のコメント](../../src/core/watch/reloadservice.hpp#L151))。
 
-#### [`applyRenderPipelineCompanionReload()`](../../src/core/watch/reloadservice.cpp#L447) — 流れと早期 return
+#### [`applyRenderPipelineCompanionReload()`](../../src/core/watch/reloadservice.cpp#L448) — 流れと早期 return
 
 **分からなくなること**: 何もせずに戻る条件が読み取りづらい。
 
@@ -1718,18 +1718,18 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [`applyRuntimeBoundary()`](../../src/core/watch/reloadservice.cpp#L276) | frame_start と render_start | 境界の使い分け | 境界ごとに参加者を絞って実行する二段構え。**ゲームロジック DLL のような論理状態の入れ替えは frame_start、シェーダ / パイプライン再構築は描画直前の render_start** |
+| [`applyRuntimeBoundary()`](../../src/core/watch/reloadservice.cpp#L277) | frame_start と render_start | 境界の使い分け | 境界ごとに参加者を絞って実行する二段構え。**ゲームロジック DLL のような論理状態の入れ替えは frame_start、シェーダ / パイプライン再構築は描画直前の render_start** |
 | [`makeLogicalAssetId()`](../../src/core/watch/reloadtransaction.cpp#L19) | generation を上位 32bit・index を下位 32bit に詰めた 64bit | stale 検出の仕組み | [`liveRecord()`](../../src/core/watch/reloadtransaction.cpp#L77) は index でスロットを引いた後 generation 不一致なら stale。`destroyResource` がスロットを free list へ返し再利用時に `++generation` するので、古いハンドルは同じ index を指しても必ず検出される(飽和時は例外)。→ §9.22 |
 | [`eraseEdges()`](../../src/core/watch/reloadtransaction.cpp#L90) と逆引き map | `AssetKey -> set<LogicalResourceRef>` | 何に使うのか | 依存元アセットから「それに依存している論理リソース」を引く。**ファイル変更時に再ロード対象を特定するため**で、publish/destroy のたびに同期し、空集合はエントリごと削除する |
 | [`topologicalOrder()`](../../src/core/watch/reloadtransaction.cpp#L105) | DAG の必須性 | 循環したらどうなるか | 1 グループ内の actor は `after` で「先にコミットすべき対象」を宣言し、Kahn 法で処理順を決める。循環があると順序が決まらず `"reload transaction dependency cycle"`(重複ターゲットも先に弾く) |
 | [`ResourceRegistry::publish()`](../../src/core/watch/reloadtransaction.cpp#L247) | revision と retire | 破棄のタイミング | content は publish のたびに +1、compatibility は互換性 / レイアウト / リグの変更を表し、stale handle 判定に使う slot generation とは**意図的に独立**。retire は旧 payload の `shared_ptr` を集めて返し、呼び出し側が公開後に受け取って GPU の DeletionQueue へ遅延破棄する(→ §9.23.8 の rebuild → release と同じ順序原則) |
-| [thread_local な companion observer](../../src/core/watch/reloadservice.cpp#L24) | 入れ子と並行の安全化 | なぜ thread_local か | **未執筆**(コメントが無く、「ctor で退避・dtor で復元」以上の根拠がコードにない) |
-| [built-in participant の lazy 登録](../../src/core/watch/reloadservice.cpp#L668) | 4 つの既定参加者 | ポインタ比較で更新判定する理由 | **未執筆**(根拠がコードにない) |
-| [`applyRequests()`](../../src/core/watch/reloadservice.cpp#L1184) | claimants / owned / companion / consumed | 4 つの集合の役割 | **未執筆**(根拠がコードにない) |
-| [`applyShaderReloadBatch()`](../../src/core/watch/reloadservice.cpp#L372) | prepared 空での早期 error | cache_hits/misses の意味 | **未執筆**(根拠がコードにない) |
-| [authored candidate の completion callback](../../src/core/watch/reloadservice.cpp#L309) | 完了通知 | 誰が呼ぶか | **未執筆**(根拠がコードにない) |
-| [`applyRequest()`](../../src/core/watch/reloadservice.cpp#L992) | enqueue false と failed count | 同期の機構 | **未執筆**(根拠がコードにない) |
-| [`runtimeStatusJson()`](../../src/core/watch/reloadservice.cpp#L1390) | describe callback | 誰が読むか | §9.23.11 の participant 照会が読む先。詳細は**未執筆** |
+| [thread_local な companion observer](../../src/core/watch/reloadservice.cpp#L25) | 入れ子と並行の安全化 | なぜ thread_local か | **未執筆**(コメントが無く、「ctor で退避・dtor で復元」以上の根拠がコードにない) |
+| [built-in participant の lazy 登録](../../src/core/watch/reloadservice.cpp#L669) | 4 つの既定参加者 | ポインタ比較で更新判定する理由 | **未執筆**(根拠がコードにない) |
+| [`applyRequests()`](../../src/core/watch/reloadservice.cpp#L1220) | claimants / owned / companion / consumed | 4 つの集合の役割 | **未執筆**(根拠がコードにない) |
+| [`applyShaderReloadBatch()`](../../src/core/watch/reloadservice.cpp#L373) | prepared 空での早期 error | cache_hits/misses の意味 | **未執筆**(根拠がコードにない) |
+| [authored candidate の completion callback](../../src/core/watch/reloadservice.cpp#L310) | 完了通知 | 誰が呼ぶか | **未執筆**(根拠がコードにない) |
+| [`applyRequest()`](../../src/core/watch/reloadservice.cpp#L1028) | enqueue false と failed count | 同期の機構 | **未執筆**(根拠がコードにない) |
+| [`runtimeStatusJson()`](../../src/core/watch/reloadservice.cpp#L1426) | describe callback | 誰が読むか | §9.23.11 の participant 照会が読む先。詳細は**未執筆** |
 
 ### 9.23.13 vkcore
 
@@ -1949,7 +1949,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **読む場所**: [`renderconfigsection.hpp`](../../src/project/renderconfigsection.hpp#L12) → [`locateSectionMembers()`](../../src/project/renderconfigdocument.cpp#L308) → [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L754)。
 
-> **N-6 の例外**: `edit_graph_document` の op 列が `set_layout` だけのとき、editor は候補文書を `apply_candidate` に通さず(`Ticket::source_only`)、文書を書くだけで commit を終えます。「すべての commit は候補経路を通る」の唯一の例外で、置き場所は engine の挙動に触れないためです([経路](../../src/core/communication/renderconfigeditor.cpp#L3741))。
+> **N-6 の例外**: `edit_graph_document` の op 列が `set_layout` だけのとき、editor は候補文書を `apply_candidate` に通さず(`Ticket::source_only`)、文書を書くだけで commit を終えます。「すべての commit は候補経路を通る」の唯一の例外で、置き場所は engine の挙動に触れないためです([経路](../../src/core/communication/renderconfigeditor.cpp#L3782))。
 
 ### 難所 — 排他 create の committed marker
 
@@ -2081,13 +2081,13 @@ seek が無い代わりに置かれているのが **replay prologue** です。
 
 **実際は**: 物理の描画の契約(color / depth の format・sample 数・local read・attachment state)の違いだけは、見つけてもすぐには投げません。最初の 1 件を `std::optional<MaterialPhysicalContractChanged>` に取っておき([取っておく所](../../src/core/material/materialgenerationplanner.cpp#L1222))、受け皿の検査(`requireEveryMaterialServed()`)と、全 material・全 pass の output schema と `ray_query` の検査が通った後に投げます([投げる所](../../src/core/material/materialgenerationplanner.cpp#L1303))。型は [`MaterialPhysicalContractChanged`](../../src/core/material/materialphysicalcontractchanged.hpp#L46)(`std::runtime_error` の派生。`info()` が `{material_id, material, pass, detail[]}`)で、code は [`materialPhysicalContractChangedCode`](../../src/core/material/materialphysicalcontractchanged.hpp#L13) です。**この順があるので、editor はこの型を見たら「これが唯一の拒否だった」と読めます。**
 
-editor の側では、runtime の完了が [`completeCommitTransaction()`](../../src/core/communication/renderconfigeditor.cpp#L7673) に戻ったとき、staged でも committed でもなく source commit も呼ばれていない結果の例外を、[`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L214) が rethrow して型を見ます。この型のときだけ、editor 自身が ticket の preset の CAS(`CommitTransaction::verify_preset`。[`commitPending()` で取っておく所](../../src/core/communication/renderconfigeditor.cpp#L8124))と複数ファイルの commit(`commitRenderConfigCandidateDocuments`)を行い、`applied.committed = true`、`published_generation` を runtime の今の世代にして、成功の経路へ合流します([合流する所](../../src/core/communication/renderconfigeditor.cpp#L7722))。結果に `restart_required` と `restart_reason` を付けるのは最後の 1 か所で、G-4 の `material_route_default_changed` より先に見ます([結果に載せる所](../../src/core/communication/renderconfigeditor.cpp#L7938))。runtime に行く ticket はすべて [`commitPending()`](../../src/core/communication/renderconfigeditor.cpp#L7969) → `apply_candidate` → `completeCommitTransaction()` を通るので、この 1 か所が graph の編集・`add_authored_pass`・restore などのすべてに効きます。`set_layout` だけの ticket(`source_only`)はここを通りません。
+editor の側では、runtime の完了が [`completeCommitTransaction()`](../../src/core/communication/renderconfigeditor.cpp#L7827) に戻ったとき、staged でも committed でもなく source commit も呼ばれていない結果の例外を、[`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L214) が rethrow して型を見ます。この型のときだけ、editor 自身が ticket の preset の CAS(`CommitTransaction::verify_preset`。[`commitPending()` で取っておく所](../../src/core/communication/renderconfigeditor.cpp#L8278))と複数ファイルの commit(`commitRenderConfigCandidateDocuments`)を行い、`applied.committed = true`、`published_generation` を runtime の今の世代にして、成功の経路へ合流します([合流する所](../../src/core/communication/renderconfigeditor.cpp#L7876))。結果に `restart_required` と `restart_reason` を付けるのは最後の 1 か所で、G-4 の `material_route_default_changed` より先に見ます([結果に載せる所](../../src/core/communication/renderconfigeditor.cpp#L8092))。runtime に行く ticket はすべて [`commitPending()`](../../src/core/communication/renderconfigeditor.cpp#L8123) → `apply_candidate` → `completeCommitTransaction()` を通るので、この 1 か所が graph の編集・`add_authored_pass`・restore などのすべてに効きます。`set_layout` だけの ticket(`source_only`)はここを通りません。
 
 live の material を見るのは authored の経路だけです。[`Renderer::applyRenderPipelineAuthoringCandidate()`](../../src/core/vkcore/renderer.cpp#L3926) は `validate_live_materials = true`、ディスクからの [`reloadRenderPipelineFromDisk()`](../../src/core/vkcore/renderer.cpp#L3720) は reload service がいるとき `false` で、material の組み直しは reload service の companion reload(`MaterialContainer::prepareRuntimeGenerationReload()`)に任せます。検査は flat の variant の `validate_prepared_generation` の中にあり、XR の variant の検査と `before_publish`(publish の直前の準備と source commit)はその後です([variant ごとに検査を呼ぶ所](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1515))。だから RS-1 の経路ではそれらは走りません。
 
 **不変条件**: 物理の契約の拒否より後ろで新しい検査を走らせないこと —— RS-1 の経路はそこで止まるので、その検査が見るはずの誤りを抱えた候補が commit されます。足すなら `validateCompatibility()` の中で、`physical_change` を投げる前に。editor で型付きの拒否以外を commit に回さないこと。
 
-**読む場所**: [`materialphysicalcontractchanged.hpp`](../../src/core/material/materialphysicalcontractchanged.hpp#L39) → [`validateCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1215) → [`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L214) → [`completeCommitTransaction()` の RS-1 の枝](../../src/core/communication/renderconfigeditor.cpp#L7722)。利用者から見た結果の形は manual の第13章 §13.5。
+**読む場所**: [`materialphysicalcontractchanged.hpp`](../../src/core/material/materialphysicalcontractchanged.hpp#L39) → [`validateCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1215) → [`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L214) → [`completeCommitTransaction()` の RS-1 の枝](../../src/core/communication/renderconfigeditor.cpp#L7876)。利用者から見た結果の形は manual の第13章 §13.5。
 
 ---
 

@@ -615,7 +615,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「いま実行中のトランザクション」「いま登録中のオブザーバ」のような、呼び出しの深いところまで届けたい文脈を、引数で引き回さずに参照するためのイディオムです。名前空間スコープの `thread_local` なポインタに現在値を置き、その差し替えを RAII クラス(コンストラクタで `std::exchange` して旧値を保存、デストラクタで書き戻す)に閉じ込めます。RAII にしておけば例外で抜けても必ず前の値に戻り、入れ子も正しく動きます。`thread_local` なのでスレッドごとに独立し、別スレッドの実行中トランザクションを踏むことがありません。素の大域変数 + 手書きの復元にすると、途中の `return` や例外で復元を飛ばした瞬間に「終わったはずのトランザクションが実行中に見える」壊れ方をします。
 
-**使用場所**: [PendingSceneTransactionScope](../../src/core/loader/scene.cpp#L225) / [thread_local な active_effect_transaction の宣言](../../src/core/loader/effecttransaction.cpp#L20) / [ScopedRenderPipelineCompanionReloadObserver のコンストラクタ](../../src/core/watch/reloadservice.cpp#L113)
+**使用場所**: [PendingSceneTransactionScope](../../src/core/loader/scene.cpp#L225) / [thread_local な active_effect_transaction の宣言](../../src/core/loader/effecttransaction.cpp#L20) / [ScopedRenderPipelineCompanionReloadObserver のコンストラクタ](../../src/core/watch/reloadservice.cpp#L114)
 
 ### スコープガード(巻き戻しをデストラクタに置き、成功時に無効化する)
 
@@ -849,7 +849,7 @@ POSIX と違い、Windows ではファイルを開くときに「他のプロセ
 
 `std::filesystem::canonical(p)` は実在するパスしか正規化できず、存在しなければ例外(または `error_code`)になります。対して `weakly_canonical(p)` は「存在する先頭部分だけを解決し、残りは字句的に正規化する」ので、これから作るファイルのパスにも使えます。Windows 固有の落とし穴が**ルート名**で、`path::has_root_name()` は `C:` や `\\server` の有無を返します。`C:\dir`(ルート名 + ルートディレクトリ)は絶対パスですが、`C:dir` は「ドライブ C の**カレントディレクトリ**からの相対」であり、しかも `current_path()` がドライブごとに存在するため、プロセスのカレントだけでは決まりません。この曖昧な形は受け付けずに拒否するのが安全です。
 
-**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L1108) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L1100) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L1052) / [resolveDeclaration()](../../src/core/asset/model.cpp#L263)
+**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L1108) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L1100) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L1052) / [resolveDeclaration()](../../src/core/asset/model.cpp#L265)
 
 ## 10.5 アルゴリズムとデータ処理の定番
 
