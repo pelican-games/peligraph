@@ -83,6 +83,10 @@ DECLARE_MODULE(ModelAssetContainer) {
     // material named `material` (a project material of that name would make
     // the model's bindings ambiguous and stop it loading), or nullopt.
     std::optional<std::string> modelDeclaringMaterial(std::string_view material) const;
+    // MT-3 (edit_material): the models held now that draw with one of
+    // `materials` -- their template's primitives (bindings included), or a
+    // live instance's own material (MT-2) -- by name.
+    std::vector<std::string> modelsDrawingMaterials(std::span<const GlobalMaterialId> materials) const;
 
     ModelAssetId assetIdForTesting(const std::string &name) const;
     std::uint64_t contentRevisionForTesting(const std::string &name) const;

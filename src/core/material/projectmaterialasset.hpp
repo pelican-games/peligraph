@@ -41,6 +41,19 @@ DECLARE_MODULE(ProjectMaterialAssetContainer) {
     // the names registered.
     std::vector<std::string> registerDocument(
         const std::string &reference);
+    // MT-3 (edit_material): reads a registered document again and registers
+    // its materials anew -- shader, pipeline, textures, tags, route and
+    // variants as the document now says -- under the same names; its values
+    // are reloaded from the new registration on. The previous registrations
+    // are returned still registered: what draws with them (model templates,
+    // draw items) holds their ids until it is rebuilt, and the caller
+    // releases them after that. Throws, changing nothing, as
+    // registerDocument does.
+    struct Reregistered {
+        std::vector<std::string> names;
+        std::vector<GlobalMaterialId> previous;
+    };
+    Reregistered reregisterDocument(const std::string &reference);
     // MT-1: the document a registered material was read from (its asset_data
     // materials[] reference), or nullopt for a name that is not registered.
     std::optional<std::string> documentOf(

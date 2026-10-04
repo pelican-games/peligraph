@@ -542,6 +542,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
         std::string name;
     };
     std::vector<InstancePrimitiveMaterial> instancePrimitiveMaterials(ModelInstanceId id) const;
+    // MT-3: the models of the live instances that draw a primitive with one
+    // of `materials` (a scene object's own material included).
+    std::vector<ModelAssetId> modelsDrawingMaterials(std::span<const GlobalMaterialId> materials) const;
     bool removeModelInstance(ModelInstanceId id);
     void clear();
     void triggerUpdate();

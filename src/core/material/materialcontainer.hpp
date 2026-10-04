@@ -348,6 +348,9 @@ DECLARE_MODULE(MaterialContainer) {
         const watch::AssetKey &key, const std::filesystem::path &path,
         MaterialSurfaceCatalog surfaces,
         std::span<const ReloadableMaterialValuesBinding> bindings);
+    // MT-3: the document's materials were registered again (edit_material);
+    // the values of the previous registration are no longer reloaded.
+    void forgetReloadableMaterialValuesFile(const watch::AssetKey &key);
     // Same-layout SSBO update surface used by HR1-M. It never changes the
     // logical material id, descriptor set, or pipeline.
     void updateMaterialValues(GlobalMaterialId material, const Std140Layout &layout,

@@ -909,6 +909,26 @@ std::optional<std::string> ModelAssetContainer::modelDeclaringMaterial(std::stri
     return std::nullopt;
 }
 
+std::vector<std::string>
+ModelAssetContainer::modelsDrawingMaterials(std::span<const GlobalMaterialId> materials) const {
+    std::vector<ModelAssetId> instanced;
+    if (const auto *instances = FastModuleContainer::tryGet<PolygonInstanceContainer>())
+        instanced = instances->modelsDrawingMaterials(materials);
+    std::vector<std::string> result;
+    for (const auto &[name, record] : impl_->records) {
+        const auto drawn = [&] {
+            if (std::find(instanced.begin(), instanced.end(), record.model.asset_id) != instanced.end()) return true;
+            return std::any_of(record.model.material_primitives.begin(), record.model.material_primitives.end(),
+                               [&](const auto &group) {
+                                   return std::find(materials.begin(), materials.end(), group.material) !=
+                                          materials.end();
+                               });
+        };
+        if (drawn()) result.push_back(name);
+    }
+    return result;
+}
+
 ModelAssetId ModelAssetContainer::assetIdForTesting(const std::string &name) const {
     return impl_->records.at(name).model.asset_id;
 }

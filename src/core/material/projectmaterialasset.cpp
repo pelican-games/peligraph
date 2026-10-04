@@ -233,13 +233,23 @@ struct ProjectMaterialAssetContainer::Impl {
     // materials[] paths). A document that does not parse, a surface that is
     // missing, a name another document (or one already registered) holds:
     // all of it is refused before the first material is registered.
+    // MT-3 `replace`: the documents are registered already; their materials
+    // are registered anew and take the names over (the names they held go
+    // to `previous`, still registered: the caller releases them once
+    // nothing draws with them).
     std::vector<std::string> registerDocuments(
-        std::span<const std::string> references);
+        std::span<const std::string> references,
+        bool replace = false,
+        std::vector<GlobalMaterialId> *previous = nullptr);
 };
 
 std::vector<std::string>
 ProjectMaterialAssetContainer::Impl::registerDocuments(
-    std::span<const std::string> references) {
+    std::span<const std::string> references, bool replace,
+    std::vector<GlobalMaterialId> *previous) {
+    const auto replaced = [&](const std::string &document) {
+        return replace && std::find(references.begin(), references.end(), document) != references.end();
+    };
     auto &paths = GET_MODULE(PathResolver);
     std::vector<SourceDocument> documents;
     documents.reserve(references.size());
@@ -289,6 +299,7 @@ ProjectMaterialAssetContainer::Impl::registerDocuments(
 
     std::map<std::string, std::string>
         material_sources = material_documents;
+    std::erase_if(material_sources, [&](const auto &entry) { return replaced(entry.second); });
     std::vector<PreparedProjectMaterial> prepared;
     for (std::size_t document_index = 0;
          document_index < documents.size();
@@ -377,97 +388,126 @@ ProjectMaterialAssetContainer::Impl::registerDocuments(
         MaterialContainer::
             ReloadableMaterialValuesBinding>>
         reload_bindings(documents.size());
-    named_materials.reserve(named_materials.size() +
-                            prepared.size());
+    std::vector<ModelTemplate::NamedMaterial> fresh;
+    fresh.reserve(prepared.size());
     std::vector<std::string> registered;
     registered.reserve(prepared.size());
-
-    for (auto &entry : prepared) {
-        const auto &surface_reference =
-            *entry.definition.surface;
-        const auto &surface =
-            surfaces.at(surface_reference);
-        auto info = makeMaterialInfo(
-            entry.definition.base,
-            entry.lowered, surface,
-            surface_reference, shader_defines,
-            standard, shaders,
-            *texture_resolver);
-        const auto &source_document =
-            documents.at(entry.document_index);
-        info.name = entry.definition.name;
-        info.source_asset = source_document.reference;
-        info.source_document = source_document.reference;
-        const auto material =
-            materials.registerMaterial(
-                std::move(info));
-
-        std::vector<MaterialContainer::
-                        NamedMaterialVariantRegistration>
-            variants;
-        variants.reserve(entry.variants.size());
-        for (const auto &variant :
-             entry.variants) {
-            const auto &variant_surface =
-                surfaces.at(
-                    variant.material.surface);
-            auto variant_info = makeMaterialInfo(
+    // A registration that throws part way takes back what it registered
+    // (MT-3: the registration it was to replace stays as it was).
+    std::vector<GlobalMaterialId> fresh_ids;
+    try {
+        for (auto &entry : prepared) {
+            const auto &surface_reference =
+                *entry.definition.surface;
+            const auto &surface =
+                surfaces.at(surface_reference);
+            auto info = makeMaterialInfo(
                 entry.definition.base,
-                variant.material,
-                variant_surface,
-                variant.material.surface,
-                shader_defines,
+                entry.lowered, surface,
+                surface_reference, shader_defines,
                 standard, shaders,
                 *texture_resolver);
-            variant_info.name =
-                entry.definition.name + "#variant/" +
-                variant.name;
-            variant_info.source_asset =
-                source_document.reference;
-            variant_info.source_document =
-                source_document.reference;
-            variants.push_back({
-                .name = variant.name,
-                .material = std::move(variant_info),
-            });
-        }
-        materials.registerMaterialVariants(
-            material, std::move(variants));
+            const auto &source_document =
+                documents.at(entry.document_index);
+            info.name = entry.definition.name;
+            info.source_asset = source_document.reference;
+            info.source_document = source_document.reference;
+            const auto material =
+                materials.registerMaterial(
+                    std::move(info));
+            fresh_ids.push_back(material);
 
-        named_materials.push_back({
-            .name = entry.definition.name,
-            .material = material,
-            .routing = entry.lowered.routing,
-        });
-        material_documents.insert_or_assign(
-            entry.definition.name,
-            source_document.reference);
-        registered.push_back(entry.definition.name);
-        auto &bindings =
-            reload_bindings.at(
-                entry.document_index);
-        bindings.push_back({
-            .name = entry.definition.name,
-            .material = material,
-        });
-        for (const auto &variant :
-             entry.variants) {
+            std::vector<MaterialContainer::
+                            NamedMaterialVariantRegistration>
+                variants;
+            variants.reserve(entry.variants.size());
+            for (const auto &variant :
+                 entry.variants) {
+                const auto &variant_surface =
+                    surfaces.at(
+                        variant.material.surface);
+                auto variant_info = makeMaterialInfo(
+                    entry.definition.base,
+                    variant.material,
+                    variant_surface,
+                    variant.material.surface,
+                    shader_defines,
+                    standard, shaders,
+                    *texture_resolver);
+                variant_info.name =
+                    entry.definition.name + "#variant/" +
+                    variant.name;
+                variant_info.source_asset =
+                    source_document.reference;
+                variant_info.source_document =
+                    source_document.reference;
+                variants.push_back({
+                    .name = variant.name,
+                    .material = std::move(variant_info),
+                });
+            }
+            materials.registerMaterialVariants(
+                material, std::move(variants));
+
+            fresh.push_back({
+                .name = entry.definition.name,
+                .material = material,
+                .routing = entry.lowered.routing,
+            });
+            registered.push_back(entry.definition.name);
+            auto &bindings =
+                reload_bindings.at(
+                    entry.document_index);
             bindings.push_back({
                 .name = entry.definition.name,
                 .material = material,
-                .variant = variant.name,
             });
+            for (const auto &variant :
+                 entry.variants) {
+                bindings.push_back({
+                    .name = entry.definition.name,
+                    .material = material,
+                    .variant = variant.name,
+                });
+            }
         }
+
+        for (std::size_t index = 0;
+             index < documents.size(); ++index) {
+            if (replace)
+                materials.forgetReloadableMaterialValuesFile(
+                    documents[index].key);
+            materials
+                .registerReloadableMaterialValuesFile(
+                    documents[index].key,
+                    documents[index].path,
+                    surfaces,
+                    reload_bindings[index]);
+        }
+    } catch (...) {
+        ReleaseErrorSink::record(
+            "project material registration",
+            materials.releaseModelResources(
+                std::move(fresh_ids), {}, false));
+        throw;
     }
 
-    for (std::size_t index = 0;
-         index < documents.size(); ++index) {
-        materials
-            .registerReloadableMaterialValuesFile(
-                documents[index].key,
-                documents[index].path,
-                surfaces,
-                reload_bindings[index]);
+    // The names the replaced documents held leave with their materials.
+    for (auto it = named_materials.begin(); it != named_materials.end();) {
+        const auto source = material_documents.find(it->name);
+        if (source != material_documents.end() && replaced(source->second)) {
+            if (previous != nullptr) previous->push_back(it->material);
+            material_documents.erase(source);
+            it = named_materials.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (std::size_t index = 0; index < fresh.size(); ++index) {
+        material_documents.insert_or_assign(
+            fresh[index].name,
+            documents.at(prepared[index].document_index).reference);
+        named_materials.push_back(std::move(fresh[index]));
     }
     return registered;
 }
@@ -522,6 +562,16 @@ ProjectMaterialAssetContainer::registerDocument(
     const std::string &reference) {
     return impl_->registerDocuments(
         std::span<const std::string>{&reference, 1});
+}
+
+ProjectMaterialAssetContainer::Reregistered
+ProjectMaterialAssetContainer::reregisterDocument(
+    const std::string &reference) {
+    Reregistered result;
+    result.names = impl_->registerDocuments(
+        std::span<const std::string>{&reference, 1}, true,
+        &result.previous);
+    return result;
 }
 
 std::optional<std::string>

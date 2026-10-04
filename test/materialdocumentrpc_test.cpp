@@ -24,6 +24,9 @@
 #include <ostream>
 #include <sstream>
 #include <stb_image.h>
+#define STB_IMAGE_WRITE_STATIC
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
 #include <string>
 #include <vector>
 
@@ -68,7 +71,9 @@ TempDir makeTempDir(std::string_view name) {
 // The Blank template with the one material pass a box needs: forward_opaque
 // (cleared to white) under material_route_default forward, and the
 // template's own `present` (engine://passthrough) reading its colour.
-std::filesystem::path makeBlankBoxProject(const std::filesystem::path &dir) {
+// MT-3 `transparent`: a forward_transparent pass after it, loading its colour
+// and depth.
+std::filesystem::path makeBlankBoxProject(const std::filesystem::path &dir, bool transparent = false) {
     const auto root = dir / "project";
     initializeProjectTemplate(root, ProjectTemplate::Blank);
     Json rendering{
@@ -100,6 +105,16 @@ std::filesystem::path makeBlankBoxProject(const std::filesystem::path &dir) {
                                        {{"vertex", "engine://fullscreen"},
                                         {"fragment", "engine://passthrough"}}}}})}}})},
     };
+    if (transparent) {
+        auto &passes = rendering.at("rendering_passes").at(0).at("passes");
+        passes.insert(passes.begin() + 1, Json{{"name", "transparent"},
+                                               {"type", "material"},
+                                               {"material_contract", "forward_transparent_v1"},
+                                               {"output", {{"color", {"scene_color"}}, {"depth", "scene_depth"}}},
+                                               {"color_load_op", "load"},
+                                               {"depth_load_op", "load"},
+                                               {"depth_store_op", "store"}});
+    }
     writeFile(root / "passes/main_rendering_config.json", TestSupport::renderGraphRoot(rendering).dump(2));
     return root;
 }
@@ -337,11 +352,14 @@ TEST_CASE("MT-1 a Blank box is given a material made, bound and recoloured over 
             CHECK(reddish(pixel));
         }
 
-        // A key outside values is written for the next start.
+        // A key outside values registers the material again (MT-3) and
+        // rebuilds the box that draws it.
         const auto tagged = rpc.result("edit_material", {{"base_material_digest", digest},
                                                          {"path", path},
                                                          {"tags", Json::array({"paint"})}});
-        CHECK(tagged.at("applied") == "restart_required");
+        CHECK(tagged.at("applied") == "rebuilt");
+        CHECK(tagged.at("restart_required").is_null());
+        CHECK(tagged.at("rebuilt_models") == Json::array({std::string{cube}}));
         CHECK(tagged.at("previous") == Json{{"tags", nullptr}});
         {
             const auto pixel = rpc.centre(capture);
@@ -601,6 +619,141 @@ TEST_CASE("MT-2b bind_material's previous takes a Blank box back to the primitiv
         CHECK(reddish(pixel));
     }
     GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+// MT-3. What edit_material changes outside values is applied without a
+// restart: the box's material is registered again and the box rebuilt with it
+// ("rebuilt"). A routing change is written into the bindings that name the
+// material in the same transaction, so the next start loads the box; a
+// routing taken off a bound material is refused by name, nothing written.
+TEST_CASE("MT-3 a Blank box's material takes a new texture and blend routing over RPC without a restart",
+          "[mt3][material][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("rebuilt");
+    const auto root = makeBlankBoxProject(dir.root, true);
+    const auto capture = dir.root / "capture.png";
+    const std::string path = "materials/paint.material.json";
+    {
+        std::vector<unsigned char> blue_pixels;
+        for (int index = 0; index < 16; ++index) blue_pixels.insert(blue_pixels.end(), {0, 0, 255, 255});
+        std::filesystem::create_directories(root / "textures");
+        REQUIRE(stbi_write_png((root / "textures/blue.png").string().c_str(), 4, 4, 4, blue_pixels.data(), 16) != 0);
+    }
+    const auto magentaish = [](const Rgb &rgb) { return rgb.r > rgb.g + 60 && rgb.b > rgb.g + 60; };
+    // Half of the blue box over the white clear: the white shows through.
+    const auto seeThroughBlue = [](const Rgb &rgb) { return rgb.r > 60 && rgb.g > 60 && rgb.b > rgb.r + 30; };
+    std::string bindings_reference;
+
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        const auto actor =
+            rpc.result("open_editor_session", {{"display_name", "MT-3"}}).at("actor_id").get<std::uint64_t>();
+        REQUIRE(rpc.edit(actor, spawnCube()).at("status") == "committed");
+
+        REQUIRE(rpc.result("create_material", {{"path", path},
+                                               {"surface", openPbrOpaque},
+                                               {"values",
+                                                {{"base_color", {0.0, 0.0, 0.0, 1.0}},
+                                                 {"emission_color", {1.0, 0.0, 1.0, 1.0}},
+                                                 {"emission_luminance", 1.0}}}})
+                    .at("applied") == "live");
+        const auto bound = rpc.result("bind_material", {{"model", cube}, {"material", "paint"}});
+        REQUIRE(bound.at("applied") == "live");
+        bindings_reference = bound.at("material_bindings").get<std::string>();
+        {
+            const auto pixel = rpc.centre(capture);
+            INFO("bound " << pixel);
+            CHECK(magentaish(pixel));
+        }
+
+        // Stage 1: the bound material's routing taken off is refused by name;
+        // the material and its bindings stay as they were.
+        const auto digest = rpc.result("get_material", {{"path", path}}).at("material_digest").get<std::string>();
+        const auto bindings_before = readFile(root / bindings_reference);
+        const auto conflict =
+            rpc.refusal("edit_material", {{"base_material_digest", digest}, {"path", path}, {"routing", nullptr}});
+        INFO(conflict.dump(2));
+        CHECK(conflict.at("error_code") == "material.routing_conflict@1");
+        CHECK(conflict.at("error_fields") ==
+              Json{{"path", path},
+                   {"material", "paint"},
+                   {"routing", nullptr},
+                   {"bound_by",
+                    Json::array({{{"model", cube}, {"routing", {{"alpha_mode", "opaque"}, {"double_sided", false}}}}})}});
+        CHECK(rpc.result("get_material", {{"path", path}}).at("material_digest") == digest);
+        CHECK(readFile(root / bindings_reference) == bindings_before);
+
+        // (a) A texture: the box takes it in the next frame.
+        const auto textured = rpc.result(
+            "edit_material",
+            {{"base_material_digest", digest},
+             {"path", path},
+             {"textures", {{"emission_color_map", "project://textures/blue.png"}}}});
+        INFO(textured.dump(2));
+        CHECK(textured.at("applied") == "rebuilt");
+        CHECK(textured.at("restart_required").is_null());
+        CHECK(textured.at("rebuilt_models") == Json::array({std::string{cube}}));
+        CHECK(textured.at("rewritten_bindings") == Json::array());
+        CHECK(textured.at("previous") == Json{{"textures", {{"emission_color_map", nullptr}}}});
+        {
+            const auto pixel = rpc.centre(capture);
+            INFO("textured " << pixel);
+            CHECK(bluish(pixel));
+            CHECK(pixel.r < 60);
+        }
+
+        // (b) opaque -> blend (OpenPBR's blend surface with it), half opaque:
+        // the binding takes the routing in the same write and the box is drawn
+        // see-through in the next frame.
+        const auto blended = rpc.result("edit_material",
+                                        {{"base_material_digest", textured.at("material_digest")},
+                                         {"path", path},
+                                         {"surface", "engine://surfaces/openpbr/blend_single.surface"},
+                                         {"routing", {{"alpha_mode", "blend"}, {"double_sided", false}}},
+                                         {"values", {{"geometry_opacity", 0.5}}}});
+        INFO(blended.dump(2));
+        CHECK(blended.at("applied") == "rebuilt");
+        CHECK(blended.at("rebuilt_models") == Json::array({std::string{cube}}));
+        REQUIRE(blended.at("rewritten_bindings").size() == 1);
+        const auto &rewritten = blended.at("rewritten_bindings").at(0);
+        CHECK(rewritten.at("model") == std::string{cube});
+        CHECK(rewritten.at("material_bindings") == bindings_reference);
+        CHECK(rewritten.at("bindings_digest") ==
+              rpc.result("get_material_bindings", {{"model", cube}}).at("bindings_digest"));
+        CHECK(blended.at("previous").at("routing") == Json{{"alpha_mode", "opaque"}, {"double_sided", false}});
+        const auto bindings = Json::parse(readFile(root / bindings_reference));
+        CHECK(bindings.at("bindings").at(0).at("routing") == Json{{"alpha_mode", "blend"}, {"double_sided", false}});
+        {
+            const auto pixel = rpc.centre(capture);
+            INFO("blended " << pixel);
+            CHECK(seeThroughBlue(pixel));
+        }
+        (void)rpc.result("save_scene");
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+
+    // The next start loads the box with the rewritten binding and draws it
+    // the same.
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        CHECK(rpc.result("get_material_bindings", {{"model", cube}}).at("primitives").at(0).at("material") == "paint");
+        {
+            const auto pixel = rpc.centre(capture);
+            INFO("next start " << pixel);
+            CHECK(seeThroughBlue(pixel));
+        }
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
 }
 
 } // namespace Pelican

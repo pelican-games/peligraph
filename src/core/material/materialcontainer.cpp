@@ -1509,6 +1509,10 @@ void MaterialContainer::registerReloadableMaterialValuesFile(
     material_values_reload_handler->track(key, path, std::move(surfaces), bindings);
 }
 
+void MaterialContainer::forgetReloadableMaterialValuesFile(const watch::AssetKey &key) {
+    if (material_values_reload_handler) material_values_reload_handler->untrack(key);
+}
+
 std::function<void()> MaterialContainer::prepareSurfaceMaterialReload(
     const std::map<watch::AssetKey, SurfaceFormatDocument> &surface_documents,
     std::span<const watch::AssetKey> material_documents) {

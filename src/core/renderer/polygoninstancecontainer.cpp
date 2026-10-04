@@ -1033,6 +1033,21 @@ PolygonInstanceContainer::instancePrimitiveMaterials(ModelInstanceId id) const {
     });
     return result;
 }
+
+std::vector<ModelAssetId> PolygonInstanceContainer::modelsDrawingMaterials(
+    std::span<const GlobalMaterialId> materials) const {
+    std::vector<ModelAssetId> result;
+    for (const auto &item : draw_inventory) {
+        if (std::find(materials.begin(), materials.end(), item.pipeline_material_key.material) == materials.end())
+            continue;
+        const auto instance = item.stable_identity.instance.index;
+        if (instance >= slots.model_asset_ids.size() || !slots.instance_slots.alive(instance)) continue;
+        const auto asset = slots.model_asset_ids[instance];
+        if (std::find(result.begin(), result.end(), asset) == result.end()) result.push_back(asset);
+    }
+    return result;
+}
+
 void PolygonInstanceContainer::resetSlot(std::uint32_t index) {
     slots.clearSlot(index);
     material_override_frames.erase(index);

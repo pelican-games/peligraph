@@ -416,6 +416,17 @@ void MaterialValuesReloadHandler::track(
     files_.emplace(key, std::move(tracked));
 }
 
+void MaterialValuesReloadHandler::untrack(const watch::AssetKey &key) {
+    const auto found = files_.find(key);
+    if (found == files_.end()) return;
+    auto &registry = coordinator_.registry();
+    // The surface fakes are shared by every document on that surface; they
+    // stay.
+    for (const auto &material : found->second.materials) (void)registry.destroyResource(material.resource);
+    (void)registry.destroyResource(found->second.document_resource);
+    files_.erase(found);
+}
+
 bool MaterialValuesReloadHandler::handles(const watch::AssetKey &key) const {
     return files_.contains(key);
 }

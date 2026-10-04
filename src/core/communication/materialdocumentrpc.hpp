@@ -58,8 +58,8 @@ class ReloadService;
 //     draws the model; `object_overrides` those of them with their own
 //     materials (set_object_material).
 //
-// Writes ({committed, changed, ..., applied: "live" | "restart_required",
-// restart_required: {reason} | null}):
+// Writes ({committed, changed, ..., applied: "live" | "rebuilt" |
+// "restart_required", restart_required: {reason} | null}):
 //   edit_material {base_material_digest, path, name?, values?, textures?,
 //                  tags?, routing?, variants?, surface?}
 //     values / textures: {param: value | null} merged into the material's
@@ -69,8 +69,18 @@ class ReloadService;
 //     with what it held before: a value, or null for absent -- the same call
 //     with `previous` and the new digest takes the edit back). A change of
 //     values alone is applied live through the material values reload
-//     (MaterialContainer::prepareSurfaceMaterialReload); any other key is
-//     written and answered restart_required.
+//     (MaterialContainer::prepareSurfaceMaterialReload). MT-3: a change of
+//     any other key is applied "rebuilt": the document's materials are
+//     registered anew (ProjectMaterialAssetContainer::reregisterDocument)
+//     and the models drawing the previous registration rebuilt in place
+//     (rebuilt_models: [model]); restart_required only when this engine did
+//     not register the material, or the new registration or the rebuild
+//     fails (reason says which; the document stays written).
+//     MT-3: a routing change is carried into every material_bindings entry
+//     naming the material, written in the same transaction
+//     (rewritten_bindings: [{model, material_bindings, bindings_digest,
+//     previous_bindings_digest}], [] when none); a routing taken off a
+//     bound material is refused, material.routing_conflict@1.
 //   create_material {path, surface, name?, values?, tags?, routing?}
 //     writes a new one-material document and lists it in asset_data
 //     materials[] (one transaction), then registers it live
@@ -103,7 +113,8 @@ class ReloadService;
 // material.path_conflict@1 {path}, material.surface_unknown@1 {surface,
 // reason}, material.model_unknown@1 {model, reason},
 // material.binding_invalid@1 {model, reason},
-// material.transaction_busy@1 {path}.
+// material.transaction_busy@1 {path}, material.routing_conflict@1 {path,
+// material, routing: null, bound_by: [{model, routing}]}.
 void configureMaterialDocumentRpcHandlers(RpcServer &server,
                                           PathResolver &path_resolver,
                                           watch::ReloadService *reload_service);

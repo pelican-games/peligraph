@@ -24,6 +24,9 @@ class MaterialValuesReloadHandler {
         const watch::AssetKey &key, std::filesystem::path path,
         MaterialSurfaceCatalog surfaces,
         std::span<const MaterialContainer::ReloadableMaterialValuesBinding> bindings);
+    // MT-3: stops tracking a document (its registration was replaced); its
+    // resources leave the registry. Nothing tracked: nothing happens.
+    void untrack(const watch::AssetKey &key);
     bool handles(const watch::AssetKey &key) const;
     bool enqueue(const watch::ReloadRequest &request,
                  watch::ReloadCoordinator &coordinator);
