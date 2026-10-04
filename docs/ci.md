@@ -134,7 +134,8 @@ CPU gate と同じ exact SKIP policy を `test/ci/gpu_skip_allowlist.txt` に対
 既定allowlistはWindowsかつStudio有効の構成に対応する。別のplatformやStudioを外す限定検証は
 対応するファイルを`--allowlist`で明示し、登録されないテスト名を自動で除外しない。
 
-`test/studio_scenarios/*.json` の全 scenario（現在10件）を正確な CTest 名で必須とし、
+`test/studio_scenarios/*.json` の全 scenario を正確な CTest 名で必須とし(件数はこの文書では追わない。
+2026-10-05 の時点で 84 件。2026-09-24 の gate の 10 件は当時の数)、
 未登録・未実行・skip も失敗にする。scenario の CTest 登録と起動は CMake が検出した
 Python を直接使い、`uv` の有無には依存しない。driver は step の成功に加え、
 Studio の exit 0 と強制終了されていないことを確認する。
@@ -148,6 +149,85 @@ Studio の GPU 不要テストは上の `run_studio_gate.py` でも確認し、c
 `-DPELICAN_TEST_PROJECTS_DIR=<projects>` で指定する。未指定時は理由
 `PELICAN_PROJECT_CATALOG_SMOKE_SKIP_NO_PROJECTS_DIR` を持つ skip になり、その CTest 名だけを
 GPU allowlist で許可する。entry を外したまま未指定 gate を走らせると unexpected skip として失敗する。
+
+#### project catalog smoke の検査の中身(2026-10-05、EB-5b `85d0b06b` の後)
+
+`project_catalog_headless_smoke`([script](../test/run_project_catalog_smoke.cmake))は corpus の project を名前順に回し、
+project ごとに次を見る。最初の失敗で止まるので、後ろの project と editor lane は走らない。
+
+- **絵の閾値**: player を `--size 160x90` で 10 frame 走らせ、frame 10 の PNG を `pelican_test_png_nonuniform_check` に
+  掛ける。project の `catalog_smoke.json` の `minimum_distinct_colors`(色の数)と `minimum_non_modal_ratio`
+  (最頻色でない画素の割合)の両方に届かなければ赤。
+- **animation**: animation を宣言する project(project の下に `*.anim_graph.json` がある、または rendering config の
+  `pelican.graph` root が `"pose.` の op を持つ。出荷 7 本では animgraph_demo・posegraph_demo・vrm_xr_demo)だけ、
+  同じ game logic・同じ frame 数で **1920x1080** の player をもう 1 回走らせ、frame 1 と frame 10 で RGBA が違う画素が
+  **1,200 以上**あることを `png_nonuniform_check --changed` で見る([大きさと最小の画素数](../test/run_project_catalog_smoke.cmake))。
+  閾値の検査は 160x90 のまま。
+  - EB-5b の前は 160x90 の frame 1 と frame 10 の byte 比較だった。vrm_xr_demo の Idle の上下動は frame 10 で 0.015 単位、
+    160x90 では **0.33 画素**しかなく、画素の中心をまたぐ縁が無いので 2 枚は byte 一致していた(以前通っていたのは、
+    縁 1 行が偶然またいでいたから。EB-5b の実装者が CC-1 の前の配置を再現して確かめた)。つまり検査になっていなかった。
+  - 1920x1080 では同じ動きが 3.9 画素(実測 2,556 画素が変わる。動く縁は 1 行ごとに約 640 画素)。1,200 は約 2 行分で、
+    縁 1 行が偶然またいだだけでは届かない。animgraph_demo は 27,035、posegraph_demo は 55,444、動かない project は 0。
+    負対照(vrm_xr_demo から animation を動かす game logic を外す)はこの検査で赤になる(実装者の run)。
+  - 1,200 は vrm_xr_demo の今の Idle で決めた値で、主役が小さく動きの少ない animation の project を足すと落ちうる
+    (そのときは 1920x1080 の changed を測って見直す。実装者の注意)。animation の 3 project で 1920x1080 の player が
+    1 回ずつ増える分、smoke の所要が延びる(秒数は測っていない。test の timeout は 600 s)。
+- **MG-2b の root の検査**: rendering config が `pelican.graph` root でなければ名前で赤。
+- **editor lane**(editor の設定のある project): `scene_tree` → `pick_object` → `set_gizmo` → `render_frame` → capture で、
+  選択の有無で capture が違うことを見る。答えは行の top-level の `id` を JSON で読んで照らす([`response_for_id`](../test/run_project_catalog_smoke.cmake))。
+
+**09-22 から動いていなかった検査**: be35b7de8(2026-09-22、requires の判定を `cmake/pelican_project_requirements.cmake` へ移した commit)で
+`file(READ "${project_manifest}" project_manifest_text)` が消え、変数が未定義のままだった。そのため posegraph_demo の animation の
+検査(posegraph_demo の宣言は rendering config の `pose.` だけ)と MG-2b の root の検査が、09-22 から一度も走っていなかった。
+EB-5b で `file(READ)` を戻した。出荷 7 project の root はすべて `pelican.graph` で、戻した後もこの検査で落ちるものは無い。
+
+**editor lane の取り違え**: `response_for_id` は行の中のどこかの `"id":N` を正規表現で探して最後に当たった行を返していた。
+MP-1(`afd923e1`、10-02)で `get_frame_plan` の `drawn_materials` に `{"draws":2,"id":2,…}` が入ってから、id 2(`set_gizmo`)を探すと
+id 9 の `get_frame_plan` の行が返り、`result visible` が無いと赤になった(vrm_xr_demo が閾値で先に止まっていたので、10-05 の全数では表に出ていない)。
+
+**vrm_xr_demo の閾値の記録し直し**: `minimum_distinct_colors` 50 → **20**、`minimum_non_modal_ratio` 0.04 → **0.09**。
+50 / 0.04 は a4a12da7(2026-08-14、WP295)で入ったきり変わっておらず、CC-1(`c8367b87`、10-03)の前の絵に合っていた。
+CC-1 の前の vrm_xr_demo は、上下が反転して描かれる engine で正立して見えるよう、主役と床を y>0 に逆さに置き、camera は床の
+**裏**(下向きの光が当たらない黒)を見上げていた。色数は床の手前の縁の specular の横の階調(約 60 色)から来ていた。
+CC-1 で配置が正立し、光が床の上面を一様に照らすようになって 36 色になった(今の絵が sample の意図どおりであることは
+EB-5b の実装者が 960x540 で確かめた)。新しい値は負対照から決めた(160x90 の frame 10):
+
+| 絵 | distinct | non-modal | 20 / 0.09 |
+|---|---|---|---|
+| 今の絵(game logic あり) | 36 | 0.124 | 通る |
+| game logic なし(表情なし) | 37 | 0.118 | 通る(色数では区別できない) |
+| 主役なし | 34 | 0.071 | 落ちる(non-modal) |
+| 床なし | 3 | 0.060 | 落ちる(両方) |
+| CC-1 の前の配置の再現 | 96 | 0.0715 | 落ちる(non-modal) |
+
+CC-1 の前の絵は古い commit を build せずに、今の engine で CC-1 の前の配置を描いて上下を反転した再現で、当時の engine の
+実物ではない。10-02 の緑の run の vrm の測定値は log に残っていない。
+
+**出荷 sample の閾値の余裕**(EB-5b の実装者の 7 project の run。160x90 の frame 10。animation は 1920x1080 の changed):
+
+| project | distinct / 最小 | 比 | non-modal / 最小 | 比 | animation |
+|---|---|---|---|---|---|
+| animgraph_demo | 24 / 20 | 1.20 | 0.1094 / 0.08 | 1.37 | 27,035 |
+| example | 3127 / 1000 | 3.13 | 0.9612 / 0.90 | 1.07 | — |
+| pathtrace_demo | 4676 / 350 | 13.4 | 0.8512 / 0.50 | 1.70 | — |
+| posegraph_demo | 25 / 20 | 1.25 | 0.1078 / 0.08 | 1.35 | 55,444 |
+| raytracing_demo | 817 / 350 | 2.33 | 0.8367 / 0.50 | 1.67 | — |
+| sprite_demo | 58 / 20 | 2.90 | 0.0412 / 0.02 | 2.06 | — |
+| vrm_xr_demo | 36 / 20 | 1.80 | 0.1240 / 0.09 | 1.38 | 2,556 |
+
+余裕が薄いのは animgraph_demo / posegraph_demo の色数(+4 / +5 色)と example の non-modal(+0.06)。絵が少し変わる変更で
+ここが先に赤になりうる。EB-5b の確かめは worktree で script を `cmake -P` で直接流したもので(worktree では smoke が登録されない)、
+primary の ctest 経由の実行は着地の時点で未確認。
+
+#### package install smoke の照合(EB-5b)
+
+`package_install_smoke`([script](../test/run_package_install_smoke.cmake))は、`list_render_features` の catalog の entry を、
+鍵の並びを固定した正規表現で照らしていた。FR-1 の `required_targets`・FR-2 の `insertion` が entry に入ると外れた
+(production の答えは正しかった)。1 つ直すと、壊れた package の entry の `"available":false,[^}]*"source":"package"` が
+`insertion` の `}` で止まって次で落ちることも実物で確かめた。EB-5b から、transcript の行を JSON として読み、top-level の `id`
+の行の `result` から `reference` の一致する entry を取り出して、欄を名前で比べる(`rpc_result` / `catalog_entry` / `require_field`。
+[欄を名前で比べる関数](../test/run_package_install_smoke.cmake))。`source_digest` の照合も同じ形にした。
+部分文字列の有無だけを見る照合(`"status":"accepted"` など)は並びに依らないので残した。
 
 **`ctest` が緑でも gate は落ちうる。** それがこの gate の存在理由である。2026-07-31 の実行では
 `ctest` が「122 件中 0 失敗」と報告した一方、gate は 4 件の非許可 skip を検出して FAIL した
@@ -274,6 +354,73 @@ allowlist は作らない。失敗 artifact と retry なしの規律も CI0 と
 大容量 example asset の取得、ライセンス、provenance は
 [`example_assets.md`](example_assets.md)を正とする。CI1 の一時 project と CPU test は
 その 22 binary を使わない。
+
+## 配布の構成(hot reload OFF)の test
+
+`PELICAN_WITH_HOT_RELOAD`(AV-1 `5f7c5cdb`、既定 ON)は OFF で監視・DLL の poll・起動時の asset の照合を止める。
+`pelican_cli dist-config` は常に OFF を出すので、**配布する構成は OFF** である([ビルド機能台帳](build_features.md))。
+
+- **CI が見ているもの**: CI1 の構成 matrix の `PELICAN_WITH_HOT_RELOAD` の行は、OFF の tree を `BUILD_TESTING=ON` で全体 build し、
+  player の `--strict-assets` が照合して止まることと、`--rpc --headless` の `get_status` が監視と照合を止めた理由を言うことを見るだけである
+  ([hot reload の smoke](../test/run_build_units_smoke.cmake))。**OFF の構成で ctest は回していない**。CI0 と clean-clone は既定(ON)の構成。
+  CI が OFF の test を回すようにはしていない(EB-4 の実装者の指摘。workflow は変えていない)。
+- **手元で回した結果(EB-4 `5df8b9d2`、2026-10-05)**: OFF の別 build(`-DPELICAN_WITH_HOT_RELOAD=OFF -DSKIP_DEVSTUDIO=ON`、ほかは
+  Debug / Ninja / `PELICAN_WITH_SPIRV_LINK=ON` / `PELICAN_PYTHON_TESTS=ON`)で、非 GPU の全数を変更前に 1 回回すと 1,917 件中 11 件が赤だった。
+  - OFF が原因の 7 件: 6 件(HW-1 の gate 2 本、central gate、AV-1 の 3 本)は gate が開く・監視が動く・起動時の照合が走ることが前提の test で、
+    OFF では `SKIP("PELICAN_WITH_HOT_RELOAD=OFF: …")` の名前付き skip にした(Catch2 の SKIP は ctest で Skipped。登録は変えない)。
+    WP331 は期待する理由の文字列だけが違ったので、構成で切り替えた。
+  - GPU は OFF で意味の変わる 38 件を回して 4 件が赤: F-5 の `reload_shaders` は期待を構成で切り替え、EB-2 の watch と HW-1 の texture の
+    watch は名前付き skip、`devcli_assets_command` は `-DHOT_RELOAD` を受けて OFF の期待(strict でない起動に `assets manifest:` の行が出ない)を見る。
+  - **名前付き skip は合計 8 件**(非 GPU 6、GPU 2)。skip の代わりに配布の構成の契約を見る、**OFF でだけ登録する test を 3 本**足した:
+    filewatcher の gate(どの宣言・driver でも開かず理由は `hot reload build disabled`)、`ReloadService::setup()` の本番の道の 6 通り
+    (`state: disabled`)、起動時の照合(strict でなければ `not_run`、`verify_assets` は走る、strict は照合して止まる)。
+  - OFF でだけ落ちる production の不具合は無かった。残りの 4 件は ON でも赤の develop の既存の赤で、EB-5a(`7725297f`)で直した(下の「全数の記録」)。
+  - 変更後に OFF の非 GPU 全数は回し直していない(触った家族と元の赤の 15 件 → 緑 9 / 名前付き skip 6 / 赤 0、GPU の 4 件 → 緑 2 / skip 2)。
+    ON の構成では、変えた test が今までどおり登録され緑であることを確かめた。
+- **OFF でも毎 frame 動くもの**(EB-4 の実装者の報告。直していない): `src/core/ecs/predefined/animationsystem.cpp` の
+  `AnimationSystem::updateGraphs()` は、animation graph を持つ entity ごとに毎 frame `last_write_time` で file を見て、変わっていれば読み直す
+  (開発用の hot reload と同じ働きで、配布でも毎 frame の stat)。`src/core/audio/audio.cpp` の `prepareSound()` は decode の cache の鍵に
+  file の更新時刻と大きさを使う(再生のたびに stat。poll ではない)。
+- **golden の orbit の case**(EB-4): golden の test の exe は `pelican_core` を `/WHOLEARCHIVE` せずに link するので、built-in の camera controller の
+  登録が落ち、この case の golden はずっと既定の camera の絵だった。何もしない anchor `internal::linkBuiltinCameraControllerSystem()` を harness から
+  呼ぶようにし、golden と hash を作り直した。player は whole-archive なので本番は無事。
+
+## 全数の記録
+
+全数(非 GPU・GPU・Studio の scenario)は着地ごとには回さず、段の終わりに回す。下は「その時点の途中の基準」であり、
+release の gate(上の GPU gate と [v0 の検証記録](v0_freeze.md#6-v010-tag-の手順))の代わりにはしない。
+
+### 2026-10-05(develop `31c390c7`、統合側の run)
+
+primary の Debug build(Studio ON)。log は統合側の `<作業ディレクトリ>/int_full_1005/`。
+
+| 部 | 結果 | 赤 |
+|---|---|---|
+| 非 GPU(`-LE gpu`) | 2,663 / 2,667(skip 1 は既存の symlink 権限) | 4 件 → EB-5a `7725297f` |
+| GPU(scenario を除く) | 397 / 399 | `package_install_smoke`、`project_catalog_headless_smoke` → EB-5b `85d0b06b` |
+| Studio の scenario | 80 / 82 | `gui_build_C`(→ `85d0b06b` で期待を直した)、`gui_rt_full_from_blank`(間欠。QA-1 で対応中) |
+
+計 3,148 件。直した後の全数は回していない(この文書の時点)。
+
+**家族の外の赤**(2026-10-04〜05 に見つかったもの)。どれも、壊した WP が自分の家族の test だけを回して着地し、全数を回していなかったので、
+後の WP や全数で初めて見えた。production が正しく test が追従していなかったものと、production の後退の両方がある。
+
+| test | 壊した commit | 見つけた所 | 中身 | 直した commit |
+|---|---|---|---|---|
+| `WP332 catalog and apply share the engine availability decision` | PB-1 `a55d1eaf` | RTL-1c の実装者 | `render_feature_requires_restart@1` の拒否が運ぶ形(`<code>: {JSON}`)になったのに、test が catalog の人の文と文字列で比べていた | RTL-1c `8034d096`(test) |
+| `WP240c project material names are unique across documents` | FO-1 `a4d7760a` | EB-2 の実装者 | 起動時に登録できない文書を外して起動するようになったのに、test が throw を期待していた | EB-2 `e1ba9058`(test) |
+| `RT6 named TLAS tasks select independent scene subsets with shared records` の 1 section | FO-1 `a4d7760a` | EB-3 の実装者(GPU の家族) | **production の後退**。FO-1 の握り方が広すぎて、pass が `ray_query` を宣言していない(pass 側の原因)のを「material 文書を読めない」として起動を続けた | FO-2 `31c390c7`(production と test) |
+| `renderer-owned WP354 append covers every family …` | RTL-1b `8034d096` | 10-05 の全数 | frame plan に足した `named_tlas_blas` が基準の fixture に無かった | EB-5a `7725297f` |
+| `logical shadow compilation preserves every existing frame plan` | RTL-2s `c8fd51cb` | 10-05 の全数 | 総なめが graph root の rendering 節だけを legacy 形で読み、lowering の作る target を読む Studio の fixture で落ちた | EB-5a |
+| `frame planner preserves existing rendering config order` | RTL-2s `c8fd51cb`、GL-5e `74767e46` | 10-05 の全数 | 同上と、project の feature だけが宣言する target に描く fixture | EB-5a |
+| `WP357 shipping fullscreen manifest keeps only the three bloom upsample blends explicit` | FR-4 `2eb08d21`(10-03) | 10-05 の全数 | features の `required_targets[].type` が object になったのに、test の走査が全 object の `type` を文字列で読んだ | EB-5a |
+| `package_install_smoke` | FR-1 `45ca769b` / FR-2 `0b15fb62` | 10-05 の全数 | catalog の entry の鍵の並びを固定した正規表現(上の「package install smoke の照合」) | EB-5b `85d0b06b` |
+| `project_catalog_headless_smoke` | CC-1 `c8367b87`(閾値)、MP-1 `afd923e1`(editor lane)、be35b7de8(09-22、死んだ検査) | 10-05 の全数 | 上の「project catalog smoke の検査の中身」 | EB-5b |
+| `studio_scenario_gui_build_C` step 116 | GL-5e `74767e46` | 10-05 の全数 | 見せている入力のソケットの名前に付く ` (shown)` を期待が知らなかった | `85d0b06b`(統合側が json の 1 行) |
+| `studio_scenario_gui_rt_full_from_blank` step 55 | (競合) | 10-05 の全数 | combo の選択肢が engine の答えで埋まる前に選んだ(`has no entry Every Sphere`)。単独では緑 | QA-1 で対応中(統合側の記録) |
+
+EB-5a の 4 件はどれも、直前の非 GPU 全数(10-02)より後の commit で壊れた(EB-5a の実装者の補足)。GPU の 2 つの smoke は、
+最後の緑が 10-02 04:07 の全数(CC-1 の前。FR-1 / FR-2 の前)で、その後に全数が回ったのは 10-05 が初めてだった(EB-5b の実装者の調べ)。
 
 ## CI1 をローカルで再現する
 

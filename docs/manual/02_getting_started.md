@@ -135,9 +135,9 @@ skip posegraph_demo: requires animation (PELICAN_WITH_ANIMATION=OFF)
 ```
 
 この 1 行は宣言したプロジェクトごとに出るので、OFF build では `animgraph_demo` / `posegraph_demo` /
-`vrm_xr_demo` の **3 行**が並びます([プロジェクトの skip 出力](../../test/run_project_catalog_smoke.cmake#L108))。
+`vrm_xr_demo` の **3 行**が並びます([プロジェクトの skip 出力](../../test/run_project_catalog_smoke.cmake#L123))。
 飛ばされたプロジェクトがエディタ経路のレーンを持っていた場合は `skip editor lane: <project> requires …` が続き
-([editor lane の skip 出力](../../test/run_project_catalog_smoke.cmake#L296))、最後に「何件中何件を飛ばしたか」の要約が 1 行出ます。
+([editor lane の skip 出力](../../test/run_project_catalog_smoke.cmake#L352))、最後に「何件中何件を飛ばしたか」の要約が 1 行出ます。
 
 語彙・検証規則は [第3章 §3.2](03_project_format.md) の「機能ユニットの要求(`requires`)」にあります。
 

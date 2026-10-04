@@ -460,6 +460,7 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 
 2026-09-17 の engine 全数 1947 / 1947（`450f2866`）は履歴である。
 その構成には現在の全 Studio scenario が含まれず、現行 release の gate 通過とは扱わない。
+2026-10-05 の全数(develop `31c390c7`、primary の Debug build、Studio ON。非 GPU 2,663 / 2,667、GPU 397 / 399、Studio scenario 80 / 82)は途中の基準であり、最終の gate ではない。赤 8 件と直した commit は [CI 運用](ci.md) の「全数の記録」に残し、直した後の全数は回していない。
 tag は利用者が v0 を閉じる判断をした時点で付ける。
 
 2026-09-22 のローカル検証は Windows / MSVC、Qt 6.10.3、Python 3.12、Vulkan SDK 1.4.x の
