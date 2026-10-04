@@ -829,6 +829,12 @@ void MainWindow::createWorkspace() {
         graph_canvas_->placeFromPalette(op);
         return true;
     });
+    // GL-5e, decision 7 (not wired yet): FullscreenPassWidget::setGraphPlaceAction
+    // takes the Frame Plan's place action above for the Pass Editor's New pass
+    // on a direct graph root. Wiring it changes the four scenarios that make
+    // a managed fragment with New pass (fullscreen_pass_from_template,
+    // lighting_pass_template, render_undo_roundtrip,
+    // render_pipeline_from_scratch); it goes in with their rewrite.
     // GL-2b, decision 3: a pass row of the Graph tab's Layers section picks
     // that plan node in the Frame Plan.
     graph_canvas_->setFramePlanNodeAction([this, render_tabs](const QString &node) {
@@ -884,6 +890,53 @@ void MainWindow::createWorkspace() {
                 frame_plan_->whenRead(
                     [this, graph, pass] { frame_plan_->makeSocketsVariadic(graph, pass); }, said);
             });
+        // GL-5e: the rest of what only the Frame Plan did, from the Graph --
+        // each the function the Frame Plan's own entry calls, after it read
+        // the plan and the context again (whenRead). Decision 6's two are the
+        // Frame Plan's Shift-drag's (setTaskConnectionAction /
+        // setPresetPassConnectionAction below).
+        GraphCanvasWidget::FramePlanEdits edits;
+        edits.remove_pass = [this, said](const QString &graph, const QString &pass) {
+            frame_plan_->whenRead([this, graph, pass] { frame_plan_->removePass(graph, pass); }, said);
+        };
+        edits.shader_contract = [this, said](const GraphCanvasWidget::ShaderContract &contract,
+                                             bool use_passthrough) {
+            QStringList inputs;
+            for (const auto &input : contract.inputs) inputs.push_back(QString::fromStdString(input));
+            frame_plan_->whenRead(
+                [this, contract, inputs, use_passthrough] {
+                    frame_plan_->runShaderContract(
+                        QString::fromStdString(contract.graph), QString::fromStdString(contract.pass),
+                        QString::fromStdString(contract.fragment), inputs, contract.unsupplied,
+                        contract.binding, use_passthrough);
+                },
+                said);
+        };
+        edits.reload_refusal = [this, said](const QString &graph, const QString &pass, bool disconnect) {
+            frame_plan_->whenRead(
+                [this, graph, pass, disconnect] { frame_plan_->runReloadRefusal(graph, pass, disconnect); },
+                said);
+        };
+        edits.pin = [this, said](const QString &candidate) {
+            frame_plan_->whenRead([this, candidate] { frame_plan_->pinBackendCandidate(candidate); }, said);
+        };
+        edits.unpin = [this, said] { frame_plan_->whenRead([this] { frame_plan_->unpinBackend(); }, said); };
+        edits.freeze = [this, said] {
+            frame_plan_->whenRead([this] { frame_plan_->freezePhysicalPlan(); }, said);
+        };
+        edits.remove_frozen = [this, said] {
+            frame_plan_->whenRead([this] { frame_plan_->removeFrozenPhysicalPlan(); }, said);
+        };
+        edits.task_connection = [this](const QString &task, const QStringList &outputs) {
+            render_features_->editComputeTaskConnection(task, outputs);
+        };
+        edits.preset_pass_connection = [this](const QString &graph, const QString &pass,
+                                              const QStringList &outputs) {
+            fullscreen_pass_->editPresetPassConnection(graph, pass, outputs);
+            docks_[FullscreenPassDock]->show();
+            docks_[FullscreenPassDock]->raise();
+        };
+        graph_canvas_->setFramePlanEdits(std::move(edits));
     }
     inspector_->setRayGroupAction([this, render_tabs](const QString &group) {
         docks_[FramePlanDock]->show();
@@ -1130,15 +1183,11 @@ void MainWindow::createWorkspace() {
                     if (request_id == pending_models_request_) {
                         pending_models_request_ = 0;
                         registered_model_files_.clear();
-                        const auto assets = result.is_object() ? result.find("assets") : result.end();
-                        if (project_model_ && result.is_object() && assets != result.end() && assets->is_array())
-                            for (const auto &asset : *assets) {
-                                if (!asset.is_object() || asset.value("kind", std::string{}) != "model") continue;
-                                const auto id = asset.value("id", std::string{});
-                                const auto path = projectRelativeAssetPath(project_model_->projectRoot(),
-                                                                           asset.value("path", std::string{}));
-                                if (!path.empty() && !id.empty()) registered_model_files_[path] = id;
-                            }
+                        // GL-5e, decision 9: models only (EB-1 lists materials
+                        // too), by the project-relative path EB-1 sends.
+                        if (project_model_)
+                            registered_model_files_ =
+                                registeredModelFiles(project_model_->projectRoot(), result);
                         return;
                     }
                     model_registration_->receiveResult(request_id, result.is_discarded() ? nlohmann::json{} : result);

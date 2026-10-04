@@ -93,6 +93,11 @@ class FullscreenPassWidget final : public QWidget {
     // is read again and the pass being edited is loaded from it -- the form
     // shows what the document holds now, not the draft.
     void documentRestored();
+    // GL-5e, decision 7. New pass on a root that is a graph and selects no
+    // preset (Blank's): `action` is handed render.fullscreen, as the Frame
+    // Plan's Add fullscreen pass... hands it, and the Graph tab places the
+    // pass. False -- or no action -- keeps the form's new authored pass.
+    void setGraphPlaceAction(std::function<bool(const QString &op)> action);
 };
 
 } // namespace PelicanStudio

@@ -37,10 +37,17 @@ struct ProjectModelFile {
                                                      const std::filesystem::path &file);
 
 // Decision 4: a list_assets path as the project names it
-// ("assets/models/box.glb"). The engine lists the file it resolved
-// (absolute); asset_data may say project:// or a relative path. Empty for an
-// engine:// one and one outside the project.
+// ("assets/models/box.glb"). Since engine EB-1 list_assets' `path` is the
+// spelling asset_data holds -- project-relative, or project:// -- and the
+// file it resolved is `resolved_path` (absolute); an absolute path is still
+// read. Empty for an engine:// one and one outside the project.
 [[nodiscard]] std::string projectRelativeAssetPath(const std::filesystem::path &project_root, std::string_view path);
+
+// GL-5e, decision 9: the registered models of a list_assets result, by the
+// file the project names them by -> their id. Only `kind: "model"` rows: the
+// material rows EB-1 added (one per material, `id` its name) are not models.
+[[nodiscard]] std::map<std::string, std::string> registeredModelFiles(const std::filesystem::path &project_root,
+                                                                      const nlohmann::json &list_assets_result);
 
 // The name register_model is sent with on try `attempt`: 0 sends none (the
 // engine takes the file's stem), then "<stem>_001", "<stem>_002"... as

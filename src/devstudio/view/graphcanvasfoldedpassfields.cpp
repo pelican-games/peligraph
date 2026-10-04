@@ -7,6 +7,7 @@
 #include "passforms/shaderdefinesform.hpp"
 #include "presetpassedit.hpp"
 #include "studiotheme.hpp"
+#include "viewselectfield.hpp"
 
 #include <QByteArray>
 #include <QCheckBox>
@@ -117,6 +118,13 @@ GraphCanvasFoldedPassFields::GraphCanvasFoldedPassFields(GraphCanvasModel &model
     ops_ = new AttachmentOpsForm(foldedPrefix(), fields);
     ops_caption_ = caption(tr("Attachments"), fields);
     form->addRow(ops_caption_, ops_);
+    // GL-5e, decision 1: the View field, LP-4b's part (the Pass Editor's).
+    view_caption_ = caption(tr("View"), fields);
+    view_ = new ViewSelectField(foldedPrefix(), fields);
+    view_->setToolTip(tr("Which views of its family the pass runs for: the Frame Plan's View "
+                         "menu, one edit a pick."));
+    form->addRow(view_caption_, view_);
+    view_->changed = [this] { viewPicked(); };
     layout->addWidget(fields);
 
     // Decision 5: the pass's graph-wide decisions, as the Frame Plan's
@@ -212,6 +220,7 @@ void GraphCanvasFoldedPassFields::showPass(const std::string &pass) {
     }
     fillShaderChoices(declaration);
     fillOutputs();
+    showView(*found);
     showPlanning();
     readPlanning();
     show();
@@ -300,7 +309,8 @@ void GraphCanvasFoldedPassFields::fillShaderChoices(const Json &declaration) {
 void GraphCanvasFoldedPassFields::followEditable(bool can_send) {
     can_send_ = can_send;
     for (QWidget *widget : std::initializer_list<QWidget *>{vertex_, fragment_, outputs_, defines_,
-                                                          interface_, ops_, settings_, planning_})
+                                                          interface_, ops_, settings_, planning_,
+                                                          view_})
         widget->setEnabled(can_send);
 }
 
@@ -387,6 +397,69 @@ void GraphCanvasFoldedPassFields::editRefused() {
     // What the root holds is shown again: the next showPass loads it.
     shown_.clear();
     outputs_shown_.clear();
+    // GL-5e: the View field's pick goes back to what the root says.
+    view_shown_.clear();
+    view_->showSelection(view_select_);
+}
+
+// --- GL-5e, decision 1: the View field.
+
+void GraphCanvasFoldedPassFields::showView(const FramePlanAuthoringPass &row) {
+    const auto *family = model_.planPassView(pass_);
+    auto selected = framePlanDeclaredViewSelect(row.editable_declaration);
+    std::string key = pass_;
+    if (family != nullptr) {
+        key += "" + family->family;
+        for (const auto &axis : family->axes) {
+            key += "" + axis.axis + "=" + (axis.length ? std::to_string(*axis.length) : "-") +
+                   (axis.runtime ? "r" : "");
+            for (const auto &label : axis.labels) key += "," + label;
+        }
+    }
+    key += "";
+    for (const auto &axis : selected) key += axis.axis + "=" + std::to_string(axis.value) + ";";
+    if (key != view_shown_) {
+        view_shown_ = std::move(key);
+        view_select_ = std::move(selected);
+        // The family's axes come from the frame plan; none, no field.
+        if (family == nullptr || !view_->load(family->axes, view_select_, family->family))
+            view_->clear();
+    }
+    const bool shown = view_->hasRows();
+    view_->setVisible(shown);
+    view_caption_->setVisible(shown);
+    if (auto *form = qobject_cast<QFormLayout *>(view_->parentWidget()->layout()))
+        form->setRowVisible(view_, shown);
+}
+
+void GraphCanvasFoldedPassFields::viewPicked() {
+    if (loading_ || !editable_ || !send_) return;
+    // The one axis the pick changed: a value now, or none (All views, Remove).
+    const auto next = view_->selection();
+    std::optional<std::pair<std::string, std::optional<std::uint64_t>>> changed;
+    for (const auto &axis : next) {
+        const auto held = std::ranges::find(view_select_, axis.axis, &FramePlanViewSelectAxis::axis);
+        if (held == view_select_.end() || held->value != axis.value) {
+            changed = std::pair{axis.axis, std::optional<std::uint64_t>{axis.value}};
+            break;
+        }
+    }
+    if (!changed)
+        for (const auto &axis : view_select_)
+            if (std::ranges::find(next, axis.axis, &FramePlanViewSelectAxis::axis) == next.end()) {
+                changed = std::pair{axis.axis, std::optional<std::uint64_t>{}};
+                break;
+            }
+    if (!changed) return;
+    const auto build = [this, axis = changed->first, value = changed->second] {
+        auto request =
+            framePlanPassViewSelectRequest(authoring(), model_.planGraph(), pass_, axis, value);
+        if (request.notice.empty()) request.notice = pass_ + " saved.";
+        return request;
+    };
+    // After the commit -- or the refusal -- the field shows what the root holds.
+    view_shown_.clear();
+    send_(build(), build);
 }
 
 Json GraphCanvasFoldedPassFields::draftJson(const Json &original) const {

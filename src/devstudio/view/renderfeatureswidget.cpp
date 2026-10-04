@@ -227,7 +227,7 @@ class FrameNodeOrderDialog final : public QDialog, public RestartsEngine {
           readResult();
         }
       } else
-        notice->setText(responseError(*response));
+        notice->setText(orderRefusal(*response));
     } else if (response->value("status").toString() != "pending") {
       poll.stop();
       ticket.clear();
@@ -239,9 +239,22 @@ class FrameNodeOrderDialog final : public QDialog, public RestartsEngine {
         close();
         return;
       }
-      notice->setText(responseError(*response));
+      notice->setText(orderRefusal(*response));
     }
     controls();
+  }
+
+  // GL-5e, decision 8: a refused Apply, in the sentence Studio's refusal
+  // table has for its code (where frame_node_order's own codes go once the
+  // engine names them, FO-1), else the engine's message and code as they
+  // come ("logical graph contains a dependency cycle: main_render
+  // (render_pipeline_preflight_failed)").
+  static QString orderRefusal(const QJsonObject &response) {
+    const auto error = response.value(QStringLiteral("error")).toObject();
+    const auto known = knownRefusalDescription(
+        error.value(QStringLiteral("code")).toString().toStdString(),
+        error.value(QStringLiteral("message")).toString().toStdString());
+    return known.empty() ? responseError(response) : QString::fromStdString(known);
   }
 
 public:

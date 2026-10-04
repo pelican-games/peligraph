@@ -3157,8 +3157,10 @@ TEST_CASE("GL-2b the plan's origin says which graph node made a pass; bands, Lay
     CHECK(model.layerRows("tint") ==
           std::vector<GraphCanvasLayerRow>{
               {"L1", "pass", "tint \xC2\xB7 render", "tint"},
-              {"L2", "resource", "resource tint_image \xC2\xB7 R8G8B8A8_UNORM \xC2\xB7 alias alias_0", ""},
-              {"L2", "resource", "resource scene_color \xC2\xB7 R16G16B16A16_SFLOAT", ""},
+              // GL-5e, decision 5: a resource row names its resource.
+              {"L2", "resource", "resource tint_image \xC2\xB7 R8G8B8A8_UNORM \xC2\xB7 alias alias_0", "",
+               "tint_image"},
+              {"L2", "resource", "resource scene_color \xC2\xB7 R16G16B16A16_SFLOAT", "", "scene_color"},
               {"L2", "alias", "alias group alias_0: tint_image, canvas", ""},
               {"L2", "scope", "scope scope_0 (render_pass)", ""},
               {"L2", "barrier",
@@ -3189,7 +3191,9 @@ TEST_CASE("GL-2b the plan's origin says which graph node made a pass; bands, Lay
     CHECK(model.graphLayerRows() ==
           std::vector<GraphCanvasLayerRow>{
               {"L3", "decision", "pelican.plan.profile \xC2\xB7 main_render \xE2\x86\x92 default", ""},
-              {"L3", "backend", "candidate vulkan_raster \xC2\xB7 vulkan \xC2\xB7 selected", ""}});
+              // GL-5e, decision 5: and a candidate's row its candidate.
+              {"L3", "backend", "candidate vulkan_raster \xC2\xB7 vulkan \xC2\xB7 selected", "",
+               "vulkan_raster"}});
     CHECK(model.planDiagnostics().size() == 2);
     // Two domains: no band, no Layers.
     model.setDomainShown("value", true);

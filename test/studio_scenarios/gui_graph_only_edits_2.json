@@ -1,0 +1,751 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "gui_graph_only_edits_2",
+  "description": "GL-5e, from File > New Project > Blank with Studio's GUI only, and the Frame Plan's tab never brought forward. (a) A forward material pass from the palette and two of the Graph's fullscreen passes; plain drags on the Graph connect the material pass's colour and the first pass's gradient to the second pass's + input -- what the Frame Plan's Shift-drag was for -- and the second pass to present's + input: the box is on screen. (b) A click on a connected socket of a pass drawing with engine://passthrough shows that input: on the second pass (a graph node) it writes PELICAN_PASSTHROUGH_INPUT into its shader.defines, and the gradient replaces the box, then the box again; on present (the rendering section's) it is the Frame Plan's click, an edit_preset_pass of present's defines. Each step reads the document and the picture. (c) Delete pass and (d) the View field are gui_graph_folded_edits, on a fixture: Blank makes no authored fragment and no view family with axes. Typed: the project folder and name in New Project.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the new project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "the Graph tab is in front (the Frame Plan's is never brought forward in this run)",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "File > New Project...",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "graph_only_2"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the blank project's present is on the Graph canvas",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "Add Object > Cube, something for the pass to draw",
+      "cmd": "action",
+      "name": "pelican.outliner.addObject.cube"
+    },
+    {
+      "label": "the engine has a third object, named Cube",
+      "expect": "rpc_equals",
+      "method": "scene_tree",
+      "params": {
+        "scene_id": "default_scene"
+      },
+      "path": "objects[2].name",
+      "value": "Cube",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the Inspector has read the Cube before Save (Save waits for an idle editor session)",
+      "cmd": "wait",
+      "name": "pelican.inspectorModelChoice",
+      "text": "Cube (built-in)",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "File > Save Scene, so the restart the material pass asks for has nothing to ask",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "the save is done",
+      "cmd": "wait",
+      "name": "pelican.inspectorNotice",
+      "contains": "Scene saved",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick the camera in the Outliner, so no gizmo is drawn over the box",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "MainCamera"
+    },
+    {
+      "label": "the Inspector holds the camera",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "MainCamera\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the canvas has read the new document and can edit it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the picture before: present reads nothing and passthrough draws its gradient",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/gui_graph_only_edits_2_before.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "gradient"
+    },
+    {
+      "label": "(a) Add: the palette opens",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the filter narrows the list to the material pass",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "material_pass"
+    },
+    {
+      "label": "the contract combo is offered for it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPaletteContract",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "a forward pass (Studio sends the route default; the engine restarts)",
+      "cmd": "select",
+      "name": "pelican.graphCanvasPaletteContract",
+      "text": "forward_opaque_v1"
+    },
+    {
+      "label": "Enter in the filter is OK",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the palette closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the pass's draw loop is drawn as a zone (after the engine restarts)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#render_material_pass_draws",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the material pass is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#render_material_pass",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the document: a render.material_pass among the graph's nodes",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].op",
+      "value": "render.material_pass",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit the graph",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the Graph's Add fullscreen pass, in the root",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addFullscreenPass"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the document: the fullscreen pass after its image",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[5].id",
+      "value": "render_fullscreen",
+      "retry_ms": 60000
+    },
+    {
+      "label": "drawing with engine://passthrough",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[5].parameters.shader.fragment",
+      "value": "engine://passthrough"
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the picture: present still reads nothing, the gradient",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/gui_graph_only_edits_2_a.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "eq",
+      "value_of": "gradient",
+      "retry_ms": 60000
+    },
+    {
+      "label": "a second fullscreen pass: the Graph's Add fullscreen pass again",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addFullscreenPass"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the document: the second pass after its image",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[7].id",
+      "value": "render_fullscreen_2",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "(a) auto layout",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.autoLayout"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "decision 6: a plain drag from the material pass's colour onto the second pass's + input (what the Frame Plan's Shift-drag was for)",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_material_pass/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen_2/in:variadic"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the document: the second pass reads the material pass's colour",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[7].inputs.color_2.node",
+      "value": "render_material_pass",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "and the first pass's gradient onto its + input too",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen_2/in:variadic"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the document: the second pass reads the first pass",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[7].inputs.color_3.node",
+      "value": "render_fullscreen",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "present offers an empty + input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the second pass's output onto present's + input",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen_2/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Pass inputs saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the box is on screen: the second pass shows its first input, the material pass's colour",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/gui_graph_only_edits_2_box.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "gradient",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the box, read",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/gui_graph_only_edits_2_box.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "remember": "box"
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "(b) decision 2: a click on the second pass's second socket (the first pass's gradient)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_socket#render_fullscreen_2/in@1"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the document: its shader.defines show input 1",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[7].parameters.shader.defines[0]",
+      "value": "PELICAN_PASSTHROUGH_INPUT=1",
+      "retry_ms": 60000
+    },
+    {
+      "label": "and its lines are still both there",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[7].inputs.color_2.node",
+      "value": "render_material_pass"
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the picture: no longer the box",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/gui_graph_only_edits_2_shown_1.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "box",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "a click on its first socket",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_socket#render_fullscreen_2/in@0"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the document: no define (input 0 is the default)",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.nodes[7].parameters.shader",
+      "op": "excludes",
+      "value": "PELICAN_PASSTHROUGH_INPUT",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the picture: the box again",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/gui_graph_only_edits_2_shown_0.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "eq",
+      "value_of": "box",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "present offers an empty + input again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the first pass's gradient onto present's + input: present reads two",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_derived_socket#present/in:+"
+      },
+      "steps": 8
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Pass inputs saved.",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "present shows its first input, the box",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/gui_graph_only_edits_2_present_0.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "eq",
+      "value_of": "box",
+      "retry_ms": 120000
+    },
+    {
+      "label": "the canvas can edit again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "fit",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "a click on present's socket of the first pass: the Frame Plan's click (present draws with engine://passthrough)",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_derived_socket#present/render_fullscreen__color"
+    },
+    {
+      "label": "saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "contains": "present shows",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the root: present's shader.defines show input 1",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_render_documents",
+        "params": {}
+      },
+      "path": "result.documents[0].content",
+      "op": "contains",
+      "value": "PELICAN_PASSTHROUGH_INPUT=1",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the picture: no longer the box",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/gui_graph_only_edits_2_present_1.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ]
+        ]
+      },
+      "path": "pixels[0]",
+      "op": "ne",
+      "value_of": "box",
+      "retry_ms": 120000
+    },
+    {
+      "label": "a picture of the window",
+      "expect": "screenshot",
+      "path": "gui_graph_only_edits_2_window.png"
+    }
+  ]
+}

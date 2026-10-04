@@ -5595,6 +5595,7 @@ void GraphCanvasModel::readPlanPasses(const Json &plan) {
             pass.kind = text(node, "kind");
             pass.source = text(node, "source");
             pass.feature = text(node, "provider_feature");
+            pass.provider_reference = text(node, "provider_ref");
             pass.reads = planStrings(node, "reads");
             pass.history_reads = planStrings(node, "reads_history");
             pass.writes = planStrings(node, "writes");
@@ -6426,7 +6427,7 @@ std::vector<GraphCanvasLayerRow> GraphCanvasModel::layerRows(std::string_view ca
         if (!resource.format.empty()) line += dot + resource.format;
         for (const auto &group : plan_alias_groups_)
             if (listed(group.resources, resource.name)) line += dot + "alias " + group.id;
-        rows.push_back({"L2", "resource", line, {}});
+        rows.push_back({"L2", "resource", line, {}, resource.name});
     }
     for (const auto &group : plan_alias_groups_)
         if (meets(group.from_nodes, nodes))
@@ -6503,7 +6504,8 @@ std::vector<GraphCanvasLayerRow> GraphCanvasModel::graphLayerRows() const {
                             (candidate.selected   ? "selected"
                              : candidate.feasible ? "feasible"
                                                   : "rejected"),
-                        {}});
+                        {},
+                        candidate.candidate});
     return rows;
 }
 

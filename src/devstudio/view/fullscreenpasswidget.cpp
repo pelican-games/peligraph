@@ -341,6 +341,8 @@ struct FullscreenPassWidget::Impl {
     QString pending_ticket;
     // --- Q-13: the digest every panel that edits the document shares.
     std::shared_ptr<RenderConfigDigest> digest_hub;
+    // GL-5e, decision 7.
+    std::function<bool(const QString &op)> graph_place_action;
     // Another panel moved the document while this one was busy: read the
     // context again once it is idle.
     bool context_reread = false;
@@ -741,6 +743,9 @@ struct FullscreenPassWidget::Impl {
         authoring_controls->addWidget(new_pass);
         QObject::connect(new_pass, &QPushButton::clicked, &owner, [this] {
             if (pending_authoring_request || !pending_ticket.isEmpty()) return;
+            // GL-5e, decision 7: on a graph root the Graph places it.
+            if (graph_place_action && graph_place_action(QStringLiteral("render.fullscreen")))
+                return;
             editing_preset_pass.reset(); load_edit_requested = false;
             input_filter.reset(); populateRoleCandidates();
             name->setReadOnly(false); position->setEnabled(true); raster_form->setEnabled(true);
@@ -3796,6 +3801,10 @@ void FullscreenPassWidget::receiveResult(const QByteArray &result_json) {
 void FullscreenPassWidget::receiveAuthoringConfig(
     const QByteArray &config_json) {
     impl_->consumeAuthoringConfig(config_json);
+}
+
+void FullscreenPassWidget::setGraphPlaceAction(std::function<bool(const QString &op)> action) {
+    impl_->graph_place_action = std::move(action);
 }
 
 void FullscreenPassWidget::setRenderConfigDigest(

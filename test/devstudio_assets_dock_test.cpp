@@ -688,12 +688,44 @@ TEST_CASE("MI-1s decision 4: a registered model's row offers Remove from project
     CHECK(dock.noticeLine()->isVisibleTo(&dock));
     CHECK(dock.noticeLine()->toolTip() == QStringLiteral("box is used by 1 object: Crate (model.in_use@1)."));
 
-    // The window finds a row's model from list_assets, whose path is the
-    // file the engine resolved: read as the project names it.
+    // The window finds a row's model from list_assets, whose path is read
+    // as the project names it (EB-1: relative; an absolute one still reads).
     CHECK(projectRelativeAssetPath(root, (root / "assets" / "models" / "box.glb").string()) ==
           "assets/models/box.glb");
     CHECK(projectRelativeAssetPath(root, "project://assets/models/box.glb") == "assets/models/box.glb");
     CHECK(projectRelativeAssetPath(root, "assets/models/box.glb") == "assets/models/box.glb");
     CHECK(projectRelativeAssetPath(root, "engine://primitives/cube").empty());
     CHECK(projectRelativeAssetPath(root, (root.parent_path() / "elsewhere.glb").string()).empty());
+}
+
+TEST_CASE("GL-5e decision 9: list_assets' project-relative path (engine EB-1) finds a registered model, "
+          "and its material rows are not models") {
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid());
+    const std::filesystem::path root = directory.path().toStdWString();
+    // EB-1's shape: `path` as asset_data spells it, `resolved_path` the file.
+    const auto resolved = [&](const char *relative) {
+        return (root / std::filesystem::path{relative}).generic_string();
+    };
+    const Json result{
+        {"assets",
+         Json::array({
+             {{"id", "engine://primitives/cube"}, {"kind", "model"}, {"path", "engine://primitives/cube"},
+              {"store", "engine"}, {"status", "builtin"}},
+             {{"id", "checker_box"}, {"kind", "model"}, {"path", "assets/models/checker_box.glb"},
+              {"store", "project"}, {"status", "loaded"},
+              {"resolved_path", resolved("assets/models/checker_box.glb")}},
+             {{"id", "crate"}, {"kind", "model"}, {"path", "project://assets/models/crate.glb"},
+              {"store", "project"}, {"status", "loaded"}, {"resolved_path", resolved("assets/models/crate.glb")}},
+             {{"id", "paint"}, {"kind", "material"}, {"path", "materials/paint.material.json"},
+              {"store", "project"}, {"status", "loaded"},
+              {"resolved_path", resolved("materials/paint.material.json")}},
+             {{"id", "materials/gone.material.json"}, {"kind", "material"},
+              {"path", "materials/gone.material.json"}, {"store", "project"}, {"status", "missing"}},
+         })}};
+    CHECK(projectRelativeAssetPath(root, "assets/models/checker_box.glb") == "assets/models/checker_box.glb");
+    const auto files = registeredModelFiles(root, result);
+    CHECK(files == std::map<std::string, std::string>{{"assets/models/checker_box.glb", "checker_box"},
+                                                      {"assets/models/crate.glb", "crate"}});
+    CHECK(registeredModelFiles(root, Json::object()).empty());
 }

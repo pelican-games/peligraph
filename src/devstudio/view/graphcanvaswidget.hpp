@@ -8,6 +8,7 @@
 #include <QAction>
 #include <QGraphicsScene>
 #include <QPointF>
+#include <QStringList>
 #include <QWidget>
 
 #include <filesystem>
@@ -630,6 +631,31 @@ class GraphCanvasScene final : public QGraphicsScene {
     // picks it and adds the entries that act on it.
     std::function<void(QMenu &menu, const std::string &scope, const std::string &node, bool line)>
         nodeMenuEntries;
+    // GL-5e, decision 3: Delete (the key) with folded node `node` of the root
+    // picked: the owner removes it when it is a pass the project authored,
+    // and says true; false lets the key go on as before.
+    std::function<bool(const std::string &node)> foldedNodeDelete;
+    // GL-5e, decision 2: a click -- a press and a release on the same input
+    // socket, no line drawn -- on socket `key` (`in@<binding>`) of `node` in
+    // `scope` (a folded node's at the root when `folded`): when the pass
+    // draws with engine://passthrough, that input is the one shown -- the
+    // Frame Plan's framePlanPassthroughInputRequest for a pass of the
+    // rendering section, the same define (PELICAN_PASSTHROUGH_INPUT) in a
+    // graph node's shader.defines -- and true. False keeps what a click did.
+    bool clickInputSocket(const std::string &scope, const std::string &node, const std::string &key,
+                          bool folded);
+    // GL-5e, decision 4: a pass input edit for `pass` the builders refused
+    // before it was sent (the shader declares no input: `passthrough_inputs`
+    // set).
+    std::function<void(const std::string &pass, const FramePlanEditRequest &request)>
+        passInputRefused;
+    // GL-5e, decision 6: a line from an output let go over folded node
+    // `node` of the root (its body or one of its input rows, `row` the
+    // resource that row reads, else empty), carrying `resource`. The owner
+    // answers it -- the Frame Plan's Shift-drag dialog, or the notice's line
+    // and Expand to edit… on a read-only node -- and says true.
+    std::function<bool(const std::string &node, const std::string &row, const std::string &resource)>
+        foldedNodeDrop;
     // Let go of everything picked on the canvas (a group's heading was
     // picked instead).
     void clearPicks();
@@ -771,7 +797,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     void dropResourceOnPassInput(const std::string &pass, const QGraphicsItem &socket,
                                  const std::string &resource);
     void handPassInputEdit(const FramePlanEditRequest &request,
-                           std::function<FramePlanEditRequest()> rebuild);
+                           std::function<FramePlanEditRequest()> rebuild,
+                           const std::string &pass = {});
     std::unique_ptr<InlineEditor> editor_;
     QAction *auto_layout_action_ = nullptr;
     QAction *fit_view_action_ = nullptr;
@@ -1022,6 +1049,47 @@ class GraphCanvasWidget final : public QWidget {
     // GL-5d: a line one of those left on the Frame Plan's status row, on
     // this tab's notice.
     void showFramePlanLine(const QString &line);
+    // GL-5e. The rest of what only the Frame Plan offered, on what is picked
+    // here: each hook is the Frame Plan's (or the Pass Editor's / Task
+    // Editor's) own function, and an entry whose hook is empty is not
+    // offered. Named actions, in the right-click and in the detail column's
+    // row (pelican.graphCanvasNodeActions.<name>):
+    //   decision 3, pelican.graphCanvas.deletePass (and the Delete key) on a
+    //     folded node standing for a pass the project authored (a managed
+    //     fragment, passes/authoring/pass-<id>.json): `remove_pass`;
+    //   decision 4, pelican.graphCanvas.usePassthrough / .openContractShader
+    //     after a pass's edit was refused because its shader does not read
+    //     its inputs, .disconnectRefused / .openRefusedShader on a pass whose
+    //     shader reload the engine refused: `shader_contract`, `reload_refusal`
+    //     (also as buttons under the notice, pelican.graphCanvasNoticeActions.*);
+    //   decision 5, the Layers section's right-click: Pin this candidate /
+    //     Unpin on a backend candidate's row, Freeze this physical plan, Eject
+    //     again and Remove the frozen plan, and Remove TRANSFER_SRC on a
+    //     resource row (this tab's removeImageTransferSource);
+    //   decision 6, a line dropped on a feature's authored compute task or an
+    //     editable preset pass: the Frame Plan's Shift-drag dialogs.
+    struct ShaderContract {
+        std::string graph;
+        std::string pass;
+        std::string fragment;
+        std::vector<std::string> inputs;
+        bool unsupplied = false;
+        std::optional<std::size_t> binding;
+        bool use_passthrough = false;
+    };
+    struct FramePlanEdits {
+        std::function<void(const QString &graph, const QString &pass)> remove_pass;
+        std::function<void(const ShaderContract &contract, bool use_passthrough)> shader_contract;
+        std::function<void(const QString &graph, const QString &pass, bool disconnect)> reload_refusal;
+        std::function<void(const QString &candidate)> pin;
+        std::function<void()> unpin;
+        std::function<void()> freeze;
+        std::function<void()> remove_frozen;
+        std::function<void(const QString &task, const QStringList &outputs)> task_connection;
+        std::function<void(const QString &graph, const QString &pass, const QStringList &outputs)>
+            preset_pass_connection;
+    };
+    void setFramePlanEdits(FramePlanEdits edits);
     // The same ingestion boundary the production RPC callback uses.
     void receiveResult(qint64 request_id, const QByteArray &result_json);
     void receiveFailure(qint64 request_id, const QString &message);

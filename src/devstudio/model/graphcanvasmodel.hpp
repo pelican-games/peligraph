@@ -693,6 +693,9 @@ struct GraphCanvasPlanPass {
     std::vector<GraphCanvasPlanReplace> replaces;
     // The endpoint the execution plan selected for it, when it says.
     std::string backend;
+    // GL-5e, decision 6: the document that brought it (get_frame_plan's
+    // provider_ref: a feature's or the preset's reference), when the plan says.
+    std::string provider_reference;
     // A material pass: its shader is the materials' (shader_resolution
     // material_owned), or it carries a material filter or variant.
     bool material = false;
@@ -855,6 +858,9 @@ struct GraphCanvasLayerRow {
     // The frame plan node the row stands for (an L1 pass row): a click on
     // it selects that node in the Frame Plan.
     std::string plan_node;
+    // GL-5e, decision 5: what the row's right-click acts on -- the resource
+    // of an L2 resource row, the candidate of an L3 backend candidate row.
+    std::string subject;
 
     bool operator==(const GraphCanvasLayerRow &) const = default;
 };
@@ -1868,6 +1874,13 @@ class GraphCanvasModel {
     // ($main, planar, an author's) are not in it.
     [[nodiscard]] const std::vector<GraphCanvasViewFamily> &viewFamilies() const noexcept {
         return view_families_;
+    }
+    // GL-5e, decision 1: the family and axes the last frame plan gives the
+    // pass `name` (its view_family and view_axes), or null when it runs in a
+    // family without axes.
+    [[nodiscard]] const GraphCanvasViewFamily *planPassView(std::string_view name) const {
+        const auto found = plan_node_views_.find(name);
+        return found == plan_node_views_.end() ? nullptr : &found->second;
     }
     // The render targets of the last frame plan, for the count
     // expression's mip_levels_of / layers_of.

@@ -224,6 +224,25 @@ class FramePlanWidget final : public QWidget {
     // and the one its edit ends with, are handed to `said` too.
     void whenRead(std::function<void()> action,
                   std::function<void(const QString &line)> said = {});
+    // GL-5e. The rest of what only this panel did, for the Graph tab to run
+    // (through whenRead) on what is picked there -- each the function this
+    // panel's own entry calls:
+    // decision 3, Delete on a pass the project authored (remove_authored_pass);
+    void removePass(const QString &graph, const QString &pass);
+    // decision 4, the two ways out of a shader that does not read the
+    // inputs a pass was given -- Use engine://passthrough (`use_passthrough`)
+    // or Open the shader -- and of a reload that no longer declares a binding
+    // the pass feeds: Disconnect (`disconnect`) or Open the shader;
+    void runShaderContract(const QString &graph, const QString &pass, const QString &fragment,
+                           const QStringList &inputs, bool unsupplied,
+                           std::optional<std::size_t> binding, bool use_passthrough);
+    void runReloadRefusal(const QString &graph, const QString &pass, bool disconnect);
+    // decision 5, the lower layer's decisions: Pin this candidate, Unpin,
+    // Freeze this physical plan (Eject again is the same), Remove.
+    void pinBackendCandidate(const QString &candidate);
+    void unpinBackend();
+    void freezePhysicalPlan();
+    void removeFrozenPhysicalPlan();
     // LP-4b. The view axes (view_axes) of the node that runs `task` in the
     // current frame plan, for the Task Editor's View field. Empty when the
     // plan holds no such task or its family has no axes.

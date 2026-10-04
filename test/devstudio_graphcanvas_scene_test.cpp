@@ -58,6 +58,7 @@
 #include <QTableWidget>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <QTreeWidgetItemIterator>
 #include <QSpinBox>
 #include <QThread>
 #include <QStandardItemModel>
@@ -84,6 +85,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <tuple>
 #include <sstream>
 #include <string>
 #include <functional>
@@ -7073,6 +7075,9 @@ struct Gl5bTab {
     Json shade_inputs;
     Json shade_reads = Json::array();
     Json nodes = Json::array();
+    // GL-5e: what the plan and the context say beside Blank's.
+    std::function<void(Json &)> plan_edit;
+    std::function<void(Json &)> authoring_edit;
     std::set<qint64> answered;
     std::unique_ptr<PelicanStudio::GraphCanvasWidget> widget;
 
@@ -7088,6 +7093,7 @@ struct Gl5bTab {
             plan["nodes"][0]["pass_inputs"] = shade_inputs;
             plan["nodes"][0]["reads"] = shade_reads;
         }
+        if (plan_edit) plan_edit(plan);
         return plan;
     }
 
@@ -7153,9 +7159,10 @@ struct Gl5bTab {
                 Json reply;
                 if (method == QLatin1String{"get_graph_instances"}) reply = document();
                 else if (method == QLatin1String{"get_frame_plan"}) reply = plan();
-                else if (method == QLatin1String{"get_render_authoring_context"})
+                else if (method == QLatin1String{"get_render_authoring_context"}) {
                     reply = gl5bAuthoring(extra, inputs);
-                else continue;
+                    if (authoring_edit) authoring_edit(reply);
+                } else continue;
                 answered.insert(id);
                 transport.deliver(id, QByteArray::fromStdString(reply.dump()));
                 any = true;
@@ -9690,7 +9697,9 @@ TEST_CASE("UX-5c a loop's output onto present's + input sends <loop>.<output>, a
         const auto sockets = h.scene.passInputSockets("present");
         REQUIRE(sockets.has_value());
         REQUIRE(sockets->sockets.size() == 2);
-        CHECK(sockets->sockets[0].label == "← steps.color → steps/1/canvas");
+        // GL-5e, decision 2: present draws with engine://passthrough, which
+        // shows this input -- marked as the Frame Plan marks it.
+        CHECK(sockets->sockets[0].label == "← steps.color → steps/1/canvas (shown)");
         const auto lines = itemsOfKind(h.scene, PelicanStudio::GraphCanvasPassInputEdgeItem);
         REQUIRE(lines.size() == 1);
         CHECK(lines.front()->data(PelicanStudio::NodeGraphFromNameRole).toString() ==
@@ -13141,4 +13150,275 @@ TEST_CASE("CT-6s decision 5: a ray tracing task's refusal reads as one sentence 
           "Whether the project has a ray group layout changes only when the engine restarts: restart it to "
           "apply this (pelican.ray_layout_mode_change_requires_restart@1).");
     CHECK(PelicanStudio::rayTracingRefusalDescription({}, "graph.something_else@1: no").empty());
+}
+
+// --- GL-5e: what was left only on the Frame Plan, on the Graph.
+
+TEST_CASE("GL-5e a rendering-section pass's View field, a click on its passthrough socket, Delete "
+          "pass on a managed fragment, the ways out of a refused shader, a line on a folded node "
+          "and the Layers section's right-click are the Frame Plan's",
+          "[devstudio][graph-canvas][scene][gl5e]") {
+    (void)application();
+    bool reload_refused = false;
+    Gl5bTab tab{{}, [&](Gl5bTab &self) {
+                    self.inputs = {"shade__color", "other_color"};
+                    self.plan_edit = [&reload_refused](Json &plan) {
+                        // Decision 1: present runs in a family with an axis.
+                        auto &present = plan["nodes"][1];
+                        present["view_family"] = "$capture/cube";
+                        present["view_axes"] = Json::array(
+                            {{{"axis", "face"},
+                              {"length", 6},
+                              {"labels", Json::array({"+X", "-X", "+Y", "-Y", "+Z", "-Z"})}}});
+                        // Decision 4: a reload refused binding 1 of present.
+                        if (reload_refused)
+                            present["pass_inputs"]["reload_refused"] = {
+                                {"reason", "the new shader no longer declares binding 1"},
+                                {"declarations",
+                                 Json::array({{{"binding", 0},
+                                               {"type", "sampled_image"},
+                                               {"name", "in_a"},
+                                               {"variadic", false}}})}};
+                        // Decision 3: a pass the project authored (a managed
+                        // fragment). Decision 6: a project feature's authored
+                        // task, and an engine feature's pass.
+                        auto tint = gl1bPass("tint", 2, "feature:authored_pass_abc", Json::array(),
+                                             Json::array({"tint_color"}));
+                        tint["provider_feature"] = "authored_pass_abc";
+                        tint["provider_ref"] = "project://passes/authoring/pass-abc.json";
+                        auto task = gl1bPass("blur_task", 3, "feature:blur",
+                                             Json::array({"blur_in"}), Json::array({"blur_out"}));
+                        task["kind"] = "compute";
+                        task["authored_name"] = "blur_task";
+                        task["provider_feature"] = "blur";
+                        task["provider_ref"] = "project://features/blur.json";
+                        auto bloom = gl1bPass("bloom_down", 4, "feature:bloom",
+                                              Json::array({"bloom_in"}), Json::array({"bloom_out"}));
+                        bloom["provider_feature"] = "bloom";
+                        bloom["provider_ref"] = "engine://features/bloom.json";
+                        plan["nodes"].push_back(std::move(tint));
+                        plan["nodes"].push_back(std::move(task));
+                        plan["nodes"].push_back(std::move(bloom));
+                        // Decision 5: the backend candidates.
+                        plan["physical_target_plan"] = {
+                            {"backend_selection",
+                             {{"selected_candidate", "vulkan_raster"},
+                              {"candidates", Json::array({{{"candidate", "vulkan_raster"},
+                                                           {"endpoint", "vulkan"},
+                                                           {"feasible", true}}})}}}};
+                    };
+                    self.authoring_edit = [](Json &context) {
+                        context["graphs"][0]["passes"].push_back(
+                            {{"name", "tint"},
+                             {"declaration_index", 1},
+                             {"declaration", {{"type", "fullscreen"}}},
+                             {"provenance",
+                              {{"source", "feature"},
+                               {"provider_feature", "authored_pass_abc"},
+                               {"provider_reference", "project://passes/authoring/pass-abc.json"}}},
+                             {"managed", true}});
+                    };
+                }};
+    auto &widget = *tab.widget;
+    auto &scene = widget.scene();
+    widget.setProjectRoot(std::filesystem::temp_directory_path());
+    std::vector<std::pair<QString, QString>> removed;
+    std::vector<std::pair<PelicanStudio::GraphCanvasWidget::ShaderContract, bool>> contracts;
+    std::vector<std::tuple<QString, QString, bool>> refusals;
+    std::vector<std::pair<QString, QStringList>> tasks;
+    std::vector<QString> pins;
+    int freezes = 0;
+    PelicanStudio::GraphCanvasWidget::FramePlanEdits edits;
+    edits.remove_pass = [&](const QString &graph, const QString &pass) {
+        removed.emplace_back(graph, pass);
+    };
+    edits.shader_contract = [&](const PelicanStudio::GraphCanvasWidget::ShaderContract &contract,
+                                bool use_passthrough) { contracts.emplace_back(contract, use_passthrough); };
+    edits.reload_refusal = [&](const QString &graph, const QString &pass, bool disconnect) {
+        refusals.emplace_back(graph, pass, disconnect);
+    };
+    edits.pin = [&](const QString &candidate) { pins.push_back(candidate); };
+    edits.unpin = [] {};
+    edits.freeze = [&] { ++freezes; };
+    edits.remove_frozen = [] {};
+    edits.task_connection = [&](const QString &task, const QStringList &outputs) {
+        tasks.emplace_back(task, outputs);
+    };
+    edits.preset_pass_connection = [](const QString &, const QString &, const QStringList &) {};
+    widget.setFramePlanEdits(edits);
+    const auto action = [&](const char *name) {
+        auto *found = widget.findChild<QAction *>(QString::fromLatin1(name));
+        REQUIRE(found != nullptr);
+        return found;
+    };
+    const auto button = [&](const char *name) {
+        auto *found = widget.findChild<QPushButton *>(
+            QStringLiteral("pelican.graphCanvasNodeActions.") + QString::fromLatin1(name));
+        REQUIRE(found != nullptr);
+        return found;
+    };
+    const auto pick = [&](const char *node) {
+        scene.selectNode(node);
+        QCoreApplication::processEvents();
+    };
+    const auto fire = [&](const char *name) {
+        REQUIRE(action(name)->isEnabled());
+        action(name)->trigger();
+        QCoreApplication::processEvents();
+    };
+    const auto commit = [&](const char *method, const char *ticket) {
+        tab.answer(method, Json{{"status", "accepted"}, {"ticket", ticket}});
+        tab.answer("get_edit_result", Json{{"status", "committed"},
+                                           {"committed", true},
+                                           {"source_digest", {{"hex", "gl1e-root"}}}});
+        tab.reads();
+    };
+    auto *notice = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasNotice"));
+    REQUIRE(notice != nullptr);
+    const auto authoring = [&] {
+        auto context = gl5bAuthoring(tab.extra, tab.inputs);
+        tab.authoring_edit(context);
+        return PelicanStudio::framePlanAuthoringFromContext(context);
+    };
+
+    // Decision 1: present's View field is LP-4b's, and a pick is the Frame
+    // Plan's View menu's edit_preset_pass.
+    pick("present");
+    auto *face = widget.findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasFoldedPass.view.face"));
+    REQUIRE(face != nullptr);
+    CHECK(face->isVisible());
+    REQUIRE(face->count() == 7);
+    CHECK(face->itemText(3) == QStringLiteral("2 (+Y)"));
+    face->setCurrentIndex(3);
+    QCoreApplication::processEvents();
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_preset_pass")) == 1);
+    CHECK(tab.sent("edit_preset_pass") ==
+          PelicanStudio::framePlanPassViewSelectRequest(authoring(), "main_render", "present", "face", 2)
+              .params);
+    CHECK(tab.sent("edit_preset_pass").at("view_select") == Json{{"face", 2}});
+    commit("edit_preset_pass", "gl5e-view");
+
+    // Decision 2: the input engine://passthrough shows is marked, and a
+    // click on another connected socket of present is the Frame Plan's click.
+    const auto sockets = scene.passInputSockets("present");
+    REQUIRE(sockets);
+    REQUIRE(sockets->sockets.size() >= 2);
+    CHECK(sockets->sockets[0].label.ends_with("(shown)"));
+    QGraphicsItem *second = nullptr;
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasDerivedSocketItem} &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == QStringLiteral("present") &&
+            item->data(PelicanStudio::GraphCanvasSocketKeyRole).toString() == QStringLiteral("in@1"))
+            second = item;
+    REQUIRE(second != nullptr);
+    click(scene, second->sceneBoundingRect().center());
+    REQUIRE(tab.transport.countOf(QStringLiteral("edit_preset_pass")) == 2);
+    const auto shown = tab.sent("edit_preset_pass");
+    CHECK(shown.at("shader").at("defines") == Json::array({"PELICAN_PASSTHROUGH_INPUT=1"}));
+    CHECK(shown.at("input") == Json::array({"shade__color", "other_color"}));
+
+    // Decision 4: refused because the shader does not read an input -- the
+    // Frame Plan's two ways out, in the detail column and under the notice.
+    tab.answer("edit_preset_pass",
+               Json{{"status", "rejected"},
+                    {"error",
+                     {{"code", "render_pipeline_preflight_failed"},
+                      {"message", "Fullscreen pass input texture/local-read contract does not match "
+                                  "shader reflection: pass 'present' input 1 ('other_color') expects "
+                                  "sampled_image, but fragment 'engine://passthrough' declares "
+                                  "nothing at binding 1 (shader declares 1 pass inputs)"},
+                      {"shader_input_mismatch",
+                       {{"pass", "present"},
+                        {"fragment", "engine://passthrough"},
+                        {"kind", "texture"},
+                        {"binding", 1},
+                        {"resource", "other_color"},
+                        {"expected", "sampled_image"},
+                        {"pass_texture_inputs", 2},
+                        {"pass_buffer_inputs", 0},
+                        {"shader_pass_inputs",
+                         Json::array({{{"binding", 0}, {"type", "sampled_image"}}})}}}}}});
+    pick("present");
+    CHECK(button("usePassthrough")->isVisible());
+    CHECK(button("openContractShader")->isVisible());
+    auto *under_notice = widget.findChild<QPushButton *>(
+        QStringLiteral("pelican.graphCanvasNoticeActions.usePassthrough"));
+    REQUIRE(under_notice != nullptr);
+    CHECK(under_notice->isVisible());
+    fire("pelican.graphCanvas.usePassthrough");
+    REQUIRE(contracts.size() == 1);
+    CHECK(contracts[0].second);
+    CHECK(contracts[0].first.pass == "present");
+    CHECK(contracts[0].first.fragment == "engine://passthrough");
+    CHECK(contracts[0].first.inputs == std::vector<std::string>{"shade__color", "other_color"});
+    CHECK_FALSE(button("usePassthrough")->isVisible());
+    // And a reload that no longer declares binding 1: Disconnect.
+    reload_refused = true;
+    widget.shadersReloaded();
+    tab.reads();
+    pick("present");
+    CHECK(button("disconnectRefused")->isVisible());
+    fire("pelican.graphCanvas.disconnectRefused");
+    REQUIRE(refusals.size() == 1);
+    CHECK(refusals[0] == std::tuple{QStringLiteral("main_render"), QStringLiteral("present"), true});
+
+    // Decision 3: Delete pass on the managed fragment's folded node -- its
+    // button, its right-click and the Delete key -- not on a feature's.
+    pick("feature:authored_pass_abc");
+    CHECK(button("deletePass")->isVisible());
+    fire("pelican.graphCanvas.deletePass");
+    REQUIRE(removed.size() == 1);
+    CHECK(removed[0] == std::pair{QStringLiteral("main_render"), QStringLiteral("tint")});
+    {
+        auto *item = nodeItem(scene, QStringLiteral("feature:authored_pass_abc"));
+        REQUIRE(item != nullptr);
+        CHECK(canvasMenuOver(scene, *item).contains(QStringLiteral("pelican.graphCanvas.deletePass")));
+    }
+    pick("feature:authored_pass_abc");
+    pressKey(scene, Qt::Key_Delete);
+    CHECK(removed.size() == 2);
+    pick("feature:bloom");
+    CHECK_FALSE(button("deletePass")->isVisible());
+
+    // Decision 6: a line from shade onto the project feature's folded node is
+    // the Frame Plan's Shift-drag on its authored task; onto the engine
+    // feature's, nothing is sent and the notice says it is read only here.
+    scene.clearPicks();
+    QCoreApplication::processEvents();
+    auto *from = socketItem(scene, QStringLiteral("shade"), QStringLiteral("color"), QStringLiteral("output"));
+    REQUIRE(from != nullptr);
+    auto *blur = nodeItem(scene, QStringLiteral("feature:blur"));
+    REQUIRE(blur != nullptr);
+    drag(scene, from->sceneBoundingRect().center(), blur->sceneBoundingRect().center());
+    REQUIRE(tasks.size() == 1);
+    CHECK(tasks[0] == std::pair{QStringLiteral("blur_task"), QStringList{QStringLiteral("shade__color")}});
+    auto *bloom = nodeItem(scene, QStringLiteral("feature:bloom"));
+    REQUIRE(bloom != nullptr);
+    const int graph_edits = tab.transport.countOf(QStringLiteral("edit_graph_document"));
+    drag(scene, from->sceneBoundingRect().center(), bloom->sceneBoundingRect().center());
+    CHECK(tasks.size() == 1);
+    CHECK(tab.transport.countOf(QStringLiteral("edit_graph_document")) == graph_edits);
+    auto *folded_notice = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasFoldedNotice"));
+    REQUIRE(folded_notice != nullptr);
+    CHECK(folded_notice->isVisible());
+    CHECK(folded_notice->text().contains(QStringLiteral("read only here")));
+
+    // Decision 5: the whole graph's Layers -- a candidate's row pins it, and
+    // Freeze this physical plan is the Frame Plan's.
+    scene.clearPicks();
+    QCoreApplication::processEvents();
+    auto *layers = widget.findChild<QTreeWidget *>(QStringLiteral("pelican.graphCanvasLayers"));
+    REQUIRE(layers != nullptr);
+    QTreeWidgetItem *candidate = nullptr;
+    for (QTreeWidgetItemIterator it{layers}; *it != nullptr; ++it)
+        if ((*it)->text(0).startsWith(QStringLiteral("candidate vulkan_raster"))) candidate = *it;
+    REQUIRE(candidate != nullptr);
+    layers->setCurrentItem(candidate);
+    QCoreApplication::processEvents();
+    fire("pelican.graphCanvas.layers.pin");
+    CHECK(pins == std::vector<QString>{QStringLiteral("vulkan_raster")});
+    fire("pelican.graphCanvas.layers.freeze");
+    fire("pelican.graphCanvas.layers.ejectAgain");
+    CHECK(freezes == 2);
 }

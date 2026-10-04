@@ -5252,6 +5252,55 @@ void FramePlanWidget::whenRead(std::function<void()> action,
     impl_->whenRead(std::move(action), std::move(said));
 }
 
+// --- GL-5e: this panel's own functions, run for the Graph tab.
+
+void FramePlanWidget::removePass(const QString &graph, const QString &pass) {
+    impl_->removeNode(FramePlanNodeKey{graph.toStdString(), pass.toStdString()});
+}
+
+void FramePlanWidget::runShaderContract(const QString &graph, const QString &pass,
+                                        const QString &fragment, const QStringList &inputs,
+                                        bool unsupplied, std::optional<std::size_t> binding,
+                                        bool use_passthrough) {
+    Impl::ShaderContractFix fix;
+    fix.graph = graph.toStdString();
+    fix.pass = pass.toStdString();
+    fix.fragment = fragment.toStdString();
+    for (const auto &input : inputs) fix.inputs.push_back(input.toStdString());
+    fix.unsupplied = unsupplied;
+    fix.binding = binding;
+    impl_->contract_fix = std::move(fix);
+    if (use_passthrough) impl_->useEnginePassthrough();
+    else impl_->openContractShader();
+}
+
+void FramePlanWidget::runReloadRefusal(const QString &graph, const QString &pass,
+                                       bool disconnect) {
+    const auto name = pass.toStdString();
+    std::optional<Impl::ReloadRefusalFix> fix;
+    if (impl_->model && impl_->model->graph == graph.toStdString())
+        if (const auto node = std::ranges::find(impl_->model->nodes, name, &FramePlanNode::name);
+            node != impl_->model->nodes.end())
+            fix = impl_->reloadRefusalFor(*node);
+    if (!fix) {
+        impl_->showStatus(tr("%1's shader reloaded since: nothing to disconnect.").arg(pass));
+        return;
+    }
+    impl_->reload_refusal_fix = std::move(fix);
+    if (disconnect) impl_->disconnectRefusedInput();
+    else impl_->openRefusedShader();
+}
+
+void FramePlanWidget::pinBackendCandidate(const QString &candidate) {
+    impl_->pinCandidate(candidate.toStdString());
+}
+
+void FramePlanWidget::unpinBackend() { impl_->unpinBackend(); }
+
+void FramePlanWidget::freezePhysicalPlan() { impl_->freezePhysicalPlan(); }
+
+void FramePlanWidget::removeFrozenPhysicalPlan() { impl_->removeFrozenPlan(); }
+
 std::vector<FramePlanViewAxis> FramePlanWidget::taskViewAxes(
     const QString &task) const {
     if (!impl_->model || task.isEmpty()) return {};

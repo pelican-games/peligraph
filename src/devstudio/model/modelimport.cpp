@@ -109,6 +109,22 @@ std::string projectRelativeAssetPath(const std::filesystem::path &project_root, 
     return {generic.begin(), generic.end()};
 }
 
+std::map<std::string, std::string> registeredModelFiles(const std::filesystem::path &project_root,
+                                                        const Json &list_assets_result) {
+    std::map<std::string, std::string> files;
+    const auto assets = list_assets_result.is_object() ? list_assets_result.find("assets")
+                                                       : list_assets_result.end();
+    if (!list_assets_result.is_object() || assets == list_assets_result.end() || !assets->is_array())
+        return files;
+    for (const auto &asset : *assets) {
+        if (!asset.is_object() || asset.value("kind", std::string{}) != "model") continue;
+        const auto id = asset.value("id", std::string{});
+        const auto path = projectRelativeAssetPath(project_root, asset.value("path", std::string{}));
+        if (!path.empty() && !id.empty()) files[path] = id;
+    }
+    return files;
+}
+
 std::string numberedModelName(std::string_view stem, unsigned attempt) {
     if (attempt == 0) return {};
     std::string number = std::to_string(attempt);

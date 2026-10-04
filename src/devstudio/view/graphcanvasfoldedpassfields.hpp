@@ -25,6 +25,7 @@ class AttachmentOpsForm;
 class FullscreenPassInterfaceRow;
 class MaterialSettingsForm;
 class ShaderDefinesForm;
+class ViewSelectField;
 
 // GL-5a, decisions 1, 2, 5 and 6. A folded node of the root canvas that stands
 // for a pass the root's rendering section declares (Blank's present) is edited
@@ -54,6 +55,10 @@ class ShaderDefinesForm;
 // `.inputs`, `.output.<n>` (GL-5b: colour output n's target, picked from the
 // declared ones or made with New target…), the forms' own fields, `.serial`,
 // `.isolate`, `.noAlias.<resource>`.
+//
+// GL-5e, decision 1: a pass of a view family with axes also shows LP-4b's
+// View field (ViewSelectField, `.view.<axis>`); a pick is the Frame Plan's
+// View menu's edit (framePlanPassViewSelectRequest), sent the same way.
 class GraphCanvasFoldedPassFields final : public QWidget {
   public:
     using Send = std::function<void(const FramePlanEditRequest &request,
@@ -114,6 +119,9 @@ class GraphCanvasFoldedPassFields final : public QWidget {
     void fillOutputs();
     void outputPicked(std::size_t output, int index);
     void retarget(std::size_t output, const std::string &target);
+    // GL-5e, decision 1.
+    void showView(const FramePlanAuthoringPass &row);
+    void viewPicked();
 
     GraphCanvasModel &model_;
     GraphCanvasReadCapability graph_;
@@ -146,6 +154,12 @@ class GraphCanvasFoldedPassFields final : public QWidget {
     std::vector<QComboBox *> output_combos_;
     std::string outputs_shown_;
     NewTarget new_target_;
+    // GL-5e, decision 1: the View field, what it was loaded from, and the
+    // view_select it shows.
+    QLabel *view_caption_ = nullptr;
+    ViewSelectField *view_ = nullptr;
+    std::string view_shown_;
+    std::vector<FramePlanViewSelectAxis> view_select_;
 
     // Decision 5.
     QWidget *planning_ = nullptr;

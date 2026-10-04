@@ -610,6 +610,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
+    # GL-5e: the Graph offers the Frame Plan's ways out of a refused shader.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderinputcontract.cpp
     # UX-5b: the Pass fields hold the Pass Editor's Frame data row and its
     # UX-4a parts.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenpasssettings.cpp
@@ -673,6 +675,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/viewselectfield.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanedit.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenshadertemplate.cpp
+    # GL-5e: the Graph offers the Frame Plan's ways out of a refused shader.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/shaderinputcontract.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/fullscreenpasssettings.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/passform.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/passforms/rasterstateform.cpp
