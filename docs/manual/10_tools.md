@@ -585,6 +585,8 @@ scene の object 1 つだけの material を、その object の `simplemodelvie
   `actor_id` と最後に見た revision を付けた `set_object_material` 1 回で送り(scene の Undo で戻る)、`get_object_materials` の `drawn` と `source` を
   `<名前> (this object)` / `(model default: <名前>)` で見せ、`get_material_bindings` の `objects` / `object_overrides` を
   `(N objects, M with their own material)` に使います([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
+  ✅MT-2s-b(`9d15ddc0`)から、`material.object_unknown@1` に空でない `name` があれば、Studio の 1 文はその名前で言います
+  (`<name> cannot take a material of its own: <理由>`。無ければ今までどおり `Object <object> …`)。
 
 ### 移行の 2 method と移行専用 endpoint(✅MG-1)
 

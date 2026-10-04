@@ -158,7 +158,7 @@ Outliner の右クリックと **Scene** toolbar の **Add Object** は同じ 1 
 - **Undo**: coalesce key を付けないので、Undo 1 回で Add 1 回が戻ります。
 - **Inspector の編集の途中で押した Add Object は待ちます(✅Q-7)**: Inspector の値の編集が進行中(commit の途中を含む)に
   押すと、spawn は 1 本だけ待ち、Inspector の手が空いた時点で、その編集が残した scene revision の上に送られます
-  ([`InspectorModel::spawnObject()`](../../src/devstudio/model/inspectormodel.cpp#L3909))。待っている間は status bar(8 秒)と
+  ([`InspectorModel::spawnObject()`](../../src/devstudio/model/inspectormodel.cpp#L3914))。待っている間は status bar(8 秒)と
   Outliner の下の 1 行(`pelican.outlinerNotice`)に `Adding <名前> after the current edit.` が出ます
   ([Add Object の結果を status bar と Outliner に出す所](../../src/devstudio/view/mainwindow.cpp#L2199))。既に 1 本待っているときに
   押した 2 本目は、置き換えずに断ります。同じ 2 か所に
@@ -267,13 +267,13 @@ Outliner の行の右クリックの menu の先頭に **Duplicate** と **Delet
   Undo / Redo で object が戻ってきたとき(Delete の Undo など)は、その応答の `created_objects` の object を選びます
   ([committed の後に選ぶ所](../../src/devstudio/view/mainwindow.cpp#L2385))。
 - **断られたとき**は、status bar(8 秒)と Outliner の下の 1 行(`pelican.outlinerNotice`)に 1 文で出ます
-  ([断りの文](../../src/devstudio/model/inspectormodel.cpp#L1811))。例: engine が `cycle_detected` で断った付け替えは `Cannot move <名前> under <親>: <親> is inside <名前>.`、
+  ([断りの文](../../src/devstudio/model/inspectormodel.cpp#L1816))。例: engine が `cycle_detected` で断った付け替えは `Cannot move <名前> under <親>: <親> is inside <名前>.`、
   preview 中は `Cannot duplicate <名前> while a live preview is open; finish the preview first.`、physics の無い build で
   collider を含む object の複製は Q-6 と同じ文で `Cannot duplicate <名前>: This build has no physics module (physics.module_unavailable@1).`、
   もう無い object は `<名前> is no longer in the scene.` です。
 - **Inspector の編集が進行中(commit の途中を含む)のときは断ります。**待たせずに
   `Finish the edit in progress first, then <操作> again.` を同じ 2 か所に出します
-  ([進行中なら断る所](../../src/devstudio/model/inspectormodel.cpp#L3941))。進行中の編集が同じ object を変えているかも
+  ([進行中なら断る所](../../src/devstudio/model/inspectormodel.cpp#L3946))。進行中の編集が同じ object を変えているかも
   しれないためで、1 本だけ待たせる Add Object(✅Q-7)とは扱いが違います。
 - rename・複数選択の一括操作・scene をまたぐ移動はありません。
 
@@ -296,10 +296,10 @@ UX-13c(`4405641a`)の前は `scene_tree` で、Outliner は revision が変わ�
   今までどおり Studio が作る表示名で出し、付け替えも今までどおり断ります。宣言の位置が隙間なく並ぶこと・id が 0 でなく重複も無いこと・
   親の id が一覧にあることを検査し、外れた答えは使わず、持っている scene を残します([`ProjectOutlinerModel::updateScene()`](../../src/devstudio/model/project.cpp#L229))。
 - **Inspector**: 選んだ object の id を確かめる問いが `scene_outline {scene_id}` になりました(条件無し)。詳細は今までどおり `get_components` です
-  ([問いを積む所](../../src/devstudio/model/inspectormodel.cpp#L2277))。
+  ([問いを積む所](../../src/devstudio/model/inspectormodel.cpp#L2282))。
 - **古い engine**: `scene_outline` が `-32601`(method not found)で断られると、その engine の間は `scene_tree` で読みます(親は名前で引く
   今までの読み方)。Outliner と Inspector がそれぞれ 1 回ずつ問って覚え、engine に繋ぎ直すと問い直します
-  ([Outliner が覚える所](../../src/devstudio/view/mainwindow.cpp#L812)、[Inspector が覚える所](../../src/devstudio/model/inspectormodel.cpp#L3276))。
+  ([Outliner が覚える所](../../src/devstudio/view/mainwindow.cpp#L812)、[Inspector が覚える所](../../src/devstudio/model/inspectormodel.cpp#L3281))。
 - engine に繋ぎ直しても Studio は持っている scene と revision を捨てないので、繋ぎ直した後の最初の poll も(scene が 1 つなら)条件付きです
   (コードの読み)。同じ revision の答えで作り直さないのは、UX-13c の前の `scene_tree` の読みでも同じでした。
 - **重さ**: commit の記録では、1,000 object の test(Studio の test の fake の engine)で一覧全体の答えが約 104 KB、変わらない poll の答えが
@@ -553,7 +553,7 @@ material を選ぶと、`get_material` で文書のままの material を、続�
   ([`MaterialAssignSession::choose()`](../../src/devstudio/model/materialsmodel.cpp#L1097))。今と同じ material なら送りません。
   - **送り方**(決定 5): Material の行は自分で送らず、Inspector の scene の編集の session(`InspectorModel`)に渡します。session が、
     scene の編集で使っている `actor_id` と、最後に見た scene の revision を `base_scene_revision` に足し、自分の編集の 1 つとして送ります
-    ([`InspectorModel::submitObjectMaterial()`](../../src/devstudio/model/inspectormodel.cpp#L3968)、
+    ([`InspectorModel::submitObjectMaterial()`](../../src/devstudio/model/inspectormodel.cpp#L3973)、
     [Material の行から渡す所](../../src/devstudio/view/inspectorwidget.cpp#L330))。そのため **scene の Undo**(Inspector の Undo のボタン。Ctrl+Z も RU-1 から
     同じ Undo です)で戻ります(下の「Undo」)。別の編集が進んでいる間は送らず、行に `Finish the edit in progress first, then choose the material again.` が出ます。
     答えが `changed: false` なら編集にせず、Inspector の notice は `<何を>: nothing to change.` です。
@@ -578,7 +578,13 @@ material を選ぶと、`get_material` で文書のままの material を、続�
   `bind_material {model, material}`(model の全 primitive)を 1 回送ります。Model default は、割り当てを変えた primitive をそれぞれ model 自身の
   material(`get_material_bindings` の `slot`)に戻す `bindings` を送ります。primitive ごとに違う material を持つときは、combo は選べない項目
   `(differs per primitive)` を示します。MT-2s の着地時、engine の基本形(`engine://primitives/cube` など)では
-  この Model default が engine に断られました(engine の MT-2b の後は未確認。下の「MT-2s の残した穴」)。
+  この Model default が engine に断られました。engine の ✅MT-2b(`213562bb`)から、engine はこのとき割り当ての宣言を外し、答えの
+  `material_bindings` は `null` です。✅MT-2s-b(`9d15ddc0`)のシナリオで、基本形の Every Cube の Model default の後に `get_material_bindings` の
+  `material_bindings` が `null`、primitive 0 が `pelican.primitive.default` になり、combo が `Model default` を言い、両方の箱が灰になることを確かめました。
+  Studio は bind の答えの `material_bindings` を読まず、bind の後に `get_material_bindings` を読み直して、全 primitive の material が `slot` と
+  同じなら combo を Model default にします([その判定](../../src/devstudio/model/materialsmodel.cpp#L1041))。全 primitive が既に `slot` のままなら
+  Model default は何も送りません。送った後に別の client が外していて engine が `changed: false` を返したときは、Undo の項目を積まずに読み直すだけで、
+  行はまた選べます([Undo を積む条件](../../src/devstudio/model/materialsmodel.cpp#L1227)。✅MT-2s-b の決定 3。GUI からは起こせないので test だけ)。
   - 下の 1 行は `Applies to every <model> in this project (N objects, M with their own material).` です(例
     `Applies to every Cube in this project (2 objects, 1 with their own material).`。[`modelScopeLine()`](../../src/devstudio/model/materialsmodel.cpp#L403))。
     tooltip は `A material is bound to the model (<model>); an object with its own keeps it` です。
@@ -604,7 +610,7 @@ material を選ぶと、`get_material` で文書のままの material を、続�
   (`44b7b50a` から `7112072e` の前までの develop。実装者の報告では、MT-1s の `gui_material_from_blank` も step 20 で落ちていました)。
   MT-2s から、Inspector は flat な `schema.fields` の `list` 型を欄にせず飛ばします([飛ばす所](../../src/devstudio/model/inspectormodel.cpp#L358))。
   list の行はもともと schema の `node` から作るもので、simplemodelview の `/materials` はそこでも汎用の行にせず、
-  `Chosen in the Material rows above`(`pelican.inspectorListElsewhere`)の 1 行にします([`inspectorListShown()`](../../src/devstudio/model/inspectormodel.cpp#L1693))。
+  `Chosen in the Material rows above`(`pelican.inspectorListElsewhere`)の 1 行にします([`inspectorListShown()`](../../src/devstudio/model/inspectormodel.cpp#L1698))。
   実装者の報告では、engine は今 simplemodelview に `node` を送らないので、この 1 行は今は出ません(engine が送るようになったときの備えで、
   test だけが見ます)。
 
@@ -616,18 +622,22 @@ material を選ぶと、`get_material` で文書のままの material を、続�
   ボタンの文字は `Undo <何を>` で、書き込みの答えを待つ間は押せません。project を替えると消え、engine の起こし直しでは残ります(コードの読み)。
 - **This object の割り当て(`set_object_material`)は scene の Undo で戻ります**(✅MT-2s の決定 5)。Inspector の scene の編集の session の
   `actor_id` で送るので、Inspector の Undo(`pelican.inspectorUndo`)が engine の `undo {actor_id}` でそれを戻し、Redo も同じです
-  (シナリオの step 167〜170 が、Use model default の後に Inspector の Undo で上書きが戻ることを見ます)。Material の行は revision が動いたのを
+  (シナリオの step 202〜205 が、Use model default の後に Inspector の Undo で上書きが戻ることを見ます)。Material の行は revision が動いたのを
   見て読み直します。
 - Inspector の Material の行の **Undo**(`pelican.inspectorMaterialUndo`)は、Every <model> の `bind_material` だけを `previous.bindings` で
   戻します。履歴に項目があるときだけ見えます。ドックとは別の履歴で、Edit メニューの Undo Render Edit や Inspector の scene の Undo とも別です。
   ✅MT-2s から、項目は送った先の model を覚え、押した時点で別の object を選んでいても、その model に送り返します
   ([`MaterialAssignSession::undo()`](../../src/devstudio/model/materialsmodel.cpp#L1185))。MT-1s では押した時点の model に送っていました
-  (下の「残した穴」の MT-1s の項)。MT-2s の着地時、engine の基本形ではこの Undo が engine に断られました(MT-2b の後は未確認。下の「MT-2s の残した穴」)。
+  (下の「残した穴」の MT-1s の項)。MT-2s の着地時、engine の基本形ではこの Undo が engine に断られました。
+  ✅MT-2s-b のシナリオで、基本形でも Every Cube の Model default を行の Undo で戻すと model が `material_2` に戻り、両方の箱が赤に戻ることを確かめました
+  (Undo の表示は 1 つ前の項目 `Undo material_2 on every Cube` になります)。
 - `create_material` は戻せません(上)。
 
 **拒否**(決定 7)
 
-- MT-1 の拒否 13 種(`material.*@1`)、✅MT-2s で足した `material.object_unknown@1`(`Object <object> cannot take a material of its own: <理由>`)、
+- MT-1 の拒否 13 種(`material.*@1`)、✅MT-2s で足した `material.object_unknown@1`(`Object <object> cannot take a material of its own: <理由>`。
+  ✅MT-2s-b から、engine が `name` を付けたとき(空でない文字列)は `<name> cannot take a material of its own: <理由>`。
+  [名前で言う所](../../src/devstudio/model/inspectormodel.cpp#L1692))、
   `external_modification` を、Studio の 1 文の表で `<文> (<code>).` にします
   ([表](../../src/devstudio/model/inspectormodel.cpp#L1643)、[`materialRefusalDescription()`](../../src/devstudio/model/inspectormodel.cpp#L1679))。
   例: `materials/material.material.json changed outside Studio since it was read; it was read again, try again (external_modification).`。
@@ -658,22 +668,18 @@ material を選ぶと、`get_material` で文書のままの material を、続�
 
 **MT-2s の残した穴**(着地時の記録。実装者の報告):
 
-- **engine の基本形では、Every <model> の Model default と Material の行の Undo が通りません。**engine は
-  `bind_material {model: engine://primitives/cube, bindings: [{mesh: 0, primitive: 0, material: "pelican.primitive.default"}]}` を
-  `material.binding_invalid@1`(routing が無い・合わない)で断ります。最初の bind の答えの `previous.bindings` がちょうどこの形なので、
-  MT-1s の Every Cube の Model default も、それを送り返す Material の行の Undo も、基本形では断られます(engine に回しました)。
-  そのためシナリオは「Every Cube を Model default に戻す」を使わず、2 つ目の material(`material_2`)を作って Every Cube を `material` のまま、
-  Cube_001 だけを `material_2` にします。
-  MT-2s の直後に engine の MT-2b(`213562bb`)が入り、commit の記述では、送り返した bindings が全 primitive を model 自身の material
-  (基本形では `pelican.primitive.default`)に戻すとき、`bind_material` は書かずに bindings の文書と asset_data の割り当てを外します。
-  Studio の Model default と Material の行の Undo がこれで通るかは、Studio 側では確かめていません(未確認)。
-- `material.object_unknown@1` の `error_fields` は object の id だけなので、文は `Object 7 cannot take …` と読めます(名前を足すよう engine に回しました)。
-  engine の MT-2b(`213562bb`)は、object があるとき(別の scene にある・simplemodelview が無い)に `scene_id` と `name` を足しました。
-  Studio の 1 文は今も `{object}` だけを使うので、文はまだ id です(コードの読み)。
+- 着地時の記録の 2 つ —— engine の基本形で Every <model> の Model default と Material の行の Undo が `material.binding_invalid@1` で断られたこと
+  (シナリオは Model default を使わず `material_2` で代わりをしていました)、`material.object_unknown@1` の 1 文が object の id で読めたこと —— は、
+  engine の ✅MT-2b(`213562bb`)と Studio の ✅MT-2s-b(`9d15ddc0`)で済みました(上の「Every <model>」「Undo」「拒否」)。
 - ドックの **Assign to selected object** は今も model 単位の `bind_material` です(仕様に無いので触っていません)。
 - primitive が複数ある model の行(This object)、拒否の道 4 種、missing の印はシナリオで通していません(test だけ)。
 - engine の MT-2 で simplemodelview の flat な `schema.fields` に `list` の型が入りました。Studio は飛ばすようにしましたが、同じ形の欄を
   読む別の client があれば同じ所で落ちます(実装者の報告。engine に知らせました)。
+
+**MT-2s-b の残した穴**(着地時の記録。実装者の報告):
+
+- 名前で言う 1 文と `changed: false` の道は test だけです(拒否の道と `changed: false` は GUI から作れません)。
+- primitive が複数ある model の Every <model> の Model default は test だけです(MT-2s と同じ)。
 
 - test: `devstudio_materials_test`(`QT_OFFSCREEN`。test が engine の代わりに答えます)の
   [「MT-1s decision 1: the Materials dock lists the documents and their materials, a missing one greyed with its reason, and a poll whose digests are the same changes nothing」](../../test/devstudio_materials_test.cpp#L357)・
@@ -696,6 +702,11 @@ material を選ぶと、`get_material` で文書のままの material を、続�
   [「MT-2s decision 5: the Material rows' set_object_material is an edit of the Inspector's own session, so its Undo is the scene's Undo」](../../test/devstudio_inspector_test.cpp#L2760)
   は、`actor_id` と `base_scene_revision` が足されること、`changed: false` が編集にならないこと、拒否が未保存扱いにならないこと、
   commit の後の Undo が同じ actor で送られることを見ます。実装者の run で `ctest -R 'MT-1s|MT-2s'` 15 / 15、`studio_cpu` 702 / 702 が緑です。
+  ✅MT-2s-b は同じ `devstudio_materials_test` に
+  [「MT-2s-b decision 1: a refused object is called by its name when the engine gives one」](../../test/devstudio_materials_test.cpp#L1045)・
+  [「MT-2s-b decision 2: Model default on Every Cube is taken off (material_bindings null), reads as Model default, and its Undo binds the material again」](../../test/devstudio_materials_test.cpp#L1092)・
+  [「MT-2s-b decision 3: a Model default the engine has already (changed:false) leaves the rows choosable, with nothing to undo」](../../test/devstudio_materials_test.cpp#L1145)
+  の 3 本を足しました(test が返す答えは engine の MT-2b の形です)。実装者の run で `ctest -R 'MT-1s|MT-2s' -LE gpu` 18 / 18、`studio_cpu` 705 / 705 が緑です。
 - シナリオ: `gui_material_from_blank`(Blank から GUI だけで。§13.5「Studio の自動化面」)。
 
 ### Studio で game を再生・停止する(✅PM-3a / PM-3b / PM-3c)
@@ -803,7 +814,7 @@ PM-3b が edit での起動・Play / Stop・Keep を、PM-3c が Outliner の ru
   欄(生成された Transform でないもの)にボタンが出ます。押すと `get_components` でその object を読み、Transform の
   `runtime_json.local_trs`(ECS の今の値)の `pos` / `rotation` / `scale` を、authoring の Transform に書く `set_component_value`
   3 つの 1 回の `edit` にして送り(`base_revision` はその読みの `scene_revision`)、その編集に Keep の印を付けます
-  ([`handleTakeFromGame()`](../../src/devstudio/model/inspectormodel.cpp#L3217))。commit すると行は
+  ([`handleTakeFromGame()`](../../src/devstudio/model/inspectormodel.cpp#L3222))。commit すると行は
   `Take Transform from game committed…` です。v0 は Transform だけです。下の runtime の行を見ている間は出ません。
 
 **Stop**(✅PM-3b)
@@ -823,7 +834,7 @@ PM-3b が edit での起動・Play / Stop・Keep を、PM-3c が Outliner の ru
   [読み直す所](../../src/devstudio/view/mainwindow.cpp#L1661))。
 - **未保存の扱い**: Stop は scene revision を戻さず、新しい revision で scene を戻します(§13.5「再生のセッション」)。そのままでは
   Stop のたびに未保存に見えるので、Studio は、Play の前(edit の間)に scene が保存済みで、Stop が 1 件も keep しなかったとき、
-  Stop の後の最初の新しい revision を保存済みとして扱います([`InspectorModel::adoptRestoredRevisionAsSaved()`](../../src/devstudio/model/inspectormodel.cpp#L4027))。
+  Stop の後の最初の新しい revision を保存済みとして扱います([`InspectorModel::adoptRestoredRevisionAsSaved()`](../../src/devstudio/model/inspectormodel.cpp#L4032))。
 
 **再生中に変わること**(✅PM-3b)
 
@@ -3242,7 +3253,7 @@ Outputs の区は body に出力があるときだけ、Carry の区は body に
 - 出る所は、Graph タブの notice と、Frame Plan の status 行です。render target の form は、変種が断ったときと、ループの code の拒否のときにこの文を使います(後者は ✅RU-1b から。LP-2 で draw_loop の拒否 5 つが最上位の code で届くようになったためです)。
 - **変種の前置き(LP-0d)**: 変種(preview / xr)の preflight が断ったときは、code が何であっても前に `The <variant> graph refused it: ` が付きます。LP-0d から、変種の graph の拒否が graph の code のまま `variant` 付きで返るためです(それまで Frame Plan の render target の form は、`render_pipeline_preflight_failed` のときだけ前置きを付けていました)。
   - ✅PV-1(engine `a173e70c`)から engine は preview の変種で編集を断らないので、engine が `variant` を付けて返すのは xr だけです。`The preview graph refused it: ` は今の engine からは出ません(engine の側のコードの読み。Studio は変えていません)。
-  - `graph.loop_variant_missing@1` の material の変種は field `material_variant` で届きます(engine 5e246063)。code の横の最上位の `variant` は、どの拒否でも常に graph の変種で、前置きはそれで付けます(✅LP-4d2。[`graphRefusalVariant()`](../../src/devstudio/model/inspectormodel.cpp#L1796))。
+  - `graph.loop_variant_missing@1` の material の変種は field `material_variant` で届きます(engine 5e246063)。code の横の最上位の `variant` は、どの拒否でも常に graph の変種で、前置きはそれで付けます(✅LP-4d2。[`graphRefusalVariant()`](../../src/devstudio/model/inspectormodel.cpp#L1801))。
   - ⚠ RU-1b の当時は、この拒否が material の変種を `variant` という名前で運んでいました。そのため、message の `<code>: {…}` に同じ `variant` があれば graph の変種と見なさず、前置きを付けない回避を入れていました(その前は `The outline graph refused it: ` のように付いていました)。LP-4d2 でこの回避を外しました。
 - **赤い印**: 拒否が `graph.loop_*` の code で、`node` にループの id を持つとき、そのループの node の縁が赤くなり、hover で文が出ます。詳細表にも `refused` の行が出ます([`GraphCanvasModel::markRefusal()`](../../src/devstudio/model/graphcanvasmodel.cpp#L4725))。
   - 拒否が `loop_origin` を持つとき(回の node が断られた)は、ループと、その要素の分岐の body の中のその node の両方が赤くなります。
@@ -3934,10 +3945,10 @@ Outputs の区は body に出力があるときだけ、Carry の区は body に
   - 保存の最中なら、その node を名指したまま覚えて、編集できるようになったときに古い順に送ります([`GraphCanvasHeldEdits::sendOrHold()`](../../src/devstudio/view/graphcanvasrenderfields.cpp#L114))。image と pass の欄の parameters の編集は、覚えた後に同じ node の別の鍵が変わっていても、変えた鍵だけを当てます(JSON patch。[`heldParametersEdit()`](../../src/devstudio/view/graphcanvasrenderfields.cpp#L140))。Place の欄の選択も同じく覚えます。
   - image・Place・値の欄も、確定した時と覚えている間に `Saving the graph change...` を言います(LC-1s では pass の欄だけでした)。
 - **voice の帯**: `audio.playback` の node の下の帯(GL-2b の帯の位置)に、engine の `get_status.audio.voices`(✅CT-1。[第8章](08_gameplay.md) の「`get_status` の `audio`」)の状態を `playing · 1.2 s` / `paused · 1.2 s` の形で出します(秒は `position_seconds` の小数 1 桁)。`idle` は、play の state が `edit` の間は出さず、Play / Pause の間だけ `idle` と出します([`graphCanvasVoiceBands()`](../../src/devstudio/view/graphcanvaswidget.cpp#L1365))。読むのは、Play の帯が受けた UX-7 の 1 回 parse した `get_status` の返事です([voice の帯へ get_status を渡す所](../../src/devstudio/view/mainwindow.cpp#L1474))。
-- **起動時の致命の 1 文**: engine が起動時に構成を読めずに終わると(✅CT-1 から、致命の行 `Pelican fatal error : graph.port_field_missing@1 {...}` に code が出る)、Frame Plan の status 行が `The engine stopped: <code の 1 文> (<code>) in <file>. Fix the file (or Reload from disk) to start it again.` を言い、tooltip が致命の行そのものです([`engineStoppedSentence()`](../../src/devstudio/model/inspectormodel.cpp#L1739)、[起動時の致命を 1 文にする所](../../src/devstudio/view/frameplanwidget.cpp#L1589))。
+- **起動時の致命の 1 文**: engine が起動時に構成を読めずに終わると(✅CT-1 から、致命の行 `Pelican fatal error : graph.port_field_missing@1 {...}` に code が出る)、Frame Plan の status 行が `The engine stopped: <code の 1 文> (<code>) in <file>. Fix the file (or Reload from disk) to start it again.` を言い、tooltip が致命の行そのものです([`engineStoppedSentence()`](../../src/devstudio/model/inspectormodel.cpp#L1744)、[起動時の致命を 1 文にする所](../../src/devstudio/view/frameplanwidget.cpp#L1589))。
   - code は行の中の最初の `<名前空間>.<名前>@<版>` で、Studio が 1 文を持つ code のときだけこの形になります(持たなければ今までどおり行そのもの)。
-  - file は、IA-1s の前は行の中の最後の `.json` の path でした。UX-9 の時点の engine の行は file を言わないので、project.json の `basic_config.rendering_config_json`(例 `passes/main.json`)を使い([`projectRenderDocument()`](../../src/devstudio/model/inspectormodel.cpp#L1726))、それも読めなければ `the project's render documents` です。形は UX-8 で入れ、UX-9 で実際の engine の行で確かめました(下の test)。
-  - ✅CT-2(engine `51d1c2d8`)から、graph の拒否の致命の行には `"document":"project://passes/main.json"`(definition の body の node なら `definition` も)が入ります(第6章 §6.18 の CT-2 の項)。✅IA-1s から、file はまずこの `document` を `project://` を外して使い、`definition` があれば `definition <名前> of <文書>` にします(例 `... in definition blur of passes/main.json. ...`)。行の中の最後の `.json` の path は `document` の無い行のときだけ、project.json の推測はそれも無いときだけです([`engineStoppedSentence()` が document を読む所](../../src/devstudio/model/inspectormodel.cpp#L1739))。下の UX-9 の test は IA-1s で注記が「file は行が名指す文書(CT-2 の `document`)」に替わり、期待は `in passes/main.json` のままです(IA-1s の commit の差分)。
+  - file は、IA-1s の前は行の中の最後の `.json` の path でした。UX-9 の時点の engine の行は file を言わないので、project.json の `basic_config.rendering_config_json`(例 `passes/main.json`)を使い([`projectRenderDocument()`](../../src/devstudio/model/inspectormodel.cpp#L1731))、それも読めなければ `the project's render documents` です。形は UX-8 で入れ、UX-9 で実際の engine の行で確かめました(下の test)。
+  - ✅CT-2(engine `51d1c2d8`)から、graph の拒否の致命の行には `"document":"project://passes/main.json"`(definition の body の node なら `definition` も)が入ります(第6章 §6.18 の CT-2 の項)。✅IA-1s から、file はまずこの `document` を `project://` を外して使い、`definition` があれば `definition <名前> of <文書>` にします(例 `... in definition blur of passes/main.json. ...`)。行の中の最後の `.json` の path は `document` の無い行のときだけ、project.json の推測はそれも無いときだけです([`engineStoppedSentence()` が document を読む所](../../src/devstudio/model/inspectormodel.cpp#L1744))。下の UX-9 の test は IA-1s で注記が「file は行が名指す文書(CT-2 の `document`)」に替わり、期待は `in passes/main.json` のままです(IA-1s の commit の差分)。
 - test: `devstudio_graphcanvas_scene_test` の [「UX-9 decision 1: an unchanged pill sends nothing as it loses the keyboard, and Add opens the palette over a save in flight, adding its pick once the save lands」](../../test/devstudio_graphcanvas_scene_test.cpp#L10548)、[「UX-9 decision 2: a value typed into a side field goes to its node as the fields let go of it, held for that node while a save is in flight」](../../test/devstudio_graphcanvas_scene_test.cpp#L10670)、[「UX-9 decision 4: a voice's state reads as the band under its audio.playback -- playing and paused with where it is, idle only in a play session」](../../test/devstudio_graphcanvas_scene_test.cpp#L10751)、`devstudio_engine_failure_test` の [「UX-9 decision 5: an engine stopped at start by a buffer port without its element says the code's sentence and the file in the Frame Plan's status」](../../test/devstudio_engine_failure_test.cpp#L551)(engine を起動して、`Port data of sim needs element (graph.port_field_missing@1) in passes/main.json` を見る)。
 
 **一度だけ走る pass と、frame をまたいで残る image —— Schedule・Lifetime・once の帯・Recompute(✅PS-1s、`349af5e4`)**: engine の ✅PS-1(`render.image` の `lifetime`、pass / task の `schedule`、`rerun_once`、`get_frame_plan` の `last_run_generation` / `last_run_frame`。§13.5 の「`get_frame_plan` に足されたもの」、[第6章](06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」)を Graph の欄から書けるようにしました。GB-3 の海は、初期スペクトル h0 を毎 frame 計算し直していました(仕様の背景)。
@@ -5010,7 +5021,7 @@ Q-10 の時点では、埋め込んだ player は窓があるので実物の dev
 
 **`get_status` の返事は 1 回だけ parse します(✅UX-7)**: viewport は、誰が送った `get_status` の返事でも、生の bytes の signal `engineStatusRead` の後に、1 回 parse した JSON を `engineStatusParsed(request_id, status)` で渡します([渡す所](../../src/devstudio/viewport/embeddedviewport.cpp#L834))。Play の帯・Outliner の runtime の行・`wait_engine`([`render.published_frames` を読む所](../../src/devstudio/automation/automationcommands.cpp#L1819))はこれを読みます。UX-7 の前はそれぞれが GUI の thread で parse していて、ループを 16 回展開した graph で約 2 MB の返事が GUI を止めていました(仕様の背景。engine の ✅ST-1 で返事自体も小さくなりました)。UX-6b の `PlanPerfHub` は生の bytes を受けて thread pool で parse します。
 
-現在のシナリオは **67 本**です(`test/studio_scenarios/*.json` の数。✅GL-5b の `gui_graph_new_target` で 67 本になりました。✅MT-2s は新しいシナリオを足さず、`gui_material_from_blank` を延ばしました。それまでの数え方: ✅MT-1s の `gui_material_from_blank` で 66 本になりました。それまでの数え方: ✅CT-6s の `gui_build_rt_from_blank` で 65 本になりました。✅UX-15b の `gui_lower_layer_pin_freeze` で 63 本に、✅GL-5a の `gui_folded_pass_edit` で 64 本になりました。✅UX-15a は新しいシナリオを足さず、`rendering_settings_from_blank` を延ばしました。それまでの数え方: ✅HW-2s / AV-1s の `gui_assets_watch_verify` で 62 本になりました。それまでの数え方: ✅AB-1s の `gui_build_audio_reactive` で 61 本になりました。✅UX-12e は `gui_node_parameters` を、✅UX-12d と ✅UX-13d は `gui_settings_choose` を延ばしました。✅UX-14 は、CC-1 の後の絵に合わせて `gui_settings_choose`・`gui_build_ocean`・`gui_build_ocean_compute`・`gui_build_ltc` の期待を直しました(`gui_settings_choose` は CC-1c の後に `a954d38c` でもう一度)。それまでの数え方: ✅UX-10 の `gui_settings_choose` で 59 本に、✅UX-12a の `gui_node_parameters` で 60 本になりました。✅UX-12c は `gui_build_D` を、✅UX-12b は `gui_settings_choose` を延ばし、全シナリオの run で古くなっていた 4 本の期待(`deferred_loop_from_scratch` の光の向きの Raw、`menu_actions` の File の 5 項目、`gui_build_optimize` の provider 名の Draw sort、`loop_zone_wire` の Frame Plan の status 行。最後の 1 本は Studio の側を直しました)を直しました。それまでの数え方: ✅UX-8 の `gui_build_curve` で 57 本に、✅EL-5s の `gui_build_ocean_compute` で 58 本になりました。✅PS-1s / IA-1s / UX-11 は新しいシナリオを足さず、`gui_build_ocean`・`gui_build_ocean_compute`・`gui_build_ltc`・`graph_from_blank` を延ばしました。それまでの数え方: ✅GB-3 の `gui_build_ocean` と `gui_build_ltc` で 54 本に、✅RL-1s の `render_reload_external` で 55 本に、✅GB-4 の `gui_build_music` で 56 本になりました。それまでの数え方: ✅UX-3 の `graph_palette_kinds` で 43 本に、✅GB-1 の `gui_build_A`〜`gui_build_E` で 48 本に、✅RSX の `rendering_settings_from_blank` で 49 本に、✅GB-2 の `gui_build_full` と `gui_build_optimize` で 51 本に、✅GL-3a の `graph_fold_decisions` で 52 本になりました。それまでの数え方: ✅LP-4f1 の `loop_view_axis` と ✅LP-4f2 の `graph_template_bloom` で 31 本から 33 本に、✅EW-2 の `engine_window_embedded` で 34 本に、✅Q-19 の `loop_zone_read` で 35 本に、✅PM-3a の `play_pause_step` で 36 本に、✅PM-3b の `play_mode_roundtrip` と `play_view_camera` で 38 本に、✅PM-3c の `play_runtime_objects` で 39 本に、✅PM-3d で `play_view_camera` を `play_mode_roundtrip` にまとめて 38 本に、✅GL-1 の `graph_folded_features` で 39 本に、✅GL-2b の `graph_layers_origin` で 40 本に、✅GL-1d の `graph_from_blank` と `graph_from_blank_forward` で 42 本になりました)。
+現在のシナリオは **67 本**です(`test/studio_scenarios/*.json` の数。✅GL-5b の `gui_graph_new_target` で 67 本になりました。✅MT-2s と ✅MT-2s-b は新しいシナリオを足さず、`gui_material_from_blank` を延ばしました。それまでの数え方: ✅MT-1s の `gui_material_from_blank` で 66 本になりました。それまでの数え方: ✅CT-6s の `gui_build_rt_from_blank` で 65 本になりました。✅UX-15b の `gui_lower_layer_pin_freeze` で 63 本に、✅GL-5a の `gui_folded_pass_edit` で 64 本になりました。✅UX-15a は新しいシナリオを足さず、`rendering_settings_from_blank` を延ばしました。それまでの数え方: ✅HW-2s / AV-1s の `gui_assets_watch_verify` で 62 本になりました。それまでの数え方: ✅AB-1s の `gui_build_audio_reactive` で 61 本になりました。✅UX-12e は `gui_node_parameters` を、✅UX-12d と ✅UX-13d は `gui_settings_choose` を延ばしました。✅UX-14 は、CC-1 の後の絵に合わせて `gui_settings_choose`・`gui_build_ocean`・`gui_build_ocean_compute`・`gui_build_ltc` の期待を直しました(`gui_settings_choose` は CC-1c の後に `a954d38c` でもう一度)。それまでの数え方: ✅UX-10 の `gui_settings_choose` で 59 本に、✅UX-12a の `gui_node_parameters` で 60 本になりました。✅UX-12c は `gui_build_D` を、✅UX-12b は `gui_settings_choose` を延ばし、全シナリオの run で古くなっていた 4 本の期待(`deferred_loop_from_scratch` の光の向きの Raw、`menu_actions` の File の 5 項目、`gui_build_optimize` の provider 名の Draw sort、`loop_zone_wire` の Frame Plan の status 行。最後の 1 本は Studio の側を直しました)を直しました。それまでの数え方: ✅UX-8 の `gui_build_curve` で 57 本に、✅EL-5s の `gui_build_ocean_compute` で 58 本になりました。✅PS-1s / IA-1s / UX-11 は新しいシナリオを足さず、`gui_build_ocean`・`gui_build_ocean_compute`・`gui_build_ltc`・`graph_from_blank` を延ばしました。それまでの数え方: ✅GB-3 の `gui_build_ocean` と `gui_build_ltc` で 54 本に、✅RL-1s の `render_reload_external` で 55 本に、✅GB-4 の `gui_build_music` で 56 本になりました。それまでの数え方: ✅UX-3 の `graph_palette_kinds` で 43 本に、✅GB-1 の `gui_build_A`〜`gui_build_E` で 48 本に、✅RSX の `rendering_settings_from_blank` で 49 本に、✅GB-2 の `gui_build_full` と `gui_build_optimize` で 51 本に、✅GL-3a の `graph_fold_decisions` で 52 本になりました。それまでの数え方: ✅LP-4f1 の `loop_view_axis` と ✅LP-4f2 の `graph_template_bloom` で 31 本から 33 本に、✅EW-2 の `engine_window_embedded` で 34 本に、✅Q-19 の `loop_zone_read` で 35 本に、✅PM-3a の `play_pause_step` で 36 本に、✅PM-3b の `play_mode_roundtrip` と `play_view_camera` で 38 本に、✅PM-3c の `play_runtime_objects` で 39 本に、✅PM-3d で `play_view_camera` を `play_mode_roundtrip` にまとめて 38 本に、✅GL-1 の `graph_folded_features` で 39 本に、✅GL-2b の `graph_layers_origin` で 40 本に、✅GL-1d の `graph_from_blank` と `graph_from_blank_forward` で 42 本になりました)。
 `graph_read` は fixture を Graph タブで開き、`list` が objectName を返すこと・無い名前が
 `automation.widget_missing@1` で断られること・キャンバスが描いたものが `get_graph_instances` の中身と合うことを見ます
 ([シナリオ](../../test/studio_scenarios/graph_read.json))。✅GL-1 から root は既定で Render の領域だけを描く(値の node は隠れる)ので、`graph_read` は `Show:` の Value を押してから、root の 2 つの node(値の node `clock` と instance の `left`)を名前で待ちます。GL-1 の前は canvas の node の数(2)を数えていましたが、畳んだ node が並ぶので数えなくなりました。`graph_edit_roundtrip` は**実物の engine で**値の帯を
@@ -5248,9 +5259,11 @@ preview の判定と除外の伝播が直り([第6章 §6.13](06_rendering.md))�
 
 ✅CT-6s の `gui_build_rt_from_blank`(json の step は 79)は、File > New Project > Blank pipeline から GUI だけで、project の RT の shader を書いて trace の task を組みます(上の「RT を Graph で組む(✅CT-6s)」)。Add Object の Cube を置いて保存し(光線が当たる物)、`MainCamera` を選んでから Graph タブの palette を開き、絞り込みに `render.compute` を打ちます。shader の combo の横の **New…**(`pelican.graphCanvasPaletteComputeNew`)を押すと、combo が `project://shaders/ray_tracing  (ray tracing)` になり、project に `shaders/ray_tracing.rgen` / `.rmiss` / `.rchit` があり、`.rgen` が `#include "pelican_frame.glsl"` を持つことを見ます。Return で置くと、engine が 3 つの stage を読んでから `render_compute` とその image `render_compute__color` が描かれ、`get_graph_instances` の task が `ray_tracing` の `raygen` / `miss` / `closesthit` にその組を、`dispatch.rays_from.port` に `color` を持ち、image の format が `R16G16B16A16_SFLOAT` であることを見ます。compute の欄の Shader がその組を示し、reflection error の行が無いことを見てから、task の `color` を `present` の `+ input` へ drag し、notice の `Pass inputs saved.` と、frame plan の順(`__scene_acceleration_structure` → `render_compute` → `present`、`present` が `render_compute__color` を読む)を見ます。viewport の中央が前のグラデーションと違い、隅(miss の空)とも違う(cube の法線の色)ことを見て撮ります。最後に task の **More parameters** → `ray_tracing` の見出しを開き、`raygen` の欄がその組を示すこと、Max recursion に `2` を打って Return で `get_graph_instances` の `max_recursion` が 2 になり、`raygen` が残り、engine が trace を描き続ける(中央がグラデーションと違う)ことを見ます。打つ欄は New Project のフォルダと名前 `gb_rt`、palette の絞り込みの `render.compute`、Max recursion の `2` です([RT を Blank から組むシナリオ](../../test/studio_scenarios/gui_build_rt_from_blank.json))。ray tracing の pipeline を持つ device が要ります。実装者の run では 3 回目に緑でした(報告は 81 step と数えています。1・2 回目の赤は、シナリオの node の添字の書き違い —— Blank の graph は node が 0 個で、frame plan の先頭は `__scene_acceleration_structure` —— を直したもの)。報告の画素は、中央が `#bcbbff`、隅が `#65788b`、置く前のグラデーションの中央が `#bcbcbc` です(シナリオは値ではなく「違うこと」を見ます)。
 
-✅MT-1s の `gui_material_from_blank`(json の step は 91。✅MT-2s で 190)は、File > New Project > Blank pipeline から GUI だけで、箱の色を変えます(§13.1 の「Studio の Materials のドック」)。Add Object の Cube を置いて保存し、Frame Plan の **Add material pass…** で Forward opaque の pass `forward_opaque`(Create missing targets で `scene_color`、forward の既定にする)を足して engine の起こし直しを待ち、`scene_color` を `present` の可変の帯へ drag して、viewport に箱が出る(色が 64 以下で、中央が隅の背景とも前のグラデーションとも違う)ことを見ます(`add_primitive_object` と同じ道)。**View > Materials** でドックを前に出し、`list_materials` の文書が 0 件であることを見てから **New material…** を押し、Surface で `openpbr / opaque_single_sided` を選びます。名前は打たずに `material`、path は `materials/material.material.json` です。Create で engine の一覧にその文書が `registered: true` で入り、エディタの見出しがそれを示します。`base_color` の swatch で色のダイアログを開き、hex に `#ff0000` を打って OK で、文書の `base_color` が `[1.0, 0.0, 0.0, 1.0]` になります。Outliner で Cube を選び、Inspector の Material の範囲が `This object` で、combo が `(model default: pelican.primitive.default)` であることを見てから(✅MT-2s)、範囲を `Every Cube` に替え、combo が `Model default` で、その下の 1 行が `Applies to every Cube in this project (1 object, 0 with their own material)` を言うことを見て、combo で `material` を選ぶと、`get_material_bindings` の primitive 0 がそれになり、**起こし直さずに**箱の中央が赤寄り(`rgb` の赤が緑と青より 40 以上大きい)になり、Restart engine のボタンが出ていないことを見ます。続けて `specular_roughness` の spin に `0.8` を打って Return で文書がその値を持ち、ドックの Undo を 2 回押すと、1 回目で roughness が、2 回目で赤が文書から外れ(文書に `base_color` が無い。割り当ては残したまま)、箱の中央が赤寄りでなくなります。打つ欄は New Project のフォルダと名前 `material_project`、色の hex の `#ff0000`、roughness の `0.8` です([Materials のドックのシナリオ](../../test/studio_scenarios/gui_material_from_blank.json))。実装者の run では緑でした(報告は 93 step と数え、23.7 s、`PELICAN_STUDIO_SCREEN=1`)。報告の画素は、箱の中央が割り当て前 `#756f63`、割り当て後 `rgb(74, 1, 0)`、Undo の後 `rgb(66, 62, …)` です。`restart_required` の道、テクスチャ、primitive ごとの行、拒否はこのシナリオでは通していません。
+✅MT-1s の `gui_material_from_blank`(json の step は 91。✅MT-2s で 190、✅MT-2s-b で 225)は、File > New Project > Blank pipeline から GUI だけで、箱の色を変えます(§13.1 の「Studio の Materials のドック」)。Add Object の Cube を置いて保存し、Frame Plan の **Add material pass…** で Forward opaque の pass `forward_opaque`(Create missing targets で `scene_color`、forward の既定にする)を足して engine の起こし直しを待ち、`scene_color` を `present` の可変の帯へ drag して、viewport に箱が出る(色が 64 以下で、中央が隅の背景とも前のグラデーションとも違う)ことを見ます(`add_primitive_object` と同じ道)。**View > Materials** でドックを前に出し、`list_materials` の文書が 0 件であることを見てから **New material…** を押し、Surface で `openpbr / opaque_single_sided` を選びます。名前は打たずに `material`、path は `materials/material.material.json` です。Create で engine の一覧にその文書が `registered: true` で入り、エディタの見出しがそれを示します。`base_color` の swatch で色のダイアログを開き、hex に `#ff0000` を打って OK で、文書の `base_color` が `[1.0, 0.0, 0.0, 1.0]` になります。Outliner で Cube を選び、Inspector の Material の範囲が `This object` で、combo が `(model default: pelican.primitive.default)` であることを見てから(✅MT-2s)、範囲を `Every Cube` に替え、combo が `Model default` で、その下の 1 行が `Applies to every Cube in this project (1 object, 0 with their own material)` を言うことを見て、combo で `material` を選ぶと、`get_material_bindings` の primitive 0 がそれになり、**起こし直さずに**箱の中央が赤寄り(`rgb` の赤が緑と青より 40 以上大きい)になり、Restart engine のボタンが出ていないことを見ます。続けて `specular_roughness` の spin に `0.8` を打って Return で文書がその値を持ち、ドックの Undo を 2 回押すと、1 回目で roughness が、2 回目で赤が文書から外れ(文書に `base_color` が無い。割り当ては残したまま)、箱の中央が赤寄りでなくなります。打つ欄は New Project のフォルダと名前 `material_project`、色の hex の `#ff0000`、roughness の `0.8` です([Materials のドックのシナリオ](../../test/studio_scenarios/gui_material_from_blank.json))。実装者の run では緑でした(報告は 93 step と数え、23.7 s、`PELICAN_STUDIO_SCREEN=1`)。報告の画素は、箱の中央が割り当て前 `#756f63`、割り当て後 `rgb(74, 1, 0)`、Undo の後 `rgb(66, 62, …)` です。`restart_required` の道、テクスチャ、primitive ごとの行、拒否はこのシナリオでは通していません。
 
-✅MT-2s は `gui_material_from_blank` を延ばし、object ごとの割り当てを通します(§13.1 の「Studio の Materials のドック」の「割り当て」)。ドックの Undo の後、Outliner で Cube を選び直して Inspector の model の欄が `Cube (built-in)` を読み、汎用の list の行(`pelican.inspectorListRows`)が 0 であることを見ます(MT-2 の後に欄が出なくなっていた件の直し)。New material… をもう一度押し、名前は打たずに `material_2` を作って swatch で `#ff0000` にし、Every Cube は `material`(灰)のままであることを見ます。Add Object で 2 つ目の Cube(`Cube_001`)を足し、Transform の x に `1.1` を打って横に置くと、範囲は `Every Cube` のままで、1 行が `2 objects` を言います(新しい revision で読み直す)。範囲を `This object` にして combo が `(model default: material)` を言うことを見てから `material_2` を選ぶと、`get_material_bindings` の `object_overrides` が 1、combo が `material_2 (this object)`、model の割り当ては `material` のままです。MainCamera を選んで、**起こし直さずに** viewport の x 0.88 の点(Cube_001)が赤寄り(赤が緑と青より 40 以上大きい)で、中央(Cube)が赤寄りでないことを見ます。Cube_001 で `Every Cube` にすると 1 行が `Applies to every Cube in this project (2 objects, 1 with their own material).` で、`material_2` を選ぶと両方の箱が赤寄りになります。`Every Cube` を `material` に戻しても、`This object` にすると Cube_001 は `material_2 (this object)` のままです(自分の行が model に勝つ)。**Use model default** で `object_overrides` が 0、combo が `(model default: material)` になり、Inspector の Undo(scene の Undo)で `object_overrides` が 1 に戻り、combo が `material_2 (this object)` に戻ります。File > Save Scene で保存した scene に `material_2` があり、別の project を開いてからこの project を開き直すと、`object_overrides` が 1、model の割り当てが `material` で、Cube_001 が赤寄り、Cube が赤寄りでないことを見ます。新しく打つ欄は Transform の x の `1.1` と、2 つ目の色の hex の `#ff0000` です。実装者の run では緑でした(報告は 192 step と数え、37 s、`PELICAN_STUDIO_SCREEN=1`)。報告の画素は、2 つ並んだときの Cube_001 が `rgb(74, 1, 1)`、Cube が赤 66・緑 62 です。シナリオは「Every Cube を Model default に戻す」を使いません(engine の基本形で断られるため。§13.1 の「MT-2s の残した穴」)。primitive が複数ある model、拒否、missing の印はこのシナリオでは通していません。
+✅MT-2s は `gui_material_from_blank` を延ばし、object ごとの割り当てを通します(§13.1 の「Studio の Materials のドック」の「割り当て」)。ドックの Undo の後、Outliner で Cube を選び直して Inspector の model の欄が `Cube (built-in)` を読み、汎用の list の行(`pelican.inspectorListRows`)が 0 であることを見ます(MT-2 の後に欄が出なくなっていた件の直し)。New material… をもう一度押し、名前は打たずに `material_2` を作って swatch で `#ff0000` にし、Every Cube は `material`(灰)のままであることを見ます。Add Object で 2 つ目の Cube(`Cube_001`)を足し、Transform の x に `1.1` を打って横に置くと、範囲は `Every Cube` のままで、1 行が `2 objects` を言います(新しい revision で読み直す)。✅MT-2s-b からは、ここに Every Cube の Model default と行の Undo の手順が入ります(下の段落)。範囲を `This object` にして combo が `(model default: material)` を言うことを見てから `material_2` を選ぶと、`get_material_bindings` の `object_overrides` が 1、combo が `material_2 (this object)`、model の割り当ては `material` のままです。MainCamera を選んで、**起こし直さずに** viewport の x 0.88 の点(Cube_001)が赤寄り(赤が緑と青より 40 以上大きい)で、中央(Cube)が赤寄りでないことを見ます。Cube_001 で `Every Cube` にすると 1 行が `Applies to every Cube in this project (2 objects, 1 with their own material).` で、`This object` に戻すと Cube_001 は `material_2 (this object)` のままです。**Use model default** で `object_overrides` が 0、combo が `(model default: material)` になり、Inspector の Undo(scene の Undo)で `object_overrides` が 1 に戻り、combo が `material_2 (this object)` に戻ります。File > Save Scene で保存した scene に `material_2` があり、別の project を開いてからこの project を開き直すと、`object_overrides` が 1、model の割り当てが `material` で、Cube_001 が赤寄り、Cube が赤寄りでないことを見ます。新しく打つ欄は Transform の x の `1.1` と、2 つ目の色の hex の `#ff0000` です。実装者の run では緑でした(報告は 192 step と数え、37 s、`PELICAN_STUDIO_SCREEN=1`)。報告の画素は、2 つ並んだときの Cube_001 が `rgb(74, 1, 1)`、Cube が赤 66・緑 62 です。MT-2s の着地時、シナリオは「Every Cube を Model default に戻す」を使わず(engine の基本形で断られたため)、Cube_001 が自分の `material_2` を持った後に Every Cube を `material_2` にして両方の箱の赤を見てから `material` に戻していました。この手順は ✅MT-2s-b で下の手順に置き換わりました。primitive が複数ある model、拒否、missing の印はこのシナリオでは通していません。
+
+✅MT-2s-b(`9d15ddc0`)は `gui_material_from_blank` に、engine の MT-2b の後の基本形の Every Cube の Model default と Material の行の Undo を足しました(json の step は 225)。Cube_001 を足して 1 行が `2 objects` を言った後(step 120。範囲は `Every Cube`、model は `material`)、`material_2` を選ぶと model がそれになり、MainCamera を選んで中央(Cube)と x 0.88 の点(Cube_001)の両方が赤寄りであることを見ます(step 122〜133)。Cube_001 を選び直して combo で **Model default** を選ぶと、`get_material_bindings` の `material_bindings` が `null`、primitive 0 の material が `pelican.primitive.default` になり、combo が `Model default`、行の Undo が `Undo Model default on every Cube` を言います(step 139〜144)。両方の箱が赤寄りでなくなり(step 147〜150)、行の Undo を押すと model が `material_2` に戻り、Undo の表示が 1 つ前の `Undo material_2 on every Cube` になり、両方がまた赤寄りです(step 155〜167)。続けて Every Cube を `material` に戻し(step 172〜173)、上の This object の手順に入ります。新しく打つ欄はありません。実装者の run では緑でした(報告は 227 step と数え、40.7 s、`PELICAN_STUDIO_SCREEN=1`)。報告の画素は、両方が赤のとき `rgb` ≒ (74, 1, 0)、Model default の後の灰が赤 117・緑 111 です。名前で言う拒否の 1 文と `changed: false` の道は GUI から作れないので、このシナリオでは通していません(test だけ)。
 
 ✅GL-5b の `gui_graph_new_target`(json の step は 60)は、File > New Project > Blank pipeline から GUI だけで、Graph タブの中で render target を宣言して使います(上の「New render target を Frame Plan と Graph で 1 つの関数に(✅GL-5b)」)。Graph タブの palette を `target_ref` に絞り、target の combo で **New render target…** を選ぶと note が `OK opens New render target` を言い、Return で palette が閉じて New render target の form が名前 `render_target` 入りで開きます(打ちません)。種類で Explicit format を選んで format が `R16G16B16A16_SFLOAT` であることを見て OK を押すと、`get_render_authoring_context` の `render_targets[0]` が `render_target` になり、`render_target_ref` の node が置かれ、文書の `nodes[0].parameters.name` がそれを名指します。続けて palette を `material_pass` に絞り、contract `forward_opaque_v1` で置くと engine が起こし直し(route default)、draw ループのゾーンが描かれます。`render_target_ref` の resource の出力を material pass の color のソケットへ drag して文書の `nodes[4].inputs.color.node` が `render_target_ref` になり、同じ出力を `present` の `+` 入力へ drag すると `Pass inputs saved.` と、target を書く pass から `present` への線(`render_material_pass->present`。GL-1f)が出て、中央の画素がグラデーションと違います。Graph タブの Undo でその線が消え、画素が前と同じに戻ることを見ます。打つ欄は New Project のフォルダと名前 `graph_target`、palette の絞り込みの `target_ref` と `material_pass` です([Graph で New render target のシナリオ](../../test/studio_scenarios/gui_graph_new_target.json))。実装者の run では 3 回目に緑でした(23.6 s。1 回目は既定の Scene color の target を material pass の color に繋ぐ編集が format mismatch で断られ、form で Explicit format を選ぶ手順を足した。2 回目は `present` への線の名前の書き違い)。報告の画素は、中央が `#bcbcbc` → `#000000` → Undo で `#bcbcbc` です。詳細欄の出力の付け替えと `New target: …` はこのシナリオでは通していません(unit test だけ)。既存の `gui_folded_pass_edit` と `graph_palette_kinds` も、実装者の run で緑でした。
 
@@ -5581,7 +5594,8 @@ with PelicanRpc("mygame") as rpc:   # 第 1 引数は project の dir。既定�
 | `render.compute` の `ray_tracing` を汎用の欄に(stage ごとの shader の候補、union の Shader / List)、`dispatch` の `groups_from` / `rays_from` の port を task の image port の combo に、compute の欄と palette の New… で RT の雛形(raygen / miss / closest hit)、Task Editor の New ray tracing も同じ雛形、RT の拒否 16 種の 1 文 | ✅CT-6s `827eddd7`(engine の CT-6。シナリオ `gui_build_rt_from_blank`。mode の変更は再起動の道に乗らず拒否の 1 文まで) |
 | Materials のドック(View > Materials、`list_materials` の一覧と見えている間の poll、surface の宣言から作る欄 —— slider / spin / 色の swatch(linear は sRGB で見せる)/ check / テクスチャの combo、default と違う値の太字と Reset to default、Tags / Alpha mode / Surface と `restart_required` の再起動、`list_surfaces` から New material…、Assign to selected object、ドックの Undo、`material.*` と `external_modification` の 1 文)、Inspector の Material の行(model 単位の 1 行と使う object の数、primitive ごとの行、自分の Undo)、screenshot の `rgb` | ✅MT-1s `2d81ef51`(engine の MT-1 / MT-1b。シナリオ `gui_material_from_blank`。object ごとの割り当ては下の MT-2s の行) |
 | New render target を Frame Plan と Graph で 1 つの関数に(`presentNewRenderTarget()` / `proposedRenderTargetName()`)、palette の `render.target_ref` の combo の New render target…、詳細欄の color 出力の行(宣言済みの target から選び直す・`New target: <pass>_color…`)、詳細欄の編集が断られたら root から読み直す、Add の入口と書き先の表 | ✅GL-5b `60ff3a2c`(シナリオ `gui_graph_new_target`。Add は束ねていない —— 寄せ方は GL-6 の判断。GL-5c は未着手) |
-| Inspector の Material の行を object ごとに: 範囲の切り替え(This object が既定で `set_object_material`、Every <model> は `bind_material`)、`get_object_materials` から描いている material と `(this object)` / `(model default: …)`、Use model default、primitive の行も範囲に従う、`objects` / `object_overrides` の「N objects, M with their own material」を revision ごとに読み直す、object の割り当ては scene の Undo、Material の行の Undo は送った model へ、`material.object_unknown@1` の 1 文と missing の印、Inspector が simplemodelview の list 型の欄で止まっていた件の直し | ✅MT-2s `7112072e`(engine の MT-2。シナリオ `gui_material_from_blank` を延ばした。ドックの Assign to selected object は model 単位のまま。基本形の Model default / Undo は着地時に engine が断った —— engine の MT-2b `213562bb` の後は未確認) |
+| Inspector の Material の行を object ごとに: 範囲の切り替え(This object が既定で `set_object_material`、Every <model> は `bind_material`)、`get_object_materials` から描いている material と `(this object)` / `(model default: …)`、Use model default、primitive の行も範囲に従う、`objects` / `object_overrides` の「N objects, M with their own material」を revision ごとに読み直す、object の割り当ては scene の Undo、Material の行の Undo は送った model へ、`material.object_unknown@1` の 1 文と missing の印、Inspector が simplemodelview の list 型の欄で止まっていた件の直し | ✅MT-2s `7112072e`(engine の MT-2。シナリオ `gui_material_from_blank` を延ばした。ドックの Assign to selected object は model 単位のまま。基本形の Model default / Undo は着地時に engine が断った —— engine の MT-2b `213562bb` の後、✅MT-2s-b でシナリオが通す) |
+| 基本形の Every <model> の Model default と Material の行の Undo をシナリオで通す、`material.object_unknown@1` を engine の `name` で言う、`changed: false` の答えで行が止まらない | ✅MT-2s-b `9d15ddc0`(engine の MT-2b。シナリオ `gui_material_from_blank` の `material_2` の代わりの手順を置き換えた) |
 
 Qt Inspectorは再帰schemaのListを行IDと値の一覧で表示します。`Add`で行の値をJSON入力し、`Edit`で選択行の値を変更、`Remove`で削除、`Up`/`Down`で順序を変えます。`$row`や`next_id`を入力する必要はありません。移動は同じ行IDを保持し、通常のUndo/Redoと保存を使用します。省略されたListにも行を追加できます。generated・pending・read-onlyのcomponentとList内部のネストしたListは編集対象外です。
 

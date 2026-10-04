@@ -2388,7 +2388,7 @@ test: [`materialdocumentrpc_test` の MT-1b の GPU test](../../test/materialdoc
 - **model を読み直すとき**: instance は上書きの指定を持ち続け、model の reload(`bind_material` やファイルの変更)が作る新しい template に対して解き直します([reload で解き直す所](../../src/core/renderer/polygoninstancecontainer.cpp#L1415))。この経路の test はありません(未確認)。
 - **名前が解けない上書き**: 読み込みや投影のときに解けない名前は断りません。警告を出し、その行が無いものとして描きます(全 primitive の行が解けていればそれ、無ければ model の既定。`get_object_materials` ではその行が `resolved: false`)。`set_object_material` は書く前に知らない名前を `material.name_unknown@1` で断ります。
 - **Play 中**: `set_object_material` は `edit` を通るので、Play 中の扱いは他の scene の編集と同じ経路です(コードの読み)。Play 中の編集の test はありません(未確認)。
-- **Studio**: ✅MT-2s(`7112072e`)から、Inspector の Material の行が既定で選んだ object だけに `set_object_material` を送り、Every <model> に切り替えると `bind_material` です([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
+- **Studio**: ✅MT-2s(`7112072e`)から、Inspector の Material の行が既定で選んだ object だけに `set_object_material` を送り、Every <model> に切り替えると `bind_material` です([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。engine の基本形の Every <model> の Model default と Material の行の Undo は、上の MT-2b の外す道を通ります(✅MT-2s-b `9d15ddc0` のシナリオ `gui_material_from_blank` で確かめました)。
 
 test: [`mt2_object_material_test` の GPU test](../../test/mt2_object_material_test.cpp#L241)(Blank の project に箱を 2 つ置き、`create_material` で赤を作って `set_object_material` で右の箱だけを赤に。次の frame で右だけが赤く、左は既定の色。`get_object_materials`・`get_material_bindings` の `objects` / `object_overrides`・MP-1 の `drawn_materials`、同じ値で `changed: false`、undo / redo、`previous` での戻し、primitive と slot での指定、拒否 3 種で scene の revision が動かないこと、保存した scene の行と次の起動で右の箱が赤いこと)。
 
