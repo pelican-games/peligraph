@@ -83,6 +83,11 @@ class P {
         schema_.choices_from = GraphParameterChoices{std::move(rpc), std::move(key), std::move(field), {}};
         return *this;
     }
+    // RTL-1b: a map object's keys, from an RPC's list.
+    P &keyChoicesFrom(std::string rpc, std::string key, std::string field = {}) {
+        schema_.key_choices_from = GraphParameterChoices{std::move(rpc), std::move(key), std::move(field), {}};
+        return *this;
+    }
     P &choicesFromGraph(std::initializer_list<const char *> ops) {
         GraphParameterChoices choices;
         for (const auto *op : ops) choices.graph_ops.emplace_back(op);
@@ -293,20 +298,26 @@ P rayTracing() {
                                               "layout; refused with one)."))
         .field(rayShaderList("closesthit").describe("The closest-hit shaders, in index order (required without a "
                                                     "ray group layout; refused with one)."))
-        .field(array("traced_ray_types", string(""))
+        // RTL-1b: the names come from the ray group layout the root names
+        // (get_render_authoring_context's ray_layout).
+        .field(array("traced_ray_types", string("").choicesFrom(authoring_context, "ray_layout.ray_types"))
                    .describe("The layout's ray types this task traces, each once (required with a ray group "
                              "layout)."))
         .field(object("misses")
+                   .keyChoicesFrom(authoring_context, "ray_layout.misses")
                    .item(shader(""))
                    .describe("The layout's miss name to its shader, one for every miss (required with a ray group "
                              "layout)."))
         .field(object("hit_shaders")
-                   .item(object("").item(object("")
-                                             .field(shader("closesthit").required())
-                                             .field(shader("anyhit"))
-                                             .field(shader("intersection")
-                                                        .describe("Required in a procedural group, refused in a "
-                                                                  "triangles one."))))
+                   .keyChoicesFrom(authoring_context, "ray_layout.ray_types")
+                   .item(object("")
+                             .keyChoicesFrom(authoring_context, "ray_layout.groups", "name")
+                             .item(object("")
+                                       .field(shader("closesthit").required())
+                                       .field(shader("anyhit"))
+                                       .field(shader("intersection")
+                                                  .describe("Required in a procedural group, refused in a "
+                                                            "triangles one."))))
                    .describe("Traced ray type to layout group to its hit shaders, for every traced type and every "
                              "group (required with a ray group layout)."))
         .field(rayShaderList("callable").describe("The callable shaders, in index order."))
@@ -737,6 +748,33 @@ OrderedJson bound(double value) {
     return value;
 }
 
+// The catalog form of where a value (choices_from) or a key
+// (key_choices_from) is chosen from.
+OrderedJson choicesJson(const GraphParameterChoices &choices) {
+    OrderedJson from;
+    if (!choices.graph_ops.empty()) {
+        from = OrderedJson{{"graph_nodes", choices.graph_ops}};
+    } else if (!choices.asset_parameter.empty()) {
+        // CT-5: derivedAssetManifestPath: the manifest beside the asset.
+        from = OrderedJson{{"asset_manifest", {{"parameter", choices.asset_parameter},
+                                               {"manifest", "<asset>.import.json"},
+                                               {"key", choices.key}}}};
+    } else {
+        from = OrderedJson{{"rpc", choices.rpc}, {"key", choices.key}};
+        if (!choices.field.empty()) from["field"] = choices.field;
+    }
+    // CT-5: one value as a string, several as an array (one of them).
+    if (!choices.where.empty()) {
+        auto where = OrderedJson::object();
+        for (const auto &[name, values] : choices.where) {
+            if (values.size() == 1) where[name] = values.front();
+            else where[name] = values;
+        }
+        from["where"] = std::move(where);
+    }
+    return from;
+}
+
 OrderedJson itemJson(const GraphParameterSchema &schema) {
     auto result = graphParameterSchemaJson(schema);
     result.erase("name");
@@ -804,30 +842,9 @@ nlohmann::ordered_json graphParameterSchemaJson(const GraphParameterSchema &para
     if (parameter.soft_max) result["soft_max"] = bound(*parameter.soft_max);
     if (!parameter.asset_kind.empty()) result["asset_kind"] = parameter.asset_kind;
     if (!parameter.extensions.empty()) result["extensions"] = parameter.extensions;
-    if (const auto &choices = parameter.choices_from) {
-        OrderedJson from;
-        if (!choices->graph_ops.empty()) {
-            from = OrderedJson{{"graph_nodes", choices->graph_ops}};
-        } else if (!choices->asset_parameter.empty()) {
-            // CT-5: derivedAssetManifestPath: the manifest beside the asset.
-            from = OrderedJson{{"asset_manifest", {{"parameter", choices->asset_parameter},
-                                                   {"manifest", "<asset>.import.json"},
-                                                   {"key", choices->key}}}};
-        } else {
-            from = OrderedJson{{"rpc", choices->rpc}, {"key", choices->key}};
-            if (!choices->field.empty()) from["field"] = choices->field;
-        }
-        // CT-5: one value as a string, several as an array (one of them).
-        if (!choices->where.empty()) {
-            auto where = OrderedJson::object();
-            for (const auto &[name, values] : choices->where) {
-                if (values.size() == 1) where[name] = values.front();
-                else where[name] = values;
-            }
-            from["where"] = std::move(where);
-        }
-        result["choices_from"] = std::move(from);
-    }
+    if (const auto &choices = parameter.choices_from) result["choices_from"] = choicesJson(*choices);
+    // RTL-1b: a map object's keys, in choices_from's form.
+    if (const auto &choices = parameter.key_choices_from) result["key_choices_from"] = choicesJson(*choices);
     if (parameter.items) result["items"] = itemJson(*parameter.items);
     if (!parameter.fields.empty()) {
         auto fields = OrderedJson::array();

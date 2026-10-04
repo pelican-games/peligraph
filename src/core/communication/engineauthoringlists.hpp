@@ -76,9 +76,14 @@ void holdEngineShadersReflectionForTesting(bool held);
 // reflection_error. An engine:// stem is get_engine_shaders' entries of the
 // stem (building while that list builds; refresh does not apply).
 // A reference the resolver refuses throws std::invalid_argument.
+// RTL-1b: `virtual_includes` are generated includes a project source may
+// read, as the pass that runs it would give them (the project's ray group
+// layout header, __pelican_ray_group_layout.glsl); they are part of the
+// answer's key, so a changed layout builds it again.
 using ShaderReferenceResolver = std::function<ResolvedRef(std::string_view)>;
-nlohmann::ordered_json shaderInterfaceStatusJson(std::string_view reference, bool refresh,
-                                                 const ShaderReferenceResolver &resolve);
+nlohmann::ordered_json shaderInterfaceStatusJson(
+    std::string_view reference, bool refresh, const ShaderReferenceResolver &resolve,
+    std::vector<std::pair<std::string, std::string>> virtual_includes = {});
 // Stops the worker after the stage it is reflecting and joins it; done
 // answers are kept, queued builds dropped. The engine calls it with
 // stopEngineShadersReflection.

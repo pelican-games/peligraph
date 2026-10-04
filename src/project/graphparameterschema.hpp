@@ -94,6 +94,10 @@ struct GraphParameterSchema {
     std::string asset_kind;
     std::vector<std::string> extensions;
     std::optional<GraphParameterChoices> choices_from;
+    // RTL-1b: where a map object's keys are chosen from (an RPC's list, as
+    // choices_from's), e.g. ray_tracing.misses' keys from the layout's
+    // misses. Listed only; the op's parser judges a key it does not have.
+    std::optional<GraphParameterChoices> key_choices_from;
     // An array's elements; an object's members when it is a map (any key).
     std::shared_ptr<const GraphParameterSchema> items;
     // An object's named members.

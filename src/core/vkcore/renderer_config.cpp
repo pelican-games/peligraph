@@ -23,6 +23,7 @@
 #include "../renderingpass/renderingpassconfigloader.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/rendertargetcontainer.hpp"
+#include "../shader/raytracingrefusal.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../ui/module.hpp"
@@ -444,6 +445,26 @@ std::string renderPipelineFallbackConfigJson(
     return config.dump(2);
 }
 
+bool isRenderPipelineFallbackConfig(std::string_view rendering_config_json) {
+    const auto config = nlohmann::json::parse(rendering_config_json, nullptr, false);
+    if (!config.is_object()) return false;
+    const auto rendering = config.find("rendering");
+    if (rendering == config.end() || !rendering->is_object() ||
+        rendering->contains("ray_group_layout"))
+        return false;
+    const auto graphs = rendering->find("rendering_passes");
+    if (graphs == rendering->end() || !graphs->is_array() || graphs->size() != 1) return false;
+    const auto &graph = graphs->front();
+    const auto passes = graph.is_object() ? graph.find("passes") : graph.end();
+    if (passes == graph.end() || !passes->is_array() || passes->size() != 1) return false;
+    const auto &pass = passes->front();
+    if (!pass.is_object() || pass.value("name", std::string{}) != renderPipelineFallbackPassName)
+        return false;
+    const auto shader = pass.find("shader");
+    return shader != pass.end() && shader->is_object() &&
+           shader->value("fragment", std::string{}) == "engine://fallback_clear";
+}
+
 nlohmann::json renderPipelineRefusalJson(
     const std::exception &error, std::string_view root_json,
     std::string_view root_reference) {
@@ -468,6 +489,12 @@ nlohmann::json renderPipelineRefusalJson(
         if (named.detail().is_object()) refusal = named.detail();
         code = named.code();
         message = named.what();
+    } else if (const auto *ray =
+                   dynamic_cast<const RayTracingRefusal *>(&error)) {
+        // RTL-1b: a ray tracing task's refusal by the parser's code, with
+        // the fields it was raised with; the message is the parser's.
+        if (ray->fields().is_object()) refusal = ray->fields();
+        code = ray->code();
     } else if (auto coded = splitCodedRefusalMessage(error.what())) {
         if (coded->fields.is_object()) refusal = coded->fields;
         code = coded->code;
@@ -618,6 +645,10 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
     RenderingPassConfigRegistrationDependencies::Options
         flat_options;
     flat_options.load_document = hooks.load_document;
+    // RTL-1b (BS-1): the engine's fallback generation stands in for a project
+    // with or without a ray group layout, so its mode is not judged.
+    flat_options.judge_ray_layout_mode =
+        !isRenderPipelineFallbackConfig(rendering_config_json);
     flat_options.validate_prepared_generation =
         [default_pass_name, &prepared_flat_rendering_pass_id,
          validate_live_materials =

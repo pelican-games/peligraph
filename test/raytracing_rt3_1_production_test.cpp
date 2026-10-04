@@ -1556,6 +1556,22 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     CHECK(diagnostics.named_tlas_instance_counts.at("left") == 1);
     CHECK(diagnostics.named_tlas_instance_counts.at("right") == 1);
     CHECK(diagnostics.named_tlas_instance_counts.at("empty") == 0);
+    // RTL-1b (engine_backlog 4): each named TLAS names its BLASes, as
+    // active_blas_inputs lists them; the one that selects nothing has none.
+    for (const auto *name : {"left", "right"}) {
+        CAPTURE(name);
+        const auto &blas = diagnostics.named_tlas_blas.at(name);
+        CHECK_FALSE(blas.empty());
+        for (const auto &entry : blas)
+            CHECK(std::find(diagnostics.active_blas_inputs.begin(), diagnostics.active_blas_inputs.end(), entry) !=
+                  diagnostics.active_blas_inputs.end());
+    }
+    CHECK(diagnostics.named_tlas_blas.at("empty").empty());
+    {
+        const auto json = rayQueryAccelerationStructureDiagnosticsToJson(diagnostics);
+        CHECK(json.at("named_tlas_blas").at("left").size() == diagnostics.named_tlas_blas.at("left").size());
+        CHECK(json.at("named_tlas_blas").at("empty").empty());
+    }
     CHECK(diagnostics.tlas_build_count == 4);
     CHECK(diagnostics.blas_build_count == 2);
 #if PELICAN_WITH_RPC
@@ -7528,6 +7544,12 @@ TEST_CASE("RTL-1a edit_ray_layout adds a miss with its task in one batch, takes 
         CHECK(result.at("committed") == false);
         CHECK_THAT(result.at("error").at("message").get<std::string>(),
                    ContainsSubstring("miss_shader_missing"));
+        // RTL-1c: the refusal at commit is RTL-1b's typed one: the parser's
+        // code, the task and the miss it lacks, the feature that declares it.
+        CHECK(result.at("error").at("code") == "pelican.ray_tracing.miss_shader_missing@1");
+        CHECK(result.at("error").at("task") == "wp386_trace");
+        CHECK(result.at("error").at("miss") == "aux");
+        CHECK(result.at("error").at("document") == "project://features/wp386_procedural.json");
         CHECK(readWp374aText(layout_path) == layout_bytes);
         REQUIRE(rtl1aFrame().empty());
     }

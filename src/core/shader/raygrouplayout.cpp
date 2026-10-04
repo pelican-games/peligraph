@@ -1,5 +1,6 @@
 #include "raygrouplayout.hpp"
 #include "../../project/renderconfigdocument.hpp"
+#include "raytracingrefusal.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -353,9 +354,14 @@ std::uint32_t findIndex(
     std::string_view domain) {
     const auto found = std::find(names.begin(), names.end(), name);
     if (found == names.end()) {
-        throw std::runtime_error(
+        // RTL-1b: {name, kind}; a task's parser adds the task.
+        std::string kind{domain};
+        std::replace(kind.begin(), kind.end(), ' ', '_');
+        throw RayTracingRefusal(
+            "pelican.ray_group_name_unknown@1",
+            {{"name", std::string{name}}, {"kind", std::move(kind)}},
             "pelican.ray_group_name_unknown@1: " + std::string{domain} +
-            " '" + std::string{name} + "'");
+                " '" + std::string{name} + "'");
     }
     return static_cast<std::uint32_t>(found - names.begin());
 }
@@ -750,10 +756,19 @@ void RayLayoutRuntimeState::configure(RayLayoutSemanticMode mode) {
     mode_ = mode;
 }
 
+std::string_view rayLayoutModeName(RayLayoutSemanticMode mode) noexcept {
+    return mode == RayLayoutSemanticMode::LayoutV3 ? "layout" : "none";
+}
+
+RayLayoutModeChanged::RayLayoutModeChanged(RayLayoutSemanticMode from,
+                                           RayLayoutSemanticMode to)
+    : std::runtime_error(
+          "pelican.ray_layout_mode_change_requires_restart@1: ray layout semantic mode cannot change during a process lifetime"),
+      from_(from), to_(to) {}
+
 void RayLayoutRuntimeState::validate(RayLayoutSemanticMode mode) const {
     if (configured_ && mode_ != mode) {
-        throw std::runtime_error(
-            "pelican.ray_layout_mode_change_requires_restart@1: ray layout semantic mode cannot change during a process lifetime");
+        throw RayLayoutModeChanged{mode_, mode};
     }
 }
 
@@ -761,6 +776,12 @@ RayLayoutSemanticMode rayLayoutSemanticMode(
     const RayTracingProjectConfig *config) noexcept {
     return config == nullptr ? RayLayoutSemanticMode::LegacyNoLayout
                              : RayLayoutSemanticMode::LayoutV3;
+}
+
+std::optional<RayLayoutSemanticMode> currentRayLayoutMode() noexcept {
+    const auto *runtime = FastModuleContainer::tryGet<RayLayoutRuntimeState>();
+    if (runtime == nullptr || !runtime->configured()) return std::nullopt;
+    return runtime->mode();
 }
 
 std::uint32_t RayGroupLayout::rayTypeIndex(std::string_view name) const {
@@ -1473,10 +1494,10 @@ loadRayTracingProjectConfig(
             throw std::runtime_error(
                 "pelican.ray_tracing.bindings_without_layout@1: ray_bindings requires ray_group_layout");
         }
-        if (const auto *runtime =
-                FastModuleContainer::tryGet<RayLayoutRuntimeState>()) {
-            runtime->validate(RayLayoutSemanticMode::LegacyNoLayout);
-        }
+        // RTL-1b: the process's mode is judged by the render pipeline
+        // registration once the rest of the candidate has been checked, not
+        // here (this reads the startup preflight's root, a candidate's and
+        // the published root's alike).
         return {};
     }
     if (!runtime_shader_compiler_enabled) {
@@ -1497,10 +1518,6 @@ loadRayTracingProjectConfig(
         authored_root.at("ray_group_layout").get<std::string>();
     result->layout = parseRayGroupLayout(
         load_document(layout_reference), layout_reference);
-    if (const auto *runtime =
-            FastModuleContainer::tryGet<RayLayoutRuntimeState>()) {
-        runtime->validate(RayLayoutSemanticMode::LayoutV3);
-    }
     if (has_bindings) {
         if (!authored_root.at("ray_bindings").is_string() ||
             authored_root.at("ray_bindings").get_ref<const std::string &>().empty()) {

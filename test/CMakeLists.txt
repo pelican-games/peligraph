@@ -3853,6 +3853,14 @@ if(PELICAN_WITH_RPC AND WIN32)
     target_compile_definitions(pelican_test_pb1_problems_test PRIVATE
         PELICAN_PB1_PLAYER="$<TARGET_FILE:pelican_player>")
     add_dependencies(pelican_test_pb1_problems_test pelican_player)
+    # RTL-1b: a reload that adds a ray group layout (restart_required after
+    # every other check) and a layout project refused at start (the fallback),
+    # through a headless --rpc --render-fallback player.
+    pelican_define_test(rtl1b_ray_layout_restart_test GPU pelican_project stb)
+    target_include_directories(pelican_test_rtl1b_ray_layout_restart_test PRIVATE ${stb_SOURCE_DIR})
+    target_compile_definitions(pelican_test_rtl1b_ray_layout_restart_test PRIVATE
+        PELICAN_RTL1B_PLAYER="$<TARGET_FILE:pelican_player>")
+    add_dependencies(pelican_test_rtl1b_ray_layout_restart_test pelican_player)
 endif()
 
 add_test(

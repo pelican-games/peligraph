@@ -53,7 +53,7 @@ struct RendererTestAccess {
 
     static RayQueryAccelerationStructureDiagnostics
     rayQueryAccelerationStructureDiagnostics(const Target &renderer) {
-        return renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+        return renderer.rayQueryAccelerationStructureDiagnostics();
     }
 
     static std::size_t

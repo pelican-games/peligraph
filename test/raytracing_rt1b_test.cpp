@@ -9,6 +9,7 @@
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/shader/raytracingrefusal.hpp"
 #include "../src/core/shader/raytracingvalidation.hpp"
 #include "../src/core/shader/raytracingoracle.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
@@ -20,6 +21,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <functional>
 #include <array>
 #include <bit>
 #include <chrono>
@@ -724,6 +726,136 @@ TEST_CASE("WP366 root sidecar is single-load and drives the complete task gramma
             Catch::Matchers::ContainsSubstring(
                 "pelican.ray_tracing.layout_requires_runtime_compiler@1"));
         CHECK(loads == 0);
+    }
+}
+
+// RTL-1b: the task parser's ray tracing refusals carry their code and the
+// fields known where they are raised (RayTracingRefusal); what() is the
+// sentence it always was.
+TEST_CASE("RTL-1b the ray tracing task parser refuses by a typed code with its fields and the same message",
+          "[ray-tracing][rt1b][rtl1b][rejection]") {
+    const auto root = Pelican::TestSupport::renderGraphRoot(nlohmann::json{{"ray_group_layout", "layout.json"}});
+    const auto project = loadRayTracingProjectConfig(
+        root, [](std::string_view) { return std::string{layoutJson}; }, true);
+    REQUIRE(project);
+    const auto config = nlohmann::json::parse(R"json({
+      "compute_tasks":[{
+        "name":"trace",
+        "ray_tracing":{
+          "raygen":"shaders/trace",
+          "traced_ray_types":["primary"],
+          "misses":{"sky":"shaders/sky","shadow_open":"shaders/open"},
+          "hit_shaders":{"primary":{
+            "opaque":{"closesthit":"shaders/opaque"},
+            "foliage":{"closesthit":"shaders/foliage"}
+          }}
+        },
+        "writes":["mask"],
+        "resource_ports":{"mask":{"resource":"mask","access":"storage"}},
+        "dispatch":{"rays_from":{"port":"mask"}}
+      }]
+    })json");
+    REQUIRE_NOTHROW(parseComputeTaskDefinitionsFromConfigJson(config, project.get()));
+    struct Refused {
+        std::string code;
+        nlohmann::json fields;
+        std::string message;
+    };
+    const auto refuse = [&](const std::function<void(nlohmann::json &)> &change,
+                            const RayTracingProjectConfig *layout) {
+        auto invalid = config;
+        change(invalid["compute_tasks"][0]["ray_tracing"]);
+        try {
+            (void)parseComputeTaskDefinitionsFromConfigJson(invalid, layout);
+        } catch (const RayTracingRefusal &refusal) {
+            return Refused{refusal.code(), refusal.fields(), refusal.what()};
+        }
+        FAIL("the task was not refused");
+        return Refused{};
+    };
+    const auto with_layout = [&](const std::function<void(nlohmann::json &)> &change) {
+        return refuse(change, project.get());
+    };
+
+    {
+        const auto refused = with_layout([](auto &rt) { rt["hit_shaders"]["primary"].erase("foliage"); });
+        CHECK(refused.code == "pelican.ray_tracing.hit_shader_missing@1");
+        CHECK(refused.fields == nlohmann::json{{"task", "trace"}, {"ray_type", "primary"}, {"group", "foliage"}});
+        CHECK(refused.message ==
+              "pelican.ray_tracing.hit_shader_missing@1: compute task 'trace' group='foliage' ray_type='primary' "
+              "available=[opaque]");
+    }
+    {
+        const auto refused = with_layout([](auto &rt) { rt["misses"]["skyy"] = "shaders/sky"; });
+        CHECK(refused.code == "pelican.ray_tracing.miss_shader_unknown@1");
+        CHECK(refused.fields == nlohmann::json{{"task", "trace"}, {"miss", "skyy"}});
+        CHECK(refused.message == "pelican.ray_tracing.miss_shader_unknown@1: compute task 'trace' miss='skyy'");
+    }
+    {
+        const auto refused = with_layout([](auto &rt) { rt["misses"].erase("shadow_open"); });
+        CHECK(refused.code == "pelican.ray_tracing.miss_shader_missing@1");
+        CHECK(refused.fields == nlohmann::json{{"task", "trace"}, {"miss", "shadow_open"}});
+    }
+    {
+        const auto refused = with_layout([](auto &rt) { rt["hit_shaders"]["primary"]["bark"] = {{"closesthit", "x"}}; });
+        CHECK(refused.code == "pelican.ray_tracing.hit_shader_unknown_group@1");
+        CHECK(refused.fields == nlohmann::json{{"task", "trace"}, {"ray_type", "primary"}, {"group", "bark"}});
+    }
+    {
+        const auto refused = with_layout([](auto &rt) { rt["hit_shaders"]["shadow"] = nlohmann::json::object(); });
+        CHECK(refused.code == "pelican.ray_tracing.hit_shader_untraced@1");
+        CHECK(refused.fields == nlohmann::json{{"task", "trace"}, {"ray_type", "shadow"}});
+    }
+    {
+        const auto refused = with_layout([](auto &rt) { rt["traced_ray_types"] = nlohmann::json::array(); });
+        CHECK(refused.code == "pelican.ray_tracing.traced_ray_types_invalid@1");
+        CHECK(refused.fields == nlohmann::json{{"task", "trace"}});
+    }
+    {
+        // A ray type the layout does not have: the layout lookup's code, with
+        // the task.
+        const auto refused = with_layout([](auto &rt) { rt["traced_ray_types"] = {"primary", "glow"}; });
+        CHECK(refused.code == "pelican.ray_group_name_unknown@1");
+        CHECK(refused.fields == nlohmann::json{{"name", "glow"}, {"kind", "ray_type"}, {"task", "trace"}});
+        CHECK(refused.message == "pelican.ray_group_name_unknown@1: ray type 'glow'");
+    }
+    {
+        const auto refused = with_layout([](auto &rt) {
+            rt["hit_shaders"]["primary"]["opaque"]["intersection"] = "shaders/box";
+        });
+        CHECK(refused.code == "pelican.ray_tracing.unsupported_shader_stage@1");
+        CHECK(refused.fields ==
+              nlohmann::json{{"task", "trace"}, {"ray_type", "primary"}, {"group", "opaque"}, {"stage", "intersection"}});
+    }
+    {
+        const auto refused = with_layout([](auto &rt) {
+            rt["miss"] = "shaders/legacy";
+            rt["closesthit"] = "shaders/legacy";
+        });
+        CHECK(refused.code == "pelican.ray_tracing.legacy_syntax_with_layout@1");
+        CHECK(refused.fields == nlohmann::json{{"task", "trace"}, {"keys", {"closesthit", "miss"}}});
+        CHECK(refused.message ==
+              "pelican.ray_tracing.legacy_syntax_with_layout@1: compute task 'trace' must use "
+              "traced_ray_types/misses/hit_shaders");
+    }
+    {
+        // Without a layout: the stage the form without one does not take.
+        const auto refused = refuse([](auto &rt) {
+            rt = {{"raygen", "shaders/trace"}, {"miss", "shaders/m"}, {"closesthit", "shaders/c"},
+                  {"anyhit", "shaders/a"}};
+        }, nullptr);
+        CHECK(refused.code == "pelican.ray_tracing.unsupported_shader_stage@1");
+        CHECK(refused.fields == nlohmann::json{{"task", "trace"}, {"stage", "anyhit"}});
+    }
+    {
+        // The layout's own name lookup without a task: the name and its kind.
+        try {
+            (void)project->layout.groupIndex("bark");
+            FAIL("an unknown group was found");
+        } catch (const RayTracingRefusal &refusal) {
+            CHECK(refusal.code() == "pelican.ray_group_name_unknown@1");
+            CHECK(refusal.fields() == nlohmann::json{{"name", "bark"}, {"kind", "group"}});
+        }
     }
 }
 

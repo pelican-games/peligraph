@@ -55,6 +55,7 @@
 #include "../renderingpass/renderingpasscontainer.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../shader/pipelinefactory.hpp"
+#include "../shader/raygrouplayout.hpp"
 #include "../renderdoc/renderdoccapture.hpp"
 #include "../renderer/spritescene.hpp"
 #include "../renderer/camera.hpp"
@@ -1643,7 +1644,15 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         return nlohmann::json{
             {"instance_id", instance_id},
             {"ray_tracing", {{"procedural_oracle",
-                modules.pipelines.proceduralOracleStatus(active_pipelines)}}},
+                modules.pipelines.proceduralOracleStatus(active_pipelines)},
+                // RTL-1b: the ray layout mode this process started in
+                // ("none" | "layout"; null before it is configured). A
+                // committed edit that changes it says restart_required.
+                {"ray_layout_mode", [] {
+                    const auto mode = currentRayLayoutMode();
+                    return mode ? nlohmann::json(std::string{rayLayoutModeName(*mode)})
+                                : nlohmann::json(nullptr);
+                }()}}},
             {"project_root", projectRootString(modules.path_resolver)},
             {"scene", modules.scene_loader.currentScene()},
             {"scene_source", {{"hot_reload", false},

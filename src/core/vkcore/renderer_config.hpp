@@ -135,6 +135,11 @@ inline constexpr std::string_view renderPipelineFallbackPassName =
     "render_pipeline_fallback";
 std::string renderPipelineFallbackConfigJson(
     std::string_view default_pass_name);
+// RTL-1b: whether a rendering configuration is the fallback generation's
+// (renderPipelineFallbackConfigJson's one pass, with the launch's feature
+// overlays or without). Its ray layout mode is not judged: it stands in for a
+// project started with or without a ray group layout.
+bool isRenderPipelineFallbackConfig(std::string_view rendering_config_json);
 
 // BS-1: the code of a startup refusal that carries no name of its own (the
 // one render_pipeline_preflight_failed a reload's ticket gets for it).

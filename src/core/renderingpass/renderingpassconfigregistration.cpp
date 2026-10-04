@@ -1516,6 +1516,19 @@ RegisteredRenderGraphVariantFamily RegistrationStages::publish() {
                     prepared_generation.candidate());
         }
     }
+    // RTL-1b: whether the root names a ray group layout is fixed when the
+    // process starts. A candidate of the other mode is refused here, after
+    // its tasks were parsed, its shaders compiled and its generation
+    // validated, and before anything is staged or published: the editor
+    // then knows the mode was the only thing in the way and commits the
+    // documents for the next start (restart_required).
+    if (first.options.judge_ray_layout_mode) {
+        if (const auto *runtime =
+                FastModuleContainer::tryGet<RayLayoutRuntimeState>()) {
+            runtime->validate(
+                rayLayoutSemanticMode(ray_tracing_project.get()));
+        }
+    }
     std::function<void(
         const RendererRuntimeGeneration &)>
         coordinated_commit;

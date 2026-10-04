@@ -1750,8 +1750,24 @@ TEST_CASE("CT-6 the catalog lists render.compute's ray_tracing and dispatch as f
         CHECK(field(ray_tracing, list).at("variants") ==
               Json::array({Json{{"kind", "shader"}}, Json{{"kind", "array"}, {"items", {{"kind", "shader"}}}}}));
     }
-    CHECK(field(ray_tracing, "traced_ray_types").at("items") == Json{{"kind", "string"}});
+    // RTL-1b: the names are chosen from the ray group layout the root names
+    // (get_render_authoring_context's ray_layout): a traced ray type, a miss
+    // key, a hit_shaders ray type key and its group key.
+    const Json from_context{{"rpc", "get_render_authoring_context"}};
+    const auto choices = [&](std::string_view key, std::string_view by = {}) {
+        auto result = from_context;
+        result["key"] = std::string{key};
+        if (!by.empty()) result["field"] = std::string{by};
+        return result;
+    };
+    CHECK(field(ray_tracing, "traced_ray_types").at("items") ==
+          Json{{"kind", "string"}, {"choices_from", choices("ray_layout.ray_types")}});
     CHECK(field(ray_tracing, "misses").at("items") == Json{{"kind", "shader"}});
+    CHECK(field(ray_tracing, "misses").at("key_choices_from") == choices("ray_layout.misses"));
+    CHECK(field(ray_tracing, "hit_shaders").at("key_choices_from") == choices("ray_layout.ray_types"));
+    CHECK(field(ray_tracing, "hit_shaders").at("items").at("key_choices_from") ==
+          choices("ray_layout.groups", "name"));
+    CHECK_FALSE(field(ray_tracing, "hit_shaders").at("items").at("items").contains("key_choices_from"));
     const auto group = field(ray_tracing, "hit_shaders").at("items").at("items");
     CHECK(group.at("kind") == "object");
     CHECK(names(group) == std::vector<std::string>{"closesthit", "anyhit", "intersection"});

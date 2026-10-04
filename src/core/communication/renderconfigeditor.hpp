@@ -29,6 +29,8 @@
 
 namespace Pelican {
 
+enum class RayLayoutSemanticMode : std::uint8_t;
+
 // RD-1: get_render_documents / restore_render_documents named a reference
 // that is not a render document the current composition writes. Fields:
 // {method, reference, reason}; reason is "engine_document",
@@ -238,6 +240,11 @@ struct RenderConfigEditorDependencies {
     // then composes what is on disk even when no document changed, since
     // none of it is live. Unset: never.
     std::function<bool()> runtime_fallback;
+    // RTL-1b: the ray layout mode this process runs in (production:
+    // currentRayLayoutMode). get_render_authoring_context reports it as
+    // ray_layout.mode ("none" | "layout"); unset or nullopt: not configured
+    // (null).
+    std::function<std::optional<RayLayoutSemanticMode>()> ray_layout_mode;
     // FG-2: draws a verify_fold job's three runs on a worker thread
     // (graphfoldverify.hpp; production: runFoldVerifyProcesses). Unset:
     // verify_fold is fold_verify_unavailable {reason: "no_runner"}.
@@ -615,6 +622,22 @@ class RenderConfigEditorService {
     // (when the root's section holds it), or nullopt for any other error.
     std::optional<nlohmann::ordered_json> physicalFragmentStaleRefusal(
         const std::exception_ptr &error, std::string_view root_bytes,
+        nlohmann::ordered_json details) const;
+    // RTL-1b: a ray tracing task's refusal (RayTracingRefusal) by its own
+    // code, its fields beside `details`, and for a task the document that
+    // declares it (`document`: the feature, the preset or the root) and, for
+    // a task a graph node made, the node (`node`), both read from `documents`
+    // composed again. Nullopt for any other error.
+    // RTL-1b: get_render_authoring_context's ray_layout:
+    //   {mode: "none" | "layout" | null, reference: string | null,
+    //    ray_types: [name], groups: [{name, type}], misses: [name],
+    //    default_group: string | null[, error: {code, message}]}
+    // The names are the layout document's the root names; one that cannot be
+    // read or parsed lists none and says why in `error`.
+    nlohmann::ordered_json rayLayoutAuthoringNames() const;
+    std::optional<nlohmann::ordered_json> rayTracingTaskRefusal(
+        const std::exception_ptr &error,
+        const RenderConfigCandidateDocumentSet *documents,
         nlohmann::ordered_json details) const;
     nlohmann::ordered_json rejection(
         std::string code, std::string message,

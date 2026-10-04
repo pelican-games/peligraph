@@ -829,9 +829,8 @@ lowerRayTracingTlasInstancePlan(
 
 nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
     const RayQueryAccelerationStructureDiagnostics &diagnostics) {
-    nlohmann::json inputs = nlohmann::json::array();
-    for (const auto &input : diagnostics.active_blas_inputs) {
-        inputs.push_back({
+    const auto blas_json = [](const RayQueryBlasInputDiagnostics &input) {
+        return nlohmann::json{
             {"geometry_kind",
              input.geometry_kind == RayGeometryKind::aabbs
                  ? "aabbs"
@@ -844,7 +843,18 @@ nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
              input.index_device_address},
             {"vertex_device_address",
              input.vertex_device_address},
-        });
+        };
+    };
+    nlohmann::json inputs = nlohmann::json::array();
+    for (const auto &input : diagnostics.active_blas_inputs) {
+        inputs.push_back(blas_json(input));
+    }
+    // RTL-1b: each named TLAS's BLASes, in resident_blas_keys' form.
+    nlohmann::json named_blas = nlohmann::json::object();
+    for (const auto &[name, entries] : diagnostics.named_tlas_blas) {
+        auto listed = nlohmann::json::array();
+        for (const auto &input : entries) listed.push_back(blas_json(input));
+        named_blas[name] = std::move(listed);
     }
     return {
         {"requested", diagnostics.requested},
@@ -856,6 +866,7 @@ nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
         {"resident_blas_keys", inputs},
         {"tlas_instance_count", diagnostics.tlas_instance_count},
         {"named_tlas_instance_counts", diagnostics.named_tlas_instance_counts},
+        {"named_tlas_blas", std::move(named_blas)},
         {"geometry_pool_generation",
          diagnostics.geometry_pool_generation},
         {"model_rebuild_generation",
@@ -1002,6 +1013,24 @@ bool RayQueryAccelerationStructureScope::FrameBuild::recordNamedTopLevel(
     recordTopLevelConsumerBarrier(command_buffer, vkcore);
     candidate_->named_tlas.emplace(definition->name, std::move(tlas));
     candidate_->diagnostics.named_tlas_instance_counts.emplace(definition->name, selected.size());
+    // RTL-1b: the BLASes its instances reference, as active_blas_inputs
+    // lists them (an instance names its BLAS by device address).
+    std::vector<RayQueryBlasInputDiagnostics> named_blas;
+    for (const auto &input : candidate_->diagnostics.active_blas_inputs) {
+        const auto used = std::any_of(candidate_->blas.begin(), candidate_->blas.end(), [&](const auto &entry) {
+            const auto &variant = entry.first.front();
+            return variant.geometry_kind == input.geometry_kind &&
+                   variant.geometry_allocation_id == input.geometry_allocation_id &&
+                   variant.geometry_flags == input.geometry_flags &&
+                   entry.second->index_input_address == input.index_device_address &&
+                   entry.second->vertex_input_address == input.vertex_device_address &&
+                   std::any_of(selected.begin(), selected.end(), [&](const auto &instance) {
+                       return instance.accelerationStructureReference == entry.second->address;
+                   });
+        });
+        if (used) named_blas.push_back(input);
+    }
+    candidate_->diagnostics.named_tlas_blas.emplace(definition->name, std::move(named_blas));
     ++candidate_->diagnostics.tlas_build_count;
     return true;
 }
@@ -1224,6 +1253,7 @@ RayQueryAccelerationStructureScope::recordFrame(
     }
     candidate->diagnostics = diagnostics_;
     candidate->diagnostics.named_tlas_instance_counts.clear();
+    candidate->diagnostics.named_tlas_blas.clear();
     candidate->diagnostics.requested = true;
     candidate->diagnostics.excluded = classification.excluded;
     candidate->diagnostics.tlas_instance_count =

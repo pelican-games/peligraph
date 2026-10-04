@@ -4763,7 +4763,7 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     }
     result["ray_query_acceleration_structures"] =
         rayQueryAccelerationStructureDiagnosticsToJson(
-            rayQueryAccelerationStructureDiagnosticsForTesting());
+            rayQueryAccelerationStructureDiagnostics());
     // The physical target plan is the generation's; how large its
     // resolution sources are now is not.
     if (frame_graph->target_plan != nullptr &&
@@ -5322,7 +5322,7 @@ std::vector<std::string> Renderer::currentFramePlanOrderForTesting() const {
 }
 
 RayQueryAccelerationStructureDiagnostics
-Renderer::rayQueryAccelerationStructureDiagnosticsForTesting() const {
+Renderer::rayQueryAccelerationStructureDiagnostics() const {
     const auto *frame_graph_runtime =
         FastModuleContainer::tryGet<
             FrameGraphRuntimeContainer>();

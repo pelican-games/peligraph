@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -162,9 +163,37 @@ struct RayGroupLayout {
         RayEngineRecordField field) const noexcept;
 };
 
+// RTL-1b: how the ray layout mode is spelled to a client: "none" (no ray
+// group layout) or "layout".
+std::string_view rayLayoutModeName(RayLayoutSemanticMode mode) noexcept;
+
+// RTL-1b: the restart_reason code of a committed render edit or reload the
+// running engine cannot take because it adds or removes the ray group layout.
+inline constexpr const char *rayLayoutModeChangedCode = "ray_layout_mode_changed";
+
+// RTL-1b: a candidate whose root has (or lacks) a ray group layout, judged in
+// a process started in the other mode. The render pipeline registration
+// raises it only after every other check of the candidate passed (its tasks
+// parsed, its shaders compiled, its generation validated), so the editor
+// commits the documents with restart_required. what() keeps the sentence the
+// refusal always had (pelican.ray_layout_mode_change_requires_restart@1).
+class RayLayoutModeChanged : public std::runtime_error {
+  public:
+    RayLayoutModeChanged(RayLayoutSemanticMode from, RayLayoutSemanticMode to);
+
+    [[nodiscard]] RayLayoutSemanticMode from() const noexcept { return from_; }
+    [[nodiscard]] RayLayoutSemanticMode to() const noexcept { return to_; }
+
+  private:
+    RayLayoutSemanticMode from_;
+    RayLayoutSemanticMode to_;
+};
+
 // Process-lifetime runtime gate, owned by FastModuleContainer.  Parsing stays
-// pure; startup configures this before builtin ECS registration, and render
-// graph reloads validate against the immutable mode.
+// pure; startup configures this before builtin ECS registration, and the
+// render pipeline registration validates each candidate generation against
+// the immutable mode once the candidate has passed every other check
+// (RTL-1b). The engine's fallback generation is not judged.
 DECLARE_MODULE(RayLayoutRuntimeState) {
     bool configured_ = false;
     RayLayoutSemanticMode mode_ = RayLayoutSemanticMode::LegacyNoLayout;
@@ -181,6 +210,14 @@ DECLARE_MODULE(RayLayoutRuntimeState) {
 
 RayLayoutSemanticMode rayLayoutSemanticMode(
     const RayTracingProjectConfig *config) noexcept;
+
+// RTL-1b: the one source of the mode this process runs in. nullopt while it
+// is not configured (before the startup preflight, or a process without the
+// module: a tool, a unit harness); otherwise the mode startup fixed.
+// get_status.ray_tracing.ray_layout_mode and
+// get_render_authoring_context.ray_layout.mode both read it (spelled by
+// rayLayoutModeName, null when not configured).
+std::optional<RayLayoutSemanticMode> currentRayLayoutMode() noexcept;
 
 RayGroupLayout parseRayGroupLayout(
     std::string_view raw_bytes,

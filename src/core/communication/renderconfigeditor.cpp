@@ -29,6 +29,7 @@
 #include "../renderingpass/rendertargetjsonparser.hpp"
 #include "../renderingpass/rendertargetmetadataresolver.hpp"
 #include "../renderingpass/rendertargetnameresolver.hpp"
+#include "../shader/raytracingrefusal.hpp"
 #include "../shader/shaderreflection.hpp"
 #include "../vkcore/renderer_config.hpp"
 #include "../watch/problemlist.hpp"
@@ -207,11 +208,21 @@ OrderedJson withPreflightRefusalFields(OrderedJson details,
 
 // RS-1: the restart_reason of a runtime refusal that was only a live
 // material's physical rendering contract, or nullopt for any other failure.
+// RTL-1b: or only the ray layout mode (whether the root names a ray group
+// layout), {code: ray_layout_mode_changed, from, to: "none" | "layout",
+// message}. Both are raised after every other check of the candidate passed.
 std::optional<OrderedJson> physicalContractRestartReason(
     const std::exception_ptr &error) {
     if (!error) return std::nullopt;
     try {
         std::rethrow_exception(error);
+    } catch (const RayLayoutModeChanged &change) {
+        return OrderedJson{
+            {"code", rayLayoutModeChangedCode},
+            {"from", std::string{rayLayoutModeName(change.from())}},
+            {"to", std::string{rayLayoutModeName(change.to())}},
+            {"message", change.what()},
+        };
     } catch (const MaterialPhysicalContractChanged &change) {
         const auto &info = change.info();
         return OrderedJson{
@@ -902,6 +913,89 @@ renderTargetUsers(const Json &composed) {
         }
     }
     return users;
+}
+
+// RTL-1c: the root's rendering section (a root that is not JSON names no
+// ray documents).
+Json rootRenderingSection(std::string_view root_bytes) {
+    try {
+        return renderingSectionOrEmpty(Json::parse(root_bytes));
+    } catch (const std::exception &) {
+        return Json::object();
+    }
+}
+
+// RTL-1c: a ray document (ray_group_layout / ray_bindings) the root's
+// rendering section names, read the one way every reader reads it.
+// `reference` empty: the root names none (or not by a string).
+struct RootRayDocument {
+    std::string reference;
+    std::optional<std::string> bytes;      // nullopt: it did not read
+    std::optional<std::string> read_error; // why it did not read
+};
+
+RootRayDocument rootRayDocument(const Json &section, std::string_view key,
+                                const RenderConfigEditorDependencies &dependencies) {
+    RootRayDocument result;
+    const auto found = section.find(std::string{key});
+    if (found == section.end() || !found->is_string()) return result;
+    result.reference = found->get<std::string>();
+    try {
+        if (result.reference.starts_with("engine://")) {
+            result.bytes = engineResourceOrThrow(result.reference.substr(9));
+        } else {
+            if (!dependencies.resolve_document_path)
+                throw std::runtime_error("Project document access is unavailable.");
+            result.bytes = readFileBytes(dependencies.resolve_document_path(result.reference));
+        }
+    } catch (const std::exception &error) {
+        result.read_error = error.what();
+    }
+    return result;
+}
+
+// RTL-1b / RTL-1c: the ray group layout the root names, parsed. The one
+// reader of it: get_ray_layout (its layout entry and names), the authoring
+// context's ray_layout names and get_shader_interface's generated header.
+// `error`: why it did not read or parse (`layout` is then nullopt).
+struct RootRayGroupLayout {
+    RootRayDocument document;
+    std::optional<RayGroupLayout> layout;
+    std::optional<std::string> error;
+};
+
+RootRayGroupLayout rootRayGroupLayout(const Json &section,
+                                      const RenderConfigEditorDependencies &dependencies) {
+    RootRayGroupLayout result{.document = rootRayDocument(section, "ray_group_layout", dependencies)};
+    if (result.document.read_error) {
+        result.error = result.document.read_error;
+    } else if (result.document.bytes) {
+        try {
+            result.layout = parseRayGroupLayout(*result.document.bytes, result.document.reference);
+        } catch (const std::exception &error) {
+            result.error = error.what();
+        }
+    }
+    return result;
+}
+
+RootRayGroupLayout rootRayGroupLayoutOf(std::string_view root_bytes,
+                                        const RenderConfigEditorDependencies &dependencies) {
+    return rootRayGroupLayout(rootRenderingSection(root_bytes), dependencies);
+}
+
+// RTL-1c: the ray layout mode the process runs in, as get_ray_layout.mode
+// and get_render_authoring_context.ray_layout.mode both answer it:
+// "none" | "layout", null when it is not configured.
+OrderedJson rayLayoutModeJson(const RenderConfigEditorDependencies &dependencies) {
+    std::optional<RayLayoutSemanticMode> mode;
+    if (dependencies.ray_layout_mode) {
+        try {
+            mode = dependencies.ray_layout_mode();
+        } catch (const std::exception &) {
+        }
+    }
+    return mode ? OrderedJson(std::string{rayLayoutModeName(*mode)}) : OrderedJson(nullptr);
 }
 
 } // namespace
@@ -2640,35 +2734,23 @@ OrderedJson RenderConfigEditorService::getRayLayout(const Json &params) const {
     constexpr std::string_view method = "get_ray_layout";
     requireOnly(params, {}, method);
     const auto &root = readDocument();
-    Json section = Json::object();
-    try {
-        const auto parsed = Json::parse(root.bytes());
-        section = renderingSectionOrEmpty(parsed);
-    } catch (const std::exception &) {
-        // A root that is not JSON names no ray documents.
-    }
-    std::optional<RayGroupLayout> layout;
-    const auto describe = [&](std::string_view key, bool is_layout) -> OrderedJson {
-        const auto found = section.find(std::string{key});
-        if (found == section.end() || !found->is_string()) return nullptr;
-        const auto reference = found->get<std::string>();
+    // RTL-1c: the layout is read by the reader the authoring context and
+    // get_shader_interface read it by (one source for every name listed).
+    const auto section = rootRenderingSection(root.bytes());
+    const auto root_layout = rootRayGroupLayout(section, dependencies_);
+    const auto &layout = root_layout.layout;
+    const auto describe = [&](const RootRayDocument &document, bool is_layout) -> OrderedJson {
+        if (document.reference.empty()) return nullptr;
+        const auto &reference = document.reference;
         OrderedJson entry{{"reference", reference},
                           {"digest", nullptr},
                           {"document", nullptr}};
-        std::string bytes;
-        try {
-            if (reference.starts_with("engine://")) {
-                bytes = engineResourceOrThrow(reference.substr(9));
-            } else {
-                if (!dependencies_.resolve_document_path)
-                    throw std::runtime_error("Project document access is unavailable.");
-                bytes = readFileBytes(dependencies_.resolve_document_path(reference));
-            }
-        } catch (const std::exception &error) {
+        if (!document.bytes) {
             entry["error"] = {{"code", std::string{renderDocumentMissingCode}},
-                              {"message", error.what()}};
+                              {"message", document.read_error.value_or(std::string{})}};
             return entry;
         }
+        const auto &bytes = *document.bytes;
         entry["digest"] = renderConfigSourceDigest(bytes);
         if (const auto syntax = renderDocumentSyntax(bytes, reference)) {
             entry["error"] = {{"code", std::string{renderDocumentSyntaxCode}},
@@ -2677,21 +2759,27 @@ OrderedJson RenderConfigEditorService::getRayLayout(const Json &params) const {
         } else {
             entry["document"] = OrderedJson::parse(bytes);
         }
-        try {
-            if (is_layout) layout = parseRayGroupLayout(bytes, reference);
-            else if (layout) (void)parseRayBindings(bytes, *layout, reference);
-        } catch (const std::exception &error) {
-            if (!entry.contains("error"))
-                entry["error"] = {
-                    {"code", rayParserCode(error.what(),
-                                           is_layout ? rayGroupLayoutInvalidCode
-                                                     : rayBindingsInvalidCode)},
-                    {"message", error.what()}};
+        std::optional<std::string> parse_error;
+        if (is_layout) {
+            parse_error = root_layout.error;
+        } else if (layout) {
+            try {
+                (void)parseRayBindings(bytes, *layout, reference);
+            } catch (const std::exception &error) {
+                parse_error = error.what();
+            }
         }
+        if (parse_error && !entry.contains("error"))
+            entry["error"] = {
+                {"code", rayParserCode(*parse_error,
+                                       is_layout ? rayGroupLayoutInvalidCode
+                                                 : rayBindingsInvalidCode)},
+                {"message", *parse_error}};
         return entry;
     };
-    auto layout_entry = describe("ray_group_layout", true);
-    auto bindings_entry = describe("ray_bindings", false);
+    auto layout_entry = describe(root_layout.document, true);
+    auto bindings_entry =
+        describe(rootRayDocument(section, "ray_bindings", dependencies_), false);
 
     // What a binding may select, spelled as a scene row is matched. A
     // document selector names the document only, so one entry per document.
@@ -2764,6 +2852,9 @@ OrderedJson RenderConfigEditorService::getRayLayout(const Json &params) const {
         {"source_reference", dependencies_.source_reference},
         {"source_digest", digestJson(root.sourceDigest())},
         {"live", readLive()},
+        // RTL-1c: the mode the process runs in, which the documents above
+        // may already differ from until the engine starts again.
+        {"mode", rayLayoutModeJson(dependencies_)},
         {"layout", std::move(layout_entry)},
         {"bindings", std::move(bindings_entry)},
         {"names", rayLayoutNames(layout)},
@@ -3376,6 +3467,12 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
             if (entry.is_object() && entry.contains("name") && entry.at("name").is_string())
                 acceleration_structures.push_back(entry.at("name"));
     result["acceleration_structures"] = std::move(acceleration_structures);
+    // RTL-1b: the names a ray tracing task gives (the catalog's ray_tracing
+    // choices): the ray group layout's ray types, groups and misses, read
+    // from the document the root names (so they are there before a restart
+    // takes a layout the mode does not have yet), and the mode this process
+    // runs in.
+    result["ray_layout"] = rayLayoutAuthoringNames();
     // EL-1: the names a draw_loop branch's `when` and draw.variant take, from
     // what the draw-loop tables judge (MaterialDrawSubject): `id` is the
     // matching key `when.material` compares, `tags` what `when.tags` / `where`
@@ -4489,7 +4586,15 @@ OrderedJson RenderConfigEditorService::getShaderInterface(const Json &params) co
     }
     // EL-5: a worker thread reflects the stem's files; until it is done
     // this answers {status: building} at once.
-    return shaderInterfaceStatusJson(reference, refresh, dependencies_.resolve_shader_reference);
+    // RTL-1b: a project with a ray group layout gives its ray tracing
+    // shaders the generated header the task compiles them with
+    // (__pelican_ray_group_layout.glsl), so they compile here on their own.
+    std::vector<std::pair<std::string, std::string>> virtual_includes;
+    if (const auto root = rootRayGroupLayoutOf(readDocument().bytes(), dependencies_); root.layout)
+        virtual_includes.emplace_back(std::string{rayGroupLayoutVirtualIncludeName},
+                                      makeRayGroupLayoutVirtualInclude(*root.layout));
+    return shaderInterfaceStatusJson(reference, refresh, dependencies_.resolve_shader_reference,
+                                     std::move(virtual_includes));
 }
 
 OrderedJson RenderConfigEditorService::editFrameNodeOrder(const Json &params) {
@@ -4988,6 +5093,87 @@ std::optional<OrderedJson> RenderConfigEditorService::physicalFragmentStaleRefus
         details["expected"] = info.expected;
         details["actual"] = info.actual;
         return rejection("physical_fragment_stale", stale.what(), std::move(details));
+    } catch (...) {
+    }
+    return std::nullopt;
+}
+
+OrderedJson RenderConfigEditorService::rayLayoutAuthoringNames() const {
+    OrderedJson result{
+        {"mode", rayLayoutModeJson(dependencies_)},
+        {"reference", nullptr},
+        {"ray_types", OrderedJson::array()},
+        {"groups", OrderedJson::array()},
+        {"misses", OrderedJson::array()},
+        {"default_group", nullptr},
+    };
+    // RTL-1c: the names get_ray_layout.names lists, from the same reader.
+    const auto root = rootRayGroupLayoutOf(readDocument().bytes(), dependencies_);
+    if (!root.document.reference.empty()) result["reference"] = root.document.reference;
+    if (root.layout) {
+        auto names = rayLayoutNames(root.layout);
+        for (const char *key : {"ray_types", "groups", "misses", "default_group"})
+            result[key] = std::move(names[key]);
+    } else if (root.error) {
+        // A layout that cannot be read lists no names; the rest of the
+        // context is answered as before.
+        const auto &message = *root.error;
+        const auto colon = message.find(": ");
+        const auto code = colon != std::string::npos && message.substr(0, colon).find('@') != std::string::npos
+                              ? message.substr(0, colon)
+                              : std::string{"ray_layout_unreadable"};
+        result["error"] = {{"code", code}, {"message", message}};
+    }
+    return result;
+}
+
+std::optional<OrderedJson> RenderConfigEditorService::rayTracingTaskRefusal(
+    const std::exception_ptr &error, const RenderConfigCandidateDocumentSet *documents,
+    OrderedJson details) const {
+    if (!error) return std::nullopt;
+    try {
+        std::rethrow_exception(error);
+    } catch (const RayTracingRefusal &refusal) {
+        const auto &fields = refusal.fields();
+        if (fields.is_object())
+            for (const auto &[key, value] : fields.items())
+                if (!details.contains(key)) details[key] = OrderedJson::parse(value.dump());
+        // Where the task is declared, read as get_compute_task_authoring
+        // reads it: the composition says which document (or graph node)
+        // made each task. The parser's refusal came after composition, so
+        // the candidate composes again here.
+        const auto task = fields.is_object() ? fields.find("task") : fields.end();
+        if (task != fields.end() && task->is_string() && documents != nullptr &&
+            dependencies_.resolve_authoring_context) {
+            try {
+                const auto context = dependencies_.resolve_authoring_context(*documents);
+                const auto name = task->get<std::string>();
+                const auto provenance = std::find_if(
+                    context.pass_provenance.begin(), context.pass_provenance.end(),
+                    [&](const auto &entry) { return entry.name == name; });
+                if (provenance != context.pass_provenance.end()) {
+                    const bool from_feature =
+                        provenance->source == RenderPipelineProvenanceSource::feature;
+                    const GraphNodeOrigin *graph_node =
+                        !from_feature && provenance->graph_origin && provenance->graph_origin->loop.empty()
+                            ? &*provenance->graph_origin
+                            : nullptr;
+                    const bool from_preset =
+                        !from_feature && graph_node == nullptr && context.pipeline_preset.has_value();
+                    if (!details.contains("document"))
+                        details["document"] = from_feature  ? provenance->provider_reference
+                                              : from_preset ? context.pipeline_preset->reference
+                                                            : dependencies_.source_reference;
+                    if (graph_node != nullptr && !details.contains("node")) {
+                        details["node"] = graph_node->node;
+                        if (!graph_node->definition.empty()) details["definition"] = graph_node->definition;
+                    }
+                }
+            } catch (const std::exception &) {
+                // Without the composition the refusal still has its task.
+            }
+        }
+        return rejection(refusal.code(), refusal.what(), std::move(details));
     } catch (...) {
     }
     return std::nullopt;
@@ -7614,6 +7800,17 @@ void RenderConfigEditorService::completeCommitTransaction(
                 if (auto refusal = physicalFragmentStaleRefusal(
                         applied.exception,
                         transaction->ticket.candidate.bytes(), details)) {
+                    finish(std::move(*refusal));
+                    return;
+                }
+                // RTL-1b: a ray tracing task's refusal by the parser's
+                // code, with its fields.
+                if (auto refusal = rayTracingTaskRefusal(
+                        applied.exception,
+                        transaction->ticket.candidate_documents
+                            ? &*transaction->ticket.candidate_documents
+                            : nullptr,
+                        details)) {
                     finish(std::move(*refusal));
                     return;
                 }

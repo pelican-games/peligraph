@@ -305,8 +305,11 @@ DECLARE_MODULE(Renderer) {
     R8RenderTargetReadback readR8RenderTargetForTesting(
         std::string_view name);
     std::vector<std::string> currentFramePlanOrderForTesting() const;
+    // The current generation's ray-query acceleration structures, as
+    // get_frame_plan's ray_query_acceleration_structures reports them
+    // (RTL-1b: production reads it, so it is not named for testing).
     RayQueryAccelerationStructureDiagnostics
-    rayQueryAccelerationStructureDiagnosticsForTesting() const;
+    rayQueryAccelerationStructureDiagnostics() const;
     void recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent);
 
   public:

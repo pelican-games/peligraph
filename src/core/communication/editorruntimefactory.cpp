@@ -2415,6 +2415,8 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                     .runtime_fallback = [runtime] {
                         return runtime->modules.renderer.renderPipelineFallback();
                     },
+                    // RTL-1b: the mode startup fixed.
+                    .ray_layout_mode = [] { return currentRayLayoutMode(); },
                     // FG-2: verify_fold's runs are this executable, headless,
                     // in a copy of the project (graphfoldverify.hpp). What the
                     // children need of this launch is read once, here: the

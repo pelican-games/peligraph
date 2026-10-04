@@ -232,6 +232,9 @@ struct RayQueryAccelerationStructureDiagnostics {
     std::size_t blas_variant_count = 0;
     std::size_t tlas_instance_count = 0;
     std::map<std::string, std::size_t> named_tlas_instance_counts;
+    // RTL-1b (engine_backlog 4): each named TLAS's BLASes, as
+    // active_blas_inputs lists them (the same entries, in its order).
+    std::map<std::string, std::vector<RayQueryBlasInputDiagnostics>> named_tlas_blas;
     std::uint64_t geometry_pool_generation = 0;
     std::uint64_t model_rebuild_generation = 0;
     std::uint64_t geometry_pool_invalidation_count = 0;

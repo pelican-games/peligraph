@@ -26,6 +26,7 @@
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
 #include "../src/core/shader/raygrouplayout.hpp"
+#include "../src/core/shader/raytracingrefusal.hpp"
 #include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/watch/reloadgate.hpp"
 #include "../src/project/featurecompose.hpp"
@@ -607,6 +608,8 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
         authoring_override = {},
     // FG-2: verify_fold's runner (unset: fold_verify_unavailable).
     FoldVerifyRunner verify_fold = {},
+    // RTL-1b: the process's ray layout mode (unset: not configured).
+    std::function<std::optional<RayLayoutSemanticMode>()> ray_layout_mode = {},
     // RTL-1a: changes the dependencies before the service is made.
     const std::function<void(RenderConfigEditorDependencies &)> &customize = {}) {
     runtime.path_resolver = &resolver;
@@ -697,6 +700,7 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
                         return runtime.availability(name, document);
                     });
             },
+            .ray_layout_mode = std::move(ray_layout_mode),
             .verify_fold = std::move(verify_fold),
         };
     if (customize) customize(dependencies);
@@ -3264,7 +3268,16 @@ TEST_CASE(
             .bytes(),
         [&] { rejected_source_commit_called = true; });
     REQUIRE_FALSE(directly_rejected.committed);
-    REQUIRE(directly_rejected.error == unavailable_reason);
+    // PB-1: the runtime carries a frozen-module refusal as
+    // "render_feature_requires_restart@1: <fields JSON>"; its words are the
+    // catalog's reason (and the editor's rejection below says them).
+    if (const auto carried = splitCodedRefusalMessage(directly_rejected.error)) {
+        REQUIRE(carried->code == std::string{renderFeatureRequiresRestartCode});
+        REQUIRE(renderFeatureRequiresRestartText(carried->fields) ==
+                unavailable_reason);
+    } else {
+        REQUIRE(directly_rejected.error == unavailable_reason);
+    }
     REQUIRE_FALSE(rejected_source_commit_called);
     REQUIRE(runtime.snapshot.published_generation ==
             baseline_generation);
@@ -7993,6 +8006,309 @@ TEST_CASE("RS-1 a candidate refused live only for a material's physical contract
     CHECK(readBytes(harness.fragmentPath()) == fragment_committed);
 }
 
+// RTL-1b: a candidate the runtime refuses only because the process runs in
+// the other ray layout mode (the registration raises RayLayoutModeChanged
+// once every other check passed) is committed for the next start, with
+// restart_required and {code: ray_layout_mode_changed, from, to, message}.
+// The running engine's own case is in rtl1b_ray_layout_restart_test.
+TEST_CASE("RTL-1b a candidate refused live only for the ray layout mode is committed with restart_required",
+          "[render-config-editor][rtl1b][ray-layout]") {
+    RenderTargetHarness harness{true};
+    const auto root_before = readBytes(harness.project.render_config);
+    const auto generation_before = harness.runtime.snapshot.published_generation;
+    harness.runtime.validate_candidate = [](const RenderConfigCandidateDocumentSet &) {
+        throw RayLayoutModeChanged{RayLayoutSemanticMode::LegacyNoLayout, RayLayoutSemanticMode::LayoutV3};
+    };
+    const auto edit = [&](std::string_view name) {
+        const auto accepted = harness.edit(addOp(sceneTarget(name)));
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        harness.service->commitPending();
+        return harness.service->getResult({{"ticket", accepted.at("ticket")}});
+    };
+    const auto committed = edit("rtl1b_color");
+    INFO(committed.dump());
+    REQUIRE(committed.at("status") == "committed");
+    CHECK(committed.at("restart_required") == true);
+    const auto &reason = committed.at("restart_reason");
+    CHECK(reason.at("code") == "ray_layout_mode_changed");
+    CHECK(reason.at("from") == "none");
+    CHECK(reason.at("to") == "layout");
+    CHECK(reason.at("message") ==
+          "pelican.ray_layout_mode_change_requires_restart@1: ray layout semantic mode cannot change during a "
+          "process lifetime");
+    CHECK(committed.at("published_generation") == generation_before);
+    CHECK(readBytes(harness.project.render_config) != root_before);
+    // Until the restart every edit is committed for it the same way.
+    const auto again = edit("rtl1b_second");
+    INFO(again.dump());
+    REQUIRE(again.at("status") == "committed");
+    CHECK(again.at("restart_reason").at("code") == "ray_layout_mode_changed");
+}
+
+// RTL-1b: a ray tracing task's parser refusal is the ticket's rejection by
+// the parser's code, with its fields beside ticket and participant; the
+// message is the parser's sentence as it was, and nothing is written.
+TEST_CASE("RTL-1b a ray tracing task refusal keeps the parser's code, fields and message",
+          "[render-config-editor][rtl1b][rejection]") {
+    RenderTargetHarness harness{true};
+    const auto root_before = readBytes(harness.project.render_config);
+    const std::string message =
+        "pelican.ray_tracing.hit_shader_missing@1: compute task 'trace' group='mesh' ray_type='primary' "
+        "available=[]";
+    harness.runtime.validate_candidate = [&](const RenderConfigCandidateDocumentSet &) {
+        throw RayTracingRefusal{"pelican.ray_tracing.hit_shader_missing@1",
+                                {{"task", "trace"}, {"ray_type", "primary"}, {"group", "mesh"}},
+                                message};
+    };
+    const auto accepted = harness.edit(addOp(sceneTarget("rtl1b_refused")));
+    REQUIRE(accepted.at("status") == "accepted");
+    harness.service->commitPending();
+    const auto result = harness.service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("status") == "rejected");
+    CHECK_FALSE(result.contains("restart_required"));
+    const auto &error = result.at("error");
+    CHECK(error.at("code") == "pelican.ray_tracing.hit_shader_missing@1");
+    CHECK(error.at("message") == message);
+    CHECK(error.at("task") == "trace");
+    CHECK(error.at("ray_type") == "primary");
+    CHECK(error.at("group") == "mesh");
+    CHECK(error.at("participant") == "pelican.render_pipeline");
+    CHECK(error.at("ticket") == accepted.at("ticket"));
+    // No composed task of that name: no document is guessed.
+    CHECK_FALSE(error.contains("document"));
+    CHECK(readBytes(harness.project.render_config) == root_before);
+}
+
+// RTL-1b: get_render_authoring_context.ray_layout names the layout's ray
+// types, groups and misses from the document the root names, with the mode
+// the process runs in; a layout that does not parse lists none and says why,
+// and the rest of the context is answered.
+TEST_CASE("RTL-1b get_render_authoring_context names the ray group layout's ray types, groups and misses",
+          "[render-config-editor][rtl1b][authoring-context]") {
+    TemporaryAnimgraphProject project;
+    auto root = Json::parse(graphRootFixture("main"));
+    const auto without_layout = root.dump(2) + "\n";
+    root["rendering"]["ray_group_layout"] = "project://ray_layout.json";
+    writeBytes(project.render_config, root.dump(2) + "\n");
+    const auto layout_path = project.root / "ray_layout.json";
+    const Json layout{{"schema", "pelican.ray_group_layout"},
+                      {"version", 3},
+                      {"ray_types", Json::array({"radiance", "shadow"})},
+                      {"default_group", "mesh"},
+                      {"groups", Json::array({{{"name", "sphere"}, {"type", "procedural"}},
+                                              {{"name", "mesh"}, {"type", "triangles"}}})},
+                      {"misses", Json::array({{{"name", "sky"}}, {{"name", "shadow"}}})},
+                      {"record", Json::array()}};
+    writeBytes(layout_path, layout.dump(2));
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    std::optional<RayLayoutSemanticMode> mode = RayLayoutSemanticMode::LegacyNoLayout;
+    auto service = makeProjectService(project, resolver, runtime, {}, {}, {}, [&mode] { return mode; });
+
+    auto names = service->getRenderAuthoringContext(Json::object()).at("ray_layout");
+    INFO(names.dump());
+    CHECK(names.at("mode") == "none");
+    CHECK(names.at("reference") == "project://ray_layout.json");
+    CHECK(Json::parse(names.at("ray_types").dump()) == Json::array({"radiance", "shadow"}));
+    CHECK(Json::parse(names.at("groups").dump()) ==
+          Json::array({{{"name", "sphere"}, {"type", "procedural"}}, {{"name", "mesh"}, {"type", "triangles"}}}));
+    CHECK(Json::parse(names.at("misses").dump()) == Json::array({"sky", "shadow"}));
+    CHECK(names.at("default_group") == "mesh");
+    CHECK_FALSE(names.contains("error"));
+
+    // The process's mode, as it is asked each time; null when not configured.
+    mode = RayLayoutSemanticMode::LayoutV3;
+    CHECK(service->getRenderAuthoringContext(Json::object()).at("ray_layout").at("mode") == "layout");
+    mode.reset();
+    CHECK(service->getRenderAuthoringContext(Json::object()).at("ray_layout").at("mode").is_null());
+
+    // A layout that does not parse: no names, the reason, the rest answered.
+    writeBytes(layout_path, "{\"schema\": \"pelican.ray_group_layout\", \"version\": 3}");
+    const auto context = service->getRenderAuthoringContext(Json::object());
+    names = context.at("ray_layout");
+    INFO(names.dump());
+    CHECK(names.at("ray_types").empty());
+    CHECK(names.at("groups").empty());
+    CHECK(names.at("misses").empty());
+    CHECK(names.at("default_group").is_null());
+    CHECK(names.at("error").at("code") == "pelican.ray_group_layout_invalid@1");
+    CHECK_THAT(names.at("error").at("message").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("ray_layout.json"));
+    CHECK(context.contains("acceleration_structures"));
+
+    // A root without a layout: no names and no error.
+    TemporaryAnimgraphProject plain;
+    writeBytes(plain.render_config, without_layout);
+    PathResolver plain_resolver;
+    plain_resolver.setup(plain.root, false);
+    ActualCpuRenderRuntime plain_runtime;
+    const auto plain_service = makeProjectService(plain, plain_resolver, plain_runtime);
+    names = plain_service->getRenderAuthoringContext(Json::object()).at("ray_layout");
+    INFO(names.dump());
+    CHECK(names.at("mode").is_null());
+    CHECK(names.at("reference").is_null());
+    CHECK(names.at("ray_types").empty());
+    CHECK_FALSE(names.contains("error"));
+}
+
+// RTL-1c: get_ray_layout answers the mode the process runs in, as the
+// authoring context does ("none" | "layout", null when not configured), and
+// its names and the authoring context's are one reading of the document the
+// root names -- also when the documents already differ from the mode (until
+// the restart) and when the layout does not parse.
+TEST_CASE("RTL-1c get_ray_layout's mode and names are the authoring context's",
+          "[render-config-editor][rtl1c][ray-layout]") {
+    TemporaryAnimgraphProject project;
+    auto root = Json::parse(graphRootFixture("main"));
+    root["rendering"]["ray_group_layout"] = "project://ray_layout.json";
+    writeBytes(project.render_config, root.dump(2) + "\n");
+    const auto layout_path = project.root / "ray_layout.json";
+    writeBytes(layout_path,
+               Json{{"schema", "pelican.ray_group_layout"},
+                    {"version", 3},
+                    {"ray_types", Json::array({"radiance", "shadow"})},
+                    {"default_group", "mesh"},
+                    {"groups", Json::array({{{"name", "sphere"}, {"type", "procedural"}},
+                                            {{"name", "mesh"}, {"type", "triangles"}}})},
+                    {"misses", Json::array({{{"name", "sky"}}})},
+                    {"record", Json::array()}}
+                   .dump(2));
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    std::optional<RayLayoutSemanticMode> mode = RayLayoutSemanticMode::LegacyNoLayout;
+    auto service = makeProjectService(project, resolver, runtime, {}, {}, {}, [&mode] { return mode; });
+    const auto same_reading = [&](const nlohmann::ordered_json &read, const nlohmann::ordered_json &context) {
+        INFO(read.dump());
+        INFO(context.dump());
+        CHECK(read.at("mode") == context.at("mode"));
+        for (const auto *key : {"ray_types", "groups", "misses", "default_group"}) {
+            INFO(key);
+            CHECK(read.at("names").at(key) == context.at(key));
+        }
+    };
+
+    auto read = service->getRayLayout(Json::object());
+    CHECK(read.at("mode") == "none");
+    CHECK(read.at("layout").at("reference") == "project://ray_layout.json");
+    CHECK(Json::parse(read.at("names").at("ray_types").dump()) == Json::array({"radiance", "shadow"}));
+    same_reading(read, service->getRenderAuthoringContext(Json::object()).at("ray_layout"));
+    mode = RayLayoutSemanticMode::LayoutV3;
+    read = service->getRayLayout(Json::object());
+    CHECK(read.at("mode") == "layout");
+    same_reading(read, service->getRenderAuthoringContext(Json::object()).at("ray_layout"));
+    mode.reset();
+    read = service->getRayLayout(Json::object());
+    CHECK(read.at("mode").is_null());
+    same_reading(read, service->getRenderAuthoringContext(Json::object()).at("ray_layout"));
+
+    // A layout that does not parse: both list no names and give the same
+    // code.
+    writeBytes(layout_path, "{\"schema\": \"pelican.ray_group_layout\", \"version\": 3}");
+    read = service->getRayLayout(Json::object());
+    const auto context = service->getRenderAuthoringContext(Json::object()).at("ray_layout");
+    same_reading(read, context);
+    CHECK(read.at("names").at("ray_types").empty());
+    CHECK(read.at("layout").at("error").at("code") == "pelican.ray_group_layout_invalid@1");
+    CHECK(context.at("error").at("code") == read.at("layout").at("error").at("code"));
+}
+
+// RTL-1b (D1): a ray tracing shader of a project with a ray group layout
+// includes the header the task compiles it with (__pelican_ray_group_layout
+// .glsl). get_shader_interface gives it that header, so the shader reflects
+// on its own and Studio reads its ports. Without a layout the same source does
+// not compile (the header is nowhere on disk): that was every layout shader
+// before.
+TEST_CASE("RTL-1b get_shader_interface compiles a layout project's ray tracing shader with the generated layout "
+          "header",
+          "[render-config-editor][rtl1b][shader-interface]") {
+    const Json layout{{"schema", "pelican.ray_group_layout"},
+                      {"version", 3},
+                      {"ray_types", Json::array({"primary"})},
+                      {"default_group", "mesh"},
+                      {"groups", Json::array({{{"name", "mesh"}, {"type", "triangles"}}})},
+                      {"misses", Json::array({{{"name", "sky"}}})},
+                      {"record", Json::array()}};
+    const std::string raygen = R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : enable
+#extension GL_EXT_ray_tracing : require
+#include "pelican_sets.glsl"
+#include "__pelican_ray_group_layout.glsl"
+layout(rgba16f, set = PELICAN_SET_PASS_INPUT, binding = 0) writeonly uniform image2D pelican_resource_ray_color;
+layout(set = PELICAN_SET_FRAME, binding = PELICAN_RAY_QUERY_TLAS_BINDING) uniform accelerationStructureEXT scene;
+layout(location = 0) rayPayloadEXT vec4 hit;
+void main() {
+    traceRayEXT(scene, gl_RayFlagsOpaqueEXT, 0xff, PELICAN_RAY_TYPE_primary, pelican_ray_type_count,
+                PELICAN_MISS_sky, vec3(0.0), 0.001, vec3(0.0, 0.0, -1.0), 100.0, 0);
+    imageStore(pelican_resource_ray_color, ivec2(gl_LaunchIDEXT.xy), hit);
+}
+)glsl";
+    const auto settle = [](RenderConfigEditorService &service, const Json &params) {
+        const Json building{{"status", "building"}};
+        auto answered = Json(service.getShaderInterface(params));
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes{2};
+        while (answered == building && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+            answered = Json(service.getShaderInterface(params));
+        }
+        INFO(answered.dump(2));
+        REQUIRE(answered != building);
+        return answered;
+    };
+    const auto project_with = [&](TemporaryAnimgraphProject &project, bool with_layout) {
+        auto root = Json::parse(graphRootFixture("main"));
+        if (with_layout) root["rendering"]["ray_group_layout"] = "project://ray_layout.json";
+        writeBytes(project.render_config, root.dump(2) + "\n");
+        writeBytes(project.root / "ray_layout.json", layout.dump(2));
+        std::filesystem::create_directories(project.root / "shaders");
+        writeBytes(project.root / "shaders" / "rtl1b_trace.rgen", raygen);
+    };
+    const Json probe{{"reference", "project://shaders/rtl1b_trace"}};
+
+    // Without a layout in the root: the header is not there.
+    resetShaderInterfaceReflectionForTesting();
+    {
+        TemporaryAnimgraphProject project;
+        project_with(project, false);
+        PathResolver resolver;
+        resolver.setup(project.root, false);
+        ActualCpuRenderRuntime runtime;
+        const auto service = makeProjectService(project, resolver, runtime);
+        const auto answered = settle(*service, probe);
+        REQUIRE(answered.at("status") == "ready");
+        REQUIRE(answered.at("stages").size() == 1);
+        const auto &stage = answered.at("stages").at(0);
+        CHECK(stage.at("stage") == "raygen");
+        REQUIRE(stage.contains("reflection_error"));
+        CHECK_THAT(stage.at("reflection_error").get<std::string>(),
+                   Catch::Matchers::ContainsSubstring("__pelican_ray_group_layout.glsl"));
+    }
+
+    // The root names the layout: the header is given, the stage reflects
+    // and its port is read.
+    resetShaderInterfaceReflectionForTesting();
+    TemporaryAnimgraphProject project;
+    project_with(project, true);
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    const auto service = makeProjectService(project, resolver, runtime);
+    const auto answered = settle(*service, probe);
+    REQUIRE(answered.at("status") == "ready");
+    REQUIRE(answered.at("stages").size() == 1);
+    const auto &stage = answered.at("stages").at(0);
+    INFO(stage.dump(2));
+    CHECK_FALSE(stage.contains("reflection_error"));
+    CHECK(stage.at("reflected_from") == "source");
+    REQUIRE(stage.at("resource_ports").size() == 1);
+    CHECK(stage.at("resource_ports").at(0) ==
+          Json{{"port", "ray_color"}, {"binding", 0}, {"type", "storage_image"}, {"format", "R16G16B16A16_SFLOAT"}});
+    resetShaderInterfaceReflectionForTesting();
+}
+
 // Q-14e: the renderer's typed input/shader mismatch reaches the ticket's
 // rejection as one structured field; the code and the message stay as they
 // were. The running renderer's own case is in engine_primitives_test.
@@ -12270,7 +12586,7 @@ struct Rtl1aHarness {
         writeBytes(project.render_config, root.dump(2));
         resolver.setup(project.root, false);
         service = makeProjectService(
-            project, resolver, runtime, {}, {}, {},
+            project, resolver, runtime, {}, {}, {}, {},
             [this](RenderConfigEditorDependencies &dependencies) {
                 dependencies.ray_selectable_materials = [] {
                     return std::vector<RaySelectableMaterial>{
