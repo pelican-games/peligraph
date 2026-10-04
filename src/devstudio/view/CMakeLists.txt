@@ -137,6 +137,9 @@ add_library(pelican_studio_view STATIC
     materialsdock.hpp
     materialassignwidget.cpp
     materialassignwidget.hpp
+    # BS-1s: the row above the viewport while the engine draws its placeholder.
+    renderfallbacknotice.cpp
+    renderfallbacknotice.hpp
     studioscreen.cpp
     studioscreen.hpp
 )

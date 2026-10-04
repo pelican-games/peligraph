@@ -57,6 +57,7 @@ class PlayControls;
 class ProjectMigrationWidget;
 class RenderConfigDigest;
 class RenderFeaturesWidget;
+class RenderFallbackNotice;
 class RenderingSettingsWidget;
 class RuntimeOutliner;
 enum class AddObjectKind : std::uint8_t;
@@ -219,6 +220,11 @@ class MainWindow : public QMainWindow {
     // reload_render_documents; and the Graph menu's "Reload from disk".
     std::optional<RenderDocumentReload> render_reload_;
     QAction *reload_from_disk_action_ = nullptr;
+    // BS-1s: the row above the viewport while the engine draws its
+    // placeholder, and how Open file opens a file (the desktop's editor;
+    // under automation, a line in the log).
+    RenderFallbackNotice *render_fallback_ = nullptr;
+    std::function<bool(const std::filesystem::path &)> file_open_action_;
     // PM-3a: Pause / Step on the gizmo band, the play line of the status bar,
     // and what a paused game turns the viewport's frame and that band.
     PlayControls *play_controls_ = nullptr;

@@ -150,6 +150,9 @@ class RenderDocumentReload {
     // A reload committed with a change: its commit result (source_digest,
     // documents, changed, restart_required).
     std::function<void(const Json &commit)> reloaded;
+    // BS-1s, decision 4: a refused reload, with the engine's error as it
+    // came ({code, message, ...}), after the notice said it.
+    std::function<void(const Json &error)> refusedWith;
 
   private:
     Transport transport_;

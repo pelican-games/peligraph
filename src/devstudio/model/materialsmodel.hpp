@@ -330,6 +330,9 @@ class MaterialsDockSession {
     [[nodiscard]] const std::vector<SurfaceChoice> &surfaces() const noexcept { return surfaces_; }
     [[nodiscard]] SurfacesState surfacesState() const noexcept { return surfaces_state_; }
     [[nodiscard]] bool editPending() const noexcept { return write_ != 0 || !queue_.empty(); }
+    // The selected material is being read (after an edit, or written
+    // outside): material() is the one before it until the reply.
+    [[nodiscard]] bool materialReading() const noexcept { return material_request_ != 0; }
     [[nodiscard]] const std::string &notice() const noexcept { return notice_; }
     [[nodiscard]] const std::string &noticeDetail() const noexcept { return notice_detail_; }
     // Decision 7: material.value_invalid@1's sentence, shown under its row.

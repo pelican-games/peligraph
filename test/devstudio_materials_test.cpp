@@ -1169,3 +1169,106 @@ TEST_CASE("MT-2s-b decision 3: a Model default the engine has already (changed:f
     REQUIRE(rows.session().choose("paint"));
     CHECK(engine.take("bind_material").has_value());
 }
+
+TEST_CASE("MT-3s decision 5: an edit the engine rebuilt in place restarts nothing and says how many models "
+          "it rebuilt; a routing edit's rewritten bindings are read again, its Undo too; a bound "
+          "material's routing taken off is one sentence",
+          "[devstudio][materials][mt3s]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = project(temporary);
+    FakeEngine engine;
+    MaterialsDock dock{engine.dockHooks()};
+    readyWithPaint(dock, engine, root);
+    const auto rebuilt = [](const std::string &digest, Json previous, Json models, Json rewritten) {
+        return Json{{"committed", true},
+                    {"changed", true},
+                    {"path", Paint},
+                    {"name", "paint"},
+                    {"material_digest", digest},
+                    {"previous", std::move(previous)},
+                    {"applied", "rebuilt"},
+                    {"restart_required", nullptr},
+                    {"rebuilt_models", std::move(models)},
+                    {"rewritten_bindings", std::move(rewritten)}};
+    };
+
+    // A tag: registered again in place, no restart.
+    auto *tags = static_cast<GraphCanvasTagPicker *>(named<QToolButton>(dock, QStringLiteral("pelican.materials.tags")));
+    REQUIRE(tags->addTag("glass"));
+    auto sent = engine.take("edit_material");
+    REQUIRE(sent.has_value());
+    REQUIRE(dock.receiveResult(sent->id, QByteArray::fromStdString(
+                                             rebuilt("d2", {{"tags", {"shiny"}}}, Json::array({Cube}),
+                                                     Json::array())
+                                                 .dump())));
+    CHECK(engine.restarts.empty());
+    CHECK(dock.noticeLine()->text() == QStringLiteral("Applied; rebuilt 1 model."));
+    CHECK_FALSE(named<QPushButton>(dock, QStringLiteral("pelican.materials.restartEngine"))->isVisibleTo(&dock));
+    CHECK(engine.bound.empty());
+    answer(dock, engine, "get_material", paintMaterial("d2"));
+
+    // The routing: the bindings that name paint are rewritten in the same
+    // write, and the rows showing them read them again.
+    auto *alpha_mode = named<QComboBox>(dock, QStringLiteral("pelican.materials.alphaMode"));
+    alpha_mode->setCurrentIndex(2);
+    sent = engine.take("edit_material");
+    REQUIRE(sent.has_value());
+    // The choice stays shown while the edit is out (it used to flick back to
+    // the document's value until the reply).
+    CHECK(alpha_mode->currentText() == QStringLiteral("blend"));
+    const Json opaque{{"alpha_mode", "opaque"}, {"double_sided", false}};
+    const Json rewritten = Json::array({{{"model", Cube},
+                                         {"material_bindings", "assets/bindings/cube.json"},
+                                         {"bindings_digest", "b2"},
+                                         {"previous_bindings_digest", "b1"}}});
+    REQUIRE(dock.receiveResult(sent->id,
+                               QByteArray::fromStdString(
+                                   rebuilt("d3", {{"routing", opaque}}, Json::array({Cube, "models/box"}), rewritten)
+                                       .dump())));
+    CHECK(engine.restarts.empty());
+    CHECK(dock.noticeLine()->text() == QStringLiteral("Applied; rebuilt 2 models."));
+    CHECK(engine.bound == std::vector<std::string>{Cube});
+    answer(dock, engine, "get_material", paintMaterial("d3"));
+
+    // Undo sends the previous routing; the engine puts the bindings back with
+    // it, and they are read again.
+    auto *undo = dock.undoAction();
+    REQUIRE(undo->isEnabled());
+    undo->trigger();
+    sent = engine.take("edit_material");
+    REQUIRE(sent.has_value());
+    CHECK(sent->params == Json{{"path", Paint}, {"name", "paint"}, {"base_material_digest", "d3"}, {"routing", opaque}});
+    REQUIRE(dock.receiveResult(sent->id, QByteArray::fromStdString(
+                                             rebuilt("d4", {{"routing", {{"alpha_mode", "blend"},
+                                                                         {"double_sided", false}}}},
+                                                     Json::array({Cube}), rewritten)
+                                                 .dump())));
+    CHECK(engine.bound == std::vector<std::string>{Cube, Cube});
+    CHECK(engine.restarts.empty());
+
+    // restart_required is still a restart (a material the engine has not
+    // registered, a rebuild that failed).
+    named<QComboBox>(dock, QStringLiteral("pelican.materials.alphaMode"))->setCurrentIndex(1);
+    sent = engine.take("edit_material");
+    REQUIRE(sent.has_value());
+    REQUIRE(dock.receiveResult(sent->id, QByteArray::fromStdString(
+                                             edited("d5", {{"routing", opaque}},
+                                                    {{"reason", "the models could not be rebuilt in place"}})
+                                                 .dump())));
+    CHECK(engine.restarts.size() == 1);
+
+    // The routing of a bound material taken off: one sentence, the models
+    // named.
+    CHECK(materialRefusalDescription(Json{
+              {"code", "material.routing_conflict@1"},
+              {"error_fields",
+               {{"path", Paint},
+                {"material", "paint"},
+                {"routing", nullptr},
+                {"bound_by", Json::array({{{"model", Cube}, {"routing", opaque}},
+                                          {{"model", "models/box"}, {"routing", opaque}}})}}}}) ==
+          "paint keeps its routing: engine://primitives/cube, models/box draw it through their bindings; bind "
+          "them to another material first (material.routing_conflict@1).");
+}

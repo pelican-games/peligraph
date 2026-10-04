@@ -930,6 +930,24 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     Qt6::Widgets
   )
 
+  # BS-1s: the row above the viewport while the engine draws its placeholder
+  # (engine BS-1), on the real widget with the test answering through its
+  # hooks.
+  pelican_define_test(devstudio_render_fallback_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+
   # PM-3c: the Outliner's rows for what the running game spawned, and the
   # Inspector's read-only view of one, on the real window over the real RPC
   # transport, with the test answering as an RO-1 engine.

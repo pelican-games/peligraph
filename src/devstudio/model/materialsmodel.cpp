@@ -798,6 +798,22 @@ void MaterialsDockSession::writeResult(const Write &write, const Json &result) {
         restart_reason_ = restart->is_string() ? restart->get<std::string>() : text(*restart, "reason");
         if (restart_reason_.empty()) restart_reason_ = "the engine reads it when it starts";
         if (restartRequested) restartRequested(restart_reason_);
+    } else if (write.kind == Write::Kind::Edit || write.kind == Write::Kind::UndoEdit) {
+        // MT-3s, decision 5 (engine MT-3): textures, tags, routing, variants
+        // and surface are registered again in place, and the models drawing
+        // the material rebuilt -- no restart.
+        if (text(result, "applied") == "rebuilt") {
+            std::size_t models = 0;
+            if (const auto rebuilt = result.find("rebuilt_models"); rebuilt != result.end() && rebuilt->is_array())
+                models = rebuilt->size();
+            setNotice("Applied; rebuilt " + std::to_string(models) + (models == 1 ? " model." : " models."));
+        }
+        // A routing edit rewrote the bindings that name the material (and its
+        // Undo writes them back): the rows that show them read them again.
+        if (const auto rewritten = result.find("rewritten_bindings");
+            rewritten != result.end() && rewritten->is_array())
+            for (const auto &entry : *rewritten)
+                if (const auto model = text(entry, "model"); !model.empty() && bound) bound(model);
     }
     readList();
 }

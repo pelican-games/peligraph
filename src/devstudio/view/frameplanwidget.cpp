@@ -526,6 +526,8 @@ struct FramePlanWidget::Impl {
     std::function<void(const QString &, const QString &, const QStringList &)> pass_connection_action;
     std::function<void(const QString &, const QStringList &, quint64)> node_order_action;
     qint64 pending_request = 0;
+    // BS-1s: the status line the engine's placeholder plan put there.
+    QString fallback_line;
     // Q-18. Another panel's edit that committed can change the plan (the
     // Graph tab's loop count, a branch, a view axis). In view, the plan is
     // read again at once -- after the read in flight, which may predate the
@@ -1641,6 +1643,34 @@ struct FramePlanWidget::Impl {
             return;
         }
         showStatus(oneLine(fatal_error_line), fatal_error_line);
+    }
+
+    // BS-1s, decision 2: true when the plan is the engine's placeholder,
+    // which the status row then says (renderFallbackSentence); a plan of the
+    // project's takes that line away again.
+    bool showRenderFallback(const QByteArray &result_json) {
+        RenderPipelineReading reading;
+        if (result_json.contains("\"render_pipeline\"")) {
+            try {
+                reading = readRenderPipeline(Json::parse(
+                    result_json.constData(), result_json.constData() + result_json.size()));
+            } catch (const std::exception &) {
+            }
+        }
+        if (reading.state == RenderPipelineReading::State::Fallback) {
+            fallback_line = QString::fromStdString(renderFallbackSentence(reading));
+            status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+            showStatus(fallback_line,
+                       fallback_line + QLatin1Char('\n') +
+                           QString::fromStdString(reading.refusal.value("message", std::string{})));
+            return true;
+        }
+        if (!fallback_line.isEmpty() && status->text() == fallback_line) {
+            status->setStyleSheet({});
+            showStatus({});
+        }
+        fallback_line.clear();
+        return false;
     }
 
     // N-7 rule 2: the panel has one status row. It is one line, it carries
@@ -3779,6 +3809,11 @@ struct FramePlanWidget::Impl {
                 placement_loaded = true;
                 loadPlacement();
             }
+            // BS-1s, decision 2: the plan of the engine's placeholder says so
+            // (get_frame_plan carries render_pipeline while it lasts). There
+            // is nothing of the project's to edit in it, so its documents are
+            // not read for editing either.
+            if (showRenderFallback(result_json)) return;
             requestAuthoringContext();
             requestTaskAuthoring();
             followShaderSources();

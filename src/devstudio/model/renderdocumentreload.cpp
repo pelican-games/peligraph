@@ -436,8 +436,11 @@ void RenderDocumentReload::refuse(const Json &error) {
                          "; fix the file and save again.";
     // IA-1s, decision 5: a refusal Studio has a sentence for (an initial
     // asset that does not fit its image, IA-2) says it first.
-    if (const auto sentence = graphLoopRefusalDescription(error); !sentence.empty())
+    // BS-1s, decision 7: a document that is not JSON says where.
+    if (auto sentence = renderDocumentSyntaxDescription(error); !sentence.empty())
         detail = sentence + "\n" + detail;
+    else if (const auto graph = graphLoopRefusalDescription(error); !graph.empty())
+        detail = graph + "\n" + detail;
     if (!code.empty() || !message.empty()) {
         detail += "\n" + (code.empty() ? std::string{"refused"} : code);
         if (!where.empty()) detail += " (" + where + ")";
@@ -446,6 +449,7 @@ void RenderDocumentReload::refuse(const Json &error) {
     setRefused(true);
     say(Notice::Kind::Error, "Could not load " + file + ": fix the file and save again.",
         std::move(detail));
+    if (refusedWith) refusedWith(error);
     if (std::exchange(again_, false)) check(false);
 }
 

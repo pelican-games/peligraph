@@ -1,6 +1,7 @@
 #include "embeddedviewport.hpp"
 #include "enginefailuremodel.hpp"
 #include "frameplanwidget.hpp"
+#include "../src/devstudio/model/inspectormodel.hpp"
 
 #include "../src/core/asset/model.hpp"
 #include "../src/core/container.hpp"
@@ -543,14 +544,17 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
     REQUIRE_FALSE(control_log.contains(engine_fatal));
 }
 
-// UX-9, decision 5 (engine CT-1): a document the engine cannot read at start
-// -- a buffer port without its element -- stops it with the code named on its
-// fatal line, and the Frame Plan's status says the code's sentence and the
-// file to fix, read from the line the running engine really writes (UX-8
-// decision 13 (c) was written against a line made up in a test).
-TEST_CASE("UX-9 decision 5: an engine stopped at start by a buffer port without its element "
-          "says the code's sentence and the file in the Frame Plan's status",
-          "[devstudio][frame-plan][failure][ux9]") {
+// UX-9, decision 5 (engine CT-1) -> BS-1s, decision 4 (engine BS-1): a
+// document the engine cannot read at start -- a buffer port without its
+// element -- no longer stops the engine Studio starts (--render-fallback). It
+// keeps running on its placeholder, says why in get_status.render_pipeline,
+// and the Frame Plan's status says the code's sentence and the file to fix,
+// read from what the running engine really answers. The fatal line a player
+// started without the flag writes is still read (engineStoppedSentence, and
+// the test above it).
+TEST_CASE("BS-1s decision 4 (UX-9 decision 5): an engine Studio starts on a buffer port without its element "
+          "keeps running on its placeholder, and the Frame Plan's status says the code's sentence and the file",
+          "[devstudio][frame-plan][failure][ux9][bs1s]") {
     int argument_count = 1;
     char application_name[] = "pelican_engine_failure_ux9_test";
     char *arguments[] = {application_name};
@@ -577,45 +581,66 @@ TEST_CASE("UX-9 decision 5: an engine stopped at start by a buffer port without 
         "PELICAN_STUDIO_PLAYER", QString::fromUtf8(PELICAN_WP298_PLAYER).toLocal8Bit()};
     EnvironmentVariableGuard player_arguments{"PELICAN_STUDIO_PLAYER_ARGUMENTS",
                                               QByteArray{"--size 320x180"}};
-    ViewportObservation broken;
+    const QString expected = QStringLiteral(
+        "Showing a placeholder: the rendering setup was refused — Port data of sim needs element "
+        "(graph.port_field_missing@1) in passes/main.json. Fix it, then Reload from disk.");
+    ViewportObservation observed;
+    nlohmann::json status;
     QString status_text;
-    QString status_detail;
+    bool running_after = false;
     {
         EmbeddedViewport viewport;
         FramePlanWidget frame_plan{&viewport};
-        auto *status = frame_plan.findChild<QLabel *>(QStringLiteral("pelican.framePlanStatus"));
-        REQUIRE(status != nullptr);
+        auto *frame_status = frame_plan.findChild<QLabel *>(QStringLiteral("pelican.framePlanStatus"));
+        REQUIRE(frame_status != nullptr);
         QEventLoop ready_loop;
         QEventLoop rpc_loop;
         QEventLoop stopped_loop;
         QObject connection_context;
-        observeViewport(viewport, broken, ready_loop, rpc_loop, stopped_loop, connection_context);
+        observeViewport(viewport, observed, ready_loop, rpc_loop, stopped_loop, connection_context);
+        // The readiness probe's get_status is the first status read.
+        QObject::connect(&viewport, &EmbeddedViewport::engineStatusParsed, &connection_context,
+                         [&](qint64, const nlohmann::json &parsed) {
+                             if (status.is_null()) status = parsed;
+                         });
         viewport.resize(640, 480);
         viewport.show();
         viewport.openProject(displayPath(project));
-        QTimer::singleShot(60000, &stopped_loop, &QEventLoop::quit);
-        if (!broken.stopped) stopped_loop.exec();
+        QTimer::singleShot(60000, &ready_loop, &QEventLoop::quit);
+        if (!observed.rpc_available && !observed.stopped) ready_loop.exec();
+        // The Frame Plan reads the plan when the engine answers; the plan of
+        // the placeholder carries the same render_pipeline.
+        QEventLoop plan_loop;
+        QTimer poll;
+        QObject::connect(&poll, &QTimer::timeout, &plan_loop, [&] {
+            if (frame_status->text() == expected || observed.stopped) plan_loop.quit();
+        });
+        poll.start(50);
+        QTimer::singleShot(30000, &plan_loop, &QEventLoop::quit);
+        if (frame_status->text() != expected && !observed.stopped) plan_loop.exec();
         QApplication::processEvents();
-        status_text = status->text();
-        status_detail = status->toolTip();
+        status_text = frame_status->text();
+        running_after = viewport.engineRunning();
     }
 
-    REQUIRE(broken.stopped);
-    const QString engine_fatal = lastFatalLine(broken.standard_error);
-    INFO("engine stderr: " << broken.standard_error.toStdString());
-    INFO("running engine fatal line: " << engine_fatal.toStdString());
+    INFO("engine stderr: " << observed.standard_error.toStdString());
     INFO("Frame Plan status: " << status_text.toStdString());
-    REQUIRE(engine_fatal.contains(QStringLiteral("graph.port_field_missing@1")));
-    REQUIRE(broken.fatal_error_line == engine_fatal);
-    // The sentence Studio has for the code, with the port, the node and the
-    // field the engine named. IA-1s, decision 6: the file is the document
-    // the line names (CT-2's "document"), as the project names it.
-    CHECK(status_text ==
-          QStringLiteral("The engine stopped: Port data of sim needs element "
-                         "(graph.port_field_missing@1) in passes/main.json. Fix the file (or "
-                         "Reload from disk) to start it again."));
-    // The line itself stays the detail.
-    CHECK(status_detail == engine_fatal);
+    INFO("first get_status: " << status.dump().substr(0, 2000));
+    // The engine did not stop: it answered, and was still running when the
+    // test let it go.
+    REQUIRE(observed.rpc_available);
+    CHECK_FALSE(observed.stopped);
+    CHECK(running_after);
+    CHECK(observed.fatal_error_line.isEmpty());
+    CHECK(lastFatalLine(observed.standard_error).isEmpty());
+    // It said why, as the edit's refusal names it.
+    const auto reading = readRenderPipeline(status);
+    REQUIRE(reading.state == RenderPipelineReading::State::Fallback);
+    CHECK(reading.refusal.value("code", std::string{}) == "graph.port_field_missing@1");
+    CHECK(renderFallbackNode(reading) == "sim");
+    // The sentence Studio has for the code, with the port, the node, the
+    // field and the document the engine named.
+    CHECK(status_text == expected);
 }
 
 } // namespace PelicanStudio

@@ -875,6 +875,13 @@ std::string knownRefusalDescription(std::string_view code, std::string_view mess
     if (code == "external_modification" && renderDocumentsRefusedOnDisk())
         return std::string{renderDiskRefusalSentence} + "\n" + std::string{code} + ": " +
                std::string{message};
+    // BS-1s, decision 7 (engine BS-1b): a render document that is not JSON.
+    if (code == "render_document_syntax@1" ||
+        message.find("render_document_syntax@1") != std::string_view::npos)
+        if (auto syntax = renderDocumentSyntaxDescription(
+                nlohmann::json{{"code", "render_document_syntax@1"}, {"message", std::string{message}}});
+            !syntax.empty())
+            return syntax;
     if (findUnavailableComponentText(code) != nullptr)
         return componentUnavailableDescription(code);
     for (const auto &entry : UnavailableComponentTexts)
@@ -1640,7 +1647,7 @@ constexpr std::string_view ProjectSettingsUndoNeedsRestartText =
     "{store} was there when the engine started, so it stays declared \xE2\x80\x94 only stores added since then can be undone";
 
 // MT-1s, decision 7: the material editor's refusals (engine MT-1).
-constexpr std::array<GraphLoopRefusalText, 15> MaterialRefusalTexts{{
+constexpr std::array<GraphLoopRefusalText, 16> MaterialRefusalTexts{{
     {"material.value_invalid@1", "{param} cannot take that value: {reason}"},
     {"material.param_unknown@1", "The surface of {path} declares no {kind} {param}"},
     {"material.document_unknown@1", "{path} is not a material document the project lists: {reason}"},
@@ -1655,6 +1662,11 @@ constexpr std::array<GraphLoopRefusalText, 15> MaterialRefusalTexts{{
     {"material.binding_invalid@1", "The materials of {model} cannot be bound that way: {reason}"},
     {"material.object_unknown@1", "Object {object} cannot take a material of its own: {reason}"},
     {"material.transaction_busy@1", "{path} is being written by another edit; try again"},
+    // MT-3s, decision 5 (engine MT-3): {path, material, routing, bound_by:
+    // [{model, routing}]}; {models} is bound_by's models, one after another.
+    {"material.routing_conflict@1",
+     "{material} keeps its routing: {models} draw it through their bindings; bind them to another "
+     "material first"},
     {"external_modification", "{path} changed outside Studio since it was read; it was read again, try again"},
 }};
 
@@ -1687,6 +1699,18 @@ std::string materialRefusalDescription(const nlohmann::json &error) {
     if (!fields.contains("path") || !fields["path"].is_string()) fields["path"] = "the material";
     if (!fields.contains("kind") || !fields["kind"].is_string()) fields["kind"] = "value";
     if (!fields.contains("reason")) fields["reason"] = error.value("message", std::string{});
+    // MT-3s, decision 5: the models whose bindings route through it.
+    if (code == "material.routing_conflict@1") {
+        std::string models;
+        if (const auto bound_by = fields.find("bound_by"); bound_by != fields.end() && bound_by->is_array())
+            for (const auto &entry : *bound_by) {
+                const auto model = entry.is_object() ? entry.value("model", std::string{}) : std::string{};
+                if (model.empty()) continue;
+                models += (models.empty() ? "" : ", ") + model;
+            }
+        fields["models"] = models.empty() ? std::string{"models"} : models;
+        if (!fields.contains("material") || !fields["material"].is_string()) fields["material"] = "The material";
+    }
     // MT-2s-b: an object with a name is called by it (engine MT-2b).
     std::string_view pattern = entry->sentence;
     if (code == "material.object_unknown@1" && fields.contains("name") && fields["name"].is_string() &&
@@ -1796,6 +1820,113 @@ std::string engineStoppedSentence(std::string_view fatal_line, std::string_view 
     if (!definition.empty()) file = "definition " + definition + " of " + file;
     return "The engine stopped: " + sentence + " in " + file +
            ". Fix the file (or Reload from disk) to start it again.";
+}
+
+RenderPipelineReading readRenderPipeline(const nlohmann::json &reply) {
+    RenderPipelineReading reading;
+    if (!reply.is_object()) return reading;
+    const auto pipeline = reply.find("render_pipeline");
+    if (pipeline == reply.end() || !pipeline->is_object()) return reading;
+    const auto state = pipeline->value("state", std::string{});
+    if (state == "fallback") reading.state = RenderPipelineReading::State::Fallback;
+    else if (state == "ready") reading.state = RenderPipelineReading::State::Ready;
+    else return reading;
+    if (const auto root = pipeline->find("root"); root != pipeline->end() && root->is_string())
+        reading.root = root->get<std::string>();
+    if (const auto refusal = pipeline->find("refusal"); refusal != pipeline->end() && refusal->is_object())
+        reading.refusal = *refusal;
+    else
+        reading.refusal = nlohmann::json::object();
+    return reading;
+}
+
+std::string renderFallbackDocument(const RenderPipelineReading &reading) {
+    if (reading.state != RenderPipelineReading::State::Fallback) return {};
+    if (auto document = graphRefusalSource(reading.refusal, "document"); !document.empty())
+        return document;
+    // The root as the engine names it: project-relative, maybe project://.
+    return graphRefusalSource(nlohmann::json{{"document", reading.root}}, "document");
+}
+
+std::string renderFallbackNode(const RenderPipelineReading &reading) {
+    if (reading.state != RenderPipelineReading::State::Fallback) return {};
+    return graphRefusalSource(reading.refusal, "node");
+}
+
+std::string renderFallbackSentence(const RenderPipelineReading &reading) {
+    if (reading.state != RenderPipelineReading::State::Fallback) return {};
+    const auto &refusal = reading.refusal;
+    const auto code = refusal.value("code", std::string{});
+    const auto message = refusal.value("message", std::string{});
+    // The fields beside the code first (the refusal is a rejection's
+    // `error`), then whatever table knows the code from its message. The
+    // document is said once, after the sentence.
+    // BS-1s, decision 7: a document that is not JSON names itself.
+    if (auto syntax = renderDocumentSyntaxDescription(refusal); !syntax.empty()) {
+        while (!syntax.empty() && (syntax.back() == '.' || syntax.back() == ' ')) syntax.pop_back();
+        return "Showing a placeholder: the rendering setup was refused \xE2\x80\x94 " + syntax +
+               ". Fix it, then Reload from disk.";
+    }
+    auto sentence = graphLoopRefusalDescription(refusal, false);
+    if (sentence.empty()) sentence = knownRefusalDescription(code, message, false);
+    if (sentence.empty()) {
+        // A refusal Studio has no sentence for reads as the engine wrote it,
+        // with its code when the message does not start with it.
+        sentence = message.empty() ? code
+                   : code.empty() || message.starts_with(code) ? message
+                                                              : message + " (" + code + ")";
+        if (const auto newline = sentence.find('\n'); newline != std::string::npos)
+            sentence.erase(newline);
+    }
+    while (!sentence.empty() && (sentence.back() == '.' || sentence.back() == ' ')) sentence.pop_back();
+    auto file = renderFallbackDocument(reading);
+    if (file.empty()) file = "the project's render documents";
+    if (const auto definition = graphRefusalSource(refusal, "definition");
+        !definition.empty() && !graphRefusalSentenceNamesDefinition(code))
+        file = "definition " + definition + " of " + file;
+    return "Showing a placeholder: the rendering setup was refused \xE2\x80\x94 " + sentence + " in " +
+           file + ". Fix it, then Reload from disk.";
+}
+
+std::string renderDocumentSyntaxDescription(const nlohmann::json &error) {
+    if (!error.is_object()) return {};
+    constexpr std::string_view code = "render_document_syntax@1";
+    const auto fields = graphRefusalFields(error, code);
+    if (!fields || !fields->is_object() || (!fields->contains("document") && !fields->contains("reason")))
+        return {};
+    auto document = graphRefusalSource(*fields, "document");
+    if (document.empty()) document = "A render document";
+    std::string where;
+    const auto line = fields->find("line");
+    const auto column = fields->find("column");
+    if (line != fields->end() && line->is_number_integer() && column != fields->end() &&
+        column->is_number_integer())
+        where = " at line " + std::to_string(line->get<std::int64_t>()) + ", column " +
+                std::to_string(column->get<std::int64_t>());
+    auto reason = fields->value("reason", std::string{});
+    std::string sentence = document + " is not valid JSON" + where;
+    if (!reason.empty()) sentence += ": " + reason;
+    return sentence + " (" + std::string{code} + ").";
+}
+
+std::string renderRestartFeature(const nlohmann::json &error) {
+    if (!error.is_object()) return {};
+    constexpr std::string_view frozen = "was first requested after the runtime module graph was frozen";
+    constexpr std::string_view module = "Module '";
+    const auto message = error.value("message", std::string{});
+    const auto at = message.find(frozen);
+    if (at == std::string::npos) return {};
+    const auto open = message.rfind(module, at);
+    if (open == std::string::npos) return {};
+    const auto begin = open + module.size();
+    const auto close = message.find('\'', begin);
+    if (close == std::string::npos || close > at) return {};
+    std::string name = message.substr(begin, close - begin);
+    // The type's name as the compiler spells it: "struct Pelican::UiSystem".
+    for (const std::string_view keyword : {"struct ", "class "})
+        if (name.starts_with(keyword)) name.erase(0, keyword.size());
+    if (const auto scope = name.rfind("::"); scope != std::string::npos) name.erase(0, scope + 2);
+    return name.empty() ? std::string{"the feature"} : name;
 }
 
 std::string graphRefusalVariant(const nlohmann::json &error) {

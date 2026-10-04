@@ -369,6 +369,8 @@ modelReferenceChoices(std::string_view current,
 //   material.object_unknown@1     {object, reason}  (MT-2s: set_object_material,
 //                                                    get_object_materials)
 //   material.transaction_busy@1   {path}
+//   material.routing_conflict@1   {path, material, routing, bound_by: [{model, routing}]}
+//                                 (MT-3s: the routing of a bound material taken off)
 //   external_modification         {path, expected, actual}
 // `error` as for graphLoopRefusalDescription. Answers "<sentence>
 // (<code>).", or empty for any other refusal.
@@ -396,6 +398,45 @@ modelReferenceChoices(std::string_view current,
 // The render document project.json names (basic_config.rendering_config_json,
 // as written there: "passes/main.json"); empty when it cannot be read.
 [[nodiscard]] std::string projectRenderDocument(const std::filesystem::path &project_root);
+// BS-1s, decision 2 (engine BS-1): an engine Studio starts with
+// --render-fallback does not stop when the project's rendering configuration
+// is refused at start. It draws one flat colour and says why in
+// get_status.render_pipeline (and, while it lasts, get_frame_plan's):
+//   {state: "ready", root}
+//   {state: "fallback", root, refusal: {code, ...fields, document?, message}}
+// The refusal is shaped as a render edit's rejected `error`.
+struct RenderPipelineReading {
+    enum class State { Unknown, Ready, Fallback };
+    // Unknown: the reply carries no render_pipeline (an engine before BS-1).
+    State state = State::Unknown;
+    std::string root;
+    nlohmann::json refusal;
+};
+[[nodiscard]] RenderPipelineReading readRenderPipeline(const nlohmann::json &reply);
+// "Showing a placeholder: the rendering setup was refused — <the code's
+// sentence> in <file>. Fix it, then Reload from disk." -- the sentence of
+// the code's table (as engineStoppedSentence finds it), else the engine's
+// message; the file is the refusal's `document` (CT-2), else the root.
+// Empty unless the state is Fallback.
+[[nodiscard]] std::string renderFallbackSentence(const RenderPipelineReading &reading);
+// The file the refusal names, as the project names it ("passes/main.json"),
+// the root when it names none; and the node, empty when it names none.
+[[nodiscard]] std::string renderFallbackDocument(const RenderPipelineReading &reading);
+[[nodiscard]] std::string renderFallbackNode(const RenderPipelineReading &reading);
+// BS-1s, decision 7 (engine BS-1b): render_document_syntax@1 {document,
+// line?, column?, reason} -- a render document whose bytes are not JSON --
+// as "<document> is not valid JSON at line <l>, column <c>: <reason>
+// (render_document_syntax@1)." (the "at line ..." clause only when both are
+// given; the document without project://). Fields beside the code, in
+// error_fields or after the code in the message. Empty for any other
+// refusal. knownRefusalDescription answers it too.
+[[nodiscard]] std::string renderDocumentSyntaxDescription(const nlohmann::json &error);
+// BS-1s, decision 4: a configuration the engine refuses only because the
+// feature it turns on needs a module the running engine was started without
+// ("Module '<type>' was first requested after the runtime module graph was
+// frozen"): the module's short name ("UiSystem"); empty for any other
+// refusal. `error` is a rejection's {code, message, ...}.
+[[nodiscard]] std::string renderRestartFeature(const nlohmann::json &error);
 // LP-0d: the graph variant (preview, XR) that refused an edit, named by
 // `variant` beside the code; empty when the main graph did. LP-4d2: always --
 // graph.loop_variant_missing@1 names the material's variant

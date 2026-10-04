@@ -147,6 +147,9 @@ TEST_CASE("Studio player arguments force public editor feature and input overlay
 
     REQUIRE(arguments ==
             QStringList{QStringLiteral("--rpc"),
+                        // BS-1s, decision 1: a refused rendering setup does
+                        // not stop the engine Studio starts.
+                        QStringLiteral("--render-fallback"),
                         QStringLiteral("--project"),
                         QStringLiteral("C:/projects/example"),
                         QStringLiteral("--feature-overlay"), expected_overlay,
@@ -165,6 +168,14 @@ TEST_CASE("Studio player arguments force public editor feature and input overlay
     REQUIRE(own_log.contains(QStringLiteral("D:/logs/mine.log")));
     REQUIRE(arguments.count(QStringLiteral("--feature-overlay")) == 1);
     REQUIRE(arguments.count(QStringLiteral("--editor-transform")) == 1);
+    // BS-1s, decision 1: every engine Studio starts with --rpc gets it, once,
+    // headless too (the engine takes it with --rpc alone).
+    REQUIRE(studioPlayerArguments({QStringLiteral("--render-fallback")},
+                                  QStringLiteral("C:/projects/example"))
+                .count(QStringLiteral("--render-fallback")) == 1);
+    REQUIRE(studioPlayerArguments({QStringLiteral("--headless")},
+                                  QStringLiteral("C:/projects/example"))
+                .count(QStringLiteral("--render-fallback")) == 1);
 
     const auto handle_only = studioPlayerArguments(
         {QStringLiteral("--editor-transform=grab")},

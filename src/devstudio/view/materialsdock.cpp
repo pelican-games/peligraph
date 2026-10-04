@@ -477,8 +477,8 @@ struct MaterialsDock::Impl {
         auto *settings = new QFormLayout;
         surface = new QComboBox(editor);
         surface->setObjectName(QStringLiteral("pelican.materials.surface"));
-        surface->setToolTip(owner.tr("The surface the material draws with; a change is read when the "
-                                     "engine starts"));
+        surface->setToolTip(owner.tr("The surface the material draws with; the engine registers a change "
+                                     "again in place and rebuilds the models that draw it"));
         QObject::connect(surface, &QComboBox::currentIndexChanged, &owner, [this](int row) {
             if (filling || row < 0) return;
             const int index = surface->itemData(row).toInt();
@@ -490,8 +490,8 @@ struct MaterialsDock::Impl {
         settings->addRow(owner.tr("Surface"), surface);
         tags = new GraphCanvasTagPicker(QStringLiteral("pelican.materials.tags"), owner.tr("(no tags)"), editor);
         tags->allowNewTags(true);
-        tags->setToolTip(owner.tr("The tags a material pass's filter and a draw loop test; a change is read "
-                                  "when the engine starts"));
+        tags->setToolTip(owner.tr("The tags a material pass's filter and a draw loop test; the engine "
+                                  "registers a change again in place"));
         tags->changed = [this] {
             if (!filling) session.setTags(tags->selected());
         };
@@ -499,11 +499,12 @@ struct MaterialsDock::Impl {
         alpha_mode = new QComboBox(editor);
         alpha_mode->setObjectName(QStringLiteral("pelican.materials.alphaMode"));
         for (const char *mode : {"opaque", "mask", "blend"}) alpha_mode->addItem(QLatin1String(mode), QLatin1String(mode));
-        alpha_mode->setToolTip(owner.tr("routing.alpha_mode: which material passes draw it; read when the "
-                                        "engine starts"));
+        alpha_mode->setToolTip(owner.tr("routing.alpha_mode: which material passes draw it; the bindings "
+                                        "that name the material are rewritten with it"));
         double_sided = new QCheckBox(owner.tr("Double sided"), editor);
         double_sided->setObjectName(QStringLiteral("pelican.materials.doubleSided"));
-        double_sided->setToolTip(owner.tr("routing.double_sided; read when the engine starts"));
+        double_sided->setToolTip(owner.tr("routing.double_sided; the bindings that name the material are "
+                                          "rewritten with it"));
         const auto routing_changed = [this] {
             if (filling) return;
             session.setRouting(alpha_mode->currentData().toString().toStdString(), double_sided->isChecked());
@@ -802,7 +803,12 @@ struct MaterialsDock::Impl {
     void applyValues() {
         const auto &material = session.material();
         filling = true;
-        if (surface != nullptr) fillSurfaceChoices(*surface, material.value("surface", std::string{}), false);
+        // MT-3s: while an edit of this dock is out, or the material is read
+        // again after it, the document held is the one before it -- the
+        // choice just made stays shown instead of flicking back.
+        const bool settled = !session.editPending() && !session.materialReading();
+        if (surface != nullptr && (settled || surface->count() == 0))
+            fillSurfaceChoices(*surface, material.value("surface", std::string{}), false);
         if (tags != nullptr) {
             std::vector<std::string> chosen;
             if (const auto found = material.find("tags"); found != material.end() && found->is_array())
@@ -810,7 +816,7 @@ struct MaterialsDock::Impl {
                     if (tag.is_string()) chosen.push_back(tag.get<std::string>());
             tags->setTags(materialTagVocabulary(session.list()), chosen);
         }
-        if (alpha_mode != nullptr) {
+        if (alpha_mode != nullptr && settled) {
             const auto routing = material.value("routing", Json::object());
             const QSignalBlocker block_mode{alpha_mode};
             const QSignalBlocker block_sides{double_sided};

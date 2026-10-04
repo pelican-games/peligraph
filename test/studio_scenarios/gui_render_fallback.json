@@ -1,0 +1,560 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "gui_render_fallback",
+  "description": "BS-1s: a project whose rendering setup the engine refuses at start no longer stops the engine Studio starts (--render-fallback, engine BS-1). The prepare step makes a Blank project with pelican_cli and writes into its root a render.compute node whose buffer port has no element (CT-1's case, BS-1's engine test). Opened in Studio, the engine keeps running and draws its one-colour placeholder (dark magenta); the row above the viewport and the Frame Plan's status say one sentence -- the code's, the node, the port, the field and the file -- with Reload from disk, Open in Graph and Open file. Open in Graph shows the node. Reload from disk with the file still broken is refused and the placeholder stays. The file is then fixed outside Studio (the node taken out): Studio picks it up, the engine publishes the project's setup, get_status read again takes the row away, and Blank's gradient is on screen. BS-1b: a second project, its root's last } taken away, opens on the placeholder too; the sentence names the file, the line and the column (render_document_syntax@1), and Show the document opens the root as it is on disk; Save cannot be pressed until it is JSON; the } typed at its end and Save (restore_render_documents) bring the project's frames back. Typed: the } in the document's window.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up, so the switch to the broken project is something that happens",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout: the panel layout is the desktop's, saved by whichever Studio closed last",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "open the project the prepare step made from Blank, its root holding a compute node whose buffer port has no element",
+      "cmd": "open_project",
+      "dir": "{artifacts}/incoming/broken"
+    },
+    {
+      "label": "decision 2: the engine does not stop; the row above the viewport says why",
+      "cmd": "wait",
+      "name": "pelican.renderFallbackNotice.text",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "one sentence: the code's, the node, the port, the field and the file",
+      "expect": "text_equals",
+      "name": "pelican.renderFallbackNotice.text",
+      "value": "Showing a placeholder: the rendering setup was refused — Port data of sim needs element (graph.port_field_missing@1) in passes/main_rendering_config.json. Fix it, then Reload from disk."
+    },
+    {
+      "label": "the engine says it draws its placeholder",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "render_pipeline.state",
+      "value": "fallback"
+    },
+    {
+      "label": "refused by the code the edit would be refused by",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "render_pipeline.refusal.code",
+      "value": "graph.port_field_missing@1"
+    },
+    {
+      "label": "and it keeps presenting frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the Frame Plan's status says the same sentence",
+      "cmd": "wait",
+      "name": "pelican.framePlanStatus",
+      "text": "Showing a placeholder: the rendering setup was refused — Port data of sim needs element (graph.port_field_missing@1) in passes/main_rendering_config.json. Fix it, then Reload from disk.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Reload from disk is offered",
+      "expect": "visible",
+      "name": "pelican.renderFallbackNotice.reload",
+      "value": true
+    },
+    {
+      "label": "Open in Graph, for the node the refusal names",
+      "expect": "visible",
+      "name": "pelican.renderFallbackNotice.openGraph",
+      "value": true
+    },
+    {
+      "label": "Open file, for the file it names",
+      "expect": "visible",
+      "name": "pelican.renderFallbackNotice.openFile",
+      "value": true
+    },
+    {
+      "label": "no restart is asked for",
+      "expect": "visible",
+      "name": "pelican.renderFallbackNotice.restart",
+      "value": false
+    },
+    {
+      "label": "read the green of the viewport's middle",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/placeholder.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "rgb[0][1]",
+      "remember": "placeholder_green"
+    },
+    {
+      "label": "the placeholder is the dark magenta: red well above green",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/placeholder.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "op": "gt",
+      "value_of": "placeholder_green",
+      "plus": 20,
+      "retry_ms": 30000
+    },
+    {
+      "label": "read the red of the middle",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/placeholder.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "remember": "placeholder_red"
+    },
+    {
+      "label": "one colour: the corner is no redder than the middle",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/placeholder.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "rgb[1][0]",
+      "op": "le",
+      "value_of": "placeholder_red",
+      "plus": 4
+    },
+    {
+      "label": "and no less red",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/placeholder.png",
+        "pixels": [
+          [
+            0.5,
+            0.5
+          ],
+          [
+            0.06,
+            0.06
+          ]
+        ]
+      },
+      "path": "rgb[1][0]",
+      "op": "ge",
+      "value_of": "placeholder_red",
+      "plus": -4
+    },
+    {
+      "label": "a picture of the window on the placeholder, the row above the viewport",
+      "expect": "screenshot",
+      "path": "gui_render_fallback_placeholder_window.png"
+    },
+    {
+      "label": "decision 2: Open in Graph",
+      "cmd": "click",
+      "name": "pelican.renderFallbackNotice.openGraph"
+    },
+    {
+      "label": "the Graph tab shows the node the refusal names",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#sim",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "decision 3: Reload from disk, with the file still broken",
+      "cmd": "click",
+      "name": "pelican.renderFallbackNotice.reload"
+    },
+    {
+      "label": "the reload is refused and says which file",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "contains": "Could not load",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the engine stays on its placeholder",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "render_pipeline.state",
+      "value": "fallback"
+    },
+    {
+      "label": "and the row still says why",
+      "expect": "visible",
+      "name": "pelican.renderFallbackNotice",
+      "value": true
+    },
+    {
+      "label": "the file fixed outside Studio: the node taken out of the root again",
+      "file": "replace",
+      "path": "{artifacts}/incoming/broken/passes/main_rendering_config.json",
+      "old": "{\"id\": \"sim\", \"op\": \"render.compute\", \"parameters\": {\"ports\": {\"data\": {\"kind\": \"buffer\", \"access\": \"read_write\"}}, \"shader\": \"shaders/sim.comp\"}, \"outputs\": []}",
+      "new": ""
+    },
+    {
+      "label": "decision 3: Studio picks the fixed file up and the engine publishes it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Picked up the change to main_rendering_config.json.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the engine runs the project's rendering setup",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "render_pipeline.state",
+      "value": "ready",
+      "retry_ms": 30000
+    },
+    {
+      "label": "get_status read again after the reload takes the row away",
+      "cmd": "wait",
+      "name": "pelican.renderFallbackNotice",
+      "visible": false,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the engine presents the project's frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the Frame Plan tab",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "the Frame Plan is the project's again: present is drawn",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "read the red of the top-left corner",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/project_frames.png",
+        "pixels": [
+          [
+            0.06,
+            0.06
+          ],
+          [
+            0.94,
+            0.06
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "remember": "left_red"
+    },
+    {
+      "label": "Blank's gradient: the top-right corner is far redder than the top-left",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/project_frames.png",
+        "pixels": [
+          [
+            0.06,
+            0.06
+          ],
+          [
+            0.94,
+            0.06
+          ]
+        ]
+      },
+      "path": "rgb[1][0]",
+      "op": "gt",
+      "value_of": "left_red",
+      "plus": 60,
+      "retry_ms": 30000
+    },
+    {
+      "label": "a picture of the window back on the project's frames",
+      "expect": "screenshot",
+      "path": "gui_render_fallback_window.png"
+    },
+    {
+      "label": "decision 9: open the second project the prepare step made, its root's last } taken away",
+      "cmd": "open_project",
+      "dir": "{artifacts}/incoming/unclosed"
+    },
+    {
+      "label": "the engine does not stop on a root that is not JSON either",
+      "cmd": "wait",
+      "name": "pelican.renderFallbackNotice.text",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "decision 7: the sentence names the file, the line and the column",
+      "cmd": "wait",
+      "name": "pelican.renderFallbackNotice.text",
+      "contains": "passes/main_rendering_config.json is not valid JSON at line ",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "and the code",
+      "cmd": "wait",
+      "name": "pelican.renderFallbackNotice.text",
+      "contains": "(render_document_syntax@1)",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the engine names the same code",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "render_pipeline.refusal.code",
+      "value": "render_document_syntax@1"
+    },
+    {
+      "label": "decision 8: Show the document is offered",
+      "expect": "visible",
+      "name": "pelican.renderFallbackNotice.showDocument",
+      "value": true
+    },
+    {
+      "label": "no node to open in the Graph",
+      "expect": "visible",
+      "name": "pelican.renderFallbackNotice.openGraph",
+      "value": false
+    },
+    {
+      "label": "a picture of the window on the placeholder of a root that is not JSON",
+      "expect": "screenshot",
+      "path": "gui_render_fallback_syntax_window.png"
+    },
+    {
+      "label": "Show the document",
+      "cmd": "click",
+      "name": "pelican.renderFallbackNotice.showDocument"
+    },
+    {
+      "label": "its window is on screen",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "it reads the document as it is on disk, and says it is not JSON yet",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog.notice",
+      "contains": "Not valid JSON yet at line ",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Save cannot be pressed while it is not JSON",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog.save",
+      "enabled": false,
+      "timeout_ms": 5000
+    },
+    {
+      "label": "to the end of the text",
+      "cmd": "key",
+      "name": "pelican.renderDocumentDialog.text",
+      "sequence": "Ctrl+End"
+    },
+    {
+      "label": "the } that was taken away, typed",
+      "cmd": "type",
+      "name": "pelican.renderDocumentDialog.text",
+      "text": "}",
+      "select_all": false
+    },
+    {
+      "label": "it is JSON now",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog.notice",
+      "contains": "Valid JSON",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Save can be pressed",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog.save",
+      "enabled": true,
+      "timeout_ms": 5000
+    },
+    {
+      "label": "Save: one restore_render_documents against the digest of the broken bytes",
+      "cmd": "click",
+      "name": "pelican.renderDocumentDialog.save"
+    },
+    {
+      "label": "the restore commits and the window closes",
+      "cmd": "wait",
+      "name": "pelican.renderDocumentDialog",
+      "missing": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the engine runs the project's rendering setup",
+      "expect": "rpc_equals",
+      "method": "get_status",
+      "params": {},
+      "path": "render_pipeline.state",
+      "value": "ready",
+      "retry_ms": 30000
+    },
+    {
+      "label": "get_status read again after the commit takes the row away",
+      "cmd": "wait",
+      "name": "pelican.renderFallbackNotice",
+      "visible": false,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the engine wrote the file: its root closes again",
+      "file": "contains",
+      "path": "{artifacts}/incoming/unclosed/passes/main_rendering_config.json",
+      "text": "  }\n}",
+      "value": true
+    },
+    {
+      "label": "the engine presents the project's frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the Frame Plan tab",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "the Frame Plan is the project's: present is drawn",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "read the red of the top-left corner",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/syntax_fixed.png",
+        "pixels": [
+          [
+            0.06,
+            0.06
+          ],
+          [
+            0.94,
+            0.06
+          ]
+        ]
+      },
+      "path": "rgb[0][0]",
+      "remember": "fixed_left_red"
+    },
+    {
+      "label": "Blank's gradient again",
+      "expect": "result",
+      "command": {
+        "cmd": "screenshot",
+        "name": "pelican.viewportHost",
+        "mode": "screen",
+        "path": "{artifacts}/syntax_fixed.png",
+        "pixels": [
+          [
+            0.06,
+            0.06
+          ],
+          [
+            0.94,
+            0.06
+          ]
+        ]
+      },
+      "path": "rgb[1][0]",
+      "op": "gt",
+      "value_of": "fixed_left_red",
+      "plus": 60,
+      "retry_ms": 30000
+    },
+    {
+      "label": "a picture of the window for the reader of this report",
+      "expect": "screenshot",
+      "path": "gui_render_fallback_fixed_window.png"
+    }
+  ]
+}

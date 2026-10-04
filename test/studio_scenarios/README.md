@@ -570,6 +570,21 @@ sees. Components with a list are still rebuilt on every commit. The unsaved-scen
 asked before a restart the Frame Plan requests (`restart_required`), and Cancel
 leaves the running engine alone.
 
+BS-1s: Studio starts every engine with `--render-fallback`, so a project whose
+rendering setup the engine refuses at start opens on the engine's one-colour
+placeholder instead of a stopped viewport. The row above the viewport is
+`pelican.renderFallbackNotice` (hidden while there is nothing to say), its
+sentence `.text`, and its buttons `.reload` (Reload from disk), `.openGraph`,
+`.openFile`, `.showDocument` and `.restart`. Show the document (a root that is
+not JSON, render_document_syntax@1) opens `pelican.renderDocumentDialog`:
+`.text` (the bytes on disk, the cursor where the parser stopped), `.notice`,
+`.save` (restore_render_documents; off until the text is JSON) and `.cancel`.
+Under automation Open file prints `automation:
+shader source open <path>` to the log, as a shader does. A project that has to
+be broken before Studio opens it is made by the scenario's `<name>.prepare.py`
+(with `pelican_cli project init`) in `{artifacts}/incoming/`;
+`gui_render_fallback` is the example.
+
 ## Gestures a canvas is driven with
 
 `press`, `move` and `release` share one piece of state: which buttons this

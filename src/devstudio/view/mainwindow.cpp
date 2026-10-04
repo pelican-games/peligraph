@@ -16,6 +16,7 @@
 #include "projectmigrationwidget.hpp"
 #include "renderconfigdigest.hpp"
 #include "planperfhub.hpp"
+#include "renderfallbacknotice.hpp"
 #include "renderfeatureswidget.hpp"
 #include "renderingsettingswidget.hpp"
 #include "rendereditcompletion.hpp"
@@ -27,6 +28,7 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QCryptographicHash>
+#include <QDesktopServices>
 #include <QAbstractItemView>
 #include <QCoreApplication>
 #include <QCloseEvent>
@@ -69,6 +71,7 @@
 #include <QTreeWidgetItemIterator>
 #include <QElapsedTimer>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QVariant>
 
@@ -277,6 +280,67 @@ void MainWindow::createWorkspace() {
     viewport_ = new EmbeddedViewport(workspace);
     viewport_->bindSelectionModel(&selection_model_);
     workspace->setHole(viewport_);
+    // BS-1s, decisions 2-4: above the viewport while the engine draws its
+    // placeholder because the rendering setup was refused at start. Its
+    // hooks reach panels made further down; they run only once it shows.
+    file_open_action_ = [](const std::filesystem::path &path) {
+        return QDesktopServices::openUrl(QUrl::fromLocalFile(QString::fromStdWString(path.wstring())));
+    };
+    render_fallback_ = new RenderFallbackNotice(
+        RenderFallbackNotice::Hooks{
+            .reload = [this] {
+                if (render_reload_) render_reload_->reloadNow();
+            },
+            .open_graph = [this](const QString &node) {
+                if (graph_canvas_ == nullptr || render_tabs_ == nullptr) return;
+                docks_[FramePlanDock]->show();
+                docks_[FramePlanDock]->raise();
+                render_tabs_->setCurrentWidget(graph_canvas_);
+                graph_canvas_->revealNodeWhenPresent(node);
+            },
+            .open_file = [this](const QString &document) {
+                const QString root = viewport_->projectRoot();
+                if (root.isEmpty()) return;
+                const auto path = std::filesystem::path{root.toStdWString()} /
+                                  std::filesystem::path{document.toStdWString()};
+                if (!file_open_action_ || !file_open_action_(path))
+                    statusBar()->showMessage(tr("Could not open %1.").arg(document), 8000);
+            },
+            .restart = [this](const QString &reason) { requestEngineRestart(reason); },
+            .read_status = [this] {
+                QString error;
+                (void)viewport_->requestRpc(QStringLiteral("get_status"), QJsonObject{}, &error);
+            },
+            // Decision 8: Show the document reads and restores it.
+            .request = [this](const std::string &method, const nlohmann::json &params,
+                              std::string *error) -> std::int64_t {
+                const auto object =
+                    QJsonDocument::fromJson(QByteArray::fromStdString(params.dump())).object();
+                QString message;
+                const qint64 id =
+                    viewport_->requestRpc(QString::fromStdString(method), object, &message);
+                if (id == 0 && error != nullptr) *error = message.toStdString();
+                return id;
+            },
+            .schedule = [this](int milliseconds, std::function<void()> task) {
+                QTimer::singleShot(milliseconds, this, std::move(task));
+            },
+            .restored = [this](const nlohmann::json &commit) {
+                // Every panel reads the documents again, as after a reload.
+                renderDocumentsRestored(commit, false);
+            },
+            .shown_changed = [this](bool shown, const QString &line) {
+                if (shown) {
+                    statusBar()->showMessage(line, 15000);
+                } else if (render_fallback_ != nullptr &&
+                           render_fallback_->session().reading().state ==
+                               RenderPipelineReading::State::Ready) {
+                    statusBar()->showMessage(tr("The project's rendering setup runs again."), 8000);
+                }
+            },
+        },
+        workspace);
+    workspace_layout->addWidget(render_fallback_);
     workspace_layout->addWidget(viewport_, 1);
     migration_panel_ = new ProjectMigrationWidget(
         [this](const QString &method, const QJsonObject &params,
@@ -847,6 +911,7 @@ void MainWindow::createWorkspace() {
                 // the history stays (its documents are on disk).
                 if (render_history_) render_history_->abandonInFlight();
                 if (render_reload_) render_reload_->engineGone();
+                render_fallback_->engineGone();
                 assets_dock_->engineUnavailable();
                 materials_dock_->engineUnavailable();
                 if (pending_navigation_ != Navigation::None) {
@@ -870,6 +935,9 @@ void MainWindow::createWorkspace() {
             [this](qint64 request_id, const QByteArray &result_json) {
                 if (migration_panel_->acceptRpcResult(request_id, result_json))
                     return;
+                // BS-1s, decision 8: Show the document's reads and restore. A
+                // committed restore goes on, to be read as every commit.
+                if (render_fallback_->receiveResult(request_id, result_json)) return;
                 // HW-2s / AV-1s: the Assets dock's settings edits and checks.
                 if (assets_dock_->receiveResult(request_id, result_json)) return;
                 // MT-1s: the Materials dock's reads and writes.
@@ -894,6 +962,9 @@ void MainWindow::createWorkspace() {
                     }
                     if (render_reload_->receiveResult(request_id, result)) return;
                     render_reload_->observeReply(result);
+                    // BS-1s, decision 3: an edit that committed while the
+                    // engine draws its placeholder may have ended it.
+                    render_fallback_->observeReply(result);
                 }
                 // RU-1: the render history's own reads, restores and polls,
                 // and the replies to the edits it follows.
@@ -933,6 +1004,7 @@ void MainWindow::createWorkspace() {
             [this](qint64 request_id, const QString &message) {
                 if (migration_panel_->acceptRpcFailure(request_id, message))
                     return;
+                if (render_fallback_->receiveFailure(request_id, message)) return;
                 if (assets_dock_->receiveFailure(request_id, message)) return;
                 if (materials_dock_->receiveFailure(request_id, message)) return;
                 if (play_controls_ &&
@@ -1146,6 +1218,10 @@ void MainWindow::createRenderReload() {
     render_reload_->reloaded = [this](const nlohmann::json &commit) {
         renderDocumentsReloaded(commit);
     };
+    // BS-1s, decision 4: a fixed setup only a restart can run.
+    render_reload_->refusedWith = [this](const nlohmann::json &error) {
+        if (render_fallback_ != nullptr) render_fallback_->observeReloadRefusal(error);
+    };
     // IA-1s, decision 5: the images' initial assets are watched with the
     // documents.
     graph_canvas_->setInitialAssetsAction([this](std::vector<std::string> assets) {
@@ -1168,6 +1244,8 @@ void MainWindow::renderDocumentsReloaded(const nlohmann::json &commit) {
     // hold was written before the disk changed under them: both end here.
     if (render_history_) render_history_->cut("\xE2\x80\x94 reloaded from disk \xE2\x80\x94");
     graph_canvas_->documentsReloadedFromDisk();
+    // BS-1s, decision 3: the placeholder may have given way.
+    if (render_fallback_ != nullptr) render_fallback_->reloadCommitted();
     // The way back after any outside change (RU-1's restore): every panel
     // reads the documents again, and RSX's one reader hears a restart.
     renderDocumentsRestored(commit, readRenderEditCompletion(commit).restart_required);
@@ -1502,6 +1580,8 @@ void MainWindow::createPlayControls(QToolBar *band) {
                 // and, decision 7, whether the engine's own watch is open.
                 assets_dock_->observeStatus(request_id, status);
                 frame_plan_->observeEngineStatus(status);
+                // BS-1s, decision 2: the engine's placeholder, and why.
+                render_fallback_->observeStatus(status);
             });
     connect(viewport_, &EmbeddedViewport::engineRpcRefused, this,
             [this](qint64 request_id, int code, const QString &message,
@@ -2071,6 +2151,8 @@ void MainWindow::leaveCurrentProject(
 void MainWindow::setShaderSourceOpenAction(
     std::function<bool(const std::filesystem::path &)> action) {
     frame_plan_->setShaderSourceOpenAction(action);
+    // BS-1s: the fallback notice's Open file opens the same way.
+    file_open_action_ = action;
     fullscreen_pass_->setShaderSourceOpenAction(std::move(action));
 }
 
