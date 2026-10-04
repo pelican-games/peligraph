@@ -588,7 +588,7 @@ level実行前に、その段に入っている**全System**の`prepare_func`が
 
 表に出てくる **model instance** は、ECS Componentではなく**描画側の1件**です。[`PolygonInstanceContainer`](../../src/core/renderer/polygoninstancecontainer.hpp#L382) が所有するGPU描画単位で（model matrix bufferの1行 + indirect draw command）、識別子は [`ModelInstanceId`](../../src/core/renderer/modelinstance.hpp#L28)（`index + generation + scene_epoch`）です。`SimpleModelViewComponent` はこのIDを持つだけで、実体はChunkの外にあります。ここの組み込みSystem群がしているのは、ECS側の値（transform、アニメーション状態）を毎フレームこの描画側の1件へ書き写すことです。
 
-model instance の数は、同時に生きているものが 1,024 まで、物理的な slot(index)が 2,048 までです(`8bde3c2f`。利用者の codex の変更、handoff 05。[`maxActiveModelInstances` と `maxModelInstances`](../../src/core/renderer/polygoninstancecontainer.cpp#L30))。scene の置き換えの間は公開中の世代と候補の世代の両方が slot を持つので、slot の数を生きている数の上限の 2 倍にしてあります(コードの注記)。回収の流れは [第3章](03_project_and_loading.md) の scene load の retire の段の後の段落です。
+model instance の数は、同時に生きているものが 1,024 まで、物理的な slot(index)が 2,048 までです(`8bde3c2f`。利用者の codex の変更、handoff 05。[`maxActiveModelInstances` と `maxModelInstances`](../../src/core/renderer/polygoninstancecontainer.cpp#L31))。scene の置き換えの間は公開中の世代と候補の世代の両方が slot を持つので、slot の数を生きている数の上限の 2 倍にしてあります(コードの注記)。回収の流れは [第3章](03_project_and_loading.md) の scene load の retire の段の後の段落です。
 
 `CameraSystem`は`count == 0`で早期returnするようになりました（[camerasystem.cpp](../../src/core/ecs/predefined/camerasystem.cpp#L14)）。ただし「先頭1件のみ使用」（`i < 1`固定のループ）は変わりません。scene cameraの主経路は別の [`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L395) でも管理されており、camera関連には旧内部ECS経路と新scene camera経路が併存しています。
 
@@ -833,6 +833,6 @@ ECS の関わり方には、読み間違えやすい非対称があります。
 
 本番の executor は、生成した entity に対して**trace 無しの `finish()` を呼びます**（[`for (auto &token : created_entities) token.finish();`](../../src/core/loader/scene.cpp#L1808)）。`finish` を trace へ書くのは、その直前に executor が明示的に置いた [`phase_trace.record(SceneLoadPhase::finish)`](../../src/core/loader/scene.cpp#L1807) の1行です。コメントが理由を書いています — **batch 自体が1人の participant** であり、entity が0件の scene でも `finish` が観測できる必要がある一方、token 個々の完了は batch の実装詳細だからです。
 
-`early_publish` も同じ考え方です。ECS の3行（`entity_liveness` / `component_values` / `component_versions`）は [participant manifest](../../src/core/loader/sceneparticipantmanifest.cpp#L99) 上で `early_publish` の participant として宣言されていますが、`publish()` 自体は trace を触りません。executor 側で `early_publish` が現れるのは失敗経路の [`fail(SceneLoadPhase::early_publish, ...)`](../../src/core/loader/scene.cpp#L1770) と、同じ段で走る [`PolygonInstanceContainer` 側の記録](../../src/core/renderer/polygoninstancecontainer.cpp#L714) です。
+`early_publish` も同じ考え方です。ECS の3行（`entity_liveness` / `component_values` / `component_versions`）は [participant manifest](../../src/core/loader/sceneparticipantmanifest.cpp#L99) 上で `early_publish` の participant として宣言されていますが、`publish()` 自体は trace を触りません。executor 側で `early_publish` が現れるのは失敗経路の [`fail(SceneLoadPhase::early_publish, ...)`](../../src/core/loader/scene.cpp#L1770) と、同じ段で走る [`PolygonInstanceContainer` 側の記録](../../src/core/renderer/polygoninstancecontainer.cpp#L743) です。
 
 **触るときの不変条件**: token の `publish()` / `finish()` / `rollback()` は全て `noexcept` で、executor はそれを [`static_assert`](../../src/core/loader/scene.cpp#L1082) で固定しています。trace を足したくなったら、`record` 文を executor に書くのではなく participant の側へ渡します（[第9章](09_black_magic_and_gotchas.md)の落とし穴）。

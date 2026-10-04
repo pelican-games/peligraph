@@ -157,13 +157,13 @@ codec の表には 8 個目として `pelican_ray_instance` が並んでいま�
 ```
 
 - 行の `mesh` と `primitive` は GLB の mesh と primitive の番号で、その 1 つを覆います。両方とも省いた行は全 primitive を覆います([行の型 `ModelMaterialOverride`](../../src/core/userpublic/components/modelview.hpp#L17))。
-- 効く順は「その primitive の行」>「全 primitive の行」> model の既定です([効く順を決める所 MT-2](../../src/core/renderer/polygoninstancecontainer.cpp#L409))。
+- 効く順は「その primitive の行」>「全 primitive の行」> model の既定です([効く順を決める所 MT-2](../../src/core/renderer/polygoninstancecontainer.cpp#L438))。
 - `material` は、その model の glTF の material の名前か、登録済みの project material の名前です。
 - codec が断る行(`simplemodelview.materials` の範囲エラー。[行の検査 MT-2](../../src/core/loader/componentcodec.cpp#L730)):
   - `material` が空の行。
   - `mesh` と `primitive` の片方だけの行。
   - 同じ対象(同じ primitive、または全 primitive)を覆う行が 2 つあるとき。
-- scene を読むときに名前が解けない行は断りません。警告をログに出し、その行が無いものとして描きます(全 primitive の行が解けていればそれ、無ければ model の既定。[名前が解けないときの警告](../../src/core/renderer/polygoninstancecontainer.cpp#L442))。`get_object_materials` ではその行が `resolved: false` です。
+- scene を読むときに名前が解けない行は断りません。警告をログに出し、その行が無いものとして描きます(全 primitive の行が解けていればそれ、無ければ model の既定。[名前が解けないときの警告](../../src/core/renderer/polygoninstancecontainer.cpp#L471))。`get_object_materials` ではその行が `resolved: false` です。
 - エディタからは `set_object_material` で書きます([第13章](13_editor.md) §13.5 の「material 文書を読み書きする」)。Studio では ✅MT-2s から Inspector の Material の行(範囲 This object)がこれを送ります(§13.1 の「Studio の Materials のドック」。Inspector は `materials` を汎用の list の欄にしません)。`get_component_add_candidates` の simplemodelview の `schema_fields` は `[model, materials]` の 2 つになりました。
 
 ### localtransform(✅)
@@ -413,9 +413,9 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 2〜9 の 8 段が [SceneLoadPhase](../../src/core/loader/sceneload.hpp#L27) の 8 値(`prepare` / `early_publish` / `publish` / `activate` / `commit_metadata` / `retire` / `flush` / `finish`)にそのまま対応します(1 は executor に入る前の解釈レイヤなので phase ではありません)。ロード結果に付く phase trace は内部の順序検証(と fault injection)のためのもので、rpc には出ていません。
 
-**モデルのインスタンスの枠(`8bde3c2f`。利用者の codex の変更、handoff 05)。**同時に置けるモデルのインスタンスは今までどおり 1,024 で、それを超えると `Model instance capacity exceeded` です。一方、内部の物理的な slot は 2,048 にしました([インスタンスの上限](../../src/core/renderer/polygoninstancecontainer.cpp#L30))。prepare で新しいシーンの候補を作る間も、公開中の旧シーンの slot は rollback のために残るので、旧と新の合計が 1,024 を超えると置き換えができなかったためです(codex の報告では、約 1,000 model のシーンの最初の再読込で起きていました)。
+**モデルのインスタンスの枠(`8bde3c2f`。利用者の codex の変更、handoff 05)。**同時に置けるモデルのインスタンスは今までどおり 1,024 で、それを超えると `Model instance capacity exceeded` です。一方、内部の物理的な slot は 2,048 にしました([インスタンスの上限](../../src/core/renderer/polygoninstancecontainer.cpp#L31))。prepare で新しいシーンの候補を作る間も、公開中の旧シーンの slot は rollback のために残るので、旧と新の合計が 1,024 を超えると置き換えができなかったためです(codex の報告では、約 1,000 model のシーンの最初の再読込で起きていました)。
 
-- 置き換えの準備の時に、前に retire した世代が回収されずに残っていれば(frame を挟まずに `load_scene` を続けた場合)、GPU の完了を待って(`waitIdle`)から回収します。公開中の世代は置き換えが commit するまで回収しません([連続した load で古い世代を回収する所](../../src/core/renderer/polygoninstancecontainer.cpp#L660))。
+- 置き換えの準備の時に、前に retire した世代が回収されずに残っていれば(frame を挟まずに `load_scene` を続けた場合)、GPU の完了を待って(`waitIdle`)から回収します。公開中の世代は置き換えが commit するまで回収しません([連続した load で古い世代を回収する所](../../src/core/renderer/polygoninstancecontainer.cpp#L689))。
 - 代わりに払うもの: device の buffer が 18.2 MiB 増えます(うち skin palette の 2 本で 16 MiB。commit の説明の値)。連続した load では必要に応じて GPU を待ちます。frame ごとの新しい待ちは足していません(codex の報告)。
 - codex の報告では、998 個の cube と Anchor・Camera の 1,000 object のシーンで、前は 3 回とも最初の再読込が失敗し、今は 3 回とも 6 回の再読込が通りました。test: `modelinstance_slotmap_test` の [「Full-capacity scene replacement keeps rollback slots and reclaims older generations」](../../test/modelinstance_slotmap_test.cpp#L390)(1,024 個のモデルで候補の作成・公開後の rollback・frame を挟まない 3 回の置き換え。報告では GPU の test)。
 

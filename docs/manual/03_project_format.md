@@ -357,7 +357,7 @@ manifest 本体(`pelican.assets` v1)は `pelican_cli assets manifest` が生成�
 - CLI: `pelican_cli assets manifest / verify / status --project <dir>`([第10章](10_tools.md))。
 - **起動時検証**: manifest 宣言のある store は player 起動時に照合されます。深刻度は「内容の変化 = INFO、欠落・参照不能・大文字小文字違い = WARNING」で、**ロードは止めません**。`--strict-assets` 指定時のみ全 issue が ERROR に昇格して起動中止になります。
   - ✅AV-1(`5f7c5cdb`)から、照合の結果は store ごとに engine に残り、RPC で読めます(`get_status.assets_verification` の件数、`get_assets_verification` の全件、走らせ直す `verify_assets`、manifest を書き直す `update_assets_manifest`。形は [第10章](10_tools.md) §10.3 の「起動時の asset 検証の結果」)。**配布 build(`PELICAN_WITH_HOT_RELOAD=OFF`)は起動時に照合しません**。`--strict-assets` を付けたときだけ照合し、食い違えば止まります(2026-10-02 利用者決定)。照合しなかったときの `get_status.assets_verification` は `{"state":"not_run","reason":"PELICAN_WITH_HOT_RELOAD=OFF"}` です。
-  - ✅AH-1(`0f93b5b8`)から、hash は file を 1 MiB ずつ読んで計算し、Windows では BCrypt の SHA-256 を使います([`assetFileSha256()`](../../src/project/assetsmanifest.cpp#L162)。計算そのものは ✅FW-1 から hot reload の file watcher と共有する [`Sha256Stream`](../../src/project/sha256stream.hpp#L15) にあります)。digest は前と同じなので、今の manifest と hash cache はそのまま使えます。commit の記述では、hash cache の無い状態の Debug の `projects/example`(約 70 MB)で、検証が 23〜31 s から 0.5〜0.75 s になりました。それまでは Studio が engine の窓を見つけるまでの待ち(15 s)より長く、cache の無い worktree で Studio の test「running example fatal text」を走らせると、致命の行が出る前に engine が kill されていました。
+  - ✅AH-1(`0f93b5b8`)から、hash は file を 1 MiB ずつ読んで計算し、Windows では BCrypt の SHA-256 を使います([`assetFileSha256()`](../../src/project/assetsmanifest.cpp#L162)。計算そのものは ✅FW-1 から hot reload の file watcher と共有する [`Sha256Stream`](../../src/project/sha256stream.hpp#L15) にあります)。digest は前と同じなので、今の manifest と hash cache はそのまま使えます。commit の記述では、hash cache の無い状態の Debug の `projects/example`(約 70 MB)で、検証が 23〜31 s から 0.5〜0.75 s になりました。それまでは Studio が engine の窓を見つけるまでの待ち(15 s)より長く、cache の無い worktree で Studio の test「running example fatal text」を走らせると、致命の行が出る前に engine が kill されていました。→ この test は ✅MV-1(`f84a7d14`)で 2 本に分かれ、`projects/example` を起動するのは「The example with Alicia starts on its placeholder …」の方です。fatal の行を見る WP298 の case は小さな fixture(`test/fixtures/studio_automation_graph` の写し)から起動します。
   - hash を始める前に、hash の要る file があれば `assets manifest [<store>] verifying <N> assets (<X> MB), <M> cached` を 1 行出します(N は hash する数、M は cache が当たった数。全部 cache が当たったときは出しません。[出す所](../../src/core/loader/assetsverification.cpp#L54))。
 
 > **設計決定(検証はロードを止めない):** アセットの正当性検査は開発の補助であり、既定では警告に留める。厳格化は明示フラグ(開発 CI・配布検証)でのみ行う。
@@ -707,7 +707,7 @@ RPC `uninstall_package{namespace}` は `packages/<ns>/` を消し、`project.jso
 - `sha256` は `package list` が再計算して照合します。エンジン起動時には照合しません。
 - `provides.components` は複製されるだけで、engine 側の消費者はまだありません。この `components` は **`pelican.render_component`**(§3.12)のディレクトリを指す語で、**ECS のコンポーネント([第4章](04_scene_ecs.md))とも、`project.json` の他の語とも無関係**です。今日それを読むのは `import_render_feature` だけで、package 経由では読まれません。
 - **install が途中で死ぬと `packages/<namespace>.tmp-<pid>` が残ります**。install 自体は失敗時に自分の staging を消しますが、プロセスごと消えた場合の残骸を**誰も掃除しません**(export 側の `user://components/*.tmp-*` は次の export が掃除します — §3.12。install 側にその機構はありません)。残骸は `pelican_packages()` が飛ばすのでビルドは壊れませんが、手で消す必要があります —— **glob(`packages/*/package.json`)自体は残骸も拾い**、拾ってから `if(package_name MATCHES "\\.tmp-") continue()` で落とす形です([src/player/CMakeLists.txt:277](../../src/player/CMakeLists.txt#L279))。
-- `uninstall_package` が「まだ使われているか」を見るのは **rendering config の root 文書と、その preset だけ**です([renderconfigeditor.cpp:1119](../../src/core/communication/renderconfigeditor.cpp#L1680))。他の feature 文書の中から `project://packages/<ns>/` を参照していても検出されません。
+- `uninstall_package` が「まだ使われているか」を見るのは **rendering config の root 文書と、その preset だけ**です([renderconfigeditor.cpp:1119](../../src/core/communication/renderconfigeditor.cpp#L1690))。他の feature 文書の中から `project://packages/<ns>/` を参照していても検出されません。
 - shader を持ち込む package は未対応です(feature が `engine://` shader だけを参照できる範囲)。
 
 ## 3.12 共有部品(render component)— feature 1 本を持ち出して別 project へ入れる(✅P-2a-3)
@@ -718,7 +718,7 @@ RPC `uninstall_package{namespace}` は `packages/<ns>/` を消し、`project.jso
 
 ### 書き出す(export)
 
-RPC [`export_render_feature{scope, index}`](../../src/core/communication/renderconfigeditor.cpp#L1454)(`scope` は `"root"` か `"preset"`、`index` は `features[]` の何番目か)が 1 本を書き出します。書き先は**固定で `user://components/<name>/`**([renderconfigeditor.cpp:944](../../src/core/communication/renderconfigeditor.cpp#L1505))、`<name>` は feature 文書の `name` です。プロジェクトには 1 バイトも書きません(設計決定 7 — [第1章 §1.5](01_overview.md))。
+RPC [`export_render_feature{scope, index}`](../../src/core/communication/renderconfigeditor.cpp#L1464)(`scope` は `"root"` か `"preset"`、`index` は `features[]` の何番目か)が 1 本を書き出します。書き先は**固定で `user://components/<name>/`**([renderconfigeditor.cpp:944](../../src/core/communication/renderconfigeditor.cpp#L1515))、`<name>` は feature 文書の `name` です。プロジェクトには 1 バイトも書きません(設計決定 7 — [第1章 §1.5](01_overview.md))。
 
 ディレクトリの中身は 2 ファイルです(以下は例):
 
@@ -754,7 +754,7 @@ user://components/glow_bloom/
 
 ### 取り込む(import)
 
-RPC [`import_render_feature{base_source_digest, source_dir, destination_reference}`](../../src/core/communication/renderconfigeditor.cpp#L1523) が、component ディレクトリを読んで **`destination_reference`(`project://…` の新規ファイル)に feature 文書を作り、`rendering.features` に足す**ところまでを **1 つのトランザクション**で行います(`base_source_digest` は CAS。[第13章](13_editor.md))。`source_dir` は**絶対パス**でなければならず、`destination_reference` は `project://` で始まる**新規**ファイル(`#` フラグメント不可)です。**この 3 つは別々の code で断られます** —— `project://` でない / `#` を含むは `invalid_feature_destination`([renderconfigeditor.cpp:974](../../src/core/communication/renderconfigeditor.cpp#L1535))、`source_dir` が絶対でないのは `render_component_invalid`([:980](../../src/core/communication/renderconfigeditor.cpp#L1541))、宛先が既にあるのは `feature_destination_exists`([:1026](../../src/core/communication/renderconfigeditor.cpp#L1587))です。
+RPC [`import_render_feature{base_source_digest, source_dir, destination_reference}`](../../src/core/communication/renderconfigeditor.cpp#L1533) が、component ディレクトリを読んで **`destination_reference`(`project://…` の新規ファイル)に feature 文書を作り、`rendering.features` に足す**ところまでを **1 つのトランザクション**で行います(`base_source_digest` は CAS。[第13章](13_editor.md))。`source_dir` は**絶対パス**でなければならず、`destination_reference` は `project://` で始まる**新規**ファイル(`#` フラグメント不可)です。**この 3 つは別々の code で断られます** —— `project://` でない / `#` を含むは `invalid_feature_destination`([renderconfigeditor.cpp:974](../../src/core/communication/renderconfigeditor.cpp#L1545))、`source_dir` が絶対でないのは `render_component_invalid`([:980](../../src/core/communication/renderconfigeditor.cpp#L1551))、宛先が既にあるのは `feature_destination_exists`([:1026](../../src/core/communication/renderconfigeditor.cpp#L1597))です。
 
 **複製であって参照ではありません** —— 取り込んだ後は component ディレクトリを消してもプロジェクトは描けます。
 
@@ -772,8 +772,8 @@ RPC [`import_render_feature{base_source_digest, source_dir, destination_referenc
 | `render_component_destination_exists` | `user://components/<name>/` が既にある(上書きしません) |
 | `render_component_digest_mismatch` | `feature.json` が `sha256` と一致しない |
 | `render_component_source_inside_project` | `source_dir` が取り込み先プロジェクトの中(それは `project://` で参照するものであって import ではありません) |
-| `render_component_requires_missing` | 宿主が宣言していない RT がある(`render_targets` に不足を列挙 — [renderconfigeditor.cpp:1019](../../src/core/communication/renderconfigeditor.cpp#L1580)) |
-| `render_component_write_failed` | staging ディレクトリの作成・2 ファイルの書き込み・公開 rename のどれかが失敗した([rendercomponent.cpp:37](../../src/project/rendercomponent.cpp#L37)、[:282](../../src/project/rendercomponent.cpp#L282))。受付では export / import の両方が `RenderComponentError` をそのままの code で返します([renderconfigeditor.cpp:955](../../src/core/communication/renderconfigeditor.cpp#L1516)、[:1050](../../src/core/communication/renderconfigeditor.cpp#L1516)) |
+| `render_component_requires_missing` | 宿主が宣言していない RT がある(`render_targets` に不足を列挙 — [renderconfigeditor.cpp:1019](../../src/core/communication/renderconfigeditor.cpp#L1590)) |
+| `render_component_write_failed` | staging ディレクトリの作成・2 ファイルの書き込み・公開 rename のどれかが失敗した([rendercomponent.cpp:37](../../src/project/rendercomponent.cpp#L37)、[:282](../../src/project/rendercomponent.cpp#L282))。受付では export / import の両方が `RenderComponentError` をそのままの code で返します([renderconfigeditor.cpp:955](../../src/core/communication/renderconfigeditor.cpp#L1526)、[:1050](../../src/core/communication/renderconfigeditor.cpp#L1526)) |
 | `invalid_feature_destination` | `destination_reference` が `project://` で始まらない、または `#` を含む(取り込み先の 2 種の 1 つ) |
 | `feature_destination_exists` | `destination_reference` のファイルが既にある(同上) |
 
