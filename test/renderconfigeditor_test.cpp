@@ -606,15 +606,16 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
     std::function<std::optional<std::string>(std::string_view)>
         authoring_override = {},
     // FG-2: verify_fold's runner (unset: fold_verify_unavailable).
-    FoldVerifyRunner verify_fold = {}) {
+    FoldVerifyRunner verify_fold = {},
+    // RTL-1a: changes the dependencies before the service is made.
+    const std::function<void(RenderConfigEditorDependencies &)> &customize = {}) {
     runtime.path_resolver = &resolver;
     // This producer models an already-running animgraph_demo instance. Shader
     // availability has its own ON/OFF gate tests; keep this lifecycle fixture
     // focused on the document-set preflight and publish path in both builds.
     runtime.runtime_shader_compiler_enabled = true;
     runtime.initialize(readBytes(project.render_config));
-    return std::make_unique<RenderConfigEditorService>(
-        RenderConfigEditorDependencies{
+    RenderConfigEditorDependencies dependencies{
             .source_reference = "passes/main.json",
             .source_path = project.render_config,
             .source_bytes = readBytes(project.render_config),
@@ -697,7 +698,9 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
                     });
             },
             .verify_fold = std::move(verify_fold),
-        });
+        };
+    if (customize) customize(dependencies);
+    return std::make_unique<RenderConfigEditorService>(std::move(dependencies));
 }
 
 Json submitAndCommit(RenderConfigEditorService &service,
@@ -12188,6 +12191,528 @@ TEST_CASE("FR-4 edit_batch takes edit_preset_pass with a compute task edit on on
         INFO(restored.dump());
         REQUIRE(restored.at("status") == "committed");
         CHECK(readBytes(feature_path) == feature_before);
+    }
+}
+
+namespace {
+
+// RTL-1a: a layout with one triangles group and a vec4 record, with or
+// without the procedural transform AS space editing needs.
+Json rtl1aLayout(bool procedural_transform = false) {
+    Json layout{{"schema", "pelican.ray_group_layout"}, {"version", 3},
+                {"ray_types", Json::array({"primary"})}, {"default_group", "surface"},
+                {"groups", Json::array({{{"name", "surface"}, {"type", "triangles"}}})},
+                {"misses", Json::array({{{"name", "sky"}}})},
+                {"record", Json::array({{{"name", "tint"}, {"type", "vec4"}}})}};
+    if (procedural_transform) layout["engine_record"] = Json::array({"procedural_transform"});
+    return layout;
+}
+
+Json rtl1aBindings(double red = 1.0) {
+    return {{"schema", "pelican.ray_bindings"}, {"version", 2},
+            {"bindings", Json::array({{{"material", {{"document", "materials/red.json"}}},
+                                       {"group", "surface"},
+                                       {"record", {{"tint", {red, 0.0, 0.0, 1.0}}}}}})}};
+}
+
+std::string rtl1aCrlf(std::string text) {
+    std::string result;
+    for (const char ch : text) {
+        if (ch == '\n') result += '\r';
+        result += ch;
+    }
+    return result;
+}
+
+nlohmann::ordered_json rtl1aCommit(RenderConfigEditorService &service,
+                                   const nlohmann::ordered_json &accepted) {
+    INFO(accepted.dump());
+    REQUIRE(accepted.at("status") == "accepted");
+    service.commitPending();
+    const auto result = service.getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("committed") == true);
+    return result;
+}
+
+// A project whose root names a ray group layout (CRLF, as a Windows checkout
+// keeps it) and, unless `bindings` is false, ray bindings, beside an
+// asset_data with one procedural asset whose record has the layout's field.
+struct Rtl1aHarness {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    ActualCpuRenderRuntime runtime;
+    std::unique_ptr<RenderConfigEditorService> service;
+    std::filesystem::path layout_path;
+    std::filesystem::path bindings_path;
+    std::filesystem::path assets_path;
+    // What the unresolved-bindings dependency answers (empty digest: none).
+    std::vector<std::size_t> unresolved;
+    std::string unresolved_digest;
+
+    explicit Rtl1aHarness(bool bindings = true, bool procedural_transform = false) {
+        layout_path = project.root / "ray_layout.json";
+        bindings_path = project.root / "ray_bindings.json";
+        assets_path = project.root / "assets.json";
+        writeBytes(layout_path, rtl1aCrlf(rtl1aLayout(procedural_transform).dump(2) + "\n"));
+        if (bindings) writeBytes(bindings_path, rtl1aBindings().dump(2) + "\n");
+        writeBytes(assets_path,
+                   Json{{"schema", "pelican.asset_data"}, {"version", 2},
+                        {"models", Json::array()}, {"textures", Json::array()},
+                        {"procedural_geometry",
+                         Json::array({{{"name", "sphere_asset"}, {"kind", "aabb_v1"},
+                                       {"aabb", {{"min", {-1.0, -1.0, -1.0}}, {"max", {1.0, 1.0, 1.0}}}},
+                                       {"record", {{"tint", {0.0, 0.0, 1.0, 1.0}}}}}})}}
+                       .dump(2) + "\n");
+        auto root = Json::parse(readBytes(project.render_config));
+        renderingSectionOf(root)["ray_group_layout"] = "ray_layout.json";
+        if (bindings) renderingSectionOf(root)["ray_bindings"] = "ray_bindings.json";
+        writeBytes(project.render_config, root.dump(2));
+        resolver.setup(project.root, false);
+        service = makeProjectService(
+            project, resolver, runtime, {}, {}, {},
+            [this](RenderConfigEditorDependencies &dependencies) {
+                dependencies.ray_selectable_materials = [] {
+                    return std::vector<RaySelectableMaterial>{
+                        {.name = "Red", .document = "materials/red.json"},
+                        {.name = "Seat", .asset = "models/chair.glb", .source_material_index = 1},
+                        // A registered material nothing can select by.
+                        {.name = "engine_default"},
+                        // The same document again is one selector.
+                        {.name = "Red", .document = "materials/red.json"},
+                    };
+                };
+                dependencies.ray_unresolved_bindings =
+                    [this]() -> std::optional<RayUnresolvedBindingsObservation> {
+                    if (unresolved_digest.empty()) return std::nullopt;
+                    return RayUnresolvedBindingsObservation{
+                        .bindings_reference = "ray_bindings.json",
+                        .bindings_digest = unresolved_digest,
+                        .indices = unresolved};
+                };
+                dependencies.ray_asset_data = [this]() -> std::optional<RayAssetDataDocument> {
+                    return RayAssetDataDocument{.reference = "project://assets.json",
+                                                .path = assets_path};
+                };
+            });
+    }
+
+    nlohmann::ordered_json read() { return service->getRayLayout(Json::object()); }
+    std::string digest() { return read().at("source_digest").at("hex").get<std::string>(); }
+    Json section() const {
+        return renderingSectionOrEmpty(Json::parse(readBytes(project.render_config)));
+    }
+};
+
+} // namespace
+
+TEST_CASE("RTL-1a get_ray_layout reads the layout and bindings the root names, with what a binding may select",
+          "[render-config-editor][rtl1a]") {
+    Rtl1aHarness harness;
+    const auto layout_bytes = readBytes(harness.layout_path);
+    const auto bindings_bytes = readBytes(harness.bindings_path);
+    const auto read = harness.read();
+    INFO(read.dump());
+    CHECK(read.at("layout").at("reference") == "ray_layout.json");
+    CHECK(read.at("layout").at("digest") == renderConfigSourceDigest(layout_bytes));
+    CHECK(Json(read.at("layout").at("document")) == rtl1aLayout());
+    CHECK_FALSE(read.at("layout").contains("error"));
+    CHECK(read.at("bindings").at("reference") == "ray_bindings.json");
+    CHECK(Json(read.at("bindings").at("document")) == rtl1aBindings());
+    const auto names = Json(read.at("names"));
+    CHECK(names.at("ray_types") == Json::array({"primary"}));
+    CHECK(names.at("groups") == Json::array({{{"name", "surface"}, {"type", "triangles"}}}));
+    CHECK(names.at("misses") == Json::array({"sky"}));
+    CHECK(names.at("default_group") == "surface");
+    CHECK(names.at("record") == Json::array({{{"name", "tint"}, {"type", "vec4"}}}));
+    CHECK(names.at("engine_record") == Json::array());
+    CHECK(Json(read.at("selectable_materials")) ==
+          Json::array({{{"label", "Red (materials/red.json)"}, {"name", "Red"},
+                        {"selector", {{"document", "materials/red.json"}}}},
+                       {{"label", "Seat (models/chair.glb #1)"}, {"name", "Seat"},
+                        {"selector", {{"asset", "models/chair.glb"}, {"source_material_index", 1}}}}}));
+    CHECK(Json(read.at("selectable_procedural_assets")) ==
+          Json::array({{{"asset", "sphere_asset"}, {"record_fields", {{"tint", {0.0, 0.0, 1.0, 1.0}}}}}}));
+    CHECK(read.at("unresolved_bindings").empty());
+
+    // The last resolved rows left binding 0 unmatched: listed while those
+    // rows were resolved from these bindings bytes.
+    harness.unresolved = {0};
+    harness.unresolved_digest = std::string(64, '0');
+    CHECK(harness.read().at("unresolved_bindings").empty());
+    harness.unresolved_digest = renderConfigSourceDigest(bindings_bytes);
+    CHECK(Json(harness.read().at("unresolved_bindings")) ==
+          Json::array({{{"index", 0}, {"selector", {{"document", "materials/red.json"}}}, {"group", "surface"}}}));
+
+    // RD-1: both are render documents of their own kind.
+    const auto documents = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+    REQUIRE(documents.contains("ray_layout.json"));
+    REQUIRE(documents.contains("ray_bindings.json"));
+    CHECK(documents.at("ray_layout.json").at("kind") == "ray_group_layout");
+    CHECK(documents.at("ray_layout.json").at("content") == layout_bytes);
+    CHECK(documents.at("ray_bindings.json").at("kind") == "ray_bindings");
+    CHECK(documents.at("ray_bindings.json").at("content") == bindings_bytes);
+
+    SECTION("a layout that is not JSON is listed, read as text, and restored") {
+        const std::string broken = "{ \"schema\": \"pelican.ray_group_layout\",";
+        writeBytes(harness.layout_path, broken);
+        const auto listed = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+        REQUIRE(listed.contains("ray_layout.json"));
+        CHECK(listed.at("ray_layout.json").at("kind") == "ray_group_layout");
+        CHECK(listed.at("ray_layout.json").at("content") == broken);
+        const auto unread = harness.read();
+        CHECK(unread.at("layout").at("document").is_null());
+        CHECK(unread.at("layout").at("error").at("code") == "render_document_syntax@1");
+        CHECK(unread.at("layout").at("text") == broken);
+        CHECK(unread.at("names").at("ray_types").empty());
+
+        // A restore the parser refuses keeps its code, and writes nothing.
+        auto invalid = rtl1aLayout();
+        invalid["ray_types"] = Json::array();
+        const auto refused = rd1Error(harness.service->restoreRenderDocuments(
+            {{"documents", Json::array({rd1Document("ray_layout.json",
+                                                    renderConfigSourceDigest(broken),
+                                                    invalid.dump(2))})}}));
+        CHECK_THAT(refused.at("code").get<std::string>(),
+                   Catch::Matchers::StartsWith("pelican.ray_group_layout"));
+        CHECK(refused.at("document_kind") == "ray_group_layout");
+        CHECK(readBytes(harness.layout_path) == broken);
+
+        const auto restored = rtl1aCommit(
+            *harness.service,
+            harness.service->restoreRenderDocuments(
+                {{"documents", Json::array({rd1Document("ray_layout.json",
+                                                        renderConfigSourceDigest(broken),
+                                                        layout_bytes)})}}));
+        CHECK(restored.at("documents").at("ray_layout.json") == renderConfigSourceDigest(layout_bytes));
+        CHECK(readBytes(harness.layout_path) == layout_bytes);
+        CHECK(Json(harness.read().at("layout").at("document")) == rtl1aLayout());
+    }
+    SECTION("restored bindings are judged with the layout restored with them") {
+        // A layout with a second record field and bindings that have it,
+        // restored together: judged alone against the layout on disk, the
+        // bindings would be refused.
+        auto layout = rtl1aLayout();
+        layout["record"].push_back({{"name", "scale"}, {"type", "f32"}});
+        auto bindings = rtl1aBindings();
+        bindings["bindings"][0]["record"]["scale"] = 2.0;
+        const auto alone = rd1Error(harness.service->restoreRenderDocuments(
+            {{"documents", Json::array({rd1Document("ray_bindings.json",
+                                                    renderConfigSourceDigest(bindings_bytes),
+                                                    bindings.dump(2))})}}));
+        CHECK(alone.at("code") == "pelican.ray_binding_record_invalid@1");
+        CHECK(readBytes(harness.bindings_path) == bindings_bytes);
+        rtl1aCommit(*harness.service,
+                    harness.service->restoreRenderDocuments(
+                        {{"documents",
+                          Json::array({rd1Document("ray_bindings.json",
+                                                   renderConfigSourceDigest(bindings_bytes),
+                                                   bindings.dump(2)),
+                                       rd1Document("ray_layout.json",
+                                                   renderConfigSourceDigest(layout_bytes),
+                                                   layout.dump(2))})}}));
+        CHECK(Json::parse(readBytes(harness.layout_path)) == layout);
+        CHECK(Json::parse(readBytes(harness.bindings_path)) == bindings);
+    }
+}
+
+TEST_CASE("RTL-1a edit_ray_layout writes a document whole, refuses by the parser's code, and leaves equal content alone",
+          "[render-config-editor][rtl1a]") {
+    Rtl1aHarness harness;
+    const auto root_bytes = readBytes(harness.project.render_config);
+    const auto layout_bytes = readBytes(harness.layout_path);
+    const auto bindings_bytes = readBytes(harness.bindings_path);
+    const auto layout_digest = renderConfigSourceDigest(layout_bytes);
+    const auto unchanged = [&] {
+        CHECK(readBytes(harness.project.render_config) == root_bytes);
+        CHECK(readBytes(harness.layout_path) == layout_bytes);
+        CHECK(readBytes(harness.bindings_path) == bindings_bytes);
+    };
+    auto with_miss = rtl1aLayout();
+    with_miss["misses"].push_back({{"name", "shadow_open"}});
+    const auto edit = [&](Json params) {
+        params["base_source_digest"] = harness.digest();
+        return harness.service->editRayLayout(params);
+    };
+
+    SECTION("an existing document needs its digest, and a stale one is external_modification") {
+        CHECK_THROWS_AS(edit({{"layout", with_miss}}), std::invalid_argument);
+        const auto stale = rd1Error(edit({{"layout", with_miss}, {"base_layout_digest", std::string(64, '0')}}));
+        CHECK(stale.at("code") == "external_modification");
+        CHECK(stale.at("reference") == "ray_layout.json");
+        unchanged();
+    }
+    SECTION("a document the parser refuses is refused by the parser's code") {
+        auto invalid = rtl1aLayout();
+        invalid["ray_types"] = Json::array();
+        const auto refused = rd1Error(edit({{"layout", invalid}, {"base_layout_digest", layout_digest}}));
+        const auto code = refused.at("code").get<std::string>();
+        CHECK_THAT(code, Catch::Matchers::StartsWith("pelican.ray_group_layout"));
+        CHECK_THAT(refused.at("message").get<std::string>(), Catch::Matchers::ContainsSubstring(code));
+        CHECK(refused.at("document_kind") == "ray_group_layout");
+        auto bindings = rtl1aBindings();
+        bindings["bindings"][0]["record"]["tint"] = {1.0, 0.0, 0.0};
+        const auto record = rd1Error(edit({{"bindings", bindings},
+                                           {"base_bindings_digest", renderConfigSourceDigest(bindings_bytes)}}));
+        CHECK(record.at("code") == "pelican.ray_binding_record_invalid@1");
+        CHECK(record.at("document_kind") == "ray_bindings");
+        // Bindings without a layout are refused before anything is written.
+        const auto orphan = rd1Error(edit({{"layout", nullptr}}));
+        CHECK(orphan.at("code") == "pelican.ray_tracing.bindings_without_layout@1");
+        unchanged();
+    }
+    SECTION("the same content is not written again") {
+        auto same = rtl1aLayout();
+        const auto accepted = edit({{"layout", same}, {"base_layout_digest", layout_digest}});
+        CHECK(accepted.at("changed") == false);
+        CHECK(accepted.at("layout_digest") == layout_digest);
+        const auto result = rtl1aCommit(*harness.service, accepted);
+        CHECK(result.at("no_change") == true);
+        unchanged();
+    }
+    SECTION("a miss added: the file keeps its key order and line ending, and restore takes it back") {
+        const auto read = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+        const auto accepted = edit({{"layout", with_miss}, {"base_layout_digest", layout_digest}});
+        INFO(accepted.dump());
+        CHECK(accepted.at("changed") == true);
+        CHECK(accepted.at("layout_reference") == "ray_layout.json");
+        const auto result = rtl1aCommit(*harness.service, accepted);
+        const auto written = readBytes(harness.layout_path);
+        CHECK(Json::parse(written) == with_miss);
+        CHECK(result.at("layout_digest") == renderConfigSourceDigest(written));
+        CHECK(Json(result.at("documents")) == Json{{"ray_layout.json", renderConfigSourceDigest(written)}});
+        // CRLF throughout, a final newline, and the keys where they were.
+        CHECK(written.ends_with("}\r\n"));
+        CHECK(written.find("\r\n") != std::string::npos);
+        CHECK(std::count(written.begin(), written.end(), '\n') ==
+              std::count(written.begin(), written.end(), '\r'));
+        std::vector<std::string> keys;
+        const auto parsed_keys = nlohmann::ordered_json::parse(written);
+        for (const auto &[key, value] : parsed_keys.items()) {
+            (void)value;
+            keys.push_back(key);
+        }
+        std::vector<std::string> keys_before;
+        const auto parsed_keys_before = nlohmann::ordered_json::parse(layout_bytes);
+        for (const auto &[key, value] : parsed_keys_before.items()) {
+            (void)value;
+            keys_before.push_back(key);
+        }
+        CHECK(keys == keys_before);
+        CHECK(readBytes(harness.project.render_config) == root_bytes);
+
+        rtl1aCommit(*harness.service,
+                    harness.service->restoreRenderDocuments(
+                        {{"documents", Json::array({rd1Restore(read.at("ray_layout.json"),
+                                                               Json(result.at("documents").at("ray_layout.json")))})}}));
+        CHECK(readBytes(harness.layout_path) == layout_bytes);
+    }
+    SECTION("bindings: null takes the root's key out and leaves the file") {
+        const auto result = rtl1aCommit(*harness.service, edit({{"bindings", nullptr}}));
+        CHECK(result.at("bindings_digest").is_null());
+        CHECK_FALSE(harness.section().contains("ray_bindings"));
+        CHECK(harness.section().at("ray_group_layout") == "ray_layout.json");
+        CHECK(readBytes(harness.bindings_path) == bindings_bytes);
+    }
+}
+
+TEST_CASE("RTL-1a edit_ray_layout creates bindings beside the root, and refuses a file it would overwrite",
+          "[render-config-editor][rtl1a]") {
+    Rtl1aHarness harness{false};
+    const auto root_bytes = readBytes(harness.project.render_config);
+    const auto created_path = harness.project.root / "passes" / "ray_bindings.json";
+    const std::string created_reference = "project://passes/ray_bindings.json";
+    SECTION("created, named project://<root dir>/ray_bindings.json, and deleted by restore") {
+        const auto accepted = harness.service->editRayLayout(
+            {{"base_source_digest", harness.digest()}, {"bindings", rtl1aBindings()}});
+        INFO(accepted.dump());
+        CHECK(accepted.at("bindings_reference") == created_reference);
+        const auto result = rtl1aCommit(*harness.service, accepted);
+        CHECK(harness.section().at("ray_bindings") == created_reference);
+        const auto written = readBytes(created_path);
+        CHECK(Json::parse(written) == rtl1aBindings());
+        CHECK(written.ends_with("}\n"));
+        CHECK(written.find('\r') == std::string::npos);
+        const auto documents = Json(result.at("documents"));
+        CHECK(documents.at(created_reference) == renderConfigSourceDigest(written));
+        REQUIRE(documents.contains("passes/main.json"));
+        // Studio sees it as a render document, and an undo deletes it.
+        CHECK(rd1Documents(harness.service->getRenderDocuments(Json::object()))
+                  .at(created_reference).at("kind") == "ray_bindings");
+        rtl1aCommit(*harness.service,
+                    harness.service->restoreRenderDocuments(
+                        {{"documents",
+                          Json::array({rd1Document("passes/main.json", documents.at("passes/main.json"), root_bytes),
+                                       {{"reference", created_reference},
+                                        {"base_digest", documents.at(created_reference)},
+                                        {"content", nullptr}}})}}));
+        CHECK(readBytes(harness.project.render_config) == root_bytes);
+        CHECK_FALSE(std::filesystem::exists(created_path));
+    }
+    SECTION("a file already at the place the root does not name is not overwritten") {
+        writeBytes(created_path, "{}");
+        const auto refused = rd1Error(harness.service->editRayLayout(
+            {{"base_source_digest", harness.digest()}, {"bindings", rtl1aBindings()}}));
+        CHECK(refused.at("code") == "pelican.ray_layout_destination_exists@1");
+        CHECK(refused.at("path") == created_reference);
+        CHECK(readBytes(created_path) == "{}");
+        CHECK(readBytes(harness.project.render_config) == root_bytes);
+    }
+}
+
+TEST_CASE("RTL-1a edit_ray_layout rides edit_batch, a document an earlier edit made needs no digest",
+          "[render-config-editor][rtl1a][fr3]") {
+    Rtl1aHarness harness{false};
+    const auto layout_digest = renderConfigSourceDigest(readBytes(harness.layout_path));
+    auto first = rtl1aLayout();
+    first["misses"].push_back({{"name", "shadow_open"}});
+    auto second = first;
+    second["misses"].push_back({{"name", "probe"}});
+    const auto batch = [&](Json edits) {
+        return harness.service->editBatch({{"base_source_digest", harness.digest()}, {"edits", std::move(edits)}});
+    };
+    SECTION("two layout edits and created bindings edited again build on each other") {
+        const auto result = rtl1aCommit(
+            *harness.service,
+            batch(Json::array({
+                {{"method", "edit_ray_layout"},
+                 {"params", {{"layout", first}, {"base_layout_digest", layout_digest}}}},
+                // The digest a client read before the batch.
+                {{"method", "edit_ray_layout"},
+                 {"params", {{"layout", second}, {"base_layout_digest", layout_digest}}}},
+                {{"method", "edit_ray_layout"}, {"params", {{"bindings", rtl1aBindings(0.5)}}}},
+                // Made by the edit before: no digest to give.
+                {{"method", "edit_ray_layout"}, {"params", {{"bindings", rtl1aBindings(0.25)}}}},
+            })));
+        CHECK(Json(result.at("methods")) == Json::array({"edit_ray_layout", "edit_ray_layout",
+                                                         "edit_ray_layout", "edit_ray_layout"}));
+        CHECK(Json::parse(readBytes(harness.layout_path)) == second);
+        CHECK(Json::parse(readBytes(harness.project.root / "passes" / "ray_bindings.json")) ==
+              rtl1aBindings(0.25));
+        CHECK(harness.section().at("ray_bindings") == "project://passes/ray_bindings.json");
+    }
+    SECTION("a digest that is not the one before the batch refuses the batch") {
+        const auto refused = rd1Error(batch(Json::array({
+            {{"method", "edit_ray_layout"},
+             {"params", {{"layout", first}, {"base_layout_digest", layout_digest}}}},
+            {{"method", "edit_ray_layout"},
+             {"params", {{"layout", second},
+                         {"base_layout_digest", renderConfigSourceDigest(rtl1aCrlf(first.dump(2) + "\n"))}}}},
+        })));
+        CHECK(refused.at("code") == "external_modification");
+        CHECK(refused.at("batch_index") == 1);
+        CHECK(Json::parse(readBytes(harness.layout_path)) == rtl1aLayout());
+    }
+}
+
+TEST_CASE("RTL-1a restore takes back the layout edit_scene_acceleration_structures wrote, and two AS edits in one batch both stay",
+          "[render-config-editor][rtl1a][scene-as]") {
+    Rtl1aHarness harness{true, true};
+    const auto root_bytes = readBytes(harness.project.render_config);
+    const auto layout_bytes = readBytes(harness.layout_path);
+    const auto layout_digest = renderConfigSourceDigest(layout_bytes);
+    SECTION("an AS space edit is undone by restore") {
+        const auto read = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+        const auto result = rtl1aCommit(
+            *harness.service,
+            harness.service->editSceneAccelerationStructures(
+                {{"base_source_digest", harness.digest()}, {"definitions", Json::array()},
+                 {"triangle_space", "world"}, {"base_layout_digest", layout_digest}}));
+        const auto written = readBytes(harness.layout_path);
+        CHECK(Json::parse(written).at("acceleration_structure").at("triangle_space") == "world");
+        // The AS edit keeps the layout's line ending too.
+        CHECK(std::count(written.begin(), written.end(), '\n') ==
+              std::count(written.begin(), written.end(), '\r'));
+        const auto documents = Json(result.at("documents"));
+        REQUIRE(documents.contains("ray_layout.json"));
+        REQUIRE(documents.contains("passes/main.json"));
+        const auto restored = harness.service->restoreRenderDocuments(
+            {{"documents", Json::array({rd1Restore(read.at("passes/main.json"), documents.at("passes/main.json")),
+                                        rd1Restore(read.at("ray_layout.json"), documents.at("ray_layout.json"))})}});
+        rtl1aCommit(*harness.service, restored);
+        CHECK(readBytes(harness.project.render_config) == root_bytes);
+        CHECK(readBytes(harness.layout_path) == layout_bytes);
+    }
+    SECTION("the second AS edit of a batch builds on the first's layout") {
+        rtl1aCommit(*harness.service,
+                    harness.service->editBatch(
+                        {{"base_source_digest", harness.digest()},
+                         {"edits", Json::array({
+                              {{"method", "edit_scene_acceleration_structures"},
+                               {"params", {{"definitions", Json::array()}, {"triangle_space", "world"},
+                                           {"base_layout_digest", layout_digest}}}},
+                              {{"method", "edit_scene_acceleration_structures"},
+                               {"params", {{"definitions", Json::array()}, {"procedural_space", "world"},
+                                           {"base_layout_digest", layout_digest}}}},
+                          })}}));
+        const auto written = Json::parse(readBytes(harness.layout_path));
+        CHECK(written.at("acceleration_structure").at("triangle_space") == "world");
+        CHECK(written.at("acceleration_structure").at("procedural_space") == "world");
+    }
+}
+
+TEST_CASE("RTL-1a reload_render_documents takes in a layout changed outside the editor",
+          "[render-config-editor][rtl1a][rl1]") {
+    Rtl1aHarness harness;
+    const auto reload = [&] {
+        return rtl1aCommit(*harness.service, harness.service->reloadRenderDocuments(Json::object()));
+    };
+    // The first reload learns every document's digest; the second finds none
+    // changed.
+    (void)reload();
+    const auto calls = harness.runtime.apply_calls;
+    const auto same = reload();
+    CHECK(same.at("no_change") == true);
+    CHECK(harness.runtime.apply_calls == calls);
+    auto changed = rtl1aLayout();
+    changed["misses"].push_back({{"name", "shadow_open"}});
+    writeBytes(harness.layout_path, changed.dump(2));
+    const auto taken = reload();
+    INFO(taken.dump());
+    CHECK_FALSE(taken.value("no_change", false));
+    CHECK(Json(taken.at("changed")) == Json::array({"ray_layout.json"}));
+    CHECK(Json(taken.at("documents")).contains("ray_layout.json"));
+    CHECK(harness.runtime.apply_calls == calls + 1);
+    CHECK(Json(harness.read().at("layout").at("document")) == changed);
+}
+
+TEST_CASE("RTL-1a edit_ray_layout rewrites asset_data's procedural records with the layout in one ticket",
+          "[render-config-editor][rtl1a][procedural]") {
+    Rtl1aHarness harness;
+    const auto layout_digest = renderConfigSourceDigest(readBytes(harness.layout_path));
+    const auto bindings_digest = renderConfigSourceDigest(readBytes(harness.bindings_path));
+    const auto assets_bytes = readBytes(harness.assets_path);
+    auto layout = rtl1aLayout();
+    layout["record"].push_back({{"name", "scale"}, {"type", "f32"}});
+    auto bindings = rtl1aBindings();
+    bindings["bindings"][0]["record"]["scale"] = 1.0;
+    Json params{{"base_source_digest", harness.digest()},
+                {"layout", layout}, {"base_layout_digest", layout_digest},
+                {"bindings", bindings}, {"base_bindings_digest", bindings_digest}};
+    SECTION("records without the new field are refused by name, and nothing is written") {
+        params["procedural_records"] = {{"sphere_asset", {{"tint", {0.0, 0.0, 1.0, 1.0}}}}};
+        const auto refused = rd1Error(harness.service->editRayLayout(params));
+        CHECK(refused.at("code") == "pelican.ray_binding_record_invalid@1");
+        CHECK(refused.at("asset") == "sphere_asset");
+        params["procedural_records"] = {{"ghost", {{"tint", {0.0, 0.0, 1.0, 1.0}}, {"scale", 2.0}}}};
+        CHECK(rd1Error(harness.service->editRayLayout(params)).at("code") == "asset_not_found");
+        CHECK(readBytes(harness.assets_path) == assets_bytes);
+        CHECK(Json::parse(readBytes(harness.layout_path)) == rtl1aLayout());
+    }
+    SECTION("the layout, the bindings and the records commit together") {
+        params["procedural_records"] = {{"sphere_asset", {{"tint", {0.0, 0.0, 1.0, 1.0}}, {"scale", 2.0}}}};
+        const auto result = rtl1aCommit(*harness.service, harness.service->editRayLayout(params));
+        const auto documents = Json(result.at("documents"));
+        CHECK(documents.contains("ray_layout.json"));
+        CHECK(documents.contains("ray_bindings.json"));
+        CHECK(documents.contains("project://assets.json"));
+        const auto assets = Json::parse(readBytes(harness.assets_path));
+        CHECK(assets.at("procedural_geometry").at(0).at("record") ==
+              Json{{"tint", {0.0, 0.0, 1.0, 1.0}}, {"scale", 2.0}});
+        // Only the record changed; the asset keeps its other keys.
+        CHECK(assets.at("procedural_geometry").at(0).at("kind") == "aabb_v1");
+        CHECK(Json::parse(readBytes(harness.layout_path)) == layout);
+        CHECK(Json::parse(readBytes(harness.bindings_path)) == bindings);
     }
 }
 

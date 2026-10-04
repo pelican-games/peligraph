@@ -939,11 +939,17 @@ TEST_CASE("WP366 material resolution produces canonical immutable rows",
                           Catch::Matchers::ContainsSubstring(
                               "pelican.ray_binding_selector_duplicate@1"));
     }
-    SECTION("an unresolved authored selector is rejected") {
+    // RTL-1a: an authored selector no row matches is listed, not refused.
+    SECTION("an unresolved authored selector is listed and its row set still resolves") {
         std::array only_leaf{input[1]};
-        CHECK_THROWS_WITH(resolveRaySceneRows(only_leaf, layout, &bindings),
-                          Catch::Matchers::ContainsSubstring(
-                              "pelican.ray_binding_selector_unresolved@1"));
+        const auto rows = resolveRaySceneRows(only_leaf, layout, &bindings);
+        REQUIRE(rows.rows.size() == 1);
+        CHECK(rows.rows[0].group_index == layout.groupIndex("foliage"));
+        CHECK(rows.bindings_digest_sha256 == bindings.digest_sha256);
+        REQUIRE(rows.unresolved_binding_indices.size() == 1);
+        CHECK(bindings.bindings.at(rows.unresolved_binding_indices[0]).selector.reference ==
+              "models/tree.glb");
+        CHECK(forward.unresolved_binding_indices.empty());
     }
     SECTION("one geometric row cannot receive divergent bindings") {
         auto ambiguous = input;

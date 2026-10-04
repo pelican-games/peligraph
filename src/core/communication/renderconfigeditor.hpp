@@ -87,6 +87,35 @@ struct RenderConfigPublishedAsset {
     std::string sha256;
 };
 
+// RTL-1a: one material a ray binding may select, spelled as the engine
+// matches a scene row (raygrouplayout.cpp selectorMatches): `document` (the
+// material's source document, compared as a string) or `asset` with
+// `source_material_index` (a glTF material of a model). `name` is the
+// registered material name.
+struct RaySelectableMaterial {
+    std::string name;
+    std::string document;
+    std::string asset;
+    std::optional<std::uint32_t> source_material_index;
+};
+
+// RTL-1a: the bindings of the last scene row resolution that matched no
+// scene row (get_ray_layout.unresolved_bindings), with the digest of the
+// bindings bytes they were resolved from.
+struct RayUnresolvedBindingsObservation {
+    std::string bindings_reference;
+    std::string bindings_digest;
+    std::vector<std::size_t> indices;
+};
+
+// RTL-1a: the project's asset_data document, whose procedural_geometry
+// records edit_ray_layout reads (selectable_procedural_assets) and rewrites
+// with the layout (procedural_records).
+struct RayAssetDataDocument {
+    std::string reference;
+    std::filesystem::path path;
+};
+
 struct RenderConfigEditorGateObservation {
     bool can_edit = true;
     std::uint64_t transition_epoch = 0;
@@ -219,6 +248,17 @@ struct RenderConfigEditorDependencies {
     // AB-1: the project's asset stores, which list_derived_assets walks for
     // `*.import.json`. Unset: the project root.
     std::function<std::vector<AssetStoreStatus>()> asset_stores;
+    // RTL-1a: the materials the running engine registered that a ray binding
+    // can select (get_ray_layout.selectable_materials), with or without a
+    // layout. Unset: none.
+    std::function<std::vector<RaySelectableMaterial>()> ray_selectable_materials;
+    // RTL-1a: the bindings the last resolved scene rows left unmatched.
+    // nullopt (or unset): no rows were resolved with bindings.
+    std::function<std::optional<RayUnresolvedBindingsObservation>()>
+        ray_unresolved_bindings;
+    // RTL-1a: where asset_data is. nullopt (or unset): no asset_data, and
+    // edit_ray_layout refuses procedural_records.
+    std::function<std::optional<RayAssetDataDocument>()> ray_asset_data;
 };
 
 // AB-1: what a bake_audio_analysis worker hands back to the engine's thread:
@@ -392,6 +432,17 @@ class RenderConfigEditorService {
         std::string base_digest;
     };
     HeldDocument heldDocument(const std::string &reference) const;
+    // RTL-1a: heldDocument for a document that may not be there: `present`
+    // false (bytes empty) when neither the batch nor the disk has it;
+    // `batch` when an earlier edit of the running edit_batch wrote it, whose
+    // `expected` is what the batch holds it to.
+    struct HeldOptionalDocument {
+        bool present = false;
+        bool batch = false;
+        std::string bytes;
+        RenderConfigDocumentExpectedState expected;
+    };
+    HeldOptionalDocument heldOptionalDocument(const std::string &reference) const;
     nlohmann::ordered_json materializeRenderFeature(const std::string &base_digest, const nlohmann::json &operation);
     // F-6: edit_preset_pass's third destination, a pass the direct root
     // declares itself. One root document, the ordinary root-edit ticket.
@@ -768,6 +819,22 @@ class RenderConfigEditorService {
     nlohmann::ordered_json editRayCallableRecords(const nlohmann::json &params);
     nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
     nlohmann::ordered_json editSceneAccelerationStructures(const nlohmann::json &params);
+    // RTL-1a: get_ray_layout {} -> {source_digest, layout, bindings, names,
+    // selectable_materials, selectable_procedural_assets,
+    // unresolved_bindings}: the ray group layout and the ray bindings the
+    // root names (each {reference, digest, document}, document null with
+    // error and text when it is not JSON; null when the root names none),
+    // the names the parsed layout declares, and what a binding may select.
+    nlohmann::ordered_json getRayLayout(const nlohmann::json &params) const;
+    // RTL-1a: edit_ray_layout {base_source_digest, layout?,
+    // base_layout_digest?, bindings?, base_bindings_digest?,
+    // procedural_records?}: each document whole (null takes the root's key
+    // out and leaves the file), judged by the layout and bindings parsers at
+    // once, written with the root that names it in one ticket. A document
+    // that is there needs its base digest (inside edit_batch it may be left
+    // out). A new one goes beside the root, named
+    // project://<root dir>/ray_layout.json (ray_bindings.json).
+    nlohmann::ordered_json editRayLayout(const nlohmann::json &params);
     explicit RenderConfigEditorService(
         RenderConfigEditorDependencies dependencies);
     ~RenderConfigEditorService();

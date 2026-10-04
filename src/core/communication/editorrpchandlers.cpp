@@ -336,6 +336,13 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("edit_scene_acceleration_structures", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editSceneAccelerationStructures(params); });
     });
+    // RTL-1a: the ray group layout and ray bindings documents the root names.
+    server.setHandler("get_ray_layout", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getRayLayout(params); });
+    });
+    server.setHandler("edit_ray_layout", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.editRayLayout(params); });
+    });
     server.setHandler("add_authored_pass", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.addAuthoredPass(params); });
     });

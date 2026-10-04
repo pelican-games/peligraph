@@ -107,6 +107,17 @@ struct RenderPipelineReloadState {
     std::string last_error;
 };
 
+namespace {
+
+// RTL-1a: why the logical frame that met a staged generation ended early, as
+// the frame's exception said it (empty: it did not, or not with a message).
+// Set while the frame unwinds, before its rollback guard runs; the rollback
+// takes it into the generation's failure, so the refusal names its cause
+// (a ray scene row refusal, say) instead of only that it was rolled back.
+thread_local std::string staged_frame_failure_cause;
+
+} // namespace
+
 bool Renderer::hasPendingRenderPipelinePublication() const noexcept {
     return render_pipeline_reload_state && render_pipeline_reload_state->staged_generation != 0;
 }
@@ -222,7 +233,11 @@ void RenderPipelinePublicationTransaction::rollback(
     if (finalized) return;
     if (failure.empty()) {
         failure = rollback_failure_message;
+        // RTL-1a: the frame's own words, when a frame ended it.
+        if (!staged_frame_failure_cause.empty())
+            failure += ": " + staged_frame_failure_cause;
     }
+    staged_frame_failure_cause.clear();
     if (renderer.render_pipeline_reload_state != nullptr) {
         auto &rolled_back =
             *renderer.render_pipeline_reload_state;
@@ -7017,7 +7032,9 @@ void Renderer::renderLogicalFrame(
     ILogicalFrameTarget &target,
     const RenderViewFamilies &view_families) {
     synchronizeGraphGpuOwnership();
+    staged_frame_failure_cause.clear();
     LogicalFrameRecorder recorder{*this, target};
+    try {
     recorder.requireUnchangedWindowOutput();
     recorder.collectPassPlan();
     recorder.resolveViewFamilies(view_families);
@@ -7043,6 +7060,18 @@ void Renderer::renderLogicalFrame(
     recorder.retainPickingSnapshot();
     recorder.publishExecutionTrace();
     recorder.advanceFrameHistories();
+    } catch (const OutputTemporarilyUnavailable &) {
+        // A skipped frame keeps the staged generation (no rollback).
+        throw;
+    } catch (const std::exception &error) {
+        // RTL-1a: read by the staged generation's rollback, which the
+        // recorder's guard runs as this frame unwinds.
+        try {
+            staged_frame_failure_cause = error.what();
+        } catch (...) {
+        }
+        throw;
+    }
 }
 
 void Renderer::render(

@@ -370,6 +370,12 @@ struct RayOccurrenceOverrideResolution {
 struct RaySceneRowSnapshot {
     std::string layout_reference;
     std::string bindings_reference;
+    // RTL-1a: the digest of the bindings bytes these rows were resolved from,
+    // and the bindings (by index) that matched no scene row. Such a binding
+    // is not an error: a binding may be authored before the object it binds
+    // is placed, and stay after the last one is removed.
+    std::string bindings_digest_sha256;
+    std::vector<std::size_t> unresolved_binding_indices;
     std::vector<std::string> group_names;
     // Authored schema captured with these row bytes, excluding engine-owned fields.
     std::vector<RayRecordMemberLayout> record_members;

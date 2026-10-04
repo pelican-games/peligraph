@@ -1704,22 +1704,13 @@ RaySceneRowSnapshot resolveRaySceneRows(
             std::memcpy(resolved.back().record_data.data() + *offset, encoded.data(), sizeof(encoded));
         }
     }
+    // RTL-1a: a binding that matched no scene row is recorded, not refused
+    // (get_ray_layout.unresolved_bindings): the rows it would bind take the
+    // default group as any unbound row does.
+    std::vector<std::size_t> unresolved_bindings;
     if (bindings != nullptr) {
-        for (std::size_t index = 0; index < binding_matched.size(); ++index) {
-            if (!binding_matched[index]) {
-                const auto &selector = bindings->bindings[index].selector;
-                if (selector.kind ==
-                    RayBindingSelector::Kind::procedural) {
-                    throw std::runtime_error(
-                        "pelican.procedural_group_unresolved@1: procedural selector '" +
-                        selector.reference +
-                        "' did not resolve to a scene row");
-                }
-                throw std::runtime_error(
-                    "pelican.ray_binding_selector_unresolved@1: selector '" +
-                    selector.reference + "' did not resolve to a scene row");
-            }
-        }
+        for (std::size_t index = 0; index < binding_matched.size(); ++index)
+            if (!binding_matched[index]) unresolved_bindings.push_back(index);
     }
     std::sort(resolved.begin(), resolved.end(), [](const auto &left, const auto &right) {
         return std::tie(left.scene_identity, left.geometry_identity,
@@ -1764,6 +1755,8 @@ RaySceneRowSnapshot resolveRaySceneRows(
     result.record_members = layout.record;
     result.layout_reference = layout.source_reference;
     result.bindings_reference = bindings ? bindings->source_reference : std::string{};
+    result.bindings_digest_sha256 = bindings ? bindings->digest_sha256 : std::string{};
+    result.unresolved_binding_indices = std::move(unresolved_bindings);
     result.group_names = layout.groups;
     const auto encoded = identity.str();
     result.identity_digest_sha256 =

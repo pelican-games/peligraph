@@ -1204,6 +1204,49 @@ struct EditorRuntimeState {
     }
 };
 
+// RTL-1a stage D: when a render config candidate rewrites asset_data
+// (edit_ray_layout's procedural_records), its procedural records are
+// published into the scene now -- their ray rows left to the next frame,
+// which resolves them with the candidate's layout -- and the returned
+// function publishes the records the engine had before again (for a
+// candidate that does not end committed). Empty: the candidate does not
+// change asset_data. The file is written by the candidate's source commit.
+template <typename RuntimePointer>
+std::function<void()> publishCandidateAssetData(
+    const RuntimePointer &runtime,
+    const RenderConfigCandidateDocumentSet &candidate) {
+    auto &modules = runtime->modules;
+    const auto reference = modules.project_config.assetDataReference();
+    const auto *document =
+        candidate.find(modules.path_resolver.normalizedReference(reference));
+    if (document == nullptr ||
+        document->operation == RenderConfigDocumentOperation::erase)
+        return {};
+    if (modules.project_config.prepareAssetDataJson(
+            document->bytes, modules.path_resolver) ==
+        modules.project_config.assetDataJson())
+        return {};
+    const auto publish = [](auto &modules, std::string_view bytes) {
+        auto prepared = PreparedProceduralAssetPublication::prepare(
+            modules.project_config, modules.path_resolver,
+            GET_MODULE(ProceduralGeometryContainer), modules.polygon_instances,
+            FastModuleContainer::tryGet<VulkanManageCore>(),
+            modules.scene_loader.currentScene(), bytes,
+            /*resolve_ray_rows=*/false);
+        prepared->commit([] {});
+    };
+    auto previous = modules.path_resolver.loadText(reference);
+    publish(modules, document->bytes);
+    return [runtime, publish, previous = std::move(previous)] {
+        try {
+            publish(runtime->modules, previous);
+        } catch (...) {
+            // The refusal of the candidate is the answer; the scene keeps
+            // what it has.
+        }
+    };
+}
+
 } // namespace
 
 EditorProjectionContext makeEditorProjectionContext(
@@ -2106,6 +2149,26 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                         "pelican.render_pipeline reload participant is unavailable",
                                 };
                             }
+                            // RTL-1a stage D: edit_ray_layout's
+                            // procedural_records rewrite asset_data in the
+                            // same candidate as the layout. Its records are
+                            // published into the scene before the layout's
+                            // generation is staged, so that generation's
+                            // first frame resolves the new records with the
+                            // new layout; the file itself is written by the
+                            // candidate's source commit. Whatever does not
+                            // end committed publishes the previous records
+                            // again (revert_assets).
+                            std::function<void()> revert_assets;
+                            try {
+                                revert_assets = publishCandidateAssetData(
+                                    runtime, candidate);
+                            } catch (const std::exception &error) {
+                                return RenderConfigRuntimeApplyResult{
+                                    .error = error.what(),
+                                    .exception = std::current_exception(),
+                                };
+                            }
                             const auto applied =
                                 runtime->modules.reload_service
                                     ->applyAuthoredCandidate(
@@ -2113,9 +2176,13 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                         std::move(candidate),
                                         std::move(source_commit),
                                         [completion =
-                                             std::move(completion)](
+                                             std::move(completion),
+                                         revert_assets](
                                             watch::AuthoredRuntimeReloadResult
                                                 completed) mutable {
+                                            if (!completed.committed &&
+                                                revert_assets)
+                                                revert_assets();
                                             if (!completion) return;
                                             completion(
                                                 RenderConfigRuntimeApplyResult{
@@ -2128,6 +2195,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                                     .exception = std::move(completed.exception),
                                                 });
                                         });
+                            if (!applied.committed && !applied.staged &&
+                                revert_assets)
+                                revert_assets();
                             return RenderConfigRuntimeApplyResult{
                                 .committed = applied.committed,
                                 .staged = applied.staged,
@@ -2376,6 +2446,56 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                     // AB-1: list_derived_assets walks the asset stores.
                     .asset_stores = [runtime] {
                         return runtime->modules.path_resolver.stores();
+                    },
+                    // RTL-1a: every registered material a ray binding can
+                    // select, as a scene row names it: its source document,
+                    // or a model's asset and glTF material index.
+                    .ray_selectable_materials = [] {
+                        std::vector<RaySelectableMaterial> result;
+                        if (!FastModuleContainer::isInitialized<
+                                MaterialContainer>())
+                            return result;
+                        const auto &materials = GET_MODULE(MaterialContainer);
+                        for (const auto material :
+                             materials.drawLoopMaterials()) {
+                            const auto identity =
+                                materials.rayBindingIdentity(material);
+                            result.push_back({
+                                .name = materials.materialName(material),
+                                .document = identity.document,
+                                .asset = identity.asset,
+                                .source_material_index =
+                                    identity.source_material_index,
+                            });
+                        }
+                        return result;
+                    },
+                    // RTL-1a: the bindings the published scene rows left
+                    // unmatched.
+                    .ray_unresolved_bindings =
+                        [runtime]() -> std::optional<RayUnresolvedBindingsObservation> {
+                        const auto plan =
+                            runtime->modules.polygon_instances.rayAsPlan();
+                        if (!plan || plan->bindings_reference.empty())
+                            return std::nullopt;
+                        return RayUnresolvedBindingsObservation{
+                            .bindings_reference = plan->bindings_reference,
+                            .bindings_digest = plan->bindings_digest_sha256,
+                            .indices = plan->unresolved_binding_indices,
+                        };
+                    },
+                    .ray_asset_data =
+                        [runtime]() -> std::optional<RayAssetDataDocument> {
+                        const auto reference =
+                            runtime->modules.project_config.assetDataReference();
+                        const auto resolved =
+                            runtime->modules.path_resolver
+                                .resolveExistingFileReference(reference);
+                        const auto *path =
+                            std::get_if<std::filesystem::path>(&resolved);
+                        if (path == nullptr) return std::nullopt;
+                        return RayAssetDataDocument{.reference = reference,
+                                                    .path = *path};
                     },
                 });
         }

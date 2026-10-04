@@ -436,6 +436,19 @@ DECLARE_MODULE(MaterialContainer) {
     const std::string &materialName(GlobalMaterialId material) const {
         return materials.get(material).name;
     }
+    // RTL-1a: what a ray binding's material selector matches this material
+    // by: its source document, or the model asset and glTF material index
+    // its rows carry.
+    struct RayBindingIdentity {
+        std::string document;
+        std::string asset;
+        std::optional<std::uint32_t> source_material_index;
+    };
+    RayBindingIdentity rayBindingIdentity(GlobalMaterialId material) const {
+        const auto &info = materials.get(material);
+        return {info.source_document, info.source_asset,
+                info.source_material_index};
+    }
     std::uint64_t rayMaterialGeneration(
         GlobalMaterialId material) const {
         return materials.get(material).ray_generation;

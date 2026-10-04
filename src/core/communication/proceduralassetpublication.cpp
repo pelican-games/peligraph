@@ -32,7 +32,8 @@ PreparedProceduralAssetPublication::~PreparedProceduralAssetPublication() = defa
 std::unique_ptr<PreparedProceduralAssetPublication> PreparedProceduralAssetPublication::prepare(
     ProjectBasicConfig &config, PathResolver &resolver,
     ProceduralGeometryContainer &procedural, PolygonInstanceContainer &renderer,
-    VulkanManageCore *vkcore, std::string_view scene_id, std::string_view raw_assets) {
+    VulkanManageCore *vkcore, std::string_view scene_id, std::string_view raw_assets,
+    bool resolve_ray_rows) {
     const auto *scene = config.resolvedScene().findScene(scene_id);
     if (!scene) throw std::invalid_argument("Procedural asset publication requires the active resolved scene.");
     if (procedural.allocationGeneration() == std::numeric_limits<std::uint64_t>::max())
@@ -65,7 +66,8 @@ std::unique_ptr<PreparedProceduralAssetPublication> PreparedProceduralAssetPubli
     state->renderer_state = renderer.snapshotPreparedScene();
     const auto instances = procedural.proceduralRayInstances(&state->procedural_state);
     renderer.prepareRayScenePlan(state->renderer_state,
-        state->renderer_state.ray_scene_plan ? state->renderer_state.ray_scene_plan->project : nullptr,
+        resolve_ray_rows && state->renderer_state.ray_scene_plan
+            ? state->renderer_state.ray_scene_plan->project : nullptr,
         nullptr, instances);
     return std::unique_ptr<PreparedProceduralAssetPublication>(
         new PreparedProceduralAssetPublication(std::move(state)));
