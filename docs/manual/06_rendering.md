@@ -384,11 +384,11 @@ color attachment stateは「未指定」の空表現を保ちます。省略をo
 
 **stem(ステム)** はファイル名から拡張子を落とした部分のことです([用語集](14_glossary.md))。シェーダは**拡張子なしの stem** で参照します(例: `"shaders/lava"`、`"engine://ssao"`)。`.vert` / `.frag` / `.spv` などの拡張子を書くと「use an extensionless <stage> shader stem」エラーになります(WP63)。
 
-拡張子は stem ではなく、**その参照を書いた場所(どのシェーダステージか)**が決めます。`shader.vertex` に書いた `"shaders/lava"` なら `.vert`、`shader.fragment` なら `.frag`、compute の `shader` なら `.comp` です。そのうえで解決順は ① `<stem>.<ステージ拡張子>`(GLSL ソース → 実行時コンパイル)→ ② `<stem>.<ステージ拡張子>.spv`(ビルド済み SPIR-V)。つまり fragment に `"shaders/lava"` と書くと `shaders/lava.frag` → `shaders/lava.frag.spv` の順に探します。①の候補は**実行時コンパイラを含むビルドでのみ**列に入る(`PELICAN_RUNTIME_SHADER_COMPILER` — [第2章](02_getting_started.md))ので、配布ビルドでは実質 `.spv` だけです([shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp#L587))。どちらも無ければ試行パス一覧付きエラー。
+拡張子は stem ではなく、**その参照を書いた場所(どのシェーダステージか)**が決めます。`shader.vertex` に書いた `"shaders/lava"` なら `.vert`、`shader.fragment` なら `.frag`、compute の `shader` なら `.comp` です。そのうえで解決順は ① `<stem>.<ステージ拡張子>`(GLSL ソース → 実行時コンパイル)→ ② `<stem>.<ステージ拡張子>.spv`(ビルド済み SPIR-V)。つまり fragment に `"shaders/lava"` と書くと `shaders/lava.frag` → `shaders/lava.frag.spv` の順に探します。①の候補は**実行時コンパイラを含むビルドでのみ**列に入る(`PELICAN_RUNTIME_SHADER_COMPILER` — [第2章](02_getting_started.md))ので、**明示的に compiler を OFF にしたビルドでは** `.spv` だけを探します([shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp#L587))。現在の `dist-config` は compiler を OFF にせず、既定の ON のままなので、配布ビルドでも GLSL を実行時にコンパイルします。どちらも無ければ試行パス一覧付きエラー。
 
 (**GLSL** は Vulkan/OpenGL 系のシェーダ言語、**SPIR-V** はそれをコンパイルした GPU 向け中間バイナリ形式です。)
 
-> **設計決定(二層供給):** 開発時 = GLSL 実行時コンパイル(defines によるバリアント可)、配布 = `.spv` 固定 1 バリアント。`.spv` に `shader_defines` を組み合わせると「Shader defines and generated includes require GLSL source」エラー。feature を使う config は実行時コンパイラ必須。この stem 規約は web プロファイルと共有される可搬形式です([第9章](09_web.md))。
+> **現在の配布と将来の二層供給:** 現在の PC の開発・配布ビルドは compiler ON を使います。Release では shaderc を静的にリンクします。compiler OFF 向けに shader を事前に焼いて同梱する `dist-bake`(WP211/B4)は[設計のみ](../design_build_tiers.md)です。`.spv` に `shader_defines` や生成 include を組み合わせると「Shader defines and generated includes require GLSL source」エラーになります。feature ごとの compiler 要否にも従う必要があり、多くの標準 feature は compiler を必要とします。この stem 規約は web プロファイルと共有される可搬形式です([第9章](09_web.md))。
 
 ### 自動リフレクションとキャッシュ
 
@@ -2141,8 +2141,8 @@ blend constant/dual-source blendの境界は
 
 `material_outputs` を省略した pass は既存プロジェクト向けの内蔵5-MRT/1-color ABIを
 維持します。独自スキーマは生成 fragment shader が必要なため、現時点では runtime
-shader compiler を有効にした開発ビルドで使います。shaderc OFF の配布物は
-`dist-bake`（WP211）の生成物へ移す予定です。
+shader compiler を有効にしたビルドで使います。現在の配布ビルドも compiler ON なので利用できます。compiler OFF 向けの事前コンパイルは
+`dist-bake`（WP211、設計のみ）の対象です。
 
 ### compute/別passのresourceをmaterialから読む（✅WP207b/220）
 
@@ -3079,7 +3079,7 @@ GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usag
 
 - `ray_bindings` だけを書くと `pelican.ray_tracing.bindings_without_layout@1`。
 - 2 つのキーと 2 つの文書は、手で書くほかに ✅RTL-1a から `edit_ray_layout` で engine に書かせられます(下の「文書を RPC で読み書きする」)。
-- `ray_group_layout` があるプロジェクトは**ランタイムシェーダコンパイラ必須**で、`PELICAN_RUNTIME_SHADER_COMPILER=OFF` のビルドでは `pelican.ray_tracing.layout_requires_runtime_compiler@1` になります。
+- `ray_group_layout` があるプロジェクトは**ランタイムシェーダコンパイラ必須**で、`PELICAN_RUNTIME_SHADER_COMPILER=OFF` のビルドでは `pelican.ray_tracing.layout_requires_runtime_compiler@1` になります。現在の `dist-config` による配布ビルドは compiler ON のままなので、layout を使う RT もこの制約で拒否されません。compiler OFF 向けの事前コンパイルは、RT に限らない将来の `dist-bake` の対象です。
 - layout 文書は `pelican.ray_group_layout` の **version 3 だけ**を、bindings 文書は `pelican.ray_bindings` の **version 2 だけ**を受理します(✅MG-2a)。ほかの整数版(古い 1 / 2 を含む)は `pelican.ray_group_layout.version_unsupported@1` / `pelican.ray_bindings.version_unsupported@1` で拒否され、メッセージに文書の参照が付きます([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L864))。旧版を旧い意味で読む経路は無く、自動移行もしないので、手で書き直します。layout version 1 / 2 は各 `groups[]` に `"type": "triangles"` を足して `version` を 3 に、bindings version 1 は `version` を 2 にします。⚠ version 1 の layout では行の `instance_custom_index` が q(行の正規順の添字)でしたが、version 3 では `pelican_ray_instance` の `custom_index` で宣言しない限り 0 です(shader に出る値が変わります)。
 - group の型(`triangles` / `procedural`)は layout の `groups[].type` だけが持ちます。compute task 側の `hit_shaders` の group に `type` を書くと、値を問わず `pelican.ray_group_type_declared_in_task@1` です(MG-2a より前は `"triangles"` だけ受理していました)。
 
