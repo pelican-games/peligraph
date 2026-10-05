@@ -1671,6 +1671,32 @@ void MainWindow::openProblem(const ProblemRow &row) {
     case Place::GraphPass:
         openPlanPassOnGraph(text(row.pass));
         return;
+    case Place::SceneObject: {
+        // EB-6s, decision 5 (engine EB-6): the object whose own material no
+        // registered material holds -- picked in the Outliner, its Material
+        // rows in the Inspector.
+        QTreeWidgetItem *found = nullptr;
+        for (QTreeWidgetItemIterator it{outliner_}; *it && found == nullptr; ++it) {
+            const QVariant id = (*it)->data(0, OutlinerAuthoringIdRole);
+            if (!id.isValid() || id.toULongLong() != row.object) continue;
+            if (!row.scene_id.empty() && (*it)->data(0, OutlinerSceneIdRole).toString() != text(row.scene_id)) continue;
+            found = *it;
+        }
+        if (found == nullptr) {
+            statusBar()->showMessage(
+                tr("The Outliner has no object %1.")
+                    .arg(row.object_name.empty() ? QStringLiteral("#%1").arg(row.object) : text(row.object_name)),
+                8000);
+            return;
+        }
+        docks_[OutlinerDock]->show();
+        docks_[InspectorDock]->show();
+        docks_[InspectorDock]->raise();
+        outliner_->setCurrentItem(found);
+        outliner_->scrollToItem(found);
+        if (inspector_ != nullptr) inspector_->revealMaterialRows();
+        return;
+    }
     case Place::Restart:
     case Place::None:
         return;

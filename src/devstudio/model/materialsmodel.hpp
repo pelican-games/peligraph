@@ -66,6 +66,10 @@ struct MaterialList {
 // ({material?, pass | passes, requirement}) in one sentence, what to do on the
 // pass; empty without a pass.
 [[nodiscard]] std::string materialPassContractSentence(const nlohmann::json &fields);
+// EB-6s, decision 1 (engine EB-6): a write the engine took, whose document it
+// cannot draw yet (`applied: "unusable"`) -- its `problem` in one sentence:
+// materialPassContractSentence with the code, else the problem's message.
+[[nodiscard]] std::string materialUnusableSentence(const nlohmann::json &problem);
 // Every material name of the loaded documents, in the list's order.
 [[nodiscard]] std::vector<std::string> materialNames(const MaterialList &list);
 // Every tag a listed material carries, sorted, once each.
@@ -102,6 +106,9 @@ struct MaterialFileProblem {
     std::string reason;
     std::int64_t line = 0;
     std::int64_t column = 0;
+    // EB-6s, decision 6 (engine EB-6): the sha256 of the bytes the watch
+    // read and refused (fields.digest); empty from an engine before EB-6.
+    std::string digest;
     bool operator==(const MaterialFileProblem &) const = default;
 };
 // What the engine's problem list says of materials, as the Materials dock
@@ -193,6 +200,10 @@ struct SurfaceChoice {
     std::uint64_t params = 0;
     std::uint64_t textures = 0;
     nlohmann::json routing;  // null when the surface implies none
+    // EB-6s, decision 4 (engine EB-6): every routing the surface's lowering
+    // takes ({alpha_mode, double_sided}), `routing` (the default) first; one
+    // for a surface of the engine's manifest (its variant's pair).
+    std::vector<nlohmann::json> routings;
     std::string error;       // a surface that cannot be read: listed, not chosen
 };
 [[nodiscard]] std::vector<SurfaceChoice> parseSurfaceList(const nlohmann::json &result);
@@ -204,6 +215,13 @@ struct SurfaceChoice {
 // The one a new material starts on: the engine's OpenPBR opaque one-sided
 // surface when listed, else the first one that can be read; nullopt for none.
 [[nodiscard]] std::optional<std::size_t> defaultSurfaceChoice(const std::vector<SurfaceChoice> &surfaces);
+// EB-6s, decision 4: how a routing reads in a combo -- "opaque, one-sided",
+// "blend, double-sided".
+[[nodiscard]] std::string materialRoutingLabel(const nlohmann::json &routing);
+// The routings a material on `surface` can be given: the surface's own list
+// (`routings`); every one for a variant of the engine's manifest (named),
+// whose routing picks the variant (VR-1); empty when the engine does not say.
+[[nodiscard]] std::vector<nlohmann::json> materialRoutingChoices(const SurfaceChoice &surface);
 
 // --- a new material's name and file (decision 4)
 
@@ -238,9 +256,19 @@ struct MaterialPrimitive {
     // pelican.primitive.default for an engine primitive).
     std::string slot;
     std::string material;
+    // EB-6s, decision 5 (engine EB-6): `material` is a name no registered
+    // material holds (get_material_bindings' unresolved) -- why, and what is
+    // drawn in its place (the slot). Empty when it resolves.
+    std::string unresolved_reason;
+    std::string drawn;
+    bool unresolved = false;
     bool operator==(const MaterialPrimitive &) const = default;
 };
 [[nodiscard]] std::vector<MaterialPrimitive> parseMaterialBindings(const nlohmann::json &result);
+// "material is not registered -- drawing pelican.primitive.default" (an em
+// dash in the line) for the
+// first primitive whose bound name does not resolve; empty when all do.
+[[nodiscard]] std::string materialBindingUnresolvedLine(const std::vector<MaterialPrimitive> &primitives);
 // MT-2s, decision 4 (engine MT-2): get_material_bindings' `objects` (the scene
 // objects that draw the model, every scene, prefab-made ones too) and
 // `object_overrides` (those of them with materials of their own); nullopt
@@ -372,7 +400,9 @@ class MaterialsDockSession {
     bool setSurface(const std::string &surface);
     // Decision 4: create_material on `surface`; the new one is selected once
     // it is listed. Not undoable (there is no delete_material).
-    bool create(const SurfaceChoice &surface, const std::string &name);
+    // EB-6s, decision 4: `routing` one of the surface's routings (null: the
+    // surface's default, or none when it names none -- the engine's).
+    bool create(const SurfaceChoice &surface, const std::string &name, const Json &routing = nullptr);
     // Decision 5 (b): bind_material of the selected material to every
     // primitive of `model`; `object` names it in Undo.
     bool assign(const std::string &model, const std::string &object);
@@ -397,6 +427,11 @@ class MaterialsDockSession {
     // against list_materials once more -- the engine's watch may have taken
     // it in first -- and otherwise only a restart reads it (restartReason()).
     bool registerAgain(const std::string &path);
+    // EB-6s, decision 3 (engine EB-6): register_material {path} of a
+    // registered document -- the engine reads it again from its file
+    // (`reloaded: true`): what another editor saved, in a project whose
+    // hot_reload does not watch materials (Blank's default).
+    bool reloadFromFile(const std::string &path);
     // MR-1s, decisions 1 and 3: Show the document wrote `path` (holding
     // `names`). A document the engine's watch refused after start (stale) is
     // taken in by the watch -- nothing is sent, the outcome comes with the
@@ -410,10 +445,13 @@ class MaterialsDockSession {
         // Decision 3: the engine's watch takes it in; what it said at the save.
         bool watch = false;
         std::string stale_line;
+        // EB-6s, decision 6: the sha256 of the bytes saved. The watch's
+        // refusal of them carries it (fields.digest), whatever its sentence.
+        std::string saved_digest;
         // Refused: why, in one sentence.
         std::string sentence;
     };
-    void documentSaved(const std::string &path, std::vector<std::string> names);
+    void documentSaved(const std::string &path, std::vector<std::string> names, std::string digest = {});
     [[nodiscard]] const std::optional<Repair> &repair() const noexcept { return repair_; }
     void forgetRepair() noexcept { repair_.reset(); }
     // Decisions 2 and 3: the engine's problem list moved (PB-1s). A material
@@ -494,6 +532,8 @@ class MaterialsDockSession {
         std::string param;
         std::string description;
         Json params;
+        // EB-6s, decision 3: a Register that is Reload from file.
+        bool from_file = false;
     };
 
     void notify();
@@ -537,6 +577,10 @@ class MaterialsDockSession {
     // A register_material refused as listed already, for a document the list
     // did not hold loaded: decided on the next list_materials.
     std::optional<std::string> recheck_;
+    // EB-6s, decision 1: a write the engine took but cannot draw yet -- the
+    // document's row (unusable, Open the pass) is picked once listed.
+    std::optional<std::string> broken_when_listed_;
+    void unusable(const Write &write, const Json &result);
     void loadedAgain(const std::string &path, std::vector<std::string> names);
     std::deque<Write> queue_;
     std::optional<Write> in_flight_;

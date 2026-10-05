@@ -7,6 +7,7 @@
 #include "../model/renderfallback.hpp"
 
 #include <QAbstractSpinBox>
+#include <QCryptographicHash>
 #include <QDialog>
 #include <QFontDatabase>
 #include <QMenu>
@@ -113,6 +114,8 @@ struct MaterialsDock::Impl {
     QPushButton *assign_button = nullptr;
     QWidget *new_row = nullptr;
     QComboBox *new_surface = nullptr;
+    // EB-6s, decision 4: the routings the chosen surface takes.
+    QComboBox *new_routing = nullptr;
     QLineEdit *new_name = nullptr;
     QLabel *new_path = nullptr;
     QLabel *new_notice = nullptr;
@@ -290,6 +293,8 @@ struct MaterialsDock::Impl {
         notice = new QLabel(&owner);
         notice->setObjectName(QStringLiteral("pelican.materials.notice"));
         applyPanelNoticeStyle(notice);
+        // A pass refusal must fit the dock instead of squeezing out the viewport.
+        notice->setWordWrap(true);
         notice->hide();
         restart = new QPushButton(owner.tr("Restart engine"), &owner);
         restart->setObjectName(QStringLiteral("pelican.materials.restartEngine"));
@@ -333,6 +338,10 @@ struct MaterialsDock::Impl {
         new_surface->setObjectName(QStringLiteral("pelican.materials.new.surface"));
         new_surface->setToolTip(owner.tr("The surfaces the engine lists (list_surfaces): the shader "
                                          "and the parameters the material takes"));
+        new_routing = new QComboBox(new_row);
+        new_routing->setObjectName(QStringLiteral("pelican.materials.new.routing"));
+        new_routing->setToolTip(owner.tr("Which material passes draw it (routing): only what the surface's "
+                                         "lowering takes is offered, the engine's default first"));
         new_name = new QLineEdit(new_row);
         new_name->setObjectName(QStringLiteral("pelican.materials.new.name"));
         new_name->setToolTip(owner.tr("Letters, digits and _; the file is named after it"));
@@ -352,6 +361,7 @@ struct MaterialsDock::Impl {
         buttons->addWidget(new_create);
         buttons->addWidget(new_cancel);
         form->addRow(owner.tr("Surface"), new_surface);
+        form->addRow(owner.tr("Routing"), new_routing);
         form->addRow(owner.tr("Name"), new_name);
         form->addRow(QString{}, new_path);
         form->addRow(new_notice);
@@ -364,7 +374,11 @@ struct MaterialsDock::Impl {
             const int index = new_surface->currentData().isValid() ? new_surface->currentData().toInt() : -1;
             const auto &surfaces = session.surfaces();
             if (index < 0 || index >= static_cast<int>(surfaces.size())) return;
-            if (session.create(surfaces[static_cast<std::size_t>(index)], new_name->text().trimmed().toStdString()))
+            const auto routing = new_routing->currentIndex() >= 0
+                                     ? Json::parse(new_routing->currentData().toString().toStdString(), nullptr, false)
+                                     : Json{};
+            if (session.create(surfaces[static_cast<std::size_t>(index)], new_name->text().trimmed().toStdString(),
+                               routing.is_object() ? routing : Json{}))
                 new_row->hide();
         });
         layout.addWidget(new_row);
@@ -440,9 +454,43 @@ struct MaterialsDock::Impl {
         choices.setCurrentIndex(wanted);
     }
 
+    // EB-6s, decision 4 (engine EB-6): the routings the chosen surface takes
+    // (list_surfaces' routings), its default first and chosen; "(engine
+    // default)" alone when it names none.
+    void fillNewRouting() {
+        const int index = new_surface->currentData().isValid() ? new_surface->currentData().toInt() : -1;
+        const auto &surfaces = session.surfaces();
+        std::vector<Json> routings;
+        if (index >= 0 && index < static_cast<int>(surfaces.size())) {
+            const auto &surface = surfaces[static_cast<std::size_t>(index)];
+            routings = surface.routings;
+            if (routings.empty() && surface.routing.is_object()) routings.push_back(surface.routing);
+        }
+        QStringList labels;
+        QStringList values;
+        for (const auto &routing : routings) {
+            labels << qtext(materialRoutingLabel(routing));
+            values << qtext(routing.dump());
+        }
+        if (labels.isEmpty()) {
+            labels << owner.tr("(the engine's default)");
+            values << QString{};
+        }
+        bool same = new_routing->count() == labels.size();
+        for (int row = 0; same && row < labels.size(); ++row)
+            same = new_routing->itemData(row).toString() == values[row];
+        if (same) return;
+        const QSignalBlocker block{new_routing};
+        new_routing->clear();
+        for (int row = 0; row < labels.size(); ++row) new_routing->addItem(labels[row], values[row]);
+        new_routing->setCurrentIndex(0);
+        new_routing->setEnabled(labels.size() > 1);
+    }
+
     void presentNewRow() {
         if (new_row->isHidden()) return;
         if (!newSurfaceChoicesCurrent()) fillSurfaceChoices(*new_surface, {}, true);
+        fillNewRouting();
         const auto name = new_name->text().trimmed().toStdString();
         new_path->setText(name.empty() ? QString{} : qtext(materialDocumentPath(name)));
         QString line;
@@ -706,7 +754,12 @@ struct MaterialsDock::Impl {
         const auto &model = model_session.model();
         model_heading->setText(owner.tr("Bindings of %1").arg(qtext(modelShortName(model))));
         model_heading->setToolTip(qtext(model));
-        const auto line = model_line.empty() ? model_session.notice() : model_line;
+        // EB-6s, decision 5 (engine EB-6): a bound name no registered material
+        // holds, and what is drawn in its place -- the engine's word, not a
+        // guess from the list.
+        const auto unresolved = materialBindingUnresolvedLine(model_session.primitives());
+        auto line = model_line.empty() ? model_session.notice() : model_line;
+        if (line.empty()) line = unresolved;
         setPanelNotice(model_notice, qtext(line), qtext(line));
         {
             const QSignalBlocker block{model_choice};
@@ -716,8 +769,17 @@ struct MaterialsDock::Impl {
             const auto shown = model_session.shownMaterial();
             int index = shown ? model_choice->findData(qtext(*shown)) : -1;
             if (shown && index < 0) {
-                model_choice->addItem(owner.tr("%1 (not loaded)").arg(qtext(*shown)), qtext(*shown));
+                model_choice->addItem(qtext(*shown), qtext(*shown));
                 index = model_choice->count() - 1;
+            }
+            if (shown && !unresolved.empty() && index > 0) {
+                const auto &primitives = model_session.primitives();
+                const auto drawn = std::ranges::find_if(primitives, [](const auto &p) { return p.unresolved; });
+                if (drawn != primitives.end() && drawn->material == *shown) {
+                    model_choice->setItemText(index, owner.tr("%1 (not registered \xE2\x80\x94 drawing %2)")
+                                                         .arg(qtext(*shown), qtext(drawn->drawn)));
+                    model_choice->setItemData(index, qtext(drawn->unresolved_reason), Qt::ToolTipRole);
+                }
             }
             // Primitives that differ (or bindings not read yet): no entry.
             model_choice->setCurrentIndex(index);
@@ -872,8 +934,14 @@ struct MaterialsDock::Impl {
             }
             // MR-1s, decisions 1 and 3: taken in without a restart; the
             // window stays open until the engine has it, and says why not.
+            // EB-6s, decision 6: the bytes' sha256, which the watch's refusal
+            // of them names.
             repair_shown.clear();
-            session.documentSaved(document_path, materialNamesInText(bytes));
+            session.documentSaved(
+                document_path, materialNamesInText(bytes),
+                QCryptographicHash::hash(QByteArray::fromStdString(bytes), QCryptographicHash::Sha256)
+                    .toHex()
+                    .toStdString());
         });
         QObject::connect(dialog, &QObject::destroyed, &owner, [this] {
             document_text = nullptr;
@@ -1111,7 +1179,23 @@ struct MaterialsDock::Impl {
         bold.setBold(true);
         heading->setFont(bold);
         heading->setText(owner.tr("%1 \xE2\x80\x94 %2").arg(qtext(selection->name), qtext(selection->path)));
-        layout->addWidget(heading);
+        // EB-6s, decision 3 (engine EB-6): the document saved by another
+        // editor, read again by the engine (register_material's reloaded) --
+        // what a project whose hot_reload does not watch materials needs.
+        auto *heading_row = new QHBoxLayout;
+        heading_row->addWidget(heading, 1);
+        auto *reload = new QPushButton(owner.tr("Reload from file"), editor);
+        reload->setObjectName(QStringLiteral("pelican.materials.reloadFromFile"));
+        reload->setToolTip(owner.tr("Have the engine read %1 again from its file, as another editor saved it "
+                                    "(register_material); a project whose hot_reload watches materials does it "
+                                    "by itself")
+                               .arg(qtext(selection->path)));
+        reload->setEnabled(session.ready());
+        const auto reload_path = selection->path;
+        QObject::connect(reload, &QPushButton::clicked, &owner,
+                         [this, reload_path] { (void)session.reloadFromFile(reload_path); });
+        heading_row->addWidget(reload);
+        layout->addLayout(heading_row);
 
         auto *settings = new QFormLayout;
         surface = new QComboBox(editor);
@@ -1146,7 +1230,19 @@ struct MaterialsDock::Impl {
                                           "rewritten with it"));
         const auto routing_changed = [this] {
             if (filling) return;
-            session.setRouting(alpha_mode->currentData().toString().toStdString(), double_sided->isChecked());
+            const auto mode = alpha_mode->currentData().toString().toStdString();
+            bool sides = double_sided->isChecked();
+            // EB-6s, decision 4: a pair the surface does not take is the one
+            // of that alpha mode it does.
+            const auto choices = routingChoicesOfMaterial();
+            const auto takes = [&](bool two) {
+                return std::ranges::any_of(choices, [&](const Json &routing) {
+                    return routing.value("alpha_mode", std::string{}) == mode &&
+                           routing.value("double_sided", false) == two;
+                });
+            };
+            if (!choices.empty() && !takes(sides) && takes(!sides)) sides = !sides;
+            session.setRouting(mode, sides);
         };
         QObject::connect(alpha_mode, &QComboBox::currentIndexChanged, &owner, routing_changed);
         QObject::connect(double_sided, &QCheckBox::toggled, &owner, routing_changed);
@@ -1439,6 +1535,16 @@ struct MaterialsDock::Impl {
         row.choice->setCurrentIndex(std::max(0, row.choice->findData(qtext(current))));
     }
 
+    // EB-6s, decision 4: the routings the shown material's surface takes;
+    // empty when the engine does not list the surface.
+    std::vector<Json> routingChoicesOfMaterial() const {
+        if (!session.material().is_object()) return {};
+        const auto surface_reference = session.material().value("surface", std::string{});
+        const auto &surfaces = session.surfaces();
+        const auto found = std::ranges::find(surfaces, surface_reference, &SurfaceChoice::reference);
+        return found == surfaces.end() ? std::vector<Json>{} : materialRoutingChoices(*found);
+    }
+
     void applyValues() {
         const auto &material = session.material();
         filling = true;
@@ -1463,6 +1569,24 @@ struct MaterialsDock::Impl {
                 std::max(0, alpha_mode->findData(qtext(routing.is_object() ? routing.value("alpha_mode", std::string{"opaque"})
                                                                              : std::string{"opaque"}))));
             double_sided->setChecked(routing.is_object() && routing.value("double_sided", false));
+            // EB-6s, decision 4 (engine EB-6): only the routings the surface
+            // takes can be chosen; a surface the engine does not list leaves
+            // every one.
+            const auto choices = routingChoicesOfMaterial();
+            const auto mode = alpha_mode->currentData().toString().toStdString();
+            if (auto *model = qobject_cast<QStandardItemModel *>(alpha_mode->model()))
+                for (int row = 0; row < alpha_mode->count(); ++row)
+                    if (auto *item = model->item(row)) {
+                        const auto entry = alpha_mode->itemData(row).toString().toStdString();
+                        const bool taken = choices.empty() || std::ranges::any_of(choices, [&](const Json &choice) {
+                                               return choice.value("alpha_mode", std::string{}) == entry;
+                                           });
+                        item->setFlags(taken ? item->flags() | Qt::ItemIsEnabled : item->flags() & ~Qt::ItemIsEnabled);
+                    }
+            const auto sides = std::ranges::count_if(choices, [&](const Json &choice) {
+                return choice.value("alpha_mode", std::string{}) == mode;
+            });
+            double_sided->setEnabled(choices.empty() || sides > 1);
         }
         if (variants != nullptr) {
             QStringList names;

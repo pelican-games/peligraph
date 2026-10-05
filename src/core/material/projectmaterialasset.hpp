@@ -98,12 +98,22 @@ DECLARE_MODULE(ProjectMaterialAssetContainer) {
     // document. `passes` only when more than one pass does not declare it.
     // Once the published render pipeline changes, the document is registered
     // again at the next frame (retryPassContractRefusals).
+    //
+    // EB-6: a document that reads and does not register is listed with
+    // fields.digest, the sha256 of the bytes it was read from (the file's
+    // digest as the material RPCs give it), so a client tells a refusal of
+    // the file it saved from one of an earlier save.
     struct RefusedDocument {
         std::string status;
         std::string code;
         std::string reason;
         std::optional<std::uint64_t> line;
         std::optional<std::uint64_t> column;
+        // EB-6: the sha256 of the file it was refused as (absent: no file).
+        std::optional<std::string> digest;
+        // EB-6: where it was met; empty is "startup" (or "hot_reload" for a
+        // values reload's refusal).
+        std::string source;
         // FO-2: status "unusable" only.
         std::string material;
         std::vector<std::string> passes;
@@ -111,6 +121,10 @@ DECLARE_MODULE(ProjectMaterialAssetContainer) {
         std::optional<std::string> pass_document;
         std::optional<std::string> pass_document_kind;
         std::optional<std::string> pass_node;
+        // EB-6: the generation of the material passes it was last tried
+        // against (retryPassContractRefusals tries it again once the
+        // published one is another).
+        std::uint64_t generation = 0;
     };
     std::optional<RefusedDocument> refusedDocument(
         std::string_view reference) const;
@@ -125,6 +139,35 @@ DECLARE_MODULE(ProjectMaterialAssetContainer) {
     // bindings resolve again).
     void noteUnresolvedBindings(const std::string &model,
                                 std::vector<std::string> materials);
+    // EB-6: the materials the model's bindings name that it draws with its
+    // own material instead (the warning above), empty when none.
+    std::vector<std::string> unresolvedBindings(std::string_view model) const;
+
+    // EB-6: a document registered over RPC -- create_material,
+    // register_material, edit_material's or rename_material's registration
+    // anew -- that a pass refused to draw for a declaration it lacks (as
+    // FO-2's start): status "unusable", listed as FO-2 lists it with source
+    // "edit_rpc", and registered at the next frame once the material passes'
+    // generation is another (retryPassContractRefusals). The engine goes on:
+    // a document registered before keeps drawing its previous registration
+    // until then. Returns the refusal as listed.
+    RefusedDocument notePassContractRefusal(const std::string &reference,
+                                            const PassContractRefusal &refusal);
+
+    // EB-6 (MT-2's own materials): every scene object (each scene of the
+    // document, prefab-generated objects included) whose simplemodelview
+    // names a material neither its model's glTF materials nor a registered
+    // document hold -- it draws with the model's material -- is listed as
+    //   {severity: "warning", source: "startup", code:
+    //    "material.object_material_unresolved@1", message,
+    //    document: <the scene document>, document_kind: "scene",
+    //    fields: {object: <authoring object id>, name?, scene_id, material,
+    //             model, primitive?: {mesh, primitive}}}
+    // Looked at again when the scene projection or the registered names
+    // change (a material registered, unregistered or recovered, an override
+    // set or taken off, the scene loaded again); the reload service calls it
+    // at the start of every frame. A model that is not held is passed over.
+    void syncObjectMaterialProblems();
 
     // EB-2: a document refused at start, read again and registered now that
     // it reads (register_material {path} on a listed document, or the file
@@ -134,6 +177,11 @@ DECLARE_MODULE(ProjectMaterialAssetContainer) {
     // kept their own material for want of its materials are rebuilt in place
     // (ReloadService::reloadModelsNow), their warnings leaving with it;
     // `restart_reason` says why they could not be (the registration stays).
+    // EB-6: a refused document that is registered already (edit_material's
+    // "unusable") takes its names over (as reregisterDocument), the models
+    // drawing the previous registration are rebuilt with them and it is
+    // released; the models of the scene objects whose own material it now
+    // holds are rebuilt too.
     struct Recovered {
         std::vector<std::string> names;
         std::vector<std::string> rebuilt_models;
@@ -175,6 +223,11 @@ inline constexpr std::string_view materialPassContractUnmetCode = "material.pass
 // the published render pipeline knows it.
 ProjectMaterialAssetContainer::RefusedDocument materialPassContractRefusal(
     const std::string &reference, const PassContractRefusal &refusal);
+// EB-6: the problem an RPC answering applied "unusable" carries: {code,
+// message, document?, document_kind?, node?} with the fields above.
+nlohmann::json materialPassContractUnmetProblem(
+    const std::string &reference,
+    const ProjectMaterialAssetContainer::RefusedDocument &refused);
 // Its sentence (code first, as the problem list has it) and its fields
 // {material, material_document, pass, passes?, requirement, reason}.
 std::string materialPassContractUnmetMessage(

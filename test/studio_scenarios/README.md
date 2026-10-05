@@ -669,6 +669,22 @@ answers with `process_id`, the engine process that answered: `remember` it and
 compare it later, and a step says no restart happened in between.
 `gui_material_repair` is the example.
 
+EB-6s (engine EB-6): a material written that the pass drawing it does not
+declare enough for (`applied: "unusable"`) asks no restart: the dock's notice
+says why, `pelican.materials.restartEngine` stays hidden, and the document's
+row is picked with `pelican.materials.broken` and `pelican.materials.openPass`
+(`gui_material_ray_query_from_blank`, bound before the pass is fixed). A
+material's editor has `pelican.materials.reloadFromFile`: the engine reads the
+document again from its file (`register_material`, `reloaded`), for a project
+whose `hot_reload` does not watch materials (`gui_material_repair`). New
+material... offers the surface's routings in `pelican.materials.new.routing`.
+The Inspector's `pelican.inspectorMaterialMissing` says a bound name the engine
+does not draw on Every <model> too ("<name> is not registered -- drawing
+<material>"). A Problems row of `material.object_material_unresolved@1` picks
+the object in the Outliner and shows its Material rows. A render document put
+back outside Studio to the bytes the engine draws, after a refused reload, is
+asked again (`gui_problems_window`).
+
 ## Gestures a canvas is driven with
 
 `press`, `move` and `release` share one piece of state: which buttons this

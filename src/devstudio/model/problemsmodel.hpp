@@ -63,12 +63,17 @@ struct ProblemRow {
         // Graph tab -- a preset's or a feature's folded pass, or the node of
         // the root's graph that made it -- picked, its fields open. `pass`.
         GraphPass,
+        // EB-6s, decision 5 (engine EB-6): a scene object whose own material
+        // no registered material holds -- the object picked in the Outliner,
+        // its Material row in the Inspector. `object`, `object_name`.
+        SceneObject,
     };
 
     std::string id;
     Severity severity = Severity::Error;
     Origin origin = Origin::Engine;
-    // startup, hot_reload, reload_rpc (the engine's); "assets" for the check.
+    // startup, hot_reload, reload_rpc, edit_rpc (the engine's: EB-6, a
+    // material written that its pass cannot draw yet); "assets" for the check.
     std::string source;
     std::string code;
     std::string message;
@@ -102,6 +107,11 @@ struct ProblemRow {
     std::filesystem::path asset_path;
     // Place::GraphPass: the pass's authored name (fields.pass).
     std::string pass;
+    // Place::SceneObject: the authoring object id (fields.object), its name
+    // when it has one, and its scene.
+    std::uint64_t object = 0;
+    std::string object_name;
+    std::string scene_id;
 
     [[nodiscard]] bool error() const noexcept { return severity == Severity::Error; }
     // "12:5", "12", or empty without a line.

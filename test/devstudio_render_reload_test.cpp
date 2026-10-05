@@ -515,4 +515,36 @@ TEST_CASE("IA-1s decision 5: the images' initial assets are watched; changed_ass
     CHECK(std::find(files.begin(), files.end(), lut) == files.end());
 }
 } // namespace
+
+TEST_CASE("EB-6s decision 8: a file broken outside, refused, then put back to the bytes the engine drew is "
+          "asked again -- the engine's base is the refused version -- and the reload's commit clears the refusal",
+          "[devstudio][render_reload][eb6s]") {
+    Rig rig;
+    rig.opened();
+    // Broken outside: asked, and refused (the problem is listed).
+    rig.saved(rig.rootPath(), RootB);
+    REQUIRE(rig.last().method == "reload_render_documents");
+    rig.answer(rig.last().id,
+               Json{{"status", "rejected"},
+                    {"committed", false},
+                    {"error",
+                     {{"code", "render_pipeline_preflight_failed"},
+                      {"message", "graph.port_field_missing@1"},
+                      {"reference", Root}}}});
+    REQUIRE(rig.reload.refused());
+    // Put back to the live bytes outside: the digests held say "the same",
+    // and the engine holds the refused one -- asked all the same.
+    const auto before = rig.sent.size();
+    rig.saved(rig.rootPath(), RootA);
+    REQUIRE(rig.sent.size() == before + 1);
+    CHECK(rig.last().method == "reload_render_documents");
+    rig.ticket(Rig::committed({{Root, RootA}, {Fragment, FragmentA}}, Json::array({Root})));
+    CHECK_FALSE(rig.reload.refused());
+    CHECK(rig.notices.back().kind == Notice::Kind::Success);
+    // Nothing refused: a file holding what the engine holds asks nothing.
+    const auto settled = rig.sent.size();
+    rig.saved(rig.rootPath(), RootA);
+    CHECK(rig.sent.size() == settled);
+}
+
 } // namespace PelicanStudio

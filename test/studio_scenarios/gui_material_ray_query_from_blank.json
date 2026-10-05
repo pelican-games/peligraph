@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_material_ray_query_from_blank",
-  "description": "RTL-3s decisions 8 and 9 (engine FO-2), from Blank with the GUI only. File > New Project > Blank; Add Object > Cube and a Forward opaque material pass read by present (gui_material_from_blank's way). A surface that queries the scene's acceleration structure is written into the project's shaders (a person's own editor); New material on OpenPBR, bound to every Cube, New material on that surface: the pass does not declare ray_query, so the engine asks for a restart. Started again, the engine lists material.pass_contract_unmet@1 for the root's graph node render_material_pass and list_materials says unusable. The Materials dock's row says the pass and what to do there and offers Open the pass, which picks the pass on the Graph; the Problems row goes to the same pass (not to the Materials dock). Ray query On in the pass's fields: without a restart the engine takes the material in and the problems go; bound to every Cube, the box takes the surface's green. Typed: the project folder and its name in New Project; the surface's text is written by the scenario as a person's own editor would.",
+  "description": "RTL-3s decisions 8 and 9 and EB-6s decisions 1, 2 and 5 (engine FO-2, EB-6), from Blank with the GUI only, without a restart. File > New Project > Blank; Add Object > Cube and a Forward opaque material pass read by present (gui_material_from_blank's way). A surface that queries the scene's acceleration structure is written into the project's shaders (a person's own editor), and the engine process is noted. New material on that surface: the pass does not declare ray_query, yet the engine takes the document and goes on (applied unusable) -- the Materials dock says why in one sentence and asks no restart, list_materials says unusable, and get_problems lists material.pass_contract_unmet@1 met by the edit (source edit_rpc) for the root's graph node render_material_pass; the dock picks the document's row, which says the pass and offers Open the pass. Bound to every Cube while it is unusable: the engine binds the name, draws the cube's own material in its place (get_material_bindings' unresolved, which the Inspector's rows say), and adds the binding's warning. The dock's Open the pass picks the pass on the Graph; the Problems row goes to the same pass. Ray query On in the pass's fields: the engine takes the material in, the problems go, the binding resolves and the box takes the surface's green without being bound again -- all from the process noted before New material. Typed: the project folder and its name in New Project; the surface's text is written by the scenario as a person's own editor would.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -428,6 +428,16 @@
       "text": "//! pelican.surface v1\n//! language: glsl\n//! render_state: { blend: opaque, cull: back, depth: read_write }\n#extension GL_EXT_ray_query : require\n// A surface that asks the scene's acceleration structure: two rays along +z,\n// one each side of the origin; green with what they hit in red and blue.\nlayout(set=0,binding=6) uniform accelerationStructureEXT queryScene;\nvoid pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {\n    vec2 hits = vec2(0);\n    for (int lane = 0; lane < 2; ++lane) {\n        rayQueryEXT query;\n        rayQueryInitializeEXT(query, queryScene, gl_RayFlagsOpaqueEXT, 255u, vec3(lane == 0 ? -2 : 2,0,0), 0.001, vec3(0,0,1), 100.0);\n        while (rayQueryProceedEXT(query)) {}\n        hits[lane] = rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT\n            ? 0.0 : float(rayQueryGetIntersectionInstanceCustomIndexEXT(query, true));\n    }\n    s.base_color = vec4(hits.x, 1.0, hits.y, 1.0);\n}\nvec3 pelican_lighting_v1(in PelicanSurfaceV1 s, in PelicanSurfaceInputV1 i) {\n    return s.base_color.rgb;\n}\n"
     },
     {
+      "label": "EB-6s decision 2: the engine's process now, which nothing below may replace -- the material is made, bound and taken in by this one",
+      "expect": "result",
+      "command": {
+        "cmd": "wait_engine",
+        "timeout_ms": 60000
+      },
+      "path": "process_id",
+      "remember": "engine"
+    },
+    {
       "label": "View > Materials",
       "cmd": "action",
       "name": "pelican.view.materials"
@@ -485,32 +495,26 @@
       "value": true
     },
     {
-      "label": "the pass that would draw it does not declare ray_query: the engine cannot take it in place, and asks for a restart",
+      "label": "EB-6s decision 1 (engine EB-6): the pass that would draw it does not declare ray_query; the engine took it all the same and goes on, and the dock says why in one sentence",
       "cmd": "wait",
-      "name": "pelican.materials.restartEngine",
-      "visible": true,
-      "enabled": true,
+      "name": "pelican.materials.notice",
+      "contains": "Material material queries the scene's acceleration structure, and pass render_material_pass",
       "timeout_ms": 30000
     },
     {
-      "label": "Restart engine",
-      "cmd": "click",
-      "name": "pelican.materials.restartEngine"
+      "label": "no restart is asked",
+      "expect": "visible",
+      "name": "pelican.materials.restartEngine",
+      "value": false
     },
     {
-      "label": "the new engine has presented frames",
-      "cmd": "wait_engine",
-      "timeout_ms": 180000,
-      "frames": 30
-    },
-    {
-      "label": "engine FO-2: started again, the document reads and its pass does not declare what it uses",
+      "label": "engine EB-6: the document is unusable, not waiting for a restart",
       "expect": "rpc_equals",
       "method": "list_materials",
       "params": {},
       "path": "documents[0].status",
       "value": "unusable",
-      "retry_ms": 60000
+      "retry_ms": 30000
     },
     {
       "label": "by the pass's name",
@@ -521,13 +525,21 @@
       "value": "render_material_pass"
     },
     {
-      "label": "the engine lists the problem first",
+      "label": "the engine lists the problem",
       "expect": "rpc_equals",
       "method": "get_problems",
       "params": {},
       "path": "problems[0].code",
       "value": "material.pass_contract_unmet@1",
       "retry_ms": 30000
+    },
+    {
+      "label": "met by the edit itself (engine EB-6: source edit_rpc)",
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems[0].source",
+      "value": "edit_rpc"
     },
     {
       "label": "its document is the root, as the root's graph made the pass",
@@ -544,6 +556,128 @@
       "params": {},
       "path": "problems[0].node",
       "value": "render_material_pass"
+    },
+    {
+      "label": "decision 1: the document's row is picked in the dock, and says the pass and what to do there",
+      "cmd": "wait",
+      "name": "pelican.materials.broken",
+      "contains": "pass render_material_pass, which draws it, does not declare ray_query: turn Ray query on for the pass",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Open the pass is offered",
+      "cmd": "wait",
+      "name": "pelican.materials.openPass",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Show the document is not",
+      "expect": "visible",
+      "name": "pelican.materials.showDocument",
+      "value": false
+    },
+    {
+      "label": "a picture of the dock",
+      "expect": "screenshot",
+      "name": "pelican.materialsDock",
+      "path": "gui_material_ray_query_materials.png"
+    },
+    {
+      "label": "decision 2: bound before the pass is fixed -- pick the Cube",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "Cube"
+    },
+    {
+      "label": "the Inspector names it",
+      "cmd": "wait",
+      "name": "pelican.inspectorSelection",
+      "contains": "Cube\n",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "its Material rows are read",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialChoice",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "every Cube",
+      "cmd": "select",
+      "name": "pelican.inspectorMaterialTarget",
+      "text": "Every Cube"
+    },
+    {
+      "label": "the material, unusable as it is",
+      "cmd": "select",
+      "name": "pelican.inspectorMaterialChoice",
+      "text": "material"
+    },
+    {
+      "label": "the engine binds it all the same (engine EB-6)",
+      "expect": "rpc_equals",
+      "method": "get_material_bindings",
+      "params": {
+        "model": "engine://primitives/cube"
+      },
+      "path": "primitives[0].material",
+      "value": "material",
+      "retry_ms": 30000
+    },
+    {
+      "label": "a name it does not draw yet: the cube's own material in its place",
+      "expect": "rpc_equals",
+      "method": "get_material_bindings",
+      "params": {
+        "model": "engine://primitives/cube"
+      },
+      "path": "primitives[0].unresolved.drawn",
+      "value": "pelican.primitive.default"
+    },
+    {
+      "label": "decision 5: the Inspector's rows say so",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialMissing",
+      "visible": true,
+      "contains": "material is not registered — drawing pelican.primitive.default",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "decision 1: and the bind's answer says why, without a restart",
+      "cmd": "wait",
+      "name": "pelican.inspectorMaterialNotice",
+      "contains": "Material material queries the scene's acceleration structure",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the error and the binding's warning",
+      "cmd": "wait",
+      "name": "pelican.problemsCount",
+      "text": "1 error, 1 warning",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the warning is the binding's",
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems[1].code",
+      "value": "material.binding_unresolved@1"
+    },
+    {
+      "label": "pick the camera, so no gizmo is drawn over the box",
+      "cmd": "select",
+      "name": "pelican.outliner",
+      "text": "MainCamera"
+    },
+    {
+      "label": "the engine has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
     },
     {
       "label": "the box draws with the cube's own material: its green",
@@ -564,7 +698,7 @@
       "remember": "green_before"
     },
     {
-      "label": "decision 8: the Materials dock's row",
+      "label": "decision 8 of RTL-3s: the Materials dock's row",
       "cmd": "action",
       "name": "pelican.view.materials"
     },
@@ -575,32 +709,12 @@
       "text": "material.material.json"
     },
     {
-      "label": "says the pass and what to do there",
-      "cmd": "wait",
-      "name": "pelican.materials.broken",
-      "contains": "pass render_material_pass, which draws it, does not declare ray_query: turn Ray query on for the pass",
-      "timeout_ms": 30000
-    },
-    {
-      "label": "Open the pass is offered, not the document's repair",
+      "label": "Open the pass is there",
       "cmd": "wait",
       "name": "pelican.materials.openPass",
       "visible": true,
       "enabled": true,
       "timeout_ms": 10000
-    },
-    {
-      "label": "Show the document is not",
-      "cmd": "wait",
-      "name": "pelican.materials.showDocument",
-      "visible": false,
-      "timeout_ms": 10000
-    },
-    {
-      "label": "a picture of the dock",
-      "expect": "screenshot",
-      "name": "pelican.materialsDock",
-      "path": "gui_material_ray_query_materials.png"
     },
     {
       "label": "Open the pass",
@@ -640,7 +754,7 @@
       "name": "pelican.view.renderTools.frame_plan"
     },
     {
-      "label": "decision 8: View > Problems",
+      "label": "View > Problems",
       "cmd": "action",
       "name": "pelican.view.problems"
     },
@@ -659,7 +773,7 @@
       "timeout_ms": 30000
     },
     {
-      "label": "a click on its row",
+      "label": "a click on the error's row",
       "cmd": "select",
       "name": "pelican.problems.list",
       "index": 0
@@ -698,17 +812,6 @@
       "path": "gui_material_ray_query_problem.png"
     },
     {
-      "label": "the engine running now",
-      "expect": "result",
-      "command": {
-        "cmd": "rpc",
-        "method": "get_status",
-        "params": {}
-      },
-      "path": "result.instance_id",
-      "remember": "engine_second"
-    },
-    {
       "label": "Ray query on",
       "cmd": "select",
       "name": "pelican.graphCanvasParameters.ray_query",
@@ -740,18 +843,6 @@
       "retry_ms": 60000
     },
     {
-      "label": "without a restart: the same engine",
-      "expect": "result",
-      "command": {
-        "cmd": "rpc",
-        "method": "get_status",
-        "params": {}
-      },
-      "path": "result.instance_id",
-      "op": "eq",
-      "value_of": "engine_second"
-    },
-    {
       "label": "the engine lists nothing",
       "expect": "rpc_equals",
       "method": "get_problems",
@@ -768,6 +859,28 @@
       "timeout_ms": 30000
     },
     {
+      "label": "the bound name draws now: the cube's bindings name nothing unresolved (mesh, primitive, slot, material, usd_path)",
+      "expect": "rpc_equals",
+      "method": "get_material_bindings",
+      "params": {
+        "model": "engine://primitives/cube"
+      },
+      "path": "primitives[0].$len",
+      "value": 5,
+      "retry_ms": 30000
+    },
+    {
+      "label": "decision 2: without a restart -- the same engine process all along",
+      "expect": "result",
+      "command": {
+        "cmd": "wait_engine",
+        "timeout_ms": 60000
+      },
+      "path": "process_id",
+      "op": "eq",
+      "value_of": "engine"
+    },
+    {
       "label": "the Materials dock's row is the material again",
       "cmd": "action",
       "name": "pelican.view.materials"
@@ -780,62 +893,13 @@
       "timeout_ms": 30000
     },
     {
-      "label": "pick the Cube",
-      "cmd": "select",
-      "name": "pelican.outliner",
-      "text": "Cube"
-    },
-    {
-      "label": "the Inspector names it",
-      "cmd": "wait",
-      "name": "pelican.inspectorSelection",
-      "contains": "Cube\n",
-      "timeout_ms": 30000
-    },
-    {
-      "label": "its Material rows are read",
-      "cmd": "wait",
-      "name": "pelican.inspectorMaterialChoice",
-      "enabled": true,
-      "timeout_ms": 60000
-    },
-    {
-      "label": "every Cube",
-      "cmd": "select",
-      "name": "pelican.inspectorMaterialTarget",
-      "text": "Every Cube"
-    },
-    {
-      "label": "the material, taken in now",
-      "cmd": "select",
-      "name": "pelican.inspectorMaterialChoice",
-      "text": "material"
-    },
-    {
-      "label": "the engine binds it",
-      "expect": "rpc_equals",
-      "method": "get_material_bindings",
-      "params": {
-        "model": "engine://primitives/cube"
-      },
-      "path": "primitives[0].material",
-      "value": "material",
-      "retry_ms": 30000
-    },
-    {
-      "label": "pick the camera, so no gizmo is drawn over the box",
-      "cmd": "select",
-      "name": "pelican.outliner",
-      "text": "MainCamera"
-    },
-    {
       "label": "the engine has presented frames",
       "cmd": "wait_engine",
       "timeout_ms": 180000,
       "frames": 30
     },
     {
-      "label": "the box now in the surface's colour: green well above what it was",
+      "label": "the box now in the surface's colour, bound before the fix and not again: green well above what it was",
       "expect": "result",
       "command": {
         "cmd": "screenshot",

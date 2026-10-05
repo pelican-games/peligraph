@@ -32,12 +32,16 @@ namespace Pelican {
 // document that is not JSON has no node).
 //
 // An edit RPC's refusal is not listed: the client that sent the edit reads it
-// in the answer, and a list entry would go stale with the next edit.
+// in the answer, and a list entry would go stale with the next edit. EB-6: an
+// edit RPC that wrote its documents but whose engine state cannot draw them
+// yet (a material its pass does not declare what for, answered applied
+// "unusable") is listed, source edit_rpc, until the engine takes it in.
 
 // Where a problem was met.
 inline constexpr std::string_view problemSourceStartup = "startup";
 inline constexpr std::string_view problemSourceHotReload = "hot_reload";
 inline constexpr std::string_view problemSourceReloadRpc = "reload_rpc";
+inline constexpr std::string_view problemSourceEditRpc = "edit_rpc";
 
 inline constexpr std::string_view problemSeverityError = "error";
 inline constexpr std::string_view problemSeverityWarning = "warning";
@@ -55,6 +59,8 @@ inline constexpr std::string_view problemSeverityWarning = "warning";
 //   material        a material document asset_data lists (FO-1), or a
 //                   model's material bindings that name a material no
 //                   registered document holds (fields.model)
+//   scene           the scene document (EB-6: a scene object's own material
+//                   no registered document holds, fields.object)
 inline constexpr std::string_view problemKindRoot = "root";
 inline constexpr std::string_view problemKindRootGraph = "root_graph";
 inline constexpr std::string_view problemKindDefinition = "definition";
@@ -63,6 +69,7 @@ inline constexpr std::string_view problemKindPreset = "preset";
 inline constexpr std::string_view problemKindFeature = "feature";
 inline constexpr std::string_view problemKindShader = "shader";
 inline constexpr std::string_view problemKindMaterial = "material";
+inline constexpr std::string_view problemKindScene = "scene";
 
 // The owner of a set of problems: a new attempt of the same owner replaces
 // its problems (a failure) or clears them (a commit).

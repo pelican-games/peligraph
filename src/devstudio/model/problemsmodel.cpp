@@ -90,6 +90,18 @@ std::string problemSentence(const ProblemRow &row) {
                ", which no loaded material document holds; it draws with the model's own material (" + row.code +
                ").";
     }
+    // EB-6s, decision 5 (engine EB-6): a scene object's own material that no
+    // registered material holds.
+    if (row.code == "material.object_material_unresolved@1") {
+        auto object = stringOf(row.fields, "name");
+        if (object.empty()) object = "Object #" + std::to_string(numberOf(row.fields, "object"));
+        auto material = stringOf(row.fields, "material");
+        if (material.empty()) material = "a material";
+        const auto model = stringOf(row.fields, "model");
+        return object + " sets its own material " + material + ", which no registered material holds; it draws " +
+               (model.empty() ? std::string{"its model's"} : modelShortName(model) + "'s") + " material (" +
+               row.code + ").";
+    }
     if (row.code == "material_route_unserved@1") {
         if (auto notice = materialRouteUnservedNotice(error); !notice.empty())
             return withoutFullStop(std::move(notice)) + " (" + row.code + ").";
@@ -164,6 +176,17 @@ void placeOf(ProblemRow &row) {
             return;
         }
         row.place = Place::None;
+        return;
+    }
+    // EB-6s, decision 5 (engine EB-6): fixed on the object -- its Material
+    // row in the Inspector -- or by registering the material it names.
+    if (row.code == "material.object_material_unresolved@1" && numberOf(row.fields, "object") > 0) {
+        row.object = static_cast<std::uint64_t>(numberOf(row.fields, "object"));
+        row.object_name = stringOf(row.fields, "name");
+        row.scene_id = stringOf(row.fields, "scene_id");
+        row.material = stringOf(row.fields, "material");
+        row.place = Place::SceneObject;
+        row.place_text = "Inspector: " + (row.object_name.empty() ? "#" + std::to_string(row.object) : row.object_name);
         return;
     }
     if (kind == "material" || row.code.starts_with("material.")) {
@@ -322,6 +345,8 @@ MaterialProblems materialProblemsOf(const std::vector<ProblemRow> &rows) {
         problem.reason = stringOf(row.fields, "reason");
         problem.line = row.line;
         problem.column = row.column;
+        // EB-6s, decision 6: the bytes the watch read.
+        problem.digest = stringOf(row.fields, "digest");
         problems.stale.push_back(std::move(problem));
     }
     return problems;
@@ -403,7 +428,10 @@ bool ProblemsSession::receiveResult(std::int64_t id, const Json &result) {
         engine_lists_ = true;
     }
     const bool same = std::ranges::equal(rows, engine_rows_, [](const ProblemRow &a, const ProblemRow &b) {
-        return a.id == b.id && a.sentence == b.sentence && a.source == b.source && a.severity == b.severity;
+        // EB-6s, decision 6: the same refusal of other bytes (fields.digest)
+        // is news to whoever waits on a save.
+        return a.id == b.id && a.sentence == b.sentence && a.source == b.source && a.severity == b.severity &&
+               a.fields == b.fields;
     });
     if (!same) {
         engine_rows_ = std::move(rows);

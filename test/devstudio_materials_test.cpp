@@ -8,6 +8,7 @@
 #include "../src/devstudio/model/inspectormodel.hpp"
 #include "../src/devstudio/model/materialsmodel.hpp"
 #include "../src/devstudio/model/problemsmodel.hpp"
+#include "../src/devstudio/model/renderfallback.hpp"
 #include "graphcanvastagpicker.hpp"
 #include "materialassignwidget.hpp"
 #include "materialsdock.hpp"
@@ -18,6 +19,7 @@
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QDialog>
 #include <QDoubleSpinBox>
 #include <QFont>
@@ -1955,4 +1957,461 @@ TEST_CASE("QA-1: New material…'s surfaces follow an answer of as many surfaces
     const auto sent = engine.take("create_material");
     REQUIRE(sent.has_value());
     CHECK(sent->params.value("surface", std::string{}) == "project://shaders/query.surface");
+}
+
+namespace {
+
+constexpr const char *Query = "materials/query.material.json";
+constexpr const char *QuerySurface = "project://shaders/query.surface";
+
+// engine EB-6: written, and the pass that would draw it does not declare
+// ray_query -- the write's `problem` (FO-2's fields, flat).
+Json passContractProblem() {
+    return Json{{"code", "material.pass_contract_unmet@1"},
+                {"message", "material.pass_contract_unmet@1: material 'query' queries the scene acceleration "
+                            "structure, but pass 'forward' does not declare ray_query: true; declare it on the pass, "
+                            "or remove the query from the material's surface"},
+                {"document", "project://passes/main_rendering_config.json"},
+                {"document_kind", "root_graph"},
+                {"node", "forward"},
+                {"material", "query"},
+                {"material_document", Query},
+                {"pass", "forward"},
+                {"requirement", "ray_query"},
+                {"reason", "Raster pass uses the scene acceleration structure but does not declare ray_query: true"}};
+}
+
+constexpr const char *QueryUnusableSentence =
+    "Material query queries the scene's acceleration structure, and pass forward, which draws it, does not "
+    "declare ray_query: turn Ray query on for the pass (material.pass_contract_unmet@1).";
+
+// list_materials with query.material.json beside paint, `status` loaded or
+// unusable.
+Json queryListed(const std::string &status) {
+    Json document{{"path", Query},
+                  {"material_digest", "q1"},
+                  {"status", status},
+                  {"materials", Json::array({{{"name", "query"},
+                                              {"surface", QuerySurface},
+                                              {"tags", Json::array()},
+                                              {"id", "query@materials/query.material.json"},
+                                              {"registered", status == "loaded"}}})}};
+    if (status == "unusable") {
+        document["reason"] = passContractProblem().at("message");
+        document["pass"] = "forward";
+        document["requirement"] = "ray_query";
+    }
+    return listResult("d1", Json::array({document}));
+}
+
+Json unusableAnswer(Json answer) {
+    answer["applied"] = "unusable";
+    answer["restart_required"] = nullptr;
+    answer["problem"] = passContractProblem();
+    return answer;
+}
+
+} // namespace
+
+TEST_CASE("EB-6s decision 1: a material written that its pass cannot draw yet is unusable -- no restart, the "
+          "notice says why, its row says the pass and Open the pass, and the Inspector's bind says the same",
+          "[devstudio][materials][eb6s]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = project(temporary);
+    FakeEngine engine;
+    auto hooks = engine.dockHooks();
+    int problem_reads = 0;
+    hooks.problems_changed = [&] { ++problem_reads; };
+    std::vector<std::string> opened;
+    hooks.open_pass = [&](const std::string &pass) { opened.push_back(pass); };
+    MaterialsDock dock{hooks};
+    dock.show();
+    dock.open(root);
+    dock.engineAvailable();
+    answer(dock, engine, "list_materials", listResult());
+    answer(dock, engine, "list_surfaces", surfaces());
+
+    // New material on the surface that queries the scene.
+    SurfaceChoice surface;
+    surface.reference = QuerySurface;
+    surface.source = "project";
+    surface.routing = Json{{"alpha_mode", "opaque"}, {"double_sided", false}};
+    REQUIRE(dock.session().create(surface, "query"));
+    answer(dock, engine, "create_material",
+           unusableAnswer(Json{{"committed", true},
+                               {"changed", true},
+                               {"path", Query},
+                               {"name", "query"},
+                               {"material_digest", "q1"}}));
+    // Not a restart: the engine is live; why, in one sentence, and the
+    // Problems window reads the engine's list now (source edit_rpc).
+    CHECK(engine.restarts.empty());
+    CHECK(dock.session().restartReason().empty());
+    CHECK_FALSE(named<QPushButton>(dock, QStringLiteral("pelican.materials.restartEngine"))->isVisibleTo(&dock));
+    CHECK(dock.session().notice() == QueryUnusableSentence);
+    CHECK(dock.noticeLine()->minimumSizeHint().width() < 400);
+    CHECK(dock.session().noticeDetail() == passContractProblem().at("message").get<std::string>());
+    CHECK(problem_reads == 1);
+
+    // The list says unusable: the document's row is picked, with the pass and
+    // Open the pass -- not the material's editor.
+    answer(dock, engine, "list_materials", queryListed("unusable"));
+    REQUIRE(dock.session().broken());
+    CHECK(*dock.session().broken() == Query);
+    CHECK_FALSE(dock.session().selection());
+    CHECK(named<QLabel>(dock, QStringLiteral("pelican.materials.broken"))->text().contains(
+        QStringLiteral("pass forward, which draws it, does not declare ray_query: turn Ray query on for the pass")));
+    auto *open_pass = named<QPushButton>(dock, QStringLiteral("pelican.materials.openPass"));
+    QApplication::processEvents();
+    CHECK(open_pass->isVisibleTo(&dock));
+    CHECK_FALSE(named<QPushButton>(dock, QStringLiteral("pelican.materials.showDocument"))->isVisibleTo(&dock));
+    open_pass->click();
+    CHECK(opened == std::vector<std::string>{"forward"});
+
+    // The pass declared it: the next list holds it loaded, its material is
+    // the one shown.
+    dock.session().poll();
+    answer(dock, engine, "list_materials", queryListed("loaded"));
+    CHECK_FALSE(dock.session().broken());
+    REQUIRE(dock.session().selection());
+    CHECK(dock.session().selection()->name == "query");
+
+    // The Inspector's Every Cube bound to it while it is unusable: bound, the
+    // box draws its own material, the same sentence, no restart.
+    MaterialAssignWidget rows{engine.assignHooks()};
+    readyCube(rows, engine);
+    rows.session().setScope(MaterialAssignSession::Scope::Model);
+    REQUIRE(rows.session().choose("query"));
+    answer(rows, engine, "bind_material",
+           unusableAnswer(Json{{"committed", true},
+                               {"changed", true},
+                               {"model", Cube},
+                               {"previous", {{"bindings", Json::array({{{"mesh", 0},
+                                                                        {"primitive", 0},
+                                                                        {"material", "pelican.primitive.default"}}})}}}}));
+    CHECK(rows.session().notice() == QueryUnusableSentence);
+    CHECK(named<QLabel>(rows, QStringLiteral("pelican.inspectorMaterialNotice"))->minimumSizeHint().width() < 400);
+    CHECK(engine.restarts.empty());
+}
+
+TEST_CASE("EB-6s decision 3: Reload from file has the engine read a registered document again from its file "
+          "(register_material's reloaded), and Show the document's Save of one broken outside takes it in",
+          "[devstudio][materials][eb6s]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = project(temporary);
+    const auto fixed = paintText();
+    write(root / "materials" / "paint.material.json", fixed);
+    FakeEngine engine;
+    auto hooks = engine.dockHooks();
+    int problem_reads = 0;
+    hooks.problems_changed = [&] { ++problem_reads; };
+    MaterialsDock dock{hooks};
+    dock.show();
+    readyWithPaint(dock, engine, root);
+
+    const auto reloaded = [](const std::string &digest) {
+        return Json{{"committed", true},           {"reloaded", true},
+                    {"path", Paint},               {"names", {"paint"}},
+                    {"material_digest", digest},   {"asset_data_digest", "a1"},
+                    {"previous_asset_data_digest", "a1"},
+                    {"applied", "rebuilt"},        {"restart_required", nullptr},
+                    {"rebuilt_models", {Cube}}};
+    };
+
+    // Saved by another editor, in a project whose hot_reload does not watch
+    // materials: Reload from file, one register_material of the document.
+    auto *reload = named<QPushButton>(dock, QStringLiteral("pelican.materials.reloadFromFile"));
+    QApplication::processEvents();
+    CHECK(reload->isVisibleTo(&dock));
+    reload->click();
+    const auto sent = answer(dock, engine, "register_material", reloaded("d2"));
+    CHECK(sent.params == Json{{"path", Paint}});
+    CHECK(dock.session().notice() == "Read materials/paint.material.json again from its file; rebuilt 1 model.");
+    CHECK(problem_reads == 1);
+    CHECK(engine.restarts.empty());
+    // The editor shows the file's values now.
+    answer(dock, engine, "get_material", paintMaterial("d2", Json{{"base_color", {0.0, 0.0, 1.0, 1.0}}}));
+    answer(dock, engine, "list_materials", listResult("d2"));
+
+    // Broken outside while the engine holds it: the list reads the file, and
+    // the document is fixed in Show the document. Its Save is taken in --
+    // reloaded, not a restart (MR-1s's path_conflict for a registered one).
+    write(root / "materials" / "paint.material.json", fixed.substr(0, fixed.size() - 2));
+    dock.session().poll();
+    answer(dock, engine, "list_materials", refusedAtStart());
+    REQUIRE(dock.revealMaterial(Paint, {}));
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.showDocument"))->click();
+    QPointer<QDialog> dialog = named<QDialog>(dock, QStringLiteral("pelican.materials.documentDialog"));
+    auto *text = named<QPlainTextEdit>(*dialog, QStringLiteral("pelican.materials.documentDialog.text"));
+    text->moveCursor(QTextCursor::End);
+    text->insertPlainText(QStringLiteral("}\n"));
+    named<QPushButton>(*dialog, QStringLiteral("pelican.materials.documentDialog.save"))->click();
+    answer(dock, engine, "register_material", reloaded("d3"));
+    QApplication::processEvents();
+    CHECK((dialog.isNull() || !dialog->isVisible()));
+    CHECK(dock.noticeLine()->text() == QStringLiteral("paint is loaded again."));
+    CHECK_FALSE(named<QPushButton>(dock, QStringLiteral("pelican.materials.restartEngine"))->isVisibleTo(&dock));
+    CHECK(engine.restarts.empty());
+}
+
+TEST_CASE("EB-6s decision 4: New material… offers only the routings the surface takes, the engine's default "
+          "first, and the editor's routing rows only those; a surface changed alone sends no routing",
+          "[devstudio][materials][eb6s]") {
+    application();
+    constexpr const char *TwoSided = "project://shaders/two_sided.surface";
+    const auto routing = [](const char *mode, bool sides) {
+        return Json{{"alpha_mode", mode}, {"double_sided", sides}};
+    };
+    SurfaceChoice listed = parseSurfaceList(
+        Json{{"surfaces", Json::array({{{"reference", TwoSided},
+                                        {"source", "project"},
+                                        {"params", 1},
+                                        {"textures", 0},
+                                        {"routing", routing("opaque", true)},
+                                        {"routings", Json::array({routing("opaque", true), routing("mask", true)})}}})}})
+                               .front();
+    CHECK(listed.routings == std::vector<Json>{routing("opaque", true), routing("mask", true)});
+    CHECK(materialRoutingChoices(listed) == listed.routings);
+    CHECK(materialRoutingLabel(routing("mask", true)) == "mask, double-sided");
+    // A variant of the manifest: its routing picks the variant (VR-1).
+    CHECK(materialRoutingChoices(parseSurfaceList(surfaces()).back()).size() == 6);
+
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    FakeEngine engine;
+    MaterialsDock dock{engine.dockHooks()};
+    dock.show();
+    dock.open(project(temporary));
+    dock.engineAvailable();
+    answer(dock, engine, "list_materials", listResult());
+    Json offered = surfaces();
+    offered["surfaces"].push_back({{"reference", TwoSided},
+                                   {"source", "project"},
+                                   {"params", 1},
+                                   {"textures", 0},
+                                   {"routing", routing("opaque", true)},
+                                   {"routings", Json::array({routing("opaque", true), routing("mask", true)})}});
+    answer(dock, engine, "list_surfaces", offered);
+
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.newMaterial"))->click();
+    auto *surface = named<QComboBox>(dock, QStringLiteral("pelican.materials.new.surface"));
+    auto *routings = named<QComboBox>(dock, QStringLiteral("pelican.materials.new.routing"));
+    // OpenPBR (the default): its one pair, nothing to choose.
+    CHECK(routings->count() == 1);
+    CHECK(routings->itemText(0) == QStringLiteral("opaque, one-sided"));
+    CHECK_FALSE(routings->isEnabled());
+    surface->setCurrentIndex(surface->findText(QStringLiteral("shaders/two_sided")));
+    REQUIRE(routings->count() == 2);
+    CHECK(routings->itemText(0) == QStringLiteral("opaque, double-sided"));
+    CHECK(routings->currentIndex() == 0);
+    CHECK(routings->itemText(1) == QStringLiteral("mask, double-sided"));
+    routings->setCurrentIndex(1);
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.new.create"))->click();
+    const auto created = engine.take("create_material");
+    REQUIRE(created.has_value());
+    CHECK(created->params.at("surface") == TwoSided);
+    CHECK(created->params.at("routing") == routing("mask", true));
+    // (Answered as refused, so nothing is selected or waits behind it.)
+    REQUIRE(dock.receiveRefusal(created->id, -32000, QStringLiteral("refused"),
+                                QJsonObject{{QStringLiteral("error_code"), QStringLiteral("material.name_conflict@1")},
+                                            {QStringLiteral("error_fields"), QJsonObject{}}}));
+    answer(dock, engine, "list_materials", listResult());
+
+    // A material on that surface: blend is not the surface's, and opaque is
+    // taken double-sided only.
+    REQUIRE(dock.revealMaterial(Paint, "paint"));
+    Json material = paintMaterial();
+    material["material"]["surface"] = TwoSided;
+    material["material"]["routing"] = routing("opaque", true);
+    answer(dock, engine, "get_material", material);
+    Json schema_two = schema();
+    schema_two["surface"] = TwoSided;
+    answer(dock, engine, "get_surface_schema", schema_two);
+    auto *alpha = named<QComboBox>(dock, QStringLiteral("pelican.materials.alphaMode"));
+    auto *items = qobject_cast<QStandardItemModel *>(alpha->model());
+    REQUIRE(items != nullptr);
+    CHECK(items->item(alpha->findData(QStringLiteral("opaque")))->isEnabled());
+    CHECK(items->item(alpha->findData(QStringLiteral("mask")))->isEnabled());
+    CHECK_FALSE(items->item(alpha->findData(QStringLiteral("blend")))->isEnabled());
+    CHECK_FALSE(named<QCheckBox>(dock, QStringLiteral("pelican.materials.doubleSided"))->isEnabled());
+
+    // Back to OpenPBR: the surface alone; the engine fits the routing (EB-6).
+    auto *editor_surface = named<QComboBox>(dock, QStringLiteral("pelican.materials.surface"));
+    editor_surface->setCurrentIndex(editor_surface->findText(QStringLiteral("openpbr / opaque_single_sided")));
+    const auto edit = engine.take("edit_material");
+    REQUIRE(edit.has_value());
+    CHECK(edit->params.at("surface") == OpenPbr);
+    CHECK_FALSE(edit->params.contains("routing"));
+}
+
+TEST_CASE("EB-6s decision 5: a scene object's own material no registered material holds goes to the object's "
+          "Material rows, and a bound name that does not resolve says what is drawn in its place",
+          "[devstudio][materials][eb6s]") {
+    application();
+    const auto row = readEngineProblem(Json{
+        {"id", "object-3"},
+        {"severity", "warning"},
+        {"source", "startup"},
+        {"code", "material.object_material_unresolved@1"},
+        {"message", "material.object_material_unresolved@1: scene object 'Box' sets its own material 'paint', ..."},
+        {"document", "project://scenes/main.scene.json"},
+        {"document_kind", "scene"},
+        {"fields",
+         {{"object", 3},
+          {"name", "Box"},
+          {"scene_id", "default_scene"},
+          {"material", "paint"},
+          {"model", Cube},
+          {"primitive", {{"mesh", 0}, {"primitive", 0}}}}}});
+    REQUIRE(row);
+    CHECK(row->place == ProblemRow::Place::SceneObject);
+    CHECK(row->object == 3);
+    CHECK(row->object_name == "Box");
+    CHECK(row->scene_id == "default_scene");
+    CHECK(row->place_text == "Inspector: Box");
+    CHECK(row->sentence == "Box sets its own material paint, which no registered material holds; it draws Cube's "
+                           "material (material.object_material_unresolved@1).");
+
+    // get_material_bindings' unresolved: the bound name, and what is drawn.
+    Json bindings = cubeBindings();
+    bindings["primitives"][0]["material"] = "query";
+    bindings["primitives"][0]["unresolved"] = {
+        {"material", "query"},
+        {"reason", "its document 'materials/query.material.json' is unusable (material.pass_contract_unmet@1)"},
+        {"drawn", "pelican.primitive.default"}};
+    const auto primitives = parseMaterialBindings(bindings);
+    REQUIRE(primitives.size() == 1);
+    CHECK(primitives.front().unresolved);
+    CHECK(materialBindingUnresolvedLine(primitives) ==
+          "query is not registered \xE2\x80\x94 drawing pelican.primitive.default");
+    CHECK(materialBindingUnresolvedLine(parseMaterialBindings(cubeBindings())).empty());
+
+    FakeEngine engine;
+    // The Inspector's Every Cube.
+    MaterialAssignWidget rows{engine.assignHooks()};
+    rows.show();
+    readyCube(rows, engine, cubeObject(), bindings);
+    rows.session().setScope(MaterialAssignSession::Scope::Model);
+    auto *missing = named<QLabel>(rows, QStringLiteral("pelican.inspectorMaterialMissing"));
+    CHECK(missing->isVisibleTo(&rows));
+    CHECK(missing->text().contains(QStringLiteral("query is not registered \xE2\x80\x94 drawing "
+                                                  "pelican.primitive.default")));
+
+    // The Materials dock's bindings of Cube.
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    MaterialsDock dock{engine.dockHooks()};
+    dock.show();
+    dock.open(project(temporary));
+    dock.engineAvailable();
+    answer(dock, engine, "list_materials", queryListed("unusable"));
+    answer(dock, engine, "list_surfaces", surfaces());
+    dock.revealModel(Cube, {});
+    answer(dock, engine, "list_materials", queryListed("unusable"));
+    answer(dock, engine, "get_material_bindings", bindings);
+    CHECK(named<QLabel>(dock, QStringLiteral("pelican.materials.model.notice"))->text() ==
+          QStringLiteral("query is not registered \xE2\x80\x94 drawing pelican.primitive.default"));
+    CHECK(named<QComboBox>(dock, QStringLiteral("pelican.materials.model.choice"))->currentText() ==
+          QStringLiteral("query (not registered \xE2\x80\x94 drawing pelican.primitive.default)"));
+}
+
+TEST_CASE("EB-6s decision 6: a material's problem (source edit_rpc) is not taken for a refused render "
+          "document, and the watch's refusal of the very bytes saved is the save's answer even at the same line",
+          "[devstudio][materials][eb6s]") {
+    application();
+    // The held version's row says the render document's refusal, not the
+    // material's that the engine lists first.
+    RenderFallbackSession fallback;
+    (void)fallback.observeAuthoringRead(Json{{"live", false}});
+    Json material_problem = passContractProblem();
+    std::vector<ProblemRow> rows;
+    rows.push_back(*readEngineProblem(Json{{"id", "m"},
+                                           {"severity", "error"},
+                                           {"source", "edit_rpc"},
+                                           {"code", "material.pass_contract_unmet@1"},
+                                           {"message", material_problem.at("message")},
+                                           {"document", "project://passes/main_rendering_config.json"},
+                                           {"document_kind", "root_graph"},
+                                           {"node", "forward"},
+                                           {"fields", material_problem}}));
+    rows.push_back(*readEngineProblem(Json{{"id", "r"},
+                                           {"severity", "error"},
+                                           {"source", "reload_rpc"},
+                                           {"code", "graph.port_field_missing@1"},
+                                           {"message", "graph.port_field_missing@1: node 'blur' has no field"},
+                                           {"document", "project://passes/main_rendering_config.json"},
+                                           {"document_kind", "root_graph"},
+                                           {"node", "blur"},
+                                           {"fields", Json::object()}}));
+    (void)fallback.observeProblems(rows);
+    CHECK(fallback.notice().held);
+    CHECK(fallback.notice().node == "blur");
+    CHECK(fallback.notice().line.find("ray_query") == std::string::npos);
+
+    // The watch's refusal names the bytes it read (fields.digest).
+    Json stale = staleProblem(4);
+    stale["fields"]["digest"] = "old";
+    const auto problems = problemsOf({stale});
+    REQUIRE(problems.stale.size() == 1);
+    CHECK(problems.stale.front().digest == "old");
+
+    // The same refusal of other bytes is a change of the rows.
+    int changes = 0;
+    ProblemsSession session{ProblemsSession::Transport{
+        .request = [](const std::string &, const Json &, std::string *) -> std::int64_t { return 1; }}};
+    session.changed = [&] { ++changes; };
+    session.engineReady();
+    session.readNow();
+    REQUIRE(session.receiveResult(1, Json{{"revision", 1}, {"problems", Json::array({stale})}}));
+    Json again = stale;
+    again["fields"]["digest"] = "new";
+    session.readNow();
+    REQUIRE(session.receiveResult(1, Json{{"revision", 2}, {"problems", Json::array({again})}}));
+    CHECK(changes == 2);
+
+    // Show the document's Save: refused again for the same reason at the same
+    // line -- the digest is the bytes saved, so the window says so.
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = project(temporary);
+    const auto fixed = paintText();
+    write(root / "materials" / "paint.material.json", fixed.substr(0, fixed.size() - 2));
+    FakeEngine engine;
+    MaterialsDock dock{engine.dockHooks()};
+    dock.show();
+    readyWithPaint(dock, engine, root);
+    dock.observeProblems(problemsOf({stale}));
+    answer(dock, engine, "list_materials", refusedAtStart());
+    REQUIRE(dock.revealMaterial(Paint, {}));
+    named<QPushButton>(dock, QStringLiteral("pelican.materials.showDocument"))->click();
+    QPointer<QDialog> dialog = named<QDialog>(dock, QStringLiteral("pelican.materials.documentDialog"));
+    auto *text = named<QPlainTextEdit>(*dialog, QStringLiteral("pelican.materials.documentDialog.text"));
+    auto *notice = named<QLabel>(*dialog, QStringLiteral("pelican.materials.documentDialog.notice"));
+    // Saved as JSON; the watch refuses it all the same (say, a value it
+    // does not take), at the line it gave before.
+    text->moveCursor(QTextCursor::End);
+    text->insertPlainText(QStringLiteral("}\n"));
+    named<QPushButton>(*dialog, QStringLiteral("pelican.materials.documentDialog.save"))->click();
+    const auto saved = readBack(root / "materials" / "paint.material.json");
+    const auto digest =
+        QCryptographicHash::hash(QByteArray::fromStdString(saved), QCryptographicHash::Sha256).toHex().toStdString();
+    CHECK(dock.session().repair()->saved_digest == digest);
+    // The watch's answer to the save before it (other bytes): still waiting.
+    Json before = stale;
+    before["fields"]["digest"] = "older";
+    dock.observeProblems(problemsOf({before}));
+    REQUIRE(dock.session().repair());
+    CHECK(dock.session().repair()->state == MaterialsDockSession::Repair::State::Waiting);
+    // Its answer to these bytes, the same sentence: refused.
+    Json refused = stale;
+    refused["fields"]["digest"] = digest;
+    dock.observeProblems(problemsOf({refused}));
+    CHECK(dock.session().repair()->state == MaterialsDockSession::Repair::State::Refused);
+    QApplication::processEvents();
+    REQUIRE(dialog);
+    CHECK(notice->text().contains(QStringLiteral("line 4, column 1: syntax error")));
 }

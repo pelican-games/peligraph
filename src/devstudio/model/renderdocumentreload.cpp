@@ -217,6 +217,15 @@ void RenderDocumentReload::check(bool forced) {
             differing_assets_.end())
             differing_assets_.push_back(reference);
     }
+    // EB-6s, decision 8 (engine RR-1, EB-7): after a refused reload the
+    // engine's base is the refused version on disk, not the digests held
+    // here (the live ones). A file put back to those bytes is a change to
+    // the engine -- the reload it takes clears the refusal and its problem
+    // -- so it is asked, as long as the last reload stands refused.
+    if (differing_.empty() && differing_assets_.empty() && !forced && refused_) {
+        sendReload();
+        return;
+    }
     if (differing_.empty() && differing_assets_.empty() && !forced) {
         // Decision 2: Studio's own write, or the file is back to what the
         // engine holds -- a refusal said about it no longer applies.

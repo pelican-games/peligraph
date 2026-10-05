@@ -11,6 +11,7 @@
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/watch/reloadgate.hpp"
 #include "../src/core/watch/reloadservice.hpp"
+#include "../src/project/projectdocumenttransaction.hpp"
 #include "../src/project/projecttemplate.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "vulkan_test_support.hpp"
@@ -1068,7 +1069,8 @@ TEST_CASE("EB-1 a Blank box's material is renamed while bound, deleted once unbo
     CHECK(restored.at("names") == Json::array({"coat"}));
     CHECK(restored.at("applied") == "live");
     CHECK(restored.at("asset_data_digest") != restored.at("previous_asset_data_digest"));
-    CHECK(rpc.refusal("register_material", {{"path", path}}).at("error_code") == "material.path_conflict@1");
+    // EB-6: a listed, registered document is read again from its file.
+    CHECK(rpc.result("register_material", {{"path", path}}).at("reloaded") == true);
     CHECK(materialAssets().size() == 2);
     REQUIRE(rpc.result("bind_material", {{"model", cube}, {"material", "coat"}}).at("applied") == "live");
     {
@@ -1323,7 +1325,8 @@ TEST_CASE("EB-2 a material document refused at start is taken in by register_mat
     CHECK(rpc.result("get_material_bindings", {{"model", cube}}).at("primitives").at(0).at("material") == "paint");
     // asset_data is not written; the document is listed already now.
     CHECK(readFile(root / "assets/asset_data.json") == asset_data);
-    CHECK(rpc.refusal("register_material", {{"path", path}}).at("error_code") == "material.path_conflict@1");
+    // EB-6: listed and registered now, it is read again from its file.
+    CHECK(rpc.result("register_material", {{"path", path}}).at("reloaded") == true);
     // The material edits as any registered one.
     const auto digest = rpc.result("get_material", {{"path", path}}).at("material_digest");
     const Json blue{0.0, 0.0, 1.0, 1.0};
@@ -1412,6 +1415,9 @@ TEST_CASE("EB-2 a declared watch takes a fixed material document in, and lists o
         CHECK(problems.at(0).at("document_kind") == "material");
         CHECK(problems.at(0).at("line").get<int>() >= 1);
         CHECK(problems.at(0).at("fields").at("path") == path);
+        // EB-6: the digest of the file the reload refused.
+        CHECK(problems.at(0).at("fields").at("digest") ==
+              projectDocumentDigest(document.substr(0, document.size() / 2)));
         CHECK(problemsWithCode(rpc, "material.binding_unresolved@1").empty());
         const auto pixel = rpc.centre(capture);
         INFO("broken after start " << pixel);
@@ -1433,6 +1439,418 @@ TEST_CASE("EB-2 a declared watch takes a fixed material document in, and lists o
     reload.watcherForTesting()->stop();
     GET_MODULE(VulkanManageCore).waitIdle();
 #endif
+}
+
+namespace {
+
+// EB-6: a surface that queries the scene's acceleration structure: green, with
+// what two rays along +z beside the box hit in red and blue (nothing).
+constexpr std::string_view querySurface = R"surface(//! pelican.surface v1
+//! language: glsl
+//! render_state: { blend: opaque, cull: back, depth: read_write }
+#extension GL_EXT_ray_query : require
+layout(set=0,binding=6) uniform accelerationStructureEXT queryScene;
+void pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {
+    vec2 hits = vec2(0);
+    for (int lane = 0; lane < 2; ++lane) {
+        rayQueryEXT query;
+        rayQueryInitializeEXT(query, queryScene, gl_RayFlagsOpaqueEXT, 255u, vec3(lane == 0 ? -2 : 2, 0, 0), 0.001,
+                              vec3(0, 0, 1), 100.0);
+        while (rayQueryProceedEXT(query)) {}
+        hits[lane] = rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT ? 0.0 : 1.0;
+    }
+    s.base_color = vec4(hits.x, 1.0, hits.y, 1.0);
+}
+vec3 pelican_lighting_v1(in PelicanSurfaceV1 s, in PelicanSurfaceInputV1 i) {
+    return s.base_color.rgb;
+}
+)surface";
+
+// EB-6: a project surface drawn from both sides (cull none), in its tint.
+constexpr std::string_view twoSidedSurface = R"surface(//! pelican.surface v1
+//! language: glsl
+//! params:
+//!   - { name: tint, type: color, default: [0.0, 0.0, 1.0, 1.0], encoding: linear }
+//! render_state: { blend: opaque, cull: none, depth: read_write }
+
+vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 input_data) {
+    return pelican_param_tint().rgb;
+}
+)surface";
+
+bool greenish(const Rgb &rgb) {
+    return rgb.g > rgb.r + 60 && rgb.g > rgb.b + 60;
+}
+
+std::uint64_t objectNamed(Rpc &rpc, std::string_view name) {
+    const auto tree = rpc.result("scene_tree");
+    for (const auto &object : tree.at("objects"))
+        if (object.value("name", std::string{}) == name) return object.at("authoring_object_id").get<std::uint64_t>();
+    FAIL("no object named " << name);
+    return 0;
+}
+
+// A render edit's ticket, stepped until it is no longer pending.
+Json settled(Rpc &rpc, const Json &sent) {
+    INFO(sent.dump(2));
+    REQUIRE(sent.value("status", std::string{}) == "accepted");
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        (void)rpc.result("step_frame");
+        auto result = rpc.result("get_edit_result", {{"ticket", sent.at("ticket")}});
+        if (result.value("status", std::string{}) != "pending") return result;
+    }
+    FAIL("the edit ticket stayed pending");
+    return Json{};
+}
+
+} // namespace
+
+// EB-6 (1, 5). A material whose surface queries the scene's acceleration
+// structure, drawn by a pass that does not declare ray_query: create_material
+// writes it and answers "unusable" with the pass's problem, the engine goes on
+// answering and drawing (the box in its own material, the binding written and
+// named unresolved), and once the pass declares ray_query the engine takes the
+// material in at the next frame -- no restart.
+TEST_CASE("EB-6 a material its pass cannot draw is created unusable, the engine stays live, and the pass's "
+          "declaration takes it in",
+          "[eb6][material][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("eb6_query");
+    const auto root = makeBlankBoxProject(dir.root);
+    writeFile(root / "shaders/query.surface", querySurface);
+    const auto capture = dir.root / "capture.png";
+    const std::string path = "materials/query.material.json";
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    (void)GET_MODULE(watch::ReloadService);
+    (void)GET_MODULE(Renderer);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    const auto actor =
+        rpc.result("open_editor_session", {{"display_name", "EB-6"}}).at("actor_id").get<std::uint64_t>();
+    REQUIRE(rpc.edit(actor, spawnCube()).at("status") == "committed");
+
+    const auto created = rpc.result("create_material", {{"path", path}, {"surface", "project://shaders/query.surface"}});
+    INFO(created.dump(2));
+    CHECK(created.at("committed") == true);
+    CHECK(created.at("applied") == "unusable");
+    CHECK(created.at("restart_required").is_null());
+    REQUIRE(created.contains("problem"));
+    {
+        const auto &problem = created.at("problem");
+        CHECK(problem.at("code") == "material.pass_contract_unmet@1");
+        CHECK(problem.at("pass") == "forward");
+        CHECK(problem.at("requirement") == "ray_query");
+        CHECK(problem.at("material") == "query");
+        CHECK(problem.at("material_document") == path);
+        CHECK(problem.at("document_kind") == "root_rendering");
+        CHECK(problem.at("message").get<std::string>().find("does not declare ray_query") != std::string::npos);
+    }
+    // Live: it answers, lists the document unusable and the problem, and draws.
+    {
+        const auto listed = rpc.result("list_materials").at("documents");
+        REQUIRE(listed.size() == 1);
+        CHECK(listed.at(0).at("status") == "unusable");
+        CHECK(listed.at(0).at("pass") == "forward");
+        CHECK(listed.at(0).at("requirement") == "ray_query");
+        const auto unmet = problemsWithCode(rpc, "material.pass_contract_unmet@1");
+        INFO(unmet.dump(2));
+        REQUIRE(unmet.size() == 1);
+        CHECK(unmet.at(0).at("source") == "edit_rpc");
+        CHECK(unmet.at(0).at("fields").at("material_document") == path);
+        const auto pixel = rpc.centre(capture);
+        INFO("created " << pixel);
+        CHECK_FALSE(greenish(pixel));
+    }
+
+    // bind_material writes the binding; the box keeps its own material until
+    // the material is taken in, and get_material_bindings says so (5).
+    const auto bound = rpc.result("bind_material", {{"model", cube}, {"material", "query"}});
+    INFO(bound.dump(2));
+    CHECK(bound.at("committed") == true);
+    CHECK(bound.at("applied") == "unusable");
+    CHECK(bound.at("restart_required").is_null());
+    CHECK(bound.at("problem").at("code") == "material.pass_contract_unmet@1");
+    {
+        CHECK(problemsWithCode(rpc, "material.binding_unresolved@1").size() == 1);
+        const auto bindings = rpc.result("get_material_bindings", {{"model", cube}});
+        INFO(bindings.dump(2));
+        const auto &primitive = bindings.at("primitives").at(0);
+        CHECK(primitive.at("material") == "query");
+        REQUIRE(primitive.contains("unresolved"));
+        CHECK(primitive.at("unresolved").at("material") == "query");
+        CHECK(primitive.at("unresolved").at("drawn") == "pelican.primitive.default");
+        CHECK_FALSE(primitive.at("unresolved").at("reason").get<std::string>().empty());
+        const auto pixel = rpc.centre(capture);
+        INFO("bound " << pixel);
+        CHECK_FALSE(greenish(pixel));
+    }
+
+    // The pass declares ray_query (a render edit); the next frame takes the
+    // material in, the problems leave, and the box draws it.
+    const auto context = rpc.result("get_render_authoring_context");
+    const auto edited = settled(rpc, rpc.result("edit_preset_pass", {{"base_source_digest", context.at("source_digest").at("hex")},
+                                                                    {"graph", "main_render"},
+                                                                    {"pass_name", "forward"},
+                                                                    {"ray_query", true}}));
+    INFO(edited.dump(2));
+    REQUIRE(edited.at("status") == "committed");
+    (void)rpc.result("step_frame");
+    (void)rpc.result("step_frame");
+    {
+        const auto listed = rpc.result("list_materials").at("documents");
+        INFO(listed.dump(2));
+        CHECK(listed.at(0).at("status") == "loaded");
+        CHECK(listed.at(0).at("materials").at(0).at("registered") == true);
+        const auto problems = rpc.result("get_problems");
+        INFO(problems.dump(2));
+        CHECK(problems.at("problems").empty());
+        CHECK_FALSE(rpc.result("get_material_bindings", {{"model", cube}}).at("primitives").at(0).contains("unresolved"));
+        const auto pixel = rpc.centre(capture);
+        INFO("taken in " << pixel);
+        CHECK(greenish(pixel));
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+// EB-6 (2). A project surface drawn from both sides: list_surfaces offers the
+// routing that surface takes, create_material takes it as Studio sends it, and
+// an OpenPBR material changed to that surface alone takes its routing with it
+// (the binding follows in the same write).
+TEST_CASE("EB-6 a project surface takes the routing list_surfaces offers, from create_material and from an edit of "
+          "the surface alone",
+          "[eb6][material][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("eb6_routing");
+    const auto root = makeBlankBoxProject(dir.root);
+    writeFile(root / "shaders/two_sided.surface", twoSidedSurface);
+    writeFile(root / "shaders/query.surface", querySurface);
+    const auto capture = dir.root / "capture.png";
+    const std::string surface = "project://shaders/two_sided.surface";
+    const Json opaqueSingle{{"alpha_mode", "opaque"}, {"double_sided", false}};
+    const Json opaqueDouble{{"alpha_mode", "opaque"}, {"double_sided", true}};
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    (void)GET_MODULE(Renderer);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    const auto actor =
+        rpc.result("open_editor_session", {{"display_name", "EB-6"}}).at("actor_id").get<std::uint64_t>();
+    REQUIRE(rpc.edit(actor, spawnCube()).at("status") == "committed");
+
+    const auto surfaces = rpc.result("list_surfaces").at("surfaces");
+    const auto find = [&](std::string_view reference) {
+        for (const auto &entry : surfaces)
+            if (entry.at("reference").get<std::string>() == reference) return entry;
+        return Json{};
+    };
+    const auto entry = find(surface);
+    INFO(entry.dump(2));
+    REQUIRE(entry.is_object());
+    CHECK(entry.value("routing", Json{}) == opaqueDouble);
+    CHECK(entry.value("routings", Json{}) == Json::array({opaqueDouble}));
+    CHECK(find("project://shaders/query.surface").value("routing", Json{}) == opaqueSingle);
+    CHECK(find(openPbrOpaque).value("routings", Json{}) == Json::array({opaqueSingle}));
+
+    // As Studio's New material sends it: the surface with the routing listed.
+    Json params{{"path", "materials/two.material.json"}, {"surface", surface}};
+    if (entry.contains("routing")) params["routing"] = entry.at("routing");
+    const auto created = rpc.call("create_material", params);
+    INFO(created.dump(2));
+    REQUIRE(created.contains("result"));
+    CHECK(created.at("result").at("applied") == "live");
+
+    // An OpenPBR material bound to the box, changed to the project surface by
+    // the surface alone: the routing follows, and the binding with it.
+    const std::string path = "materials/paint.material.json";
+    REQUIRE(rpc.result("create_material", {{"path", path}, {"surface", openPbrOpaque}}).at("applied") == "live");
+    const auto bound = rpc.result("bind_material", {{"model", cube}, {"material", "paint"}});
+    REQUIRE(bound.at("applied") == "live");
+    const auto bindings_reference = bound.at("material_bindings").get<std::string>();
+    const auto digest = rpc.result("get_material", {{"path", path}}).at("material_digest");
+    const auto edited = rpc.call("edit_material", {{"base_material_digest", digest}, {"path", path}, {"surface", surface}});
+    INFO(edited.dump(2));
+    REQUIRE(edited.contains("result"));
+    const auto &answer = edited.at("result");
+    CHECK(answer.at("applied") == "rebuilt");
+    CHECK(answer.at("previous") == Json{{"surface", openPbrOpaque}, {"routing", opaqueSingle}});
+    CHECK(rpc.result("get_material", {{"path", path}}).at("material").at("routing") == opaqueDouble);
+    CHECK(Json::parse(readFile(root / bindings_reference)).at("bindings").at(0).at("routing") == opaqueDouble);
+    {
+        const auto pixel = rpc.centre(capture);
+        INFO("two-sided " << pixel);
+        CHECK(bluish(pixel));
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+// EB-6 (3). Without a watch, a registered document rewritten outside the
+// engine is read again by register_material {path}: the box draws what the
+// file says now. A file that does not read is refused by the parser's code and
+// the engine keeps what it had.
+TEST_CASE("EB-6 register_material reads a registered document again from its file, and refuses one that does not "
+          "read",
+          "[eb6][material][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("eb6_reload");
+    const auto root = makeBlankBoxProject(dir.root);
+    const auto capture = dir.root / "capture.png";
+    const std::string path = "materials/paint.material.json";
+    const auto document = makeRedBoxProject(root, capture, path);
+    const auto asset_data = readFile(root / "assets/asset_data.json");
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    (void)GET_MODULE(Renderer);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    {
+        const auto pixel = rpc.centre(capture);
+        INFO("started " << pixel);
+        REQUIRE(reddish(pixel));
+    }
+
+    // Rewritten outside (blue), read again.
+    auto blue = Json::parse(document);
+    blue.at("materials").at(0).at("values")["base_color"] = Json{0.0, 0.0, 1.0, 1.0};
+    blue.at("materials").at(0).at("values")["emission_color"] = Json{0.0, 0.0, 1.0, 1.0};
+    const auto blue_bytes = blue.dump(2);
+    writeFile(root / path, blue_bytes);
+    const auto reloaded = rpc.call("register_material", {{"path", path}});
+    INFO(reloaded.dump(2));
+    REQUIRE(reloaded.contains("result"));
+    const auto &answer = reloaded.at("result");
+    CHECK(answer.at("committed") == true);
+    CHECK(answer.at("reloaded") == true);
+    CHECK(answer.at("path") == path);
+    CHECK(answer.at("names") == Json::array({"paint"}));
+    CHECK(answer.at("material_digest") == projectDocumentDigest(blue_bytes));
+    CHECK(answer.at("applied") == "rebuilt");
+    CHECK(answer.at("restart_required").is_null());
+    CHECK(answer.at("rebuilt_models") == Json::array({std::string{cube}}));
+    CHECK(answer.at("asset_data_digest") == answer.at("previous_asset_data_digest"));
+    CHECK(readFile(root / "assets/asset_data.json") == asset_data);
+    {
+        const auto pixel = rpc.centre(capture);
+        INFO("read again " << pixel);
+        CHECK(bluish(pixel));
+    }
+
+    // Broken outside: refused by the parser's code, the box as it was.
+    writeFile(root / path, document.substr(0, document.size() / 2));
+    const auto refused = rpc.refusal("register_material", {{"path", path}});
+    INFO(refused.dump(2));
+    CHECK(refused.at("error_code") == "material.document_invalid@1");
+    CHECK(refused.at("error_fields").at("path") == path);
+    {
+        const auto pixel = rpc.centre(capture);
+        INFO("refused " << pixel);
+        CHECK(bluish(pixel));
+    }
+
+    // Fixed (red again): read again.
+    writeFile(root / path, document);
+    CHECK(rpc.result("register_material", {{"path", path}}).at("reloaded") == true);
+    {
+        const auto pixel = rpc.centre(capture);
+        INFO("fixed " << pixel);
+        CHECK(reddish(pixel));
+    }
+    CHECK(rpc.result("get_problems").at("problems").empty());
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+// EB-6 (6, 4). A scene object's own material (MT-2) that no registered
+// document holds -- its document refused at start -- is listed as a warning on
+// the scene document, and leaves the list once the document is taken in. The
+// refused document's problem carries the digest of the file it read.
+TEST_CASE("EB-6 a scene object's own material no registered document holds is listed, and leaves the list once "
+          "the document is taken in",
+          "[eb6][material][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("eb6_object");
+    const auto root = makeBlankBoxProject(dir.root);
+    const auto capture = dir.root / "capture.png";
+    const std::string path = "materials/paint.material.json";
+    std::uint64_t box = 0;
+    std::string document;
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        const auto actor =
+            rpc.result("open_editor_session", {{"display_name", "EB-6"}}).at("actor_id").get<std::uint64_t>();
+        REQUIRE(rpc.edit(actor, spawnCube()).at("status") == "committed");
+        box = objectNamed(rpc, "Box");
+        const Json red{1.0, 0.0, 0.0, 1.0};
+        REQUIRE(rpc.result("create_material",
+                           {{"path", path},
+                            {"surface", openPbrOpaque},
+                            {"values", {{"base_color", red}, {"emission_color", red}, {"emission_luminance", 1.0}}}})
+                    .at("applied") == "live");
+        const auto set = rpc.result("set_object_material", {{"actor_id", actor}, {"object", box}, {"material", "paint"}});
+        REQUIRE(set.at("status") == "accepted");
+        (void)rpc.result("step_frame");
+        REQUIRE(rpc.result("get_edit_result", {{"ticket", set.at("ticket")}}).at("status") == "committed");
+        const auto pixel = rpc.centre(capture);
+        INFO("own material " << pixel);
+        REQUIRE(reddish(pixel));
+        (void)rpc.result("save_scene");
+        GET_MODULE(VulkanManageCore).waitIdle();
+        document = readFile(root / path);
+    }
+    const auto broken = document.substr(0, document.size() / 2);
+    writeFile(root / path, broken);
+
+    FastModuleContainer modules;
+    configureHeadless(root);
+    (void)GET_MODULE(watch::ReloadService);
+    (void)GET_MODULE(Renderer);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    (void)rpc.result("step_frame");
+    {
+        INFO(rpc.result("get_problems").dump(2));
+        const auto refused = problemsWithCode(rpc, "material.document_invalid@1");
+        REQUIRE(refused.size() == 1);
+        CHECK(refused.at(0).at("fields").at("digest") == projectDocumentDigest(broken));
+        const auto unresolved = problemsWithCode(rpc, "material.object_material_unresolved@1");
+        REQUIRE(unresolved.size() == 1);
+        const auto &problem = unresolved.at(0);
+        CHECK(problem.at("severity") == "warning");
+        CHECK(problem.at("document") == "project://scenes/main.scene.json");
+        CHECK(problem.at("document_kind") == "scene");
+        CHECK(problem.at("fields").at("object") == box);
+        CHECK(problem.at("fields").at("name") == "Box");
+        CHECK(problem.at("fields").at("material") == "paint");
+        CHECK_FALSE(problem.at("fields").contains("primitive"));
+        const auto pixel = rpc.centre(capture);
+        INFO("refused " << pixel);
+        CHECK_FALSE(reddish(pixel));
+    }
+
+    // Fixed and taken in: the warning leaves with the document's problem.
+    writeFile(root / path, document);
+    CHECK(rpc.result("register_material", {{"path", path}}).at("recovered") == true);
+    (void)rpc.result("step_frame");
+    {
+        const auto problems = rpc.result("get_problems");
+        INFO(problems.dump(2));
+        CHECK(problems.at("problems").empty());
+        const auto pixel = rpc.centre(capture);
+        INFO("taken in " << pixel);
+        CHECK(reddish(pixel));
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
 }
 
 } // namespace Pelican

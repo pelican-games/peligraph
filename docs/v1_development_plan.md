@@ -6,6 +6,8 @@ WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_
 
 ## 再開時の入口
 
+- 2026-10-05 引継ぎ: EB-6／EB-6s の再起動なしの material 修復を統合。最新 develop と合わせた関連契約 21 件、material／Problems／RT の GUI scenario 10 本が成功。QD-1 の driver 強化と不変条件の棚卸しは別途検証中。公開 license・寄与者コード・履歴・文書の公開範囲は利用者判断待ち。配布は runtime shader compiler 入りで、compiler を外した配布の仕組みは v1 の別作業。
+
 - v0 の出荷範囲・解消済み項目・再検証は [v0 凍結一覧](v0_freeze.md) §3・§4・§6を参照する。v1 の拡張を v0 の未実装と混同しない。
 - 着手する項目の WP・最終差分だけ確認する。機能フラグの表は [専用台帳](build_features.md)、以前の着地時系列は [履歴](history/v0_delivery_2026-09.md) に分離した。
 - 開始時に branch・差分・対象 job の現在状態を確認する。古いログの成功は現行 revision の release gate 通過を意味しない。

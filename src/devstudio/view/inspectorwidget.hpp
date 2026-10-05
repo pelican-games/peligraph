@@ -102,6 +102,9 @@ class InspectorWidget final : public QWidget {
     // the Material rows read them again.
     void materialsChanged();
     void materialBindingsChanged();
+    // EB-6s, decision 5: the Material rows scrolled into view -- now, or once
+    // the selected object's are shown (a Problems row picked the object).
+    void revealMaterialRows();
     // MI-1s, decision 2. Import... beside a simplemodelview's model field
     // (`pelican.inspectorModelImport`, shown once an action is set): the
     // action chooses a file and registers it, and calls `registered` with

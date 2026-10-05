@@ -999,6 +999,8 @@ void ReloadService::applyFrame() {
     if (auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>()) {
         try {
             project->retryPassContractRefusals();
+            // EB-6: the scene objects' own materials nothing registered holds.
+            project->syncObjectMaterialProblems();
         } catch (const std::exception &error) {
             if (logger) LOG_WARNING(logger, "material documents refused for a pass were not tried again: {}", error.what());
         }

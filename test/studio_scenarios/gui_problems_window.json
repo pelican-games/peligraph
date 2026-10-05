@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_problems_window",
-  "description": "PB-1s, from Blank with the GUI only. File > New Project > Blank; View > Problems shows the dock beside the Engine Log, and the status bar says No problems. The root saved outside Studio without its last }: Studio's reload is refused (RL-1s), and the engine's list (engine PB-1, get_problems, read when get_status.problems.revision moves) is one row -- the document, the line and the column, what is wrong -- counted on the status bar. RR-1s: while the file is not JSON the row above the viewport says the Graph shows the last version that was (engine RR-1, held_unparsed). A click on it opens Show the document at that line; the } typed and Save (restore_render_documents against the digest the engine lists: Studio writes no file) take the row away, and the row above the viewport with it. A compute node without its buffer port's element saved into the root: one row naming the node; the engine draws the version before while its reads are the saved version's (live: false), and the row above the viewport says so with the list's sentence. A click on the row selects the node on the Graph, which reads the saved version; Delete on the Graph is an edit on that version's digest, the engine publishes it, and the rows go. The node saved again outside Studio, and opened again, the engine starts on that root and falls back (BS-1s): the row above the viewport ends See Problems, the count brings Problems forward, and a click on the row (met at start) selects the node on the Graph tab. The node taken out outside Studio: the row goes. Typed: the } in the document's window, and New Project's folder and name.",
+  "description": "PB-1s, from Blank with the GUI only. File > New Project > Blank; View > Problems shows the dock beside the Engine Log, and the status bar says No problems. The root saved outside Studio without its last }: Studio's reload is refused (RL-1s), and the engine's list (engine PB-1, get_problems, read when get_status.problems.revision moves) is one row -- the document, the line and the column, what is wrong -- counted on the status bar. RR-1s: while the file is not JSON the row above the viewport says the Graph shows the last version that was (engine RR-1, held_unparsed). A click on it opens Show the document at that line; the } typed and Save (restore_render_documents against the digest the engine lists: Studio writes no file) take the row away, and the row above the viewport with it. A compute node without its buffer port's element saved into the root: one row naming the node; the engine draws the version before while its reads are the saved version's (live: false), and the row above the viewport says so with the list's sentence. A click on the row selects the node on the Graph, which reads the saved version; Delete on the Graph is an edit on that version's digest, the engine publishes it, and the rows go. EB-6s decision 8: the node saved outside Studio once more and refused, then the root put back outside Studio to the very bytes the engine draws: Studio asks the reload all the same, since the engine holds the refused version (engine RR-1, EB-7), and the row goes. The node saved again outside Studio, and opened again, the engine starts on that root and falls back (BS-1s): the row above the viewport ends See Problems, the count brings Problems forward, and a click on the row (met at start) selects the node on the Graph tab. The node taken out outside Studio: the row goes. Typed: the } in the document's window, and New Project's folder and name.",
   "tab": "frame_plan",
   "probe_no_automation": false,
   "steps": [
@@ -401,6 +401,68 @@
     },
     {
       "label": "RR-1s decision 1: and so does the row above the viewport",
+      "cmd": "wait",
+      "name": "pelican.renderFallbackNotice",
+      "visible": false,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "EB-6s decision 8: the node saved into the root outside Studio once more",
+      "file": "replace",
+      "path": "{artifacts}/problems_project/passes/main_rendering_config.json",
+      "old": "\"nodes\": []",
+      "new": "\"nodes\": [{\"id\": \"sim\", \"op\": \"render.compute\", \"parameters\": {\"ports\": {\"data\": {\"kind\": \"buffer\", \"access\": \"read_write\"}}, \"shader\": \"shaders/sim.comp\"}, \"outputs\": []}]"
+    },
+    {
+      "label": "the reload's refusal is one row",
+      "cmd": "wait",
+      "name": "pelican.problems.count",
+      "text": "1 error",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the engine's reads are the saved version's",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "live",
+      "value": false,
+      "retry_ms": 30000
+    },
+    {
+      "label": "the root put back outside Studio, byte for byte what the engine draws",
+      "file": "replace",
+      "path": "{artifacts}/problems_project/passes/main_rendering_config.json",
+      "old": "\"nodes\": [{\"id\": \"sim\", \"op\": \"render.compute\", \"parameters\": {\"ports\": {\"data\": {\"kind\": \"buffer\", \"access\": \"read_write\"}}, \"shader\": \"shaders/sim.comp\"}, \"outputs\": []}]",
+      "new": "\"nodes\": []"
+    },
+    {
+      "label": "decision 8: Studio asks the reload all the same (the engine holds the refused version), and the row goes",
+      "cmd": "wait",
+      "name": "pelican.problemsCount",
+      "text": "No problems",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the engine lists nothing",
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems.$len",
+      "value": 0,
+      "retry_ms": 30000
+    },
+    {
+      "label": "the reads are the live version's again",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "live",
+      "value": true,
+      "retry_ms": 30000
+    },
+    {
+      "label": "and the row above the viewport goes",
       "cmd": "wait",
       "name": "pelican.renderFallbackNotice",
       "visible": false,

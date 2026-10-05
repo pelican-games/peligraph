@@ -73,9 +73,13 @@ bool RenderFallbackSession::observeProblems(const std::vector<ProblemRow> &rows)
     HeldProblem next;
     for (const auto &row : rows) {
         // The start's refusal is the placeholder's; a shader's is not one of
-        // the documents the editor holds.
+        // the documents the editor holds. EB-6s, decision 6: nor is a
+        // material's -- a material document the watch refused, or one written
+        // that its pass cannot draw yet (source edit_rpc, the pass's
+        // document named): the Materials dock's, not a refused render reload.
         if (row.origin != ProblemRow::Origin::Engine || !row.error() || row.source == "startup" ||
-            row.document_kind == "shader")
+            row.document_kind == "shader" || row.document_kind == "material" || row.document_kind == "scene" ||
+            row.code.starts_with("material."))
             continue;
         next = HeldProblem{row.sentence, row.code, row.document, row.node, row.line, row.column};
         break;

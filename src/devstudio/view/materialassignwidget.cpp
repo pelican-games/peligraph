@@ -157,6 +157,8 @@ struct MaterialAssignWidget::Impl {
         notice = new QLabel(&owner);
         notice->setObjectName(QStringLiteral("pelican.inspectorMaterialNotice"));
         applyPanelNoticeStyle(notice);
+        // A pass refusal must fit the dock instead of squeezing out the viewport.
+        notice->setWordWrap(true);
         notice->hide();
         layout->addWidget(notice);
         owner.hide();
@@ -309,8 +311,11 @@ struct MaterialAssignWidget::Impl {
         choice->setEnabled(session.choosable());
         use_default->setVisible(object_scope);
         use_default->setEnabled(session.canUseModelDefault());
-        // Decision 7: an override whose material is not loaded.
-        const auto missing_line = object_scope ? objectMaterialMissingLine(session.objectMaterials()) : std::string{};
+        // Decision 7: an override whose material is not loaded. EB-6s,
+        // decision 5 (engine EB-6): Every <model>, a bound name no registered
+        // material holds and what is drawn in its place.
+        const auto missing_line = object_scope ? objectMaterialMissingLine(session.objectMaterials())
+                                               : materialBindingUnresolvedLine(session.primitives());
         missing->setVisible(!missing_line.empty());
         missing->setText(missing_line.empty() ? QString{} : QStringLiteral("\xE2\x9A\xA0 ") + qtext(missing_line));
         missing->setToolTip(qtext(missing_line));

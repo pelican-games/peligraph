@@ -387,6 +387,8 @@ allowlist は作らない。失敗 artifact と retry なしの規律も CI0 と
 
 ## 全数の記録
 
+2026-10-05 の EB-6／EB-6s 引継ぎ検査: F-2・EB-7 を含む develop を取り込んだ構成で、`EB-6|EB-7|FO-2|RT6` の 21 件と material／Problems／RT の Studio scenario 10 本が成功した。後者は `gui_material_from_blank`、`gui_material_ray_query_from_blank`、`gui_material_repair`、`gui_problems_window`、`gui_rt_checks`、`gui_rt_full_from_blank`、`gui_rt_hit_groups_from_blank`、`gui_rt_layout_edits`、`gui_rt_procedural_callable`、`gui_rt_two_rays_two_misses`。Debug build 成功、manual 10・13 章の doclink check／audit 成功。これは関連範囲の確認で、下の全数を現行 revision で再実施したという意味ではない。
+
 全数(非 GPU・GPU・Studio の scenario)は着地ごとには回さず、段の終わりに回す。下は「その時点の途中の基準」であり、
 release の gate(上の GPU gate と [v0 の検証記録](v0_freeze.md#6-v010-tag-の手順))の代わりにはしない。
 

@@ -542,6 +542,26 @@ Json appliedAtRestart(Json answer, const std::string &reason) {
     return answer;
 }
 
+// EB-6: written, and the engine goes on, but a pass that draws the material
+// does not declare what it uses: the document is "unusable" (listed in
+// get_problems) until the pass declares it, when the next frame takes it in.
+Json appliedUnusable(Json answer, const std::string &reference,
+                     const ProjectMaterialAssetContainer::RefusedDocument &refused) {
+    answer["applied"] = "unusable";
+    answer["restart_required"] = nullptr;
+    answer["problem"] = materialPassContractUnmetProblem(reference, refused);
+    return answer;
+}
+
+// EB-6: the document `reference` refused for a pass's declaration, when it is.
+std::optional<ProjectMaterialAssetContainer::RefusedDocument> unusableDocument(const std::string &reference) {
+    const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
+    if (project == nullptr) return std::nullopt;
+    auto refused = project->refusedDocument(reference);
+    if (!refused || refused->status != "unusable") return std::nullopt;
+    return refused;
+}
+
 OrderedJson routingJson(const MaterialVariantRouting &routing) {
     return {{"alpha_mode", std::string{materialAlphaModeName(routing.alpha_mode)}},
             {"double_sided", routing.double_sided}};
@@ -559,6 +579,26 @@ std::optional<MaterialVariantRouting> routingFromJson(const OrderedJson &value) 
     else return std::nullopt;
     routing.double_sided = value.at("double_sided").get<bool>();
     return routing;
+}
+
+// EB-6: the routings a material on `surface` is lowered with, as
+// checkCandidateDocument lowers it (the routing variant's pipeline state is
+// the surface's render_state, the surface has the pelican_lighting_v1
+// wrapper, a mask routing has a float alpha_cutoff): one-sided before
+// double-sided, opaque before mask before blend. Empty when none does.
+std::vector<MaterialVariantRouting> surfaceRoutings(const SurfaceFormatDocument &surface) {
+    std::vector<MaterialVariantRouting> routings;
+    for (const bool double_sided : {false, true}) {
+        for (const auto mode : {MaterialAlphaMode::opaque, MaterialAlphaMode::mask, MaterialAlphaMode::blend}) {
+            MaterialDefinition probe{.name = "routing", .routing = MaterialVariantRouting{mode, double_sided}};
+            try {
+                (void)lowerMaterial(probe, surface, projectMaterialLoweringCapabilities());
+                routings.push_back(*probe.routing);
+            } catch (const std::exception &) {
+            }
+        }
+    }
+    return routings;
 }
 
 // MT-3: a model's material bindings document with the entries that name one
@@ -805,6 +845,21 @@ std::map<std::string, EngineSurfaceVariant> engineSurfaceVariants() {
     return variants;
 }
 
+// EB-6: the routing create_material gives a material on `surface` when none
+// is sent -- list_surfaces' `routing` for it -- or nullopt when it takes none.
+std::optional<MaterialVariantRouting> defaultSurfaceRouting(const std::string &reference,
+                                                            const SurfaceFormatDocument &surface) {
+    const auto variants = engineSurfaceVariants();
+    if (const auto found = variants.find(reference); found != variants.end()) {
+        if (!found->second.alpha_mode || !found->second.double_sided) return std::nullopt;
+        return routingFromJson(
+            OrderedJson{{"alpha_mode", *found->second.alpha_mode}, {"double_sided", *found->second.double_sided}});
+    }
+    const auto routings = surfaceRoutings(surface);
+    if (routings.empty()) return std::nullopt;
+    return routings.front();
+}
+
 // Every `*.surface` under the project directory, as project:// references,
 // sorted. Hidden directories (.git, .pelican, ...) and symlinked ones are
 // not entered.
@@ -842,10 +897,19 @@ Json surfaceListEntry(const PathResolver &paths, const std::string &reference, s
         const auto surface = parseSurfaceFormat(text, reference);
         entry["params"] = surface.params.size();
         entry["textures"] = surface.textures.size();
-        // A material's routing as create_material takes it: only where the
-        // engine's manifest says it.
-        if (variant && variant->alpha_mode && variant->double_sided)
-            entry["routing"] = {{"alpha_mode", *variant->alpha_mode}, {"double_sided", *variant->double_sided}};
+        // A material's routing as create_material takes it. EB-6: `routings`
+        // every one a material on the surface is drawn with -- the one the
+        // engine's manifest pairs it with, else each its render_state takes
+        // -- and `routing` the first, create_material's default.
+        auto routings = Json::array();
+        if (variant) {
+            if (variant->alpha_mode && variant->double_sided)
+                routings.push_back({{"alpha_mode", *variant->alpha_mode}, {"double_sided", *variant->double_sided}});
+        } else {
+            for (const auto &routing : surfaceRoutings(surface)) routings.push_back(toJson(routingJson(routing)));
+        }
+        if (!routings.empty()) entry["routing"] = routings.front();
+        entry["routings"] = std::move(routings);
         if (declaresRenderState(text, surface.code_offset)) {
             const auto &state = surface.render_state;
             entry["render_state"] = {{"blend", std::string{blendModeName(state.blend)}},
@@ -892,7 +956,8 @@ Json listSurfaces(const Json &params, PathResolver &paths) {
 // models' declarations take before the rebuild.
 Json rebuildMaterial(Json answer, const std::string &path, const std::string &name,
                      const std::vector<std::string> &structural, const std::vector<BindingsNaming> &rebound,
-                     MaterialContainer &materials, watch::ReloadService *reload_service) {
+                     MaterialContainer &materials, watch::ReloadService *reload_service,
+                     std::string_view refusing = {}) {
     std::string keys;
     for (const auto &key : structural) keys += (keys.empty() ? "" : ", ") + key;
     auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
@@ -914,8 +979,20 @@ Json rebuildMaterial(Json answer, const std::string &path, const std::string &na
             if (models->hasModel(bindings.model))
                 exchanged.emplace_back(bindings.model, models->exchangeMaterialBindings(bindings.model, bindings.reference));
         registered = project->reregisterDocument(path);
+    } catch (const PassContractRefusal &refusal) {
+        // EB-6: a pass that draws it does not declare what the new surface
+        // uses. The models keep drawing the previous registration, their
+        // declarations holding the bindings written; the next frame after the
+        // pass declares it registers the document and rebuilds them.
+        return appliedUnusable(std::move(answer), path, project->notePassContractRefusal(path, refusal));
     } catch (const std::exception &error) {
         restoreBindings();
+        // EB-6 (register_material reading a document again): nothing was
+        // written, so a document that does not register is refused by name;
+        // the engine keeps what it had.
+        if (!refusing.empty())
+            refuse(refusing, "'" + path + "' would not load: " + error.what(), documentInvalidCode,
+                   {{"path", path}, {"reason", error.what()}});
         return appliedAtRestart(std::move(answer), keys + " of material '" + name +
                                                        "' could not be registered in place: " + error.what());
     }
@@ -952,8 +1029,11 @@ Json rebuildMaterial(Json answer, const std::string &path, const std::string &na
 // sent follows the half sent, in the same edit: a surface alone takes its
 // routing (the material holding one), a routing alone takes the surface of
 // that routing from the manifest of the material's surface. Both sent, or a
-// surface no manifest lists, are taken as they are.
-void pairSurfaceVariant(Json &params, const OrderedJson &material) {
+// routing alone on a surface no manifest lists, are taken as they are.
+// EB-6: a surface alone that no manifest lists keeps the routing the material
+// holds when the surface takes it, and otherwise takes the first it does
+// (list_surfaces' `routing` for it).
+void pairSurfaceVariant(Json &params, const OrderedJson &material, SurfaceCache &surfaces) {
     const bool surface_sent = params.contains("surface");
     const bool routing_sent = params.contains("routing") && params.at("routing").is_object();
     if (surface_sent == routing_sent) return;
@@ -965,7 +1045,19 @@ void pairSurfaceVariant(Json &params, const OrderedJson &material) {
     if (surface_sent) {
         if (params.contains("routing") || !material.contains("routing")) return;
         const auto found = variants.find(params.at("surface").get<std::string>());
-        if (found == variants.end()) return;
+        if (found == variants.end()) {
+            std::vector<MaterialVariantRouting> routings;
+            try {
+                routings = surfaceRoutings(surfaces.load(params.at("surface").get<std::string>()));
+            } catch (const std::exception &) {
+                return; // The edit refuses the surface by name.
+            }
+            const auto held = routingFromJson(material.at("routing"));
+            if (routings.empty() || (held && std::find(routings.begin(), routings.end(), *held) != routings.end()))
+                return;
+            params["routing"] = toJson(routingJson(routings.front()));
+            return;
+        }
         const auto routing = routingOf(found->second);
         if (!routing) return;
         const auto held = routingFromJson(material.at("routing"));
@@ -1023,7 +1115,7 @@ Json editMaterial(const Json &sent, PathResolver &paths, watch::ReloadService *r
     const auto material_name = material.value("name", std::string{});
     auto previous = OrderedJson::object();
     SurfaceCache surfaces{paths};
-    pairSurfaceVariant(params, material);
+    pairSurfaceVariant(params, material, surfaces);
 
     if (params.contains("surface")) {
         previous["surface"] = material.contains("surface") ? material.at("surface") : OrderedJson(nullptr);
@@ -1165,6 +1257,35 @@ Json editMaterial(const Json &sent, PathResolver &paths, watch::ReloadService *r
 
 // --- create_material.
 
+// The document `relative` just listed in asset_data (create_material,
+// register_material), registered live. EB-6: a pass that draws it and does
+// not declare what it uses leaves it "unusable" (the engine goes on; the
+// pass's declaration takes it in at the next frame) instead of asking for a
+// restart.
+Json registerWritten(Json answer, const std::string &relative) {
+    if (FastModuleContainer::tryGet<MaterialContainer>() == nullptr)
+        return appliedAtRestart(std::move(answer), "this host runs no material container");
+    try {
+        if (auto *core = FastModuleContainer::tryGet<VulkanManageCore>()) core->waitIdle();
+        if (auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>()) {
+            (void)project->registerDocument(relative);
+        } else {
+            // Made now, from the asset_data just published: it registers every
+            // listed document, this one with them.
+            (void)GET_MODULE(ProjectMaterialAssetContainer);
+        }
+    } catch (const PassContractRefusal &refusal) {
+        return appliedUnusable(std::move(answer), relative,
+                               GET_MODULE(ProjectMaterialAssetContainer).notePassContractRefusal(relative, refusal));
+    } catch (const std::exception &error) {
+        return appliedAtRestart(std::move(answer),
+                                std::string{"the material could not be registered in place: "} + error.what());
+    }
+    // A container made just now refuses at its start, as the engine's does.
+    if (const auto refused = unusableDocument(relative)) return appliedUnusable(std::move(answer), relative, *refused);
+    return appliedLive(std::move(answer));
+}
+
 std::string projectRelative(std::string_view method, const std::string &path) {
     std::string relative = path;
     if (relative.starts_with("project://")) relative = relative.substr(std::string_view{"project://"}.size());
@@ -1241,9 +1362,12 @@ Json createMaterial(const Json &params, PathResolver &paths) {
     material["surface"] = surface_reference;
     if (params.contains("values"))
         mergeSurfaceInputs(method, relative, params.at("values"), "values", surface, paths, material, nullptr);
+    // EB-6: without one sent, the routing list_surfaces offers for the surface
+    // (one-sided opaque when it takes none, as before: a binding needs one).
     material["routing"] = params.contains("routing")
                               ? toOrdered(params.at("routing"))
-                              : OrderedJson{{"alpha_mode", "opaque"}, {"double_sided", false}};
+                              : routingJson(defaultSurfaceRouting(surface_reference, surface).value_or(
+                                    MaterialVariantRouting{}));
     OrderedJson document;
     document["schema"] = std::string{materialSchema};
     document["version"] = 1;
@@ -1279,22 +1403,7 @@ Json createMaterial(const Json &params, PathResolver &paths) {
                 {"material_digest", digest},
                 {"asset_data_digest", asset_digest},
                 {"previous_asset_data_digest", asset_data.digest}};
-    if (FastModuleContainer::tryGet<MaterialContainer>() == nullptr)
-        return appliedAtRestart(std::move(answer), "this host runs no material container");
-    try {
-        if (auto *core = FastModuleContainer::tryGet<VulkanManageCore>()) core->waitIdle();
-        if (auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>()) {
-            (void)project->registerDocument(relative);
-        } else {
-            // Made now, from the asset_data just published: it registers every
-            // listed document, this one with them.
-            (void)GET_MODULE(ProjectMaterialAssetContainer);
-        }
-    } catch (const std::exception &error) {
-        return appliedAtRestart(std::move(answer),
-                                std::string{"the material could not be registered in place: "} + error.what());
-    }
-    return appliedLive(std::move(answer));
+    return registerWritten(std::move(answer), relative);
 }
 
 // --- get_material_bindings / bind_material.
@@ -1404,16 +1513,34 @@ Json getMaterialBindings(const Json &params, PathResolver &paths) {
     constexpr std::string_view method = "get_material_bindings";
     requireOnly(method, params, {"model"});
     const auto model = requireString(method, params, "model");
-    const auto state = readBindingState(method, model, readAssetData(paths), paths);
+    const auto asset_data = readAssetData(paths);
+    const auto state = readBindingState(method, model, asset_data, paths);
     const auto [objects, object_overrides] = countModelObjects(model);
+    // EB-6: the names the model's bindings give that it draws with its own
+    // material instead (FO-1's material.binding_unresolved@1).
+    std::vector<std::string> unresolved;
+    if (const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>())
+        unresolved = project->unresolvedBindings(model);
     auto primitives = Json::array();
     for (const auto &slot : state.slots) {
         const auto &entry = state.current.at({slot.mesh, slot.primitive});
-        primitives.push_back({{"mesh", slot.mesh},
-                              {"primitive", slot.primitive},
-                              {"slot", slot.slot},
-                              {"material", entry.material},
-                              {"usd_path", entry.usd_path ? Json(*entry.usd_path) : Json(nullptr)}});
+        Json primitive{{"mesh", slot.mesh},
+                       {"primitive", slot.primitive},
+                       {"slot", slot.slot},
+                       {"material", entry.material},
+                       {"usd_path", entry.usd_path ? Json(*entry.usd_path) : Json(nullptr)}};
+        if (entry.material != slot.slot &&
+            std::find(unresolved.begin(), unresolved.end(), entry.material) != unresolved.end()) {
+            std::string reason = "no registered material document holds it";
+            if (const auto holder = nameHolder(entry.material, asset_data, paths)) {
+                const auto document = holder->at("path").get<std::string>();
+                const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
+                if (const auto refused = project ? project->refusedDocument(document) : std::nullopt)
+                    reason = "its document '" + document + "' is " + refused->status + " (" + refused->code + ")";
+            }
+            primitive["unresolved"] = {{"material", entry.material}, {"reason", reason}, {"drawn", slot.slot}};
+        }
+        primitives.push_back(std::move(primitive));
     }
     return {{"model", model},
             {"material_bindings", state.bindings_reference ? Json(*state.bindings_reference) : Json(nullptr)},
@@ -1426,6 +1553,8 @@ Json getMaterialBindings(const Json &params, PathResolver &paths) {
 struct BindingMaterial {
     MaterialVariantRouting routing;
     bool live = true;
+    // EB-6: not live because a pass refused its document ("unusable").
+    std::optional<std::string> unusable;
 };
 
 BindingMaterial resolveBindingMaterial(std::string_view method, const std::string &name,
@@ -1455,6 +1584,7 @@ BindingMaterial resolveBindingMaterial(std::string_view method, const std::strin
                            bindingInvalidCode,
                            {{"model", state.model}, {"reason", "material '" + name + "' has no routing"}});
                 project = BindingMaterial{*routing, registeredFrom(name, reference)};
+                if (!project->live && unusableDocument(reference)) project->unusable = reference;
             }
         }
     }
@@ -1604,14 +1734,12 @@ Json bindMaterial(const Json &params, PathResolver &paths, watch::ReloadService 
         }
     }
 
-    bool live = true;
     auto previous = Json::array();
     std::map<std::string, BindingMaterial> resolved;
     for (const auto &[key, material] : requested) {
         auto found = resolved.find(material);
         if (found == resolved.end())
             found = resolved.emplace(material, resolveBindingMaterial(method, material, state, asset_data, paths)).first;
-        live = live && found->second.live;
         auto &entry = state.current.at(key);
         if (entry.material == material && entry.routing == found->second.routing) continue;
         previous.push_back({{"mesh", key.first}, {"primitive", key.second}, {"material", entry.material}});
@@ -1733,9 +1861,19 @@ Json bindMaterial(const Json &params, PathResolver &paths, watch::ReloadService 
     answer["changed"] = true;
     LOG_INFO(logger, "material bindings of model '{}' written to '{}'", model, reference);
 
-    if (!live)
-        return appliedAtRestart(std::move(answer),
-                                "a bound material is not registered in this engine; it is read when the engine starts");
+    // EB-6: a bound material whose document a pass refused is bound live all
+    // the same: the model takes the bindings now, its primitives keep their
+    // own material (material.binding_unresolved@1) until the pass declares
+    // what the material uses, and that frame rebuilds them with it.
+    std::optional<std::string> unusable;
+    for (const auto &[name, material] : resolved) {
+        (void)name;
+        if (material.live) continue;
+        if (!material.unusable)
+            return appliedAtRestart(std::move(answer), "a bound material is not registered in this engine; it is read "
+                                                       "when the engine starts");
+        if (!unusable) unusable = material.unusable;
+    }
     // The endpoint resolves its modules once, when it is made; a host that
     // made the reload service after that still has it.
     if (reload_service == nullptr) reload_service = FastModuleContainer::tryGet<watch::ReloadService>();
@@ -1758,6 +1896,9 @@ Json bindMaterial(const Json &params, PathResolver &paths, watch::ReloadService 
         return appliedAtRestart(std::move(answer),
                                 std::string{"the model could not be rebuilt in place: "} + error.what());
     }
+    if (unusable)
+        if (const auto refused = unusableDocument(*unusable))
+            return appliedUnusable(std::move(answer), *unusable, *refused);
     return appliedLive(std::move(answer));
 }
 
@@ -2231,7 +2372,12 @@ Json deleteMaterial(const Json &params, PathResolver &paths) {
     if (const auto reason = publishAssetData(paths, asset_bytes))
         return appliedAtRestart(std::move(answer), "the engine's copy of asset_data was not refreshed: " + *reason);
     auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
-    if (project == nullptr || !registeredFrom(name, path)) return appliedLive(std::move(answer));
+    if (project == nullptr || !registeredFrom(name, path)) {
+        // EB-6: a document the engine refused (at start, or "unusable") takes
+        // its problem with it.
+        if (project != nullptr) (void)project->unregisterDocument(path);
+        return appliedLive(std::move(answer));
+    }
     // Nothing in the documents names it any more; a model the engine still
     // draws with it (a runtime instance the documents do not hold) keeps it.
     if (const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>()) {
@@ -2317,10 +2463,49 @@ Json recoverMaterial(const std::string &reference, const AssetDataFile &asset_da
     return appliedLive(std::move(answer));
 }
 
+// EB-6: register_material on a listed document the engine holds: the file as
+// it is now (a person's own editor wrote it, and no watch read it) is checked
+// as create_material checks a document -- refused by the parser's code,
+// nothing changing, when it does not read -- and registered anew as an
+// edit_material outside values is (MT-3): the models drawing it are rebuilt
+// with it. Nothing is written.
+Json reloadMaterial(const std::string &reference, const AssetDataFile &asset_data, PathResolver &paths,
+                    watch::ReloadService *reload_service) {
+    constexpr std::string_view method = "register_material";
+    const auto document = readMaterialDocument(method, paths, reference);
+    const auto names = materialNames(document.json);
+    const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
+    for (const auto &name : names) {
+        if (const auto holder = project ? project->documentOf(name) : std::nullopt; holder && *holder != reference)
+            refuse(method, "material '" + name + "' exists already", nameConflictCode,
+                   {{"name", name}, {"path", *holder}});
+        if (const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>())
+            if (const auto holder = models->modelDeclaringMaterial(name))
+                refuse(method, "model '" + *holder + "' has a glTF material named '" + name + "'", nameConflictCode,
+                       {{"name", name}, {"model", *holder}});
+    }
+    SurfaceCache surfaces{paths};
+    checkCandidateDocument(method, reference, document.json, surfaces);
+    Json answer{{"committed", true},
+                {"reloaded", true},
+                {"path", reference},
+                {"names", names},
+                {"material_digest", document.digest},
+                {"asset_data_digest", asset_data.digest},
+                {"previous_asset_data_digest", asset_data.digest}};
+    auto *materials = FastModuleContainer::tryGet<MaterialContainer>();
+    if (materials == nullptr) return appliedAtRestart(std::move(answer), "this host runs no material container");
+    std::string label;
+    for (const auto &name : names) label += (label.empty() ? "" : ", ") + name;
+    LOG_INFO(logger, "material document '{}' read again from its file", reference);
+    return rebuildMaterial(std::move(answer), reference, label, std::vector<std::string>{"file"}, {}, *materials,
+                           reload_service, method);
+}
+
 // register_material {path}: a material document already in the project,
 // listed in asset_data materials[] and registered (delete_material's way
 // back: its removed.path).
-Json registerMaterial(const Json &params, PathResolver &paths) {
+Json registerMaterial(const Json &params, PathResolver &paths, watch::ReloadService *reload_service) {
     constexpr std::string_view method = "register_material";
     requireOnly(method, params, {"path"});
     const auto relative = projectRelative(method, requireString(method, params, "path"));
@@ -2328,6 +2513,11 @@ Json registerMaterial(const Json &params, PathResolver &paths) {
     if (const auto listed = findListedMaterial(asset_data, paths, relative)) {
         // EB-2: listed, but refused at start -- read again and taken in.
         if (auto refused = refusedAtStart(paths, *listed)) return recoverMaterial(*refused, asset_data, paths);
+        // EB-6: listed and registered -- read again from the file.
+        if (const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>())
+            for (const auto &name : project->namedMaterials())
+                if (project->documentOf(name.name) == *listed)
+                    return reloadMaterial(*listed, asset_data, paths, reload_service);
         refuse(method, "'" + relative + "' is listed already", pathConflictCode, {{"path", relative}});
     }
     const auto document = readMaterialDocument(method, paths, relative);
@@ -2369,20 +2559,7 @@ Json registerMaterial(const Json &params, PathResolver &paths) {
                 {"previous_asset_data_digest", asset_data.digest}};
     if (const auto reason = publishAssetData(paths, asset_bytes))
         return appliedAtRestart(std::move(answer), "the engine's copy of asset_data was not refreshed: " + *reason);
-    if (FastModuleContainer::tryGet<MaterialContainer>() == nullptr)
-        return appliedAtRestart(std::move(answer), "this host runs no material container");
-    try {
-        if (auto *core = FastModuleContainer::tryGet<VulkanManageCore>()) core->waitIdle();
-        if (auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>()) {
-            (void)project->registerDocument(relative);
-        } else {
-            (void)GET_MODULE(ProjectMaterialAssetContainer);
-        }
-    } catch (const std::exception &error) {
-        return appliedAtRestart(std::move(answer),
-                                std::string{"the material could not be registered in place: "} + error.what());
-    }
-    return appliedLive(std::move(answer));
+    return registerWritten(std::move(answer), relative);
 }
 
 // rename_material {name, new_name}: the material document's name and every
@@ -2526,8 +2703,8 @@ void configureMaterialDocumentRpcHandlers(RpcServer &server, PathResolver &path_
     server.setHandler("delete_material", [&path_resolver](const Json &params) {
         return deleteMaterial(params, path_resolver);
     });
-    server.setHandler("register_material", [&path_resolver](const Json &params) {
-        return registerMaterial(params, path_resolver);
+    server.setHandler("register_material", [&path_resolver, reload_service](const Json &params) {
+        return registerMaterial(params, path_resolver, reload_service);
     });
     server.setHandler("rename_material", [&path_resolver, reload_service](const Json &params) {
         return renameMaterial(params, path_resolver, reload_service);

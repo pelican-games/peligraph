@@ -157,6 +157,17 @@ std::string materialPassContractSentence(const Json &fields) {
            (passes.size() == 1 ? "does" : "do") + " not declare it";
 }
 
+std::string materialUnusableSentence(const Json &problem) {
+    if (!problem.is_object()) return "The engine cannot draw the material yet.";
+    if (auto sentence = materialPassContractSentence(problem); !sentence.empty()) {
+        const auto code = text(problem, "code");
+        return sentence + (code.empty() ? std::string{"."} : " (" + code + ").");
+    }
+    auto message = text(problem, "message");
+    if (const auto newline = message.find('\n'); newline != std::string::npos) message.erase(newline);
+    return message.empty() ? std::string{"The engine cannot draw the material yet."} : message;
+}
+
 std::string materialDocumentProblemLine(const MaterialListDocument &document) {
     if (document.status == "loaded" || document.status.empty()) return {};
     if (document.status == "unusable" && !document.pass.empty())
@@ -418,6 +429,9 @@ std::vector<SurfaceChoice> parseSurfaceList(const Json &result) {
         entry.params = counter(surface, "params");
         entry.textures = counter(surface, "textures");
         entry.routing = surface.value("routing", Json{});
+        if (const auto routings = surface.find("routings"); routings != surface.end() && routings->is_array())
+            for (const auto &routing : *routings)
+                if (routing.is_object()) entry.routings.push_back(routing);
         if (const auto error = surface.find("error"); error != surface.end() && !error->is_null())
             entry.error = error->is_string() ? error->get<std::string>() : error->dump();
         if (!entry.reference.empty()) surfaces.push_back(std::move(entry));
@@ -446,6 +460,26 @@ std::optional<std::size_t> defaultSurfaceChoice(const std::vector<SurfaceChoice>
         if (!first) first = index;
     }
     return first;
+}
+
+std::string materialRoutingLabel(const Json &routing) {
+    if (!routing.is_object()) return {};
+    return routing.value("alpha_mode", std::string{"opaque"}) +
+           (routing.value("double_sided", false) ? ", double-sided" : ", one-sided");
+}
+
+std::vector<Json> materialRoutingChoices(const SurfaceChoice &surface) {
+    // A variant of the engine's manifest: its routing picks the variant of
+    // the family (VR-1), so every routing is one the engine pairs.
+    if (!surface.name.empty()) {
+        std::vector<Json> every;
+        for (const char *mode : {"opaque", "mask", "blend"})
+            for (const bool sides : {false, true}) every.push_back(Json{{"alpha_mode", mode}, {"double_sided", sides}});
+        return every;
+    }
+    if (!surface.routings.empty()) return surface.routings;
+    if (surface.routing.is_object()) return {surface.routing};
+    return {};
 }
 
 // --- a new material's name
@@ -529,10 +563,26 @@ std::vector<MaterialPrimitive> parseMaterialBindings(const Json &result) {
     if (listed == result.end() || !listed->is_array()) return primitives;
     for (const auto &primitive : *listed) {
         if (!primitive.is_object()) continue;
-        primitives.push_back({counter(primitive, "mesh"), counter(primitive, "primitive"), text(primitive, "slot"),
-                              text(primitive, "material")});
+        MaterialPrimitive entry{counter(primitive, "mesh"), counter(primitive, "primitive"), text(primitive, "slot"),
+                                text(primitive, "material")};
+        if (const auto unresolved = primitive.find("unresolved");
+            unresolved != primitive.end() && unresolved->is_object()) {
+            entry.unresolved = true;
+            entry.unresolved_reason = text(*unresolved, "reason");
+            entry.drawn = text(*unresolved, "drawn");
+            if (entry.drawn.empty()) entry.drawn = entry.slot;
+        }
+        primitives.push_back(std::move(entry));
     }
     return primitives;
+}
+
+std::string materialBindingUnresolvedLine(const std::vector<MaterialPrimitive> &primitives) {
+    for (const auto &primitive : primitives)
+        if (primitive.unresolved)
+            return primitive.material + " is not registered \xE2\x80\x94 drawing " +
+                   (primitive.drawn.empty() ? primitive.slot : primitive.drawn);
+    return {};
 }
 
 ModelObjectCounts parseModelObjectCounts(const Json &result) {
@@ -638,6 +688,7 @@ std::int64_t MaterialsDockSession::send(const std::string &method, const Json &p
 
 void MaterialsDockSession::forgetRequests() {
     recheck_.reset();
+    broken_when_listed_.reset();
     list_request_ = 0;
     material_request_ = 0;
     schema_request_ = 0;
@@ -814,7 +865,7 @@ bool MaterialsDockSession::setSurface(const std::string &surface) {
     return editSelected(Json{{"surface", surface}}, "surface");
 }
 
-bool MaterialsDockSession::create(const SurfaceChoice &surface, const std::string &name) {
+bool MaterialsDockSession::create(const SurfaceChoice &surface, const std::string &name, const Json &routing) {
     if (!surface.error.empty() || surface.reference.empty()) return false;
     if (!validMaterialName(name)) {
         setNotice("A material name is letters, digits and _.");
@@ -828,7 +879,8 @@ bool MaterialsDockSession::create(const SurfaceChoice &surface, const std::strin
     write.name = name;
     write.description = "New material " + name;
     write.params = Json{{"path", write.path}, {"surface", surface.reference}, {"name", name}};
-    if (surface.routing.is_object()) write.params["routing"] = surface.routing;
+    if (routing.is_object()) write.params["routing"] = routing;
+    else if (surface.routing.is_object()) write.params["routing"] = surface.routing;
     return enqueue(std::move(write));
 }
 
@@ -912,10 +964,24 @@ bool MaterialsDockSession::registerAgain(const std::string &path) {
     return enqueue(std::move(write));
 }
 
-void MaterialsDockSession::documentSaved(const std::string &path, std::vector<std::string> names) {
+bool MaterialsDockSession::reloadFromFile(const std::string &path) {
+    if (path.empty()) return false;
+    Write write;
+    write.kind = Write::Kind::Register;
+    write.method = "register_material";
+    write.path = path;
+    write.description = "Reload " + path + " from its file";
+    write.params = Json{{"path", path}};
+    write.from_file = true;
+    return enqueue(std::move(write));
+}
+
+void MaterialsDockSession::documentSaved(const std::string &path, std::vector<std::string> names,
+                                         std::string digest) {
     Repair repair;
     repair.path = path;
     repair.names = std::move(names);
+    repair.saved_digest = std::move(digest);
     if (const auto *stale = staleOf(path)) {
         // Decision 3: registered, and refused by the engine's watch after its
         // start -- the watch reads the saved file; nothing is sent.
@@ -963,7 +1029,16 @@ void MaterialsDockSession::observeProblems(MaterialProblems problems) {
     // in (the problem went), or refused again for another reason.
     if (repair_ && repair_->watch && repair_->state == Repair::State::Waiting) {
         if (const auto *stale = staleOf(repair_->path)) {
-            if (const auto line = materialFileProblemLine(*stale); line != repair_->stale_line) {
+            // EB-6s, decision 6 (engine EB-6): the refusal names the bytes it
+            // read -- the ones saved means this save was refused, even for the
+            // same reason at the same line; other bytes are the save before
+            // it, still waiting. An engine before EB-6 names none: the
+            // sentence moving is all there is to go by.
+            const auto line = materialFileProblemLine(*stale);
+            const bool this_save = !stale->digest.empty() && !repair_->saved_digest.empty()
+                                       ? stale->digest == repair_->saved_digest
+                                       : line != repair_->stale_line;
+            if (this_save) {
                 repair_->state = Repair::State::Refused;
                 repair_->sentence = repair_->path + ": " + line;
                 setNotice(repair_->sentence);
@@ -1054,6 +1129,26 @@ void MaterialsDockSession::listResult(const Json &result) {
                 repair_->state = Repair::State::Refused;
                 repair_->sentence = own;
             }
+        }
+    }
+    // EB-6s, decision 1: a document written that the engine cannot draw yet
+    // -- its row, with why and Open the pass; already taken in (the pass
+    // declared it meanwhile), its first material.
+    if (broken_when_listed_) {
+        const auto path = *broken_when_listed_;
+        const auto after = std::ranges::find(list.documents, path, &MaterialListDocument::path);
+        if (after != list.documents.end() && after->status == "unusable") {
+            broken_when_listed_.reset();
+            select_when_listed_.reset();
+            list_ = std::move(list);
+            if (listChanged) listChanged();
+            selectBroken(path);
+            notify();
+            return;
+        }
+        if (after != list.documents.end() && after->status == "loaded") {
+            broken_when_listed_.reset();
+            if (!after->materials.empty()) select_when_listed_ = Selection{path, after->materials.front().name};
         }
     }
     if (select_when_listed_) {
@@ -1167,6 +1262,23 @@ void MaterialsDockSession::writeResult(const Write &write, const Json &result) {
             // MR-1s, decisions 1 and 2 (engine EB-2): a document the engine
             // refused at its start, taken in -- the problem list too.
             loadedAgain(write.path, names);
+        } else if (result.value("reloaded", false)) {
+            // EB-6s, decision 3 (engine EB-6): a registered document read
+            // again from its file -- what Show the document saved, or Reload
+            // from file after another editor. Its watch's refusal goes too.
+            if (write.from_file && !(repair_ && repair_->path == path)) {
+                std::size_t models = 0;
+                if (const auto rebuilt = result.find("rebuilt_models"); rebuilt != result.end() && rebuilt->is_array())
+                    models = rebuilt->size();
+                setNotice("Read " + path + " again from its file; rebuilt " + std::to_string(models) +
+                          (models == 1 ? " model." : " models."));
+                restart_reason_.clear();
+                if (problemsMayHaveChanged) problemsMayHaveChanged();
+            } else {
+                loadedAgain(path, names);
+            }
+            // What the editor shows is the file's now.
+            if (selection_ && selection_->path == path) readSelected();
         } else {
             std::string listed;
             for (const auto &name : names) listed += (listed.empty() ? "" : ", ") + name;
@@ -1218,7 +1330,9 @@ void MaterialsDockSession::writeResult(const Write &write, const Json &result) {
     }
     }
     const auto restart = result.find("restart_required");
-    if (restart != result.end() && !restart->is_null()) {
+    if (text(result, "applied") == "unusable") {
+        unusable(write, result);
+    } else if (restart != result.end() && !restart->is_null()) {
         restart_reason_ = restart->is_string() ? restart->get<std::string>() : text(*restart, "reason");
         if (restart_reason_.empty()) restart_reason_ = "the engine reads it when it starts";
         if (restartRequested) restartRequested(restart_reason_);
@@ -1240,6 +1354,30 @@ void MaterialsDockSession::writeResult(const Write &write, const Json &result) {
                 if (const auto model = text(entry, "model"); !model.empty() && bound) bound(model);
     }
     readList();
+}
+
+void MaterialsDockSession::unusable(const Write &write, const Json &result) {
+    // EB-6s, decision 1 (engine EB-6): written, and the engine goes on; the
+    // pass that draws the material does not declare what it uses, so the
+    // document is unusable until the pass does -- no restart.
+    const auto problem = result.value("problem", Json::object());
+    setNotice(materialUnusableSentence(problem), text(problem, "message"));
+    restart_reason_.clear();
+    auto path = text(problem, "material_document");
+    if (path.empty()) path = text(result, "path");
+    if (path.empty()) path = write.path;
+    // The document's row (why, Open the pass) once the list says so. A bind
+    // stays where it was made: the bound name draws once the pass declares it.
+    if (write.kind != Write::Kind::Bind && write.kind != Write::Kind::UndoBind && !path.empty()) {
+        select_when_listed_.reset();
+        broken_when_listed_ = path;
+    }
+    if (repair_ && repair_->path == path && repair_->state == Repair::State::Waiting) {
+        repair_->state = Repair::State::Refused;
+        repair_->sentence = notice_;
+    }
+    // The engine lists it among its problems (source edit_rpc).
+    if (problemsMayHaveChanged) problemsMayHaveChanged();
 }
 
 bool MaterialsDockSession::receiveResult(std::int64_t id, const Json &result) {
@@ -1708,7 +1846,14 @@ bool MaterialAssignSession::receiveResult(std::int64_t id, const Json &result) {
                 undo_.push_back({bind_description_, bind_model_, previous});
         }
         const auto restart = result.find("restart_required");
-        if (restart != result.end() && !restart->is_null()) {
+        if (text(result, "applied") == "unusable") {
+            // EB-6s, decision 1 (engine EB-6): bound, and the model drawn with
+            // its own material until the pass declares what the bound one
+            // uses -- no restart.
+            const auto problem = result.value("problem", Json::object());
+            notice_ = materialUnusableSentence(problem);
+            notice_detail_ = text(problem, "message");
+        } else if (restart != result.end() && !restart->is_null()) {
             auto reason = restart->is_string() ? restart->get<std::string>() : text(*restart, "reason");
             if (reason.empty()) reason = "the engine reads it when it starts";
             notice_ = "Restart the engine to apply: " + reason;

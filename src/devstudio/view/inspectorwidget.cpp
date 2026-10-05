@@ -130,6 +130,8 @@ struct InspectorWidget::Impl {
     QHash<qint64, quint64> graph_transport_requests;
     // MT-1s, decision 5: the Material rows of an object that shows a model.
     MaterialAssignWidget *material_assign = nullptr;
+    // EB-6s, decision 5: scroll to them once they are shown.
+    bool reveal_material_rows = false;
     QLabel *selection_label = nullptr;
     QLabel *notice_label = nullptr;
     // PM-3c: the read-only view of a spawned object, in place of the fields.
@@ -1561,6 +1563,11 @@ struct InspectorWidget::Impl {
             }
             material_assign->setSubject(material_subject);
             material_assign->setSceneBusy(model.busy() || model.refreshBlocked());
+            // EB-6s, decision 5: asked to show them before they were.
+            if (reveal_material_rows && !material_subject.model.empty()) {
+                reveal_material_rows = false;
+                scroll->ensureWidgetVisible(material_assign);
+            }
         }
         synchronizeRayDialog();
         add_component_button->setEnabled(model.canRequestComponentAddCandidates());
@@ -2733,6 +2740,14 @@ void InspectorWidget::modelsChanged() {
 void InspectorWidget::materialsChanged() { impl_->material_assign->materialsChanged(); }
 
 void InspectorWidget::materialBindingsChanged() { impl_->material_assign->bindingsChanged(); }
+
+void InspectorWidget::revealMaterialRows() {
+    if (impl_->material_assign->isVisible() && impl_->scroll != nullptr) {
+        impl_->scroll->ensureWidgetVisible(impl_->material_assign);
+        return;
+    }
+    impl_->reveal_material_rows = true;
+}
 
 void InspectorWidget::setRayGroupAction(std::function<void(const QString &)> action) {
     impl_->ray_group_action = std::move(action);

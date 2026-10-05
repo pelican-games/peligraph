@@ -45,28 +45,54 @@ class ReloadService;
 //   list_surfaces {} ->
 //     {surfaces: [{reference, source: "engine" | "project", name?,
 //       params: <count>, textures: <count>, routing?: {alpha_mode,
-//       double_sided}, render_state?: {blend, cull, depth_test, depth_write,
+//       double_sided}, routings: [{alpha_mode, double_sided}],
+//       render_state?: {blend, cull, depth_test, depth_write,
 //       depth_compare}, error?}]}
 //     MT-1b: the engine's registered `surfaces/**.surface` resources
 //     (engine://, sorted), then every `*.surface` under the project
 //     directory (project://, sorted; hidden and symlinked directories are not
 //     entered). Each is read as get_surface_schema reads it; one that does not
 //     read or parse carries `error` (and no counts) instead of being dropped.
-//     `name` and `routing`: the engine surface manifest's variant (OpenPBR's
-//     manifest.json), only for a surface it lists; `routing` is a material's
-//     routing as create_material takes it. `render_state`: the header's
-//     render_state, only when it declares one.
+//     `name`: the engine surface manifest's variant (OpenPBR's
+//     manifest.json), only for a surface it lists. EB-6: `routings` every
+//     routing a material on the surface is drawn with, as create_material
+//     takes it -- the one the manifest pairs the surface with, or, for a
+//     surface no manifest lists, each its render_state and hooks take
+//     (one-sided before double-sided, opaque, mask, blend; [] when none,
+//     e.g. no pelican_lighting_v1) -- and `routing` the first of them,
+//     create_material's default (absent when there is none).
+//     `render_state`: the header's render_state, only when it declares one.
 //   get_material_bindings {model} ->
 //     {model, material_bindings: path | null, bindings_digest | null,
-//      primitives: [{mesh, primitive, slot, material, usd_path | null}],
+//      primitives: [{mesh, primitive, slot, material, usd_path | null,
+//                    unresolved?: {material, reason, drawn}}],
 //      objects, object_overrides}
+//     EB-6: `unresolved` when the primitive's bound `material` is a name no
+//     registered document holds (FO-1's material.binding_unresolved@1): it
+//     draws `drawn`, the model's own material, instead; `reason` says why
+//     (the refused document holding the name and its status, when known).
 //     MT-2: `objects` counts the scene objects (every scene of the document
 //     the editor holds, prefab-generated ones included) whose simplemodelview
 //     draws the model; `object_overrides` those of them with their own
 //     materials (set_object_material).
 //
 // Writes ({committed, changed, ..., applied: "live" | "rebuilt" |
-// "restart_required", restart_required: {reason} | null}):
+// "restart_required" | "unusable", restart_required: {reason} | null,
+// problem?}):
+//   EB-6: "unusable" -- the documents are written and the engine goes on,
+//   but a pass that draws the material does not declare what its surface
+//   uses (a scene acceleration structure query, ray_query): the document is
+//   list_materials' "unusable" and get_problems lists
+//   material.pass_contract_unmet@1 (source edit_rpc) until the pass declares
+//   it; the next frame after that registers it (and rebuilds the models
+//   binding it). `problem`: {code, message, document?, document_kind?, node?,
+//   material, material_document, pass, passes?, requirement, reason}, the
+//   listed problem's fields with its code and where. create_material and
+//   register_material (a new document) answer it; edit_material and
+//   rename_material when the registration anew is refused so (the models
+//   keep drawing the previous registration until then); bind_material when a
+//   material bound is such a document's (the model takes the bindings, its
+//   primitives keep their own material until then).
 //   edit_material {base_material_digest, path, name?, values?, textures?,
 //                  tags?, routing?, variants?, surface?}
 //     values / textures: {param: value | null} merged into the material's
@@ -93,7 +119,9 @@ class ReloadService;
 //     sent, in the same edit: `surface` alone takes its manifest routing
 //     (when the material holds a routing), `routing` alone takes the surface
 //     of that routing from the manifest of the material's surface. The key
-//     that followed is in `previous` like a sent one. Both sent are taken as
+//     that followed is in `previous` like a sent one. EB-6: `surface` alone
+//     on a surface no manifest lists keeps the material's routing when the
+//     surface takes it, and otherwise takes list_surfaces' `routing` for it. Both sent are taken as
 //     they are; a routing whose pipeline state is not the surface's is
 //     refused, material.document_invalid@1.
 //   create_material {path, surface, name?, values?, tags?, routing?}
@@ -101,7 +129,8 @@ class ReloadService;
 //     materials[] (one transaction), then registers it live
 //     (ProjectMaterialAssetContainer::registerDocument). `name` defaults to
 //     the file name without `.material.json` / `.json`; `routing` to
-//     {alpha_mode: opaque, double_sided: false} (a binding needs one).
+//     list_surfaces' `routing` for the surface (EB-6), or {alpha_mode:
+//     opaque, double_sided: false} when it has none (a binding needs one).
 //   bind_material {model, material, primitive?: {mesh, primitive} | slot?}
 //   bind_material {model, bindings: [{mesh, primitive, material}]}
 //     writes the model's pelican.material_bindings document (made, and named
@@ -190,6 +219,16 @@ class ReloadService;
 //     rebuilt_models: [model], and asset_data_digest ==
 //     previous_asset_data_digest; restart_required when the models could
 //     not be rebuilt in place (the document stays registered).
+//     EB-6: a listed document the engine holds is read again from its file
+//     (a person's own editor wrote it; no watch did): checked as
+//     create_material checks a document -- refused by the parser's code,
+//     material.document_unknown@1 / material.document_invalid@1 {path,
+//     reason}, nothing changing -- and registered anew as an edit outside
+//     values is (MT-3): {committed, reloaded: true, path, names,
+//     material_digest, asset_data_digest == previous_asset_data_digest,
+//     applied: "rebuilt" | "unusable" | "restart_required", rebuilt_models}.
+//     Nothing is written. material.path_conflict@1 is left for a listed
+//     document this engine neither holds nor refused.
 //   rename_material {name, new_name} ->
 //     {committed, changed, path, name: new_name, previous_name,
 //      material_digest, previous_material_digest, rewritten_bindings: [{model,
