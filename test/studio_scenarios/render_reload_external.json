@@ -5,6 +5,14 @@
   "description": "RL-1s: the root render document rewritten outside Studio, the way a person fixes the JSON by hand in an editor of their own. From File > New Project > Blank, the Graph tab's Add fullscreen pass goes onto present's + input, and its image's format is picked in the Graph (an edit the Graph can undo). The scenario then rewrites passes/main_rendering_config.json on disk: the image's format back to half floats. Studio notices the write (decision 1), sees it is not its own (2), asks reload_render_documents (3), says Picked up the change, shows the new format in the Graph, and its Undo no longer reaches back past the reload (4). The file is then broken (a doubled comma): the refusal names the file, and while it stands a Graph edit reads as the file on disk that could not be loaded, and Reload from disk says the refusal again (5). The comma fixed (with a format the engine did not hold), Studio picks it up, and a Graph edit commits. Typed: the project folder and name in New Project.",
   "tab": "frame_plan",
   "probe_no_automation": false,
+  "invariants": {
+    "undo_exempt": [
+      {
+        "path": "render:passes/main_rendering_config.json",
+        "reason": "The scenario replaces this root graph outside Studio, deliberately cutting earlier Graph history. Its disk file is already excluded as an external write; this is the RPC view of the same document."
+      }
+    ]
+  },
   "steps": [
     {"label": "the fixture's engine is up, so the switch to the new project is something that happens", "cmd": "wait_engine", "timeout_ms": 180000},
     {"label": "start from the default layout", "cmd": "action", "name": "pelican.layout.resetDefault"},

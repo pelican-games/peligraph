@@ -9,6 +9,7 @@
 
 #include "automationcommands.hpp"
 #include "automationserver.hpp"
+#include "../src/devstudio/viewport/embeddedviewport.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -794,6 +795,117 @@ TEST_CASE("AG-3b: wait answers for whether a thing is usable, not only on screen
               .toBool());
 }
 
+// QD-1 (GL-5g's rule 5): hidden and switched off are states of a thing that is
+// there. A wait for "not visible" or "not enabled" on a name that resolves to
+// nothing used to be satisfied at once, so a misspelt name passed.
+TEST_CASE("QD-1: wait for hidden or switched off needs the thing to be there; gone is missing",
+          "[devstudio][automation][qd1]") {
+    Fixture fixture;
+    for (const char *state : {"visible", "enabled"}) {
+        INFO("state " << state);
+        const AutomationReply misspelt = fixture.run(
+            QStringLiteral("wait"),
+            QJsonObject{{QStringLiteral("name"), QStringLiteral("pelican.testAtach")},
+                        {QString::fromLatin1(state), false},
+                        {QStringLiteral("timeout_ms"), 50}});
+        CHECK_FALSE(misspelt.ok);
+        CHECK(misspelt.code == QStringLiteral("automation.wait_timeout@1"));
+        CHECK(misspelt.message.contains(QStringLiteral("found=false")));
+    }
+    // The thing that is there and switched off still answers.
+    const QJsonObject off = fixture.result(
+        QStringLiteral("wait"),
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("pelican.testAttach")},
+                    {QStringLiteral("enabled"), false},
+                    {QStringLiteral("timeout_ms"), 50}});
+    CHECK(off.value(QStringLiteral("found")).toBool());
+    // And "gone" is said with missing.
+    CHECK(fixture.run(QStringLiteral("wait"),
+                      QJsonObject{{QStringLiteral("name"), QStringLiteral("pelican.testAtach")},
+                                  {QStringLiteral("missing"), true},
+                                  {QStringLiteral("timeout_ms"), 50}})
+              .ok);
+}
+
+// QD-1: `history` reads each of Studio's Undo controls by the name it already
+// has, and presses one the way the control is pressed; `project_state` needs
+// an engine viewport.
+TEST_CASE("QD-1: history reads and presses the Undo controls by kind; project_state needs a viewport",
+          "[devstudio][automation][qd1]") {
+    Fixture fixture;
+    const QJsonObject empty = fixture.result(QStringLiteral("history"));
+    const QJsonObject kinds = empty.value(QStringLiteral("kinds")).toObject();
+    for (const char *kind : {"scene", "render", "graph", "materials", "material_row", "assets"}) {
+        INFO("kind " << kind);
+        REQUIRE(kinds.contains(QString::fromLatin1(kind)));
+        CHECK_FALSE(kinds.value(QString::fromLatin1(kind))
+                        .toObject()
+                        .value(QStringLiteral("undo"))
+                        .toObject()
+                        .value(QStringLiteral("found"))
+                        .toBool());
+    }
+    CHECK(kinds.value(QStringLiteral("materials")).toObject().value(QStringLiteral("redo")).isNull());
+
+    // The scene's are buttons (the Inspector's), the render edits' are actions.
+    auto *scene_undo = new QPushButton(QStringLiteral("Undo"), fixture.window.centralWidget());
+    scene_undo->setObjectName(QStringLiteral("pelican.inspectorUndo"));
+    int scene_undos = 0;
+    QObject::connect(scene_undo, &QPushButton::clicked, [&scene_undos] { ++scene_undos; });
+    auto *render_undo = new QAction(QStringLiteral("Undo Render Edit"), &fixture.window);
+    render_undo->setObjectName(QStringLiteral("pelican.edit.undoRenderEdit"));
+    render_undo->setToolTip(QStringLiteral("Undo Edit pass present"));
+    int render_undos = 0;
+    QObject::connect(render_undo, &QAction::triggered, [&render_undos] { ++render_undos; });
+    fixture.window.addAction(render_undo);
+    scene_undo->show();
+    QApplication::processEvents();
+
+    const QJsonObject read = fixture.result(QStringLiteral("history"))
+                                 .value(QStringLiteral("kinds"))
+                                 .toObject();
+    const QJsonObject render = read.value(QStringLiteral("render"))
+                                   .toObject()
+                                   .value(QStringLiteral("undo"))
+                                   .toObject();
+    CHECK(render.value(QStringLiteral("found")).toBool());
+    CHECK(render.value(QStringLiteral("tooltip")).toString() == QStringLiteral("Undo Edit pass present"));
+
+    fixture.result(QStringLiteral("history"),
+                   QJsonObject{{QStringLiteral("kind"), QStringLiteral("scene")},
+                               {QStringLiteral("step"), QStringLiteral("undo")}});
+    fixture.result(QStringLiteral("history"),
+                   QJsonObject{{QStringLiteral("kind"), QStringLiteral("render")},
+                               {QStringLiteral("step"), QStringLiteral("undo")}});
+    CHECK(scene_undos == 1);
+    CHECK(render_undos == 1);
+
+    // Switched off is refused, as click refuses it; a history with no Redo
+    // says so; a kind that is not one is named.
+    render_undo->setEnabled(false);
+    const AutomationReply off = fixture.run(
+        QStringLiteral("history"),
+        QJsonObject{{QStringLiteral("kind"), QStringLiteral("render")},
+                    {QStringLiteral("step"), QStringLiteral("undo")}});
+    CHECK_FALSE(off.ok);
+    CHECK(off.message.contains(QStringLiteral("disabled")));
+    CHECK(render_undos == 1);
+    const AutomationReply no_redo = fixture.run(
+        QStringLiteral("history"),
+        QJsonObject{{QStringLiteral("kind"), QStringLiteral("materials")},
+                    {QStringLiteral("step"), QStringLiteral("redo")}});
+    CHECK_FALSE(no_redo.ok);
+    CHECK(no_redo.message.contains(QStringLiteral("no Redo")));
+    CHECK_FALSE(fixture.run(QStringLiteral("history"),
+                            QJsonObject{{QStringLiteral("kind"), QStringLiteral("journal")},
+                                        {QStringLiteral("step"), QStringLiteral("undo")}})
+                    .ok);
+
+    const AutomationReply state = fixture.run(QStringLiteral("project_state"));
+    CHECK_FALSE(state.ok);
+    CHECK(state.code == QStringLiteral("automation.engine_not_ready@1"));
+}
+
 // Q-16: Qt drops a press on a switched-off widget without a word. A click that
 // answered "ok" anyway let a scenario go on as if it had pressed, and fail
 // steps later on what the press never did.
@@ -1087,4 +1199,36 @@ TEST_CASE("PX-2: viewport_size holds the viewport while panels come and go",
     QApplication::processEvents();
     CHECK(surface->size() != QSize(300, 200));
     CHECK(surface->minimumSize() == QSize(1, 1));
+}
+
+TEST_CASE("QD-1: a fixed viewport remains inside its collapsible live container",
+          "[devstudio][automation][qd1][px2]") {
+    (void)application();
+    QMainWindow window;
+    auto *centre = new QWidget(&window);
+    auto *layout = new QVBoxLayout(centre);
+    auto *viewport = new PelicanStudio::EmbeddedViewport(centre);
+    layout->addWidget(viewport);
+    window.setCentralWidget(centre);
+    auto *side = new QDockWidget(QStringLiteral("Inspector"), &window);
+    side->setWidget(new QWidget(side));
+    side->widget()->setMinimumSize(250, 60);
+    window.addDockWidget(Qt::RightDockWidgetArea, side);
+    window.resize(900, 600);
+    window.show();
+    QApplication::processEvents();
+    auto *surface = viewport->findChild<QWidget *>(QStringLiteral("pelican.viewportHost"));
+    REQUIRE(surface);
+    const int original_minimum = surface->parentWidget()->minimumWidth();
+    AutomationHost host;
+    host.window = &window;
+    REQUIRE(runAutomationCommand(host, request(QStringLiteral("viewport_size"),
+        {{QStringLiteral("width"), 500}, {QStringLiteral("height"), 250}})).ok);
+    window.resize(550, 500);
+    QApplication::processEvents();
+    CHECK(surface->width() == 500);
+    CHECK(surface->parentWidget()->rect().contains(surface->geometry()));
+    REQUIRE(runAutomationCommand(host, request(QStringLiteral("viewport_size"),
+        {{QStringLiteral("free"), true}})).ok);
+    CHECK(surface->parentWidget()->minimumWidth() == original_minimum);
 }

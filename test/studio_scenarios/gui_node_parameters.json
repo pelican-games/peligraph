@@ -276,7 +276,7 @@
         "params": {}
       },
       "path": "result.nodes[0].parameters",
-      "op": "excludes",
+      "op": "lacks_key",
       "value": "lifetime",
       "retry_ms": 60000
     },

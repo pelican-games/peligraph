@@ -2,6 +2,14 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_graph_order",
+  "invariants": {
+    "log_allow": [
+      {
+        "pattern": "Failed to load main rendering configuration: frame_node_order[.]conflicts_dependency@1",
+        "reason": "the scenario applies a node order that puts present before left, whose output present reads, to see the refusal named; the engine logs the configuration it refused"
+      }
+    ]
+  },
   "description": "GL-5d, decision 1, on a fixture of its own: Blank's rendering section has one pass, so gui_graph_only_edits cannot reach Order… from Blank. The root's rendering section holds left, right and present (fullscreen passes with engine://passthrough). right picked on the Graph offers Order… in its detail column; it is the Frame Plan's Order..., which reads the plan again first (the Frame Plan's tab is never brought forward) and opens the Features tab's node order dialog on the plan's nodes. Apply sends that order: get_frame_node_order keeps it, the root holds frame_node_order, the plan and the picture do not change. FO-1s, decision 1 (engine FO-1): Order… again, right moved above left (neither reads the other) and Apply commits; the plan runs right first, and the picture is the same (both draw the gradient, present shows left's). Order… once more, present moved above left, whose left_color it reads: the engine refuses it, the dialog says so in one sentence (left must stay before present: present reads left_color, which left writes), and the order the engine keeps is still right, left. Nothing typed.",
   "tab": "graph",
   "probe_no_automation": false,

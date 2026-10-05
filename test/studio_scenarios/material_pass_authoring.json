@@ -5,6 +5,10 @@
   "description": "G-1 as GL-5c leaves it: on a graph root that selects no preset, Add material pass... on the Frame Plan is the Graph's palette, which places a forward_opaque_v1 pass with its draw loop and its own images in the graph's nodes (no managed fragment, no declared target) on a project with a model, and once present reads the pass's colour image the model is on screen. G-4: the pipeline has no pass for deferred materials, so the forward route default goes with the edit and Studio restarts the engine on the same project. The material pass form itself (Create missing targets) is a preset root's now.",
   "tab": "frame_plan",
   "probe_no_automation": false,
+  "invariants": {
+    "undo": "known_red",
+    "undo_ticket": "QD1-R4"
+  },
   "steps": [
     {
       "label": "the fixture's engine is up",

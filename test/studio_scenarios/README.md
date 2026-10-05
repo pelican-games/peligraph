@@ -124,8 +124,21 @@ reply, which is how `view_state` and `menu_list` are checked.
      "path": "scale", "op": "gt", "value_of": "before"}
 
 * `value` is a literal; `value_of` is what an earlier step wrote down with
-  `remember`. With neither, the step only reads (and remembers), and passes.
-* `op` is `eq` (the default), `ne`, `gt`, `ge`, `lt`, `le`, `contains` or `excludes` (the text does not hold the value -- how a scenario says a message never appeared).
+  `remember`. A step with neither compares nothing: it must `remember` the
+  value for a later step, or say `"record": true` (a reading kept for the
+  report's reader, such as a measurement); otherwise it fails (QD-1). A name
+  remembered and never compared by a later step is a warning in the report.
+* `op` is `eq` (the default), `ne`, `gt`, `ge`, `lt`, `le`, `contains`,
+  `excludes` (the text does not hold the value -- how a scenario says a message
+  never appeared), `has_key` or `lacks_key` (an object has / has no key of that
+  name). QD-1 refuses, as a failed step, the forms that pass whatever happened:
+  `contains` / `excludes` on an object (Python's `in` reads its keys -- ask
+  `has_key` / `lacks_key`, or walk the path to the value), an `excludes` from a
+  list of a value of a kind none of its elements is, `contains` / `excludes` of
+  `""`, and `ne` between two kinds (null apart). `eq` tells a bool from a number:
+  `true` is not `1`.
+* `stable_for_frames: N` reads the value again once the engine has drawn N more
+  frames and requires the same value: "and it stays so".
 * `plus` adds a number to `value_of` (`"value_of": "frame", "plus": 1` is one
   step later), and `value_format` is a text made of what earlier steps
   remembered (`"Paused · frame {frame}"`) -- PM-3a's `play_pause_step` uses
@@ -776,3 +789,97 @@ The two entries of a canvas's own context menu are named QActions, so `action`
 fires them without a popup: `pelican.graphCanvas.autoLayout`,
 `pelican.graphCanvas.fitView`, `pelican.framePlan.autoLayout` and
 `pelican.framePlan.fitView`.
+
+
+## What every scenario is held to (QD-1)
+
+Executed findings and the complete 84-case matrix are in [QD1_FINDINGS.md](QD1_FINDINGS.md).
+There are 49 ticketed `known_red` checks in 46 scenarios:
+45 Undo/Redo findings and 4 health findings. These marks retain
+observed failures, including restoration gaps whose root cause is not isolated;
+they are not a count of independent product defects. A mark never excuses an
+exception or an incomplete history traversal in the checker.
+
+After a scenario's last step passed, the driver checks three things the scenario
+does not have to write (`tools/studio_invariants.py`). Each is one more step in
+the report, of kind `invariant`, and the report's `invariants` holds what each
+found.
+
+1. **`undo`** -- the documents as they were when the engine first answered (after
+   the scenario's first `wait_engine`, or again after one that finds another
+   project or the same one opened again) come back when every Undo Studio has is
+   pressed until no available history moves, and the documents as they were after
+   the last step come back when the check's Undo sequence is redone. Studio's Undo is one per kind
+   of document, each behind its own control, and the driver presses them by kind:
+
+   | kind | Undo / Redo | what it holds |
+   |---|---|---|
+   | `graph` | `pelican.graphCanvas.undo` / `.redo` | the Graph tab's edits, and the render edits the tab sent, in the order sent |
+   | `render` | `pelican.edit.undoRenderEdit` / `.redoRenderEdit` | the render edits (Frame Plan, Pass Editor, render panels) |
+   | `materials` | `pelican.materials.undo` / -- | the Materials dock's writes |
+   | `material_row` | `pelican.inspectorMaterialUndo` / -- | a Material row's Every <model> |
+   | `assets` | `pelican.assets.undo` / -- | the Assets dock's declarations |
+   | `scene` | `pelican.inspectorUndo` / `.inspectorRedo` | the engine's scene journal, the Inspector's session |
+
+   Undo goes in that order, each kind until its control is off or a press moves
+   nothing. A blocked kind is retried after another kind changes documents.
+   Redo presses, last first, one Redo per Undo that moved something. Only if no
+   Redo was already available at the ordinary endpoint does it drain remaining
+   Redo; existing endpoint history must not carry the check past its snapshot.
+   The scene journal distinguishes real Redo from always-enabled empty buttons.
+   Both traversals are bounded; an incomplete traversal fails even if snapshots
+   happen to match. Not compared, and said in the report when it is what
+   differs: a scene file on disk (Save is not undone; the scene in memory is
+   compared), the scene after the engine was started again (the journal lives in the
+   engine), the Frame Plan's placement (`layout.frame_plan`, kept through Undo by
+   RU-1), and, after an Undo of a kind with no Redo, the Redo half. The documents
+   are read with `project_state` (below): every file under the project but
+   `.pelican/` and logs by sha256, and the engine's `export_scene_snapshot`,
+   `get_render_documents`, `list_materials` and `get_project_settings`.
+2. **`reopen`** -- File > Save Scene, then the project closed (another one opened)
+   and opened again: the documents are what was saved, and nine points of the
+   viewport (a 3 x 3 grid at 0.2 / 0.5 / 0.8) are within 3 of what they were. A
+   picture must be stable in two readings half a second apart within 5 s. Animated
+   scenarios must explicitly declare `pixels: false` with `pixels_reason`;
+   missing pixels or an undeclared unstable picture fail the check.
+3. **`health`** -- the engine still answers; Studio's log and the engine's
+   (`<project>/.pelican/logs/player.log`) hold no `ERROR`, `LOG_ERROR`, `LOG_FATAL`, assert
+   or fatal line that `log_allowlist.json` (here) or the scenario does not allow by
+   pattern, with a reason; and Problems holds as many entries as the scenario
+   declares (`"problems": N`, default 0) right after its last step. Studio's exit
+   code is the `shutdown` step's, as before.
+
+A scenario says what does not fit it, always with a reason:
+
+    "invariants": {
+      "undo": false, "undo_reason": "...",           // off
+      "reopen": "known_red", "reopen_ticket": "QD1-4", // red for a listed bug
+      "pixels": false, "pixels_reason": "...",       // reopen without the picture
+      "problems": 1,
+      "log_allow": [{"pattern": "<regex>", "reason": "..."}],
+      "undo_exempt": [{"path": "file:shaders/*.frag", "reason": "..."},
+                      {"path": "render:passes/main.json", "key": "a.b", "reason": "..."}]
+    }
+
+`reason` and `ticket` stand for every invariant the scenario turns off or marks.
+An `undo_exempt` entry names a document (by its key in the report, a glob) or, with
+`key`, a part of a JSON document that an operation writes outside every Undo by
+design. **`known_red`** is for an executed finding on the list (the ticket is its
+number there): the run stays green and the report and the driver's output say
+`KNOWN RED invariant <name> (<ticket>)`; once the check passes, the step says the
+mark can come off. `QD1_INVARIANTS=undo,health` in the environment runs only those.
+
+Two commands serve this, and a scenario can use them too:
+
+* `history` -- every Undo / Redo control by kind: `{kinds: {<kind>: {undo: {name,
+  found, enabled, visible, text, tooltip}, redo: {...} | null}}}`. With `kind` and
+  `step` (`undo` / `redo`) it presses that control the way it is pressed (whether
+  or not its panel is on screen); switched off is refused, as `click` refuses it.
+* `project_state` -- `{dir, engine_ready, engine_process_id, files: [{path, size,
+  sha256}], rpc: {<method>: <answer> | {error}}}`; `brief: true` leaves out the
+  files and the engine, `journal: false` leaves out `query_journal`.
+
+A hidden widget still exists. Use `wait` with `missing: true` when an action
+removes a widget or a graph item; `visible: false` / `enabled: false` require
+the name to resolve and fail on a missing name. Keep a positive check of the
+created item or replacement next to a disappearance check.

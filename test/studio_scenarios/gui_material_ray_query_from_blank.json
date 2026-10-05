@@ -5,6 +5,16 @@
   "description": "RTL-3s decisions 8 and 9 and EB-6s decisions 1, 2 and 5 (engine FO-2, EB-6), from Blank with the GUI only, without a restart. File > New Project > Blank; Add Object > Cube and a Forward opaque material pass read by present (gui_material_from_blank's way). A surface that queries the scene's acceleration structure is written into the project's shaders (a person's own editor), and the engine process is noted. New material on that surface: the pass does not declare ray_query, yet the engine takes the document and goes on (applied unusable) -- the Materials dock says why in one sentence and asks no restart, list_materials says unusable, and get_problems lists material.pass_contract_unmet@1 met by the edit (source edit_rpc) for the root's graph node render_material_pass; the dock picks the document's row, which says the pass and offers Open the pass. Bound to every Cube while it is unusable: the engine binds the name, draws the cube's own material in its place (get_material_bindings' unresolved, which the Inspector's rows say), and adds the binding's warning. The dock's Open the pass picks the pass on the Graph; the Problems row goes to the same pass. Ray query On in the pass's fields: the engine takes the material in, the problems go, the binding resolves and the box takes the surface's green without being bound again -- all from the process noted before New material. Typed: the project folder and its name in New Project; the surface's text is written by the scenario as a person's own editor would.",
   "tab": "frame_plan",
   "probe_no_automation": false,
+  "invariants": {
+    "undo": "known_red",
+    "undo_ticket": "QD1-R3",
+    "log_allow": [
+      {
+        "pattern": "LOG_ERROR\\s+pelican\\s+material\\.pass_contract_unmet@1:",
+        "reason": "The scenario deliberately creates and binds a material before declaring ray_query, then checks live recovery."
+      }
+    ]
+  },
   "steps": [
     {
       "label": "the fixture's engine is up, so the switch to the new project is something that happens",

@@ -5,6 +5,16 @@
   "description": "HW-2s / AV-1s, from Blank with the GUI only. File > New Project > Blank; the Assets dock (View > Assets) lists the template's assets/. The textures folder's Reload when saved outside writes project.json's hot_reload through edit_project_settings, and the engine watches it at once (get_status.reload.watch). Track asset contents declares the store main at assets/ with assets.manifest.json in one edit; the engine writes the manifest and checks against it: nothing differs. A texture baked outside Studio (gui_assets_watch_verify.prepare.py) is saved into assets/textures; the engine reads it again and the line above the tree names it; Verify again finds one extra file; Update manifest says how many files change, writes the manifest, and the check is clean again. Undo takes back Track asset contents, then the watch: project.json's two keys are gone again.",
   "tab": "frame_plan",
   "probe_no_automation": false,
+  "invariants": {
+    "undo_exempt": [
+      {
+        "path": "file:assets.manifest.json",
+        "reason": "Update Manifest writes this generated manifest outside Assets Undo; the scenario explicitly confirms that separate operation."
+      }
+    ],
+    "undo": "known_red",
+    "undo_ticket": "QD1-R13"
+  },
   "steps": [
     {
       "label": "the fixture's engine is up, so the switch to the new project is something that happens",

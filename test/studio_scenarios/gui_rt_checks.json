@@ -4,6 +4,24 @@
   "description": "RTL-3s: the ray tracing operations Studio had only unit tests for, done on the real window and engine. The fixture (test/fixtures/studio_gui_rt_checks) has a cube and a procedural ball, a ray group layout of two ray types (primary, shadow), two hit groups (mesh, ball procedural), two misses, the engine's record and a record field value, and a task `trace` that traces primary only and calls a callable through a callable record. Decision 5 (engine EB-3): the Graph's shadow check makes a whole row in shadow's own payload -- the template's closest hits, which declare no record, written for it -- and the pipeline takes it; unchecked, the row goes in the same edit; checked again, the same files. Decision 6: a cell's shader replaced by one whose record is not the layout's is refused, and the sentence names that shader and what to do, from the refusal's fields, with the cell red; the same shader saved into the root outside Studio is a Problems row whose click opens the task with the same cell red. Decision 3 / 7: a procedural asset's record value changed and taken back with Edit > Undo Render Edit (the engine restores asset data by digest), forward again with Redo; the engine record's geometry_kind checked (the hit shader's Studio block written again); the record field removed and put back with one Undo. The Callable records dialog opened from the Graph and one value changed. The Frame Plan lists the named TLAS's BLAS. Typed: the callable record's value in the Records dialog.",
   "tab": "graph",
   "probe_no_automation": false,
+  "invariants": {
+    "log_allow": [
+      {
+        "pattern": "LOG_ERROR\\s+pelican\\s+Failed to load main rendering configuration: pelican\\.ray_tracing\\.shader_record_abi_mismatch@1: shader .*wrong_record\\.rchit",
+        "reason": "The wrong_record shader is deliberately rejected both through editing and external reload; the scenario then restores the valid shader."
+      }
+    ],
+    "undo_exempt": [
+      {
+        "path": "render:passes/main_rendering_config.json",
+        "reason": "The scenario rewrites the root graph outside Studio with wrong_record and repairs it through the UI. The disk document is excluded as an external write; this is its RPC view. Asset-data and shader Undo checks remain enabled."
+      }
+    ],
+    "undo": "known_red",
+    "undo_ticket": "QD1-R31",
+    "health": "known_red",
+    "health_ticket": "QD1-H1"
+  },
   "steps": [
     {"label": "the fixture's engine is up and has presented frames", "cmd": "wait_engine", "timeout_ms": 180000, "frames": 30},
     {"label": "start from the default layout", "cmd": "action", "name": "pelican.layout.resetDefault"},

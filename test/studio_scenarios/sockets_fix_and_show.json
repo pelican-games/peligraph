@@ -1,4 +1,8 @@
 {
+  "invariants": {
+    "undo": "known_red",
+    "undo_ticket": "QD1-R44"
+  },
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "sockets_fix_and_show",

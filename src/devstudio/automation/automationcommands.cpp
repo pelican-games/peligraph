@@ -20,7 +20,10 @@
 #include <QApplication>
 #include <QColor>
 #include <QComboBox>
+#include <QCryptographicHash>
 #include <QDir>
+#include <QDirIterator>
+#include <QFile>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFileInfo>
@@ -31,11 +34,13 @@
 #include <QGraphicsTextItem>
 #include <QGraphicsView>
 #include <QGuiApplication>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QKeySequence>
 #include <QLineEdit>
+#include <QLayout>
 #include <QModelIndex>
 #include <QMenu>
 #include <QMouseEvent>
@@ -1795,9 +1800,13 @@ AutomationReply commandWait(const AutomationHost &host,
                        target.owner->isEnabled();
         bool satisfied = true;
         if (missing.isBool()) satisfied = satisfied && (last_found != missing.toBool());
-        if (visible.isBool()) satisfied = satisfied && last_visible == visible.toBool();
+        // QD-1 (GL-5g's rule 5): hidden and switched off are states of a
+        // thing that is there. A name that resolves to nothing satisfied
+        // both, so a misspelt name passed; "gone" is `missing: true`.
+        if (visible.isBool())
+            satisfied = satisfied && last_found && last_visible == visible.toBool();
         if (enabled.isBool())
-            satisfied = satisfied && last_enabled == enabled.toBool();
+            satisfied = satisfied && last_found && last_enabled == enabled.toBool();
         if (text.isString()) satisfied = satisfied && last_found && last_text == text.toString();
         if (contains.isString())
             satisfied = satisfied && last_found &&
@@ -1805,6 +1814,7 @@ AutomationReply commandWait(const AutomationHost &host,
         if (satisfied)
             return AutomationReply::success(QJsonObject{
                 {QStringLiteral("name"), name},
+                {QStringLiteral("found"), last_found},
                 {QStringLiteral("text"), last_text},
                 {QStringLiteral("visible"), last_visible},
                 {QStringLiteral("enabled"), last_enabled},
@@ -2050,10 +2060,12 @@ AutomationReply commandViewportSize(const AutomationHost &host,
             WidgetMissing, QStringLiteral("no widget is named \"%1\"").arg(name));
     QWidget *surface = target.widget;
     QWidget *window = surface->window();
+    QWidget *container = surface->parentWidget();
     // What the layout gave it before the first fix, so `free` returns that
     // rather than a guess.
     const char *kept_minimum = "pelicanAutomationFreeMinimumSize";
     const char *kept_maximum = "pelicanAutomationFreeMaximumSize";
+    const char *kept_container_width = "pelicanAutomationFreeMinimumWidth";
     if (!surface->property(kept_minimum).isValid()) {
         surface->setProperty(kept_minimum, surface->minimumSize());
         surface->setProperty(kept_maximum, surface->maximumSize());
@@ -2063,6 +2075,8 @@ AutomationReply commandViewportSize(const AutomationHost &host,
     if (request.value(QStringLiteral("free")).toBool(false)) {
         surface->setMinimumSize(surface->property(kept_minimum).toSize());
         surface->setMaximumSize(surface->property(kept_maximum).toSize());
+        if (container && container->property(kept_container_width).isValid())
+            container->setMinimumWidth(container->property(kept_container_width).toInt());
     } else {
         const int width = request.value(QStringLiteral("width")).toInt(0);
         const int height = request.value(QStringLiteral("height")).toInt(0);
@@ -2076,6 +2090,18 @@ AutomationReply commandViewportSize(const AutomationHost &host,
         wanted = QSize{std::max(1, qRound(width / ratio)),
                        std::max(1, qRound(height / ratio))};
         surface->setFixedSize(wanted);
+        // The live viewport deliberately permits its layout to collapse to
+        // one pixel. A fixed automation surface must also reserve space in
+        // that container, or a dock covers part of the photographed viewport
+        // after Reset Layout even though the surface itself still says 720.
+        if (container && container != window) {
+            if (!container->property(kept_container_width).isValid())
+                container->setProperty(kept_container_width, container->minimumWidth());
+            const QMargins margins = container->layout()
+                ? container->layout()->contentsMargins() : QMargins{};
+            container->setMinimumWidth(std::max(container->property(kept_container_width).toInt(),
+                                               wanted.width() + margins.left() + margins.right()));
+        }
         if (window != surface && !window->isMaximized() &&
             !window->isFullScreen())
             window->resize(window->size() + (wanted - before));
@@ -2302,6 +2328,240 @@ AutomationReply commandScreenshot(const AutomationHost &host,
     return AutomationReply::success(reply);
 }
 
+// --------------------------------------------------------------------------
+// QD-1: what the driver checks after a scenario's last step
+//
+// Studio keeps one Undo per kind of document, each behind its own control: the
+// scene's (the Inspector's buttons, the engine's journal of its session), the
+// render edits' (Edit > Undo Render Edit, which the Frame Plan, the Pass
+// Editor and the render panels share), the Graph tab's, and the docks' own
+// (Materials, a Material row's Every <model>, Assets), the last three with no
+// Redo. `history` reads every one of them by the name its control already
+// has, and with `kind` + `step` presses one -- the way the control would be
+// pressed, whether or not its panel is on screen.
+
+struct HistoryKind {
+    const char *kind;
+    const char *undo;
+    const char *redo; // nullptr: this history has no Redo
+};
+
+constexpr HistoryKind HistoryKinds[] = {
+    {"scene", "pelican.inspectorUndo", "pelican.inspectorRedo"},
+    {"render", "pelican.edit.undoRenderEdit", "pelican.edit.redoRenderEdit"},
+    {"graph", "pelican.graphCanvas.undo", "pelican.graphCanvas.redo"},
+    {"materials", "pelican.materials.undo", nullptr},
+    {"material_row", "pelican.inspectorMaterialUndo", nullptr},
+    {"assets", "pelican.assets.undo", nullptr},
+};
+
+// Every named widget and action, looked up once: `history` is read after each
+// step, and walking the whole window per control made that a tenth of a second.
+struct NamedControls {
+    QHash<QString, QWidget *> widgets;
+    QHash<QString, QAction *> actions;
+};
+
+NamedControls namedControls(const AutomationHost &host) {
+    NamedControls found;
+    QSet<QString> wanted;
+    for (const HistoryKind &kind : HistoryKinds) {
+        wanted.insert(QString::fromLatin1(kind.undo));
+        if (kind.redo != nullptr) wanted.insert(QString::fromLatin1(kind.redo));
+    }
+    // namedWidgets() puts a visible widget before a hidden namesake, as
+    // findWidget() reads it; keep the first.
+    for (QWidget *widget : namedWidgets())
+        if (wanted.contains(widget->objectName()) &&
+            !found.widgets.contains(widget->objectName()))
+            found.widgets.insert(widget->objectName(), widget);
+    for (QAction *action : namedActions(host))
+        if (wanted.contains(action->objectName()) &&
+            !found.actions.contains(action->objectName()))
+            found.actions.insert(action->objectName(), action);
+    return found;
+}
+
+QJsonObject historyControlJson(const NamedControls &controls, const QString &name) {
+    QJsonObject control{{QStringLiteral("name"), name}};
+    if (QWidget *widget = controls.widgets.value(name)) {
+        control.insert(QStringLiteral("found"), true);
+        control.insert(QStringLiteral("enabled"), widget->isEnabled());
+        control.insert(QStringLiteral("visible"), widget->isVisible());
+        control.insert(QStringLiteral("text"), widgetText(*widget));
+        control.insert(QStringLiteral("tooltip"), widget->toolTip());
+        return control;
+    }
+    if (QAction *action = controls.actions.value(name)) {
+        control.insert(QStringLiteral("found"), true);
+        control.insert(QStringLiteral("enabled"), action->isEnabled());
+        control.insert(QStringLiteral("visible"), action->isVisible());
+        control.insert(QStringLiteral("text"), withoutMnemonic(action->text()));
+        control.insert(QStringLiteral("tooltip"), action->toolTip());
+        return control;
+    }
+    control.insert(QStringLiteral("found"), false);
+    control.insert(QStringLiteral("enabled"), false);
+    control.insert(QStringLiteral("visible"), false);
+    return control;
+}
+
+QJsonObject historyStateJson(const AutomationHost &host) {
+    const NamedControls controls = namedControls(host);
+    QJsonObject kinds;
+    for (const HistoryKind &kind : HistoryKinds) {
+        QJsonObject entry{
+            {QStringLiteral("undo"),
+             historyControlJson(controls, QString::fromLatin1(kind.undo))}};
+        entry.insert(QStringLiteral("redo"),
+                     kind.redo == nullptr
+                         ? QJsonValue{}
+                         : QJsonValue{historyControlJson(
+                               controls, QString::fromLatin1(kind.redo))});
+        kinds.insert(QString::fromLatin1(kind.kind), entry);
+    }
+    return kinds;
+}
+
+AutomationReply commandHistory(const AutomationHost &host,
+                               const QJsonObject &request) {
+    const QString kind_name = request.value(QStringLiteral("kind")).toString();
+    const QString step = request.value(QStringLiteral("step")).toString();
+    if (kind_name.isEmpty() && step.isEmpty())
+        return AutomationReply::success(
+            QJsonObject{{QStringLiteral("kinds"), historyStateJson(host)}});
+    if (step != QLatin1String("undo") && step != QLatin1String("redo"))
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("step is undo or redo, with a kind"));
+    const HistoryKind *kind = nullptr;
+    QStringList known;
+    for (const HistoryKind &candidate : HistoryKinds) {
+        known.push_back(QString::fromLatin1(candidate.kind));
+        if (kind_name == QLatin1String(candidate.kind)) kind = &candidate;
+    }
+    if (kind == nullptr)
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("unknown history \"%1\"; known: %2")
+                            .arg(kind_name, known.join(QStringLiteral(", "))));
+    const char *control_name = step == QLatin1String("undo") ? kind->undo : kind->redo;
+    if (control_name == nullptr)
+        return AutomationReply::failure(
+            BadRequest, QStringLiteral("the %1 history has no Redo").arg(kind_name));
+    const QString name = QString::fromLatin1(control_name);
+    if (QWidget *widget = findWidget(host, name)) {
+        auto *button = qobject_cast<QAbstractButton *>(widget);
+        if (button == nullptr)
+            return AutomationReply::failure(
+                BadRequest, QStringLiteral("\"%1\" is not a button").arg(name));
+        if (!button->isEnabled())
+            return AutomationReply::failure(
+                BadRequest, QStringLiteral("the widget named \"%1\" is disabled").arg(name));
+        button->click();
+    } else if (QAction *action = findAction(host, name)) {
+        if (!action->isEnabled())
+            return AutomationReply::failure(
+                BadRequest, QStringLiteral("the action named \"%1\" is disabled").arg(name));
+        action->trigger();
+    } else {
+        return AutomationReply::failure(
+            WidgetMissing, QStringLiteral("no widget or action is named \"%1\"").arg(name));
+    }
+    QCoreApplication::processEvents();
+    return AutomationReply::success(QJsonObject{
+        {QStringLiteral("pressed"), name},
+        {QStringLiteral("kinds"), historyStateJson(host)},
+    });
+}
+
+// The project's documents as they stand: every file under the project's
+// directory (but `.pelican/` and logs) by its sha256, and what the engine says
+// of the documents it holds in memory -- the scene (unsaved edits are only
+// there), the render documents, the materials and project.json's settings --
+// plus the scene journal, from which a reader counts what each session can
+// still undo. A method the engine refuses is written down, not fatal: a
+// project the engine did not start still has files.
+const char *const ProjectStateMethods[] = {
+    "export_scene_snapshot", "get_render_documents", "list_materials",
+    "get_project_settings",  "query_journal",
+};
+
+AutomationReply commandProjectState(const AutomationHost &host,
+                                    const QJsonObject &request) {
+    if (host.viewport == nullptr)
+        return AutomationReply::failure(
+            EngineNotReady, QStringLiteral("this window has no engine viewport"));
+    const QString root = host.viewport->projectRoot();
+    QJsonObject reply{
+        {QStringLiteral("dir"), root.isEmpty() ? QString{} : QDir(root).absolutePath()},
+        {QStringLiteral("engine_ready"), host.viewport->currentEngineReady()},
+        {QStringLiteral("engine_process_id"),
+         static_cast<double>(host.viewport->engineProcessId())},
+    };
+    // `brief`: which project and which engine, nothing read.
+    if (request.value(QStringLiteral("brief")).toBool(false))
+        return AutomationReply::success(reply);
+    QJsonArray files;
+    if (!root.isEmpty() && QFileInfo(root).isDir()) {
+        const QDir base(root);
+        QStringList paths;
+        QDirIterator walk(root, QDir::Files | QDir::Hidden | QDir::NoDotAndDotDot,
+                          QDirIterator::Subdirectories);
+        while (walk.hasNext()) {
+            const QString path = walk.next();
+            const QString relative = base.relativeFilePath(path);
+            if (relative.startsWith(QStringLiteral(".pelican/")) ||
+                relative.endsWith(QStringLiteral(".log")))
+                continue;
+            paths.push_back(relative);
+        }
+        paths.sort();
+        for (const QString &relative : paths) {
+            QFile file(base.filePath(relative));
+            QJsonObject entry{{QStringLiteral("path"), relative},
+                              {QStringLiteral("size"), static_cast<double>(file.size())}};
+            if (file.open(QIODevice::ReadOnly)) {
+                QCryptographicHash hash(QCryptographicHash::Sha256);
+                hash.addData(&file);
+                entry.insert(QStringLiteral("sha256"),
+                             QString::fromLatin1(hash.result().toHex()));
+            } else {
+                entry.insert(QStringLiteral("error"), file.errorString());
+            }
+            files.push_back(entry);
+        }
+    }
+    reply.insert(QStringLiteral("files"), files);
+    QJsonObject documents;
+    if (host.viewport->currentEngineReady()) {
+        const int timeout = timeoutOf(request);
+        // The journal holds every edit's commands and is the slow part; a
+        // reader that only asks "did anything move" leaves it out.
+        const bool journal = request.value(QStringLiteral("journal")).toBool(true);
+        // `methods`: only these of the list (a poll that asks "did anything
+        // move" reads the scene, the one document only the engine holds).
+        QStringList only;
+        for (const QJsonValue &name : request.value(QStringLiteral("methods")).toArray())
+            only.push_back(name.toString());
+        for (const char *method : ProjectStateMethods) {
+            if (!journal && std::strcmp(method, "query_journal") == 0) continue;
+            if (!only.isEmpty() && !only.contains(QString::fromLatin1(method))) continue;
+            QJsonObject params;
+            if (std::strcmp(method, "export_scene_snapshot") == 0) {
+                params.insert(QStringLiteral("schema_version"), 2);
+                params.insert(QStringLiteral("allow_pending"), true);
+            }
+            auto outcome = callEngineRpc(host, QString::fromLatin1(method), params, timeout);
+            documents.insert(QString::fromLatin1(method),
+                             outcome.failure
+                                 ? QJsonValue{QJsonObject{
+                                       {QStringLiteral("error"), outcome.failure->message}}}
+                                 : *outcome.result);
+        }
+    }
+    reply.insert(QStringLiteral("rpc"), documents);
+    return AutomationReply::success(reply);
+}
+
 } // namespace
 
 QStringList automationCommandNames() {
@@ -2317,6 +2577,7 @@ QStringList automationCommandNames() {
             QStringLiteral("wait"),         QStringLiteral("wait_engine"),
             QStringLiteral("rpc"),          QStringLiteral("open_project"),
             QStringLiteral("screenshot"),   QStringLiteral("viewport_size"),
+            QStringLiteral("history"),      QStringLiteral("project_state"),
             QStringLiteral("quit")};
 }
 
@@ -2357,6 +2618,9 @@ AutomationReply runAutomationCommand(const AutomationHost &host,
         return commandScreenshot(host, request);
     if (command == QLatin1String("viewport_size"))
         return commandViewportSize(host, request);
+    if (command == QLatin1String("history")) return commandHistory(host, request);
+    if (command == QLatin1String("project_state"))
+        return commandProjectState(host, request);
     // `quit` is answered by the server: it has to finish writing this reply
     // before the event loop it is running in goes away.
     return AutomationReply::failure(

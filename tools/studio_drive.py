@@ -38,6 +38,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+# QD-1: the checks every scenario gets after its last step. The module sits
+# beside this script, which Python puts first on sys.path.
+import studio_invariants
+
 REPORT_SCHEMA = "pelican.studio_scenario_report"
 REPORT_VERSION = 1
 # The player reads it when no --audio-backend is given (AU-3).
@@ -522,14 +526,38 @@ def follow(value: Any, path: str) -> Any:
 
 
 def equal(left: Any, right: Any) -> bool:
+    # QD-1 (GL-5g's rule 3): a bool is not a number. `True == 1` in Python,
+    # and a step that expected `true` of a count of one passed.
     if isinstance(left, bool) or isinstance(right, bool):
-        return left is right or left == right
+        return left is right
     if isinstance(left, (int, float)) and isinstance(right, (int, float)):
         return abs(float(left) - float(right)) <= 1e-9
+    if isinstance(left, list) and isinstance(right, list):
+        return len(left) == len(right) and all(equal(a, b) for a, b in zip(left, right))
+    if isinstance(left, dict) and isinstance(right, dict):
+        return left.keys() == right.keys() and all(equal(left[k], right[k]) for k in left)
     return left == right
 
 
 _MISSING = object()
+
+
+class StepMisuse(ValueError):
+    """A comparison that would pass whatever happened (QD-1, GL-5g's rules)."""
+
+
+def kind_of(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "list"
+    return "object"
 
 
 def compare(op: str, actual: Any, expected: Any) -> bool:
@@ -537,16 +565,49 @@ def compare(op: str, actual: Any, expected: Any) -> bool:
 
     `eq` is the one every other expectation uses.  The rest exist because a
     gesture is judged by which way a number moved, not by where it landed.
+
+    QD-1 makes the forms that cannot fail an error rather than a pass:
+    `contains` / `excludes` on an object (Python's `in` reads its keys, so a
+    value never matched; `has_key` / `lacks_key` ask about a key by name), an
+    `excludes` of a value of a kind no element of the list has, and `ne`
+    between two kinds (a string is never a number).
     """
 
     if op == "eq":
         return equal(actual, expected)
     if op == "ne":
+        if None not in (actual, expected) and kind_of(actual) != kind_of(expected):
+            raise StepMisuse(
+                f"ne between a {kind_of(actual)} and a {kind_of(expected)} is always true"
+            )
         return not equal(actual, expected)
-    if op == "contains":
-        return expected in actual
-    if op == "excludes":
-        return expected not in actual
+    if op in ("has_key", "lacks_key"):
+        if not isinstance(actual, dict):
+            raise StepMisuse(f"{op} needs an object, found a {kind_of(actual)}")
+        return (str(expected) in actual) == (op == "has_key")
+    if op in ("contains", "excludes"):
+        if isinstance(actual, dict):
+            raise StepMisuse(
+                f"{op} on an object reads its keys; write has_key / lacks_key for a key, "
+                "or a path to the value"
+            )
+        if isinstance(actual, str):
+            if not isinstance(expected, str):
+                raise StepMisuse(f"{op} in a string needs a string, not a {kind_of(expected)}")
+            if expected == "":
+                raise StepMisuse(f'{op} "" is decided before the step runs')
+        elif isinstance(actual, list):
+            kinds = {kind_of(item) for item in actual}
+            if op == "excludes" and actual and kind_of(expected) not in kinds:
+                raise StepMisuse(
+                    f"excludes a {kind_of(expected)} from a list of {', '.join(sorted(kinds))} "
+                    "is always true"
+                )
+            found = any(equal(item, expected) for item in actual)
+            return found if op == "contains" else not found
+        else:
+            raise StepMisuse(f"{op} needs a string or a list, found a {kind_of(actual)}")
+        return (expected in actual) if op == "contains" else (expected not in actual)
     if op in {"gt", "ge", "lt", "le"}:
         left, right = float(actual), float(expected)
         return {
@@ -578,6 +639,14 @@ class Run:
         self.remembered: dict[str, Any] = {}
         # EW-2: set when the scenario asks for `watch_engine_windows`.
         self.window_watch: EngineWindowWatch | None = None
+        # QD-1: what the report says of the run besides pass and fail.
+        self.warnings: list[str] = []
+        self.remember_names: dict[str, str] = {}
+        self.used_names: set[str] = set()
+        self.compared_steps = 0
+        self.read_steps = 0
+        self.file_seen: set[tuple[str, str]] = set()
+        self.list_patterns: dict[str, int] = {}
 
     # -- recording -----------------------------------------------------------
 
@@ -758,6 +827,11 @@ def run_command_step(run: Run, step: dict[str, Any], label: str) -> bool:
         return False
     if request.get("cmd") == "screenshot":
         run.screenshots.append(reply["result"]["path"])
+    # QA-1's suggestion: a select that had to wait over a second for its entry
+    # is a scenario missing a wait before it.
+    waited = (reply.get("result") or {}).get("waited_ms") if isinstance(reply.get("result"), dict) else None
+    if request.get("cmd") == "select" and isinstance(waited, (int, float)) and waited > 1000:
+        run.warnings.append(f'"{label}": select waited {waited:.0f} ms for its entry')
     run.record("cmd", label, ok=True, request=request, response=reply, started=started)
     return True
 
@@ -816,6 +890,21 @@ def run_file_step(
                 raise ValueError(
                     f"{path.name} {'holds' if found else 'does not hold'} {step['text']!r}"
                 )
+            if found:
+                run.file_seen.add(("contains", f"{path}|{step['text']}"))
+            elif step.get("was"):
+                # QD-1 (GL-5g's rule 6): "no longer holds" -- this run saw it
+                # hold the text first, so the absence is news, not a typo.
+                if ("contains", f"{path}|{step['text']}") not in run.file_seen:
+                    raise ValueError(
+                        f"{path.name} never held {step['text']!r} earlier in this run "
+                        "(was: true says it did)"
+                    )
+            elif ("contains", f"{path}|{step['text']}") not in run.file_seen:
+                run.warnings.append(
+                    f'"{label}": {path.name} does not hold {step["text"]!r}, and no step of '
+                    "this run saw it hold it (a misspelt text passes too; was: true says it did)"
+                )
             detail = f"{path.name} {'holds' if found else 'does not hold'} the text"
         elif action == "copy":
             source = Path(str(step["from"])).resolve()
@@ -830,7 +919,29 @@ def run_file_step(
             present = path.is_file()
             if present != bool(step.get("value", True)):
                 raise ValueError(f"{path.name} {'exists' if present else 'is missing'}")
+            if present:
+                run.file_seen.add(("exists", str(path)))
+            elif step.get("was") and ("exists", str(path)) not in run.file_seen:
+                raise ValueError(
+                    f"{path.name} was never seen in this run (was: true says it was)"
+                )
+            elif not present and ("exists", str(path)) not in run.file_seen:
+                run.warnings.append(
+                    f'"{label}": {path.name} is missing, and no step of this run saw it '
+                    "(a misspelt path passes too; was: true says it was there)"
+                )
             detail = f"{path.name} {'exists' if present else 'is missing'}"
+        elif action == "list":
+            # QD-1 (GL-5g's rule 6): what a directory holds, so "nothing new
+            # was written in shaders/" can be said without guessing a name.
+            names = sorted(entry.name for entry in path.iterdir()) if path.is_dir() else []
+            if "value" in step and names != sorted(step["value"]):
+                raise ValueError(f"{path.name}/ holds {names}, expected {sorted(step['value'])}")
+            if "count" in step and len(names) != int(step["count"]):
+                raise ValueError(f"{path.name}/ holds {len(names)} entries ({names}), expected {step['count']}")
+            if "value" not in step and "count" not in step:
+                raise ValueError("a list step needs value (the names) or count")
+            detail = f"{path.name}/ holds {names}"
         else:
             raise ValueError(f"unknown file action \"{action}\"")
     except (OSError, ValueError, KeyError) as error:
@@ -929,6 +1040,27 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
                 )
             path = str(step.get("path", ""))
             has_expectation = "value" in step or "value_of" in step or "value_format" in step
+            # QD-1 (GL-5g's rule 2): a reading that is neither compared nor
+            # written down for a later step passes whatever it reads. One kept
+            # only for the report's reader says so with `record`.
+            if not has_expectation and not step.get("remember") and not step.get("record"):
+                return _fail(
+                    run, kind, label, request, None,
+                    "a result step compares (value / value_of / value_format), remembers "
+                    "for a later step (remember), or is a reading for the record (record: true)",
+                    started,
+                )
+            if step.get("remember"):
+                run.remember_names.setdefault(str(step["remember"]), label)
+            if "value_of" in step:
+                run.used_names.add(str(step["value_of"]))
+            if "value_format" in step:
+                import string
+
+                run.used_names.update(
+                    field for _, field, _, _ in string.Formatter().parse(str(step["value_format"]))
+                    if field
+                )
             expected: Any = None
             shown = ""
             if "value" in step:
@@ -1019,13 +1151,44 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
                     f"{op} {shown}",
                     started,
                 )
+            # QD-1 (GL-5g's rule 4): "and it stays so" -- the same reading
+            # again once the engine has drawn this many more frames.
+            if step.get("stable_for_frames"):
+                frames = int(step["stable_for_frames"])
+                status = run.call({"cmd": "rpc", "method": "get_status", "params": {}}, timeout=60.0)
+                published = (((status.get("result") or {}).get("result") or {}).get("render") or {}).get(
+                    "published_frames"
+                )
+                if not status.get("ok") or not isinstance(published, (int, float)):
+                    return _fail(run, kind, label, request, status,
+                                 "stable_for_frames: get_status has no render.published_frames", started)
+                waited = run.call(
+                    {"cmd": "wait_engine", "frames": int(published) + frames, "timeout_ms": 60000},
+                    timeout=90.0,
+                )
+                if not waited.get("ok"):
+                    return _fail(run, kind, label, request, waited,
+                                 f"stable_for_frames: the engine did not draw {frames} more frames", started)
+                again = run.call(request, timeout=float(step.get("wait_s", 120)))
+                try:
+                    later = follow(again["result"], path) if again.get("ok") else _MISSING
+                except (PathError, ValueError):
+                    later = _MISSING
+                if later is _MISSING or not equal(later, actual):
+                    return _fail(
+                        run, kind, label, request, again,
+                        f"{request['cmd']} {path}: {json.dumps(actual)}, then "
+                        f"{json.dumps(None if later is _MISSING else later)} {frames} frames later",
+                        started,
+                    )
             run.record(
                 "expect",
                 label,
                 ok=True,
                 request=request,
                 response={"path": path, "value": actual},
-                detail=f"{request['cmd']} {path} {op} {shown} ({json.dumps(actual)})",
+                detail=f"{request['cmd']} {path} {op} {shown} ({json.dumps(actual)})"
+                + (f", the same {step['stable_for_frames']} frames later" if step.get("stable_for_frames") else ""),
                 started=started,
             )
             return True
@@ -1070,6 +1233,17 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
         if kind == "visible":
             request = {"cmd": "text", "name": step["name"]}
             reply = run.call(request, timeout=60.0)
+            # QD-1 (GL-5g's rule 5): "not visible" is a question about a thing
+            # that exists. A name that resolves to nothing is not hidden, it
+            # is a typo -- or the thing is gone, which `wait` with `missing`
+            # says.
+            if not reply.get("ok") and not bool(step.get("value", True)):
+                return _fail(
+                    run, kind, label, request, reply,
+                    f"{step['name']} names nothing; visible false needs a widget that is "
+                    "there and hidden (write a wait with missing: true for one that is gone)",
+                    started,
+                )
             visible = bool(reply.get("ok")) and bool(reply["result"]["visible"])
             if visible != bool(step.get("value", True)):
                 return _fail(
@@ -1108,6 +1282,9 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
                     started,
                 )
             names = [entry["name"] for entry in reply["result"]["widgets"]]
+            run.list_patterns[step["pattern"]] = max(
+                run.list_patterns.get(step["pattern"], 0), len(names)
+            )
             if len(names) != int(step["value"]):
                 return _fail(
                     run,
@@ -1296,6 +1473,29 @@ def fix_viewport(run: Run, scenario: dict[str, Any]) -> bool:
     return ok
 
 
+def finish_warnings(run: Run) -> None:
+    """QD-1: what passed but says little.
+
+    A name remembered and never compared (GL-5g's rule 2), and a list_count of
+    0 whose pattern matched nothing in any list_count of the run (rule 7):
+    both pass whatever happened.
+    """
+
+    for remembered, where in sorted(run.remember_names.items()):
+        if remembered not in run.used_names:
+            run.warnings.append(
+                f'"{where}" remembered {remembered}, and no later step compared it'
+            )
+    for pattern, most in sorted(run.list_patterns.items()):
+        if most == 0:
+            run.warnings.append(
+                f'list_count "{pattern}" matched nothing anywhere in the run: '
+                "a count of 0 would pass for a misspelt name too"
+            )
+    for warning in run.warnings:
+        print(f"warning: {warning}", flush=True)
+
+
 def probe_no_automation(
     run: Run, studio: Path, pipe: str, artifacts: Path, env: dict[str, str]
 ) -> bool:
@@ -1393,6 +1593,10 @@ def main() -> int:
         variables[key.strip()] = value
 
     run = Run(scenario, artifacts)
+    epilogue = studio_invariants.Epilogue(
+        run, scenario, variables, repository=Path(__file__).resolve().parents[1]
+    )
+    invariant_outcomes: list[dict[str, Any]] = []
     started_at = time.time()
     started = time.perf_counter()
     studio: Studio | None = None
@@ -1441,6 +1645,16 @@ def main() -> int:
             started=started,
         )
         viewport_held = fix_viewport(run, scenario)
+        # QD-1: the documents as they were when the engine first answered --
+        # after the scenario's first wait_engine, or, for a scenario that has
+        # none, the files as they are before its first step (waiting for the
+        # engine here would change what such a scenario sees first).
+        if viewport_held and scenario.get("steps") and not any(
+            isinstance(raw, dict) and raw.get("cmd") == "wait_engine"
+            for raw in scenario.get("steps", [])
+        ):
+            epilogue.capture_start(0, need_engine=False)
+        steps_ok = viewport_held
         for index, raw_step in enumerate(scenario.get("steps", []), start=1):
             if not viewport_held:
                 break
@@ -1448,6 +1662,15 @@ def main() -> int:
             label = step_label(step, index)
             if "expect" in step:
                 ok = run_expect_step(run, step, label)
+                # QD-1 (GL-5g's rule 8): which steps judged something.
+                reads_only = step["expect"] == "screenshot" or (
+                    step["expect"] == "result"
+                    and not any(key in step for key in ("value", "value_of", "value_format"))
+                )
+                if reads_only:
+                    run.read_steps += 1
+                else:
+                    run.compared_steps += 1
             elif "file" in step:
                 ok = run_file_step(
                     run, step, label, [arguments.project, artifacts]
@@ -1459,8 +1682,13 @@ def main() -> int:
                     "step", label, ok=False, request=step, detail="no cmd and no expect"
                 )
                 ok = False
+            epilogue.after_step(step, index, ok)
             if not ok:
+                steps_ok = False
                 break
+        # A scenario of no steps (a launch check) has nothing to undo or keep.
+        if steps_ok and scenario.get("steps"):
+            invariant_outcomes = studio_invariants.run_invariants(run, epilogue)
     except AutomationError as error:
         launch_error = str(error)
         run.record("launch", " ".join(command), ok=False, detail=launch_error, started=started)
@@ -1503,6 +1731,7 @@ def main() -> int:
             started=shutdown_started,
         )
 
+    finish_warnings(run)
     failed = len(run.failures)
     report = {
         "schema": REPORT_SCHEMA,
@@ -1523,17 +1752,32 @@ def main() -> int:
         + (0 if scenario.get("viewport", True) is None else 1)
         + 2,
         "failed_steps": failed,
+        # QD-1 (GL-5g's rule 8): steps that compared something, and readings
+        # that only wrote a value down (screenshots, record, remember).
+        "compared_steps": run.compared_steps,
+        "read_steps": run.read_steps,
+        "warnings": run.warnings,
         "summary": run.summary,
         "failures": run.failures,
         "screenshots": run.screenshots,
         "studio_exit_code": exit_code,
         "studio_shutdown_forced": forced_shutdown,
         "studio_log": str((artifacts / "studio.log").resolve()),
+        # QD-1: what the driver checked after the last step, by invariant.
+        "invariants": invariant_outcomes,
+        "known_red": [
+            {"invariant": outcome["invariant"], "ticket": outcome.get("ticket")}
+            for outcome in invariant_outcomes
+            if outcome.get("status") == "known_red"
+        ],
+        "invariant_timings_s": {key: round(value, 2) for key, value in epilogue.timings.items()},
         "steps": run.steps,
     }
     arguments.report.parent.mkdir(parents=True, exist_ok=True)
     arguments.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
+    for known in report["known_red"]:
+        print(f"{name}: KNOWN RED invariant {known['invariant']} ({known['ticket']})")
     if report["ok"]:
         print(f"{name}: green ({len(run.steps)} steps)")
         return 0

@@ -5,6 +5,18 @@
   "description": "AB-1s (GB-4 target 3, a drawing that reacts to sound), from File > New Project > Blank with Studio's GUI only. gui_build_audio_reactive.prepare.py writes, outside the project, a quiet one-second WAV whose loudness changes over time (silence, then a 62.5 Hz tone at -20 dBFS from 0.5 s) and the same sound the other way round. File > Import Sound copies the first into assets/audio, the palette's audio.playback plays it, and its Sound fields' Bake analysis... (decision 1) bakes RMS and 4 bands (Peak unchecked, Bands 8 -> 4 with the keyboard) into assets/analysis/beat.ktx2; the bake's row says so. The scenario writes the fragment shader (an editor of one's own): its right half reads band 0 of the table on the GPU (pelican_sample_table, decision 3), its left half the number a render.buffer hands it (the CPU path, decision 2), under a fixed 0.5 band; both buffers are read through pelican_resource_ports.glsl (UX-13a: no binding written by hand). Use in Graph places value.sample_table on rms (decision 2). A fullscreen pass draws with the shader onto present; with the pass picked, Use in a shader places the table as a persistent image and its layout as a vec4 buffer (rows_per_feature, sample_count, hop_seconds from the layout, the scene time from the clock) in one edit, connected to the shader's image binding 0 and to the port its text reads the layout by (beat_layout), and gives the line to copy; the include then declares the layout at binding 1. The Timeline follows the value.sample_table; with Live, a press at its left end (scene time 0, silence) and its right end (1 s, the tone) changes the right half (b, the GPU path). Then the palette's render.buffer, the value.sample_table dragged onto its value, and the buffer added to the pass's Buffers with + Buffer port as value_level (the other name the text reads): the engine binds it at 2, after beat_layout (UX-13a decision 1), and the left half changes the same way (a, the CPU path). Last (decision 4): the other sound copied over the project's makes the table stale (Refresh reads list_derived_assets), the value.sample_table's band says stale: source_changed in orange and its fields offer Re-bake; Re-bake bakes it again with the manifest's settings, the band clears, nothing is edited (UX-13a decision 3: no Graph change saved, no Undo step), and the reload picks the rewritten table up (Picked up the change to assets/analysis/beat.ktx2, engine IA-3), so at scene time 0 -- the tone now -- neither half is what it was. (The engine binds a pass's buffer reads after its images in the order of the buffers they read -- beat_layout, then render_buffer -- which the sockets and the Buffers list show.) Typed: the project folder and name, the sound's path in the import dialog, and the palette's filters.",
   "tab": "frame_plan",
   "probe_no_automation": false,
+  "invariants": {
+    "undo_exempt": [
+      {
+        "path": "file:passes/main_rendering_config.json",
+        "reason": "This scenario deliberately reloads an externally replaced audio asset and asserts that Graph Undo is empty after re-bake. Earlier Graph history is outside this traversal; other project documents are still compared."
+      },
+      {
+        "path": "render:passes/main_rendering_config.json",
+        "reason": "This scenario deliberately reloads an externally replaced audio asset and asserts that Graph Undo is empty after re-bake. Earlier Graph history is outside this traversal; other project documents are still compared."
+      }
+    ]
+  },
   "steps": [
     {"label": "the fixture's engine is up", "cmd": "wait_engine", "timeout_ms": 180000},
     {"label": "File > New Project...", "cmd": "action", "name": "pelican.file.newProject"},

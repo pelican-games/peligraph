@@ -1,4 +1,8 @@
 {
+  "invariants": {
+    "undo": "known_red",
+    "undo_ticket": "QD1-R41"
+  },
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "loop_zone_wire",

@@ -5,6 +5,16 @@
   "description": "MR-1s (engine EB-2), from Blank with the GUI only, and FO-1s's decision 3. A Cube and a forward material pass, New material… made red and bound to every Cube: the box is red. The material document is then saved outside Studio without its last }, and the project opened again: the engine starts without it (FO-1), Problems lists an error (the document, with its line) and a warning (the cube's binding), and the box draws with the model's own material. The error's row shows the document in the Materials dock; Show the document opens its bytes, the } is typed back and Save -- the only thing pressed -- writes the file and has the engine take it in (register_material, recovered): the window closes, the dock says the material is loaded again, nothing is wrong and the box is red, all from the same engine process. EB-6s decision 3 (engine EB-6), still without a watch on materials: the document is saved outside Studio with blue for red, the engine keeps drawing red, and the dock's Reload from file has it read the file again (register_material, reloaded) -- the box turns blue; red put back outside and Reload from file again, it is red, from the same engine process. Decision 3: project.json then declares the watch on materials/ and the project is opened again; the document broken outside Studio once more is the watch's error (source hot_reload) while the box stays red, its Problems row marks the document in the dock at its line, and Show the document's Save is taken in by the watch, again without a restart. Delete… on the material is refused in one sentence (the bindings of Cube use it) with a button to that place: the cube's bindings in the dock, set to Model default; Delete… then takes the document off the list (the file stays) and Undo registers it again. Typed: the project folder and name in New Project, the red's hex.",
   "tab": "frame_plan",
   "probe_no_automation": false,
+  "invariants": {
+    "log_allow": [
+      {
+        "pattern": "LOG_WARNING\\s+pelican\\s+reload: material values project://materials/material\\.material\\.json failed .*material values JSON .*parse_error\\.101.*unexpected end of input",
+        "reason": "The scenario deliberately removes the closing brace from this material document, verifies the hot-reload error, and repairs it through Show the document / Save."
+      }
+    ],
+    "undo": "known_red",
+    "undo_ticket": "QD1-R30"
+  },
   "steps": [
     {"label": "the fixture's engine is up, so the switch to the new project is something that happens", "cmd": "wait_engine", "timeout_ms": 180000},
     {"label": "start from the default layout", "cmd": "action", "name": "pelican.layout.resetDefault"},

@@ -1,4 +1,8 @@
 {
+  "invariants": {
+    "undo": "known_red",
+    "undo_ticket": "QD1-R39"
+  },
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "loop_zone_edit",
@@ -255,7 +259,7 @@
         "params": {}
       },
       "path": "result.definitions.loop_body.layout.nodes",
-      "op": "contains",
+      "op": "has_key",
       "value": "render_fullscreen",
       "retry_ms": 10000
     },
@@ -363,7 +367,7 @@
         "params": {}
       },
       "path": "result.layout.nodes",
-      "op": "contains",
+      "op": "has_key",
       "value": "loop",
       "retry_ms": 10000
     },
@@ -376,7 +380,7 @@
         "params": {}
       },
       "path": "result.layout.nodes",
-      "op": "excludes",
+      "op": "lacks_key",
       "value": "render_fullscreen"
     },
     {
@@ -470,7 +474,7 @@
         "params": {}
       },
       "path": "result.definitions.loop_body",
-      "op": "excludes",
+      "op": "lacks_key",
       "value": "layout",
       "retry_ms": 10000
     },

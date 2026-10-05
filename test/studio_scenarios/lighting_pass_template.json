@@ -1,4 +1,8 @@
 {
+  "invariants": {
+    "undo": "known_red",
+    "undo_ticket": "QD1-R38"
+  },
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "lighting_pass_template",

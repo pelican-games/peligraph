@@ -1,4 +1,8 @@
 {
+  "invariants": {
+    "health": "known_red",
+    "health_ticket": "QD1-H2"
+  },
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_rt_layout_edits",

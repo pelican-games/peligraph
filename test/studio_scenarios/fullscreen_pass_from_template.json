@@ -5,6 +5,16 @@
   "description": "F-3 / F-5: build a fullscreen pass shader and all from Studio, then change it the way a person does, in their own editor. The Pass Editor's New pass on this graph root is the Graph's (GL-5f): a render.fullscreen is placed in the graph's nodes and picked, and no managed fragment is made. Two render.target_ref nodes from the palette give it the albedo the G-buffer holds as its input and the lit colour as what it writes, the colour the viewport shows. New... in its Pass fields writes the fragment shader for that input into the project, and the pass draws with it in the same edit. Then the file is edited: Studio notices the write and asks the engine to reload its shaders (reload_shaders), and the viewport changes. A syntax error saved the same way marks the pass on the Frame Plan's canvas and puts the log under the Pass Editor's form while the engine keeps drawing what it had; fixed, the mark and the log go. (Before GL-5f the Pass Editor saved the pass with add_authored_pass, whose preflight showed a typo under the form; on a graph root no pass is saved that way any more.) GL-5g: the refused shader is also said on the Graph tab's notice row (whose shader, the compiler's line) and is a row of the Problems window, and both go when the file is fixed.",
   "tab": "frame_plan",
   "probe_no_automation": false,
+  "invariants": {
+    "log_allow": [
+      {
+        "pattern": "LOG_WARNING.*render_fullscreen\\.frag:\\d+(?::\\d+)?: error: 'vaule0' : undeclared identifier",
+        "reason": "The scenario deliberately writes vaule0 into render_fullscreen.frag, verifies the compile-error notice and line, then repairs the shader."
+      }
+    ],
+    "undo": "known_red",
+    "undo_ticket": "QD1-R8"
+  },
   "steps": [
     {
       "label": "the engine viewport answers editor RPC",

@@ -5,6 +5,10 @@
   "description": "GL-1d: a render pass built in the Graph from nothing. From a Blank project, the Graph tab's Add opens the palette; the filter narrows it to render.material_pass, the contract combo picks deferred_geometry_v1, and Enter adds it. The pass arrives drawing: in the same list, its images, a draw_loop render_material_pass_draws over its draw items and that loop's body render_material_pass_draw, whose one step is draw.material, feeding the pass's draws -- the shape decompose_material_pass writes. After the engine takes it (restarting if it asks to, RS-1), the root canvas draws the pass beside the loop's zone with draw.material inside it, the frame plan runs the loop as a draw_loop, and the Frame Plan tab lists the pass. UX-11: picked, the pass shows the Pass Editor's material settings and attachment rows beside the canvas -- its Tags a picker, albedo's Load set to Clear there writes the pass's color_load_op -- and its Materials drawn list, whose first row brings the Frame Plan's Materials forward.",
   "tab": "frame_plan",
   "probe_no_automation": false,
+  "invariants": {
+    "undo": "known_red",
+    "undo_ticket": "QD1-R1"
+  },
   "steps": [
     {
       "label": "the fixture's engine is up, so the switch to the new project is something that happens",

@@ -1,4 +1,8 @@
 {
+  "invariants": {
+    "undo": "known_red",
+    "undo_ticket": "QD1-R28"
+  },
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_graph_only_edits_2",
@@ -586,7 +590,7 @@
         "params": {}
       },
       "path": "result.nodes[7].parameters.shader",
-      "op": "excludes",
+      "op": "lacks_key",
       "value": "defines",
       "retry_ms": 60000
     },

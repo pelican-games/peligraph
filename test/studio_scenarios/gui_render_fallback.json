@@ -5,6 +5,14 @@
   "description": "BS-1s: a project whose rendering setup the engine refuses at start no longer stops the engine Studio starts (--render-fallback, engine BS-1). The prepare step makes a Blank project with pelican_cli and writes into its root a render.compute node whose buffer port has no element (CT-1's case, BS-1's engine test). Opened in Studio, the engine keeps running and draws its one-colour placeholder (dark magenta); the row above the viewport and the Frame Plan's status say one sentence -- the code's, the node, the port, the field and the file -- with Reload from disk, Open in Graph and Open file. Open in Graph shows the node. Reload from disk with the file still broken is refused and the placeholder stays. The file is then fixed outside Studio (the node taken out): Studio picks it up, the engine publishes the project's setup, get_status read again takes the row away, and Blank's gradient is on screen. BS-1b: a second project, its root's last } taken away, opens on the placeholder too; the sentence names the file, the line and the column (render_document_syntax@1), and Show the document opens the root as it is on disk; Save cannot be pressed until it is JSON; the } typed at its end and Save (restore_render_documents) bring the project's frames back. Typed: the } in the document's window.",
   "tab": "frame_plan",
   "probe_no_automation": false,
+  "invariants": {
+    "log_allow": [
+      {
+        "pattern": "LOG_ERROR\\s+pelican\\s+render pipeline refused at start;.*(?:render_document_syntax|graph\\.port_field_missing)@1",
+        "reason": "The two deliberately broken roots must start on the fallback; the scenario repairs both and checks the recovered picture."
+      }
+    ]
+  },
   "steps": [
     {
       "label": "the fixture's engine is up, so the switch to the broken project is something that happens",

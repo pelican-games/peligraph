@@ -5,6 +5,10 @@
   "description": "GL-5c, from File > New Project > Blank with Studio's GUI only. Blank's root is a graph that selects no preset, so the Frame Plan's Add material pass... is the Graph's palette (decision 1): the Graph tab comes forward with the palette open on render.material_pass, forward_opaque_v1 is picked, and the pass goes into the graph's nodes with its draw loop -- no managed fragment (pass-<id>.json) is made -- and is picked on the Graph once the engine (restarted for the route default) has it, its detail column open. Its colour output dragged onto present's + input puts what it draws on screen. Back on the Frame Plan, a double-click on present's row opens it on the Graph in the detail column (decision 3), and on the material pass's row the pass's own fields. A render.target_ref placed beside the picked forward pass with New render target... opens the form on Explicit format R16G16B16A16_SFLOAT, which a forward pass's colour takes (decision 4); it is cancelled. Typed: the project folder and name in New Project.",
   "tab": "frame_plan",
   "probe_no_automation": false,
+  "invariants": {
+    "undo": "known_red",
+    "undo_ticket": "QD1-R2"
+  },
   "steps": [
     {
       "label": "the fixture's engine is up, so the switch to the new project is something that happens",
@@ -188,9 +192,9 @@
     },
     {
       "label": "the material pass form never opened",
-      "expect": "visible",
+      "cmd": "wait",
       "name": "pelican.materialPassForm",
-      "value": false
+      "missing": true
     },
     {
       "label": "the pass's draw loop is drawn as a zone (after the engine restarts)",
