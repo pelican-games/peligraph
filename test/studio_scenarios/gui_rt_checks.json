@@ -16,11 +16,7 @@
         "path": "render:passes/main_rendering_config.json",
         "reason": "The scenario rewrites the root graph outside Studio with wrong_record and repairs it through the UI. The disk document is excluded as an external write; this is its RPC view. Asset-data and shader Undo checks remain enabled."
       }
-    ],
-    "undo": "known_red",
-    "undo_ticket": "QD1-R31",
-    "health": "known_red",
-    "health_ticket": "QD1-H1"
+    ]
   },
   "steps": [
     {"label": "the fixture's engine is up and has presented frames", "cmd": "wait_engine", "timeout_ms": 180000, "frames": 30},

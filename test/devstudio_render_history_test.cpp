@@ -1025,6 +1025,40 @@ TEST_CASE("RTL-3s decision 3: an edit that rewrote procedural records is recorde
     CHECK(rig.history.undoStack().back().barrier);
 }
 
+TEST_CASE("Procedural record Undo retains each inverse across repeated document digests",
+          "[devstudio][render-history][procedural-history]") {
+    Rig rig;
+    const std::string assets = "project://assets/asset_data.json";
+    const std::string a0(64, '0'), a1(64, '1'), a2(64, '2');
+    const auto records = [](int value) { return Json{{"ball", {{"value", value}}}}; };
+    const auto commit = [&](const std::string &digest, int previous) {
+        auto result = committed({{assets, digest}});
+        result["procedural_records_before"] = {{assets, records(previous).dump()}};
+        return result;
+    };
+    const auto edit = [&](const std::string &digest, int previous, int next) {
+        const auto before = rig.sent.size();
+        const auto panel = rig.panelSends("edit_ray_layout",
+                                         {{"procedural_records", records(next)}});
+        rig.answer(rig.sent[before].id, {{"documents", Json::array()}});
+        rig.answer(panel, commit(digest, previous));
+    };
+    edit(a1, 0, 1);
+    edit(a2, 1, 2);
+    const auto restore = [&](bool undo, const std::string &base, int target,
+                             const std::string &written, int previous) {
+        auto expected = restored(assets, base, nullptr);
+        expected["procedural_records"] = records(target).dump();
+        CHECK(rig.restore(undo, Json::array(), commit(written, previous)) == Json::array({expected}));
+    };
+    restore(true, a2, 1, a1, 2);
+    // The engine just produced a1 again; the earlier entry still restores 0.
+    rig.history.abandonInFlight(); // a same-project engine restart preserves the inverse
+    restore(true, a1, 0, a0, 1);
+    restore(false, a0, 1, a1, 0);
+    restore(false, a1, 2, a2, 1);
+}
+
 TEST_CASE("RTL-3s decision 4: a raygen switch Studio wrote is an entry of its own -- Undo writes the file back "
           "and Redo writes it again, with no restore sent",
           "[devstudio][render-history][rtl3s]") {

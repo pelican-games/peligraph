@@ -234,6 +234,10 @@ struct MaterialsDock::Impl {
             if (model_binding && !pending && hooks.bound) hooks.bound(model_session.model());
             model_binding = pending;
             presentModelRow();
+            presentUndo();
+        };
+        model_session.bindingCommitted = [this](const MaterialAssignSession::UndoEntry &entry) {
+            session.rememberBindingUndo(entry.description, entry.model, entry.bindings);
         };
         model_session.restartRequested = [this](const std::string &reason) {
             if (hooks.restart) hooks.restart(qtext(reason));
@@ -1672,11 +1676,16 @@ struct MaterialsDock::Impl {
             assign_button->setToolTip(owner.tr("Pick a material, and an object with a model in the Outliner"));
     }
 
-    void present() {
+    void presentUndo() {
         const auto &undo = session.undoEntries();
-        undo_action->setEnabled(!undo.empty() && session.ready() && !session.editPending());
+        undo_action->setEnabled(!undo.empty() && session.ready() && !session.editPending() &&
+                                !model_session.bindPending());
         undo_action->setText(undo.empty() ? owner.tr("Undo") : owner.tr("Undo %1").arg(qtext(undo.back().description)));
         undo_action->setToolTip(undo_action->text());
+    }
+
+    void present() {
+        presentUndo();
         new_button->setEnabled(session.ready());
         QString line = qtext(session.notice());
         QString detail = qtext(session.noticeDetail());
@@ -1719,6 +1728,7 @@ MaterialsDock::~MaterialsDock() {
     impl_->session.restartRequested = nullptr;
     impl_->session.bound = nullptr;
     impl_->session.problemsMayHaveChanged = nullptr;
+    impl_->model_session.bindingCommitted = nullptr;
     impl_->model_session.changed = nullptr;
     impl_->model_session.restartRequested = nullptr;
     if (impl_->document_dialog) delete impl_->document_dialog.data();
@@ -1733,7 +1743,8 @@ void MaterialsDock::open(const std::filesystem::path &project_root) {
     impl_->delete_row->hide();
     impl_->rename_row->hide();
     impl_->model_row->hide();
-    impl_->model_session.setSubject({});
+    impl_->model_binding = false;
+    impl_->model_session.open();
     if (impl_->document_dialog) impl_->document_dialog->close();
     impl_->session.open(project_root);
 }

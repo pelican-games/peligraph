@@ -15,6 +15,7 @@
 #include "materialcontainer_testaccess.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/vertbufcontainer.hpp"
+#include "../src/core/model/modelresourcerelease.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "polygoninstancecontainer_testaccess.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -110,6 +111,30 @@ template <class T> T animationDescriptor() {
 }
 
 } // namespace
+
+TEST_CASE("Late model loading into an empty project releases resources before their owners",
+          "[model-reload][project-lifetime][gpu]") {
+    setupLogger();
+    auto sandbox = makeSandbox("late_model_teardown");
+    TestGltfFragmentFixture::writeGlb(sandbox.root / "fragment.glb");
+    const auto before = ReleaseErrorSink::status();
+    {
+        FastModuleContainer modules;
+        configureProject(sandbox.root, nlohmann::json::array());
+        TestSupport::requireVulkanDevice("Vulkan unavailable");
+        auto &models = GET_MODULE(ModelAssetContainer);
+        (void)GET_MODULE(StandardMaterialResource);
+        const auto &model = models.getModelTemplateByName("fragment.glb#node/RootA/Cube");
+        REQUIRE(primitiveCount(model) > 0);
+        REQUIRE(model.gpu_resources);
+        REQUIRE_FALSE(model.gpu_resources->materials.empty());
+        REQUIRE_FALSE(model.gpu_resources->textures.empty());
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    const auto after = ReleaseErrorSink::status();
+    CHECK(after.release_errors == before.release_errors);
+    CHECK(after.overflow_count == before.overflow_count);
+}
 
 TEST_CASE("Direct model references do not invent logical occurrence asset keys",
           "[wp382c][model-reload][direct-asset-key][gpu]") {

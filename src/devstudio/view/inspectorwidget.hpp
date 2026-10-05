@@ -100,6 +100,7 @@ class InspectorWidget final : public QWidget {
     [[nodiscard]] std::optional<std::pair<std::string, std::string>> materialSubject() const;
     // The materials (a new one), or the model's bindings, changed elsewhere:
     // the Material rows read them again.
+    void resetMaterialState();
     void materialsChanged();
     void materialBindingsChanged();
     // EB-6s, decision 5: the Material rows scrolled into view -- now, or once

@@ -10,6 +10,8 @@
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../material/projectmaterialasset.hpp"
+#include "../material/materialcontainer.hpp"
+#include "../model/vertbufcontainer.hpp"
 #include "../model/engineprimitives.hpp"
 #include "../model/gltf.hpp"
 #include "../parallel_prepare.hpp"
@@ -555,6 +557,11 @@ ModelAssetContainer::ModelAssetContainer() : impl_{std::make_unique<Impl>()} {
     const auto prepared = parallelPrepareOrdered<PreparedGltf>(
         declarations.size(),
         [&](std::size_t index) { return prepareDeclaration(declarations[index]); }, 4);
+    // Models can first arrive through a direct reference after startup, even
+    // when the asset list is empty. Their GPU owners must still outlive this
+    // container: modules are destroyed in reverse construction order.
+    (void)GET_MODULE(MaterialContainer);
+    (void)GET_MODULE(VertBufContainer);
     auto &loader = GET_MODULE(GltfLoader);
     try {
         for (std::size_t index = 0; index < declarations.size(); ++index) {

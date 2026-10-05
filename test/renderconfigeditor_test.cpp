@@ -13240,6 +13240,90 @@ TEST_CASE("EB-2 get_ray_layout's selectable_materials say which objects use each
 // ticket; restore_render_documents takes them back in one call with the
 // layout and the bindings: asset_data named by the digest the commit
 // answered, content null.
+TEST_CASE("Procedural record restore has an explicit inverse when output digests repeat",
+          "[render-config-editor][procedural-history]") {
+    Rtl1aHarness harness;
+    const auto original = readBytes(harness.assets_path);
+    const std::string assets = "project://assets.json";
+    const auto record = [](double red, double green, double blue) {
+        return Json{{"sphere_asset", {{"tint", {red, green, blue, 1.0}}}}};
+    };
+    const auto edit = [&](const Json &records) {
+        return rtl1aCommit(*harness.service, harness.service->editRayLayout(
+            {{"base_source_digest", harness.digest()}, {"procedural_records", records}}));
+    };
+    const auto first = edit(record(1, 0, 0));
+    const auto second = edit(record(0, 1, 0));
+    const auto request = [&](const nlohmann::ordered_json &commit) {
+        return Json{{"documents", Json::array({{
+            {"reference", assets}, {"base_digest", commit.at("documents").at(assets)},
+            {"content", nullptr},
+            {"procedural_records", commit.at("procedural_records_before").at(assets)}}})}};
+    };
+    const auto restore = [&](const nlohmann::ordered_json &commit) {
+        return rtl1aCommit(*harness.service, harness.service->restoreRenderDocuments(request(commit)));
+    };
+    REQUIRE(Json::parse(first.at("procedural_records_before").at(assets).get<std::string>()) == record(0, 0, 1));
+    REQUIRE(Json::parse(second.at("procedural_records_before").at(assets).get<std::string>()) == record(1, 0, 0));
+
+    SECTION("two Undos and two Redos keep their own inverse") {
+        const auto undo_second = restore(second);
+        REQUIRE(undo_second.at("documents").at(assets) == first.at("documents").at(assets));
+        const auto undo_first = restore(first);
+        CHECK(readBytes(harness.assets_path) == original);
+        restore(undo_first);
+        restore(undo_second);
+        CHECK(Json::parse(readBytes(harness.assets_path))["procedural_geometry"][0]["record"] ==
+              record(0, 1, 0).at("sphere_asset"));
+    }
+    SECTION("snapshots also restore after the editor service restarts") {
+        harness.service = makeProjectService(
+            harness.project, harness.resolver, harness.runtime, {}, {}, {}, {},
+            [&](RenderConfigEditorDependencies &dependencies) {
+                dependencies.ray_asset_data = [&]() -> std::optional<RayAssetDataDocument> {
+                    return RayAssetDataDocument{.reference = assets, .path = harness.assets_path};
+                };
+            });
+        restore(second);
+        restore(first);
+        CHECK(readBytes(harness.assets_path) == original);
+    }
+    SECTION("a batch retains the first predecessor when it edits one record twice") {
+        const auto batch = rtl1aCommit(*harness.service, harness.service->editBatch(
+            {{"base_source_digest", harness.digest()},
+             {"edits", Json::array({
+                 {{"method", "edit_ray_layout"}, {"params", {{"procedural_records", record(1, 0, 0)}}}},
+                 {{"method", "edit_ray_layout"}, {"params", {{"procedural_records", record(0.5, 0.5, 0.5)}}}}
+             })}}));
+        CHECK(Json::parse(batch.at("procedural_records_before").at(assets).get<std::string>()) == record(0, 1, 0));
+        restore(batch);
+        CHECK(Json::parse(readBytes(harness.assets_path))["procedural_geometry"][0]["record"] ==
+              record(0, 1, 0).at("sphere_asset"));
+    }
+    SECTION("external edits still fail compare and swap") {
+        auto outside = Json::parse(readBytes(harness.assets_path));
+        outside["models"].push_back({{"name", "outside"}, {"path", "outside.glb"}});
+        writeBytes(harness.assets_path, outside.dump(2));
+        const auto refused = rd1Error(harness.service->restoreRenderDocuments(request(second)));
+        CHECK(refused.at("code") == "external_modification");
+        CHECK(Json::parse(readBytes(harness.assets_path)) == outside);
+    }
+    SECTION("explicit records must match the restored layout") {
+        auto invalid = request(second);
+        invalid["documents"][0]["procedural_records"] = Json{{"sphere_asset", {{"other", 1}}}}.dump();
+        const auto unchanged = readBytes(harness.assets_path);
+        const auto refused = rd1Error(harness.service->restoreRenderDocuments(invalid));
+        CHECK(refused.at("code") == "pelican.ray_binding_record_invalid@1");
+        CHECK(readBytes(harness.assets_path) == unchanged);
+    }
+    SECTION("a render document cannot consume a procedural record restore") {
+        auto invalid = request(second);
+        invalid["documents"][0]["reference"] = "ray_layout.json";
+        const auto refused = rd1Error(harness.service->restoreRenderDocuments(invalid));
+        CHECK(refused.at("code") == "render_document_not_writable");
+    }
+}
+
 TEST_CASE("EB-2 restore_render_documents takes asset_data's procedural records back with the layout",
           "[render-config-editor][rtl1a][procedural][eb2]") {
     Rtl1aHarness harness;

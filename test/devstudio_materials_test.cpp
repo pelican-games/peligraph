@@ -1001,6 +1001,60 @@ TEST_CASE("MT-2s decision 5: an object's material is the scene's Undo; the rows'
     CHECK(sent->params == Json{{"model", Cube}, {"bindings", previous}});
 }
 
+TEST_CASE("Material assignment history survives engine restart but ends at project open",
+          "[devstudio][materials][project-lifetime]") {
+    application();
+    FakeEngine engine;
+    MaterialAssignWidget rows{engine.assignHooks()};
+    readyCube(rows, engine);
+    auto &session = rows.session();
+    session.setScope(MaterialAssignSession::Scope::Model);
+    REQUIRE(session.choose("paint"));
+    auto sent = engine.take("bind_material");
+    REQUIRE(sent);
+    const Json reply{{"committed", true}, {"changed", true}, {"model", Cube},
+                     {"previous", {{"bindings", Json::array({{{"mesh", 0}, {"primitive", 0},
+                         {"material", "pelican.primitive.default"}}})}}},
+                     {"applied", "live"}, {"restart_required", nullptr}};
+    REQUIRE(session.receiveResult(sent->id, reply));
+    REQUIRE(session.undoEntries().size() == 1);
+
+    rows.engineUnavailable();
+    rows.engineAvailable();
+    REQUIRE(session.undoEntries().size() == 1);
+    REQUIRE(session.undo());
+    const auto old_undo = engine.take("bind_material");
+    REQUIRE(old_undo);
+    REQUIRE(session.bindPending());
+
+    session.open();
+    CHECK(session.scope() == MaterialAssignSession::Scope::Model);
+    CHECK_FALSE(session.ready());
+    CHECK(session.model().empty());
+    CHECK(session.materials().empty());
+    CHECK(session.primitives().empty());
+    CHECK_FALSE(session.bindingsRead());
+    CHECK_FALSE(session.objectRead());
+    CHECK_FALSE(session.bindPending());
+    CHECK(session.undoEntries().empty());
+    CHECK_FALSE(session.undo());
+    CHECK_FALSE(session.receiveResult(old_undo->id, reply));
+    CHECK_FALSE(named<QToolButton>(rows, QStringLiteral("pelican.inspectorMaterialUndo"))->isVisibleTo(&rows));
+
+    for (const auto &pending : engine.pending)
+        CHECK_FALSE(session.owns(pending.id));
+    engine.pending.clear();
+    // The new project may contain the same model name; it cannot inherit Undo.
+    readyCube(rows, engine);
+    CHECK_FALSE(session.undo());
+    REQUIRE(session.choose("paint"));
+    sent = engine.take("bind_material");
+    REQUIRE(sent);
+    session.open();
+    CHECK_FALSE(session.receiveResult(sent->id, reply));
+    CHECK(session.undoEntries().empty());
+}
+
 TEST_CASE("MT-2s decision 6: a simplemodelview's materials list is chosen in the Material rows, not typed "
           "in the generic list",
           "[devstudio][materials][mt2s]") {
@@ -1507,6 +1561,10 @@ TEST_CASE("FO-1s decision 3: Delete… and Rename… on a material's row -- in_u
           Json{{"model", Cube},
                {"bindings", Json::array({{{"mesh", 0}, {"primitive", 0}, {"material", "pelican.primitive.default"}}})}});
 
+    const auto previous_binding = Json::array({{{"mesh", 0}, {"primitive", 0}, {"material", "paint"}}});
+    REQUIRE(dock.receiveResult(unbind->id, QByteArray::fromStdString(
+        Json{{"changed", true}, {"previous", {{"bindings", previous_binding}}}}.dump())));
+
     // Taken off them, the delete goes; Undo registers the document again.
     remove->trigger();
     named<QPushButton>(dock, QStringLiteral("pelican.materials.deleteConfirmed"))->click();
@@ -1528,6 +1586,11 @@ TEST_CASE("FO-1s decision 3: Delete… and Rename… on a material's row -- in_u
                                   {"applied", "live"}, {"restart_required", nullptr}});
     CHECK(back.params == Json{{"path", Paint}});
     CHECK(dock.noticeLine()->text() == QStringLiteral("Put paint back from materials/paint.material.json."));
+    REQUIRE(dock.session().undoEntries().size() == 1);
+    REQUIRE(dock.undoAction()->isEnabled());
+    dock.undoAction()->trigger();
+    const auto rebound = answer(dock, engine, "bind_material", Json{{"changed", true}});
+    CHECK(rebound.params == Json{{"model", Cube}, {"bindings", previous_binding}});
     CHECK(dock.session().undoEntries().empty());
     lists(listResult());
     REQUIRE(dock.session().selection());
@@ -2414,4 +2477,40 @@ TEST_CASE("EB-6s decision 6: a material's problem (source edit_rpc) is not taken
     QApplication::processEvents();
     REQUIRE(dialog);
     CHECK(notice->text().contains(QStringLiteral("line 4, column 1: syntax error")));
+}
+
+TEST_CASE("Materials dock binding repairs share its visible Undo history", "[devstudio][materials]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    FakeEngine engine;
+    MaterialsDock dock{engine.dockHooks()};
+    dock.show();
+    readyWithPaint(dock, engine, project(temporary));
+    REQUIRE(dock.session().setTags({"test"}));
+    answer(dock, engine, "edit_material", edited("d2", Json{{"tags", Json::array()}}));
+    const auto earlier = dock.session().undoEntries().size();
+    REQUIRE(earlier == 1);
+    dock.revealModel(Cube, {});
+    answer(dock, engine, "list_materials", listResult());
+    auto bound = cubeBindings();
+    bound["primitives"][0]["material"] = "paint";
+    answer(dock, engine, "get_material_bindings", bound);
+    auto *choice = named<QComboBox>(dock, QStringLiteral("pelican.materials.model.choice"));
+    REQUIRE(choice->isEnabled());
+    REQUIRE(choice->currentIndex() != 0);
+    choice->setCurrentIndex(0);
+    REQUIRE_FALSE(dock.undoAction()->isEnabled());
+    const auto previous = Json::array({Json{{"primitive", 0}, {"material", "paint"}}});
+    answer(dock, engine, "bind_material", Json{{"changed", true}, {"previous", {{"bindings", previous}}}});
+    REQUIRE(dock.undoAction()->isEnabled());
+    REQUIRE(dock.session().undoEntries().size() == earlier + 1);
+    dock.undoAction()->trigger();
+    const auto undo = answer(dock, engine, "bind_material", Json{{"changed", true}});
+    CHECK(undo.params == Json{{"model", Cube}, {"bindings", previous}});
+    REQUIRE(dock.session().undoEntries().size() == earlier);
+    CHECK(dock.session().undoEntries().back().kind == MaterialsDockSession::UndoEntry::Kind::Edit);
+    dock.open(project(temporary));
+    CHECK(dock.session().undoEntries().empty());
+    CHECK_FALSE(dock.undoAction()->isEnabled());
 }

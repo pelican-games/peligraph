@@ -1048,6 +1048,52 @@ TEST_CASE("OT-1 an engine restart keeps the graph history for the same document"
     }
 }
 
+
+TEST_CASE("Graph Redo survives a confirmed Render restore only when the graph is unchanged",
+          "[studio][graph-canvas][graph-history]") {
+    GraphHistoryHarness h;
+    h.open();
+    REQUIRE(h.client.model.setNodeLabel("clock", "Clock"));
+    h.commit();
+    REQUIRE(h.client.model.undo());
+    h.commit();
+    REQUIRE(h.client.model.canRedo());
+    ++h.generation;
+    h.client.model.renderHistoryRestored(h.digest());
+    const auto verify = [&](bool retained) {
+        h.client.model.refresh();
+        h.refresh();
+        CHECK(h.client.model.canRedo() == retained);
+        if (retained) {
+            REQUIRE(h.client.model.redo());
+            h.commit();
+            CHECK(h.document["nodes"][0]["label"] == "Clock");
+            CHECK(h.document.contains("rendering"));
+            // Permission is consumed; another revision still clears history.
+            ++h.generation;
+            h.client.model.refresh();
+            h.refresh();
+            CHECK_FALSE(h.client.model.canUndo());
+        }
+    };
+    SECTION("only the rendering section changes, and Redo still applies") {
+        h.document["rendering"] = {{"render_targets", Json::object()}};
+        verify(true);
+    }
+    SECTION("another writer wins before the context is read") {
+        ++h.generation;
+        verify(false);
+    }
+    SECTION("the known restore also changes graph nodes") {
+        h.document["nodes"][0]["label"] = "Other writer";
+        verify(false);
+    }
+    SECTION("opening a project cancels the permission") {
+        h.client.model.forgetHistory();
+        verify(false);
+    }
+}
+
 TEST_CASE("Q-10 a sound refused while a graph edit is prepared reads as one sentence",
           "[studio][graph-canvas][q10]") {
     GraphHistoryHarness h;

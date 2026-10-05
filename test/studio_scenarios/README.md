@@ -794,8 +794,8 @@ fires them without a popup: `pelican.graphCanvas.autoLayout`,
 ## What every scenario is held to (QD-1)
 
 Executed findings and the complete 84-case matrix are in [QD1_FINDINGS.md](QD1_FINDINGS.md).
-There are 49 ticketed `known_red` checks in 46 scenarios:
-45 Undo/Redo findings and 4 health findings. These marks retain
+There are 33 ticketed `known_red` checks in 33 scenarios:
+33 Undo/Redo findings and 0 health findings. These marks retain
 observed failures, including restoration gaps whose root cause is not isolated;
 they are not a count of independent product defects. A mark never excuses an
 exception or an incomplete history traversal in the checker.
@@ -821,6 +821,11 @@ found.
    | `assets` | `pelican.assets.undo` / -- | the Assets dock's declarations |
    | `scene` | `pelican.inspectorUndo` / `.inspectorRedo` | the engine's scene journal, the Inspector's session |
 
+   Before walking history, the driver sends Escape to any open Graph inline
+   editor and records its name in `closed_graph_drafts`. This cancels only an
+   uncommitted text draft: Graph Undo deliberately stays disabled during text
+   editing, and clicking a node's label can otherwise leave it disabled through
+   sidebar edits. Failure to inspect or close an editor fails the check.
    Undo goes in that order, each kind until its control is off or a press moves
    nothing. A blocked kind is retried after another kind changes documents.
    Redo presses, last first, one Redo per Undo that moved something. Only if no
@@ -832,7 +837,8 @@ found.
    differs: a scene file on disk (Save is not undone; the scene in memory is
    compared), the scene after the engine was started again (the journal lives in the
    engine), the Frame Plan's placement (`layout.frame_plan`, kept through Undo by
-   RU-1), and, after an Undo of a kind with no Redo, the Redo half. The documents
+   RU-1, including empty ancestor containers left solely by removing that
+   explicitly exempt subtree), and, after an Undo of a kind with no Redo, the Redo half. The documents
    are read with `project_state` (below): every file under the project but
    `.pelican/` and logs by sha256, and the engine's `export_scene_snapshot`,
    `get_render_documents`, `list_materials` and `get_project_settings`.

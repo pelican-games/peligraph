@@ -2737,6 +2737,10 @@ void InspectorWidget::modelsChanged() {
     impl_->dispatchRequests();
 }
 
+void InspectorWidget::resetMaterialState() {
+    impl_->material_assign->session().open();
+}
+
 void InspectorWidget::materialsChanged() { impl_->material_assign->materialsChanged(); }
 
 void InspectorWidget::materialBindingsChanged() { impl_->material_assign->bindingsChanged(); }

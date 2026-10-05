@@ -2,7 +2,7 @@
 
 Inventory dated 2026-10-05. Ordinary scenario assertions pass in all 84 cases. The matrix preserves observed failures even when a ticketed `known_red` mark lets CTest pass.
 
-There are **49 marks in 46 scenarios**: 45 Undo/Redo checks and 4 health checks. These are reproduction records, not a count of independent root causes. No reopen check is marked known red.
+There are now **33 marks in 33 scenarios**: 33 Undo/Redo checks and 0 health checks. The original inventory had 49 marks in 46 scenarios; this follow-up resolved 16 marks. These are reproduction records, not a count of independent root causes. No reopen check is marked known red.
 
 ## Evidence and interpretation
 
@@ -13,6 +13,14 @@ There are **49 marks in 46 scenarios**: 45 Undo/Redo checks and 4 health checks.
 - Each case is reproducible with `ctest --test-dir <build> -C Debug -R "^studio_scenario_<scenario>$" -j1 --output-on-failure`. Reports are in `<build>/test_artifacts/studio_scenarios/<scenario>/report.json`; invariant steps immediately follow the ordinary scenario steps.
 - The full-run and targeted-run reports/logs were archived before final mark verification. The integration report records their local locations.
 - Studio CPU: 774/774. Python CI: 79/79 including the final incomplete-traversal guard. Nine isolated Python mutations each failed the relevant test and passed after restoration. This was not a mutation campaign across every C++ command. No golden was regenerated.
+
+## Follow-up fixes (2026-10-05)
+
+Production fixes cover project-scoped Material history, the Materials dock's missing binding inverse, per-entry procedural-record restoration, Graph Redo across confirmed Render restores, model-resource destruction order, and shader failure retirement. The checker separately corrects uncommitted inline editors and empty containers left by an already-exempt placement subtree. No golden was regenerated and no error was added to an allowlist.
+
+Validation is targeted, not a second all-84 run: 125 Graph/Materials/Render-history CPU cases, 81 Python CI cases, engine procedural-record and shader regression cases, GPU late-model teardown and shader-retirement cases, and the dated GUI rechecks in the matrix. Earlier in the fix series the complete Studio CPU set passed 776/776. Local reports/logs are archived in `<作業ディレクトリ>/studio_fixes_final_evidence.zip`; intermediate diagnostic evidence is in `<作業ディレクトリ>/studio_fixes_mid_evidence.zip` and `<作業ディレクトリ>/studio_fixes_lifetime_evidence.zip`.
+
+Remaining marks are still executable reproductions. They include intentional route-contract refusals, the documented value-only Assets Undo, and Graph/Render ordering or missing-inverse cases that are not resolved by these fixes. A CTest pass with `known_red` is not an invariant pass.
 
 ## All 84 scenarios
 
@@ -25,18 +33,18 @@ There are **49 marks in 46 scenarios**: 45 Undo/Redo checks and 4 health checks.
 | forward_loop_from_scratch | pass | green | green | green |  | full run |
 | frameplan_edit_roundtrip | pass | green | green | green |  | full run |
 | frameplan_layout_then_edit | pass | red | green | green | QD1-R7 | full run |
-| fullscreen_pass_from_template | pass | red | green | green | QD1-R8 | follow-up |
-| graph_auto_layout | pass | red | green | green | QD1-R9 | full run |
+| fullscreen_pass_from_template | pass | green | green | green |  | fixes recheck 21:08 |
+| graph_auto_layout | pass | green | green | green |  | fixes recheck 21:09 |
 | graph_canvas_zoom_pan | pass | green | green | green |  | full run |
 | graph_edit_roundtrip | pass | green | green | green |  | full run |
-| graph_fold_decisions | pass | red | green | green | QD1-R10 | full run |
+| graph_fold_decisions | pass | red | green | green | QD1-R10 | fixes recheck 21:28 |
 | graph_folded_features | pass | green | green | green |  | full run |
 | graph_from_blank | pass | red | green | green | QD1-R1 | final check |
 | graph_from_blank_forward | pass | red | green | green | QD1-R11 | follow-up |
 | graph_layers_origin | pass | green | green | green |  | full run |
 | graph_loop_expand | pass | green | green | green |  | final check |
 | graph_observe_roundtrip | pass | green | green | green |  | full run |
-| graph_palette_kinds | pass | red | green | green | QD1-R12 | full run |
+| graph_palette_kinds | pass | green | green | green |  | fixes recheck 21:29 |
 | graph_read | pass | green | green | green |  | full run |
 | graph_reroute_tie | pass | green | green | green |  | full run |
 | graph_template_bloom | pass | green | green | green |  | full run |
@@ -59,31 +67,31 @@ There are **49 marks in 46 scenarios**: 45 Undo/Redo checks and 4 health checks.
 | gui_frameplan_delegates | pass | red | green | green | QD1-R2 | full run |
 | gui_graph_folded_edits | pass | green | green | green |  | full run |
 | gui_graph_new_target | pass | red | green | green | QD1-R26 | follow-up |
-| gui_graph_only_edits | pass | red | green | green | QD1-R27 | full run |
+| gui_graph_only_edits | pass | red | green | green | QD1-R27 | fixes recheck 21:30 |
 | gui_graph_only_edits_2 | pass | red | green | green | QD1-R28 | follow-up |
 | gui_graph_order | pass | green | green | green |  | full run |
 | gui_graph_task_delete | pass | green | green | green |  | full run |
 | gui_lower_layer_pin_freeze | pass | green | green | green |  | pilot |
-| gui_material_from_blank | pass | red | green | green | QD1-R29 | final check |
+| gui_material_from_blank | pass | green | green | green |  | fixes recheck 21:31 |
 | gui_material_ray_query_from_blank | pass | red | green | green | QD1-R3 | follow-up |
-| gui_material_repair | pass | red | green | green | QD1-R30 | pilot |
+| gui_material_repair | pass | green | green | green |  | fixes recheck 21:32 |
 | gui_model_from_file | pass | green | green | green |  | full run |
 | gui_node_parameters | pass | green | green | green |  | full run |
 | gui_problems_window | pass | N/A | green | green |  | full run |
 | gui_render_fallback | pass | green | green | green |  | full run |
-| gui_rt_checks | pass | red | green | red | QD1-R31, QD1-H1 | final check |
-| gui_rt_full_from_blank | pass | red | green | green | QD1-R32 | follow-up |
+| gui_rt_checks | pass | green | green | green |  | fixes recheck 21:33 |
+| gui_rt_full_from_blank | pass | green | green | green |  | fixes recheck 21:34 |
 | gui_rt_hit_groups_from_blank | pass | red | green | green | QD1-R33 | follow-up |
-| gui_rt_layout_edits | pass | green | green | red | QD1-H2 | full run |
-| gui_rt_procedural_callable | pass | red | green | red | QD1-R34, QD1-H3 | full run |
-| gui_rt_two_rays_two_misses | pass | red | green | red | QD1-R35, QD1-H4 | full run |
-| gui_settings_choose | pass | red | green | green | QD1-R36 | follow-up |
+| gui_rt_layout_edits | pass | green | green | green |  | fixes recheck 21:35 |
+| gui_rt_procedural_callable | pass | red | green | green | QD1-R34 | fixes recheck 21:36 |
+| gui_rt_two_rays_two_misses | pass | red | green | green | QD1-R35 | fixes recheck 21:37 |
+| gui_settings_choose | pass | red | green | green | QD1-R36 | fixes recheck 21:15 |
 | input_needs_shader | pass | red | green | green | QD1-R37 | pilot |
-| lighting_pass_template | pass | red | green | green | QD1-R38 | full run |
+| lighting_pass_template | pass | green | green | green |  | fixes recheck 21:17 |
 | loop_view_axis | pass | green | green | green |  | full run |
-| loop_zone_edit | pass | red | green | green | QD1-R39 | follow-up |
-| loop_zone_read | pass | red | green | green | QD1-R40 | full run |
-| loop_zone_wire | pass | red | green | green | QD1-R41 | follow-up |
+| loop_zone_edit | pass | green | green | green |  | fixes recheck 21:19 |
+| loop_zone_read | pass | green | green | green |  | fixes recheck 21:19 |
+| loop_zone_wire | pass | green | green | green |  | fixes recheck 21:20 |
 | material_loop_decompose | pass | red | green | green | QD1-R42 | full run |
 | material_pass_authoring | pass | red | green | green | QD1-R4 | full run |
 | menu_actions | pass | green | green | green |  | pilot |
@@ -95,7 +103,7 @@ There are **49 marks in 46 scenarios**: 45 Undo/Redo checks and 4 health checks.
 | render_pipeline_from_scratch | pass | green | green | green |  | full run |
 | render_reload_external | pass | green | green | green |  | final check |
 | render_target_authoring | pass | green | green | green |  | full run |
-| render_undo_roundtrip | pass | red | green | green | QD1-R43 | full run |
+| render_undo_roundtrip | pass | green | green | green |  | fixes recheck 21:38 |
 | rendering_settings_from_blank | pass | green | green | green |  | pilot |
 | sockets_fix_and_show | pass | red | green | green | QD1-R44 | full run |
 | sockets_from_shader | pass | red | green | green | QD1-R45 | follow-up |
@@ -170,36 +178,6 @@ Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 +  "render_material_pass_draw": {
 +   "nodes": [
 +    {
-```
-
-### QD1-R8: fullscreen_pass_from_template / undo
-
-**Serialization / empty metadata.** Undo leaves only an empty `layout` object after the explicitly exempt `layout.frame_plan` subtree is removed. This is a strict document-restoration difference, not evidence of a rendering failure.
-
-Reproduce through ordinary step 79, then the `undo` epilogue.
-
-Undo differs: `file:passes/main.json`, `render:passes/main.json`.
-
-```diff
-@@ -39,2 +39,3 @@
-  },
-+ "layout": {},
-  "nodes": [
-```
-
-### QD1-R9: graph_auto_layout / undo
-
-**Serialization / empty metadata.** Undo leaves only an empty `layout` object after the explicitly exempt `layout.frame_plan` subtree is removed. This is a strict document-restoration difference, not evidence of a rendering failure.
-
-Reproduce through ordinary step 11, then the `undo` epilogue.
-
-Undo differs: `file:passes/main.json`, `render:passes/main.json`.
-
-```diff
-@@ -39,2 +39,3 @@
-  },
-+ "layout": {},
-  "nodes": [
 ```
 
 ### QD1-R10: graph_fold_decisions / undo
@@ -280,28 +258,9 @@ Redo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 
 The last same-project restart is step 22; after-Undo matches that restart snapshot. Only scene history is excluded solely because of restart.
 
-### QD1-R12: graph_palette_kinds / undo
-
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
-
-Reproduce through ordinary step 61, then the `undo` epilogue.
-
-Redo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -2,126 +2,3 @@
-  "definitions": {},
-- "nodes": [
--  {
--   "id": "ux3_scene_ref",
--   "op": "render.target_ref",
--   "outputs": [
--    "resource"
-```
-
 ### QD1-R13: gui_assets_watch_verify / undo
 
-**Serialization / byte identity.** After exempting the manifest update that is outside Assets Undo, `project.json` still differs by bytes while its canonical JSON diff is empty; `get_project_settings` also reports a changed project digest.
+**Documented value-based Undo / strict byte check.** After exempting the manifest update that is outside Assets Undo, `project.json` still differs by bytes while its canonical JSON diff is empty; `get_project_settings` also reports a changed project digest. The Assets Undo documentation in [manual 13](../../docs/manual/13_editor.md) explicitly says that it restores values and does not restore the original digest, because the engine formats JSON with two spaces. This record is therefore not evidence of a lost setting. The strict byte check remains marked until a narrowly scoped comparison policy is chosen; do not change production values or suppress the whole project document to make it pass.
 
 Reproduce through ordinary step 46, then the `undo` epilogue.
 
@@ -671,27 +630,6 @@ Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 
 The last same-project restart is step 31; after-Undo also differs from that restart snapshot. Only scene history is excluded solely because of restart.
 
-### QD1-R29: gui_material_from_blank / undo
-
-**Studio / history lifetime.** The scenario reopens its original project after `project_control`. The Material row still exposes 3 old Undo entries; invoking them removes bindings that existed at the new start snapshot. `MaterialAssignSession::engineReady` and `engineGone` do not clear that history.
-
-Reproduce through ordinary step 253, then the `undo` epilogue.
-
-Undo differs: `file:assets/asset_data.json`, `file:materials/cube.bindings.json`, `list_materials:`.
-
-```diff
-@@ -9,9 +9,3 @@
-  ],
-- "models": [
--  {
--   "material_bindings": "materials/cube.bindings.json",
--   "name": "engine://primitives/cube",
--   "path": "engine://primitives/cube"
--  }
-```
-
-Redo coverage limit: material_row: a Material row's Undo (Every <model>) has no Redo.
-
 ### QD1-R3: gui_material_ray_query_from_blank / undo
 
 **Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
@@ -714,70 +652,6 @@ Undo differs: `file:assets/asset_data.json`, `file:materials/material.material.j
 ```
 
 The last same-project restart is step 32; after-Undo also differs from that restart snapshot. Only scene history is excluded solely because of restart.
-
-Redo coverage limit: material_row: a Material row's Undo (Every <model>) has no Redo.
-
-### QD1-R30: gui_material_repair / undo
-
-**Studio / binding history.** The Materials dock removes a binding during ordinary steps. The enabled Material-row Undo is exercised even with its parent hidden, but the binding and asset-data entry are not restored. Exact ownership of this missing inverse remains to be isolated.
-
-Reproduce through ordinary step 205, then the `undo` epilogue.
-
-Undo differs: `file:assets/asset_data.json`, `file:materials/cube.bindings.json`, `list_materials:`.
-
-```diff
-@@ -6,9 +6,3 @@
-  ],
-- "models": [
--  {
--   "material_bindings": "materials/cube.bindings.json",
--   "name": "engine://primitives/cube",
--   "path": "engine://primitives/cube"
--  }
-```
-
-### QD1-R31: gui_rt_checks / undo
-
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
-
-Reproduce through ordinary step 125, then the `undo` epilogue.
-
-Undo differs: `file:assets/asset_data.json`, `list_materials:`.
-
-```diff
-@@ -20,3 +20,3 @@
-    "record": {
--    "value": 0.0
-+    "value": 1
-    }
-```
-
-### QD1-H1: gui_rt_checks / health
-
-**Engine teardown error.** `project_control/player.log` records `model container teardown release` with `stage=material` and `stage=texture`, both `code=owner_unavailable`. At the ordinary endpoint, Problems also contains `shader_reload_failed@1` for `project://shaders/start.rchit`; this is distinct from the intentionally rejected wrong_record shader. These errors are not allowlisted. The cases may share one underlying defect.
-
-Reproduce through ordinary step 125, then the `health` epilogue.
-
-Observed at the endpoint / project close: Problems holds 1, the scenario declares 0: error: shader_reload_failed@1: Shader compile failed: project://shaders/start.rchit / 2 error line(s) in the logs, the first: 19:23:07.550686969 [43732] modelresourcerelease.cpp:20  LOG_ERROR     pelican      model container teardown release: stage=material code=owner_unavailable index=1
-
-### QD1-R32: gui_rt_full_from_blank / undo
-
-**Studio / history lifetime.** The scenario reopens its original project after `project_control`. The Material row still exposes 2 old Undo entries; invoking them removes bindings that existed at the new start snapshot. `MaterialAssignSession::engineReady` and `engineGone` do not clear that history.
-
-Reproduce through ordinary step 249, then the `undo` epilogue.
-
-Undo differs: `file:assets/asset_data.json`, `file:materials/cube.bindings.json`, `file:materials/sphere.bindings.json`, `list_materials:`.
-
-```diff
-@@ -9,14 +9,3 @@
-  ],
-- "models": [
--  {
--   "material_bindings": "materials/cube.bindings.json",
--   "name": "engine://primitives/cube",
--   "path": "engine://primitives/cube"
--  },
-```
 
 Redo coverage limit: material_row: a Material row's Undo (Every <model>) has no Redo.
 
@@ -804,15 +678,9 @@ The last same-project restart is step 83; after-Undo also differs from that rest
 
 Redo coverage limit: material_row: a Material row's Undo (Every <model>) has no Redo.
 
-### QD1-H2: gui_rt_layout_edits / health
-
-**Engine teardown error.** `project_control/player.log` records `model container teardown release` with `stage=material` and `stage=texture`, both `code=owner_unavailable`. These errors are not allowlisted. The cases may share one underlying defect.
-
-Reproduce through ordinary step 82, then the `health` epilogue.
-
-Observed at the endpoint / project close: 2 error line(s) in the logs, the first: 18:25:45.577283444 [38844] modelresourcerelease.cpp:20  LOG_ERROR     pelican      model container teardown release: stage=material code=owner_unavailable index=1
-
 ### QD1-R34: gui_rt_procedural_callable / undo
+
+**Follow-up diagnosis:** the inline editor was the `trace/dispatch` value editor, not a lost history. After cancelling its uncommitted draft, four Graph inverses and their Redo restore all authored JSON values. The only remaining Undo difference is raw file identity; canonical JSON and the engine document agree. The strict byte check remains marked. The original semantic-difference excerpt below is historical.
 
 **Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
 
@@ -831,15 +699,9 @@ Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 -        "intersection": "project://shaders/none"
 ```
 
-### QD1-H3: gui_rt_procedural_callable / health
-
-**Engine teardown error.** `project_control/player.log` records `model container teardown release` with `stage=material` and `stage=texture`, both `code=owner_unavailable`. These errors are not allowlisted. The cases may share one underlying defect.
-
-Reproduce through ordinary step 42, then the `health` epilogue.
-
-Observed at the endpoint / project close: 2 error line(s) in the logs, the first: 18:26:17.196852342 [9584] modelresourcerelease.cpp:20  LOG_ERROR     pelican      model container teardown release: stage=material code=owner_unavailable index=1
-
 ### QD1-R35: gui_rt_two_rays_two_misses / undo
+
+**Follow-up diagnosis:** the inline editor was the `trace/dispatch` value editor, not a lost history. After cancelling its uncommitted draft, four Graph inverses and their Redo restore all authored JSON values. The only remaining Undo difference is raw file identity; canonical JSON and the engine document agree. The strict byte check remains marked. The original semantic-difference excerpt below is historical.
 
 **Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
 
@@ -857,14 +719,6 @@ Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 +       }
        }
 ```
-
-### QD1-H4: gui_rt_two_rays_two_misses / health
-
-**Engine teardown error.** `project_control/player.log` records `model container teardown release` with `stage=material` and `stage=texture`, both `code=owner_unavailable`. These errors are not allowlisted. The cases may share one underlying defect.
-
-Reproduce through ordinary step 48, then the `health` epilogue.
-
-Observed at the endpoint / project close: 2 error line(s) in the logs, the first: 18:26:48.667943032 [4776] modelresourcerelease.cpp:20  LOG_ERROR     pelican      model container teardown release: stage=material code=owner_unavailable index=1
 
 ### QD1-R36: gui_settings_choose / undo
 
@@ -906,66 +760,6 @@ Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 +    {
 ```
 
-### QD1-R38: lighting_pass_template / undo
-
-**Serialization / empty metadata.** Undo leaves only an empty `layout` object after the explicitly exempt `layout.frame_plan` subtree is removed. This is a strict document-restoration difference, not evidence of a rendering failure.
-
-Reproduce through ordinary step 85, then the `undo` epilogue.
-
-Undo differs: `file:passes/main.json`, `render:passes/main.json`.
-
-```diff
-@@ -39,2 +39,3 @@
-  },
-+ "layout": {},
-  "nodes": [
-```
-
-### QD1-R39: loop_zone_edit / undo
-
-**Serialization / empty metadata.** Undo leaves only an empty `layout` object after the explicitly exempt `layout.frame_plan` subtree is removed. This is a strict document-restoration difference, not evidence of a rendering failure.
-
-Reproduce through ordinary step 66, then the `undo` epilogue.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -2,2 +2,3 @@
-  "definitions": {},
-+ "layout": {},
-  "nodes": [],
-```
-
-### QD1-R40: loop_zone_read / undo
-
-**Serialization / empty metadata.** Undo leaves only an empty `layout` object after the explicitly exempt `layout.frame_plan` subtree is removed. This is a strict document-restoration difference, not evidence of a rendering failure.
-
-Reproduce through ordinary step 94, then the `undo` epilogue.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -2,2 +2,3 @@
-  "definitions": {},
-+ "layout": {},
-  "nodes": [],
-```
-
-### QD1-R41: loop_zone_wire / undo
-
-**Serialization / empty metadata.** Undo leaves only an empty `layout` object after the explicitly exempt `layout.frame_plan` subtree is removed. This is a strict document-restoration difference, not evidence of a rendering failure.
-
-Reproduce through ordinary step 77, then the `undo` epilogue.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -2,2 +2,3 @@
-  "definitions": {},
-+ "layout": {},
-  "nodes": [],
-```
-
 ### QD1-R42: material_loop_decompose / undo
 
 **Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
@@ -1005,38 +799,6 @@ Undo differs: `file:passes/main.json`, `render:passes/main.json`.
 ```
 
 The last same-project restart is step 15; after-Undo matches that restart snapshot. Only scene history is excluded solely because of restart.
-
-### QD1-R43: render_undo_roundtrip / undo
-
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
-
-Reproduce through ordinary step 136, then the `undo` epilogue.
-
-Undo differs: `file:passes/main.json`, `render:passes/main.json`.
-
-```diff
-@@ -2,2 +2,7 @@
-  "definitions": {},
-+ "layout": {
-+  "nodes": {},
-+  "reroutes": [],
-+  "ties": []
-+ },
-  "nodes": [],
-```
-
-Redo differs: `file:passes/main.json`, `render:passes/main.json`.
-
-```diff
-@@ -7,22 +7,3 @@
-  },
-- "nodes": [
--  {
--   "id": "render_target_ref",
--   "op": "render.target_ref",
--   "outputs": [
--    "resource"
-```
 
 ### QD1-R44: sockets_fix_and_show / undo
 
@@ -1098,3 +860,319 @@ Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 - Paired timings for 83 cases: baseline without epilogues 2574.36 s; full-run case durations 5103.49 s, **1.98x**. The 84-case full CTest wall time was 5212.34 s. Targeted reruns are additional validation, not a second full-run benchmark.
 - During development, select affected scenarios with `-R`; keep the full serial suite for integration. If reducing reopen coverage to Blank-building cases is later desired, make it an explicit policy change. This change keeps default coverage.
 - No new end-user text-entry field or production engine behavior is introduced. The complete non-Studio repository release gate was not rerun in this QD-1 validation.
+
+## Resolved findings
+
+### QD1-R8: fullscreen_pass_from_template / undo
+
+**Resolved in the 2026-10-05 fixes.** Checker correction: removing the explicitly exempt layout.frame_plan subtree also removes its empty ancestor containers. Siblings and unrelated empty objects remain compared. Verified `fullscreen_pass_from_template` / `undo` green at 2026-10-05T21:08:29.
+
+Original reproduction (retained as evidence):
+
+**Serialization / empty metadata.** Undo leaves only an empty `layout` object after the explicitly exempt `layout.frame_plan` subtree is removed. This is a strict document-restoration difference, not evidence of a rendering failure.
+
+Reproduce through ordinary step 79, then the `undo` epilogue.
+
+Undo differs: `file:passes/main.json`, `render:passes/main.json`.
+
+```diff
+@@ -39,2 +39,3 @@
+  },
++ "layout": {},
+  "nodes": [
+```
+
+### QD1-R9: graph_auto_layout / undo
+
+**Resolved in the 2026-10-05 fixes.** Checker correction: removing the explicitly exempt layout.frame_plan subtree also removes its empty ancestor containers. Siblings and unrelated empty objects remain compared. Verified `graph_auto_layout` / `undo` green at 2026-10-05T21:09:55.
+
+Original reproduction (retained as evidence):
+
+**Serialization / empty metadata.** Undo leaves only an empty `layout` object after the explicitly exempt `layout.frame_plan` subtree is removed. This is a strict document-restoration difference, not evidence of a rendering failure.
+
+Reproduce through ordinary step 11, then the `undo` epilogue.
+
+Undo differs: `file:passes/main.json`, `render:passes/main.json`.
+
+```diff
+@@ -39,2 +39,3 @@
+  },
++ "layout": {},
+  "nodes": [
+```
+
+### QD1-R12: graph_palette_kinds / undo
+
+**Resolved in the 2026-10-05 fixes.** Graph Redo survives a confirmed Render-history restore whose exact digest and graph contents match; unrelated writes still invalidate history. Verified `graph_palette_kinds` / `undo` green at 2026-10-05T21:29:26.
+
+Original reproduction (retained as evidence):
+
+**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+
+Reproduce through ordinary step 61, then the `undo` epilogue.
+
+Redo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+
+```diff
+@@ -2,126 +2,3 @@
+  "definitions": {},
+- "nodes": [
+-  {
+-   "id": "ux3_scene_ref",
+-   "op": "render.target_ref",
+-   "outputs": [
+-    "resource"
+```
+
+### QD1-R29: gui_material_from_blank / undo
+
+**Resolved in the 2026-10-05 fixes.** Material assignment history and pending replies are cleared on project open; same-project engine restarts retain history. Verified `gui_material_from_blank` / `undo` green at 2026-10-05T21:31:16.
+
+Original reproduction (retained as evidence):
+
+**Studio / history lifetime.** The scenario reopens its original project after `project_control`. The Material row still exposes 3 old Undo entries; invoking them removes bindings that existed at the new start snapshot. `MaterialAssignSession::engineReady` and `engineGone` do not clear that history.
+
+Reproduce through ordinary step 253, then the `undo` epilogue.
+
+Undo differs: `file:assets/asset_data.json`, `file:materials/cube.bindings.json`, `list_materials:`.
+
+```diff
+@@ -9,9 +9,3 @@
+  ],
+- "models": [
+-  {
+-   "material_bindings": "materials/cube.bindings.json",
+-   "name": "engine://primitives/cube",
+-   "path": "engine://primitives/cube"
+-  }
+```
+
+Redo coverage limit: material_row: a Material row's Undo (Every <model>) has no Redo.
+
+### QD1-R30: gui_material_repair / undo
+
+**Resolved in the 2026-10-05 fixes.** The Materials dock model-binding row now adopts its inverse into the visible dock history. The scenario verifies deletion Undo followed by binding Undo. Verified `gui_material_repair` / `undo` green at 2026-10-05T21:32:27.
+
+Original reproduction (retained as evidence):
+
+**Studio / binding history.** The Materials dock removes a binding during ordinary steps. The enabled Material-row Undo is exercised even with its parent hidden, but the binding and asset-data entry are not restored. Exact ownership of this missing inverse remains to be isolated.
+
+Reproduce through ordinary step 205, then the `undo` epilogue.
+
+Undo differs: `file:assets/asset_data.json`, `file:materials/cube.bindings.json`, `list_materials:`.
+
+```diff
+@@ -6,9 +6,3 @@
+  ],
+- "models": [
+-  {
+-   "material_bindings": "materials/cube.bindings.json",
+-   "name": "engine://primitives/cube",
+-   "path": "engine://primitives/cube"
+-  }
+```
+
+### QD1-R31: gui_rt_checks / undo
+
+**Resolved in the 2026-10-05 fixes.** Procedural record inverses belong to each history entry, not an output digest. Opaque JSON text preserves numeric types through Qt transport; repeated Undo/Redo and restart are covered. Verified `gui_rt_checks` / `undo` green at 2026-10-05T21:33:31.
+
+Original reproduction (retained as evidence):
+
+**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+
+Reproduce through ordinary step 125, then the `undo` epilogue.
+
+Undo differs: `file:assets/asset_data.json`, `list_materials:`.
+
+```diff
+@@ -20,3 +20,3 @@
+    "record": {
+-    "value": 0.0
++    "value": 1
+    }
+```
+
+### QD1-H1: gui_rt_checks / health
+
+**Resolved in the 2026-10-05 fixes.** Resource owners are initialized before the model container, including an initially empty project with later model loads, so reverse destruction order keeps them alive during model release. Shader retirement also remaps failed reload-unit indices and removes only retired shaders from Problems, retaining surviving failure details. Verified `gui_rt_checks` / `health` green at 2026-10-05T21:33:31.
+
+Original reproduction (retained as evidence):
+
+**Engine teardown error.** `project_control/player.log` records `model container teardown release` with `stage=material` and `stage=texture`, both `code=owner_unavailable`. At the ordinary endpoint, Problems also contains `shader_reload_failed@1` for `project://shaders/start.rchit`; this is distinct from the intentionally rejected wrong_record shader. These errors are not allowlisted. The cases may share one underlying defect.
+
+Reproduce through ordinary step 125, then the `health` epilogue.
+
+Observed at the endpoint / project close: Problems holds 1, the scenario declares 0: error: shader_reload_failed@1: Shader compile failed: project://shaders/start.rchit / 2 error line(s) in the logs, the first: 19:23:07.550686969 [43732] modelresourcerelease.cpp:20  LOG_ERROR     pelican      model container teardown release: stage=material code=owner_unavailable index=1
+
+### QD1-R32: gui_rt_full_from_blank / undo
+
+**Resolved in the 2026-10-05 fixes.** Material assignment history and pending replies are cleared on project open; same-project engine restarts retain history. Verified `gui_rt_full_from_blank` / `undo` green at 2026-10-05T21:34:47.
+
+Original reproduction (retained as evidence):
+
+**Studio / history lifetime.** The scenario reopens its original project after `project_control`. The Material row still exposes 2 old Undo entries; invoking them removes bindings that existed at the new start snapshot. `MaterialAssignSession::engineReady` and `engineGone` do not clear that history.
+
+Reproduce through ordinary step 249, then the `undo` epilogue.
+
+Undo differs: `file:assets/asset_data.json`, `file:materials/cube.bindings.json`, `file:materials/sphere.bindings.json`, `list_materials:`.
+
+```diff
+@@ -9,14 +9,3 @@
+  ],
+- "models": [
+-  {
+-   "material_bindings": "materials/cube.bindings.json",
+-   "name": "engine://primitives/cube",
+-   "path": "engine://primitives/cube"
+-  },
+```
+
+Redo coverage limit: material_row: a Material row's Undo (Every <model>) has no Redo.
+
+### QD1-H2: gui_rt_layout_edits / health
+
+**Resolved in the 2026-10-05 fixes.** Resource owners are initialized before the model container, including an initially empty project with later model loads, so reverse destruction order keeps them alive during model release. Verified `gui_rt_layout_edits` / `health` green at 2026-10-05T21:35:57.
+
+Original reproduction (retained as evidence):
+
+**Engine teardown error.** `project_control/player.log` records `model container teardown release` with `stage=material` and `stage=texture`, both `code=owner_unavailable`. These errors are not allowlisted. The cases may share one underlying defect.
+
+Reproduce through ordinary step 82, then the `health` epilogue.
+
+Observed at the endpoint / project close: 2 error line(s) in the logs, the first: 18:25:45.577283444 [38844] modelresourcerelease.cpp:20  LOG_ERROR     pelican      model container teardown release: stage=material code=owner_unavailable index=1
+
+### QD1-H3: gui_rt_procedural_callable / health
+
+**Resolved in the 2026-10-05 fixes.** Resource owners are initialized before the model container, including an initially empty project with later model loads, so reverse destruction order keeps them alive during model release. Verified `gui_rt_procedural_callable` / `health` green at 2026-10-05T21:36:45.
+
+Original reproduction (retained as evidence):
+
+**Engine teardown error.** `project_control/player.log` records `model container teardown release` with `stage=material` and `stage=texture`, both `code=owner_unavailable`. These errors are not allowlisted. The cases may share one underlying defect.
+
+Reproduce through ordinary step 42, then the `health` epilogue.
+
+Observed at the endpoint / project close: 2 error line(s) in the logs, the first: 18:26:17.196852342 [9584] modelresourcerelease.cpp:20  LOG_ERROR     pelican      model container teardown release: stage=material code=owner_unavailable index=1
+
+### QD1-H4: gui_rt_two_rays_two_misses / health
+
+**Resolved in the 2026-10-05 fixes.** Resource owners are initialized before the model container, including an initially empty project with later model loads, so reverse destruction order keeps them alive during model release. Verified `gui_rt_two_rays_two_misses` / `health` green at 2026-10-05T21:37:34.
+
+Original reproduction (retained as evidence):
+
+**Engine teardown error.** `project_control/player.log` records `model container teardown release` with `stage=material` and `stage=texture`, both `code=owner_unavailable`. These errors are not allowlisted. The cases may share one underlying defect.
+
+Reproduce through ordinary step 48, then the `health` epilogue.
+
+Observed at the endpoint / project close: 2 error line(s) in the logs, the first: 18:26:48.667943032 [4776] modelresourcerelease.cpp:20  LOG_ERROR     pelican      model container teardown release: stage=material code=owner_unavailable index=1
+
+### QD1-R38: lighting_pass_template / undo
+
+**Resolved in the 2026-10-05 fixes.** Checker correction: removing the explicitly exempt layout.frame_plan subtree also removes its empty ancestor containers. Siblings and unrelated empty objects remain compared. Verified `lighting_pass_template` / `undo` green at 2026-10-05T21:17:08.
+
+Original reproduction (retained as evidence):
+
+**Serialization / empty metadata.** Undo leaves only an empty `layout` object after the explicitly exempt `layout.frame_plan` subtree is removed. This is a strict document-restoration difference, not evidence of a rendering failure.
+
+Reproduce through ordinary step 85, then the `undo` epilogue.
+
+Undo differs: `file:passes/main.json`, `render:passes/main.json`.
+
+```diff
+@@ -39,2 +39,3 @@
+  },
++ "layout": {},
+  "nodes": [
+```
+
+### QD1-R39: loop_zone_edit / undo
+
+**Resolved in the 2026-10-05 fixes.** Checker correction: removing the explicitly exempt layout.frame_plan subtree also removes its empty ancestor containers. Siblings and unrelated empty objects remain compared. Verified `loop_zone_edit` / `undo` green at 2026-10-05T21:19:05.
+
+Original reproduction (retained as evidence):
+
+**Serialization / empty metadata.** Undo leaves only an empty `layout` object after the explicitly exempt `layout.frame_plan` subtree is removed. This is a strict document-restoration difference, not evidence of a rendering failure.
+
+Reproduce through ordinary step 66, then the `undo` epilogue.
+
+Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+
+```diff
+@@ -2,2 +2,3 @@
+  "definitions": {},
++ "layout": {},
+  "nodes": [],
+```
+
+### QD1-R40: loop_zone_read / undo
+
+**Resolved in the 2026-10-05 fixes.** Checker correction: removing the explicitly exempt layout.frame_plan subtree also removes its empty ancestor containers. Siblings and unrelated empty objects remain compared. Verified `loop_zone_read` / `undo` green at 2026-10-05T21:19:40.
+
+Original reproduction (retained as evidence):
+
+**Serialization / empty metadata.** Undo leaves only an empty `layout` object after the explicitly exempt `layout.frame_plan` subtree is removed. This is a strict document-restoration difference, not evidence of a rendering failure.
+
+Reproduce through ordinary step 94, then the `undo` epilogue.
+
+Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+
+```diff
+@@ -2,2 +2,3 @@
+  "definitions": {},
++ "layout": {},
+  "nodes": [],
+```
+
+### QD1-R41: loop_zone_wire / undo
+
+**Resolved in the 2026-10-05 fixes.** Checker correction: removing the explicitly exempt layout.frame_plan subtree also removes its empty ancestor containers. Siblings and unrelated empty objects remain compared. Verified `loop_zone_wire` / `undo` green at 2026-10-05T21:20:41.
+
+Original reproduction (retained as evidence):
+
+**Serialization / empty metadata.** Undo leaves only an empty `layout` object after the explicitly exempt `layout.frame_plan` subtree is removed. This is a strict document-restoration difference, not evidence of a rendering failure.
+
+Reproduce through ordinary step 77, then the `undo` epilogue.
+
+Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+
+```diff
+@@ -2,2 +2,3 @@
+  "definitions": {},
++ "layout": {},
+  "nodes": [],
+```
+
+### QD1-R43: render_undo_roundtrip / undo
+
+**Resolved in the 2026-10-05 fixes.** Graph history survives a confirmed Render-history restore whose exact digest and graph contents match, allowing the mixed Undo/Redo sequence to finish without losing its remaining entries. Verified `render_undo_roundtrip` / `undo` green at 2026-10-05T21:38:30.
+
+Original reproduction (retained as evidence):
+
+**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+
+Reproduce through ordinary step 136, then the `undo` epilogue.
+
+Undo differs: `file:passes/main.json`, `render:passes/main.json`.
+
+```diff
+@@ -2,2 +2,7 @@
+  "definitions": {},
++ "layout": {
++  "nodes": {},
++  "reroutes": [],
++  "ties": []
++ },
+  "nodes": [],
+```
+
+Redo differs: `file:passes/main.json`, `render:passes/main.json`.
+
+```diff
+@@ -7,22 +7,3 @@
+  },
+- "nodes": [
+-  {
+-   "id": "render_target_ref",
+-   "op": "render.target_ref",
+-   "outputs": [
+-    "resource"
+```

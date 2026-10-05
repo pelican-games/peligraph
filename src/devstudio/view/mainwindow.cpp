@@ -1389,6 +1389,8 @@ void MainWindow::createRenderHistory(QWidget *pass_editor) {
     });
     render_history_->changed = [this] { renderHistoryChanged(); };
     render_history_->restored = [this](const nlohmann::json &commit, bool restart) {
+        graph_canvas_->renderHistoryRestored(
+            commit.value("source_digest", nlohmann::json::object()).value("hex", std::string{}));
         renderDocumentsRestored(commit, restart);
     };
     // Every request any panel sends passes here; the history hears only the
@@ -2534,6 +2536,7 @@ void MainWindow::openProjectNow(const QString &path) {
         outliner_refresh_timer_->stop();
         pending_outliner_request_ = 0;
         inspector_->resetSceneSaveState();
+        inspector_->resetMaterialState();
         pending_spawn_name_.reset();
         pending_created_selection_.reset();
         pending_outliner_edit_.reset();

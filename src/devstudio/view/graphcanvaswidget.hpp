@@ -1149,6 +1149,9 @@ class GraphCanvasWidget final : public QWidget {
     // own Undo history ends here (what it holds inverts a document that is
     // no longer the one on disk), and the document is read again.
     void documentsReloadedFromDisk();
+    // A committed Render Undo/Redo can leave the graph unchanged. Unlike an
+    // external reload, that exact revision may retain Graph Undo and Redo.
+    void renderHistoryRestored(const std::string &digest);
     // RL-1s. What the reload from disk said, on this tab's notice row
     // (kind None takes down only a line this call put up).
     void showDiskReloadNotice(const InspectorNotice &notice);

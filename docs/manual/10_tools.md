@@ -336,12 +336,12 @@ component に `resolution_error`。
 
 2026-09 の追加(GP-4、`c095493c`): `get_status` の `input` に `cursor {requested, effective, embedded}`([組み立て](../../src/core/communication/rpcserver.cpp#L1770))。`requested` はゲームコードが `ctx.input().setCursorMode` で頼んだモード、`effective` は窓に適用したモード(`normal` / `hidden` / `locked`)、`embedded` は窓が別の窓に埋め込まれているか(`--rpc` かつ `WS_CHILD`。Windows だけで判定)。埋め込みでは `locked` を頼んでも `effective` は `normal` です。headless は窓が無いので `effective` は常に `normal`、`embedded` は `false`。
 
-2026-09 の追加(AG-3a、`32d9a20b`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L4577)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L461))。読み取り専用で `edit_*` の CAS には乗らない。
+2026-09 の追加(AG-3a、`32d9a20b`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L4599)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L461))。読み取り専用で `edit_*` の CAS には乗らない。
 
 **`get_graph_values` と `get_graph_node_values` は問いが違います。**前者は `instance` 必須で、その
 **instance の入力 port だけ**を `{port, value, source, connected|parameter}` として返します(`source` は
 `connected` / `parameter` / `default` / `override`)。後者は**展開木のノードを全部**並べ、各ノードの出力値を
-`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L4496))。両方とも
+`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L4518))。両方とも
 **同じ publish snapshot を読むだけ**で再評価しません —— 再評価は graph の時計を進め event を二重に消費するためです。
 `source: "rendering"` は「これは描画側の評価が使った値だ」という明示で、animation phase は同じ文書を
 自分の state で評価するため、event や trigger で駆動される文書では両者が恒久的に違いうることを表します。
@@ -448,7 +448,7 @@ component に `resolution_error`。
 - `register_material {path}` が、`materials[]` に載っていて起動時に断った文書なら `material.path_conflict@1` で断らずに読み直して登録し、答えに `recovered: true` と `rebuilt_models` が付きます(✅EB-2)。取り込んだ後の `list_materials` は `loaded` です。
 - `hot_reload` に宣言された文書なら、ファイルの保存で同じ取り込みが走ります(reload participant `pelican.material_documents`)。watch が見ている登録済みの文書が読めなくなると、`get_problems` に source `hot_reload` の `material.document_invalid@1` / `material.document_unknown@1` が入ります(✅EB-2)。
 - `get_ray_layout.selectable_materials` の各行に `used_by: {count, objects}`、asset の selector の行に `model`(✅EB-2)。
-- `restore_render_documents` の `documents` に asset_data の `{reference, base_digest, content: null}` を渡すと、`edit_ray_layout` の `procedural_records` が書いた record を戻します(✅EB-2。拒否 `render_document_not_writable {reason: "procedural_records_only"}`)。
+- `edit_ray_layout` / `restore_render_documents` の commit は、書き換えた asset_data の record の逆操作を `procedural_records_before: {<参照>: <JSON 文字列>}` で返します。`restore_render_documents` の `documents` に `{reference, base_digest, content: null, procedural_records: <その文字列>}` を渡すと、その record だけを戻します。文字列の中は `{<asset 名>: <record または null>}` です。文字列のまま保持することで数値型・メンバー順を保ち、同じ digest に戻る編集の繰り返しや engine の再起動後も Undo / Redo できます。asset_data 全体の digest と復元先 layout の検査は行います。`procedural_records` を省いた従来の digest だけの形式も受けますが、これは engine が動いている間の履歴に限ります(✅EB-2。拒否 `render_document_not_writable {reason: "procedural_records_only"}`)。
 
 2026-10 の追加(EB-3 / FO-2、`31c390c7`。形の正は [第13章](13_editor.md) §13.5 の「SBT の全行を 1 回で読む —— `get_ray_table`(✅EB-3)」と「RT の拒否の code と fields」、[第6章](06_rendering.md) §6.15 の「shader record の宣言(✅EB-3)」と §6.7 の「pass の宣言漏れは別の code(✅FO-2)」):
 
@@ -777,7 +777,7 @@ params の形が違う(鍵が足りない・知らない鍵・型が違う)と�
 - **`register_model {path, name?}`**([register_model の本体](../../src/core/communication/materialdocumentrpc.cpp#L1976))→ `{committed: true, name, path, asset_data_digest, previous_asset_data_digest, applied: "live" | "restart_required", restart_required: {reason} | null}`
   - `path` は project 相対です。`project://` を付けても受け、外した形で asset_data と返り値に書きます。
   - `name` を省くとファイル名の stem です(`std::filesystem::path::stem()`。`assets/models/checker_box.glb` → `checker_box`、`a.b.glb` → `a.b`。実装者の報告)。stem が既にある名前と重なっても `model.name_conflict@1` で断り、番号は振りません(番号を振るのは呼び手)。
-  - 検査はこの順で、最初に当たったもので断ります: path の形 → 拡張子(大小を区別しない)→ ファイルがあるか → 同じ path が既に `models[]` にあるか(fragment 付きと基本形の entry は比べない)→ name の形 → name の衝突 → 読み込みの検査。読み込みの検査は起動時に `models[]` の entry を読むのと同じで、宣言を解き、ファイルを読み、`GltfLoader::inspect()` で検査し(GPU は確保しない)、glTF の material の名前を project の material と照らします([`ModelAssetContainer::preflightModel()`](../../src/core/asset/model.cpp#L953))。
+  - 検査はこの順で、最初に当たったもので断ります: path の形 → 拡張子(大小を区別しない)→ ファイルがあるか → 同じ path が既に `models[]` にあるか(fragment 付きと基本形の entry は比べない)→ name の形 → name の衝突 → 読み込みの検査。読み込みの検査は起動時に `models[]` の entry を読むのと同じで、宣言を解き、ファイルを読み、`GltfLoader::inspect()` で検査し(GPU は確保しない)、glTF の material の名前を project の material と照らします([`ModelAssetContainer::preflightModel()`](../../src/core/asset/model.cpp#L960))。
   - 通れば `models[]` の末尾に `{name, path}` を足し、asset_data の読み込みの検査(`parseAssetDataFormatJson()`)に通してから 1 つの transaction で書きます。鍵の順と改行コードは保ちます。
   - 書いた後に engine の asset_data の写しを替え、`waitIdle()` の後に model を 1 件登録して `applied: "live"` です。model の container がまだ無い host では、替えた写しから container を作るので、この model も入って live です。
   - 写しを替えられなかったとき(`restart_required.reason` は `the engine's copy of asset_data was not refreshed: …`)と、登録が失敗したとき(`the model could not be registered in place: …`)は、書いたうえで `restart_required` です。登録が失敗する例は、前の `unregister_model` が restart_required で engine に残っている同じ名前を、別のファイルで登録し直したときです。同じ名前・同じファイルなら、残っている model をそのまま使って live です。
@@ -1318,7 +1318,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 ```
 
 `--tab` が取るのは `frame_plan` / `render_features` / `rendering_settings` / `graph` の 4 つ(`rendering_settings` は ✅RSX から。[第13章](13_editor.md)「Studio の Rendering settings タブ」)
-([一覧](../../src/devstudio/view/mainwindow.cpp#L2289))。**未知の名前は window を作る前に console へ
+([一覧](../../src/devstudio/view/mainwindow.cpp#L2291))。**未知の名前は window を作る前に console へ
 理由を出して終了コード 2** です([検査](../../src/devstudio/main.cpp#L36)) —— window を開いて「たまたま前にあった
 タブ」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます
 ([順序](../../src/devstudio/view/uimain.cpp#L78)) —— project を開くとその project のツール配置が復元され、
@@ -1331,7 +1331,7 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 `\\.\pipe\<名前>`)が開き、**改行区切りの JSON 1 行 = 1 命令**で `list` / `click` / `double_click` / `drag` /
 `wheel` / `move` / `press` / `release` / `key` / `type` / `text` / `select` / `action` / `menu_list` / `view_state` /
 `layout_stats` / `wait` / `wait_engine` / `rpc` / `open_project` / `screenshot` / `viewport_size` / `quit` の **23 命令**を受けます
-([一覧](../../src/devstudio/automation/automationcommands.cpp#L2307))。この節は長く 20 命令と書いていましたが、一覧には `select`(AG-3b)と
+([一覧](../../src/devstudio/automation/automationcommands.cpp#L2567))。この節は長く 20 命令と書いていましたが、一覧には `select`(AG-3b)と
 `layout_stats` が既にあり、✅PX-2(`28bc5ef9`)で `viewport_size` が増えました。**flag が無い起動では server object が
 作られないので socket は存在しません**([構築](../../src/devstudio/view/uimain.cpp#L41)) —— 出荷時の挙動は
 変わりません。listen できたときだけ `automation listening: <endpoint>` を標準出力に出します
@@ -1340,19 +1340,19 @@ pelican_studio --automation <名前>             # test 用の自動化チャネ
 `wait_engine` は engine が editor RPC に答えた時点で返ります。engine は**最初の frame を出す前に** RPC に
 答えるので、描画済みの frame が要る操作(`capture`、公開済みの frame plan)の前には `frames` を付けます。
 `{"cmd": "wait_engine", "frames": 1}` は `get_status` の `render.published_frames` がその数に届くまで待ち、
-応答に `published_frames` を足します([commandWaitEngine()](../../src/devstudio/automation/automationcommands.cpp#L1955))。
+応答に `published_frames` を足します([commandWaitEngine()](../../src/devstudio/automation/automationcommands.cpp#L1965))。
 `published_frames` は renderer がその起動で公開した logical frame の数で、飛ばした frame は数えません。
 ✅MR-1s(`5c26d492`)から、答えに `process_id`(答えた engine の process の id)も付きます。シナリオは覚えておいて後で比べ、その間に engine が起こし直されていないことを言えます([第13章](13_editor.md) §13.5 の「Studio の自動化面」)。
 
-回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1336)(`uv run`、標準ライブラリだけ)です。
+回す側は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1536)(`uv run`、標準ライブラリだけ)です。
 Studio を `--automation --project --tab` で起動し、シナリオ JSON(`test/studio_scenarios/<名前>.json`)の step を
 順に送り、期待を検査して `report.json` を書きます。
 
 **viewport の大きさ(✅PX-2、`28bc5ef9`)**: driver は Studio とつないだ直後・最初の step の前に
 `{"cmd": "viewport_size", "width": 720, "height": 450}` を送り、engine の viewport(`pelican.viewportHost`)を画の画素で 720x450 に固定します
-([`fix_viewport()`](../../tools/studio_drive.py#L1250)、既定の [`DEFAULT_VIEWPORT`](../../tools/studio_drive.py#L55))。
+([`fix_viewport()`](../../tools/studio_drive.py#L1427)、既定の [`DEFAULT_VIEWPORT`](../../tools/studio_drive.py#L59))。
 Studio は viewport に固定の大きさをかけ、窓を差の分だけ伸び縮みさせ、ドックの大きさはそのままにします。後でドックを開け閉めしても viewport の大きさは変わりません
-([`commandViewportSize()`](../../src/devstudio/automation/automationcommands.cpp#L2043)。`{"free": true}` で外します)。
+([`commandViewportSize()`](../../src/devstudio/automation/automationcommands.cpp#L2053)。`{"free": true}` で外します)。
 シナリオの最上位に `"viewport": [w, h]` と書けばその大きさ、`"viewport": null` なら固定しません(今は `whole_frame_first_steps` だけ)。
 答えの大きさが要求から 1 画素を超えてずれるか断られたら、その run は step を送らずに赤です。画素を読むシナリオの点は 720x450 の絵で選んであるので、
 **既定の大きさを変えると、画素を読む 33 本の点を全部測り直すことになります**。理由・`screen` の screenshot が 719x449 になる件・点の測り直しは
@@ -1367,7 +1367,7 @@ uv run tools/studio_drive.py --studio build/dist/Debug/pelican_studio.exe \
 ```
 
 report は `verdict`(`green` / `red`)・`summary`(step ごとに 1 行)・`failures`(送受信・理由・失敗時の
-スクリーンショット)・`studio_log` を持ちます([組み立て](../../tools/studio_drive.py#L1508))。
+スクリーンショット)・`studio_log` を持ちます([組み立て](../../tools/studio_drive.py#L1737))。
 最後の `shutdown` step は終了コード 0 での正常終了を検査します。異常終了・終了待ちのタイムアウト・watchdog による
 強制終了はシナリオの操作が成功していても失敗です。`studio_exit_code` と `studio_shutdown_forced` に結果を記録します。
 書式・命令表・名前の付け方は [README](../../test/studio_scenarios/README.md#L1) と
@@ -1384,7 +1384,7 @@ pan が書け、`key` は `route`(`widget` 既定 / `window`)を取って **`win
 
 ✅IA-1s で、シナリオが Studio の外の作業を代わりにする口が 2 つ増えました。
 
-- **`file` step の `copy`**: `{"file": "copy", "path": "{project}/x", "from": "{artifacts}/y"}` は `from` の file を `path` へ byte のまま写します(あれば上書きします。[file step の copy](../../tools/studio_drive.py#L820))。`write` は UTF-8 の文字しか書けないので、人が外で焼き直した binary の file を project の file に上書きする、の代わりです。`path` と `from` のどちらも run の持つ 2 つの directory(`{project}` と `{artifacts}`)の中でなければ step の失敗です(ほかの `file` step と同じ範囲。[第13章](13_editor.md) §13.5「Studio の自動化面」)。
+- **`file` step の `copy`**: `{"file": "copy", "path": "{project}/x", "from": "{artifacts}/y"}` は `from` の file を `path` へ byte のまま写します(あれば上書きします。[file step の copy](../../tools/studio_drive.py#L909))。`write` は UTF-8 の文字しか書けないので、人が外で焼き直した binary の file を project の file に上書きする、の代わりです。`path` と `from` のどちらも run の持つ 2 つの directory(`{project}` と `{artifacts}`)の中でなければ step の失敗です(ほかの `file` step と同じ範囲。[第13章](13_editor.md) §13.5「Studio の自動化面」)。
 - **`<名前>.prepare.py`**: `test/studio_scenarios/<名前>.json` の隣に `<名前>.prepare.py` があると、ctest の `run_studio_scenario.cmake`([prepare の script を走らせる cmake の口](../../test/run_studio_scenario.cmake#L68))は driver を起こす前に `<python> -B <名前>.prepare.py --out <run の directory>/incoming --cli <pelican_cli>` を走らせます(120 秒で打ち切り)。人が Studio を開く前に外で作る file(自分の script で書いて CLI で焼いた資産など)の代わりで、シナリオは `{artifacts}/incoming/` の file を Studio の Import で取り込みます(`{artifacts}` がその run の directory です)。`pelican_cli` は ctest の登録が target から `-DCLI=` で渡し([prepare に CLI を渡す登録](../../test/CMakeLists.txt#L3706))、target が無いか file が無ければ、prepare を持つシナリオは失敗です。prepare が 0 以外で終わっても、その stderr を付けて失敗です。`tools/studio_drive.py` を直接回すときは prepare は走りません(ctest の cmake の口のため)。
   - 今 prepare を持つのは 5 本です: `gui_build_ltc`、✅AB-1s の `gui_build_audio_reactive`(音量が時間で変わる 1 秒の小さな WAV 2 つを書く。`--cli` は受けるが使わない)、
     ✅HW-2s / AV-1s の `gui_assets_watch_verify`(`pelican_cli image ktx2 --raw` で焼いた 4×4 の texture を書き、シナリオが `copy` で project に写す)、

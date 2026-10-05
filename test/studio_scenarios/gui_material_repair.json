@@ -11,9 +11,7 @@
         "pattern": "LOG_WARNING\\s+pelican\\s+reload: material values project://materials/material\\.material\\.json failed .*material values JSON .*parse_error\\.101.*unexpected end of input",
         "reason": "The scenario deliberately removes the closing brace from this material document, verifies the hot-reload error, and repairs it through Show the document / Save."
       }
-    ],
-    "undo": "known_red",
-    "undo_ticket": "QD1-R30"
+    ]
   },
   "steps": [
     {"label": "the fixture's engine is up, so the switch to the new project is something that happens", "cmd": "wait_engine", "timeout_ms": 180000},
@@ -219,6 +217,9 @@
     {"label": "Undo: register_material of the document", "cmd": "action", "name": "pelican.materials.undo"},
     {"label": "put back", "cmd": "wait", "name": "pelican.materials.notice", "text": "Put material back from materials/material.material.json.", "timeout_ms": 30000},
     {"label": "the engine lists it again, registered live", "expect": "rpc_equals", "method": "list_materials", "params": {}, "path": "documents[0].materials[0].registered", "value": true, "retry_ms": 30000},
+    {"label": "the preceding binding repair can now be undone in this dock", "cmd": "wait", "name": "pelican.materials.undoButton", "enabled": true, "contains": "Model default on every Cube", "timeout_ms": 30000},
+    {"label": "Undo restores the cube's material after putting its document back", "cmd": "action", "name": "pelican.materials.undo"},
+    {"label": "the binding is back", "expect": "rpc_equals", "method": "get_material_bindings", "params": {"model": "engine://primitives/cube"}, "path": "primitives[0].material", "value": "material", "retry_ms": 30000},
     {"label": "nothing left to undo", "cmd": "wait", "name": "pelican.materials.undoButton", "enabled": false, "timeout_ms": 30000},
     {"label": "a picture of the window", "expect": "screenshot", "path": "gui_material_repair_window.png"}
   ]

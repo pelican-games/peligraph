@@ -2466,8 +2466,25 @@ OrderedJson RenderConfigEditorService::editBatch(const Json &params) {
         merged.source_only = merged.source_only && ticket.source_only;
         merged.restart_required = merged.restart_required || ticket.restart_required;
         merged.reload_managed_baselines = merged.reload_managed_baselines || ticket.reload_managed_baselines;
-        for (const auto &[key, value] : ticket.result_extras.items())
-            if (!merged.result_extras.contains(key)) merged.result_extras[key] = value;
+        for (const auto &[key, value] : ticket.result_extras.items()) {
+            if (key == "procedural_records_before") {
+                // Several edits of one asset in a batch restore to the first
+                // value; edits of different assets retain both inverses.
+                auto &before = merged.result_extras[key];
+                if (!before.is_object()) before = OrderedJson::object();
+                for (const auto &[reference, bytes] : value.items()) {
+                    const auto records = OrderedJson::parse(bytes.get<std::string>());
+                    auto held = before.contains(reference)
+                                    ? OrderedJson::parse(before.at(reference).get<std::string>())
+                                    : OrderedJson::object();
+                    for (const auto &[name, record] : records.items())
+                        if (!held.contains(name)) held[name] = record;
+                    before[reference] = held.dump();
+                }
+            } else if (!merged.result_extras.contains(key)) {
+                merged.result_extras[key] = value;
+            }
+        }
     }
     merged.result_extras["methods"] = methods;
     auto checks = std::move(batch_->checks);
@@ -3184,6 +3201,7 @@ OrderedJson RenderConfigEditorService::editRayLayout(const Json &params) {
             };
     }
 
+    const auto records_reference = asset_data_write ? asset_data_write->reference : std::string{};
     const auto records_digest = asset_data_write ? std::optional<std::string>{renderConfigSourceDigest(
                                                        asset_data_write->bytes)}
                                                  : std::nullopt;
@@ -3207,7 +3225,7 @@ OrderedJson RenderConfigEditorService::editRayLayout(const Json &params) {
         documents);
     if (answer.value("status", std::string{}) != "accepted") return answer;
     // EB-2: these bytes, once committed, restore to the records they replaced.
-    if (records_digest) procedural_record_versions_.insert_or_assign(*records_digest, std::move(previous_records));
+    if (records_digest) procedural_record_versions_.insert_or_assign(*records_digest, previous_records);
     const auto digest_of = [](const RayDocumentEdit &edit) {
         return edit.bytes && !edit.unname_it ? OrderedJson(renderConfigSourceDigest(*edit.bytes))
                                              : OrderedJson(nullptr);
@@ -3217,6 +3235,10 @@ OrderedJson RenderConfigEditorService::editRayLayout(const Json &params) {
                        {"layout_digest", digest_of(layout_edit)},
                        {"bindings_reference", has_bindings ? OrderedJson(bindings_edit.reference) : OrderedJson(nullptr)},
                        {"bindings_digest", digest_of(bindings_edit)}};
+    if (records_digest)
+        // Keep numeric types and member order through clients (including Qt JSON)
+        // that otherwise turn 0.0 into 0 or reorder object members.
+        extras["procedural_records_before"] = {{records_reference, previous_records.dump()}};
     if (!pending_.empty() && pending_.back().id == answer.value("ticket", std::string{}))
         pending_.back().result_extras = extras;
     for (const auto &[key, value] : extras.items()) answer[key] = value;
@@ -6894,6 +6916,7 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
         std::string reference;
         std::optional<std::string> base_digest;
         std::optional<std::string> content;
+        std::optional<OrderedJson> procedural_records;
     };
     const auto string_or_null = [&](const Json &entry, const char *field) {
         const auto found = entry.find(field);
@@ -6907,7 +6930,7 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
     };
     std::vector<Restore> restores;
     for (const auto &entry : *requested) {
-        requireOnly(entry, {"reference", "base_digest", "content"},
+        requireOnly(entry, {"reference", "base_digest", "content", "procedural_records"},
                     "restore_render_documents document");
         Restore restore{
             .reference = requireString(entry, "reference", method),
@@ -6922,6 +6945,18 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
                 "restore_render_documents " + restore.reference +
                 ": base_digest and content cannot both be null (a document "
                 "that is not there cannot be deleted)");
+        if (entry.contains("procedural_records")) {
+            if (!entry.at("procedural_records").is_string())
+                throw std::invalid_argument("procedural_records restore requires JSON text");
+            const auto bytes = entry.at("procedural_records").get<std::string>();
+            const auto records = Json::parse(bytes, nullptr, false);
+            if (!records.is_object() || restore.content || !restore.base_digest)
+                throw std::invalid_argument("procedural_records restore requires JSON object text, base_digest and content null");
+            for (const auto &[name, record] : records.items())
+                if (name.empty() || !(record.is_object() || record.is_null()))
+                    throw std::invalid_argument("procedural_records restore values must be record objects or null");
+            restore.procedural_records = OrderedJson::parse(bytes);
+        }
         restores.push_back(std::move(restore));
     }
     if (!dependencies_.resolve_authoring_context ||
@@ -6949,6 +6984,7 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
     // external_modification.
     std::optional<RenderConfigCandidateDocument> asset_data_restore;
     OrderedJson asset_data_replaced = OrderedJson::object();
+    std::string asset_data_reference;
     if (const auto asset_data = dependencies_.ray_asset_data ? dependencies_.ray_asset_data()
                                                              : std::optional<RayAssetDataDocument>{}) {
         const auto normalized_of = [&](const std::string &reference) -> std::optional<std::string> {
@@ -6968,7 +7004,7 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
                 throw std::invalid_argument("restore_render_documents names " + it->reference + " more than once");
             const auto version = it->base_digest ? procedural_record_versions_.find(*it->base_digest)
                                                  : procedural_record_versions_.end();
-            if (it->content || version == procedural_record_versions_.end())
+            if (it->content || (!it->procedural_records && version == procedural_record_versions_.end()))
                 return rejection(std::string{renderDocumentNotWritableCode},
                                  "asset_data " + it->reference +
                                      " is restored only as the procedural records edit_ray_layout wrote: name "
@@ -6996,11 +7032,14 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
             }
             auto document = OrderedJson::parse(*bytes);
             auto &assets = document["procedural_geometry"];
-            for (const auto &[name, record] : version->second.items()) {
+            const auto &records = it->procedural_records ? *it->procedural_records : version->second;
+            for (const auto &[name, record] : records.items()) {
                 const auto found = std::find_if(assets.begin(), assets.end(), [&](const auto &asset) {
                     return asset.is_object() && asset.value("name", std::string{}) == name;
                 });
-                if (found == assets.end()) continue;
+                if (found == assets.end())
+                    return rejection("asset_not_found", "Unknown procedural asset: " + name,
+                                     {{"method", std::string{method}}, {"asset", name}});
                 asset_data_replaced[name] = found->contains("record") ? found->at("record") : OrderedJson(nullptr);
                 if (record.is_null()) found->erase("record");
                 else (*found)["record"] = record;
@@ -7013,9 +7052,16 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
                 .expected = {RenderConfigDocumentExistence::present, *it->base_digest},
                 .bytes = renderJsonDocument(document, *bytes),
             };
+            asset_data_reference = asset_data->reference;
             it = restores.erase(it);
         }
     }
+    for (const auto &restore : restores)
+        if (restore.procedural_records)
+            return rejection(std::string{renderDocumentNotWritableCode},
+                             "procedural_records may restore only the project's asset_data",
+                             {{"method", std::string{method}}, {"reference", restore.reference},
+                              {"reason", "procedural_records_only"}});
 
     std::vector<WritableRenderDocument> writable;
     try {
@@ -7397,9 +7443,12 @@ OrderedJson RenderConfigEditorService::restoreRenderDocuments(
     if (result.value("status", std::string{}) == "accepted") {
         pending_.back().reload_managed_baselines = true;
         // EB-2: restoring these bytes in turn puts back what this replaced.
-        if (asset_data_restored_digest)
-            procedural_record_versions_.insert_or_assign(*asset_data_restored_digest,
-                                                         std::move(asset_data_replaced));
+        if (asset_data_restored_digest) {
+            procedural_record_versions_.insert_or_assign(*asset_data_restored_digest, asset_data_replaced);
+            auto before = OrderedJson{{asset_data_reference, asset_data_replaced.dump()}};
+            pending_.back().result_extras["procedural_records_before"] = before;
+            result["procedural_records_before"] = std::move(before);
+        }
     }
     return result;
 }

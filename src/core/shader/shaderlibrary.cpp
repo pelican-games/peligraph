@@ -7,6 +7,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
+#include "../watch/problemlist.hpp"
 #include "../../project/materiallowering.hpp"
 #include "../../project/sha256stream.hpp"
 #include "../../project/shadersourceresolver.hpp"
@@ -1447,6 +1448,7 @@ void ShaderLibrary::retireRegistrations(
     std::vector<ShaderBundleId> next_bundle_ids;
     std::vector<ShaderBundleId> next_dirty;
     std::vector<ReloadUnit> next_units;
+    std::set<std::size_t> next_failed_units;
     std::unordered_map<ShaderBundleId, std::size_t,
                        ShaderBundleId::Hash>
         next_unit_by_bundle;
@@ -1466,7 +1468,8 @@ void ShaderLibrary::retireRegistrations(
             }
         }
         next_units.reserve(reload_units.size());
-        for (const auto &unit : reload_units) {
+        for (std::size_t old_index = 0; old_index < reload_units.size(); ++old_index) {
+            const auto &unit = reload_units[old_index];
             const auto retiring_count =
                 std::count_if(
                     unit.bundle_ids.begin(),
@@ -1475,6 +1478,8 @@ void ShaderLibrary::retireRegistrations(
                         return retiring.contains(id);
                     });
             if (retiring_count == 0) {
+                if (units_failed_since_publish.contains(old_index))
+                    next_failed_units.insert(next_units.size());
                 next_units.push_back(unit);
             } else if (retiring_count !=
                        unit.bundle_ids.size()) {
@@ -1506,9 +1511,20 @@ void ShaderLibrary::retireRegistrations(
     bundle_ids.swap(next_bundle_ids);
     dirty_bundles.swap(next_dirty);
     reload_units.swap(next_units);
+    units_failed_since_publish.swap(next_failed_units);
     unit_by_bundle.swap(next_unit_by_bundle);
     units_by_dependency.swap(
         next_units_by_dependency);
+
+    // A replaced generation can retire a failed shader without another
+    // shader reload. Its diagnostic must leave with its registration;
+    // failures of surviving shaders retain their original detail.
+    try {
+        std::vector<std::string> failed;
+        for (const auto &key : failedReloadSources()) failed.push_back(watch::assetKeyString(key));
+        syncShaderProblems(problemSourceHotReload, failed, {});
+    } catch (...) {
+    }
 
     for (const auto id : ids) {
         auto retired = bundles.extract(id, false);

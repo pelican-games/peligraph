@@ -11,9 +11,7 @@
         "pattern": "LOG_WARNING.*render_fullscreen\\.frag:\\d+(?::\\d+)?: error: 'vaule0' : undeclared identifier",
         "reason": "The scenario deliberately writes vaule0 into render_fullscreen.frag, verifies the compile-error notice and line, then repairs the shader."
       }
-    ],
-    "undo": "known_red",
-    "undo_ticket": "QD1-R8"
+    ]
   },
   "steps": [
     {

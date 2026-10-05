@@ -286,14 +286,20 @@ def without_subtree(text: str | None, dotted: str) -> str | None:
         value = json.loads(text)
     except ValueError:
         return None
-    parent = value
     parts = dotted.split(".")
-    for part in parts[:-1]:
-        if not isinstance(parent, dict) or part not in parent:
-            return canonical(value)
-        parent = parent[part]
-    if isinstance(parent, dict):
-        parent.pop(parts[-1], None)
+    def remove(parent: Any, path: list[str]) -> None:
+        if not isinstance(parent, dict) or not path:
+            return
+        key = path[0]
+        if len(path) == 1:
+            parent.pop(key, None)
+        elif key in parent:
+            remove(parent[key], path[1:])
+            # The explicitly exempt subtree may be the only reason its
+            # container exists. Keep every sibling and unrelated empty map.
+            if parent[key] == {}:
+                del parent[key]
+    remove(value, parts)
     return canonical(value)
 
 
@@ -476,6 +482,32 @@ class Epilogue:
 
     # -- after the last step ------------------------------------------------
 
+    def close_graph_drafts(self) -> list[str]:
+        """Leave text-edit mode before walking committed document history.
+
+        A node-label click can leave an uncommitted editor open throughout
+        sidebar edits. Graph Undo correctly stays disabled while it is open.
+        Escape cancels that draft; it does not submit an edit or omit a file.
+        """
+        reply = self.call({"cmd": "list", "pattern": "::graph_inline_editor#"}, timeout=30.0)
+        widgets = (reply.get("result") or {}).get("widgets")
+        if not reply.get("ok") or not isinstance(widgets, list):
+            raise ValueError("could not inspect Graph inline editors before Undo")
+        closed = []
+        for widget in widgets:
+            name = widget.get("name", "")
+            if not name.startswith("pelican.graphCanvasView::graph_inline_editor#"):
+                continue
+            answer = self.call({"cmd": "key", "name": name, "sequence": "Escape"}, timeout=30.0)
+            if not answer.get("ok"):
+                raise ValueError(f"could not close Graph inline editor {name}")
+            gone = self.call({"cmd": "wait", "name": name, "missing": True,
+                              "timeout_ms": 10000}, timeout=30.0)
+            if not gone.get("ok"):
+                raise ValueError(f"Graph inline editor did not close: {name}")
+            closed.append(name)
+        return closed
+
     @staticmethod
     def order(step: str) -> list[str]:
         """The kinds in the order they are pressed: KINDS for Undo, reversed for Redo.
@@ -582,7 +614,7 @@ class Epilogue:
             if before[2] != after[2]:
                 entry["engine_started_again"] = f"pid {before[2]} -> {after[2]}"
         notice_of = {"scene": "pelican.inspectorNotice", "graph": "pelican.graphCanvasNotice",
-                     "materials": "pelican.materials.notice"}
+                     "materials": "pelican.materials.notice", "render": "pelican.framePlanStatus"}
         if kind in notice_of:
             # What the panel said of it: a refusal, if any.
             notice = self.call({"cmd": "text", "name": notice_of[kind]}, timeout=30.0)
@@ -778,6 +810,9 @@ def check_undo(epilogue: Epilogue) -> dict[str, Any]:
         return None
 
     result["end_journal"] = journal_depths(end.journal)
+    result["closed_graph_drafts"] = epilogue.close_graph_drafts()
+    if result["closed_graph_drafts"]:
+        epilogue.settled = epilogue.settle(None)
     kinds = epilogue.history() or {}
     existing_redo = available_redo(kinds, end.journal)
     result["redo_available_at_end"] = existing_redo

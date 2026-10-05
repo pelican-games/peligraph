@@ -556,6 +556,37 @@ class QD1InvariantTest(unittest.TestCase):
             start, edited, subtrees=list(studio_invariants.DEFAULT_UNDO_EXEMPT))
         self.assertEqual(len(differing), 1)
 
+    def test_exempt_placement_does_not_leave_an_empty_container_difference(self) -> None:
+        start = project_state({}, {"passes/main.json": '{"nodes": []}'})
+        for layout in ({"frame_plan": {"x": 1}}, {}):
+            moved = project_state({}, {"passes/main.json": json.dumps({"nodes": [], "layout": layout})})
+            differing, skipped = studio_invariants.diff_states(
+                start, moved, subtrees=list(studio_invariants.DEFAULT_UNDO_EXEMPT))
+            self.assertEqual(differing, [])
+            self.assertTrue(skipped)
+        for extra in ({"layout": {"nodes": {}}}, {"other": {}}):
+            moved = project_state({}, {"passes/main.json": json.dumps({"nodes": [], **extra})})
+            differing, _ = studio_invariants.diff_states(
+                start, moved, subtrees=list(studio_invariants.DEFAULT_UNDO_EXEMPT))
+            self.assertEqual(len(differing), 1)
+
+    def test_graph_drafts_are_cancelled_without_committing_or_hiding_documents(self) -> None:
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "inline"})
+        name = "pelican.graphCanvasView::graph_inline_editor#trace"
+        epilogue.call = mock.Mock(side_effect=[
+            {"ok": True, "result": {"widgets": [{"name": name}, {"name": "unrelated"}]}},
+            {"ok": True}, {"ok": True}])
+        self.assertEqual(epilogue.close_graph_drafts(), [name])
+        self.assertEqual(epilogue.call.call_args_list[1].args[0],
+                         {"cmd": "key", "name": name, "sequence": "Escape"})
+        epilogue.call = mock.Mock(return_value={"ok": False})
+        with self.assertRaises(ValueError):
+            epilogue.close_graph_drafts()
+        epilogue.call = mock.Mock(side_effect=[
+            {"ok": True, "result": {"widgets": [{"name": name}]}}, {"ok": False}])
+        with self.assertRaises(ValueError):
+            epilogue.close_graph_drafts()
+
     def test_the_journal_says_what_each_session_can_still_undo(self) -> None:
         records = [
             {"actor_id": 1, "actor_display_name": "Pelican Studio Inspector", "operation_kind": "edit"},
@@ -672,6 +703,7 @@ class QD1InvariantTest(unittest.TestCase):
                 epilogue.start = project_state({}, {})
                 epilogue.state = mock.Mock(return_value=epilogue.start)
                 epilogue.history = lambda: {}
+                epilogue.close_graph_drafts = lambda: []
                 walks = {name: {"presses": {}, "sequence": [], "log": [], "notes": []}
                          for name in ("undo", "redo")}
                 walks[phase]["notes"].append(f"{phase}: stopped at the time budget (240 s)")

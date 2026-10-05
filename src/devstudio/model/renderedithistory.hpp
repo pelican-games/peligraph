@@ -110,13 +110,15 @@ class RenderEditHistory {
         std::uint64_t serial = 0;
         // RTL-2s-c: the files the edit rewrote beside its documents.
         std::vector<FileChange> files;
-        // RTL-3s, decision 3 (engine EB-2): asset_data an edit_ray_layout's
-        // procedural_records wrote. It is no render document: not read, and
-        // restored by its digest alone ({reference, base_digest, content:
-        // null}), which takes its procedural records back (and forward). The
-        // engine keeps those digests while it runs; after a restart the
-        // restore is refused (procedural_records_only) and the entry stops.
+        // Asset-data references whose procedural records were changed. They
+        // are not render documents: restore only their records under full-file
+        // CAS, using the explicit inverse below. Older engines may omit it;
+        // the digest-only compatibility path then lasts only until restart.
         std::set<std::string> records_only;
+        // Explicit inverse per entry. Equal output bytes can have different
+        // predecessors, so their digest alone cannot identify an inverse.
+        // Values are opaque JSON strings preserving numeric types and order.
+        Json procedural_records_before = Json::object();
     };
 
     explicit RenderEditHistory(Transport transport);
@@ -127,8 +129,8 @@ class RenderEditHistory {
     [[nodiscard]] static bool recordsMethod(const std::string &method);
     // RTL-2s, decision 7: an edit_ray_layout (alone or in an edit_batch)
     // that rewrites procedural records -- asset_data. RTL-3s, decision 3
-    // (engine EB-2): recorded; its asset_data is restored by digest
-    // (Entry::records_only).
+    // (engine EB-2): recorded; its asset_data records have a per-entry
+    // inverse under full-file CAS (Entry::records_only).
     [[nodiscard]] static bool rewritesProceduralRecords(const std::string &method, const Json &params);
     // A request the history has to hear about (the same set).
     [[nodiscard]] static bool followsMethod(const std::string &method);

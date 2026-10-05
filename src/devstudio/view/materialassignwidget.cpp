@@ -271,6 +271,12 @@ struct MaterialAssignWidget::Impl {
     void present() {
         const bool shown = !session.model().empty();
         owner.setVisible(shown);
+        const auto &undo_entries = session.undoEntries();
+        undo->setVisible(!undo_entries.empty());
+        undo->setEnabled(!undo_entries.empty() && session.ready() && !session.bindPending());
+        undo->setText(undo_entries.empty() ? owner.tr("Undo")
+                                           : owner.tr("Undo %1").arg(qtext(undo_entries.back().description)));
+        undo->setToolTip(undo->text());
         if (!shown) {
             // QA-1: no object, nothing to choose. The rows go with the panel
             // switched off and naming no model: left as they were, they kept
@@ -320,12 +326,6 @@ struct MaterialAssignWidget::Impl {
         missing->setText(missing_line.empty() ? QString{} : QStringLiteral("\xE2\x9A\xA0 ") + qtext(missing_line));
         missing->setToolTip(qtext(missing_line));
         presentPrimitives();
-        const auto &undo_entries = session.undoEntries();
-        undo->setVisible(!undo_entries.empty());
-        undo->setEnabled(!undo_entries.empty() && session.ready() && !session.bindPending());
-        undo->setText(undo_entries.empty() ? owner.tr("Undo")
-                                           : owner.tr("Undo %1").arg(qtext(undo_entries.back().description)));
-        undo->setToolTip(undo->text());
         setPanelNotice(notice, oneLine(qtext(session.notice()), 140), qtext(session.noticeDetail()));
     }
 };

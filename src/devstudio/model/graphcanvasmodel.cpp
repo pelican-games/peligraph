@@ -1474,7 +1474,10 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         source_reference_ = std::move(source_reference);
         digest_ = response.value("source_digest", Json::object()).value("hex", std::string{});
         if (!history_digest_.empty() && digest_ != history_digest_) {
-            if (std::exchange(keep_history_through_digest_, false) && same_graph)
+            const auto restored_digest = std::exchange(render_restore_digest_, std::string{});
+            const bool restored = !restored_digest.empty() && digest_ == restored_digest;
+            const bool tab_edit = std::exchange(keep_history_through_digest_, false);
+            if ((restored || tab_edit) && same_graph)
                 history_digest_ = digest_;
             else
                 clearHistory();
@@ -2784,6 +2787,8 @@ void GraphCanvasModel::clearHistory() {
     redo_.clear();
     pending_history_.reset();
     history_digest_.clear();
+    render_restore_digest_.clear();
+    keep_history_through_digest_ = false;
 }
 
 void GraphCanvasModel::commitHistory(const Json &response) {

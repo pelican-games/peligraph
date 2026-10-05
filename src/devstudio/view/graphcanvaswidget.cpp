@@ -10430,6 +10430,10 @@ void GraphCanvasWidget::shadersReloaded() {
     impl_->dispatch();
 }
 
+void GraphCanvasWidget::renderHistoryRestored(const std::string &digest) {
+    impl_->model.renderHistoryRestored(digest);
+}
+
 void GraphCanvasWidget::documentsReloadedFromDisk() {
     impl_->model.forgetHistory();
     if (impl_->model.canRefresh()) impl_->model.refresh();

@@ -406,10 +406,9 @@ class RenderConfigEditorService {
     // editor last wrote or reloaded it, {normalized reference: sha256 hex}.
     // A document absent here is compared with published_documents.
     std::map<std::string, std::string> known_document_digests_;
-    // EB-2: asset_data as edit_ray_layout's procedural_records (or a restore
-    // of them) wrote it, {sha256 hex of the bytes written: {asset name: the
-    // record it had before, null for none}}. restore_render_documents
-    // takes asset_data back to those records from exactly those bytes.
+    // Legacy digest-only record restoration. Current clients retain the
+    // per-commit procedural_records_before inverse; equal output digests
+    // need not have equal predecessors, and this cache ends at restart.
     std::map<std::string, nlohmann::ordered_json> procedural_record_versions_;
     // RR-1: a reload refused the documents on disk, and the editor holds
     // them (the root's bytes and digest, the managed fragments, the other

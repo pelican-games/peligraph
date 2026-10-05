@@ -602,6 +602,7 @@ void RenderEditHistory::finishEdit(PendingEdit edit, const Json &commit) {
     entry.label = edit.label;
     entry.serial = next_serial_++;
     entry.files = std::move(edit.files);
+    entry.procedural_records_before = commit.value("procedural_records_before", Json::object());
     entry.restart_required = readRenderEditCompletion(commit).restart_required;
     if (!edit.snapshot_received) {
         entry.barrier = true;
@@ -791,9 +792,12 @@ void RenderEditHistory::sendRestore() {
                 base = now->second.digest;
             }
         }
-        documents.push_back(Json{{"reference", reference},
-                                 {"base_digest", stringOrNull(base)},
-                                 {"content", stringOrNull(content)}});
+        Json restore{{"reference", reference},
+                     {"base_digest", stringOrNull(base)},
+                     {"content", stringOrNull(content)}};
+        if (entry.records_only.contains(reference) && entry.procedural_records_before.contains(reference))
+            restore["procedural_records"] = entry.procedural_records_before.at(reference);
+        documents.push_back(std::move(restore));
         operation_->sent[reference] = std::move(content);
     }
     operation_->stage = Stage::Restore;
@@ -863,6 +867,7 @@ void RenderEditHistory::finishOperation(const Json &commit) {
         }
     }
     entry.written = std::move(next);
+    entry.procedural_records_before = commit.value("procedural_records_before", Json::object());
     say(std::string{undoing ? "Undid" : "Redid"} + " \"" + entry.label + "\".");
     // RSX: the restore's own answer counts too -- taking an edit back can
     // be what changes a material's physical contract.

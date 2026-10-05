@@ -297,6 +297,38 @@ TEST_CASE(
 #endif
 }
 
+TEST_CASE("shader retirement keeps failures attached to surviving reload units",
+          "[shader][hot-reload][registration-lifetime]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    FastModuleContainer modules;
+    ShaderSandbox sandbox;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
+    const std::string valid = "#version 450\nvoid main() { gl_Position = vec4(0); }\n";
+    const auto first = sandbox.root / "shaders" / "first.vert";
+    const auto second = sandbox.root / "shaders" / "second.vert";
+    const auto third = sandbox.root / "shaders" / "third.vert";
+    for (const auto &path : {first, second, third}) writeText(path, valid);
+    const auto a = library.loadFromFile(first);
+    const auto b = library.loadFromFile(second);
+    const auto c = library.loadFromFile(third);
+    writeText(second, "invalid GLSL");
+    REQUIRE_FALSE(library.reload(b));
+    const std::vector expected{watch::makeAssetKey("shaders/second.vert")};
+    REQUIRE(library.failedReloadSources() == expected);
+
+    // Removing an earlier unit shifts indices, but never moves the failure
+    // to the unrelated third shader.
+    library.retireRegistrations({a});
+    CHECK(library.failedReloadSources() == expected);
+    library.retireRegistrations({b});
+    CHECK(library.failedReloadSources().empty());
+    CHECK(library.registrationCount() == 1);
+    CHECK(library.reload(c));
+    CHECK(library.failedReloadSources().empty());
+#endif
+}
+
 TEST_CASE("shader library tracks watcher keys and reloads every include and surface variant atomically",
           "[shader][hot-reload][hr2-s]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER

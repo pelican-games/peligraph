@@ -896,6 +896,17 @@ bool MaterialsDockSession::assign(const std::string &model, const std::string &o
     return enqueue(std::move(write));
 }
 
+void MaterialsDockSession::rememberBindingUndo(const std::string &description, const std::string &model,
+                                                const Json &bindings) {
+    UndoEntry entry;
+    entry.kind = UndoEntry::Kind::Bind;
+    entry.description = description;
+    entry.model = model;
+    entry.previous = bindings;
+    undo_.push_back(std::move(entry));
+    notify();
+}
+
 bool MaterialsDockSession::undo() {
     if (undo_.empty() || editPending() || !ready_) return false;
     const auto &entry = undo_.back();
@@ -1544,6 +1555,29 @@ std::int64_t MaterialAssignSession::send(const std::string &method, const Json &
     return id;
 }
 
+void MaterialAssignSession::open() {
+    ready_ = false;
+    subject_ = {};
+    scene_busy_ = false;
+    materials_.clear();
+    primitives_.clear();
+    bindings_read_ = false;
+    counts_ = {};
+    object_materials_ = {};
+    object_read_ = false;
+    object_edit_pending_ = false;
+    object_requested_.reset();
+    notice_.clear();
+    notice_detail_.clear();
+    undo_.clear();
+    bind_description_.clear();
+    bind_model_.clear();
+    requested_.reset();
+    bind_undoing_ = false;
+    bindings_request_ = materials_request_ = object_request_ = bind_request_ = 0;
+    notify();
+}
+
 void MaterialAssignSession::engineReady() {
     ready_ = true;
     bindings_request_ = materials_request_ = object_request_ = bind_request_ = 0;
@@ -1842,8 +1876,11 @@ bool MaterialAssignSession::receiveResult(std::int64_t id, const Json &result) {
             if (!undo_.empty()) undo_.pop_back();
         } else {
             const auto previous = result.value("previous", Json::object()).value("bindings", Json::array());
-            if (result.value("changed", true) && previous.is_array() && !previous.empty())
-                undo_.push_back({bind_description_, bind_model_, previous});
+            if (result.value("changed", true) && previous.is_array() && !previous.empty()) {
+                UndoEntry entry{bind_description_, bind_model_, previous};
+                if (bindingCommitted) bindingCommitted(entry);
+                else undo_.push_back(std::move(entry));
+            }
         }
         const auto restart = result.find("restart_required");
         if (text(result, "applied") == "unusable") {

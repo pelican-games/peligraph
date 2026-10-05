@@ -406,6 +406,9 @@ class MaterialsDockSession {
     // Decision 5 (b): bind_material of the selected material to every
     // primitive of `model`; `object` names it in Undo.
     bool assign(const std::string &model, const std::string &object);
+    // Adopt an inverse from the dock's model-binding row into the same
+    // history as its material edits, in commit order.
+    void rememberBindingUndo(const std::string &description, const std::string &model, const Json &bindings);
     bool undo();
     // list_surfaces again (New material… opened).
     void readSurfaces();
@@ -636,8 +639,15 @@ class MaterialAssignSession {
 
     explicit MaterialAssignSession(Transport transport);
 
+    // Opening a project discards its predecessor's history and pending replies.
+    // Engine restarts within the same project preserve history.
+    void open();
+
     std::function<void()> changed;
     std::function<void(const std::string &reason)> restartRequested;
+    // When supplied, the containing panel owns binding Undo. Otherwise the
+    // Inspector retains the inverse in this session's own history.
+    std::function<void(const UndoEntry &)> bindingCommitted;
 
     void engineReady();
     void engineGone();

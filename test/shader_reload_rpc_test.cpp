@@ -5,6 +5,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/watch/reloadgate.hpp"
 #include "../src/core/watch/reloadservice.hpp"
@@ -221,6 +222,20 @@ void main(){ uv=vec2((gl_VertexIndex<<1)&2,gl_VertexIndex&2); gl_Position=vec4(u
         CHECK(near(drawn(), grey));
         // And after that, the same file is nothing to do.
         CHECK(result("reload_shaders") == Json{{"committed", false}, {"attempted", false}});
+    }
+
+    SECTION("a failed shader retired with its generation leaves no stale problem") {
+        const auto orphan = root / "shaders" / "orphan.frag";
+        writeFile(orphan, fragment("outColor=vec4(1);"));
+        auto &library = GET_MODULE(ShaderLibrary);
+        const auto id = library.loadFromFile(orphan);
+        writeFile(orphan, "invalid GLSL");
+        REQUIRE(call("reload_shaders").contains("error"));
+        REQUIRE_FALSE(result("get_problems").at("problems").empty());
+        library.retireRegistrations({id});
+        CHECK(result("get_problems").at("problems").empty());
+        CHECK(result("reload_shaders") == Json{{"committed", false}, {"attempted", false}});
+        CHECK(near(drawn(), grey));
     }
 
     SECTION("replay keeps the gate shut to the request") {
