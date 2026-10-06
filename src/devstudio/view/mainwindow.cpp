@@ -1588,10 +1588,7 @@ void MainWindow::createRenderReload() {
             open->click();
     });
     // RTL-3s, decision 4: a raygen switch is one entry of the render history.
-    graph_canvas_->setFileHistoryAction(
-        [this](const std::string &label, const std::string &path, const std::string &before, const std::string &after) {
-            if (render_history_) render_history_->recordFiles(label, {{path, before, after}});
-        });
+    graph_canvas_->setRenderHistory(render_history_ ? &*render_history_ : nullptr);
 }
 
 void MainWindow::showProblems() {

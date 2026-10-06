@@ -393,6 +393,9 @@ if(TARGET pelican_studio_inspector_model)
   # RU-1: the render edit history over a list of what was sent -- no Qt, no
   # engine; the test answers each request as the engine does.
   pelican_define_test(devstudio_render_history_test pelican_studio_inspector_model)
+  # RT-D: history movement notices and the Graph tab's edit order -- no Qt.
+  pelican_define_test(devstudio_render_history_moved_test pelican_studio_inspector_model)
+  pelican_define_test(devstudio_tab_edit_order_test pelican_studio_inspector_model)
   # RT-C: applied / restart_required of a synchronous write, and a committed
   # render edit's post_commit_error, said once per ticket -- no Qt.
   pelican_define_test(devstudio_appliedstate_test pelican_studio_inspector_model)
@@ -636,6 +639,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   set_target_properties(pelican_test_devstudio_graphcanvas_scene_test PROPERTIES AUTOMOC ON)
   # Several tests compile graphcanvaswidget.cpp, past the section limit (C1128).
   if(MSVC)
+    target_compile_options(pelican_test_devstudio_graphcanvas_scene_test PRIVATE /bigobj)
     set_source_files_properties(${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
       PROPERTIES COMPILE_OPTIONS /bigobj)
   endif()
@@ -1085,6 +1089,27 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
   )
   add_dependencies(pelican_test_devstudio_render_post_commit_test
+    pelican_test_process_fixture_child)
+
+  # RT-D: production History injection and fold/verify capability wrappers.
+  pelican_define_test(devstudio_tab_render_history_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+  target_compile_definitions(pelican_test_devstudio_tab_render_history_test PRIVATE
+    PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
+  )
+  add_dependencies(pelican_test_devstudio_tab_render_history_test
     pelican_test_process_fixture_child)
 
   # F-2: File > New Project... -- the dialog writes the picked template

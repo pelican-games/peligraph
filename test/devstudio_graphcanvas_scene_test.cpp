@@ -10,6 +10,8 @@
 #include "graphcanvasvaluefields.hpp"
 #include "graphcanvaswidget.hpp"
 #include "rendertargetform.hpp"
+#include "renderedithistory.hpp"
+#include "renderconfigdigest.hpp"
 #include "graphfoldgroups.hpp"
 #include "inspectormodel.hpp"
 #include "graphcomposition.hpp"
@@ -6588,6 +6590,229 @@ Json gl1eSaved(const std::vector<std::string> &inputs) {
 
 } // namespace
 
+// RT-D: a tab and the real shared history over one fake engine document.
+// Replies carry snapshots and written digests; assertions inspect the restore
+// payload, so a QAction firing is never treated as a successful Undo.
+namespace {
+struct RtdTab {
+    struct Request {
+        std::int64_t id;
+        std::string method;
+        Json params;
+    };
+    QApplication &app = application();
+    RecordedCapability transport;
+    std::vector<Request> history_requests;
+    std::set<std::int64_t> answered;
+    std::set<qint64> tab_reads;
+    std::int64_t next_history = 100000;
+    int generation = 0;
+    Json document;
+    QAction render_undo{QStringLiteral("Undo Render Edit")};
+    QAction render_redo{QStringLiteral("Redo Render Edit")};
+    PelicanStudio::RenderEditHistory history{
+        PelicanStudio::RenderEditHistory::Transport{
+            .request = [this](const std::string &method, const Json &params, std::string *) {
+                const auto id = next_history++;
+                history_requests.push_back({id, method, params});
+                return id;
+            },
+            .schedule = [](int, std::function<void()>) {},
+        }};
+    std::unique_ptr<PelicanStudio::GraphCanvasWidget> widget;
+    std::function<void(bool, QString)> ready_changed;
+    std::function<void(qint64, QString)> failure;
+
+    RtdTab() {
+        (void)application();
+        const auto read = gl1eRead();
+        document = {{"schema", "pelican.graph"}, {"version", 1},
+                    {"nodes", read.at("nodes")}, {"definitions", read.at("definitions")},
+                    {"layout", Json::object()}, {"outputs", Json::object()},
+                    {"rendering", {{"present", gl1ePresent({})}}}};
+        document["nodes"][1]["parameters"] = {{"shader", {{"fragment", "engine://passthrough"}}}};
+        auto capability = transport.capability();
+        capability.ready = [this](QObject *, auto handler) {
+            ready_changed = handler;
+            handler(true, {});
+        };
+        capability.failure = [this](QObject *, auto handler) { failure = handler; };
+        capability.requestFramePlan = [this](QString *) { return record("get_frame_plan"); };
+        capability.requestRenderAuthoringContext = [this](QString *) {
+            return record("get_render_authoring_context");
+        };
+        capability.requestEditPresetPass = [this](const QJsonObject &params, QString *) {
+            const auto body = Json::parse(QJsonDocument(params).toJson(QJsonDocument::Compact).toStdString());
+            history.beforeRequest("edit_preset_pass", body);
+            const auto id = record("edit_preset_pass", body);
+            history.requestSent(id, "edit_preset_pass", body);
+            return id;
+        };
+        QObject::connect(&render_undo, &QAction::triggered, [&] { history.undo(); });
+        QObject::connect(&render_redo, &QAction::triggered, [&] { history.redo(); });
+        history.changed = [this] {
+            render_undo.setEnabled(history.canUndo());
+            render_redo.setEnabled(history.canRedo());
+        };
+        history.restored = [this](const Json &reply, bool) {
+            widget->renderHistoryRestored(reply.at("source_digest").at("hex").get<std::string>());
+            widget->refresh();
+        };
+        render_undo.setEnabled(false);
+        render_redo.setEnabled(false);
+        widget = std::make_unique<PelicanStudio::GraphCanvasWidget>(capability);
+        widget->setRenderHistory(&history);
+        widget->setRenderHistoryActions(&render_undo, &render_redo);
+        widget->resize(1100, 800);
+        widget->show();
+        readTab();
+    }
+
+    qint64 record(const char *method, const Json &params = Json::object()) {
+        RecordedCapability::Call call{QString::fromLatin1(method)};
+        call.body = QByteArray::fromStdString(params.dump());
+        transport.calls.push_back(std::move(call));
+        return transport.next++;
+    }
+    std::string digest() const { return std::string(63, 'a') + "0123456789abcdef"[generation % 16]; }
+    Json snapshot() const {
+        return {{"documents", Json::array({{{"reference", "project://passes/main_rendering_config.json"},
+                                            {"kind", "root"}, {"digest", digest()},
+                                            {"content", document.dump()}}})}};
+    }
+    Json committed() const {
+        return {{"status", "committed"}, {"committed", true},
+                {"source_digest", {{"hex", digest()}}},
+                {"documents", {{"project://passes/main_rendering_config.json", digest()}}}};
+    }
+    void reply(qint64 id, const Json &result) {
+        history.receiveResult(id, result);
+        transport.deliver(id, QByteArray::fromStdString(result.dump()));
+    }
+    void answerTab(const char *method, const Json &result) {
+        const auto id = transport.idOf(QString::fromLatin1(method));
+        REQUIRE(id != 0);
+        reply(id, result);
+    }
+    void readHistory() {
+        for (std::size_t i = 0; i < history_requests.size(); ++i) {
+            const auto request = history_requests[i];
+            if (request.method == "get_render_documents" && answered.insert(request.id).second) {
+                // A refused or abandoned edit no longer needs its snapshot.
+                if (history.waitingFor(request.id)) REQUIRE(history.receiveResult(request.id, snapshot()));
+            }
+        }
+    }
+    void readTab() {
+        for (std::size_t i = 0; i < transport.calls.size(); ++i) {
+            const auto call = transport.calls[i];
+            const auto id = static_cast<qint64>(i + 1);
+            if (!tab_reads.insert(id).second) continue;
+            if (call.method == QStringLiteral("get_graph_instances")) {
+                auto read = context(document);
+                read["source_digest"]["hex"] = digest();
+                read["root_schema"] = "pelican.graph";
+                read["source_reference"] = "project://passes/main_rendering_config.json";
+                reply(id, read);
+            } else if (call.method == QStringLiteral("get_graph_catalog")) {
+                reply(id, visualCatalog());
+            } else if (call.method == QStringLiteral("get_frame_plan")) {
+                reply(id, gl1ePlan(document.at("rendering").at("present").at("input")
+                                      .get<std::vector<std::string>>()));
+            } else if (call.method == QStringLiteral("get_render_authoring_context")) {
+                auto authoring = gl1eAuthoring(document.at("rendering").at("present").at("input")
+                                                  .get<std::vector<std::string>>());
+                authoring["source_digest"]["hex"] = digest();
+                authoring["graphs"][0]["passes"][0]["declaration"] = document["rendering"]["present"];
+                authoring["graphs"][0]["passes"][0]["root_declaration"] = document["rendering"]["present"];
+                reply(id, authoring);
+            }
+        }
+        QCoreApplication::processEvents();
+    }
+    Request lastHistory(const char *method) const {
+        for (auto it = history_requests.rbegin(); it != history_requests.rend(); ++it)
+            if (it->method == method) return *it;
+        FAIL("Missing history request " << method);
+        return {};
+    }
+    int historyCount(const char *method) const {
+        return static_cast<int>(std::ranges::count(history_requests, std::string{method}, &Request::method));
+    }
+    Json tabEdit() const {
+        const auto id = transport.idOf(QStringLiteral("edit_graph_document"));
+        REQUIRE(id != 0);
+        return Json::parse(transport.calls[static_cast<std::size_t>(id - 1)].body.toStdString());
+    }
+    void graphCommit() {
+        const auto ops = tabEdit();
+        answerTab("edit_graph_document", {{"status", "accepted"}, {"ticket", "graph"}});
+        document = Pelican::editGraphDocument(document, ops);
+        ++generation;
+        answerTab("get_edit_result", committed());
+        readTab();
+        REQUIRE(widget->model().canEdit());
+    }
+    void graphLabel() {
+        auto &scene = widget->scene();
+        REQUIRE(scene.beginLabelEdit("shade"));
+        scene.setInlineEditText(QStringLiteral("Graph edit"));
+        REQUIRE(scene.commitInlineEdit());
+        graphCommit();
+    }
+    void renderEdit(bool from_tab = true) {
+        if (from_tab) {
+            auto &scene = widget->scene();
+            auto *from = socketItem(scene, QStringLiteral("shade__color"), QStringLiteral("resource"),
+                                    QStringLiteral("output"));
+            auto *to = passSocket(scene, QStringLiteral("present"), QStringLiteral("in:+"));
+            REQUIRE(from != nullptr);
+            REQUIRE(to != nullptr);
+            drag(scene, from->sceneBoundingRect().center(), to->sceneBoundingRect().center());
+            REQUIRE(transport.idOf(QStringLiteral("edit_preset_pass")) != 0);
+            readHistory();
+            answerTab("edit_preset_pass", {{"status", "accepted"}, {"ticket", "render-tab"}});
+        } else {
+            history.beforeRequest("edit_preset_pass", {{"pass_name", "other-panel"}});
+            history.requestSent(90000, "edit_preset_pass", {});
+            readHistory();
+            REQUIRE(history.receiveResult(90000, {{"status", "accepted"}, {"ticket", "render-other"}}));
+        }
+        auto &present = document["rendering"]["present"];
+        if (from_tab) present["input"] = Json::array({"shade__color"});
+        else present["shader"]["fragment"] = "engine://scene_present";
+        ++generation;
+        REQUIRE(history.receiveResult(lastHistory("get_edit_result").id, committed()));
+        readHistory();
+        if (from_tab) {
+            answerTab("get_edit_result", committed());
+            readTab();
+        }
+        REQUIRE(history.undoStack().size() >= 1);
+    }
+    Json finishRestore(bool reject = false) {
+        readHistory();
+        const auto restore = lastHistory("restore_render_documents");
+        const auto documents = restore.params.at("documents");
+        REQUIRE(documents.size() == 1);
+        REQUIRE(documents[0].at("reference") == "project://passes/main_rendering_config.json");
+        if (reject) {
+            REQUIRE(history.receiveResult(restore.id, {{"status", "rejected"},
+                       {"error", {{"code", "external_modification"},
+                                  {"reference", "project://passes/main_rendering_config.json"}}}}));
+        } else {
+            REQUIRE(documents[0].at("base_digest") == digest());
+            document = Json::parse(documents[0].at("content").get<std::string>());
+            ++generation;
+            REQUIRE(history.receiveResult(restore.id, {{"status", "accepted"}, {"ticket", "restore"}}));
+            REQUIRE(history.receiveResult(lastHistory("get_edit_result").id, committed()));
+            readTab();
+        }
+        return documents;
+    }
+};
+} // namespace
+
 TEST_CASE("GL-1e a rendering-section pass takes lines: + input, replace, append, the solid line, "
           "Delete",
           "[devstudio][graph-canvas][scene][gl1e]") {
@@ -6741,68 +6966,33 @@ TEST_CASE("GL-1e a rendering-section pass takes lines: + input, replace, append,
 TEST_CASE("GL-1e the Graph tab sends a pass's input edit, its Undo reaches the render history, "
           "and an engine before RS-3 says why it refused",
           "[devstudio][graph-canvas][scene][gl1e]") {
-    (void)application();
-    RecordedCapability transport;
-    auto capability = transport.capability();
-    capability.requestFramePlan = [&](QString *) {
-        transport.calls.push_back({QStringLiteral("get_frame_plan")});
-        return transport.next++;
-    };
-    capability.requestRenderAuthoringContext = [&](QString *) {
-        transport.calls.push_back({QStringLiteral("get_render_authoring_context")});
-        return transport.next++;
-    };
-    capability.requestEditPresetPass = [&](const QJsonObject &params, QString *) {
-        RecordedCapability::Call call{QStringLiteral("edit_preset_pass")};
-        call.body = QJsonDocument(params).toJson(QJsonDocument::Compact);
-        transport.calls.push_back(call);
-        return transport.next++;
-    };
-    PelicanStudio::GraphCanvasWidget widget{capability};
-    // RU-1's two actions, as the window hands them over.
-    QAction render_undo{QStringLiteral("Undo Render Edit")};
-    QAction render_redo{QStringLiteral("Redo Render Edit")};
-    int undone = 0;
-    QObject::connect(&render_undo, &QAction::triggered, [&] { ++undone; });
-    render_undo.setEnabled(false);
-    render_redo.setEnabled(false);
-    widget.setRenderHistoryActions(&render_undo, &render_redo);
-    widget.resize(1100, 700);
-    widget.show();
-    QCoreApplication::processEvents();
-    const auto answer = [&](const char *method, const Json &reply) {
-        const qint64 id = transport.idOf(QString::fromLatin1(method));
-        REQUIRE(id != 0);
-        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
-        QCoreApplication::processEvents();
-    };
-    const auto open = [&](const std::vector<std::string> &inputs) {
-        answer("get_graph_instances", gl1eRead());
-        answer("get_frame_plan", gl1ePlan(inputs));
-        answer("get_render_authoring_context", gl1eAuthoring(inputs));
-    };
-    answer("get_graph_catalog", visualCatalog());
-    open({});
+    RtdTab tab;
+    auto &widget = *tab.widget;
+    auto &transport = tab.transport;
     auto &scene = widget.scene();
     auto *notice = widget.findChild<QLabel *>(QStringLiteral("pelican.graphCanvasNotice"));
     REQUIRE(notice != nullptr);
+    const auto original = tab.document.dump();
+    const auto answer = [&](const char *method, const Json &reply) {
+        if (std::string_view{method} == "get_edit_result")
+            REQUIRE(tab.history.receiveResult(tab.lastHistory("get_edit_result").id, reply));
+        tab.answerTab(method, reply);
+    };
     const auto drop = [&] {
-        QGraphicsItem *from = socketItem(scene, QStringLiteral("shade__color"),
-                                         QStringLiteral("resource"), QStringLiteral("output"));
-        QGraphicsItem *slot = passSocket(scene, QStringLiteral("present"), QStringLiteral("in:+"));
+        auto *from = socketItem(scene, QStringLiteral("shade__color"), QStringLiteral("resource"),
+                                QStringLiteral("output"));
+        auto *slot = passSocket(scene, QStringLiteral("present"), QStringLiteral("in:+"));
         REQUIRE(from != nullptr);
         REQUIRE(slot != nullptr);
-        const int before = transport.countOf(QStringLiteral("edit_preset_pass"));
+        const auto before = transport.countOf(QStringLiteral("edit_preset_pass"));
         drag(scene, from->sceneBoundingRect().center(), slot->sceneBoundingRect().center());
-        QCoreApplication::processEvents();
         REQUIRE(transport.countOf(QStringLiteral("edit_preset_pass")) == before + 1);
-        // The edit itself, not whatever was asked last: the tab's clock may
-        // have read the plan again while the line was drawn (UX-2 puts the
-        // image's fields on screen as the drag picks it, which takes time).
-        const auto sent = transport.idOf(QStringLiteral("edit_preset_pass"));
-        CHECK(Json::parse(transport.calls[static_cast<std::size_t>(sent - 1)].body.toStdString()) ==
-              gl1eSaved({"shade__color"}));
-        answer("edit_preset_pass", Json{{"status", "accepted"}, {"ticket", "gl1e"}});
+        const auto id = transport.idOf(QStringLiteral("edit_preset_pass"));
+        auto expected = gl1eSaved({"shade__color"});
+        expected["base_source_digest"] = tab.digest();
+        CHECK(Json::parse(transport.calls[static_cast<std::size_t>(id - 1)].body.toStdString()) == expected);
+        tab.readHistory();
+        answer("edit_preset_pass", {{"status", "accepted"}, {"ticket", "gl1e"}});
     };
 
     // Decision 3: an engine before RS-3 runs the graph's pass after present.
@@ -6844,23 +7034,53 @@ TEST_CASE("GL-1e the Graph tab sends a pass's input edit, its Undo reaches the r
         "before it. Write it from shade.depth.")));
     CHECK_FALSE(notice->toolTip().contains(QStringLiteral("runs after this pass")));
 
-    // Committed: the tab says so, reads the document again, and its Undo
-    // takes the edit back through the render edit history.
     drop();
     const int reads = transport.countOf(QStringLiteral("get_graph_instances"));
-    answer("get_edit_result", Json{{"status", "committed"},
-                                   {"committed", true},
-                                   {"source_digest", {{"hex", "gl1e-root-2"}}}});
+    tab.document["rendering"]["present"]["input"] = Json::array({"shade__color"});
+    ++tab.generation;
+    answer("get_edit_result", tab.committed());
     CHECK(notice->text() == QStringLiteral("Pass inputs saved."));
     CHECK(transport.countOf(QStringLiteral("get_graph_instances")) == reads + 1);
-    render_undo.setEnabled(true);
-    QCoreApplication::processEvents();
-    auto *undo = widget.findChild<QAction *>(QStringLiteral("pelican.graphCanvas.undo"));
-    REQUIRE(undo != nullptr);
-    CHECK(undo->isEnabled());
-    undo->trigger();
-    QCoreApplication::processEvents();
-    CHECK(undone == 1);
+    tab.readHistory();
+    tab.readTab();
+    REQUIRE(tab.history.undoStack().size() == 1);
+    const auto serial = tab.history.undoStack().back().serial;
+
+    SECTION("the connected history restores the exact document and content") {
+        auto *undo = widget.findChild<QAction *>(QStringLiteral("pelican.graphCanvas.undo"));
+        REQUIRE(undo != nullptr);
+        REQUIRE(undo->isEnabled());
+        undo->trigger();
+        REQUIRE(tab.history.busy());
+        const auto restored = tab.finishRestore();
+        CHECK(restored[0].at("content") == original);
+        REQUIRE(tab.history.redoStack().size() == 1);
+        CHECK(tab.history.redoStack().back().serial == serial);
+    }
+    SECTION("disconnecting the history removes the restore path even with enabled actions") {
+        widget.setRenderHistory(nullptr);
+        REQUIRE(tab.render_undo.isEnabled());
+        const auto sent = tab.history_requests.size();
+        scene.undoEdit();
+        CHECK(tab.history_requests.size() == sent);
+        CHECK_FALSE(scene.canUndoAny());
+        REQUIRE(tab.history.undoStack().back().serial == serial);
+        REQUIRE(tab.history.undo());
+        CHECK(tab.finishRestore()[0].at("content") == original);
+    }
+    SECTION("disconnecting the history actions removes the restore path") {
+        widget.setRenderHistoryActions(nullptr, nullptr);
+        const auto sent = tab.history_requests.size();
+        scene.undoEdit();
+        CHECK(tab.history_requests.size() == sent);
+        CHECK_FALSE(tab.history.busy());
+        REQUIRE(tab.history.undoStack().size() == 1);
+        CHECK(tab.history.undoStack().back().serial == serial);
+        // The control disconnects only the tab: the shared history itself
+        // still restores the same bytes through its public operation.
+        REQUIRE(tab.history.undo());
+        CHECK(tab.finishRestore()[0].at("content") == original);
+    }
 }
 
 // --- GL-5a: a folded pass of the rendering section, edited beside the canvas.
@@ -6872,11 +7092,49 @@ TEST_CASE("GL-5a a rendering-section pass picked on the Graph is edited in the d
     (void)application();
     RecordedCapability transport;
     auto capability = transport.capability();
+    std::vector<RtdTab::Request> history_requests;
+    std::set<std::int64_t> history_answered;
+    std::int64_t history_next = 100000;
+    std::string history_digest = "gl1e-root";
+    Json history_document{{"schema", "pelican.graph"},
+                          {"rendering", {{"present", gl1ePresent({})}}}};
+    const auto original_render = history_document.dump();
+    PelicanStudio::RenderEditHistory history{PelicanStudio::RenderEditHistory::Transport{
+        .request = [&](const std::string &method, const Json &params, std::string *) {
+            const auto id = history_next++;
+            history_requests.push_back({id, method, params});
+            return id;
+        },
+        .schedule = [](int, std::function<void()>) {},
+    }};
+    const auto last_history = [&](const char *method) {
+        const auto found = std::find_if(history_requests.rbegin(), history_requests.rend(),
+            [&](const auto &request) { return request.method == method; });
+        REQUIRE(found != history_requests.rend());
+        return *found;
+    };
+    const auto read_history = [&] {
+        for (std::size_t i = 0; i < history_requests.size(); ++i) {
+            const auto request = history_requests[i];
+            if (request.method == "get_render_documents" && history_answered.insert(request.id).second)
+                REQUIRE(history.receiveResult(request.id, {{"documents", Json::array({
+                    {{"reference", "fixture"}, {"kind", "root"}, {"digest", history_digest},
+                     {"content", history_document.dump()}}})}}));
+        }
+    };
+    Json history_params;
+    std::string history_method;
     const auto record = [&](const char *method, const QJsonObject &params) {
+        history_params = Json::parse(QJsonDocument(params).toJson(QJsonDocument::Compact).toStdString());
+        history_method = method;
+        history.beforeRequest(method, history_params);
         RecordedCapability::Call call{QString::fromLatin1(method)};
         call.body = QJsonDocument(params).toJson(QJsonDocument::Compact);
         transport.calls.push_back(call);
-        return transport.next++;
+        const auto id = transport.next++;
+        history.requestSent(id, method, history_params);
+        read_history();
+        return id;
     };
     capability.requestFramePlan = [&](QString *) {
         transport.calls.push_back({QStringLiteral("get_frame_plan")});
@@ -6899,8 +7157,13 @@ TEST_CASE("GL-5a a rendering-section pass picked on the Graph is edited in the d
     PelicanStudio::GraphCanvasWidget widget{capability};
     QAction render_undo{QStringLiteral("Undo Render Edit")};
     QAction render_redo{QStringLiteral("Redo Render Edit")};
-    int undone = 0;
-    QObject::connect(&render_undo, &QAction::triggered, [&] { ++undone; });
+    QObject::connect(&render_undo, &QAction::triggered, [&] { history.undo(); });
+    QObject::connect(&render_redo, &QAction::triggered, [&] { history.redo(); });
+    history.changed = [&] {
+        render_undo.setEnabled(history.canUndo());
+        render_redo.setEnabled(history.canRedo());
+    };
+    widget.setRenderHistory(&history);
     render_undo.setEnabled(false);
     render_redo.setEnabled(false);
     widget.setRenderHistoryActions(&render_undo, &render_redo);
@@ -6910,7 +7173,23 @@ TEST_CASE("GL-5a a rendering-section pass picked on the Graph is edited in the d
     const auto answer = [&](const char *method, const Json &reply) {
         const qint64 id = transport.idOf(QString::fromLatin1(method));
         REQUIRE(id != 0);
-        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+        auto result = reply;
+        if (std::string_view{method} == "get_edit_result") {
+            if (result.value("committed", false)) {
+                history_digest = result.at("source_digest").at("hex").get<std::string>();
+                if (history_method == "edit_preset_pass")
+                    history_document["rendering"]["present"]["shader"] = history_params.at("shader");
+                else
+                    history_document["rendering"]["target_planning"] = {
+                        {"graphs", {{"main_render", {{"nodes", {{"present", {{"serial", true}}}}}}}}}};
+                result["documents"] = {{"fixture", history_digest}};
+            }
+            REQUIRE(history.receiveResult(last_history("get_edit_result").id, result));
+            read_history();
+        } else if (history.waitingFor(id)) {
+            REQUIRE(history.receiveResult(id, result));
+        }
+        transport.deliver(id, QByteArray::fromStdString(result.dump()));
         QCoreApplication::processEvents();
     };
     const auto sent = [&](const char *method) {
@@ -6984,14 +7263,27 @@ TEST_CASE("GL-5a a rendering-section pass picked on the Graph is edited in the d
                                    {"source_digest", {{"hex", "gl5a-root-2"}}}});
     CHECK(notice->text() == QStringLiteral("present saved."));
     // RU-1: the tab's Undo takes the pass's edit back.
-    render_undo.setEnabled(true);
     QCoreApplication::processEvents();
     auto *undo = widget.findChild<QAction *>(QStringLiteral("pelican.graphCanvas.undo"));
     REQUIRE(undo != nullptr);
     CHECK(undo->isEnabled());
     undo->trigger();
     QCoreApplication::processEvents();
-    CHECK(undone == 1);
+    REQUIRE(history.busy());
+    read_history();
+    const auto restore = last_history("restore_render_documents");
+    const auto &restored = restore.params.at("documents");
+    REQUIRE(restored.size() == 1);
+    CHECK(restored[0].at("reference") == "fixture");
+    CHECK(restored[0].at("base_digest") == history_digest);
+    CHECK(restored[0].at("content") == original_render);
+    const auto serial_before = history.undoStack().back().serial;
+    history_digest = "gl5a-restored";
+    history_document = Json::parse(original_render);
+    REQUIRE(history.receiveResult(restore.id, {{"status", "committed"}, {"committed", true},
+        {"source_digest", {{"hex", history_digest}}}, {"documents", {{"fixture", history_digest}}}}));
+    REQUIRE(history.redoStack().size() == 1);
+    CHECK(history.redoStack().back().serial == serial_before);
 
     // Decision 6: a refused edit reads as the Pass Editor's sentence for its
     // code, from the inspector model's table.
@@ -14368,4 +14660,269 @@ TEST_CASE("Graph placement ignores empty serialization and preserves other panel
     model.refresh();
     answer(model, document);
     CHECK_FALSE(scene.followDocumentPlacement());
+}
+
+TEST_CASE("RT-D D1 the Graph tab refuses a later render entry from another panel",
+          "[devstudio][graph-canvas][scene][rtd]") {
+    RtdTab tab;
+    tab.renderEdit();
+    const auto own_serial = tab.history.undoStack().back().serial;
+    const auto own_content = tab.document.dump();
+    tab.renderEdit(false);
+    REQUIRE(tab.history.undoStack().back().serial != own_serial);
+    const auto before = tab.history_requests.size();
+    tab.widget->scene().undoEdit();
+    CHECK(tab.history_requests.size() == before);
+    CHECK(tab.widget->model().notice().message ==
+          "A later render edit from another panel is on top. Undo it there first, or refresh.");
+    if (tab.history_requests.size() != before) return;
+    REQUIRE(tab.history.undo());
+    CHECK(tab.finishRestore()[0].at("content") == own_content);
+    REQUIRE(tab.history.undoStack().back().serial == own_serial);
+    tab.widget->scene().undoEdit();
+    REQUIRE(tab.history.busy());
+    const auto restored = tab.finishRestore();
+    CHECK(Json::parse(restored[0].at("content").get<std::string>())
+              .at("rendering").at("present").at("input").empty());
+}
+
+TEST_CASE("RT-D D2 a refused render Undo leaves the tab on the same entry",
+          "[devstudio][graph-canvas][scene][rtd]") {
+    RtdTab tab;
+    tab.graphLabel();
+    tab.renderEdit();
+    const auto serial = tab.history.undoStack().back().serial;
+    SECTION("asynchronous CAS refusal") {
+        tab.widget->scene().undoEdit();
+        REQUIRE(tab.history.busy());
+        tab.finishRestore(true);
+    }
+    SECTION("synchronous refusal while a render edit is in flight") {
+        tab.history.beforeRequest("edit_preset_pass", {{"pass_name", "pending"}});
+        tab.history.requestSent(90001, "edit_preset_pass", {});
+        tab.widget->scene().undoEdit();
+        REQUIRE_FALSE(tab.history.busy());
+        REQUIRE(tab.history.receiveResult(90001, {{"status", "rejected"},
+                    {"error", {{"code", "gate_closed"}}}}));
+    }
+    REQUIRE(tab.history.undoStack().back().serial == serial);
+    const auto graph_before = tab.transport.countOf(QStringLiteral("edit_graph_document"));
+    const auto reads_before = tab.historyCount("get_render_documents");
+    tab.widget->scene().undoEdit();
+    CHECK(tab.transport.countOf(QStringLiteral("edit_graph_document")) == graph_before);
+    CHECK(tab.historyCount("get_render_documents") == reads_before + 1);
+    if (!tab.history.busy()) return;
+    tab.finishRestore();
+    CHECK(tab.history.redoStack().back().serial == serial);
+}
+
+TEST_CASE("RT-D D3 a detail-column Graph edit is undone before the tab render edit",
+          "[devstudio][graph-canvas][scene][rtd]") {
+    RtdTab tab;
+    tab.renderEdit();
+    const auto before_detail = tab.document;
+    tab.widget->scene().selectNode("shade");
+    QCoreApplication::processEvents();
+    auto *fragment = tab.widget->findChild<QComboBox *>(QStringLiteral("pelican.graphCanvasPass.shader.fragment"));
+    REQUIRE(fragment != nullptr);
+    REQUIRE(fragment->isVisible());
+    const auto index = fragment->findData(QStringLiteral("engine://fullscreen"));
+    REQUIRE(index >= 0);
+    fragment->setCurrentIndex(index);
+    QCoreApplication::processEvents();
+    tab.graphCommit();
+    const auto before = tab.transport.countOf(QStringLiteral("edit_graph_document"));
+    const auto render_before = tab.history_requests.size();
+    tab.widget->scene().undoEdit();
+    CHECK(tab.transport.countOf(QStringLiteral("edit_graph_document")) == before + 1);
+    CHECK(tab.history_requests.size() == render_before);
+    if (tab.transport.countOf(QStringLiteral("edit_graph_document")) != before + 1) return;
+    // Graph inverses restore the whole previous node (including its
+    // absent fields), not a second forward set_node_parameters operation.
+    CHECK(tab.tabEdit()[0].at("op") == "replace_node");
+    CHECK(tab.tabEdit()[0].at("node").at("id") == "shade");
+    CHECK(Pelican::editGraphDocument(tab.document, tab.tabEdit()) == before_detail);
+    tab.graphCommit();
+    CHECK(tab.document == before_detail);
+    tab.widget->scene().undoEdit();
+    REQUIRE(tab.history.busy());
+    tab.finishRestore();
+    CHECK(tab.document["rendering"]["present"]["input"].empty());
+    tab.widget->scene().redoEdit();
+    REQUIRE(tab.history.busy());
+    tab.finishRestore();
+    CHECK(tab.document == before_detail);
+    tab.widget->scene().redoEdit();
+    tab.graphCommit();
+    CHECK(tab.document["nodes"][1]["parameters"]["shader"]["fragment"] == "engine://fullscreen");
+    tab.widget->scene().undoEdit();
+    tab.graphCommit();
+    CHECK(tab.document == before_detail);
+}
+
+TEST_CASE("RT-D D4 disabled render Undo does not fall through to an older Graph edit",
+          "[devstudio][graph-canvas][scene][rtd]") {
+    RtdTab tab;
+    tab.graphLabel();
+    tab.renderEdit();
+    REQUIRE(tab.widget->model().canUndo());
+    tab.render_undo.setEnabled(false);
+    const auto graph_before = tab.transport.countOf(QStringLiteral("edit_graph_document"));
+    const auto render_before = tab.history_requests.size();
+    CHECK_FALSE(tab.widget->scene().canUndoAny());
+    tab.widget->scene().undoEdit();
+    CHECK(tab.transport.countOf(QStringLiteral("edit_graph_document")) == graph_before);
+    CHECK(tab.history_requests.size() == render_before);
+    tab.render_undo.setEnabled(true);
+    tab.widget->scene().undoEdit();
+    REQUIRE(tab.history.busy());
+    tab.finishRestore();
+}
+
+TEST_CASE("RT-D D5 reload and project change remove the tab render records",
+          "[devstudio][graph-canvas][scene][rtd]") {
+    RtdTab tab;
+    tab.renderEdit();
+    SECTION("external reload") {
+        tab.history.cut("Reloaded from disk.");
+        tab.widget->documentsReloadedFromDisk();
+        CHECK_FALSE(tab.history.canUndo());
+    }
+    SECTION("project switch") {
+        tab.history.clear();
+        tab.widget->setProjectRoot(std::filesystem::temp_directory_path() / "rtd-other-project");
+        CHECK_FALSE(tab.history.canUndo());
+    }
+    tab.readTab();
+    tab.renderEdit(false);
+    const auto before = tab.history_requests.size();
+    tab.widget->scene().undoEdit();
+    CHECK(tab.history_requests.size() == before);
+    CHECK_FALSE(tab.widget->scene().canUndoAny());
+}
+
+TEST_CASE("RT-D Graph history invalidation after an attachment digest removes only Graph records",
+          "[devstudio][graph-canvas][scene][rtd]") {
+    RtdTab tab;
+    tab.graphLabel();
+    tab.renderEdit();
+    // A newer Graph entry covers the render record in the tab.
+    REQUIRE(tab.widget->scene().beginLabelEdit("shade"));
+    tab.widget->scene().setInlineEditText(QStringLiteral("Newer Graph edit"));
+    REQUIRE(tab.widget->scene().commitInlineEdit());
+    tab.graphCommit();
+    const auto render_serial = tab.history.undoStack().back().serial;
+    auto hub = std::make_shared<PelicanStudio::RenderConfigDigest>();
+    tab.widget->setRenderConfigDigest(hub);
+    // Attachment's future hub connection reaches the same subscriber as
+    // another panel: a different graph in the new root invalidates inverses.
+    tab.document["nodes"].push_back({{"id", "attached"}, {"op", "value.constant"},
+                                     {"parameters", {{"value", 3.0}}},
+                                     {"outputs", Json::array({"value"})}});
+    ++tab.generation;
+    hub->publish(tab.digest());
+    tab.readTab();
+    REQUIRE_FALSE(tab.widget->model().canUndo());
+    REQUIRE(tab.history.undoStack().back().serial == render_serial);
+    const auto reads = tab.historyCount("get_render_documents");
+    tab.widget->scene().undoEdit();
+    CHECK(tab.historyCount("get_render_documents") == reads + 1);
+    if (!tab.history.busy()) return;
+    // The render entry remains guarded by its own CAS after invalidation.
+    const auto docs = tab.finishRestore(true);
+    CHECK(docs[0].at("base_digest") != tab.digest());
+    CHECK(tab.history.undoStack().back().serial == render_serial);
+}
+
+TEST_CASE("RT-D engine restart retains the tab render record",
+          "[devstudio][graph-canvas][scene][rtd]") {
+    RtdTab tab;
+    tab.renderEdit();
+    const auto serial = tab.history.undoStack().back().serial;
+    tab.history.abandonInFlight();
+    tab.ready_changed(false, {});
+    tab.ready_changed(true, {});
+    tab.readTab();
+    REQUIRE(tab.history.undoStack().back().serial == serial);
+    tab.widget->scene().undoEdit();
+    REQUIRE(tab.history.busy());
+    tab.finishRestore();
+    CHECK(tab.history.redoStack().back().serial == serial);
+}
+
+TEST_CASE("RT-D D4 disabled render Redo does not fall through to an older Graph redo",
+          "[devstudio][graph-canvas][scene][rtd]") {
+    RtdTab tab;
+    tab.renderEdit();
+    tab.graphLabel();
+    tab.widget->scene().undoEdit();
+    tab.graphCommit();
+    REQUIRE(tab.widget->model().canRedo());
+    tab.widget->scene().undoEdit();
+    REQUIRE(tab.history.busy());
+    tab.finishRestore();
+    REQUIRE(tab.widget->model().canRedo());
+    tab.render_redo.setEnabled(false);
+    const auto graph_before = tab.transport.countOf(QStringLiteral("edit_graph_document"));
+    const auto render_before = tab.history_requests.size();
+    CHECK_FALSE(tab.widget->scene().canRedoAny());
+    tab.widget->scene().redoEdit();
+    CHECK(tab.transport.countOf(QStringLiteral("edit_graph_document")) == graph_before);
+    CHECK(tab.history_requests.size() == render_before);
+    tab.render_redo.setEnabled(true);
+    tab.widget->scene().redoEdit();
+    REQUIRE(tab.history.busy());
+    tab.finishRestore();
+}
+
+TEST_CASE("RT-D a lost Graph submission drops Graph records and retains render records",
+          "[devstudio][graph-canvas][scene][rtd]") {
+    RtdTab tab;
+    tab.renderEdit();
+    tab.graphLabel();
+    const auto serial = tab.history.undoStack().back().serial;
+    REQUIRE(tab.widget->scene().beginLabelEdit("shade"));
+    tab.widget->scene().setInlineEditText(QStringLiteral("Uncertain save"));
+    REQUIRE(tab.widget->scene().commitInlineEdit());
+    const auto id = tab.transport.idOf(QStringLiteral("edit_graph_document"));
+    REQUIRE(id != 0);
+    tab.failure(id, QStringLiteral("lost submission reply"));
+    tab.readTab();
+    REQUIRE_FALSE(tab.widget->model().canUndo());
+    REQUIRE(tab.history.undoStack().back().serial == serial);
+    const auto reads = tab.historyCount("get_render_documents");
+    tab.widget->scene().undoEdit();
+    CHECK(tab.historyCount("get_render_documents") == reads + 1);
+    if (!tab.history.busy()) return;
+    tab.finishRestore(true);
+    CHECK(tab.history.undoStack().back().serial == serial);
+}
+
+TEST_CASE("RT-D Redo refuses another panel top and resumes after that panel restores it",
+          "[devstudio][graph-canvas][scene][rtd]") {
+    RtdTab tab;
+    tab.renderEdit(false);
+    const auto foreign = tab.history.undoStack().back().serial;
+    tab.renderEdit();
+    const auto own = tab.history.undoStack().back().serial;
+    const auto content = tab.document;
+    tab.widget->scene().undoEdit();
+    REQUIRE(tab.history.busy());
+    tab.finishRestore();
+    REQUIRE(tab.history.undo());
+    tab.finishRestore();
+    REQUIRE(tab.history.redoStack().back().serial == foreign);
+    const auto before = tab.history_requests.size();
+    tab.widget->scene().redoEdit();
+    CHECK(tab.history_requests.size() == before);
+    CHECK(tab.widget->model().notice().message ==
+          "A later render edit from another panel is on top. Redo it there first, or refresh.");
+    REQUIRE(tab.history.redo());
+    tab.finishRestore();
+    REQUIRE(tab.history.redoStack().back().serial == own);
+    tab.widget->scene().redoEdit();
+    REQUIRE(tab.history.busy());
+    tab.finishRestore();
+    CHECK(tab.document == content);
+    CHECK(tab.history.undoStack().back().serial == own);
 }

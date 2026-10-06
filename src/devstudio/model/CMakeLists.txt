@@ -28,6 +28,8 @@ add_library(pelican_studio_inspector_model STATIC
     graphfoldgroups.hpp
     renderedithistory.cpp
     renderedithistory.hpp
+    tabeditorder.cpp
+    tabeditorder.hpp
     # RSX: the one reading of a render config ticket's last answer.
     rendereditcompletion.cpp
     rendereditcompletion.hpp

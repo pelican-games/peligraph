@@ -30,6 +30,9 @@ class QKeyEvent;
 
 namespace PelicanStudio {
 
+class TabEditOrder;
+class RenderEditHistory;
+
 class RenderConfigDigest;
 
 // Data roles make the rendered canvas inspectable without coupling callers to
@@ -600,17 +603,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     void selectPassInput(const std::string &pass, std::size_t input_index);
     // Delete on the picked line (or its right-click Delete).
     bool deletePassInput();
-    // RU-1: the Graph's Undo and Redo also reach the render edit history,
-    // for the pass edits this tab sent (noteRenderEdit); Redo gives back what
-    // that Undo took. GL-5g: in the order the tab sent its edits, graph and
-    // render alike -- New render target… from the palette is a render edit
-    // and then the reference's placement, and two Undos take back both.
-    // Each hook returns false when the history had nothing to do.
-    std::function<bool()> renderUndo;
-    std::function<bool()> renderRedo;
-    std::function<bool()> renderUndoAvailable;
-    std::function<bool()> renderRedoAvailable;
-    void noteRenderEdit();
+    // RT-D: the widget owns the tab order; the scene only guards gestures.
+    void setEditOrder(TabEditOrder *order) { edit_order_ = order; }
     [[nodiscard]] bool canUndoAny() const;
     [[nodiscard]] bool canRedoAny() const;
     [[nodiscard]] const QPointF &lastContextPosition() const noexcept {
@@ -782,15 +776,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     std::vector<std::size_t> selected_ties_;
     std::optional<PendingConnection> pending_connection_;
     QGraphicsPathItem *pending_edge_ = nullptr;
-    // GL-1e: the picked line into a pass, and which history the tab's last
-    // edit went to (the render edits' after noteRenderEdit).
     std::optional<PassInputPick> selected_pass_input_;
-    // GL-5g: the tab's edits in the order it sent them, which history each
-    // went to (true: the render edit history's), and those its Undo took back
-    // (what its Redo gives back), newest last.
-    std::vector<bool> tab_edits_;
-    std::vector<bool> tab_undone_;
-    void noteTabEdit(bool render);
+    TabEditOrder *edit_order_ = nullptr;
     // The builders' inputs, from the model: the authoring context parsed
     // once per revision, and the plan in the Frame Plan's terms.
     [[nodiscard]] FramePlanAuthoring passAuthoring() const;
@@ -980,6 +967,7 @@ class GraphCanvasWidget final : public QWidget {
     // A pass's input edit sent from this tab is taken back by the tab's own
     // Undo through them, as by the Frame Plan's.
     void setRenderHistoryActions(QAction *undo, QAction *redo);
+    void setRenderHistory(RenderEditHistory *history);
     // GL-1b, decision 2. An edit that committed with restart_required hands
     // the restart to this action -- the window's, the one the Frame Plan's
     // G-4 / G-5 calls -- with the line the tab's notice shows. When the
@@ -1112,11 +1100,6 @@ class GraphCanvasWidget final : public QWidget {
     // record initial values (get/edit_ray_callable_records, Render Features'
     // Records).
     void setOpenCallableRecords(std::function<void()> open);
-    // RTL-3s, decision 4: the raygen switches' file writes, for the render
-    // history (label, path, before, after).
-    void setFileHistoryAction(std::function<void(const std::string &, const std::string &, const std::string &,
-                                                 const std::string &)>
-                                  record);
     // UX-8, decision 9: File > Import Sound… and the Sound list's Import…:
     // the files picked (or dropped) are copied into the project's
     // assets/audio, `_2` beside a name already there, and the first is

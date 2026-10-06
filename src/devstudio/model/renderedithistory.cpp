@@ -7,6 +7,8 @@
 #include <array>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <queue>
 #include <set>
 #include <string_view>
 #include <utility>
@@ -407,6 +409,30 @@ std::int64_t RenderEditHistory::send(const std::string &method, const Json &para
     return id;
 }
 
+std::shared_ptr<RenderEditHistory::Movement> RenderEditHistory::observeMoves(Movement moved) {
+    auto connection = std::make_shared<Movement>(std::move(moved));
+    movement_observers_.push_back(connection);
+    return connection;
+}
+
+void RenderEditHistory::notifyMoved(std::uint64_t serial, Move direction, bool ok, Completion completed) {
+    // Bind the originating submission as part of Push, before subscribers
+    // inspect the committed entry. Request identity ends at this point.
+    if (direction == Move::Push && ok && completed) completed(serial);
+    std::erase_if(movement_observers_, [](const auto &observer) { return observer.expired(); });
+    const auto observers = movement_observers_;
+    for (const auto &observer : observers)
+        if (const auto moved = observer.lock()) (*moved)(serial, direction, ok);
+    if (historyMoved) historyMoved(serial, direction, ok);
+}
+
+bool RenderEditHistory::followRequest(std::int64_t id, Completion completed) {
+    const auto found = std::ranges::find(pending_, id, &PendingEdit::edit_request);
+    if (found == pending_.end()) return false;
+    found->completed = std::move(completed);
+    return true;
+}
+
 void RenderEditHistory::notify() {
     if (changed) changed();
 }
@@ -424,6 +450,8 @@ void RenderEditHistory::beforeRequest(const std::string &method, const Json &par
     if (!recordsMethod(method)) return;
     PendingEdit edit;
     edit.method = method;
+    edit.base_source_digest = stringAt(params, "base_source_digest");
+    edit.submitted = next_submission_++;
     // RTL-3s, decision 3 (engine EB-2): asset_data it writes is restored by
     // its digest (Entry::records_only).
     edit.records = rewritesProceduralRecords(method, params);
@@ -491,6 +519,7 @@ bool RenderEditHistory::receiveResult(std::int64_t id, const Json &result) {
             auto finished = std::move(edit);
             pending_.erase(pending_.begin() + static_cast<std::ptrdiff_t>(index));
             if (committed(result)) finishEdit(std::move(finished), result);
+            else if (finished.completed) finished.completed(0);
             return true;
         }
         if (id == edit.poll_request) {
@@ -509,6 +538,7 @@ bool RenderEditHistory::receiveResult(std::int64_t id, const Json &result) {
             auto finished = std::move(edit);
             pending_.erase(pending_.begin() + static_cast<std::ptrdiff_t>(index));
             if (committed(result)) finishEdit(std::move(finished), result);
+            else if (finished.completed) finished.completed(0);
             return true;
         }
     }
@@ -577,6 +607,8 @@ bool RenderEditHistory::receiveFailure(std::int64_t id, const std::string &messa
             return true;
         }
         if (id == edit.edit_request || id == edit.poll_request) {
+            auto completed = std::move(edit.completed);
+            if (completed) completed(0);
             pending_.erase(pending_.begin() + static_cast<std::ptrdiff_t>(index));
             return true;
         }
@@ -591,20 +623,39 @@ void RenderEditHistory::pollEdit(std::int64_t edit_request) {
     const auto found = std::ranges::find(pending_, edit_request, &PendingEdit::edit_request);
     if (found == pending_.end() || found->ticket.empty() || found->poll_request != 0) return;
     found->poll_request = send("get_edit_result", Json{{"ticket", found->ticket}}, nullptr);
-    if (found->poll_request == 0) pending_.erase(found);
+    if (found->poll_request == 0) {
+        auto completed = std::move(found->completed);
+        pending_.erase(found);
+        if (completed) completed(0);
+    }
 }
 
 void RenderEditHistory::finishEdit(PendingEdit edit, const Json &commit) {
-    const auto written = writtenOf(commit);
-    // Nothing was written: there is nothing to take back.
-    if (commit.value("no_change", false) || written.empty()) return;
+    // Only an explicit no_change authorizes forgetting this submission.
+    // A committed reply without its write set leaves an unconfirmed edit.
+    if (commit.contains("no_change") && commit.at("no_change") == Json(true)) {
+        if (edit.completed) edit.completed(0);
+        return;
+    }
     Entry entry;
     entry.label = edit.label;
     entry.serial = next_serial_++;
+    entry.base_source_digest = std::move(edit.base_source_digest);
+    entry.source_digest = stringAt(commit.value("source_digest", Json::object()), "hex");
+    entry.submitted = edit.submitted;
     entry.files = std::move(edit.files);
     entry.procedural_records_before = commit.value("procedural_records_before", Json::object());
     entry.restart_required = readRenderEditCompletion(commit).restart_required;
-    if (!edit.snapshot_received) {
+    const auto documents = commit.find("documents");
+    const bool valid_documents = documents != commit.end() && documents->is_object();
+    const auto written = valid_documents ? *documents : Json::object();
+    if (!valid_documents || written.empty()) {
+        entry.barrier = true;
+        entry.barrier_reason = "render_history.invalid_commit_response@1: " +
+            std::string{documents == commit.end() ? "committed reply is missing documents"
+                        : !valid_documents ? "committed reply documents must be an object"
+                                           : "committed reply documents is empty without no_change: true"};
+    } else if (!edit.snapshot_received) {
         entry.barrier = true;
         entry.barrier_reason = "its documents could not be read before it";
     }
@@ -643,9 +694,75 @@ void RenderEditHistory::finishEdit(PendingEdit edit, const Json &commit) {
             send("get_render_documents", Json{{"references", std::move(references)}}, nullptr);
         if (request != 0) after_reads_.push_back(AfterRead{request, entry.serial});
     }
-    undo_.push_back(std::move(entry));
+    const auto serial = entry.serial;
+    insertUndo(std::move(entry));
     redo_.clear();
+    notifyMoved(serial, Move::Push, true, std::move(edit.completed));
     notify();
+}
+
+void RenderEditHistory::insertUndo(Entry entry) {
+    // A digest link orders commits, even when independent pollers observe
+    // the successor first. File-only entries commit synchronously, so their
+    // relation to requests already sent is known without an engine digest.
+    const auto precedes = [](const Entry &before, const Entry &after) {
+        // Equal bytes may recur (A -> B -> A). Only the earlier submission
+        // can be a predecessor: same-document stale candidates are refused
+        // by the engine's CAS, not silently rebased into a different order.
+        if (before.submitted >= after.submitted) return false;
+        const auto files_only = [](const Entry &item) {
+            return item.before.empty() && !item.files.empty() && !item.barrier;
+        };
+        if (files_only(before) || files_only(after)) return true;
+        if (!after.base_source_digest.empty() &&
+            after.base_source_digest != after.source_digest &&
+            before.base_source_digest != before.source_digest &&
+            before.source_digest == after.base_source_digest)
+            return true;
+        // The root digest need not move for an edit to a preset/feature.
+        // Match that document's write to the successor's before snapshot.
+        for (const auto &[reference, written] : before.written) {
+            const auto snapshot = after.before.find(reference);
+            if (written && !written->digest.empty() && snapshot != after.before.end() &&
+                snapshot->second && snapshot->second->digest == written->digest)
+                return true;
+        }
+        return false;
+    };
+    undo_.push_back(std::move(entry));
+    // The normal in-order push costs one scan. With no known successor,
+    // leave independent documents in observation order.
+    const auto successor = std::find_if(undo_.begin(), std::prev(undo_.end()), [&](const Entry &other) {
+        return precedes(undo_.back(), other);
+    });
+    if (successor == std::prev(undo_.end())) return;
+
+    // A late middle link can join two previously disconnected chains (R3,
+    // R1, then R2). Stable topological order fixes the entire joined chain,
+    // not just the new entry. Observation order breaks ties. Nothing in the
+    // affected suffix precedes the already ordered prefix, so leave it alone.
+    const auto offset = static_cast<std::size_t>(std::distance(undo_.begin(), successor));
+    const auto size = undo_.size() - offset;
+    std::vector<std::size_t> incoming(size, 0);
+    for (std::size_t i = 0; i < size; ++i)
+        for (std::size_t j = 0; j < size; ++j)
+            if (precedes(undo_[offset + i], undo_[offset + j])) ++incoming[j];
+    std::priority_queue<std::size_t, std::vector<std::size_t>, std::greater<>> ready;
+    for (std::size_t i = 0; i < size; ++i)
+        if (incoming[i] == 0) ready.push(i);
+    std::vector<std::size_t> order;
+    order.reserve(size);
+    while (!ready.empty()) {
+        const auto i = ready.top();
+        ready.pop();
+        order.push_back(i);
+        for (std::size_t j = 0; j < size; ++j)
+            if (precedes(undo_[offset + i], undo_[offset + j]) && --incoming[j] == 0) ready.push(j);
+    }
+    std::vector<Entry> sorted;
+    sorted.reserve(size);
+    for (const auto i : order) sorted.push_back(std::move(undo_[offset + i]));
+    std::move(sorted.begin(), sorted.end(), successor);
 }
 
 void RenderEditHistory::receiveAfterRead(std::uint64_t serial, const Json &result) {
@@ -690,6 +807,7 @@ bool RenderEditHistory::undo() {
     } else {
         return startRestore(Direction::Undo);
     }
+    if (!undo_.empty()) notifyMoved(undo_.back().serial, Move::Undo, false);
     notify();
     return false;
 }
@@ -707,6 +825,7 @@ bool RenderEditHistory::redo() {
     } else {
         return startRestore(Direction::Redo);
     }
+    if (!redo_.empty()) notifyMoved(redo_.back().serial, Move::Redo, false);
     notify();
     return false;
 }
@@ -719,14 +838,19 @@ std::string RenderEditHistory::verb() const {
     return operation_ && operation_->direction == Direction::Redo ? "redone" : "undone";
 }
 
-void RenderEditHistory::recordFiles(std::string label, std::vector<FileChange> files) {
-    if (files.empty()) return;
+void RenderEditHistory::recordFiles(std::string label, std::vector<FileChange> files, Completion completed) {
+    if (files.empty()) {
+        if (completed) completed(0);
+        return;
+    }
     Entry entry;
     entry.label = std::move(label);
     entry.serial = next_serial_++;
+    entry.submitted = next_submission_++;
     entry.files = std::move(files);
     undo_.push_back(std::move(entry));
     redo_.clear();
+    notifyMoved(undo_.back().serial, Move::Push, true, std::move(completed));
     notify();
 }
 
@@ -737,9 +861,11 @@ bool RenderEditHistory::startRestore(Direction direction) {
         const bool undoing = direction == Direction::Undo;
         writeFiles(files_only, undoing);
         auto entry = std::move(files_only);
+        const auto serial = entry.serial;
         (undoing ? undo_ : redo_).pop_back();
         say(std::string{undoing ? "Undid" : "Redid"} + " \"" + entry.label + "\".");
         (undoing ? redo_ : undo_).push_back(std::move(entry));
+        notifyMoved(serial, undoing ? Move::Undo : Move::Redo, true);
         notify();
         return true;
     }
@@ -838,6 +964,7 @@ void RenderEditHistory::finishOperation(const Json &commit) {
     const auto written = writtenOf(commit);
     const bool undoing = operation_->direction == Direction::Undo;
     auto entry = std::move(operationEntry());
+    const auto serial = entry.serial;
     (undoing ? undo_ : redo_).pop_back();
     // What this restore replaced is what the other direction puts back.
     auto &replaced = undoing ? entry.after : entry.before;
@@ -875,6 +1002,7 @@ void RenderEditHistory::finishOperation(const Json &commit) {
         entry.restart_required || readRenderEditCompletion(commit).restart_required;
     (undoing ? redo_ : undo_).push_back(std::move(entry));
     operation_.reset();
+    notifyMoved(serial, undoing ? Move::Undo : Move::Redo, true);
     if (restored) restored(commit, restart);
     notify();
 }
@@ -885,6 +1013,8 @@ void RenderEditHistory::refuseOperation(const Json &result) {
     const auto code = stringAt(error, "code");
     const auto message = stringAt(error, "message");
     auto &entry = operationEntry();
+    const auto serial = entry.serial;
+    const auto direction = operation_->direction == Direction::Undo ? Move::Undo : Move::Redo;
     const auto label = entry.label;
     const auto reason = stringAt(error, "reason");
     if (code == "external_modification") {
@@ -927,14 +1057,18 @@ void RenderEditHistory::refuseOperation(const Json &result) {
     // RTL-2s-c: not restored: the files back as the documents still are.
     if (operation_->stage != Stage::Read) writeFiles(entry, operation_->direction != Direction::Undo);
     operation_.reset();
+    notifyMoved(serial, direction, false);
     notify();
 }
 
 void RenderEditHistory::failOperation(const std::string &message) {
+    const auto serial = operationEntry().serial;
+    const auto direction = operation_->direction == Direction::Undo ? Move::Undo : Move::Redo;
     say("\"" + operationEntry().label + "\" cannot be " + verb() + ": " + message);
     if (operation_->stage != Stage::Read)
         writeFiles(operationEntry(), operation_->direction != Direction::Undo);
     operation_.reset();
+    notifyMoved(serial, direction, false);
     notify();
 }
 
@@ -943,7 +1077,9 @@ void RenderEditHistory::abandonInFlight() {
     const bool had = operation_.has_value() || !pending_.empty() || unsent_.has_value() ||
                      !after_reads_.empty();
     operation_.reset();
-    pending_.clear();
+    auto abandoned = std::exchange(pending_, {});
+    for (auto &edit : abandoned)
+        if (edit.completed) edit.completed(0);
     unsent_.reset();
     after_reads_.clear();
     if (had) notify();
@@ -952,7 +1088,9 @@ void RenderEditHistory::abandonInFlight() {
 void RenderEditHistory::clear() {
     ++epoch_;
     operation_.reset();
-    pending_.clear();
+    auto abandoned = std::exchange(pending_, {});
+    for (auto &edit : abandoned)
+        if (edit.completed) edit.completed(0);
     unsent_.reset();
     after_reads_.clear();
     undo_.clear();

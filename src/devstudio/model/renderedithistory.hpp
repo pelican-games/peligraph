@@ -1,5 +1,7 @@
 #pragma once
 
+#include <memory>
+
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
@@ -108,6 +110,12 @@ class RenderEditHistory {
         bool restart_required = false;
         // Names the entry for the read that follows the edit's commit.
         std::uint64_t serial = 0;
+        // RT-D: the original edit's digest link, independent of when its
+        // terminal reply was observed. The submission number disambiguates
+        // repeated digests and anchors synchronous file-only entries.
+        std::string base_source_digest;
+        std::string source_digest;
+        std::uint64_t submitted = 0;
         // RTL-2s-c: the files the edit rewrote beside its documents.
         std::vector<FileChange> files;
         // Asset-data references whose procedural records were changed. They
@@ -173,7 +181,11 @@ class RenderEditHistory {
     // RTL-3s, decision 4: an entry of files alone (a raygen's switch Studio
     // wrote): no document is restored -- Undo writes each file's `before`
     // back, Redo its `after` -- and the shaders' watch compiles them again.
-    void recordFiles(std::string label, std::vector<FileChange> files);
+    using Completion = std::function<void(std::uint64_t serial)>;
+    // Request identity is needed only until its terminal reply. Zero means
+    // no entry (refusal, lost reply, abandon or a no-op commit).
+    bool followRequest(std::int64_t id, Completion completed);
+    void recordFiles(std::string label, std::vector<FileChange> files, Completion completed = {});
 
     // Whether a reply under `id` is one the history is waiting for.
     [[nodiscard]] bool waitingFor(std::int64_t id) const noexcept;
@@ -208,6 +220,18 @@ class RenderEditHistory {
     // Undo does not reach back past it; `line` marks where it was cut.
     void cut(std::string line);
 
+    // RT-D: entry identity survives stack moves. Push is a new committed
+    // entry (including files alone); Undo/Redo report the completed move.
+    // Push may insert below the top: find the serial in undoStack() after
+    // insertion, rather than assuming that the pushed entry is back().
+    // A refused/failed restore reports ok=false without moving the entry.
+    enum class Move { Push, Undo, Redo };
+    using Movement = std::function<void(std::uint64_t serial, Move direction, bool ok)>;
+    Movement historyMoved;
+    // The subscriber owns the connection. Destroying it disconnects even
+    // when the shared history outlives the tab.
+    std::shared_ptr<Movement> observeMoves(Movement moved);
+
     // The stacks, the busy state or the line changed.
     std::function<void()> changed;
     // A restore committed: its commit result (source_digest, documents) and
@@ -216,6 +240,9 @@ class RenderEditHistory {
 
   private:
     struct PendingEdit {
+        Completion completed;
+        std::string base_source_digest;
+        std::uint64_t submitted = 0;
         std::string method;
         std::string label;
         std::int64_t snapshot_request = 0;
@@ -256,6 +283,7 @@ class RenderEditHistory {
     std::string line_;
     std::uint64_t line_serial_ = 0;
     std::uint64_t next_serial_ = 1;
+    std::uint64_t next_submission_ = 1;
     // An edit whose beforeRequest ran and whose requestSent has not.
     std::optional<PendingEdit> unsent_;
     std::vector<PendingEdit> pending_;
@@ -271,10 +299,13 @@ class RenderEditHistory {
     static void writeFiles(const Entry &entry, bool undoing);
 
     std::int64_t send(const std::string &method, const Json &params, std::string *error);
+    std::vector<std::weak_ptr<Movement>> movement_observers_;
+    void notifyMoved(std::uint64_t serial, Move direction, bool ok, Completion completed = {});
     void notify();
     void say(std::string line);
     void pollEdit(std::int64_t edit_request);
     void finishEdit(PendingEdit edit, const Json &commit);
+    void insertUndo(Entry entry);
     void receiveAfterRead(std::uint64_t serial, const Json &result);
     bool startRestore(Direction direction);
     void sendRestore();

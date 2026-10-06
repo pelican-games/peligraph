@@ -671,7 +671,7 @@ void GraphCanvasModel::clearContext() {
     // one other than history_digest_ clears it (see receiveRpcResult). Only
     // the edit in the air went with the engine. Another project clears it
     // through forgetHistory().
-    pending_history_.reset();
+    discardPendingHistory();
     digest_.clear();
     layout_retry_.reset();
     layout_retrying_ = false;
@@ -1353,7 +1353,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                             if (edit_scope == "root") edit_scope.clear();
                             break;
                         }
-                pending_history_.reset();
+                discardPendingHistory();
                 edit_notice_ = {InspectorNoticeKind::Error, diagnostic(response)};
                 // GL-1b, decision 3: an engine that cannot yet answer a graph
                 // edit with restart_required refuses a change to a live
@@ -1422,7 +1422,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             ticket_.clear();
             layout_retrying_ = false;
             saved_note_.clear();
-            pending_history_.reset();
+            discardPendingHistory();
             edit_notice_ = {InspectorNoticeKind::Error, error.what()};
             refresh();
         }
@@ -2766,6 +2766,7 @@ bool GraphCanvasModel::submitHistory(HistoryAction action, HistoryEntry entry) {
                 params[key] = value;
     pending_history_ = PendingHistory{action, std::move(entry)};
     edit_notice_ = {InspectorNoticeKind::Information, "Saving the graph change..."};
+    if (action == HistoryAction::Edit && historySubmitted) historySubmitted();
     request(RequestKind::Submit, "edit_graph_document", std::move(params));
     return true;
 }
@@ -2782,7 +2783,7 @@ bool GraphCanvasModel::retryWithoutRouteDefault(const std::string &message) {
         return false;
     route_default_unknown_ = true;
     auto retry = std::move(*pending_history_);
-    pending_history_.reset();
+    discardPendingHistory();
     retry.entry.params.erase("material_route_default");
     return submitHistory(retry.action, std::move(retry.entry));
 }
@@ -2791,13 +2792,22 @@ void GraphCanvasModel::forgetHistory() {
     clearHistory();
 }
 
+void GraphCanvasModel::discardPendingHistory() {
+    if (!pending_history_) return;
+    const auto pending = std::exchange(pending_history_, std::nullopt);
+    const auto move = pending->action == HistoryAction::Edit ? HistoryMove::Push
+                    : pending->action == HistoryAction::Undo ? HistoryMove::Undo : HistoryMove::Redo;
+    if (historyMoved) historyMoved(pending->entry.serial, move, false);
+}
+
 void GraphCanvasModel::clearHistory() {
     undo_.clear();
     redo_.clear();
-    pending_history_.reset();
+    discardPendingHistory();
     history_digest_.clear();
     render_restore_digest_.clear();
     keep_history_through_digest_ = false;
+    if (historyCleared) historyCleared();
 }
 
 void GraphCanvasModel::commitHistory(const Json &response) {
@@ -2815,6 +2825,8 @@ void GraphCanvasModel::commitHistory(const Json &response) {
                                                                   : pending.entry.forward)
         if (op.is_object() && text(op, "op") == "rename_definition")
             committed_renames_[text(op, "from")] = text(op, "to");
+    if (pending.action == HistoryAction::Edit) pending.entry.serial = next_history_serial_++;
+    const auto serial = pending.entry.serial;
     if (pending.action == HistoryAction::Undo) {
         undo_.pop_back();
         redo_.push_back(std::move(pending.entry));
@@ -2825,6 +2837,9 @@ void GraphCanvasModel::commitHistory(const Json &response) {
         if (undo_.size() > historyCapacity) undo_.erase(undo_.begin());
     }
     history_digest_ = digest;
+    const auto move = pending.action == HistoryAction::Edit ? HistoryMove::Push
+                    : pending.action == HistoryAction::Undo ? HistoryMove::Undo : HistoryMove::Redo;
+    if (historyMoved) historyMoved(serial, move, true);
 }
 
 bool GraphCanvasModel::undo() {

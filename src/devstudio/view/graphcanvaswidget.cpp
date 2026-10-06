@@ -1,4 +1,5 @@
 #include "graphcanvaswidget.hpp"
+#include "tabeditorder.hpp"
 #include "graphcanvasaudioanalysis.hpp"
 #include "graphcanvascomputefields.hpp"
 #include "graphcanvasdrawing.hpp"
@@ -2805,20 +2806,8 @@ void GraphCanvasScene::selectEdge(const std::string &scope, const GraphCanvasEdg
 
 void GraphCanvasScene::afterEdit(bool submitted) {
     if (!submitted) return;
-    // GL-1e: the tab's last edit is the graph's now.
-    noteTabEdit(false);
     // The request is in the model's outbox; only the owner can post it.
     if (editSubmitted) editSubmitted();
-}
-
-void GraphCanvasScene::noteTabEdit(bool render) {
-    tab_edits_.push_back(render);
-    tab_undone_.clear();
-    // A bounded memory: the histories themselves keep no more than this.
-    constexpr std::size_t kept = 256;
-    if (tab_edits_.size() > kept)
-        tab_edits_.erase(tab_edits_.begin(),
-                         tab_edits_.begin() + static_cast<std::ptrdiff_t>(tab_edits_.size() - kept));
 }
 
 void GraphCanvasScene::clearPendingConnection() {
@@ -4253,59 +4242,24 @@ void GraphCanvasScene::keyPressEvent(QKeyEvent *event) {
 
 void GraphCanvasScene::undoEdit() {
     if (!model_ || editingInline() || dragging() || layoutPending()) return;
-    // GL-1e: a pass's input edit this tab sent went to the render edit
-    // history (RU-1), and the tab's Undo takes it back there while it is
-    // the tab's last edit. Any other render edit stays the Frame Plan's and
-    // the Pass Editor's to undo: here Ctrl+Z is the graph's (RU-1's keys).
-    // GL-5g: the newest of the tab's edits, whichever history it went to.
-    if (!tab_edits_.empty() && tab_edits_.back() && renderUndo && renderUndoAvailable &&
-        renderUndoAvailable()) {
-        model_->keepHistoryThroughNextDigest();
-        if (renderUndo()) {
-            tab_edits_.pop_back();
-            tab_undone_.push_back(true);
-        }
-        return;
-    }
-    if (!model_->undo()) return;
-    if (!tab_edits_.empty() && !tab_edits_.back()) tab_edits_.pop_back();
-    tab_undone_.push_back(false);
+    if (edit_order_) edit_order_->undo();
+    else model_->undo();
     if (editSubmitted) editSubmitted();
 }
 
 void GraphCanvasScene::redoEdit() {
     if (!model_ || editingInline() || dragging() || layoutPending()) return;
-    if (!tab_undone_.empty() && tab_undone_.back() && renderRedo && renderRedoAvailable &&
-        renderRedoAvailable()) {
-        model_->keepHistoryThroughNextDigest();
-        if (renderRedo()) {
-            tab_undone_.pop_back();
-            tab_edits_.push_back(true);
-        }
-        return;
-    }
-    if (!model_->redo()) return;
-    if (!tab_undone_.empty() && !tab_undone_.back()) tab_undone_.pop_back();
-    tab_edits_.push_back(false);
+    if (edit_order_) edit_order_->redo();
+    else model_->redo();
     if (editSubmitted) editSubmitted();
 }
 
-void GraphCanvasScene::noteRenderEdit() {
-    noteTabEdit(true);
-    // The commit's digest is the root's; the graph's history stays.
-    if (model_ != nullptr) model_->keepHistoryThroughNextDigest();
-}
-
 bool GraphCanvasScene::canUndoAny() const {
-    return model_ != nullptr &&
-           (model_->canUndo() || (!tab_edits_.empty() && tab_edits_.back() && renderUndoAvailable &&
-                                  renderUndoAvailable()));
+    return model_ && (edit_order_ ? edit_order_->canUndo() : model_->canUndo());
 }
 
 bool GraphCanvasScene::canRedoAny() const {
-    return model_ != nullptr &&
-           (model_->canRedo() || (!tab_undone_.empty() && tab_undone_.back() &&
-                                  renderRedoAvailable && renderRedoAvailable()));
+    return model_ && (edit_order_ ? edit_order_->canRedo() : model_->canRedo());
 }
 
 // --- GL-1e: a pass of the rendering section takes lines.
@@ -5024,6 +4978,7 @@ struct GraphCanvasWidget::Impl {
     GraphCanvasWidget &view;
     GraphCanvasReadCapability graph;
     GraphCanvasModel model;
+    TabEditOrder edit_order{model};
     // Q-13: the digest the panels that edit the document share, and whether
     // another panel moved the document while this tab was busy.
     std::shared_ptr<RenderConfigDigest> digest_hub;
@@ -5329,6 +5284,23 @@ struct GraphCanvasWidget::Impl {
 
     explicit Impl(GraphCanvasWidget &owner, GraphCanvasReadCapability capability)
         : view{owner}, graph{std::move(capability)} {
+        // Only requests leaving this tab reserve its order. The shared
+        // history sees all panels and joins this request at its own Push.
+        const auto track = [this](auto &request) {
+            if (!request) return;
+            request = [this, send = std::move(request)](const QJsonObject &params, QString *error) {
+                const auto id = send(params, error);
+                edit_order.renderRequestSent(id);
+                return id;
+            };
+        };
+        track(graph.requestEditPresetPass);
+        track(graph.requestEditTargetPlanning);
+        track(graph.requestEditRenderTargets);
+        track(graph.requestFoldNodes);
+        track(graph.requestVerifyFold);
+        edit_order.renderUndoAvailable = [this] { return render_undo && render_undo->isEnabled(); };
+        edit_order.renderRedoAvailable = [this] { return render_redo && render_redo->isEnabled(); };
         // Q-2 looked at stopping this clock while there is nothing to poll
         // for, and put it back: it is not only a poll. Descending into a
         // definition, leaving a scope, choosing one from the combo and
@@ -6269,6 +6241,7 @@ struct GraphCanvasWidget::Impl {
         });
 
         scene->setModel(&model);
+        scene->setEditOrder(&edit_order);
         // GL-3a: the Decisions section stands where the Pass fields do.
         folds = std::make_unique<GraphCanvasFoldController>(
             graph, model, *scene, view,
@@ -6654,7 +6627,7 @@ struct GraphCanvasWidget::Impl {
         if (const auto completion = readRenderEditCompletion(response);
             completion.restart_required) {
             model.setEditNotice({InspectorNoticeKind::Information, completion.restart_line});
-            scene->noteRenderEdit();
+            model.keepHistoryThroughNextDigest();
             showNotice();
             if (engine_restart_action) {
                 restart_asked = true;
@@ -6666,7 +6639,7 @@ struct GraphCanvasWidget::Impl {
                              pass_edit_notice.empty() ? std::string{"Pass inputs saved."}
                                                       : pass_edit_notice});
         // RU-1: the tab's Undo takes this back first.
-        scene->noteRenderEdit();
+        model.keepHistoryThroughNextDigest();
         if (plan_commit_action) plan_commit_action();
         model.refresh();
         // GL-5b: the target is waited for among the context's (followNewTarget).
@@ -7409,7 +7382,7 @@ struct GraphCanvasWidget::Impl {
         const auto digest = response.value("source_digest", nlohmann::json::object())
                                 .value("hex", std::string{});
         if (digest_hub && !digest.empty()) digest_hub->publish(digest, &view);
-        scene->noteRenderEdit();
+        model.keepHistoryThroughNextDigest();
         if (const auto completion = readRenderEditCompletion(response);
             completion.restart_required) {
             model.setEditNotice({InspectorNoticeKind::Information, completion.restart_line});
@@ -10314,16 +10287,6 @@ void GraphCanvasWidget::setPlanCommitAction(std::function<void()> action) {
 void GraphCanvasWidget::setRenderHistoryActions(QAction *undo, QAction *redo) {
     impl_->render_undo = undo;
     impl_->render_redo = redo;
-    auto &scene = *impl_->scene;
-    const auto fire = [](QAction *action) {
-        if (action == nullptr || !action->isEnabled()) return false;
-        action->trigger();
-        return true;
-    };
-    scene.renderUndo = [undo, fire] { return fire(undo); };
-    scene.renderRedo = [redo, fire] { return fire(redo); };
-    scene.renderUndoAvailable = [undo] { return undo != nullptr && undo->isEnabled(); };
-    scene.renderRedoAvailable = [redo] { return redo != nullptr && redo->isEnabled(); };
     // The tab's buttons follow what the history can do as well.
     for (QAction *action : {undo, redo})
         if (action != nullptr)
@@ -10396,7 +10359,10 @@ void GraphCanvasWidget::importSounds(const std::vector<std::filesystem::path> &f
 void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root) {
     // OT-1: the graph history survives an engine restart, not a project
     // switch.
-    if (impl_->project_root != project_root) impl_->model.forgetHistory();
+    if (impl_->project_root != project_root) {
+        impl_->model.forgetHistory();
+        impl_->edit_order.clear();
+    }
     impl_->project_root = project_root;
     impl_->pass_fields->setProjectRoot(project_root);
     impl_->value_fields->setProjectRoot(project_root);
@@ -10422,10 +10388,15 @@ void GraphCanvasWidget::setOpenCallableRecords(std::function<void()> open) {
     impl_->compute_fields->setOpenCallableRecords(std::move(open));
 }
 
-void GraphCanvasWidget::setFileHistoryAction(
-    std::function<void(const std::string &, const std::string &, const std::string &, const std::string &)>
-        record) {
-    impl_->compute_fields->setFileHistoryAction(std::move(record));
+void GraphCanvasWidget::setRenderHistory(RenderEditHistory *history) {
+    impl_->edit_order.setRenderHistory(history);
+    impl_->compute_fields->setFileHistoryAction(
+        [impl = impl_.get()](const std::string &label, const std::string &path,
+                            const std::string &before, const std::string &after) {
+            impl->edit_order.recordFiles(label, {{path, before, after}});
+            impl->synchronize();
+        });
+    impl_->synchronize();
 }
 
 void GraphCanvasWidget::setOpenRayLayout(std::function<void()> open) {
@@ -10475,6 +10446,7 @@ void GraphCanvasWidget::renderHistoryRestored(const std::string &digest) {
 
 void GraphCanvasWidget::documentsReloadedFromDisk() {
     impl_->model.forgetHistory();
+    impl_->edit_order.clear();
     if (impl_->model.canRefresh()) impl_->model.refresh();
     impl_->dispatch();
 }

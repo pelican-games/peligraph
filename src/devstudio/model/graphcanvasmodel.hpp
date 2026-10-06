@@ -1151,6 +1151,7 @@ class GraphCanvasModel {
         // (`material_route_default`), or null. An Undo sends the inverse
         // alone: the route default is the project's, not the list's.
         nlohmann::json params;
+        std::uint64_t serial = 0;
     };
     enum class HistoryAction { Edit, Undo, Redo };
     struct PendingHistory {
@@ -1160,6 +1161,8 @@ class GraphCanvasModel {
     std::vector<HistoryEntry> undo_;
     std::vector<HistoryEntry> redo_;
     std::optional<PendingHistory> pending_history_;
+    std::uint64_t next_history_serial_ = 1;
+    void discardPendingHistory();
     // Q-13. A placement refused because another panel's commit moved the
     // document is written again, once, against the document read next. The
     // placement is the canvas's own (the document only keeps it), so the same
@@ -1519,6 +1522,16 @@ class GraphCanvasModel {
     // OT-1: another project is opened. Its document is not the one the
     // history is about, even if its digest happened to match.
     void forgetHistory();
+    // RT-D: the Graph inverses were invalidated. Other histories retain
+    // their own entries; their owner removes only the Graph records.
+    std::function<void()> historyCleared;
+    // RT-D: submission reserves the tab's order; only a commit binds an
+    // entry or moves it. Failed submissions and abandoned edits close it.
+    enum class HistoryMove { Push, Undo, Redo };
+    std::function<void()> historySubmitted;
+    std::function<void(std::uint64_t, HistoryMove, bool)> historyMoved;
+    [[nodiscard]] std::uint64_t undoSerial() const { return undo_.empty() ? 0 : undo_.back().serial; }
+    [[nodiscard]] std::uint64_t redoSerial() const { return redo_.empty() ? 0 : redo_.back().serial; }
     // GL-5g: a render edit the tab itself sends, takes back or gives again
     // moves the root's digest and not its graph. The next read that brings
     // another digest keeps the history when the nodes and the definitions
