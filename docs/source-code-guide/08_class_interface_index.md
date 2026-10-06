@@ -1,5 +1,7 @@
 # 第8章 クラス・インターフェース索引
 
+最終確認: 2026-10-07(develop d975ee9c0)
+
 [索引へ戻る](README.md) / [前章](07_tools_rpc_tests.md) / [次章](09_black_magic_and_gotchas.md)
 
 この章は「名前は分かったので宣言と本体へすぐ飛びたい」ときの索引です。全 private helper を列挙するのではなく、所有権または subsystem 境界を持つ主要型を収録しています。

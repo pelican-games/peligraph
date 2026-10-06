@@ -1,18 +1,47 @@
 # Pelican2 ソースコード読解ガイド
 
-調査時点: 2026-09-04
+最終確認: 2026-10-07(develop d975ee9c0)
 
-対象ブランチ: `codex/render-target-runtime-slice`
+## 一枚で見た全体像
 
-基準コミット: `8864050`
+```mermaid
+flowchart LR
+    Project["project.json / scene / assets / passes"]
+    Player["pelican_player\nCLI・起動"]
+    Core["pelican_core\n実行時モジュール"]
+    Pure["pelican_project\n純粋パース・検証"]
+    Game["project/code\nゲームSystem\npelican_game_logic (DLL)"]
+    ECS["ECS\nEntity・Chunk・System"]
+    Render["Rendering\nFrame graph・Shader"]
+    XR["OpenXR\nsession・composition"]
+    VK["Vulkan\nDevice・FrameTarget・GPU資源"]
+    Tools["pelican_cli / Studio / tests"]
 
-上記は初回調査の基準です。その後の追記は各章で扱っています。2026-10-01 に `develop` の `c6df4822` と照合し、用語、参照先、加速構造などの説明を訂正しました。全機能をこの日付で再検証したという意味ではありません。現在の開発状況は [v1 開発計画](../v1_development_plan.md)、v0 の公開仕様は [凍結一覧](../v0_freeze.md) を参照してください。
+    Project --> Player
+    Project --> Pure
+    Player --> Core
+    Game -->|DLLとしてロード| Player
+    Core --> Pure
+    Core --> ECS
+    Core --> Render
+    Core --> XR
+    XR --> VK
+    Render --> VK
+    Tools --> Pure
+    Tools --> Core
+```
+
+大切なのは、`src/project` がGPUやモジュールコンテナに依存しない**形式ロジック**、`src/core` がそれを実行時オブジェクトへ結び付ける**エンジン本体**、`src/player` がプロセスの入口、という分担です。
+
+本文に残る過去の観測や未検証の範囲は各節の注記を確認してください。現在の開発状況は [v1 開発計画](../v1_development_plan.md)、v0 の公開仕様は [凍結一覧](../v0_freeze.md) を参照してください。
 
 この文書群は、Pelican2を「利用する方法」ではなく、**ソースコードがどう分割され、起動後に何がどの順で動き、複雑な実装がなぜその形になっているか**を理解するための読解ガイドです。
 
 既存の利用マニュアルや設計文書とは目的を分けるため、[`docs/manual/`](../manual/00_index.md) には追加せず、独立した `docs/source-code-guide/` にまとめています。既存文書を正として言い換えたものではなく、調査時点の実装をソースから逆引きした資料です。
 
 ## この解説書の読み方
+
+前提とする manual の章は[第1章(全体像)](../manual/01_overview.md)・[第2章(ビルドと起動)](../manual/02_getting_started.md)で、領域に応じて[第3章(プロジェクト形式)](../manual/03_project_format.md)・[第4章(シーンと ECS)](../manual/04_scene_ecs.md)・[第6章(描画)](../manual/06_rendering.md)・[第7章(入力と UI)](../manual/07_input_ui.md)・[第8章(ゲームロジック)](../manual/08_gameplay.md)・[第13章(編集 RPC)](../manual/13_editor.md)を参照します。[M12(コード対応表)](../manual/12_codemap.md)はデータ → parser の早見表、このガイドはクラス → 責務・所有・呼び出し連鎖の解説です。
 
 この文書群が説明せずに使う前提知識は 3 つです — **C++20**(concept、`if constexpr`、fold 式、`consteval`、`<=>`)、**Vulkan の基礎**(instance / device / queue / swapchain / descriptor / pipeline がそれぞれ何であるか)、**ECS の一般概念**(entity と component を分けて持ち、system がその組み合わせを走査する、という考え方)。この 3 つ以外の一般知識は、本文の側に説明を添える方針です。
 
@@ -83,93 +112,4 @@ Pelican が「こう呼んでいる」基本語(scene、asset、feature、render
 - `型名::関数 → file.cpp#L100` の形式のリンクは主要実装へ飛びます。
 - 「仕様として読む」リンクは対応する [`test/`](../../test) のテストへ飛びます。
 
-行番号はリファクタで必ずずれます。ずれたリンクは「無いリンク」より悪い(黙って無関係な
-コードを指すため)ので、[`tools/doclink.py`](../../tools/doclink.py) が追従させます。
-
-```bash
-uv run tools/doclink.py check
-```
-
-インタプリタは uv がスクリプト冒頭の宣言から自前で用意するので、システムに Python を
-入れる必要はありません。依存も無いので素の `python tools/doclink.py` でも動きます。
-
-`check` は現状を報告するだけ、`update` が行番号を書き直します。追従の鍵は行番号ではなく
-**アンカー**で、二通りあります。
-
-- **シンボル** — リンク文字列が `` `Renderer::render()` `` のような識別子なら、対象ファイル中の
-  **定義**を探し直します。`DECLARE_MODULE(Foo)` や `class PELICAN_API Foo` といった
-  このリポジトリ固有の宣言の形も知っています。
-- **台帳** — リンク文字列が識別子でないとき(ファイル名、日本語、`#L123` 自体)は、
-  [`docs/link_anchors.json`](../link_anchors.json) が**その行の本文を憶えて**おり、
-  次回はその本文を探し直します。
-
-どちらでも決められないときは書き換えず、名指しで報告して終わります。候補が等距離に
-2 つあるようなときに勘で選ばないための設計です。
-
-### 追従では拾えない 2 種
-
-`check` が見るのは「リンクがアンカーの上に居るか」だけです。アンカーを離れないまま
-参照が嘘になる道が 2 つあり、そちらは `audit` が見ます。
-
-```bash
-uv run tools/doclink.py audit
-```
-
-- **最初から違う行にアンカーを取ってしまったもの** — 追従は健全に働き続けるのに、
-  着地点がずっと間違っています。空行や閉じ括弧を指しているもの、ラベルが名指しした
-  識別子が対象の前後 3 行に無いものを報告します。
-- **消えた関数を説明している本文** — リンクが正しいファイルの正しい行を指していても、
-  説明している関数が改名・削除されていれば無意味です。`` `foo()` `` 形式の記述を
-  ソース全体の識別子と突き合わせます。
-
-**第10章は 2 段構えです。** 先発の 73 項目は markdown リンクではなく
-`` `symbol()`(175 行) `` の形で 227 箇所を引用しており、9 割はファイルを文脈に依存します。
-全部リンクにすると解説が読めなくなるため、追従の代わりに章の冒頭で基準コミットを宣言する
-方を採っています。2026-09-04 に足した 70 項目は「使用場所」の行にリンクをまとめる書式で、
-こちらは `doclink.py` の追従対象です。`audit` の識別子検査は書式に依存しないので、**消えた関数の説明は
-第10章でも検出されます**。
-
-どちらも**人が判断して直すもの**なので、`update` のような自動修正はありません。
-外部 API や「かつて存在した」という意図的な言及は
-[`docs/doc_audit_allowlist.txt`](../doc_audit_allowlist.txt) に理由付きで登録します。
-**登録した名前がソースへ復活すると audit が落ちます** — 免除が腐って溜まらないようにするためです。
-
-commit 時に自動で走らせるには:
-
-```bash
-git config core.hooksPath tools/hooks
-```
-
-フックは**ステージ済みで、かつ未ステージの変更を持たない**文書だけを書き換えます
-(`git add` が無関係な編集を巻き込まないため)。`--no-verify` で迂回できます。
-
-## 一枚で見た全体像
-
-```mermaid
-flowchart LR
-    Project["project.json / scene / assets / passes"]
-    Player["pelican_player\nCLI・起動"]
-    Core["pelican_core\n実行時モジュール"]
-    Pure["pelican_project\n純粋パース・検証"]
-    Game["project/code\nゲームSystem\npelican_game_logic (DLL)"]
-    ECS["ECS\nEntity・Chunk・System"]
-    Render["Rendering\nFrame graph・Shader"]
-    XR["OpenXR\nsession・composition"]
-    VK["Vulkan\nDevice・FrameTarget・GPU資源"]
-    Tools["pelican_cli / Studio / tests"]
-
-    Project --> Player
-    Project --> Pure
-    Player --> Core
-    Game -->|DLLとしてロード| Player
-    Core --> Pure
-    Core --> ECS
-    Core --> Render
-    Core --> XR
-    XR --> VK
-    Render --> VK
-    Tools --> Pure
-    Tools --> Core
-```
-
-大切なのは、`src/project` がGPUやモジュールコンテナに依存しない**形式ロジック**、`src/core` がそれを実行時オブジェクトへ結び付ける**エンジン本体**、`src/player` がプロセスの入口、という分担です。
+行番号リンクの保守(`update` → `check` → `audit`、アンカー台帳・監査・フックの扱い)は[マニュアル第10章 §10.10](../manual/10_tools.md#doclink-maintenance)にまとめています。

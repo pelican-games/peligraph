@@ -1,14 +1,8 @@
 # Pelican2 マニュアル
 
-対象: pelican2(HEAD=`82054c05`・2026-09-17、branch
-`codex/render-target-runtime-slice`)/ 初版 2026-07-10、WP64〜111 反映
-2026-07-16、WP112〜137 反映 2026-07-17、WP138〜179 の状態差分を
-2026-07-19 に同期、WP180〜238e(レンダラ再構築)を 2026-07-31、
-WP375c〜385(scene load transaction / game DLL ABI / 宣言 schema v3 /
-GPU lease)を 2026-09-04、**v0 の段(AG-0 〜 R-3 と Studio 側の N-1 〜 N-3 / N-5 / Q-1 / Q-1b。共通グラフ / 姿勢グラフ /
-package / 共有部品 / オフライン出力 / ノードキャンバスと自動操作面)を 2026-09-17** に反映
+最終確認: 2026-10-07(develop d975ee9c0)
 
-> ⚠ **章ごとに鮮度が違います。**各章の冒頭「対象:」行がその章の基準です。
+> 各章の冒頭「最終確認:」行に確認日とリビジョンを記載します。本文に残る過去の観測や未検証の範囲は、その節の注記を確認してください。
 > 現在の開発状況は [v1 開発計画](../v1_development_plan.md)、v0 の公開仕様は [凍結一覧](../v0_freeze.md) を参照してください。2026-10-01 に `develop` の `c6df4822` と照合し、用語と一部の仕様説明を訂正しています。
 > **WP239〜374(2026-08)は [第11章 §11.1](11_status.md) の WP 表に行として転記されていません** ——
 > WP 単位の仕様・履歴の参照先は [../implementation_plan.md](../implementation_plan.md) です。
@@ -39,7 +33,7 @@ Pelican2 の**使い方と設計を人間向けに解説する公式マニュア
 | [第9章 Web プロファイル](09_web.md) | サブセット原則、web ビューアでの開き方、シェーダ stem と WGSL、web 互換チェックリスト |
 | [第10章 ツールリファレンス](10_tools.md) | pelican_player 全 CLI(オフライン出力の `--start-time` を含む)、JSON-RPC 全メソッド(graph 系 6 本・package 2 本・共有部品 2 本を含む)、pelican_cli(`package` / `graph-catalog` を含む)、配布ビルド、Studio、テスト基盤、`tools/` の保守スクリプト |
 | [第11章 実装状況と文書マップ](11_status.md) | WP 全台帳、設計文書⇔章の対応表、既知の食い違い一覧、本マニュアルの更新ルール |
-| [第12章 コード読解ガイド](12_codemap.md) | **技術解説書**。リポジトリ地図、起動〜1フレームの追跡ルート、JSON→パーサ対応表、実装パターン(ソースへのジャンプリンク付き) |
+| [第12章 コード読解ガイド](12_codemap.md) | データ → parser の早見表と、起動〜1フレームの追跡ルート。リポジトリ地図・型の詳細は所有節へのリンクから読む |
 | [第13章 編集 RPC リファレンス](13_editor.md) | 実行中のシーンを編集する RPC の契約(オーサリング文書・チケット・undo/redo・プレビュー・保存)、**グラフの装着を編集する** RPC、ImGui のインスペクタ、Python クライアント |
 | [第14章 用語集](14_glossary.md#この用語集の使い方) | 本マニュアルに出る用語と記号の索引(WP / D0 / codec / transaction / JSON-RPC / `name@1` / 共通グラフ / pose / instance / package など。基本語だけなら [第1章 §1.0](01_overview.md)) |
 | [第15章 Studio の操作](15_studio.md) | Pelican Studio の panel ごとの操作(Inspector / Outliner / Materials / Assets / Graph / Frame Plan / Pass Editor / Render Features / Rendering settings / Ray layout / Layers / Problems / Play) |
@@ -48,13 +42,13 @@ Pelican2 の**使い方と設計を人間向けに解説する公式マニュア
 
 ## 読み方の目安
 
-- **初めての人**: 第1章 → 第2章 → 第3章 → 第4章 の順で、`pelican_cli project init` から動くものを作るのが最短です。
-- **Studio を使う人**: 第1章 → 第2章 → 第15章(panel ごとの操作)。操作が送る RPC の細部が要るときは第13章の編集 RPC リファレンス。
-- **ゲームを書く人**: 第7章・第8章。example の `playercontrol.cpp` が最小の完成形です。
+- **初めての人**: [第1章](01_overview.md) → [第2章](02_getting_started.md) → [第3章 §3.1〜§3.4](03_project_format.md#31-プロジェクトとは) → [第4章](04_scene_ecs.md)。`pelican_cli project init` で動くものを作り、プロジェクトの基本形・パス・アセットの置き場所を確認します。第3章の後半(宣言スキーマ・package・共有部品・移行など)は必要になったら読みます。
+- **Studio を使う人**: [第1章](01_overview.md) → [第2章](02_getting_started.md) → [第15章](15_studio.md)(panel ごとの操作)。概念・操作・RPC の対応は[通し表](#studio-operation-map)、RPC の契約は[第13章](13_editor.md)で調べます。
+- **ゲームロジックを書く人**: [第7章](07_input_ui.md) → [第8章](08_gameplay.md)。example の `playercontrol.cpp` が最小の完成形です。
 - **絵作り・シェーダ**: 第6章。JSON だけでパイプラインが組めます。
 - **ツール・自動化・CI**: 第10章。ヘッドレス + JSON-RPC が入口です。
 - **「これって使えるの?」と思ったら**: 第11章の WP 台帳とバッジを確認してください。
-- **エンジンのソースを読む人**: 第12章。どのファイルから読み始めるか・JSON がどこで読まれるかの地図です。
+- **コードを読む人**: [読解ガイド README](../source-code-guide/README.md) の全体図と読む順番から始めます。データ → parser の早見表は[第12章](12_codemap.md)、クラス → 責務と内部の呼び出し連鎖は読解ガイドで調べます。
 - **エディタ・自動化ツールを書く人**: 第13章。実行中のエンジンを外から編集する API の全体像です。
 - **グラフでパラメータや姿勢を動かす人**: 第6章 §6.17(ノード語彙)→ 第13章(装着の編集)→ 第8章 §8.13(姿勢)。実物は [projects/posegraph_demo](../../projects/posegraph_demo)。
 - **部品を配る・もらう人**: 第3章 §3.11(package)と §3.12(共有部品)。
@@ -72,3 +66,32 @@ Pelican2 の**使い方と設計を人間向けに解説する公式マニュア
 更新ルール（実装状況の表記、章の追加、食い違いの記録）は [第11章 §11.4](11_status.md) にあります。機能の変更時には該当する章を更新し、旧版の未実装一覧を現在の残件として再利用しないでください。
 
 v0 の統合・再検証・リリース手順は [凍結一覧](../v0_freeze.md) §5・§6 を参照してください。ここに掲載した過去のテスト件数は、現在のビルドの成功を示すものではありません。
+
+<a id="studio-operation-map"></a>
+
+## 概念 → 操作 → Studio の場所 → RPC → 履歴の行き先 → 反映の状態
+
+既存の所有節と操作説明を結ぶ通し表です。RPC の引数・戻り値・拒否条件はリンク先を参照してください。履歴の行き先は[第15章の7対象の地図](15_studio.md#undo-map)に合わせています。RT records は共有の描画履歴に入り、文字入力中は Qt の文字の Undo が優先されます。空欄は既存文書から確定できない欄です。
+
+| 概念 | 操作 | Studio の場所 | RPC | 履歴の行き先 | 反映の状態 |
+|---|---|---|---|---|---|
+| [object・シーン](04_scene_ecs.md#41-シーンファイルの全体構造) | [object を置く](15_studio.md#153-outliner) | Outliner / Scene toolbar | [edit (`spawn`)](13_editor.md#編集操作operationsの-13-種) | Scene | [フレーム境界で適用](13_editor.md#133-編集の実行モデル--チケットとフレーム境界) |
+| [component](04_scene_ecs.md#42-コンポーネント一覧シーンに書けるものすべて) | [component を足す](15_studio.md#152-inspector) | Inspector / Add component... | [edit (`add_component`)](13_editor.md#編集操作operationsの-13-種) | Scene | [フレーム境界で適用・Save で保存](13_editor.md#133-編集の実行モデル--チケットとフレーム境界) |
+| [material](06_rendering.md#67-マテリアルm1m35--wp586870767883) | [material を作る](15_studio.md#154-materials) | Materials / New material… | [create_material](13_editor.md#material-文書を読み書きする) |  | [live / 再起動待ち / unusable](13_editor.md#material-文書を読み書きする) |
+| [material の値・surface](06_rendering.md#67-マテリアルm1m35--wp586870767883) | [material を編集する](15_studio.md#154-materials) | Materials | [edit_material](13_editor.md#material-文書を読み書きする) | Materials | [live / rebuilt / 再起動待ち / unusable](13_editor.md#material-文書を読み書きする) |
+| [object ごとの material](06_rendering.md#67-マテリアルm1m35--wp586870767883) | [選んだ object に割り当てる](15_studio.md#154-materials) | Inspector / Material / This object | [set_object_material](13_editor.md#material-文書を読み書きする) | Scene | [フレーム境界で適用](13_editor.md#material-文書を読み書きする) |
+| [model 全体の material](06_rendering.md#67-マテリアルm1m35--wp586870767883) | [同じ model 全体に割り当てる](15_studio.md#154-materials) | Inspector / Material / Every model | [bind_material](13_editor.md#material-文書を読み書きする) | Inspector の Material 行 | [live / 再起動待ち / unusable](13_editor.md#material-文書を読み書きする) |
+| [pass](06_rendering.md#62-rendering-config-のスキーマ) | [pass を足す](15_studio.md#158-frame-plan) | Frame Plan / Add pass…・Add material pass…（graph root は Graph palette） | [add_authored_pass / edit_graph_document](13_editor.md#レンダー設定を編集する) | 描画（graph root の node は Graph） | [フレーム境界で世代公開 / 契約変更は再起動待ち](13_editor.md#render-edit-sequence) |
+| [render target](06_rendering.md#render_targets) | [render target を足す](15_studio.md#158-frame-plan) | Frame Plan / New render target…（Graph からも同じ form） | [edit_render_targets](13_editor.md#レンダー設定を編集する) | 描画 | [フレーム境界で世代公開 / 契約変更は再起動待ち](13_editor.md#render-edit-sequence) |
+| [共通グラフの node](06_rendering.md#617-共通グラフのノード語彙) | [node を置く](15_studio.md#156-graph-タブ) | Graph / Add node…・palette | [edit_graph_document (`add_node`)](13_editor.md#グラフの装着を編集する) | Graph | [フレーム境界で世代公開 / 契約変更は再起動待ち](13_editor.md#render-edit-sequence) |
+| [共通グラフの接続](06_rendering.md#617-共通グラフのノード語彙) | [node を繋ぐ](15_studio.md#156-graph-タブ) | Graph / sockets | [edit_graph_document (`connect`)](13_editor.md#グラフの装着を編集する) | Graph | [フレーム境界で世代公開 / 契約変更は再起動待ち](13_editor.md#render-edit-sequence) |
+| [fold group](13_editor.md#レンダー設定を編集する) | [fold / 検査する](15_studio.md#156-graph-タブ) | Graph / fold group | [fold_nodes / verify_fold](13_editor.md#レンダー設定を編集する) | 描画（Graph タブの送信順で選択） | [宣言直後は unverified・検査成功で verified を保存](13_editor.md#レンダー設定を編集する) |
+| [frame_node_order](06_rendering.md#pass-の順を指定する--frame_node_order) | [Frame Plan の順序を変える](15_studio.md#158-frame-plan) | Frame Plan / Order… | [edit_frame_node_order](13_editor.md#レンダー設定を編集する) | 描画 | [フレーム境界で世代公開 / 契約変更は再起動待ち](13_editor.md#render-edit-sequence) |
+| [ray layout・bindings](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383) | [ray layout を編集する](15_studio.md#1512-ray-layout) | Rendering settings / Ray layout | [edit_ray_layout / edit_batch](13_editor.md#レンダー設定を編集する) | 描画 | [commit 時に組み直し / layout mode 変更は再起動待ち](13_editor.md#render-edit-sequence) |
+| [procedural records](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383) | [RT records を編集する](15_studio.md#1512-ray-layout) | Ray layout / records | [edit_ray_layout (`procedural_records`)](13_editor.md#レンダー設定を編集する) | RT records（共有の描画履歴） | [commit 時に runtime を組み直す](13_editor.md#レンダー設定を編集する) |
+| [project の監視・store 宣言](03_project_format.md#34-asset-store--置き場所の間接化実装済みwp55) | [project 設定を変える](15_studio.md#155-assets) | Assets / Reload when saved outside・Track asset contents… | [edit_project_settings](13_editor.md#projectjson-の宣言を書き換える) | Assets | [その場で反映 / 反映失敗や module 不在は再起動待ち](13_editor.md#projectjson-の宣言を書き換える) |
+| [Play セッション](13_editor.md#再生のセッション) | [Play / Stop](15_studio.md#1517-play) | Play toolbar | [set_play_state](13_editor.md#再生のセッション) |  | [edit / playing / paused・Stop で開始前の scene と履歴を復元](13_editor.md#再生のセッション) |
+| [シーンの保存](03_project_format.md#39-シーンドキュメントと保存エディタ経路wp149158166168) | [保存する](15_studio.md#151-project-を作る開く保存する) | Save / 未保存変更の Save・Discard・Cancel | [save_scene](13_editor.md#save_scene) |  | [保存のみ・シーンは hot reload 対象外](13_editor.md#save_scene) |
+| [可逆な編集・同時編集](13_editor.md#134-同時編集--actor-と-revision) | [Undo / Redo](15_studio.md#1514-履歴と-undo) | focus のある panel / Undo ボタン・Edit menu | [undo / redo](13_editor.md#セッションと編集)、[restore_render_documents](13_editor.md#render-文書を丸ごと読む戻す--get_render_documents--restore_render_documents)、[graph の逆操作](13_editor.md#グラフの装着を編集する)、[material の逆操作](13_editor.md#material-文書を読み書きする)、[project の逆操作](13_editor.md#projectjson-の宣言を書き換える) | Scene / Graph / 描画 / Materials / Inspector の Material 行 / Assets / RT records（focus・対象で分岐） | [元の編集の反映経路で戻す・再起動が要る描画編集は戻すと再起動](13_editor.md#render-edit-sequence) |
+
+material の新規作成、Play、保存を単独で行ったときの履歴の行き先は空欄です。Play の Stop による履歴の復元や Keep の Undo 項目は[第15章 §15.17](15_studio.md#1517-play)、Undo の選択と外部再読込の区切りは[§15.14](15_studio.md#undo-map)を参照してください。

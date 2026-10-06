@@ -8182,6 +8182,7 @@
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/render_pass_executor.cpp|`RenderPassExecutor::execute()`|#1": "void RenderPassExecutor::execute(const FrameRenderContext &frame, const CompiledPass &pass,",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/render_pass_executor.cpp|`RenderPassExecutor` の特別分岐": "if (pass_def.isUi()) {",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/render_pass_executor.cpp|専用分岐": "void validateViewExecution(",
+    "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/render_target_layout_tracker.cpp|`RenderTargetLayoutTracker::memoryDependency()`": "void RenderTargetLayoutTracker::memoryDependency(",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/render_target_layout_tracker.cpp|`RenderTargetLayoutTracker`": "void RenderTargetLayoutTracker::transition(",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/render_target_layout_tracker.cpp|`forgetRecreatedPersistentImage()`": "void RenderTargetLayoutTracker::forgetRecreatedPersistentImage(",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/render_target_layout_tracker.cpp|`makeTransitionInfo()`": "VulkanUtils::ChangeImageLayoutInfo makeTransitionInfo(",

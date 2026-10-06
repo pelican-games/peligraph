@@ -1,7 +1,6 @@
 # 第14章 用語集
 
-対象: pelican2(HEAD=`82054c05`・2026-09-17、branch
-`codex/render-target-runtime-slice`)/ このマニュアルはコードを正とする
+最終確認: 2026-10-07(develop d975ee9c0)
 
 用語・仕様説明の再照合: 2026-10-01（`develop` / `c6df4822`）。主な訂正内容は [確認記録](../documentation_review_2026-10-01.md) にあります。
 

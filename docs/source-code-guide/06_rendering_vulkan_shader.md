@@ -1,5 +1,7 @@
 # 第6章 描画・Vulkan・Shader
 
+最終確認: 2026-10-07(develop d975ee9c0)
+
 [索引へ戻る](README.md) / [前章](05_gameplay_and_services.md) / [次章](07_tools_rpc_tests.md)
 
 この章は、設定ファイルに書かれた「この順で、この画像へ描く」が、最終的に Vulkan のコマンドへ変換されるまでを追います。Pelican の描画層は、単純な `Renderer` 1 クラスではありません。まず地図として、次の 5 層を頭に置いてください。
@@ -1264,9 +1266,9 @@ layout transition は単なる状態ラベルではありません。[`makeTrans
 
 ### 現在の image barrier の注意点
 
-compute target は [`transitionResourcesForDispatch()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1782) で `eGeneral` へ遷移します。しかし tracker は old layout と new layout が同じなら [`transition()` から早期 return](../../src/core/vkcore/render_target_layout_tracker.cpp#L182) します。また frame graph の明示 RAW barrier 実装は [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1951) で、buffer でなければ return します。
+compute の image resource は [`transitionResourcesForDispatch()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1782) で、sampled のみなら `eShaderReadOnlyOptimal`、storage を含むなら `eGeneral` を選びます。現在の layout が同じなら [`RenderTargetLayoutTracker::memoryDependency()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L206)、異なれば `transition()` を呼びます。同じ `GENERAL` のまま使う image にも、layout を保ったまま stage / access の memory dependency を発行します。
 
-したがって調査時点では、同じ storage image を `GENERAL` のまま連続 compute task で write → read する場合、graph 上の順序は付きますが、その依存専用の image memory barrier は発行されません。layout が変わる compute → render などとは事情が違います。これは「設定に edge を書けば全 resource の同期も完全」という意味ではない、現在実装上の制約です。
+`transition()` 自体が同じ layout で早期 return することと、compute dispatch 前の同期が省略されることは同義ではありません。buffer の RAW barrier は別経路の [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetaskcontainer.cpp#L1951) が担当します。
 
 > 🧩 **難所 — 色の経路は型で申告し、文字列は RPC の端だけ**([`OffscreenFrameTarget::OffscreenFrameTarget()`](../../src/core/vkcore/offscreenframetarget.cpp#L98) / [`caps()`](../../src/core/vkcore/offscreenframetarget.cpp#L376))
 >
@@ -1314,7 +1316,7 @@ buffer は storage buffer、render target は storage image でなければ [`cr
 [`FrameGraphResourceContainer::registerBuffers()`](../../src/core/renderingpass/framegraphbuffercontainer.cpp#L33) は `size > 0` の buffer を一度だけ device local memory に確保します。
 
 - 文字列だけ、または size 0 の宣言は graph の既知名にはなりますが、実 buffer を確保しません。
-- `lifetime: persistent|transient` は [`parseFrameGraphBufferDefinitionsFromJson()`](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L1156) で読みますが、登録側は調査時点で `persistent` を参照していません。transient の frame 単位 recycle は未実装です。✅PS-1 の graph の lowering は、once の node が書く・読む buffer の `lifetime` を見ます(書かなければ persistent。`transient` を書いた buffer に once が書くと `graph.once_writes_transient@1`)。
+- `lifetime: persistent|transient` は [`parseFrameGraphBufferDefinitionsFromJson()`](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L1156) で読みますが、登録側は `persistent` を参照していません。transient の frame 単位 recycle は未実装です。✅PS-1 の graph の lowering は、once の node が書く・読む buffer の `lifetime` を見ます(書かなければ persistent。`transient` を書いた buffer に once が書くと `graph.once_writes_transient@1`)。
 - `host_source: "runtime_f32"` の buffer だけが `initial_f32` を持てます([`FrameGraphBufferDefinition::initial_f32`](../../src/core/renderingpass/framegraphbufferdefinition.hpp#L84))。parse は **float 配列であること**と、**宣言 `size` の 4 byte ごとにちょうど 1 要素**であることを検査し、どちらか外れると名前付きで落とします([`initial_f32` の parse](../../src/core/renderingpass/computetaskdefinitionjson.cpp#L1223))。登録時には確保した CPU 側の値列へ [`std::copy` で先頭から書き込み](../../src/core/renderingpass/framegraphbuffercontainer.cpp#L96)、dirty を立てて GPU へ運びます。空なら 0 — この機能が入る前の全 buffer の挙動です。要点は**最初のフレームが未初期化値で描かれない**ことで、`render.scalar` の書き込みが届くのはそれを publish したフレームからです。文書に直接書くこともできますが、feature の scalar から導出される場合は authored な `initial_f32` は拒否されます(§6.1 の難所「`binding: buffer` は 5 つの宣言が噛み合って初めて成立する」)。
 - `dispatch.groups_from: {"port": "..."}` は typed image resource port の選択 mip extent と shader reflection の `local_size` から `ceil(extent / local_size)` を導出します。render target resize と compute shader reload の rebind 時にも再計算されます。
 - `dispatch.local_size` は受理しません。workgroup size の authority は compute shader の `layout(local_size_*=...)` と SPIR-V reflection です。
@@ -1333,7 +1335,8 @@ buffer は storage buffer、render target は storage image でなければ [`cr
 | `dispatch.groups_from: {"port":"..."}` | 済 | typed image port の選択 mip extent と shader reflection の local size から direct group 数を導出。resize/rebindでも再計算 |
 | `dispatch.local_size` | 検出 | 二重 authority を避けるため明示 error。shader の `layout(local_size_*=...)` が authority |
 | `schedule: per_frame` | 済 | 対応 |
-| その他 schedule | 検出 | 明示 error |
+| `schedule: per_view` / `once` | 済 | view ごとの実行 / once の実行として登録 |
+| それ以外の schedule | 検出 | 明示 error |
 | buffer `size > 0` | 済 | device-local storage buffer を一度確保 |
 | buffer `size == 0` | 済 | graph 名だけ。実 buffer はなし |
 | buffer `command_layout: compute_dispatch` | 済 | 12 byte以上を検証し`INDIRECT_BUFFER` usageを付与 |
@@ -1476,7 +1479,7 @@ vertex と fragment の reflection は [`merge()`](../../src/core/shader/shaderr
 | 2 | `PELICAN_SET_MATERIAL` | material texture/data |
 | 3 | `PELICAN_SET_FREE` | 自由枠 |
 
-set の意味は執筆時点から不変ですが、binding 定数は増えています([`pelican_sets.hpp` 内](../../src/core/shader/pelican_sets.hpp#L26)): `FRAME_UBO=0` / `OBJECT_BUFFER=1` / `LIGHT_UBO=2` / `PREVIOUS_OBJECT_BUFFER=3`(TAA velocity 用)/ `MATERIAL_BUFFER=6` のほか、skin palette、morph 系、material instance override 系の binding があります。
+binding 定数は各 set の用途に応じて定義されています([`pelican_sets.hpp` 内](../../src/core/shader/pelican_sets.hpp#L26)): `FRAME_UBO=0` / `OBJECT_BUFFER=1` / `LIGHT_UBO=2` / `PREVIOUS_OBJECT_BUFFER=3`(TAA velocity 用)/ `MATERIAL_BUFFER=6` のほか、skin palette、morph 系、material instance override 系の binding があります。
 
 push constant は engine 64 bytes + shader 64 bytes、合計128 bytesを契約値としています。実際の pipeline layout は reflection された range から [`createPipelineLayout()`](../../src/core/shader/pipelinefactory.cpp#L557) が作ります。
 
@@ -1732,7 +1735,7 @@ teardown の最終段は phase で分岐します。
 
 buffer/image memory は VMA を使います。[`BufferWrapper`](../../src/core/vkcore/buf.hpp#L7) と [`ImageWrapper`](../../src/core/vkcore/image.hpp#L8) が Vulkan resource と VMA allocation を同じ struct に持ち、RAII で一緒に解放します。
 
-調査時点の compute task は独立 compute submission ではなく、[`FrameRenderContext::cmd_buf`](../../src/core/vkcore/frametarget.hpp#L23) へ dispatch を記録します。この command buffer は [`allocCmdBufs()`](../../src/core/vkcore/core.cpp#L1299) が graphics pool/queue 用に作るものです。したがって frame graph compute は async compute pipeline ではなく、graphics queue 上の直列 compute と理解するのが正確です。
+compute task は独立 compute submission ではなく、[`FrameRenderContext::cmd_buf`](../../src/core/vkcore/frametarget.hpp#L23) へ dispatch を記録します。この command buffer は [`allocCmdBufs()`](../../src/core/vkcore/core.cpp#L1299) が graphics pool/queue 用に作るものです。したがって frame graph compute は async compute pipeline ではなく、graphics queue 上の直列 compute と理解するのが正確です。
 
 ### multiDrawIndirect、drawIndirectFirstInstance、shaderDrawParameters(gl_BaseInstance)の使用箇所 {#background-usage-02}
 

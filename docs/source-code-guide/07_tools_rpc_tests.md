@@ -1,5 +1,7 @@
 ﻿# 第7章 ツール・RPC・テスト
 
+最終確認: 2026-10-07(develop d975ee9c0)
+
 [索引へ戻る](README.md) / [前章](06_rendering_vulkan_shader.md) / [次章](08_class_interface_index.md)
 
 この章では、engine 本体の周辺にある3つの入口を扱います。

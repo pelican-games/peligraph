@@ -1,6 +1,6 @@
 # 第13章 編集 RPC リファレンス
 
-最終確認: 2026-10-07(develop 8c37c92a9)
+最終確認: 2026-10-07(develop d975ee9c0)
 
 Studio の panel ごとの操作は [第15章 Studio の操作](15_studio.md) にあります。この章は Studio と外部のツールが呼ぶ編集 RPC の契約です。
 

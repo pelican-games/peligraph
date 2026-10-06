@@ -1,6 +1,6 @@
 # 第7章 入力と UI
 
-対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
+最終確認: 2026-10-07(develop d975ee9c0)
 
 ## この章で学ぶこと
 
@@ -194,7 +194,7 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
 
 > ⚠ **破壊的変更(WP87):** 旧 `ui_overlay.json` の `images` 配列形式は**削除されました**(パースエラーになります)。現行の UI は `pelican.ui` v1 ドキュメントです。ファイル名は従来どおり `basic_config.ui_config_json` で指します。
 
-2026-07-10 時点で「レビュー Reject 中・実装ゼロ」(= 設計レビューで差し戻され、コードが 1 行も無い状態。レビュー記録は [../design_reviews/](../design_reviews/))だった `pelican.ui` は、レビュー条件を折り込んだ v8 設計で承認され、U0(CPU 基盤)→ U1(GPU 描画)→ U2(対話ウィジェット)まで実装済みです。
+`pelican.ui` v1 の CPU 基盤・GPU 描画・対話ウィジェットは実装済みです。
 
 ### 有効化(2 段)
 

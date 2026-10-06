@@ -1,10 +1,8 @@
 # 第12章 コード読解ガイド(技術解説書)
 
-対象: pelican2(2026-07-21 に全域再測定、2026-09-04 に scene transaction / game DLL ABI /
-schema v3 / GPU lease の新入りを追記、2026-09-17 に v0 で入った共通グラフ / package /
-rendering config の節 / オフライン時刻の行を追記。HEAD=`82054c05`)/ このマニュアルはコードを正とする
+最終確認: 2026-10-07(develop d975ee9c0)
 
-この章は他章と目的が違います。第1〜11章が「エンジンを**使う**ための説明書」なのに対し、この章は「エンジンの**中身を読む**ための地図」です。冒頭の「このマニュアルはコードを正とする」は、**設計文書と実装が食い違ったら実装の挙動を本文に書き、食い違いそのものは [第11章 §11.3](11_status.md) に台帳化する**、という本マニュアル全体の原則です([第0章](00_index.md))。より深いクラス単位の解説(ライフサイクル・インターフェース索引・落とし穴集)は [../source-code-guide/](../source-code-guide/README.md) —— アーキテクチャ / ランタイム / ロード / ECS / ゲームプレイ / 描画 / ツールと RPC の 7 章に、クラス索引(第8章)・落とし穴集(第9章)・背景知識(第10章)・レイトレ(第11章)が続く構成で、索引は同ディレクトリの README です。本章は入口・概観、詳細はそちらへ。すべての節にソースへの相対リンクを張ってあるので、エディタ(VS Code 等)や GitHub 上でクリックしながら読み進められます。
+この章は他章と目的が違います。第1〜11章が「エンジンを**使う**ための説明書」なのに対し、この章は「エンジンの**中身を読む**ための地図」です。「このマニュアルはコードを正とする」とは、**設計文書と実装が食い違ったら実装の挙動を本文に書き、食い違いそのものは [第11章 §11.3](11_status.md) に台帳化する**、という本マニュアル全体の原則です([第0章](00_index.md))。より深いクラス単位の解説(ライフサイクル・インターフェース索引・落とし穴集)は [../source-code-guide/](../source-code-guide/README.md) —— アーキテクチャ / ランタイム / ロード / ECS / ゲームプレイ / 描画 / ツールと RPC の 7 章に、クラス索引(第8章)・落とし穴集(第9章)・背景知識(第10章)・レイトレ(第11章)が続く構成で、索引は同ディレクトリの README です。本章は入口・概観、詳細はそちらへ。すべての節にソースへの相対リンクを張ってあるので、エディタ(VS Code 等)や GitHub 上でクリックしながら読み進められます。
 
 > **リンクの約束:** ファイルリンクはリファクタに強いのでそちらを基本とし、特に重要な箇所のみ行アンカー(`#L212` — GitHub で有効)を付けています。行番号は **2026-07-21 に再測定**したものです(WP138〜179 で大きく動いたため、この時点で追随できなかったアンカーはファイルリンクに落として関数名だけを残しています)。ずれていたら添えてある関数名で探してください。
 
@@ -18,80 +16,11 @@ rendering config の節 / オフライン時刻の行を追記。HEAD=`82054c05`
 
 ## 12.1 リポジトリ地図
 
-```
-pelican2/
-  src/
-    core/        … エンジン本体(静的ライブラリ pelican_core)
-    project/     … 純ロジック層 pelican_project(パーサ・検証。GPU/Vulkan 非依存)
-    player/      … pelican_player.exe(main 1 ファイル)
-    devcli/      … pelican_cli.exe(11 サブコマンド系統: assets / audio / bake-camera / image / import /
-                   dist-config / package / project / dump-lowered-material / vrm /
-                   graph-catalog)
-    devstudio/   … pelican_studio.exe(Qt Widgets。30,449 行。静的ライブラリ 8 本 + exe)
-                   view/ は pelican_studio_view としてまとめ、production とテストが同じものをリンクする
-    spvlink/     … pelican-spv-link 単体 CLI(experimental、PELICAN_WITH_SPIRV_LINK=ON時)
-  projects/
-    example/       … 実例プロジェクト(全 JSON 形式の生きた見本。rendering config は
-                     `pelican.graph` root)
-    sprite_demo/   … 2D 横スクロールの vertical slice(sprite / pixel policy / platformer)
-    animgraph_demo/ … アニメーショングラフのデモ(歩き↔走り + ジャンプ割込み)
-    posegraph_demo/ … 共通グラフの `graph.instance` + `pose.*` で姿勢を駆動するデモ。
-                     rendering config は `pelican.graph` root で、project.json に
-                     `requires: ["animation"]` を持つ
-    pathtrace_demo/ … パストレーシングのデモ
-    raytracing_demo/ … ray query / RT pipeline のデモ(手続き球。`pelican.ray_group_layout` v3)
-    vrm_xr_demo/   … VRM キャラ + OpenXR デモ(flat-first。表情・視線・一人称)
-  test/          … Catch2 単体 + golden + fixtures + run_*.cmake/.ps1 結合テスト
-                   + ci/(CPU ゲートと機械 gate の Python)
-                   + gpu_lease_run.cpp(GPU テストを直列化する launcher。WP385)
-  tools/         … 開発者向けスクリプト(pelican_rpc.py = 薄型 JSON-RPC クライアント /
-                   worktree.sh / codex_bg_*.sh / public_api_inventory.py / doclink.py。
-                   一覧は[第10章](10_tools.md) §10.10)
-  .github/
-    workflows/   … GitHub Actions(cpu-gate.yml = CI0 / configuration-smoke.yml = CI1)
-  docs/          … 設計文書(design_*.md)・指示書・本マニュアル・ci.md
-  experiments/   … スパイク(spvlink 等。本体にリンクされない)
-```
-
-### src/core のサブモジュール一覧(下層 → 上層の順)
-
-| ディレクトリ | 役割 | まず開くファイル |
-|---|---|---|
-| [os/](../../src/core/os) | ウィンドウ(GLFW)・入力スナップショット・アクション層 | [inputstate.hpp](../../src/core/os/inputstate.hpp), [actionmap.hpp](../../src/core/os/actionmap.hpp) |
-| [vkcore/](../../src/core/vkcore) | Vulkan 低層(デバイス・スワップチェーン・RT・実行)+ GPU デバッグ/計測(debug utils・VRAM 診断)+ preview 実行 | [core.hpp](../../src/core/vkcore/core.hpp), [renderer.hpp](../../src/core/vkcore/renderer.hpp), [debugutils.hpp](../../src/core/vkcore/debugutils.hpp) |
-| [shader/](../../src/core/shader) | シェーダ基盤(コンパイル→リフレクション→ライブラリ→パイプライン) | [shaderlibrary.hpp](../../src/core/shader/shaderlibrary.hpp) |
-| [renderingpass/](../../src/core/renderingpass) | rendering config のパーサ群 + フレームグラフ(プランナ/ランタイム)+ preview グラフ variant | [frameplanner.hpp](../../src/core/renderingpass/frameplanner.hpp), [previewgraph.hpp](../../src/core/renderingpass/previewgraph.hpp) |
-| [renderer/](../../src/core/renderer) | パス種別ごとの描画実装・カメラ・debug 描画・UI 描画 | [materialrender.hpp](../../src/core/renderer/materialrender.hpp), [camera.hpp](../../src/core/renderer/camera.hpp) |
-| [fullscreenpass/](../../src/core/fullscreenpass) | fullscreen パスのコンテナ | [fullscreenpasscontainer.hpp](../../src/core/fullscreenpass/fullscreenpasscontainer.hpp) |
-| [loader/](../../src/core/loader) | project.json・パス解決・シーンバインド・画像読み込み・**コンポーネント受理仕様(codec)**・authoring シーン文書・`.vrma` デコード・**scene load トランザクション**(✅WP380a〜e)+ **共通グラフのシーン側ランタイム**(instance owner の解決、評価状態、publish snapshot) | [basicconfig.cpp](../../src/core/loader/basicconfig.cpp), [pathresolver.hpp](../../src/core/loader/pathresolver.hpp), [componentcodec.hpp](../../src/core/loader/componentcodec.hpp), [sceneload.hpp](../../src/core/loader/sceneload.hpp), [scenegraphruntime.cpp](../../src/core/loader/scenegraphruntime.cpp) |
-| [ecs/](../../src/core/ecs) | ECS コア(chunk = 同じ archetype の entity を一定個数ずつ区切った箱。[用語集](14_glossary.md#soa--chunk--archetype)。実体は userpublic/details/ecs 側)+ エンジン内部システム + アーキタイプ移行トランザクション + **builtin 登録の host 専用入口**(✅WP379a) | [core.hpp](../../src/core/ecs/core.hpp), [predefined/](../../src/core/ecs/predefined), [archetypemigration.hpp](../../src/core/ecs/archetypemigration.hpp), [enginecomponentregistrar.hpp](../../src/core/ecs/enginecomponentregistrar.hpp) |
-| [userpublic/](../../src/core/userpublic) | **ゲームコードに公開される唯一の API 面**(facade)。システム / イベント / **behavior** / 共通 field schema / **アニメーショングラフ評価器の実体** / **共通グラフの lowering 済み IR と評価器**(`valuegraph.*`)/ pose staging service ABI | [gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp), [behavior.hpp](../../src/core/userpublic/behavior.hpp), [animation/animgraph.cpp](../../src/core/userpublic/animation/animgraph.cpp), [valuegraph.hpp](../../src/core/userpublic/valuegraph.hpp), [animation/pose_staging_v1.hpp](../../src/core/userpublic/animation/pose_staging_v1.hpp) |
-| [appflow/](../../src/core/appflow) | フレームループ・時刻・フレームレート・終了処理 | [loop.cpp](../../src/core/appflow/loop.cpp) |
-| [phys/](../../src/core/phys) | 物理クエリ(raycast/overlap)と PhysWorld(`trigger:true` collider の `OverlapEnter` / `OverlapExit` 発行を含む) | [physquery.hpp](../../src/core/phys/physquery.hpp), [physworld.hpp](../../src/core/phys/physworld.hpp)(`PELICAN_WITH_PHYSICS=OFF` 時は `physworld_stub.cpp` / `physicsservice_stub.cpp`) |
-| [light/](../../src/core/light) / [material/](../../src/core/material) / [model/](../../src/core/model) / [asset/](../../src/core/asset) | ライト・マテリアル・glTF/VAT・モデル資産の各コンテナ | [gltf.cpp](../../src/core/model/gltf.cpp), [vatformat.hpp](../../src/core/model/vatformat.hpp) |
-| [playback/](../../src/core/playback) | transform_seq / VAT の再生 | [seqplayer.cpp](../../src/core/playback/seqplayer.cpp) |
-| [audio/](../../src/core/audio) | WAV / Ogg Vorbis 再生(miniaudio の device / offline、退避先の null バックエンド。Ogg Vorbis は同梱の stb_vorbis)と、形式の判定(拡張子と先頭 bytes)、グラフの voice の追従・decode の cache・10 秒を超える音の streaming。バックエンドの種類と名前(`device` / `offline` / `null`、起動時の名指しを読む `audioBackendKindFromName`、`audio.backend_unknown@1`)は audio OFF の build にもある header に分けてある(✅AU-3) | [audio.cpp](../../src/core/audio/audio.cpp), [audiobackendkind.hpp](../../src/core/audio/audiobackendkind.hpp) |
-| [animation/](../../src/core/animation) | アニメーション機構(ABI v1 jobs・アニメーションサービス = フェーズ実行)+ VRM Animation リターゲット + **共通グラフの姿勢経路**(`posegraph.*` = compile 済み定義、`posegraphruntime.*` = 評価器。`pose.*` op を評価するのはここ)。ただし **`pelican.anim_graph`(animation component が指す状態機械)の評価器の実体はここではなく** [userpublic/animation/animgraph.cpp](../../src/core/userpublic/animation/animgraph.cpp) 側(`animationservice.cpp` は `AnimationGraph::Internal::linkAnchor()` でリンク保持するだけ)。`PELICAN_WITH_ANIMATION=OFF` のときの顔は [animation_disabled.cpp](../../src/core/animation/animation_disabled.cpp) | [animationservice.hpp](../../src/core/animation/animationservice.hpp), [posegraphruntime.hpp](../../src/core/animation/posegraphruntime.hpp), [vrmaretarget.hpp](../../src/core/animation/vrmaretarget.hpp) |
-| [ui/](../../src/core/ui) | UI ランタイム(pelican.ui レイアウト・atlas) | — |
-| [imgui/](../../src/core/imgui) | ImGui 開発 UI + Plan Viewer + Object Tree / Inspector(編集可)/ Asset Browser(PELICAN_WITH_IMGUI) | [inspector.hpp](../../src/core/imgui/inspector.hpp), [assetbrowser.hpp](../../src/core/imgui/assetbrowser.hpp) |
-| [watch/](../../src/core/watch) | アセットホットリロード基盤(FileWatcher / ReloadService) | — |
-| [gamelogic/](../../src/core/gamelogic) | ゲームロジック DLL のロード・ホットリロード(G2)+ behavior アタッチメントアリーナ + **`LoadLibrary` 前の PE import 診断**(✅WP381/381a) | [behaviorarena.hpp](../../src/core/gamelogic/behaviorarena.hpp), [gamelogicimports.hpp](../../src/core/gamelogic/gamelogicimports.hpp) |
-| [renderdoc/](../../src/core/renderdoc) | RenderDoc の受動検出と F11 / RPC からのキャプチャ状態機械(PELICAN_WITH_RENDERDOC) | [renderdoccapture.hpp](../../src/core/renderdoc/renderdoccapture.hpp)(OFF 時は `renderdoccapture_stub.cpp`) |
-| [persistence/](../../src/core/persistence) | user:// 設定・セーブ(pelican.settings v1) | — |
-| [openxr/](../../src/core/openxr) | OpenXR(discovery / session / composition / viewspace / action / feature policy / mirror) | [openxrsession.hpp](../../src/core/openxr/openxrsession.hpp)。activation 判定は [xractivation.hpp](../../src/core/xractivation.hpp)、XR フレーム順序は [loop.cpp](../../src/core/appflow/loop.cpp) |
-| [communication/](../../src/core/communication) | stdio JSON-RPC サーバ + エディタ編集サービス(command / journal / preview / asset query)+ **rendering config 編集サービス**(`renderconfigeditor.*`: feature / pass / 共通グラフ / package)と**その永続化トランザクション**の別名(`renderconfigtransaction.hpp`。実体は MG-1 で `src/project/projectdocumenttransaction.*` へ移り、`project migrate` と共用。排他 create による committed marker)+ 移行の RPC(`projectmigrationrpc.*`: `plan_project_migration` / `apply_project_migration` と、入口で止まった `--rpc` player の移行専用 endpoint。MG-1)+ `get_status` のアニメーション欄(`animationstatus.*`)+ ウィンドウモード RPC ホスト | [rpcserver.cpp](../../src/core/communication/rpcserver.cpp), [editorcommandservice.hpp](../../src/core/communication/editorcommandservice.hpp), [renderconfigeditor.hpp](../../src/core/communication/renderconfigeditor.hpp), [renderconfigtransaction.hpp](../../src/core/communication/renderconfigtransaction.hpp), [projectdocumenttransaction.hpp](../../src/project/projectdocumenttransaction.hpp), [projectmigrationrpc.hpp](../../src/core/communication/projectmigrationrpc.hpp) |
-| [resources/](../../src/core/resources) | `engine://` 埋め込みリソースの実体(シェーダ・feature JSON・既定設定) | [features/](../../src/core/resources/features) |
-| 直下 | モジュール機構・ハンドル・ログ・起動設定 + **登録 owner の host 専用 API**(✅WP379a) | [container.hpp](../../src/core/container.hpp), [handle.hpp](../../src/core/handle.hpp), [launchconfig.hpp](../../src/core/launchconfig.hpp), [registrationownerhost.hpp](../../src/core/registrationownerhost.hpp) |
-
-※ この表に出てくる語: **codec**(コンポーネント受理仕様)= シーン JSON のコンポーネント 1 個を受理・検証して正規形へ直す変換器 / **authoring シーン文書** = 編集の正本としてメモリ上に持つシーン JSON(ディスクの実物とは別。[第13章](13_editor.md) §13.2)/ **トランザクション** = 準備した更新を全体として適用し、失敗時は巻き戻す単位。scene load は publish 後も activate で失敗でき、commit_metadata が確定点 / **descriptor set 規約** = シェーダに渡すリソースを set 番号で分ける取り決め(set 0 = frame / 1 = pass input / 2 = material / 3 = 自由枠。§12.6)。いずれも [用語集](14_glossary.md#この用語集の使い方) の基本語です。
+リポジトリの配置は[第1章 §1.3](01_overview.md#13-リポジトリの地図)、層ごとの役割は[§1.4](01_overview.md#14-レイヤ構造とレイヤ規則)を参照してください。
 
 ## 12.2 レイヤ構造と依存規則
 
-> **設計決定(レイヤ規則):** [vkcore/](../../src/core/vkcore) から [renderingpass/](../../src/core/renderingpass) 以上のレイヤ(**以上** = 依存の向きで上位。§12.1 の表は下層 → 上層の順なので、vkcore より下の行にあるもの)へ新たな include を追加しない。下位層は「何が起きたか」をフラグ/イベントで上に伝えるだけで、「どう対応するか」(編成)は上位層が行う。実例: リサイズ時、[swapchainframetarget.cpp](../../src/core/vkcore/swapchainframetarget.cpp) はフラグを立てるだけで、RT の再生成は上位の [renderer.cpp](../../src/core/vkcore/renderer.cpp) が行う。
-
-> **設計決定(純ロジック分離):** パース・検証・計画のコードは Vulkan・モジュール機構に依存しない plain クラスとして書き、GPU なしの単体テストを可能にする。その集積が [src/project/](../../src/project)(`pelican_project` ターゲット、WP44/WP248)で、依存は std + nlohmann_json(+ ハッシュ用 picosha2)のみ。[projectformat.cpp](../../src/project/projectformat.cpp)・[projectpathresolver.cpp](../../src/project/projectpathresolver.cpp)・[sceneformat.cpp](../../src/project/sceneformat.cpp)・[featurecompose.cpp](../../src/project/featurecompose.cpp)・[jsonrpc.cpp](../../src/project/jsonrpc.cpp)・[importmanifest.cpp](../../src/project/importmanifest.cpp)・[materialformat.cpp](../../src/project/materialformat.cpp) がここに住む。devstudio や外部ツールはこの層だけをリンクしてprojectを開ける。
-
-モジュール間の参照は 2 つの機構で行われます(→ §12.7):グローバル取得(`DECLARE_MODULE` / `GET_MODULE`)と、新しいコードで推奨される**依存構造体**([render_pass_dispatch.hpp](../../src/core/vkcore/render_pass_dispatch.hpp) の `XxxDependencies` が手本)。
+レイヤ構造と依存規則は[第1章 §1.4](01_overview.md#14-レイヤ構造とレイヤ規則)を参照してください。
 
 ## 12.3 起動から最初のフレームまで(追跡ルート)
 
@@ -183,40 +112,7 @@ pelican2/
 
 ### シーンロードのトランザクション(2026-09 の新しい住人)
 
-`SceneLoader::load()` は 1 つの executor になりました(✅WP380a〜e。利用者向けの説明は
-[第4章](04_scene_ecs.md) §4.3)。読み順:
-
-1. [`sceneload.hpp`](../../src/core/loader/sceneload.hpp) —— **型だけのヘッダ**(関数の実装を持たず、要求・結果・トレースの型定義だけを置く)。
-   [`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L222)(`Borrowed` = 既に commit 済みの
-   projection を借りる / `Owned` = 候補 metadata を `MetadataCommitToken` ごと持ち込む)、
-   結果の [`SceneLoadResult`](../../src/core/loader/sceneload.hpp#L188) =
-   `SceneLoadCommitted` | [`PreCommitFailure`](../../src/core/loader/sceneload.hpp#L138) |
-   [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174)、
-   固定長の [`SceneLoadPhaseTrace`](../../src/core/loader/sceneload.hpp#L40)(8 要素。溢れたら
-   `overflow` を立てる = **順序の観測を黙って捨てない**)、5 つの
-   [`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)(startup / rpc / pending / import v1 / v2)、
-   import 側の [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275)。
-2. [`scene.cpp`](../../src/core/loader/scene.cpp#L1650) の `SceneLoader::load` —— executor 本体。
-   段と commit 点は[第4章のロード図](04_scene_ecs.md#scene-load-transaction)、participant の順序は[読解ガイド](../source-code-guide/03_project_and_loading.md#scene-load-lanes)を参照してください。
-   `load()` 自身は 18 個の [`SceneLoadParticipant`](../../src/core/loader/sceneloadparticipant.hpp#L55) を
-   phase ごとの順序表で回す driver で、候補状態は `SceneLoadContext`、fault 注入は
-   [`SceneLoadMutationGate`](../../src/core/loader/sceneloadparticipant.hpp#L96) にあります。
-3. [`effecttransaction.hpp`](../../src/core/loader/effecttransaction.hpp#L27) —— behavior が
-   `onInit` / `onDestroy` で起こした副作用(audio / persistence / event / RNG / pending scene)の outbox。
-   [`EffectTransactionScope`](../../src/core/loader/effecttransaction.hpp#L212) は
-   **最初の game-DLL callback より前**に張られ、rollback なら捨て、commit なら flush します。
-   診断は固定 slot に enum + 整数で書く(`flush()` は noexcept かつ allocation-free)。
-4. [`sceneparticipantmanifest.hpp`](../../src/core/loader/sceneparticipantmanifest.hpp#L36) ——
-   **build から生成される participant の表**。誰が prepare / publish / rollback / retire を持つかと、
-   [公開 API 行の分類](../../src/core/loader/sceneparticipantmanifest.hpp#L50)を持ちます。
-   [`tools/public_api_inventory.py`](../../tools/public_api_inventory.py) がこの表と公開ヘッダを
-   双方向に突き合わせます([第10章](10_tools.md) §10.10)。
-5. [`sceneloadfault.hpp`](../../src/core/loader/sceneloadfault.hpp#L12) —— テスト専用の fault injection
-   (`phase × participant × mutation ID`)。**production では injector は nullptr** で、setter が
-   production archive に出ていないことを symbol gate が検査します。
-6. [`modelresourcerelease.hpp`](../../src/core/model/modelresourcerelease.hpp#L36) ——
-   失敗した候補の GPU 資源を返すときの `ReleaseReport`(**heap を使わない**固定 8 件 +
-   `overflow_count`)。`PreCommitFailure.release_errors` に集約されます。
+シーンロード・結果・副作用の型と責務は[読解ガイド第8章 §8.4](../source-code-guide/08_class_interface_index.md#84-projectpathdata-formatloading)を参照してください。
 
 ### 宣言 schema(v2 と v3)
 

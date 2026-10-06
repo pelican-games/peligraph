@@ -1,6 +1,6 @@
 # 第2章 ビルドと起動
 
-対象: pelican2(HEAD=`82054c05`・2026-09-17。2026-07-21 の全域調査に、v0 の段(`PELICAN_WITH_ANIMATION` / `requires` / `--start-time` / package)を 2026-09-17 に反映)/ このマニュアルはコードを正とする
+最終確認: 2026-10-07(develop d975ee9c0)
 
 ## この章で学ぶこと
 

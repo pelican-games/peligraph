@@ -24,7 +24,7 @@
 ## まずこれを読む(新規参加者・新エージェント)
 
 1. 本索引と上の規則
-2. [利用マニュアル](manual/00_index.md) の第 1 章と、コードを読むなら [読解ガイド](source-code-guide/README.md) の README
+2. [利用マニュアル](manual/00_index.md#読み方の目安)の読み方を選ぶ。初めての人は第1章 → 第2章 → 第3章 §3.1〜§3.4 → 第4章(第3章の後半は必要になったら)、Studio を使う人は第1章 → 第2章 → 第15章、ゲームロジックを書く人は第7章 → 第8章。コードを読む人は[読解ガイド README](source-code-guide/README.md)の全体図と読む順番から始め、データ → parser の早見表には第12章を使う
 3. [v1 開発計画](v1_development_plan.md)と[v0 凍結一覧](v0_freeze.md)。対象の WP の仕様・履歴は [実装指示書](implementation_plan.md)で確認する
 4. `design_project_format.md`([PF])— プロジェクトという単位の定義
 5. `adding_features.md` — 機能を足すときのレシピ集

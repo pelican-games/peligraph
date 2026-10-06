@@ -61,6 +61,7 @@ nav:
       - 15. Studio の操作: manual/15_studio.md
   - ソースコード読解ガイド:
       - 読み方: source-code-guide/README.md
+      - 0. 横断パターン: source-code-guide/00_cross_cutting_patterns.md
       - 1. 全体構造とビルド: source-code-guide/01_architecture_and_build.md
       - 2. 起動とフレーム更新: source-code-guide/02_runtime_lifecycle.md
       - 3. プロジェクトの読み込み: source-code-guide/03_project_and_loading.md

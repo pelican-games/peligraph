@@ -1,5 +1,7 @@
 # 第3章 プロジェクトデータとロード
 
+最終確認: 2026-10-07(develop d975ee9c0)
+
 [索引へ戻る](README.md) / [前章](02_runtime_lifecycle.md)
 
 **この章の地図**
