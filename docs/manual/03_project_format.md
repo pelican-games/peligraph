@@ -366,7 +366,7 @@ example の README にあった手書き sha256 表の役目は、この manifes
 
 ### 起動中の engine に宣言を足す(✅PJ-1)
 
-✅PJ-1(`89643cd7`)から、動いている engine に RPC で `asset_stores` と `hot_reload` を書かせ、engine を起こし直さずに反映できます。読むのは `get_project_settings {}`、書くのは `edit_project_settings {base_project_digest, hot_reload?, asset_stores?}` です。返り値と拒否の形は [第10章](10_tools.md) §10.3 の「project.json の宣言を書き換える」にあります([PJ-1 の書き込みと反映の handler](../../src/core/communication/projectsettingsrpc.cpp#L93))。
+✅PJ-1(`89643cd7`)から、動いている engine に RPC で `asset_stores` と `hot_reload` を書かせ、engine を起こし直さずに反映できます。読むのは `get_project_settings {}`、書くのは `edit_project_settings {base_project_digest, hot_reload?, asset_stores?}` です。返り値と拒否の形は [第13章](13_editor.md#projectjson-の宣言を書き換えるpj-1) §13.5 の「project.json の宣言を書き換える」にあります([PJ-1 の書き込みと反映の handler](../../src/core/communication/projectsettingsrpc.cpp#L93))。
 
 背景: `pelican_cli project init` の Blank / Standard の雛形は `assets/` を作るだけで、`asset_stores` も `hot_reload` も宣言しません。そのため hot reload の宣言(HW-1)と素材の照合(AV-1)は、project.json を手で書いて engine を起こし直さないと効きませんでした。2026-10-03 に利用者が「Studio のボタンで宣言を足す」形を承認し(HW-2 / AV-1s)、PJ-1 はその engine 側です。Studio の側は ✅HW-2s / AV-1s(`78737fdf`)の **Assets のドック**で、行ごとの Reload when saved outside が `hot_reload` を、**Track asset contents…** が `asset_stores.main = {mount: "assets/", manifest: "assets.manifest.json"}`(store が既にあれば manifest の無い store に manifest だけ)を、それぞれ 1 回の `edit_project_settings` で書き、ドックの Undo が答えの `previous` を送り返します([第13章](13_editor.md) §13.1 の「Studio の Assets のドック」)。
 

@@ -151,49 +151,41 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 
 | メソッド | params | 動作 |
 |---|---|---|
-| `get_status` | `{}` | `{instance_id, ray_tracing:{procedural_oracle, ray_layout_mode}, project_root, scene, frame, time, seed, renderdoc, diagnostics:{renderdoc:{...}}, debug_utils:{...}, vulkan_validation:{layer, available, enabled, synchronization, reason}, stores, input:{..., cursor:{requested, effective, embedded}}, reload:{...}, participants:{game_logic:{...}}, sprite:{...}, color:{...}, render:{published_frames}, startup:{...}, xr:{active, reference_space, floor_semantics, ...}, animation:{available, sinks:[{owner, node, source, cursors:[{clip, time_seconds, normalized_phase}], frame_revision, pose_hash, state?, transition?, root_delta?}]}, audio:{available, backend, fallback_reason?, voices:[{node, state, position_seconds}]}, assets_verification:{state, ...}, preview:{available, reason?}, render_pipeline:{state, root, refusal?}, problems:{revision, count, errors, warnings}}`(`ray_tracing.ray_layout_mode` は ✅RTL-1b で、このプロセスが起動した ray の layout の mode `"none"` / `"layout"`(まだ決まっていなければ `null`)。layout の有無を変えた編集を commit した後も、起こし直すまで前の値です。[第13章](13_editor.md) §13.5 の「ray の layout と bindings を読み書きする」。`preview` は ✅PV-1 で、単発 preview(`render_preview`)が今の世代で使えるか。使えなければ `reason: {code: "preview.unsupported_authoring@1", feature, target?, graph?, pass?, cause?, message}`。[第6章](06_rendering.md) §6.13 の PV-1 の段落。`render_pipeline` は ✅BS-1 で、project の構成で動いていれば `{state: "ready", root}`、`--render-fallback` の起動で構成が断られて fallback の世代で動いていれば `{state: "fallback", root, refusal: {code, ...fields, document?, message}}`([第6章](06_rendering.md) §6.16)。`problems` は ✅PB-1 で、`get_problems` の一覧の件数。`revision` は一覧が変わったときだけ増える([第6章](06_rendering.md) §6.16 の「engine が持つ今の問題の一覧」)。`assets_verification` は ✅AV-1 で、起動時の asset 検証の要約。形は下の「起動時の asset 検証の結果」。`animation` は AG-3a。animation module の無い build では `{available: false}` だけ。`audio` は AU-1 で、`backend` は `device` / `offline` / `null`、`voices` は ✅CT-1 で graph の `audio.playback` の node ごとの `idle` / `playing` / `paused` と音源の秒、audio を外した build では `{available: false}` だけ。`gpu_timing` の `nodes` は ✅ST-1 から最後の 1 frame の sample だけで、node ごとの平均は `node_averages`([第6章](06_rendering.md) §6.14)。[第8章](08_gameplay.md) §8.11)※rpc は常に flat 駆動のため `xr.active=true` は rpc からは観測できない |
-| `set_seed` | `{seed}` | 決定的乱数のシード設定 |
-| `set_time` | `{t}` | 仮想時刻の直接設定(dt=0) |
+| `get_status` | `{}` | `{instance_id, ray_tracing:{procedural_oracle, ray_layout_mode}, project_root, scene, scene_source:{...}, frame, time, play:{...}, seed, renderdoc, diagnostics:{renderdoc:{...}, scene_load:{...}}, debug_utils:{...}, vulkan_validation:{layer, available, enabled, synchronization, reason}, gpu_timing:{...}, memory:{...}, window_output:{...}, stores, input:{..., cursor:{requested, effective, embedded}}, reload:{...}, participants:{game_logic:{...}}, sprite:{...}, color:{...}, render:{published_frames}, startup:{...}, modules:{...}, xr:{active, reference_space, floor_semantics, ...}, animation:{available, sinks:[{owner, node, source, cursors:[{clip, time_seconds, normalized_phase}], frame_revision, pose_hash, state?, transition?, root_delta?}]}, audio:{available, backend, fallback_reason?, voices:[{node, state, position_seconds}]}, assets_verification:{state, ...}, preview:{available, reason?}, render_pipeline:{state, root, refusal?}, problems:{revision, count, errors, warnings}}`(`{...}` と略した鍵の形は下の「`get_status` の鍵」。`ray_tracing.ray_layout_mode` は ✅RTL-1b で、このプロセスが起動した ray の layout の mode `"none"` / `"layout"`(まだ決まっていなければ `null`)。layout の有無を変えた編集を commit した後も、起こし直すまで前の値です。[第13章](13_editor.md) §13.5 の「ray の layout と bindings を読み書きする」。`preview` は ✅PV-1 で、単発 preview(`render_preview`)が今の世代で使えるか。使えなければ `reason: {code: "preview.unsupported_authoring@1", feature, target?, graph?, pass?, cause?, message}`。[第6章](06_rendering.md) §6.13 の PV-1 の段落。`render_pipeline` は ✅BS-1 で、project の構成で動いていれば `{state: "ready", root}`、`--render-fallback` の起動で構成が断られて fallback の世代で動いていれば `{state: "fallback", root, refusal: {code, ...fields, document?, message}}`([第6章](06_rendering.md) §6.16)。`problems` は ✅PB-1 で、`get_problems` の一覧の件数。`revision` は一覧が変わったときだけ増える([第6章](06_rendering.md) §6.16 の「engine が持つ今の問題の一覧」)。`assets_verification` は ✅AV-1 で、起動時の asset 検証の要約。形は下の「起動時の asset 検証の結果」。`animation` は AG-3a。animation module の無い build では `{available: false}` だけ。`audio` は AU-1 で、`backend` は `device` / `offline` / `null`、`voices` は ✅CT-1 で graph の `audio.playback` の node ごとの `idle` / `playing` / `paused` と音源の秒、audio を外した build では `{available: false}` だけ。`gpu_timing` の `nodes` は ✅ST-1 から最後の 1 frame の sample だけで、node ごとの平均は `node_averages`([第6章](06_rendering.md) §6.14)。[第8章](08_gameplay.md) §8.11)※rpc は常に flat 駆動のため `xr.active=true` は rpc からは観測できない |
+| `get_gpu_timing` | `{}` | node ごとの GPU 時間の平均 `{schema: "pelican.gpu_timing_node_averages", version: 1, enabled, supported, reason, window_size: 30, frame_count, nodes: [{logical_frame, graph_variant, view_index, node_ordinal, node_kind, node_name, barriers_ms, body_ms, body_supported, sample_count}]}`([`get_gpu_timing` の登録](../../src/core/communication/rpcserver.cpp#L1880))。`nodes` は窓の最後の 30 論理フレーム(履歴がそれより短ければその数 `frame_count`)の node ごとの平均で、`get_status.gpu_timing.node_averages` と同じ行・同じ値です([第6章](06_rendering.md#gpu-タイミングwp143) §6.14 の「GPU タイミング」)。`gpu_timing` feature が無ければ `{enabled: false, supported: false, reason: "feature_not_enabled", frame_count: 0, nodes: []}`。GPU が graphics queue の timestamp を持たなければ `supported: false`・`reason: "graphics_queue_timestamps_unsupported"`(持てば `"enabled"`) |
+| `set_seed` | `{seed}`(符号なし整数) | 決定的乱数のシード設定。返り値 `{seed}` |
+| `set_time` | `{t}` | 仮想時刻の直接設定(dt=0)。返り値 `{t, frame}`(`frame` は評価の番号) |
 | `step_frame` | `{}` | headless 専用で、描画のフレームを 1 つ進める(評価の番号が 1 増える)。game が進むのは `playing` のときだけ。窓ありでは `step_frame_windowed` で断る(第 13 章 §13.5) |
-| `render_frame` | `{}` | 時刻を進めず描画のみ |
+| `set_play_state` | — | `edit` / `playing` / `paused` を切り替える(✅PM-1a / PM-1b / PM-2)。params・返り値・拒否は [第13章](13_editor.md#一時停止と-1-歩ずつ進めるpm-1a) §13.5 の「一時停止と 1 歩ずつ進める」「edit 状態」「再生のセッション」 |
+| `advance_frames` | — | `paused` の game を指定の歩数だけ進める(✅PM-1a)。同上 |
+| `set_view_camera` | — | `edit` / `paused` で見る camera を editor と game から選ぶ(✅PM-1b)。[第13章](13_editor.md#edit-状態pm-1b) §13.5 の「edit 状態」 |
+| `render_frame` | `{}` | 時刻を進めず描画のみ。返り値 `{t, frame}` |
 | `capture_gpu` | `{}` | `render_frame` と同じcurrent-time描画を1回だけ**RenderDoc**(GPU に送った描画コマンドを 1 フレーム分丸ごと記録して後から追える外部デバッガ)で captureし、実際に増えたindexのcanonical `.rdc` pathを返す |
-| `capture` | `{path}` | 直近フレームを PNG 保存(sRGB。応答に `encoding:"srgb"`) |
+| `capture` | `{path}` | 直近フレームを PNG 保存(sRGB)。応答は `{path, encoding: "srgb", contract: 2}`(`path` は書いたファイルの絶対 path) |
 | `get_frame_plan` | `{}`、または `{loop_elements: {node, offset?, limit?}}`(✅LP-3b。draw_loop の要素の paging) | フレームプラン JSON(fullscreen / raster pass の node には shader の set 1 の宣言 `pass_inputs` が付く。✅VI-1 / VI-1b。LP 系からは最上位の `loops[]`、node と resource の `loop_origin`、node の `view_select` / `view_axes` / `no_selected_view` も。✅LC-1 から、shader が `pelican_loop.glsl` の回の番号を読む pass / task の node に `reads_loop_index: true`。✅PS-1 から、`schedule: "once"` の node に `schedule: "once"`・`last_run_generation`・`last_run_frame`(まだ走っていなければ `null`)。✅IA-1 から、`physical_target_plan.resources[]` の `initial: {asset}` を持つ image の要素に `initial_asset: {asset, sha256}`(`sha256` は `assets.manifest` の値、載っていなければ `null`。✅AB-1 から、asset の隣に `.import.json` があれば `derived_from` / `stale` / `stale_reasons` も)。✅PV-1 から最上位に `preview: {available, reason?}`(`get_status` の `preview` と同じ形)。✅BS-1 から、fallback の世代の間だけ最上位に `render_pipeline`(`get_status` の `render_pipeline` と同じ形)。形は[第 13 章](13_editor.md) §13.5「ループと分解の RPC」) |
 | `rerun_once` | `{node?}`(✅PS-1。`node` は空でない文字列。ほかの鍵は `-32602`) | `{scheduled: [<pass / task の名前>...]}`。`schedule: "once"` の node を次の frame で走らせる。`node` を省くと今の frame plan の once の全部、graph の node の id ならその node が作った once、`graph.loop` の id なら全回の once。per_frame の node は `[]`。frame plan に無い名前は `-32602` で `data` が `{code: "node_unknown", node}`([`rerun_once` の登録](../../src/core/communication/rpcserver.cpp#L2489)、[`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4273)。走る条件は[第 6 章](06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」) |
 | `pick_object` | `{x, y}` | 最後に完了した **ID バッファ**(色ではなく「そのピクセルに写っているオブジェクトの ID」を書き出す描画出力。`picking` feature が宣言する `R32_UINT` のレンダーターゲット `picking_id` — [picking.json](../../src/core/resources/features/picking.json))の 1 ピクセルを同期読み出し。`engine://features/picking.json` が必要 |
 | `set_gizmo` | `{selection:GizmoSelection\|null, mode}` | 選択 transform のギズモ表示を設定/解除。`engine://features/gizmo.json` が必要 |
 | `query_gizmo_handle` | `{selection:GizmoSelection, mode, x, y}` | 指定した選択・mode・物理 pixel にある handle を状態なしで問い合わせ。同 feature が必要 |
-| `load_gltf` | `{path, name?}` | glb の一時ロード(プロジェクト相対のみ) |
+| `query_gizmo_drag_basis` | `{selection:GizmoSelection, mode, axis}` | 選択・mode・軸(`null` は view の平面)のドラッグの 1 論理 pixel あたりの量を状態なしで問い合わせ。同 feature が必要。形は下の「ギズモのドラッグ基底と modal transform」 |
+| `get_modal_transform` | `{}` | engine の窓で進む modal transform の状態を読む。同上 |
+| `cancel_modal_transform` | `{reason?}` | 進行中の modal transform を取り消す。同上 |
+| `ack_modal_transform` | `{operation_id, revision}` | 終わった modal transform を受け取ったと伝え、`idle` に戻す。同上 |
+| `load_gltf` | `{path, name?}` | glb の一時ロード(プロジェクト相対のみ)。返り値 `{path, name}`(`path` は解決したファイル、`name` は省けば `null`) |
 | `load_scene` | `{name}` | シーン切替。応答は `{name, committed, effect_errors[]}`(✅WP380b/380e。commit 後の副作用の失敗は error ではなく result に出ます — [第13章](13_editor.md) §13.13) |
-| `set_camera` | `{name}` | シーン内カメラへ切替 |
+| `get_runtime_objects` | — | 今の scene で game が spawn した生きている object の一覧(✅RO-1)。形は [第13章](13_editor.md#spawn-された-object-を読むro-1) §13.5 の「spawn された object を読む」 |
+| `set_camera` | `{name}` | シーン内カメラへ切替。返り値 `{name}` |
 | `raycast` | `{origin, direction, max_distance}`(3 鍵ちょうど) | 最近傍 1 件を `{hit: {name, collider_id, shape_ordinal, distance, position, normal, trigger, one_way}}`、当たらなければ `{hit: null}`([受け口](../../src/core/communication/rpcserver.cpp#L1243))。`PELICAN_WITH_PHYSICS=OFF` の build では `hit: null` ではなく JSON-RPC error(code `-32000`、`data` = `{code: "physics.module_unavailable@1", requirement: "physics", option: "PELICAN_WITH_PHYSICS"}`。✅PG-2b)。provider が 0 本の build も `-32000`(message は `physics.provider_unavailable@1` の例外文。[第8章](08_gameplay.md) §8.4「機能を外した build」) |
-| `update_transforms` | `{objects, transforms}` | 次フレーム境界で適用。`rot` は名指し拒否(`rotation`) |
-| `inject_input` | `{events:[...]}` | 入力注入。`key_*` / `mouse_*` / `axis` + **`gamepadButtonDown` / `gamepadUp` / `gamepadAxis`**(リプレイ中は拒否)。`mouse_move` の `x` / `y` は**窓座標**で、OS からの移動と同じ event になる。`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにする(headless は 1 倍。✅GP-4、[注入の受け口](../../src/core/communication/rpcserver.cpp#L866)) |
-| `inject_event` | `{type, payload}` | 登録済みゲームイベントの emit。payload は EventPayloadSchema で事前検証(✅WP71) |
+| `update_transforms` | `{objects, transforms}` | 次フレーム境界で適用。`rot` は名指し拒否(`rotation`)。返り値 `{queued}`(積んだ更新の数) |
+| `inject_input` | `{events:[...]}` | 入力注入。`key_*` / `mouse_*` / `axis` + **`gamepadButtonDown` / `gamepadUp` / `gamepadAxis`**(リプレイ中は拒否)。`mouse_move` の `x` / `y` は**窓座標**で、OS からの移動と同じ event になる。`ctx.input().pointer()` と UI の入力ルータがフレームの換算で framebuffer ピクセルにする(headless は 1 倍。✅GP-4、[注入の受け口](../../src/core/communication/rpcserver.cpp#L866))。返り値 `{queued}`(積んだ入力 event の数) |
+| `inject_event` | `{type, payload}` | 登録済みゲームイベントの emit。payload は EventPayloadSchema で事前検証(✅WP71)。返り値 `{queued: 1}`。知らない `type` と payload の検査の失敗は `-32602` |
 | `reload_game_logic` | `{}` | ゲームロジック DLL を即時リロード(✅WP90) |
-| `reload_shaders` | `{}` | shader を読み直して公開する(✅F-5。file watch が閉じている `--rpc` の下でも、明示の要求は通る。入力と宣言が合わなくなった pass はその pass だけ前の shader で描き続け、`refused_passes` に名が出る。✅VI-1b。返り値とエラーは[第 13 章](13_editor.md)の表) |
+| `reload_shaders` | — | shader を読み直して公開する(✅F-5)。params・返り値・拒否は [第13章](13_editor.md#shader-を読み直させるf-5) §13.5 の「shader を読み直させる」 |
 | `get_assets_verification` | `{}` | 起動時(または最後の再検証)の asset 検証の全件(✅AV-1。下の「起動時の asset 検証の結果」) |
-| `get_problems` | `{}` | engine が持つ今の問題の全部 `{revision, problems: [{id, severity, source, code, message, fields, document?, line?, column?, node?, port?, definition?, scope?, document_kind?, at_frame?}]}`(✅PB-1。起動時の拒否・engine の disk からの読み直しの拒否・`reload_render_documents` の拒否・shader の読み直しの失敗。編集 RPC の拒否は入らない。同じ `id` は 1 件。[第6章](06_rendering.md) §6.16 の「engine が持つ今の問題の一覧」) |
+| `get_problems` | — | engine が持つ今の問題の全部(✅PB-1)。params・返り値と 1 件の形は [第6章](06_rendering.md#engine-が持つ今の問題の一覧--get_problemspb-1-a55d1eaf) §6.16 の「engine が持つ今の問題の一覧」 |
 | `verify_assets` | `{}` | asset 検証を worker で走らせ直し、すぐ `{state: "running"}` を返す(✅AV-1) |
 | `update_assets_manifest` | `{store}` | その store の manifest を今のディスクから書き直し、再検証を始める(✅AV-1) |
-| `get_project_settings` | `{}` | project.json の `hot_reload` と `asset_stores` を書かれているまま(無ければ `null`)と、`project_digest`(✅PJ-1。下の「project.json の宣言を書き換える」) |
-| `edit_project_settings` | `{base_project_digest, hot_reload?, asset_stores?}` | project.json の 2 つの鍵を書き、engine にその場で反映する(✅PJ-1。同上) |
-| `list_materials` | `{}` | asset_data の `materials[]` の全部の文書と、その中の material(✅MT-1。下の「material 文書を読み書きする」) |
-| `get_material` | `{path, name?}` | 1 つの material を文書のままと、`material_digest`(✅MT-1。同上) |
-| `get_surface_schema` | `{surface}` | `.surface` の `//!` の宣言の `params` と `textures`(✅MT-1。同上) |
-| `list_surfaces` | `{}`(引数は取らない) | engine と project の `.surface` の一覧。数・OpenPBR の名前と routing・render_state(✅MT-1b。同上) |
-| `get_material_bindings` | `{model}` | model の primitive ごとの material(✅MT-1。同上)。✅MT-2 から、その model を描く scene の object の数 `objects` と、自分の material を持つ数 `object_overrides` も |
-| `edit_material` | `{base_material_digest, path, name?, values?, textures?, tags?, routing?, variants?, surface?}` | material を 1 つ直す。values だけなら live、ほかが変われば書いて material を登録し直し、描いている model を組み直す `rebuilt`(✅MT-3)。routing の変更は、その material を指す binding も同じ書き込みで書き直す(✅MT-3)。engine の OpenPBR の surface で surface か routing の片方だけを送ると、もう片方を manifest の組に合わせる(✅VR-1)(✅MT-1。同上) |
-| `create_material` | `{path, surface, name?, values?, tags?, routing?}` | material 文書を作り asset_data に載せ、live で登録する(✅MT-1。同上) |
-| `bind_material` | `{model, material, primitive?\|slot?}` か `{model, bindings}` | model の material_bindings を書き、model を読み直す(✅MT-1。同上) |
-| `set_object_material` | `{actor_id, object, scene_id?, base_scene_revision?, material\|null, primitive?\|slot?}` か `{actor_id, object, scene_id?, base_scene_revision?, materials}` | scene の object 1 つだけの material を、その `simplemodelview.materials` に 1 つの scene の編集で書く(CAS・undo / redo。✅MT-2。同上) |
-| `get_object_materials` | `{object, scene_id?}` | object の primitive ごとの実効の material と、その出所(`object` / `model`)(✅MT-2。同上) |
-| `register_model` | `{path, name?}` | project の中に既にある `.glb` / `.gltf` / `.vrm` を asset_data の `models[]` に足し、動いている engine にその場で登録する(✅MI-1。下の「project の中の model ファイルを登録する・外す」) |
-| `unregister_model` | `{name}` | `models[]` からその model を外し、engine からも外す。ファイルは消さない(✅MI-1。同上) |
-| `delete_material` | `{name}` | その material の文書を asset_data の `materials[]` から外し、登録も外す。文書のファイルは消さない。名前で指す所が残っていれば `material.in_use@1`(✅EB-1。下の「material を消す・戻す・改名する」) |
-| `register_material` | `{path}` | project の中に既にある material の文書を `materials[]` に載せ、live で登録する(`delete_material` の戻し。✅EB-1。同上) |
-| `rename_material` | `{name, new_name}` | material の名前と、それを名前で指す全 model の bindings の行を 1 つの書き込みで書き換え、登録し直して描いている model を組み直す(✅EB-1。同上) |
-| `set_input_profile` | `{name}` | 入力プロファイル切替(✅WP91) |
+| `set_input_profile` | `{name}` | 入力プロファイル切替(✅WP91)。返り値 `{name, gamepad_polling}`。選べない名前は `-32000` |
 | `start_input_record` | `{path}` | input_seq 収録開始(✅WP89。v2 で書く) |
 | `stop_input_record` | `{}` | 収録停止。`{path, frames, events}` |
 | `start_input_replay` | `{path}` | リプレイ開始(fixed-step 化・リロードゲート閉鎖) |
@@ -202,6 +194,25 @@ test は `ew1_engine_window_embedded`([engine_window_embedded.py](../../test/eng
 | `import_scene_snapshot` | `{schema_version:2, semantic_scene_bytes, digest, current_scene_id, prefab_closure}` | disk を上書きせず、検証済み snapshot を in-memory scene source として reload する |
 | `plan_project_migration` | `{}`(省略可) | 前の版の文書を移す計画(dry-run。何も書かない)。`{project_root, required, engine_version, saved_by_engine, documents:[{path, schema, from, to, steps, digest, manual_items}], expected:{<path>: <sha256>}}`(✅MG-1。[第3章 §3.13](03_project_format.md)) |
 | `apply_project_migration` | `{expected:{<path>: <sha256>}}`(plan が返した `expected` をそのまま) | 移行を 1 つの transaction で適用。応答は plan の形 + `{applied, backup, saved_by_engine_after, restart_required}`。`expected` が今の文書と食い違えば何も書かずに `project.migration_plan_stale@1`。`expected` が無い / オブジェクトでない / 値が文字列でないものは `-32602` |
+
+**`get_status` の鍵**([`get_status` の組み立て](../../src/core/communication/rpcserver.cpp#L1603))。上の表の形で `{...}` と略した鍵と、表の形に無かった鍵の形です。
+
+| 鍵 | 形 |
+|---|---|
+| `scene_source` | `{hot_reload: false, save_method: "save_scene"}`。シーンはホットリロードの対象外で、保存は `save_scene` です |
+| `play` | `{state, game_frame, game_time, pending_steps, view_camera, session, recorded_edits}`。`frame` / `time` との違いと各鍵は [第13章](13_editor.md#一時停止と-1-歩ずつ進めるpm-1a) §13.5 の「一時停止と 1 歩ずつ進める」 |
+| `diagnostics.scene_load` | 読み込みの経路ごとの `{unspecified, startup, rpc, pending, import_versioned}`。各値は `{rejected_rows: [{address: {object, component, list_path, row_id}, error}], effect_errors}`(`effect_errors` は `load_scene` の result と同じ形。[第13章](13_editor.md#1313-シーン遷移とゲームロジックの結果wp378380b380e381381a) §13.13。[経路ごとに並べる所](../../src/core/loader/scene.cpp#L1890)) |
+| `input` | `{recording, replaying, replay_frame, hot_reload, profile, profiles, gamepad_polling, cursor: {requested, effective, embedded}}`。`profile` は選んでいる入力プロファイル(無ければ `null`)、`profiles` は選べる名前の列。`cursor` は表の下 |
+| `memory` | `{schema_version: 1, driver_available, driver_reason, heaps: [{heap_index, device_local, size, usage, budget, source}], engine_categories: [{category, allocated_bytes, logical_used_bytes, free_bytes, high_water_bytes, object_count, source, reason}]}`。`driver_reason` と `reason` は無ければ `null`([`memoryStatusJson()`](../../src/core/vkcore/memorydiagnostics.cpp#L72)) |
+| `gpu_timing` | GPU の計測の状態、最後の 1 frame の sample、node ごとの平均 `node_averages`。鍵の表は [第6章](06_rendering.md#gpu-タイミングwp143) §6.14 の「GPU タイミング」 |
+| `window_output` | 出力先の状態 `{state, reason, surface_epoch, swapchain_epoch, presentation_queue_family, surface_recoveries, retry_count, extent_revision, output_facts_hash, last_vk_result, retired_epochs, maintenance, retirement_mode, quarantined_resources, device_rebuild_reason}`。`state` は `ready` / `preparing` / `preparing_surface` / `suspended_zero_extent` / `unavailable_retry` / `surface_lost` / `device_rebuild_required` / `fatal`、`reason` は `none` / `zero_extent` / `acquire_not_ready` / `output_out_of_date` / `surface_stale` / `output_preparing` / `retry_pending` / `output_reconfigured` / `surface_lost`([名前の表](../../src/core/vkcore/frametarget.cpp#L152))。`presentation_queue_family` は無ければ `null`、`maintenance` は `worker` / `not_applicable`、`retirement_mode` は `present_fence` / `reacquire` / `not_applicable` |
+| `startup` | `{config_ms, vulkan_ms, shaders_ms, shader_cache_hits, shader_cache_requests, models_ms, total_ms, complete}`。起動の段ごとの時間と shader cache の当たりの数 |
+| `modules` | `{phase, creation_frozen, initialized, dependencies, initialized_after_runtime_start}`。`phase` は `booting` / `running` / `shutting_down`、`initialized` と `dependencies` は数、`initialized_after_runtime_start` は実行が始まった後に初期化した module の名前の列 |
+| `color` | `{contract: 2, swapchain_format, path, readback_encoding: "srgb", capture}`。`path` は出力の sRGB 化が hardware の `srgb` か、shader で変換する `unorm_fallback` か。`capture` は `available` / `unavailable_windowed` |
+
+⚠ `window_output.reason` の名前の表で、`device_lost` の行は `"srgb_shader_unorm"` という文字列を返します([その行](../../src/core/vkcore/frametarget.cpp#L200))。名前の取り違えに見えます(engine 側で確認する事項。この表には `device_lost` の名前を挙げていません)。
+
+**`input.cursor {requested, effective, embedded}`**([組み立て](../../src/core/communication/rpcserver.cpp#L1770)): `requested` はゲームコードが `ctx.input().setCursorMode` で頼んだモード、`effective` は窓に適用したモード(`normal` / `hidden` / `locked`)、`embedded` は窓が別の窓に埋め込まれているか(`--rpc` かつ `WS_CHILD`。Windows だけで判定)。埋め込みでは `locked` を頼んでも `effective` は `normal` です。headless は窓が無いので `effective` は常に `normal`、`embedded` は `false`。
 
 `pick_object` の座標は ID バッファ `picking_id` の左上原点で、`x` は右、`y` は下へ増えます。
 両方とも符号なし整数だけを受理し、範囲外は `-32602`、feature 無効または完了済みの
@@ -310,154 +321,60 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 `gizmo_target_transform_not_found` です。混在時に一方を優先する互換経路はありません。
 詳細は[第6章](06_rendering.md#ギズモ-render-feature-と状態なし当たり判定wp274)を参照してください。
 
+### ギズモのドラッグ基底と modal transform
+
+**`query_gizmo_drag_basis {selection, mode, axis}`**([`query_gizmo_drag_basis` の登録](../../src/core/communication/rpcserver.cpp#L2586))は、ドラッグの 1 論理 pixel で値がどれだけ動くかを、状態を変えずに返します。`query_gizmo_handle` と同じく `engine://features/gizmo.json` が要り(無ければ `-32000`)、`selection` と `mode` は `set_gizmo` と同じ形です。鍵はこの 3 つちょうどで、ほかは `-32602` です。
+
+- `axis` は `"x"` / `"y"` / `"z"` か `null` です。`null`(view の平面に沿った移動)は `mode: "translate"` だけで、ほかの mode では `-32602` です。
+- 応答は `{contract: 1, selection, mode, axis, extent: {width, height}, content_scale, basis}` です。`axis` は送った値のままです。
+- `basis` は、軸なら `{kind: "axis", axis, drag_direction: {x, y}, value_per_logical_pixel}`(意味は `query_gizmo_handle` の `handle` の同じ名前の鍵と同じ)、`axis: null` なら `{kind: "view_plane", world_per_logical_pixel_x: [x, y, z], world_per_logical_pixel_y: [x, y, z]}`(画面の右・下へ 1 論理 pixel 動かしたときの world の移動量)です。
+- 求まらないときは `basis: null` です。軸では、その軸の handle がドラッグの向きを持たないとき(`query_gizmo_handle` が `handle: null` を返す潰れた軸と同じ判定)、view の平面では、出力の大きさが 0 か、camera の向きと射影から向きが決まらないときです([軸の基底](../../src/core/renderer/gizmo.cpp#L514)、[view の平面の基底](../../src/core/renderer/gizmo.cpp#L528))。
+- selection の拒否(存在しない transform、`error.data.code` の 5 つの名前)は `query_gizmo_handle` と同じです。
+
+**modal transform の 3 本**は、engine の窓でキー操作が始めた移動・回転・拡縮(modal transform)の状態を外から読み、止め、結果を受け取ったと伝えます([`get_modal_transform`](../../src/core/communication/rpcserver.cpp#L2672)、[`cancel_modal_transform`](../../src/core/communication/rpcserver.cpp#L2684)、[`ack_modal_transform`](../../src/core/communication/rpcserver.cpp#L2708))。gizmo の feature は要りません。
+
+- **`get_modal_transform {}`**(鍵を書くと `-32602`)→ 状態 `{contract: 1, enabled, revision, phase, operation_id, selection, mode, axis, delta: {translation: [x, y, z], rotation: [x, y, z, w], scale_exponent: [x, y, z]}, reason, bindings: {translate, rotate, scale}}`([状態の形](../../src/core/communication/rpcserver.cpp#L665))。
+  - `phase` は `idle` / `active` / `confirmed` / `cancelled` です。`operation_id` は操作の番号で、無ければ `null`。`selection` は gizmo と同じタグ付きの形、`mode` は `translate` / `rotate` / `scale`、`axis` は `x` / `y` / `z` で、どれも無ければ `null`。`reason` は取り消しの理由で、無ければ `null` です。
+  - `revision` は状態が変わるたびに 1 増えます。`enabled` は modal transform の入力が効いているかで、効かなくなると進行中の操作は `reason: "actions_disabled"` で取り消されます([`ModalTransformController::update()`](../../src/core/renderer/modaltransform.cpp#L70))。
+  - `bindings` は 3 つの action に割り当てたキーボードのキーのうち最初のものの表示名です(1 文字は大文字、`enter` は `Enter`、`escape` は `Esc`)。キーボードの割り当てが無ければ `null` です。
+- **`cancel_modal_transform {reason?}`** → 同じ状態。`active` の操作を `cancelled` にします(`active` でなければ何もしません)。`reason` は空でない文字列で、省くと `studio_cancel` です。ほかの鍵は `-32602` です。
+- **`ack_modal_transform {operation_id, revision}`**(2 つちょうど。どちらも符号なし整数)→ `{acknowledged, state}`。`phase` が `confirmed` か `cancelled` で、`operation_id` が今の操作と同じで、`revision` が今の値以上のときだけ `acknowledged: true` になり、状態を `idle` に戻します(`revision` が 1 増える)。そうでなければ `false` で、何も変えません([`ModalTransformController::acknowledge()`](../../src/core/renderer/modaltransform.cpp#L239))。
+
 ### エディタ拡張メソッド(詳細は[第13章](13_editor.md))
 
 上の表の `export_scene_snapshot` / `import_scene_snapshot` はエディタトラックで増えた分です。**総数は挙げません** —— メソッドは増え続けるので、数字を書くと必ず腐ります。登録の実物は `src/core/communication/rpcserver.cpp`(基盤)と `src/core/communication/editorrpchandlers.cpp`(エディタ)です。
 
 シーンの編集・履歴・プレビュー・保存のためのメソッド群です(✅WP154/156/157/158/161/166/168/170/172)。params と戻り値、**エラーが `result.status` に出る**という重要な作法は [第13章](13_editor.md) §13.5〜§13.6 にまとめてあります。`edit` 系だけ作法が違うのは、これらが**チケットを返す受付のメソッド**で、呼び出し自体は成功しており、実際の適用がフレーム境界で起きるためです(受付で弾かれた = `rejected` / 適用時に弾かれた = `failed`)。基盤メソッドは呼んだその場で答えが決まるので、失敗は通常の JSON-RPC `error` に出ます。
 
-| 分類 | メソッド |
-|---|---|
-| 読み取り | `scene_tree` / `scene_outline`(component を含まない軽い一覧)/ `get_components` / `get_scene_revision` / `list_assets` / `query_journal` / `can_edit` / `can_preview` |
-| セッション | `open_editor_session` / `resume_editor_session` |
-| 編集 | `edit` / `undo` / `redo` / `get_edit_result` |
-| チケットプレビュー | `open_preview` / `update_preview` / `commit_preview` / `abort_preview` / `get_preview_result` |
-| 隔離プレビュー | `eval_preview` / `render_preview` |
-| 保存 | `save_scene` |
-| 共通グラフ | `get_graph_instances` / `get_graph_catalog` / `get_engine_shaders`(✅EL-4b)/ `get_shader_interface`(✅EL-5)/ `get_registered_providers`(✅EL-6)/ `get_graph_values` / `get_graph_node_values` / `edit_graph_document` / `edit_graph_instances` |
-| 共有部品と package | `export_render_feature` / `import_render_feature` / `install_package` / `uninstall_package` |
-| ray の layout と bindings | `get_ray_layout` / `edit_ray_layout`(✅RTL-1a。`edit_ray_layout` は render の編集の ticket を返し、`edit_batch` に入る。[第13章](13_editor.md) §13.5 の「ray の layout と bindings を読み書きする」)/ `get_ray_table`(✅EB-3。SBT の全行を 1 回で。同じ節の「SBT の全行を 1 回で読む」) |
+| 分類 | メソッド | 正本 |
+|---|---|---|
+| 読み取り | `scene_tree` / `scene_outline`(component を含まない軽い一覧)/ `get_components` / `get_scene_revision` / `list_assets` / `query_journal` / `can_edit` / `can_preview` / `get_component_add_candidates`(object に足せる component の候補) | [第13章 読み取り](13_editor.md#読み取り) |
+| RT の occurrence | `get_ray_occurrences`(object 1 件の RT の occurrence と、その行の hit group・binding・record)/ `resolve_ray_occurrence`(occurrence の id を 1 件に解く) | [第13章 読み取り](13_editor.md#読み取り) |
+| セッション | `open_editor_session` / `resume_editor_session` | [第13章 セッションと編集](13_editor.md#セッションと編集) |
+| 編集 | `edit` / `undo` / `redo` / `get_edit_result` | [第13章 セッションと編集](13_editor.md#セッションと編集) |
+| prefab | `set_prefab_parameter` / `unset_prefab_parameter` / `unpack_prefab`(同名の op 1 つだけの `edit` を出す) | [第13章 セッションと編集](13_editor.md#セッションと編集) |
+| チケットプレビュー | `open_preview` / `update_preview` / `commit_preview` / `abort_preview` / `get_preview_result` | [第13章 プレビュー](13_editor.md#プレビュー) |
+| 隔離プレビュー | `eval_preview` / `render_preview` | [第13章 プレビュー](13_editor.md#プレビュー) |
+| 保存 | `save_scene` | [第13章 スナップショットと保存](13_editor.md#スナップショットと保存) |
+| procedural asset | `get_procedural_assets` / `edit_procedural_asset`(asset_data の procedural asset の AABB と record を読む・書く。`edit` の op ではない) | [第13章 §13.3](13_editor.md#133-編集の実行モデル--チケットとフレーム境界) |
+| project の宣言(✅PJ-1) | `get_project_settings` / `edit_project_settings`(project.json の `hot_reload` と `asset_stores` を読む / 書いてその場で反映する) | [第13章 project.json の宣言を書き換える](13_editor.md#projectjson-の宣言を書き換えるpj-1) |
+| material 文書(✅MT-1 / MT-1b / MT-2) | `list_materials` / `get_material` / `get_surface_schema` / `list_surfaces` / `get_material_bindings`(material 文書・`.surface` の宣言・model の割り当てを読む)/ `edit_material` / `create_material` / `bind_material`(書く)/ `set_object_material` / `get_object_materials`(scene の object ごとの上書き) | [第13章 material 文書を読み書きする](13_editor.md#material-文書を読み書きするmt-1) |
+| material の削除・戻し・改名(✅EB-1) | `delete_material` / `register_material` / `rename_material` | [第13章 material を消す・戻す・改名する](13_editor.md#material-を消す戻す改名するeb-1) |
+| model の登録(✅MI-1) | `register_model` / `unregister_model`(project の中の model のファイルを asset_data に載せる・外す) | [第13章 project の中の model ファイルを登録する・外す](13_editor.md#project-の中の-model-ファイルを登録する外すmi-1) |
+| レンダー設定 | `get_render_features` / `list_render_features` / `edit_render_features`(feature の一覧と有効化・`materialize`)/ `get_render_authoring_context`(編集に要る名前と候補)/ `fork_render_pipeline`(preset を project の文書へ写す)/ `edit_region_replacement`(preset の領域の差し替え)/ `edit_preset_pass`(preset・feature・root の pass を直す)/ `add_authored_pass` / `remove_authored_pass`(editor が作る pass の fragment を足す・外す)/ `edit_render_targets`(editor が作る render target)/ `set_material_route_default` / `edit_rendering_keys`(rendering 節のほかの鍵)/ `edit_target_planning` / `edit_vulkan_plan_pins` / `put_vulkan_physical_fragment`(計画の決定)/ `get_frame_node_order` / `edit_frame_node_order`(pass の順) | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
+| compute / RT の task と AS | `get_compute_task_authoring` / `edit_compute_task` / `add_compute_task` / `remove_compute_task`(task の宣言)/ `get_ray_callable_records` / `edit_ray_callable_records`(callable の record の初期値)/ `get_scene_acceleration_structures` / `edit_scene_acceleration_structures`(名前付きの TLAS と task の接続、三角形と AABB の座標系) | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
+| 断片の決定 | `get_fold_groups` / `fold_nodes`(group の宣言)/ `verify_fold`(開いた形と比べて印を付ける非同期の ticket) | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
+| 音の解析 | `bake_audio_analysis`(音の解析を焼く非同期の ticket)/ `list_derived_assets`(取り込みで作った file と、古いか) | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
+| まとめて 1 回 | `edit_batch`(文書を書き換える編集 method を 1 つの ticket で) | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
+| render 文書の丸ごと | `get_render_documents` / `restore_render_documents`(丸ごと読む・CAS で戻す)/ `reload_render_documents`(ディスクから読み直して組み直す) | [第13章 ループと分解の RPC](13_editor.md#ループと分解の-rpc--engine-の契約lp-0alp-vb--rd-1--rd-1b) |
+| ループと分解 | `decompose_material_pass`(一体版の material pass を分解版へ)/ `get_graph_templates` / `apply_graph_template`(同梱の分解版の雛形) | [第13章 ループと分解の RPC](13_editor.md#ループと分解の-rpc--engine-の契約lp-0alp-vb--rd-1--rd-1b) |
+| 共通グラフ | `get_graph_instances` / `get_graph_catalog` / `get_engine_shaders`(✅EL-4b)/ `get_shader_interface`(✅EL-5)/ `get_registered_providers`(✅EL-6)/ `get_graph_values` / `get_graph_node_values` / `edit_graph_document` / `edit_graph_instances` | [第13章 読み取り](13_editor.md#読み取り)・[グラフの装着を編集する](13_editor.md#グラフの装着を編集する) |
+| 共有部品と package | `export_render_feature` / `import_render_feature` / `install_package` / `uninstall_package` | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
+| ray の layout と bindings | `get_ray_layout` / `edit_ray_layout`(✅RTL-1a。`edit_ray_layout` は render の編集の ticket を返し、`edit_batch` に入る)/ `get_ray_table`(✅EB-3。SBT の全行を 1 回で) | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) の「ray の layout と bindings を読み書きする」「SBT の全行を 1 回で読む」 |
 
-既存メソッドの変化: `get_status` に `scene_source`(シーンは**ホットリロード対象外**・保存は `save_scene`)が追加、`step_frame` の応答に `edit_results[]` が追加、`load_scene` / `reload_game_logic` / `start_input_replay` は進行中のプレビューを強制中止します。
-2026-09 の追加(詳細は [第13章](13_editor.md) §13.13): `get_status` に `participants.game_logic`
-(`error_code` / `error_fields`。**起動時の初期化失敗も未試行の状態で出ます**)、`load_scene` と
-`import_scene_snapshot` の result に `committed` / `effect_errors`、`get_components` の各
-component に `resolution_error`。
+既存の基盤メソッドへの影響: `step_frame` の応答に `edit_results[]` が付き、`load_scene` / `reload_game_logic` / `start_input_replay` は進行中のプレビューを強制中止します。`get_status` の `participants.game_logic`、`load_scene` と `import_scene_snapshot` の result の `committed` / `effect_errors`、`get_components` の各 component の `resolution_error` は [第13章](13_editor.md#1313-シーン遷移とゲームロジックの結果wp378380b380e381381a) §13.13 です。
 
-2026-09 の追加(GP-4、`c095493c`): `get_status` の `input` に `cursor {requested, effective, embedded}`([組み立て](../../src/core/communication/rpcserver.cpp#L1770))。`requested` はゲームコードが `ctx.input().setCursorMode` で頼んだモード、`effective` は窓に適用したモード(`normal` / `hidden` / `locked`)、`embedded` は窓が別の窓に埋め込まれているか(`--rpc` かつ `WS_CHILD`。Windows だけで判定)。埋め込みでは `locked` を頼んでも `effective` は `normal` です。headless は窓が無いので `effective` は常に `normal`、`embedded` は `false`。
-
-2026-09 の追加(AG-3a、`32d9a20b`): `get_status` に `animation`(上の表)。新メソッド `get_graph_node_values{instance?}` → `{instance, generation, frame, published, source:"rendering", nodes:[{node, expanded, outputs:{port: value}}]}`(publish 時の snapshot、再評価しない。`instance` 省略で root 側の展開木全体、rendering domain の node は `outputs: {}`、publish 前は `published: false`)。**animation domain の node は空ではありません** —— 自分の値は出しませんが、そのフレームに**食べたスカラー**が values 側に `$pose/<node>/<port>` として publish されるので、**受けた入力ポートの名前で**並びます([renderconfigeditor.cpp:2010](../../src/core/communication/renderconfigeditor.cpp#L4599)、[graphAnimationScalarOutput()](../../src/project/graphpartition.cpp#L461))。読み取り専用で `edit_*` の CAS には乗らない。
-
-**`get_graph_values` と `get_graph_node_values` は問いが違います。**前者は `instance` 必須で、その
-**instance の入力 port だけ**を `{port, value, source, connected|parameter}` として返します(`source` は
-`connected` / `parameter` / `default` / `override`)。後者は**展開木のノードを全部**並べ、各ノードの出力値を
-`outputs` に入れます([実装](../../src/core/communication/renderconfigeditor.cpp#L4518))。両方とも
-**同じ publish snapshot を読むだけ**で再評価しません —— 再評価は graph の時計を進め event を二重に消費するためです。
-`source: "rendering"` は「これは描画側の評価が使った値だ」という明示で、animation phase は同じ文書を
-自分の state で評価するため、event や trigger で駆動される文書では両者が恒久的に違いうることを表します。
-
-2026-09 の追加(グラフ・共有部品・package): `get_graph_instances` / `get_graph_catalog` / `get_graph_values` /
-`edit_graph_document` / `edit_graph_instances`([登録](../../src/core/communication/editorrpchandlers.cpp#L277))、
-`export_render_feature` / `import_render_feature`(`user://components/<name>/` 経由の共有部品)、
-`install_package` / `uninstall_package`(`project://packages/<ns>/` への vendoring)。params と返り値、
-`ops` の 5 種と `scope`、名前付きの拒否は [第13章](13_editor.md) §13.5 が正です。
-
-2026-10 の追加(IA-2 / SC-1 / EL-6。形の正は [第13章](13_editor.md) §13.5):
-
-- 新メソッド `get_registered_providers {}`(✅EL-6、`5582bb93`)→ `{draw_sort, pass_implementation, region_replacements, graph_transforms, render_strategy}`。各値は `[{name, source: "engine" | "game", provider_version}]` を名前順で、呼ぶたびに registry から読みます([登録 `get_registered_providers`](../../src/core/communication/editorrpchandlers.cpp#L312))。
-- `reload_render_documents` の committed の結果に `changed_assets`(✅IA-2、`cdcdebc1`)。image の `initial` の asset の中身だけが変わったときも組み直して公開し、その asset を辞書順で並べます。何も変わらなければ `no_change: true`・`changed_assets: []`。
-- `get_components` / `scene_tree` の `schema.fields[]` と `get_component_add_candidates` の `schema_fields[]` に、camera の `controller.*` の `discriminant` / `applies_to` / `required_for` / `default`(✅SC-1、`14e10b19`)。`controller.type` は `enum` `["orbit", "follow", "fly"]` になりました。
-- `get_render_features` の `feature_instances[].parameter_schema` の宣言に `engine_default`(✅SC-1)。materialize 済みの feature で、元の `default` を持つ宣言だけです。
-
-2026-10 の追加(CT-3 / MP-1。形の正は [第13章](13_editor.md) §13.5 と [第6章](06_rendering.md) §6.17・§6.18):
-
-- `get_graph_catalog` の各 op に `parameters: [{name, kind, required?, alternatives?, default?, enum?, min?, max?, items?, fields?, expression?, description?}]` と `parameters_complete`(✅CT-3、`0d215a68`)。catalog 本体の鍵なので `pelican_cli graph-catalog` にも出ます。`parameters_complete` が `false` の op は `render.image` / `render.fullscreen` / `render.raster` / `render.material_pass` です(CT-3 のときは `render.compute` を含む 5 つでした。✅CT-6 で `render.compute` は `true` になりました。[第6章](06_rendering.md) §6.17)。
-- 名前付きの拒否 `graph.render_node_parameter_invalid@1 {node, op, parameter, expected, reason: type | enum | range, allowed? | min? / max?}`(✅CT-3)。編集の rejected には CT-2 の `document` も付きます。
-- `get_graph_catalog` の `material_pass_contracts` の各 contract に `screen_inputs` / `surface_resources`(`[{name, source_type}]`。✅MP-1、`afd923e1`)。CLI には出ません。
-- `get_frame_plan` の material pass の node に `drawn_materials: [{material?, id, draws}]`・`drawn_materials_frame`、256 件を超えたら `drawn_materials_truncated: true`(✅MP-1)。最後に公開した logical frame で、その pass が描いた material です。
-
-2026-10 の追加(FR-1 / FR-2 / AB-1。形の正は [第13章](13_editor.md) §13.5、[第6章](06_rendering.md) §6.5・§6.8・§6.18、[第5章](05_assets.md) §5.8):
-
-- `list_render_features` の各 feature に `required_targets: [{name, type, usage?}]`(✅FR-1、`45ca769b`)と `insertion: [{pass, anchor, position}]`(✅FR-2、`0b15fb62`)。feature を足す前に、pipeline に要る target と挿入先が分かります。
-- `get_render_authoring_context` に `snapshot_after_candidates`(✅FR-1)。`rendering.snapshots` の `after` に書ける名前です。
-- 名前付きの拒否 `feature.required_target_missing@1 {feature, target, type, document}`・`snapshot.after_unknown@1 {snapshot, after, resolved?, candidates}`(✅FR-1)、`feature.insertion_anchor_missing@1 {feature, anchor, candidates, document}`(✅FR-2)。`graph.target_ref_type_mismatch@1` に `expected: {type, layers?}`(✅FR-1)。
-- 新メソッド `bake_audio_analysis {asset, out, settings?}`(✅AB-1、`892a1455`)→ `{ticket, status: "accepted", asset, out}`。worker で焼き、`get_edit_result` の committed に `{operation: "bake_audio_analysis", asset, out, manifest, layout}`([登録 `bake_audio_analysis`](../../src/core/communication/editorrpchandlers.cpp#L271))。
-- 新メソッド `list_derived_assets {}`(✅AB-1)→ `[{asset, manifest, tool, source, derived_from, stale, stale_reasons}]`(配列)。asset store の `*.import.json` を全部読みます([登録 `list_derived_assets`](../../src/core/communication/editorrpchandlers.cpp#L274))。
-
-2026-10 の追加(CT-4 / FR-3。形の正は [第13章](13_editor.md) §13.5、[第6章](06_rendering.md) §6.5・§6.17・§6.18):
-
-- `get_graph_catalog` の各 op の `parameters` の要素に `choices_from?`(`{rpc, key, field?}` か `{graph_nodes: [<op>...]}`)・`asset_kind?` / `extensions?`・`soft_min?` / `soft_max?`、kind `union` と `variants`、各 op に `placement: "anywhere" | "owned_instance"`(✅CT-4、`4d682338`)。catalog 本体の鍵なので `pelican_cli graph-catalog` にも出ます。
-- `get_render_authoring_context` に `view_families` と `canonical_anchors`(✅CT-4)。`choices_from` が指す一覧です。
-- 名前付きの拒否 `graph.op_requires_owned_instance@1 {node, op}`(✅CT-4)。`pose.*` と `value.morph_weight` を `owner` 付きの `graph.instance` の外に置いた。編集の rejected には CT-2 の `document` も付きます。
-- `list_render_features` の `required_targets` の各要素に `needs_writer`(✅FR-3、`55390f4b`)。名前付きの拒否 `feature.required_target_unwritten@1 {feature, target, type, writer_candidates: [{node?, pass, port, resource}], document}`(✅FR-3)。
-- 新メソッド `edit_batch {base_source_digest, edits: [{method, params}]}`(✅FR-3)→ `{ticket, status: "accepted", base_source_digest, methods}`。文書を書き換える 20 の編集 method を順に 1 つの候補へ当て、組み立てと preflight を 1 回だけ行う 1 つの ticket です。当てられない edit は `batch_index` 付きで断ります([登録 `edit_batch`](../../src/core/communication/editorrpchandlers.cpp#L360))。
-
-2026-10 の追加(IA-3 / CT-5 / PV-1 / scene_outline。形の正は [第13章](13_editor.md) §13.5・§13.7、[第6章](06_rendering.md) §6.5・§6.13・§6.17・§6.18):
-
-- `reload_render_documents` の比較に、`value.sample_table` が読む表(KTX2)と隣の `.import.json` の中身(✅IA-3、`26473e75`)。`changed_assets` には表の参照で出ます(manifest だけが変わったときも表の名前)。
-- `get_graph_catalog` の `choices_from` に条件 `where` と 3 つ目の形 `{asset_manifest: {parameter, manifest, key}}`、`render.fullscreen` の `push_constants` が enum(✅CT-5、`65f3a8a3`)。`get_render_authoring_context` に `acceleration_structures` と `render_target_vocabulary.format_class_patterns`。`get_graph_instances` に `definition_instances {<definition>: {owned_instances_only, instances: [{id, op, owned}]}}`。
-- 名前付きの拒否 `graph.render_scalar_target_incompatible@1 {node?, target, expected: {host_source, size?}, actual}`(✅CT-5。graph の中の buffer は partition で、graph の外の buffer は登録の段で。後者は `node` 無し)。`edit_graph_instances` は graph の名前付きの拒否を、その code と CT-2 の `document` のまま返します(前は `invalid_graph_attachment`)。
-- `get_status` と `get_frame_plan` に `preview: {available, reason?}`、render の編集の committed の結果にも `preview`(✅PV-1、`a173e70c`)。`render_preview` は preview が使えない世代で `preview.unavailable@1 {method, reason}`。preview だけが組めない編集は断られず committed になります。
-- 新メソッド `scene_outline {scene_id?, if_scene_revision?}`(`b29ccfea`。利用者の codex の変更)→ `{scene_id, scene_revision, not_modified, objects?: [{authoring_object_id, declaration_index, name?, parent_authoring_object_id}]}`。component を含まない authoring の一覧で、`if_scene_revision` が今の revision と同じなら `objects` を省きます([登録 `scene_outline`](../../src/core/communication/editorrpchandlers.cpp#L77))。
-
-2026-10 の追加(BS-1 / BS-1b。形の正は [第13章](13_editor.md) §13.5 と [第6章](06_rendering.md) §6.16):
-
-- player の引数 `--render-fallback`(✅BS-1、`d9811bfc`。`--rpc` が要る。§10.2)。`get_status` に `render_pipeline: {state: "ready" | "fallback", root, refusal?}`、`get_frame_plan` は fallback の世代の間だけ最上位に同じ `render_pipeline`。fallback の間の `reload_render_documents` は、変わった文書が無くても毎回組み直します(`no_change` にならない)。`get_render_documents` は組めない root でも、root と rendering 節が名指す文書を返します。Studio は ✅BS-1s(`19be8983`)からこの引数で engine を起こし、`render_pipeline` を読みます。
-- 名前付きの拒否 `render_document_syntax@1 {document, line?, column?, reason}`(✅BS-1b、`40318ffe`)。root か、rendering 節が名指す feature / preset が JSON として読めない。編集の rejected の `error` には `method` も付きます。root が JSON でない `reload_render_documents` と、JSON でない `content` の `restore_render_documents` は、`render_pipeline_preflight_failed` からこの code に変わりました。`get_render_documents` は読めない文書も、生の `content` とその `digest` で返します。
-
-2026-10 の追加(PB-1。形の正は [第6章](06_rendering.md) §6.16 の「engine が持つ今の問題の一覧」と [第13章](13_editor.md) §13.5 の「今の問題の一覧を読む」):
-
-- 新メソッド `get_problems {}`(✅PB-1、`a55d1eaf`)→ `{revision, problems: [...]}`。`get_status` に `problems: {revision, count, errors, warnings}`。1 件は `{id, severity: "error" | "warning", source: "startup" | "hot_reload" | "reload_rpc", code, message, fields, document?, line?, column?, node?, port?, definition?, scope?, document_kind?, at_frame?}` で、
-  `document_kind` は `root` / `root_graph` / `definition` / `root_rendering` / `preset` / `feature` / `shader`。`id` は code と場所の hash の 16 桁(`source` を含まない)。今は `warning` を出すものがありません(コードの読み)。
-  → ✅FO-1(`a4d7760a`)から `document_kind` に `material` が加わり、`material.binding_unresolved@1` が最初の `warning` です(下の FO-1 の追加)。
-  編集 RPC の拒否と、`reload_busy`・`gate_closed`・`external_modification`・`stale_source_digest` は入りません。Studio の Problems の窓(PB-1s)は作業中です。
-  → ✅PB-1s(`93934318`)から、Studio は一覧を **Problems のドック**(View > Problems)で読みます。`get_status.problems.revision` が動いたときと読み直しの答えの後に `get_problems` を読み、
-  行を押すと直す場所(Graph の node、Show the document の行、Materials、shader の file、Assets)へ飛びます。status bar に件数が出ます([第13章](13_editor.md) §13.1 の「Studio の Problems のドック」)。
-- 名前付きの拒否 `render_feature_requires_restart@1 {feature?, module}`(✅PB-1)。module の graph が固まった後に、その module の要る feature を初めて有効にする構成(起動し直せば通る)。
-  message は `render_feature_requires_restart@1: feature 'debug_draw' needs runtime module DebugDraw, which this engine was started without; restart the engine to enable it`。
-  前は code の無い `Render pipeline hot reload cannot enable feature '<feature>' after module creation is frozen; missing runtime module <module>`(と、container の `Module '<型>' was first requested after the runtime module graph was frozen`)で、
-  `reload_render_documents` では `render_pipeline_preflight_failed` に畳まれていました(コードの読み)。`feature` は module が feature の表にあるときだけ付きます。
-  Studio は ✅PB-1s から、BS-1s の再起動の案内をこの code と `fields.feature` で出します(前は文面を探していて、本番の文と一致していませんでした)。
-- 名前付きの失敗 `shader_reload_failed@1`(一覧の 1 件の code。`fields: {path, log}`、`document_kind: "shader"`、文書自身の行なら `line`)。`reload_shaders` の失敗の `error_code` と同じ名前です。
-- `--render-fallback` の起動で、起動の間に登録する material の route を受ける pass が無い(`material_route_unserved@1`)ときも、致命にせず fallback の世代に入ります(✅PB-1)。
-
-2026-10 の追加(RR-1。形の正は [第13章](13_editor.md) §13.5 の「reload に断られた版を持つ」と [第6章](06_rendering.md) §6.16):
-
-- `get_graph_instances`・`get_render_authoring_context`・`get_render_features`・`get_fold_groups`・`get_frame_node_order`・`get_compute_task_authoring`・`get_ray_callable_records`・`get_scene_acceleration_structures` の答えに `live: bool`(✅RR-1、`4549cae8`)。返した版が live の世代を組んだ版かどうかです。文法の壊れた版を持っている間は前に読めた版を返し、`held_unparsed: true` も付きます。`get_render_documents` の答えは `{documents, live}`(`held_unparsed` は付かない)。`get_graph_values` には付きません。
-- 文書の都合で断られた `reload_render_documents` の後、editor はディスクの版を base に持ちます。その digest の `restore_render_documents` と構造の編集が通り、前の live の digest の編集は `external_modification` です。持っている間の reload は `no_change` になりません。断られた後にディスクを元に戻したときは、元の digest の編集の前に一度 reload が要ります(前は戻せばそのまま通りました)。Studio はまだ `live` を読みません。
-
-2026-10 の追加(RTL-1a / RTL-1b / RTL-1c。形の正は [第13章](13_editor.md) §13.5 の「ray の layout と bindings を読み書きする」と [第6章](06_rendering.md) §6.15):
-
-- 新メソッド `get_ray_layout {}`(✅RTL-1a、`e9f3a333`)→ `{source_reference, source_digest, live, mode, layout, bindings, names, selectable_materials, selectable_procedural_assets, unresolved_bindings}`(`mode` は ✅RTL-1c)。`edit_ray_layout {base_source_digest, layout?, base_layout_digest?, bindings?, base_bindings_digest?, procedural_records?}` → render の編集の ticket([RTL-1a の登録 `get_ray_layout`](../../src/core/communication/editorrpchandlers.cpp#L343))。`edit_batch` が受ける method は 24 になりました。
-- `get_render_documents` の `kind` に `ray_group_layout` / `ray_bindings`(✅RTL-1a)。`restore_render_documents` で作る・消す・戻す、`reload_render_documents` が読み直す対象です。
-- ray の layout の有無が変わる編集・restore・reload は、拒否ではなく `committed` + `restart_required: true` + `restart_reason: {code: "ray_layout_mode_changed", from, to, message}`(✅RTL-1b、`8034d096`)。`get_status` に `ray_tracing.ray_layout_mode`。
-- RT の task の拒否は parser の code のまま、fields(`task` / `ray_type` / `group` / `miss` / `stage` / `keys` など)が `error` に並び、editor と reload の拒否には `document` と graph の node の `node` も付きます(✅RTL-1b)。`get_status.render_pipeline.refusal` にも code と fields が付きます(`document` / `node` は無し)。
-- `get_render_authoring_context` に `ray_layout: {mode, reference, ray_types, groups, misses, default_group, error?}`、`get_graph_catalog` の parameter に `key_choices_from`(object の鍵の候補。形は `choices_from` と同じ)(✅RTL-1b)。
-- `get_frame_plan` の `ray_query_acceleration_structures` に `named_tlas_blas: {<TLAS 名>: [<resident_blas_keys と同じ形>]}`(✅RTL-1b。[第6章](06_rendering.md) §6.15 の「BLAS variant と `resident_blas_keys` 診断」)。
-- `get_shader_interface` は、root が layout を名指すとき layout の生成 include を渡して compile します(✅RTL-1b)。
-- 名前付きの拒否 `pelican.ray_layout_destination_exists@1 {method, path, document_kind}`(✅RTL-1a。`edit_ray_layout` が新しく作る場所に、root が名指していないファイルがある)。edit の時点の layout / bindings の拒否は parser の code のまま(`pelican.ray_group_layout_invalid@1`・`pelican.ray_binding_record_invalid@1`・`pelican.ray_tracing.bindings_without_layout@1` など)、`asset_not_found {method, asset}`・`asset_data_unavailable {method}`(`procedural_records`)。
-- 行に当たらない ray binding は失敗にならず、`get_ray_layout.unresolved_bindings` に出ます(✅RTL-1a)。staged の世代の巻き戻りの文 `pelican.ray_tracing.generation_rolled_back@1: …` に原因の文が付きます。
-
-2026-10 の追加(EB-1。形の正は下の「material を消す・戻す・改名する」と §10.4 の `dist-config`):
-
-- 新メソッド `delete_material {name}` / `register_material {path}` / `rename_material {name, new_name}`(✅EB-1、`aaa7b2da`)。名前付きの拒否 `material.in_use@1 {name, bindings, objects, count, render_documents}`・`material.document_shared@1 {name, path, names}`(新)、ほかは MT-1 の `material.*@1`。
-- `list_assets` の `path` は asset_data に書かれた綴り(project 相対)になり、解決したファイルの絶対 path は新しい `resolved_path` です。material も名前ごとに 1 行で出ます(`kind: "material"`)。`get_component_add_candidates` の `asset_selection.choices[].path` も同じ相対の値です(実装者の報告)。
-- 名前付きの拒否 `graph.buffer_key_unknown@1 {buffer, key, allowed}`(✅EB-1)。graph / frame graph の buffer の entry に、frame graph が読まない鍵がある(`initial_f32` の綴り間違いなど)。
-- `update_assets_manifest` は再検証が走っている間は待たずに `assets_verification_running@1 {store}` で断ります(✅EB-1。下の「起動時の asset 検証の結果」)。
-- `pelican_cli dist-config` が asset store を manifest と照らし、違えば exit 1(`--skip-assets-verify` で外す。§10.4)。
-
-2026-10 の追加(FO-1。形の正は [第6章](06_rendering.md) §6.6 の「pass の順を指定する」、§6.2 の `render_targets`、§6.7 の「起動時に読めない material 文書」):
-
-- `edit_frame_node_order` は、root の rendering 節の依存の無い 2 つの pass の入れ替えを通します(✅FO-1、`a4d7760a`。前は依存の循環 `render_pipeline_preflight_failed`)。依存と矛盾する並びは ticket の結果の拒否 `frame_node_order.conflicts_dependency@1 {graph, first, second, reason: "reads" | "after" | "before" | "canonical_order", resource?, via?, anchor?}` です。名前付きの AS の操作の順も同じ code で断ります。
-- 名前付きの拒否 `graph.image_key_unknown@1 {image, key, allowed}`(✅FO-1)。合成した構成の `render_targets[]` の entry(graph の `render.image` の node を含む)に、frame graph が読まない鍵がある(`history` の綴り間違いなど)。`allowed` は 17 個です。
-- `--strict-assets` の無い起動で、asset_data の `materials[]` が指す文書が無い・読めないとき、起動は止まらず、その文書の material を登録しません(✅FO-1)。`get_problems` に `document_kind: "material"` の 2 種が入ります: 文書ごとの error `material.document_unknown@1` / `material.document_invalid@1`(`document`、JSON でなければ `line` / `column`、`fields: {path, reason, line?, column?}`)と、元の material に落とした model ごとの warning `material.binding_unresolved@1`(`document` 無し、`fields: {model, materials}`)。`--strict-assets` では今までどおり起動が失敗します。
-- `list_materials` の行に `line?` / `column?`。起動時に engine が断った文書の `status` / `reason` / `line` / `column` は engine の状態で、起こし直すまでファイルを直しても変わりません(✅FO-1)。`status` の値は `loaded` / `missing` / `invalid` のままです。
-
-2026-10 の追加(EB-2、`e1ba9058`。形の正は下の「material を消す・戻す・改名する」、[第6章](06_rendering.md) §6.7 の「起こし直さずに取り込む」、[第13章](13_editor.md) §13.5 の「ray の layout と bindings を読み書きする」):
-
-- `register_material {path}` が、`materials[]` に載っていて起動時に断った文書なら `material.path_conflict@1` で断らずに読み直して登録し、答えに `recovered: true` と `rebuilt_models` が付きます(✅EB-2)。取り込んだ後の `list_materials` は `loaded` です。
-- `hot_reload` に宣言された文書なら、ファイルの保存で同じ取り込みが走ります(reload participant `pelican.material_documents`)。watch が見ている登録済みの文書が読めなくなると、`get_problems` に source `hot_reload` の `material.document_invalid@1` / `material.document_unknown@1` が入ります(✅EB-2)。
-- `get_ray_layout.selectable_materials` の各行に `used_by: {count, objects}`、asset の selector の行に `model`(✅EB-2)。
-- `edit_ray_layout` / `restore_render_documents` の commit は、書き換えた asset_data の record の逆操作を `procedural_records_before: {<参照>: <JSON 文字列>}` で返します。`restore_render_documents` の `documents` に `{reference, base_digest, content: null, procedural_records: <その文字列>}` を渡すと、その record だけを戻します。文字列の中は `{<asset 名>: <record または null>}` です。文字列のまま保持することで数値型・メンバー順を保ち、同じ digest に戻る編集の繰り返しや engine の再起動後も Undo / Redo できます。asset_data 全体の digest と復元先 layout の検査は行います。`procedural_records` を省いた従来の digest だけの形式も受けますが、これは engine が動いている間の履歴に限ります(✅EB-2。拒否 `render_document_not_writable {reason: "procedural_records_only"}`)。
-
-2026-10 の追加(EB-3 / FO-2、`31c390c7`。形の正は [第13章](13_editor.md) §13.5 の「SBT の全行を 1 回で読む —— `get_ray_table`(✅EB-3)」と「RT の拒否の code と fields」、[第6章](06_rendering.md) §6.15 の「shader record の宣言(✅EB-3)」と §6.7 の「pass の宣言漏れは別の code(✅FO-2)」):
-
-- 新メソッド `get_ray_table {limit?: 1..65536(既定 1024), offset?}`(✅EB-3)→ `{mode, generation, layout_reference, bindings_reference, groups, acceleration_structures, rows, total, offset, truncated}`。全 object の hit group・binding・record・TLAS の行を 1 回で返します(triangle の行は `get_ray_occurrences` と同じ出所)。layout の無い project は `mode: "none"` と空の `rows`。
-- traced の ray type の hit shader(closest hit / any hit)は shader record を宣言しなくてよくなりました(✅EB-3。宣言するなら layout の物理 record と同じ)。
-- `pelican.ray_tracing.shader_record_abi_mismatch@1` と `pelican.ray_tracing.payload_mismatch@1` に fields(`expected` / `actual`、`task` / `stage` / `shader` / `ray_type` / `group` / `miss`、payload は `caller` か `closesthit`)が付きます(✅EB-3)。commit の時の拒否では `error` に平らに、問題の一覧では `fields` に。message の文は前のままです。
-- 名前付きの問題 `material.pass_contract_unmet@1 {material, material_document, pass, passes?, requirement, reason}`(✅FO-2)。文書は読めるのに、それを描く pass が material の使うもの(今は `ray_query`)を宣言していない。起動時の `get_problems` の error で、`document` / `document_kind` は pass を宣言している文書(`preset` / `feature` / `root_graph` と `node` / `root_rendering`)。FO-1 の時点ではこの場合も `material.document_invalid@1` でした。pass が宣言すると次の frame で engine が取り込み直し、問題は消えます。
-- `list_materials` の `status` に `unusable`(✅FO-2。`pass`・`requirement` が付き、`reason` は問題の message、`materials: []`)。値は `loaded` / `missing` / `invalid` / `unusable` の 4 つです。
-- `register_material {path}` の recovered の道で、まだ pass が宣言していなければ `material.pass_contract_unmet@1` で断ります(✅FO-2)。
+各 method に後から足された鍵と名前付きの拒否も、上の表の「正本」の節に書きます。足された順(作業単位・日付・commit)は [RPC の追加の記録(2026)](../history/rpc_additions_2026.md) にあります。
 
 ### 起動時の asset 検証の結果(✅AV-1)
 
@@ -494,7 +411,7 @@ player が起動時に行う assets manifest の照合([第3章](03_project_form
 - 走っている間にもう一度呼ぶと、新しく走らせず `{"state":"running"}` を返します(合流)。
 - manifest を宣言した store が無い project では走らせず `{"state":"not_run","reason":"no asset store declares a manifest"}` を返します。
 - 再検証は log を出しません。配布 build でも明示の要求として走り、終わると `verified` になります。
-- 照合する store の構成は、起動時のものか、✅PJ-1 の `edit_project_settings` で足した後のものです。project.json を手で書き換えたときは engine を起こし直します(下の「project.json の宣言を書き換える」)。
+- 照合する store の構成は、起動時のものか、✅PJ-1 の `edit_project_settings` で足した後のものです。project.json を手で書き換えたときは engine を起こし直します([第13章](13_editor.md#projectjson-の宣言を書き換えるpj-1) §13.5 の「project.json の宣言を書き換える」)。
 
 **`update_assets_manifest {"store": "<name>"}`** は「今のディスクを正とする」操作です。`pelican_cli assets manifest` と同じ書き方(hash cache は `<project>/.pelican/assets-hash-cache.json`、`--full` なし)でその store の manifest を書き、INFO を 1 行(`manifest main: 2 files (1 hashed, 1 cached) -> <path>`、CLI と同じ文言)出して、`verify_assets` と同じ再検証を始めます([`updateManifest()`](../../src/core/loader/assetsverification.cpp#L318))。返り値は `{"store":"main","manifest":"<path>","files":2,"hashed":1,"cached":1,"state":"running"}` です。書き込みは handler の中で同期に行います。AV-1 の時点では、再検証が走っている最中ならそれが終わるまで待ってから書いていました(その間は frame も止まりました)。✅EB-1(`aaa7b2da`)から、再検証が走っている間は待たずに `assets_verification_running@1 {store}` で断ります(走っているかを見て、さらに store の disk の lock を待たずに取ろうとし、取れなければ同じ拒否。[`AssetsVerification::updateManifest()`](../../src/core/loader/assetsverification.cpp#L318))。`get_status.assets_verification.state` が `running` でなくなってから送り直します。worker に合流して結果を待たずに返す形にしなかったのは、書き込みの失敗を RPC の答えで返せなくなるためと、Studio の Assets のドックが走っている間は Update manifest を送らない作りだからです(実装者の報告)。
 
@@ -507,327 +424,6 @@ params は `get_assets_verification` / `verify_assets` が空の object だけ�
 | `assets_manifest_write_failed@1` | `update_assets_manifest: cannot write the manifest of asset store 'main': <理由>` | `{"store","manifest","reason"}`(宣言した manifest が解決できない store では `{"store","reason"}`) |
 | `assets_verification_unavailable@1` | `verify_assets: this host does not verify assets` | `{}` |
 | `assets_verification_running@1`(✅EB-1) | `update_assets_manifest: the asset stores are being verified; update the manifest of 'main' once get_status says the verification is done` | `{"store":"main"}` |
-
-### project.json の宣言を書き換える(✅PJ-1)
-
-`get_project_settings` / `edit_project_settings`(✅PJ-1、`89643cd7`)は、project.json の `hot_reload` と `asset_stores` を動いている engine に書かせ、engine を起こし直さずに反映します([2 method の登録](../../src/core/communication/projectsettingsrpc.cpp#L253)。[engine の RPC への登録](../../src/core/communication/rpcserver.cpp#L1588))。Blank / Standard の雛形はどちらの鍵も宣言しないので、HW-1 の監視と AV-1 の照合は、これまで project.json を手で書いて engine を起こし直さないと効きませんでした。2026-10-03 に利用者が「Studio のボタンで宣言を足す」形を承認し(HW-2 / AV-1s)、これはその engine 側です。✅HW-2s / AV-1s(`78737fdf`)から、Studio の **Assets のドック**がこれを呼びます(行ごとの Reload when saved outside、Track asset contents…、答えの `previous` を送り返すドックの Undo。拒否は 1 文で出し、`restart_required` が `null` でなければ Restart engine を出す。[第13章](13_editor.md) §13.1 の「Studio の Assets のドック」)。何を受けて何を断るかの規則は [第3章](03_project_format.md) §3.4 の「起動中の engine に宣言を足す」です。
-
-**`get_project_settings {}`** → `{project_digest, hot_reload, asset_stores}`。2 つの値は project.json に書かれているままで、鍵が無ければ `null` です。`project_digest` は project.json の bytes の sha256 で、`edit_project_settings` の `base_project_digest` に渡します。params は空の object か省略だけです。
-
-**`edit_project_settings {base_project_digest, hot_reload?, asset_stores?}`**([書き込みと反映](../../src/core/communication/projectsettingsrpc.cpp#L93))
-
-- 鍵を省けば今の値のまま、`null` を渡せば鍵ごと消します。`hot_reload` は配列の置き換えで、HW-1 の検査([第3章](03_project_format.md) の「hot reload で監視するもの」)を通した正規化の形で書きます。`asset_stores` は宣言の全体(`{name: {mount, manifest?}}`)を渡します。
-- 書き込みは project の文書の transaction で、`base_project_digest` を CAS に使います。ほかの鍵と並びは保ちます。書くと全体が 2 空白の indent に展開されるので、値を元に戻しても digest は元に戻りません(実例: 何も宣言しない project の `1f89682d…` に store と `hot_reload` を足して戻すと `6d686b44…` になる)。値が変わらない要求は書かず、`changed: false` を返します。
-- 書いた後、その場で 3 つを反映します: resolver の store の一覧と `hot_reload` の宣言の差し替え(`PathResolver::replaceDeclarations()`)、file watcher の作り直し(`ReloadService::setup()` をもう一度。§10.5 の `scans` などの累計は引き継ぎます)、asset の照合(新しく宣言した manifest のファイルが無ければ今のディスクから書き、再検証を始める。[`redeclareStores()`](../../src/core/loader/assetsverification.cpp#L389))。照合が走っている最中なら、その照合は終わった後に新しい store の一覧でもう一度走ってから結果を出します。
-- params は上の 3 つの鍵だけで、ほかの鍵、無いか文字列でない `base_project_digest`、配列でも `null` でもない `hot_reload`、object でも `null` でもない `asset_stores` は `-32602` です。
-
-返り値(実例。何も宣言しない Blank 相当の project に store と監視を足した。`get_status.reload.watch` は `["assets/textures","shaders"]` になる):
-
-```json
-{"committed":true,"changed":true,
- "previous_project_digest":"1f89682d…","project_digest":"621c7ab7…",
- "applied":{"asset_stores":{"main":{"mount":"assets/"}},"hot_reload":["assets/textures","shaders"]},
- "previous":{"asset_stores":null,"hot_reload":null},
- "asset_stores_change":{"added":["main"],"removed":[],"manifests_declared":[],"manifests_removed":[]},
- "assets_verification":{"state":"not_run","reason":"no asset store declares a manifest","generated":[],"failed":[]},
- "restart_required":null}
-```
-
-続けて同じ store に `"manifest": "assets.manifest.json"` を足すと、`asset_stores_change.manifests_declared` が `["main"]`、`assets_verification` が `{"state":"running","generated":[{"store":"main","manifest":"<path>","files":6,"hashed":6,"cached":0}],"failed":[]}` になります。
-
-| 鍵 | 中身 |
-|---|---|
-| `committed` | 成功なら常に `true` |
-| `changed` | project.json を書いたか。`false` なら何も書かず、`project_digest` は前のまま |
-| `previous_project_digest` / `project_digest` | 書く前と書いた後の digest |
-| `applied` / `previous` | 書いた後と書く前の `{hot_reload, asset_stores}`(project.json のままの値)。`previous` をそのまま渡すと戻ります。外せるのは、この engine の実行中にこの RPC で足した store と manifest だけです |
-| `asset_stores_change` | `{added, removed, manifests_declared, manifests_removed}`。store の名前の列 |
-| `assets_verification` | 照合の module の答え `{state, reason?, generated, failed}`(`generated` は書いた manifest、`failed` は書けなかった manifest と理由)。照合しない host(module が無いか、起動時の照合の経路を通っていない)と `changed: false` では `null` |
-| `restart_required` | `null` か `{reason}`。出るのは、project.json を書いた後に反映が失敗したときと、監視か照合の module の無い host で、その部分が要るときだけです。player では `null` です([その組み立て](../../src/core/communication/projectsettingsrpc.cpp#L205)) |
-
-照合が終わった通知はありません。`get_status.assets_verification.state` が `running` でなくなるのを待ちます。
-
-断るときは何も書きません。形は `code: -32000`、`data: {error_code, error_fields}` です。
-
-| `error_code` | いつ | `error_fields` |
-|---|---|---|
-| `project.settings_change_unsupported@1` | engine が開いたときからある宣言を動かす変更: mount の移動、store の root の移動(`.pelican/local.json`)、起動時からある store の削除、起動時からある manifest の削除と差し替え、足す store の root が mount の名指すフォルダでない(実例の文言: `the mount moves from 'assets/' to 'assets/models', which changes where references resolve; restart the engine after editing project.json`) | `{key: "asset_stores", store?, reason}` |
-| `external_modification` | `base_project_digest` が今の project.json と違う。または transaction が書く直前に変更を見つけた | `{expected, actual}`(transaction が見つけたときは `actual: null`) |
-| `project.hot_reload_invalid@1` | `hot_reload` が HW-1 の検査に通らない(例 `project.json hot_reload[0] '../x' must not contain '..'`) | `{key: "hot_reload", reason}` |
-| `project.settings_invalid@1` | 書いた後の project.json が engine の開くときの検査に通らない(`key: "project"`)、`asset_stores` が起動時の検査(mount の重なりなど)に通らないか、新しく宣言した manifest が解決できない(`key: "asset_stores"`) | `{key, store?, reason}` |
-| `project.settings_transaction_busy@1` | 別の書き手が project の文書の transaction を持っている | `{path}` |
-
-残る穴(着地時の記録): manifest を書いている間と、走っている照合の終わりを待つ間は frame が止まります(✅EB-1 で `update_assets_manifest` は待たずに断るようになりましたが、この RPC の新しい manifest の書き込みは今も待ちます。EB-1 の実装者の報告)。作り直した watcher は、見張っていなかった間の外の変更を読み直しません。mount で始まり `..` で mount の外へ出る参照は、store を足すと解けなくなります。resolver の差し替えは lock を取らず、main thread の frame の境目で呼ぶことが前提です。
-
-### material 文書を読み書きする(✅MT-1)
-
-7 本(✅MT-1、`976c410d`)は、material 文書(`pelican.material`)・`.surface` の宣言・model の material_bindings を、動いている engine に読ませて書かせます([MT-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L14)。[MT-1 の handler の登録](../../src/core/communication/materialdocumentrpc.cpp#L2666))。書く 3 本は project の文書の transaction と digest の CAS で書き、返る前に engine に当てます。どの鍵の変更が live で、どれが rebuilt / restart_required かの規則は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、engine が書くファイルの形は [第5章](05_assets.md) §5.2 です。✅MT-1b の `list_surfaces` と、✅MT-2 の object ごとの上書きの 2 本(`set_object_material` / `get_object_materials`)もこの節に書きます。
-
-**読む 4 本と `list_surfaces`**(状態を変えません)
-
-- **`list_materials {}`** → `{asset_data_digest, documents: [{path, material_digest, status, reason?, materials: [{name, surface, tags, id, registered}]}]}`。asset_data の `materials[]` の並びのままです。`status` は `loaded` / `missing`(読めない。`material_digest` は `null`)/ `invalid`(JSON でない、または `pelican.material` の `materials` 配列が無い)で、`reason` が付きます。✅FO-1(`a4d7760a`)から、起動時に engine が断った文書の行は、`status` / `reason`(JSON でなければ `line` / `column` も)が engine の状態です。ファイルを後で直しても、起こし直すまでこの値のままです(その文書の material は登録されていないため。[第6章](06_rendering.md) §6.7 の「起動時に読めない material 文書」)。それ以外の行は今までどおりファイルを読んだ結果です。✅FO-2(`31c390c7`)から、文書は読めるのにそれを描く pass が material の使うもの(今は ray query)を宣言していない行は `status: "unusable"` で、`pass`・`requirement` が付き、`reason` は問題の一覧の message(直す場所の pass を言う文)、`materials` は空です([第6章](06_rendering.md) §6.7 の「pass の宣言漏れは別の code(✅FO-2)」)。`id` は `get_render_authoring_context` の `materials[]` と同じ draw の鍵、`registered` はこの engine がその文書からその material を登録しているかです。params は省くか空の object だけです。
-- **`get_material {path, name?}`** → `{path, material_digest, name, names, registered, material}`。`material` は文書に書かれているままの object で、鍵の順も文書のままです(ordered の handler)。`path` は asset_data に書かれたままか、正規化して同じになる参照です。文書が 1 つの material だけを持つなら `name` は省けます。
-- **`get_surface_schema {surface}`** → `{surface, params: [{name, type, default, min?, max?, hint?, encoding}], textures: [{name, default, color_space, role, dimension}]}`。`.surface` の `//!` の宣言そのままで、何も足しません。`surface` は `.surface` で終わる参照です。
-- **`get_material_bindings {model}`** → `{model, material_bindings, bindings_digest, primitives: [{mesh, primitive, slot, material, usd_path}], objects, object_overrides}`。`model` は asset_data の `models[]` の名前か、engine の基本形の参照です。`slot` は model のファイル(基本形なら生成した形)が primitive に付けている glTF の material の名前、`material` は今の割り当て(binding が無ければ `slot` と同じ)です。material_bindings の文書が無ければ `material_bindings` / `bindings_digest` / `usd_path` は `null` です。
-  - `objects` / `object_overrides`(✅MT-2): `objects` は、その model を `simplemodelview` で描く scene の object の数です。エディタが持つ文書の全部の scene を数え、prefab から生成された object も含みます。`object_overrides` はそのうち `simplemodelview.materials` に行を持つ(自分の material を持つ)数です([object を数える所 MT-2](../../src/core/communication/materialdocumentrpc.cpp#L1488))。
-- **`list_surfaces {}`**(✅MT-1b、`a6373c01`)→ `{surfaces: [{reference, source: "engine" | "project", name?, params, textures, routing?, render_state?, error?}]}`([MT-1b の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L45))。引数は取りません(`{}` 以外は `-32602`)。
-  - 並び: engine の資源に登録された `surfaces/**.surface`(`engine://`、整列)が先で、その後に project のディレクトリの下の全部の `*.surface`(`project://`、整列)です。project の走査は再帰で、名前が `.` で始まるディレクトリと symlink のディレクトリには入りません。asset store の実体のディレクトリを別に辿る処理はありません。
-  - `params` / `textures` は数で、`get_surface_schema` と同じ読み方で数えます。読めない・parse できない surface は落とさず、数の代わりに `error`(例外の文)を付けて並べます。
-  - `name` と `routing: {alpha_mode, double_sided}` は、engine の OpenPBR の `manifest.json` の variant が載せている surface にだけ付きます。`name` は variant の名前、`routing` は `create_material` の `routing` にそのまま渡せる形です。
-  - `render_state: {blend, cull, depth_test, depth_write, depth_compare}` は、surface の `//!` の宣言に `render_state:` があるときだけ付きます。
-  - 実例(test): `engine://surfaces/openpbr/opaque_single.surface` は `name: "opaque_single_sided"`、`routing: {"alpha_mode": "opaque", "double_sided": false}`、`render_state: {"blend": "opaque", "cull": "back", "depth_test": true, "depth_write": true, "depth_compare": "less"}`。`//! language: cobol` の project の surface は `error` に `cobol` を含み、`params` がありません。
-
-実例(test。Blank の project の箱 `engine://primitives/cube`、割り当て前):
-
-```json
-{"model":"engine://primitives/cube","material_bindings":null,"bindings_digest":null,
- "primitives":[{"mesh":0,"primitive":0,"slot":"pelican.primitive.default",
-                "material":"pelican.primitive.default","usd_path":null}]}
-```
-
-**書く 3 本**(どれも返り値に `committed: true`・`changed`・`applied: "live" | "restart_required"`・`restart_required: {reason} | null`。`edit_material` の `applied` は ✅MT-3 から `"rebuilt"` も)
-
-- **`edit_material {base_material_digest, path, name?, values?, textures?, tags?, routing?, variants?, surface?}`**(edit_material の本体 [`editMaterial()`](../../src/core/communication/materialdocumentrpc.cpp#L1080))
-  - `values` / `textures` は `{param: 値 | null}` で今の値に重ねます(`null` はその上書きを外す)。`tags` / `routing` / `variants` は値の全体で置き換え(`null` は鍵ごと消す)、`surface` は参照を替えます。`surface` を替えるときは、material が既に書いている `values` / `textures` の名前が新しい surface に宣言されている必要があります(無ければ `material.param_unknown@1`)。
-  - 返り値に `path`・`name`・`material_digest`・`previous_material_digest`・`previous`。`previous` は渡した鍵ごとの前の値です(`values` / `textures` は `{param: 前の値 | null}`、ほかは前の値か `null`)。`previous` を新しい `material_digest` と一緒に同じ RPC で送れば戻ります。
-  - `values` だけが変わったときは live です。`textures` / `tags` / `routing` / `variants` / `surface` のどれかが実際に変わったときは(✅MT-3、`c6f94eb7`)、書いた後に engine がその文書の material を登録し直し、前の登録で描いていた model をその場で組み直して `applied: "rebuilt"`・`restart_required: null`・`rebuilt_models: [model]` を返します。MT-3 の前は書いたうえで restart_required でした。その material をこの engine が登録していない、host に要る container か reload service が無い、登録し直しか組み直しが失敗した、のどれかなら、書いたうえで restart_required です(文書は書かれたまま)。規則の全体は第6章です。
-  - `routing` が実際に変わると(✅MT-3)、asset_data の `models[]` の `material_bindings` のうち、その material を指す行の `routing` を同じ transaction で書き直します。書いた答えには必ず `rewritten_bindings: [{model, material_bindings, bindings_digest, previous_bindings_digest}]` が付きます(無ければ `[]`。`changed: false` の答えには付きません)。`previous` の `routing` を送り返すと binding も戻ります。割り当て済みの material の `routing` を外す(`null`)要求は `material.routing_conflict@1` で断ります。
-  - `surface` か `routing` の片方だけを送ると(✅VR-1、`45864d55`)、送られなかった片方を engine の surface の manifest(OpenPBR)の組に合わせて同じ edit で書きます([VR-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L117))。`surface` だけなら、その surface が manifest に載り material が `routing` を持つとき、`routing` をその variant の値に。`routing` だけ(object)なら、今の surface が manifest に載るとき、同じ manifest でその routing の variant の surface に。補った鍵も `previous` に入るので、送り返すと両方が戻ります。両方を送って組でなければ今までどおり `material.document_invalid@1`(reason `… routing variant '…' does not match surface pipeline state`)で、何も書きません。project の surface と、`routing` を持たない material には補いません。VR-1 の前は片方だけの変更が同じ code で断られていました(opaque ↔ mask は断られずに通っていた。実装者の報告)。規則の全体は第6章です。
-  - 実例(test。✅VR-1): `opaque_single` で箱に bind した `paint` に `{"surface": "engine://surfaces/openpbr/blend_single.surface"}` だけを送ると `applied: "rebuilt"`・`previous: {"surface": "engine://surfaces/openpbr/opaque_single.surface", "routing": {"alpha_mode": "opaque", "double_sided": false}}`・`rewritten_bindings` に箱の bindings の文書 1 つで、material と binding の routing が `{"alpha_mode": "blend", "double_sided": false}` になります。続けて `{"routing": {"alpha_mode": "opaque", "double_sided": true}}` だけを送ると surface が `engine://surfaces/openpbr/opaque_double.surface` になります。
-  - 実例(test): 赤の `base_color` / `emission_color` を青にすると `applied: "live"`・`previous: {"values": {"base_color": [1,0,0,1], "emission_color": [1,0,0,1]}}` で、次の frame の画素が青になります。続けて `tags: ["paint"]` を送ると、✅MT-3 から `applied: "rebuilt"`・`rebuilt_models: ["engine://primitives/cube"]`・`previous: {"tags": null}` で、画素は赤のままです。
-  - 実例(test。✅MT-3): 箱に bind したマゼンタの `paint` に `textures: {"emission_color_map": "project://textures/blue.png"}` を送った答え(digest は略)。次の frame の画素が青になります。
-
-    ```json
-    {"applied":"rebuilt","restart_required":null,"changed":true,"committed":true,"name":"paint",
-     "path":"materials/paint.material.json","material_digest":"…","previous_material_digest":"…",
-     "previous":{"textures":{"emission_color_map":null}},
-     "rebuilt_models":["engine://primitives/cube"],"rewritten_bindings":[]}
-    ```
-
-  - 続けて `surface: "engine://surfaces/openpbr/blend_single.surface"`・`routing: {"alpha_mode": "blend", "double_sided": false}`・`values: {"geometry_opacity": 0.5}` を送ると、`rewritten_bindings` に箱の bindings の文書が 1 つ(`bindings_digest` は直後の `get_material_bindings` と同じ)、`previous.routing` は `{"alpha_mode": "opaque", "double_sided": false}` で、次の frame の画素は白が透ける青です(test の project は `forward_transparent_v1` の material pass を持つ)。
-- **`create_material {path, surface, name?, values?, tags?, routing?}`**([create_material の本体](../../src/core/communication/materialdocumentrpc.cpp#L1329))
-  - 1 つの material の文書を作り、asset_data の `materials[]` に足して(1 つの transaction)、live で登録します。`name` の既定はファイル名、`routing` の既定は `{alpha_mode: "opaque", double_sided: false}` です。
-  - 返り値に `path`・`name`・`material_digest`・`asset_data_digest`・`previous_asset_data_digest`。
-- **`bind_material {model, material, primitive?: {mesh, primitive} | slot?}`** または **`{model, bindings: [{mesh, primitive, material}]}`**([bind_material の本体](../../src/core/communication/materialdocumentrpc.cpp#L1677))
-  - `primitive` はその 1 つ、`slot` はその glTF の material を持つ primitive の全部、どちらも無ければ model の全 primitive に割り当てます。`primitive` と `slot` の両方、`bindings` と `material` / `primitive` / `slot` の両方は `-32602` です。
-  - `material` は、その model の glTF の material の名前か project material の名前です。両方にあれば `material.binding_invalid@1`(曖昧)、どちらにも無ければ `material.name_unknown@1`、`routing` の無い project material は `material.binding_invalid@1` です。
-  - model の material_bindings の文書を書き(無ければ作り、asset_data の `models[]` に `material_bindings` を足す。基本形は `models[]` に宣言ごと足す)、model を読み直します。割り当ては model 単位です。
-  - 返り値に `model`・`material_bindings`・`bindings_digest`・`previous_bindings_digest`(文書が無かったなら `null`)・`previous: {bindings: [{mesh, primitive, material}]}`(変わった primitive の前の material)、asset_data を書いたときは `asset_data_digest` / `previous_asset_data_digest`。`previous.bindings` を `bindings` に送れば戻ります。
-  - 実例(test): 箱に `{model: "engine://primitives/cube", slot: "pelican.primitive.default", material: "paint"}` → `applied: "live"`、`previous: {"bindings": [{"mesh": 0, "primitive": 0, "material": "pelican.primitive.default"}]}`。
-  - **戻しの規則(✅MT-2b、`213562bb`)**: 要求を当てた結果、全 primitive が model の元の material(glTF の slot、基本形は `pelican.primitive.default`)になるときは、binding を書かずに外します。bindings の文書を消す・asset_data の `material_bindings` の鍵を外す・MT-1 が基本形に足した `models[]` の項目を外す、の 3 つを 1 つの transaction で書き、model を読み直します([bind_material の戻しで外す所 MT-2b](../../src/core/communication/materialdocumentrpc.cpp#L1614))。返り値は `material_bindings: null`・`bindings_digest: null` と、`previous` / `previous_bindings_digest`(asset_data を書いたときは `asset_data_digest` / `previous_asset_data_digest` も)です。宣言が無い状態で同じものを送ると、何も書かず `changed: false` です。
-  - 上の実例の `previous` を `bindings` に送り返すと、この道で箱が灰に戻ります(test)。外す理由は、bindings の形式が点を含む material 名を行に書けないためです(commit の記述)。一部の primitive だけを既定に戻すときは、今までどおり slot の名前の行を書きます。
-
-params の形が違う(鍵が足りない・知らない鍵・型が違う)ときは `-32602` です。断るとき(`-32000`、`data: {error_code, error_fields}`)は何も書きません([MT-1 の拒否の code の並び](../../src/core/communication/materialdocumentrpc.cpp#L54))。
-
-| `error_code` | いつ | `error_fields` |
-|---|---|---|
-| `external_modification` | `base_material_digest` が今の文書と違う。または transaction が書く直前に変更を見つけた | `{path, expected, actual}`(transaction が見つけたときは `expected` / `actual` が `null`) |
-| `material.value_invalid@1` | 値が surface の宣言の型か `min` / `max` に合わない、texture の参照が解決できない(test の入力 `base_color: [2.0, 0, 0, 1]` なら `reason` は `component 0 2.0 is above the declared max 1.0`。文はコードの読みで、test は `max` を含むことだけを見ます) | `{path, param, reason}` |
-| `material.param_unknown@1` | surface が宣言していない param / texture | `{path, param, kind: "value" \| "texture"}` |
-| `material.document_unknown@1` | asset_data の `materials[]` に無い、または文書が読めない | `{path, reason}` |
-| `material.document_invalid@1` | 文書が JSON でない・`pelican.material` でない、書いた後の文書が起動時の読み込み(parse と lowering)を通らない、surface の無い material に values / textures、書いた後の asset_data が読めない | `{path, reason}` |
-| `material.name_unknown@1` | 複数の material を持つ文書で `name` が無い・その名前が無い(`bind_material` では割り当てる material が無い) | `{name, path?, reason}` |
-| `material.name_invalid@1` | `create_material` の名前が英数字と `_` でない | `{name, reason}` |
-| `material.name_conflict@1` | `create_material` の名前が、文書・登録済みの material・model の glTF の material にある | `{name, path}` か `{name, model}` |
-| `material.path_invalid@1` | `create_material` の `path` が project 相対・`/` 区切り・`.json` 終わり・`.` / `..` 無しでない | `{path, reason}` |
-| `material.path_conflict@1` | `create_material` の `path` がもう asset_data に載っているか、ファイルがある | `{path}` |
-| `material.surface_unknown@1` | surface が読めない・parse できない | `{surface, reason}` |
-| `material.model_unknown@1` | `models[]` に無い model、読み込まれていない model、知らない基本形、model の container の無い host | `{model, reason}` |
-| `material.binding_invalid@1` | 無い primitive、その slot の primitive が無い、material の名前が曖昧、routing の無い material、割り当ての無い primitive が glTF の material も持たない、今の material_bindings の文書が読めない、書いた後の文書が読めない(✅MT-3 から `edit_material` でも: routing を書き直した bindings の文書が読めなくなる) | `{model, reason}` |
-| `material.transaction_busy@1` | 別の書き手が project の文書の transaction を持っている | `{path}` |
-| `material.routing_conflict@1`(✅MT-3) | `edit_material` が、binding に指されている material の `routing` を外そうとした(`routing: null`)。binding は routing を要る | `{path, material, routing: null, bound_by: [{model, routing}]}`(`bound_by` は bindings の文書ごとに、その material を指す最初の行の routing) |
-
-- `edit_batch` の対象ではありません(material の文書は RD-1 の render 文書の集合の外。commit の記録)。MT-1 の時点では `delete_material` はありませんでした(→ ✅EB-1。下の「material を消す・戻す・改名する」)。
-- MT-1 の時点の `list_assets` は name の無い entry を飛ばしたので、material の一覧には `list_materials` を使っていました。✅EB-1 から `list_assets` にも material が名前ごとに出ます(下の同じ節)。`list_materials` は文書ごとの状態と `registered` を返す点で今も別物です。
-- ✅MT-1s(`2d81ef51`)から、Studio の **Materials のドック**と Inspector の **Material** の行がこの 7 本と ✅MT-1b の `list_surfaces` を呼びます(surface の宣言から作る値の欄、New material…、割り当て、答えの `previous` を送り返す Undo。拒否は 1 文で出し、`restart_required` は engine の起こし直しへ。[第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。✅MT-3s(`19be8983`)から、`applied: "rebuilt"` では起こし直さずに `Applied; rebuilt N models.` を言い、`rewritten_bindings` の model ごとに Inspector の Material の行を読み直し、`material.routing_conflict@1` を 1 文で言います。
-- 残る穴(着地時の記録): 割り当て済みの material の `routing` を変えても binding の `routing` とのずれを断らない(→ ✅MT-3 で binding を同じ書き込みで書き直すようになりました)、`material_route_default` は `Renderer` の constructor が記録する(起動の順)。`bind_material` の割り当ては model 単位です。object ごとの上書きは ✅MT-2(`44b7b50a`)で入りました(下の「object ごとの上書きの 2 本」)。詳しくは第6章の同じ節です。
-
-**object ごとの上書きの 2 本(✅MT-2、`44b7b50a`)**
-
-scene の object 1 つだけの material を、その object の `simplemodelview.materials`(第4章 §4.2)に読み書きします。model の割り当て(`bind_material`)が既定で、object の行がそれを上書きします。効く順は「その primitive の行」>「全 primitive の行」> model の既定です。2 本はエディタの RPC で、`set_object_material` は scene の編集の `edit` を 1 本出します([MT-2 の契約の注記](../../src/core/communication/editorcommandservice.hpp#L372))。
-
-- **`set_object_material {actor_id, object, scene_id?, base_scene_revision?, material: 名前 | null, primitive?: {mesh, primitive} | slot?}`** または **`{actor_id, object, scene_id?, base_scene_revision?, materials: [{material: 名前 | null, primitive?}]}`**([set_object_material の本体](../../src/core/communication/editorobjectmaterial.cpp#L220))
-  - `actor_id` は必須です(`open_editor_session` の actor)。`object` は `authoring_object_id`、`scene_id` を渡すとその scene の object であることも確かめます。`base_scene_revision` を省くと今の revision です。
-  - `primitive` はその 1 つ、`slot` はその glTF の material を持つ primitive の全部(primitive の行に展開して保存します)、どちらも無ければ全 primitive の 1 行です。`null` はその対象の行を外します(model の既定に戻る)。
-  - 対象ごとに、行の material をその場で替える・行を末尾に足す・行を外す、の操作を作り、まとめて 1 本の `edit` にします(`base_revision` の CAS、undo / redo)。
-  - 返り値は `edit` の答え(`status`・`ticket` など)に `changed: true`・`object`・`scene_id`・`model`・`previous: {materials: [{material | null, primitive?}]}` を足したものです。`previous.materials` を `materials` に送れば戻ります。
-  - 何も変わらない要求は `edit` を出さず、`{changed: false, object, scene_id, model, previous}` を返します。
-  - `material` と `materials` の両方か、どちらも無い・`materials` と `primitive` / `slot` の併記・`primitive` と `slot` の併記・同じ対象を 2 回・空の `materials`・知らない鍵は `-32602` です。
-  - 実例(test。Blank の箱 2 つの右の箱): `{actor_id, object: <右>, material: "paint"}` → `changed: true`、`model: "engine://primitives/cube"`、`scene_id: "default_scene"`、`previous: {"materials": [{"material": null}]}`。次の frame で右の箱だけが赤く描かれます。
-- **`get_object_materials {object, scene_id?}`** → `{object, scene_id, model, materials: [{row_id, material, primitive?, resolved}], primitives: [{mesh, primitive, slot, material, source: "object" | "model", model_material, drawn | null}]}`([get_object_materials の本体](../../src/core/communication/editorobjectmaterial.cpp#L358))
-  - `materials` は object の行のままです。`resolved` は、その名前が model の glTF の material か登録済みの project material にあるかです。
-  - `primitives` は model の primitive ごとです。`material` は実効の material、`source` はそれが object の行から来たか model から来たか、`model_material` は model の割り当て(material_bindings、無ければ `slot`)です。
-  - `drawn` は、生きている instance がその primitive を今描いている material の名前です。instance が無ければ `null` です。
-  - 実例(test。上の後): `primitives[0]` は `{material: "paint", source: "object", model_material: "pelican.primitive.default", drawn: "paint"}`、`materials[0]` は `{material: "paint", resolved: true}`(`primitive` 無し)。
-
-断るとき(`-32000`、`data: {error_code, error_fields}`)は何も書きません。
-
-| `error_code` | いつ | `error_fields` |
-|---|---|---|
-| `material.object_unknown@1` | その id の object が無い、`scene_id` と別の scene にある、`simplemodelview` を持たない | `{object, scene_id?, name?, reason}`(✅MT-2b。`scene_id` は object が見つかったとき、`name` はさらに authoring の名前があるとき。id の object が無ければ `{object, reason}`) |
-| `material.model_unknown@1` | object の model が読めない(model の container の無い host、知らない基本形など) | `{model, object, reason}` |
-| `material.name_unknown@1` | `material` が model の glTF の material にも登録済みの project material にも無い | `{name, reason}` |
-| `material.binding_invalid@1` | model に無い primitive、その `slot` を持つ primitive が無い | `{model, object, reason}` |
-
-- `material.object_unknown@1` の `scene_id` / `name` は ✅MT-2b(`213562bb`)で足しました([MT-2b の object_unknown の fields を作る所](../../src/core/communication/editorobjectmaterial.cpp#L110))。[`editorcommandservice.hpp` の MT-2 の拒否の注記](../../src/core/communication/editorcommandservice.hpp#L388) は `{object, reason}` のままです。
-
-- scene の文書に名前の解けない行があっても(手で書いたなど)、読み込みは断りません。警告を出して、その行が無いものとして描きます(第6章 §6.7 の「object ごとの上書き」)。
-- test の無い所: Play 中の編集、`bind_material` などで model を読み直したときに上書きを解き直す経路、draw_loop の振り分け(第6章の同じ節)。
-- ✅MT-2s(`7112072e`)から、Studio の Inspector の **Material** の行が 2 本を呼びます。既定の範囲 This object で選んだ material を、Inspector の scene の編集の
-  `actor_id` と最後に見た revision を付けた `set_object_material` 1 回で送り(scene の Undo で戻る)、`get_object_materials` の `drawn` と `source` を
-  `<名前> (this object)` / `(model default: <名前>)` で見せ、`get_material_bindings` の `objects` / `object_overrides` を
-  `(N objects, M with their own material)` に使います([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
-  ✅MT-2s-b(`9d15ddc0`)から、`material.object_unknown@1` に空でない `name` があれば、Studio の 1 文はその名前で言います
-  (`<name> cannot take a material of its own: <理由>`。無ければ今までどおり `Object <object> …`)。
-
-### material を消す・戻す・改名する(✅EB-1)
-
-**EB-6 の追加**: 登録済みの `path` に `register_material` をもう一度送ると、今のファイルを読み直します。成功は `reloaded: true` と `rebuilt_models` を返し、asset_data の一覧は増やしません。読めないファイルは拒否し、それまでの描画を保ちます。以下の EB-2 の「取り込んだ後は path_conflict」は、この読み直しが入る前の仕様です。
-
-`create_material`・`edit_material`・`bind_material` と登録済み文書の読み直しでは、pass の宣言不足を `applied: "unusable"` として返せます。文書は保存済みで、engine は動き続けます。`material.pass_contract_unmet@1` (`source: "edit_rpc"`) が示す pass を直すと、再起動せずに使える状態へ戻ります。起動時に拒否された文書を取り込む recovered の経路では、宣言不足のままなら従来どおり拒否します。
-
-併せて `list_surfaces` に選べる routing 全件の `routings` が入り、`routing` は既定の先頭です。`get_material_bindings.primitives[]` の `unresolved: {material, reason, drawn}` は、未解決の割り当てと実際に描いている material を分けて返します。object の上書き先が未解決なら Problems に `material.object_material_unresolved@1` (`document_kind: "scene"`) が入り、object・scene・model・material を `fields` に持ちます。material の拒否の `fields.digest` は、同じエラー文でもファイルが変わったことを識別する SHA-256 です。
-
-`delete_material` / `register_material` / `rename_material`(✅EB-1、`aaa7b2da`)は、MT-1 で作った material を asset_data から外し、戻し、改名します([EB-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L190)。[delete_material の本体](../../src/core/communication/materialdocumentrpc.cpp#L2311))。書き込みは MT-1 と同じ project の文書の transaction で、呼び手は digest を渡しません(handler が読んだ asset_data / 文書の digest を CAS に使う)。何を名前で指していると断るかの表は [第13章](13_editor.md) §13.5 の同じ節です。
-
-- **`delete_material {name}`** → `{committed: true, name, removed: {path}, asset_data_digest, previous_asset_data_digest, applied: "live" | "restart_required", restart_required}`
-  - `name` を持つ文書を `materials[]` から外し、登録を外して material の資源を解放します。**文書のファイルは消しません**。
-  - 外さずに `restart_required` になるのは、文書に無い instance がまだその material で描いているとき(`the engine keeps the material until it starts again: model '<m>' still draws with it`)、
-    engine の asset_data の写しを替えられないとき(`the engine's copy of asset_data was not refreshed: …`)、解放が例外で失敗したとき(`the material could not be released in place: …`)です。
-  - 実例(GPU の test の値): `{"committed": true, "name": "coat", "removed": {"path": "materials/paint.material.json"}, "asset_data_digest": "…", "previous_asset_data_digest": "…", "applied": "live", "restart_required": null}`。
-    この後、`list_materials` と `list_assets` から消え、その名前の `bind_material` は `material.name_unknown@1` です。
-- **`register_material {path}`** → `{committed: true, path, names, material_digest, asset_data_digest, previous_asset_data_digest, applied, restart_required}`
-  - project の中に既にある material の文書を `materials[]` の末尾に `{path}` で載せ、`create_material` と同じく live で登録します(`delete_material` の `removed.path` を渡せば戻る)。
-  - `path` の検査は `create_material` と同じです(`project://` を外す、`.json` で終わる、`..` / `\` / 絶対 path は `material.path_invalid@1`)。
-  - **起動時に断った文書の取り込み(✅EB-2、`e1ba9058`)**: `path` が `materials[]` に載っていて、起動時に engine が登録しなかった文書(`list_materials` の `status` が `invalid` / `missing`)なら、`material.path_conflict@1` で断らずに今のファイルを読み直して登録します。asset_data は書きません。
-    実例(GPU の test の値。Blank の箱、`materials/paint.material.json`):
-
-    ```json
-    {"committed": true, "recovered": true, "path": "materials/paint.material.json",
-     "names": ["paint"], "rebuilt_models": ["engine://primitives/cube"],
-     "material_digest": "<sha256>", "asset_data_digest": "<d>", "previous_asset_data_digest": "<d>",
-     "applied": "live", "restart_required": null}
-    ```
-
-    `rebuilt_models` は、その名前を待って元の material で描いていた model で、その場で作り直したものです。作り直せなければ `applied: "restart_required"` と `restart_required: {reason}` で(material container の無い host は `this host runs no material container`)、文書の登録は残ります。
-    まだ読めなければ何も変えずに `material.document_invalid@1 {path, reason}`(ファイルが無ければ `material.document_unknown@1`)、名前が重なれば `material.name_conflict@1` です。取り込んだ後にもう一度呼ぶと `material.path_conflict@1` です。
-    test: `materialdocumentrpc_test` の [「EB-2 a material document refused at start is taken in by register_material once fixed, without a restart」](../../test/materialdocumentrpc_test.cpp#L1285)(GPU)。
-- **`rename_material {name, new_name}`** → `{committed: true, changed, path, name: <new_name>, previous_name, material_digest, previous_material_digest, rewritten_bindings: [{model, material_bindings, bindings_digest, previous_bindings_digest}], applied: "rebuilt" | "live" | "restart_required", restart_required, rebuilt_models?}`
-  - material の文書の `name` と、その名前を `material` に持つ全 model の `material_bindings` の行を 1 つの transaction で書き、MT-3 の `rebuilt` と同じく登録し直して描いている model を組み直します。
-  - 実例(GPU の test の値):
-
-    ```json
-    {"committed": true, "changed": true, "path": "materials/paint.material.json",
-     "name": "coat", "previous_name": "paint",
-     "material_digest": "…", "previous_material_digest": "…",
-     "rewritten_bindings": [{"model": "engine://primitives/cube",
-                             "material_bindings": "materials/cube.bindings.json",
-                             "bindings_digest": "…", "previous_bindings_digest": "…"}],
-     "applied": "rebuilt", "restart_required": null,
-     "rebuilt_models": ["engine://primitives/cube"]}
-    ```
-
-  - 戻すときは名前を入れ替えて同じ RPC を呼びます。`new_name == name` は `changed: false`・`applied: "live"`(何も書かない)。この engine が登録していない material は書いたうえで `restart_required` です。
-
-params の形が違う(鍵が足りない・知らない鍵・型が違う)ときは `-32602` です。断るとき(`-32000`、`data: {error_code, error_fields}`、message は `<method>: …`)は何も書きません。
-
-| `error_code` | いつ | `error_fields` の実例 |
-|---|---|---|
-| `material.in_use@1` | delete: model の bindings・scene の object の上書き・render 文書が名前で指している。rename: scene の object の上書きか render 文書が指している(bindings は書き換えるので数えない) | delete `{"name":"paint","bindings":["engine://primitives/cube"],"objects":[],"count":0,"render_documents":[]}`(message `delete_material: material 'paint' is bound by 1 model(s)`)/ rename `{"name":"coat","bindings":[],"objects":[],"count":0,"render_documents":["passes/eb1_reference.json"]}`(message `rename_material: material 'coat' is named by 1 render document(s), which a rename does not rewrite`)。`objects` は先頭 8 件の object の名前(名前の無い object は `#<authoring_object_id>`)、`count` はその総数、`render_documents` は project 相対の path を整列したもの |
-| `material.document_shared@1`(新) | delete: その文書が複数の material を持つ(1 つを外すと、ほかも黙って外れる) | `{"name":"a","path":"materials/two.material.json","names":["a","b"]}` |
-| `material.name_invalid@1` | engine の material(`pelican.*`)、model の glTF の material、rename の `new_name` が英数字と `_` でない | `{"name":"pelican.primitive.default","reason":"engine_material"}` / `{"name":…,"reason":"model_material","model":…}` / `{"name":"pelican.x","reason":"a material name is letters, digits and '_'"}` |
-| `material.name_unknown@1` | `materials[]` に載った文書のどれもその名前を持たない | `{"name":"nothing","reason":"not in a listed material document"}` |
-| `material.name_conflict@1` | rename の `new_name`・register の文書が持つ名前が、既にある material か model の glTF の material と重なる | `{"name":"spare","path":"materials/spare.material.json"}` か `{name, model}` |
-| `material.path_conflict@1` | register: その path がもう `materials[]` にあり、登録されている(✅EB-2 から、起動時に断った文書はここに入らず取り込みます) | `{path}` |
-| `material.document_unknown@1` / `material.document_invalid@1` | register: 文書が読めない / JSON でない・`pelican.material` でない。書いた後の asset_data か文書が読み込みの検査を通らない | `{path, reason}` |
-| `material.pass_contract_unmet@1`(✅FO-2) | register: 起動時に pass の宣言漏れで断った文書(`list_materials` の `unusable`)を、まだ pass が宣言していないうちに名指した(FO-2 の前は `material.document_invalid@1`) | 問題の一覧と同じ `{material, material_document, pass, passes?, requirement, reason}` |
-| `material.binding_invalid@1` | rename: 書き換えた bindings の文書が読めなくなる | `{model, reason}` |
-| `external_modification` / `material.transaction_busy@1` | MT-1 と同じ | MT-1 と同じ |
-
-**`list_assets` の形(✅EB-1)。**[`collectEditorAssets()`](../../src/core/communication/editorassetqueryruntime.cpp#L89) が作ります。
-
-```json
-{"assets": [
-  {"id": "engine://primitives/cube", "kind": "model", "path": "engine://primitives/cube", "store": "engine", "status": "builtin"},
-  {"id": "checker_box", "kind": "model", "path": "assets/models/checker_box.glb", "store": "project", "status": "loaded",
-   "resolved_path": "C:/…/assets/models/checker_box.glb"},
-  {"id": "paint", "kind": "material", "path": "materials/paint.material.json", "store": "project", "status": "loaded",
-   "resolved_path": "C:/…/materials/paint.material.json"},
-  {"id": "materials/broken.material.json", "kind": "material", "path": "materials/broken.material.json", "store": "project", "status": "invalid",
-   "resolved_path": "C:/…"},
-  {"id": "materials/gone.material.json", "kind": "material", "path": "materials/gone.material.json", "store": "project", "status": "missing"}
-]}
-```
-
-(実装者の報告の形。test は相対の `path`・絶対の `resolved_path`・material の行・`invalid` / `missing`・wire の形を見ます。)
-
-- **`path`** は asset_data に書かれた綴りです(`project://` を付けて書いてあればそのまま)。ただし、project の asset_data のファイルを読み込みの形にしたものが engine の publish 済みの写しと一致するときだけで、
-  外から書き換えられて publish されていない間は、解決した絶対 path を project 相対に直して返します(project の外ならそのまま)。EB-1 の前は model の `path` が解決した絶対 path でした。
-- **`resolved_path`** は解決したファイルの絶対 path です。engine の基本形・procedural・解決できない entry には付きません(鍵ごと無い)。
-- **material**: `materials[]` の 1 entry につき、文書が持つ material ごとに 1 行で、`id` は material の名前です。読めない文書(JSON でない・`pelican.material` でない)は `id` が path で `status: "invalid"`、
-  ファイルが無いものは `status: "missing"` です。EB-1 の前は name の無い entry として飛ばしていました。
-- 呼ぶたびに asset_data と material の文書を読みます。
-- test: `editorcommandservice_test` の [「EB-1 list_assets lists project-relative paths beside the resolved file, and materials by name」](../../test/editorcommandservice_test.cpp#L500)(CPU)、
-  `modelregistrationrpc_test` の MI-1 の test に足した `path` / `resolved_path` の検査、上の delete の GPU の test。
-
-### project の中の model ファイルを登録する・外す(✅MI-1)
-
-`register_model` / `unregister_model`(✅MI-1、`61600f9e`)は、project の中に既にある model のファイルを asset_data の `models[]` に載せ(外し)、動いている engine にその場で登録します(外します)([MI-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L163)。[MI-1 の 2 method の登録](../../src/core/communication/materialdocumentrpc.cpp#L2696))。MI-1 の前は、Blank の project に外の glb を使うには、ファイルを手でコピーし、`models[]` を手で書いて engine を起こし直すしかありませんでした(仕様書の記述)。**ファイルを project にコピーするのは呼び手の役目です**。engine は project の外の path を受けず、ファイルを書きも消しもしません。書き込みは MT-1 と同じ project の文書の transaction で、呼び手は digest を渡しません(handler が読んだ asset_data の digest を CAS に使う)。
-
-- **`register_model {path, name?}`**([register_model の本体](../../src/core/communication/materialdocumentrpc.cpp#L1976))→ `{committed: true, name, path, asset_data_digest, previous_asset_data_digest, applied: "live" | "restart_required", restart_required: {reason} | null}`
-  - `path` は project 相対です。`project://` を付けても受け、外した形で asset_data と返り値に書きます。
-  - `name` を省くとファイル名の stem です(`std::filesystem::path::stem()`。`assets/models/checker_box.glb` → `checker_box`、`a.b.glb` → `a.b`。実装者の報告)。stem が既にある名前と重なっても `model.name_conflict@1` で断り、番号は振りません(番号を振るのは呼び手)。
-  - 検査はこの順で、最初に当たったもので断ります: path の形 → 拡張子(大小を区別しない)→ ファイルがあるか → 同じ path が既に `models[]` にあるか(fragment 付きと基本形の entry は比べない)→ name の形 → name の衝突 → 読み込みの検査。読み込みの検査は起動時に `models[]` の entry を読むのと同じで、宣言を解き、ファイルを読み、`GltfLoader::inspect()` で検査し(GPU は確保しない)、glTF の material の名前を project の material と照らします([`ModelAssetContainer::preflightModel()`](../../src/core/asset/model.cpp#L960))。
-  - 通れば `models[]` の末尾に `{name, path}` を足し、asset_data の読み込みの検査(`parseAssetDataFormatJson()`)に通してから 1 つの transaction で書きます。鍵の順と改行コードは保ちます。
-  - 書いた後に engine の asset_data の写しを替え、`waitIdle()` の後に model を 1 件登録して `applied: "live"` です。model の container がまだ無い host では、替えた写しから container を作るので、この model も入って live です。
-  - 写しを替えられなかったとき(`restart_required.reason` は `the engine's copy of asset_data was not refreshed: …`)と、登録が失敗したとき(`the model could not be registered in place: …`)は、書いたうえで `restart_required` です。登録が失敗する例は、前の `unregister_model` が restart_required で engine に残っている同じ名前を、別のファイルで登録し直したときです。同じ名前・同じファイルなら、残っている model をそのまま使って live です。
-  - 実例(test。Blank 相当の project に `test/fixtures/studio_material_pass_authoring/checker_box.glb` を `assets/models/` に写して。digest は略):
-
-    ```json
-    {"applied":"live","asset_data_digest":"66bec13f…","committed":true,"name":"checker_box",
-     "path":"assets/models/checker_box.glb","previous_asset_data_digest":"99284ff8…","restart_required":null}
-    ```
-
-    この後、`list_assets` に `id: "checker_box"`・`kind: "model"`・`status: "loaded"` で出て、`simplemodelview.model` にこの名前を書いた object を `edit` で足すと、起こし直さずに描かれます。engine を起こし直しても同じ object が描かれます(test)。`asset_data_digest` は `get_procedural_assets` の `source_digest.hex` と同じ値です(どちらも asset_data の bytes の sha256。実装者の報告)。
-- **`unregister_model {name}`**([unregister_model の本体](../../src/core/communication/materialdocumentrpc.cpp#L2063))→ `{committed: true, name, removed, asset_data_digest, previous_asset_data_digest, applied, restart_required}`
-  - `removed` は外した `models[]` の entry そのままです(`material_bindings` があればそれも)。model のファイルも、bindings の文書のファイルも消しません。
-  - scene の object がその model を描いていれば `model.in_use@1` で断り、何も書きません。数えるのはエディタが持つ文書の全部の scene の `simplemodelview` で、prefab から生成された object も含みます(`get_material_bindings` の `objects` と同じ数え方)。
-  - 書いた後に写しを替え、engine の model の container から外せれば live です。外すのは、その model に animation の rig が無く、生きている instance が描いていないときだけです。どちらかがあると外さずに `restart_required` で、reason は `the engine keeps the model until it starts again: ` の後に `the model has an animation rig, which the animation service may still hold`(skin を持つ model。VRM はほぼこれ)か `a live instance still draws the model`(game logic が spawn した object など、文書に無い instance)が続きます。restart_required でも `list_assets` からは消えます(写しは替わっている)。container が無い host は live、写しを替えられないときと外すのが例外で失敗したとき(`the model could not be released in place: …`)は restart_required です。
-  - 実例(test。skin を持つ VRM 1.0 を `assets/models/character.vrm` に置いて登録した後):
-
-    ```json
-    {"applied":"restart_required","asset_data_digest":"66bec13f…","committed":true,"name":"character",
-     "previous_asset_data_digest":"d44e8320…",
-     "removed":{"name":"character","path":"assets/models/character.vrm"},
-     "restart_required":{"reason":"the engine keeps the model until it starts again: the model has an animation rig, which the animation service may still hold"}}
-    ```
-
-  - 戻すときは `register_model {path: removed.path, name: removed.name}` を呼びます。`removed.material_bindings` はこれでは戻りません(下の「残る穴」)。静的な glb を、object を消してから外し、同じ名前で登録し直すと live で描かれます(test)。
-- `edit_batch` の対象ではありません(仕様書の範囲外。`edit_batch` の側に 2 本の名前はありません)。戻しは上の呼び直しです。
-
-params の形が違う(`path` / `name` が文字列でない、鍵が足りない、知らない鍵)ときは `-32602` で、`data` は付きません。断るとき(`-32000`、`data: {error_code, error_fields}`、message は `<method>: …`)は何も書きません([MI-1 の拒否の code の並び](../../src/core/communication/materialdocumentrpc.cpp#L1907))。
-
-| `error_code` | いつ | `error_fields` |
-|---|---|---|
-| `model.path_invalid@1` | `path` が空、`\` を含む、絶対 path(`/` で始まる・2 文字目が `:`・`project://` を外した後に `://` がある)、`#` を含む(fragment の登録は受けない)、`.` / `..` の段を含む | `{path, reason: "empty" \| "backslash" \| "absolute" \| "fragment" \| "dot_segment"}` |
-| `model.format_unsupported@1` | 拡張子が `.glb` / `.gltf` / `.vrm` でない | `{path, extension, supported: [".glb", ".gltf", ".vrm"]}` |
-| `model.file_missing@1` | ファイルが project に無い | `{path}` |
-| `model.path_conflict@1` | 同じ path(正規化して同じものを含む)が既に `models[]` にある。`name` は既にある登録の名前で、呼び手はそのまま使える | `{path, name}` |
-| `model.name_invalid@1` | `register_model` の名前が空、`#` を含む、`engine://` で始まる。`unregister_model` の名前が engine の基本形(`engine://` で始まるか、entry の path が基本形) | `{name, reason: "empty" \| "fragment" \| "engine_reference" \| "engine_primitive"}` |
-| `model.name_conflict@1` | その名前(省いたときは stem)が既に `models[]` にある | `{name}` |
-| `model.load_failed@1` | 読み込みの検査が通らない(壊れた glb など)、足した後の asset_data が読み込みの検査を通らない | `{path, message}` |
-| `model.unknown@1` | `unregister_model` の名前が `models[]` に無い | `{name}` |
-| `model.in_use@1` | `unregister_model` の model を scene の object が描いている。`objects` は先頭 8 件の object の名前(名前の無い object は `#<authoring_object_id>`) | `{name, count, objects}` |
-| `model.transaction_busy@1` | 別の書き手が project の文書の transaction を持っている | `{path}` |
-| `external_modification` | 読んだ後、書く直前に asset_data が外から書き換えられた | `{path, expected: null, actual: null}` |
-
-- 実例(test): `assets/models/none.glb` は `model.file_missing@1`(message `register_model: 'assets/models/none.glb' is not a file in the project: …`)、`assets/models/thing.fbx` は `model.format_unsupported@1`、`../outside.glb` は `reason: "dot_segment"`、壊れた glb は `model.load_failed@1`。どれも asset_data の bytes は変わりません。描いている object が 1 つの `checker_box` の `unregister_model` は `{"name": "checker_box", "count": 1, "objects": ["Crate"]}`。
-- `unregister_model` で外した後の asset_data が読み込みの検査を通らないときは、MT-1 の `material.document_invalid@1 {path, reason}` で断ります(コードの読み。test はありません)。
-- **edit の ticket の `payload.model`**: `models[]` に無い名前を `simplemodelview.model` に書いた `edit` は、今までどおり ticket の後に `method_unavailable` で失敗します。✅MI-1 から、その `error.payload` に `model` と `reason: "model_unknown"` が付くので、文を読まずに「model が未登録」と分かります(第13章 §13.5)。
-- 残る穴(着地時の記録): `removed.material_bindings` を `register_model` で戻す口は無く、bindings を持つ model を外して登録し直すと bindings は失われます(`bind_material` を呼び直す)。`unregister_model` の live の判定は生きている instance の slot だけを見ます(edit の staging 中の instance は見ない。RPC がフレームの境目で動く前提)。`pelican_cli import` は asset_data を鍵の順を保たずに書くので、`register_model` の書き方(順を保つ)と揃っていません。
-- Studio の画面(✅MI-1s、`70298f88`): Add Object > Model from file… と Inspector の model 欄の Import… が `register_model` を、Assets のドックの
-  Remove from project… が `unregister_model` を呼びます。外のファイルを `assets/models/` へコピーするのと、`model.name_conflict@1` のときに `_001`… の
-  名前で送り直すのは Studio です([第13章](13_editor.md) §13.1 の「Studio で外の model を持ち込む(✅MI-1s)」)。
 
 ### 移行の 2 method と移行専用 endpoint(✅MG-1)
 
@@ -1235,7 +831,7 @@ pelican_cli audio analyze --asset sounds/tone.wav --out tables/few.ktx2 --featur
 | rendering config | ✅ | ディスク経由は `pelican.render_pipeline` 参加者が拾う。加えて Studio から `features[]`・feature の scalar パラメータ・**共通グラフ文書**(`nodes` / `definitions`)を編集して再起動なしで反映できる(§13.5)。どれも engine がファイルを所有し、編集側は触りません |
 | scene JSON / project.json | 対象外 | 設計上の決定(再起動)。ただし project.json の `hot_reload` / `asset_stores` は、RPC `edit_project_settings` で書かせればその場で反映される(✅PJ-1。§10.3) |
 
-- **有効条件**: ウィンドウモードのみ(既定 ON・専用フラグなし)。リプレイ / `--strict-assets` / rpc 駆動中は中央ゲートで無効。headless では自動監視しません。✅HW-1 から、project.json に `hot_reload`(監視する素材とフォルダの配列)を書くと、**列挙したものだけ**を監視し、rpc 駆動中(Studio の engine)でもそこは監視します。空の配列なら監視しません。リプレイ / `--strict-assets` / headless は宣言があっても無効です。書き方・拒否・`--rpc` の下で反映されないもの(render 文書)は [第3章](03_project_format.md) の「hot reload で監視するもの」。宣言は起動時に読みます。✅PJ-1 から、動いている engine には `edit_project_settings` で宣言を差し替えられ、watcher はその場で作り直されます(§10.3 の「project.json の宣言を書き換える」)。
+- **有効条件**: ウィンドウモードのみ(既定 ON・専用フラグなし)。リプレイ / `--strict-assets` / rpc 駆動中は中央ゲートで無効。headless では自動監視しません。✅HW-1 から、project.json に `hot_reload`(監視する素材とフォルダの配列)を書くと、**列挙したものだけ**を監視し、rpc 駆動中(Studio の engine)でもそこは監視します。空の配列なら監視しません。リプレイ / `--strict-assets` / headless は宣言があっても無効です。書き方・拒否・`--rpc` の下で反映されないもの(render 文書)は [第3章](03_project_format.md) の「hot reload で監視するもの」。宣言は起動時に読みます。✅PJ-1 から、動いている engine には `edit_project_settings` で宣言を差し替えられ、watcher はその場で作り直されます([第13章](13_editor.md#projectjson-の宣言を書き換えるpj-1) §13.5 の「project.json の宣言を書き換える」)。
 - **配布 build(`PELICAN_WITH_HOT_RELOAD=OFF`)✅AV-1**: dist-config が常に OFF を出す build(§10.4)では、ファイルを監視せず(FileWatcher を作らない)、game logic の DLL の更新も見に行きません。`get_status.reload` は `state: "disabled"`、`error` と `runtime."pelican.shaders".gate_reason` は `"hot reload build disabled"` で、この理由は他のどの理由よりも先に出ます([gate の 1 か所](../../src/core/watch/reloadgate.cpp#L49))。project.json の `hot_reload` は読みます(形の拒否は同じ)が効かず、宣言があれば起動時に INFO を 1 行 `project.json hot_reload is ignored: this binary was built with PELICAN_WITH_HOT_RELOAD=OFF` 出します([出す所](../../src/core/watch/reloadservice.cpp#L971))。F5・`reload_game_logic`・`reload_shaders` の明示の reload は AV-1 で変えていません(`reload_shaders` を断るのは今も replay と `--strict-assets` だけ。OFF の build で実際に走らせての確認はしていません)。起動時の assets manifest の照合も `--strict-assets` のときだけになります(§10.4 の `assets`)。ソースは build から外していません(FileWatcher のコードは binary に残ります)。
 - **fail-soft**: 壊れたファイルを保存しても旧リソースで動き続け、名前入り WARNING と `get_status.reload.last_reload_error` に出ます。修正して保存し直せば回復します。✅PB-1(`a55d1eaf`)から、render 文書(`--rpc` の無い起動だけ。HW-1)と shader の読み直しの失敗は `get_problems` の一覧にも `source: "hot_reload"` で残り、通れば消えます([第6章](06_rendering.md) §6.16 の「engine が持つ今の問題の一覧」)。
 
@@ -1260,7 +856,7 @@ pelican_cli audio analyze --asset sounds/tone.wav --out tables/few.ktx2 --featur
 | `applied` / `failed` / `last_reload_error` | 適用した数・失敗した数・最後の失敗 |
 | `participants` / `runtime` / `model_catalog` | 登録された参加者、runtime の参加者の状態、model の目録 |
 | `watch` | ✅HW-1。正規化した `hot_reload` の宣言。書いていなければ `null`、空の配列なら `[]` |
-| `scans` / `hashed_files` / `hashed_bytes` | ✅HW-1(数えるのは FW-1)。起動からの累計: 終わった走査の回数・hash したファイルの数・hash した byte 数。watcher がまだ無ければ 0。✅PJ-1 の `edit_project_settings` が watcher を作り直しても、前の watcher の分を足して数え続けます(§10.3 の「project.json の宣言を書き換える」) |
+| `scans` / `hashed_files` / `hashed_bytes` | ✅HW-1(数えるのは FW-1)。起動からの累計: 終わった走査の回数・hash したファイルの数・hash した byte 数。watcher がまだ無ければ 0。✅PJ-1 の `edit_project_settings` が watcher を作り直しても、前の watcher の分を足して数え続けます([第13章](13_editor.md#projectjson-の宣言を書き換えるpj-1) §13.5 の「project.json の宣言を書き換える」) |
 
 ### ゲームロジック DLL のホットリロード(✅WP90/162 = G2/BEH1)
 

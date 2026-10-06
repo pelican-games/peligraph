@@ -52,7 +52,7 @@
 (`name` を省くとファイル名の stem。起動時と同じ読み込みの検査を通らないファイルは断られ、asset_data は変わりません)。
 外すのは `unregister_model {name}` で、`models[]` から外しますが、ファイルは消しません。ファイルを project にコピーするのは
 呼び手の役目です。rig を持つ model(VRM の大半)を外したときと、登録できなかったときは、書いたうえで `restart_required` を返し、
-engine を起こし直すと効きます。引数・拒否・live になる条件は [第10章](10_tools.md) §10.3 の「project の中の model ファイルを登録する・外す」です。
+engine を起こし直すと効きます。引数・拒否・live になる条件は [第13章](13_editor.md#project-の中の-model-ファイルを登録する外すmi-1) §13.5 の「project の中の model ファイルを登録する・外す」です。
 登録した model は `list_assets` に出ます。✅EB-1(`aaa7b2da`)から、その `path` は asset_data に書いた綴り(上の 2 の project 相対の path)のままで、
 解決したファイルの絶対 path は `resolved_path` に分かれています(EB-1 の前は `path` が絶対 path でした)。
 Studio の画面からこの RPC を呼ぶ道は下の「Studio から持ち込む」です。
@@ -153,7 +153,7 @@ engine が登録を書いたもののその場で使えなかったとき(`resta
   `edit_material` は ✅MT-3 から、これらの変更で material を登録し直します。第6章 §6.7)。
 - **RPC で書かせる(✅MT-1、`976c410d`)**: 動いている engine に、この節の 3 つ(material 文書・`materials[]`・
   `pelican.material_bindings`)を書かせられます。RPC の一覧と「values だけなら live、ほかの鍵は登録し直して rebuilt(✅MT-3)」の
-  規則は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、引数と拒否の表は [第10章](10_tools.md) §10.3 です。
+  規則は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、引数と拒否の表は [第13章](13_editor.md#material-文書を読み書きするmt-1) §13.5 の「material 文書を読み書きする」です。
   engine が書くファイルの形は次のとおりです(コードの読み)。
   - `create_material {path, surface, name?, values?, tags?, routing?}` は、`schema` / `version: 1` / 1 つの material の
     `materials` を持つ文書を新しく作り、asset_data の `materials[]` の末尾に `{"path": <path>}` を足します。2 つは
@@ -191,7 +191,7 @@ engine が登録を書いたもののその場で使えなかったとき(`resta
     render 文書(draw loop と ray bindings)がその名前を指していれば `material.in_use@1` で断り、何も書きません。戻すときは `register_material {path}` で、残っている文書を
     `materials[]` の末尾に `{"path": <path>}` で載せ直します。`rename_material {name, new_name}` は、文書の `materials[].name` と、その名前を `material` に持つ全 model の
     `pelican.material_bindings` の行を 1 つの transaction で書き換えます(scene の object の上書きと render 文書は書き換えないので、それらが指していれば断る)。
-    引数と拒否の表は [第10章](10_tools.md) §10.3 の「material を消す・戻す・改名する」です。
+    引数と拒否の表は [第13章](13_editor.md#material-を消す戻す改名するeb-1) §13.5 の「material を消す・戻す・改名する」です。
   - **起動時に断られた文書の取り込み(✅EB-2、`e1ba9058`)**: `materials[]` に載っているのに起動時に読めなかった文書は、直した後に `register_material {path}` を呼ぶか、`hot_reload` にその文書(か dir)を宣言しておけば保存で、engine を起こし直さずに登録されます(asset_data は書きません)。規則は [第6章](06_rendering.md) §6.7 の「起こし直さずに取り込む」です。Studio の Materials のドックでは、直す欄から Show the document で直して Save します([第13章](13_editor.md) §13.1)。
 
 ### モデル材質の identity — レイトレの AS 規則が見る値(✅WP383)

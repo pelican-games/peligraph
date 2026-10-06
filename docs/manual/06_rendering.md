@@ -894,7 +894,7 @@ Graph で組んだ pipeline(Blank から始めたものなど)は、同梱の pr
   - 外すもの: `view_family` を書いた pass(shadow map など別の view を描く pass)、feature の pass、`swapchain` / `display` と要る target 自身を書く出力です([FR-3 で候補から外す所](../../src/project/featurecompose.cpp#L2182))。
   - `pass` は frame の pass の名前、`resource` は今書いている target です。root の graph の node が作った pass(instance やループの中ではないもの)で、その node の入力 port が `render.image` か `render.target_ref` を通してその target に繋がっていれば、`node` にその node の id、`port` にその graph の port の名前が入ります。それ以外は `node` が無く、`port` は `depth` / `color` / `color.<番号>` です。
   - 候補が無ければ空の配列です(test: depth を書く pass の無い pipeline)。
-- **直し方(Studio の 1 回の編集)**: 候補の 1 つの `port` を、要る target の `render.target_ref` に繋ぎ替えます。例(test。UX-12b の GUI session が Blank から Graph で組んだ deferred の pipeline を fixture にしたもの): `sky_ambient` の 2 つの target と target_ref を足した後で `sky_ambient` を足すと、`writer_candidates` は `[{"node": "render_material_pass", "pass": "render_material_pass", "port": "depth", "resource": "render_material_pass__depth"}]` です(material pass が自分の `render.image` に描く depth)。`shadow_depth`(別の view で、feature の pass)は候補に出ません。ここで `edit_graph_document {ops: [{"op": "set_input", "node": "render_material_pass", "port": "depth", "source": {"node": "scene_depth_ref", "port": "resource"}}]}` を送ると通り、次の `sky_ambient` の追加が committed になります。frame plan では `render_material_pass` が `scene_depth` を書き、`sky_background` が読みます。実 Renderer を RPC で動かす GPU の test でも同じ結果です。
+- **直し方(Studio の 1 回の編集)**: 候補の 1 つの `port` を、要る target の `render.target_ref` に繋ぎ替えます。例(test。UX-12b の GUI session が Blank から Graph で組んだ deferred の pipeline を fixture にしたもの): `sky_ambient` の 2 つの target と target_ref を足した後で `sky_ambient` を足すと、`writer_candidates` は `[{"node": "render_material_pass", "pass": "render_material_pass", "port": "depth", "resource": "render_material_pass__depth"}]` です(material pass が自分の `render.image` に描く depth)。`shadow_depth`(別の view で、feature の pass)は候補に出ません。ここで `edit_graph_document {ops: [{"op": "set_input", "node": "render_material_pass", "port": "depth", "source": {"node": "scene_depth_ref", "port": "resource"}}]}` を送ると通り(op の形は [第13章](13_editor.md#ops-と-scope) §13.5 の「`ops[]` と `scope`」)、次の `sky_ambient` の追加が committed になります。frame plan では `render_material_pass` が `scene_depth` を書き、`sky_background` が読みます。実 Renderer を RPC で動かす GPU の test でも同じ結果です。
 - 宣言・target_ref・繋ぎ替えのような複数の編集を 1 つの ticket で送るには、✅FR-3 の `edit_batch` を使います([第13章](13_editor.md) §13.5「複数の編集を 1 つの ticket で —— `edit_batch`」)。✅FR-4 から `edit_preset_pass` も batch に入るので、`sky_ambient` を足した後で空を present に映す 2 つの編集(lighting の pass の color を `lit_color_ref` へ繋ぐ `edit_graph_document` と、present の入力を `lit_color` にする `edit_preset_pass`)は 1 つの ticket で、`restore_render_documents` 1 回で戻ります(例は同じ節)。
 
 **挿入先 —— `insertion`(✅FR-2)**
@@ -2395,11 +2395,20 @@ standard / toon に続く**特権なしの standard library surface** として�
 
 ### RPC で material を読み書きする(✅MT-1、`976c410d`)
 
-MT-1 の前は、Blank の project で物体の色を 1 つ変えるのに JSON を 3 つ手で書き(material 文書・asset_data の `materials[]`・material_bindings)、engine を起こし直していました(仕様書の記述)。MT-1 から、動いている engine が material 文書・`.surface` の宣言・model の割り当てを RPC で読み書きします。エディタはファイルを自分で書かず、この RPC を送ります([MT-1 の 7 本を登録する所](../../src/core/communication/materialdocumentrpc.cpp#L2666)。[engine の RPC に MT-1 を足す行](../../src/core/communication/rpcserver.cpp#L1592))。引数・返り値・拒否の表は [第10章](10_tools.md) §10.3 の「material 文書を読み書きする」と [第13章](13_editor.md) §13.5 です。✅MT-1s(`2d81ef51`)から、Studio の Materials のドックと Inspector の Material の行がこの RPC を呼び、Blank の project でも GUI だけで material を作り、色を変え、箱に割り当てられます([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
+MT-1 の前は、Blank の project で物体の色を 1 つ変えるのに JSON を 3 つ手で書き(material 文書・asset_data の `materials[]`・material_bindings)、engine を起こし直していました(仕様書の記述)。MT-1 から、動いている engine が material 文書・`.surface` の宣言・model の割り当てを RPC で読み書きします。エディタはファイルを自分で書かず、この RPC を送ります([MT-1 の 7 本を登録する所](../../src/core/communication/materialdocumentrpc.cpp#L2666)。[engine の RPC に MT-1 を足す行](../../src/core/communication/rpcserver.cpp#L1592))。引数・返り値・拒否の表は [第13章](13_editor.md#material-文書を読み書きするmt-1) §13.5 の「material 文書を読み書きする」です。✅MT-1s(`2d81ef51`)から、Studio の Materials のドックと Inspector の Material の行がこの RPC を呼び、Blank の project でも GUI だけで material を作り、色を変え、箱に割り当てられます([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
 
-- **読む 4 本**: `list_materials`(asset_data の `materials[]` の全部の文書と、その中の material)、`get_material`(1 つの material を文書のまま)、`get_surface_schema`(`.surface` の `//!` の宣言の `params` と `textures`。宣言にあるものだけで、何も足しません)、`get_material_bindings`(model の primitive ごとの material。✅MT-2 から、その model を描く scene の object の数 `objects` と、そのうち自分の material を持つ数 `object_overrides` も)。
-- **surface の一覧(✅MT-1b、`a6373c01`)**: `list_surfaces {}` は、material を作るときに選べる `.surface` を並べます(下の「surface の一覧」)。
-- **書く 3 本**: `edit_material`(文書の 1 つの material を直す)、`create_material`(material 文書を作って asset_data に載せる)、`bind_material`(model の material_bindings を書く)。どれも読んだときの digest を CAS に、project の文書の transaction で書き、返る前に動いている engine に当てます。当てられないときは、書いたうえで `applied: "restart_required"` と `restart_required: {reason}` を返します(当てたときは `applied: "live"`、✅MT-3 から `edit_material` は `"rebuilt"` も。どちらも `restart_required: null`)。
+| メソッド | 何をするか(params・返り値・拒否は [第13章](13_editor.md#material-文書を読み書きするmt-1) §13.5) |
+|---|---|
+| `list_materials` | asset_data の `materials[]` の全部の文書と、その中の material を読む |
+| `get_material` | 1 つの material を文書のまま読む |
+| `get_surface_schema` | `.surface` の `//!` の宣言の `params` と `textures` を読む(宣言にあるものだけで、何も足さない) |
+| `get_material_bindings` | model の primitive ごとの material と、その model を描く scene の object の数を読む |
+| `list_surfaces`(✅MT-1b) | material を作るときに選べる `.surface` を並べる(下の「surface の一覧」) |
+| `edit_material` | 文書の 1 つの material を直す |
+| `create_material` | material 文書を作って asset_data に載せる |
+| `bind_material` | model の material_bindings を書く |
+
+書く 3 本は、読んだときの digest を CAS に、project の文書の transaction で書き、返る前に動いている engine に当てます。当てられないときは書いたうえで `restart_required` を返します。どの鍵の変更がその場で効くかは次の段落からです。
 
 **`edit_material` は values だけなら live、ほかの鍵は material を登録し直して rebuilt です(✅MT-3、`c6f94eb7`)。**決めるのは、その編集で実際に変わった鍵です([live か rebuilt かを決める所 MT-3](../../src/core/communication/materialdocumentrpc.cpp#L1233))。MT-3 の前は、`textures` / `tags` / `routing` / `variants` / `surface` が変われば文書を書いて `restart_required` を返し、engine を起こし直すまで効きませんでした(MT-1 の記録)。
 
@@ -2443,7 +2452,7 @@ MT-1 の前は、Blank の project で物体の色を 1 つ変えるのに JSON 
 - 割り当てる material が asset_data に載っていても、この engine に登録されていなければ `restart_required` です。
 - binding に書く routing は、✅MT-3 から material の文書の値です(上の「`routing` を変えると」)。
 
-**戻し**は、返り値の `previous` を同じ RPC で送ります(`edit_material` は新しい `material_digest` と一緒に、`bind_material` は `previous.bindings` を `bindings` に)。MT-1 の時点では `delete_material` はありませんでした。✅EB-1(`aaa7b2da`)から、`delete_material {name}`(asset_data の `materials[]` から外し、登録も外す。文書のファイルは残す)・`register_material {path}`(その戻し)・`rename_material {name, new_name}`(名前と、それを名前で指す全 model の bindings を 1 つの transaction で書き、`edit_material` の `rebuilt` と同じ道で登録し直す)があります。名前で指す所が残っていれば `material.in_use@1` で断ります。引数と拒否の表は [第10章](10_tools.md) §10.3 の「material を消す・戻す・改名する」です。
+**戻し**は、返り値の `previous` を同じ RPC で送ります(`edit_material` は新しい `material_digest` と一緒に、`bind_material` は `previous.bindings` を `bindings` に)。MT-1 の時点では `delete_material` はありませんでした。✅EB-1(`aaa7b2da`)から、`delete_material {name}`(asset_data の `materials[]` から外し、登録も外す。文書のファイルは残す)・`register_material {path}`(その戻し)・`rename_material {name, new_name}`(名前と、それを名前で指す全 model の bindings を 1 つの transaction で書き、`edit_material` の `rebuilt` と同じ道で登録し直す)があります。名前で指す所が残っていれば `material.in_use@1` で断ります。引数と拒否の表は [第13章](13_editor.md#material-を消す戻す改名するeb-1) §13.5 の「material を消す・戻す・改名する」です。
 
 - **元の material に戻るときは外す(✅MT-2b、`213562bb`)**: 送り返した bindings で全 primitive が model の元の material(glTF の slot、engine の基本形なら `pelican.primitive.default`)に戻るとき、`bind_material` は binding を書かずに外します。bindings の文書を消す・asset_data の `material_bindings` の鍵を外す・MT-1 が基本形に足した `models[]` の項目を外す、の 3 つを 1 つの transaction で書き、model を読み直します([MT-2b の binding を外して読み直す所](../../src/core/communication/materialdocumentrpc.cpp#L1614))。返り値の `material_bindings` と `bindings_digest` は `null` で、`previous` と digest の組は今までどおりです。宣言が無い状態で同じものを送ると `changed: false` です。
 - 行を書かずに外すのは、bindings の形式が点を含む material 名(`pelican.primitive.default`)を行に書けないためです(commit の記述)。MT-2b の前は、基本形で最初の bind の `previous` を送り返すと `material.binding_invalid@1` で断られました(仕様書の記述)。一部の primitive だけを既定に戻すときは、今までどおり slot の名前の行を書きます。
@@ -2456,7 +2465,7 @@ MT-1 の前は、Blank の project で物体の色を 1 つ変えるのに JSON 
 - 割り当て済みの material の `routing` を `edit_material` で変えても、binding の `routing` とのずれを断りません。起動時の照合は `binding.routing` の不一致を hard error にするので(上の「primitive binding」)、次の起動で断られると考えられます(未確認)。→ ✅MT-3(`c6f94eb7`)で、binding の routing を同じ書き込みで書き直すようになりました(上の「`routing` を変えると」)。
 - 起動の順: `material_route_default` は `Renderer` の constructor が、material を lowering する前に記録します([G-4 の snapshot の行](../../src/core/vkcore/renderer.cpp#L3253))。MT-1 の test は player と同じく `Renderer` を先に作ってから RPC の endpoint を作ります(test の注記)。この順でない host での振る舞いは確かめていません(未確認)。
 - 割り当てが model 単位であること(上)。✅MT-2 で、scene の object ごとの上書きが入りました(下)。
-- `list_assets` は name の無い entry を今も飛ばすので、material の一覧には出ません。material の一覧は `list_materials` で読みます。→ ✅EB-1(`aaa7b2da`)から、`list_assets` は `materials[]` の文書が持つ material を名前ごとに 1 行(`kind: "material"`)で返します(第10章 §10.3)。
+- `list_assets` は name の無い entry を今も飛ばすので、material の一覧には出ません。material の一覧は `list_materials` で読みます。→ ✅EB-1(`aaa7b2da`)から、`list_assets` は `materials[]` の文書が持つ material を名前ごとに 1 行(`kind: "material"`)で返します([第13章](13_editor.md#読み取り) §13.5 の「読み取り」の「`list_assets` の形」)。
 - (✅MT-3 の着地時)texture の参照を変えずに、texture のファイルの中身だけを変えた場合、`edit_material` の登録し直しは古い画像のままです。project の texture は論理の key ごとに 1 回だけ登録され([`ProjectMaterialTextureResolver`](../../src/core/material/projectmaterialtextureresolver.hpp#L18) の key ごとの表)、登録し直しはその id を引き直すだけです。ファイルの監視による texture の hot reload([第5章](05_assets.md) §5.2)がこの場合に効くかは、MT-3 では確かめていません(未確認)。
 - (✅MT-3 の着地時)MT-3 の test の project は blend の routing を描く `forward_transparent_v1` の material pass を持っています。その pass の無い project で blend に変えたときの描かれ方は test がありません(未確認)。
 
@@ -2480,14 +2489,14 @@ test: [`materialdocumentrpc_test` の MT-1b の GPU test](../../test/materialdoc
 
 - **書く所**: scene の文書の `simplemodelview.materials`(SC-1 の list。行は `{material, mesh?, primitive?}`)。書き方と codec が断る行は [第4章](04_scene_ecs.md) §4.2 の simplemodelview の項です。
 - **効く順**: その primitive の行 > 全 primitive の行 > model の既定。
-- **RPC**: 書くのは `set_object_material`(scene の編集の `edit` として 1 本。CAS・undo / redo)、読むのは `get_object_materials`(primitive ごとの実効の material と、その出所 `object` / `model`)です。引数・返り値・拒否は [第10章](10_tools.md) §10.3 と [第13章](13_editor.md) §13.5 の「material 文書を読み書きする」です。
+- **RPC**: 書くのは `set_object_material`(scene の編集の `edit` として 1 本。CAS・undo / redo)、読むのは `get_object_materials`(primitive ごとの実効の material と、その出所 `object` / `model`)です。引数・返り値・拒否は [第13章](13_editor.md#material-文書を読み書きするmt-1) §13.5 の「material 文書を読み書きする」です。
 - **描き方**: instance ごとの draw item に、その primitive の実効の material が入ります([draw item を作る所 MT-2](../../src/core/renderer/polygoninstancecontainer.cpp#L488))。
   - draw の束ね方の鍵(`pipeline_material_key.material`)・material の route・material 文書の参照・名前は、この実効の material から作ります。
   - 同じ model で material が違う 2 つの instance は、それぞれの material で描かれます。MP-1 の `drawn_materials` も実効の material で数えます(test では、forward の pass が `paint` と model の既定を 1 回ずつ描きました)。
   - tags / variant / draw_loop の振り分けがこれに従うことは commit の記述です。draw_loop の振り分けの test はありません(未確認)。
 - **material だけの変更**: エディタの投影は instance を作り直しません。同じ instance の draw item だけを、宣言の順番(declaration ordinal)を保ったまま作り直します([material だけが変わったときの分岐](../../src/core/loader/editorprojectionadapters.cpp#L1247)、[`PolygonInstanceContainer::setPreparedSceneModelMaterials()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1007))。model が変わったときは今までどおり新しい instance です。component の codec が runtime の component に当てる経路([`applySimpleModelView()` の MT-2 の比較](../../src/core/loader/componentcodec.cpp#L772))は、model か `materials` が変われば instance を外して作り直します。
 - **model を読み直すとき**: instance は上書きの指定を持ち続け、model の reload(`bind_material` やファイルの変更)が作る新しい template に対して解き直します([reload で解き直す所](../../src/core/renderer/polygoninstancecontainer.cpp#L1466))。この経路の test はありません(未確認)。
-- **名前が解けない上書き**: 読み込みや投影のときに解けない名前は断りません。警告を出し、その行が無いものとして描きます(全 primitive の行が解けていればそれ、無ければ model の既定。`get_object_materials` ではその行が `resolved: false`)。`set_object_material` は書く前に知らない名前を `material.name_unknown@1` で断ります。✅FO-1(`a4d7760a`)の後も、この警告は log だけで、問題の一覧(`get_problems`)には入りません(下の「起動時に読めない material 文書」の残る穴)。
+- **名前が解けない上書き**: 読み込みや投影のときに解けない名前は断りません。警告を出し、その行が無いものとして描きます(全 primitive の行が解けていればそれ、無ければ model の既定。`get_object_materials` ではその行が `resolved: false`)。`set_object_material` は書く前に知らない名前を `material.name_unknown@1` で断ります。解けない上書きは、EB-6 から問題の一覧(`get_problems`)にも warning `material.object_material_unresolved@1` として載ります(§6.16 の `document_kind` の `scene`)。
 - **Play 中**: `set_object_material` は `edit` を通るので、Play 中の扱いは他の scene の編集と同じ経路です(コードの読み)。Play 中の編集の test はありません(未確認)。
 - **Studio**: ✅MT-2s(`7112072e`)から、Inspector の Material の行が既定で選んだ object だけに `set_object_material` を送り、Every <model> に切り替えると `bind_material` です([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。engine の基本形の Every <model> の Model default と Material の行の Undo は、上の MT-2b の外す道を通ります(✅MT-2s-b `9d15ddc0` のシナリオ `gui_material_from_blank` で確かめました)。
 
@@ -2536,7 +2545,7 @@ asset_data の `materials[]` が指す material 文書が無い・読めない�
 
 - 起動時に断られた文書は、ファイルを直しても起こし直すまで登録されません。生きている engine で登録し直す口はありません。`register_material` は `material.path_conflict@1`(`materials[]` に既に載っているため)、MT-3 の `edit_material` は登録されていないので `restart_required` です。
   → ✅EB-2(`e1ba9058`)で口が入りました(下の「起こし直さずに取り込む」)。
-- MT-2 の解けない上書き(scene の object の `simplemodelview.materials` の行が指す名前が解けない。上の「object ごとの上書き」)は、今までどおり log の warning だけで、問題の一覧には入りません。draw item を作るたびに判定する所なので、上書きが解けたときに一覧から消す仕組みが要るためです。
+- MT-2 の解けない上書き(scene の object の `simplemodelview.materials` の行が指す名前が解けない。上の「object ごとの上書き」)は、EB-6 から問題の一覧に warning `material.object_material_unresolved@1`(`document_kind: "scene"`)として入ります。scene の投影が変わるたびに判定し直し、解ければ消えます([`syncObjectMaterialProblems()`](../../src/core/material/projectmaterialasset.cpp#L1158))。
 - render 文書の draw loop や ray の binding が、断られた文書の material を名前で指す場合は、render pipeline の側の拒否(fallback と問題の一覧)になる、と実装者は報告しています。この道の test はありません(未確認)。
 
 test: `materialdocumentrpc_test` の [「FO-1 a Blank box whose material document is broken starts, is listed in get_problems and draws with its own material」](../../test/materialdocumentrpc_test.cpp#L1088)(GPU。Blank の箱に `create_material` の赤を bind して保存し、文書を壊して起こし直す。JSON でない(`line` / `column`)・surface が無い(`reason`)・ファイルが無い(`missing`)のそれぞれで、起動し、箱は赤くなく、`get_problems` に error 1 件と warning 1 件、`get_status.problems`、`list_materials` の `status` / `reason`。`--strict-assets` では `ProjectMaterialAssetContainer` の構築が投げる)。
@@ -2563,7 +2572,7 @@ test: `materialdocumentrpc_test` の [「FO-1 a Blank box whose material documen
   ファイルが消えたときは `material.document_unknown@1` です。登録は残っているので `binding_unresolved` は出ません。読める形で保存し直した(reload が commit した)とき、`edit_material` / `register_material` で登録し直したとき、文書を外したときに消えます。
   - 載るのは watch がその文書を見ているとき(値の reload が走ったとき)だけです。`hot_reload` の宣言の無い `--rpc` の engine は外のエディタの書き換えに気づかないので、載りません。
   - このとき `list_materials` のその文書の行は、engine が持つ値ではなくファイルを読んだ結果です。`listMaterials()` は登録済みの文書もファイルを毎回読むので、壊れていれば `status: "invalid"`・`materials: []`・`reason` は parser の生の文で、`line` / `column` は付きません(engine の状態で上書きするのは起動時に断った文書だけ。[engine の状態を返す所(FO-1)](../../src/core/communication/materialdocumentrpc.cpp#L702)の上)。EB-2 の報告は「`loaded` のまま」と書いていますが、コードと、後続の Studio の実装者が実物で見た結果は `invalid` です。
-  - 登録済みの文書を、直したファイルから取り込み直す RPC はありません。`register_material` は `material.path_conflict@1`(起動時に断った文書ではないため)、同じ値の `edit_material` は `changed: false` で読み直しません(後続の Studio の実装者の報告とコードの読み)。watch のある project では保存で watch が読み直します。
+  - 登録済みの文書を直したファイルから取り込み直すのは、EB-6 からは `register_material {path}` です。登録している文書の path を名指すと、`material.path_conflict@1` で断らずに今のファイルを読み直し、`reloaded: true` と `rebuilt_models` を返します(読めなければ拒否し、前の描画を保ちます。[第13章](13_editor.md#material-を消す戻す改名するeb-1) §13.5 の EB-6 の段落)。同じ値の `edit_material` は `changed: false` で読み直しません。watch のある project では保存で watch が読み直します。
 - `--strict-assets` の起動は今のまま失敗します(起動時の constructor は変えていません)。
 - test: `materialdocumentrpc_test` の [「EB-2 a material document refused at start is taken in by register_material once fixed, without a restart」](../../test/materialdocumentrpc_test.cpp#L1285)(GPU。直さずに呼ぶと断られて何も変わらない、直して呼ぶと再起動なしで箱がその色、もう一度呼ぶと `path_conflict`)と [「EB-2 a declared watch takes a fixed material document in, and lists one broken after start」](../../test/materialdocumentrpc_test.cpp#L1351)(GPU。watch の道と、起動後に壊れた文書の問題)。
 
@@ -2584,7 +2593,7 @@ test: `materialdocumentrpc_test` の [「FO-1 a Blank box whose material documen
   - `document_kind` は、feature が出した pass なら `feature`、root の graph の node が作った pass(loop の複製を除く)なら `root_graph` と `node`、root が preset を選んでいれば `preset`、それ以外は `root_rendering` です。出所が分からないときと `engine://` の文書のときは `document` / `document_kind` / `node` を付けません。test が見たのは `preset` の分岐で、`root_graph` と `node` は Studio の RTL-3s のシナリオ(`gui_material_ray_query_from_blank`)で実物が正しいことを確かめました(`node: "render_material_pass"`)。`feature` / `root_rendering` / `engine://` の分岐は確かめていません(未確認)。
   - `pass` は authored の名前(variant の名前空間を外したもの)です。2 つ以上の pass が宣言していないときだけ `passes: [...]` が付き、文は「passes 'a' and 'b' do not declare …; declare it on the passes」です。
   - 同じ model の `material.binding_unresolved@1` は今までどおり出ます(primitive は model の元の material で描く)。`material.document_invalid@1` は出ません。
-- **`list_materials`**: その文書の行は `{status: "unusable", reason: <上の message>, pass, requirement, materials: []}` です([`unusable` を返す所](../../src/core/communication/materialdocumentrpc.cpp#L704))。`status` の値は `loaded` / `missing` / `invalid` / `unusable` の 4 つになりました。
+- **`list_materials`**: その文書の行は `{status: "unusable", reason: <上の message>, pass, requirement, materials}` です。`materials` は空ではなく今のファイルから読んだ並びで、登録されていないので `registered` は `false` です(コードの読み。⚠ 実装のコメントの「その文書の material は 1 つも持たない」と食い違っており、engine 側で確認中です。[第13章](13_editor.md#material-文書を読み書きするmt-1) §13.5 の `list_materials`)([`unusable` を返す所](../../src/core/communication/materialdocumentrpc.cpp#L704))。`status` の値は `loaded` / `missing` / `invalid` / `unusable` の 4 つになりました。
 - **pass に宣言を足すと取り込まれます**: render の編集・reload で pass が `ray_query` を宣言した後、**次の frame の始め**に engine が自分で取り込み直します。`ReloadService::applyFrame()` の最後で `ProjectMaterialAssetContainer::retryPassContractRefusals()` を呼び、`unusable` の文書があって、material pass を読む generation(published、無ければ最初の frame 用に prepared のもの)が拒否のときと違えば、EB-2 と同じ取り込み(`recoverDocument()`)を走らせます([取り込み直す所](../../src/core/material/projectmaterialasset.cpp#L1090)、[`applyFrame()` から呼ぶ所](../../src/core/watch/reloadservice.cpp#L1001))。取り込むと問題 2 件(`pass_contract_unmet` と `binding_unresolved`)が消え、その material を bind していた model が組み直されてその material で描かれます。まだ登録できなければ、その時の理由で問題を書き直します(別の pass 契約ならこの code のまま、文書の問題になったなら `material.document_invalid@1`)。
   - material 文書の保存(watch)と `register_material {path}` でも、今までどおり取り込めます(surface から query を外したとき)。まだ pass が宣言していない `register_material` は `material.pass_contract_unmet@1` で断られます(FO-2 の前は `material.document_invalid@1`。[第13章](13_editor.md) §13.5 の「material を消す・戻す・改名する」)。
   - 取り込み直しは `ReloadService::applyFrame()` が回るときだけです(RPC の engine か hot_reload の engine。どちらも無い player は render の編集もできない)。`unusable` の文書がある間は、generation が変わるたびに(pass と関係の無い変化でも)1 回ずつ登録を試します。
@@ -3387,6 +3396,7 @@ BS-1 の `get_status.render_pipeline.refusal` は起動時の 1 件だけで、h
 | `startup` | `--render-fallback` の起動で構成が断られた(BS-1 / BS-1b。[起動時の拒否を一覧に入れる所(PB-1)](../../src/core/vkcore/renderer.cpp#L3282))。material の route を受ける pass が無い起動(下の engine_backlog 23)。✅FO-1 から、material 文書が無い・読めない起動(`--strict-assets` 無し。フラグ `--render-fallback` は要りません) |
 | `hot_reload` | engine 自身の disk からの読み直し(file 監視)が断られた([disk からの読み直しの拒否を入れる所(PB-1)](../../src/core/vkcore/renderer.cpp#L3902))。render 文書は `--rpc` の無い起動だけです(`--rpc` の下では HW-1 で、監視の変更が render pipeline の participant に届きません)。shader は `--rpc` の下でも、監視しているものは入ります |
 | `reload_rpc` | `reload_render_documents` の拒否(ticket を取らずにすぐ返る拒否も、ticket の結果の拒否も。[`RenderConfigEditorService::noteProblems()`](../../src/core/communication/renderconfigeditor.cpp#L7489))と、`reload_shaders` の失敗 |
+| `edit_rpc`(EB-6) | 編集 RPC(`create_material`・`edit_material`・`bind_material` と、`register_material` の読み直し)が material の文書を書いたのに、それを描く pass が material の使うものを宣言していないので engine がまだ描けない(答えの `applied: "unusable"`)。code は `material.pass_contract_unmet@1` で、engine が取り込むまで載ります([`notePassContractRefusal()`](../../src/core/material/projectmaterialasset.cpp#L1128))。拒否ではないので、下の「入らないもの」の編集 RPC の拒否とは別です |
 
 入らないもの:
 
@@ -3394,7 +3404,7 @@ BS-1 の `get_status.render_pipeline.refusal` は起動時の 1 件だけで、h
 - その時の都合の拒否 `reload_busy`・`gate_closed`・`external_modification`・`stale_source_digest`。文書の問題ではないためです([その時の都合の拒否を除く所(PB-1、RR-1 で切り出し)](../../src/core/communication/renderconfigeditor.cpp#L7513))。
 - AV-1 の素材の照合。Studio が `get_assets_verification` から同じ窓に混ぜる予定です。
 - material の文書の読み込みの問題(文書が無い・読めない、MT-2 の解けない上書き)。別 WP です。
-  → ✅FO-1(`a4d7760a`)から、起動時の文書の問題は入ります(下の「material 文書の問題」)。MT-2 の解けない上書きは今も入りません(log の warning のまま)。
+  → ✅FO-1(`a4d7760a`)から、起動時の文書の問題は入ります(下の「material 文書の問題」)。MT-2 の解けない上書きも、EB-6 から warning `material.object_material_unresolved@1`(`document_kind: "scene"`)として入ります。
 
 **消える時**:
 
@@ -3418,10 +3428,11 @@ BS-1 の `get_status.render_pipeline.refusal` は起動時の 1 件だけで、h
 | `feature` | root か preset が有効にする feature 文書 | `document` が root の `features` か preset の `config.features` |
 | `shader` | shader の file(`line`) | shader の失敗 |
 | `material`(✅FO-1) | asset_data の `materials[]` が指す material 文書(`document`、JSON でなければ `line` / `column`)か、その material を指していた model の bindings(`fields.model`。`document` は無し) | material の問題を書く `ProjectMaterialAssetContainer` が付ける |
+| `scene`(EB-6) | scene の object 自身の material(`simplemodelview.materials` の行)が、model の glTF の material にも登録済みの文書にも無い。code は `material.object_material_unresolved@1`(warning、`source: "startup"`)、`fields: {object, scene_id, material, model, name?, primitive?}`、`document` は project.json が名指す scene の文書 | 問題を書く `ProjectMaterialAssetContainer` が、scene の投影が変わるたびに判定し直して付ける([`syncObjectMaterialProblems()`](../../src/core/material/projectmaterialasset.cpp#L1158)) |
 
 root・preset・feature の判定は、記録する時に disk の root と preset を読み、`project://` の綴りで照らします([`renderDocumentRoles()`](../../src/core/watch/problemlist.cpp#L161))。
 どれにも当たらない文書と、`document` の無い問題には `document_kind` が付きません。`material` / `scene` はまだありません(指示書の段 4 の material は切りました)。
-→ ✅FO-1(`a4d7760a`)で `material` が入りました(上の表)。`document` の無い `material.binding_unresolved@1` にも `material` が付きます。`scene` はまだありません。
+→ ✅FO-1(`a4d7760a`)で `material` が入りました(上の表)。`document` の無い `material.binding_unresolved@1` にも `material` が付きます。`scene` は EB-6 から、解けない object の上書きに付きます(上の表)。
 
 例(PB-1 の test):
 
@@ -3473,7 +3484,7 @@ route を受ける material pass が無いとき、以前は `material_route_uns
   → ✅PB-1s の実装者の計測では、外で保存してから Studio の一覧に出るまで 397 ms(構文の壊れ)/ 492 ms(node の壊れ)で、大半は RL-1s の 300 ms のまとめでした。
   実装者は、render 文書については Studio から見てこの案(PB-2)は要らないと判断しています(採るかは未裁定)。
 - material の文書の読み込みの問題(上の「入らないもの」)は別 WP です。
-  → ✅FO-1(`a4d7760a`)で起動時の文書の問題は入りました(上の「material 文書の問題」)。MT-2 の解けない上書きは入れていません。
+  → ✅FO-1(`a4d7760a`)で起動時の文書の問題は入りました(上の「material 文書の問題」)。MT-2 の解けない上書きは EB-6 から入ります(上の `document_kind` の `scene`)。
 - Studio の Problems の窓は PB-1s で作業中です([第13章](13_editor.md) §13.5 の「今の問題の一覧を読む」)。
   → ✅PB-1s(`93934318`)で着地しました。Studio は一覧を Problems のドックで読みます([第13章](13_editor.md) §13.1 の「Studio の Problems のドック」)。
   PB-1s の実装者の報告では、WP298 の例の起動(`material_route_unserved@1` が致命でなくなった後に、glTF の morph の頂点の上限 262144 で止まる)、
@@ -3618,7 +3629,7 @@ instance の入力ポート 1 本ごとに、値がどこから来ているか�
 
 実行時の `override` は 4 つ目の mode として由来に出ます。ただし **edge が供給しているポートを上書きしようとすると `graph.override_shadowed@1`** になります —— 展開が `value.parameter` ノードを作っていないので上書きの着地点が無く、**黙って消えるのではなく名前で断ります**([scenegraphruntime.cpp:123](../../src/core/loader/scenegraphruntime.cpp#L129))。
 
-現在の実効値と由来は、再評価せずに **publish 時のスナップショット**から読みます(`get_graph_values{instance}` / `get_graph_node_values{instance?}`。[第10章](10_tools.md))。
+現在の実効値と由来は、再評価せずに **publish 時のスナップショット**から読みます(`get_graph_values{instance}` / `get_graph_node_values{instance?}`。[第13章](13_editor.md#読み取り) §13.5 の「読み取り」)。
 
 ### sink — グラフの末端
 
