@@ -40,6 +40,8 @@ implementation archive」によります(WP1〜179 は 2026-07-19 調査、WP180
 完了しているが実機・実測の受け入れが未消化 / **未** = 台帳に指示書として登録済み・未実装 /
 **予約** = 番号予約のみ(設計文書側で番号だけ押さえた枠。着手前に台帳へ正式記載する — [../implementation_archive.md](../implementation_archive.md))。
 
+Studio と編集 RPC の機能ごとの実装状況の表(旧 第13章 §13.12)は [Studio と編集 RPC の実装状況(2026-10)](../history/studio_status_2026-10.md) に移しました。
+
 ### WP1〜63(基盤期。詳細は各章)
 
 | WP | 内容 | 状態 |
@@ -626,8 +628,9 @@ game DLL ABI / 宣言 schema v3 / GPU lease)を §11.1 の追補表として足�
 3. **JSON 例は実物から。** `projects/example/`・`projects/sprite_demo/`・`projects/animgraph_demo/`・`projects/posegraph_demo/`・`test/fixtures/`・`src/core/resources/` の実ファイル、またはパーサ実装で検証した形だけを載せる。創作例には「(例)」と明記。
 4. **章の追加**: `NN_slug.md` で採番し、[00_index.md](00_index.md) の目次と、関係する章の相互リンクを更新する。章の冒頭形式(タイトル → 対象行 → 「この章で学ぶこと」→ 末尾「関連文書」)を踏襲する。
 5. **バッジ更新のタイミング**: 形式(スキーマ)に触れる WP・strict 化 WP・機能追加 WP のマージ時。直近では HR2-I・U3・VRMA watcher・CI2 の着地時、**XR2b(WP203c)/ WP204 / WP216 / WP217 は外部 gate を通過した時点**で関係章を書き換える。加えて WP211 `dist-bake` の着地時に第2章・第10章を、**WP238 系の公開 game-DLL ABI が凍結された時点**で第6章を書き換える(それまで NativeScope を「使える」と書かない)。
-6. **一緒に直すもの(再発防止)**: golden ケースを足したら `test/golden/inventory.json` にも登録する(件数の自動発見はもう無い)。RPC メソッドを足したら [第10章](10_tools.md) の表と、編集系なら [第13章](13_editor.md) にも書く。CLI 引数を足したら第10章 §10.2 の表に足す。**名前付きコード(`name@1`)を足したら、それを踏む利用者が読む章のエラー表**([第4章 §4.5](04_scene_ecs.md) / [第13章 §13.6](13_editor.md) / 該当章)**にも足す**。ビルド機能ユニット(`PELICAN_WITH_*`)を足したら [第2章 §2.2](02_getting_started.md) の表と、project の `requires` の語彙([第3章 §3.2](03_project_format.md))を確認する。
+6. **一緒に直すもの(再発防止)**: golden ケースを足したら `test/golden/inventory.json` にも登録する(件数の自動発見はもう無い)。RPC メソッドを足したら **正本に 1 回だけ書く**(基盤・読取の method は [第10章](10_tools.md)、編集系の method は [第13章](13_editor.md) の編集 RPC リファレンス)。もう片方には method 表の 1 行とリンクだけを足し、params・戻り値・拒否コードを 2 箇所に書かない(2026-10-06 改定。それまでの「両方に書く」が第 6・10・13 章の三重記載と食い違いを生んでいた。[文書の再編計画](../documentation_plan_2026-10-06.md) §1)。CLI 引数を足したら第10章 §10.2 の表に足す。**名前付きコード(`name@1`)を足したら、それを踏む利用者が読む章のエラー表**([第4章 §4.5](04_scene_ecs.md) / [第13章 §13.6](13_editor.md) / 該当章)**にも足す**。ビルド機能ユニット(`PELICAN_WITH_*`)を足したら [第2章 §2.2](02_getting_started.md) の表と、project の `requires` の語彙([第3章 §3.2](03_project_format.md))を確認する。
 7. **§11.3 の食い違い一覧は「解消したら消す」**。設計文書側が改訂されたか、実装が設計に追いついたら該当行を削除する。
+8. **着地の記録は manual に書かない**(2026-10-06)。着地日・commit hash・検証件数・「実装者の報告では」・着地時の「穴」は `docs/history/` か [実装指示書](../implementation_plan.md) に書き、manual には「今どうなっているか」と、今も有効な制限だけを現在形で書く。判定は 3 問: 「commit が変わっても真か」が No なら history、「利用者が書く値・読む値か」が Yes なら manual、「コードを開いた人が迷う所か」が Yes なら読解ガイド。
 
 ## 関連文書
 

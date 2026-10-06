@@ -889,3 +889,174 @@ A hidden widget still exists. Use `wait` with `missing: true` when an action
 removes a widget or a graph item; `visible: false` / `enabled: false` require
 the name to resolve and fail on a missing name. Keep a positive check of the
 created item or replacement next to a disappearance check.
+
+## 第13章・第10章から移した記述(日本語)
+
+2026-10-06 に manual の第13章 §13.5「Studio の自動化面」と第10章 §10.7 の `--automation` の段落から移した原文です。
+上の英語の節と同じことだけを書いた段落は移さず、上の節に無い事実を含む段落だけを、文を変えずに置きました(段落の中には上の節と重なる文も残っています)。
+当時の記録を含みます。上の節と食い違うときはコードを確かめてください(例: 上の「Writing a scenario」の QD-1 は、下の GL-5g の段落が「常に通る」と書く形のいくつかを失敗にします)。
+
+### 第13章 §13.5「Studio の自動化面」から
+
+**これは「GUI の動作確認を AI だけで完結させる」ための面です**(Q-1、利用者指示 2026-09-17)。
+人が窓を見て確かめる代わりに、シナリオが実物の窓を実物の engine 付きで動かし、AI が結果の report を読んで
+「緑 / 赤と理由」を判定します。**人のレビューは使い勝手に使います。**
+
+**flag が無い起動では server object が作られないので、socket が存在しません**
+([宣言のコメント](../../src/devstudio/automation/automationserver.hpp#L30)) —— 出荷時の挙動は変わりません。
+チャネルは**逐次**で、命令の実行中に次の行が来たら `automation.busy@1` で断ります
+([判定](../../src/devstudio/automation/automationserver.cpp#L102))。認証はありません(flag を付けたときだけ開く口です)。
+
+**命令は 23 個**です([一覧](../../src/devstudio/automation/automationcommands.cpp#L2567)):
+`list` / `click` / `double_click` / `drag` / `wheel` / `move` / `press` / `release` / `key` / `type` / `text` / `select` /
+`action` / `menu_list` / `view_state` / `layout_stats` / `wait` / `wait_engine` / `rpc` /
+`open_project` / `screenshot` / `viewport_size` / `quit`。`rpc` は `EmbeddedViewport` 経由で engine へ送り、応答をそのまま返します。
+この文書は長く 20 個と書いていましたが、一覧には `select`(AG-3b。下の段落)と `layout_stats`(名前を指した view の scene で自動配置が達成したものを読む。コードのコメントの読み)が既にあり、
+✅PX-2(`28bc5ef9`)で `viewport_size`(下の「viewport の大きさを決める(✅PX-2)」)が増えました。
+イベントは `QTest` の合成なので、**窓が前面にあるかどうかに依存しません**。拒否は名前付きで、
+`automation.widget_missing@1` / `bad_request@1` / `unknown_command@1` / `engine_not_ready@1` / `rpc_failed@1` /
+`wait_timeout@1` / `screenshot_failed@1` / `project_failed@1` / `busy@1` / `command_threw@1` の 10 種です
+([定数](../../src/devstudio/automation/automationcommands.cpp#L243))。
+
+**`wait_engine` は「今の」engine を待ちます(✅Q-9)。**Frame Plan の保存が engine の再起動を求めると(G-4)、Studio は再起動の
+前に古い engine へ未保存の編集を問います(G-5)。その往復の間も古い engine は editor RPC に答えるので、以前の `wait_engine` は
+その engine で通り、次の step が止まった engine に当たって `automation.engine_not_ready@1` で落ちていました。今は
+**再起動は頼まれた時点で始まったと数え**、そこから新しい engine の process が最初の `get_status` に答えるまで、`wait_engine` は
+通りません([wait_engine の判定](../../src/devstudio/automation/automationcommands.cpp#L1981)、
+[再起動待ちを立てる所](../../src/devstudio/view/mainwindow.cpp#L2361))。Cancel などで再起動が見送られれば、すぐ今の engine で
+通ります。再起動を待っている間に Studio が送る editor RPC は古い engine に届き(未保存の問いと Save はそこへ届く必要が
+あるため)、engine が止まった後は既存の 1 行 `The engine viewport is not ready for editor RPC requests.` で断られます。
+Stop ボタンや project の切り替えのような普通の停止は、process が終わるまで ready を落としません(`open_project` はその終わりを
+待ちます)。
+✅MR-1s(`5c26d492`)から、`wait_engine` の答えに **`process_id`**(答えた engine の process の id。`ready`・`waited_ms`・`frames` を付けたときの `published_frames` と並ぶ)が付きます([process_id を足す所](../../src/devstudio/automation/automationcommands.cpp#L2015))。
+シナリオは `result` の `remember` で覚え、後の `wait_engine` の `process_id` を `value_of` と `op: eq` で比べて「その間に engine を起こし直していない」を言えます(`gui_material_repair`)。
+
+**`list` の `checked`(✅SK-1、`67fd3d29`)**: `list` の widget の項目は `name` / `class` / `visible` / `enabled` / `geometry` / `text` / `shortcut` を返し、
+check できるボタン(`QAbstractButton` で `isCheckable()` が真のもの。`QCheckBox` など)だけ `checked`(真偽)も返します
+([`checked` を足す所](../../src/devstudio/automation/automationcommands.cpp#L967))。check box の `text` は caption(例 `Double sided`)なので、
+印が付いているかはこちらで読みます(例 `{"cmd": "list", "pattern": "pelican.materials.doubleSided"}` の `widgets[0].checked`)。
+check できない widget の項目には `checked` の鍵がありません。test は `devstudio_automation_input_test` の
+[「SK-1: list says whether a check box is ticked」](../devstudio_automation_input_test.cpp#L627)(`QCheckBox` の false → true が `checked` に出て、
+`QPushButton` の項目には無い)です。なお今の `list` は、名前の付いた `QAction` も `class` が `QAction` の項目(`visible` / `enabled` / `checked` /
+`text`)で返します([`QAction` の項目](../../src/devstudio/automation/automationcommands.cpp#L998))。上の「`QAction` は `list` には出ません」は
+Q-1b の着地時の記述で、今のコードとは違います(コードの読み)。発火は今も `action` です。
+
+**シナリオは JSON で、`test/studio_scenarios/<名前>.json` に置きます**(書式は
+[README](README.md#L61))。step は「命令をそのまま送るもの」か「期待」で、期待は
+`rpc_equals`(engine の応答の `path` が `value`)/ `result`(任意の命令を送り、応答の `path` を記録するか `value` と比べる)/
+`text_equals` / `visible` / `list_count` / `screenshot`(保存のみ)の 6 種です([判定](../../tools/studio_drive.py#L1031))。`{project}` / `{artifacts}` と `--var NAME=VALUE` は step のすべての文字列に差し込まれます。
+`result` の比べ方 `op` は `eq`(既定)/ `ne` / `gt` / `ge` / `lt` / `le` / `contains` / **`excludes`**(✅F-7。文字列がその値を
+含まない —— 「その文言は出なかった」の書き方。[`compare()`](../../tools/studio_drive.py#L563))です。`result` も **`retry_ms`**(✅F-5)を受け、
+条件を満たすか時間が尽きるまで 0.2 秒おきに問い直します(`rpc_equals` は前から受けていました)。shader を保存した後に
+engine が描くものは engine の時計で届くので、`fullscreen_pass_from_template` は `screen` の screenshot をこれで待ちます
+([問い直し](../../tools/studio_drive.py#L1098))。
+✅PM-3a から、`result` は `value_of` に数を足す **`plus`**(`"value_of": "frame", "plus": 1` は 1 歩後)と、覚えた値から比べる
+文を作る **`value_format`**(`"Paused · frame {paused_frame}"`)も受けます([`plus` を足す所](../../tools/studio_drive.py#L1082)。
+書式の正は [README](README.md#L142))。
+3 つ目の種類の **`file` step**(✅F-3)は Studio へ送らず、driver 自身が run の持つ directory の中の file を 1 つ読み書きします ——
+人が Studio の操作の合間に自分のエディタで file を直す、の代わりです。`write` / `replace`(`old` がちょうど 1 か所のときだけ)/
+`contains` / `exists` と、✅IA-1s の `copy`(`from` の file を `path` へ byte のまま写して上書きする。`write` は UTF-8 の文字しか書けないので、人が外で焼き直した binary の file を project の file に上書きする代わり。[copy の所](../../tools/studio_drive.py#L909))の 5 つです。書ける範囲は **`{project}`(fixture の複製)と `{artifacts}`(その run の成果物の置き場)の
+2 つ**で、File > New Project でシナリオが作った project は `{artifacts}` の下にあるので、そこにも届きます(✅F-4)。
+それ以外の path(`..` で外へ出るものを含む)は step の失敗です([file step の範囲の検査](../../tools/studio_drive.py#L869))。`copy` は `from` もこの 2 つの中でなければ失敗です。
+driver の stdout / stderr は、cp932 の console で出せない文字があっても止まりません。
+`"probe_no_automation": true` を書くと、**先に flag 無しの Studio を起こして socket が無いことを確かめて**から本番を起動します。
+最上位の **`"viewport": [w, h] | null`**(✅PX-2)は、driver が最初の step の前に `viewport_size` で固定する engine の viewport の大きさ(画の画素)です。
+省くと 720x450、`null` なら固定しません(下の「viewport の大きさを決める(✅PX-2)」)。
+最初の失敗で run は止まります。
+
+**シナリオの確認が常に通る形(✅GL-5g、`cfa9859f`)**: シナリオを書く人向けの注意です。driver の比較は、書いた期待が何も確かめていなくても緑になる形があります。GL-5f の実装者が `gui_graph_only_edits_2` の 1 step で気づき、GL-5g の実装者が全シナリオを走査しました(78 本・6,541 step。cmd 4,656 / expect 1,784 / file 101。build に残っていた最新の report の「driver が実際に比べた値」と step の label で突き合わせた。走査の script は repo に入れていません)。本物の常に通る step は 6 本に 6 件あり、全部直しました。常に落ちる step は 0 件でした。直した後に赤になったものはありません(= 隠れていた不具合は無かった)。
+
+| 常に通る形(driver の分岐。実装者が [`compare()`](../../tools/studio_drive.py#L563) と [`equal()`](../../tools/studio_drive.py#L528) などを読んだ結果) | 見つかった step と直し方 |
+|---|---|
+| `result` の `contains` / `excludes` を **object** に使う。Python の `in` なので object では**鍵**を見る。値の文字列を `excludes` すると常に真 | `gui_graph_only_edits_2` の「the document: no define」(`parameters.shader` に `excludes "PELICAN_PASSTHROUGH_INPUT"`)→ 同じ object に `excludes "defines"`(鍵が無い = define が 1 つも無い) |
+| `remember` / `value_of` で、**同じ command・同じ path を時間を進めずに読み直して `eq`**(止めてあれば必ず同じ) | `play_pause_step` の「and no further」→ 間に「engine がその後 30 frame 描く」(`result.frame` に `ge` と `plus`、retry)を入れてから比べる |
+| `result` に `value` / `value_of` / `value_format` が無く、`remember` だけで**後で誰も比べない**(path があれば通る) | `graph_reroute_tie`(drag の前に node の y を覚えて `ne`)、`gui_graph_only_edits`(notice の文を `contains "used by render_fullscreen_2"`)、`gui_build_curve`(何も繋がない時の黒と `eq`、retry)、`deferred_loop_from_scratch`(覚えた gradient の色に段 5 の後で `ne`) |
+
+ほかにも次の形は常に通りえます(実装者の表。今のシナリオでは意図どおりに使われていたもの): `ne` で型の違う値を比べる、bool と数を `eq` で比べる(`True == 1` が通る)、`$len` や `distinct_colors` に `ge 0`、名前を書き間違えた `visible: false` / `wait` の `missing`、どの source にも現れない pattern の `list_count 0`、書き間違えた path の file の `contains: false` / `exists: false`。`screenshot` の期待は保存だけで、設計どおり常に通ります。
+
+- **書くときの決まり**: 「無いこと」を言うときは、何が来れば落ちるかを先に考えます。object に `excludes` するなら鍵の名前を、文字列なら部分文字列を書きます。`remember` したら必ずどこかで `value_of` で比べます。「変わらない」を言うときは、間に時間を進める step(retry のある `result`・`wait`・`wait_engine`)を挟みます。開き直した後の絵は「背景と違う」ではなく、保存の前に覚えた点の色と `eq` で比べます(GL-5g が `gui_model_from_file` の 4 点と `render_pipeline_from_scratch` の段 6 の 2 点をこの形にした)。
+- **見たが直さなかったもの**(実装者の報告): object の鍵を `contains` / `excludes` する 9 件は期待が鍵の名前で意図どおり(値が来れば落ちる)。比べない読み 80 件は label が「(read)」などの記録で、比較は別の step がする。`eq` の期待が前の操作より前の同じ読みで既に出ていた 86 件は round trip の「戻った」「残った」の確認。**未確認 1 件**: `input_needs_shader` の file の否定(`shaders/present_pass_through.frag` が書かれるとしたらその名前になる根拠が見つからなかった。driver に dir の一覧が無いので「増えていない」とは書けない)。
+- **driver を直す案**(実装者の報告。`tools/` は触っていない): object への `contains` / `excludes` を失敗にして鍵には別の op を、比べない `result` で `remember` も無いものを失敗に・使われない `remember` を警告に、`eq` で bool と数を区別、`stable_for_frames` のような「時間が経っても変わらない」の形、`visible: false` は名前が解決しないとき失敗に、file の否定に「前に肯定を見た」を書ける形と dir の一覧、`list_count 0` の pattern が一度も一致しなければ警告、report の summary に比べた step の数。
+
+**回し方**: [`tools/studio_drive.py`](../../tools/studio_drive.py#L1536)(Python 3.11以上、標準ライブラリだけ)が Studio を
+`--automation --project --tab` で起動し、✅PX-2 から Studio とつないだ直後・最初の step の前に `viewport_size` で viewport を 720x450 に固定し
+([固定する所](../../tools/studio_drive.py#L1647))、step を順に送り、`report.json` を書きます。ctest からは
+`studio_scenario_<名前>` として GPU lane で走ります([登録](../CMakeLists.txt#L3673)) —— **実物の窓が要るので
+`QT_QPA_PLATFORM=offscreen` は掛けません**。fixture の project は temp に 2 つ複製されるので、シナリオは
+文書を書き換えてよく、「ディスクから読み直す」も試せます([複製](../run_studio_scenario.cmake#L30))。✅IA-1s から、シナリオの隣に `<名前>.prepare.py` があれば、ctest の口([prepare の script を走らせる所](../run_studio_scenario.cmake#L68))が driver を起こす前に`<名前>.prepare.py --out <run の directory>/incoming --cli <pelican_cli>` を走らせます。人が Studio を開く前に外で作る file の代わりで、シナリオは `{artifacts}/incoming/` の file を Studio で取り込むか、`file` step の `copy` で project に写すか、project として開きます(今 prepare を持つのは `gui_build_ltc`、✅AB-1s の `gui_build_audio_reactive`、✅HW-2s / AV-1s の `gui_assets_watch_verify`、✅BS-1s の `gui_render_fallback`、✅MI-1s の `gui_model_from_file` の 5 本。[第10章](../../docs/manual/10_tools.md) §10.7)。
+CTest登録にはStudio targetと`PELICAN_PYTHON_TESTS=ON`（またはPythonが見つかった`AUTO`）が必要です。
+`uv`は不要で、完全なGPU gateは全scenarioの登録・実行を必須にします([CI運用](../../docs/ci.md))。
+
+**run ごとに空の設定 directory を使います(✅F-5)。**Studio は環境変数 **`PELICAN_STUDIO_CONFIG_DIR`** があれば、利用者の
+設定 directory の代わりにそこへ dock の layout を読み書きします([置き場の決定](../../src/devstudio/view/mainwindow.cpp#L120))。
+driver は run ごとに `{artifacts}/studio_config` を空にして作り、この変数で渡します([渡し方](../../tools/studio_drive.py#L1585))。
+以前のシナリオは、前の run(や人が使った Studio)が利用者の設定 directory に残した dock の layout を復元し、自分の
+layout をそこに残していました。テーマの選択はこの directory ではなく `QSettings` に残るので、この変数の影響を受けません。
+
+**Studio を置く画面を選べます(✅OT-1)。**環境変数 **`PELICAN_STUDIO_SCREEN`** に画面の番号(`QGuiApplication::screens()` の順、0 から)か
+画面の名前(`QScreen::name()`。`\\.\DISPLAY5` など)を書くと、Studio は起動した窓をその画面の使える範囲(`availableGeometry`)の左上へ動かします
+([`placeOnRequestedScreen()`](../../src/devstudio/view/studioscreen.cpp#L30)、[呼ぶ所](../../src/devstudio/view/uimain.cpp#L35))。値は先に番号として読み、
+範囲内の番号でなければ名前として探します。保存された窓の位置と大きさを戻した後に動かし、大きさは変えず、枠が画面に入らないときだけ縮めます
+(最大化していれば、通常の位置を動かしてから最大化し直します)。どの画面にも当たらなければ stderr に 1 行
+`PELICAN_STUDIO_SCREEN names no screen: <値>; screens: <名前, …>` を出し、窓は動かしません。未設定なら何もしません。
+ctest の run(`cmake -E env`)と driver(`dict(os.environ)`)は Studio に環境をそのまま渡すので、`PELICAN_STUDIO_SCREEN=1 ctest -L studio_scenario` で
+全部のシナリオを 2 枚目の(仮想の)モニタで走らせ、人が使っている画面を空けておけます。OT-1 の着地時に統合側が、100 % の主モニタの右に置いた
+125 % の仮想モニタで 40 本全部を緑で通しました。
+
+**シナリオは無音です(✅Q-11)。**AU-3 から player は audio の backend を起動時に選べます(`--audio-backend device|offline|null` と
+環境変数 `PELICAN_AUDIO_BACKEND`。`null` は device を開きません)。Studio の QProcess は環境を継承するので、driver は Studio を起動する環境に
+`PELICAN_AUDIO_BACKEND=null` を入れます([無音にする所](../../tools/studio_drive.py#L1576))。呼び出し側が既に値を設定していれば
+(`device` / `offline` など)その値を尊重し、**空文字は未設定として扱って** `null` に置き換えます(player と同じ扱い)。シナリオ
+`graph_read` は `get_status` の `audio.backend` が `null` で、`audio` に `fallback_reason` が無い(鍵が `available`・`backend`・`voices` の 3 つだけ)ことを確かめます。
+engine の ✅CT-1(`ac8d836b`)から `audio` には `voices` が常に付くので(audio を外した build を除く。[第8章](../../docs/manual/08_gameplay.md) の「`get_status` の `audio`」)、`9ca2d3ce` でシナリオの `audio.$len` の期待を 2 から 3 にしました。この文書ではシナリオを走らせて確かめていません(未確認)。
+Q-10 の時点では、埋め込んだ player は窓があるので実物の device を選び、シナリオの間も speaker から音が出ていました。
+
+**report.json は AI が読む形です**([組み立て](../../tools/studio_drive.py#L1737)): `verdict`(`green` / `red`)と
+`ok` / `failed_steps`、`summary`(step ごとに 1 行)、`failures`(送った命令・返ってきた応答・言葉での理由・
+**失敗した瞬間のスクリーンショット**)、`steps`(全文)、`studio_log`(Studio と engine の console 出力)。
+`studio_exit_code` と `studio_shutdown_forced` も記録します。✅PX-2 から `steps` には `viewport` の step(`the viewport is held at 720x450`)が入り、`steps_planned` もそれを数えます(`"viewport": null` のシナリオを除く)。最後の shutdown step は
+**exit 0、強制終了なし**を要求し、異常終了・タイムアウトによる強制停止も report と driver の失敗になります。
+
+**Play の間の `quit`(✅UX-7)**: 自動化面の `quit` は、閉じる前に MainWindow の [`stopPlayThen()`](../../src/devstudio/view/mainwindow.cpp#L2130) を通ります([渡す所](../../src/devstudio/view/uimain.cpp#L49))。Play の帯が Playing か Paused(か run がある)と言う間は、帯が送れる時に keep なしの Stop を送り(2 秒ごとに送り直します)、run が終わってから閉じます。15 秒たっても終わらなければ、待つのをやめて閉じる処理へ進みます(Stop に engine が答えないときに止まらないため。そのときに確認のダイアログが出るかは確かめていません。未確認)。UX-7 の前は、Play の間の `quit` が窓の close の「再生を終える確認」のダイアログで止まり、30 秒で強制終了になっていました(`gui_build_ocean` の間欠の失敗)。人が窓を閉じるときは今も確認が出ます。
+
+**`get_status` の返事は 1 回だけ parse します(✅UX-7)**: viewport は、誰が送った `get_status` の返事でも、生の bytes の signal `engineStatusRead` の後に、1 回 parse した JSON を `engineStatusParsed(request_id, status)` で渡します([渡す所](../../src/devstudio/viewport/embeddedviewport.cpp#L834))。Play の帯・Outliner の runtime の行・`wait_engine`([`render.published_frames` を読む所](../../src/devstudio/automation/automationcommands.cpp#L1907))はこれを読みます。UX-7 の前はそれぞれが GUI の thread で parse していて、ループを 16 回展開した graph で約 2 MB の返事が GUI を止めていました(仕様の背景。engine の ✅ST-1 で返事自体も小さくなりました)。UX-6b の `PlanPerfHub` は生の bytes を受けて thread pool で parse します。
+
+### 第10章 §10.7「`pelican_studio` の CLI」の `--automation` から
+
+`--automation <名前>` は **GUI を外から駆動するための口**です(Q-1)。指定すると `QLocalServer`(Windows では
+`\\.\pipe\<名前>`)が開き、**改行区切りの JSON 1 行 = 1 命令**で `list` / `click` / `double_click` / `drag` /
+`wheel` / `move` / `press` / `release` / `key` / `type` / `text` / `select` / `action` / `menu_list` / `view_state` /
+`layout_stats` / `wait` / `wait_engine` / `rpc` / `open_project` / `screenshot` / `viewport_size` / `quit` の **23 命令**を受けます
+([一覧](../../src/devstudio/automation/automationcommands.cpp#L2567))。この節は長く 20 命令と書いていましたが、一覧には `select`(AG-3b)と
+`layout_stats` が既にあり、✅PX-2(`28bc5ef9`)で `viewport_size` が増えました。**flag が無い起動では server object が
+作られないので socket は存在しません**([構築](../../src/devstudio/view/uimain.cpp#L41)) —— 出荷時の挙動は
+変わりません。listen できたときだけ `automation listening: <endpoint>` を標準出力に出します
+([その 1 行](../../src/devstudio/view/uimain.cpp#L71))。開けなかったときは理由を出して **終了コード 3** です。
+
+`wait_engine` は engine が editor RPC に答えた時点で返ります。engine は**最初の frame を出す前に** RPC に
+答えるので、描画済みの frame が要る操作(`capture`、公開済みの frame plan)の前には `frames` を付けます。
+`{"cmd": "wait_engine", "frames": 1}` は `get_status` の `render.published_frames` がその数に届くまで待ち、
+応答に `published_frames` を足します([commandWaitEngine()](../../src/devstudio/automation/automationcommands.cpp#L1965))。
+`published_frames` は renderer がその起動で公開した logical frame の数で、飛ばした frame は数えません。
+✅MR-1s(`5c26d492`)から、答えに `process_id`(答えた engine の process の id)も付きます。シナリオは覚えておいて後で比べ、その間に engine が起こし直されていないことを言えます([第13章](../../docs/manual/13_editor.md) §13.5 の「Studio の自動化面」)。
+
+**viewport の大きさ(✅PX-2、`28bc5ef9`)**: driver は Studio とつないだ直後・最初の step の前に
+`{"cmd": "viewport_size", "width": 720, "height": 450}` を送り、engine の viewport(`pelican.viewportHost`)を画の画素で 720x450 に固定します
+([`fix_viewport()`](../../tools/studio_drive.py#L1427)、既定の [`DEFAULT_VIEWPORT`](../../tools/studio_drive.py#L59))。
+Studio は viewport に固定の大きさをかけ、窓を差の分だけ伸び縮みさせ、ドックの大きさはそのままにします。後でドックを開け閉めしても viewport の大きさは変わりません
+([`commandViewportSize()`](../../src/devstudio/automation/automationcommands.cpp#L2053)。`{"free": true}` で外します)。
+シナリオの最上位に `"viewport": [w, h]` と書けばその大きさ、`"viewport": null` なら固定しません(今は `whole_frame_first_steps` だけ)。
+答えの大きさが要求から 1 画素を超えてずれるか断られたら、その run は step を送らずに赤です。画素を読むシナリオの点は 720x450 の絵で選んであるので、
+**既定の大きさを変えると、画素を読む 33 本の点を全部測り直すことになります**。理由・`screen` の screenshot が 719x449 になる件・点の測り直しは
+[第13章](../../docs/manual/13_editor.md) §13.5「Studio の自動化面」の「viewport の大きさを決める(✅PX-2)」です。
+
+✅IA-1s で、シナリオが Studio の外の作業を代わりにする口が 2 つ増えました。
+
+- **`file` step の `copy`**: `{"file": "copy", "path": "{project}/x", "from": "{artifacts}/y"}` は `from` の file を `path` へ byte のまま写します(あれば上書きします。[file step の copy](../../tools/studio_drive.py#L909))。`write` は UTF-8 の文字しか書けないので、人が外で焼き直した binary の file を project の file に上書きする、の代わりです。`path` と `from` のどちらも run の持つ 2 つの directory(`{project}` と `{artifacts}`)の中でなければ step の失敗です(ほかの `file` step と同じ範囲。[第13章](../../docs/manual/13_editor.md) §13.5「Studio の自動化面」)。
+- **`<名前>.prepare.py`**: `test/studio_scenarios/<名前>.json` の隣に `<名前>.prepare.py` があると、ctest の `run_studio_scenario.cmake`([prepare の script を走らせる cmake の口](../run_studio_scenario.cmake#L68))は driver を起こす前に `<python> -B <名前>.prepare.py --out <run の directory>/incoming --cli <pelican_cli>` を走らせます(120 秒で打ち切り)。人が Studio を開く前に外で作る file(自分の script で書いて CLI で焼いた資産など)の代わりで、シナリオは `{artifacts}/incoming/` の file を Studio の Import で取り込みます(`{artifacts}` がその run の directory です)。`pelican_cli` は ctest の登録が target から `-DCLI=` で渡し([prepare に CLI を渡す登録](../CMakeLists.txt#L3706))、target が無いか file が無ければ、prepare を持つシナリオは失敗です。prepare が 0 以外で終わっても、その stderr を付けて失敗です。`tools/studio_drive.py` を直接回すときは prepare は走りません(ctest の cmake の口のため)。
+  - 今 prepare を持つのは 5 本です: `gui_build_ltc`、✅AB-1s の `gui_build_audio_reactive`(音量が時間で変わる 1 秒の小さな WAV 2 つを書く。`--cli` は受けるが使わない)、
+    ✅HW-2s / AV-1s の `gui_assets_watch_verify`(`pelican_cli image ktx2 --raw` で焼いた 4×4 の texture を書き、シナリオが `copy` で project に写す)、
+    ✅BS-1s の `gui_render_fallback`(`pelican_cli project init --template blank` の project の root を壊して書き、シナリオがそれを開く)、
+    ✅MI-1s の `gui_model_from_file`(repo の `test/fixtures/studio_material_pass_authoring/checker_box.glb` を写す。`--cli` は受けるが使わない)。[`gui_build_ltc.prepare.py`](gui_build_ltc.prepare.py) は LTC の表 2 枚と焼き直した 1 枚を raw の float で書き、`pelican_cli image ktx2 --format R32G32B32A32_SFLOAT --raw … --width 64 --height 64`(§10.4)で `.ktx2` にします。
+  - 書式の正の [README](README.md) には、`copy` はまだ書かれていません(IA-1s の commit は README を変えていません)。prepare は、BS-1s と MI-1s の段落が
+    `<name>.prepare.py` で `{artifacts}/incoming/` に置く例として触れるだけで、書式の節はありません。

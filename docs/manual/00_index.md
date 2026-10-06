@@ -40,14 +40,16 @@ Pelican2 の**使い方と設計を人間向けに解説する公式マニュア
 | [第10章 ツールリファレンス](10_tools.md) | pelican_player 全 CLI(オフライン出力の `--start-time` を含む)、JSON-RPC 全メソッド(graph 系 6 本・package 2 本・共有部品 2 本を含む)、pelican_cli(`package` / `graph-catalog` を含む)、配布ビルド、Studio、テスト基盤、`tools/` の保守スクリプト |
 | [第11章 実装状況と文書マップ](11_status.md) | WP 全台帳、設計文書⇔章の対応表、既知の食い違い一覧、本マニュアルの更新ルール |
 | [第12章 コード読解ガイド](12_codemap.md) | **技術解説書**。リポジトリ地図、起動〜1フレームの追跡ルート、JSON→パーサ対応表、実装パターン(ソースへのジャンプリンク付き) |
-| [第13章 エディタとエディタ RPC](13_editor.md) | 実行中のシーンを編集する API(オーサリング文書・チケット・undo/redo・プレビュー・保存)、**グラフの装着を編集する**(ノードキャンバスと Inspector)、ImGui のインスペクタ、Python クライアント |
+| [第13章 編集 RPC リファレンス](13_editor.md) | 実行中のシーンを編集する RPC の契約(オーサリング文書・チケット・undo/redo・プレビュー・保存)、**グラフの装着を編集する** RPC、ImGui のインスペクタ、Python クライアント |
 | [第14章 用語集](14_glossary.md) | 本マニュアルに出る用語と記号の索引(WP / D0 / codec / transaction / JSON-RPC / `name@1` / 共通グラフ / pose / instance / package など。基本語だけなら [第1章 §1.0](01_overview.md)) |
+| [第15章 Studio の操作](15_studio.md) | Pelican Studio の panel ごとの操作(Inspector / Outliner / Materials / Assets / Graph / Frame Plan / Pass Editor / Render Features / Rendering settings / Ray layout / Layers / Problems / Play) |
 
 > **共通グラフ(`pelican.graph`)に専用の章はありません。**値・描画・姿勢を 1 つの文書で繋ぐこの機構は 3 か所に分かれて書かれています —— **ノード語彙と入力の 4 mode は [第6章 §6.17「共通グラフのノード語彙」](06_rendering.md)**、**装着の編集操作(ノードキャンバスと Inspector)は [第13章 §13.5「グラフの装着を編集する」](13_editor.md)**、**語の定義は [第14章 §14.7「共通グラフと姿勢の語」](14_glossary.md)**(package / `requires` / component は §14.2)です。姿勢グラフの書き方は [第8章 §8.13](08_gameplay.md)、`graph.instance` の owner は [第4章 §4.1](04_scene_ecs.md)、文書がどの root に入るかは [第3章 §3.2](03_project_format.md) と [第6章 §6.16](06_rendering.md) にあります。
 
 ## 読み方の目安
 
 - **初めての人**: 第1章 → 第2章 → 第3章 → 第4章 の順で、`pelican_cli project init` から動くものを作るのが最短です。
+- **Studio を使う人**: 第1章 → 第2章 → 第15章(panel ごとの操作)。操作が送る RPC の細部が要るときは第13章の編集 RPC リファレンス。
 - **ゲームを書く人**: 第7章・第8章。example の `playercontrol.cpp` が最小の完成形です。
 - **絵作り・シェーダ**: 第6章。JSON だけでパイプラインが組めます。
 - **ツール・自動化・CI**: 第10章。ヘッドレス + JSON-RPC が入口です。

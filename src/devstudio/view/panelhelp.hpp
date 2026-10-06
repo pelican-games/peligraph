@@ -24,28 +24,28 @@
 
 namespace PelicanStudio {
 
-// The manual section each panel's `?` opens. One place, so a heading that
-// moves is one edit rather than six.
+// The manual section each panel's `?` opens, as `<chapter>#<heading slug>`.
+// One place, so a heading that moves is one edit rather than six.
 inline constexpr const char *ManualPassEditorAnchor =
-    "レンダー設定を編集する";
+    "15_studio.md#159-pass-editor";
 inline constexpr const char *ManualRenderFeaturesAnchor =
-    "レンダー設定を編集する";
+    "13_editor.md#レンダー設定を編集する";
 inline constexpr const char *ManualInspectorAnchor =
-    "studioでcomponentを追加する";
+    "15_studio.md#studioでcomponentを追加する";
 inline constexpr const char *ManualFramePlanAnchor =
-    "レンダー設定を編集する";
+    "15_studio.md#158-frame-plan";
 inline constexpr const char *ManualGraphCanvasAnchor =
-    "studio-のノードキャンバスgraph-タブ";
+    "15_studio.md#studio-のノードキャンバスgraph-タブ";
 
-// Where the shipped manual is, found by walking up from the executable. A
-// Studio run out of a build tree, out of `dist_debug`, or out of the source
-// tree all reach the same file; a Studio that has no manual next to it
-// answers with an empty string rather than a URL that opens nothing.
-[[nodiscard]] inline QString manualEditorChapterPath() {
+// Where a chapter of the shipped manual is, found by walking up from the
+// executable. A Studio run out of a build tree, out of `dist_debug`, or out
+// of the source tree all reach the same file; a Studio with no manual next
+// to it answers with an empty string rather than a URL that opens nothing.
+[[nodiscard]] inline QString manualChapterPath(const QString &chapter) {
     QDir directory{QCoreApplication::applicationDirPath()};
     for (int step = 0; step < 8; ++step) {
         const QString candidate =
-            directory.filePath(QStringLiteral("docs/manual/13_editor.md"));
+            directory.filePath(QStringLiteral("docs/manual/") + chapter);
         if (QFileInfo::exists(candidate)) return candidate;
         if (!directory.cdUp()) break;
     }
@@ -53,10 +53,10 @@ inline constexpr const char *ManualGraphCanvasAnchor =
 }
 
 inline bool openManualSection(const QString &anchor) {
-    const QString path = manualEditorChapterPath();
+    const QString path = manualChapterPath(anchor.section(QLatin1Char('#'), 0, 0));
     if (path.isEmpty()) return false;
     QUrl url = QUrl::fromLocalFile(path);
-    if (!anchor.isEmpty()) url.setFragment(anchor);
+    url.setFragment(anchor.section(QLatin1Char('#'), 1));
     return QDesktopServices::openUrl(url);
 }
 

@@ -56,8 +56,9 @@ nav:
       - 10. ツール: manual/10_tools.md
       - 11. 実装状況: manual/11_status.md
       - 12. コード対応表: manual/12_codemap.md
-      - 13. エディタ: manual/13_editor.md
+      - 13. 編集 RPC リファレンス: manual/13_editor.md
       - 14. 用語集: manual/14_glossary.md
+      - 15. Studio の操作: manual/15_studio.md
   - ソースコード読解ガイド:
       - 読み方: source-code-guide/README.md
       - 1. 全体構造とビルド: source-code-guide/01_architecture_and_build.md

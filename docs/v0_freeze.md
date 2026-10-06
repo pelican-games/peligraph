@@ -90,7 +90,7 @@ engine 付属の `engine://graphs/*.json`(分解版の雛形。`decomposes` を�
 method 名は後の版で足したり変えたりしうる。RPC は project の文書ではないので `project migrate` の対象でもない。
 
 stdio JSON-RPC の枠組み(`jsonrpc` / `id` / `method` / `params`、名前付き error)の v0 時点の形と method 名を記録する。
-**params と戻り値の表は [docs/manual/10_tools.md](manual/10_tools.md) が正本**(ここでは重複させない)。
+**params と戻り値の表の正本は、基盤・読取の method が [docs/manual/10_tools.md](manual/10_tools.md)、編集系の method が [docs/manual/13_editor.md](manual/13_editor.md) の編集 RPC リファレンス**(2026-10-06 に分けた。ここでは重複させない)。
 
 MG-1 で足した 2 本(`src/core/communication/projectmigrationrpc.cpp` の登録。engine では `rpcserver.cpp` の `configureEngineRpcHandlers` から登録し、開く前の入口で止まった `--rpc` player ではこの 2 本だけの endpoint になる): `plan_project_migration`, `apply_project_migration`
 
