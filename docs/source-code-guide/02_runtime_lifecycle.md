@@ -173,6 +173,45 @@ Renderer
 >
 > **不変条件**: 依存は constructor で掴む(実行時に初めて掴むと破棄順が逆転する)。`__ready()` は `cleaners` 登録の後にだけ立てる。module 実体は container のメンバではなく型ごとの関数ローカル static なので、container の生存スコープは重ねられない（[constructor の重複検査](../../src/core/container.hpp#L124) が `lifetime_scope_active` で拒否）。
 
+### 遅延生成の公開順序と変更時の注意 {#module-publication-gotchas}
+
+> 🧩 **難所 — 遅延生成の 49 行**([`FastModuleContainer::get<T>()`](../../src/core/container.hpp#L149))
+>
+> **何をする所か**: module の遅延生成です。初回だけ default 構築して cleaner を積み、2 回目以降は同じ参照を返します。
+>
+> **素朴に読むと**: この 49 行には**独立した仕掛けが 5 つ同居**していて、どれか 1 つを知らないと「なぜこの順序なのか」が読めません。1 つずつ分けると次のとおりです。
+>
+> 1. **速い経路は lock を取らない(double-checked locking)** — 二重チェックロックとは、lock を取らずにフラグを読み、まだ初期化前に見えたときだけ lock を取って**もう一度**確かめる方式です。ここでは `__ready()` がそのフラグで、初期化済みなら lock 無しで参照を返します。
+> 2. **公開は [`store(release)`](../../src/core/container.hpp#L192) の 1 点だけ** — `emplace` と `cleaners.push_back` の**両方**が終わった後に置いてあります。`ready` を先に立てると「ready なのに cleaner が無い module」ができ、teardown で破棄されずに漏れます。これは書く順序の話です。
+> 3. **その 1 点が `release`、読む側が `acquire`** — 生成は owner スレッド限定でも読み取りは他スレッドから自由なので([`test` 内](../../test/module_container_test.cpp#L147))、`release` で書き `acquire`([`isInitialized()` 側](../../src/core/container.hpp#L141) / [`tryGet()` 側](../../src/core/container.hpp#L145) / [`get()` の速い経路](../../src/core/container.hpp#L151))で読む対にして、「`ready` が true に見えたスレッドからは、その前に済ませた `emplace` も必ず見える」を保証します。`relaxed` へ緩めると、`ready` だけが先に見えて未構築の optional を掴み得ます。2 と 3 は**別々の理由が同じ 1 行に重なっている**ので、片方だけ直しても壊れます。
+> 4. **[`state_mutex`](../../src/core/container.hpp#L62) が `recursive_mutex`** — `obj_ref.emplace()` が走らせる `T` のコンストラクタの中で `GET_MODULE(U)` が呼ばれ、同じスレッドが `get()` へ再入するからです。ただの `mutex` なら自己デッドロックします。
+> 5. **宣言位置と検査順そのものが意味を持つ** — `ConstructionScope`([`ConstructionScope`](../../src/core/container.hpp#L174))を `construction_stack.push_back` の直後・`emplace()` の直前に置くのは、コンストラクタが throw しても必ず pop させるためです。依存辺の記録を自分を積む前に行うのは `construction_stack.back()` を「親」にするため、循環検出を `requireCreationAllowedLocked()`([`requireCreationAllowedLocked()`](../../src/core/container.hpp#L98))より先に置くのは freeze 済みでも「循環」という正しい診断を出すためです。
+>
+> **骨子**:
+> ```text
+> [fast] ready.load(acquire) なら 依存辺を記録して返す    ← 読み取りは lock なし(辺を記録する時だけ lock)
+> [slow] scoped_lock(recursive_mutex) → ready を再確認
+>        依存辺を記録 → construction_stack に自分がいれば循環エラー
+>        shutdown中 / freeze済み / owner スレッド違い → エラー
+>        stack.push(id) + ConstructionScope(RAII pop)
+>        obj_ref.emplace()                          ← ここで再入しうる
+>        try { cleaners.push(id, destroyModule<T>) } catch { pop; reset(); rethrow }
+>        ready.store(true, release)                 ← 公開はここ 1 点
+> ```
+>
+> **手がかり**: 失敗ロールバック([catch 節](../../src/core/container.hpp#L187))は `cleaners.back().id == id` を確認してから pop し `obj_ref.reset()` します。`ready` はまだ false なので、外からは一度も見えていません。[`destroyModule<T>`](../../src/core/container.hpp#L116) は `ready=false` → `reset()` の順で、逆にすると `tryGet` が破棄済み optional へのポインタを配ります。テストは [`module_container_test.cpp` 内](../../test/module_container_test.cpp#L114)(依存記録と逆順破棄)/ [`module construction failures and cycles never publish partial modules`](../../test/module_container_test.cpp#L132)(失敗と循環で部分公開しない)/ [`module creation is owner-thread-only while initialized access remains available`](../../test/module_container_test.cpp#L147)(生成は owner スレッド限定、読み取りは自由)。
+>
+> **不変条件**: `ready.store(true)` は「emplace 済み かつ cleaner 登録済み」の後だけ。`state_mutex` は再帰的でなければなりません。`tryGet` は lock を取らないので、破棄と並行に読めば dangling になり得ます(生存期間の規律だけで守っています)。
+
+- **[`FastModuleContainer::freezeCreation()`](../../src/core/container.hpp#L199)**(Loop 開始直前、[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L538) で呼ばれる)以降は新規 module 生成が禁止されます。「render 中に初めて `GET_MODULE` する」コードは freeze 後に失敗するため、`Renderer::prepareRuntimeModules()` / `prepareFrameStateModules()` のように起動時に依存を先解決するパターンが必須です。生成しない読み取りには [`tryGet<T>()`](../../src/core/container.hpp#L144) があります。shutdown 側には [`beginShutdown()`](../../src/core/container.hpp#L213)が加わりました。
+- module reference/pointer は `PelicanCore::run()` の外へ保持してはいけません。container destructor 後は無効です。
+- destructor から新しい `GET_MODULE` を呼ぶと、teardown 中に module を再生成し得ます。destructor は既に所有する dependency を使うか、明示 teardown で完結させる方が安全です。
+- `get()` は dependency injection seam ではありません。pure algorithm をテストしたい場合は、frame planner のように module から切り離した free function/value 層を作る設計が合います。
+
+### double-checked locking と acquire / releaseの使用箇所 {#background-usage-06}
+
+**使用場所**: [FastModuleContainer::get()](../../src/core/container.hpp#L149)(acquire で読み、`scoped_lock` の内側で再検査し、最後に release で `__ready()` を立てる)
+
 ## 2.3 明示teardownが必要な理由
 
 moduleのC++ destructorだけに任せると、ECS Componentの`deinit()`が参照する描画moduleが先に壊れるほか、pending/frozen event、behavior deferred mutation、GPU deletion callbackがowner/DLLの破棄後まで残る可能性があります。ここでの **pending event** は `emit()` されてまだ配送されていない列（[`pending_events`](../../src/core/userpublic/details/event/registerer.hpp#L110)）、**frozen event** はフレーム冒頭の `freeze_events` でそこから移された「今回配送する分」の列（[`deliver_now_events`](../../src/core/userpublic/details/event/registerer.hpp#L111)）です。どちらも payload を `shared_ptr<const void>` と発行元の `RegistrationOwner` で持つ（[`QueuedEvent`](../../src/core/userpublic/details/event/registerer.hpp#L37)）ので、game DLL 由来のpayloadが列に残ったままDLLを外せない、というのが下の7番の理由です（列の意味は §2.5 の「eventの1フレーム遅延」）。そこで [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp) が、module optionalの存在を確認して次の順で明示解放します。
@@ -359,6 +398,21 @@ windowedでは、F11でRenderDocのin-applicationキャプチャを1フレーム
 > **設計決定:** キャプチャが失敗しても**論理フレームは必ず1回描画されます**。`captureArmedFrame()` へ渡すコールバックが `rendered` フラグを立てるので、`EndFrameCapture` が描画後に失敗しても二重描画にはなりません（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L332)）。デバッグ機能がフレーム進行の正しさを壊さない、という線引きです。
 
 [`RenderDocCapture`](../../src/core/renderdoc/renderdoccapture.hpp#L66) は `Renderer` がVulkan instanceを作る前に [`resolveLoopModules()`](../../src/core/appflow/loop.cpp#L156) で解決されます。RenderDoc自体をロードするのではなく、**既に注入されているAPIを観測するだけ**です。終了時は [`finishLoopResources()`](../../src/core/appflow/loop.cpp#L302) の先頭で `renderdoc_capture.beginShutdown()`（[RenderDoc shutdown 呼び出し](../../src/core/appflow/loop.cpp#L307)）を呼びます。XR経路にはキャプチャ点がありません（flat描画のみ対象）。
+
+### XR の forced-off {#xr-forced-off-gotchas}
+
+headless / RPC / golden / replay では XR は決定的に off です([`xrForcedOffDriver()`](../../src/core/xractivation.hpp#L55))。`--xr on` とこれらの組み合わせはエラー方向です([`resolveXrActivation()`](../../src/core/xractivation.hpp#L89))。「headless テストで XR コードが動かない」のはこの activation 規約によるものです。
+
+### windowed RPC ホストの落とし穴 {#gotcha-9-18}
+
+- `--rpc` は `--headless` 無しでも通るようになりましたが、**ImGui UI は無効になります**([`isImGuiRuntimeEnabled()`](../../src/core/imgui/imguiruntime.cpp#L9) が `!config.rpc` を要求)。windowed RPC と ImGui inspector は排他です。
+- リクエストは **フレーム境界でしか処理されません**。windowed は毎フレーム進むので通常は問題になりませんが、ウィンドウ最小化などでフレームが止まると応答も止まります。
+- queue 容量 [`64`](../../src/core/communication/rpcserver.hpp#L187) を超えると即座に `-32000` / `data.reason == "busy"` が返ります。この応答は **reader スレッドから** 出るため、engine スレッドの応答と行が混ざり得ます。順序保証は JSON-RPC の `id` に依存してください。
+- reader スレッドは `std::istream` にキャンセル手段がないため、ブロックしたまま `detach()` されることがあります。テストで `WindowedRpcHost` を使い捨てるときは入力ストリームを閉じて `readerFinished()` を待ってください。本番は process 寿命の `std::cin` 前提です。
+
+### [`Window::process()`](../../src/core/os/window.cpp#L374) — close flag が立たないまま窓が消える {#reading-note-065}
+
+Studio に埋め込まれた player の窓は Studio の窓の子で、Studio が先に親を壊すと子も一緒に消えます。Studio が送った `WM_CLOSE` が届く前に窓が消えると GLFW は close flag を立てないので、`glfwWindowShouldClose()` だけを見る loop は回り続け、swapchain が消えた窓に surface を毎 frame 作り直そうとします(`ErrorSurfaceLostKHR` が数十行出て、Studio に kill されるまで続いた)。Windows では `IsWindow()` で窓の実在も見て、無ければ close と同じく loop を終えます。配布確認([`run_distribution_check.py`](../../test/ci/run_distribution_check.py#L180))は Studio 終了時に生きていた player の log で surface lost の数を数え、3 以下であることを確かめます(外すと 168〜172)。
 
 ## 2.5 1フレームの五つの状態フェーズ
 
@@ -660,3 +714,28 @@ pollを駆動するのはreload serviceのruntime participant `game_logic` で�
 - どちらも無ければ `{error_code: null, error_fields: {}}`。
 
 つまり「起動で失敗し、その後まだ誰もreloadしていない」状態でも、エディタ側は最初の失敗理由を読めます。逆に一度でもreloadを試したら、そちらの結果が正になります。
+
+
+### raw import 診断は provider-only な旧 DLL の唯一の enforcement {#provider-only-import-check}
+
+game DLL のロード前診断([`diagnoseGameLogicImports()`](../../src/core/gamelogic/gamelogicimports.cpp#L559))は、OS loader の重複だと読まれがちですが、そうではありません。SDK 入口か epoch anchor を import する DLL なら未解決 import になるので loader 自身が拒否します。一方 **`getApiV1` 系を export するだけで SDK 入口を import しない旧 DLL** は未解決 import を持たないため loader は素通しで、この診断([`game_logic_abi_stale@1`](../../src/core/gamelogic/gamelogicimports.hpp#L40))だけが止めます。
+
+だから診断は無効化できず、`LoadLibraryW` の**前**に走ります(constructor を動かさないため)。reader は PE の import directory と delay-import directory だけを読み、[`GameLogicPeImportKind`](../../src/core/gamelogic/gamelogicimports.hpp#L12) の 4 種(`named` / `ordinal` / `delay_named` / `delay_ordinal`)へ分類します。host module への delay-load / ordinal import は unsupported として拒否します。
+
+Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗しない provider-only な旧 `.so` を止める仕組みは、**今のところありません**([第1章](01_architecture_and_build.md))。
+
+### [`gameLogicParticipantRpcStatus()` による participant 照会](../../src/core/communication/rpcserver.cpp#L1288) — 参加者名の正 {#reading-note-055}
+
+定数は [`watch::gameLogicReloadParticipantName = "pelican.game_logic"`](../../src/core/watch/reloadservice.hpp#L54) です。ReloadService が未登録なら [`registerParticipant` で自己登録](../../src/core/watch/reloadservice.cpp#L777)し(frame_start 境界の RuntimeReloadParticipant)、RPC は [`statusJson()["runtime"][participant]`](../../src/core/communication/rpcserver.cpp#L1295) で照会、`applyRuntimeNow(participant)` で明示適用します。
+
+### [`diagnoseGameLogicImports()`](../../src/core/gamelogic/gamelogicimports.cpp#L559) — expected_epoch と host_schema_entrance {#reading-note-072}
+
+`expected_epoch` は「ホスト実行ファイルからインポートされているべき epoch anchor シンボル([`gameLogicEpochAnchorSymbol`](../../src/core/userpublic/gamelogic.hpp#L23))」の一致検査で、**DLL が別世代の SDK でビルドされていないこと**を見ます。`host_schema_entrance` は**登録 API の世代(v2/v3)**で、DLL が host より新しい entrance を要求していないかを見ます。ABI 世代と登録スキーマ世代という別軸なので両方要ります。anchor が未装飾の `extern "C"` シンボルなのは、DLL が初期化子の前にホストから解決を強制され、**PE インポートテーブルを読むだけで世代不一致を静的に検出できる**ようにするためです(→ [§9.21](09_black_magic_and_gotchas.md#921-prepare--publish-世代のコードで踏む新しい罠)「raw import 診断は provider-only な旧 DLL の唯一の enforcement」)。
+
+### 実行中の DLL は Windows では上書きできない(シャドウコピー)の使用箇所 {#background-usage-09}
+
+**このリポジトリでは**: `src/core/gamelogic/gamelogicreload.cpp` の `makeShadowCopy()` が、`initialize()` で決めた process 固有の `shadow_directory`(= `source_path.parent_path() / ".pelican-hot-reload" / <pid>`)へ `copy_file(..., overwrite_existing)` で成果物を写し、`.pdb` も追随させます。`loadCopy()` の `LoadLibraryW` は常にこのコピー側にだけ効かせます。自動 poll は原本 `source_path` の `(last_write_time, file_size)` が 2 回続けて一致するまで待ち、さらに write share を許さない read lease を取ってから shadow copy を作るため、リンカが truncate/refill 中の部分 DLL を raw import 診断へ渡しません。writer がまだ開いていれば次フレームで再試行しますが、3 回連続で busy なら `game_logic_source_busy@1` を pending status として公開し、writer が閉じれば次の poll で通常どおり再試行します。起動時には死んだ pid の shadow directory を sweep し、正常 shutdown では自分の pid directory を削除します。狙いは「ビルドツールが書く原本」と「エンジンがマップするファイル」の分離で、process 間でも shadow copy 名が衝突しません。これをしないとゲームを動かしたままリビルドしたときにロック済みの原本へリンカが書けず失敗します。
+
+### PE の import directory / delay-import directory を、イメージをマップせずに読むの使用箇所 {#background-usage-10}
+
+**このリポジトリでは**: `src/core/gamelogic/gamelogicimports.cpp` が `LoadLibraryW` の前に走る診断用の最小 reader を持ちます。`importDirectoryIndex = 1` / `delayImportDirectoryIndex = 13`(19〜20 行)で 2 つの directory だけを取り、`fileOffset()`(212 行)が section テーブル経由で RVA をファイルオフセットへ翻訳します。`appendThunkImports()`(306 行)が PE32 / PE32+ の幅と ordinal フラグ(`0x80000000` / `0x8000000000000000`)を分け、`GameLogicPeImportKind` の 4 種へ分類します。delay 側の `delayFieldRva()`(293 行)が「絶対アドレス版」を `image_base` の減算で RVA へ直します。ファイルは 256 MiB、記述子は 4096 件、thunk は 65536 件で打ち切りますが、コメントが明記しているとおり **これは PE 形式の制限ではなく parser の作業量制限**で、壊れた入力が無制限の走査や確保にならないようにするためのものです。`directoryDescriptorOffset()`(248 行)が「directory と記述子が同じ section にあること」まで見るのも同じ理由(section 境界を越えた記述子を正当に見せないため)です。この reader が読むのは top-level の import だけで、`GetProcAddress` や依存 DLL 経由の解決は範囲外です。

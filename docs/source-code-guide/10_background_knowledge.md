@@ -1,12 +1,6 @@
 # 第10章 前提知識の補足(このコードが当然としていること)
 
-調査時点: 2026-07-21 / 基準コミット: `85882ec`
-(§10.1 末尾の 5 項目 — cube イメージ / subresource range / mip 数の上限 / タイル常駐 / dynamic rendering local read — のみ 2026-07-31 / 基準コミット `ef76292`)
-(§10.4 の 2 項目 — PE の import directory / 名前付き mutex と `Global\` 名前空間 — のみ 2026-09-04 / 基準コミット `8864050`)
-(§10.1 の swapchain 4 項目 — maxImageCount の 0 / currentExtent の特別値 / sharing mode / vulkan-hpp の戻り値規約 — のみ 2026-07-31 / 基準コミット `ab731bb`。frame target が surface/swapchain の世代管理へ作り替わったのに合わせて書き直したもの)
-(**§10.8 の 6 項目 — 2026-09-17 / 基準コミット `82054c05`。** v0 で入った共通グラフ・package・オフライン時刻の周りで、「エンジン固有の設計」ではなく**一般的な作法**にあたる話をまとめたものです。本文は他の 2026-09-04 項目と同じ「使用場所」書式で、行番号はリンクに寄せてあります)
-(§10.1 の「色空間と伝達関数」と §10.5 の 3 項目 — Floyd–Warshall 法 / GJK と EPA / JSON-RPC 2.0 の予約エラーコード — のみ 2026-09-04 / 基準コミット `76f61371`。他章から「第10章へ委譲」と書かれていた一般知識を後から補ったもの)
-(**2026-09-04 に足した 70 項目と、既存項目への「追記」段落 — 基準コミット `349a2d38`。** src を初読した読み手が「一般知識が足りなくて読めない」と挙げた 109 件を既存項目と突き合わせ、重複を除いた残りです。**この 70 項目と追記段落だけは markdown リンクで書かれており、[`tools/doclink.py`](../../tools/doclink.py) が行番号を追従させます** — 下の「行番号は追従されません」は、それ以前に書かれた 73 項目の本文にかかります)
+基準コミット: `85882ec` / `ef76292` / `8864050` / `ab731bb` / `82054c05` / `76f61371` / `349a2d38`(追従しない行番号は各項目の調査基準)。
 
 第2〜9章の「🧩 難所」ブロックが**このコードベース固有の難しさ**を扱うのに対して、この章は **pelican2 のコードが「知っている前提」で書かれている一般知識**をまとめたものです。仕様の細部や定番イディオムの名前を知らないと、コード自体は素直なのに読めない — そういう箇所を拾ってあります。
 
@@ -26,183 +20,6 @@
 > (書式には依存しません)。守られていないのは行番号だけです。
 
 各項目は「一般知識の説明」→「どこに出てくるか」の順です。後者の見出しは、先発の 73 項目が「**このリポジトリでは**」、2026-09-04 に足した 70 項目が「**使用場所**」で、後者にはリンクの後ろに「**このコードベースでの注意**」が付くことがあります(一般論と違う使われ方をしている場合だけ)。上から読む必要はありません。コードで見慣れない書き方に出会ったときに引いてください。
-
-## この章の索引
-
-全 149 項目。分類ごとに知識名だけを並べます(節そのものへの見出しリンクは張っていません — ブラウザの検索で名前を引いてください)。
-
-**10.1 Vulkan の仕様と作法**(34 項目)
-
-- swapchain の maxImageCount が 0 のとき
-- VkSurfaceCapabilitiesKHR::currentExtent の 0xFFFFFFFF
-- 色空間と伝達関数(OETF / EOTF)、linear と sRGB
-- sRGB フォーマットをスコアで選ぶ理由
-- present mode で必ず存在するのは FIFO だけ
-- sharing mode: eExclusive と eConcurrent
-- usage flags と format feature flags は別物
-- timeout に 0 を渡す waitForFences / acquireNextImageKHR
-- vulkan-hpp の戻り値規約(いつ Result が返り、いつ例外が飛ぶか)
-- vk::DrawIndexedIndirectCommand の各フィールド
-- drawIndexed の vertexOffset はインデックス値に加算される
-- drawIndirect の stride は構造体より大きくてよい
-- multiDrawIndirect、drawIndirectFirstInstance、shaderDrawParameters(gl_BaseInstance)
-- bufferRowLength / bufferImageHeight の 0 は「詰めて配置」
-- cube イメージは「6 レイヤ + CUBE_COMPATIBLE フラグ」でしかない
-- image view の subresource range(baseMipLevel / levelCount / baseArrayLayer / layerCount)
-- mip 数の上限は `floor(log2(max(w,h))) + 1`
-- LAZILY_ALLOCATED メモリと TRANSIENT_ATTACHMENT(タイル常駐)
-- dynamic rendering local read(input attachment を dynamic rendering で使う)
-- descriptor set と WriteDescriptorSet(binding 番号がシェーダとの契約)
-- descriptor binding flags と ePartiallyBound(descriptor indexing / bindless)
-- descriptor type の使い分け(combined image sampler / storage image / sampled image + sampler)
-- pNext チェーンと vulkan-hpp の StructureChain / unlink
-- 機能照会(getFeatures2 の chain)と拡張関数の動的解決
-- VMA(Vulkan Memory Allocator)の usage と allocation flags
-- buffer device address と usage flags
-- std140 / std430 レイアウト規則
-- 頂点入力の binding / attribute / stride
-- multiview と view mask
-- sampler の filter と address mode
-- レイトレーシング: shader group と SBT(handle size / stride / base alignment)
-- レイトレーシング: AS ビルドの入力とメモリ要件(maxVertex / instance 配列 / scratch)
-- レイトレーシング: instance flags と any-hit シェーダ
-- in-flight フレームと GPU 資源の寿命
-
-**10.2 glTF / 3D アセット形式の仕様**(12 項目)
-
-- GLB のコンテナ構造(ヘッダ + JSON チャンク + BIN チャンク)
-- buffer / bufferView / accessor の三層と byteStride
-- sparse accessor
-- normalized 整数属性を float へ戻す規則(UNORM / SNORM)
-- node.weights と mesh.weights の優先順位
-- primitive.mode(トポロジ)と TRIANGLES 以外を扱わない実装が多い理由
-- extensions / extensionsUsed / extensionsRequired と extras
-- 行列から TRS を分解できない場合(skew / perspective 成分)
-- VRM / VRMA が glTF 拡張として乗っていること
-- glTF の node.matrix は列優先の 16 要素
-- animation channel の出力 accessor の型は target_path で決まる
-- JOINTS_0 / WEIGHTS_0(skin ローカルの joint index と重みの正規化)
-
-**10.3 C++ とビルドのイディオム**(40 項目)
-
-- RAII ハンドルラッパ(コピー禁止・ムーブのみ)
-- pimpl と「デストラクタは .cpp で定義する」規則
-- CRTP(奇妙に再帰したテンプレートパターン)による強い型付け
-- 世代付きハンドル(index + generation)と SlotMap
-- 単調増加する generation / epoch を「変わったか」の検出に使う
-- std::erase_if(erase-remove イディオムの置き換え)
-- std::tie による多段キーの辞書式比較
-- C++20 の指示付き初期化子(designated initializers)
-- デフォルト化された operator<=>(三方比較)
-- std::vector<bool> の特殊化
-- std::filesystem の error_code オーバーロード(投げない版)
-- プラットフォーム分岐の #ifdef で、同名関数を 2 回定義する
-- windows.h を include する前の NOMINMAX
-- 機能フラグをマクロ「値」で渡し、#ifdef ではなく #if で見る
-- thread_local + RAII による「今このスレッドが実行中のもの」
-- スコープガード(巻き戻しをデストラクタに置き、成功時に無効化する)
-- double-checked locking と acquire / release
-- compare_exchange による所有権の一度きりの確定
-- ビットパッキングとビットマスクのイディオム
-- shared_ptr / weak_ptr による寿命の「リース」
-- 参照カウンタ付きの遅延解放と、受付/排出を分ける状態機械
-- moved-from 状態の契約
-- 型消去: std::any と any_cast
-- Result 型で例外型を境界の外に出さない
-- std::variant + std::visit + if constexpr のディスパッチ
-- fold 式と std::apply(タプルライク型の全要素処理)
-- consteval とコンパイル時の throw
-- __COUNTER__ と ADL タグディスパッチによる「登録済みの型の列挙」
-- メンバーポインタの非型テンプレート引数
-- concept / requires 節と、特殊化による trait チェーン
-- std::span によるイテレータ型・要素数の消去
-- 関数スコープ static の一度きり初期化
-- static_assert + sizeof による ABI レイアウトの凍結
-- std::bit_cast と浮動小数点のビット表現(-0.0 の正規化)
-- 整数オーバーフローの事前検査
-- swap-and-pop(末尾要素で穴を埋める削除)
-- C++20 の jthread / stop_token / condition_variable_any による協調停止
-- 固定長バッファ(例外も動的確保もしない経路のため)
-- 自己参照ラムダによる再帰
-- コールバック連鎖(既存のフックを move して包む)
-
-**10.4 OS・プロセス・ファイルの作法**(13 項目)
-
-- 実行中の DLL は Windows では上書きできない(シャドウコピー)
-- 同じパスの LoadLibrary / dlopen は参照カウントされる
-- POSIX のプロセスグループと setpgid、kill(-pid) で子孫ごと止める
-- Windows の Job オブジェクト(プロセスグループの対応物)
-- PE の import directory / delay-import directory を、イメージをマップせずに読む
-- Windows の名前付き mutex と `Global\` 名前空間(machine-wide の相互排他)
-- 子プロセスのパイプ読みとデッドロック回避
-- ファイル監視 API は取りこぼす前提で使う
-- 一時ファイル + rename による原子的置換
-- Windows のファイル共有モードとロック検出(ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION)
-- プロセス生存判定と PID の型
-- 動的ライブラリのエラー取得(GetLastError と dlerror)
-- std::filesystem の canonical / weakly_canonical とルート名
-
-**10.5 アルゴリズムとデータ処理の定番**(20 項目)
-
-- Kahn 法のトポロジカルソートと、未知の依存先を無視する実装
-- Floyd–Warshall 法と推移閉包(到達可能性の全点対計算)
-- GJK と EPA(凸形状の距離計算と貫通量計算)
-- CRC-32 の初期値 0xFFFFFFFF と最終反転(なぜ 0 から始めないか)
-- zlib / deflate の BFINAL ビットと「非圧縮(stored)ブロック」
-- デッドゾーンの取り方(成分ごと vs 半径)と、方向を保つ再スケール
-- 走査順(DFS)と表示順(ソートキー)を分けて考えること
-- JSON-RPC 2.0 の予約エラーコード(出典は RFC ではない)
-- 正規表現でパスやページ名を検証するときの、区切り文字とドットの扱い
-- Möller–Trumbore 光線-三角形交差
-- 軸への投影による分離判定(AABB の slab 法と OBB の分離軸定理)
-- Time of Impact(TOI)と conservative advancement
-- FNV-1a とハッシュ値の合成(0x9e3779b9)
-- ソート済み列に対する隣接検査(adjacent_find)
-- 再帰的な型の循環検知(訪問スタック)
-- SPIR-V のバイナリ形式
-- JSON Pointer(RFC 6901)
-- nlohmann::json の型判定・キー順・JSON null
-- IEEE 754 の倍精度と JSON の「安全な整数」2^53−1
-- JSON-RPC 2.0 の request / response の形と行区切り framing
-
-**10.6 座標・数値の約束事**(21 項目)
-
-- NDC(正規化デバイス座標)と Vulkan の座標系
-- GLM の `_RH_ZO` / `_NO` サフィックスの意味
-- ビューポート変換と「負の height」による Y 反転
-- w 除算(パースペクティブ除算)と w ≤ 0 のガード
-- `ndc * 0.5 + 0.5` と、その逆変換の `2 / size`
-- NDC 空間のオフセットは、w を掛けてクリップ空間で足す
-- 画像の行 0 は上端 — CPU ラスタの Y の向き
-- ピクセル中心は n + 0.5、テクセル中心は (i + 0.5) / size
-- `floor(x + 0.5)` と `round()` は同じ丸めではない
-- ε 比較:絶対誤差・相対誤差・その混合
-- 長さは二乗のまま比較し、ε も二乗する
-- NaN はあらゆる比較で false — `isfinite` を先に置く
-- 「ε 以内なら等しい」は同値関係ではない
-- 区間演算(interval arithmetic)と有向丸め
-- ULP と nextafter によるパディング
-- 四元数: 単位性の判定とベクトル回転の展開形
-- GLM の quat コンストラクタ引数順は (w, x, y, z)
-- TRS の合成順序と world → local の逆算
-- 法線の変換は transpose(inverse(M))
-- 切り上げ除算と mip 寸法のシフト
-- view 行列の逆行列とカメラの前方軸
-
-**10.7 OpenXR ランタイムの作法**(3 項目)
-
-- swapchain image の acquire → wait → release 契約
-- XR_TIMEOUT_EXPIRED は正常系(失敗ではない)
-- XR_KHR_composition_layer_depth(深度をランタイムへ渡す)
-
-**10.8 宣言的なグラフと拡張の作法**(6 項目)
-
-- レジストリと登録順(登録順が文書の意味を変えない、という条件)
-- semantic type と logical type(不透明な型がハンドルを運ぶ理由)
-- 評価の分類(direct / replay / baked / recorded)と変更の費用(value / recompile / rebuild)
-- 排他 create を「決定」の primitive にする(O_EXCL / hard link)
-- 内容アドレスによる vendoring(sha256 が同一性、ABI の本当の gate は別)
-- 連続時刻を固定ステップのタイムラインへ量子化する
 
 ## 10.1 Vulkan の仕様と作法
 
@@ -268,7 +85,7 @@ vulkan-hpp は `VULKAN_HPP_NO_EXCEPTIONS` を定義していなければ既定�
 
 `VkDrawIndexedIndirectCommand` は `vkCmdDrawIndexed` の引数をそのまま GPU 可読なメモリ上の構造体にしたもので、フィールドの順序と意味は仕様で固定されています。`indexCount` は描画するインデックスの個数、`instanceCount` はインスタンス数、`firstIndex` はインデックスバッファ内の開始位置(バイトではなくインデックス要素単位)、`vertexOffset` は `int32_t` でインデックス値に加算される頂点オフセット、`firstInstance` は最初のインスタンス ID です。`firstIndex` と `vertexOffset` はどちらも「オフセット」ですが軸が違い、前者はインデックスバッファ側、後者は頂点バッファ側を指します。集約初期化で 5 つの数値を並べて書くとこの順序を取り違えても型が通ってしまうため、読む側は仕様順を覚えておく必要があります。
 
-**このリポジトリでは**: `makeDrawItemSnapshot()`(polygoninstancecontainer.cpp:256)が 5 項目を名前付きの `DrawIndexedArguments`(`index_count` / `instance_count = 1` / `first_index = index_offset` / `vertex_offset = vert_offset` / `first_instance = instance.index`)に保存し(274〜281 行)、`drawqueuebuilder.cpp` の `materialize()`(215 行)が同じ順で集約初期化して `vk::DrawIndexedIndirectCommand{...}` に変換します(217〜223 行)。model 登録(391 行)も hot-reload の rebuild(873 行)も同じ helper を通ります。名前付きの中間表を挟むことで 5 つの数値の並びを GPU 構造体の直書きまで持ち込まず、取り違えを防いでいます。とくに `first_instance = instance.index`(スロット番号がシェーダの `gl_BaseInstance` になる約束)を 1 か所に固定しているので、staging とリロードで別々に書いてずれることがありません。
+**このリポジトリでは**: [第6章 §6.4 の使用箇所](06_rendering_vulkan_shader.md#background-usage-01)。
 
 ### drawIndexed の vertexOffset はインデックス値に加算される
 
@@ -286,7 +103,7 @@ vulkan-hpp は `VULKAN_HPP_NO_EXCEPTIONS` を定義していなければ既定�
 
 `vkCmdDrawIndexedIndirect` の `drawCount` に 2 以上を渡すには、`VkPhysicalDeviceFeatures::multiDrawIndirect` が有効化されている必要があります(無効なら `drawCount` は 0 か 1 に限られます)。さらに `VkPhysicalDeviceLimits::maxDrawIndirectCount` が上限です。indirect command の `firstInstance` を 0 以外にするには `VkPhysicalDeviceFeatures::drawIndirectFirstInstance` が必要です。GLSL 側で `gl_BaseInstance` / `gl_BaseVertex` / `gl_DrawID` を読むのはさらに別の機能で、Vulkan 1.1 の `shaderDrawParameters`(元は `VK_KHR_shader_draw_parameters`)が要ります。feature は「物理デバイスが対応しているか」を照会したうえで、`vkCreateDevice` の `pEnabledFeatures` / `VkPhysicalDeviceFeatures2` で明示的に有効化しないと使えません(照会しただけでは有効になりません)。
 
-**このリポジトリでは**: `core.cpp` の `queryDeviceFeatureSupport()`(219 行)が 3 feature を `getFeatures2` の chain で照会し、1 つでも欠ける device は `firstMissingRequiredVulkanFeature()` で選外にします(279〜280 行)。選ばれた device では `multiDrawIndirect` / `drawIndirectFirstInstance` / `vk11.shaderDrawParameters` をすべて true にして `createLogicalDevice()` の `vk::StructureChain` に載せます(350〜370 行)。`PolygonInstanceContainer::triggerUpdate()` は `limits.maxDrawIndirectCount` を build request に渡し、builder が同じ material の連続範囲を上限以下へ分割します(657〜660 行)。`first_instance = instance.index` がシェーダで `gl_BaseInstance` になり、`default.vert` の `pelicanObjects.objects[gl_BaseInstance].model`(29 行)で per-instance のモデル行列を引きます。この 3 点が揃わないと「1 回の間接描画で drawCount>1」「各 draw が別々の firstInstance を持つ」「シェーダがそれを読む」が成立せずバッチが崩れるため、照会だけでは有効にならない feature を明示 enable し、非対応 GPU は起動時に弾いています。
+**このリポジトリでは**: [第6章 §6.12 の使用箇所](06_rendering_vulkan_shader.md#background-usage-02)。
 
 ### bufferRowLength / bufferImageHeight の 0 は「詰めて配置」
 
@@ -445,7 +262,7 @@ TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE`
 
 GPU に投入したコマンドバッファは、対応する fence が signal されるまで「まだ実行中かもしれない」ものです。そのコマンドバッファが参照している資源(バッファ・イメージ・acceleration structure・SBT・descriptor set)は、その間は破棄も上書きもできません。CPU が先へ進むために同じ資源を N セット用意して添字で回すのが in-flight frame で、この N はスワップチェーンのイメージ枚数とは**別の数**です。破棄を「fence 完了後」まで遅らせる仕組み(遅延解放キュー)と、フレームが掴んだ資源を型を消して握っておく仕組み(lease)を組むのが定型になります。
 
-**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L5444) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
+**使用場所**: [第6章 §6.11 の使用箇所](06_rendering_vulkan_shader.md#background-usage-07)。
 
 ## 10.2 glTF / 3D アセット形式の仕様
 
@@ -541,21 +358,19 @@ OS のハンドル(Win32 の `HANDLE`、POSIX の fd)を確実に閉じるため
 
 `struct Derived : Base<Derived>` のように、自分自身をテンプレート引数として基底に渡す書き方を CRTP(Curiously Recurring Template Pattern)と呼びます。基底が実体化される時点で `Derived` はまだ不完全型ですが、メンバ関数の本体とシグネチャは「使われたときに」実体化されるため、基底の中で `Derived` を型として書けます。これに空の派生クラスを組み合わせると、内部表現は同じ整数でも型としては別物になる「強い typedef(phantom type)」が作れ、別種のハンドル同士の取り違えをコンパイルエラーにできます。ハッシュ関数オブジェクトを基底の入れ子 `struct Hash` として持たせておくと、`std::unordered_map<H, V, H::Hash>` のように派生型ごとに使い回せます。
 
-**このリポジトリでは**: `src/core/handle.hpp` の `BasicHandle<T, Base>`(9〜19 行、入れ子 `struct Hash` 付き)と、それを空派生させるマクロ `PELICAN_DEFINE_HANDLE`、適用例の `SoundHandle`(24 行)。`SoundHandle` は `std::uint64_t` を包む phantom type で、`src/core/audio/audio.cpp` の `playSound()` が `SoundHandle{next_handle++}`(439 行)で採番し、`src/core/audio/audio.hpp` の `std::unordered_map<SoundHandle, Voice, SoundHandle::Hash> voices`(33 行)のキーにします。`stopSound()` / `isPlaying()` はこのハンドルを `voices.find()` で引き、`Hash` は CRTP 基底の入れ子なので派生型ごとにそのまま使い回せます。内部表現が同じ `uint64` でも、`GameContext` 経由でユーザーのゲームコードが握る `SoundHandle` に別種の id(エンティティ id など)を取り違えて渡すと、型が別物なのでコンパイルエラーになります。
+**このリポジトリでは**: [第3章 §3.8 の使用箇所](03_project_and_loading.md#background-usage-03)。
 
 ### 世代付きハンドル(index + generation)と SlotMap
 
 配列の添字をそのままハンドルとして外に配ると、スロットが解放されて別のオブジェクトに再利用されたとき、古いハンドルが新しい住人を指してしまいます(ABA 問題)。定番の解法が「添字 + 世代番号」の組をハンドルにする方式で、スロットが死ぬたびに世代を +1 し、参照時に `generations[index] == handle.generation` を確認します。これで有効性判定が O(1) の整数比較 2 回で済み、解放済みハンドルは必ず弾かれます。空きスロットはフリーリスト(空き添字のスタック)で管理し、再利用時も添字は据え置き・世代だけ進めます。この構造はコミュニティでは slot map / generational index / generational arena と呼ばれ、EnTT のエンティティ ID(index + version)や Rust の `slotmap` クレートが同じ考え方です。世代 0 を「無効」に予約しておくと、ゼロ初期化されたハンドルが自動的に無効になります。
 
-**このリポジトリでは**: `src/core/renderer/modelinstance.hpp` の `ModelInstanceId{index, generation, scene_epoch}` と、`src/core/renderer/modelinstanceslots.hpp/.cpp` の `ModelInstanceSlots`(`generations_` / `alive_` / `free_indices_`)。`isLive()`(modelinstanceslots.cpp:10)が「scene_epoch 一致 ∧ `alive_[index]` ∧ `generations_[index] == id.generation`」の 3 条件を O(1) で確認し、外れれば `requireLive()`(15 行)が `"stale ModelInstanceId"` を throw します。`retire()`(62 行)はスロットを殺すとき `generations_` を +1 して `free_indices_` に積み、`nextId()` / `publish()` が空き添字を据え置きのまま世代だけ進めて再利用します。`ModelInstanceId` は公開ハンドルとしてユーザーのゲームコードがフレームや(ゲームロジックの)ホットリロードをまたいで保持するので、スロットが別モデルに再利用された後に古いハンドルを渡しても世代不一致で必ず弾かれ、他人のインスタンスを黙って書き換える ABA 事故を防げます。
-
-同じ形はモデル以外にもあります(2026-09-04 追記): [makeLogicalAssetId()](../../src/core/watch/reloadtransaction.cpp#L19) は index と generation を 64bit の上下 32bit へ詰めて 1 つの id にし、[liveRecord()](../../src/core/watch/reloadtransaction.cpp#L77) が世代不一致を stale として弾きます。フレーム側は [IFrameTarget::consumeFrame()](../../src/core/vkcore/frametarget.hpp#L280) が `expected_serial` を突き合わせて、前フレームのトークンで今フレームを終わらせることを防ぎます。index 空間が `uint32` で有限である以上、再利用のたびに世代を進める側にも枯渇検査が要る、というのは共通の注意点です。
+**このリポジトリでは**: [第3章 §3.8 の使用箇所](03_project_and_loading.md#background-usage-04)。
 
 ### 単調増加する generation / epoch を「変わったか」の検出に使う
 
 データ本体を突き合わせずに「前回見たときから変わったか」を判定したいとき、変更のたびに +1 される単調増加カウンタ(revision / generation / epoch、論理時計)を横に持たせるのが定番です。等値比較だけで陳腐化を検出でき、大小比較を使えば「古い更新の取りこぼし受理」や「同じ更新の二重適用」も拒否できます(受け取った revision が保持中の値以下なら重複とみなす)。粒度を変えた複数のカウンタを併用するのも普通で、「スロット単位」「レイアウト単位」「シーン全体」で別々に持てば、無効化の影響範囲を必要最小限にできます。有限幅なので折り返しへの備えが要り、0 を無効値に予約しているなら折り返し時に 0 を飛ばす、あるいは上限に達したスロットは再利用をやめる、といった扱いをします。
 
-**このリポジトリでは**: `src/core/renderer/polygoninstancecontainer.cpp` の `frame_revision` による `duplicate_revision` 判定(985〜997 行)が代表例です。アニメフレームは単調増加する `frame.frame_revision` を持ち、`animation_revisions[index]` 以下なら本体(スキンパレット等)を突き合わせずに `duplicate_revision` を返して捨て、世代不一致なら `stale_generation` を返します。`resetSlot()`(503 行)はスロット再利用のたびに `animation_generations` を +1 し、`0`(無効値)へ折り返したらもう一度 +1 して飛ばします。シーン全体の破棄は `modelinstanceslots.cpp` の `clearPrepared()`(99 行)が `scene_epoch_` を +1 します。この 3 粒度(revision / slot generation / scene epoch)のおかげで、同じフレームの二重適用や古い更新の取りこぼし受理を等値・大小比較だけで拒否でき、同じ入力列なら同じ状態になる決定性を保てます。
+**このリポジトリでは**: [第6章 §6.10 の使用箇所](06_rendering_vulkan_shader.md#background-usage-05)。
 
 ### std::erase_if(erase-remove イディオムの置き換え)
 
@@ -627,7 +442,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「初回だけ高コストな初期化をし、以降はロックなしで読みたい」ときの定型です。まずロックを取らずにフラグを読み、未初期化ならロックを取ってから**もう一度**読み、まだなら初期化する、という二重検査になります。ここで肝心なのがメモリ順序で、フラグを `memory_order_release` で書き、`memory_order_acquire` で読むことで「フラグが true に見えた時点で、初期化中に書いた内容もすべて見える」ことが保証されます。`relaxed` にすると、フラグだけ先に見えて中身が未完成のオブジェクトを掴む、という再現しにくいバグになります。C++11 以降の関数内 static 変数はこれを言語側が保証するので、自前で書くのは「初期化の場所を自分で決めたい」場合に限られます。
 
-**使用場所**: [FastModuleContainer::get()](../../src/core/container.hpp#L149)(acquire で読み、`scoped_lock` の内側で再検査し、最後に release で `__ready()` を立てる)
+**使用場所**: [第2章 §2.2 の使用箇所](02_runtime_lifecycle.md#background-usage-06)。
 
 ### compare_exchange による所有権の一度きりの確定
 
@@ -743,7 +558,7 @@ C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビッ�
 
 順序を保つ必要のない配列から途中の要素を消すとき、後続を全部前へ詰める(O(n))代わりに、**末尾の要素を穴へ移してから末尾を 1 つ縮める**と O(1) で済みます。順序が壊れることと、消した要素の添字を外に配っていた場合はそれが別の要素を指すようになること(だから世代付きハンドルが要る)が代償です。実装上は「消す位置が末尾自身のときは移動しない」分岐を忘れると自己代入になります。関連して、コンテナを逆順に走査するのは「見つけた時点で末尾側から使う」「途中で消しても未走査部分が動かない」ようにするためです。
 
-**使用場所**: [ECSArchetypeMigrationToken::State::publish()](../../src/core/ecs/archetypemigration.cpp#L93)(`relocate_one(atUnchecked(source_row), atUnchecked(source_last_row))` してから `--count`) / [ECSArchetypeMigration::prepare()](../../src/core/ecs/archetypemigration.cpp#L452)(archetype の chunk 列を `rbegin()` から走査して空きのある chunk を選ぶ)
+**使用場所**: [第4章 §4.7 の使用箇所](04_ecs_deep_dive.md#background-usage-08)。
 
 ### C++20 の jthread / stop_token / condition_variable_any による協調停止
 
@@ -775,7 +590,7 @@ C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビッ�
 
 Windows は、イメージセクションとしてマップされた実行ファイル/DLL のファイルを書き込み・削除から保護します。`LoadLibrary` が成功している間、そのファイルへの書き込みオープンは `ERROR_SHARING_VIOLATION`、削除は `ERROR_ACCESS_DENIED` で拒否されます。したがってエンジンが `game_logic.dll` を直接ロードしたままだと、ビルドツール側のリンクが「出力ファイルを開けない」で失敗します。POSIX にはこの制約がなく、`dlopen` 中のファイルを普通に置き換えられます(既存のマッピングが古い inode を保持し続けるだけ)ので、この回避策は Windows 由来です。定番の対処が **シャドウコピー**、つまりビルド成果物をロード用の別ディレクトリへコピーし、コピーの方をロードして原本には触らないやり方です。なお名前の変更(rename)だけは実行中でも許されるため、「リネームで退避してから上書き」という変種もあります。MSVC の `.pdb` も、デバッガがアタッチしていると同様にロックされるため、シンボルを見せたいならコピーと一緒に運ぶ必要があります。
 
-**このリポジトリでは**: `src/core/gamelogic/gamelogicreload.cpp` の `makeShadowCopy()` が、`initialize()` で決めた process 固有の `shadow_directory`(= `source_path.parent_path() / ".pelican-hot-reload" / <pid>`)へ `copy_file(..., overwrite_existing)` で成果物を写し、`.pdb` も追随させます。`loadCopy()` の `LoadLibraryW` は常にこのコピー側にだけ効かせます。自動 poll は原本 `source_path` の `(last_write_time, file_size)` が 2 回続けて一致するまで待ち、さらに write share を許さない read lease を取ってから shadow copy を作るため、リンカが truncate/refill 中の部分 DLL を raw import 診断へ渡しません。writer がまだ開いていれば次フレームで再試行しますが、3 回連続で busy なら `game_logic_source_busy@1` を pending status として公開し、writer が閉じれば次の poll で通常どおり再試行します。起動時には死んだ pid の shadow directory を sweep し、正常 shutdown では自分の pid directory を削除します。狙いは「ビルドツールが書く原本」と「エンジンがマップするファイル」の分離で、process 間でも shadow copy 名が衝突しません。これをしないとゲームを動かしたままリビルドしたときにロック済みの原本へリンカが書けず失敗します。
+**このリポジトリでは**: [第2章 §2.11 の使用箇所](02_runtime_lifecycle.md#background-usage-09)。
 
 ### 同じパスの LoadLibrary / dlopen は参照カウントされる
 
@@ -799,7 +614,7 @@ Windows には「プロセスツリーをまとめて殺す」API が素直な�
 
 Windows の実行イメージ(PE)は先頭に DOS スタブ、続いて `PE\0\0` シグネチャ、COFF ヘッダ、optional ヘッダを持ち、optional ヘッダの末尾に **data directory** の配列が並びます。この配列の 1 番が import directory、13 番が delay-import directory です。どちらのエントリも `(RVA, size)` の組で、RVA(relative virtual address)は「イメージがメモリへマップされたときの、イメージ先頭からの相対アドレス」を指します。**ファイルをそのまま読む場合、RVA はファイルオフセットではありません** — section テーブルを走査し、RVA を含む section を見つけて `raw_offset + (rva - virtual_address)` へ翻訳する必要があります。import directory の各記述子(20 byte)は「元 thunk 配列の RVA」「モジュール名の RVA」「first thunk の RVA」を持ち、thunk 配列の各要素は最上位ビットが立っていれば **ordinal import**(下位 16 bit が序数)、そうでなければ「hint(2 byte) + NUL 終端名」を指す RVA、つまり **named import** です。要素の幅は PE32 で 4 byte、PE32+(64bit)で 8 byte です。delay-import 記述子は歴史的経緯で、フィールドが RVA の版と**絶対アドレス**の版があり、後者は `image_base` を引いて RVA へ直す必要があります。
 
-**このリポジトリでは**: `src/core/gamelogic/gamelogicimports.cpp` が `LoadLibraryW` の前に走る診断用の最小 reader を持ちます。`importDirectoryIndex = 1` / `delayImportDirectoryIndex = 13`(19〜20 行)で 2 つの directory だけを取り、`fileOffset()`(212 行)が section テーブル経由で RVA をファイルオフセットへ翻訳します。`appendThunkImports()`(306 行)が PE32 / PE32+ の幅と ordinal フラグ(`0x80000000` / `0x8000000000000000`)を分け、`GameLogicPeImportKind` の 4 種へ分類します。delay 側の `delayFieldRva()`(293 行)が「絶対アドレス版」を `image_base` の減算で RVA へ直します。ファイルは 256 MiB、記述子は 4096 件、thunk は 65536 件で打ち切りますが、コメントが明記しているとおり **これは PE 形式の制限ではなく parser の作業量制限**で、壊れた入力が無制限の走査や確保にならないようにするためのものです。`directoryDescriptorOffset()`(248 行)が「directory と記述子が同じ section にあること」まで見るのも同じ理由(section 境界を越えた記述子を正当に見せないため)です。この reader が読むのは top-level の import だけで、`GetProcAddress` や依存 DLL 経由の解決は範囲外です。
+**このリポジトリでは**: [第2章 §2.11 の使用箇所](02_runtime_lifecycle.md#background-usage-10)。
 
 ### Windows の名前付き mutex と `Global\` 名前空間(machine-wide の相互排他)
 
@@ -823,7 +638,7 @@ Windows の実行イメージ(PE)は先頭に DOS スタブ、続いて `PE\0\0`
 
 保存先を直接開いて上書きすると、書き込みの途中でクラッシュ/電断が起きたときに「半分だけ新しい」ファイルが残ります。これを避ける定番が **write-to-temp + rename** です。同じディレクトリに一時ファイルを作って全部書き、flush/close で内容を確定させてから、`rename` で本来の名前に被せます。POSIX の `rename(2)` は、置換先が既に存在する場合でもリンクは他プロセスから常に可視で、古いファイルか新しいファイルのどちらかを指す(中間状態は観測されない)と規定しており、この不可分性がこのイディオムの根拠です。一時ファイルを**同じディレクトリに作る**のは、`rename` が別ファイルシステムをまたぐと `EXDEV` で失敗するからで、`/tmp` に置くと破綻します。厳密な耐障害性まで求めるなら、`rename` の原子性は「見える内容」の話であって「ディスクに届いたか」は別問題なので、ファイルと親ディレクトリの `fsync` が要ります。Windows での対応物は `MoveFileExW` に `MOVEFILE_REPLACE_EXISTING` を渡す形で、`MOVEFILE_WRITE_THROUGH` を併せると移動がディスクに反映されるまで関数が戻りません。
 
-**このリポジトリでは**: `src/core/loader/basicconfig.cpp` の `saveSceneDocument()`(693 行)が、`temporaryScenePath()`(453 行)で保存先の `parent_path()` に `<filename>.pelican-save-<nonce>-<seq>.tmp` を作り(同一ディレクトリなので `EXDEV` を踏まない)、`writeAndFlushSceneFile()`(488 行、write→flush→close)で全部書き切ってから `replaceSceneFileAtomically()`(508 行)で被せます。置換直前にディスクのダイジェストを取り直して TOCTOU 窓を閉じ(754 行)、Windows では `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`(511〜512 行)、それ以外は `std::filesystem::rename()`(520 行)を呼び、失敗時は `TemporarySceneFile` の RAII(479 行)が一時ファイルを消します。シーンファイルはローダとファイル監視が読む唯一の真実なので、直書きして保存中に落ちると「半分だけ新しい」壊れたプロジェクトが残る — 原子的置換はどの瞬間に落ちても旧か新の完全な方だけを観測させます。
+**このリポジトリでは**: [第3章 §3.2 の使用箇所](03_project_and_loading.md#background-usage-11)。
 
 ### Windows のファイル共有モードとロック検出(ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION)
 
@@ -859,13 +674,13 @@ Kahn 法は、入次数(その頂点へ入ってくる辺の数)が 0 の頂点�
 
 依存先を頂点表から引けなかったときに `continue` で読み飛ばす実装は、「この依存はソート対象グラフの外にある」= すでに満たされている前提として扱う、という意味になります。辺を張らないので入次数も増えず、その頂点は最初から ready 側に入ります。部分グラフだけを並べ替えるときの定石ですが、代償として「依存先の名前を書き間違えた」ケースが黙って通ることになります。
 
-**このリポジトリでは**: `src/core/watch/reloadtransaction.cpp` の `topologicalOrder()`(105 行〜)。`ReloadCoordinator::execute()` は 1 トランザクション分のアクタを全部 `stage()` した後にこれを呼び、返ったインデックス順で staged 済みリソースを並べ替えてから `registry_.publish(ordered)`(337 行)へ渡します。各アクタの `after` に並ぶ依存先を `actor_for` から引いて「依存先 → 依存元」の辺を張って入次数を数え、`if (found == actor_for.end()) continue;`(118 行)で同一トランザクション外の依存(外側で既に満たされている前提)を読み飛ばします。この順序が要るのは `publish()` が渡された順に `content_revision` を進めて逆依存辺を張り直すためで、依存先を先に確定させないと依存元が古い版を掴みます。末尾の `result.size() != actors.size()`(137 行)が循環依存のトランザクションを例外にし、ホットリロードの差し替えを「全部通すか、全部やめるか」の原子的な単位に保ちます。
+**このリポジトリでは**: [第6章 §6.10 の使用箇所](06_rendering_vulkan_shader.md#background-usage-12)。
 
 ### Floyd–Warshall 法と推移閉包(到達可能性の全点対計算)
 
 Floyd–Warshall 法(フロイド・ウォーシャル法)は、全頂点対の最短距離を求める古典的な動的計画法です。「中継してよい頂点を `0..k` に限ったときの答え」を `k` について 1 つずつ広げていく形をしていて、3 重ループの**最外が中継点 `k`** であることが正しさの条件になります(`k` の反復を 1 つ終えた時点で「中継点として `0..k` だけを使う答え」が完成している、というのが保たれる不変条件です)。距離ではなく「到達できるか否か」だけを bool で持てば同じ骨格が**推移閉包**(a→b と b→c があるなら a→c を張る、を閉じるまで繰り返した関係)の計算になり、更新式は `reach[i][j] |= reach[i][k] && reach[k][j]` になります。計算量は頂点数 V に対して O(V³)、記憶量は O(V²) で、疎なグラフでも密行列を持つぶん重いかわりに、実装が 3 行で済み辺の追加順に依存しません。ループ順を入れ替える(`k` を内側へ動かす)と、まだ更新されていない `reach[i][k]` を読むため閉包が不完全になりますが、**グラフの形によっては正しい答えが出てしまう**ので、テストで気づきにくい壊れ方をします。
 
-**このリポジトリでは**: `src/core/renderingpass/frameplanner.cpp` の `transitiveClosure()` が到達可否版で、`validateWritesAreOrdered()` が「同じ resource に書く 2 node のどちらが先か決まっているか」を `reach(a,b) || reach(b,a)` で検査します。frame graph は node 数が数十なので O(V³) が問題にならず、密行列のほうが読みやすい、という選択です。設計上の意味と壊し方は [第6章](06_rendering_vulkan_shader.md) §6.3 の難所「writes-writes の曖昧検出」にあります。
+**このリポジトリでは**: [第6章 §6.3 の使用箇所](06_rendering_vulkan_shader.md#background-usage-13)。
 
 ### GJK と EPA(凸形状の距離計算と貫通量計算)
 
@@ -873,9 +688,7 @@ Floyd–Warshall 法(フロイド・ウォーシャル法)は、全頂点対の�
 
 **EPA**(Expanding Polytope Algorithm)は、GJK が「交差している」で終わったときに続けて走らせるアルゴリズムです。GJK が残した単体を種にして、Minkowski 差の境界へ向けて多面体を膨らませ続け、原点に最も近い面を見つけます。その面の法線と距離が、貫通を解消するのに必要な最小の移動 = **MTD**(minimum translation distance、最小移動距離)になります。GJK 単体では「どれだけめり込んでいるか」が出ない(交差の判定で止まる)ので、距離は GJK、貫通量は EPA、という役割分担になるのが定番です。どちらも反復法なので、最大反復数と収束の ε をどう置くかが実装ごとの差になります。
 
-**このリポジトリでは**: `src/core/phys/physquerysweep.cpp` が両方を持ちます。反復上限は定数で `kGjkIterations = 40` / `kEpaIterations = 256`、EPA の収束判定は `kEpaTolerance = 1.0e-6F`(19〜21 行)。GJK 側は 442 行のループで最近接点と分離判定を出し、交差した組だけ `EpaFace` を張り替える `penetration()`(657 行)へ進んで貫通量を求めます。呼び出し面と、ε クラスタや collider identity による順序付けの契約は [第5章](05_gameplay_and_services.md) の physics query 節にあります。
-
-内訳の関数は次のとおりです(2026-09-04 追記)。形状ごとの support 関数が [support()](../../src/core/phys/physquerysweep.cpp#L155)、Minkowski 差の支持点(`support(A,d) - support(B,-d)`)が [supportDifference()](../../src/core/phys/physquerysweep.cpp#L256)、GJK 本体が [convexDistance()](../../src/core/phys/physquerysweep.cpp#L433) です。単体から原点への最近点は、部分集合をビットマスクで列挙して各々の重心座標を連立方程式で解き、負の重みが出ない解のうち最短を選ぶ **Johnson のアルゴリズム**([closestForSubset()](../../src/core/phys/physquerysweep.cpp#L310) と [closestToOrigin()](../../src/core/phys/physquerysweep.cpp#L373))で、四面体が原点を含むかは符号付き体積の比 = 重心座標が全て非負かで判定します([tetraContainsOrigin()](../../src/core/phys/physquerysweep.cpp#L519)、面上のケースを内側へ倒す数値マージン付き)。掃引判定の入口は [shapeCast()](../../src/core/phys/physquerysweep.cpp#L757) です。
+**このリポジトリでは**: [第5章 §5.7 の使用箇所](05_gameplay_and_services.md#background-usage-14)。
 
 ### CRC-32 の初期値 0xFFFFFFFF と最終反転(なぜ 0 から始めないか)
 
@@ -923,7 +736,7 @@ zlib ラッパ(RFC 1950)は deflate データの前に CMF/FLG の 2 バイト�
 
 さらに `-32000` から `-32099` が「実装が定義してよいサーバエラー」として予約され、`-32768` から `-32000` までの全体が「仕様側の予約域」です。したがって**アプリ固有のエラーは、予約域の外(`-31999` 以上、あるいは正の値)を使うか、`-32000..-32099` の実装定義枠を使うか**のどちらかになります。この数値がなぜ飛び飛びなのかに意味はなく、既存実装との衝突を避けるために選ばれた区画です。
 
-**このリポジトリでは**: `src/project/jsonrpc.hpp` の `namespace JsonRpcErrorCodes`(12〜19 行)が `parseError = -32700` / `invalidRequest = -32600` / `methodNotFound = -32601` / `invalidParams = -32602` と、実装定義枠の `applicationError = -32000` / `renderDocCaptureError = -32010` を持ちます。事前定義の 4 つは仕様どおりで、後ろ 2 つは `-32000..-32099` の枠内に収めた pelican 固有コードです([第7章](07_tools_rpc_tests.md) の protocol 層)。`-32603` internal error は現在この enum に無く、内部失敗も `applicationError` に寄せています。
+**このリポジトリでは**: [第7章 §7.7 の使用箇所](07_tools_rpc_tests.md#background-usage-15)。
 
 ### 正規表現でパスやページ名を検証するときの、区切り文字とドットの扱い
 

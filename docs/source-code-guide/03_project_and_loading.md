@@ -142,6 +142,10 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 >
 > **不変条件**: 直列化は1回だけ(以降の全段が同じバイト列を消費する)。ファイル置換より後にthrowしうる処理を置かない。baseline digestの更新はファイル置換と同一の無throw区間で行う。
 
+### 一時ファイル + rename による原子的置換の使用箇所 {#background-usage-11}
+
+**このリポジトリでは**: `src/core/loader/basicconfig.cpp` の `saveSceneDocument()`(693 行)が、`temporaryScenePath()`(453 行)で保存先の `parent_path()` に `<filename>.pelican-save-<nonce>-<seq>.tmp` を作り(同一ディレクトリなので `EXDEV` を踏まない)、`writeAndFlushSceneFile()`(488 行、write→flush→close)で全部書き切ってから `replaceSceneFileAtomically()`(508 行)で被せます。置換直前にディスクのダイジェストを取り直して TOCTOU 窓を閉じ(754 行)、Windows では `MoveFileExW(..., MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)`(511〜512 行)、それ以外は `std::filesystem::rename()`(520 行)を呼び、失敗時は `TemporarySceneFile` の RAII(479 行)が一時ファイルを消します。シーンファイルはローダとファイル監視が読む唯一の真実なので、直書きして保存中に落ちると「半分だけ新しい」壊れたプロジェクトが残る — 原子的置換はどの瞬間に落ちても旧か新の完全な方だけを観測させます。
+
 ## 3.3 PathResolver
 
 解決規則の宣言は [`projectpathresolver.hpp`](../../src/project/projectpathresolver.hpp#L114)、中心実装は [`ProjectPathResolver::resolveRef()`](../../src/project/projectpathresolver.cpp#L723) です。ここは`pelican_project`に属し、Vulkan・quill・module containerへ依存しません。
@@ -468,7 +472,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 > ctest wp380c_... : dumpbin /symbols で「入っていないこと」を検査
 > ```
 >
-> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2608) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
+> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L2635) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L29)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[SOURCES 内の TU 照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[production header の列挙](../../test/run_wp380c_no_production_fault_setter.cmake#L87)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
 >
 > **不変条件**: setterの定義をヘッダへ書かない（inlineでも）。test-onlyのTUを `pelican_core` のソースへ足さない。`default_fault_injector_for_testing` の既定値をnullptr以外にしない。
 
@@ -483,6 +487,64 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 **評価stateが2つある理由**は [第2章 §2.5](02_runtime_lifecycle.md) に書いたとおりです。[`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L149)（描画側）と [`poseGraphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L153)（姿勢側）は同じ `GraphRuntime` の別メンバで、[`prepareGraphRuntimeTransfer()`](../../src/core/loader/scenegraphruntime.cpp#L358) はグラフ世代が変わるとき両方をまとめて移送します（片方だけ置いていくと、描画側が走り続けたまま姿勢側のクロックだけが初期状態へ戻ります）。owner が変わった scope は移送後に `resetState()` で落とされます。
 
 **publish snapshot**。描画側の評価が実際に各instance入力ポートへ何を流したかは、[`publishGraphValues()`](../../src/core/loader/scenegraphruntime.cpp#L144) が `graph_values`（[`PublishedInstanceInputs`](../../src/core/userpublic/valuegraph.hpp#L116)）として置いていきます。読み手がグラフを評価し直すとクロックが進みイベントが消費されるので、**描いた世代の値を読む道はこの1本だけ**です。snapshot は値の並び順を決めた `Graph` を `shared_ptr` で**保持**します（借用ではありません）—— 世代が入れ替わった後に読んだ人でも、その値に対応する名前が手元にあるようにするためです。
+
+### scene component の runtime binding の違い {#scene-binding-gotchas}
+
+scene の `components` 配列に見えても runtime binding は一様ではありません。[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L305) が分岐します。系統は **4 つ**になりました。
+
+| scene name | runtime 経路 |
+|---|---|
+| `transform`, `simplemodelview`, `camera` | ComponentInfo 経由で ECS chunk へ作成 |
+| `light` | ECS へ入れず `LightLoadEntry` として `LightContainer::prepareLoad()` → `publishPrepared()`(scene load は 2 段を直接使い、`load()` は通らない) |
+| `collider` | ECS へ入れず `ColliderComponent` を parse し `PhysWorld::prepareSceneBindings()` → `publishPrepared()`。`PELICAN_WITH_PHYSICS` OFF の build では collider を含む scene は prepare で `physics.module_unavailable@1`([`resolvedObjectFeatureRefusal()`](../../src/core/loader/resolvedscene.cpp#L78)。codec の `required_feature` を見る共有の検査で、editor の `add_component` / `spawn` も同じ関数を通る。PG-1) |
+| `behavior` | ECS へ入れず [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L95) 経由で `BehaviorAttachmentArena` へ([`component_name == "behavior"`](../../src/core/loader/scene.cpp#L382))。`type` は非空文字列必須。game DLL 未ロードなら **pending** 扱いで警告のみ |
+
+`ColliderComponent` に `init/deinit` があっても、現在の scene loader は special case です。`ECSCoreTemplatePublic::tryComponent<ColliderComponent>()` で取れる通常 ECS component だとは考えないでください。behavior も同様で、ECS の component として問い合わせても見つかりません。
+
+behavior は scene load executor(第 3 章 §3.5 の 3。WP380a)の participant の 1 つです。candidate は [`prepareSceneReconciliation()`](../../src/core/loader/scene.cpp#L1539) で作られ、publish 段で `noexcept` に swap され([`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L1546))、`onInit` は activate 段([`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L1548))で走ります。activate は executor で**唯一の失敗しうる段**で、投げると [`rollback` ラムダ](../../src/core/loader/scene.cpp#L1734) が renderer / ECS / camera / light / physics / behavior / event outbox / RNG / pending scene を**全部**旧世代へ戻し、結果は [`PreCommitFailure{phase = activate}`](../../src/core/loader/scene.cpp#L1789) です。document / projection / current scene / authority の commit([`metadata.commit()`](../../src/core/loader/scene.cpp#L635))はその後なので旧世代のままです。「behavior 型名を間違えると scene が半分だけロードされる」「document は新、runtime は旧」ということはありません(型名の誤りはそもそも prepare 段で落ちます)。旧経路の `clearRuntimeScene()` は `load()` から呼ばれません。
+
+### phase trace は participant が記録する。executor に `record` 文を足さない {#scene-phase-trace-owner}
+
+[`SceneLoadPhaseTrace`](../../src/core/loader/sceneload.hpp#L40) の各 phase を記録するのは、その phase を実際に実行する participant です。`publishPrepared(candidate, phase_trace)` のように **trace を引数で受け取る側**が [`record()`](../../src/core/loader/sceneload.hpp#L47) を呼びます。executor 本体に `phase_trace.record(...)` を書き足すと、participant を丸ごと bypass する変異が trace 上は正常に見えてしまい、順序テストが変異を検出しなくなります。
+
+現行の executor に残っている裸の `record` は2行だけで、どちらもコメント付きの例外です。
+
+| 行 | 理由 |
+|---|---|
+| [`phase_trace.record(SceneLoadPhase::flush)`](../../src/core/loader/scene.cpp#L1800) | 直後の `pending_scene_id.swap()` は participant 型を持たない |
+| [`phase_trace.record(SceneLoadPhase::finish)`](../../src/core/loader/scene.cpp#L1807) | **退役 batch 自体が 1 人の participant**。entity 0 件の scene でも `finish` を観測できるようにする |
+
+逆向きの例も1つあります。[`PreparedEffectTransaction::flush()`](../../src/core/loader/effecttransaction.cpp#L494) は `phase_trace` を受け取りながら `(void)phase_trace;` で**使いません**。コメントが理由を書いています — `flush` の印は `EventOutbox` が1つだけ持つ、という取り決めです。「引数にあるのだから記録すべきだ」と足すと、`record()` の重複抑止に助けられて症状は出ないまま、印の所有者が2人になります。
+
+### `noexcept` の commit tail の中で文字列や JSON を作らない {#scene-noexcept-tail}
+
+metadata の commit 以降は「失敗しない尾部」です。executor はその区間の全操作が `noexcept` であることを [`static_assert` の列](../../src/core/loader/scene.cpp#L633)で固定しています。ここで `std::string` を組んだり `nlohmann::json` を作ったりすると、`bad_alloc` が `noexcept` 関数から伝播して `std::terminate` になります。
+
+実装はその制約を明示しています。effect のエラーは固定長 record([`FixedText<512>` / `FixedText<384>`](../../src/core/loader/effecttransaction.hpp#L119))に詰めておき、**公開用の文字列と JSON は tail を抜けてから**作ります([`effectErrors()` の呼び出し](../../src/core/loader/scene.cpp#L1815) の直前のコメントが「deliberately materialized only after the noexcept commit tail」)。同じ理由で `SceneLoadPhaseTrace` も固定長です。
+
+### [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1650) — 5 段の責務と、どこから不可逆か {#reading-note-001}
+
+prepare は live に触れず candidate だけを作ります(authority 消費・metadata token・resolved 検証・各サブシステムの候補・retirement queue の容量予約)。early_publish は ECS entity 生成 / component 適用 / 親子 transform 投影 / 旧 entity の unpublish で、逆トークンで戻せます。publish は `noexcept` swap の列、activate は `behavior_candidate->activate()` の 1 行で「全 participant が候補に切り替わった後に失敗しうる」唯一の段です。**不可逆点は [`metadata.commit()`](../../src/core/loader/scene.cpp#L635) の単一 metadata swap** で、コメントが "The commit point is exactly one metadata swap" と明記しています。
+
+### [manifest 配列](../../src/core/loader/sceneparticipantmanifest.cpp#L81) — この表は何の権威か {#reading-note-002}
+
+「scene transaction に関与する**独立に観測できるフィールド 1 個 = 1 行**」の表で、snapshot 比較・変異テスト・契約テストが参照する唯一の分類権威です。列は [`SceneParticipantManifestEntry`](../../src/core/loader/sceneparticipantmanifest.hpp#L36) の **10 個**(owner / field / presence / role / prepare_owner / publication / rollback / retirement / snapshot_schema / mutation_id)で、「16 フィールド」は誤りです。行数も **100 行**(`manifest`)で、166 は配列末尾の行番号にすぎません。[`public_api_manifest`](../../src/core/loader/sceneparticipantmanifest.cpp#L206) は別表で 32 行です。
+
+### [`resolveParentOrder()`](../../src/core/loader/componentcodec.hpp#L116) — 巡回検査の fresh→active→done {#reading-note-003}
+
+白灰黒 DFS です。done は再計算を省くメモ化で、active への再入が循環。active と done を分けないと「親を共有する複数の子」を循環と誤報します。歩く機構は `resolveParentOrder()` 1 つで、scene load([scene.cpp の呼び出し](../../src/core/loader/scene.cpp#L1358))・編集 transaction・preview が同じ template を使い、**誰を起点にするか(participant filter)と、循環 / 不在親で何を投げるかだけが呼び手ごと**です。scene load では循環・未知親・曖昧親が parse 段で既に弾かれているので、ここでの active への再入は内部不整合として `logic_error` です(投影は early_publish 内、entity 生成・親リンク後・behavior の `onInit` より前)。parse 段側の DFS は[第3章「3値のDFSが名前を出す」](03_project_and_loading.md)が本体です。
+
+### [`ProjectBasicConfig::saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L936) — 複数の注入点と baseline 再検証 {#reading-note-004}
+
+[第3章「保存のTOCTOU窓」](03_project_and_loading.md)が本体です。1 点だけ補うと、[919 行のコメント](../../src/core/loader/basicconfig.cpp#L942)が baseline を「scene bytes + prefab read-set」の 1 つの不変物として固定すると明言しており、注入点は各区間の外部変更をテストで作るためのものです。
+
+### [`ProjectBasicConfig::publishSceneDocument()`](../../src/core/loader/basicconfig.cpp#L717) — revision と resolver generation が進む条件 {#reading-note-005}
+
+**公開 1 回につき 1 進みます**。prepare しただけでは進みません。不変式は「公開した projection の値 + 1 に揃っている」ことで、初回公開はこの関数の中で [`++scene_metadata.next_scene_revision`](../../src/core/loader/basicconfig.cpp#L742) が、2 回目以降は [`publishPreparedSceneState()`](../../src/core/loader/basicconfig.cpp#L753) が `revision + 1` / `generation + 1` を代入して揃えます。上限到達は[関数先頭の 2 つの `overflow_error`](../../src/core/loader/basicconfig.cpp#L718) が公開自体を止めます。lazy init 側の入口は [`sceneProjectionState()`](../../src/core/loader/basicconfig.cpp#L773) です。
+
+### [`PreparedEffectTransaction::errors_`](../../src/core/loader/effecttransaction.hpp#L142) — なぜ capacity + 1 か {#reading-note-006}
+
+先頭 256 スロットは診断 1 件 1 スロットで [`record()`](../../src/core/loader/effecttransaction.cpp#L97) が使い、満杯なら黙って捨てます(`if (error_count_ >= sceneEffectCapacity) return;`)。**末尾の +1 は診断用ではなく outbox 溢れ専用の予約席**で、[`reserveEntry()`](../../src/core/loader/effecttransaction.cpp#L119) がここだけを使い、積めなかった副作用の件数を `effect_outbox_full` の `dropped` として数え続けます。溢れ報告が診断枠を食って消えると「何件落ちたか分からない」状態になるため、席を分けてあります。
 
 ## 3.6 即時loadと要求load
 
@@ -678,6 +740,105 @@ instances.publishModelInstance(std::move(staged_instance));
 ```
 
 `SceneLoader` には [`transient_models`](../../src/core/loader/scene.hpp#L73) / [`runtime_only_changes`](../../src/core/loader/scene.hpp#L75) / [`releaseTransientModels()`](../../src/core/loader/scene.hpp#L147) / [`hasRuntimeOnlyChanges()`](../../src/core/loader/scene.hpp#L269) が追加されています。`runtime_only_changes` は編集RPC側で「これはruntime専用の変更なので保存できない」と判定するために使います。
+
+### typed handle の型安全性と世代の境界 {#typed-handle-boundaries}
+
+[`PELICAN_DEFINE_HANDLE`](../../src/core/handle.hpp#L21) は `struct PassId : BasicHandle<PassId,int>` のような薄い型を作ります。`PassId` と `RenderingPassId` の取り違えを compile 時に防ぎつつ、内部値は整数1個です。
+
+一方、一般的な [`ResourceContainer`](../../src/core/resourcecontainer.hpp#L13) は monotonic counter と `unordered_map` だけです。
+
+- handle は再利用しません。
+- `unreg()` 後の handle に generation はありません。
+- stale handle の `get()` は `unordered_map::at()` 例外になります。
+- counter overflow の明示検査はありません。
+- `BasicHandle` は base 整数への暗黙 conversion を持つため、logging/indexing は楽ですが、整数へ落とした後の型安全性は失われます。
+
+> 🧩 **難所 — handle の CRTP と穴**([`BasicHandle`](../../src/core/handle.hpp#L9) / [`PELICAN_DEFINE_HANDLE`](../../src/core/handle.hpp#L21))
+>
+> **何をする所か**: `struct PassId : BasicHandle<PassId, int> {};` の 1 行で、整数 1 個分の強い型を作ります。
+>
+> **素朴に読むと**: まず、なぜ CRTP なのかがコードから読めません。`T` は本体で 1 回しか使われず、[`struct Hash { size_t operator()(T key) const ... }`](../../src/core/handle.hpp#L15) だけです — つまり CRTP は**派生型を引数に取る `Hash` を基底の中で定義するため**だけにあり、`unordered_map<PassId, V, PassId::Hash>` が書けるのは、この CRTP の定義があるからです。次に、型安全が片側だけであることが読み取れません。[`operator Base()`](../../src/core/handle.hpp#L11) の暗黙変換があるので、**異なる handle 型どうしの `==` はコンパイルが通ります** — メンバの `operator==` は候補集合には入るものの右辺を変換できず viable になりませんが、組み込みの `Base == Base`(この例なら `int == int`)が両辺のユーザー定義変換を経て候補になるためです。さらに `value` に既定メンバ初期化子が無いので `H h;` は不定値、`H h{};` がゼロで、[`invalidBehaviorAttachmentHandle{}`](../../src/core/userpublic/behavior.hpp#L15) がわざわざ `{}` なのはそのためです。「一度包めば全部守られる」と読むと、この 3 点を取り違えます。
+>
+> **骨子**:
+> ```text
+> 守る:     H1 h = uint64_t;  /  takesH1(h2)    → コンパイルエラー
+> 守らない: h1 == h2(別 handle 型)             → 組み込み == 経由で通る
+>          takesUint64(h1)                      → 暗黙変換で通る
+>          H h;(未初期化)                       → 警告のみ
+> ```
+>
+> **手がかり**: 基底クラス持ちの集成体なので `A a{{1}}` も `A a{1}`(brace elision — 集成体初期化で入れ子の内側の `{}` を省略してよい、という規則)も通ります。リテラルからの生成に書き方が 2 通りあるように見えるのはこれが理由です。animation ABI 側の [`PELICAN_ANIM_HANDLE`](../../src/core/userpublic/animation/abi_v1.hpp#L25) は名前が似ているだけの別物で、C ABI 用の 16 バイト POD です(暗黙変換も比較演算子も持ちません)。
+>
+> **不変条件**: `operator Base()` を消すと logging/indexing の呼び出し側が広範囲に壊れるので、当面は「別 handle 型の `==` は通る」を前提に読んでください。`Hash` は派生型を受けるため、`BasicHandle` を非 CRTP に書き換えると連想コンテナが全部壊れます。
+
+世代付きの識別子は増えました。ECS の `EntityId`(index + generation)に加え、[`ModelInstanceId`](../../src/core/renderer/modelinstance.hpp#L28) が `index + generation + scene_epoch` になり(WP146 / INSTANCE0)、[`RegistrationToken`](../../src/core/userpublic/details/reload/registrationowner.hpp#L29) と `RegistrationOwner` も identity + generation です。
+
+**それでも `ResourceContainer` 系の GPU ハンドルだけは依然として世代なし** です。GPU resource handle と、世代付きの Entity / ModelInstance / Registration handle を同じ寿命モデルだと考えないでください。
+
+### `ModelInstanceId` の落とし穴 {#model-instance-gotchas}
+
+`ModelInstanceId` は 3 フィールドの比較可能な値型で、`toString()` は `"index:generation@scene_epoch"` を返します([`toString()`](../../src/core/renderer/modelinstance.hpp#L38))。
+
+- **identity は `PolygonInstanceContainer` から [`ModelInstanceSlots`](../../src/core/renderer/modelinstanceslots.hpp#L22) へ切り出されました。** `index` / `generation` / `scene_epoch` を持っているのはこの class で、`PolygonInstanceContainer` 側にはもう `scene_epoch` も世代表もありません(`instance_slots` メンバ越しに問い合わせます)。
+- `scene_epoch` が進むのは [`ModelInstanceSlots::clearPrepared()`](../../src/core/renderer/modelinstanceslots.cpp#L107) の **1 か所だけ** で、これは [`PolygonInstanceContainer::clear()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1113)(scene clear / 再ロード)から呼ばれます。個別 slot が死んで再利用されるときに進むのは [`ModelInstanceSlots::retire()`](../../src/core/renderer/modelinstanceslots.cpp#L87) が上げる slot generation の方です。いずれも animation generation や model asset content revision からは独立です。
+- `clear()` 自体も [§9.17](09_black_magic_and_gotchas.md#917-編集-transaction-の落とし穴prepare--publish--cas--ticket) の prepare/publish 形です。epoch 枯渇(`scene epoch exhausted`)を投げうる検査は [`ModelInstanceSlots::prepareClear()`](../../src/core/renderer/modelinstanceslots.cpp#L98) が先に済ませ、実際の書き換えは `noexcept` の `clearPrepared()` が行います。`clear()` を読むときはこの 2 段を 1 つの操作として読んでください。
+- 生存確認は [`isModelInstanceAlive(id)`](../../src/core/renderer/polygoninstancecontainer.hpp#L617)。
+- [`removeModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L557) は `void` ではなく **`bool`** を返します。戻り値を無視すると「消したつもりで消えていない」を見逃します。
+- `instanceCountForTesting()` は **live 数** を返すよう変わり、スロット総数は `slotCountForTesting()` です。両者の差は空きスロットです。
+
+登録は 3 段階に分かれました(WP144 / TRANSIENT0)。[`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L533)(Vulkan 資源確保前の容量拒否)→ [`stageModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L534) → [`publishModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L539)(`noexcept`、**唯一の no-fail 公開点**)です。詳細は [§9.17](09_black_magic_and_gotchas.md#917-編集-transaction-の落とし穴prepare--publish--cas--ticket)。
+
+### `ReleaseReport` は heap を使わない — 8 件 + `overflow_count` {#release-report-capacity}
+
+解放の失敗は `std::vector<std::string>` ではなく [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) に積みます。`std::array<ReleaseError, 8>` + `error_count` + `overflow_count` の固定 record で、[`add()`](../../src/core/model/modelresourcerelease.hpp#L43) と [`append()`](../../src/core/model/modelresourcerelease.hpp#L51) は `static_assert` で `noexcept` が固定されています。9 件目以降は捨てるのではなく `overflow_count` を増やします。
+
+「8 件を超えたら vector に切り替える」という善意の改修が、**`noexcept` の destructor / 遅延解放経路から `bad_alloc` を投げる**形になります。報告先を返せない経路(destructor、deferred release)は戻り値ではなく process 全体の [`ReleaseErrorSink::record()`](../../src/core/model/modelresourcerelease.hpp#L74) へ積む、という分担もヘッダのコメントが規範です。件数は `ReleaseErrorSinkStatus` で観測できるので、**溢れたこと自体はテストで見えます**。
+
+### [`stagePreparedSceneModel()` の reuse 判定](../../src/core/renderer/polygoninstancecontainer.cpp#L747) — スロット再利用と世代 {#reading-note-021}
+
+`instance_slots.nextId(size)` は空きスロットがあればその index を、無ければ現在サイズを返すので、`index != model_instances_data.size()` が再利用、等しければ新規確保です。これで reserve 量や `animation_generations` の引き継ぎを切り替えます。ID の generation は再利用スロットを指す古いハンドルを無効化するためのもので、scene epoch とは別軸です(→ [§9.2](03_project_and_loading.md#typed-handle-boundaries)「`ModelInstanceId` の落とし穴」)。
+
+### [`++geometry_address_generation`(index 側)](../../src/core/model/vertbufcontainer.cpp#L344) — 再確保で世代を上げる理由 {#reading-note-042}
+
+**バッファを作り直すとデバイスアドレスが変わり、旧アドレス上に構築された BLAS が無効になる**からです。値は [`geometryAddressGeneration()`](../../src/core/model/vertbufcontainer.hpp#L123) として [renderer 側へ渡され](../../src/core/vkcore/renderer.cpp#L5814)、ray-query のジオメトリ / BLAS キャッシュ無効化キーになります。頂点側とインデックス側で[2 か所](../../src/core/model/vertbufcontainer.cpp#L392)進みます。
+
+### [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) — 固定容量 8 + overflow_count {#reading-note-043}
+
+デストラクタや deferred 解放経路は `noexcept` で、そこで動的確保すると `bad_alloc` を投げうるため**報告自体が失敗します**。固定 8 要素のインライン配列なら確保も例外もなしに記録でき、溢れは件数だけ残します。同じ設計は [§9.21](09_black_magic_and_gotchas.md#921-prepare--publish-世代のコードで踏む新しい罠)「`ReleaseReport` は heap を使わない」でも扱っています。
+
+### [parse → validate → stage](../../src/core/asset/model.cpp#L685) — 3 段階と `sameRigLayout` {#reading-note-044}
+
+parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#L685) は `inspect` で **GPU コミットなしのプレビュー template** を作って `sameRigLayout` でリグ差分を判定、[`stage`](../../src/core/asset/model.cpp#L693) で初めて実 GPU コミットとリビジョン付与です。失敗しても live に触れずに巻き戻せます。rig_changed(joint_nodes・親子・skin_bindings のレイアウト一致)**だけ**が `compatibility_revision` を進めます。
+
+### [`next_generated_material = -2`](../../src/core/model/gltf.cpp#L1294) — 負値が生成マテリアルを示す {#reading-note-075}
+
+[第3章「-1を空けて負へ伸ばす」](03_project_and_loading.md)が本体です。1 点だけ補うと、[型そのもの](../../src/core/model/gltf.cpp#L830)が `int` で、glTF の material index は 0 以上しか取らず −1 が「マテリアル無し」なので、−2 から負方向へ数えれば単一のキー空間でソース index と絶対に衝突しません。
+
+### [`resolveFragmentCandidate()`](../../src/core/model/gltf.cpp#L1829) — full_path と alias {#reading-note-076}
+
+`full_path` はシーングラフ上の一意な経路指定、alias は node 名 / mesh 名という短縮指定で、**短縮名は複数の経路に出現しうる**からです。複数一致したらローダが勝手に選ばずエラーにして、呼び出し側にフルパスでの曖昧性解消を要求します(重複フルパス自体はその手前で拒否)。
+
+### [VRM firstPerson auto の primitive 分割](../../src/core/model/gltf.cpp#L1091) — なぜ分けるしかないのか {#reading-note-077}
+
+[第3章「頭に触れたら三角ごと」](03_project_and_loading.md)が本体です。1 点だけ補うと、可視性は `PrimitiveViewVisibility` として **primitive 単位の属性**なので、同一 primitive を both 用と third_person_only 用の 2 つの index セットに分割して別 primitive として登録するしかありません。
+
+### [morph target layout の generation](../../src/core/model/gltf.cpp#L47) — 何を追跡する世代か {#reading-note-078}
+
+プロセス全体で単調増加する**「不変なモデル世代の identity」**([`morphtarget.hpp` のコメント](../../src/core/model/morphtarget.hpp#L43))で、[ロード完了時に 1 つの `MorphTargetLayout` へ付与](../../src/core/model/gltf.cpp#L2522)されます。リロードでレイアウトが差し替わったことを消費側が検出でき、かつ **GPU 割り当て順に依存しない**同定ができます。
+
+### [`geometry_allocation_id`](../../src/core/model/modeltemplate.hpp#L99) — 何を識別し、どこで使うか {#reading-note-079}
+
+1 回のジオメトリ suballocation(index / vertex レンジの組)を識別する単調 ID で、[払い出しは vertbufcontainer 側](../../src/core/model/vertbufcontainer.cpp#L461)、[`modeltemplate.hpp` のコメント](../../src/core/model/modeltemplate.hpp#L94)どおり **ray-query の BLAS キャッシュキー**として [renderer](../../src/core/vkcore/renderer.cpp#L5814) 付近で使われます(→ [§9.23.5](09_black_magic_and_gotchas.md#9235-rtacceleration-structuresbtoracle) / [§9.23.8](09_black_magic_and_gotchas.md#9238-vertex--model))。
+
+### CRTP(奇妙に再帰したテンプレートパターン)による強い型付けの使用箇所 {#background-usage-03}
+
+**このリポジトリでは**: `src/core/handle.hpp` の `BasicHandle<T, Base>`(9〜19 行、入れ子 `struct Hash` 付き)と、それを空派生させるマクロ `PELICAN_DEFINE_HANDLE`、適用例の `SoundHandle`(24 行)。`SoundHandle` は `std::uint64_t` を包む phantom type で、`src/core/audio/audio.cpp` の `playSound()` が `SoundHandle{next_handle++}`(439 行)で採番し、`src/core/audio/audio.hpp` の `std::unordered_map<SoundHandle, Voice, SoundHandle::Hash> voices`(33 行)のキーにします。`stopSound()` / `isPlaying()` はこのハンドルを `voices.find()` で引き、`Hash` は CRTP 基底の入れ子なので派生型ごとにそのまま使い回せます。内部表現が同じ `uint64` でも、`GameContext` 経由でユーザーのゲームコードが握る `SoundHandle` に別種の id(エンティティ id など)を取り違えて渡すと、型が別物なのでコンパイルエラーになります。
+
+### 世代付きハンドル(index + generation)と SlotMapの使用箇所 {#background-usage-04}
+
+**このリポジトリでは**: `src/core/renderer/modelinstance.hpp` の `ModelInstanceId{index, generation, scene_epoch}` と、`src/core/renderer/modelinstanceslots.hpp/.cpp` の `ModelInstanceSlots`(`generations_` / `alive_` / `free_indices_`)。`isLive()`(modelinstanceslots.cpp:10)が「scene_epoch 一致 ∧ `alive_[index]` ∧ `generations_[index] == id.generation`」の 3 条件を O(1) で確認し、外れれば `requireLive()`(15 行)が `"stale ModelInstanceId"` を throw します。`retire()`(62 行)はスロットを殺すとき `generations_` を +1 して `free_indices_` に積み、`nextId()` / `publish()` が空き添字を据え置きのまま世代だけ進めて再利用します。`ModelInstanceId` は公開ハンドルとしてユーザーのゲームコードがフレームや(ゲームロジックの)ホットリロードをまたいで保持するので、スロットが別モデルに再利用された後に古いハンドルを渡しても世代不一致で必ず弾かれ、他人のインスタンスを黙って書き換える ABA 事故を防げます。
+
+同じ形はモデル以外にもあります(2026-09-04 追記): [makeLogicalAssetId()](../../src/core/watch/reloadtransaction.cpp#L19) は index と generation を 64bit の上下 32bit へ詰めて 1 つの id にし、[liveRecord()](../../src/core/watch/reloadtransaction.cpp#L77) が世代不一致を stale として弾きます。フレーム側は [IFrameTarget::consumeFrame()](../../src/core/vkcore/frametarget.hpp#L280) が `expected_serial` を突き合わせて、前フレームのトークンで今フレームを終わらせることを防ぎます。index 空間が `uint32` で有限である以上、再利用のたびに世代を進める側にも枯渇検査が要る、というのは共通の注意点です。
 
 ## 3.9 その他の純粋形式
 
@@ -1273,6 +1434,14 @@ componentごとに §3.11 のcodec metadataが付くので、「宣言として�
 > **不変条件**: adapter publish以降の通常経路はthrowも確保もしない。pair公開はadapter publishの**後**、finishの**前**。`AfterPublication` faultではpairを旧版へswapし直してからadapterを逆順rollbackするため、authoringとresolvedの片側だけが残る状態はありません。rollback / finish は必ず逆順。
 
 fixtureは [`test/fixtures/authoring_scene/multi_scene_roundtrip.json`](../../test/fixtures/authoring_scene/multi_scene_roundtrip.json) です。
+
+### [`validateOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L494) — gid / component_key / authored_index の三者 {#reading-note-007}
+
+`component_key` は prefab 側のスロット名、`gid = prefabGeneratedId(instance_id, component_key)` はシーン内で一意な生成物 ID、`final_authored_index` は unpack 後に authored 配列のどこへ着地したかです。三つ組は「prefab 展開済み snapshot → authored snapshot」の遷移が**損失なく可逆な改名**であることを守ります。[`buildOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L627) が作り、[`invertOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L685) が反転させます。**この表は editor journal([§9.23.9](09_black_magic_and_gotchas.md#9239-editor-journal))と behavior arena([§9.23.16](09_black_magic_and_gotchas.md#92316-game-dll--schema))でも同じものが使われます。**
+
+### [`ComponentCodec::completeDefaults()` の camera 補完](../../src/core/loader/componentcodec.cpp#L2242) — aspect を継承しない {#reading-note-008}
+
+camera の既定補完は `resolveComponent()` の中の分岐ではなくなりました。resolver は codec へ[一行で委譲する](../../src/core/loader/resolvedscene.cpp#L303)だけで、規則は [`completeCameraDefaults()`](../../src/core/loader/componentcodec.cpp#L1153) にあります。その中の[コメント](../../src/core/loader/componentcodec.cpp#L1189)が "aspect is intentionally not inherited when it is omitted" と書いているとおり、**aspect はビューポート由来の値**なので、**projection を明示したうえで** aspect を省略したときは継承せずクリアします(`projection` 自体を書かなければ既定の投影を丸ごと継承するので、そのときは aspect にも既定値が入ります)。perspective は yfov、orthographic は xmag/ymag が必須で、既定の projection kind が同種のときだけ既定値へフォールバックできます(異種なら `camera.*_required_for_*` 違反)。znear/zfar は両方で継承、ortho では aspect を reset します。
 
 ## 3.13 `.vrma`（VRM Animation）コンテナ ✅実装済み
 

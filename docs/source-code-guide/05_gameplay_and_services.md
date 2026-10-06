@@ -113,6 +113,10 @@ registry実体は [`getGameSystemRegisterer()`](../../src/core/userpublic/detail
 
 **一時停止中のフレーム(✅PM-1a)。**[`updateRegisteredGameSystems(ctx, scope)`](../../src/core/userpublic/details/system/registerer.cpp#L80) は、game の 1 歩でないフレームには `GameSystemScope::editor_only` で呼ばれ、[`markEditorGameSystem()`](../../src/core/userpublic/details/system/registerer.cpp#L57) で印の付いた system だけを同じ order 順で呼びます。印を付けるのは engine だけで、camera controller と modal transform の登録がそれぞれ `registerSystem<...>()` の token に付けます(公開の登録の形は変えていない)。印の付いた system を呼ぶ間は `ScopedEditorClock` が立ち、`GameContext::deltaTime()` はそのフレーム自身の `dt` を返します。`frameIndex()` はどちらの場合も評価の番号です。behavior(`BehaviorSystem`)・DLL の system・physics trigger には印が無いので、一時停止中は呼ばれません。
 
+### System instance の寿命 {#system-instance-lifetime}
+
+[`gameSystemInstance<System>()`](../../src/core/userpublic/details/system/registerer.hpp#L53) は function-local static です。module container と違い、`PelicanCore::run()` ごとには再生成されません。同一 process で engine を複数回 run する test/tool では、System の member state が明示 reset されない限り次の run に残ります。ただしこの注意が残るのは **engine 側の System のみ**です。game System は DLL 内 static なので、DLL reload 後は新インスタンスになり、member state は持ち越されません。
+
 ## 5.3 event handlerを持つSystem
 
 Systemはupdateに加え、登録済みevent型ごとに次を実装できます。
@@ -132,7 +136,54 @@ void onEvent(const MyEvent& event, Pelican::GameContext& ctx);
 3. そのtranslation unitから見えるcatalog entryについて、`HasGameSystemEvent<System, Event>`を判定。
 4. 該当する型だけtype-erased（型消去 — 型ごとに違う処理を、元の型を見せない共通の関数ポインタ1種類へまとめる手法。ここでは`void (*)(const void*, GameContext&)`一種類に潰し、型ごとに生成された関数の内側で、compile時に確定しているEvent型へ`static_cast`し直します。登録時に併せて保存する`std::type_index`は呼ぶ相手を選ぶための照合用で、cast自体には使いません）なdispatch関数をregistryへ保存。
 
-マクロ展開の詳細と制約は[第9章](09_black_magic_and_gotchas.md)で扱います。
+マクロ展開の詳細と制約は[この節の event catalog](#event-catalog-lookup)で扱います。
+
+### event catalog の名前探索と宣言順 {#event-catalog-lookup}
+
+> 🧩 **難所 — `decltype` で catalog を掃く**([registerer.hpp](../../src/core/userpublic/details/system/registerer.hpp#L71) の `HasEventCatalogLookup` / `collectGameSystemEventHandlers`)
+>
+> **何をする所か**: 「自分より前に登録された event 型」をコンパイル時に列挙し、`onEvent` を持つものだけを関数ポインタ表に詰めます。
+>
+> **素朴に読むと**: 核心はマクロの中のこのラムダ 1 個で、初見ではまず読めません。
+>
+> ```cpp
+> []<int Index>() -> decltype(pelicanEventCatalogEntry(::Pelican::internal::EventCatalogTag<Index>{}))
+> { return {}; }
+> ```
+>
+> 仕掛けは 2 段で、**「番号 N の event があるか」を調べる段**と、**「どの範囲の宣言が見えるか」を決める段**です。前者が下の SFINAE、後者が次項の二相名前解決で、混ぜて読むと解けません。
+>
+> **第 1 段: 存在検査(SFINAE)**。本体 `{ return {}; }` は飾りで、**意味があるのは戻り値型の `decltype` だけ**です。その番号の event が登録されていなければ戻り値型の置換に失敗し、`operator()<Index>` が ill-formed になる — これを requires 式で bool にして「あるかどうか」を判定しています。これが **SFINAE**(スフィネ。"Substitution Failure Is Not An Error" の略で、テンプレート引数を当てはめた結果おかしな型になっても**コンパイルエラーにはせず、その候補を黙って外す**という C++ の規則。「エラーにならない」性質を逆手に取って、存在検査に使う常套手段です)です。`if constexpr` で存在しない番号を黙って捨てているのも必須で、これが無いと `__COUNTER__` の抜け番(他のマクロが消費した番号)でビルドごと落ちます。素朴に「全 event を実行時に走査」する実装にすると `onEvent` の有無を実行時に判定できず、`virtual onEvent` にすると event 型ごとに vtable が要ります。この方式は両方を避けています。
+>
+> **第 2 段: なぜ「前だけ」見えるのか(二相名前解決)**: 呼び出し引数がテンプレート引数 `Index` に依存するため、**二相名前解決**(テンプレートの名前解決を「定義を書いた位置」と「型が決まって実体化される位置」の 2 段階で行う C++ の規則)になります。候補になるのは「マクロを展開した位置での通常の名前探索」と「実体化時の **ADL**(実引数依存探索 — 引数の型が属する名前空間も探しに行く仕組み)」の和です。ADL が探すのは引数の型が属する `Pelican::internal` だけですが、マクロが生む `pelicanEventCatalogEntry` の宣言は展開先(普通はグローバルかゲームの名前空間)にあるので **ADL では見つかりません**。つまり ADL 側の寄与は常に空で、実際に効くのは展開位置での通常の名前探索だけ — 結果として「同じ翻訳単位で、登録マクロより前にある宣言だけ」が見えます。逆に言うと、`EventCatalogTag` をマクロの展開先と同じ名前空間へ移すと ADL の寄与が空でなくなり、**ADL は実体化時点で探す**ので、登録マクロより後ろに書かれた overload まで拾えるようになります。
+>
+> **手がかり**: `unique_id`(= `__COUNTER__`)は **catalog の添字と走査上限を兼ねます**。overload は宣言だけで、本体は一度も呼ばれません。走査コストはテンプレート実体化 O(`__COUNTER__`) なので、event ヘッダを大量に include した翻訳単位で system を登録すると、その TU だけコンパイルが目に見えて遅くなります。behavior 側([behavior/registerer.hpp](../../src/core/userpublic/details/behavior/registerer.hpp#L136))は完全に同じ構造の複製なので、片方を直すなら両方直します。
+>
+> **不変条件**: `EventCatalogTag` は `Pelican::internal` に置いたままにする(マクロの展開先と同じ名前空間へ動かすと ADL 経路が生えて「後ろの event も見える」ようになり、TU 順序依存が静かに変わります)。ハンドラの第 2 引数は system が `GameContext&`、behavior が `BehaviorContext&` — 取り違えると concept が false になり、**コンパイルは通るのに登録されません**。
+
+### queued event フックと翻訳単位の罠 {#system-registration-gotchas}
+
+[`HasGameSystemQueuedEvent`](../../src/core/userpublic/details/system/registerer.hpp#L48)(`void dispatchQueuedEvent(const QueuedEvent&, GameContext&)`)が加わりました。これにより「update も onEvent も無い System は登録エラー」の条件は `!has_queued_event && event_handlers.empty()` に変わっています([`registerer.hpp` 内](../../src/core/userpublic/details/system/registerer.hpp#L107))。
+
+エラー文言自体は据え置きです。
+
+```text
+registered game systems must define update(ctx) or onEvent(event, ctx)
+```
+
+文言と実条件がややズレているので、`dispatchQueuedEvent` だけを持つ System を書くときは「このメッセージが出たら 3 つとも無い」と読み替えてください。
+
+#### translation unit と宣言順の罠
+
+- event macro は system macro より前に、同じ translation unit の lookup から見える必要があります。通常は event 宣言と登録を header に置き、その header を system `.cpp` で先に include します。
+- 別の `.cpp` だけで登録された event は、system 側の compile-time catalog からは見えません。
+- system macro より後に event macro を置いても、その system の handler list には入りません。
+- object file が最終 executable へ link されなければ static constructor も走りません。
+- `__COUNTER__` は translation unit ごとであり、process-wide event ID ではありません。runtime の同一性は `std::type_index` と名前で判定します。
+
+runtime update 順は static 初期化順ではなく、[`sortGameSystemRegistrations()`](../../src/core/userpublic/details/system/registerer.cpp#L35) が `(order, name)` で決めます。ここは決定論的です。Behavior もこの全順序に order 50 の 1 点として参加します([第5章 §5.13](05_gameplay_and_services.md))。
+
+registry の各登録には [`RegistrationOwner`](../../src/core/userpublic/details/system/registerer.hpp#L33)(engine / game DLL)が付きます。game DLL reload では [`unregisterGameSystems(owner)`](../../src/core/userpublic/details/system/registerer.hpp#L172) が旧 DLL の static 登録を外し、新 DLL の static 初期化が再登録します。個別解除用に [`unregisterGameSystem(token)`](../../src/core/userpublic/details/system/registerer.hpp#L171) もあります。また event 型は静的記述子 `pelican_payload`([`EventPayloadDescriptor`](../../src/core/userpublic/details/event/payloadschema.hpp#L43) / 実体化後は [`EventPayloadSchema`](../../src/core/userpublic/details/event/payloadschema.hpp#L26))で payload の field schema を宣言できるようになり、`fail_*` fixture は compile-time 検証([`run_event_schema_compile.cmake`](../../test/run_event_schema_compile.cmake))になっています。
 
 ## 5.4 Event bus
 
@@ -184,7 +235,46 @@ event emit順
   × 各eventについてSystem order/name順
 ```
 
-payload が `shared_ptr<const void>` である理由(`make_shared<Event>` が作った control block は `~Event` を呼ぶ手続きを内部に焼き付けたまま `shared_ptr<const void>` へ暗黙変換されるので、静的型が `const void` になっても破棄だけは元の型のデストラクタで行われる — だから game DLL 側で定義された型でも安全に捨てられます)と、teardown で payload を drain してから DLL をアンロードしなければならない順序は、[第9章](09_black_magic_and_gotchas.md) §9.3「event 名と RPC payload」で扱います。
+payload が `shared_ptr<const void>` である理由(`make_shared<Event>` が作った control block は `~Event` を呼ぶ手続きを内部に焼き付けたまま `shared_ptr<const void>` へ暗黙変換されるので、静的型が `const void` になっても破棄だけは元の型のデストラクタで行われる — だから game DLL 側で定義された型でも安全に捨てられます)と、teardown で payload を drain してから DLL をアンロードしなければならない順序は、[この節の event 名、payload と DLL の寿命](#event-payload-lifetime)で扱います。
+
+### event 名、payload と DLL の寿命 {#event-payload-lifetime}
+
+[`eventDisplayName()`](../../src/core/userpublic/details/event/registerer.cpp#L22) は namespace qualifier を落とします。`foo::Changed` と `bar::Changed` は同じ `Changed` になり、異なる型なら duplicate error です。
+
+RPC の `inject_event` 用 JSON loader は [`registerEvent<Event>()`](../../src/core/userpublic/details/event/registerer.hpp#L144) で選ばれます。
+
+- default constructible かつ `ref(JsonArchiveLoader&)` がある: payload を field へ load。
+- default constructible だが `ref` がない: default event を作り、渡された payload は使わない。
+- default constructible でない: name injection 不可。
+
+C++ の `GameContext::emit(event)` は copy した値をそのまま queue に置くため、この JSON 制約とは別です。
+
+> 🧩 **難所 — void payload の消し方**([`QueuedEvent::payload`](../../src/core/userpublic/details/event/registerer.hpp#L37) / [`dispatchEventToRegisteredGameSystems()`](../../src/core/userpublic/details/system/registerer.cpp#L97))
+>
+> **何をする所か**: 任意の event 型を `shared_ptr<const void>` 1 個へ消して queue に積み、配送時に `std::type_index` で照合してから元の型へ `static_cast` して呼び戻します。
+>
+> **素朴に読むと**: thunk(サンク — 型を消した引数を本来の型へ戻して本体を呼ぶだけの、極小の中継関数)側の `*static_cast<const Event *>(event)`([system/registerer.hpp](../../src/core/userpublic/details/system/registerer.hpp#L65))には**何の検査もありません**。型の健全性を担保しているのは配送側の [`handler.event_type == event.type`](../../src/core/userpublic/details/system/registerer.cpp#L101) の 1 行だけで、ここが唯一の関門であるという事実はコードの見た目からは分かりません。次に、`shared_ptr<const void>` は「型を捨てたポインタ」ではありません — `make_shared<EventType>` の control block(`shared_ptr` が参照カウントと「どう破棄するか」を保持している内部ブロック)が `~EventType` を持ったまま `const void` へ暗黙変換されています。DLL 境界での破棄は次の 3 行になります。
+>
+> 1. ゲーム DLL の中で `emit<E>(e)` が `make_shared<E>` を呼び、その瞬間に **`~E` の実体(= DLL 内のコード)へのポインタ**が control block に焼き込まれる。
+> 2. engine 側は `const void` として持ち回るので `E` を知らないが、参照カウントが 0 になったとき control block が**その焼き込まれたコード**を呼ぶ。
+> 3. したがって `FreeLibrary` でそのコードが消えた後に最後の参照が落ちると、**存在しないアドレスへジャンプします**。破棄は必ず `FreeLibrary` より前でなければなりません。
+>
+> (`void*` + `delete` にすると 1 の情報がそもそも残らず即 UB になる、というのがこの型を選んでいる理由です。)この順序を守らせているのが、一見無意味に見える [`drainForTeardown()`](../../src/core/userpublic/details/event/registerer.cpp#L511)(空の局所 vector に swap して個数だけ返す)は、**owner がまだ生きているこのスコープ内で全 payload を破棄する**のが目的です。[`unregisterEvents()`](../../src/core/userpublic/details/event/registerer.cpp#L618) が `catch (...) { std::terminate(); }` するのも同じ理由で、例外を握り潰して `FreeLibrary` へ進むとアンロード済みの型を指す登録が残ります。
+>
+> **骨子**:
+> ```text
+> emit<E>(e)  payload = make_shared<E>(e) → shared_ptr<const void>(deleter は ~E のまま)
+>             type    = type_index(typeid(E))
+> frame 先頭  deliver_now_events.swap(pending_events)
+> dispatch    for system in (order,name)順 / for handler in system.event_handlers:
+>               if handler.event_type == event.type:      ← 唯一の型検査
+>                  handler.dispatch(payload.get(), ctx)   ← 検査なしの static_cast
+> teardown    drainForTeardown() で owner 生存中に payload を全破棄 → その後 DLL アンロード
+> ```
+>
+> **手がかり**: [`QueuedEvent::owner`](../../src/core/userpublic/details/event/registerer.hpp#L41) は DLL reload 時に「消えた owner の queued event」を捨てるためにあります(`unregisterEvents` の `std::erase_if`)。一緒に読むテストは [`Event bus freeze is separate from delivery`](../../test/eventlayer_test.cpp#L69)「Event bus freeze is separate from delivery」と、[`run_behavior_dll_reload.ps1`](../../test/run_behavior_dll_reload.ps1) の `queued_event_purge` ケースです。
+>
+> **不変条件**: 配送前の `event_type == event.type` 照合を外さない。teardown の順序は `drainForTeardown()` / `unregisterEvents(owner)` → その後に DLL アンロード(逆にしない)。`payload` を `shared_ptr<const void>` 以外(生ポインタ・`any`・自前 deleter)へ変えない — control block が型のデストラクタを運ぶことが DLL 境界の安全性そのものです。
 
 ## 5.5 入力の四層
 
@@ -569,6 +659,16 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 >
 > **不変条件**: `projectedRadius()` は純粋層の `support()` と同じ形状規約に一致していること(ずれると乗れる / 抜けるが形状ごとに食い違います)。比較は当該反復の**開始姿勢**に対して行う。`one_way_tolerance >= skin_width` が実質の前提です(既定 2e-4 vs 1e-4)。
 
+### [`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L743) — 2-way merge と canonical pair {#reading-note-068}
+
+[コメント](../../src/core/phys/physworld.cpp#L811)どおり、両集合を **canonical な (min,max) EntityId ペアでソート済みにして 2-way merge** することで、混在フレームでも全順序が 1 つに決まります。イベントは self/other 視点なので、canonical ペア 1 つから低い側 self・高い側 self の 2 本を emit して両エンティティに届けます。差分の取り方は[第5章「差分は 1 パスのマージ」](05_gameplay_and_services.md)が本体です。
+
+### GJK と EPA(凸形状の距離計算と貫通量計算)の使用箇所 {#background-usage-14}
+
+**このリポジトリでは**: `src/core/phys/physquerysweep.cpp` が両方を持ちます。反復上限は定数で `kGjkIterations = 40` / `kEpaIterations = 256`、EPA の収束判定は `kEpaTolerance = 1.0e-6F`(19〜21 行)。GJK 側は 442 行のループで最近接点と分離判定を出し、交差した組だけ `EpaFace` を張り替える `penetration()`(657 行)へ進んで貫通量を求めます。呼び出し面と、ε クラスタや collider identity による順序付けの契約は [第5章](05_gameplay_and_services.md) の physics query 節にあります。
+
+内訳の関数は次のとおりです(2026-09-04 追記)。形状ごとの support 関数が [support()](../../src/core/phys/physquerysweep.cpp#L155)、Minkowski 差の支持点(`support(A,d) - support(B,-d)`)が [supportDifference()](../../src/core/phys/physquerysweep.cpp#L256)、GJK 本体が [convexDistance()](../../src/core/phys/physquerysweep.cpp#L433) です。単体から原点への最近点は、部分集合をビットマスクで列挙して各々の重心座標を連立方程式で解き、負の重みが出ない解のうち最短を選ぶ **Johnson のアルゴリズム**([closestForSubset()](../../src/core/phys/physquerysweep.cpp#L310) と [closestToOrigin()](../../src/core/phys/physquerysweep.cpp#L373))で、四面体が原点を含むかは符号付き体積の比 = 重心座標が全て非負かで判定します([tetraContainsOrigin()](../../src/core/phys/physquerysweep.cpp#L519)、面上のケースを内側へ倒す数値マージン付き)。掃引判定の入口は [shapeCast()](../../src/core/phys/physquerysweep.cpp#L757) です。
+
 ## 5.8 決定的乱数
 
 [`DeterministicRng`](../../src/core/userpublic/deterministicrng.cpp#L31) はPCG32（permuted congruential generator の32bit出力版 — 64bitの内部状態を線形合同法で進め、出力段ではその状態の上位ビットが決めた量だけxorshift結果をビット回転させる擬似乱数生成器。状態が小さく、同じseedから同じ列を完全に再現できるので決定性用途に向きます）です。初期seedは`ProjectBasicConfig.seed()`、RPC/GameContextから再設定できます。
@@ -669,6 +769,12 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 読み取り側は `overlay_data` を使います。[`loadData()`](../../src/core/loader/effecttransaction.cpp#L380) は outbox に同じ `resource_key` の未flush entry があればその `overlay_data` を返し、無ければディスクを読みます。[`listSaves()`](../../src/core/loader/effecttransaction.cpp#L409) はディスクの一覧に未flushのslotを**足し**、既にある行のtimestampは**ゼロへ潰して**からslot名でsortします（まだ書かれていないので実時刻は存在しない、という表現です）。manifest はこの2つを `read_only` として持ちます（§3.5 の 7）。
 
 読み取りの失敗は専用の例外 [`PersistenceReadError`](../../src/core/persistence/persistence.hpp#L16) で、`path()` と `reason()` を分けて持ちます。effect transaction はこれだけを他の例外と区別して捕まえ、`persistence_read_failed` として**path と reason を別フィールドで**記録します（[`loadData()` の catch](../../src/core/loader/effecttransaction.cpp#L393)）。それ以外の例外は `persistence_overlay_failed` になります — 「ディスクが読めなかった」と「overlayの組み立てで壊れた」を混ぜないための2本立てです。
+
+### persistence の key は case-fold した canonical path — ただし Windows だけ {#persistence-canonical-key}
+
+同じファイルを別の綴りで指した保存要求を1つに畳むため、`Persistence` の resource key は [`canonicalResourceKey()`](../../src/core/persistence/persistence.cpp#L40) が作ります。`weakly_canonical()` で正規化し、`generic_string()`(区切りは `/`)にしたうえで、**`_WIN32` のときだけ** `std::tolower` を全体に掛け、`"path:"` を前置します。
+
+罠は2つあります。(1) case-fold は `#ifdef _WIN32` の内側なので、**key の同一性ドメインがプラットフォームで違います**。「大文字小文字違いの2つの save slot」は Windows では衝突し、Linux では別物です。(2) `weakly_canonical()` は失敗しうるので、この関数は `std::runtime_error("failed to canonicalize persistence path: ...")` を投げます — key を作る処理が例外を出す点は、`noexcept` の中で呼ばないための前提です。
 
 ## 5.11 Debug text
 
@@ -975,6 +1081,33 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 
 [`test/behavior_determinism_probe.cpp`](../../test/behavior_determinism_probe.cpp) と [`test/run_behavior_determinism.cmake`](../../test/run_behavior_determinism.cmake) が、**4プロセス**で同一出力になることをCTest名`behavior_determinism_four_processes`で検査します。
 
+### behavior の event handler 登録 {#behavior-event-registration}
+
+[`PELICAN_REGISTER_BEHAVIOR(Type, stable_name, schema_version)`](../../src/core/userpublic/details/behavior/registerer.hpp#L385)(IMPL は [`PELICAN_REGISTER_BEHAVIOR_IMPL()`](../../src/core/userpublic/details/behavior/registerer.hpp#L364))も **まったく同じ `__COUNTER__` + catalog 走査方式** です。[`collectBehaviorEventHandlers<Type>()`](../../src/core/userpublic/details/behavior/registerer.hpp#L148) が `onEvent(const Event&, BehaviorContext&)` を探します。
+
+したがって **翻訳単位の順序の罠がそのまま適用されます**。event 宣言 header は behavior の `.cpp` の先頭で include してください。加えて 2 点、System とは違う注意があります。
+
+- handler の第2引数は `BehaviorContext&` です。`GameContext&` 版を書くと、compile は通るのに **catalog に載らず、呼ばれません**。
+- `onEvent` は `Behavior` の virtual メンバではありません。`override` を付けられない代わりに、typo が黙って無視されます。
+
+### `createObject()` は基底の `GameContext` から呼んでも defer される {#behavior-deferred-create}
+
+`BehaviorContext::createObject()` が [`deferCreateObject()`](../../src/core/gamelogic/behaviorarena.cpp#L1572) に落ちるのは自然に見えます。見落としやすいのは**基底側**で、[`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L105) も先頭で `internal::behaviorCallbackActive()` を見て、真なら同じ defer をして `invalidGameObjectId` を返します。
+
+つまり behavior のコールバック中は、`BehaviorContext` を捨てて `GameContext&` として呼んでも即時生成にはなりません。**戻り値が invalid であること自体が仕様**で、これを「基底なら即時に作れる」と読んで戻り値を使うと、`resolve()` に弾かれる ID を掴みます。生成された entity を触りたいなら次フレーム以降に名前や別の手段で引き直します。
+
+### [`reloadTransaction()`](../../src/core/gamelogic/gamelogicreload.cpp#L584) — previous_unloaded と rollback の分岐 {#reading-note-069}
+
+例外まわりは[第5章「例外を捨ててから unload」](05_gameplay_and_services.md)が本体です。分岐の側だけ補うと、`previous_unloaded` は「旧 DLL を実際に unload 済みか」を記録し、true なら旧シャドウコピーを**新しい owner で読み直し**(`loadCopy` + `activateProviderOwner`)、false(teardown が unload 前に失敗)なら**静的登録の owner が曖昧になる二重ロードを避けて**元のハンドル / owner をそのまま復帰させます。
+
+### [`activation_delay`](../../src/core/gamelogic/behaviorarena.cpp#L572) — 1 フレーム遅らせる理由 {#reading-note-070}
+
+新規 / 再構築された attachment は [`activation_delay = 1`](../../src/core/gamelogic/behaviorarena.cpp#L787) を持ち、[`update()` 末尾でデクリメント](../../src/core/gamelogic/behaviorarena.cpp#L1200)されるまで [`activateReadyEditorAttachments()` の入口で読み飛ばされます](../../src/core/gamelogic/behaviorarena.cpp#L1129)。**生成直後の同一フレームで init が走らないようにして、シーン公開が完全に終わってから 1 フレーム後に活性化する**ためです。失敗時は `activated` を逆順に辿って `destroyInstance` し、`deferred_mutations` を base まで巻き戻します(構築の逆順で壊して依存順を守り、部分活性化を残さない。→ [§9.22](09_black_magic_and_gotchas.md#922-横断パターン初読で-5-つ以上の領域に同じ形で現れるもの))。
+
+### [`sameSceneBehaviorOrigin()`](../../src/core/gamelogic/behaviorarena.cpp#L489) — 許される遷移方向 {#reading-note-071}
+
+既存 attachment と desired の origin が同一かで再利用可否を決めます。Authored 同士は `authoring_component_index` 一致、Generated 同士は `stable_generated_id` 一致。**異種間は `OriginTransitionMap.direction` が該当方向のときだけ**(Authored→Generated なら AuthoredToGenerated、逆なら GeneratedToAuthored)、entries の gid / component_key / final_authored_index が一致すれば同一とみなします = 遷移マップが宣言した**片方向のみ**許されます(→ [§9.23.2](09_black_magic_and_gotchas.md#9232-resolver--componentcodec--prefab) / [§9.23.9](09_black_magic_and_gotchas.md#9239-editor-journal))。
+
 ## 5.14 struct field schema と use-site policy ✅実装済み（WP150 / STRUCT-SCHEMA0）
 
 event payload、behavior params、component codecの3か所が、同じ **consteval なフィールド宣言DSL**（`consteval`は「必ずコンパイル時に評価される関数」を宣言するキーワードで、`constexpr`と違って実行時に呼ぶことが一切できません。おかげでフィールド宣言の検査は、ビルドが通った時点で必ず終わっています）を共有します。実体は [`src/core/userpublic/details/schema/structfieldschema.hpp`](../../src/core/userpublic/details/schema/structfieldschema.hpp) で、`behavior.hpp`経由で`Pelican::`名前空間から使えます。
@@ -1042,6 +1175,34 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 > **不変条件**: 3 本目の encode fold を「無駄だから」と消さない。unknown 検査を decode の後ろへ動かさない(エラーコードの優先順位が変わります)。destination への書き込みは最後の `swap` 1 回だけに保つ。`Params` に throw する swap や非 nothrow なムーブを持ち込まない(`using std::swap; swap(a,b);` の 2 段 ADL(実引数依存探索 — 引数の型が属する名前空間からも関数を探す C++ の名前探索規則。`using std::swap;` で既定を候補に入れつつ、その型の名前空間に専用の `swap` があればそちらが選ばれます)形と `is_nothrow_swappable_v` が見ている式は同じものなので、throw するメンバ swap を足すと静かに static_assert が落ちます)。
 
 テストは [`test/structfieldschema_test.cpp`](../../test/structfieldschema_test.cpp) と、`test/CMakeLists.txt`の`pelican_struct_schema_compile_fixture()`が定義するcompile fixture 9本（pass 3 / fail 6）です。
+
+### `OptionalOverride` の absent と「0 を set した」は別 {#optional-override-presence}
+
+`std::optional<T>` の schema field には [`StructFieldPresence::OptionalOverride`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L67) が付きます。decode は、キーが**無ければ何も代入せず**(`std::nullopt` のまま)、あれば値を decode して `member = decoded` します([decode の presence 分岐](../../src/core/userpublic/details/schema/structfieldjson.hpp#L575))。encode は逆で、`if (!member) return;` により**キーごと出しません**([encode の skip](../../src/core/userpublic/details/schema/structfieldjson.hpp#L718))。
+
+つまり次の3つはすべて別の状態です。
+
+```text
+{}                          → nullopt          「宣言していない」
+{"custom_index": 0}         → optional{0}      「0 を宣言した」
+{"instance_flags": []}      → optional{空集合}  「フラグ無しを宣言した」
+```
+
+`optional<T>` を `value_or(0)` や `.value_or(T{})` で読み出した瞬間、この区別は消えます。`pelican_ray_instance` が field ごとに optional なのはまさにこのためで([第6章 §6.20](06_rendering_vulkan_shader.md))、ヘッダのコメントが「authored の空の `instance_flags` 配列は本物の override」と明記しています。同じ理由で AS row の [`source_material_index`](../../src/core/shader/raygrouplayout.hpp#L293) も optional のまま運ばれ、コメントが「**欠損した index が黙って 0 になってはいけない**」と規範を書いています。0 に丸めると、たまたま 0 番 material を指す asset selector が誤って一致します。
+
+### `$list.next_id` は「行の最大値より大きい」しか強制されない {#list-next-id-watermark}
+
+`List<Row>` の wire は object container で、`$list` 封筒に `v` と `next_id`、各行に `$row` 封筒(`id` / `v` / 任意の `hint`)が付きます。decode が拒否するのは、未知キー・`$row` 欠落・`id == 0`・重複 id・未知 version、そして最後の [`$list.next_id must exceed every row id`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L393) です。
+
+ここが読み違えやすい点です。`next_id` は **id を発行するための水位**であって、「削除したら戻る」値ではありません。行を消しても `next_id` を下げずに配れば id は再利用されず、`hint` や外部参照が別の行へ付け替わることもありません。ただし **codec がその単調性を検査しているわけではありません** — 最大 id の行を消したあとに `next_id` を下げた文書は、decode を通ります。encode 側も [`{{"v", 1}, {"next_id", member.next_id}}`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L726) を verbatim に書くだけです。単調性は**生成側の契約**であって、wire の検査で守られてはいません。
+
+### [`StructFieldRangeDescriptor`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L107) — "constexpr-in-incomplete-owner" 不変式 {#reading-note-073}
+
+不変式は**「所有者クラスがまだ不完全な段階(クラス定義内での schema 宣言時)に `std::variant` を構築しない」**ことです。[POD 形式のコメント](../../src/core/userpublic/details/schema/structfieldschema.hpp#L358)が「クラス定義の中で variant を構築しない」という WP71/MSVC 不変式をそのまま書いています。MSVC ではこの状況で `StructFieldRange` variant の constexpr 構築が壊れるため、記述子は POD(descriptor + フラットな `enum_values[]` 配列)で保持し、自己参照 span を避けつつ variant の構成は型が完成した後の materialize 時まで遅らせます。同じ制約の別側面は[第5章「不完全型のまま consteval」](05_gameplay_and_services.md)。
+
+### [List の `$list` envelope](../../src/core/userpublic/details/schema/structfieldjson.hpp#L589) — row id の規約 {#reading-note-074}
+
+(`docs/manual/04_scene_ecs.md` §4.4)**素の配列だと添字が行の同一性になり、先頭に 1 行挿入しただけでエディタの参照や undo が別の行を指す**ため、行は不変の `$row.id` を持つオブジェクトコンテナにしました(決定「添字を identity にしない」)。`$list.v` / `$row.v` は前方互換のためのバージョン(1 以外は `RowEnvelopeUnsupported`)、**`id=0` は `OutOfRange`("row id must be non-zero")で拒否**されます(0 を「行なし」の予約値とする明文はコードにも文書にも無く、**禁止の理由そのものは未執筆**)。`next_id > max(row id)` は「未使用番号」の意味を成立させ、新規発行 id が既存行と衝突しないことを保証します。`next_id` の弱さ自体は [§9.21](09_black_magic_and_gotchas.md#921-prepare--publish-世代のコードで踏む新しい罠)「`$list.next_id` は『行の最大値より大きい』しか強制されない」を参照。
 
 ## 5.15 scene transaction中の公開API（effect transaction sink） ✅実装済み
 
@@ -1119,7 +1280,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L170)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L177)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4048)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4075)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 
@@ -1191,6 +1352,52 @@ resolved_rig  : 連鎖をさかのぼって求めた「この姿勢がどのrig�
 ### `PELICAN_WITH_ANIMATION=OFF` のときの API の応答
 
 OFFビルドではこの3ファイルがビルドに入らず、`pelican.pose` module も登録されません。残るのは交渉入口だけで、3つとも out 引数が null なら `invalid_argument`、そうでなければ `unsupported_version` です（[`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L18)）。`get_status.animation` は `{"available": false}` だけを返し、**空のsink一覧は返しません** —— 「モジュールはあるが誰も動かしていない」と読めてしまうためです。ビルド側の帰結の一覧は[第1章 §1.6](01_architecture_and_build.md)にあります。
+
+### animation ABI ハンドルの世代台帳 {#animation-generation-ledger}
+
+> 🧩 **難所 — generation は 0 を跨がない**([`ResourceGenerationLedger`](../../src/core/animation/animationserviceabi.hpp#L40) / [`isValid()`](../../src/core/userpublic/animation/abi_v1.hpp#L48))
+>
+> **何をする所か**: animation ABI ハンドルの世代を進めます。`if (++x == 0) ++x;` という同じ 3 語が [`animationservice.cpp`](../../src/core/animation/animationservice.cpp#L649) だけで 7 か所に現れます。
+>
+> **素朴に読むと**: `isValid()` が `identity != 0 && generation != 0 && reserved == 0` で判定するので、**generation 0 は「無効ハンドル」の予約値**です。予約値とは、値域の中の 1 つを通常の意味から外し、「特別な状態」を表すためだけに取っておくことを指します。0 が選ばれている効果ははっきりしていて、`memset` やゼロ初期化で作った struct が**そのまま無効**として読まれます(この ABI は [§9.2](03_project_and_loading.md#typed-handle-boundaries) の `struct_size` 交渉のとおり、呼び出し側にゼロ初期化を要求します)。1 を予約値にするとゼロ初期化した handle が有効に見えてしまいます。**この選択の理由を書いた設計文書は見つかっていません(未確認)** — ここに書いたのは実装から読み取れる帰結です。`uint32` の世代が一周して 0 に戻ると、生きているリソースのハンドルが突然「無効」になる — `if (++x == 0) ++x;` はその 1 値だけを飛ばすイディオムですが、1 行に畳まれているので「なぜ 2 回インクリメントするのか」がコードからは読めません。もう 1 段深いのが `ResourceGenerationLedger` で、リソースが消えたあとも **identity を消さずに世代だけ覚え続けます**([`tombstone()`](../../src/core/animation/animationserviceabi.cpp#L36) は世代を 1 進めて `remember()` する)。これが無いと消えたリソースのハンドルは「そんな identity は知らない」= `invalid_handle` に落ちますが、`invalid_handle` は「そのハンドルは初めからおかしい」、`stale_generation` は「正しかったが古い」で、**呼び出し側の回復経路が違います**。tombstone を外すと、モデルの hot reload のたびに [`EvaluatorV1::rebind()`](../../src/core/userpublic/animation/animgraph.cpp#L1148) での再解決ができなくなり、anim graph がパラメータもクロックも遷移も失います。
+>
+> **骨子**:
+> ```text
+> generation の値域: 0 = 無効の予約値、1..UINT32_MAX = 有効
+>                    ++g; if (g == 0) ++g;      // 一周しても 0 を踏まない
+> ledger.validate(identity, gen):
+>   未知       → invalid_handle
+>   世代不一致 → stale_generation     ← tombstone がこの行き先を守る
+>   一致       → ok
+> rig の解決 = ledger.validate() ∧ sameHandle() ∧ アセット側 atomic == handle.generation
+> ```
+>
+> **手がかり**: [`resolveRigResource()`](../../src/core/animation/animationservice.cpp#L176) は世代を **2 系統**で照合します — ledger の記録と、アセット側の `generation_state->current.load()` です。前者は「サービスが知っている世代」、後者は「アセットが実際に進めた世代」で、reload の途中では一時的に食い違い得ます(片方だけ見ると差し替え途中のアセットを掴みます)。pose だけは arena 所有でリソース台帳に載らないため、[`stale_poses`](../../src/core/animation/animationposearena.hpp#L64) という別表へ退避されます(arena も別表も、`animationservice.cpp` から切り出された [`PoseArena`](../../src/core/animation/animationposearena.hpp#L23) の持ち物です)。テストは [`animgraph_test.cpp` 内](../../test/animgraph_test.cpp#L467)(reload 後に各 API が `stale_generation` を返し、`rebind()` が graph 状態を保つ)、[`animation_jobs_test.cpp` 内](../../test/animation_jobs_test.cpp#L330)。
+>
+> **不変条件**: generation 0 を有効値として外へ出さない。消えたリソースの identity を ledger から**消さない**(tombstone を残す)。`invalid_handle` と `stale_generation` の使い分けを崩さない。
+
+### animation ABI descriptor のサイズ交渉 {#animation-descriptor-size}
+
+> 🧩 **難所 — `struct_size` の 3 段ルール**([`getApiV1()`](../../src/core/animation/animationservice.cpp#L1830) / [`validateDescriptor()`](../../src/core/animation/animationserviceabi.hpp#L15))
+>
+> **何をする所か**: 別々にコンパイルされた DLL とエンジンの間で、C の plain struct を版下位互換のまま受け渡します。呼び出し側が `struct_size` を書き、エンジンが自分の知る分だけを書き戻します。
+>
+> **素朴に読むと**: `validateDescriptor(*desc)` がほぼ全 API の頭に並ぶので「サイズは常に交渉されている」と読んでしまいますが、実際には **3 種類の異なるルールが混ざっています**。交渉の入口 3 本([`getApiV1`](../../src/core/animation/animationservice.cpp#L1830) / [`Impl::getService`](../../src/core/animation/animationservice.cpp#L1678) / [`getPoseStagingServiceV1`](../../src/core/animation/animationservice.cpp#L1855))は `sizeof(DescriptorHeaderV1)` = 16 バイトしか要求せず、加算的テールを持つ [`getClipMetadata`](../../src/core/animation/animationservice.cpp#L1513) は凍結プレフィクスの長さを手書きし、**それ以外は既定の `sizeof(T)`(= エンジン側の現在サイズ)を下限**として要求します(検査は [`struct_size < minimum`](../../src/core/animation/animationserviceabi.hpp#L17) の下限比較だけなので、大きすぎる `struct_size` は弾かれません。[`ProbeRuntime` 側の同名関数](../../src/core/animation/animationprobe.cpp#L38)は既定が `headerSize` である点も別物です)。つまり既存 descriptor の末尾にフィールドを足すと、古い DLL は即 `invalid_argument` です — 「加算的だから安全」という一般則はこのコードベースでは成り立ちません。書き戻しは `memcpy(out, &produced, min(caller_size, sizeof(produced)))` で **エンジンは呼び出し側のテールをゼロ埋めしません**から、呼び出し側は descriptor を必ずゼロ初期化してから使う必要があります(テストの `descriptor<T>()`、[`descriptor()`](../../test/animation_abi_dll_test.cpp#L44))。成功後の `out->struct_size` は**エンジンの `sizeof`** に上書きされるので、自分が確保したバッファ長として再利用しないでください。
+>
+> **骨子**:
+> ```text
+> [ header 16B ][ frozen v1 prefix ][ additive tail ]
+>  ^struct_size  ^古い DLL はここまで  ^新しいエンジンだけが書ける
+>
+> エンジン側: struct_size >= 16 / version 一致 / reserved==0 / client_abi 範囲内
+>            caller_size = out->struct_size        ← 先に退避
+>            produced{} を完全に埋める(struct_size = 自分の sizeof)
+>            memcpy(out, &produced, min(caller_size, sizeof(produced)))
+> ```
+>
+> **手がかり**: 版数の軸が 3 本あります — `version`(descriptor のレイアウト版)、`engine_abi_version` / `service_version`(関数表の意味論の版)、`capability_bits`(機能単位)。`reserved0/1 != 0` を `reserved_not_zero` で弾くのは、新しい ABI の呼び出し側が古いエンジンに当たったことを検出するためです。[`getApiV1()`](../../src/core/userpublic/animation/abi_v1.hpp#L653) の `static_assert` は 2 つのサイズと 4 か所のオフセットだけを固定しており、**それ以外のフィールド順はコンパイラが何も守ってくれません**。テストは [`old and new animation header DLLs preserve the frozen prefix`](../../test/animation_abi_dll_test.cpp#L124)(凍結プレフィクス)/ [`old-client new-engine and new-client old-engine negotiate additively`](../../test/animation_abi_dll_test.cpp#L154)(old-client と new-engine の双方向)で、`storage[caller_size]` の番兵によって越境書き込みが無いことを検査しています。
+>
+> **不変条件**: 既存フィールドの順序・型・サイズを変えない(追加は末尾のみ)。末尾に足したら、その descriptor を読む側の `minimum` を凍結プレフィクスのサイズへ明示的に下げる(前例は engine 側で 5 か所 — [`getClipMetadata`](../../src/core/animation/animationservice.cpp#L1513) と、同じ descriptor を検証する `ProbeRuntime` 側の [advanceCursor](../../src/core/animation/animationprobe.cpp#L256)(desc / result の 2 つ)/ [publishAnimationFrame](../../src/core/animation/animationprobe.cpp#L448) / [advanceTemporalHistoryAfterRender](../../src/core/animation/animationprobe.cpp#L467)。片側だけ直すと取りこぼします)。書き戻しは必ず `min(caller_size, sizeof(produced))` にする。ABI 面の関数は `noexcept` を保ち、例外を `Status` へ変換する。
 
 ## 5.17 pose staging service v1（準備中の姿勢へアクセスする追加 API） ✅実装済み（AG-1a / AG-2）
 

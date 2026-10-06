@@ -312,6 +312,23 @@ GameObjects::add()
 
 値tupleは`const T&`を保持します。通常の一続きの式では`finish()`までtemporaryが生存しますが、builder contextを長期保存したり、参照元を先に破棄したりしないでください。意図された使い方は一式のchainです。
 
+### builder の参照寿命の例 {#builder-reference-example}
+
+```cpp
+// 安全: temporaryが破棄される前、同じfull-expressionでfinishする
+auto id = GameObjects::add().addComponent(MyComponent{...}).finish();
+
+// 危険: builderだけ保存すると内部referenceがdanglingになる
+auto builder = GameObjects::add().addComponent(MyComponent{...});
+auto id2 = builder.finish();
+```
+
+builder を後で使うなら、component value を別の lvalue として `finish()` まで生存させてください。重複 Component ID は最終的に [`createEntities()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L365) が例外にします。
+
+### finish の runtime 入口 {#builder-runtime-create}
+
+`finish()` で初めて ID span と populate lambda へ落ち、[`GameObjects::create()`](../../src/core/userpublic/gameobjects.cpp#L14) から ECS の transactional create へ入ります。template の目的は、runtime に型情報が消えた `void*` 配列へ、compile-time に正しい型と index で代入することです。
+
 ## 4.7 削除は末尾要素での穴埋め
 
 [`ECSCoreTemplatePublic::remove()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L550) はO(Component数)で削除します。一般にswap-and-pop（swap-remove — 削除位置と末尾を入れ替えてから末尾を捨てる、穴を作らない定番手法）と呼ばれる形ですが、**この実装は「入れ替え」をしません**。名前どおりの `std::swap` なら削除対象の値が末尾へ移り、そのあと末尾を捨てることになりますが、ここでは削除位置をdestroyしてから末尾要素をそこへrelocateし、`count`を1減らします。移動は末尾→削除位置の片道だけで、末尾側へ書き戻す値がありません（既に消してあるので書き戻す値が存在しない、というのが理由です）。結果は同じで、**移動が2回でなく1回**という違いです。
@@ -356,6 +373,14 @@ GameObjects::add()
 いま見たとおり削除は末尾要素の移動を伴うので、**自分が消したのでない他のentityのComponentアドレスが変わります**。ここが、`tryComponent()` が返したポインタを持ち回れない理由です。
 
 Chunk自体は固定capacityですが、別entityを削除すると末尾entityが移動します。Componentへのpointer/referenceをフレームを跨いで保存すると、同じアドレスが別entityを指す可能性があります。長期保持するのは`EntityId`で、必要時に`tryComponent()`し直すのが契約です。
+
+### swap-delete 後の id 表の更新 {#swap-delete-id-table}
+
+- 移った entity は **id 表の側も直す**必要があります。`EntityId` から行を引くのは [`id_table[id.index].ref`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L108)(= `{chunk_index, array_index}`)なので、[`remove()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L550) は末尾 entity を穴へ move した直後に、その entity の `ref` を穴の位置へ書き換えます([swap-delete の実体](../../src/core/userpublic/details/ecs/coretemplate.cpp#L561))(例: E1 が row 5、末尾の E2 が row 10 で、E1 を remove すると E2 は row 5 へ移るので、`id_table[E2.index].ref.array_index` を 10 → 5 にする)。この更新を落とすと E2 は消えた row 10 を指したままになり、[`resolve()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L308) の範囲検査で当面は「いない」扱い、その後 create が row 10 を埋めると別 entity の行を指します。
+
+### swap-and-pop(末尾要素で穴を埋める削除)の使用箇所 {#background-usage-08}
+
+**使用場所**: [ECSArchetypeMigrationToken::State::publish()](../../src/core/ecs/archetypemigration.cpp#L93)(`relocate_one(atUnchecked(source_row), atUnchecked(source_last_row))` してから `--count`) / [ECSArchetypeMigration::prepare()](../../src/core/ecs/archetypemigration.cpp#L452)(archetype の chunk 列を `rbegin()` から走査して空きのある chunk を選ぶ)
 
 ## 4.8 clearとteardown
 
@@ -457,6 +482,12 @@ per-chunk型では、required Component列の最大versionが`last_run_tick`未�
 batch型では、全matching Chunkのどれかに変更があれば一回だけ全viewを渡します。実行後は全matching Chunkのwrite列を更新します。
 
 `force_update`ならversionに関係なく毎回実行します。現在の組み込みSystemは全て [`registerSystemForce`](../../src/core/ecs/predefined.cpp#L45) で登録されています。
+
+### raw pointer mutation と変更 version {#ecs-raw-write-version}
+
+non-force system は matching chunk の component version と `last_run_tick` を比較します。component を raw pointer から直接書き換えただけでは version が上がりません。公開 mutation は [`setComponent<T>()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L373) または [`markComponentChanged()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L640) を通す必要があります。
+
+一方、built-in system の多くは `registerSystemForce` なので毎 frame 動きます。最適化時に force を外すなら、すべての mutation 経路が version を更新するか先に確認してください。
 
 ## 4.12 依存グラフと並列実行 ✅実装済み
 
@@ -573,6 +604,17 @@ level実行前に、その段に入っている**全System**の`prepare_func`が
 
 テストは [`test/ecs_scheduler_test.cpp`](../../test/ecs_scheduler_test.cpp) です。
 
+### WARNING と並列開始順の読み方 {#ecs-scheduler-warning}
+
+- **無警告の race はもう起きません。** ただし逆に、**自動直列化は WARNING でしか通知されません**。ログを見ていないと「なぜか並列化されない」「なぜか順序が登録順に固定された」ことに気づけません。性能を気にするなら WARNING を潰して明示 edge を書いてください。
+- 計画作成時に node は `node.id` で sort されるため([`std::sort()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L209))、同 level 内の並びは登録順で決定的です。**それでも同 level は並列実行されるので、開始順に依存しないでください。**
+
+strict 側の例外はすべての hazard を `; ` で連結し、末尾に `; add dependency edges or use automatic serialization` が付きます。個々の hazard 行は次の形です。
+
+```text
+ECS unordered component hazard between systems '<A>' and '<B>' on component(s) '<name>'
+```
+
 ## 4.13 組み込みSystem
 
 [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) が登録します。
@@ -636,6 +678,44 @@ behaviorも**ECS Componentではありません**。`BehaviorAttachmentArena` �
 
 > **設計決定:** behaviorをECS Componentにしなかったのは、寿命の所有者がgame logic DLLだからです。DLLのアンロード/リロードでインスタンスを一斉に破棄する必要があり、その境界をECSのarchetype/Chunk寿命と混ぜると、どちらの規則が勝つのかが曖昧になります。scene JSONから見れば他のcomponentと同じ形ですが、runtime表現は別の所有者です。ロードの受理規則は[第3章](03_project_and_loading.md)に、実行時の呼び出し規約は[第5章](05_gameplay_and_services.md)にあります。
 
+### light / camera の変更時の注意 {#light-camera-gotchas}
+
+以前は engine が `"KeyLight"` / `"FillLight"` / `"PointLight1"` / `"SpotLight1"` といった名前を特別扱いし、時刻を渡すと engine 側が勝手にアニメーションさせていました。**この挙動と、原本値を保持していた配列は削除されました。**
+
+現在の [`LightContainer`](../../src/core/light/lightcontainer.hpp#L29) には **時間を引数に取る更新関数がありません**。ライト値を書き換える口は、scene load([`prepareLoad()`](../../src/core/light/lightcontainer.hpp#L46) → [`publishPrepared()`](../../src/core/light/lightcontainer.hpp#L48) の [§9.17](09_black_magic_and_gotchas.md#917-編集-transaction-の落とし穴prepare--publish--cas--ticket) 型。`load()` はこの 2 段に警告出力を挟んだ入口です)と、名前指定の setter 4 本([`setDirectionalLightDirection()`](../../src/core/light/lightcontainer.hpp#L79) ほか。名前が引けなければ **`false` を返すだけ** で例外にはなりません)の 2 系統だけです。`update()` の overload 群は shadow 行列と sky ambient を受け取って現在値を GPU バッファへ書き出すもので、値そのものは動かしません。
+
+- 代替は公開 API 4 本([`RenderContext::setDirectionalLightDirection()` ほか](../../src/core/userpublic/gamecontext.hpp#L140))で、ライトの時間変化は **ユーザー空間の責務** になりました。実例は [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L31) の `updateLightAnimation()` です。
+- setter の結果は `Renderer` の per-frame [`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L548)(呼び出しは [ここ](../../src/core/vkcore/renderer.cpp#L1609))で GPU バッファへ反映されます。
+- 「アップグレード後にライトが動かなくなった」は仕様です。scene 名に依存した暗黙アニメーションを期待しているコードを探してください。
+
+代わりに **上限超過の警告** が入りました。[`collectLightCapWarnings()`](../../src/core/light/lightcontainer.hpp#L27) が `MAX_DIRECTIONAL_LIGHTS` / `MAX_POINT_LIGHTS` / `MAX_SPOT_LIGHTS` を超えた分について次を出します([`lightcontainer.cpp` 内](../../src/core/light/lightcontainer.cpp#L56))。
+
+```text
+Light cap exceeded: <type> light #<ordinal> '<name>' will not be rendered (cap <N>)
+```
+
+`<name>` が空なら `<unnamed>` です。「ライトを足したのに 1 個だけ描かれない」ときはこの WARNING を先に探してください。テストは [`test/lightpolicy_test.cpp`](../../test/lightpolicy_test.cpp) です。
+
+#### camera の二重経路
+
+- `Camera::loadSceneCameras()` が scene document を再走査し、projection、controller、名前付き camera を module 内に構築。[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L395)
+- 同じ object の `camera` marker と `transform` は ECS にも入り、forced [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L7) が最初の camera transform を module camera へ反映。
+
+名前付き camera/controller と「最初の ECS camera」の責務が重なるため、camera 変更では両方を追う必要があります。`CameraSystem::process()` は現在 [`count == 0` で早期 return](../../src/core/ecs/predefined/camerasystem.cpp#L14) するようになりましたが、「先頭1件のみ使用」は変わっていません。複数 camera entity を扱う修正ではここを重点的にテストしてください。
+
+### 画面は長く world の鏡像だった(CC-1、`c8367b87`) {#coordinate-mirror-gotchas}
+
+2026-10-02 に v1 の `canvas.place` で板の文字が左右反転して出たのをきっかけに、glTF だけの project でも同じことを確かめ、**engine の 3D の画面が world の鏡像だった**と分かりました。CC-1 で直しましたが、多くの code と golden がこの状態を前提に積まれていたので、経緯を残します([design_coordinate_convention.md](../design_coordinate_convention.md) §1)。
+
+- **何が重なっていたか**: view は右手系の `glm::lookAt`、射影は y を反転しない `glm::perspectiveRH_ZO` / `orthoRH_ZO`、viewport の height は正(NDC の +y が画面の下)。右手系の world を y 下の画面にそのまま写すので、画面は必ず鏡像になります。そのうえ camera は回転の +Z を前方にし、up は回転からではなく project の `basic_config.camera.up`(既定 −Y)から取っていました。
+- **なぜ長く気付かれなかったか**:
+  1. 鏡に写すと三角形の画面上の巻き方も逆になります。material / velocity / shadow depth の pipeline は面の表を `vk::FrontFace::eClockwise` に固定していたので、glTF の表(反時計回り)が正しく表として扱われ、物体は欠けませんでした。辻褄が合っていたので、時計回りの固定は「そういうもの」として読まれていました。
+  2. 既定の up が −Y だったので、既定の project は上下が正しく見え、残るのは左右の反転だけでした。左右対称に近い scene では見分けがつきません。
+  3. golden は自分の前の出力と比べるので、規約の誤りは検出できません。golden の harness の project は `up` を +Y にしていて(CC-1 で外した)、CC-1 の作り直しの比較では 8 件が旧 golden の上下反転と完全に一致しました。つまり上下逆さまの絵が正として固定されていました。XR と planar の SSAO の旧 byte golden には物体が写っていませんでした(面の表が cull されていた。commit の記録)。
+  4. 画面との境目のあちこちに打ち消しの反転が置かれていました: preview の CPU ラスタの `1 - (ndc.y * 0.5 + 0.5)`、`pt.rgen` の `ndc.y = -ndc.y`、sprite の quad の y、vrm_xr_demo の主役の Z 軸まわりの 180°、example の `playercontrol.cpp` の左右。どれも単独では「その場の直し」に見えます。
+- **何を見れば鏡像と分かるか**: 左右も上下も非対称なもの(文字の「F」)を正面から写す。world の +X に置いた印が画面の右に、+Y の印が上に出るか。camera をロールさせて絵が回るか(回らなければ up が回転から取られていない)。数式では、画面の右・画面の上・視点へ向かう向きが world で右手系か([`viewIsMirrored()`](../../src/core/renderer/clipspace.hpp#L110) が行列の符号でこれを判定する)。code では、射影の外で y を `1 - y` や `-y` で反転している所と、面の表を view と無関係に時計回りに固定している所が手がかりです。
+- **今の守り**: `coordinate_mirror_headless`(GPU。「F」の板と +X 赤・+Y 緑の印を `front` / `side` / `roll` の 3 通りの camera で写し、四象限の色と F の向きを見る。[検査の本体](../../test/coordinate_mirror_check.cpp#L1))と、`camera_test` の CC-1 の case(回転なしの camera が −Z を向き鏡像でない、画面の右半分の ray が camera の +X を向く、cube の面は鏡像で flat の camera は鏡像でない)。規約は 1 か所([`clipspace.hpp`](../../src/core/renderer/clipspace.hpp#L35))にあり、cube の面だけが意図して鏡像です(Vulkan の cube の面の規約。mesh の pipeline の面の表は `viewIsMirrored()` が view ごとに選ぶ)。
+
 ## 4.15 ユーザー独自Componentの現在地
 
 `DECLARE_COMPONENT`と型付きregistererは実装されていますが、通常のゲームコード向けに安定した自動Component登録マクロはまだ公開されていません（`PELICAN_REGISTER_COMPONENT`はリポジトリ全体に不在）。**game DLL からの登録そのものは通ります** — `details/component/registerer.hpp` を直接includeして静的初期化から [`registerComponent<T>(name)`](../../src/core/userpublic/details/component/registerer.hpp#L185) を呼ぶ形で、実物は [`fixtures/ray_namespace_component/component.cpp`](../../test/fixtures/ray_namespace_component/component.cpp#L12)（WP379 の production 受け入れで実 DLL として動きます）と [`fixtures/wp382a_schema/v3_fixture.cpp`](../../test/fixtures/wp382a_schema/v3_fixture.cpp#L150)、[`fixtures/wp380b_effect/behavior.cpp`](../../test/fixtures/wp380b_effect/behavior.cpp#L69) です。engine 側の登録箇所は組み込み [`predefined.cpp`](../../src/core/ecs/predefined.cpp#L22)、benchmark、lifecycle testです。
@@ -652,7 +732,7 @@ void unregisterComponents(RegistrationOwner owner) noexcept;
 std::size_t componentRegistrationCount(RegistrationOwner owner) noexcept;
 ```
 
-この3つはWP379aでgame DLL公開面から外れ、host専用の [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) にあります（同じくowner確保の [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) はhost専用の [`registrationownerhost.hpp`](../../src/core/registrationownerhost.hpp#L11)）。game DLLからは宣言が見えずbuildが通りません。それを保つのが `wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator` の2本で、実SHARED DLLをbuildして期待した診断（`registerEngineComponent` / `allocateRegistrationOwner`）で落ちることを確認します（[test/CMakeLists.txt](../../test/CMakeLists.txt#L2729)）。
+この3つはWP379aでgame DLL公開面から外れ、host専用の [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) にあります（同じくowner確保の [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) はhost専用の [`registrationownerhost.hpp`](../../src/core/registrationownerhost.hpp#L11)）。game DLLからは宣言が見えずbuildが通りません。それを保つのが `wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator` の2本で、実SHARED DLLをbuildして期待した診断（`registerEngineComponent` / `allocateRegistrationOwner`）で落ちることを確認します（[test/CMakeLists.txt](../../test/CMakeLists.txt#L2756)）。
 
 これに伴い [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L185) の戻り値が `void` → `RegistrationToken` になりました。host 側の入口は [`EngineComponentRegisterer::registerComponent<T>()`](../../src/core/ecs/enginecomponentregistrar.hpp#L18) で、`__registerEngineComponent()` を呼ぶのはこの1箇所だけです。header 冒頭のコメントが規範を明記しています — 「この型とこのヘッダの全関数は host 専用。公開 registrar は game-DLL のコードから owner 値を受け取らない」。
 
@@ -693,6 +773,24 @@ cannot unregister component '<name>': dependent ECS system '<sys>' remains
 - init/deinit/JSON契約
 - 配布ヘッダの範囲
 - 登録完了前のentity生成を防ぐ初期化順（`registerComponent<T>()` が走る前に、その型を含む `createEntities()` が走らないことを保証する仕組み。現在は静的初期化と scene load の並びで決まっており、**順序を強制する専用の機構は見つかっていません（未確認）**。未登録IDのまま生成しようとすると §4.5 の手順4 が例外にするので、静かに壊れるのではなく落ちます）
+
+### Component 登録の host 専用入口と公開 hook の制限 {#component-host-registration}
+
+登録解除 API も入りました。[`unregisterComponent(token)`](../../src/core/ecs/enginecomponentregistrar.hpp#L31) / [`unregisterComponents(owner)`](../../src/core/ecs/enginecomponentregistrar.hpp#L32) / `componentRegistrationCount(owner)` です。ただし [`ComponentInfoManager::unregisterComponent()`](../../src/core/ecs/componentinfo.cpp#L86) は **依存 System が残っていると拒否** します。
+
+```text
+cannot unregister component '<name>': dependent ECS system '<sys>' remains
+```
+
+この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2756))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
+
+#### custom Component の現状
+
+型 ID 宣言 macro は公開 header にありますが、runtime 登録入口は [`internal::getComponentRegisterer()`](../../src/core/userpublic/details/component/registerer.hpp#L216) です。production で自動登録されるのは [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) の built-in 群です。
+
+game code 向けの安定した `PELICAN_REGISTER_COMPONENT` public macro/boot hook は **現在も存在しません**(リポジトリ全体を grep しても不在)。`DECLARE_COMPONENT` しただけでは `ComponentInfoManager` に metadata が入らず、create/scene load できません。テストは internal API を直接呼んで登録しています。[`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L192) が例です。
+
+なお `registerComponent<T>()` の戻り値は `void` から [`RegistrationToken`](../../src/core/userpublic/details/component/registerer.hpp#L185) へ変わりました。
 
 ## 4.16 ECSを変更するときの不変条件
 
@@ -804,6 +902,14 @@ archetypeを変えない「値の差し替え」にも同じ形が入りまし�
 [`isolationSnapshot()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L192) が [`IsolationSnapshot`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L162) として `global_tick` / `free_indices` / entity slot / chunkのmask+versionを露出します。transactionの前後でこれを比較すれば、「rollbackが本当に元へ戻したか」を外から検証できます。
 
 テストは [`test/ecs_migration_test.cpp`](../../test/ecs_migration_test.cpp)、[`test/ecs_scheduler_test.cpp`](../../test/ecs_scheduler_test.cpp)、[`test/registration_lifetime_test.cpp`](../../test/registration_lifetime_test.cpp) です。
+
+### [`State::publish()` の backfill](../../src/core/ecs/archetypemigration.cpp#L98) — swap-erase が id_table の参照をどう保つか {#reading-note-009}
+
+[第4章「移行の反映時に行う要素移動と参照の更新」](04_ecs_deep_dive.md)が本体です。1 点だけ補うと、`backfilled_entity != entity` のときだけ最終行の `ref` を書き戻すのは、**対象 entity 自身が最終行だったときの二重書き込みを避ける**ためで、この条件を落とすと参照が 1 つ前の位置に固定されます。
+
+### [`populate` → `cb_init` の順序](../../src/core/ecs/archetypemigration.cpp#L562) — publish 前に init する理由 {#reading-note-010}
+
+`populate` は呼び出し側の authored / ユーザー値を staging へ書くコールバック、`cb_init` は登録型の初期化フックで必ず populate の後に走り、走ったことが記録されます(discard / rollback が `cb_deinit` を対称に呼べるように)。記録先は経路で違い、component 1 個を足す migration は bool の `added_initialized`、複数 component を作る entity 生成は `initialized_indices` の配列です。公開前に済ませるのは **prepare が唯一失敗してよい局面**だからで、[ヘッダの "Publication must not fail"](../../src/core/ecs/archetypemigration.hpp#L44) の契約上、公開時点でコンポーネントは完全構築・初期化済みでなければなりません。[`prepareCreate()` の populate → cb_init](../../src/core/ecs/archetypemigration.cpp#L1047)も同じ形です。
 
 ## 4.18 scene load transaction から見た entity token
 
