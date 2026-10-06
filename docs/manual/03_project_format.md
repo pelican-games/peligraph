@@ -184,7 +184,7 @@ Studio は engine を `--rpc` で起こし、`--rpc` の engine は宣言が無�
 - `--replay` / `--strict-assets` / headless では、宣言があっても監視しません([gate の 1 か所](../../src/core/watch/reloadgate.cpp#L37))。
 - **配布 build(`PELICAN_WITH_HOT_RELOAD=OFF`。`pelican_cli dist-config` が常に出す)では、宣言は読みます(下の拒否は同じ)が効きません**。監視そのものが無く、宣言があれば起動時に INFO を 1 行 `project.json hot_reload is ignored: this binary was built with PELICAN_WITH_HOT_RELOAD=OFF` 出して、そのまま開きます(✅AV-1。[第10章](10_tools.md) §10.5)。
 - `--rpc` の下で宣言した場所から反映されるのは、texture・material の値の文書・model・shader とその依存です。**render 文書(rendering config / preset / feature)は watcher からは反映されません**。`--rpc` の engine では render 文書は `reload_render_documents`(Studio が送ります。[第13章](13_editor.md))が持つためです([除外する所](../../src/core/watch/reloadservice.cpp#L979))。
-- **宣言は起動時に読みます**([`ReloadService::setup()`](../../src/core/watch/reloadservice.cpp#L941))。project.json を手で書き換えたときは engine を起こし直してください。✅PJ-1(`89643cd7`)から、**動いている engine には RPC `edit_project_settings` で宣言を差し替えられます**。engine が project.json に書き、その場で watcher を作り直します(§3.4 の「起動中の engine に宣言を足す」)。✅HW-2s(`78737fdf`)から、Studio では **Assets のドック**(View > Assets)の行ごとの **Reload when saved outside** がこれを呼びます([第13章](13_editor.md) §13.1 の「Studio の Assets のドック」)。
+- **宣言は起動時に読みます**。project.json を手で書き換えたときは engine を起こし直してください。起動中は `edit_project_settings` で宣言を差し替え、watcher を作り直せます。Studio の Assets の **Reload when saved outside** がこの入口です([第13章](13_editor.md#projectjson-の宣言を書き換えるpj-1))。
 
 拒否は 1 つの code `project.hot_reload_invalid@1` で、文言が種類を言います。検査は封筒の parser(`parseProjectEnvelopeJson()`)の中の 1 か所なので、player の起動・engine の `basicconfig.cpp`・`pelican_cli dist-config`・Studio の project の読み込み([project.cpp](../../src/devstudio/model/project.cpp#L145))など、この parser を通る読み手はどれも同じ文言で断ります。
 
@@ -229,7 +229,7 @@ Studio は engine を `--rpc` で起こし、`--rpc` の engine は宣言が無�
 
 `camera` は glTF のカメラ定義と同形です。`type` は `"perspective"`(既定)か `"orthographic"` のみ。perspective は `yfov`(**ラジアン**)/`znear`/`zfar` 必須・`aspect` 任意、orthographic は `xmag`/`ymag`/`znear`/`zfar` 必須です。
 
-**`camera.up` は撤去されました(✅CC-1、`c8367b87`)。** camera の向きは glTF と同じ規約になり、回転なしの camera は −Z を向き、up は transform の回転の +Y です(world の上は常に +Y。[第6章 §6.1](06_rendering.md) の「座標の規約」)。`up` を書いた project.json は、どの値でも(配列でなくても)次の名前で開けません。検査は envelope の `schema` / `version` の検査の直後です([project.json で断る所](../../src/project/projectformat.cpp#L250)。project.json 以外の経路で渡った config も [`rejectRemovedCameraUp()`](../../src/core/loader/basicconfig.cpp#L247) が同じ名前で断ります):
+**`camera.up` は受け付けません。** camera の向きは glTF と同じ規約になり、回転なしの camera は −Z を向き、up は transform の回転の +Y です(world の上は常に +Y。[第6章 §6.1](06_rendering.md) の「座標の規約」)。`up` を書いた project.json は、どの値でも(配列でなくても)次の名前で開けません。検査は envelope の `schema` / `version` の検査の直後です([project.json で断る所](../../src/project/projectformat.cpp#L250)。project.json 以外の経路で渡った config も [`rejectRemovedCameraUp()`](../../src/core/loader/basicconfig.cpp#L247) が同じ名前で断ります):
 
 ```
 project.camera_up_removed@1: project.json basic_config.camera.up was removed: the camera convention changed (a camera looks along -Z of its rotation, its up is the rotation's +Y and the world's up is +Y). Convert the project with `uv run tools/convert_camera_convention.py <project dir>`, which removes the key and turns its cameras to look the way they did
@@ -258,11 +258,7 @@ CC-1 より前の project.json は `up` が必須だったので、古い projec
 
 ## 3.3 パス参照と PathResolver
 
-すべてのコンテンツ参照(JSON 内・CLI のコンテンツ引数)は同じ解決規則を通ります。ここでいう **resolver(解決器)** は、JSON に書かれた参照文字列 1 本(`assets/models/sponza.glb` など)を実ファイルの絶対パス 1 本に変換する部品のことです。規則の正本は `pelican_project` の [ProjectPathResolver](../../src/project/projectpathresolver.hpp)(実装: [projectpathresolver.cpp](../../src/project/projectpathresolver.cpp))です。engine の **PathResolver** モジュール([pathresolver.cpp](../../src/core/loader/pathresolver.cpp))はこれへ委譲し、module寿命、quillログ、`engine://`埋め込みresource loaderだけを接続します。
-
-この分離によりdevstudioや外部ツールは`pelican_core`をリンクせず、engineと同じproject root、asset store、escape防止、fragment規則を使えます。絶対CLI pathを許可したwarningも純粋層の戻り値であり、純粋層自身はログを出しません。
-
-`ProjectPathResolver::setup()` はraw JSONではなく解析済み`ProjectEnvelope`を受けます。`name`と`asset_stores`の既定解釈をpath層で繰り返さないためです。
+すべてのコンテンツ参照(JSON 内・CLI のコンテンツ引数)は同じ解決規則を通ります。**PathResolver はファイル・埋込み資源・コンテナ内要素への参照を解決する部品**です。戻り値の variant と engine adapter の構造は[読解ガイド §3.3](../source-code-guide/03_project_and_loading.md#33-pathresolver)、実装は[ProjectPathResolver](../../src/project/projectpathresolver.hpp)を参照してください。
 
 ### 参照の分類
 
@@ -356,8 +352,8 @@ manifest 本体(`pelican.assets` v1)は `pelican_cli assets manifest` が生成�
 - `files[]` は store 相対パスの**一意ソート必須**(生成は冪等 — 2 回実行で byte 一致)。差分ハッシュのキャッシュは `.pelican/assets-hash-cache.json`(git 非追跡)。
 - CLI: `pelican_cli assets manifest / verify / status --project <dir>`([第10章](10_tools.md))。
 - **起動時検証**: manifest 宣言のある store は player 起動時に照合されます。深刻度は「内容の変化 = INFO、欠落・参照不能・大文字小文字違い = WARNING」で、**ロードは止めません**。`--strict-assets` 指定時のみ全 issue が ERROR に昇格して起動中止になります。
-  - ✅AV-1(`5f7c5cdb`)から、照合の結果は store ごとに engine に残り、RPC で読めます(`get_status.assets_verification` の件数、`get_assets_verification` の全件、走らせ直す `verify_assets`、manifest を書き直す `update_assets_manifest`。形は [第10章](10_tools.md) §10.3 の「起動時の asset 検証の結果」)。**配布 build(`PELICAN_WITH_HOT_RELOAD=OFF`)は起動時に照合しません**。`--strict-assets` を付けたときだけ照合し、食い違えば止まります(2026-10-02 利用者決定)。照合しなかったときの `get_status.assets_verification` は `{"state":"not_run","reason":"PELICAN_WITH_HOT_RELOAD=OFF"}` です。
-  - ✅AH-1(`0f93b5b8`)から、hash は file を 1 MiB ずつ読んで計算し、Windows では BCrypt の SHA-256 を使います([`assetFileSha256()`](../../src/project/assetsmanifest.cpp#L162)。計算そのものは ✅FW-1 から hot reload の file watcher と共有する [`Sha256Stream`](../../src/project/sha256stream.hpp#L15) にあります)。digest は前と同じなので、今の manifest と hash cache はそのまま使えます。commit の記述では、hash cache の無い状態の Debug の `projects/example`(約 70 MB)で、検証が 23〜31 s から 0.5〜0.75 s になりました。それまでは Studio が engine の窓を見つけるまでの待ち(15 s)より長く、cache の無い worktree で Studio の test「running example fatal text」を走らせると、致命の行が出る前に engine が kill されていました。→ この test は ✅MV-1(`f84a7d14`)で 2 本に分かれ、`projects/example` を起動するのは「The example with Alicia starts on its placeholder …」の方です。fatal の行を見る WP298 の case は小さな fixture(`test/fixtures/studio_automation_graph` の写し)から起動します。
+  - 照合の結果は store ごとに engine に残り、RPC で読めます(`get_status.assets_verification` の件数、`get_assets_verification` の全件、走らせ直す `verify_assets`、manifest を書き直す `update_assets_manifest`。形は [第10章](10_tools.md) §10.3 の「起動時の asset 検証の結果」)。**配布 build(`PELICAN_WITH_HOT_RELOAD=OFF`)は起動時に照合しません**。`--strict-assets` を付けたときだけ照合し、食い違えば止まります。照合しなかったときの `get_status.assets_verification` は `{"state":"not_run","reason":"PELICAN_WITH_HOT_RELOAD=OFF"}` です。
+  - manifest の照合にはファイル内容の SHA-256 を使います。hash cache の有無で照合規則は変わりません。内部の計算は [`assetFileSha256()`](../../src/project/assetsmanifest.cpp#L162) と [`Sha256Stream`](../../src/project/sha256stream.hpp#L15) を参照してください。
   - hash を始める前に、hash の要る file があれば `assets manifest [<store>] verifying <N> assets (<X> MB), <M> cached` を 1 行出します(N は hash する数、M は cache が当たった数。全部 cache が当たったときは出しません。[出す所](../../src/core/loader/assetsverification.cpp#L54))。
 
 > **設計決定(検証はロードを止めない):** アセットの正当性検査は開発の補助であり、既定では警告に留める。厳格化は明示フラグ(開発 CI・配布検証)でのみ行う。
@@ -366,9 +362,9 @@ example の README にあった手書き sha256 表の役目は、この manifes
 
 ### 起動中の engine に宣言を足す(✅PJ-1)
 
-✅PJ-1(`89643cd7`)から、動いている engine に RPC で `asset_stores` と `hot_reload` を書かせ、engine を起こし直さずに反映できます。読むのは `get_project_settings {}`、書くのは `edit_project_settings {base_project_digest, hot_reload?, asset_stores?}` です。返り値と拒否の形は [第13章](13_editor.md#projectjson-の宣言を書き換えるpj-1) §13.5 の「project.json の宣言を書き換える」にあります([PJ-1 の書き込みと反映の handler](../../src/core/communication/projectsettingsrpc.cpp#L93))。
+動いている engine に RPC で `asset_stores` と `hot_reload` を書かせ、engine を起こし直さずに反映できます。読むのは `get_project_settings {}`、書くのは `edit_project_settings {base_project_digest, hot_reload?, asset_stores?}` です。返り値と拒否の形は [第13章](13_editor.md#projectjson-の宣言を書き換えるpj-1) §13.5 の「project.json の宣言を書き換える」にあります([PJ-1 の書き込みと反映の handler](../../src/core/communication/projectsettingsrpc.cpp#L93))。
 
-背景: `pelican_cli project init` の Blank / Standard の雛形は `assets/` を作るだけで、`asset_stores` も `hot_reload` も宣言しません。そのため hot reload の宣言(HW-1)と素材の照合(AV-1)は、project.json を手で書いて engine を起こし直さないと効きませんでした。2026-10-03 に利用者が「Studio のボタンで宣言を足す」形を承認し(HW-2 / AV-1s)、PJ-1 はその engine 側です。Studio の側は ✅HW-2s / AV-1s(`78737fdf`)の **Assets のドック**で、行ごとの Reload when saved outside が `hot_reload` を、**Track asset contents…** が `asset_stores.main = {mount: "assets/", manifest: "assets.manifest.json"}`(store が既にあれば manifest の無い store に manifest だけ)を、それぞれ 1 回の `edit_project_settings` で書き、ドックの Undo が答えの `previous` を送り返します([第13章](13_editor.md) §13.1 の「Studio の Assets のドック」)。
+Blank / Standard の雛形は `asset_stores` と `hot_reload` を宣言しません。Studio の Assets で **Reload when saved outside** と **Track asset contents…** を使うと必要な宣言を書けます。操作と Undo は[第15章の Assets](15_studio.md#155-assets)を参照してください。
 
 <a id="project-settings-cas"></a>
 
@@ -433,7 +429,7 @@ example の README にあった手書き sha256 表の役目は、この manifes
 `ProjectBasicConfig`([basicconfig.hpp](../../src/core/loader/basicconfig.hpp))が唯一の保持者です。
 
 - **起動時**: PathResolver で読んだシーン JSON の bytes をそのまま `AuthoringSceneDocument` にし、同時にその**ディスク baseline digest** を記録します。
-- `SceneRevision` は**ドキュメント全体に 1 つ**の版番号で、編集がコミットされるたびに単調増加します(オブジェクト単位ではありません)。`AuthoringObjectId` はセッション内で安定した object 識別子で、無名オブジェクト・ライトのみ・コライダのみのオブジェクトにも付きます(ランタイムの `EntityId` は nullable な投影であり、同一性の代用にはしません)。
+- シーン編集の識別子と版は[第13章の AuthoringSceneDocument](13_editor.md#132-編集の正本--authoringscenedocumentwp149)と[SceneRevision](13_editor.md#134-同時編集--actor-と-revision)を参照してください。
 - API は `sceneDocument()` / `updateSceneDocument()` / `importSceneDocument(bytes, reload)` / `saveSceneDocument()` の 4 本です。
 
 ### 保存 — 全文書のアトミック置換
@@ -472,17 +468,7 @@ example の README にあった手書き sha256 表の役目は、この manifes
 
 シーン JSON はファイル監視の対象外です([第10章](10_tools.md) §10.5)。書き戻しの経路は保存 API(rpc の `save_scene`)だけで、これは rpc の `get_status` にも `scene_source: {"hot_reload": false, "save_method": "save_scene"}` として現れます。
 
-### transform を 1 つ変える編集は、受付の検査を実行時に使い回す(`8bde3c2f`)
-
-利用者の codex が書いた変更です(handoff 01)。編集(`edit`)の ticket は、受付の時に操作を使い捨ての文書へ当ててみて検査し、フレーム境界で実行するときにもう一度同じ検査をしていました。次の条件をすべて満たす編集では、受付で作った検査済みの結果を実行時にそのまま使います([受付で検査結果を残す所](../../src/core/communication/editorjournal.cpp#L4513)、[実行時に使い回す所](../../src/core/communication/editorjournal.cpp#L4188))。
-
-- 操作が 1 つで、`set_component_value` の `component_slot: "transform"`、宛先を `object_id` で指す(`address` ではない)
-- シーン文書が prefab を使っていない
-- 受付の前後と実行時で、authoring の文書と resolved scene の組が同じもの
-
-組が同じかは revision や resolver の世代の番号ではなく、組を作るたびに新しく作る識別子([`snapshot_identity_`](../../src/core/loader/resolvedscene.hpp#L331))で見ます。番号が同じ別の組に置き換わっていれば、今までどおり検査し直します。受付の検査は全部残り、実行時の gate・scene・revision・CAS・preview lease の検査と、実際の投影の commit も残ります(コードの注記)。構造の変更・behavior・prefab・複数の操作の編集は今までの道です。
-
-codex の報告と commit の説明では、10,000 object のシーンで transform の編集 1 回(受付 + `step_frame` での適用 + 結果の取得)が 1,102 ms → 751 ms です(Release、前後 3 組の中央値)。改善後も数百 ms かかり、対象を絞った作り直しは今後の課題と報告にあります。test: `editorjournal_test` の [「Transform preflight reuse preserves commit journal undo and redo」](../../test/editorjournal_test.cpp#L2454) ほか `Transform preflight` で始まる 5 本(失敗の扱い、番号が同じ別の組、古くなった待ちの編集、受付の後に取られた preview lease)。
+transform 編集の検査結果を再利用する内部経路は[読解ガイド](../source-code-guide/03_project_and_loading.md#transform-preflight-reuse)を参照してください。
 
 編集操作・リビジョンの排他制御・プレビュー・rpc メソッドの詳細は [第10章](10_tools.md) と [第13章](13_editor.md) を参照してください。
 
@@ -820,7 +806,7 @@ RPC [`import_render_feature{base_source_digest, source_dir, destination_referenc
      project.migration_transaction_busy@1: {"path":"<project>/.pelican/render-authoring.transaction","message":"… Close every engine and Studio that has the project open and apply again; opening the project resolves a directory that was left behind"}
      ```
 
-     ディレクトリには持ち主が書かれていないので、「同じ project を開いている engine や Studio が今 commit している」のと「落ちたプロセスの残骸」は区別できず、どちらも同じ名前で止まります。**その project を開いている engine と Studio をすべて閉じてから apply し直してください。** 残骸なら、project を一度開けば(開く入口の復旧で)片付きます。MG-2a の旧形式のディレクトリ(§3.1)も、apply は中を読まないので同じ名前で止まります。MG-1 の apply は最初に transaction の復旧を走らせていたので、commit 途中の別プロセスの編集を巻き戻しうりましたが、MG-1b(`09f9151d`)で復旧をやめてこの排他に替えました。書くものが無い apply は、作ったディレクトリを消して終わります。
+     ディレクトリには持ち主が書かれていないので、「同じ project を開いている engine や Studio が今 commit している」のと「落ちたプロセスの残骸」は区別できず、どちらも同じ名前で止まります。**その project を開いている engine と Studio をすべて閉じてから apply し直してください。** 残骸なら、project を一度開けば(開く入口の復旧で)片付きます。MG-2a の旧形式のディレクトリ(§3.1)も、apply は中を読まないので同じ名前で止まります。書くものが無い apply は、作ったディレクトリを消して終わります。
    - **CAS**: 呼び手が plan で受け取った `expected`(書き換える全文書 + project.json の `{path: sha256}`)を渡すと、今の plan の組と完全に一致しなければ何も書かずに `project.migration_plan_stale@1 {expected, actual}` で止まります(RPC は必ず渡します。CLI は plan と apply を 1 回で行うので渡しません)。
    - **退避**: 書き換える文書(project.json を含む)の今の bytes を `.pelican/migration/<UTC 時刻 YYYYMMDDTHHMMSSZ>/` の下に同じ相対パスで複製し、plan の記録を `migration.json`(`schema: "pelican.project_migration_backup"`, `version: 1`)として置きます。同じ名前が既にあれば `-2`, `-3` … を付け、上書きはしません。
    - **置換**: 対象の文書と project.json(`saved_by_engine` の更新)を**1 つの transaction** で置き換えます。transaction は §3.1 の rendering config の編集と同じもの(同じディレクトリ・同じ形式)で、途中で失敗すれば全文書が元の bytes に戻り、退避先も消えて `project.migration_apply_failed@1 {message}` になります。退避の書き込みに失敗したときも同じ名前です。手順で書き換えた文書は 2 space の字下げで書き直されます(改行コードは元の文書に合わせます)。
@@ -836,16 +822,19 @@ production の登録表([`makeBuiltinDocumentMigrationRegistry()`](../../src/pro
 
 **回帰素材**: v0 の出荷 project 7 本の JSON・shader・code(計 105 ファイル。gitignored な大容量資産は含めない)を `test/fixtures/project_corpus/v0/` に固定しています。後の版の手順はこの corpus を移して開けることを test で保ちます。
 
-### 残した穴(MG-1 の時点)
+### 移行の制限
 
-- Studio の offline open と移行の画面は、MG-1 の GUI 側(`52547bee`)で入りました。旧版の project を Studio で開くと、plan を見せてから apply します([第 13 章「Studio で旧版の project を開く」](13_editor.md#studio-で旧版の-project-を開くmg-1))。
-- `pelican_cli` のほかのサブコマンド(project の文書を直接読み書きするもの)には入口がありません。
-- 退避先 `.pelican/migration/<時刻>/` を消す手段はありません(手で消します)。
-- 検出が歩くのは project root の下だけで、**root の外に mount した asset store の中の文書は見ません**。
-- ~~apply が最初に transaction の復旧を走らせ、別のプロセスの commit 途中の編集を巻き戻しうる~~ → **解消(MG-1b、`09f9151d`)**。apply は復旧せず、transaction のディレクトリを取れなければ `project.migration_transaction_busy@1` で止まります(上の 4.)。
-- 開く入口の復旧は、排他を取らずにディレクトリを消します(MG-1 より前からの性質で、MG-1b でも変えていません)。
+- Studio は旧版 project を開くと移行 plan を表示し、その後 apply します([第15章](15_studio.md#151-project-を作る開く保存する))。
+- `pelican_cli` の他のサブコマンドには自動移行の入口がありません。
+- 退避先 `.pelican/migration/<時刻>/` は手動で削除します。
+- 検出範囲は project root の下だけで、root 外に mount した asset store の文書は見ません。
+- apply は transaction を復旧せず、directory を確保できなければ `project.migration_transaction_busy@1` で止まります。
+- 開く入口の復旧は排他を取らず directory を片付けます。
 
-### camera の向きの規約の変換(✅CC-1、`c8367b87`)
+
+<a id="camera-の向きの規約の変換cc-1c8367b87"></a>
+
+### camera の向きの規約の変換
 
 CC-1 で camera の向きの規約が変わりました(回転なしの camera は +Z ではなく −Z を向き、up は `basic_config.camera.up` ではなく回転の +Y。[第6章 §6.1](06_rendering.md) の「座標の規約」)。文書の `version` は上げておらず、上の移行の枠の手順でもありません(v0 の前なので。[設計 §4](../design_coordinate_convention.md))。代わりに `up` を名前で断り(§3.2 の `project.camera_up_removed@1`)、変換は repo の script で行います:
 

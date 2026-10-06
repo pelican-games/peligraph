@@ -504,7 +504,7 @@ materialize 済み feature 1 本と宿主への要求をまとめ、別 project 
 | schema（スキーマ） | データに使えるキー、型、必須項目などの形式規則。 |
 | canonical（正規形） | 比較や処理を一貫させるために表現を統一した形。「正しい値」の同義語ではありません。 |
 | IR（Intermediate Representation、中間表現） | 入力の宣言を解析してから実行用データを作るまでの間に使う表現。 |
-| lowering | 宣言や中間表現を、実行方式に近い具体的な表現へ変換する処理。たとえば描画グラフから Vulkan 向けの計画を作ります。 |
+| lowering | 宣言・中間表現を実行方式に近い表現へ変換する処理で、[graph のデータ経路](../source-code-guide/03_project_and_loading.md#graph-dataflow)を参照してください。 |
 | backend（バックエンド） | 共通の仕様を、Vulkan などの具体的な実行方式で実現する部分。 |
 | dialect | 共通グラフ内で、ある処理分野が使う型・操作・規則のまとまり。 |
 | capability | 利用可能な機能を指す用法と、対象への操作権限を持つ token を指す用法があります（[ガイド第5章](../source-code-guide/05_gameplay_and_services.md)）。 |
@@ -514,11 +514,14 @@ materialize 済み feature 1 本と宿主への要求をまとめ、別 project 
 | identity | 対象が同じものかを判別する識別情報。単なる表示名とは限りません。 |
 | digest（ダイジェスト） | 内容の照合値で、文書の `source_digest` と要求の base の関係は[第13章](13_editor.md#digest-cas)を参照してください。 |
 | CAS（Compare And Swap） | 想定値と現在値が一致したときだけ更新する方式で、文書編集の規則は[第13章](13_editor.md#digest-cas)を参照してください（CPU の原子命令を指す用法もあります）。 |
-| epoch / generation / revision | 型ごとに対象が異なる世代・版の識別値で、描画の generation は[第6章](06_rendering.md#render-generation)を参照してください。 |
+| epoch / generation / revision | 対象ごとの世代・版の識別値で、[描画 generation](06_rendering.md#render-generation)と[SceneRevision](13_editor.md#134-同時編集--actor-と-revision)を参照してください。 |
 | 描画の世代 / publish / commit | 描画で同時に使う snapshot とその公開・確定で、定義は[第6章](06_rendering.md#render-generation)にあります。 |
 | preset | rendering config が選ぶ基本構成で、engine / project と fork の関係は[第6章](06_rendering.md#render-preset)を参照してください。 |
 | stale_source_digest / external_modification | commit 時の保持版・ディスクとの不一致を区別する code で、受付時との違いは[第13章](13_editor.md#digest-cas)を参照してください。 |
-| lease（リース） | 資源の利用権や寿命を保持する仕組み。GPU テストの排他実行と、GPU 送信完了までの資源保持では対象が異なります。 |
+| GPU lease | frame / submission が GPU 資源の寿命を保持する仕組みで、[描画世代の寿命](../source-code-guide/06_rendering_vulkan_shader.md#generation-lifetime)を参照してください。 |
+| preview lease | actor が live preview の編集範囲を保持する利用権で、[preview RPC 契約](13_editor.md#preview-rpc-contract)を参照してください。 |
+| `closure_generation` / `provider_generation` | prefab 解決の依存と provider の世代値で、[比較対象と取得元](13_editor.md#prefab-edit-comparison)を参照してください。 |
+| `prefab_closure` | SnapshotV2 が運ぶ依存内容の識別で、[wire 形式](13_editor.md#prefab-edit-comparison)を参照してください。 |
 | submission | GPU キューへコマンドを送ること、またはその送信単位。CPU 側での送信と GPU 側での完了は別です。 |
 | refit / rebuild | 加速構造の既存の構成を利用した更新と、作り直し。使い分けの条件は [加速構造の解説](../source-code-guide/11_ray_query_acceleration_structures.md) を参照してください。 |
 | gate / fixture / golden | 合否を判定する検証、検証用の固定データや環境、比較の基準にする結果。どの範囲を検証したかは個々のテストによります。 |

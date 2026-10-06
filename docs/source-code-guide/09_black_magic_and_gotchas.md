@@ -237,7 +237,7 @@ instances.publishModelInstance(std::move(staged_instance));
 
 ### 3. CAS は `SceneRevision` で行う。ただし revision だけでは足りない
 
-`edit` は `base_revision` を伴い(これが節題の CAS — compare-and-swap、「読んだときの値から変わっていなければ書き換える」条件付き更新のことです)、ズレていれば `EditorEditErrorCode::stale_revision` です。**watch トークンは [`EditorWatchToken{scene_revision, preview_epoch}`](../../src/core/communication/editorcommandservice.hpp#L222) の 2 要素** で、preview の open/commit も epoch を進めます。`get_scene_revision` の戻り値を丸ごと持ち回ってください。
+編集の比較条件は[第13章の SceneRevision](../manual/13_editor.md#134-同時編集--actor-と-revision)と[条件付き params](../manual/13_editor.md#セッションと編集)を参照してください。watch トークンは [`EditorWatchToken{scene_revision, preview_epoch}`](../../src/core/communication/editorcommandservice.hpp#L222) の2要素なので、preview の変化も監視するクライアントは両方を保持します。
 
 ### 4. preview は lease(ticket)
 

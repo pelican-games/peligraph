@@ -145,7 +145,7 @@ codec の表には 8 個目として `pelican_ray_instance` が並んでいま�
 | フィールド | 必須? | 既定 | 意味 |
 |---|---|---|---|
 | `model` | 必須 | — | 描く model の名前(上) |
-| `materials` | 任意 | なし | この object だけの material(✅MT-2、`44b7b50a`)。`List<Row>`(§4.4 の「schema が使える値の形」)で、行は `{material, mesh?, primitive?}` |
+| `materials` | 任意 | なし | この object だけの material。`List<Row>`(§4.4 の「schema が使える値の形」)で、行は `{material, mesh?, primitive?}` |
 | `params` | 任意 | — | authoring の往復保存用の object |
 
 **object ごとの material(✅MT-2)。**model の material(asset_data の `material_bindings`、無ければ glTF の material)はその model を使う全部の object の既定で、`materials` はこの object だけの上書きです。関係は Unity の Mesh の既定の material と MeshRenderer の materials と同じです(2026-10-03 の利用者の判断「object ごとの上書きはあったほうがいい」)。
@@ -164,7 +164,7 @@ codec の表には 8 個目として `pelican_ray_instance` が並んでいま�
   - `mesh` と `primitive` の片方だけの行。
   - 同じ対象(同じ primitive、または全 primitive)を覆う行が 2 つあるとき。
 - scene を読むときに名前が解けない行は断りません。警告をログに出し、その行が無いものとして描きます(全 primitive の行が解けていればそれ、無ければ model の既定。[名前が解けないときの警告](../../src/core/renderer/polygoninstancecontainer.cpp#L471))。`get_object_materials` ではその行が `resolved: false` です。
-- エディタからは `set_object_material` で書きます([第13章](13_editor.md) §13.5 の「material 文書を読み書きする」)。Studio では ✅MT-2s から Inspector の Material の行(範囲 This object)がこれを送ります(§13.1 の「Studio の Materials のドック」。Inspector は `materials` を汎用の list の欄にしません)。`get_component_add_candidates` の simplemodelview の `schema_fields` は `[model, materials]` の 2 つになりました。
+- エディタからは `set_object_material` で書きます([第13章](13_editor.md) §13.5 の「material 文書を読み書きする」)。Studio では Inspector の Material の行(範囲 This object)がこれを送ります(§13.1 の「Studio の Materials のドック」。Inspector は `materials` を汎用の list の欄にしません)。`get_component_add_candidates` の simplemodelview の `schema_fields` は `[model, materials]` の2つです。
 
 ### localtransform(✅)
 
@@ -202,7 +202,7 @@ CameraComponent 自体は**マーカー**です。マーカーコンポーネン
 
 - 旧キー `fov_y` / `near` / `far` は移行先を案内する hard error です(WP63)。
 - パラメータを何も書かなければ `basic_config.camera` の既定投影を使います(example の 1 個目のカメラがこの形)。
-- **シーン中で最初に現れた camera の投影がアクティブ**になります。位置・向きは同じオブジェクトの `transform` から取られます。**向きは glTF の camera と同じ**で、視線は rotation の −Z(R·(0,0,−1))、画面の上は rotation の +Y(R·(0,1,0))、画面の右は rotation の +X です(✅CC-1、`c8367b87`。[`cameraBasis()`](../../src/core/renderer/clipspace.hpp#L74))。回転なしの camera は −Z を向き、+X が画面の右、+Y が上です。rotation のロール(視線まわりの回転)は絵を回します。CC-1 より前は rotation の +Z が視線で、up は `basic_config.camera.up` から取っていました(撤去。直し方は [第3章 §3.13](03_project_format.md) の「camera の向きの規約の変換」)。
+- **シーン中で最初に現れた camera の投影がアクティブ**になります。位置・向きは同じオブジェクトの `transform` から取られます。**向きは glTF の camera と同じ**で、視線は rotation の −Z(R·(0,0,−1))、画面の上は rotation の +Y(R·(0,1,0))、画面の右は rotation の +X です([`cameraBasis()`](../../src/core/renderer/clipspace.hpp#L74))。回転なしの camera は −Z を向き、+X が画面の右、+Y が上です。rotation のロール(視線まわりの回転)は絵を回します。旧版からの変換は[第3章](03_project_format.md#camera-の向きの規約の変換cc-1c8367b87)を参照してください。
 - glTF の camera を `pelican_cli import gltf --extract-scene` で取り込むと、node の回転がそのまま `transform` に入り([TRS を書く所](../../src/devcli/gltfsceneextract.cpp#L159))、CC-1 からは変換なしで glTF と同じ向きになります(取り込みの経路で絵を比べる test は無く、未確認)。
 - `controller` の種類: `orbit`(`distance` 必須)/ `follow`(`target`・`offset` 必須)/ `fly`(`speed`・`sensitivity` 必須)。controller 付きカメラのオブジェクトは **name 必須**です。`type` は必須で、ほかの値は `value '<値>' is not supported` で拒まれます。
 
@@ -221,7 +221,7 @@ CameraComponent 自体は**マーカー**です。マーカーコンポーネン
 
 - 範囲は codec の検査です。schema の `range` はどれも `[0, 1e12]` で、0 を含むかどうかは載りません。
 - `yaw_degrees` / `pitch_degrees` も受けます(orbit で度として読み、ラジアンに直す)。`yaw` と `yaw_degrees` を両方書くと `UnknownField` の error(`duplicates its radian field`)で拒まれます。schema には別の field として載せていません(SC-1 の codec の注記。`yaw` / `pitch` の別名の扱い)。
-- `up` の鍵は ✅CC-1(`c8367b87`)で撤去しました。書くと閉じた object の未知の鍵として `UnknownField`(path `camera.controller.up`、`is unknown`)で拒まれます([鍵の一覧](../../src/core/loader/componentcodec.cpp#L885))。controller の world の上は常に +Y です。
+- `up` の鍵は受け付けません。書くと閉じた object の未知の鍵として `UnknownField`(path `camera.controller.up`、`is unknown`)で拒まれます([鍵の一覧](../../src/core/loader/componentcodec.cpp#L885))。controller の world の上は常に +Y です。
 - orbit の `yaw` / `pitch` は、target から camera へ向かう方向です。`yaw = pitch = 0` は +Z(camera は target の +Z 側から −Z を向いて target を見る)、`yaw` が増えると −X 側へ回り、`pitch` が増えると上(+Y)へ上がります([yaw / pitch の基底](../../src/core/userpublic/cameracontrollersystem.cpp#L104))。CC-1 より前の値は、変換の script が同じ方向を指す値に書き換えます([第3章 §3.13](03_project_format.md))。
 - fly の `move` の x は画面の右へ(`kbd:wasd` なら D が右)、y は視線の前へ動きます。`look` の x は視線を画面の右へ、y は画面の下へ向けます([fly の更新](../../src/core/userpublic/cameracontrollersystem.cpp#L332))。
 - `damping` は codec がどの `type` でも読みますが、動かすときに使うのは orbit と follow だけなので、`applies_to` は orbit / follow です(コードの注記。`cameracontrollersystem.cpp`)。
@@ -260,7 +260,7 @@ CameraComponent 自体は**マーカー**です。マーカーコンポーネン
 
 旧名 `size` / `height` は半分値の新名を案内する hard error です。オブジェクトに `transform` があれば移動に追従します。クエリ(raycast / overlap / shapeCast)は [第8章](08_gameplay.md) を参照してください。
 
-**クエリの間で collider の配列を共有します(`8bde3c2f`。利用者の codex の変更、handoff 04)。**クエリは、collider の定義と今の transform から検証済みの collider の配列を作って判定します。前はクエリのたびに全部を作り直していましたが、今は作った配列を次のクエリでも使います([`PhysWorld::colliderSnapshot()`](../../src/core/phys/physworld.cpp#L469))。毎回のクエリで各 collider の今の transform を読み、前に作ったときの値と bit で比べ、1 つでも違えば(entity が消えて transform が引けなくなった場合も)作り直します。collider の束縛を変える操作(シーンの公開・`clear`・collider の束縛)では捨てます。なので同じ frame の中で ECS の transform を直接書き換えても、次のクエリに出ます(コードの注記と test)。mesh の collider の扱いと、最も近い hit の選び方は変えていません。codex の報告と commit の説明では、512 collider に 200 本の ray で 50.7 ms → 26.4 ms(Release、前後 3 組の中央値)です。全部が当たるよう ray の上に球を並べた人工的な負荷で、collider が動かない条件の値です。collider が多く動く条件では測っていません。test: `physworld_test` の [「PhysWorld snapshot follows same-frame writes and binding cutovers」](../../test/physworld_test.cpp#L1150)。
+同じ frame 内で ECS の transform を直接変更しても、次の physics query に反映されます。collider 配列のキャッシュと失効条件は[読解ガイド](../source-code-guide/05_gameplay_and_services.md#collider-snapshot-cache)を参照してください。
 
 なお `PELICAN_WITH_PHYSICS=OFF` ビルドでは collider を含むシーンはロードの prepare 段で `physics.module_unavailable@1` になります(パージ可能境界。§4.3。✅PG-1)。
 
@@ -427,7 +427,7 @@ flowchart TD
 
 注: 旧 behavior の `onDestroy` は metadata 確定後の `behavior.finish()`（executor の commit 列内）で走ります。旧 entity・モデルインスタンス・一時モデルの破棄は retirement queue で遅延します。図の retire は即時の GPU 破棄ではありません。phase trace は内部検証用で RPC には出ません。participant ごとの順序は[読解ガイドのスイムレーン](../source-code-guide/03_project_and_loading.md#scene-load-lanes)、作用の staging・読み取り・拒否と commit 後の診断は以下の各注を参照してください。
 
-**モデルのインスタンスの枠(`8bde3c2f`。利用者の codex の変更、handoff 05)。**同時に置けるモデルのインスタンスは今までどおり 1,024 で、それを超えると `Model instance capacity exceeded` です。一方、内部の物理的な slot は 2,048 にしました([インスタンスの上限](../../src/core/renderer/polygoninstancecontainer.cpp#L31))。prepare で新しいシーンの候補を作る間も、公開中の旧シーンの slot は rollback のために残るので、旧と新の合計が 1,024 を超えると置き換えができなかったためです(codex の報告では、約 1,000 model のシーンの最初の再読込で起きていました)。
+同時に置ける model instance は1,024で、超えると `Model instance capacity exceeded` です。scene 切替中の候補と旧 scene の slot の保持は[読解ガイド](../source-code-guide/03_project_and_loading.md#scene-instance-slots)を参照してください。
 
 - 置き換えの準備の時に、前に retire した世代が回収されずに残っていれば(frame を挟まずに `load_scene` を続けた場合)、GPU の完了を待って(`waitIdle`)から回収します。公開中の世代は置き換えが commit するまで回収しません([連続した load で古い世代を回収する所](../../src/core/renderer/polygoninstancecontainer.cpp#L689))。
 - 代わりに払うもの: device の buffer が 18.2 MiB 増えます(うち skin palette の 2 本で 16 MiB。commit の説明の値)。連続した load では必要に応じて GPU を待ちます。frame ごとの新しい待ちは足していません(codex の報告)。
@@ -476,7 +476,7 @@ flush で音やディスク書き込みが失敗しても、**シーンは新し
 
 フレーム全体の順序は[第1章のフレーム順の図](01_overview.md#frame-order)を参照してください。
 
-**prepare / publish / commit** — 状態の更新を段階に分けるための名前です。**prepare** は確保・検証などの準備、**publish** は準備した状態の反映、**commit** は更新の確定を表します。ただし、具体的な段階と失敗時の扱いは機能ごとに異なります。シーンロードでは publish 後も activate などで失敗する可能性があり、commit 前なら反映済みの状態も巻き戻します。`noexcept` は例外を呼び出し元へ出さないという C++ の指定であり、それだけで一連の更新の原子性（全体を適用するか、全体を戻すか）を保証するものではありません。
+scene load の段と失敗時の保証は[シーンロードの所有節](#scene-load-transaction)を参照してください。
 
 ## 4.4 ランタイム ECS の要点(ゲーム開発者向け)
 
@@ -644,7 +644,7 @@ DECLARE_COMPONENT(MyComponent, 61);   // 0..63 の空き番号(エンジンは 0
 ## 4.6 既知の注意点
 
 - `CameraSystem` は現状、camera コンポーネントを持つ**先頭 1 entity のみ**を処理します。複数カメラを置いた場合の意味論は未規定です(アクティブ投影は「シーン中最初の camera」)。
-- 座標系は world が右手系・+Y 上、camera は回転なしで −Z を向きます(§4.2 の camera、[第6章 §6.1](06_rendering.md) の「座標の規約」)。以前の example は `basic_config.camera.up` を `[0,-1,0]` にしていましたが、この鍵は ✅CC-1(`c8367b87`)で撤去され、example も変換済みです。
+- 座標系は world が右手系・+Y 上、camera は回転なしで −Z を向きます(§4.2 の camera、[第6章 §6.1](06_rendering.md) の「座標の規約」)。旧設定の変換は[第3章の camera 移行](03_project_format.md#camera-の向きの規約の変換cc-1c8367b87)を参照してください。
 - スケルタルアニメーション(glTF スキン再生)は ✅WP38 で実装済みです(§4.2 の `animation` コンポーネント)。頂点キャッシュ系のアニメーションは従来どおり VAT([第5章](05_assets.md))が担当します。
 
 ## 関連文書

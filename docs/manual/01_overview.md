@@ -158,7 +158,7 @@ vkcore(Vulkan 低層)
 
 > **設計決定 5(決定性):** エンジン内部の判定に壁時計・`std::rand`・`random_device` を使わない。固定ループ順序・入力スナップショット・決定的システム実行順・フレーム境界のイベント配送・PCG32 乱数(既定シード 0 — シードから列が一意に決まる決定的な擬似乱数生成器。[deterministicrng.cpp](../../src/core/userpublic/deterministicrng.cpp))・固定ステップ時刻(ヘッドレス)により、**同じ入力からは常に同じ結果**が出る([第8章](08_gameplay.md) §8.10)。
 
-> **設計決定 6(二層モデル — アセット):** エンジンが読む形式は閉じた小集合(ランタイム層 = glb/VRM・PNG/JPG・EXR・WAV / Ogg Vorbis・JSON/JSONL・SPIR-V/GLSL)。FBX/PSD 等(ソース層)はエンジンに 1 バイトも入れず、**外部ツール**(`pelican_cli import` や import-tools)で変換し、`imports/` にファイルとして着地させる(隠れインポートキャッシュは作らない。一覧と手順は [第5章](05_assets.md) §5.1)。
+> **設計決定 6(二層モデル — アセット):** 制作元と実行時の依存を分離するため[二層モデル](05_assets.md#51-二層モデル--この章で最も重要な原則)を使います。
 
 > **設計決定 7(プロジェクト読み取り専有):** エンジン実行時、プロジェクトディレクトリには何も書かない。**例外は利用者が明示的に行う編集の保存だけ**で、書き込みはすべて名前の付いた操作から始まります。書き込み先は `user://` に分離(複数インスタンス並行起動の安全根拠)。パス解決は cwd を使わず、常にプロジェクトルート基準+脱出禁止([第3章](03_project_format.md))。※**「編集の保存」の範囲は v0 で広がりました**: シーンの保存と `features[]` の編集([第13章](13_editor.md))に加えて、`install_package`(`project://packages/<ns>/` への複製 + `project.json` の `packages` への記録 — [第3章 §3.11](03_project_format.md))、`uninstall_package`(その取り消し)、`import_render_feature`(`project://` に feature ファイルを 1 本新規作成 — [第3章 §3.12](03_project_format.md))、`materialize`(engine 参照の feature を project 側の派生として保存 — [第6章](06_rendering.md))が project に書きます。どれも利用者が明示的に呼んだときだけで、エンジンが自発的に書くものはありません。`export_render_feature` の書き先は project ではなく `user://components/` です。
 
@@ -179,7 +179,7 @@ vkcore(Vulkan 低層)
 このリポジトリは**マルチエージェント開発**で作られています([../agent_operations.md](../agent_operations.md)):
 
 - **ユーザー(enjoyoriori)** = 意思決定。**Claude** = 設計文書・WP(Work Package)指示書・レビュー・マージ。**codex** = 実装・監査・敵対レビュー。
-- 作業単位は WP。**1 WP = 1 ブランチ = 1 マージ**で、受け入れ基準 = マージ基準。番号は連番ではなく、`380a` `380a-fix` のような枝番が付きます。**2026-09-16〜17 の v0 の段は通し番号ではなく記号 ID**(`AG-0` / `AG-1a` / `AG-1b` / `P-1` / `P-2a-1a〜4b` / `AG-2` / `AG-3a` / `O-1` / `X-1` / `P-2b` / `R-1` / `R-2` / `R-3` / `R1-2` / `N-1` / `N-1b` / `N-2`)で登録されており、これも同じ「1 段 = 1 ブランチ = 1 マージ」です。**行単位の正は [../implementation_plan.md](../implementation_plan.md)**、v0 の段の SHA 一覧は [第11章 §11.1](11_status.md) の v0 表と [../v0_freeze.md](../v0_freeze.md) §5 にあります([第11章](11_status.md) の通し番号の表は WP238e + WP375c〜385 までの転記です)。今後の候補は [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md) と [../v1_development_plan.md](../v1_development_plan.md)。
+- 作業単位は WP。**1 WP = 1 ブランチ = 1 マージ**で、受け入れ基準がマージ基準です。番号には枝番や記号 ID もあります。台帳は[実装指示書](../implementation_plan.md)、過去の着地は[履歴](../history/manual_landing_notes_2026.md)、今後の候補は[v1 開発計画](../v1_development_plan.md)を参照してください。
 - 統合ブランチは `codex/render-target-runtime-slice`(事実上の開発本線)。
 
 文書の優先順位(矛盾したときの規則):

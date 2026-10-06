@@ -617,7 +617,7 @@ HW-2s / AV-1sから、Studio に **Assets のドック**(中身は [`AssetsDock`
 Refresh の左(Undo / Redo の後ろ)に **Auto layout** と **Fit view** のボタンがあります。右クリックのメニューと同じ action を発火します([ボタンを置く所](../../src/devstudio/view/graphcanvaswidget.cpp#L5703))。
 その下に必要なときだけ 1 行の notice が出ます。本体は左がキャンバス、右が選択ノードの詳細表(`Field` / `Value`)で、 詳細表の上に `Label:` の入力欄・**Rename**・**Add**(palette を開くボタン。)が並びます(選んだ node が  の sink なら、その下に「UI node」の欄。Q-8、下の段落。`audio.playback` なら Sound / Bus / Wrap の欄。Q-10、下の段落)。`value.curve` / `value.playback` / `render.scalar` と fullscreen・raster の pass を選ぶと値の欄、`render.compute` を選ぶと compute の欄も出ます(下の「曲線を shader の値へ GUI でつなぐ」と「project の compute / RT の shader を palette で置く」)。engine の catalog が `parameters` の表を出す op の node を選ぶと、その表から作った欄(専用の欄を持つ op では畳んだ **More parameters** の下)も出ます(下の「node の欄を catalog の表から作る」)。
 
-1. **scope を選ぶ** —— `root` は文書そのもの、definition 名はその本体です。root の `graph.instance` ノードを    **ダブルクリック**すると、その definition の中へ降ります。パンくずで戻ります。
+1. **scope を選ぶ** —— 範囲の定義は[graph scope の所有節](13_editor.md#graph-edit-scope)を参照してください。root の `graph.instance` ノードを    **ダブルクリック**すると、その definition の中へ降ります。パンくずで戻ります。
 2. **値を重ねる** —— `Values from:` で owner を持つ root instance を選ぶと、その instance の入力 port に    `get_graph_values` の値と供給元が重なり、**出力 port には `get_graph_node_values` の公開値が帯で重なります**(AG-3b。definition の中に降りても、その instance 経由の値が出ます)。`(none)` で外れます(root の scope では `Live` が入っていれば `(none)` のままでも root の node の値を読みます。下の「Timeline は root の node を instance 無しで読みます」)。`Live` で 250 ms ごとに読み直し(同時に飛ぶ読みは 1 組まで)、`Timeline` 帯を開くと選択ノードの数値 port(≤4)と owner の animation の phase / progress が貯まり、左ドラッグで `set_time` → `render_frame` の scrub です。
 3. **ノードを読む** —— ノードは見出し帯 + ソケット行です。見出しにはラベル(無ければ id)と、右に小さく型名(`op`)。
    見出し左の三角でソケット欄を**折り畳め**ます(tooltip は `Fold the sockets away` / `Show the sockets`)。

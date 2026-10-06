@@ -121,16 +121,17 @@ WP172 で **第3の variant「preview」** が加わりました。同じ `loadR
 >
 > **不変条件**: 2 つのマーカー配列の差分は意図的です。片方を編集したら、もう片方の意味を明文化すること。除外は typed policy decision を composer の feature-envelope 境界へ適用し(composer の検証を残す)、合成後の削除に置き換えないこと。
 
-### preset envelope: 既定の rendering config は `pipeline.preset` + `features` の 2 キー(WP240a)
+<a id="preset-envelope-既定の-rendering-config-は-pipelinepreset--features-の-2-キーwp240a"></a>
 
-`pelican_cli project init` が既定(`--template standard`)で書き出す rendering config は、**`pipeline.preset` と `features` の 2 キーだけ**になりました([`projecttemplate.cpp`](../../src/project/projecttemplate.cpp#L199) の `rendering_config_json`。F-2 で雛形は `src/devcli/projectinit.cpp` から `pelican_project` へ移りました)。この 2 キーは `pelican.graph` root の `rendering` 節の中にあります。MG-2b からはリテラル自体が graph root の全文で、[`renderingConfigJson()`](../../src/project/projecttemplate.cpp#L261) はそれをそのまま返します(以前の包み関数 `wrapLegacyRenderingConfig()` は撤去)。参照先は engine 同梱の [`render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json) です。`projects/animgraph_demo` の [`passes/main.json`](../../projects/animgraph_demo/passes/main.json) も同じ 2 キーへ移りました(`features` が 3 本。MG-2b で `pelican.graph` root に包まれました)。これは略記の導入ではなく **既定の描画経路そのものの入れ替え**です — 旧テンプレートは手書き 111 行で、pass は gbuffer / ssao / ssao_blur / present の 4 本、`present` が `uses_light_data: true` でライティングと present を兼ねており、forward 経路も半透明も snapshot も持っていませんでした。既定プロジェクトが踏むコードが変わっているので、「既定は deferred 4 pass だけ」という前提で読むと外します。
+### preset の展開経路
 
-展開の実体は [`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L888) で、呼び出し元は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3465) の**冒頭 1 箇所だけ**です([`featurecompose.cpp` 内](../../src/project/featurecompose.cpp#L3501))。つまり preset 展開は下の手順 1(feature 合成)の直前に、同じ関数の中で起きます。(LP-1e から、graph の `pass_set` の既定の family を決める [`defaultGraphPassFamily()`](../../src/project/featurecompose.cpp#L3439) も、preset の最初の family を知るためだけにもう 1 回 preset を展開します。結果は family の名前にしか使いません。)ソースファイルは書き換えません。
+preset の schema・合成・fork の公開契約は[第6章](../manual/06_rendering.md#render-preset)を参照してください。
 
-読むうえでの要点は 2 つです。
+[`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L888) は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3465) の冒頭で呼ばれ、feature 解析より前に展開します。`defaultGraphPassFamily()` も既定 family を取得するため展開しますが、その結果は family 名だけに使い、文書を書き換えません。
 
-- **preset と `render_targets` / `rendering_passes` は排他**です。`pipeline` を書いた config で許されるトップレベルキーは `pipeline` / `features` / `snapshots` / `shader_defines` / `draw_sort` / `graph_transforms` / `render_strategy` / `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` / `xr` だけで、それ以外は例外です([`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L888) 内の `requireOnlyKeys`)。理由はコメントが規範で、「preset の更新が deep merge 越しに意味を変えてしまう」ことを避けるためです。構造を変えたいときは preset を copy/eject して verbose config にします。preset 側が既に持つ `render_strategy` / `snapshots` / `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` を上書きしようとした場合も、merge ではなく例外になります。
-- hybrid_v1 が持つ pass は `deferred_geometry` / `ssao_pass` / `ssao_blur_pass` / `deferred_lighting` / `forward_opaque` / `__snapshot_opaque_color` / `__snapshot_opaque_depth` / `forward_transparent` / `scene_present` の 9 本で、`material_routing.policy` は `hybrid_auto_v1`、`draw_sort` は opaque が `state_batched_v1`、transparent が `back_to_front_v1` です(§6.5 の難所「draw queue は provider に鍵だけ作らせる」の provider 名はここから来ます)。deferred と forward が同じ `lit_color` / `scene_depth` へ `load` で重ねて描き、半透明は `snapshot_copy` node(§6.3)で退避した `opaque_color` / `opaque_depth` を screen input として読みます。
+hybrid の描画経路では deferred と forward が同じ target へ重ねて描き、半透明は snapshot_copy が退避した画像を screen input として読みます。
+
+<a id="render-generation-flow"></a>
 
 登録処理の順序には意味があります。
 
@@ -2169,3 +2170,19 @@ stage は raygen = 0、miss = 1..M、closest_hit = 1+M..、any_hit はその後�
 ### [`intersect()`](../../src/core/shader/raytracingoracle.cpp#L226) — double と区間演算を並走させる {#reading-note-034}
 
 double 側は GPU と同じ ["Normative Moller-Trumbore sequence"](../../src/core/shader/raytracingoracle.cpp#L229) を**式順序込みで再現**して u/v/t の代表値と inside 判定を出し、有向丸めの区間側は同じ式で t の**保証付き区間**を作ります。前者だけでは真値包含の保証が無く、後者だけでは一意な代表値が得られません。
+
+<a id="shader-catalog-internals"></a>
+
+### shader catalog の構築
+
+返却フィールドは[第13章の shader catalog](../manual/13_editor.md#engine-shader-catalog-fields)を参照してください。
+
+反映は process に 1 つの worker thread が行います([worker](../../src/core/communication/engineauthoringlists.cpp#L352))。engine は RPC の endpoint を作った直後に worker を裏で始め(Studio が聞く前に一覧が出来ているように。[始める所](../../src/core/communication/rpcserver.cpp#L2832))、endpoint が閉じるときに止めて join します([止める所](../../src/core/communication/rpcserver.cpp#L2837))。止めるのは shader 1 本ごとの区切りで、作りかけの一覧は捨て、次に始めるときは最初から作ります([1 本ごとに見る所](../../src/core/communication/engineauthoringlists.cpp#L340))。worker が動いておらず答えも無いときに `get_engine_shaders` が来れば、その呼び出しが worker を始めて `building` を返します。worker は自分専用の compiler([`ShaderCompiler::detached()`](../../src/core/shader/shadercompiler.hpp#L91))を使います。この compiler は module を読まず、project の disk の shader cache を持たず、`StartupMetrics` に記録しないので、反映は `get_status` の `startup`(shader の時間と cache の数)に入らず、frame の側の compiler の cache とも共有しません。読むのは engine に組み込まれた shader だけです。
+
+`get_graph_catalog` は反映も compile もしません。Studio の Graph は、`building` を受けると 500 ms 後に poll から聞き直し、`failed` は `error` の文を notice に出して一覧を空として扱います(palette の「Reading...」はそこで止まります)。`status` の無い古い答えは今までどおり読みます(`src/devstudio/model/graphcanvasmodel.cpp`)。palette の render.compute で選んだ ray tracing の pipeline の task が書く image は、`resource_ports` の `format` があればその format で作ります(shadow mask なら `R8_UNORM`。無ければ `R16G16B16A16_SFLOAT`)。
+
+`reflectShaderForms()` は source を compile して反映し、失敗時は同梱 SPIR-V を試します。resource port の include は pass ごとに生成するため、単体の一覧では空 include を使います。任意の port だけを読む shader は反映でき、無条件にアクセサを呼ぶ shader は compile に失敗する場合があります([反映入口](../../src/core/communication/engineauthoringlists.cpp#L242))。
+
+storage image の format は reflection の layout qualifier から vocabulary 名へ変換します。`render.image` の lowering は宣言した usage を渡し、使用先の pass / task が必要な usage を検証します([lowering](../../src/project/rendergraphcomposition.cpp#L798)、[pass 出力](../../src/core/renderingpass/renderingpassvalidation.cpp#L59)、[compute port](../../src/core/renderingpass/computetaskcontainer.cpp#L310))。
+
+Studio の Graph は material pass contracts、format aspects、engine shader 一覧を取得し、選択肢と接続検査に使います。実装確認の入口は `renderconfigeditor_test` と `engine_primitives_test` の EL-4 / MP-1 ケースです。

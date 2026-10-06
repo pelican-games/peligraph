@@ -172,7 +172,7 @@ engine は RPC の `set_play_state` で一時停止でき、`advance_frames` で
 - **走らないもの**: behavior の constructor・`onInit`・`onUpdate`・イベントの受け取り(behavior は instance を作らない「眠った」attachment になります)、game の system、イベントの配送、game DLL が登録した animation の phase。したがって `ctx.spawn` / `ctx.loadScene` を呼ぶコードも走りません
 - **走るもの**: scene のデータを作るための、ゲームの component の JSON の読み込みと `init()`、behavior の params の正規化。`edit` の読み込みでも component はできるので、ここに副作用を書くと `edit` でも起きます
 - **Play(`edit` → `playing` / `paused`)** で engine は scene を作り直し、そこで behavior の constructor と `onInit` が走ります。`ctx.time()` はそのとき 0 から始まります。**Stop(→ `edit`)** では `onDestroy` が走り、spawn した object は消えます
-- ✅PM-2 から、Play のたびに game logic の DLL が読み直され、game の system の static な状態は初めからになります(下の「再生のセッションとゲームコード」)
+- Play のたびに game logic の DLL が読み直され、game の system の static な状態は初めからになります(下の「再生のセッションとゲームコード」)
 
 ### 再生のセッションとゲームコード(✅PM-2)
 
@@ -798,7 +798,7 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 
 - **カット切替**: `ctx.render().setCamera("SceneFlowCamera")` または rpc `set_camera`。名前付きカメラだけが宛先になれます。切替後はフリーカメラ操作がロックされ、そのカメラの定義が即時適用されます。
 - **コントローラ**はビルトインのゲームシステム(order 10000)が毎フレーム駆動します。orbit / fly は Actions の `move` / `look`(いずれも axis2)を消費しますが、アクションが未定義でも「動かないだけ」でエラーにはなりません。
-- **向き(✅CC-1、`c8367b87`)**: camera は glTF と同じく回転の −Z を向き、up は回転の +Y です。コントローラの world の上は常に +Y で、controller の `up` の鍵と `basic_config.camera.up` は撤去されました。fly の `move` の x は画面の右へ動きます。orbit の `yaw` / `pitch` の意味は [第4章 §4.2](04_scene_ecs.md) の camera の項です。
+- **向き**: camera は glTF と同じく回転の −Z を向き、up は回転の +Y です。コントローラの world の上は常に +Y で、controller の `up` の鍵と `basic_config.camera.up` は撤去されました。fly の `move` の x は画面の右へ動きます。orbit の `yaw` / `pitch` の意味は [第4章 §4.2](04_scene_ecs.md) の camera の項です。
 - damping はブレンド重み `1 - exp(-damping * dt)` で、0 なら即時追従。パラメータ変更やフレーム巻き戻し(rpc `set_time`)を検出すると内部状態を自動リセットします(決定性のため)。
 - 📐未実装(C3 以降): glb カメラノードの取り込み/書き出し round-trip、transform_seq のカメラトラック、ブレンド・シェイク。
 
@@ -821,7 +821,9 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 
 ウィンドウモードの時刻は実測 dt(上限 0.1 秒でクランプ)なので、厳密なリプレイ互換が必要な検証はヘッドレスで行ってください。
 
-## 8.11 オーディオ(✅A1 = WP51、AU-1 `feca9dce`、AU-2 `e68573a2`、AU-3 `a8b03406`)
+<a id="811-オーディオa1--wp51au-1-feca9dceau-2-e68573a2au-3-a8b03406"></a>
+
+## 8.11 オーディオ
 
 音を鳴らす道は 2 本あります。ゲームコードから 1 回鳴らす `ctx.audio().playSound`(下の「ゲームコードから鳴らす」)と、共通グラフの `audio.playback` ノード(下の「グラフで鳴らす」)です。グラフの voice は「今どこを鳴らすか」をグラフの時計が決めるので、ループ・一時停止・シーンをまたぐ BGM・フェードをグラフの中で組めます。
 
@@ -871,7 +873,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 - **引数があると環境変数は読みません。** 環境変数が空文字列なら未設定と同じ扱いです([`audioBackendEnvironment`](../../src/player/main.cpp#L123))。
 - 値は完全一致です(`Null` や空文字列の引数は通らない。[`audioBackendKindFromName`](../../src/core/audio/audiobackendkind.hpp#L31))。それ以外の値は起動を止め、`audio.backend_unknown@1: --audio-backend must be one of: device, offline, null: <値>` で失敗します(環境変数から来たときは `--audio-backend` の所が `PELICAN_AUDIO_BACKEND` になります。[`parseAudioBackend`](../../src/player/main.cpp#L111))。
 - `device` / `offline` を名指ししても、開けなければ名指ししないときと同じく `null` へ退避し、`fallback_reason` が付きます。
-- **Studio の埋め込み player は Studio の環境を継承します**(QProcess)。Studio を `PELICAN_AUDIO_BACKEND=null` で起動すれば、埋め込み player は音を出しません。Studio の scenario driver(`tools/studio_drive.py`)は、呼び出し側が値を決めていない(未設定か空)ときに `null` を渡します([該当箇所](../../tools/studio_drive.py#L1576)、`d616e35a`)。
+- **Studio の埋め込み player は Studio の環境を継承します**。Studio を `PELICAN_AUDIO_BACKEND=null` で起動すれば、埋め込み player は音を出しません。シナリオの実行規則は[test の案内](../../test/studio_scenarios/README.md)を参照してください。
 - **`PELICAN_WITH_AUDIO=OFF` の build** では `--audio-backend null` だけを受け付けます。`offline` / `device` は `This binary was built with PELICAN_WITH_AUDIO=OFF: --audio-backend <値> is unavailable` で起動を止めます(未知の値は、その前に `audio.backend_unknown@1`)。**環境変数は読みません**(継承した値で OFF の player が止まらないように)。
 
 どれになったかは rpc の **`get_status` の `audio`** で読めます([`audioStatusJson()`](../../src/core/communication/audiostatus.cpp#L37))。
@@ -884,14 +886,13 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 - `backend` は `device` / `offline` / `null` のどれかで、**実際に使っているもの**です(起動で名指ししたかどうかを示す欄はありません。AU-3 でも形は同じ)。`fallback_reason` は null へ退避したときだけ出て、「目指したバックエンド名: 理由」の形です。名指しの `null` には付きません。
 - `available: false` は `PELICAN_WITH_AUDIO=OFF` の build です。Audio module を作っていない host では `backend` が JSON の `null` になります。
-- **`voices`(✅CT-1、`ac8d836b`)** は、frame が駆動している graph の `audio.playback` の node ごとに 1 件の `{node, state, position_seconds}` です。`node` は graph の node id(instance の中の node は instance の path 付き)、`state` は `"idle"` / `"playing"` / `"paused"`、`position_seconds` は graph が最後にその voice を置いた音源の秒で、`idle` のときは 0 です([組む所](../../src/core/communication/audiostatus.cpp#L16)、[node ごとの状態](../../src/core/loader/scenegraphruntime.cpp#L321))。
+- **`voices`** は、frame が駆動している graph の `audio.playback` の node ごとに 1 件の `{node, state, position_seconds}` です。`node` は graph の node id(instance の中の node は instance の path 付き)、`state` は `"idle"` / `"playing"` / `"paused"`、`position_seconds` は graph が最後にその voice を置いた音源の秒で、`idle` のときは 0 です([組む所](../../src/core/communication/audiostatus.cpp#L16)、[node ごとの状態](../../src/core/loader/scenegraphruntime.cpp#L321))。
   - 値は mixer ではなく、直前の frame が各 voice に求めたことから読みます。なので **null backend でも同じ値**です。
   - `idle` は voice が無いとき(まだ始まっていない・reset された・scene の commit で止まった)、`paused` は voice が止められているとき(voice 自身の pause、時計や `position` が止まっている、`delay` に届いていない)です。
   - 編集モード(`get_status.play.state` が `edit`)の間は何も鳴らないので、全部 `idle` で 0 です。game を一時停止している間は mix 全体が止まるので、鳴るはずの voice は `paused` になります。
   - `get_graph_node_values` で読める `audio.playback` の node の値(lowering の後の op は `audio_playback`)は、その node の `time` 入力の秒で、`position_seconds`(音源の秒)とは意味が違います([評価する所](../../src/core/userpublic/valuegraph.cpp#L861))。
   - 例(Play → 数 frame): `"voices": [{"node": "voice", "state": "playing", "position_seconds": <進んだ秒>}]`(test の、`time` に `scene_time` を繋いだ voice では、0 から frame ごとに 1 frame の秒ずつ進む)。Pause の後は `paused` になり、Stop の後は `{"node": "voice", "state": "idle", "position_seconds": 0.0}` です。test: `audio_test` の [「CT-1 get_status lists each graph voice's state and position, the same on the null backend」](../../test/audio_test.cpp#L910)(null backend の headless)。
-  - Studio のシナリオ `graph_read` は、`9ca2d3ce` から `audio` の鍵が 3 つ(`available`・`backend`・`voices`)であることを見ます(`audio.$len` が 3。[第13章](13_editor.md) の「シナリオは無音です」)。CT-1 の着地の docs の時点では 2 つを見ていて、鍵の数が合わないはずでした。この docs ではシナリオを走らせて確かめていません(未確認)。
-  - Studio の Graph は ✅UX-9 から、`audio.playback` の node の下の帯にこの `state` と `position_seconds` を `playing · 1.2 s` の形で出します(`edit` の間の `idle` は出しません。[第13章](13_editor.md) の「保存中でも palette が開く、確定前の値を送る、voice の帯、起動時の致命の 1 文」)。
+  - Studio の Graph は `audio.playback` の node の下の帯にこの `state` と `position_seconds` を `playing · 1.2 s` の形で出します(`edit` の間の `idle` は出しません。[第13章](13_editor.md) の「保存中でも palette が開く、確定前の値を送る、voice の帯、起動時の致命の 1 文」)。
 
 ### グラフで鳴らす — `audio.playback`(✅AU-1)
 
@@ -921,7 +922,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 - `events` も `position` も無いノードは、**owner の最初のフレームで鳴り始め**、そのフレームから `time` 入力の時計で経過時間(写像の elapsed)を数えます([開始](../../src/core/userpublic/valuegraph.cpp#L1024))。分解版の「`events` が無ければ owner の最初のフレーム」と同じ規則です。
 - `events` が無いときの `time` は、どの時計から来てもかまいません(`time` でも `scene_time` でも、時計の無い定数でも拒否されない)。
 - `time` は必須のままです。`events` を繋ぐなら `time` は `scene_time` だけから、の検査(`audio.clock_mismatch@1`、下の「状態と拒否」)も変わりません。
-- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L3568)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。✅UX-8 から、palette の `audio.volume` / `audio.pitch` は置く前に駆動する voice(scope の `audio.playback`)を聞き、その `voice` からの線と、`value` に 1 の `value.constant` をつないだ形で置かれます。palette の `value.curve`(`time` が `scene_time` につながった、1 秒で 0 から 1 の key)を `value` へ線で落とせば、下の「フェード」の形になります。音声の file は Studio の File ▸ Import Sound… か Sound の欄の Import… で project の `assets/audio/` に写せます(同じ名前があれば `_2`)。どれも [第13章](13_editor.md) の「音の node を置く・音声を Import する(✅UX-8)」です。
+- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L3568))。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。palette の `audio.volume` / `audio.pitch` は置く前に駆動する voice(scope の `audio.playback`)を聞き、その `voice` からの線と、`value` に 1 の `value.constant` をつないだ形で置かれます。palette の `value.curve`(`time` が `scene_time` につながった、1 秒で 0 から 1 の key)を `value` へ線で落とせば、下の「フェード」の形になります。音声の file は Studio の File ▸ Import Sound… か Sound の欄の Import… で project の `assets/audio/` に写せます(同じ名前があれば `_2`)。どれも [第13章](13_editor.md) の「音の node を置く・音声を Import する(✅UX-8)」です。
 
 下の例は `events` で鳴らす形です。
 
@@ -1046,12 +1047,12 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 
 ### 音に合わせて描く —— 解析を焼いて Studio で使う(✅AB-1s)
 
-音の rms・peak・帯域を表に焼き(engine の ✅AB-1。表の形は [第5章](05_assets.md) §5.8、読み方は [第6章](06_rendering.md) §6.18「焼いた音の解析の表を読む」)、その表で描画を動かす操作を、Studio の Graph タブで GUI だけで行えます(`149c0ec8`)。焼くのは制作の時で、実行時に音を解析するのではありません(v0 の音の解析は焼き込み)。細部は [第13章](13_editor.md) の「音の解析を焼いて描画に使う(✅AB-1s)」です。
+音の rms・peak・帯域を表に焼き(engine の ✅AB-1。表の形は [第5章](05_assets.md) §5.8、読み方は [第6章](06_rendering.md) §6.18「焼いた音の解析の表を読む」)、その表で描画を動かす操作を、Studio の Graph タブで GUI だけで行えます。焼くのは制作の時で、実行時に音を解析するのではありません(v0 の音の解析は焼き込み)。細部は [第13章](13_editor.md) の「音の解析を焼いて描画に使う(✅AB-1s)」です。
 
 - **Bake analysis…**: Graph タブで `audio.playback` を選ぶと、Sound の行に **Bake analysis…** があります。ダイアログで RMS / Peak / Bands(帯の数は 1〜128、既定 8)、Hop(既定 10 ms)、Smoothing(attack / release)、Channels(Mix / Left / Right)と、書き出す表(既定 `assets/analysis/<音の名前>.ktx2`)を選んで **Bake** を押すと、`bake_audio_analysis` が表と隣の `<表>.import.json` を書きます。焼いている間は `Baking <音>… (<秒> s)`、終わると `Baked <表>: <行> × <標本数> samples` が出ます([Bake のダイアログの class `GraphCanvasBakeDialog`](../../src/devstudio/view/graphcanvasaudioanalysis.hpp#L36))。
 - **Use in Graph**: 焼き終わった行の **Use in Graph** は、値の graph に `value.sample_table`(表の `rms` の行、時刻は `scene_time`)を置きます。その出力を `render.buffer` の value に繋げば、CPU で読んだ値を shader に渡せます。palette で置く `value.sample_table` も、焼いた表とその行を一覧から選ぶダイアログで置けます。
-- **Use in a shader**: 同じ行の **Use in a shader** は、表を始めの内容にする persistent の `render.image` と、表の形(`rows_per_feature` / `sample_count` / `hop_seconds`)と scene time を入れた vec4 の `render.buffer` を 1 回の編集で置き、選んでいる fullscreen / raster の pass の shader が宣言していればその入力に繋ぎます。shader に写す `#include "pelican_sample_table.glsl"` と `pelican_sample_table(...)` の 1 行が出ます。layout の buffer は `#include "pelican_resource_ports.glsl"` の `pelican_resource_<port>` で読みます(✅UX-13a から 1 行もこの include を言い、Studio は shader が読む名前の port に layout を繋ぎます)。
-- **Re-bake**: 元の音を書き換えた後に Graph の **Refresh** を押すと、その表を読む node の帯に橙の `stale: source_changed` が付き、node の欄に **Re-bake** が出ます。Re-bake は表の manifest に記録された音と設定で焼き直します。焼き直した後、Studio は文書を編集しません(✅UX-13a、`0e0f4481`)。Studio は `value.sample_table` が読む表も画像の初期内容と同じく見張っていて、書き換わると engine の読み直しを頼み、engine の ✅IA-3(`26473e75`)が新しい表を読み直して、notice が `Picked up the change to <表>.` を言います。AB-1s の着地時は、表を読む `value.sample_table` の parameters を同じ値で書き直す編集を 1 回送って graph を組み直させていました(Undo に 1 段残った)。
+- **Use in a shader**: 同じ行の **Use in a shader** は、表を始めの内容にする persistent の `render.image` と、表の形(`rows_per_feature` / `sample_count` / `hop_seconds`)と scene time を入れた vec4 の `render.buffer` を 1 回の編集で置き、選んでいる fullscreen / raster の pass の shader が宣言していればその入力に繋ぎます。shader に写す `#include "pelican_sample_table.glsl"` と `pelican_sample_table(...)` の 1 行が出ます。layout の buffer は `#include "pelican_resource_ports.glsl"` の `pelican_resource_<port>` で読みます(Studio は shader が読む名前の port に layout を繋ぎます)。
+- **Re-bake**: 元の音を書き換えた後に Graph の **Refresh** を押すと、その表を読む node の帯に橙の `stale: source_changed` が付き、node の欄に **Re-bake** が出ます。Re-bake は表の manifest に記録された音と設定で焼き直します。焼き直した後、Studio は文書を編集しません。Studio は `value.sample_table` が読む表も画像の初期内容と同じく見張っていて、書き換わると engine の読み直しを頼み、engine が新しい表を読み直して、notice が `Picked up the change to <表>.` を言います。
 - 動く例は Studio のシナリオ `gui_build_audio_reactive` です: 前半が無音・後半が音の WAV を焼き、Timeline の時刻を動かすと、CPU の道(`value.sample_table`)と GPU の道(shader で表を読む)の両方で viewport の明るさが変わります。
 
 ### 長い音の streaming(✅AU-2)

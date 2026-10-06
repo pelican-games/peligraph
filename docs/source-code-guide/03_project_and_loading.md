@@ -183,17 +183,11 @@ std::variant<
 >
 ```
 
-`engine://`はファイルシステム上のpathではなく、実行ファイルへ埋め込まれたresource IDです。また**fragment**を、コンテナ内要素のアドレスとして失わず伝えるためvariantになっています（[`parsePathReference()`](../../src/project/projectpathresolver.cpp#L278)）。fragmentは参照文字列の `#` 以降の `kind/path` で、「そのファイルの中のどれを指すか」を表します — 例が `assets/character.glb#mesh/Cube`（[`pathresolver_test.cpp` 内](../../test/pathresolver_test.cpp#L486)）で、`kind` が要素の種類、後半が名前です。`/` を含まない後半は名前アドレス、含む場合はコンテナ内のフルパスアドレスになります（[`AssetFragmentAddressKind`](../../src/project/projectpathresolver.hpp#L21)。[用語集](../manual/14_glossary.md#フラグメント参照) の「フラグメント参照(`#`)」）。`#` が2つある、`kind` だけで後半が無い、後半が全部数字、といった形は受理されません。
+`engine://` は埋込み resource ID、fragment はコンテナ内要素のアドレスなので、path に潰さず variant で後段へ渡します([`parsePathReference()`](../../src/project/projectpathresolver.cpp#L278))。参照の構文と受理規則は[第3章の PathResolver](../manual/03_project_format.md#33-パス参照と-pathresolver)を参照してください。
 
-### scheme別の処理
+### scheme 別の分岐
 
-| 参照 | 解決先 | 保護 |
-|---|---|---|
-| `engine://id` | `EngineResourceId` | 登録IDだけを後段で許可 |
-| `project://x` または相対`x` | project rootまたはasset store | root外escape拒否 |
-| `user://x` | project名由来のuser root | user root外escape拒否 |
-| CLI由来の絶対path | そのpath | `--allow-absolute-paths`必須 |
-| project JSON内の絶対path | 不許可 | 常に拒否 |
+`resolveRef()` は scheme と入力の出所を判別し、engine ID、project / store path、user path、CLI path へ分岐します。
 
 `std::filesystem::weakly_canonical`（`.` / `..` を畳み、途中までのsymlinkを解決して正規形へ落とす標準関数。末尾が実在しなくても失敗しない点が `canonical` との違いです）後にroot包含判定を行うため、単純な`../`文字列検査より強い境界です（[`ProjectPathResolver::resolveRef()`のproject処理](../../src/project/projectpathresolver.cpp#L828)）。
 
@@ -201,14 +195,7 @@ std::variant<
 
 [`ProjectPathResolver::setup()`](../../src/project/projectpathresolver.cpp#L343) は`project.json.asset_stores`を読みます。
 
-- 各storeは論理`mount`と実rootを持つ。
-- mount同士の重なりを拒否。
-- `.pelican/local.json`で実rootだけをローカル上書き可能。
-- 上書きはprojectで宣言済みのstore名だけ。
-- 実root同士の包含/重なりも拒否。
-- optional manifestのpathはproject root内に制限。
-
-相対参照がmount prefixに一致すると、project rootではなくstore rootへ付け替えます（[`asset store解決`](../../src/project/projectpathresolver.cpp#L812)）。これにより、VCS上の論理pathは固定したまま、大容量assetの実配置を開発者ごとに変えられます。
+mount に一致する相対参照は store root へ付け替え、包含検査をその root に対して行います([asset store の解決](../../src/project/projectpathresolver.cpp#L812))。宣言・ローカル上書き・manifest の制約は[第3章の asset store](../manual/03_project_format.md#34-asset-store--置き場所の間接化実装済みwp55)を参照してください。
 
 #### 宣言のその場の差し替え(✅PJ-1、`89643cd7`)
 
@@ -263,6 +250,8 @@ RPC の側は [`internal::configureAssetsVerificationRpcHandlers()`](../../src/c
 hash を始める前に、[`verifyAssetsManifest()`](../../src/project/assetsmanifest.cpp#L574) は `AssetManifestVerifyOptions::before_hashing`(`include_content` のときだけ)を 1 回呼び、manifest の file のうち実在するものを cache が当たるかどうかで数えた [`AssetManifestHashPlan`](../../src/project/assetsmanifest.hpp#L56) `{to_hash, bytes_to_hash, cached}` を渡します([数える所](../../src/project/assetsmanifest.cpp#L605))。cache の当たりの判定は、hash の時に使う `cachedHash()`(size と mtime が合い、値が 16 進の SHA-256)と同じです。起動時の照合(`verifyAssetStores(..., log = true)`)はそれで `assets manifest [<store>] verifying <N> assets (<X> MB), <M> cached` を INFO で出します(`to_hash` が 0 なら出しません。[出す所](../../src/core/loader/assetsverification.cpp#L54))。✅AV-1 から同じ callback が `to_hash` / `cached` を store の結果の `hashed` / `cached` に残し、`verify_assets` の再検証(`log = false`)は残すだけで出しません。test: `assetsmanifest_test` の [「asset file hashing matches SHA-256 for empty, small, and multi-chunk files」](../../test/assetsmanifest_test.cpp#L69)。`Sha256Stream` そのものは FW-1 の 2 本が見ます: `assetsmanifest_test` の [「FW-1 Sha256Stream streams across the 1 MiB read unit like one-shot SHA-256」](../../test/assetsmanifest_test.cpp#L91)(hashlib で求めた値と比べ、2 回目の `finishHex()` は throw)と、`filewatcher_test` の [「FW-1 Sha256Stream, assetFileSha256 and the watcher digest equal picosha2 around 1 MiB」](../../test/filewatcher_test.cpp#L668)(長さ 0 / 3 / 1 MiB の前後 / 2 MiB+7 を、一括・不揃いの分割・`assetFileSha256()`・`readStableContentDigest()` の 4 経路で picosha2 と比べる。assetsmanifest_test の実行ファイルは picosha2 の include を受け取っていないので、こちらに置いた)。
 
 manifestの生成も同じ`src/project/assetsmanifest.cpp`にあり、`pelican_cli assets manifest`から利用されます。
+
+<a id="scene-load-executor"></a>
 
 ## 3.5 Sceneのロード
 
@@ -417,7 +406,9 @@ sequenceDiagram
 
 **retire** は旧 state を消すのではなく queue に積むだけです。旧 entity の destroy token と transient model は [`retirement_state->enqueue()`](../../src/core/loader/scene.cpp#L754)（容量は prepare で予約済み）、renderer の旧 instance slot は [`enqueueSceneRetirement()`](../../src/core/loader/scene.cpp#L1093) へ入り、消費は次フレームです: [`drainRetirementQueue()`](../../src/core/loader/scene.cpp#L1912) が [`applyPendingLoad()` の先頭](../../src/core/loader/scene.cpp#L1870) と teardown の ecs 段（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L80)）で走り、renderer 側は [`drainSceneRetirements()`](../../src/core/renderer/polygoninstancecontainer.cpp#L863) が `triggerUpdate()` の先頭で消費します。そこでの失敗はフレームのエラーであって transaction のエラーではありません（state は既に一貫）。
 
-renderer の slot には、frame を挟まない連続の load の道もあります(`8bde3c2f`。利用者の codex の変更、handoff 05)。RPC の `load_scene` を続けると、前の load が retire した世代が `triggerUpdate()` を通らずに queue に残ります。[`prepareSceneReplacement()` の先頭](../../src/core/renderer/polygoninstancecontainer.cpp#L689) は、queue が空でなければ `VulkanManageCore::waitIdle()` で GPU の読み手の完了を待ってから回収し、それから次の候補の slot を取ります。公開中の世代は commit まで回収しません。あわせて物理的な slot の数 `maxModelInstances` を `2 * maxActiveModelInstances`(2,048)にし、同時に生きている数の上限 `maxActiveModelInstances`(1,024)は [staging の容量の検査](../../src/core/renderer/polygoninstancecontainer.cpp#L751) が `liveCount()` で見ます。候補を作る間も公開中の世代の slot が rollback のために残るので、前は旧と新の合計が 1,024 を超える置き換え(約 1,000 model のシーンの最初の再読込)が `Model instance capacity exceeded` で失敗していました(codex の報告)。device の buffer は 18.2 MiB 増えます(skin palette の 2 本で 16 MiB。commit の説明の値)。test: `modelinstance_slotmap_test` の [「Full-capacity scene replacement keeps rollback slots and reclaims older generations」](../../test/modelinstance_slotmap_test.cpp#L390)。
+### scene 切替中の model instance slot {#scene-instance-slots}
+
+renderer の slot には、frame を挟まない連続の load の道もあります。RPC の `load_scene` を続けると、前の load が retire した世代が `triggerUpdate()` を通らずに queue に残ります。[`prepareSceneReplacement()` の先頭](../../src/core/renderer/polygoninstancecontainer.cpp#L689) は、queue が空でなければ `VulkanManageCore::waitIdle()` で GPU の読み手の完了を待ってから回収し、それから次の候補の slot を取ります。公開中の世代は commit まで回収しません。あわせて物理的な slot の数 `maxModelInstances` を `2 * maxActiveModelInstances`(2,048)にし、同時に生きている数の上限 `maxActiveModelInstances`(1,024)は [staging の容量の検査](../../src/core/renderer/polygoninstancecontainer.cpp#L751) が `liveCount()` で見ます。候補を作る間も公開中の世代の slot を rollback のために保持します。利用者向けの同時配置上限は[第4章](../manual/04_scene_ecs.md#43-シーンロードの流れ)を参照してください。test: `modelinstance_slotmap_test` の [「Full-capacity scene replacement keeps rollback slots and reclaims older generations」](../../test/modelinstance_slotmap_test.cpp#L390)。
 
 **flush** は [`stageReserved()`](../../src/core/loader/scene.cpp#L1612) で prepare 済みの `SceneLoaded` を予約 slot へ移し、RNG 列と pending scene を publish してから [`event_outbox->flush()`](../../src/core/loader/scene.cpp#L1618) で live queue へ `noexcept` に push します。
 
@@ -550,7 +541,7 @@ scene の `components` 配列に見えても runtime binding は一様ではあ�
 
 `ColliderComponent` に `init/deinit` があっても、現在の scene loader は special case です。`ECSCoreTemplatePublic::tryComponent<ColliderComponent>()` で取れる通常 ECS component だとは考えないでください。behavior も同様で、ECS の component として問い合わせても見つかりません。
 
-behavior は scene load executor(第 3 章 §3.5 の 3。WP380a)の participant の 1 つです。candidate は [`prepareSceneReconciliation()`](../../src/core/loader/scene.cpp#L1539) で作られ、publish 段で `noexcept` に swap され([`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L1546))、`onInit` は activate 段([`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L1548))で走ります。activate は publish 後の**最後の pre-commit 失敗点**で、投げると [`rollback` ラムダ](../../src/core/loader/scene.cpp#L1734) が renderer / ECS / camera / light / physics / behavior / event outbox / RNG / pending scene を**全部**旧世代へ戻し、結果は [`PreCommitFailure{phase = activate}`](../../src/core/loader/scene.cpp#L1789) です。document / projection / current scene / authority の commit([`metadata.commit()`](../../src/core/loader/scene.cpp#L635))はその後なので旧世代のままです。「behavior 型名を間違えると scene が半分だけロードされる」「document は新、runtime は旧」ということはありません(型名の誤りはそもそも prepare 段で落ちます)。旧経路の `clearRuntimeScene()` は `load()` から呼ばれません。
+behavior candidate の準備は [`prepareSceneReconciliation()`](../../src/core/loader/scene.cpp#L1539) が担当し、publish / activate / rollback の所属と commit 点は[scene load executor の所有節](#scene-load-executor)を参照してください。
 
 ### phase trace は participant が記録する。executor に `record` 文を足さない {#scene-phase-trace-owner}
 
@@ -571,9 +562,9 @@ metadata の commit 以降は「失敗しない尾部」です。executor はそ
 
 実装はその制約を明示しています。effect のエラーは固定長 record([`FixedText<512>` / `FixedText<384>`](../../src/core/loader/effecttransaction.hpp#L119))に詰めておき、**公開用の文字列と JSON は tail を抜けてから**作ります([`effectErrors()` の呼び出し](../../src/core/loader/scene.cpp#L1815) の直前のコメントが「deliberately materialized only after the noexcept commit tail」)。同じ理由で `SceneLoadPhaseTrace` も固定長です。
 
-### [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1650) — commit までの 5 段の責務と、どこから不可逆か {#reading-note-001}
+### `SceneLoader::load()` の commit 点を読む {#reading-note-001}
 
-prepare は live に触れず candidate だけを作ります(authority 消費・metadata token・resolved 検証・各サブシステムの候補・retirement queue の容量予約)。early_publish は ECS entity 生成 / component 適用 / 親子 transform 投影 / 旧 entity の unpublish で、逆トークンで戻せます。publish は `noexcept` swap の列、activate は `behavior_candidate->activate()` の 1 行で「全 participant が候補に切り替わった後に失敗しうる」唯一の段です。**全体は retire → flush → finish を含む 8 段です。不可逆点は [`metadata.commit()`](../../src/core/loader/scene.cpp#L635) の単一 metadata swap** で、コメントが "The commit point is exactly one metadata swap" と明記しています。
+段の責務と不可逆点は[scene load executor の所有節](#scene-load-executor)を参照してください。
 
 ### [manifest 配列](../../src/core/loader/sceneparticipantmanifest.cpp#L81) — この表は何の権威か {#reading-note-002}
 
@@ -1032,103 +1023,36 @@ test: `featurecompose_test` の [「FR-1 a feature names the targets it leaves t
 
 material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](../../src/project/materialformat.hpp#L45) の `usd_path`、[`modeltemplate.cpp`](../../src/core/model/modeltemplate.cpp#L104) で重複/未解決を検証）。これはU-USDレーン（WP119/124）の観測境界です。
 
-#### RPC で material 文書を読み書きする(✅MT-1、`976c410d`)
+<a id="material-rpc-internals"></a>
 
-新しい [`materialdocumentrpc.hpp` の MT-1 の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L14) / `materialdocumentrpc.cpp`(`pelican_core`)が、7 本の RPC(`list_materials` / `get_material` / `get_surface_schema` / `get_material_bindings` / `edit_material` / `create_material` / `bind_material`)を持ちます(✅MT-1b で 8 本目の `list_surfaces` が加わりました。下の「surface の一覧」)。入口は [`configureMaterialDocumentRpcHandlers()`](../../src/core/communication/materialdocumentrpc.cpp#L2666) の 1 つで、[`configureEngineRpcHandlers()` が PJ-1 の直後に呼びます](../../src/core/communication/rpcserver.cpp#L1592)。RPC の契約は manual 第10章 §10.3「material 文書を読み書きする」、live と restart_required の規則は manual 第6章 §6.7 です。
+#### material RPC の内部経路
 
-- **書き方**: 書く 3 本は、文書を `nlohmann::ordered_json` で読んで直し、鍵の順・2 空白の indent・元の改行コードで出し直します(新しいファイルは LF。[MT-1 の文書の書き出し `renderJsonDocument`](../../src/core/communication/materialdocumentrpc.cpp#L113))。書き込みは `commitProjectDocuments()`(project の文書の transaction。digest の CAS)で、`ProjectDocumentExternalModification` は `external_modification`、`ProjectDocumentTransactionBusy` は `material.transaction_busy@1` に写します。asset_data を書いたときは `ProjectBasicConfig::publishAssetDataJson()` で engine の写しも替えます([`publishAssetData()`](../../src/core/communication/materialdocumentrpc.cpp#L520))。✅MI-1 から `publishAssetData()` は替えられなかった理由(`std::optional<std::string>`、替えられたら `nullopt`)を返します。MT-1 の呼び手は戻り値を捨てるので挙動は同じで、MI-1 の 2 本だけがそれを `restart_required` の理由にします。
-- **書く前の検査**: 値は surface の宣言で型と `min` / `max` を見ます([MT-1 の値の検査 `valueProblem`](../../src/core/communication/materialdocumentrpc.cpp#L366))。書いた後の文書は、起動時と同じく `parseMaterialFormatJson()` と `lowerMaterial()` / `lowerMaterialVariants()` に通します([MT-1 の候補の文書の検査](../../src/core/communication/materialdocumentrpc.cpp#L462))。
-- **`edit_material` の当て方**: 変わった鍵が `values` だけなら `MaterialContainer::prepareSurfaceMaterialReload({}, {文書の key})` を作って commit します(WP105 の values reload の経路)。ほかの鍵が変わったら、MT-1 では `restart_required` でしたが、✅MT-3(`c6f94eb7`)から登録し直して組み直します(下の「`edit_material` の登録し直しと binding の書き直し」。[MT-1 の live の判定](../../src/core/communication/materialdocumentrpc.cpp#L1233))。
-- **`create_material` の登録**: `VulkanManageCore::waitIdle()` の後、[`ProjectMaterialAssetContainer::registerDocument()`](../../src/core/material/projectmaterialasset.cpp#L884) で新しい文書の material を登録します。module がまだ無ければ `GET_MODULE` で作り、constructor が asset_data の全部の文書を登録します(コードの注記)。
-  - `registerDocument()` は constructor と同じ `Impl::registerDocuments()` を 1 件で呼びます。constructor が持っていた「文書を読み、surface を parse し、lowering して登録する」処理を、MT-1 でこの関数に切り出しました。parse できない文書・無い surface・登録済みの名前は、1 つも登録せずに throw します(header の注記)。
-  - [`ProjectMaterialAssetContainer::documentOf()`](../../src/core/material/projectmaterialasset.cpp#L934) は、登録済みの material を読んだ文書の参照(asset_data の `materials[]` の参照)を返します(`Impl::material_documents`)。`list_materials` / `get_material` の `registered` と、`create_material` の名前の衝突の検査が使います。
-- **`bind_material` の当て方**: [`ModelAssetContainer`](../../src/core/asset/model.hpp#L52) に MT-1 で足した関数を使います(§3.8 の model の container)。
-  - [`ModelAssetContainer::hasModel()`](../../src/core/asset/model.cpp#L878): その名前の template を今持っているか。
-  - [`ModelAssetContainer::materialSlots()`](../../src/core/asset/model.cpp#L882): model のファイル(基本形なら生成した形)を `GltfLoader::inspect()` で読み直し、primitive ごとに `ModelMaterialSlot {mesh, primitive, slot, routing}`(`slot` は primitive が持つ glTF の material の名前)を mesh・primitive の順に返します。bindings の内容は見ず、何も登録しません。
-  - [`ModelAssetContainer::declaredMaterialBindings()`](../../src/core/asset/model.cpp#L911): 今の宣言が持つ material_bindings の文書。
-  - [`ModelAssetContainer::exchangeMaterialBindings()`](../../src/core/asset/model.cpp#L916): 参照を material_bindings の文書として読み(`loadMaterialBindings()`)、宣言の中のものと入れ替えて前のものを返します。template は、`reloadKey()` の reload が作り直すまで前の bindings のままです。
-  - [`ModelAssetContainer::restoreMaterialBindings()`](../../src/core/asset/model.cpp#L924): 入れ替えの後の reload が失敗したときに前のものを戻します。
-  - [`ModelAssetContainer::reloadKey()`](../../src/core/asset/model.cpp#L929): その model の reload を要求する `AssetKey`(宣言の `container_key`)。
-  - [`ModelAssetContainer::modelDeclaringMaterial()`](../../src/core/asset/model.cpp#L933): その名前の glTF の material を持つ model の名前(`create_material` の名前の衝突。同じ名前の project material は、その model の bindings を曖昧にして読み込みを止めるため)。
-  - 流れ: 文書を commit → `exchangeMaterialBindings()` → `waitIdle()` → [`ReloadService::reloadModelsNow()`](../../src/core/watch/reloadservice.cpp#L425)(`ReloadKind::modified` の要求で model の reload group を作り、transaction を prepare・publication の準備・commit まで、返る前に済ませる。ファイルの変更が積むのと同じ group)。reload が throw したら `restoreMaterialBindings()` で戻し、`restart_required` を返します([MT-1 の model の読み直しを呼ぶ所](../../src/core/communication/materialdocumentrpc.cpp#L1668))。
-  - 全 primitive が元の material に戻るとき(✅MT-2b、`213562bb`): `bindMaterial()` は要求を当てた後、全 primitive の material と routing が `materialSlots()` の `slot` と `routing` のまま(`slot` が空でない)なら、書く代わりに [`unbindModel()`](../../src/core/communication/materialdocumentrpc.cpp#L1614) を呼びます。bindings の文書の `ProjectDocumentOperation::erase` と、asset_data の置き換え(`material_bindings` の鍵を外し、基本形で `{name, path}` だけ残った項目は `models[]` から外す)を 1 つの `commitDocuments()` で書き、`restoreMaterialBindings(model, std::nullopt)` → `waitIdle()` → `reloadModelsNow()` で読み直します(reload が throw したら前の bindings に戻して `restart_required`)。宣言が無ければ何も書かず `changed: false` です。test は [`materialdocumentrpc_test.cpp` の MT-2b の 1 本](../../test/materialdocumentrpc_test.cpp#L556)です。
-- test: [`materialdocumentrpc_test.cpp` の MT-1 の 1 本](../../test/materialdocumentrpc_test.cpp#L226)(GPU。`pelican_define_test(materialdocumentrpc_test GPU RUNTIME_SHADER ...)`)。着地の gate(触った家族の 259 本)は緑でした(統合側の記録)。
+params・応答・拒否・反映状態の正本は[第13章の material RPC](../manual/13_editor.md#material-文書を読み書きする)です。ここは文書処理と runtime の連鎖を扱います。
 
-#### 起動時に読めない material 文書(✅FO-1、`a4d7760a`)
+[`configureMaterialDocumentRpcHandlers()`](../../src/core/communication/materialdocumentrpc.cpp#L2666) は engine の RPC 設定から呼ばれます。handler は ordered JSON を候補へ写し、surface の宣言を照合してから `parseMaterialFormatJson()` と lowering へ通します。文書の確定後、`publishAssetData()` が `ProjectBasicConfig` の写しを更新します。
 
-利用者から見た形は manual 第6章 §6.7 の「起動時に読めない material 文書」です。FO-1 の前は、constructor の `Impl::registerDocuments()` が 1 つでも throw すると起動が致命で終わりました。
+##### values reload と material 再登録
 
-- **constructor**([1 文書ずつ登録し直す所(FO-1)](../../src/core/material/projectmaterialasset.cpp#L829)): `EngineLaunchConfig::strict_assets` が立っていれば今までどおり全部を 1 回で登録して throw をそのまま投げます。立っていなければ、まず全部を 1 回で登録し(通れば前と同じ)、throw したら(`registerDocuments()` は全部か無しなので何も残らない)1 文書ずつ登録し直します。throw した文書は `refusedDocumentOf()` で `RefusedDocument {status, code, reason, line?, column?}` にして `Impl::refused` に入れ、`LOG_ERROR` を出します。最後に `publishProblems()` です。
-- **`refusedDocumentOf()`**: ファイルが開けなければ `missing` / `material.document_unknown@1`、開ければ `invalid` / `material.document_invalid@1` で、`renderDocumentSyntax()` が JSON の誤りを見つければ `reason` と `line` / `column` をそれに替えます。それ以外の `reason` は登録の throw の文のままです。
-- **`publishProblems()`**: `Impl::refused` の文書ごとの error と、`Impl::unresolved_bindings` の model ごとの warning(`material.binding_unresolved@1`)を作り、`ProblemList::replace("materials", …)` で domain ごと置き換えます。`document` は `graphDocumentReference()` の `project://` の綴り、`document_kind` は新しい定数 `problemKindMaterial`(`"material"`)です([domain と kind の定数(FO-1)](../../src/core/watch/problemlist.hpp#L81))。`ProblemList` の module がまだ無いときは、載せる問題があるときだけ `GET_MODULE` で作ります(作れなければ何もしません)。
-- **bindings の落とし方**: [`applyPrimitiveMaterialBindings()`](../../src/core/model/modeltemplate.cpp#L72) に `keep_own_material` の関数を足しました。解けない binding でこれが真を返すと、その primitive を bindings の前の material(model の `material_primitives` の group の material)に戻し、throw しません。
-  呼ぶのは `model.cpp` の `applyDeclarationBindings()` で([元の material に落とす所(FO-1)](../../src/core/asset/model.cpp#L221))、`hasRefusedDocuments()` が真のときだけ真を返し、落とした material の名前を集めて `LOG_WARNING` と `noteUnresolvedBindings(model, materials)` を呼びます(名前は整列・重複除去。前と同じなら publish しない)。
-- **公開する読み**: `refusedDocument(reference)` / `hasRefusedDocuments()` / `noteUnresolvedBindings()`(header の注記が 1 件の形を持ちます)。`list_materials` は `refusedDocument()` のある行の `status` / `reason` / `line` / `column` を engine の値に替えます([engine の状態を返す所(FO-1)](../../src/core/communication/materialdocumentrpc.cpp#L702))。
-- **消す所は無い**: `Impl::refused` と `Impl::unresolved_bindings` から外す道は無いので、問題は起こし直すまで残ります(コードの読み)。MT-2 の object の上書きが解けないときは、今までどおり [`resolveInstanceMaterials()`](../../src/core/renderer/polygoninstancecontainer.cpp#L464) の `LOG_WARNING` だけで、この domain には入りません。draw item を作るたびに判定する所なので、解けたときに一覧から消す仕組みが要る、というのが入れなかった理由です(実装者の報告)。
-- test: [`materialdocumentrpc_test.cpp` の FO-1 の 1 本](../../test/materialdocumentrpc_test.cpp#L1088)(GPU。4 section: JSON でない / surface が無い / ファイルが無い / `--strict-assets` では constructor が投げる)。
+値だけの変更は `prepareSurfaceMaterialReload()` で処理します。構造変更の [`rebuildMaterial()`](../../src/core/communication/materialdocumentrpc.cpp#L957) は次の順で進みます。
 
-#### `edit_material` の登録し直しと binding の書き直し(✅MT-3、`c6f94eb7`)
+1. `bindingsNaming()` が material 名を参照する bindings を集め、routing の候補も同じ文書 transaction に含めます。`pairSurfaceVariant()` は候補 params の写しを補うので、補った値も履歴と検証の経路を共有します。
+2. `waitIdle()` 後、読み込まれている model の bindings を `exchangeMaterialBindings()` で候補へ交換し、前の参照を保持します。
+3. `reregisterDocument()` が `Impl::registerDocuments(replace = true)` を呼び、同名の material を新規登録します。全登録が済むまで前の登録を外しません。
+4. `modelsDrawingMaterials()` が template と生きた instance の draw item から旧 material を使う model を収集します。bindings を交換した model も加え、`reloadModelsNow()` で組み直します。失敗時は bindings を戻し、旧登録を保持します。
+5. 成功後に `releaseModelResources(previous, {}, deferred = true)` で旧登録を解放します。Vulkan object は DeletionQueue、slot 再利用は in-flight の窓に従います。render config の世代は組み直しません。
 
-MT-3 は `edit_material` の 2 つの段を足しました。契約は [MT-3 の edit_material の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L105) です。RPC の形は manual 第10章 §10.3、規則は manual 第6章 §6.7 です。
+values の追跡は旧文書を `forgetReloadableMaterialValuesFile()` で外して新登録へ付け直します。登録途中の例外では、この呼出しが作った id だけを戻します。texture resolver は論理 key ごとの登録 id を引きます。
 
-- **段 1: routing を binding へ運ぶ**([MT-3 stage 1 の注記](../../src/core/communication/materialdocumentrpc.cpp#L1160))。material の `routing` が前と違えば、[`bindingsNaming()`](../../src/core/communication/materialdocumentrpc.cpp#L620) が asset_data の `models[]` の `material_bindings` の文書を読み、`material` がその名前の行の添字を集めます(読めない文書は飛ばす)。
-  - routing が外される(`routing` の鍵が無くなる)のに集まった文書があれば、`material.routing_conflict@1 {path, material, routing: null, bound_by}` で断ります(何も書かない)。
-  - そうでなければ、集めた行の `routing` を新しい値(`routingFromJson()` → `routingJson()`。2 つの関数は MT-3 で bind の節から上に移した)にし、`parsePrimitiveMaterialBindingJson()` に通します。通らなければ `material.binding_invalid@1` です。
-  - 書き直した bindings の文書は、material の文書と同じ `commitDocuments()` の 1 回(project の文書の transaction、それぞれの digest の CAS)で書き、答えの `rewritten_bindings` に `{model, material_bindings, bindings_digest, previous_bindings_digest}` を並べます(書いた答えには必ず付く。無ければ `[]`)。
-- **段 2: 登録し直して組み直す**([`rebuildMaterial()`](../../src/core/communication/materialdocumentrpc.cpp#L957))。`values` 以外の鍵が変わり、その material がこの engine に(その文書から)登録されていて `MaterialContainer` があるときに呼びます。
-  1. `ProjectMaterialAssetContainer` / `ModelAssetContainer` / `ReloadService` のどれかが無ければ `restart_required` です。あれば `VulkanManageCore::waitIdle()`。
-  2. 段 1 が書き直した model のうち読み込まれているものは、`exchangeMaterialBindings()` で宣言の bindings を新しい文書に入れ替えます(前のものを覚える)。
-  3. [`ProjectMaterialAssetContainer::reregisterDocument()`](../../src/core/material/projectmaterialasset.cpp#L891) が文書の material を同じ名前で新しく登録し、前の登録の id を `Reregistered::previous` に返します(前の登録はまだ解放しない)。throw したら入れ替えた bindings を `restoreMaterialBindings()` で戻して `restart_required` です。
-  4. [`ModelAssetContainer::modelsDrawingMaterials()`](../../src/core/asset/model.cpp#L941) が前の id で描いている model を名前で返します。template の `material_primitives` がその id を持つ model と、[`PolygonInstanceContainer::modelsDrawingMaterials()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1066) が draw item の `pipeline_material_key.material` から引く生きた instance の model(MT-2 の object の上書きを含む)です。これに段 1 で入れ替えた model を足したものが `rebuilt_models` です。
-  5. それぞれの `reloadKey()` で `ReloadService::reloadModelsNow()` を 1 回呼び、その場で組み直します。throw したら bindings を戻して `restart_required` です(前の登録は解放せず、model は前の登録で描き続ける。コードの注記)。
-  6. 前の登録を `MaterialContainer::releaseModelResources(previous, {}, deferred = true)` で解放し、`applied: "rebuilt"`・`restart_required: null`・`rebuilt_models` を返します。
-- **`Impl::registerDocuments()` の replace**([MT-3 の replace の注記](../../src/core/material/projectmaterialasset.cpp#L249)): `reregisterDocument()` は `registerDocument()` と同じ関数を `replace = true` で呼びます。
-  - 名前の衝突の検査から、置き換える文書が持つ名前を外します。新しい登録が全部済んでから、その文書の名前を `named_materials` と `material_documents` から外して(id は `previous` へ)新しいものを入れます。
-  - 値の reload は `MaterialContainer::forgetReloadableMaterialValuesFile()`(→ `MaterialValuesReloadHandler::untrack()`。その文書の追跡と registry の資源を外し、surface の fake は残す)の後に新しい登録で `registerReloadableMaterialValuesFile()` し直します。
-  - 途中で throw したら、この呼び出しが登録した id を `releaseModelResources(..., false)` で戻して投げ直します(置き換える前の登録はそのまま。MT-3 で constructor の経路にも入った try)。
-  - texture は [`ProjectMaterialTextureResolver`](../../src/core/material/projectmaterialtextureresolver.hpp#L18) が論理の key ごとに 1 回だけ登録した id を引くので、同じ参照のままファイルの中身だけ変わっても登録し直しは古い画像のままです(着地時の記録)。
-- **`bind_material` の routing**: [`resolveBindingMaterial()` の MT-3 の注記](../../src/core/communication/materialdocumentrpc.cpp#L1566) から、project material の routing は登録済みの `namedMaterials()` ではなく asset_data の `materials[]` の文書から読みます(次の起動で binding が照合される値)。live かどうかは `registeredFrom(名前, 文書)` です。
-- test: [`materialdocumentrpc_test.cpp` の MT-3 の 1 本](../../test/materialdocumentrpc_test.cpp#L637)(GPU。`makeBlankBoxProject()` に `transparent` を足し、forward_transparent の material pass を持つ project を作る。png は `stb_image_write` で test が書く)。MT-1 の 1 本の `tags` の確認は `rebuilt` に変わりました。
+##### 作成・割当・復旧
 
-#### `edit_material` の surface と routing の組(✅VR-1、`45864d55`)
+新規登録は [`registerDocument()`](../../src/core/material/projectmaterialasset.cpp#L884) が constructor と共通の登録処理を1文書に対して呼びます。model の割当は文書 commit → bindings 交換 → waitIdle → model reload の順で、失敗時は前の bindings を復元します。
 
-VR-1 は `materialdocumentrpc.{hpp,cpp}` だけを触り、`edit_material` が surface か routing の片方だけを受けたときに、もう片方を engine の surface の manifest(OpenPBR の `surfaces/openpbr/manifest.json`)の組から補うようにしました。契約は [VR-1 の edit_material の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L117)、規則は manual 第6章 §6.7 です。VR-1 の前は、Studio のドックが surface と routing を別々に送るので、片方だけの変更が lowering の [`validateVariantSurface()`](../../src/project/materiallowering.cpp#L325)(routing の variant の render state と surface の `render_state` を比べる)で断られ、`material.document_invalid@1` になっていました(実装者の報告)。
+起動時の一括登録が失敗した場合は1文書ずつ再登録し、拒否を `Impl::refused` へ保持します。[`recoverDocument()`](../../src/core/material/projectmaterialasset.cpp#L1008) は修正済み文書の登録と model の解き直しを担当し、RPC と watch participant が同じ入口を使います。`publishProblems()` は拒否文書と未解決 bindings の内部記録を domain 単位で公開します。
 
-- **manifest の名前を持つ**: [`EngineSurfaceVariant`](../../src/core/communication/materialdocumentrpc.cpp#L817) に `manifest`(その variant を載せた manifest の engine 資源の id)を足し、[`engineSurfaceVariants()`](../../src/core/communication/materialdocumentrpc.cpp#L824) が入れます(MT-1b の `list_surfaces` と同じ表。surface の参照 → variant)。
-- **補う所**: [`pairSurfaceVariant()`](../../src/core/communication/materialdocumentrpc.cpp#L1036) は要求の `params` を直接書き換えます。そのため `editMaterial()` は受けた JSON(`sent`)を写した `params` で動き、material を見つけた後、`previous` を作る前に [VR-1 の組を補う呼び出し `pairSurfaceVariant(params, material, surfaces)`](../../src/core/communication/materialdocumentrpc.cpp#L1118) を置きました。補った鍵は送られた鍵と同じ道を通るので、`previous`・値の検査・MT-3 の段 1(binding の書き直し)と段 2(登録し直し)にそのまま乗ります。
-  - `surface` が有って `routing` が object でない、またはその逆のときだけ動きます(両方・どちらも無しは何もしない)。
-  - `surface` の側: 要求に `routing` の鍵がある(`null` を含む)か material が `routing` を持たなければ何もしない。surface が表に無いか、variant に `alpha_mode` / `double_sided` が無ければ何もしない。material の今の routing と違うときだけ `params["routing"]` を入れる(`routingFromJson()` で比べ、`toJson()` で書く)。
-  - `routing` の側: material の `surface` が文字列で表に載り、送った routing が `routingFromJson()` で読めるときだけ。同じ `manifest` の variant から routing が等しいものを探し、今の surface と違えば `params["surface"]` を入れる。
-  - 表は呼ぶたびに `engineSurfaceVariants()` で engine の資源から読み直します(コードの読み)。
-- test: [`materialdocumentrpc_test.cpp` の VR-1 の 1 本](../../test/materialdocumentrpc_test.cpp#L772)(GPU、`[vr1]`。MT-3 と同じ `makeBlankBoxProject(dir.root, true)` の project で、surface だけ・組でない両方・routing だけの 3 段と、起こし直した後の画素)。着地の W1 は 35/35 が緑でした(実装者の報告)。
+##### object ごとの material
 
-#### surface の一覧 `list_surfaces`(✅MT-1b、`a6373c01`)
+[`editorobjectmaterial.cpp`](../../src/core/communication/editorobjectmaterial.cpp#L220) は object の行を比較し、値変更・挿入・削除を journal の op 列へ変換します。scene の履歴を使うため material 文書 handler とは別に登録されます。描画側は instance の draw item に実効 material を保持し、model reload 時には上書きの指定を新しい template に対して解き直します。
 
-MT-1b は `materialdocumentrpc.{hpp,cpp}` だけを触り、[`listSurfaces()` の本体 MT-1b](../../src/core/communication/materialdocumentrpc.cpp#L927) と、その登録([MT-1b の list_surfaces の登録](../../src/core/communication/materialdocumentrpc.cpp#L2679))を足しました。契約は [MT-1b の list_surfaces の契約の注記](../../src/core/communication/materialdocumentrpc.hpp#L45) です。
-
-- **引数**: `{}` か null 以外は `std::invalid_argument`(`-32602`)です。
-- **engine の分**: `registeredEngineResourceIds()` のうち `surfaces/` で始まり `.surface` で終わる id を `engine://` を付けて整列し、先に並べます。
-- **名前と routing**: [`engineSurfaceVariants()`](../../src/core/communication/materialdocumentrpc.cpp#L824) が、同じ登録の中の `surfaces/**/manifest.json` の `variants[]` から `{surface → name, alpha_mode?, double_sided?}` の表を作ります。`name` は表にあれば付け、`routing` は `alpha_mode` と `double_sided` が両方あり、surface が parse できたときだけ付けます。
-- **project の分**: [`projectSurfaceReferences()`](../../src/core/communication/materialdocumentrpc.cpp#L866) が `PathResolver::projectRoot()` から `recursive_directory_iterator` で走査します。名前が `.` で始まるディレクトリと symlink のディレクトリは `disable_recursion_pending()` で入らず、`*.surface` の通常ファイルを `project://<相対パス>` にして整列します。`PathResolver::isSetup()` が偽なら project の分は空です。asset store の実体を別に辿る処理はありません。
-- **1 件の作り方**: [`surfaceListEntry()`](../../src/core/communication/materialdocumentrpc.cpp#L891) が `PathResolver::loadText()` と `parseSurfaceFormat()`(`get_surface_schema` と同じ)で読み、`params` / `textures` の数を入れます。例外は `error` に例外の文を入れて、その 1 件を残します。
-- **render_state**: [`declaresRenderState()`](../../src/core/communication/materialdocumentrpc.cpp#L793) が、code より前の `//!` の行に `render_state` の鍵があるかを見ます。parse 結果は宣言が無くても既定値を持つため、宣言の有無はこの関数で別に判定し、あるときだけ `{blend, cull, depth_test, depth_write, depth_compare}` を出します。
-- test: [`materialdocumentrpc_test.cpp` の MT-1b の 1 本](../../test/materialdocumentrpc_test.cpp#L425)(GPU。OpenPBR の 6 つ・project の 3 つ・`.hidden` の除外・parse できない surface の `error`・引数の拒否)。
-
-#### object ごとの material(✅MT-2、`44b7b50a`)
-
-scene の object が自分の model の material を上書きします(利用者の判断 2026-10-03「object ごとの上書きはあったほうがいい」。Unity の Mesh の既定の material と MeshRenderer の materials の関係)。書き先は `simplemodelview.materials` で、codec は §3.11、描画の側は第6章 §6.5 の「Material 描画のデータ経路」です。ここは RPC の 2 本と `get_material_bindings` の足し分です。
-
-- **置き場所**: 2 本は material の RPC の file ではなく、editor の journal を使うので新しい `editorobjectmaterial.cpp` に `EditorCommandService` の member として置きました([`EditorCommandService::setObjectMaterial()`](../../src/core/communication/editorobjectmaterial.cpp#L220) / [`EditorCommandService::getObjectMaterials()`](../../src/core/communication/editorobjectmaterial.cpp#L358))。登録は `configureEditorRpcHandlers()` の `undo` / `redo` の後です([MT-2 の set_object_material の登録](../../src/core/communication/editorrpchandlers.cpp#L182))。契約は [MT-2 の 2 本の契約の注記](../../src/core/communication/editorcommandservice.hpp#L372) です。
-- **`set_object_material` の流れ**:
-  1. 鍵と形を検査します(`std::invalid_argument` は `-32602`)。
-  2. 今の文書から object と最初の `simplemodelview` を探し(無ければ `material.object_unknown@1`。✅MT-2b から、object が見つかった後の拒否は `error_fields` に `scene_id` と、authoring の名前があれば `name` も入る。`editorcommandservice.hpp` の注記は `{object, reason}` のまま)、`ModelAssetContainer` から template と `materialSlots()` を引きます(引けなければ `material.model_unknown@1`)。
-  3. 要求を「対象(1 つの primitive か、全 primitive)→ material か null」の列にします。`slot` は、その glTF の material を持つ primitive の全部に展開します。無い primitive や、誰も持たない `slot` は `material.binding_invalid@1` です。
-  4. 名前は [`knownMaterial()`](../../src/core/communication/editorobjectmaterial.cpp#L160) で、model の `named_materials` と `ProjectMaterialAssetContainer::namedMaterials()` を引きます。無ければ `material.name_unknown@1` です。
-  5. 今の行([`currentRows()`](../../src/core/communication/editorobjectmaterial.cpp#L176)。対象ごとに 1 行)と比べ、変わる対象ごとに journal の operation を 1 つ作ります: 行の `/material` を `set_component_value`、新しい行を末尾に `insert_component_field`、null は行を `remove_component_field`。address は `list_path: "/materials"` と `row_id` です([`rowAddress()`](../../src/core/communication/editorobjectmaterial.cpp#L191))。
-  6. operation があれば `edit({actor_id, base_revision, operations})` を 1 回呼びます(`base_scene_revision` が無ければ今の revision)。無ければ `edit` を呼ばず `changed: false` です。どちらの答えにも `object` / `scene_id` / `model` / `previous.materials` を足します。
-- **`get_object_materials`**: 行ごとに `resolved`(`knownMaterial()`)を付け、primitive ごとに「その primitive の解ける行 > 全 primitive の解ける行 > model の割り当て」で `material` と `source` を決めます。model の割り当ては `ModelAssetContainer::declaredMaterialBindings()` の bindings、無ければ `slot` です。`drawn` は、[`liveInstance()`](../../src/core/communication/editorobjectmaterial.cpp#L205) が `SceneLoader::runtimeObjectBindings()` から引いた instance の [`PolygonInstanceContainer::instancePrimitiveMaterials()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1040)(draw item の `pipeline_material_key.material` の名前)です。
-- **`get_material_bindings` の `objects` / `object_overrides`**: [`countModelObjects()`](../../src/core/communication/materialdocumentrpc.cpp#L1488) が `ProjectBasicConfig::resolvedScene().scenes()` の全 object の `simplemodelview` の `effective_json` を見て、`model` が一致する数と、そのうち `materials.rows` が空でない数を数えます(prefab から生成された object も含む。header の注記)。
-- test: [`mt2_object_material_test.cpp` の 1 本](../../test/mt2_object_material_test.cpp#L241)(GPU。`pelican_define_test(mt2_object_material_test GPU RUNTIME_SHADER ...)`)。Blank の箱 2 つで、右だけを赤にして画素・`get_object_materials`・`get_material_bindings`・MP-1 の `drawn_materials`・undo / redo・`previous`・primitive と slot・拒否 3 種・保存と次の起動を見ます。Play 中の編集、model の reload で解き直す経路、draw_loop の振り分けの test はありません。
 
 #### RPC で model を登録する・外す(✅MI-1、`61600f9e`)
 
@@ -1640,19 +1564,11 @@ instance の入力ポートがどこから値を取るかは `edge > parameters 
 
 ### 編集 — `editGraphDocument()`
 
-[`editGraphDocument()`](../../src/project/graphcomposition.hpp#L245) は op の並びを1本の候補文書へ順に適用し、**最後に1回だけ展開**します。途中で1つでも落ちれば候補ごと捨てられ、呼び手の文書は無傷です。受け付ける op は5種で、**宣言の上のコメントがその5種と8つの名前付き拒否を列挙しています**（`40099e3f` で `set_node_label` と残りの拒否名が追記され、コメントと実装が揃いました）。
+受理する op・scope・source の形は[第13章の op 表と scope](../manual/13_editor.md#graph-edit-scope)を参照してください。
 
-| op | 実装 | 断り方 |
-|---|---|---|
-| `add_node` | [.cpp](../../src/project/graphcomposition.cpp#L2292) | `graph.node_duplicate@1` / `graph.nested_instance@1` / `graph.input_scope@1` |
-| `remove_node` | [.cpp](../../src/project/graphcomposition.cpp#L2333) | `graph.output_referenced@1`（出力や他ノードがまだ指している） |
-| `set_input` | [.cpp](../../src/project/graphcomposition.cpp#L2364) | `source` は `{node, port}` ちょうど2キー、または `null`（切断） |
-| `set_node_parameters` | [.cpp](../../src/project/graphcomposition.cpp#L2402) | 空オブジェクトは `parameters` キーごと削除 |
-| `set_node_label` | [.cpp](../../src/project/graphcomposition.cpp#L2415) | 人が付ける表示名。識別子ではないので、消すのは空文字列で表す |
-| `set_layout` | [.cpp](../../src/project/graphcomposition.cpp#L1083) | scope の editor 用 `layout`(node 位置 / reroute / tie)を丸ごと置換。`null` で消す。名指した node / 辺が無い、座標が非有限、未知 key は `graph.layout_invalid@1`。layout だけの op 列は再 compose しない(N-6) |
-| `add_definition` / `remove_definition` / `rename_definition` | [`applyDefinitionOp()`](../../src/project/graphcomposition.cpp#L2220) | ✅LP-0c。`graph.definition_duplicate@1` / `graph.definition_missing@1`。改名は名指す `graph.instance` と `graph.loop` の分岐を同じ op で書き換える。「消した definition がまだ名指されていないか」「instance / ループの供給する port が definition にあるか」「消した `graph.input` をまだ誰かが供給していないか」は op ごとではなく列の最後に 1 回([`runDeferredCheck()`](../../src/project/graphcomposition.cpp#L2126)) |
+[`editGraphDocument()`](../../src/project/graphcomposition.hpp#L245) は op 列を1本の候補文書へ順に適用します。scope は候補から毎回解決し、前の op の変更を見ます。definition 操作は [`applyDefinitionOp()`](../../src/project/graphcomposition.cpp#L2220) へ分岐します。
 
-各opは任意で **`scope`** を取ります。省略（または根の名前）なら根の `nodes`、定義名なら `definitions.<名前>.nodes` を編集対象にします（[`resolveEditScope()`](../../src/project/graphcomposition.cpp#L1524)）。scope は op ごとに解決し直します —— 同じ並びの前のopが定義の中身を変えている可能性があるからです。定義の中に居る id を根から触ろうとすると `graph.definition_immutable@1` です。
+instance / ループの供給 port、削除した境界入力、definition の参照は [`runDeferredCheck()`](../../src/project/graphcomposition.cpp#L2126) で列の最後に検証し、最後に1回だけ展開します。失敗時は候補を捨てるため、呼び手の文書は変更されません。
 
 [`editGraphInstances()`](../../src/project/graphcomposition.hpp#L251)（instance の着脱）は、自分で文書を触らず**上のopへ翻訳してから** `editGraphDocument()` を呼びます。2つの入口が「何が妥当な編集か」で食い違えないようにするためです。
 
@@ -1812,3 +1728,20 @@ render component は「materialize済みの feature 文書1本 + それをホス
 RPCからの使い方（`export_render_feature` / `import_render_feature`、書き先が `user://components/<name>/` に固定されること）は[第7章](07_tools_rpc_tests.md)です。
 
 次章では、sceneの中心にあるECSの実体をメモリ配置から追います。
+
+<a id="prefab-resolution-closure"></a>
+
+### prefab closure の構築と失効
+
+公開する世代値・取得元・snapshot の wire 形式は[第13章の比較対象](../manual/13_editor.md#prefab-edit-comparison)を参照してください。
+
+[`ResolvedScene::resolve()`](../../src/core/loader/resolvedscene.cpp#L780) は resolver 世代、registry 世代、bindable provider snapshot を closure に保持します。authoring scene の JSON の SHA-256、展開で使った prefab、生成された behavior の schema を収集し、名前順に整列します。未使用の registry entry は wire identity に入りません。provider と resolver 入力の fingerprint も内容識別に含めます。
+
+依存内容は `sameWireIdentity()`、プロセス内の編集前提は closure / provider の世代で照合します。metadata の再構築で新しい resolved scene や provider snapshot が公開されると、旧世代を前提にした編集は再観測が必要です。scene 文書の revision が同じでも、依存や provider の差し替えを見落とさないため、journal は[受付後にも世代を再照合](../../src/core/communication/editorjournal.cpp#L3377)します。
+
+
+<a id="transform-preflight-reuse"></a>
+
+### transform 編集の preflight 再利用
+
+`edit` の受付で作る検査済み候補は、単一の transform 値変更・legacy object_id selector・prefab を使わない文書に限って保持します([受付](../../src/core/communication/editorjournal.cpp#L4513))。適用時に document / resolved scene の pair の `snapshot_identity_` が一致すれば、その候補を再利用します([適用](../../src/core/communication/editorjournal.cpp#L4188))。revision が同じでも別 pair なら再検査します。gate・scene・revision・CAS・preview lease の検査と投影 commit は省略しません。

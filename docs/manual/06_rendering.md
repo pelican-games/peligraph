@@ -45,13 +45,11 @@ project.json ──rendering_config_json──▶ rendering config JSON
 
 ここで扱う描画世代の公開は、[シーンロードの prepare / publish / activate / commit](04_scene_ecs.md#scene-load-transaction)とは別の transaction です。**描画の世代**(`RendererRuntimeGeneration`)は、同時に使うプログラム・実行計画・GPU 資源の所有をまとめた snapshot で、番号だけを指す語ではありません。
 
-`registerRenderingPassConfigVariantsData` は **prepare → allocate → registerVariants → publish** の順で候補を作ります。prepare は宣言・provider・資産・グラフを検証し、allocate は GPU 登録の checkpoint を開き、registerVariants は flat / XR などのプログラムを登録します。publish では候補世代を検証し、通常経路なら公開中の snapshot を差し替えます([実装](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1606))。
+候補世代の構築・登録・公開の内部手順は[読解ガイドの描画登録](../source-code-guide/06_rendering_vulkan_shader.md#render-generation-flow)を参照してください。
 
 **公開(publish)** は runtime の参照先を切り替える操作、**確定(commit)** はその transaction の変更を保持すると決める操作です。描画編集では文書の transaction を `before_publish` で確定してから世代を公開します。文書が保存済みでも、live material の物理契約や ray layout の mode により `restart_required` となる場合は稼働中の世代を変えません([編集シーケンス](13_editor.md#render-edit-sequence))。
 
-ray の joint 経路は候補を **staged 世代**として保ち、ray 側との共同確定まで通常の公開 snapshot を替えません。候補を描画準備に使う `renderingSnapshot` と、公開済みを返す `snapshot` は区別します。公開前の失敗は GPU 登録を checkpoint へ戻し、staged 候補の rollback は保持した transaction と候補を解放します([staging](../../src/core/renderingpass/framegraphruntime.cpp#L655))。
-
-旧世代の GPU 資源は公開切替と同時には破棄されず、frame / submission が保持する lease と retirement の条件に従います([寿命の図](../source-code-guide/06_rendering_vulkan_shader.md#generation-lifetime))。Graph の状態は新旧 graph の対応に従って value と pose の両方へ引き継ぎ、owner が変わった scope はリセットします。parameter と音も保持可能なものだけを引き継ぎます([状態移送](../../src/core/loader/scenegraphruntime.cpp#L358))。owner だけの変更では条件を満たす persistent buffer も引き継ぎますが、通常の authoring 編集で全資源の内容が保存されるという約束ではありません([buffer の移送](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1400))。
+staged 世代・lease・状態移送を含む所有と寿命は[読解ガイドの世代寿命](../source-code-guide/06_rendering_vulkan_shader.md#generation-lifetime)を参照してください。
 
 <a id="座標の規約cc-1-c8367b87cc-2-1501685a"></a>
 
@@ -101,6 +99,8 @@ ray の joint 経路は候補を **staged 世代**として保ち、ray 側と�
 <a id="render-preset"></a>
 
 **preset** は、描画パスや target などの構成を再利用する `pelican.render_pipeline` v1 文書です。root の `rendering.pipeline.preset` で選び、`settings` で対応する設定を渡します。engine preset(`engine://…`)は同梱の構成、project preset(`project://…`)は project が所有する編集可能な構成です。engine preset の構造を編集するときは `fork_render_pipeline` で project の新規ファイルへ複製し、root の参照先も切り替えます。preset 自身から別の preset を選ぶ再帰はできません([形式の検査](../../src/project/renderpipeline.cpp#L907)、[fork](../../src/core/communication/renderconfigeditor.cpp#L3589))。
+
+preset の合成では、root の `features`・`shader_defines`・`graph_transforms` を配列へ追記します。root の `draw_sort` は preset の値を置換します。`render_strategy`・`snapshots`・`target_planning`・`vulkan_plan_pins`・`vulkan_physical_fragments` は preset が既に持つ場合に root から上書きできません。preset を選ぶ root に `render_targets` / `rendering_passes` を直接併記することもできません。構造を変更するときは先に fork します([合成の検査](../../src/project/renderpipeline.cpp#L961))。
 
 このほか `target_planning`(§6.6)、`vulkan_plan_pins` / `vulkan_physical_fragments`(§6.6)、`xr`(§6.12)もトップレベルキーです。
 
@@ -418,7 +418,31 @@ color attachment stateは「未指定」の空表現を保ちます。省略をo
 
 SPIR-V を spirv-reflect で解析し、**descriptor set layout・pipeline layout・push constant range を全自動生成**します。頂点+フラグメントで binding の型が食い違うと起動時エラー。パイプラインキャッシュ(`pipeline_cache.bin`)に加え、WP82 で **SPIR-V ディスクキャッシュ**(`<project>/.pelican/shader_cache/`、SHA-256 キー)が入り、2 回目以降の起動が大幅に短縮されます(破損時は再コンパイルへフォールバック)。
 
-**fullscreen pass の入力と shader の宣言の契約。**fullscreen pass(と入力を持つ raster pass)の入力は、set 1(`PELICAN_SET_PASS_INPUT`)の binding を `input` の位置で数えます —— texture の入力が binding 0 から、その後に buffer の入力が続きます(resource port の宣言も同じ番号に並びます —— 仮想 include `pelican_resource_ports.glsl` が `layout(set = PELICAN_SET_PASS_INPUT, binding = N)` で、画像は入力の index、buffer は画像の数 + i(shader が可変の組を宣言していれば `first + max + i`。下の「可変の入力」)。pipeline の作成時に port ごとに型・名前・次元が照合されます。graph から作った pass の `reads` は名前の順に並びます)。engine は pass を組むとき、入力ごとに、shader の reflection がその binding に要る種類の宣言を持つかを見ます。普通の texture の入力は combined image sampler、local read に選ばれた入力(§6.6 の「自動 tile-local attachment / same-pixel local read」)は input attachment、buffer の入力は storage buffer です([入力ごとの照合](../../src/core/fullscreenpass/fullscreenpasscontainer.cpp#L134))。見るのは reflection なので、`PELICAN_DECLARE_INPUT_<i>(<名前>)`(読むのは `PELICAN_TEXTURE_2D_<i>(<名前>, uv)`)で宣言しても、`layout(set = PELICAN_SET_PASS_INPUT, binding = <i>)` を手で書いても同じです。宣言が無い(か種類の違う)最初の binding で pass は組めず、編集 RPC では `render_pipeline_preflight_failed` に **`shader_input_mismatch`** `{pass, fragment, direction, kind, binding, resource, expected, pass_texture_inputs, pass_buffer_inputs, shader_pass_inputs}`(この向きの `direction` は `"pass_input_undeclared"`)が付いて断られ、文書は変わりません(鍵と例は [第13章](13_editor.md) §13.5「レンダー設定を編集する」)。message は `Fullscreen pass input texture/local-read contract does not match shader reflection: pass '<pass>' input <binding> ('<resource>') expects a sampled image at set 1 binding <binding>, but fragment '<fragment>' declares no pass input at that binding (shader declares <N> pass inputs)` の形です(buffer は `Fullscreen pass input buffer does not match shader reflection` で始まります。[型付きの拒否](../../src/core/fullscreenpass/fullscreeninputbindingmismatch.hpp#L122))。逆向き —— shader が、pass の渡す入力の数以上の binding を set 1 に宣言している —— は、engine がその binding を既定の resource で埋めます。combined image sampler と separate image(2D / 2D array / cube の view)は 1x1 の黒 (0,0,0,0)、sampler は既定の sampler(linear / repeat)、storage buffer は 0 で埋めた 64 KiB の buffer です。配列の binding は全要素に同じ resource が入ります。入力が 0 個の fullscreen pass でも、shader が set 1 を宣言していれば set 1 を bind します(入力を持つ raster pass も同じ関数を通ります。入力の無い raster pass は通りません。[埋められる宣言](../../src/core/fullscreenpass/fullscreenpasscontainer.cpp#L100)、[既定の resource](../../src/core/fullscreenpass/fullscreenpasscontainer.cpp#L590))。見るのは reflection なので、宣言しただけで読まない binding も埋まります。storage buffer の block が 64 KiB より大きくても検出しません(reflection が block の大きさを持たないため)。埋めたときは編集は成功し、compile ごとに LOG_WARNING が 1 行出ます —— 下の拒否と同じ文(埋めた最小の binding について)の後に `; the engine binds a default resource (zeros) at set 1 binding(s) 1, 2` のように埋めた binding が続きます([警告を出す所](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L2496))。埋められない種類の宣言 —— input attachment、storage image、上に無い次元の画像(3D など)、uniform buffer、dynamic buffer、texel buffer、acceleration structure など —— が 1 つでもあれば pass は組めず、同じ `render_pipeline_preflight_failed` / `shader_input_mismatch` で断られます(ほかの binding が埋められる種類でも、全体が断られます)。このとき `direction` は `"shader_input_unsupplied"`、`binding` は埋められない宣言のうち最小の binding、`kind` は宣言の種類(`"texture"` / `"buffer"` / `"other"`)、`expected` は `"none"` で、`resource` は付きません。message は `Fullscreen shader declares a pass input the pass does not supply: pass '<pass>' supplies <M> pass inputs, but fragment '<fragment>' declares a uniform buffer at set 1 binding <binding> (shader declares <N> pass inputs)` の形です(M が 1 なら `pass input`。[message を組む所](../../src/core/fullscreenpass/fullscreeninputbindingmismatch.cpp#L32))。実行時サイズの配列(`[]`)は、engine の reflection が要素 1 つの配列として扱います(set layout も同じ数から作られます)。pass が渡さなければ要素 0 が既定の資源で埋まり、渡せば要素 0 に bind されるので、どちらでも layout の全要素が書かれます(断られるのは reflection がこの読み替えをやめた場合だけ。runtime 配列には descriptor indexing の有効化が要り、今の device の設定では pipeline を作れない可能性が高いので、専用の test は無く未確認です)。入力を足すなら shader の宣言も足します。Studio はこの拒否の横で、pass の fragment を入力がすべて可変の `engine://passthrough` に替えるか、足す行を clipboard に入れます(Q-14、[第13章](13_editor.md) §13.5)。逆向き(`shader_input_unsupplied`)の拒否には、Studio は宣言を消すよう言う 1 行(`<pass>'s shader (<stem>) declares an input the pass cannot supply (<型> at binding <b>). Remove that declaration from the shader.`)を出し、操作は Open the shader だけです(Q-15。`engine://passthrough` への切り替えは出さず、clipboard にも何も入れません。[第13章](13_editor.md) §13.5)。
+<a id="shader-pass-input-contract"></a>
+
+#### 入力 binding の番号
+
+fullscreen pass(と入力を持つ raster pass)の入力は、set 1(`PELICAN_SET_PASS_INPUT`)の binding を `input` の位置で数えます —— texture の入力が binding 0 から、その後に buffer の入力が続きます(resource port の宣言も同じ番号に並びます —— 仮想 include `pelican_resource_ports.glsl` が `layout(set = PELICAN_SET_PASS_INPUT, binding = N)` で、画像は入力の index、buffer は画像の数 + i(shader が可変の組を宣言していれば `first + max + i`。下の「可変の入力」)。pipeline の作成時に port ごとに型・名前・次元が照合されます。graph から作った pass の `reads` は名前の順に並びます)。
+
+#### reflection による入力の照合
+
+engine は pass を組むとき、入力ごとに、shader の reflection がその binding に要る種類の宣言を持つかを見ます。普通の texture の入力は combined image sampler、local read に選ばれた入力(§6.6 の「自動 tile-local attachment / same-pixel local read」)は input attachment、buffer の入力は storage buffer です([入力ごとの照合](../../src/core/fullscreenpass/fullscreenpasscontainer.cpp#L134))。見るのは reflection なので、`PELICAN_DECLARE_INPUT_<i>(<名前>)`(読むのは `PELICAN_TEXTURE_2D_<i>(<名前>, uv)`)で宣言しても、`layout(set = PELICAN_SET_PASS_INPUT, binding = <i>)` を手で書いても同じです。宣言が無い(か種類の違う)最初の binding で pass は組めず、編集 RPC では `render_pipeline_preflight_failed` に **`shader_input_mismatch`** `{pass, fragment, direction, kind, binding, resource, expected, pass_texture_inputs, pass_buffer_inputs, shader_pass_inputs}`(この向きの `direction` は `"pass_input_undeclared"`)が付いて断られ、文書は変わりません(鍵と例は [第13章](13_editor.md) §13.5「レンダー設定を編集する」)。message は `Fullscreen pass input texture/local-read contract does not match shader reflection: pass '<pass>' input <binding> ('<resource>') expects a sampled image at set 1 binding <binding>, but fragment '<fragment>' declares no pass input at that binding (shader declares <N> pass inputs)` の形です(buffer は `Fullscreen pass input buffer does not match shader reflection` で始まります。[型付きの拒否](../../src/core/fullscreenpass/fullscreeninputbindingmismatch.hpp#L122))。
+
+#### shader にだけある入力の補完
+
+逆向き —— shader が、pass の渡す入力の数以上の binding を set 1 に宣言している —— は、engine がその binding を既定の resource で埋めます。combined image sampler と separate image(2D / 2D array / cube の view)は 1x1 の黒 (0,0,0,0)、sampler は既定の sampler(linear / repeat)、storage buffer は 0 で埋めた 64 KiB の buffer です。配列の binding は全要素に同じ resource が入ります。入力が 0 個の fullscreen pass でも、shader が set 1 を宣言していれば set 1 を bind します(入力を持つ raster pass も同じ関数を通ります。入力の無い raster pass は通りません。[埋められる宣言](../../src/core/fullscreenpass/fullscreenpasscontainer.cpp#L100)、[既定の resource](../../src/core/fullscreenpass/fullscreenpasscontainer.cpp#L590))。見るのは reflection なので、宣言しただけで読まない binding も埋まります。storage buffer の block が 64 KiB より大きくても検出しません(reflection が block の大きさを持たないため)。埋めたときは編集は成功し、compile ごとに LOG_WARNING が 1 行出ます —— 下の拒否と同じ文(埋めた最小の binding について)の後に `; the engine binds a default resource (zeros) at set 1 binding(s) 1, 2` のように埋めた binding が続きます([警告を出す所](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L2496))。
+
+#### 補完できない入力の拒否
+
+埋められない種類の宣言 —— input attachment、storage image、上に無い次元の画像(3D など)、uniform buffer、dynamic buffer、texel buffer、acceleration structure など —— が 1 つでもあれば pass は組めず、同じ `render_pipeline_preflight_failed` / `shader_input_mismatch` で断られます(ほかの binding が埋められる種類でも、全体が断られます)。このとき `direction` は `"shader_input_unsupplied"`、`binding` は埋められない宣言のうち最小の binding、`kind` は宣言の種類(`"texture"` / `"buffer"` / `"other"`)、`expected` は `"none"` で、`resource` は付きません。message は `Fullscreen shader declares a pass input the pass does not supply: pass '<pass>' supplies <M> pass inputs, but fragment '<fragment>' declares a uniform buffer at set 1 binding <binding> (shader declares <N> pass inputs)` の形です(M が 1 なら `pass input`。[message を組む所](../../src/core/fullscreenpass/fullscreeninputbindingmismatch.cpp#L32))。
+
+#### 配列と実行時サイズの制限
+
+実行時サイズの配列(`[]`)は、engine の reflection が要素 1 つの配列として扱います(set layout も同じ数から作られます)。pass が渡さなければ要素 0 が既定の資源で埋まり、渡せば要素 0 に bind されるので、どちらでも layout の全要素が書かれます(断られるのは reflection がこの読み替えをやめた場合だけ。runtime 配列には descriptor indexing の有効化が要り、今の device の設定では pipeline を作れない可能性が高いので、専用の test は無く未確認です)。
+
+#### Studio からの修正
+
+入力を足すなら shader の宣言も足します。Studio はこの拒否の横で、pass の fragment を入力がすべて可変の `engine://passthrough` に替えるか、足す行を clipboard に入れます(Q-14、[第13章](13_editor.md) §13.5)。逆向き(`shader_input_unsupplied`)の拒否には、Studio は宣言を消すよう言う 1 行(`<pass>'s shader (<stem>) declares an input the pass cannot supply (<型> at binding <b>). Remove that declaration from the shader.`)を出し、操作は Open the shader だけです(Q-15。`engine://passthrough` への切り替えは出さず、clipboard にも何も入れません。[第13章](13_editor.md) §13.5)。
 
 **可変の入力。**fullscreen / raster pass の fragment は、固定の入力の後ろに**数の決まっていない入力の組**を 1 つ宣言できます。`#include "pelican_view.glsl"` の後に global scope で 1 回、`PELICAN_DECLARE_VARIADIC_INPUTS(first, max);` と書くと、set 1 の binding `first` 〜 `first + max - 1` に 2D の combined image sampler(`sampler2D`)が `pelican_variadic_input_<k>`(k = 0 〜 max-1)の名前で宣言されます。`first` と `max` は整数の literal(かそれに展開される macro)で、`max` は 1 〜 16(`PELICAN_VARIADIC_INPUTS_LIMIT`)です。読むのは `PELICAN_VARIADIC_TEXTURE(k, uv)` で、k はループ変数でもよく、`[0, max)` の外は `vec4(0)` を返します。pass が渡している組の数は `PELICAN_VARIADIC_INPUT_COUNT` で、これは preprocessor の数ではなく const int の式なので `#if` には使えません。engine は fullscreen / raster pass の shader を compile するときに `PELICAN_PASS_TEXTURE_INPUT_COUNT=<pass の texture の入力の数>` を define し、マクロはそれから `first` を引いて `[0, max]` に clamp した値を数にします([マクロ](../../src/core/resources/shaders/include/pelican_view.glsl#L176)、[define を足す所](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L2146))。組のうち pass が渡さない binding は Q-14f の既定の resource(0 の 1x1)で埋まり、これは意図した使い方なので LOG_WARNING は出ません(固定の宣言を埋めたときは今までどおり出ます)。engine は組を reflection の変数名の接頭辞 `pelican_variadic_input_` で見分けるので、専用の metadata は要りません([宣言を読む所](../../src/core/fullscreenpass/passinputlayout.cpp#L97))。
 
@@ -1941,7 +1965,7 @@ sample count、array layer上限、external depthなら`TRANSFER_SRC`契約を�
 - v2以降では`(node, logical_resource)`で特定したraster attachmentの`load_op` / `store_op`。
   `load_op`は`load|clear|discard`、`store_op`は`store|discard`で、未記述fieldは自動planを維持する
 
-**scope** はここでは「1 つの Vulkan dynamic rendering instance にまとめて実行するノードの並び」を指します(この節の物理計画の文脈に限った意味です — [用語集](14_glossary.md#scopeスコープ))。`scope_edit_mode` はその scope をどこまで編集してよいかの指定で、**編集を許す範囲が version ごとに異なります**。
+`scope_edit_mode` は[物理プランの scope](#physical-plan-scope)の編集許可範囲を指定し、その範囲は version ごとに異なります。
 
 - v1/v2、またはv3の`scope_edit_mode: "split_only"`は、自動scopeをさらに**分ける**
   exact ordered partitionだけを許可します。**tile-local 値**(scope の中だけで受け渡され、GPU メモリへ書き戻さない attachment の値。上の「自動 tile-local attachment / same-pixel local read」)が新しい境界をまたぐ場合は、その
@@ -2411,88 +2435,16 @@ standard / toon に続く**特権なしの standard library surface** として�
 
 ### RPC で material を読み書きする
 
-動いている engine が material 文書・surface の宣言・model の割り当てを RPC で読み書きします。params・戻り値・拒否は [第13章](13_editor.md#material-文書を読み書きするmt-1) です。Studio の Materials と Inspector の Material の行も同じ RPC を呼びます。
+material の読取・作成・編集・割当・削除・再登録・改名の params、戻り値、拒否、反映状態は[第13章の material RPC](13_editor.md#material-文書を読み書きする)を参照してください。
 
-| メソッド | 何をするか(params・返り値・拒否は [第13章](13_editor.md#material-文書を読み書きするmt-1) §13.5) |
-|---|---|
-| `list_materials` | asset_data の `materials[]` の全部の文書と、その中の material を読む |
-| `get_material` | 1 つの material を文書のまま読む |
-| `get_surface_schema` | `.surface` の `//!` の宣言の `params` と `textures` を読む(宣言にあるものだけで、何も足さない) |
-| `get_material_bindings` | model の primitive ごとの material と、その model を描く scene の object の数を読む |
-| `list_surfaces` | material を作るときに選べる `.surface` を並べる(下の「surface の一覧」) |
-| `edit_material` | 文書の 1 つの material を直す |
-| `create_material` | material 文書を作って asset_data に載せる |
-| `bind_material` | model の material_bindings を書く |
-
-書く 3 本は、読んだときの digest を CAS に、project の文書の transaction で書き、返る前に動いている engine に当てます。当てられないときは書いたうえで `restart_required` を返します。どの鍵の変更がその場で効くかは次の段落からです。
-
-**`edit_material` は values だけなら live、ほかの鍵は material を登録し直して rebuilt です。**決めるのは、その編集で実際に変わった鍵です([live か rebuilt かを決める所 MT-3](../../src/core/communication/materialdocumentrpc.cpp#L1233))。
-
-- `values` だけが変わったときは、WP105 の値の reload と同じ [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L380) でその場に当てます([edit_material が値の reload を呼ぶ所](../../src/core/communication/materialdocumentrpc.cpp#L1250))。`applied: "live"` です。
-- `textures` / `tags` / `routing` / `variants` / `surface` のどれかが実際に変わったときは(`values` が一緒に変わっても)、文書を書いた後に、その material をその場で登録し直します([MT-3 の登録し直しと組み直し `rebuildMaterial`](../../src/core/communication/materialdocumentrpc.cpp#L957))。答えは `applied: "rebuilt"`・`restart_required: null`・`rebuilt_models: [model]` です。
-  - 手順: `VulkanManageCore::waitIdle()` → [`ProjectMaterialAssetContainer::reregisterDocument()`](../../src/core/material/projectmaterialasset.cpp#L891) が文書を読み直し、その文書の material を同じ名前で新しく登録します(shader・pipeline・texture・draw の tag・route・variant を文書のとおりに。値の reload もこの文書については新しい登録を追います)→ 前の登録で描いていた model を [`ReloadService::reloadModelsNow()`](../../src/core/watch/reloadservice.cpp#L425) でその場で組み直す → 前の登録を `MaterialContainer::releaseModelResources()` の deferred で解放(Vulkan の object は DeletionQueue に移り、material の slot の再利用は in-flight の窓が過ぎるまで待つ。header の注記)。render config の世代は組み直しません。
-  - 組み直す model([`ModelAssetContainer::modelsDrawingMaterials()`](../../src/core/asset/model.cpp#L941)): template の primitive が前の material を使う model(material_bindings による割り当てを含む)、前の material で描いている生きた instance を持つ model(MT-2 の object の上書きを含む。[`PolygonInstanceContainer::modelsDrawingMaterials()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1066) が draw item の material から引く)、この編集が binding を書き直した model(読み込まれているもの)。
-- `restart_required` になるのは次のときです。どれも文書は書かれたままで、`reason` がどれかを言います。
-  - その material がこの engine に(その文書から)登録されていない。material の container の無い host。
-  - (values 以外の鍵で)project material・model の container か reload service の無い host(「this host cannot rebuild the material in place」)。
-  - 登録し直しが例外を投げた(この編集で入れ替えた binding も戻します)。model の組み直しが例外を投げた(binding を戻し、前の登録は解放せず、model は前の登録で描き続けます。コードの注記)。
-  - `values` だけのとき、値の reload が例外を投げた。
-- 何も変わらない要求は書かず、`changed: false`・`applied: "live"` を返します。
-- 値は書く前に surface の宣言で検査します。宣言に無い名前は `material.param_unknown@1`、型(float は数、int は整数、vec2 / vec3 / vec4 は 2 / 3 / 4 個の数、color は 3 か 4 個の数)と宣言の `min` / `max`(成分ごと)に合わない値と、解決できない texture の参照は `material.value_invalid@1` です。書いた後の文書は、起動時と同じく parse して全 material を lowering し、通らなければ `material.document_invalid@1` です([候補の文書を起動時と同じに読む所](../../src/core/communication/materialdocumentrpc.cpp#L462))。
-
-**`routing` を変えると、その material を指す binding も同じ書き込みで書き直します。**起動時は binding と material の routing の不一致を hard error で断ります。
-
-- `routing` が実際に変わるとき、asset_data の `models[]` の `material_bindings` の文書のうち、その material の名前を `material` に持つ行の `routing` を新しい値にし、material の文書と同じ 1 つの transaction で書きます([MT-3 の binding の書き直し](../../src/core/communication/materialdocumentrpc.cpp#L1160))。読めない bindings の文書は飛ばします(その model は編集に関係なく読み込まれないため。コードの注記)。書き直した文書が読めなくなるなら `material.binding_invalid@1` で、何も書きません。
-- 答えの `rewritten_bindings: [{model, material_bindings, bindings_digest, previous_bindings_digest}]` が書き直した文書です(書いた答えには必ず付き、無ければ `[]`。`changed: false` の答えには付きません)。答えの `previous` の `routing` を送り返すと、binding も同じ道で前の routing に戻ります。
-- MT-2 の object の上書き(`simplemodelview.materials`)は material の名前だけを持ち routing を持たないので、ずれません。
-- 割り当て済みの material の `routing` を外す(`routing: null`)要求は、binding が routing を要るので `material.routing_conflict@1 {path, material, routing: null, bound_by: [{model, routing}]}` で断り、material も binding も書きません(`bound_by` は bindings の文書ごとに、その material を指す最初の行の routing)。どの binding にも指されていない material の `routing` は外せます(コードの読み)。
-- `bind_material` が binding に書く routing は、material の文書の値です。
-
-**`surface` か `routing` の片方だけを送ると、もう片方を engine の manifest の組に合わせます。**engine の OpenPBR の surface は manifest(`surfaces/openpbr/manifest.json`)の variant ごとに 1 つの routing と組で(下の「surface の一覧」の `name` と `routing`)、lowering は surface の pipeline state(blend・cull・depth の test / write / compare)と合わない routing を断ります([`validateVariantSurface()`](../../src/project/materiallowering.cpp#L325))。opaque と mask は pipeline state が同じなので、片方だけを替えても断られずに通っていました(どちらも)。
-
-- 書く前に [`pairSurfaceVariant()`](../../src/core/communication/materialdocumentrpc.cpp#L1036) が、送られなかった片方を同じ edit に足します。断らずに合わせるのは MT-3 の「routing を変えたら binding も同じ書き込みで直す」と同じ考えで、新しい code はありません。
-  - `surface` だけ: 送った surface が engine の manifest に載り(参照の文字列が manifest の `surface` と同じ)、material が `routing` を持っていれば、`routing` を manifest のその variant の `{alpha_mode, double_sided}` にします(今の routing と同じなら足しません)。
-  - `routing` だけ(値が object のとき): material の今の surface が manifest に載っていれば、同じ manifest の中でその routing を持つ variant の surface に替えます(例: `blend_single` の material に `{"alpha_mode": "opaque", "double_sided": true}` を送ると `engine://surfaces/openpbr/opaque_double.surface`)。
-  - 両方を送ったときは送られたとおりです。組でなければ今までどおり `material.document_invalid@1` で断り、material も binding も書きません。
-  - 補わないとき: manifest に載らない surface(project の surface)。`routing` を持たない material は、surface を替えても routing を付けません。`routing: null`(外す)は片方として扱いません(コードの読み)。
-- 補った鍵も送った鍵と同じく `previous` に入ります(header の注記)。`previous` を送り返す Undo は両方の鍵を送るので、両方が戻ります。
-- 補った routing が前と違えば、MT-3 の binding の書き直し(`rewritten_bindings`)と登録し直し(`applied: "rebuilt"`)は今までどおり起きます。VR-1 で変わった振る舞い: opaque ↔ mask を surface だけで替えると、routing も manifest の組に替わり binding も書き直されます(前は routing が元のまま)。
-
-**`create_material` は live で登録します。**1 つの material の文書を作り、asset_data の `materials[]` に `{path}` を足すのを 1 つの transaction で書き、[`ProjectMaterialAssetContainer::registerDocument()`](../../src/core/material/projectmaterialasset.cpp#L884) で登録します([create_material が登録を呼ぶ所](../../src/core/communication/materialdocumentrpc.cpp#L1271))。登録できなければ `restart_required` です。
-
-**`bind_material` は model を読み直して当てます。**model の `pelican.material_bindings` の文書を書き(無ければ作る)、[`ReloadService::reloadModelsNow()`](../../src/core/watch/reloadservice.cpp#L425) で model の reload の transaction を 1 つ、返る前に commit します([bind_material が model を読み直す所](../../src/core/communication/materialdocumentrpc.cpp#L1668))。
-
-- `bind_material` の割り当ては **model 単位**です。`engine://primitives/cube` に割り当てると、その model を使う cube は全部同じ material になります。1 つの object だけを変えるのは MT-2 の `set_object_material` です(下の「object ごとの上書き」)。
-- `engine://primitives/cube` のように asset_data に宣言の無い基本形には、`models[]` に宣言を足します(第5章 §5.2)。
-- 割り当てる material が asset_data に載っていても、この engine に登録されていなければ `restart_required` です。
-- binding に書く routing は、material の文書の値です(上の「`routing` を変えると」)。
-
-**戻し**は、返り値の `previous` を同じ RPC で送ります(`edit_material` は新しい `material_digest` と一緒に、`bind_material` は `previous.bindings` を `bindings` に)。MT-1 の時点では `delete_material` はありませんでした。`delete_material {name}`(asset_data の `materials[]` から外し、登録も外す。文書のファイルは残す)・`register_material {path}`(その戻し)・`rename_material {name, new_name}`(名前と、それを名前で指す全 model の bindings を 1 つの transaction で書き、`edit_material` の `rebuilt` と同じ道で登録し直す)があります。名前で指す所が残っていれば `material.in_use@1` で断ります。引数と拒否の表は [第13章](13_editor.md#material-を消す戻す改名するeb-1) §13.5 の「material を消す・戻す・改名する」です。
-
-- **元の material に戻るときは外す**: 送り返した bindings で全 primitive が model の元の material(glTF の slot、engine の基本形なら `pelican.primitive.default`)に戻るとき、`bind_material` は binding を書かずに外します。bindings の文書を消す・asset_data の `material_bindings` の鍵を外す・MT-1 が基本形に足した `models[]` の項目を外す、の 3 つを 1 つの transaction で書き、model を読み直します([MT-2b の binding を外して読み直す所](../../src/core/communication/materialdocumentrpc.cpp#L1614))。返り値の `material_bindings` と `bindings_digest` は `null` で、`previous` と digest の組は今までどおりです。宣言が無い状態で同じものを送ると `changed: false` です。
-- 行を書かずに外すのは、bindings の形式が点を含む material 名(`pelican.primitive.default`)を行に書けないためです(commit の記述)。一部の primitive だけを既定に戻すときは、今までどおり slot の名前の行を書きます。
-
-**やっていないこと**: この 3 本は `edit_batch` の対象ではありません。material の文書は RD-1 の render 文書の集合の外にあるためです(commit の記録)。
-
-`material_route_default` は起動時に記録されます。texture の参照を変えずにファイルの中身だけを変えた場合、`edit_material` の登録し直しは同じ texture id を使います。blend の pass が無い構成の描画は未確認です。
-
-
-**surface の一覧。**`list_surfaces {}` は engine と project の surface を並べます。
-
-- **engine の surface**: engine の資源に登録された `surfaces/**.surface` を `engine://` の参照で、整列して先に並べます。今あるのは OpenPBR の 6 つ(`engine://surfaces/openpbr/{opaque,mask,blend}_{single,double}.surface`)です。
-- **OpenPBR の名前と routing**: OpenPBR の `manifest.json` の `variants` が載せている surface には、variant の名前が `name`(例 `opaque_single_sided`)に、`alpha_mode` / `double_sided` が `routing` に付きます([manifest の variant を読む所](../../src/core/communication/materialdocumentrpc.cpp#L824))。`routing` は `create_material` の `routing` にそのまま渡せる形です。
-- **project の surface**: project のディレクトリの下を再帰で走査し、`*.surface` を `project://` の参照で整列して engine の後に並べます。名前が `.` で始まるディレクトリ(`.git`、`.pelican` など)と symlink のディレクトリには入りません([project を走査する所](../../src/core/communication/materialdocumentrpc.cpp#L866))。
-  - asset store の実体のディレクトリ(`.pelican/local.json` で project の外に置いたもの)を別に辿る処理はありません。
-  - path resolver に project が設定されていない host では、project の surface は並びません(engine の分だけ)。
-- **render_state**: surface の `//!` の宣言に `render_state:` があるときだけ、`render_state: {blend, cull, depth_test, depth_write, depth_compare}` が付きます。
-- **数**: `params` / `textures` の数は、`get_surface_schema` と同じ読み方(`parseSurfaceFormat()`)で数えます。読めない・parse できない surface は落とさず、数の代わりに `error` を付けて並べます。
+material の `values` は surface のパラメータ値、`textures` は画像参照、`tags` は描画対象の分類、`routing` は alpha mode と両面性、`variants` / `surface` は使う shader と描画状態を決めます。これらの形式はこの章の material / surface の節を参照してください。再登録と資源の解放は[読解ガイドの内部手順](../source-code-guide/03_project_and_loading.md#material-rpc-internals)を参照してください。
 
 
 **object ごとの上書き。**model の割り当て(asset_data の `material_bindings`、無ければ glTF の material)が既定で、scene の object の `simplemodelview.materials` がその object だけの上書きです。
 
 - **書く所**: scene の文書の `simplemodelview.materials`(SC-1 の list。行は `{material, mesh?, primitive?}`)。書き方と codec が断る行は [第4章](04_scene_ecs.md) §4.2 の simplemodelview の項です。
 - **効く順**: その primitive の行 > 全 primitive の行 > model の既定。
-- **RPC**: 書くのは `set_object_material`(scene の編集の `edit` として 1 本。CAS・undo / redo)、読むのは `get_object_materials`(primitive ごとの実効の material と、その出所 `object` / `model`)です。引数・返り値・拒否は [第13章](13_editor.md#material-文書を読み書きするmt-1) §13.5 の「material 文書を読み書きする」です。
+- **RPC**: object ごとの材質の読取・編集は[第13章の material RPC](13_editor.md#material-文書を読み書きする)を参照してください。
 - **描き方**: instance ごとの draw item に、その primitive の実効の material が入ります([draw item を作る所 MT-2](../../src/core/renderer/polygoninstancecontainer.cpp#L488))。
   - draw の束ね方の鍵(`pipeline_material_key.material`)・material の route・material 文書の参照・名前は、この実効の material から作ります。
   - 同じ model で material が違う 2 つの instance は、それぞれの material で描かれます。MP-1 の `drawn_materials` も実効の material で数えます(test では、forward の pass が `paint` と model の既定を 1 回ずつ描きました)。
@@ -2549,10 +2501,7 @@ asset_data の `materials[]` が指す文書が無い・読めない場合、`--
 
 **起こし直さずに取り込む**: engine_backlog 26 の残り「断られた文書を起こし直さずに登録し直す口」です。道は 2 つあり、どちらも同じ取り込み([`ProjectMaterialAssetContainer::recoverDocument()`](../../src/core/material/projectmaterialasset.cpp#L1008))を走らせます。
 
-- **RPC の道**: `register_material {path}` で、asset_data の `materials[]` に載っていて起動時に断った文書(`list_materials` の `status` が `invalid` / `missing`)を名指すと、`material.path_conflict@1` で断らずに、今のファイルを読み直して登録します。asset_data は書きません。答えの形と拒否は [第13章](13_editor.md) §13.5 の「material を消す・戻す・改名する」の EB-2 の項です。
-  - その名前を待って元の material で描いていた model は、その場で作り直します(答えの `rebuilt_models`。`ReloadService::reloadModelsNow()`)。作り直せなければ `applied: "restart_required"` で、文書の登録は残ります。
-  - 取り込んだ後は、`list_materials` がその文書を `loaded` で返し、`get_problems` からその文書の error と、それに由来する `material.binding_unresolved@1` の warning が消えます。`get_status.problems` も 0 / 0 で、箱はその material の色で描かれます(GPU の test。画素で確かめた)。
-  - ファイルがまだ壊れていれば何も変わりません(問題の一覧と status はそのまま、箱は元の色のまま)。
+- **RPC の道**: 修正した文書の取り込みは[第13章の再登録契約](13_editor.md#material-を消す戻す改名するeb-1)を参照してください。
 - **watch の道**: project.json の `hot_reload` にその文書のファイルか、それを含む dir が入っていれば(例 `"hot_reload": ["materials"]`)、起動時に断った文書のファイルの変更を新しい reload participant `pelican.material_documents` が受けて、同じ取り込みを走らせます([participant を登録する所(EB-2 の注記)](../../src/core/watch/reloadservice.cpp#L838))。HW-1 の規則どおり、宣言があれば `--rpc` の下でも watch が開きます。宣言の無い Blank では起きないので、Studio は RPC の道を呼びます。
   - まだ読めなければ問題の一覧はそのままで、reload の失敗として log に出ます。ファイルの削除では何もしません。
   - まだ読めない文書を保存しても、問題の一覧の reason は起動時のもののままで、新しい parser の文には置き換わりません(RPC の拒否は新しい reason を返します)。

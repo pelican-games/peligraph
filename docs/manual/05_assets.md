@@ -47,17 +47,16 @@
 
 3. シーンから `{"name": "simplemodelview", "model": "sotai"}` のように **name で**参照する([第4章](04_scene_ecs.md))。
 
-**動いている engine に登録する(✅MI-1、`61600f9e`)**: 上の 2 は手で書いて engine を起こし直す道です。engine が `--rpc` で動いているときは、
+**動いている engine に登録する**: 上の 2 は手で書いて engine を起こし直す道です。engine が `--rpc` で動いているときは、
 1 のファイルを project の中に置いた後、RPC `register_model {path, name?}` で `models[]` に `{name, path}` を足させ、その場で登録させられます
 (`name` を省くとファイル名の stem。起動時と同じ読み込みの検査を通らないファイルは断られ、asset_data は変わりません)。
 外すのは `unregister_model {name}` で、`models[]` から外しますが、ファイルは消しません。ファイルを project にコピーするのは
 呼び手の役目です。rig を持つ model(VRM の大半)を外したときと、登録できなかったときは、書いたうえで `restart_required` を返し、
 engine を起こし直すと効きます。引数・拒否・live になる条件は [第13章](13_editor.md#project-の中の-model-ファイルを登録する外すmi-1) §13.5 の「project の中の model ファイルを登録する・外す」です。
-登録した model は `list_assets` に出ます。✅EB-1(`aaa7b2da`)から、その `path` は asset_data に書いた綴り(上の 2 の project 相対の path)のままで、
-解決したファイルの絶対 path は `resolved_path` に分かれています(EB-1 の前は `path` が絶対 path でした)。
+登録した model は `list_assets` に出ます。`path` は asset_data に書いた project 相対の綴り、`resolved_path` は解決した絶対 path です。
 Studio の画面からこの RPC を呼ぶ道は下の「Studio から持ち込む」です。
 
-**Studio から持ち込む(✅MI-1s、`70298f88`)**: Studio で project を開いて engine が動いている間に、Outliner の右クリックか Scene の toolbar の
+**Studio から持ち込む**: Studio で project を開いて engine が動いている間に、Outliner の右クリックか Scene の toolbar の
 **Add Object > Model from file…** を押し、ファイルダイアログで `.glb` / `.vrm` を選びます。project の外のファイルは `assets/models/` にコピーされ
 (同じ名前が既にあれば `<stem>_2`…)、上の 2 の登録(`register_model`)と 3 の object(原点に、ファイル名の stem を名前にした model を描く object)を
 Studio がします。名前が既にある model と重なれば `<stem>_001`… で登録します。いま選んでいる object の model を替えるときは、Inspector の
@@ -77,7 +76,7 @@ engine が登録を書いたもののその場で使えなかったとき(`resta
 - 静的メッシュはノード階層の変換が**頂点に焼き込まれて平坦化**されます。glTF は「親ノードの行列 × 子ノードの行列 × …」の木で頂点位置を決めますが、ロード時にその積を頂点座標そのものへ掛けてしまい、ランタイムには親子関係のない 1 枚の頂点列だけが残る、という意味です(親を動かして子が付いてくる、という表現はできません。動かしたい単位はシーン側のオブジェクトに分けます)。マテリアルは 5 テクスチャ(baseColor / metallicRoughness / normal / emissive / occlusion)として登録されます。occlusion は metallicRoughness の R から推測せず、glTF の独立した `occlusionTexture` を使います(色テクスチャは SRGB view、metallicRoughness / normal / occlusion は UNORM view — [第6章](06_rendering.md) §6.3)。
 - **スケルタルアニメーションは ✅WP38 で実装済み**: glTF の `skins` + `animations` を読み、シーンの `animation` コンポーネント([第4章](04_scene_ecs.md))で再生します。skinned プリミティブはスケルトンを保持します(焼き込まない)。制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128、クリップはモデルと同一 glb のみ。※この 3 つの制限は **glb 内蔵クリップ + `animation` コンポーネントの経路に限った話**です。`.vrma` は別経路で、CUBICSPLINE も受理します(後述)。
 - **モーフターゲットは ✅WP121 で描画対応**: `primitive.targets` の POSITION/NORMAL/TANGENT delta をデコードし、初期 weight(node > mesh > 0)で material / shadow / velocity の全経路に適用します(変形順は morph → skinning → model)。制限: sparse morph accessor 非対応(名指しエラー。glTF の **sparse accessor** は「既定値からの差分だけを (添字, 値) の対で持つ」省サイズ表現で、通常の accessor が全要素を並べるのと形式が違います — [ソースコード読解ガイド §10.2](../source-code-guide/10_background_knowledge.md#sparse-accessor))、target 64/primitive・weight 256/instance、同一 primitive の **morph + VAT 併用は拒否**。**アニメクリップの `weights` チャネルは今もロードエラー**で、実行時に weight を動かす公開経路は VRM expression service([第8章](08_gameplay.md) §8.13)だけです。
-  - ✅MV-1(`f84a7d14`)から、morph を持つ model は**前に読んだ static / skinned の頂点の数で断られません**。それまでは頂点ごとの morph の記録が固定の 262,144 頂点分で、記録は共有の頂点 buffer の通し番号で引くため、morph の頂点が少なくても先に大きな model(例: sponza)を読むと起動が `glTF morph vertex metadata exceeds renderer capacity of 262144 static vertices` で止まっていました(example に Alicia を足すと起きた)。今は記録が頂点 buffer と同じ件数で、頂点 buffer と一緒に伸びます(頂点あたり 16 byte)。残る上限は morph の量だけです: delta 524,288 records(全 model の共有。primitive ごとに頂点数 × target 数)、target 64 / primitive、weight 256 / instance。超えたときの文は前と同じで起動は止まり、PB-1 の問題の一覧([第6章](06_rendering.md) §6.16)には出ません(実装者の報告)。仕組みは[ソースコード読解ガイド 第3章](../source-code-guide/03_project_and_loading.md)。
+  - morph delta の上限は全 model 共有で524,288 records(primitive ごとの頂点数 × target 数)、target は64 / primitive、weight は256 / instanceです。上限を超えると起動を止め、問題の一覧には載りません。頂点 metadata の拡張は[読解ガイド](../source-code-guide/03_project_and_loading.md)を参照してください。
 - モデルファイル(.glb/.gltf/.vrm)は実行中のホットリロード対象です(✅WP110 — [第10章](10_tools.md) §10.5)。
 - **リロードの世代はアセット単位です(✅WP147)**: スケルタルモデルを差し替えると、**そのモデルのアセットだけ**世代が 1 進みます。**animation registry** はスケルタルモデル 1 件ごとに rig・skin binding・クリップのハンドルを保持するプロセス内の表です([`AnimationAssetRegistry`](../../src/core/animation/animationjobs.hpp#L56))。以前は 1 件でもスケルタルモデルが含まれるとこの表を全体ごと破棄していましたが、現在は**無関係なモデルに付いた評価器は止まりません**。差し替えられた側の rig / レイアウト / クリップ / カーソル / ポーズの旧ハンドルは `stale_generation` になります。宣言的な `animation` コンポーネント([第4章](04_scene_ecs.md))は独自レジストリを持つため自動で復帰しますが、`pelican.anim_graph` の評価器は `EvaluatorV1::rebind()` の明示呼び出しが必要です([第8章](08_gameplay.md) §8.13)。
 
@@ -111,8 +110,8 @@ engine が登録を書いたもののその場で使えなかったとき(`resta
 
 - 画像デコーダ: PNG/JPG = stb_image、`.exr` = tinyexr(✅WP26。single-part・scanline・half/float 限定)、**`.ktx2` = 自前パーサ(✅WP92)**。
 - KTX2 の対応範囲(制限サブセット): **RGBA8 UNORM/SRGB・BC7・BC5** の 2D テクスチャ。supercompression(Basis/zstd)・cubemap/array は名指しで拒否。glb 内蔵の `KHR_texture_basisu` は対象外です。専用ビルドフラグはなく常時有効。
-  - ✅IA-1(`c6690eba`)から、非圧縮の float の 6 つも読みます: `R16_SFLOAT` / `R16G16_SFLOAT` / `R16G16B16A16_SFLOAT` / `R32_SFLOAT` / `R32G32_SFLOAT` / `R32G32B32A32_SFLOAT`(VkFormat の番号は 76 / 83 / 97 / 100 / 103 / 109。[IA-1 で広げた KTX2 の format の表](../../src/core/loader/ktx2.cpp#L71))。KTX2 の `typeSize` は 16 bit の format で 2、32 bit で 4 でなければ断ります。
-  - **mip は 1 段か全段**です。IA-1 の前は全段が必須でしたが、IA-1 から 1 段だけの file も受けます(RGBA8 / BC の 1 段も)。途中までの段は今も `incomplete mip chain: expected 1 or <全段の数> levels ...` で断ります([段の数を見る所](../../src/core/loader/ktx2.cpp#L260))。
+  - 非圧縮の float の 6 つも読みます: `R16_SFLOAT` / `R16G16_SFLOAT` / `R16G16B16A16_SFLOAT` / `R32_SFLOAT` / `R32G32_SFLOAT` / `R32G32B32A32_SFLOAT`(VkFormat の番号は 76 / 83 / 97 / 100 / 103 / 109。[KTX2 の format の表](../../src/core/loader/ktx2.cpp#L71))。KTX2 の `typeSize` は 16 bit の format で 2、32 bit で 4 でなければ断ります。
+  - **mip は1段か全段**です。RGBA8 / BC も1段を受けます。途中までの段は `incomplete mip chain: expected 1 or <全段の数> levels ...` で拒否します([検査](../../src/core/loader/ktx2.cpp#L260))。
   - KTX2 は format で色空間(sRGB か UNORM か)を宣言する扱いで、PNG / JPG は宣言しない扱いです(`LoadedImage::color_space_declared`)。これを使うのは graph の `render.image` の `initial` の照合だけです([第6章](06_rendering.md) §6.18「persistent の image を画像資産から始める」)。
   - float の KTX2 を作る道具として `pelican_cli image ktx2`(raw の bytes か `.hdr` から書く。[第10章](10_tools.md) §10.4)と、engine の関数 [`writeKtx2()`](../../src/core/loader/ktx2.cpp#L393) があります。
   - float の KTX2 を IA-1 の test が通しているのは、`render.image` の `initial` と、読み込み・書き出しの道だけです。material の texture として使えるかは確かめていません(未確認)。
@@ -145,54 +144,12 @@ engine が登録を書いたもののその場で使えなかったとき(`resta
 - `pelican.material_bindings` v1 の `binding.material` は glTF 内 named material と
   project material の両方を探索します。同名が両域にある場合、または project 文書間で
   material 名が重複した場合は、曖昧な優先順位を設けず名指しで失敗します。
-- **engine の基本形**(GP-5): `engine://primitives/{cube,plane,sphere}` は asset_data に登録しなくても model の参照として使えます(`simplemodelview.model` にそのまま書く)。形は engine がコードで生成し(cube は一辺 1、plane は XZ の 1×1 で +Y 向き、sphere は半径 0.5・32×16 分割)、既定の material は灰色の OpenPBR(`pelican.primitive.default`)です。material を差し替えるときは asset_data に `{"name": …, "path": "engine://primitives/cube", "material_bindings": …}` と宣言し、上の `pelican.material_bindings` の `model` に同じ参照を書きます。未知の名前は `model.primitive_unknown@1`。Studio では ✅MT-1s から、この宣言を手で書かずに、Inspector の **Material** の combo が engine の `bind_material`(下の「RPC で書かせる」)で書きます([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
+- **engine の基本形**(GP-5): `engine://primitives/{cube,plane,sphere}` は asset_data に登録しなくても model の参照として使えます(`simplemodelview.model` にそのまま書く)。形は engine がコードで生成し(cube は一辺 1、plane は XZ の 1×1 で +Y 向き、sphere は半径 0.5・32×16 分割)、既定の material は灰色の OpenPBR(`pelican.primitive.default`)です。material を差し替えるときは asset_data に `{"name": …, "path": "engine://primitives/cube", "material_bindings": …}` と宣言し、上の `pelican.material_bindings` の `model` に同じ参照を書きます。未知の名前は `model.primitive_unknown@1`。Studio では、この宣言を手で書かずに、Inspector の **Material** の combo が engine の `bind_material`(下の「RPC で書かせる」)で書きます([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
 - `binding.routing` は実行時にも照合されます。OpenPBR の
   `{opaque,mask,blend}_{single,double}` と一致しない binding は拒否されます。
 - material values と参照 texture は既存のファイル監視経路へ登録され、実行中の
-  hot reload 対象です。surface/routing/文書構造の変更は values reload の範囲外です(ファイルの変更の場合。RPC の
-  `edit_material` は ✅MT-3 から、これらの変更で material を登録し直します。第6章 §6.7)。
-- **RPC で書かせる(✅MT-1、`976c410d`)**: 動いている engine に、この節の 3 つ(material 文書・`materials[]`・
-  `pelican.material_bindings`)を書かせられます。RPC の一覧と「values だけなら live、ほかの鍵は登録し直して rebuilt(✅MT-3)」の
-  規則は [第6章](06_rendering.md) §6.7 の「RPC で material を読み書きする」、引数と拒否の表は [第13章](13_editor.md#material-文書を読み書きするmt-1) §13.5 の「material 文書を読み書きする」です。
-  engine が書くファイルの形は次のとおりです(コードの読み)。
-  - `create_material {path, surface, name?, values?, tags?, routing?}` は、`schema` / `version: 1` / 1 つの material の
-    `materials` を持つ文書を新しく作り、asset_data の `materials[]` の末尾に `{"path": <path>}` を足します。2 つは
-    1 つの transaction で書きます。`path` は project 相対(`project://` は外す)で `/` 区切り、`.json` で終わり、
-    `.` / `..` を含まないこと(違えば `material.path_invalid@1`)。asset_data にもう載っているか、ファイルがあれば `material.path_conflict@1` です。
-  - `name` を省くと、ファイル名から `.material.json`(または `.json`)を外したものです。英数字と `_` だけ
-    (違えば `material.name_invalid@1`)。asset_data に載った文書・登録済みの project material・読み込まれた model の glTF の
-    material に同じ名前があれば `material.name_conflict@1` です(glTF の material と同じ名前の project material は、
-    その model の binding を曖昧にして読み込みを止めるため。コードの注記)。
-  - `routing` を省くと `{"alpha_mode": "opaque", "double_sided": false}` を書きます(binding が routing を要るため)。
-  - `bind_material` は、model の宣言が `material_bindings` を持てばその文書を書き換え、持たなければ
-    `materials/<model の名前>.bindings.json`(基本形は `engine://primitives/` を外した名前。英数字・`_`・`-` 以外は `_`。
-    同じ名前のファイルがあれば `<名前>_2` などにする)を新しく作って、asset_data の `models[]` の
-    その model に `material_bindings` を足します。新しい文書は model の全 primitive を並べます(binding の文書は
-    whole-model の契約)。
-  - `engine://primitives/cube` のように `models[]` に宣言の無い基本形には、`{"name": <参照>, "path": <参照>,
-    "material_bindings": <文書>}` を `models[]` に足します。割り当ては model 単位なので、その基本形を使う物体は
-    全部同じ material になります。1 つの物体だけを変えるのは、asset_data ではなく scene の
-    `simplemodelview.materials` です(✅MT-2、`set_object_material`。[第4章](04_scene_ecs.md) §4.2)。Studio の Inspector の Material の行は
-    ✅MT-2s から既定でこちら(This object)に書き、Every <model> に切り替えたときだけ `bind_material` です([第13章](13_editor.md) §13.1)。
-  - `edit_material` で material の `routing` が変わると(✅MT-3、`c6f94eb7`)、その material の名前を `material` に持つ
-    `pelican.material_bindings` の行(asset_data の `models[]` の `material_bindings` が指す文書)の `routing` を新しい値に書き換え、
-    material の文書と 1 つの transaction で書きます(上の「`binding.routing` は実行時にも照合」でずれないように)。
-  - `edit_material` に OpenPBR の `surface` だけ、または `routing` だけを送ると(✅VR-1、`45864d55`)、engine はもう片方を
-    OpenPBR の `manifest.json` の variant の組(`{opaque,mask,blend}_{single,double}` の surface と `{alpha_mode, double_sided}`)に
-    合わせて material の文書に書きます(routing が変われば上の binding の書き換えも)。project の surface と、`routing` を
-    持たない material には補いません。規則は [第6章](06_rendering.md) §6.7 の「`surface` か `routing` の片方だけを送ると」です。
-  - engine が書く JSON は 2 空白の indent で、既存のファイルは鍵の順と改行コードを保ち、新しいファイルは LF です。
-  - asset_data を書いたときは、engine が持つ asset_data の写しも新しい bytes に置き換えます(`list_assets` などが読む写し)。
-  - MT-1 の時点の `list_assets` は `name` の無い entry を飛ばしたので、`materials[]` の entry は出ませんでした。✅EB-1(`aaa7b2da`)から、`list_assets` は
-    `materials[]` の文書が持つ material を名前ごとに 1 行(`kind: "material"`、`id` は material の名前)で返します。読めない文書は `id` が path で `status: "invalid"`、
-    無いファイルは `status: "missing"` です([material を名前ごとに並べる所](../../src/core/communication/editorassetqueryruntime.cpp#L119))。文書ごとの状態と登録済みかは今も `list_materials` で読みます。
-  - **消す・戻す・改名する(✅EB-1)**: `delete_material {name}` は、その material の文書の entry を `materials[]` から外し、engine の登録も外します。**文書のファイルは残します**。
-    1 つの文書が複数の material を持つときは外しません(`material.document_shared@1`。`create_material` が作る文書は常に 1 material)。model の bindings・scene の object の上書き・
-    render 文書(draw loop と ray bindings)がその名前を指していれば `material.in_use@1` で断り、何も書きません。戻すときは `register_material {path}` で、残っている文書を
-    `materials[]` の末尾に `{"path": <path>}` で載せ直します。`rename_material {name, new_name}` は、文書の `materials[].name` と、その名前を `material` に持つ全 model の
-    `pelican.material_bindings` の行を 1 つの transaction で書き換えます(scene の object の上書きと render 文書は書き換えないので、それらが指していれば断る)。
-    引数と拒否の表は [第13章](13_editor.md#material-を消す戻す改名するeb-1) §13.5 の「material を消す・戻す・改名する」です。
-  - **起動時に断られた文書の取り込み(✅EB-2、`e1ba9058`)**: `materials[]` に載っているのに起動時に読めなかった文書は、直した後に `register_material {path}` を呼ぶか、`hot_reload` にその文書(か dir)を宣言しておけば保存で、engine を起こし直さずに登録されます(asset_data は書きません)。規則は [第6章](06_rendering.md) §6.7 の「起こし直さずに取り込む」です。Studio の Materials のドックでは、直す欄から Show the document で直して Save します([第13章](13_editor.md) §13.1)。
+  hot reload 対象です。ファイル監視による変更範囲と描画上の意味は[第6章の material](06_rendering.md#67-マテリアルm1m35--wp586870767883)を参照してください。
+- **RPC で書かせる**: material を作る・直す・割り当てるときは、Studio の Materials と Inspector の Material 行を使います。引数・戻り値・拒否・保存ファイルは[第13章の material RPC](13_editor.md#material-文書を読み書きする)を参照してください。
 
 ### モデル材質の identity — レイトレの AS 規則が見る値(✅WP383)
 
@@ -357,7 +314,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 ## 5.7 バイナリアセットの管理
 
 - バイナリの sha256 台帳は **assets manifest(✅WP66)** です: `pelican_cli assets manifest / verify / status` で生成・照合し、起動時にも検証されます([第3章](03_project_format.md) §3.4)。example の README にあった手書き表はこれに置き換わりました。
-- ✅AV-1 から、起動時の照合の結果は engine に残り、RPC で読めて走らせ直せます(`get_status.assets_verification`・`get_assets_verification`・`verify_assets`・`update_assets_manifest`。[第10章](10_tools.md) §10.3 の「起動時の asset 検証の結果」)。照合するのは manifest を宣言した store だけで、Blank / Standard の雛形は store も manifest も宣言しません。✅PJ-1(`89643cd7`)から、動いている engine に `edit_project_settings` で store と manifest の宣言を足せます。manifest のファイルが無ければ engine が今のディスクから書き、照合を走らせ直します。照合が終わった通知は無いので、`get_status.assets_verification.state` を見ます。受ける変更と断る変更は [第3章](03_project_format.md) §3.4 の「起動中の engine に宣言を足す」です。
+- 起動時の照合の結果は engine に残り、RPC で読めて走らせ直せます(`get_status.assets_verification`・`get_assets_verification`・`verify_assets`・`update_assets_manifest`。[第10章](10_tools.md) §10.3 の「起動時の asset 検証の結果」)。照合するのは manifest を宣言した store だけで、Blank / Standard の雛形は store も manifest も宣言しません。動いている engine に `edit_project_settings` で store と manifest の宣言を足せます。manifest のファイルが無ければ engine が今のディスクから書き、照合を走らせ直します。照合が終わった通知は無いので、`get_status.assets_verification.state` を見ます。受ける変更と断る変更は [第3章](03_project_format.md) §3.4 の「起動中の engine に宣言を足す」です。
 - 置き場所を外部化したい場合は asset store([第3章](03_project_format.md) §3.4)を使います。
 - `pelican_cli project init` が生成する `.gitattributes` は `*.glb -text` 等の改行変換防止(CRLF 事故防止)+ LFS 行のコメントアウトを含みます。⚠️ 並ぶのは `*.glb` / `*.vrm` / `*.png` / `*.wav` / `*.spv` で、**`*.ogg` はまだありません**(AU-2 で Ogg Vorbis を足したときに雛形を直していない)。Ogg を置く project は `*.ogg -text` を自分で足してください([雛形](../../src/project/projecttemplate.cpp#L293))。
 
@@ -404,7 +361,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 
 ### 音の解析を焼いた表(✅AB-1)
 
-音の大きさや帯域ごとの強さで絵を動かすときは、音を**先に解析して表に焼き**、その表を読みます(`892a1455`)。解析は取り込みのたびには走らず、明示の Bake(RPC `bake_audio_analysis` か `pelican_cli audio analyze`)だけが表を書きます。方針と設計は [design_audio.md](../design_audio.md) §6 です。
+音の大きさや帯域ごとの強さで絵を動かすときは、音を**先に解析して表に焼き**、その表を読みます。解析は取り込みのたびには走らず、明示の Bake(RPC `bake_audio_analysis` か `pelican_cli audio analyze`)だけが表を書きます。方針と設計は [design_audio.md](../design_audio.md) §6 です。
 
 **焼く口は 2 つで、中身は同じ関数です**([`bakeAudioAnalysis()`](../../src/core/audio/audioanalysis.cpp#L186))。
 
@@ -459,8 +416,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 - `source.file` は manifest の置き場所からの相対です。`settings` は既定を埋めた全部の鍵で、`settings_sha256` はその JSON の sha256 です。
 - `created` は書きません。同じ bytes と settings からは同じ manifest になります。
 - 表と manifest は、隣の一時 file に書いてから名前を付け替えます(コードの注記: 読む側が書きかけを見ないため)。
-- **読む側が開いている間の置き換え(✅AB-2、`b3003b2a`)**: 一時 file は `<out>.tmp` / `<out>.import.json.tmp` で、書いて閉じてから置き換えます([`writeFileReplacing()`](../../src/project/filereplace.cpp#L169))。Windows では、置き換えが共有違反・access denied・lock violation で失敗すると、50 ms から倍々に待って、待ちの合計 2 秒まで(最後にもう 1 回)やり直します([AB-2 のやり直しの間隔](../../src/project/filereplace.hpp#L31))。
-  - AB-2 の前は、file の見張り・hash・表や texture の読み込みが表を開いている瞬間に Re-bake が当たると、1 回で `audio.analysis_failed@1`(`cannot replace …`)になっていました(GUI session の間欠の症状。仕様書の記述)。
+- **読む側が開いている間の置き換え**: 一時 file は `<out>.tmp` / `<out>.import.json.tmp` で、書いて閉じてから置き換えます([`writeFileReplacing()`](../../src/project/filereplace.cpp#L169))。Windows では、置き換えが共有違反・access denied・lock violation で失敗すると、50 ms から倍々に待って、待ちの合計 2 秒まで(最後にもう 1 回)やり直します([AB-2 のやり直しの間隔](../../src/project/filereplace.hpp#L31))。
   - 置き換えは POSIX の意味の rename(`FileRenameInfoEx`。使えない Windows・file system では `MoveFileExW`)です。delete も共有して開いている handle(test は file の見張りの開き方)なら待たずに置き換わり、開いている側は古い中身を読み続けます。`std::ifstream` のように delete を共有しない開き方では、閉じるまでやり直しで待ちます(test: 300 ms 後に閉じると committed)。
   - 2 秒の間ずっと開かれたままなら、下の表の `audio.analysis_failed@1` に `reason: "output_locked"` と `path` が付きます。一時 file は消え、元の表と manifest は書き換わりません(test)。
   - Windows 以外は rename を 1 回だけ試します(やり直しはしません)。
@@ -477,7 +433,7 @@ glob → レシピの中央表(`pelican.import_rules` v1)で一括取り込み�
 |---|---|---|
 | `audio.analysis_settings_invalid@1` | settings が読めない(RPC ではすぐ断る) | `{field, reason, value?}` |
 | `audio.format_unsupported@1` | 音が WAV / Ogg Vorbis でない(上の「音声形式」と同じ判定) | AU-2 と同じ(RPC では `asset` / `out` が要求の値) |
-| `audio.analysis_failed@1` | settings の後の失敗(音が読めない・decode できない・`hop_ms` が音の 1 標本より短い・file が書けない) | `{asset, out, message}`。✅AB-2 から、表か manifest が開かれたままでやり直しの 2 秒を越えたときは `{asset, out, message, reason: "output_locked", path}`(`path` は開かれていた方。RPC では要求の `out` か `<out>.import.json` の綴り) |
+| `audio.analysis_failed@1` | settings の後の失敗(音が読めない・decode できない・`hop_ms` が音の 1 標本より短い・file が書けない) | `{asset, out, message}`。表か manifest が開かれたままでやり直しの 2 秒を越えたときは `{asset, out, message, reason: "output_locked", path}`(`path` は開かれていた方。RPC では要求の `out` か `<out>.import.json` の綴り) |
 | `audio.analysis_busy@1` | 同じ `out` を焼いている途中(RPC だけ) | `{out, ticket}` |
 | `audio.analysis_unavailable@1` | `PELICAN_WITH_AUDIO=OFF` の build | `{reason: "built_without_audio"}` |
 

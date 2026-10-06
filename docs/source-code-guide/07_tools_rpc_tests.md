@@ -24,7 +24,7 @@ flowchart LR
 **この章の語。**
 
 - **digest / CAS** — 文書の照合値 / その一致を条件にした更新方式で、[第13章](../manual/13_editor.md#digest-cas)が受付時と確定時の規則を所有します。
-- **revision** — scene 文書の版番号で、受付後の再照合と preview の確定は[RPC の図](#rpc-threads-preview)を参照してください。
+- **revision** — scene 文書の版番号で、公開契約は[第13章](../manual/13_editor.md#134-同時編集--actor-と-revision)、内部の再照合は[RPC の図](#rpc-threads-preview)を参照してください。
 - **lease** — live preview が特定 actor と書き込み範囲に対して持つ一時的な排他権です（[予約から終了まで](#rpc-threads-preview)）。
 - **sink** — 操作の値・副作用を受け取る出口で、公開 API の transaction sink は[第5章](05_gameplay_and_services.md#515-scene-transaction中の公開apieffect-transaction-sink-実装済み)を参照してください。
 - **capability（機能）** — codec や adapter がその操作に対応できるという情報で、live preview では対応する値の編集だけを受理します（[RPC の図の注](#rpc-threads-preview)）。
@@ -413,14 +413,17 @@ get_frame_plan 応答 = pelican.frame_plan v1
   └ physical_target_plan                  : その名前を実画像へ落とした物理側(attachments / resources / alias / native scope)
 ```
 
-2 つの層は互いに引けます(✅GL-2a)。名前の層の node の出所の鍵(`source` / `provider_*` / `authored_name` / `loop_origin` と、GL-2a の
-`origin` / `replaces`、✅RS-6 の `added_after`)は、`framePlanToJson()` が compiled pipeline の `RenderPassProvenance` から写します
-([写す所](../../src/core/renderingpass/frameplanner.cpp#L1995))。resource の側の ✅RS-6b の `added_usage`(engine が宣言の `usage` に足した `SAMPLED`)も、`RenderResourceProvenance` から `resources[]` へ写します([`added_usage` を写す所](../../src/core/renderingpass/frameplanner.cpp#L2159))。`origin` の `graph`(rendering root 文書の参照)は raw の planner が知らないので、
-renderer が `framePlanToJson()` に渡します。✅PS-1 の once の node は、`framePlanToJson()` が `FramePlanNode::once` から `schedule: "once"` を書き([書く所](../../src/core/renderingpass/frameplanner.cpp#L2082))、`currentFramePlanJson()` がその node にだけ `Renderer::once_runs` の記録から `last_run_generation` / `last_run_frame`(無ければ `null`)を足します([足す所](../../src/core/vkcore/renderer.cpp#L4566))。✅IA-1 の `initial_asset: {asset, sha256}` も `currentFramePlanJson()` が最後に、`physical_target_plan.resources[]` の `logical_resource` を世代の `image_initial_assets` で引いて足します([IA-1 の `initial_asset` を足す所](../../src/core/vkcore/renderer.cpp#L4976))。物理の層は、`physical_target_plan` を足した直後に renderer が
-[`appendFramePlanPhysicalNodeReferences()`](../../src/core/renderingpass/frameplanner.cpp#L2307) を呼び
-([呼ぶ所](../../src/core/vkcore/renderer.cpp#L4416))、resources / alias_groups / decisions / backend の候補に、関わる node 名の
-`from_nodes[]` を書き込みます。物理の要素 → node 名 → `origin` → graph の文書、の順に辿れます(形は manual 第13章「`get_frame_plan` に足されたもの」)。
-✅FG-1 から、`framePlanToJson()` は compiled pipeline の `fold_planning` のうちその frame graph の分を最上位の `fold_decisions` に出し([出す所](../../src/core/renderingpass/frameplanner.cpp#L2211))、`appendFramePlanPhysicalNodeReferences()` がその 1 件ごとに `decisions[]` へ `pelican.plan.fold_decision_applied@1` の要素を足して、`from_nodes` を付けた後に `from_fold` を書きます([足す所](../../src/core/renderingpass/frameplanner.cpp#L2427))。✅PO-1 から、`framePlanToJson()` は compiled pipeline の resource の宣言の usage で [`findFramePlanUnreadOutputs()`](../../src/core/renderingpass/frameplanner.cpp#L1689) を回して `unread_output` を、renderer は `currentFramePlanJson()` の中で fullscreen / raster の pass ごとに [`appendUnusedBindingDiagnostics()`](../../src/core/vkcore/renderer.cpp#L4227) を回して `unused_binding` を `diagnostics` に足します。後者が見るのは reflection の [`ReflectedBinding::accessed`](../../src/core/shader/shaderreflection.hpp#L48)(spirv-reflect の静的な使用。stage を merge するときは OR)です。✅MP-1 から、`currentFramePlanJson()` は material pass の node に、最後に公開した frame でその pass が描いた material を `drawn_materials` / `drawn_materials_frame` として足します([MP-1 の `drawn_materials` を足す所](../../src/core/vkcore/renderer.cpp#L4711))。planner の値ではなく、renderer が描くときに数えて公開の後に残した記録で、記録の program と世代が今のものと違えば足しません(数え方は第6章 §6.5「pass ごとに描いた material の数え方」)。
+plan の公開フィールドと2層を辿る規則は[第13章の frame plan](../manual/13_editor.md#get_frame_plan-に足されたもの)を参照してください。
+
+##### 取得・変換・表示の経路
+
+`framePlanToJson()` は compiled pipeline の pass / resource provenance、once flag、fold planning を JSON へ変換します。root の文書参照は planner が持たないため renderer が渡します([変換](../../src/core/renderingpass/frameplanner.cpp#L1995))。
+
+`currentFramePlanJson()` は現在の世代を参照し、once 実行記録、画像の初期資産、直近 frame の material 描画記録を加えます。描画記録の program と generation が一致しない場合は加えません([renderer の付加処理](../../src/core/vkcore/renderer.cpp#L4566))。
+
+`appendFramePlanPhysicalNodeReferences()` は物理層と論理 node の関係を結び、fold の参照も付けます。diagnostics は planner の未読出力判定と renderer の未使用 binding 判定から作ります。後者は reflection の `accessed` を使い、stage 間は OR です([参照の付加](../../src/core/renderingpass/frameplanner.cpp#L2307))。
+
+Studio は同じ応答を Frame Plan と Graph で取得し、名前から文書の編集箇所へ誘導します。
 
 Graph タブが読む応答も同じ読み方をします。1 応答に「今の版」と「文書の 2 つの層」が入っています
 ([組み立ては `getGraphInstances()`](../../src/core/communication/renderconfigeditor.cpp#L3736))。
@@ -1120,9 +1123,7 @@ editor service を通らず、handler が project の文書の transaction(読�
 
 #### 共通グラフの編集面(P-1 / N-2)
 
-シーン編集と**同じ表に並んでいますが、実行モデルは render config 側**です。文書はディスク上の rendering
-config そのもので、CAS は `SceneRevision` ではなく **文書全体の sha256**(`base_source_digest`)、
-`actor_id` もセッションも journal も undo もありません。1 回の呼び出しが 1 つの op 列・1 チケット・1 CAS です。
+graph 文書編集の digest・CAS・ticket の公開契約は[第13章の digest / CAS](../manual/13_editor.md#digest-cas)を参照してください。
 
 `ops[]` の解釈の正は [`editGraphDocument()`](../../src/project/graphcomposition.cpp#L2496) です。op の種類と形、`scope` の書き方、名前付きの拒否の一覧は manual 第13章の [「`ops[]` と `scope`」](../manual/13_editor.md#ops-と-scope) と [「名前付きの拒否」](../manual/13_editor.md#名前付きの拒否) が正本です。
 

@@ -122,13 +122,7 @@ package は「エンジンのツリーの外で書かれ、プロジェクトへ
 
 雛形の `code/CMakeLists.txt` は [`code_cmake`](../../src/project/projecttemplate.cpp#L274) の2行で、`pelican_game_sources(game.cpp)` の**後**に `pelican_packages()` を呼びます（順序の理由は次の「packageのビルド」）。
 
-読む順序は次の3点です。
-
-- preset本体は [`src/core/resources/render_pipelines/hybrid_v1.json`](../../src/core/resources/render_pipelines/hybrid_v1.json)。[`b_embed(pelican_resources render_pipelines/hybrid_v1.json)`](../../src/core/resources/CMakeLists.txt#L89) でエンジンへ埋め込まれるので、`engine://` で解決されます。
-- `pipeline.preset` の展開は純粋層の [`resolveRenderPipelinePreset()`](../../src/project/renderpipeline.cpp#L888) が行います。`schema` は `pelican.render_pipeline`、`version` は1固定で、presetが更にpresetを指すことは禁止です。authored側の `features` / `shader_defines` / `graph_transforms` は追記される一方、`render_strategy` / `snapshots` / `target_planning` の上書きは明示エラーになります。この「部分上書きを許さず、構造を変えたいならpresetを丸ごと自分のプロジェクトへコピーして自前宣言に切り替える」やり方を、本ガイドでは **eject 方針**と呼びます（用意された既定の中に留まるか、そこから降りて全部を自分で持つか、の二択にする、という意味です）。
-- 呼び出し側は [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L3465) の先頭で、preset展開はfeature解析より前に走ります。
-
-旧テンプレートはgbuffer_pass / ssao_pass / ssao_blur_pass / presentの4passで、`present` が `uses_light_data: true` によりライティングとpresentを兼ねる構成でした。新しい既定は deferred_geometry → ssao_pass → ssao_blur_pass → deferred_lighting → forward_opaque → `snapshot_copy` 2本 → forward_transparent → scene_present という並びで、forward・半透明・snapshotを持ちます。「新規プロジェクトが最初から何を描くか」が変わっているので、この節より先の章を読むときの前提として押さえておきます。
+preset の公開契約は[第6章](../manual/06_rendering.md#render-preset)、展開の呼出し順は[描画ガイド](06_rendering_vulkan_shader.md#preset-envelope-既定の-rendering-config-は-pipelinepreset--features-の-2-キーwp240a)を参照してください。
 
 ### `pelican_studio`
 

@@ -2,7 +2,7 @@
 
 最終確認: 2026-10-07(develop d975ee9c0)
 
-> **この章の鮮度について:** §9.7の7は2026-09-05にWP382dの実装とWebのcomponent拒否入口のコード確認に基づいて更新しました。それ以外のWeb側の扱い・WW台帳は従前の調査記録であり、Web全体を再検証したものではありません。
+> **この章の鮮度について:** Web 側の扱い・WW 台帳は調査記録に基づく案内です。現在の Web 全体を再検証したものではありません。[調査履歴](../history/manual_landing_notes_2026.md)と Web 側の台帳も確認してください。
 
 ## この章で学ぶこと
 
@@ -37,7 +37,7 @@ web 側の作業単位は **WW**(Web Work Package)という番号で `implementa
 原則を機械的に支える仕組み:
 
 - **fixture 共有(✅WW2)**: 適合性テストの正はエンジン側 `test/fixtures/project_format/`。web は `npm run sync:pelican-fixtures` で git オブジェクトストアから固定 ref を同期し、同じ入力に対する合否一致を `node --test` で検証します。未知の fixture mode は「偶然 error になった」偽陽性を防ぐため必ず fail、native 専用 mode は理由付きで明示 skip します。
-- **鏡像サブセットテスト**: web が登録する engine:// id がエンジンの id 一覧(`engine_resources.json`)の部分集合であることを assert。エンジン側の id は **84 件**です(2026-07-21 時点。正は [test/fixtures/project_format/engine_resources.json](../../test/fixtures/project_format/engine_resources.json) の `ids` 配列 = fixture 共有の対象そのもの)。
+- **鏡像サブセットテスト**: Web の engine resource ID を engine 側の[fixture 一覧](../../test/fixtures/project_format/engine_resources.json)と照合します。
 
 ## 9.3 プロジェクトを web で開く手順
 
@@ -63,7 +63,7 @@ web 側の作業単位は **WW**(Web Work Package)という番号で `implementa
 
 web が理解するのは([第6章](06_rendering.md) の語彙のうち): RT フォーマット 7 種(**エンジン側は 45 種**)・usage 6 種、パス 3 種 `material` / `fullscreen` / `ui`(**エンジン側は 8 種 + `PELICAN_WITH_IMGUI` ビルド時のみの `imgui` = 8+1 種**)、`push_constants` 3 種、従来の G-buffer 5 枚契約です。**`"schema": "pelican.graph"` を名乗る rendering config(rendering config 全体が `rendering` の下に入る root。[第6章 §6.16](06_rendering.md))は web 未対応なので、その root を持つ config は web 側で明示的に拒否する必要があります**(エンジン側は MG-2b から rendering config をこの root だけにし、最上位に rendering のキーを直接並べた旧い形は `render_config.legacy_root@1` で拒否します。出荷 7 本もすべてこの形です)。未知キーとして読み飛ばすと `render_targets` 0 枚・`rendering_passes` 0 本の**空 config として受理**してしまい、「web は pelican より緩くしてはならない」に違反します —— この拡張については web の追随順は「無視 → 対応」ではなく「**拒否** → 対応」です(読み飛ばしが緩い方向になる拡張だから)。web は v0 形式への追従中(WEB-1)です。それまで web は新しい出荷 sample を開けません。my_webpage 側の状態は pelican2 側からは確認できません。native の `pelican.material_outputs` v1（任意枚数・float/SINT/UINT output）と`material_output_states`（output別blend/write-mask）はまだ web 未対応なので、そのキーを持つ config は web 側で**明示的に拒否**する必要があります。未知キーとして読み飛ばして5枚扱いにするとサブセット原則違反です。`shadow_depth` / `debug_draw` / `debug_text` / `features` / `compute_tasks` も web 未対応です。互換の正は `my_webpage/docs/pelican2-webgpu-compat.md` を参照してください。
 
-括弧内のエンジン側の数はサブセット原則の実測値です(2026-07-28 時点。いずれも [renderingpassjsonhelpers.cpp](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) が正 — RT フォーマットは `stringToFormat` の表、パス種別は `makePassInfo` の分岐)。**web の語彙はエンジンの語彙の真部分集合**(= web の語はすべてエンジン側にもあり、かつエンジン側と完全一致ではない)であり、これは「web は pelican より厳しくてよいが緩くしてはならない」に適合しています。エンジン側の RT フォーマットとパス種別の説明は [第6章](06_rendering.md) を参照してください。
+Web の語彙は engine の語彙の部分集合です。engine の RT format と pass 種別は[第6章](06_rendering.md)を参照してください。過去の件数は[調査履歴](../history/manual_landing_notes_2026.md)にあります。
 
 ## 9.4 シェーダ stem 規約 — 可搬シェーダの書き方
 
@@ -101,7 +101,7 @@ npm run shaders:spirv -- <project-dir>
 
 ## 9.6 実装状況(WW 台帳)
 
-> ⚠ **この表は 2026-07-10 時点の観測で、2026-07-21 のエンジン側監査では検証していません。** WW の実体は my_webpage リポジトリにあり、pelican2 リポジトリからは状態を確認できません。最新の状態は `my_webpage/docs/implementation_plan_web.md` を直接見てください。
+> ⚠ WW の実体は `my_webpage` リポジトリにあり、この表だけでは現在の実装状態を保証できません。最新の状態は `my_webpage/docs/implementation_plan_web.md` を確認してください。
 
 | WW | 内容 | 状態 |
 |---|---|---|
@@ -115,26 +115,26 @@ npm run shaders:spirv -- <project-dir>
 | WW8 | Plan viewer(web 版) | ❌ **撤回**(2026-07-12 **ユーザー決定** = リポジトリ所有者による裁定。方針を覆すには同じ人の決定が要ります([第1章 §1.6](01_overview.md)): プランビューアは**エンジン内 ImGui ツール**として実装 — ✅WP86、[第10章](10_tools.md) §10.6。web 側の着手分は撤去済み) |
 | — | 可搬性 lint / scene・asset JSON 対応 / WebSocket クライアント | 📐 設計のみ |
 
-## 9.7 既知の問題(1〜4 は 2026-07-10 調査、5〜6 は 2026-07-21 追記、7 は 2026-09-04 追記)
+## 9.7 Web 側で確認する項目
 
-調査で判明した、**修理が必要な箇所**です。チュートリアルどおりに動かない場合はまずここを疑ってください。1〜4 は web 側を実際に見た 2026-07-10 の調査結果で、**その後 web 側は再調査していません**(直っている可能性も、増えている可能性もあります)。
+以下は過去の調査からの確認項目です。Web 側での解消状況は未再確認なので、現在の不具合と断定せず Web 側の台帳と照合してください。
 
 1. **camera キーの世代ズレ(サブセット原則違反の実例)** — web 側のサンプル `public/scenes/hello-project/project.json`、web の型定義、web 同梱の `default_config.json` 写しは旧形式(`fov_y`/`near`/`far`)のままです。web は camera を検証せず素通しするため「web で開けるが pelican で開けない」プロジェクトになっています。新規プロジェクトでは必ず `yfov`(ラジアン)形式で書いてください —— この名前と単位は pelican 独自ではなく、**glTF 2.0 の `camera.perspective.yfov`(垂直視野角・ラジアン)と 1:1** です([第4章](04_scene_ecs.md) のカメラ)。
-2. **fixture 同期の停滞** — web 側の同期は 2026-07-02 の hash で止まっており、WP63(strict v1)で追加された invalid fixture(旧形式 reject 群)が反映されていません。`npm run sync:pelican-fixtures` の再実行が必要です。
+2. **fixture 同期** — `npm run sync:pelican-fixtures` で engine の fixture を同期し、strict な旧形式拒否ケースも比較してください。
 3. **native ブリッジが非互換** — Shader Dock から native の pelican_player を叩いて比較レンダリングする HTTP ブリッジ(`npm run pelican:bridge`)は、削除済みの `--project-settings` フラグを使っており、camera も旧形式で生成するため、**現行エンジンでは動きません**(要修理)。
 4. **web パーサの拡張語彙** — web の rendering config パーサは `shader_modules` / `scenes` / `active_scene` / インライン `source` などエンジンに存在しないキーを受理します(サイト内デモ専用)。これらをプロジェクトに書くと「web で開けて pelican で開けない」JSON になるため、**プロジェクトでは使わないでください**(形式としての位置づけは未文書化)。
 
-### scene 対応に着手するときの追随項目(2026-07-21 追記)
+### scene 対応の追随項目
 
-scene JSON の web 対応(WW4)は未着手のままですが、**その間にエンジン側の scene の受理仕様が動きました**(2026-07-21 の追記時点では v1。MG-2b からエンジンは `pelican.scene` / `pelican.asset_data` とも version 2 だけを読み、v1 は `pelican.<schema>.version_unsupported@1` です。web は v0 形式への追従中(WEB-1)で、それまで web は新しい出荷 sample を開けません)。web が scene に着手するときは、以下がエンジン側の正であることを前提にしてください(サブセット原則より、web はこれ**以上に緩く**なってはいけません)。
+engine は `pelican.scene` / `pelican.asset_data` の version 2 だけを読み、それ以外は `pelican.<schema>.version_unsupported@1` です。Web の対応状況は Web 側の台帳で確認してください。scene 対応時は[第3章の現行形式](03_project_format.md#32-projectjson-のスキーマ)を正本として照合します。
 
 5. **scene に `behavior` コンポーネントが入った(✅WP155/162/167)** — オブジェクトの `components` に `{"name": "behavior", "type": "<登録名>", "params": {...}}` を書けるようになりました。`type` は必須の非空文字列、`params` は任意 object です。振り分けは [src/core/loader/scene.cpp](../../src/core/loader/scene.cpp)(`behavior` だけ ECS 経路から外れる)、受理は [src/core/gamelogic/behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp) の `prepareSceneBehaviorAttachments()` が担当します。詳細は [第4章](04_scene_ecs.md) / [第8章](08_gameplay.md)。
 6. **コンポーネントの受理仕様が component codec に一本化され、closed schema になった(✅WP151)** — `transform` / `simplemodelview` / `camera` / `light` / `collider` / `animation` / `sprite_view` の 7 コンポーネントは [src/core/loader/componentcodec.cpp](../../src/core/loader/componentcodec.cpp) の codec テーブルが受理仕様の正です。いずれも**未知キーを名指しで拒否する closed schema**で、フィールドの必須/任意と既定値は codec ごとに決まります(例: `transform` の `pos` / `rotation` / `scale` はすべて任意で既定値あり)。web が scene を読むときは、コンポーネント側の `ref()` 実装ではなくこの codec テーブルを鏡像の元にしてください。
-7. **可変長の宣言とprocedural geometryの追随(2026-09-05更新)**
+7. **可変長の宣言と procedural geometry の追随**
    - `List` / `Flags`と`$list`のwire形はengineに実装済みです。WP382dでは`pelican_ray_instance.overrides`が`List`を使用します。
    - engine runtimeは`overrides`を受理します。native previewは共通decode入口の[componentDecodeSurfaceViolation](../../src/core/loader/componentcodec.cpp#L2160)で`ray_instance_overrides_unsupported@1`、`surface=preview`を返します。
    - `procedural_geometry`はWP386aでasset種別として実装済みです。Webへの機能実装を意味するものではありません。
-   - 別repoのmy_webpageは2026-09-05にコードを確認し、`bindPelicanScene`が未登録`pelican_ray_instance`を`unknown component`として拒否しています。専用の`ray_instance_overrides_unsupported@1`、`surface=web`への接続はWeb側の引き継ぎ事項です。engineの統合条件には含めず、Web repoは今回変更していません。Webの全形式の適合性を再検証した結果ではありません。
+   - Web の `pelican_ray_instance` の受理・拒否と専用コードの対応状況は未再確認です。確認経緯は[調査履歴](../history/manual_landing_notes_2026.md)を参照してください。
 
 ## 関連文書
 
