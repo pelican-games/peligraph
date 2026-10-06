@@ -626,3 +626,30 @@ TEST_CASE("MI-1s decision 2: Import... beside the model field registers a file t
 }
 
 } // namespace PelicanStudio
+
+namespace PelicanStudio {
+TEST_CASE("An unchanged Inspector notice does not repolish the idle UI",
+          "[devstudio][inspector][input-latency]") {
+    (void)application();
+    EmbeddedViewport viewport;
+    InspectorWidget widget{&viewport};
+    widget.show();
+    QApplication::processEvents();
+    auto *notice = widget.findChild<QLabel *>(QStringLiteral("pelican.inspectorNotice"));
+    REQUIRE(notice != nullptr);
+    class StyleCounter : public QObject {
+    public:
+        int changes = 0;
+        bool eventFilter(QObject *, QEvent *event) override {
+            if (event->type() == QEvent::StyleChange) ++changes;
+            return false;
+        }
+    } counter;
+    // Information is the idle connected-engine notice in a running Studio.
+    emit viewport.engineRpcBecameAvailable();
+    widget.playSessionChanged();
+    notice->installEventFilter(&counter);
+    for (int i = 0; i < 10; ++i) widget.playSessionChanged();
+    CHECK(counter.changes == 0);
+}
+} // namespace PelicanStudio

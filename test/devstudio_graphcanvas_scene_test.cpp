@@ -1,3 +1,4 @@
+#include <QPointer>
 #include "graphcanvasaudioanalysis.hpp"
 #include "frameplanedit.hpp"
 #include "fullscreenshadertemplate.hpp"
@@ -14250,4 +14251,121 @@ TEST_CASE("Graph drag stays attached across a crowded scene and rebuild",
         scene.repopulate();
         REQUIRE(nodeItem(scene, QStringLiteral("left"))->pos() == start + QPointF{160, 80});
     }
+}
+
+TEST_CASE("Sibling node selection reuses fields and edits only the newly selected node",
+          "[devstudio][graph-canvas][scene][input-latency]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto doc = ux12aBufferDocument(Json{{"element", "vec4"}, {"size", 16}});
+    auto sibling = doc["nodes"][0];
+    sibling["id"] = "other";
+    sibling["parameters"]["size"] = 32;
+    doc["nodes"].push_back(sibling);
+    tab.read(doc, "reuse-fields-0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    tab.widget->scene().selectNode("buf");
+    QCoreApplication::processEvents();
+    QPointer<QDoubleSpinBox> size = tab.field<QDoubleSpinBox>("pelican.graphCanvasParameters.size");
+    REQUIRE(size);
+    tab.widget->scene().selectNode("other");
+    QCoreApplication::processEvents();
+    REQUIRE(size);
+    CHECK(tab.field<QDoubleSpinBox>("pelican.graphCanvasParameters.size") == size);
+    CHECK(size->value() == 32);
+    auto *lifetime = tab.field<QComboBox>("pelican.graphCanvasParameters.lifetime");
+    tab.pick(lifetime, QStringLiteral("transient"));
+    const auto op = tab.sent(1);
+    CHECK(op.at("node") == "other");
+    CHECK(op.at("parameters").at("size") == 32);
+}
+
+TEST_CASE("Mouse selection highlights immediately and loads the latest fields after the drag",
+          "[devstudio][graph-canvas][scene][input-latency]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto doc = ux12aBufferDocument(Json{{"element", "vec4"}, {"size", 16}});
+    auto sibling = doc["nodes"][0];
+    sibling["id"] = "other";
+    sibling["parameters"]["size"] = 32;
+    doc["nodes"].push_back(sibling);
+    tab.read(doc, "mouse-fields-0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    auto &scene = tab.widget->scene();
+    scene.selectNode("buf");
+    QCoreApplication::processEvents();
+    auto *view = tab.field<QGraphicsView>("pelican.graphCanvasView");
+    auto *other = nodeItem(scene, QStringLiteral("other"));
+    REQUIRE(other != nullptr);
+    view->centerOn(other);
+    QCoreApplication::processEvents();
+    const QPoint press = view->mapFromScene(other->mapToScene(QPointF{60, 15}));
+    auto *port = view->viewport();
+    REQUIRE(port->rect().contains(press));
+    const auto send = [&](QEvent::Type type, QPoint at, Qt::MouseButton button, Qt::MouseButtons held) {
+        QMouseEvent event{type, QPointF{at}, QPointF{at}, port->mapToGlobal(QPointF{at}), button, held, Qt::NoModifier};
+        QApplication::sendEvent(port, &event);
+        QCoreApplication::processEvents();
+    };
+    const QPoint global_press = port->mapToGlobal(press);
+    send(QEvent::MouseButtonPress, press, Qt::LeftButton, Qt::LeftButton);
+    CHECK(scene.selectedNode() == std::optional<std::string>{"other"});
+    REQUIRE(scene.dragging());
+    send(QEvent::MouseMove, press + QPoint{20, 20}, Qt::NoButton, Qt::LeftButton);
+    (void)ux12aWait([] { return false; }, 40);
+    const QPoint grabbed = port->mapToGlobal(view->mapFromScene(
+        other->mapToScene(QPointF{60, 15})));
+    CHECK((grabbed - global_press - QPoint{20, 20}).manhattanLength() <= 2);
+    // The old editors stay intact while the canvas owns the gesture.
+    CHECK(tab.field<QDoubleSpinBox>("pelican.graphCanvasParameters.size")->value() == 16);
+    send(QEvent::MouseButtonRelease, press + QPoint{20, 20}, Qt::LeftButton, Qt::NoButton);
+    REQUIRE(ux12aWait([&] {
+        return tab.field<QDoubleSpinBox>("pelican.graphCanvasParameters.size")->value() == 32;
+    }));
+}
+
+TEST_CASE("Saving node positions does not repolish the graph notice on each move",
+          "[devstudio][graph-canvas][scene][input-latency]") {
+    (void)application();
+    Ux2Tab tab{false};
+    tab.read(ux12aBufferDocument(Json{{"element", "vec4"}, {"size", 16}}), "notice-0");
+    auto &scene = tab.widget->scene();
+    scene.setLayoutMember("frame_plan", Json{{"position", 0}});
+    auto *notice = tab.field<QLabel>("pelican.graphCanvasNotice");
+    REQUIRE_FALSE(notice->text().isEmpty());
+    class StyleCounter : public QObject {
+    public:
+        int changes = 0;
+        bool eventFilter(QObject *, QEvent *event) override {
+            if (event->type() == QEvent::StyleChange) ++changes;
+            return false;
+        }
+    } counter;
+    notice->installEventFilter(&counter);
+    for (int i = 1; i <= 10; ++i) scene.setLayoutMember("frame_plan", Json{{"position", i}});
+    CHECK(counter.changes == 0);
+}
+
+TEST_CASE("Graph placement ignores empty serialization and preserves other panel members",
+          "[devstudio][graph-canvas][scene][input-latency][layout-persistence]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    auto document = connectedDocument();
+    document.erase("layout");
+    model.setConnected(true);
+    answer(model, document);
+    scene.setModel(&model);
+    // An automatic placement is not an authored layout. Its absent nodes,
+    // reroutes and ties are equivalent to empty serialized collections.
+    REQUIRE(scene.followDocumentPlacement());
+    document["layout"] = {{"frame_plan", {{"nodes", {{"pass", {{"x", 50}, {"y", 75}}}}}}}};
+    model.refresh();
+    answer(model, document);
+    REQUIRE(scene.followDocumentPlacement());
+    CHECK(scene.layoutMember("frame_plan") == document["layout"]["frame_plan"]);
+    document["layout"]["nodes"]["left"] = {{"x", 100}, {"y", 200}};
+    model.refresh();
+    answer(model, document);
+    CHECK_FALSE(scene.followDocumentPlacement());
 }

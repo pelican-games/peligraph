@@ -4890,3 +4890,34 @@ TEST_CASE("GL-5f a loop body's image has Layers rows for the copies the loop mad
     CHECK(*origin == PelicanStudio::FramePlanLoopOrigin{"steps", 2, "image"});
     CHECK_FALSE(model.planResourceLoopOrigin("lit_color"));
 }
+
+TEST_CASE("Authoring refresh after layout save updates the editing digest without redrawing",
+          "[studio][graph-canvas][input-latency]") {
+    Harness h;
+    h.open();
+    Json context{{"source_digest", {{"hex", "first"}}},
+                 {"render_target_vocabulary", {{"formats", {"R8_UNORM"}}}},
+                 {"pipeline_preset", {{"source_digest", {{"hex", "preset-1"}}}}}};
+    const auto deliver = [&] {
+        h.model.readRenderAuthoringAgain();
+        h.reply(h.take("get_render_authoring_context"), context);
+    };
+    deliver();
+    const auto report = h.model.reportRevision();
+    const auto authoring = h.model.authoringRevision();
+    context["source_digest"]["hex"] = "layout-saved";
+    deliver();
+    CHECK(h.model.reportRevision() == report);
+    CHECK(h.model.authoringRevision() > authoring);
+    CHECK(h.model.renderAuthoringContext() == context);
+    SECTION("a preset document changed") {
+        context["pipeline_preset"]["source_digest"]["hex"] = "preset-2";
+        deliver();
+        CHECK(h.model.reportRevision() > report);
+    }
+    SECTION("the vocabulary changed") {
+        context["render_target_vocabulary"]["formats"].push_back("R16_UNORM");
+        deliver();
+        CHECK(h.model.reportRevision() > report);
+    }
+}

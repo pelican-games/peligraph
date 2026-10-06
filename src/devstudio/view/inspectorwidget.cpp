@@ -1597,23 +1597,16 @@ struct InspectorWidget::Impl {
             take_from_game->setVisible(offered);
             take_from_game->setEnabled(offered && model.canTakeTransformFromGame());
         }
-        switch (notice.kind) {
-        case InspectorNoticeKind::Error:
-            notice_label->setStyleSheet(
-                QStringLiteral("color: #d94c3d;"));
-            break;
-        case InspectorNoticeKind::Success:
-            notice_label->setStyleSheet(
-                QStringLiteral("color: #388e3c;"));
-            break;
-        case InspectorNoticeKind::Information:
-            notice_label->setStyleSheet(
-                QStringLiteral("color: #4f7cac;"));
-            break;
-        case InspectorNoticeKind::None:
-            notice_label->setStyleSheet({});
-            break;
-        }
+        const QString notice_style = notice.kind == InspectorNoticeKind::Error
+            ? QStringLiteral("color: #d94c3d;")
+            : notice.kind == InspectorNoticeKind::Success
+                ? QStringLiteral("color: #388e3c;")
+                : notice.kind == InspectorNoticeKind::Information
+                    ? QStringLiteral("color: #4f7cac;") : QString{};
+        // Qt repolishes even an identical stylesheet. The 40 ms pending poll
+        // must not invalidate the dock layout and repaint the whole window.
+        if (notice_label->styleSheet() != notice_style)
+            notice_label->setStyleSheet(notice_style);
 
         refresh_button->setEnabled(model.selection().has_value() &&
                                    !model.refreshBlocked() && !model.busy());

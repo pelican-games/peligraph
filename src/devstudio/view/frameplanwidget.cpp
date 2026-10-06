@@ -574,6 +574,9 @@ struct FramePlanWidget::Impl {
     std::function<void()> task_insert_action;
     FramePlanAuthoring authoring;
     FramePlanTaskAuthoring task_authoring;
+    // Root digest changes alone do not change the drawn plan or its fields.
+    Json authoring_visuals;
+    Json task_authoring_visuals;
     qint64 pending_authoring_request = 0;
     // GL-3a, decision 8: the root's target_planning (read with the root
     // document after each authoring context), for the rows' Serial /
@@ -2103,10 +2106,14 @@ struct FramePlanWidget::Impl {
         if (receivePlanning(request_id, bytes)) return true;
         if (request_id != 0 && request_id == pending_authoring_request) {
             pending_authoring_request = 0;
+            bool changed = true;
             try {
-                authoring = framePlanAuthoringFromContext(
-                    Json::parse(bytes.constData(),
-                                bytes.constData() + bytes.size()));
+                auto context = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
+                const bool had_context = authoring.received;
+                authoring = framePlanAuthoringFromContext(context);
+                if (context.is_object()) context.erase("source_digest");
+                changed = !had_context || authoring_visuals != context;
+                authoring_visuals = std::move(context);
             } catch (const std::exception &) {
                 authoring = {};
             }
@@ -2116,7 +2123,7 @@ struct FramePlanWidget::Impl {
             if (authoring.received) publishDigest(authoring.source_digest);
             // GL-3a, decision 8: and the root's target_planning with it.
             if (authoring.received) requestPlanning();
-            if (model) populate();
+            if (model && changed) populate();
             // Q-13: the document moved while this read was on its way.
             if (std::exchange(authoring_reread, false))
                 requestAuthoringContext(true);
@@ -2159,16 +2166,20 @@ struct FramePlanWidget::Impl {
         }
         if (request_id != 0 && request_id == pending_task_request) {
             pending_task_request = 0;
+            bool changed = true;
             try {
-                task_authoring = framePlanTaskAuthoringFromCatalog(
-                    Json::parse(bytes.constData(),
-                                bytes.constData() + bytes.size()));
+                auto context = Json::parse(bytes.constData(), bytes.constData() + bytes.size());
+                const bool had_context = task_authoring.received;
+                task_authoring = framePlanTaskAuthoringFromCatalog(context);
+                if (context.is_object()) context.erase("source_digest");
+                changed = !had_context || task_authoring_visuals != context;
+                task_authoring_visuals = std::move(context);
             } catch (const std::exception &) {
                 task_authoring = {};
             }
             task_authoring.root_reference = authoring.source_reference;
             if (task_authoring.received) publishDigest(task_authoring.source_digest);
-            if (model) populate();
+            if (model && changed) populate();
             if (std::exchange(task_reread, false)) requestTaskAuthoring(true);
             resumeRetry();
             runWhenRead();  // GL-5f, decision 2

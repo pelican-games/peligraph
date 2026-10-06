@@ -1800,6 +1800,8 @@ class GraphCanvasModel {
     // its zone, so a node there is edited in its definition while the canvas
     // shows the root; every op these send carries `scope: <definition>`.
     // The forms above are these with the current scope.
+    // Lightweight identity lookup for menus that do not need resolved ports.
+    [[nodiscard]] std::string nodeOperation(std::string_view scope, std::string_view id) const;
     [[nodiscard]] nlohmann::json nodeParameters(std::string_view scope,
                                                 std::string_view id) const;
     [[nodiscard]] bool canConnect(std::string_view scope, std::string_view from_node,

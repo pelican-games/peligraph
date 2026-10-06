@@ -61,6 +61,7 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QMenu>
+#include <QScopeGuard>
 #include <QLabel>
 #include <QLineEdit>
 #include <QLineF>
@@ -910,7 +911,13 @@ bool GraphCanvasScene::followDocumentPlacement() {
         // Nothing of this canvas's is in the air, so the document is the one
         // to follow; it only needs no redraw when it already says what is
         // drawn.
-        if (document != placementPayload(drawn)) follows = false;
+        // Missing/empty members describe the same placement. Other panels'
+        // members do not move Graph items, but must survive its next write.
+        if (graphCanvasLayoutToJson(graphCanvasLayoutFromJson(document)) !=
+            graphCanvasLayoutToJson(placed.layout))
+            follows = false;
+        else
+            loadLayout(drawn);
     }
     return follows;
 }
@@ -3147,6 +3154,8 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
 }
 
 void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
+    handling_press_ = true;
+    const auto pressed = qScopeGuard([this] { handling_press_ = false; });
     // GL-3a: a fold group's heading, its toggle and its folded node -- not
     // under a node drawn over them.
     if (foldItemPressed)
@@ -5312,6 +5321,7 @@ struct GraphCanvasWidget::Impl {
     QAction *undo_action = nullptr;
     QAction *redo_action = nullptr;
     QTimer *poll_timer = nullptr;
+    QTimer *details_timer = nullptr;
     QHash<qint64, quint64> transport_requests;
     std::uint64_t rendered_content = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t rendered_report = std::numeric_limits<std::uint64_t>::max();
@@ -5334,6 +5344,14 @@ struct GraphCanvasWidget::Impl {
         QObject::connect(poll_timer, &QTimer::timeout, &view,
                          [this] { view.poll(); });
         poll_timer->start();
+        details_timer = new QTimer(&view);
+        details_timer->setSingleShot(true);
+        details_timer->setInterval(16);
+        QObject::connect(details_timer, &QTimer::timeout, &view, [this] {
+            if (scene->dragging()) { details_timer->start(); return; }
+            showDetails();
+        });
+
         view.setFont(studioPanelFont());
         auto *layout = new QVBoxLayout(&view);
         layout->setContentsMargins(6, 6, 6, 6);
@@ -5480,6 +5498,12 @@ struct GraphCanvasWidget::Impl {
         notice = new QLabel(&view);
         notice->setObjectName(QStringLiteral("pelican.graphCanvasNotice"));
         applyPanelNoticeStyle(notice);
+        // Saving starts on the first drag move. Keep its status row present
+        // so showing the notice cannot move the viewport under the cursor.
+        auto notice_policy = notice->sizePolicy();
+        notice_policy.setRetainSizeWhenHidden(true);
+        notice->setSizePolicy(notice_policy);
+        notice->setMinimumHeight(notice->fontMetrics().height());
         notice->hide();
         layout->addWidget(notice);
         // GL-5e, decision 4: the ways out of a refused shader, under the line
@@ -6303,7 +6327,7 @@ struct GraphCanvasWidget::Impl {
         // when the wait before sending it runs out. Only the label: this runs
         // from inside a drag and from inside a rebuild.
         scene->placementChanged = [this] {
-            showNotice();
+            showNoticeLabel();
             // GL-3a: a group's frame follows its nodes.
             if (folds) folds->scheduleRedraw();
         };
@@ -6879,12 +6903,12 @@ struct GraphCanvasWidget::Impl {
                 markAuthoredTask(subject, node);
                 return subject;
             }
-        const auto nodes = model.nodes(scope);
-        const auto found = std::ranges::find(nodes, id, &GraphCanvasNode::id);
-        if (found == nodes.end()) return subject;
-        if (found->op == "render.target_ref")
+        // Menu eligibility needs the operation, not every node's resolved
+        // ports, values and diagnostics on each 40 ms pending poll.
+        const auto op = model.nodeOperation(scope, id);
+        if (op == "render.target_ref")
             subject.target = model.nodeParameters(scope, id).value("name", std::string{});
-        if ((found->op == "render.fullscreen" || found->op == "render.raster") && scope.empty()) {
+        if ((op == "render.fullscreen" || op == "render.raster") && scope.empty()) {
             // A loop's node made several; only one pass is one shader to fix.
             std::size_t made = 0;
             for (const auto &pass : model.planPasses())
@@ -9499,6 +9523,13 @@ struct GraphCanvasWidget::Impl {
     }
 
     void showDetails() {
+        // Highlight and move the node immediately. Building its editors must
+        // not block the press that starts a drag or replace fields mid-gesture.
+        if (scene->dragging()) {
+            details_timer->start();
+            return;
+        }
+        details_timer->stop();
         // GL-3a: a picked fold group's Decisions.
         if (folds) folds->syncFields();
         syncFoldedSummary();
@@ -9811,11 +9842,13 @@ struct GraphCanvasWidget::Impl {
             rendered_content = model.contentRevision();
             rendered_report = model.reportRevision();
             rendered_placement = model.placementRevision();
-            publishEngineShaders();
-            publishShaderSources();
-            publishInitialAssets();
-            // EL-5s: the compute nodes' shaders, read and watched.
-            followComputeShaders();
+            if (content_changed || report_changed) {
+                publishEngineShaders();
+                publishShaderSources();
+                publishInitialAssets();
+                // EL-5s: the compute nodes' shaders, read and watched.
+                followComputeShaders();
+            }
             // Q-5: a read that only moved the placement -- the reply to the
             // drag that was just made -- keeps the scene when the scene is
             // already drawing it. Rebuilding there threw every item away and
@@ -9874,7 +9907,7 @@ struct GraphCanvasWidget::Impl {
                (parameter_fields != nullptr && parameter_fields->valuePending());
     }
 
-    void showNotice() {
+    void showNoticeLabel() {
         auto message = model.notice();
         // Q-5: a placement change nobody has sent yet is not saved, whatever
         // the last save said. Only an error outranks it: that is the one thing
@@ -9885,17 +9918,6 @@ struct GraphCanvasWidget::Impl {
             message.kind != InspectorNoticeKind::Error)
             message = {InspectorNoticeKind::Information,
                        "Saving the graph change..."};
-        // EL-5s, decision 4.
-        update_ports->setVisible(!model.computePortChanges().empty());
-        update_ports->setEnabled(model.canEdit());
-        // UX-13b, decision 3.
-        if (const auto &fix = model.scalarTargetFix(); fix && fix->in_graph) {
-            fix_scalar_target->setText(qtext(GraphCanvasModel::scalarTargetFixLabel(*fix)));
-            fix_scalar_target->setEnabled(model.canEdit());
-            fix_scalar_target->show();
-        } else {
-            fix_scalar_target->hide();
-        }
         if (message.kind == InspectorNoticeKind::None) {
             notice->clear();
             notice->hide();
@@ -9912,10 +9934,26 @@ struct GraphCanvasWidget::Impl {
             if (!first.endsWith(hint)) hint = qtext(std::string{passRunsAfterHint});
             notice->setText(first.endsWith(hint) ? oneLine(first.chopped(hint.size())) + hint
                                                  : oneLine(first));
-            notice->setStyleSheet(message.kind == InspectorNoticeKind::Error
+            const QString style = message.kind == InspectorNoticeKind::Error
                                       ? QStringLiteral("color: #c0392b;")
-                                      : QStringLiteral("color: #7f8c8d;"));
+                                      : QStringLiteral("color: #7f8c8d;");
+            if (notice->styleSheet() != style) notice->setStyleSheet(style);
             notice->show();
+        }
+    }
+
+    void showNotice() {
+        showNoticeLabel();
+        // EL-5s, decision 4.
+        update_ports->setVisible(!model.computePortChanges().empty());
+        update_ports->setEnabled(model.canEdit());
+        // UX-13b, decision 3.
+        if (const auto &fix = model.scalarTargetFix(); fix && fix->in_graph) {
+            fix_scalar_target->setText(qtext(GraphCanvasModel::scalarTargetFixLabel(*fix)));
+            fix_scalar_target->setEnabled(model.canEdit());
+            fix_scalar_target->show();
+        } else {
+            fix_scalar_target->hide();
         }
         // GL-2b: the plan the bands and the Layers section read may have
         // just arrived.

@@ -263,6 +263,7 @@ class GraphCanvasParameterFields final : public QWidget {
     std::string scope_;
     std::string op_;
     std::string shown_;
+    std::shared_ptr<GraphParameterChoices> choices_;
     nlohmann::json loaded_ = nlohmann::json::object();
     std::vector<std::string> connected_inputs_;
     std::vector<Row> rows_;

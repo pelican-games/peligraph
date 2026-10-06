@@ -4969,7 +4969,17 @@ void FramePlanGraphicsScene::applyEdgeEmphasis() {
 
 void FramePlanGraphicsScene::applySceneRectNow() {
     scene_rect_update_queued_ = false;
-    setSceneRect(itemsBoundingRect().adjusted(-30.0, -30.0, 30.0, 30.0));
+    const QRectF rect = sceneRect().united(
+        itemsBoundingRect().adjusted(-30.0, -30.0, 30.0, 30.0));
+    if (rect == sceneRect()) return;
+    // Like the Graph canvas, keep the visible area in the view's bounds
+    // before growing the scene. Otherwise Qt centers the fitted axis again
+    // and the held node slides away from the pointer on every move.
+    for (QGraphicsView *view : views()) {
+        const QRectF visible = view->mapToScene(view->viewport()->rect()).boundingRect();
+        view->setSceneRect(rect.united(visible));
+    }
+    setSceneRect(rect);
 }
 
 void FramePlanGraphicsScene::scheduleSceneRectUpdate() {

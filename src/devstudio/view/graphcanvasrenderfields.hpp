@@ -181,6 +181,7 @@ class GraphCanvasImageFields final : public QWidget {
     QWidget *arguments_ = nullptr;
     QFormLayout *arguments_form_ = nullptr;
     std::vector<QComboBox *> argument_boxes_;
+    std::vector<GraphCanvasTypeArgument> argument_rows_;
     QWidget *usage_ = nullptr;
     std::vector<std::pair<std::string, QCheckBox *>> usage_boxes_;
     QLineEdit *usage_text_ = nullptr;

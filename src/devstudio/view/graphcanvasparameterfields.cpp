@@ -1738,15 +1738,16 @@ void GraphCanvasParameterFields::showNode(const GraphCanvasNode *node, const std
     node_ = node->id;
     scope_ = scope;
     op_ = node->op;
-    // The rows are made again for another node, op or table; otherwise only
-    // the values are read again.
-    const QStringList parts{qtext(scope), qtext(node->id), qtext(node->op), qtext(table.dump()),
+    // The rows belong to the scope, op and schema. A sibling node
+    // reuses them, with its choice context and values updated below.
+    const QStringList parts{qtext(scope), qtext(node->op), qtext(table.dump()),
                             qtext(project_root_.generic_string())};
     const auto shown = parts.join(QChar{0x1f}).toStdString();
     if (shown != shown_) {
         shown_ = shown;
         rebuild(*node, table);
     }
+    if (choices_) choices_->node = node_;
     if (rows_.empty()) {
         hide();
         return;
@@ -1807,7 +1808,8 @@ void GraphCanvasParameterFields::rebuild(const GraphCanvasNode &node, const Json
     // The place's and the view's fields show these.
     if (GraphCanvasModel::showsPlace(node.op))
         for (const auto *name : {"insert", "pass_set", "canonical_anchor"}) skipped.emplace_back(name);
-    auto choices = std::make_shared<GraphParameterChoices>();
+    choices_ = std::make_shared<GraphParameterChoices>();
+    const auto &choices = choices_;
     choices->model = &model_;
     choices->scope = scope_;
     choices->node = node.id;

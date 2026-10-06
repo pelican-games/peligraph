@@ -860,7 +860,10 @@ void GraphCanvasFoldController::syncFields() {
                                 "the engine's own runs, and compare: the decisions apply once "
                                 "they draw the same picture."));
     }
-    fields_->showGroup(group, model_.nodes({}), loopCounts());
+    // No selected group means no fields: don't build every root node
+    // and loop count just to pass them to the hidden panel.
+    if (group != nullptr) fields_->showGroup(group, model_.nodes({}), loopCounts());
+    else fields_->showGroup(nullptr, {}, {});
     fields_->setEditable(!busy() && model_.connected() &&
                          (group == nullptr || group->group != verifying_));
     add_selected_action_->setEnabled(group != nullptr);

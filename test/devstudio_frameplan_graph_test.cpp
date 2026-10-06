@@ -10221,10 +10221,17 @@ TEST_CASE("Q-13 a placement another panel committed reaches the Frame Plan "
     EditingFixture fixture;
     const auto digest = std::make_shared<RenderConfigDigest>();
     fixture.widget.setRenderConfigDigest(digest);
+    fixture.tweak_context = [](Json &context) { context = withRenderTargets(context); };
     fixture.open();
     // What the Frame Plan read is what the others are told.
     CHECK(digest->current() == RootDigest);
 
+    // Mark the existing items: a digest-only refresh must keep them, even
+    // though the next actual edit must use the new digest below.
+    auto &canvas = fixture.logical();
+    constexpr int Marked = Qt::UserRole + 910;
+    REQUIRE_FALSE(canvas.items().empty());
+    for (auto *item : canvas.items()) item->setData(Marked, true);
     // The Graph tab's set_layout committed: a new revision of the document.
     const auto context_before = fixture.recorder.context_id;
     const auto task_before = fixture.recorder.task_id;
@@ -10240,6 +10247,7 @@ TEST_CASE("Q-13 a placement another panel committed reaches the Frame Plan "
         QByteArray::fromStdString(movedCatalog(MovedDigest).dump()));
     QApplication::processEvents();
 
+    for (auto *item : canvas.items()) CHECK(item->data(Marked).toBool());
     saveMaterialPass(fixture.widget);
     REQUIRE(fixture.recorder.submits == 1);
     CHECK(fixture.recorder.method == QStringLiteral("edit_render_targets"));
@@ -12967,4 +12975,54 @@ TEST_CASE("Frame Plan drag stays attached across a crowded scene and rebuild",
     }
 }
 
+} // namespace PelicanStudio
+
+namespace PelicanStudio {
+TEST_CASE("Frame Plan mouse drag preserves the grabbed screen point after event delivery",
+          "[devstudio][frame-plan][drag][input-latency]") {
+    (void)application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.resize(1200, 800);
+    widget.show();
+    Json wire = capturedRuntimeFramePlan();
+    wire["runtime_resolution"] = exampleFramePlan(true).at("runtime_resolution");
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    targetSelector(widget).setCurrentText(QStringLiteral("Bloom_Threshold_RT"));
+    subtreeDepth(widget).setValue(2);
+    QApplication::processEvents();
+    auto &logical = scene(widget);
+    auto &view = logicalView(widget);
+    const auto nodes = itemsOfKind(logical, FramePlanNodeItem);
+    REQUIRE_FALSE(nodes.empty());
+    auto *node = *std::ranges::max_element(nodes, {}, [](const QGraphicsItem *item) {
+        return item->sceneBoundingRect().bottom();
+    });
+    REQUIRE(node != nullptr);
+    // A fitted canvas is narrower than its viewport on one axis. Growing
+    // its bounds must not recenter it underneath the held mouse button.
+    view.setSceneRect(QRectF{});
+    view.fitInView(logical.itemsBoundingRect().adjusted(-30, -30, 30, 30), Qt::KeepAspectRatio);
+    QApplication::processEvents();
+    auto *port = view.viewport();
+    const QPointF grab{60, 15};
+    const QPoint press = view.mapFromScene(node->mapToScene(grab));
+    REQUIRE(port->rect().contains(press));
+    const auto send = [&](QEvent::Type type, QPoint at, Qt::MouseButton button, Qt::MouseButtons held) {
+        QMouseEvent event{type, QPointF{at}, QPointF{at}, port->mapToGlobal(QPointF{at}), button, held, Qt::NoModifier};
+        QApplication::sendEvent(port, &event);
+        QApplication::processEvents();
+    };
+    send(QEvent::MouseButtonPress, press, Qt::LeftButton, Qt::LeftButton);
+    const QPointF offset = QPointF{press} - QPointF{view.mapFromScene(node->mapToScene(grab))};
+    double worst = 0;
+    for (int step = 1; step <= 20; ++step) {
+        const QPoint at = press + QPoint{step * 2, step * 4};
+        send(QEvent::MouseMove, at, Qt::NoButton, Qt::LeftButton);
+        const QPointF shown = QPointF{view.mapFromScene(node->mapToScene(grab))} + offset;
+        worst = std::max(worst, QLineF{shown, QPointF{at}}.length());
+    }
+    send(QEvent::MouseButtonRelease, press + QPoint{40, 80}, Qt::LeftButton, Qt::NoButton);
+    CHECK(worst <= 2.0);
+}
 } // namespace PelicanStudio

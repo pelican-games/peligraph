@@ -1024,17 +1024,6 @@ void GraphCanvasImageFields::bakeHdr(const GraphCanvasImageImport &imported) {
 }
 
 void GraphCanvasImageFields::loadArguments(const Json &parameters) {
-    // A load can come from inside one of these combos' own signal (a refused
-    // pick), so they go with the event loop rather than here.
-    for (QComboBox *combo : argument_boxes_) {
-        const auto row = arguments_form_->takeRow(combo);
-        for (QLayoutItem *item : {row.labelItem, row.fieldItem}) {
-            if (item == nullptr) continue;
-            if (QWidget *widget = item->widget()) retire(widget);
-            delete item;
-        }
-    }
-    argument_boxes_.clear();
     const auto type = parameters.is_object() ? parameters.value("type", Json::object()) : Json::object();
     const auto semantic = stringOf(type, "semantic");
     const auto arguments = type.is_object() ? type.value("arguments", Json::object()) : Json::object();
@@ -1048,6 +1037,31 @@ void GraphCanvasImageFields::loadArguments(const Json &parameters) {
             rows.push_back({name, value.is_string() ? std::vector{value.get<std::string>()}
                                                     : std::vector<std::string>{},
                             {}});
+    if (rows == argument_rows_ && rows.size() == argument_boxes_.size()) {
+        for (std::size_t i = 0; i < rows.size(); ++i) {
+            const QSignalBlocker block{argument_boxes_[i]};
+            auto &combo = *argument_boxes_[i];
+            combo.clear();
+            if (!rows[i].default_value.empty())
+                combo.addItem(tr("(default: %1)").arg(qtext(rows[i].default_value)), QString{});
+            for (const auto &value : rows[i].allowed) combo.addItem(qtext(value), qtext(value));
+            selectOrAdd(combo, qtext(stringOf(arguments, rows[i].name.c_str())));
+        }
+        arguments_->setVisible(!rows.empty());
+        return;
+    }
+    // A load can come from inside one of these combos' own signal (a refused
+    // pick), so they go with the event loop rather than here.
+    for (QComboBox *combo : argument_boxes_) {
+        const auto row = arguments_form_->takeRow(combo);
+        for (QLayoutItem *item : {row.labelItem, row.fieldItem}) {
+            if (item == nullptr) continue;
+            if (QWidget *widget = item->widget()) retire(widget);
+            delete item;
+        }
+    }
+    argument_boxes_.clear();
+    argument_rows_ = rows;
     for (const auto &row : rows) {
         auto *combo = new QComboBox(arguments_);
         combo->setObjectName(imageFieldName(QStringLiteral("argument.") + qtext(row.name)));
@@ -1066,12 +1080,6 @@ void GraphCanvasImageFields::loadArguments(const Json &parameters) {
 }
 
 void GraphCanvasImageFields::loadUsage(const Json &parameters) {
-    auto *grid = static_cast<QGridLayout *>(usage_->layout());
-    for (auto &[flag, box] : usage_boxes_) {
-        grid->removeWidget(box);
-        retire(box);
-    }
-    usage_boxes_.clear();
     std::vector<std::string> current;
     if (parameters.is_object())
         for (const auto &flag : parameters.value("usage", Json::array()))
@@ -1091,6 +1099,21 @@ void GraphCanvasImageFields::loadUsage(const Json &parameters) {
     // A flag the document holds that the engine does not list stays visible.
     for (const auto &flag : current)
         if (std::ranges::find(flags, flag) == flags.end()) flags.push_back(flag);
+    if (flags.size() == usage_boxes_.size() &&
+        std::equal(flags.begin(), flags.end(), usage_boxes_.begin(),
+                   [](const auto &flag, const auto &entry) { return flag == entry.first; })) {
+        for (const auto &[flag, box] : usage_boxes_) {
+            const QSignalBlocker block{box};
+            box->setChecked(std::ranges::find(current, flag) != current.end());
+        }
+        return;
+    }
+    auto *grid = static_cast<QGridLayout *>(usage_->layout());
+    for (auto &[flag, box] : usage_boxes_) {
+        grid->removeWidget(box);
+        retire(box);
+    }
+    usage_boxes_.clear();
     int index = 0;
     for (const auto &flag : flags) {
         auto *box = new QCheckBox(qtext(flag), usage_);

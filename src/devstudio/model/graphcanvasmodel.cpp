@@ -1209,8 +1209,17 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                 return;
             }
             if (pending.kind == RequestKind::Authoring) {
-                takeRenderAuthoring(response.is_object() ? response : Json::object());
-                ++report_revision_;
+                auto context = response.is_object() ? response : Json::object();
+                auto previous_visuals = render_authoring_;
+                auto next_visuals = context;
+                // A layout save changes the root digest, not the authoring
+                // data drawn by the canvas. Still refresh the editing token
+                // and authoring revision, without rebuilding every item.
+                previous_visuals.erase("source_digest");
+                next_visuals.erase("source_digest");
+                const bool changed = previous_visuals != next_visuals;
+                takeRenderAuthoring(std::move(context));
+                if (changed) ++report_revision_;
                 return;
             }
             if (pending.kind == RequestKind::RayLayout) {
@@ -2824,6 +2833,11 @@ bool GraphCanvasModel::undo() {
 
 bool GraphCanvasModel::redo() {
     return canRedo() && submitHistory(HistoryAction::Redo, redo_.back());
+}
+
+std::string GraphCanvasModel::nodeOperation(std::string_view scope, std::string_view id) const {
+    const auto *node = findNode(scope, id);
+    return node == nullptr ? std::string{} : text(*node, "op");
 }
 
 Json GraphCanvasModel::nodeParameters(std::string_view id) const {
