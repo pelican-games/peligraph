@@ -204,7 +204,7 @@ function(run_bake output replay)
     endif()
 endfunction()
 
-function(assert_navigation output preset)
+function(assert_navigation output preset axis)
     file(STRINGS "${output}" lines)
     list(GET lines 0 header)
     string(JSON camera_name GET "${header}" objects 0)
@@ -216,23 +216,29 @@ function(assert_navigation output preset)
         math(EXPR line_index "${frame} + 1")
         list(GET lines ${line_index} sample)
         string(JSON frame_${frame}_pos GET "${sample}" transforms 0 pos)
-        string(JSON frame_${frame}_pos_y GET "${sample}" transforms 0 pos 1)
+        string(JSON frame_${frame}_pos_axis GET "${sample}" transforms 0 pos ${axis})
+        string(JSON frame_${frame}_pos_z GET "${sample}" transforms 0 pos 2)
         string(JSON frame_${frame}_rot GET "${sample}" transforms 0 rot)
     endforeach()
 
     if(frame_0_pos STREQUAL frame_1_pos OR frame_0_rot STREQUAL frame_1_rot)
         message(FATAL_ERROR "${preset} orbit binding did not change position and rotation:\n${lines}")
     endif()
+    # This camera initially faces +Z: its screen right is -X. Dragging the
+    # scene right therefore moves the camera +X; dragging it down moves +Y.
+    # Both orbit and pan must follow this direction, not merely move.
+    if(NOT frame_1_pos_axis GREATER frame_0_pos_axis OR
+       NOT frame_3_pos_axis GREATER frame_2_pos_axis)
+        message(FATAL_ERROR "${preset} drag is inverted on screen axis ${axis}: ${lines}")
+    endif()
     if(frame_2_pos STREQUAL frame_3_pos OR NOT frame_2_rot STREQUAL frame_3_rot)
         message(FATAL_ERROR "${preset} pan binding did not translate without rotating:\n${lines}")
     endif()
-    if(frame_4_pos STREQUAL frame_5_pos OR
-       NOT frame_4_pos_y STREQUAL frame_5_pos_y)
-        message(FATAL_ERROR "${preset} drag zoom binding did not move without rotating:\n${lines}")
+    if(NOT frame_5_pos_z GREATER frame_4_pos_z)
+        message(FATAL_ERROR "${preset} upward zoom drag did not move toward the target:\n${lines}")
     endif()
-    if(frame_6_pos STREQUAL frame_7_pos OR
-       NOT frame_6_pos_y STREQUAL frame_7_pos_y)
-        message(FATAL_ERROR "${preset} wheel binding did not zoom without rotating:\n${lines}")
+    if(NOT frame_7_pos_z GREATER frame_6_pos_z)
+        message(FATAL_ERROR "${preset} positive wheel did not move toward the target:\n${lines}")
     endif()
 endfunction()
 
@@ -264,12 +270,12 @@ project_digest(before_digest)
 set(default_bake "${OUT_DIR}/default.transform_seq.jsonl")
 run_bake("${default_bake}" "${blender_replay}"
     --input-profile keyboard --free-camera)
-assert_navigation("${default_bake}" "default Blender")
+assert_navigation("${default_bake}" "default Blender" 0)
 
 set(blender_bake "${OUT_DIR}/blender.transform_seq.jsonl")
 run_bake("${blender_bake}" "${blender_replay}"
     --input-profile keyboard --free-camera blender)
-assert_navigation("${blender_bake}" "Blender")
+assert_navigation("${blender_bake}" "Blender" 0)
 
 file(SHA256 "${default_bake}" default_bake_digest)
 file(SHA256 "${blender_bake}" blender_bake_digest)
@@ -280,7 +286,20 @@ endif()
 set(unity_bake "${OUT_DIR}/unity.transform_seq.jsonl")
 run_bake("${unity_bake}" "${unity_replay}"
     --input-profile keyboard --free-camera unity)
-assert_navigation("${unity_bake}" "Unity")
+assert_navigation("${unity_bake}" "Unity" 0)
+
+# Exercise the independent vertical pointer axis for both input profiles.
+foreach(preset blender unity)
+    file(READ "${${preset}_replay}" vertical_input)
+    string(REPLACE "\"x\":10,\"y\":0" "\"x\":0,\"y\":10" vertical_input "${vertical_input}")
+    string(REPLACE "\"x\":20,\"y\":0" "\"x\":0,\"y\":20" vertical_input "${vertical_input}")
+    set(vertical_replay "${OUT_DIR}/${preset}_vertical.input_seq.jsonl")
+    file(WRITE "${vertical_replay}" "${vertical_input}")
+    set(vertical_bake "${OUT_DIR}/${preset}_vertical.transform_seq.jsonl")
+    run_bake("${vertical_bake}" "${vertical_replay}"
+        --input-profile keyboard --free-camera ${preset})
+    assert_navigation("${vertical_bake}" "${preset} vertical" 1)
+endforeach()
 
 set(recorded_input "${OUT_DIR}/recorded.input_seq.jsonl")
 execute_process(

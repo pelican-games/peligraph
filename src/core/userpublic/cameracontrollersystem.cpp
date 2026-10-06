@@ -212,16 +212,17 @@ OrbitInput readRuntimeFreeCameraInput(GameContext &ctx) {
 
     // A chord such as Shift+MMB also satisfies the unmodified MMB binding.
     // Resolve that deliberate input-profile overlap by operation priority.
-    // Pointer axes are the screen's (x right, y down), as pan, look and the
-    // controllers below read them.
+    // Drag the viewed scene with the pointer. The orbit controller accepts
+    // camera motion, so editor pointer deltas have the opposite sign. Keep
+    // authored camera actions and the projection convention unchanged.
     if (ctx.actionHeld("pelican_view_zoom_drag")) {
         result.zoom -= pointer_y;
     } else if (ctx.actionHeld("pelican_view_pan")) {
-        result.pan.x += pointer_x;
-        result.pan.y += pointer_y;
+        result.pan.x -= pointer_x;
+        result.pan.y -= pointer_y;
     } else if (ctx.actionHeld("pelican_view_orbit")) {
-        result.look.x += pointer_x;
-        result.look.y += pointer_y;
+        result.look.x -= pointer_x;
+        result.look.y -= pointer_y;
     }
     return result;
 }

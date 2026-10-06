@@ -234,7 +234,7 @@ QGraphicsItem *findFramePlanSocket(QGraphicsScene &scene, const QString &graph,
                                    const QString &node,
                                    const QString &resource,
                                    const QString &direction) {
-    for (QGraphicsItem *item : scene.items()) {
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
         if (item->data(FramePlanItemKindRole).toString() !=
                 QLatin1String{FramePlanSocketItem} ||
             item->data(FramePlanGraphRole).toString() != graph ||
@@ -251,7 +251,7 @@ QGraphicsItem *findFramePlanSocket(QGraphicsScene &scene, const QString &graph,
 QGraphicsItem *findFramePlanInputSocket(QGraphicsScene &scene,
                                         const QString &graph,
                                         const QString &node, int input_index) {
-    for (QGraphicsItem *item : scene.items()) {
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
         if (item->data(FramePlanItemKindRole).toString() !=
                 QLatin1String{FramePlanSocketItem} ||
             item->data(FramePlanGraphRole).toString() != graph ||
@@ -270,7 +270,7 @@ QGraphicsItem *findFramePlanInputArrow(QGraphicsScene &scene,
                                        const QString &graph,
                                        const QString &from,
                                        const QString &to, int input_index) {
-    for (QGraphicsItem *item : scene.items()) {
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
         if (item->data(FramePlanItemKindRole).toString() !=
                 QLatin1String{FramePlanEdgeArrowItem} ||
             item->data(FramePlanGraphRole).toString() != graph ||
@@ -349,9 +349,10 @@ void routeFramePlanBundle(QGraphicsScene &scene, QGraphicsPathItem &edge) {
 
 void rerouteFramePlanBundles(QGraphicsScene &scene, const std::string &graph,
                              const std::string &node) {
+    const NodeGraphLookupScope lookup{scene};
     const QString expected_graph = qtext(graph);
     const QString expected_node = qtext(node);
-    for (QGraphicsItem *item : scene.items()) {
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
         if (item->data(FramePlanItemKindRole).toString() !=
                 QLatin1String{FramePlanEdgeItem} ||
             item->data(FramePlanGraphRole).toString() != expected_graph ||

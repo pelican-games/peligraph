@@ -196,6 +196,21 @@ QPainterPath socketPath(SocketShape shape, qreal size) {
     return path;
 }
 
+thread_local NodeGraphLookupScope *NodeGraphLookupScope::current_ = nullptr;
+
+NodeGraphLookupScope::NodeGraphLookupScope(QGraphicsScene &scene)
+    : scene_(scene), items_(scene.items()), previous_(current_) {
+    current_ = this;
+}
+
+NodeGraphLookupScope::~NodeGraphLookupScope() { current_ = previous_; }
+
+QList<QGraphicsItem *> nodeGraphItems(QGraphicsScene &scene) {
+    for (auto *scope = NodeGraphLookupScope::current_; scope != nullptr; scope = scope->previous_)
+        if (&scope->scene_ == &scene) return scope->items_;
+    return scene.items();
+}
+
 QString nodeGraphItemKind(const QGraphicsItem &item) {
     return item.data(NodeGraphItemKindRole).toString();
 }
@@ -369,7 +384,7 @@ QPainterPath roundedEntityPath(qreal width, qreal height, qreal radius) {
 QGraphicsItem *findNodeItem(QGraphicsScene &scene,
                             const NodeGraphKinds &kinds, const QString &graph,
                             const QString &name) {
-    for (QGraphicsItem *item : scene.items()) {
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
         if (kinds.node_kinds.contains(nodeGraphItemKind(*item)) &&
             item->data(NodeGraphGraphRole).toString() == graph &&
             item->data(NodeGraphNameRole).toString() == name) {
@@ -383,7 +398,7 @@ QGraphicsItem *findEndpointArtifact(QGraphicsScene &scene,
                                     const QString &kind_value,
                                     const QString &graph, const QString &from,
                                     const QString &to) {
-    for (QGraphicsItem *item : scene.items()) {
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
         if (nodeGraphItemKind(*item) == kind_value &&
             item->data(NodeGraphGraphRole).toString() == graph &&
             item->data(NodeGraphFromNameRole).toString() == from &&

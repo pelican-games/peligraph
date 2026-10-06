@@ -12925,3 +12925,46 @@ TEST_CASE("GL-5d the Graph's Order... and Fix sockets are the Frame Plan's own, 
     CHECK(fix->toolTip().contains(QStringLiteral("in the Graph")));
 }
 } // namespace PelicanStudio
+
+
+namespace PelicanStudio {
+TEST_CASE("Frame Plan drag stays attached across a crowded scene and rebuild",
+          "[devstudio][frame-plan][drag][navigation-fix]") {
+    (void)application();
+    Json wire = capturedRuntimeFramePlan();
+    wire["runtime_resolution"] = exampleFramePlan(true).at("runtime_resolution");
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    targetSelector(widget).setCurrentText(QStringLiteral("Bloom_Threshold_RT"));
+    subtreeDepth(widget).setValue(2);
+    QApplication::processEvents();
+    for (int generation = 0; generation < 2; ++generation) {
+        auto &logical = scene(widget);
+        auto *node = nodeItem(logical, "HorizontalBlur_0");
+        auto *edge = dynamic_cast<QGraphicsPathItem *>(
+            edgeItem(logical, "HighLuminanceExtraction", "HorizontalBlur_0"));
+        REQUIRE(node != nullptr);
+        REQUIRE(edge != nullptr);
+        // Labels/decorations make repeated full-scene endpoint searches costly.
+        for (int i = 0; i < 1500; ++i)
+            logical.addRect(i % 100, i / 100, 1, 1);
+        const auto start = node->pos();
+        QElapsedTimer timer;
+        timer.start();
+        for (int step = 1; step <= 80; ++step) {
+            const auto previous = edge->path();
+            node->setPos(start + QPointF{step * 2.0, step * 1.0});
+            REQUIRE(edge->path() != previous);
+        }
+        if (qEnvironmentVariableIsSet("PELICAN_STUDIO_DRAG_BENCHMARK"))
+            WARN("Frame Plan: 80 drag updates " << timer.nsecsElapsed() / 1e6 << " ms");
+        QApplication::processEvents();
+        // Rebuild replaces all items, including identically named endpoints.
+        subtreeDepth(widget).setValue(0);
+        subtreeDepth(widget).setValue(2);
+        QApplication::processEvents();
+    }
+}
+
+} // namespace PelicanStudio

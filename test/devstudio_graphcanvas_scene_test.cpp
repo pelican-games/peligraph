@@ -14216,3 +14216,38 @@ TEST_CASE("GL-5g a graph node's pass shows Serial, Isolate and No alias in the d
     CHECK(vertex->isVisible());
     CHECK(heading->text() != QStringLiteral("shade: its decisions"));
 }
+
+
+TEST_CASE("Graph drag stays attached across a crowded scene and rebuild",
+          "[devstudio][graph-canvas][scene][drag][navigation-fix]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    answer(model, connectedDocument());
+    scene.setModel(&model);
+    for (int generation = 0; generation < 2; ++generation) {
+        auto *node = nodeItem(scene, QStringLiteral("left"));
+        REQUIRE(node != nullptr);
+        const auto edges = itemsOfKind(scene, PelicanStudio::GraphCanvasEdgeItem);
+        REQUIRE(edges.size() == 1);
+        auto *edge = dynamic_cast<QGraphicsPathItem *>(edges.front());
+        REQUIRE(edge != nullptr);
+        for (int i = 0; i < 1500; ++i)
+            scene.addRect(i % 100, i / 100, 1, 1);
+        const auto start = node->pos();
+        QElapsedTimer timer;
+        timer.start();
+        for (int step = 1; step <= 80; ++step) {
+            const auto previous = edge->path();
+            node->setPos(start + QPointF{step * 2.0, step * 1.0});
+            REQUIRE(edge->path() != previous);
+        }
+        if (qEnvironmentVariableIsSet("PELICAN_STUDIO_DRAG_BENCHMARK"))
+            WARN("Graph: 80 drag updates " << timer.nsecsElapsed() / 1e6 << " ms");
+        model.refresh();
+        answer(model, connectedDocument());
+        scene.repopulate();
+        REQUIRE(nodeItem(scene, QStringLiteral("left"))->pos() == start + QPointF{160, 80});
+    }
+}

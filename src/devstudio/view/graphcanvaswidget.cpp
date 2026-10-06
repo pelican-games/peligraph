@@ -150,7 +150,7 @@ ValueEditorKind editorKindFor(const nlohmann::json &value) {
 QGraphicsItem *findSocket(QGraphicsScene &scene, const QString &scope,
                           const QString &node, const QString &port,
                           const QString &direction) {
-    for (QGraphicsItem *item : scene.items()) {
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem} ||
             item->data(GraphCanvasScopeRole).toString() != scope ||
             item->data(NodeGraphNameRole).toString() != node ||
@@ -227,7 +227,7 @@ void routeGraphCanvasEdge(QGraphicsScene &scene, QGraphicsPathItem &edge) {
     // middle, and goes where the line goes.
     if (edge.data(GraphCanvasEdgeElementRole).toString().isEmpty()) return;
     const QString to_port = edge.data(GraphCanvasToPortRole).toString();
-    for (QGraphicsItem *item : scene.items()) {
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasEdgeLabelItem} ||
             item->data(GraphCanvasScopeRole).toString() != scope ||
             item->data(NodeGraphNameRole).toString() != to_name ||
@@ -271,7 +271,7 @@ void routeDerivedEdge(QGraphicsScene &scene, QGraphicsPathItem &line) {
     const QString resource = line.data(GraphCanvasFromPortRole).toString();
     const auto end = [&](const QString &name, bool output) -> std::optional<QPointF> {
         QGraphicsItem *node = nullptr;
-        for (QGraphicsItem *item : scene.items()) {
+        for (QGraphicsItem *item : nodeGraphItems(scene)) {
             if (item->data(NodeGraphNameRole).toString() != name ||
                 item->data(GraphCanvasScopeRole).toString() != scope ||
                 !item->data(GraphCanvasZoneScopeRole).toString().isEmpty())
@@ -345,7 +345,7 @@ bool isFoldedLayoutKey(const std::string &key) { return key.starts_with('\x01');
 
 void rerouteDerivedEdges(QGraphicsScene &scene, const std::string &node) {
     const QString name = qtext(node);
-    for (QGraphicsItem *item : scene.items()) {
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
         const QString kind = nodeGraphItemKind(*item);
         const bool pass_input = kind == QLatin1String{GraphCanvasPassInputEdgeItem};
         if ((kind != QLatin1String{GraphCanvasDerivedEdgeItem} && !pass_input) ||
@@ -362,11 +362,12 @@ void rerouteDerivedEdges(QGraphicsScene &scene, const std::string &node) {
 
 void rerouteGraphCanvasEdges(QGraphicsScene &scene, const std::string &scope,
                              const std::string &node) {
+    const NodeGraphLookupScope lookup{scene};
     // GL-1: the lines the plan implies follow a root node too.
     if (scope.empty()) rerouteDerivedEdges(scene, node);
     const QString expected_scope = qtext(scope);
     const QString expected_node = qtext(node);
-    for (QGraphicsItem *item : scene.items()) {
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
         if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasZoneLinkItem} &&
             item->data(GraphCanvasScopeRole).toString() == expected_scope &&
             item->data(NodeGraphFromNameRole).toString() == expected_node) {

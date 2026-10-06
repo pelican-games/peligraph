@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QColor>
+#include <QList>
 #include <QEvent>
 #include <QLineF>
 #include <QVector>
@@ -32,6 +33,24 @@ class QPainter;
 class QWheelEvent;
 
 namespace PelicanStudio {
+
+// One geometry-only routing operation shares one ordered item snapshot.
+// Do not add/remove items or change identity data inside this scope. Positions,
+// paths and polygons remain live. Nothing survives a redraw or the next drag.
+class NodeGraphLookupScope {
+public:
+    explicit NodeGraphLookupScope(QGraphicsScene &scene);
+    ~NodeGraphLookupScope();
+    NodeGraphLookupScope(const NodeGraphLookupScope &) = delete;
+    NodeGraphLookupScope &operator=(const NodeGraphLookupScope &) = delete;
+private:
+    friend QList<QGraphicsItem *> nodeGraphItems(QGraphicsScene &);
+    QGraphicsScene &scene_;
+    QList<QGraphicsItem *> items_;
+    NodeGraphLookupScope *previous_;
+    static thread_local NodeGraphLookupScope *current_;
+};
+QList<QGraphicsItem *> nodeGraphItems(QGraphicsScene &scene);
 
 // Every node canvas in Studio -- the Frame Plan and the common graph -- draws
 // the same shapes and reroutes the same way. The identity roles live here so
