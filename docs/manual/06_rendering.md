@@ -35,7 +35,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
               毎フレーム: プラン順に layout 遷移 → dynamic rendering でパス実行
 ```
 
-ここで **swapchain(スワップチェーン)** は「画面に出す番が来たら OS/ドライバへ渡す画像」の並びのことで、**display** はエンジンが用意する canonical(標準)なレンダーターゲット名です — 終端の `output_transform` が書き込む先で、最終的に swapchain の画像になります([用語集](14_glossary.md))。
+ここで **swapchain(スワップチェーン)** は「画面に出す番が来たら OS/ドライバへ渡す画像」の並びのことで、**display** はエンジンが用意する canonical(標準)なレンダーターゲット名です — 終端の `output_transform` が書き込む先で、最終的に swapchain の画像になります([用語集](14_glossary.md#swapchainスワップチェーン))。
 
 `basic_config.default_rendering_pass` が rendering config 内のどのパス列(`rendering_passes[].name`)を使うかを決めます。エンジンは常にパージ不能な終端 `output_transform` ノード(リニア → 表示エンコードの 1 箇所)を生成し、**このノードが終端に来ないパス列を既定に指定すると起動時エラー**です(§6.3)。なお authored な `"swapchain"` 出力は合成時に `display` RT へ置換されるため、`display` を誰も書かない構成はフレームグラフ検証で落ちます(§6.11)。
 
@@ -64,7 +64,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 
 ## 6.2 rendering config のスキーマ
 
-実物の最小構成([../../projects/example/passes/example_renderingpass_data.json](../../projects/example/passes/example_renderingpass_data.json) — G-buffer → ライティング → UI。**G-buffer** は「1 パス目で色・法線・粗さなどを画面サイズの複数枚に書き出し、2 パス目でそれを読んでライティングする」deferred 方式の中間バッファ群のことです。[用語集](14_glossary.md))は前版と同じ骨格で動きます。example が実際に使う [main_rendering_config.json](../../projects/example/passes/main_rendering_config.json) は SSAO と 4 段ブルームを足した 17 パス構成です(ファイルに書かれた authored 件数。実行時はこれに ui feature のパスと終端 `output_transform` が合成されます)。
+実物の最小構成([../../projects/example/passes/example_renderingpass_data.json](../../projects/example/passes/example_renderingpass_data.json) — G-buffer → ライティング → UI。**G-buffer** は「1 パス目で色・法線・粗さなどを画面サイズの複数枚に書き出し、2 パス目でそれを読んでライティングする」deferred 方式の中間バッファ群のことです。[用語集](14_glossary.md#rtrender-target))は前版と同じ骨格で動きます。example が実際に使う [main_rendering_config.json](../../projects/example/passes/main_rendering_config.json) は SSAO と 4 段ブルームを足した 17 パス構成です(ファイルに書かれた authored 件数。実行時はこれに ui feature のパスと終端 `output_transform` が合成されます)。
 
 ### トップレベルキー
 
@@ -124,7 +124,7 @@ editor の RPC から書くときは、`shader_defines`・`snapshots`・`resolve
 > に自動で足されます)に書きます。Studio が編集・削除できるのはこの file の target だけで、root や preset、他の feature で
 > 宣言した target は読み取り専用です。RPC は `edit_render_targets`、拒否の一覧は [第13章 §13.5](13_editor.md) にあります。
 
-runtime cubemapは資源形状だけを宣言し、六面をViewFamilyの6 viewとはみなしません(**view** = 1 つの視点、**ViewFamily** = 同じ内容を描く視点の束のこと。§6.12・[用語集](14_glossary.md))。
+runtime cubemapは資源形状だけを宣言し、六面をViewFamilyの6 viewとはみなしません(**view** = 1 つの視点、**ViewFamily** = 同じ内容を描く視点の束のこと。§6.12・[用語集](14_glossary.md#view-familyビューファミリ))。
 
 ```json
 {
@@ -365,7 +365,7 @@ color attachment stateは「未指定」の空表現を保ちます。省略をo
 
 ## 6.3 カラーパイプライン
 
-前提の 2 語だけ先に置きます。**sRGB** は PNG やモニタが使う色の符号化で、格納値と実際の光の量が非線形に対応します(暗部に段階を厚く割り当てるため。符号化に使う区分関数と色域の規格は **IEC 61966-2-1** で、エンジンの `Pelican::srgb()` も同じ区分点 0.04045 / 12.92 / 1.055 / 2.4 を使います — [color.hpp:33](../../src/core/userpublic/color.hpp#L33))。**リニア(線形)** はその逆で、値がそのまま光の量に比例します。加算や乗算が物理的に正しくなるのはリニア側なので、計算はリニアで行い、表示の直前だけ sRGB へ符号化する、というのがここでの方針です(用語としての整理は [用語集](14_glossary.md)、Vulkan 側の `*_SRGB` フォーマットの扱いは [ソースコード読解ガイド §10.1](../source-code-guide/10_background_knowledge.md#srgb-フォーマットをスコアで選ぶ理由))。
+前提の 2 語だけ先に置きます。**sRGB** は PNG やモニタが使う色の符号化で、格納値と実際の光の量が非線形に対応します(暗部に段階を厚く割り当てるため。符号化に使う区分関数と色域の規格は **IEC 61966-2-1** で、エンジンの `Pelican::srgb()` も同じ区分点 0.04045 / 12.92 / 1.055 / 2.4 を使います — [color.hpp:33](../../src/core/userpublic/color.hpp#L33))。**リニア(線形)** はその逆で、値がそのまま光の量に比例します。加算や乗算が物理的に正しくなるのはリニア側なので、計算はリニアで行い、表示の直前だけ sRGB へ符号化する、というのがここでの方針です(用語としての整理は [用語集](14_glossary.md#srgb--リニアワークフロー)、Vulkan 側の `*_SRGB` フォーマットの扱いは [ソースコード読解ガイド §10.1](../source-code-guide/10_background_knowledge.md#srgb-フォーマットをスコアで選ぶ理由))。
 
  に **SRGB スワップチェーン + リニアワークフロー**へ全面移行しました(設計の正: [../design_color_pipeline.md](../design_color_pipeline.md) v4)。
 
@@ -385,7 +385,7 @@ color attachment stateは「未指定」の空表現を保ちます。省略をo
 
 ### stem 参照
 
-**stem(ステム)** はファイル名から拡張子を落とした部分のことです([用語集](14_glossary.md))。シェーダは**拡張子なしの stem** で参照します(例: `"shaders/lava"`、`"engine://ssao"`)。`.vert` / `.frag` / `.spv` などの拡張子を書くと「use an extensionless <stage> shader stem」エラーになります(WP63)。
+**stem(ステム)** はファイル名から拡張子を落とした部分のことです([用語集](14_glossary.md#stemステム))。シェーダは**拡張子なしの stem** で参照します(例: `"shaders/lava"`、`"engine://ssao"`)。`.vert` / `.frag` / `.spv` などの拡張子を書くと「use an extensionless <stage> shader stem」エラーになります(WP63)。
 
 拡張子は stem ではなく、**その参照を書いた場所(どのシェーダステージか)**が決めます。`shader.vertex` に書いた `"shaders/lava"` なら `.vert`、`shader.fragment` なら `.frag`、compute の `shader` なら `.comp` です。そのうえで解決順は ① `<stem>.<ステージ拡張子>`(GLSL ソース → 実行時コンパイル)→ ② `<stem>.<ステージ拡張子>.spv`(ビルド済み SPIR-V)。つまり fragment に `"shaders/lava"` と書くと `shaders/lava.frag` → `shaders/lava.frag.spv` の順に探します。①の候補は**実行時コンパイラを含むビルドでのみ**列に入る(`PELICAN_RUNTIME_SHADER_COMPILER` — [第2章](02_getting_started.md))ので、**明示的に compiler を OFF にしたビルドでは** `.spv` だけを探します([shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp#L588))。現在の `dist-config` は compiler を OFF にせず、既定の ON のままなので、配布ビルドでも GLSL を実行時にコンパイルします。どちらも無ければ試行パス一覧付きエラー。
 
@@ -395,7 +395,7 @@ color attachment stateは「未指定」の空表現を保ちます。省略をo
 
 ### 自動リフレクションとキャッシュ
 
-**SPIR-V reflection(リフレクション)** は、コンパイル済みシェーダのバイナリを読み返して「このシェーダはどの番号にどんな資源を要求しているか」を機械的に取り出すことです(C++ 側に同じ宣言を手で書き写さずに済み、書き写しのズレも起きません)。`spirv-reflect` はそれを行う Khronos 公式のライブラリです([用語集](14_glossary.md))。
+**SPIR-V reflection(リフレクション)** は、コンパイル済みシェーダのバイナリを読み返して「このシェーダはどの番号にどんな資源を要求しているか」を機械的に取り出すことです(C++ 側に同じ宣言を手で書き写さずに済み、書き写しのズレも起きません)。`spirv-reflect` はそれを行う Khronos 公式のライブラリです([用語集](14_glossary.md#spir-v--spir-v-reflection))。
 
 SPIR-V を spirv-reflect で解析し、**descriptor set layout・pipeline layout・push constant range を全自動生成**します。頂点+フラグメントで binding の型が食い違うと起動時エラー。パイプラインキャッシュ(`pipeline_cache.bin`)に加え、WP82 で **SPIR-V ディスクキャッシュ**(`<project>/.pelican/shader_cache/`、SHA-256 キー)が入り、2 回目以降の起動が大幅に短縮されます(破損時は再コンパイルへフォールバック)。
 
@@ -420,11 +420,11 @@ SPIR-V を spirv-reflect で解析し、**descriptor set layout・pipeline layou
 
 ウィンドウモードで実行中にシェーダや `.surface` を保存すると、**単一の FileWatcher 経路**([src/core/watch/](../../src/core/watch))が検出し、**アトミックなトランザクション**で反映します: 1 変更に影響する全 define/pass バリアント・リフレクション・依存パイプライン・`.surface` の vert/frag ペア・マテリアル layout/values をすべて準備してからフレーム境界で一括公開。どれか 1 つでも失敗すれば**全体を破棄して旧世代を維持**し、WARNING を出すだけです(旧来の「1 秒ポーリング」は廃止)。例外は VI-1b の pass ごとの断りで、compile は通ったが fullscreen pass(と入力を持つ raster pass)の入力と宣言が合わない pipeline だけを外し、その pass は前の shader で描き続け、残りは公開します(§6.4 の「shader の読み直しも同じ照合を通ります」)。
 
-テクスチャ・マテリアル値・モデルコンテナ .glb/.gltf/.vrm(WP110 — 配置済みインスタンスごと一括再構築)もリロード対象です(全体像は [第10章](10_tools.md) §10.7)。リプレイ / `--strict-assets` / rpc 駆動中はゲートにより無効、headless では自動ポーリングしません(project.json の `hot_reload` に書いた素材とフォルダは rpc 駆動中も監視します。[第3章](03_project_format.md) の「hot reload で監視するもの」)。状態は `get_status` の `reload.*` で見えます。
+テクスチャ・マテリアル値・モデルコンテナ .glb/.gltf/.vrm(WP110 — 配置済みインスタンスごと一括再構築)もリロード対象です(全体像は [第10章](10_tools.md) §10.5)。リプレイ / `--strict-assets` / rpc 駆動中はゲートにより無効、headless では自動ポーリングしません(project.json の `hot_reload` に書いた素材とフォルダは rpc 駆動中も監視します。[第3章](03_project_format.md) の「hot reload で監視するもの」)。状態は `get_status` の `reload.*` で見えます。
 
 ### descriptor set 規約(shader_contract.md が正)
 
-**descriptor set(デスクリプタセット)** は Vulkan で「シェーダに渡す資源(UBO・SSBO・テクスチャ)の束」に付ける番号で、GLSL では `layout(set = N, binding = M)` と書きます。pelican は set 0〜3 の意味を固定し、どの番号に何が来るかをエンジンとシェーダの契約にしています([用語集](14_glossary.md))。この契約の正本はリポジトリ内の [../shader_contract.md](../shader_contract.md)(`docs/shader_contract.md`)で、set/binding の全表・`engineMvp` の規範意味論・生成アクセサの ABI がそこにあります。以下はその要約です。
+**descriptor set(デスクリプタセット)** は Vulkan で「シェーダに渡す資源(UBO・SSBO・テクスチャ)の束」に付ける番号で、GLSL では `layout(set = N, binding = M)` と書きます。pelican は set 0〜3 の意味を固定し、どの番号に何が来るかをエンジンとシェーダの契約にしています([用語集](14_glossary.md#descriptor-set))。この契約の正本はリポジトリ内の [../shader_contract.md](../shader_contract.md)(`docs/shader_contract.md`)で、set/binding の全表・`engineMvp` の規範意味論・生成アクセサの ABI がそこにあります。以下はその要約です。
 
 GLSL からは `#include "pelican_sets.glsl"` / `#include "pelican_frame.glsl"` で定数と構造体を共有します。
 
@@ -447,7 +447,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、**リフレク�
 
 ## 6.5 feature — パージ可能な GPU 機能
 
-**feature(フィーチャ)** は「RT・パス・compute タスク・シェーダ define をひとまとめにした断片 JSON(+ シェーダ)」で、rendering config の `features` 配列に参照を 1 行書くと、合成時にそのパスが既存のパス列へ挿し込まれます。SSAO や TAA のような描画機能 1 個ぶんの単位だと思ってください。**パージ可能**とは「参照を消せば機構ごと丸ごと消え、出力が feature 導入前と byte 単位で一致する」という意味です([用語集](14_glossary.md))。
+**feature(フィーチャ)** は「RT・パス・compute タスク・シェーダ define をひとまとめにした断片 JSON(+ シェーダ)」で、rendering config の `features` 配列に参照を 1 行書くと、合成時にそのパスが既存のパス列へ挿し込まれます。SSAO や TAA のような描画機能 1 個ぶんの単位だと思ってください。**パージ可能**とは「参照を消せば機構ごと丸ごと消え、出力が feature 導入前と byte 単位で一致する」という意味です([用語集](14_glossary.md#feature))。
 
 > **設計決定(参照 = 存在):** feature は rendering config に**参照を書いたときだけ**存在する。1 つも書かなければ合成機構ごと素通りし、挙動は完全に不変(パージ可能)。golden テストの「feature off = 既存出力の完全維持」で保証されている。
 
@@ -459,7 +459,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、**リフレク�
 { "features": [ "engine://features/shadow_directional.json", "engine://features/velocity.json" ], ... }
 ```
 
-エンジン同梱 feature([src/core/resources/features/](../../src/core/resources/features/) の **21 ファイル**・すべて実装済み)。うち 20 本が `pelican.render_feature`、`editor.json` だけは `pelican.render_feature_overlay`(他の feature を並べて参照するオーバーレイ)です。表に出る業界用語を先に 1 行ずつ: **SSAO**(screen-space ambient occlusion = 深度と法線から「物が近接して光が届きにくい隅」を推定して暗くする画面空間の手法)、**bloom**(明るい部分をぼかして周囲へにじませる後処理)、**TAA**(temporal anti-aliasing = 毎フレーム微妙に投影をずらして描き、前フレームの結果と混ぜてジャギーを消す手法。§6.8)、**IBL**(image-based lighting = 環境画像を光源として使う照明)、**CSM**(cascaded shadow map = 距離帯ごとに解像度の違う影マップを使い分ける方式)、**cluster**(画面を格子に切って「その格子に効くライトの一覧」を先に作る手法)。いずれも [用語集](14_glossary.md) にも項目があります。
+エンジン同梱 feature([src/core/resources/features/](../../src/core/resources/features/) の **21 ファイル**・すべて実装済み)。うち 20 本が `pelican.render_feature`、`editor.json` だけは `pelican.render_feature_overlay`(他の feature を並べて参照するオーバーレイ)です。表に出る業界用語を先に 1 行ずつ: **SSAO**(screen-space ambient occlusion = 深度と法線から「物が近接して光が届きにくい隅」を推定して暗くする画面空間の手法)、**bloom**(明るい部分をぼかして周囲へにじませる後処理)、**TAA**(temporal anti-aliasing = 毎フレーム微妙に投影をずらして描き、前フレームの結果と混ぜてジャギーを消す手法。§6.8)、**IBL**(image-based lighting = 環境画像を光源として使う照明)、**CSM**(cascaded shadow map = 距離帯ごとに解像度の違う影マップを使い分ける方式)、**cluster**(画面を格子に切って「その格子に効くライトの一覧」を先に作る手法)。いずれも [用語集](14_glossary.md#ssaoscreen-space-ambient-occlusion) にも項目があります。
 
 | feature | 内容 |
 |---|---|
@@ -616,7 +616,7 @@ StudioではRender featuresで対象を選び、**Make editable...**で新しい
 
 **materialize した派生 feature は、プロジェクトの外へ「共有部品」として持ち出せます。** `export_render_feature{scope, index}` は `features` 配列の 1 インスタンスを 1 ディレクトリ `user://components/<feature の name>/`(`component.json` + `feature.json`)として書き出し、`import_render_feature` が別プロジェクトの `project://` へ取り込みます([renderconfigeditor.cpp:893](../../src/core/communication/renderconfigeditor.cpp#L1696))。持ち出せるのは **`project://` を一文字も含まない** feature だけで(含んでいれば `render_component_project_reference`)、`engine://` の同梱 feature は「既に共有されている」として `render_component_engine_reference` で断られます —— まず派生を作ってから、という順序です([rendercomponent.cpp:212](../../src/project/rendercomponent.cpp#L212)、`project://` 走査は [:240](../../src/project/rendercomponent.cpp#L240))。部品が要求する RT は `component.json` の `requires.render_targets` に並びます —— **「パスが使っている名前」から「feature 自身が `render_targets` / `buffers` で宣言した名前」を引いた差**なので、`bloom` を派生させて書き出すと `lit_color` と `swapchain` の 2 つが入り、feature 自身が宣言する `Bloom_*` と `bloom.intensity` は入りません([rendercomponent.cpp:163](../../src/project/rendercomponent.cpp#L163))。`swapchain` はエンジン所有なので、取り込み先で「無い」と言われることはありません。**形式・拒否 8 種・取り込み先の規則の本文は [第3章 §3.12](03_project_format.md)** にあります。ここで覚えておくことは 1 つだけ —— **共有できるのは「プロジェクトを指していない派生 feature」**です。
 
-> **同じ綴りの別語に注意。** ここの **component** は `pelican.render_component`(feature 1 本を包んだ共有部品)で、[第4章](04_scene_ecs.md) の ECS の component とも、package の `provides.components` とも **別の語**です。同じく **requires** も 3 か所で別物で、`component.json` の `requires.render_targets`(この部品が要求する RT)/ feature の `integrations[].requires`(そのフラグメントを適用する条件の feature 名)/ `project.json` の `requires`(ビルド機能ユニットの要求。[第3章](03_project_format.md))は互いに無関係です([用語集](14_glossary.md))。
+> **同じ綴りの別語に注意。** ここの **component** は `pelican.render_component`(feature 1 本を包んだ共有部品)で、[第4章](04_scene_ecs.md) の ECS の component とも、package の `provides.components` とも **別の語**です。同じく **requires** も 3 か所で別物で、`component.json` の `requires.render_targets`(この部品が要求する RT)/ feature の `integrations[].requires`(そのフラグメントを適用する条件の feature 名)/ `project.json` の `requires`(ビルド機能ユニットの要求。[第3章](03_project_format.md))は互いに無関係です([用語集](14_glossary.md#component3-つの別の語))。
 
 StudioのRender featuresでrootに指定したfeatureを選び、**Parameters...**を開くと、公開された
 数値・bool・render target・shader assetパラメーターを編集できます。項目のチェックをONにすると
@@ -848,7 +848,7 @@ feature が作った RT を、**material 側の公開アクセサとして配る
 
 ### canonical anchor
 
-**canonical anchor(標準アンカー)** は「パイプラインのこの位置」を指すためのエンジン定義の目印です。feature は挿入先に実パス名(プロジェクトごとに違う)ではなくアンカー名を書けるので、どの config へコピーしても同じ場所に入ります([用語集](14_glossary.md))。
+**canonical anchor(標準アンカー)** は「パイプラインのこの位置」を指すためのエンジン定義の目印です。feature は挿入先に実パス名(プロジェクトごとに違う)ではなくアンカー名を書けるので、どの config へコピーしても同じ場所に入ります([用語集](14_glossary.md#canonical-anchor標準アンカー))。
 
 ここでいう**実体化**は「描画するパスになる」ことではなく、**何も挿されていなくても `__anchor_<name>` という空ノードがフレームグラフに必ず 1 個ずつ存在する**、という意味です(プランのノード種別 `anchor`。後述 §6.6)。順序の基準点があるので、挿す側は基準点の存在を確かめずに `before:` / `after:` を書けます。
 
@@ -1003,7 +1003,7 @@ Studio 側へ保持できます。
 
 ## 6.6 フレームグラフ(F0〜F2 = WP33〜35 + WP64)
 
-**フレームグラフ(frame graph)** は「1 フレームぶんのパスと GPU 資源を、ノードと依存辺のグラフとして表したもの」です。DirectX 12 / Vulkan 世代のエンジンで広く使われている考え方で、pelican 固有の発明ではありませんが、**入力は rendering config JSON だけ**(C++ でグラフを組み立てる API は公開されていません)という点が pelican の形です([用語集](14_glossary.md))。
+**フレームグラフ(frame graph)** は「1 フレームぶんのパスと GPU 資源を、ノードと依存辺のグラフとして表したもの」です。DirectX 12 / Vulkan 世代のエンジンで広く使われている考え方で、pelican 固有の発明ではありませんが、**入力は rendering config JSON だけ**(C++ でグラフを組み立てる API は公開されていません)という点が pelican の形です([用語集](14_glossary.md#frame-graphフレームグラフ))。
 
 以下 **data edge(データ辺)** は「あるパスが書いた資源を別のパスが読む」という依存の辺を指します。対して `after` / `before` で人が書く辺を**明示エッジ**と呼びます。この 2 種類だけが順序の契約です。
 
@@ -1655,7 +1655,7 @@ render / compute / transfer / output / marker のノード本体は provider の
 
 ここから **physical(物理)計画**の話に入るので、先に logical との線引きを置きます。
 
-> **分離基準:** 実デバイスの能力を知らなくても決まることが **logical(論理)plan**、実デバイスの能力を見ないと決められないことが **physical plan**([用語集](14_glossary.md))。
+> **分離基準:** 実デバイスの能力を知らなくても決まることが **logical(論理)plan**、実デバイスの能力を見ないと決められないことが **physical plan**([用語集](14_glossary.md#logical-plan--physical-plan論理プラン--物理プラン))。
 
 具体例 — rendering config に `gbuffer_albedo` という RT を宣言し、`gbuffer_pass` が書いて `lighting_pass` が読むと書いたとします。
 
@@ -1700,7 +1700,7 @@ render / compute / transfer / output / marker のノード本体は provider の
 - profile は `optimized`、`conservative_debug`、`hazard_stress`。3 つの `kind` の意味は次のとおりです([targetplanning.cpp](../../src/project/targetplanning.cpp#L973))。
   - `optimized`(既定) — 並列化・scope 融合(tile-local)・alias の候補をすべて拾い、安定な順序で採用する。
   - `conservative_debug` — 並列候補を出さず、rendering scope の融合もしない。つまり「順番に 1 つずつ、資源は共有しない」側へ倒す。バリアや融合を疑うときの対照用です。
-  - `hazard_stress` — **hazard(ハザード)** は「同じ資源への読み書きが正しい順序で並ばないと壊れる関係」を指す GPU 同期の用語で、この profile はその取りこぼしを探すためのものです([用語集](14_glossary.md))。**依存が許す範囲の任意な選択**(実行可能ノードの取り出し順、並列/融合/alias 候補の並び)を `seed` で撹拌し、alias 候補を半分に間引く。順序に暗黙に依存したバグを揺さぶり出すための profile で、`seed` はここでだけ指定できます(同じ seed なら再現します)。
+  - `hazard_stress` — **hazard(ハザード)** は「同じ資源への読み書きが正しい順序で並ばないと壊れる関係」を指す GPU 同期の用語で、この profile はその取りこぼしを探すためのものです([用語集](14_glossary.md#hazardハザード))。**依存が許す範囲の任意な選択**(実行可能ノードの取り出し順、並列/融合/alias 候補の並び)を `seed` で撹拌し、alias 候補を半分に間引く。順序に暗黙に依存したバグを揺さぶり出すための profile で、`seed` はここでだけ指定できます(同じ seed なら再現します)。
 - node/resource 制約は graph ごとです。`main` と書けば XR variant のコンパイル時には自動的に `main#xr` へ対応し、個々の node/resource 名は変わりません。
 - `serial` / `isolate` / `no_alias` は禁止側だけを明示する設計です。通常 node に `parallel_safe` のような boilerplate は要りません。
 - 未知 graph/node/resource、重複した warning ID、型の違うフラグは runtime object を作る前に compile error になります。
@@ -1822,6 +1822,8 @@ RPC から書くときは `edit_vulkan_plan_pins {base_source_digest, family, pi
 
 v1 pin が固定するのは有限集合の **backend candidate だけ**です。resource/scopeを編集する場合は、次の別schemaを使います。
 
+**logical plan / physical plan(論理プラン / 物理プラン)** — 違いは型の欄で見るのが早く、論理側の 1 リソースは `name` / `type` / materialization の 3 項だけ([LogicalResourceDesc](../../src/project/logicalrendergraph.hpp#L60))、物理側の同じリソースにはそこへ `format` / `rasterization_samples` / `view_layout` / `mip_levels` / `array_layers` / alias 可否が付きます([VulkanPhysicalResourcePlan](../../src/project/targetrenderplanning.hpp#L208))。例えば `format_class: "scene"` は論理側では文字どおり「scene 用の色」でしかなく、実 format(HDR なら `R16G16B16A16_SFLOAT`、SDR なら `B8G8R8A8_SRGB`)を欄として持つのは物理側です([第6章 §6.3](06_rendering.md))。
+
 ### Vulkan physical fragment v1 / v2 / v3
 
 `physical_target_plan.ejectable_physical_fragment`を丸ごとコピーし、対応するvariantの`vulkan_physical_fragments`へ貼ります。
@@ -1901,7 +1903,7 @@ sample count、array layer上限、external depthなら`TRANSFER_SRC`契約を�
 - v2以降では`(node, logical_resource)`で特定したraster attachmentの`load_op` / `store_op`。
   `load_op`は`load|clear|discard`、`store_op`は`store|discard`で、未記述fieldは自動planを維持する
 
-**scope** はここでは「1 つの Vulkan dynamic rendering instance にまとめて実行するノードの並び」を指します(この節の物理計画の文脈に限った意味です — [用語集](14_glossary.md))。`scope_edit_mode` はその scope をどこまで編集してよいかの指定で、**編集を許す範囲が version ごとに異なります**。
+**scope** はここでは「1 つの Vulkan dynamic rendering instance にまとめて実行するノードの並び」を指します(この節の物理計画の文脈に限った意味です — [用語集](14_glossary.md#scopeスコープ))。`scope_edit_mode` はその scope をどこまで編集してよいかの指定で、**編集を許す範囲が version ごとに異なります**。
 
 - v1/v2、またはv3の`scope_edit_mode: "split_only"`は、自動scopeをさらに**分ける**
   exact ordered partitionだけを許可します。**tile-local 値**(scope の中だけで受け渡され、GPU メモリへ書き戻さない attachment の値。上の「自動 tile-local attachment / same-pixel local read」)が新しい境界をまたぐ場合は、その
@@ -2749,13 +2751,13 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 | `graph.operation_unregistered@1` `{node, op}` | ノードの `op` をどの module も登録していない。綴り間違いのほか、**`PELICAN_WITH_ANIMATION=OFF` の build で `pose.*` を書いた**ときもこれ([graphmodule.cpp:257](../../src/project/graphmodule.cpp#L494)。§6.17) |
 | `graph.operation_unexecutable@1` `{backend, op, node}` | op は登録されているのに、それを実行する backend がこの build に無い。rendering 側は `backend: "pelican.render"` で、lowering できる 6 op 以外を rendering 区画に置いたときに出ます([rendergraphcomposition.cpp:58](../../src/project/rendergraphcomposition.cpp#L719))。姿勢側・値側にも同名の拒否があります([posegraph.cpp:91](../../src/core/animation/posegraph.cpp#L91) / [valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L555)) |
 | `graph.node_duplicate@1` / `graph.node_missing@1` / `graph.input_unknown@1` / `graph.input_referenced@1` / `graph.output_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1` / `graph.definition_immutable@1` / `graph.layout_invalid@1` | `edit_graph_document` の **9 つ**の名前付き拒否(重複 id / 不在 node / 不明な入力 port / まだ供給されている `graph.input` の削除 / まだ参照されている node の削除 / definition の中の `graph.instance` / root の `graph.input` / 編集できない scope)。正は [`editGraphDocument()` の宣言コメント](../../src/project/graphcomposition.hpp#L245)(9 つ全部を列挙しています。9 つ目 `graph.layout_invalid@1` は N-6 の `set_layout`)と throw 箇所([graphcomposition.cpp:363](../../src/project/graphcomposition.cpp#L1502) 〜 [:534](../../src/project/graphcomposition.cpp#L2350))。一覧は [第13章](13_editor.md) |
-| `graph.override_shadowed@1` `{parameter}` | edge が供給している入力に `setGraphParameter` で実行時の上書きをかけた。**黙って消えない**([scenegraphruntime.cpp:123](../../src/core/loader/scenegraphruntime.cpp#L129)。§6.17) |
+| `graph.override_shadowed@1` `{parameter}` | edge が供給している入力に `render().setValueGraphParameter` で実行時の上書きをかけた。**黙って消えない**([scenegraphruntime.cpp:123](../../src/core/loader/scenegraphruntime.cpp#L129)。§6.17) |
 | `unconnected graph input: <node>.<port>` / `unconnected subgraph input: <名前>` | 必須入力に edge も `parameters` も `default` も無い([graphcomposition.cpp:323](../../src/project/graphcomposition.cpp#L1445)、[:59](../../src/project/graphcomposition.cpp#L698)) |
 | `unknown graph definition: <名前>` / `recursive graph definition: <名前>` / `cyclic subgraph connection: <id>` | `graph.instance.definition` の綴り違い / 定義の再帰 / インスタンス同士の循環([graphcomposition.cpp:93](../../src/project/graphcomposition.cpp#L765) / [:108](../../src/project/graphcomposition.cpp#L788) / [:90](../../src/project/graphcomposition.cpp#L762)) |
 
 ## 6.12 OpenXR ステレオレンダリング(WP125〜138 / WP203a〜c実装済み)
 
-`--xr on|auto` で起動すると([第2章](02_getting_started.md))、レンダラは**論理フレーム**単位の二眼描画に切り替わります。**論理フレーム**は「左右眼など複数の view をまとめた、時間軸上の 1 単位」です。flat では view が 1 つなので論理フレーム = 描画 1 回ですが、XR では 1 論理フレームが 2 回の view 描画を含みます。アニメーションの更新やテンポラル history の入れ替えのような**時刻に紐づく処理を左右で 2 回走らせない**ための区切りだと考えてください。**ViewFamily** はその中の「同じカメラ設定を共有する view の束」(`$main` の左右眼、影の cascade 群、反射の鏡像群など)です([用語集](14_glossary.md))。
+`--xr on|auto` で起動すると([第2章](02_getting_started.md))、レンダラは**論理フレーム**単位の二眼描画に切り替わります。**論理フレーム**は「左右眼など複数の view をまとめた、時間軸上の 1 単位」です。flat では view が 1 つなので論理フレーム = 描画 1 回ですが、XR では 1 論理フレームが 2 回の view 描画を含みます。アニメーションの更新やテンポラル history の入れ替えのような**時刻に紐づく処理を左右で 2 回走らせない**ための区切りだと考えてください。**ViewFamily** はその中の「同じカメラ設定を共有する view の束」(`$main` の左右眼、影の cascade 群、反射の鏡像群など)です([用語集](14_glossary.md#view-familyビューファミリ))。
 
 - **論理フレーム / ViewFamily(WP128/WP223〜237)**: `renderLogicalFrame(target, view_families)`が共有更新(アニメ・リロード・共有アップロード・**temporal historyのadvance**)を論理フレームにつき**一回**だけ行います。flatは`$main/$mono`、XRはstable eye ID付き`$main` stereo familyです。pass/taskの`view_family`は汎用runtime registryで解決され、caller-authored familyが常に優先されます。標準directional shadowは`$shadow/directional`のstable `$cascade/N`群、標準planar reflection packageは`$reflection/planar`のstable `$mirror/<source-view>`群、標準cube captureは`$capture/cube`のstable `$face/{+x,-x,+y,-y,+z,-z}`群としてmain cameraから独立して実行されます。projection jitterはmain family modifierとして一度sampleされ、FrameUBOはin-flight × 全family viewのスロットとstable family tokenで相互汚染を防ぎます。clustered selectionもfamily/view別領域を検証して使います。標準planar providerはclip planeをVulkan ZOのoblique near planeへ変換し、cube providerはsquare 90度投影の六方向cameraを作ります。どちらもpackage OFF時はcaller/project providerで全面置換できます。secondary familyの複数viewはsequential実行に対応し、transparent passを持つfamilyは同じ公開sort providerをviewごとに再評価します。secondary multiviewは未対応です。
 - **コンポジション(WP129/203c)**: XR 用は `IFrameTarget` とは別系統の `IXrCompositionTarget`。現在は **2-layer の color array swapchain を一個**使い、一回だけ acquire/wait/release します。左右の projection view は同じ image の `imageArrayIndex=0/1` を参照し、1 つの projection layer・**単一の `xrEndFrame`** で提出します。
@@ -2807,6 +2809,8 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 4. `view_execution: "auto"` で再起動し、`auto_gate.selection` / `profile_id` / `measured_gain_percent` / `reason` が意図どおりか確認します。
 
 <a id="613-グラフ-variantflat--xr--previewwp133172"></a>
+
+**view family(ビューファミリ)** — `$main` の family は物理プランが view 数まで決め、secondary family は実行時に数が決まる、という非対称があります。
 
 ## 6.13 グラフ variant(flat / XR / preview)
 
@@ -2916,7 +2920,7 @@ hard error で終了します。
 コマンドラベルは**フレームプランの順序どおり**に、次の正規形で入れ子になります:
 
 ```
-frame/<logical-frame>/graph/<flat|xr>/view/<index>/node/<ordinal>:<kind>:<name>
+frame/<logical_frame>/graph/<variant>/view/<view_index>/node/<ordinal>:<kind>:<name>
   ├─ barriers
   └─ body
 ```
@@ -3240,7 +3244,7 @@ rendering config のファイルは **`pelican.graph` root** です。最上位�
 - `test/fixtures/graph_root_example/` は、出荷 `example` の節と、preset を選ぶ `animgraph_demo` の節を `rendering` の下に移した実物です(P-2a-4a)。
 - web ビューアは `pelican.graph` root をまだ読めません([第9章](09_web.md) §9.3)。MG-2b の記録は、web ビューア(WEB-1)と外部の USD import の道具が追従する必要があるとしています。
 
-`nodes` に何を書けるか(`value.*` / `render.*` / `pose.*` / `graph.instance` のノード語彙、`definitions` の使い方、owner の宣言)は **次の §6.17** です。GUI から装着を足す・外す手順は [第13章 エディタ](13_editor.md) の「グラフの装着を編集する」、語の索引は [用語集](14_glossary.md)、実物の手順は `projects/posegraph_demo/README.md` にあります。
+`nodes` に何を書けるか(`value.*` / `render.*` / `pose.*` / `graph.instance` のノード語彙、`definitions` の使い方、owner の宣言)は **次の §6.17** です。GUI から装着を足す・外す手順は [第13章 エディタ](13_editor.md) の「グラフの装着を編集する」、語の索引は [用語集](14_glossary.md#共通グラフpelicangraph-v1)、実物の手順は `projects/posegraph_demo/README.md` にあります。
 
 <a id="起動時に組めない構成と---render-fallbackbs-1-d9811bfc--bs-1b-40318ffe"></a>
 

@@ -5,7 +5,7 @@
 先に、この章で使う 3 組の用語を説明します。詳しい処理は後の各節で扱います。
 
 - **静的ジオメトリ / 動的ジオメトリ** — 静的ジオメトリは元の頂点をそのまま使います。スキン付き / morph / VAT は compute で変形後の頂点を生成して加速構造へ渡します。
-- **BLAS / TLAS** — BLAS(bottom-level acceleration structure)はジオメトリ群の空間分割を GPU が辿れる形に焼いた下位構造、TLAS(top-level acceleration structure)はその BLAS を変換行列・mask・custom index 付きの**インスタンス行**として並べた上位構造です。ray は TLAS から引き、TLAS の行が BLAS を指します([用語集](../manual/14_glossary.md))。
+- **BLAS / TLAS** — BLAS(bottom-level acceleration structure)はジオメトリ群の空間分割を GPU が辿れる形に焼いた下位構造、TLAS(top-level acceleration structure)はその BLAS を変換行列・mask・custom index 付きの**インスタンス行**として並べた上位構造です。ray は TLAS から引き、TLAS の行が BLAS を指します([用語集](../manual/14_glossary.md#as--blas--tlas加速構造))。
 - **ray query / ray tracing pipeline** — ray query は通常の fragment / compute シェーダの中から TLAS を辿る使い方(`VK_KHR_ray_query`)、ray tracing pipeline は raygen / miss / closest-hit という専用ステージと **SBT**(shader binding table — どの stage のどの shader を呼ぶかの handle をバイト列へ並べた表)を持ち `vkCmdTraceRaysKHR` で起動する使い方(`VK_KHR_ray_tracing_pipeline`)です。この章は両方を別々の opt-in feature として扱い、同じ影を 2 通りに計算して突き合わせます。
 
 ## 変形ジオメトリの契約

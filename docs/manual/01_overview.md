@@ -13,26 +13,7 @@
 
 ## 1.0 この文書で使う記号と基本語
 
-マニュアル全体で断りなく出てくる語です。ここでは 1 語 1〜2 文の最小定義だけを置きます(語の索引は [第14章 用語集](14_glossary.md))。
-
-| 語 | 意味 |
-|---|---|
-| **WP**(Work Package) | 開発の作業単位。台帳 [../implementation_plan.md](../implementation_plan.md) に 1 行として登録され、**1 WP = 1 ブランチ = 1 マージ**です(§1.6)。`WP380a` のような枝番が付きます。状態の一覧は [第11章 §11.1](11_status.md)。 |
-| **D0** | 「**エディタ特権の禁止**」(2026-07-08 ユーザー決定 — [../design_devstudio_direction.md](../design_devstudio_direction.md) §0.5)。標準エディタも公開契約の上に建つ 1 クライアントで、編集操作はまず JSON-RPC メソッドとして定義する、という規則です([第13章](13_editor.md))。 |
-| **codec**(component codec) | シーン JSON のコンポーネント 1 個を受理・検証し、正規形へ直す変換器。engine 同梱のコンポーネントごとに用意され、`decodeAuthored()`(JSON → 値)と `encodeCanonical()`(値 → 正規形 JSON)の対で成り立ちます([componentcodec.hpp](../../src/core/loader/componentcodec.hpp)・[第4章](04_scene_ecs.md) §4.2)。 |
-| **transaction**(トランザクション) | 「**準備(prepare)→ 途中で失敗したら公開状態を変えずに戻す(rollback)→ 全部成功したときだけ一斉に公開(publish)**」という適用の単位。シーンロード・ECS のアーキタイプ移行・ホットリロード・編集の適用がこの形です([第12章](12_codemap.md) §12.6)。 |
-| **JSON-RPC** | 外部プロセスから `pelican_player` を操る制御プロトコル(JSON-RPC 2.0)。stdin/stdout の NDJSON(1 行 = 1 リクエスト)で、stdout はプロトコル専用です(メソッド一覧は [第10章](10_tools.md) §10.3)。 |
-| **`name@1`** | 機械可読な**版付き識別子**の書き方。`@` の前が名前、後ろがその名前の契約の版です。エラーコード(`component_unknown@1`)にも、パスの operation / implementation ID(`pelican.execution.compute@1`)にも使います。 |
-| **決定的**(deterministic) | 同じ入力からは常に同じ結果が出ること。エンジン内部の判定に壁時計・`std::rand` を使わず、固定ループ順序・入力スナップショット・固定ステップ時刻で担保します(下記 設計決定 5、[第8章](08_gameplay.md) §8.10)。 |
-| **named reject**(名指し拒否) | 受理できない入力を黙って無視も推測もせず、**何がどう悪いかを名前(エラーコード・キー名・登録済み id 一覧)付きで**拒否すること(下記 設計決定 1)。 |
-| **purgeable**(パージ可能) | 参照を書いたときだけ機構が存在すること。書かなければ初期化も実行もされず、挙動もコストも変わりません(下記 設計決定 3)。 |
-| **共通グラフ**(`pelican.graph` v1) | 値・描画・姿勢を **1 つの文書のノードと辺**で繋ぐ機構。`definitions`(再利用する部分グラフ)/ `nodes`(root のノード列)/ `outputs` を持ち、op は module が登録します(下記 設計決定 12)。ノード語彙は [第6章 §6.17](06_rendering.md)、編集操作は [第13章 §13.5](13_editor.md)、凍結された op 一覧は [../v0_freeze.md](../v0_freeze.md) §1.3。パーサは [graphcomposition.cpp](../../src/project/graphcomposition.cpp)。 |
-| **姿勢(pose)グラフ** | 共通グラフのうち `pelican.pose` module の op(`pose.clip_sample` / `pose.blend` / `pose.state_machine` / `pose.retarget`)で姿勢を作り、sink `pose.skeletal` で個体へ書く部分。型 `pelican.pose@1` が port を流れます(bytes ではなく stage handle + layout 世代)。書き方は [第8章 §8.13](08_gameplay.md)、装着の排他は [第4章 §4.2](04_scene_ecs.md)。`PELICAN_WITH_ANIMATION=OFF` の build には module ごと存在しません。 |
-| **`graph.instance`(装着)** | 共通グラフの定義を 1 つ実体化するノード。`owner: {scene, object}` を書くとその個体に結び付き、入力 port の値は **辺 > `parameters` > 定義の既定値**の優先で決まります([第4章 §4.1](04_scene_ecs.md))。 |
-| **package**(`pelican.package` v1) | 本体ツリーの外で作った部品一式(feature / graph / component / code)を 1 ディレクトリにまとめたもの。使うときは project へ**複製(vendoring)**します([第3章 §3.11](03_project_format.md))。 |
-| **共有部品(render component)** | materialize 済みの feature 1 本を `user://components/<name>/` へ書き出し、別 project へ取り込める形にしたもの(`pelican.render_component` v1)。[第3章 §3.12](03_project_format.md)。 |
-| **`rendering` 節** | rendering config が `pelican.graph` root の下に入るときの置き場所。文書の最上位は共通グラフが所有し、rendering config のキーは全部 `rendering` の下に来ます([第3章 §3.2](03_project_format.md)・[第6章 §6.16](06_rendering.md))。 |
-| **root motion** | clip に焼かれた「根の移動」を、姿勢ではなく**個体の transform** に渡すこと。`pose.clip_sample{root_motion: "extract", root_node}` で有効になり、owner の local 位置に加算されます([第4章 §4.2](04_scene_ecs.md)・[第8章 §8.13](08_gameplay.md))。 |
+用語は[用語集](14_glossary.md#この用語集の使い方)を参照してください。
 
 ## 1.1 Pelican2 とは
 
@@ -44,7 +25,7 @@ Pelican2 は **C++20 / Vulkan(vulkan.hpp)/ Windows(MSVC)** のゲームエンジ
 |---|---|
 | `pelican_player` | ゲームランタイム。ウィンドウ / ヘッドレス / JSON-RPC 駆動([第2章](02_getting_started.md)・[第10章](10_tools.md))。JSON-RPC はヘッドレス(blocking)とウィンドウ(フレーム境界処理)の両方で使えます ✅WP156 |
 | `pelican_cli` | 開発 CLI。11 サブコマンド系統(`assets` / `audio` / `bake-camera` / `image` / `import` / `dist-config` / `package` / `project` / `dump-lowered-material` / `vrm` / `graph-catalog` — [main.cpp](../../src/devcli/main.cpp#L51))。エンジン本体にリンクしない |
-| `pelican_studio` | Qt6 製エディタ 🚧。別 process の player を埋め込み、**その JSON-RPC を実際に呼びます** —— Outliner 選択、Inspector、gizmo、保存、Frame Plan(= フレームグラフを解決した実行計画。[用語集](14_glossary.md))、そして `features[]` の編集と再起動なしの反映([第2章](02_getting_started.md) §2.7・[第10章](10_tools.md) §10.7・[第13章](13_editor.md)) |
+| `pelican_studio` | Qt6 製エディタ 🚧。別 process の player を埋め込み、**その JSON-RPC を実際に呼びます** —— Outliner 選択、Inspector、gizmo、保存、Frame Plan(= フレームグラフを解決した実行計画。[用語集](14_glossary.md#frameplan))、そして `features[]` の編集と再起動なしの反映([第2章](02_getting_started.md) §2.7・[第10章](10_tools.md) §10.7・[第13章](13_editor.md)) |
 | `pelican-spv-link` | `PELICAN_WITH_SPIRV_LINK=ON`時だけ作るexperimental SPIR-V リンカ CLI([spvlink/main.cpp](../../src/spvlink/main.cpp)・[第10章](10_tools.md)) 🚧 |
 | web ビューア | 別リポジトリ `my_webpage` の WebGPU「Shader Dock」。**同じプロジェクトファイルをブラウザで開く**([第9章](09_web.md)) |
 

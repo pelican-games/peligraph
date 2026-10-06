@@ -33,7 +33,7 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 
 `GameContext`自体は状態を持ちません。実体は [`updateFrameState()` のローカル変数1個](../../src/core/appflow/framephase.cpp#L188) で、フレームごとに作られてフレームを抜けると消えます（= 自動記憶域。ヒープにも moduleにも置かれていません）。5フェーズの各所へは参照として渡るだけなので、Systemが`GameContext*`を保存しても次フレームには無効になります。
 
-上の表は**通常フレームでの**委譲先です。**scene load transaction** は、scene の読み込みを prepare から finish までの1つの取引として扱う [第3章 §3.5 の 3](03_project_and_loading.md) の executor のことで、「開いている間」はその段の列を実行中という意味です（[用語集](../manual/14_glossary.md)）。開いている間（behaviorの `onInit` / `onDestroy` や、component JSON loaderから呼ばれた場合）は、同じAPIの行き先がcandidateやoutboxへ差し替わり、一部は拒否されます。分類とその根拠は §5.15 にまとめてあります。
+上の表は**通常フレームでの**委譲先です。**scene load transaction** は、scene の読み込みを prepare から finish までの1つの取引として扱う [第3章 §3.5 の 3](03_project_and_loading.md) の executor のことで、「開いている間」はその段の列を実行中という意味です（[用語集](../manual/14_glossary.md#scene-load-transactionシーンロードのトランザクション)）。開いている間（behaviorの `onInit` / `onDestroy` や、component JSON loaderから呼ばれた場合）は、同じAPIの行き先がcandidateやoutboxへ差し替わり、一部は拒否されます。分類とその根拠は §5.15 にまとめてあります。
 
 ### ライト操作API ✅実装済み（WP142 / LIGHT0）
 
@@ -438,7 +438,7 @@ physicsはビルドフラグ `PELICAN_WITH_PHYSICS` の配下にあります（O
 
 この章で扱うクエリは3種類です。**raycast** は点と方向（[`Ray`](../../src/core/phys/physquery.hpp#L19)）を飛ばして当たったcolliderを返し、**overlap** はいま重なっているcolliderを列挙し、**shapeCast** はその中間 — Sphere / Box / Capsule を**向きを固定したまま** `delta` だけ平行移動させて、最初に当たるcolliderと接触時刻を返します（「太さのあるraycast」。契約は [`ShapeCastHit` の上のコメント](../../src/core/phys/physquery.hpp#L154) が正で、`delta` がゼロなら「いまの貫通をどれだけ押し出せば解けるか」だけを問う query になります — 通常形状の押し出し量が後述のMTDです。meshの近似補正はフラグで区別します）。
 
-クエリ実装は **provider ABI** で差し替え可能です（WP107系列）。ABI は application binary interface で、ここでは「C互換の関数ポインタ表」という意味です — [`ProviderV2`](../../src/core/userpublic/physics/abi_v2.hpp#L91) は `context` と `raycast_all` / `overlap_all` / `shape_cast_all` の3本を並べた `std::is_standard_layout_v` 固定の構造体で、先頭に `struct_size` と `version` を置いてあります。ヘッダ / クラスではなくこの形にしてあるので、別ビルドのDLLが実装を差し込めます（fixtureが [`test/fixtures/physics_provider_dll/`](../../test/fixtures/physics_provider_dll)）。差し替えても結果の並びが変わらない理由は下の「εクラスタの全順序」にあります（[用語集](../manual/14_glossary.md) の「provider」「ABI」）。
+クエリ実装は **provider ABI** で差し替え可能です（WP107系列）。ABI は application binary interface で、ここでは「C互換の関数ポインタ表」という意味です — [`ProviderV2`](../../src/core/userpublic/physics/abi_v2.hpp#L91) は `context` と `raycast_all` / `overlap_all` / `shape_cast_all` の3本を並べた `std::is_standard_layout_v` 固定の構造体で、先頭に `struct_size` と `version` を置いてあります。ヘッダ / クラスではなくこの形にしてあるので、別ビルドのDLLが実装を差し込めます（fixtureが [`test/fixtures/physics_provider_dll/`](../../test/fixtures/physics_provider_dll)）。差し替えても結果の並びが変わらない理由は下の「εクラスタの全順序」にあります（[用語集](../manual/14_glossary.md#abiapplication-binary-interface) の「provider」「ABI」）。
 
 ### provider ABI
 
@@ -1280,7 +1280,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 - mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L170)）
 - manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L177)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4075)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4117)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 

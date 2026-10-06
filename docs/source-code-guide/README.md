@@ -16,7 +16,7 @@
 
 この文書群が説明せずに使う前提知識は 3 つです — **C++20**(concept、`if constexpr`、fold 式、`consteval`、`<=>`)、**Vulkan の基礎**(instance / device / queue / swapchain / descriptor / pipeline がそれぞれ何であるか)、**ECS の一般概念**(entity と component を分けて持ち、system がその組み合わせを走査する、という考え方)。この 3 つ以外の一般知識は、本文の側に説明を添える方針です。
 
-Pelican が「こう呼んでいる」基本語(scene、asset、feature、render target、frame graph、behavior など)は [`docs/manual/14_glossary.md`](../manual/14_glossary.md) が正で、この解説書はそこを再定義しません。一方、**仕様の細部や定番イディオムを知らなくて読めない**とき(Vulkan の特別値、glTF の `byteStride`、CRTP、SFINAE、トポロジカルソートなど)は [第10章 前提知識の補足](10_background_knowledge.md) を引いてください。
+Pelican が「こう呼んでいる」基本語(scene、asset、feature、render target、frame graph、behavior など)は [`docs/manual/14_glossary.md`](../manual/14_glossary.md#この用語集の使い方) が正で、この解説書はそこを再定義しません。一方、**仕様の細部や定番イディオムを知らなくて読めない**とき(Vulkan の特別値、glTF の `byteStride`、CRTP、SFINAE、トポロジカルソートなど)は [第10章 前提知識の補足](10_background_knowledge.md) を引いてください。
 
 コードベース固有の難しさは各章の `🧩 難所` ブロックにまとめてあります(下の難所インデックス)。
 
@@ -60,7 +60,7 @@ Pelican が「こう呼んでいる」基本語(scene、asset、feature、render
 | [第7章](07_tools_rpc_tests.md) | 編集前の検証、undo の前提条件、プレビュー資源の寿命と元の状態の保持 |
 | [第9章](09_black_magic_and_gotchas.md) | マクロと型消去、ABI の互換性、JSON を編集する位置の特定、姿勢の移動量抽出、参照先を解決できない場合の扱い |
 
-一般的でない専門用語(Floyd–Warshall・SFINAE・ADL・TOI・MTD・GJK/EPA・CAS・TOCTOU・ABA・Halton 列など)は、**その語が実際に出てくる章の初出箇所で 1〜2 文の説明を添えてあります**(この索引には用語表を置きません)。どの章に出るかは語ごとに違う — たとえば Floyd–Warshall は frame graph の推移閉包を扱う[第6章](06_rendering_vulkan_shader.md)、SFINAE と ADL は登録マクロを扱う[第9章](09_black_magic_and_gotchas.md)です — ので、横断して引くときは `rg '<語>' docs/source-code-guide` が最短です。Pelican 固有の基本語は [`docs/manual/14_glossary.md`](../manual/14_glossary.md)、一般知識の側は[第10章](10_background_knowledge.md)にまとまっています。
+一般的でない専門用語(Floyd–Warshall・SFINAE・ADL・TOI・MTD・GJK/EPA・CAS・TOCTOU・ABA・Halton 列など)は、**その語が実際に出てくる章の初出箇所で 1〜2 文の説明を添えてあります**(この索引には用語表を置きません)。どの章に出るかは語ごとに違う — たとえば Floyd–Warshall は frame graph の推移閉包を扱う[第6章](06_rendering_vulkan_shader.md)、SFINAE と ADL は登録マクロを扱う[第9章](09_black_magic_and_gotchas.md)です — ので、横断して引くときは `rg '<語>' docs/source-code-guide` が最短です。Pelican 固有の基本語は [`docs/manual/14_glossary.md`](../manual/14_glossary.md#148-設計コード解説で頻出する用語)、一般知識の側は[第10章](10_background_knowledge.md)にまとまっています。
 
 難所ブロックが「このコードベース固有の難しさ」を扱うのに対して、**コード自体は素直なのに仕様や定番イディオムを知らなくて読めない**ときは [第10章 前提知識の補足](10_background_knowledge.md) を引いてください(Vulkan・glTF・C++・OS・アルゴリズム・座標と数値・OpenXR・宣言的グラフと拡張の作法の 149 項目。章の冒頭に分類ごとの索引があります)。
 
@@ -70,7 +70,7 @@ Pelican が「こう呼んでいる」基本語(scene、asset、feature、render
 
 1. [`main()`](../../src/player/main.cpp#L714) — CLIで起動条件を確定する。
 2. [`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L100) — 設定、ECS、scene、loopを組み立てる。
-3. [`Loop::run()`](../../src/core/appflow/loop.cpp#L772) — 通常/XR/headless/RPCの実行方式を分ける（windowed + RPCを含む5経路）。
+3. [`Loop::run()`](../../src/core/appflow/loop.cpp#L772) — 通常/XR/headless/RPCの実行方式を分ける（一覧はwindowed + RPCを含む5項目。RPCはwindowedへ追加する層です）。
 4. [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L152) — 1フレームのゲーム状態更新を5フェーズで実行する。
 5. [`ECSCoreTemplatePublic::update()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L663) — 内部ECS Systemを依存順に実行する（実行計画は [`buildECSExecutionPlan()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L206) が作る）。
 6. [描画処理（複数のビュー群を受け取る実装）](../../src/core/vkcore/renderer.cpp#L7047) — 描画計画を GPU コマンドへ変換します。[単一ビュー群の呼び出し口](../../src/core/vkcore/renderer.cpp#L5444) はこの実装へ転送します。[通常画面の描画](../../src/core/vkcore/renderer.cpp#L7093) は計画の選択と再変換の再試行を担当し、[引数なしの描画関数](../../src/core/vkcore/renderer.cpp#L7136) はカメラから 1 つのビューを組み立てます。

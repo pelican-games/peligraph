@@ -7,7 +7,7 @@
 - 「プロジェクト」という単位の定義と、標準ディレクトリ構成
 - `project.json` の正確なスキーマ(必須/任意/既定値)と検証規則
 - パス参照の分類(素の相対 / `project://` / `engine://` / `user://` / 絶対 / `#` フラグメント)と PathResolver の解決規則
-- asset store(巨大なバイナリを git リポジトリの外へ置くための「置き場所の間接化」。[用語集](14_glossary.md))と `.pelican/local.json`
+- asset store(巨大なバイナリを git リポジトリの外へ置くための「置き場所の間接化」。[用語集](14_glossary.md#asset-store))と `.pelican/local.json`
 - シーン JSON の in-memory 表現(`AuthoringSceneDocument`)と保存の契約(エディタ経路)
 - ユーザー定義コンポーネントの宣言スキーマ v3(`Flags` / `List` の行封筒 `$list` / `$row`)と `$` 予約
 - 前の版のエンジンで作った project を後の版へ移す仕組み(`pelican_cli project migrate`。§3.13)
@@ -103,7 +103,7 @@ v0 より前のエンジンは、commit の決定を別ファイル `committed` 
 
 ### トップレベルフィールド
 
-pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の第何版か」を名乗ります(この 2 キーの組を**エンベロープ**と呼びます。[用語集](14_glossary.md))。`schema` の値は `pelican.<形式名>` の形で、`pelican.project`(この章)・`pelican.scene`([第4章](04_scene_ecs.md))・`pelican.asset_data`([第5章](05_assets.md))のように形式ごとに 1 つずつあります。検証の正本は `pelican_project` の [projectformat.cpp](../../src/project/projectformat.cpp)(`parseProjectEnvelopeJson` / `parseProjectEnvelopeText`)です。player、engine の `basicconfig.cpp`、`pelican_cli dist-config` はこの同じ実装を呼び、schema/version/`engine_min_version` 規則を持ちません。
+pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の第何版か」を名乗ります(この 2 キーの組を**エンベロープ**と呼びます。[用語集](14_glossary.md#エンベロープ))。`schema` の値は `pelican.<形式名>` の形で、`pelican.project`(この章)・`pelican.scene`([第4章](04_scene_ecs.md))・`pelican.asset_data`([第5章](05_assets.md))のように形式ごとに 1 つずつあります。検証の正本は `pelican_project` の [projectformat.cpp](../../src/project/projectformat.cpp)(`parseProjectEnvelopeJson` / `parseProjectEnvelopeText`)です。player、engine の `basicconfig.cpp`、`pelican_cli dist-config` はこの同じ実装を呼び、schema/version/`engine_min_version` 規則を持ちません。
 
 | フィールド | 必須? | 検証・意味 |
 |---|---|---|
@@ -203,7 +203,7 @@ Studio は engine を `--rpc` で起こし、`--rpc` の engine は宣言が無�
 
 > **設計決定:** 設定の優先順位は **CLI 設定 > project.json > 埋め込み既定値(`engine://default_config.json`)** の 3 段で、キー単位に上位が勝つ。プロジェクトは差分だけ書けばよい。3 段すべてに無い必須キーは `config not found: ...` で hard error。
 
-ここでいう**合成**はファイルの連結ではなく、**キーごとに 1 つの値を選ぶ**ことです([用語集](14_glossary.md))。たとえば project.json の `basic_config` に `window_title` だけを書けば、`window_title` はプロジェクトの値、`framerate` や `window_size` は埋め込み既定値(60 / 1920×1080)になります。
+ここでいう**合成**はファイルの連結ではなく、**キーごとに 1 つの値を選ぶ**ことです([用語集](14_glossary.md#3-段合成))。たとえば project.json の `basic_config` に `window_title` だけを書けば、`window_title` はプロジェクトの値、`framerate` や `window_size` は埋め込み既定値(60 / 1920×1080)になります。
 
 ※実装上の注意: 3 段の「CLI 層」の実体はエンジン組み込み API(`PelicanCore(settings_str)`)に渡す JSON であり、`pelican_player` は常に空 `{}` を渡します。つまり player の CLI フラグ(`--size` など)は JSON 合成ではなく `EngineLaunchConfig` 経由の**別経路**で、ヘッドレス系にのみ効きます。
 
@@ -241,7 +241,7 @@ CC-1 より前の project.json は `up` が必須だったので、古い projec
 
 ### rendering config の root(✅P-2a-4a/4b, MG-2b)
 
-`rendering_config_json` が指すファイルは **`pelican.graph` root** です。最上位は共通グラフの 5 キー(`schema` / `version` / `definitions` / `nodes` / `outputs`)**だけ**で、rendering config 全体が `rendering` の下に入ります。出荷 7 本すべてと、`pelican_cli project init` が生成する新規プロジェクトがこの形です。共通グラフのノード(`graph.instance` を含む)は 5 キーの側に書きます([第4章 §4.1](04_scene_ecs.md))。
+`rendering_config_json` が指すファイルは **`pelican.graph` root** です。最上位は共通グラフの 6 キー(`schema` / `version` / `definitions` / `nodes` / `outputs` / editor 用の `layout`)で、rendering config 全体が `rendering` の下に入ります。出荷 7 本すべてと、`pelican_cli project init` が生成する新規プロジェクトがこの形です。共通グラフのノード(`graph.instance` を含む)は共通グラフ root の側に書きます([第4章 §4.1](04_scene_ecs.md))。
 
 ```json
 { "schema": "pelican.graph", "version": 1,
@@ -249,7 +249,7 @@ CC-1 より前の project.json は `up` が必須だったので、古い projec
   "rendering": { "features": [...], "render_targets": [...], "rendering_passes": [...] } }
 ```
 
-規則は 1 つです —— 上の 5 キーは共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。キーごとの所有は [第6章 §6.16](06_rendering.md) にあります。
+規則は 1 つです —— 上の 6 キーは共通グラフが所有し、**それ以外の rendering config のキーは全部 `rendering` 節に属します**。キーごとの所有は [第6章 §6.16](06_rendering.md) にあります。
 
 - **`features` / `render_targets` / `rendering_passes` などを最上位に直接並べた旧い形(legacy root)は、MG-2b から読めません。** 起動時の読み込み([renderingpassconfigloader.cpp](../../src/core/renderingpass/renderingpassconfigloader.cpp#L24))、`--feature-overlay` の重ね合わせ、ray tracing の設定の読み込み、Studio / RPC の編集文書のどれもが `render_config.legacy_root@1` で断ります([`RenderConfigLegacyRoot`](../../src/project/renderconfigdocument.hpp#L39))。直すには、旧いファイル全体を `rendering` の値にして上の 5 キーを足します。`rendering` の中身は旧い root と同じ意味で読まれます。
 - **`rendering` 節には `buffers` / `compute_tasks` を書けません。** この 2 つは共通グラフのノード(`render.buffer` / `render.compute`)の接続から lowering が作るので、節に書くと `render graph derives field from connections: buffers` のように拒否されます([lowerRenderGraphDocument()](../../src/project/rendergraphcomposition.cpp#L1354))。buffer と compute task は graph node か task feature で書きます。
@@ -424,7 +424,7 @@ example の README にあった手書き sha256 表の役目は、この manifes
 
 ## 3.9 シーンドキュメントと保存(エディタ経路)(✅WP149/158/166/168)
 
-ここまでの節はすべて「ディスク上のファイル形式」の話でした。この節は、その形式をエンジンが**メモリ上でどう保持し、どう書き戻すか**を扱います。以下 **authoring(オーサリング)側**は「人やエディタが編集する JSON そのもの」を、**runtime(ランタイム)側**は「エンジンが実行のために作った ECS の状態」を指します([用語集](14_glossary.md))。**プロジェクト形式(JSON の書き方)は一切変わりません**。エディタ機能を使わないなら読み飛ばして構いません。
+ここまでの節はすべて「ディスク上のファイル形式」の話でした。この節は、その形式をエンジンが**メモリ上でどう保持し、どう書き戻すか**を扱います。以下 **authoring(オーサリング)側**は「人やエディタが編集する JSON そのもの」を、**runtime(ランタイム)側**は「エンジンが実行のために作った ECS の状態」を指します([用語集](14_glossary.md#authoring--runtime))。**プロジェクト形式(JSON の書き方)は一切変わりません**。エディタ機能を使わないなら読み飛ばして構いません。
 
 > **設計決定(編集の正本は authored JSON):** 編集の正本は `basic_config.scene_data_json` が指すシーン JSON の内容そのもの(`AuthoringSceneDocument`)であり、ランタイムの ECS はその**投影**である。保存はランタイム状態の serialize ではなく、authored ドキュメント全体の決定的エンコードとファイル置換で行う。これにより、エンジンが解釈しないコンポーネント(codec 未登録のもの)の raw JSON も保存で失われない。
 
@@ -486,7 +486,7 @@ codex の報告と commit の説明では、10,000 object のシーンで transf
 
 ## 3.10 コンポーネント宣言スキーマ v3 — `Flags` と `List` の wire(✅WP382a)
 
-§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。ここでの **v3 はスキーマ宣言機構の版番号**で、シーン JSON の `version`(pelican.scene v2)とは別物です([用語集](14_glossary.md))。従来の登録経路が運べたのは平坦なフィールド列だけで、`Flags` / `List` のように**入れ子の語彙を持つ型**を運べるようにしたのが v3 です。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L2050))はこの節の対象外です(平坦なフィールド列のまま)。
+§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。ここでの **v3 はスキーマ宣言機構の版番号**で、シーン JSON の `version`(pelican.scene v2)とは別物です([用語集](14_glossary.md#宣言-schemav2--v3))。従来の登録経路が運べたのは平坦なフィールド列だけで、`Flags` / `List` のように**入れ子の語彙を持つ型**を運べるようにしたのが v3 です。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L2050))はこの節の対象外です(平坦なフィールド列のまま)。
 
 登録側の `schema` に `Flags<E>` か `List<Row>` が 1 つでも含まれると、登録は自動的に **v3 の入口**へ切り替わります([registerer.hpp](../../src/core/userpublic/details/component/registerer.hpp#L188))。判定は `schemaRequiresV3()` のコンパイル時定数なので、含まないコンポーネントの wire は 1 バイトも変わりません。scene JSON からの入口は従来と同じ「コンポーネント JSON をそのまま渡す」経路です([`ComponentInfoManager::loadByJson()`](../../src/core/ecs/componentinfo.cpp#L189))。
 

@@ -526,7 +526,7 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 | `design_reviews/` | codex の監査・敵対レビュー・WP レポート(一次資料) |
 | `schemas/` | pelican.ui 系 JSON Schema 4 本(U0 成果物) |
 | `color_migration_manifest.json` / `material_resources_manifest.json` | WP72 / WP76 系の生成物 |
-| `source-code-guide/` | ソースコード読解ガイド(全 10 ファイル。[第12章](12_codemap.md) は入口・概観、詳細はこちら) |
+| `source-code-guide/` | ソースコード読解ガイド(全 12 ファイル。[第12章](12_codemap.md) は入口・概観、詳細はこちら) |
 
 ### 方針決定(横断・重要)
 

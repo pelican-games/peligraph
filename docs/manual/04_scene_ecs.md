@@ -72,7 +72,7 @@
 
 - **hard error** とは、警告を出して続行するのではなく、その場で例外を投げてロードを打ち切る失敗のことです(エンベロープの検査なら [validateEnvelope](../../src/project/sceneformat.cpp#L110) が `std::runtime_error` を投げます)。シーンロードは 1 つのトランザクションなので(§4.3)、hard error になったシーンが半分だけ構築されて残ることはありません。
 - schema なしのレガシー形式、トップレベル `lights` セクションは**受理されません**(名指しのエラーで移行先を案内)。※設計文書には「WARN+自動解釈」と書かれていますが、WP63(strict v1 化)で意図的に廃止されており、実装が正です。
-- 本文の `WP63` / `✅WP79` のような `WP<数字>` は、エンジン側の作業単位(work package)に付く通し番号です([用語集](14_glossary.md))。「どの作業で入った仕様か」の目印として本文に添えています。
+- 本文の `WP63` / `✅WP79` のような `WP<数字>` は、エンジン側の作業単位(work package)に付く通し番号です([用語集](14_glossary.md#wpwork-package))。「どの作業で入った仕様か」の目印として本文に添えています。
 - 起動時にロードされるのは `project.json` の `basic_config.default_scene_id` のシーンです。
 
 ### オブジェクトと名前・親子
@@ -292,7 +292,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 | `loop` | 任意 | true | 非 bool は名指しエラー。**`clip` のときだけ** |
 | `start_time` | 任意 | 0.0 | 開始オフセット秒。**`clip` のときだけ** |
 
-`graph` と一緒に `speed` / `loop` / `start_time` を書くと拒否されます —— メッセージは**書いた鍵を名指し**するので、`field 'animation.speed' is clip-only; graph states define their playback clocks` のほか `field 'animation.loop' …` / `field 'animation.start_time' …` の形も出ます([componentcodec.cpp:1009](../../src/core/loader/componentcodec.cpp#L1547))—— ステートマシンでは再生時計を各ステートが決めるからで、黙って無視はされません。実行時にパラメータを動かす API は [第8章 §8.13](08_gameplay.md)(`setAnimationGraphParameter` / `forceAnimationGraphState`)です。**出荷プロジェクトの scene.json には、今日 `animation` コンポーネント自体がありません**(2026-09-17 実測)。`animgraph_demo` は同じ形のステートマシンを**ゲームコードから**駆動しており(`code/` の `EvaluatorV1`)、`animgraph_demo` / `vrm_xr_demo` の `movement.anim_graph.json` はどちらの scene からも参照されていません。姿勢をデータだけで装着する実物は `posegraph_demo`(様式 (2)、下記)です。
+`graph` と一緒に `speed` / `loop` / `start_time` を書くと拒否されます —— メッセージは**書いた鍵を名指し**するので、`field 'animation.speed' is clip-only; graph states define their playback clocks` のほか `field 'animation.loop' …` / `field 'animation.start_time' …` の形も出ます([componentcodec.cpp:1009](../../src/core/loader/componentcodec.cpp#L1547))—— ステートマシンでは再生時計を各ステートが決めるからで、黙って無視はされません。実行時にパラメータを動かす API は [第8章 §8.13](08_gameplay.md)(`animation().setParameter` / `animation().forceState`)です。**出荷プロジェクトの scene.json には、今日 `animation` コンポーネント自体がありません**(2026-09-17 実測)。`animgraph_demo` は同じ形のステートマシンを**ゲームコードから**駆動しており(`code/` の `EvaluatorV1`)、`animgraph_demo` / `vrm_xr_demo` の `movement.anim_graph.json` はどちらの scene からも参照されていません。姿勢をデータだけで装着する実物は `posegraph_demo`(様式 (2)、下記)です。
 
 制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128。モーフターゲットは描画対応 ✅WP121(初期 weight で表示)ですが、**クリップの `weights` チャネルは v1 非対応**(表情などの weight 駆動は [第8章](08_gameplay.md) §8.13 の VRM service 経由)。時刻源は `EngineTime`(rpc `set_time` と同一経路 = 決定的)。`PELICAN_WITH_ANIMATION=OFF` のビルドでは、このコンポーネントを持つシーンは**ロードの prepare 段で** `animation.module_unavailable@1` になります(§4.3)。
 
@@ -397,7 +397,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 ## 4.3 シーンロードの流れ
 
-[`SceneLoader::load(SceneLoadRequest)`](../../src/core/loader/scene.cpp#L1650) は **1 つのトランザクション**です(✅WP380a〜e)。**トランザクション**とは、途中の状態を外から見せず「全部成功して切り替わる」か「1 つも変わらない」かのどちらかにする実行単位のことです([用語集](14_glossary.md))。「旧シーンを消してから新シーンを作る」のではなく、新シーンの候補を全部作って一斉に切り替え、失敗したら全部を旧シーンに戻します。
+[`SceneLoader::load(SceneLoadRequest)`](../../src/core/loader/scene.cpp#L1650) は **1 つのトランザクション**です(✅WP380a〜e)。**トランザクション**とは、途中の状態を外から見せず「全部成功して切り替わる」か「1 つも変わらない」かのどちらかにする実行単位のことです([用語集](14_glossary.md#scene-load-transactionシーンロードのトランザクション))。「旧シーンを消してから新シーンを作る」のではなく、新シーンの候補を全部作って一斉に切り替え、失敗したら全部を旧シーンに戻します。
 
 **この経路は 1 本だけ**です。起動時のロード / rpc `load_scene` / `ctx.loadScene()` の遅延適用(pending)/ エディタからのスナップショット import は、入口([SceneLoadRoot](../../src/core/loader/sceneload.hpp#L82))が違うだけで同じ executor を通ります。実際の処理順:
 
@@ -423,7 +423,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 ### ロード中の「作用」はトランザクションに溜まる(✅WP380b〜e)
 
-`onInit`(activate)や、ゲーム DLL が登録したコンポーネントの JSON ローダ(early_publish)からエンジン API を呼ぶと、それは**その場では起きません**。[PreparedEffectTransaction](../../src/core/loader/effecttransaction.hpp#L27) に **staging** されます。staging とは、API の呼び出しをその場で実行せず、トランザクションの控え(送信箱 = outbox)に積んでおくことです([用語集](14_glossary.md))。積んだ作用は**失敗すれば消え、commit したときだけ flush で実行**されます。
+`onInit`(activate)や、ゲーム DLL が登録したコンポーネントの JSON ローダ(early_publish)からエンジン API を呼ぶと、それは**その場では起きません**。[PreparedEffectTransaction](../../src/core/loader/effecttransaction.hpp#L27) に **staging** されます。staging とは、API の呼び出しをその場で実行せず、トランザクションの控え(送信箱 = outbox)に積んでおくことです([用語集](14_glossary.md#stagingステージング))。積んだ作用は**失敗すれば消え、commit したときだけ flush で実行**されます。
 
 | 呼んだもの | ロード中の扱い |
 |---|---|
@@ -461,9 +461,11 @@ flush で音やディスク書き込みが失敗しても、**シーンは新し
 ### フレームループの順序(ヘッドレスも同順)
 
 ```
-入力スナップショット → 時刻 advance → イベント配送 → ECS システム群
+時刻 advance → イベント凍結 → 入力スナップショット → アクション凍結 → イベント配送 → ECS システム群
 → ゲームシステム(order 順) → SeqPlayer → シーン遷移の適用 → 描画
 ```
+
+**prepare / publish / commit** — 状態の更新を段階に分けるための名前です。**prepare** は確保・検証などの準備、**publish** は準備した状態の反映、**commit** は更新の確定を表します。ただし、具体的な段階と失敗時の扱いは機能ごとに異なります。シーンロードでは publish 後も activate などで失敗する可能性があり、commit 前なら反映済みの状態も巻き戻します。`noexcept` は例外を呼び出し元へ出さないという C++ の指定であり、それだけで一連の更新の原子性（全体を適用するか、全体を戻すか）を保証するものではありません。
 
 ## 4.4 ランタイム ECS の要点(ゲーム開発者向け)
 
@@ -592,6 +594,10 @@ DECLARE_COMPONENT(MyComponent, 61);   // 0..63 の空き番号(エンジンは 0
 
 **`OptionalOverride` — 省略が「継承」を意味するフィールド。** キーを書かなければ「指定なし」のまま残り、書けばその値で確定します(`null` を書くのは型エラーで、「指定なし」の書き方ではありません)。上書き行(row)の中で「この行だけ mask を差し替える」といった使い方をします。behavior params の**トップレベル**には置けません(そこは全フィールド `defaulted` 必須 — §8.5.3)。`List` を `OptionalOverride` にすることもできません。
 
+**SoA / Chunk / Archetype** — ECS の格納形。**Archetype** は「同じコンポーネントの組み合わせを持つ entity の集合」、**Chunk** はそれを一定個数ずつ区切った箱、**SoA**(Structure of Arrays)は「コンポーネントごとに別の連続配列に置く」並べ方です。1 つのコンポーネントだけを走査するときに無駄なメモリを読まずに済みます。
+
+**MutationScope** — ECS の構造変更(entity / コンポーネントの追加・削除)の**再入を禁止する**ガード。構造変更の途中でさらに構造変更を始めると、半端に適用された状態が観測されうるため、`std::logic_error("ECS structural mutation is not reentrant")` で弾きます。
+
 ## 4.5 よくあるエラー
 
 エラーメッセージはすべて名前入りなので、メッセージで検索すれば原因に到達できます。
@@ -622,6 +628,8 @@ DECLARE_COMPONENT(MyComponent, 61);   // 0..63 の空き番号(エンジンは 0
 | `object.spawn_*@1` / `object.name_*@1`(`SpawnError`) | `ctx.spawn` の拒否(§4.4「実行時に object を作る」、一覧は [第8章 §8.4](08_gameplay.md)) |
 | `graph.operation_unregistered@1{node, op}` | 文書が、この build に登録されていない op を使っている(OFF ビルドでの `pose.*` など。[第1章 §1.5](01_overview.md) 設計決定 12) |
 
+**`<name>@<version>` 形式のエラーコード** — `component_unknown@1` / `game_logic_abi_stale@1` / `pelican.ray_tracing.bindings_without_layout@1` のように、**名前 + `@` + 契約の版**でエラーを識別する書き方。`@1` は「このエラーコードの意味の版」であり、エンジンの版でもスキーマの版でもありません。RPC の応答やログにそのまま出るので、コードで検索すれば発生箇所に到達できます。
+
 ## 4.6 既知の注意点
 
 - `CameraSystem` は現状、camera コンポーネントを持つ**先頭 1 entity のみ**を処理します。複数カメラを置いた場合の意味論は未規定です(アクティブ投影は「シーン中最初の camera」)。
@@ -636,3 +644,5 @@ DECLARE_COMPONENT(MyComponent, 61);   // 0..63 の空き番号(エンジンは 0
 - [../design_physics_queries.md](../design_physics_queries.md) — collider と物理クエリ
 - [../design_object_behaviors.md](../design_object_behaviors.md) — behavior コンポーネント(v2.1)
 - [第3章 プロジェクト形式](03_project_format.md) / [第8章 ゲームロジック](08_gameplay.md) / [第13章 エディタ](13_editor.md)
+
+**`name@1`** — 機械可読な**版付き識別子**の書き方。`@` の前が名前、後ろがその名前の契約の版です。エラーコード(`component_unknown@1`)にも、パスの operation / implementation ID(`pelican.execution.compute@1`)にも使います。

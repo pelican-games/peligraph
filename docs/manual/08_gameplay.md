@@ -14,7 +14,7 @@
 - オーディオ・永続化(設定/セーブ)・2D スプライトの操作
 - アニメーション — **姿勢の 2 つの装着様式**(`animation` コンポーネント / 共通グラフの `graph.instance` + `pose.*`)、root motion、観測、`PELICAN_WITH_ANIMATION=OFF` の見え方
 
-(本文の `✅WP155` のような `WP<数字>` は、エンジン側の作業単位(work package)に付く通し番号です — [用語集](14_glossary.md)。「どの作業で入った機能か」の目印として添えています)
+(本文の `✅WP155` のような `WP<数字>` は、エンジン側の作業単位(work package)に付く通し番号です — [用語集](14_glossary.md#wpwork-package)。「どの作業で入った機能か」の目印として添えています)
 
 ## 8.1 ゲームコードの位置づけ
 
@@ -30,8 +30,8 @@
 
 ふだん意識する必要はありませんが、**古い DLL が黙って動く事故を防ぐ**ための仕掛けがあるので、エラーが出たときのために書いておきます。
 
-- ゲーム DLL がホスト実行ファイルから import する登録入口は `pelican_register_behavior_v2` / `pelican_register_event_v2` / `pelican_register_system_v2` / `pelican_emit_v2` と、コンポーネントの `__registerComponent` です。加えて **epoch anchor** [`pelican_game_logic_epoch_v2`](../../src/core/userpublic/gamelogic.hpp#L23) を必ず import します(SDK が自動で埋めます)。epoch anchor とは、ABI の世代番号を名前そのものに含んだ関数シンボルのことです([用語集](14_glossary.md))。世代が上がると名前ごと変わるため、古い SDK でビルドされた DLL は「host に存在しない名前を import している DLL」として機械的に見分けられます。
-- ロードの**前**に、DLL の PE import テーブルだけを読む診断([diagnoseGameLogicImports](../../src/core/gamelogic/gamelogicimports.cpp#L559))が走ります。期待する epoch anchor が無い / 旧名の入口(`__registerBehavior` など)が残っている DLL は [`game_logic_abi_stale@1`](../../src/core/gamelogic/gamelogicimports.hpp#L40) で拒否され、**一度も実行されません**。ordinal import と delay-load import も `game_logic_abi_unsupported_import@1` で拒否です。`game_logic_abi_stale@1` のような `名前@数字` は**エラーコード**で、人間向けのメッセージ本文とは別に、rpc の応答へそのまま出る機械可読な識別子です([用語集](14_glossary.md))。
+- ゲーム DLL がホスト実行ファイルから import する登録入口は `pelican_register_behavior_v2` / `pelican_register_event_v2` / `pelican_register_system_v2` / `pelican_emit_v2` と、コンポーネントの `__registerComponent` です。加えて **epoch anchor** [`pelican_game_logic_epoch_v2`](../../src/core/userpublic/gamelogic.hpp#L23) を必ず import します(SDK が自動で埋めます)。epoch anchor とは、ABI の世代番号を名前そのものに含んだ関数シンボルのことです([用語集](14_glossary.md#epoch-anchor))。世代が上がると名前ごと変わるため、古い SDK でビルドされた DLL は「host に存在しない名前を import している DLL」として機械的に見分けられます。
+- ロードの**前**に、DLL の PE import テーブルだけを読む診断([diagnoseGameLogicImports](../../src/core/gamelogic/gamelogicimports.cpp#L559))が走ります。期待する epoch anchor が無い / 旧名の入口(`__registerBehavior` など)が残っている DLL は [`game_logic_abi_stale@1`](../../src/core/gamelogic/gamelogicimports.hpp#L40) で拒否され、**一度も実行されません**。ordinal import と delay-load import も `game_logic_abi_unsupported_import@1` で拒否です。`game_logic_abi_stale@1` のような `名前@数字` は**エラーコード**で、人間向けのメッセージ本文とは別に、rpc の応答へそのまま出る機械可読な識別子です([用語集](14_glossary.md#-形式のエラーコード))。
   - registration を持たない provider 専用の古い DLL には、リンカが強制する要素が無いため、**この診断が唯一の門番**です。
 - **再帰 schema**(フィールドの中にさらにフィールドを持つ、木になった schema)を宣言した型があると、SDK は `_v3` 入口([registerer.hpp](../../src/core/userpublic/details/behavior/registerer.hpp#L322))を**自動で選びます**。v2 の入口は平らなフィールド列しか運べないためです。判定は「`List` か `Flags` のフィールドが 1 つでもあるか」だけで([schemaRequiresV3](../../src/core/userpublic/details/schema/structfieldschema.hpp#L823))、§8.5.3 の `List<Row>` は行の型 `Row` が自分の `schema` を持つのでこれに当たります。書き手のコードは変わりません。v3 入口を使う DLL と v2 だけの DLL は同じホストに**同居できます**。
 - 逆に、ホストが古くて v3 入口を持たないのに DLL が v3 を使っていると、`game_logic_abi_stale@1{found: "v3", host: "v2"}` で拒否されます。
@@ -128,7 +128,7 @@ PELICAN_REGISTER_SYSTEM(Type, order);
 ### フレームループの固定順序(決定性の土台)
 
 ```
-入力スナップショット確定 → 時刻 advance → イベント配送(前フレーム分)
+時刻 advance → イベント凍結 → 入力スナップショット確定 → アクション凍結 → イベント配送(前フレーム分)
 → ECS システム → ゲームシステム(order 順) → SeqPlayer
 → シーン遷移の適用 → 描画
 ```
@@ -640,6 +640,8 @@ struct CarrierParams {
 - `onDestroy` の中の `loadScene(name)` は、**もう commit された新しいシーン集合**に対して解決されます。旧シーンにしか無い名前は拒否され、`scene_retire_load_rejected@1` として記録されます。
 - ⚠️ ロード中に `GameObjects::` の静的 API を直接呼ぶと `SceneTransactionMutationRejected{api: ...}` です。オブジェクト操作は `BehaviorContext`(= `GameContext`)経由で書いてください。
 
+**arena(アリーナ)** — ゲーム DLL の型をエンジンの ECS チャンクに載せずに、ホットリロード時の世代交代(インスタンス状態は失われ、params は authoring 値から再構築)とエディタからの付け外しを安全にするための置き場です。具体的には、エンジン側の 1 本の `std::vector<Attachment>` がすべての behavior 実体を持ち、ゲームコードは handle 経由でしか触りません([behaviorarena.hpp:193](../../src/core/gamelogic/behaviorarena.hpp#L233))。「arena」という呼び名の由来は設計文書に書かれておらず**未確認**です(この用語集では「置き場」の意味だけで使います)。
+
 ### 8.5.6 DLL ホットリロードとの関係(✅WP162)
 
 ゲームロジック DLL を差し替える([第10章](10_tools.md) §10.5)と、behavior は次の規律で世代交代します:
@@ -791,6 +793,9 @@ Builtin/Jolt/game DLL provider の交換、ゲーム独自 controller への置�
 不使用が可能です。step-up(段差の乗り越え)、coyote time(地面から離れた直後の数フレームだけジャンプ入力を受け付ける猶予)、moving platform はゲーム固有 policy として
 この最小 helper の外に残しています。実例は `projects/sprite_demo` を参照してください。
 
+結果の整列や同順位の処理はエンジン側の規則に従いますが、実装を替えても数値結果が完全一致するという意味ではありません。
+
+
 ## 8.9 カメラ(✅C1/C2 = WP48/50)
 
 カメラは「**定義**(glTF 1:1 の投影)/ **コントローラ**(orbit・follow・fly)/ **演出**(カット切替など)」の三層設計です。定義とコントローラの書き方(シーン JSON)は [第4章](04_scene_ecs.md) §4.2 を参照してください。
@@ -920,7 +925,7 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 - `events` も `position` も無いノードは、**owner の最初のフレームで鳴り始め**、そのフレームから `time` 入力の時計で経過時間(写像の elapsed)を数えます([開始](../../src/core/userpublic/valuegraph.cpp#L1024))。分解版の「`events` が無ければ owner の最初のフレーム」と同じ規則です。
 - `events` が無いときの `time` は、どの時計から来てもかまいません(`time` でも `scene_time` でも、時計の無い定数でも拒否されない)。
 - `time` は必須のままです。`events` を繋ぐなら `time` は `scene_time` だけから、の検査(`audio.clock_mismatch@1`、下の「状態と拒否」)も変わりません。
-- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L3553)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。✅UX-8 から、palette の `audio.volume` / `audio.pitch` は置く前に駆動する voice(scope の `audio.playback`)を聞き、その `voice` からの線と、`value` に 1 の `value.constant` をつないだ形で置かれます。palette の `value.curve`(`time` が `scene_time` につながった、1 秒で 0 から 1 の key)を `value` へ線で落とせば、下の「フェード」の形になります。音声の file は Studio の File ▸ Import Sound… か Sound の欄の Import… で project の `assets/audio/` に写せます(同じ名前があれば `_2`)。どれも [第13章](13_editor.md) の「音の node を置く・音声を Import する(✅UX-8)」です。
+- Studio の palette で置いた `audio.playback` は、`time` に scope の `scene_time`(`value.input`。無ければ `scene_time` / `scene_time_2` … の id で 1 つ足す)が繋がった形で置かれ、そのまま鳴ります(ノードと時計は 1 回の編集なので、Undo 1 回で両方消えます。[palette の雛形](../../src/devstudio/model/graphcanvasmodel.cpp#L3568)、`d616e35a`)。手で組むときも `scene_time → time` を 1 本繋げば鳴ります。✅UX-8 から、palette の `audio.volume` / `audio.pitch` は置く前に駆動する voice(scope の `audio.playback`)を聞き、その `voice` からの線と、`value` に 1 の `value.constant` をつないだ形で置かれます。palette の `value.curve`(`time` が `scene_time` につながった、1 秒で 0 から 1 の key)を `value` へ線で落とせば、下の「フェード」の形になります。音声の file は Studio の File ▸ Import Sound… か Sound の欄の Import… で project の `assets/audio/` に写せます(同じ名前があれば `_2`)。どれも [第13章](13_editor.md) の「音の node を置く・音声を Import する(✅UX-8)」です。
 
 下の例は `events` で鳴らす形です。
 
@@ -1124,7 +1129,7 @@ auto slots  = ctx.save().listSaves();                         // SaveContext::Sl
 |---|---|---|
 | 書く場所 | シーン JSON の `animation`([第4章](04_scene_ecs.md) §4.2) | rendering config(`pelican.graph` root)の `nodes`([第6章](06_rendering.md) §6.17) |
 | 中身 | **`clip` XOR `graph`**(クリップ 1 本か、`pelican.anim_graph` v1 文書か。どちらか片方**ちょうど 1 つ**が必須) | `pose.clip_sample` / `pose.blend` / `pose.state_machine` を `pose.skeletal` sink へ繋ぐ |
-| ゲームコードからの操作 | `setAnimationGraphParameter` / `forceAnimationGraphState`(§8.4) | `setGraphParameter` / `emitGraphEvent`(§8.4) |
+| ゲームコードからの操作 | `animation().setParameter` / `animation().forceState`(§8.4) | `render().setValueGraphParameter` / `render().emitValueGraphEvent`(§8.4) |
 | 出荷の実物 | **宣言は無い**(`movement.anim_graph.json` は animgraph_demo のゲームコードが自分で読み込みます) | `projects/posegraph_demo` |
 
 **この 2 つは同じ owner に共存しません。** 同じ個体に 2 本目の writer が来ると **`pose.sink_conflict@1`** で名前付きに落ちます —— 黙って上書きすることはありません。検査は二段で、文書レベルの proxy(`component_writer`)と、publish 時の **owner ごとの writer token**(フレーム改訂付き)の両方が見ています([posegraph.cpp:40](../../src/core/animation/posegraph.cpp#L40))。
@@ -1136,7 +1141,7 @@ auto slots  = ctx.save().listSaves();                         // SaveContext::Sl
 ### ゲームコードから見た層
 
 1. **宣言的クリップ再生(WP38)** — シーン JSON の `animation` コンポーネントの `clip`([第4章](04_scene_ecs.md) §4.2)。ゲームコード不要。時刻源は EngineTime(決定的)。
-2. **アニメーショングラフ(WP101/102)** — `pelican.anim_graph` v1 のデータアセット + **非特権の公開評価器**。**装着の仕方が 2 通り**あります: シーンの `animation.graph` に書けば**エンジンが評価器を束縛してくれ**(`setAnimationGraphParameter` / `forceAnimationGraphState` が効く相手はこれです)、ゲームコードが `#include <animation/animgraph.hpp>` で `EvaluatorV1` を自分で持つこともできます。後者はエンジン特権なしで動きます。
+2. **アニメーショングラフ(WP101/102)** — `pelican.anim_graph` v1 のデータアセット + **非特権の公開評価器**。**装着の仕方が 2 通り**あります: シーンの `animation.graph` に書けば**エンジンが評価器を束縛してくれ**(`animation().setParameter` / `animation().forceState` が効く相手はこれです)、ゲームコードが `#include <animation/animgraph.hpp>` で `EvaluatorV1` を自分で持つこともできます。後者はエンジン特権なしで動きます。
 
 グラフ JSON(実物: [../../projects/animgraph_demo/movement.anim_graph.json](../../projects/animgraph_demo/movement.anim_graph.json) 全文):
 

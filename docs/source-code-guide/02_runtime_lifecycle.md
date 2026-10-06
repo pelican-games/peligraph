@@ -45,7 +45,7 @@ sequenceDiagram
 - 入力の記録/再生（`--record-input` / `--replay` / `--input-profile`）
 - camera bake（`--bake-camera-output`、headless + replay 必須）
 
-> **設計決定:** `--rpc` は `--headless` を要求しません（WP156。以後この文書に出る `WP<番号>` は work package = 台帳 [`docs/implementation_plan.md`](../implementation_plan.md) が「独立に依頼できる単位」として採番した作業の番号で、`-fix` / `a` / `b` は同じ作業の分割・追補です。[用語集](../manual/14_glossary.md)）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L352)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
+> **設計決定:** `--rpc` は `--headless` を要求しません（WP156。以後この文書に出る `WP<番号>` は work package = 台帳 [`docs/implementation_plan.md`](../implementation_plan.md) が「独立に依頼できる単位」として採番した作業の番号で、`-fix` / `a` / `b` は同じ作業の分割・追補です。[用語集](../manual/14_glossary.md#wpwork-package)）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L352)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
 
 `--project` がなければ、実行ファイルの祖先から `projects/example/project.json` を探索します（[`configureImplicitProject()`](../../src/player/main.cpp#L271)）。明示projectなら、directoryまたは`project.json`そのものを受け付けます（[`configureExplicitProject()`](../../src/player/main.cpp#L286)）。
 
@@ -69,7 +69,7 @@ sequenceDiagram
 
 1. `EngineLaunchConfig`へCLI結果を代入。
 2. `PathResolver::setup()`へproject root、絶対パス方針、project JSON、user directoryを渡す。
-3. `AssetsVerification::verifyAtStartup()`(中で [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L148))でasset store manifestを検査し、結果を RPC 用に持つ(✅AV-1。[第3章](03_project_and_loading.md) §3.4)（asset store = アセットの置き場所の間接化。`project.json` の `asset_stores` が論理マウントを宣言し、実パスは git に入れない `.pelican/local.json` で上書きします。[第3章](03_project_and_loading.md) の「asset store」／[用語集](../manual/14_glossary.md)）。
+3. `AssetsVerification::verifyAtStartup()`(中で [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L148))でasset store manifestを検査し、結果を RPC 用に持つ(✅AV-1。[第3章](03_project_and_loading.md) §3.4)（asset store = アセットの置き場所の間接化。`project.json` の `asset_stores` が論理マウントを宣言し、実パスは git に入れない `.pelican/local.json` で上書きします。[第3章](03_project_and_loading.md) の「asset store」／[用語集](../manual/14_glossary.md#台帳)）。
 4. `ProjectSource`へproject JSONとengine version無視方針を保存。
 5. `PelicanCore::run()`を呼ぶ。
 
@@ -269,7 +269,7 @@ fallback の JSON を publish して組み直し(登録済みの material は fa
 
 フレームそのものは三つの経路で三度書かれてはいません。[`FrameStep`](../../src/core/appflow/loop.cpp#L413) が `advance` → `update` → `render` → `record` の4段を1箇所に書き、三つのドライバ([`runHeadlessFrames()`](../../src/core/appflow/loop.cpp#L634) / [`runInteractive()`](../../src/core/appflow/loop.cpp#L695) / [`runXrFrame()`](../../src/core/appflow/loop.cpp#L548))はこの4呼び出しへ渡すものだけが違います。経路差は三つの enum として明示され、差が無い呼び出し点でも値を書きます — [`AdvanceTiming`](../../src/core/appflow/loop.cpp#L375)(update 計測を timeline advance の前に開くか後に開くか)、[`GraphVariantSelection`](../../src/core/appflow/loop.cpp#L387)(graph variant を driver が選ぶか `Renderer::render()` に任せるか)、[`FramerateWait`](../../src/core/appflow/loop.cpp#L401)(`FramerateAdjust` で待つか)。
 
-経路は次の五つです。
+入口の分岐は headless RPC / headless 固定フレーム / windowed の 3 つです。windowed 内の通常 / XR と追加の RPC 層まで分類した一覧は、次の 5 項目になります。
 
 | 経路 | 条件 | フレーム進行の所有者 |
 |---|---|---|
