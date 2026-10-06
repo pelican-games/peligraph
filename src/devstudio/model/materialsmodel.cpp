@@ -1,5 +1,6 @@
 #include "materialsmodel.hpp"
 
+#include "appliedstate.hpp"
 #include "inspectormodel.hpp"
 
 #include <algorithm>
@@ -1340,21 +1341,19 @@ void MaterialsDockSession::writeResult(const Write &write, const Json &result) {
         break;
     }
     }
-    const auto restart = result.find("restart_required");
-    if (text(result, "applied") == "unusable") {
-        unusable(write, result);
-    } else if (restart != result.end() && !restart->is_null()) {
-        restart_reason_ = restart->is_string() ? restart->get<std::string>() : text(*restart, "reason");
-        if (restart_reason_.empty()) restart_reason_ = "the engine reads it when it starts";
+    // RT-C: applied / restart_required read in one place (appliedstate).
+    const auto applied = readAppliedState(result, "the engine reads it when it starts");
+    if (applied.kind == AppliedState::Kind::Unusable) {
+        unusable(write, result, applied.problem);
+    } else if (applied.kind == AppliedState::Kind::RestartRequired) {
+        restart_reason_ = applied.restart_reason;
         if (restartRequested) restartRequested(restart_reason_);
     } else if (write.kind == Write::Kind::Edit || write.kind == Write::Kind::UndoEdit) {
         // MT-3s, decision 5 (engine MT-3): textures, tags, routing, variants
         // and surface are registered again in place, and the models drawing
         // the material rebuilt -- no restart.
-        if (text(result, "applied") == "rebuilt") {
-            std::size_t models = 0;
-            if (const auto rebuilt = result.find("rebuilt_models"); rebuilt != result.end() && rebuilt->is_array())
-                models = rebuilt->size();
+        if (applied.kind == AppliedState::Kind::Rebuilt) {
+            const auto models = applied.rebuilt_models.size();
             setNotice("Applied; rebuilt " + std::to_string(models) + (models == 1 ? " model." : " models."));
         }
         // A routing edit rewrote the bindings that name the material (and its
@@ -1367,11 +1366,10 @@ void MaterialsDockSession::writeResult(const Write &write, const Json &result) {
     readList();
 }
 
-void MaterialsDockSession::unusable(const Write &write, const Json &result) {
+void MaterialsDockSession::unusable(const Write &write, const Json &result, const Json &problem) {
     // EB-6s, decision 1 (engine EB-6): written, and the engine goes on; the
     // pass that draws the material does not declare what it uses, so the
     // document is unusable until the pass does -- no restart.
-    const auto problem = result.value("problem", Json::object());
     setNotice(materialUnusableSentence(problem), text(problem, "message"));
     restart_reason_.clear();
     auto path = text(problem, "material_document");
@@ -1882,17 +1880,17 @@ bool MaterialAssignSession::receiveResult(std::int64_t id, const Json &result) {
                 else undo_.push_back(std::move(entry));
             }
         }
-        const auto restart = result.find("restart_required");
-        if (text(result, "applied") == "unusable") {
+        // RT-C: applied / restart_required read in one place (appliedstate).
+        const auto applied = readAppliedState(result, "the engine reads it when it starts");
+        if (applied.kind == AppliedState::Kind::Unusable) {
             // EB-6s, decision 1 (engine EB-6): bound, and the model drawn with
             // its own material until the pass declares what the bound one
             // uses -- no restart.
-            const auto problem = result.value("problem", Json::object());
+            const auto &problem = applied.problem;
             notice_ = materialUnusableSentence(problem);
             notice_detail_ = text(problem, "message");
-        } else if (restart != result.end() && !restart->is_null()) {
-            auto reason = restart->is_string() ? restart->get<std::string>() : text(*restart, "reason");
-            if (reason.empty()) reason = "the engine reads it when it starts";
+        } else if (applied.kind == AppliedState::Kind::RestartRequired) {
+            const auto &reason = applied.restart_reason;
             notice_ = "Restart the engine to apply: " + reason;
             notice_detail_ = reason;
             if (restartRequested) restartRequested(reason);

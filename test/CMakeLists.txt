@@ -391,6 +391,10 @@ if(TARGET pelican_studio_inspector_model)
   # RU-1: the render edit history over a list of what was sent -- no Qt, no
   # engine; the test answers each request as the engine does.
   pelican_define_test(devstudio_render_history_test pelican_studio_inspector_model)
+  # RT-C: applied / restart_required of a synchronous write, and a committed
+  # render edit's post_commit_error, said once per ticket -- no Qt.
+  pelican_define_test(devstudio_appliedstate_test pelican_studio_inspector_model)
+  pelican_define_test(devstudio_rendereditcompletion_test pelican_studio_inspector_model)
   # UX-6b: the frame's GPU time and the plan's size, per generation -- no Qt.
   pelican_define_test(devstudio_plan_perf_test pelican_studio_inspector_model)
   # RL-1s: a render document rewritten on disk is taken in by
@@ -1041,6 +1045,27 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
   )
   add_dependencies(pelican_test_devstudio_render_undo_keys_test
+    pelican_test_process_fixture_child)
+
+  # RT-C: actual status bar after committed replies, History and disconnect.
+  pelican_define_test(devstudio_render_post_commit_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+  target_compile_definitions(pelican_test_devstudio_render_post_commit_test PRIVATE
+    PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
+  )
+  add_dependencies(pelican_test_devstudio_render_post_commit_test
     pelican_test_process_fixture_child)
 
   # F-2: File > New Project... -- the dialog writes the picked template

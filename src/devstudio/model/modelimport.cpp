@@ -1,5 +1,6 @@
 #include "modelimport.hpp"
 
+#include "appliedstate.hpp"
 #include "graphcanvasmodel.hpp"
 #include "inspectormodel.hpp"
 
@@ -44,14 +45,12 @@ std::string text(const Json &object, const char *key) {
     return found != object.end() && found->is_string() ? found->get<std::string>() : std::string{};
 }
 
-// applied / restart_required of a register_model or unregister_model answer.
+// applied / restart_required of a register_model or unregister_model answer
+// (RT-C: read by appliedstate). Live unless the engine asks for a restart.
 std::pair<bool, std::string> applied(const Json &result) {
-    const bool live = text(result, "applied") != "restart_required";
-    std::string reason;
-    if (const auto restart = result.find("restart_required"); restart != result.end() && restart->is_object())
-        reason = text(*restart, "reason");
-    if (!live && reason.empty()) reason = "the engine reads it when it starts again";
-    return {live, reason};
+    const auto state = readAppliedState(result, "the engine reads it when it starts again");
+    if (state.kind != AppliedState::Kind::RestartRequired) return {true, std::string{}};
+    return {false, state.restart_reason};
 }
 
 std::string sentenceOf(const std::string &code, const std::string &message, const Json &fields) {

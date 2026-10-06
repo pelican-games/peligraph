@@ -1185,8 +1185,10 @@ void MainWindow::createWorkspace() {
                 // the picture was made from.
                 render_fallback_->readAuthoring();
             });
+    const auto post_commit_errors = std::make_shared<RenderEditPostCommitErrors>();
     connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
-            [this](const QString &) {
+            [this, post_commit_errors](const QString &) {
+                post_commit_errors->engineGone();
                 // RU-1: what the history had in flight went with the engine;
                 // the history stays (its documents are on disk).
                 if (render_history_) render_history_->abandonInFlight();
@@ -1221,7 +1223,8 @@ void MainWindow::createWorkspace() {
     connect(viewport_, &EmbeddedViewport::engineInputActiveChanged, this,
             [this](bool) { updateModalTransformPolling(); });
     connect(viewport_, &EmbeddedViewport::inspectorRpcSucceeded, this,
-            [this](qint64 request_id, const QByteArray &result_json) {
+            [this, post_commit_errors](
+                qint64 request_id, const QByteArray &result_json) {
                 if (migration_panel_->acceptRpcResult(request_id, result_json))
                     return;
                 // BS-1s, decision 8: Show the document's reads and restore. A
@@ -1256,6 +1259,13 @@ void MainWindow::createWorkspace() {
                 if (play_controls_ &&
                     play_controls_->receiveResult(request_id, result_json))
                     return;
+                // RT-C: finalize the error after every handler of this reply,
+                // including History's synchronous Undid / Redid notification.
+                std::string post_commit_line;
+                const auto say_post_commit_error = qScopeGuard([this, &post_commit_line] {
+                    if (!post_commit_line.empty())
+                        statusBar()->showMessage(QString::fromStdString(post_commit_line), 15000);
+                });
                 // RL-1s: the reload's own requests; and every committed render
                 // edit's `documents`, which is what Studio wrote (decision 2).
                 // Only an answer that can be one is parsed.
@@ -1270,6 +1280,9 @@ void MainWindow::createWorkspace() {
                     } catch (const std::exception &) {
                         result = nlohmann::json{};
                     }
+                    // Deduplicate within this engine session, before the
+                    // handlers run; display only when they have all returned.
+                    post_commit_line = post_commit_errors->take(result);
                     if (render_reload_->receiveResult(request_id, result)) return;
                     render_reload_->observeReply(result);
                     // BS-1s, decision 3: an edit that committed while the

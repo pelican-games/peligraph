@@ -31,6 +31,9 @@ add_library(pelican_studio_inspector_model STATIC
     # RSX: the one reading of a render config ticket's last answer.
     rendereditcompletion.cpp
     rendereditcompletion.hpp
+    # RT-C: the one reading of a synchronous write's applied / restart_required.
+    appliedstate.cpp
+    appliedstate.hpp
     # RL-1s: render documents rewritten on disk, taken in by reload_render_documents.
     renderdocumentreload.cpp
     renderdocumentreload.hpp

@@ -583,7 +583,7 @@ class MaterialsDockSession {
     // EB-6s, decision 1: a write the engine took but cannot draw yet -- the
     // document's row (unusable, Open the pass) is picked once listed.
     std::optional<std::string> broken_when_listed_;
-    void unusable(const Write &write, const Json &result);
+    void unusable(const Write &write, const Json &result, const Json &problem);
     void loadedAgain(const std::string &path, std::vector<std::string> names);
     std::deque<Write> queue_;
     std::optional<Write> in_flight_;

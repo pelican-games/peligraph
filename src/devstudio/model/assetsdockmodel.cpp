@@ -1,5 +1,6 @@
 #include "assetsdockmodel.hpp"
 
+#include "appliedstate.hpp"
 #include "inspectormodel.hpp"
 
 #include <algorithm>
@@ -548,10 +549,11 @@ void AssetsDockSession::editResult(const Json &result) {
         undo_.push_back(std::move(entry));
     }
     if (edit.kind == PendingEdit::Kind::Watch && edit.on && changed_now) watch_switched_on_ = true;
-    const auto restart = result.find("restart_required");
-    if (restart != result.end() && !restart->is_null()) {
-        restart_reason_ = restart->is_string() ? restart->get<std::string>() : text(*restart, "reason");
-        if (restart_reason_.empty()) restart_reason_ = "project.json changed";
+    // RT-C: restart_required read by appliedstate (`applied` here is the
+    // settings object read above, never "unusable").
+    if (const auto state = readAppliedState(result, "project.json changed");
+        state.kind == AppliedState::Kind::RestartRequired) {
+        restart_reason_ = state.restart_reason;
     } else {
         restart_reason_.clear();
     }
