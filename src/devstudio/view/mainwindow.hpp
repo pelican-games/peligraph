@@ -1,6 +1,7 @@
 #pragma once
 
 #include "layoutpreset.hpp"
+#include "renderdocumentwatcher.hpp"
 #include "toollayoutpreset.hpp"
 #include "../model/gizmomodel.hpp"
 #include "../model/modelimport.hpp"
@@ -245,6 +246,7 @@ class MainWindow : public QMainWindow {
     // RL-1s. The render documents rewritten on disk, taken in through
     // reload_render_documents; and the Graph menu's "Reload from disk".
     std::optional<RenderDocumentReload> render_reload_;
+    std::unique_ptr<RenderDocumentWatcher> render_document_watcher_;
     QAction *reload_from_disk_action_ = nullptr;
     // BS-1s: the row above the viewport while the engine draws its
     // placeholder, and how Open file opens a file (the desktop's editor;

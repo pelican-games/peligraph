@@ -26,11 +26,7 @@ ShaderReloadFollower::ShaderReloadFollower(Hooks hooks)
     : hooks_{std::move(hooks)}, context_{std::make_unique<QObject>()} {
     watcher_ = new QFileSystemWatcher(context_.get());
     QObject::connect(watcher_, &QFileSystemWatcher::fileChanged,
-                     context_.get(), [this](const QString &path) {
-                         // RL-1s: a render document is not a shader.
-                         if (document_files_.contains(path)) documentChanged(path);
-                         else sourceChanged();
-                     });
+                     context_.get(), [this](const QString &) { sourceChanged(); });
     reload_debounce_ = new QTimer(context_.get());
     reload_debounce_->setSingleShot(true);
     reload_debounce_->setInterval(ReloadDebounceMs);
@@ -70,7 +66,6 @@ void ShaderReloadFollower::rewatch() {
         for (const auto &path : paths)
             wanted.insert(QString::fromStdWString(path.wstring()));
     }
-    for (const QString &path : document_files_) wanted.insert(path);
     const QStringList watched = watcher_->files();
     for (const QString &path : watched)
         if (!wanted.contains(path)) watcher_->removePath(path);
@@ -80,27 +75,6 @@ void ShaderReloadFollower::rewatch() {
         if (!watched.contains(path) && QFileInfo::exists(path))
             watcher_->addPath(path);
     }
-}
-
-void ShaderReloadFollower::setDocumentFiles(
-    std::vector<std::filesystem::path> files,
-    std::function<void(const QString &path)> changed) {
-    QStringList spelled;
-    for (const auto &path : files) {
-        const QString text = QString::fromStdWString(path.wstring());
-        if (!spelled.contains(text)) spelled.push_back(text);
-    }
-    document_files_ = std::move(spelled);
-    document_changed_ = std::move(changed);
-    rewatch();
-}
-
-void ShaderReloadFollower::documentChanged(const QString &path) {
-    // An editor that saves by replacing the file took it out of the watch,
-    // whether or not the watcher still lists it: it is added afresh.
-    watcher_->removePath(path);
-    rewatch();
-    if (document_changed_) document_changed_(path);
 }
 
 void ShaderReloadFollower::sourceChanged() {

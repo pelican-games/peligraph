@@ -92,15 +92,6 @@ class ShaderReloadFollower {
     void setSources(NodeShaderSources sources);
     [[nodiscard]] const NodeShaderSources &sources() const noexcept;
 
-    // RL-1s, decision 1: the render documents (the root and its fragments)
-    // are watched by this same watcher, with a hook of their own -- a write
-    // to one never asks for reload_shaders. Each call, and each change,
-    // puts a file an editor replaced back into the watch.
-    void setDocumentFiles(std::vector<std::filesystem::path> files,
-                          std::function<void(const QString &path)> changed);
-    // A watched render document changed. Public so a test can say so.
-    void documentChanged(const QString &path);
-
     // The reply for a request this follower made. False when the id is
     // someone else's.
     bool receive(qint64 request_id, const QByteArray &result_json);
@@ -158,9 +149,6 @@ class ShaderReloadFollower {
     // HW-2s, decision 7: the last reading's details.enabled.
     bool engine_watch_open_ = false;
     std::optional<ShaderReloadReading> baseline_;
-    // RL-1s: the render documents, as the watcher spells them.
-    QStringList document_files_;
-    std::function<void(const QString &path)> document_changed_;
 };
 
 } // namespace PelicanStudio

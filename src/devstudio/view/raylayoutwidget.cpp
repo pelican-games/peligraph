@@ -183,7 +183,7 @@ struct RayLayoutWidget::Impl {
                                    "shaders its ray tracing tasks fill, and which objects each hit group "
                                    "answers for."));
         head->addWidget(title, 1);
-        head->addWidget(makePanelHelpButton(&owner, "pelican.rayLayout.help", ManualRenderFeaturesAnchor,
+        head->addWidget(makePanelHelpButton(&owner, "pelican.rayLayout.help", ManualRayLayoutAnchor,
                                             owner.tr("The ray group layout (get_ray_layout / edit_ray_layout).")));
         layout->addLayout(head);
         state_line = new QLabel(&owner);

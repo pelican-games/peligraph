@@ -30,6 +30,10 @@ inline constexpr const char *ManualPassEditorAnchor =
     "15_studio.md#159-pass-editor";
 inline constexpr const char *ManualRenderFeaturesAnchor =
     "13_editor.md#レンダー設定を編集する";
+inline constexpr const char *ManualRenderingSettingsAnchor =
+    "15_studio.md#1511-rendering-settings";
+inline constexpr const char *ManualRayLayoutAnchor =
+    "15_studio.md#1512-ray-layout";
 inline constexpr const char *ManualInspectorAnchor =
     "15_studio.md#studioでcomponentを追加する";
 inline constexpr const char *ManualFramePlanAnchor =

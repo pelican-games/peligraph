@@ -788,6 +788,23 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     PELICAN_TEST_FRAME_PLAN_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/devstudio/example_frame_plan.json"
   )
 
+  # RT-B: the window's production document watcher with real temporary files,
+  # independently of the Frame Plan; the two panels' manual links too.
+  pelican_define_test(devstudio_render_document_watcher_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+
   # Q-6: the Add component list on real Qt widgets -- a candidate this build
   # cannot take is greyed and turns Add and the declaration off.
   pelican_define_test(devstudio_componentadd_test QT QT_OFFSCREEN

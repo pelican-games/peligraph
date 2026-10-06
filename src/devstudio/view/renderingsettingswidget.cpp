@@ -387,7 +387,7 @@ struct RenderingSettingsWidget::Impl {
             "saved at once and applied at a frame boundary."));
         heading->addWidget(title, 1);
         heading->addWidget(makePanelHelpButton(
-            body, "pelican.renderingSettings.help", ManualRenderFeaturesAnchor,
+            body, "pelican.renderingSettings.help", ManualRenderingSettingsAnchor,
             owner.tr("The root's rendering section keys no other panel writes "
                      "(edit_rendering_keys). A change is saved at once.")));
         layout->addLayout(heading);

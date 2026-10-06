@@ -64,6 +64,8 @@ add_library(pelican_studio_view STATIC
     shaderdiagnostics.hpp
     shaderreloadfollower.cpp
     shaderreloadfollower.hpp
+    renderdocumentwatcher.cpp
+    renderdocumentwatcher.hpp
     inspectorwidget.cpp
     inspectorwidget.hpp
     outlinertree.cpp

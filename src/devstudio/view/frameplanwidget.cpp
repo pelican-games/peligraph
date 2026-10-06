@@ -5410,12 +5410,6 @@ void FramePlanWidget::receiveShaderReloadOutcome(
     impl_->applyShaderReloadOutcome(outcome);
 }
 
-void FramePlanWidget::setWatchedRenderDocuments(
-    std::vector<std::filesystem::path> files,
-    std::function<void(const QString &path)> changed) {
-    impl_->reload_follower->setDocumentFiles(std::move(files), std::move(changed));
-}
-
 void FramePlanWidget::observeEngineStatus(const nlohmann::json &status) {
     impl_->reload_follower->observeStatus(readShaderReloadStatus(status));
 }

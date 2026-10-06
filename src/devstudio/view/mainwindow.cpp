@@ -17,6 +17,7 @@
 #include "problemsdock.hpp"
 #include "projectmigrationwidget.hpp"
 #include "renderconfigdigest.hpp"
+#include "renderdocumentwatcher.hpp"
 #include "planperfhub.hpp"
 #include "renderfallbacknotice.hpp"
 #include "renderfeatureswidget.hpp"
@@ -1532,14 +1533,10 @@ void MainWindow::createRenderReload() {
             return hash.result().toHex().toStdString();
         },
     });
-    // Decision 1: one watcher, the Frame Plan's, which already follows the
-    // shaders (UX-6a); the documents ride beside them with their own hook.
+    // RT-B: the window owns the document watch beside its reload policy.
+    render_document_watcher_ = std::make_unique<RenderDocumentWatcher>(*render_reload_);
     render_reload_->watchChanged = [this] {
-        frame_plan_->setWatchedRenderDocuments(render_reload_->watchedFiles(),
-                                               [this](const QString &) {
-                                                   if (render_reload_)
-                                                       render_reload_->fileChanged();
-                                               });
+        render_document_watcher_->setFiles(render_reload_->watchedFiles());
     };
     render_reload_->notice = [this](const RenderDocumentReload::Notice &notice) {
         using Kind = RenderDocumentReload::Notice::Kind;
