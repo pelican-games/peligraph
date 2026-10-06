@@ -2,6 +2,23 @@
 
 [索引へ戻る](README.md) / [前章](04_ecs_deep_dive.md)
 
+**この章の地図**
+
+```mermaid
+flowchart LR
+    A["公開 API・System・event<br/>§5.1–5.4"] --> B["入力・camera・physics<br/>§5.5–5.7"]
+    B --> C["乱数・audio・保存<br/>§5.8–5.12"]
+    C --> D["behavior・schema・副作用<br/>§5.13–5.15"]
+    D --> E["pose・staging<br/>§5.16–5.17"]
+```
+根拠（章構成）: `05_gameplay_and_services.md:22` 以降の節見出し（矢印は読む順で、実行順ではありません）。
+
+**この章の語。**
+
+- **sink** — 評価値や副作用を受け取る出口で、scene transaction 中の staging 先は[§5.15](#515-scene-transaction中の公開apieffect-transaction-sink-実装済み)を参照してください。
+- **capability（機能）** — backend や service が対応する操作の集合を表します（[用語集](../manual/14_glossary.md#148-設計コード解説で頻出する用語)）。
+- **capability（権限）** — 特定の対象・寿命の範囲で操作を許す token / handle を指す場合があり、機能一覧とは区別します（[横断パターン](00_cross_cutting_patterns.md)）。
+
 ## 5.1 `GameContext`は公開ファサード
 
 ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L284) が主要サービスを薄く包みます。面は根と8つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画 / ポインタとカーソル / シーンオブジェクトの名前解決 / UI は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L357) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L358) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L359) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L360) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L361) / [`input()`](../../src/core/userpublic/gamecontext.hpp#L362)（GP-4）/ [`objects()`](../../src/core/userpublic/gamecontext.hpp#L363)（GP-1）/ [`ui()`](../../src/core/userpublic/gamecontext.hpp#L364)（GP-3）が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L49) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L84) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L114) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L123) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L138) / [`InputContext`](../../src/core/userpublic/gamecontext.hpp#L244) / [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L214)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。例外は [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L271) で、`ui(document_key)` の key を `std::string_view` のまま 1 本だけ持ちます（`ui()` なら空の view）。key の文字列はファサードを使い終わるまで生かしておく必要があります。委譲先は分割前と同じです。
@@ -1027,6 +1044,8 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 
 ### DLL reload
 
+切替と失敗時の復旧は [DLL reload のシーケンス](02_runtime_lifecycle.md#dll-reload-sequence)を参照し、ここでは behavior params の互換検査を読みます。
+
 [`GameLogicReloader::validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L466) は [`ResolvedScene::behaviorReloadSources()`](../../src/core/loader/resolvedscene.hpp#L288) からcore-privateな中立DTOを取得し、[`internal::validateBehaviorReloadSources()`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85) へ渡します。DTOはauthored `source_params` とscene / object / authored component indexのprovenanceを保ち、候補DLL側のcodecだけが [`candidate->canonicalize_params(source.source_params)`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L123) を一度実行します。これにより `schema_version` の差分と型の消滅を候補DLL採用前に検証しつつ、active側の既定値で二重補完することを防ぎます。validatorはcore-privateであり、`src/core/userpublic` の公開面は変更していません。
 
 回帰テストは [`test/run_behavior_dll_reload.ps1`](../../test/run_behavior_dll_reload.ps1) の9ケースです（`test/CMakeLists.txt`の`foreach(wp162_case ...)`）。
@@ -1102,7 +1121,7 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 
 ### [`activation_delay`](../../src/core/gamelogic/behaviorarena.cpp#L572) — 1 フレーム遅らせる理由 {#reading-note-070}
 
-新規 / 再構築された attachment は [`activation_delay = 1`](../../src/core/gamelogic/behaviorarena.cpp#L787) を持ち、[`update()` 末尾でデクリメント](../../src/core/gamelogic/behaviorarena.cpp#L1200)されるまで [`activateReadyEditorAttachments()` の入口で読み飛ばされます](../../src/core/gamelogic/behaviorarena.cpp#L1129)。**生成直後の同一フレームで init が走らないようにして、シーン公開が完全に終わってから 1 フレーム後に活性化する**ためです。失敗時は `activated` を逆順に辿って `destroyInstance` し、`deferred_mutations` を base まで巻き戻します(構築の逆順で壊して依存順を守り、部分活性化を残さない。→ [§9.22](09_black_magic_and_gotchas.md#922-横断パターン初読で-5-つ以上の領域に同じ形で現れるもの))。
+新規 / 再構築された attachment は [`activation_delay = 1`](../../src/core/gamelogic/behaviorarena.cpp#L787) を持ち、[`update()` 末尾でデクリメント](../../src/core/gamelogic/behaviorarena.cpp#L1200)されるまで [`activateReadyEditorAttachments()` の入口で読み飛ばされます](../../src/core/gamelogic/behaviorarena.cpp#L1129)。**生成直後の同一フレームで init が走らないようにして、シーン公開が完全に終わってから 1 フレーム後に活性化する**ためです。失敗時は `activated` を逆順に辿って `destroyInstance` し、`deferred_mutations` を base まで巻き戻します(構築の逆順で壊して依存順を守り、部分活性化を残さない。→ [§9.22](00_cross_cutting_patterns.md#922-横断パターン初読で-5-つ以上の領域に同じ形で現れるもの))。
 
 ### [`sameSceneBehaviorOrigin()`](../../src/core/gamelogic/behaviorarena.cpp#L489) — 許される遷移方向 {#reading-note-071}
 

@@ -370,8 +370,10 @@ example の README にあった手書き sha256 表の役目は、この manifes
 
 背景: `pelican_cli project init` の Blank / Standard の雛形は `assets/` を作るだけで、`asset_stores` も `hot_reload` も宣言しません。そのため hot reload の宣言(HW-1)と素材の照合(AV-1)は、project.json を手で書いて engine を起こし直さないと効きませんでした。2026-10-03 に利用者が「Studio のボタンで宣言を足す」形を承認し(HW-2 / AV-1s)、PJ-1 はその engine 側です。Studio の側は ✅HW-2s / AV-1s(`78737fdf`)の **Assets のドック**で、行ごとの Reload when saved outside が `hot_reload` を、**Track asset contents…** が `asset_stores.main = {mount: "assets/", manifest: "assets.manifest.json"}`(store が既にあれば manifest の無い store に manifest だけ)を、それぞれ 1 回の `edit_project_settings` で書き、ドックの Undo が答えの `previous` を送り返します([第13章](13_editor.md) §13.1 の「Studio の Assets のドック」)。
 
+<a id="project-settings-cas"></a>
+
 - **書き方**: 鍵を省けば今の値のまま、`null` を渡せば鍵ごと消します。`hot_reload` は配列の置き換えで、HW-1 と同じ検査(上の「hot reload で監視するもの」)を通した正規化の形で書きます。`asset_stores` は宣言の全体を渡します。
-- **project.json への書き込み**は project の文書の transaction で、`base_project_digest` を CAS に使います。ほかの鍵と並びは保ち、新しい鍵は末尾に足します。書くと全体が 2 空白の indent に展開されるので、値を元に戻しても digest は元に戻りません。改行コードは元のファイルのものを使います([書く形を作る所](../../src/core/communication/projectsettingsrpc.cpp#L62))。値が変わらない要求は書かず、`changed: false` を返します。
+- **project.json への書き込み**は [第13章の CAS](13_editor.md#digest-cas) に従い、`base_project_digest` で比較して project の文書の transaction で行います。ほかの鍵と並びは保ち、新しい鍵は末尾に足します。書くと全体が 2 空白の indent に展開されるので、値を元に戻しても digest は元に戻りません。改行コードは元のファイルのものを使います([書く形を作る所](../../src/core/communication/projectsettingsrpc.cpp#L62))。値が変わらない要求は書かず、`changed: false` を返します。
 - **受ける変更**は次の 2 つだけです。
   - store を足す。足した store の root は、mount が名指す project のフォルダでなければなりません。そうであれば、mount の下の参照は store を足す前と同じファイルに解けます。`.pelican/local.json` で別の場所に向けた store は断ります。
   - 起動時から manifest の無い store に manifest を宣言する。manifest のファイルがまだ無ければ engine が今のディスクから書き(`update_assets_manifest` と同じ書き方)、照合を走らせ直します([第10章](10_tools.md) §10.3)。

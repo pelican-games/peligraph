@@ -483,7 +483,7 @@ flowchart TD
     RPC --> Public
     RPC --> Flow
     CLI --> Project["pelican_project pure formats"]
-    Studio --> QML
+    Studio --> QtWidgets["Qt Widgets"]
 ```
 
 強い設計境界は `src/project` が GPU/module に依存しないこと、game code が `GameContext` を通ること、frame graph の純粋計画と GPU runtime binding が別であることです。逆に `src/core` 内の module 同士は `GET_MODULE` で密につながるため、constructor 時の依存と teardown 順には注意が必要です。

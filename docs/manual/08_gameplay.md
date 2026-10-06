@@ -127,11 +127,7 @@ PELICAN_REGISTER_SYSTEM(Type, order);
 
 ### フレームループの固定順序(決定性の土台)
 
-```
-時刻 advance → イベント凍結 → 入力スナップショット確定 → アクション凍結 → イベント配送(前フレーム分)
-→ ECS システム → ゲームシステム(order 順) → SeqPlayer
-→ シーン遷移の適用 → 描画
-```
+フレーム全体の順序は[第1章のフレーム順の図](01_overview.md#frame-order)を参照してください。
 
 rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテスト = 実行時と同じ意味論」がこれで保証されます(`step_frame` は headless 専用で、窓ありでは `step_frame_windowed` で断られます。✅PM-1a)。一時停止中のフレームでは、この順序のうちイベント配送・ゲームシステム・シーン遷移の適用が飛ばされます(§8.4 の「時刻の 3 つの値と一時停止」)。
 
@@ -180,12 +176,12 @@ engine は RPC の `set_play_state` で一時停止でき、`advance_frames` で
 
 ### 再生のセッションとゲームコード(✅PM-2)
 
-`edit` から Play した run は**再生のセッション**で、Stop で scene が Play の前に戻ります(RPC と戻る範囲の表は [第13章](13_editor.md) §13.5 の「再生のセッション」)。ゲームコードから見ると次のとおりです。
+`edit` から Play した run は**再生のセッション**で、Stop で scene が Play の前に戻ります(遷移と戻る範囲は[第15章の状態図](15_studio.md#play-state-map))。ゲームコードから見ると次のとおりです。
 
 - **Play のたびに DLL の新しい写しが読まれます。**game の system の instance は関数ローカルの static(§8.3)なので、メンバに持った数や状態は Play ごとに初めからです(test では、フレームを数える system の数が次のセッションで 1 から数え直します)。読み直しは behavior の `onInit` より前です。`--replay` と golden の起動では読み直しません(その run の決定性を壊すため)。読み直しに失敗すると Play そのものが断られます
 - **Stop で消えるもの**: `ctx.spawn` で作った object(behavior には `onDestroy` が走ります)、鳴っている音(全部止まり、持っていた handle は何も指さなくなります)、`ctx.loadScene` で替えた scene(Play を始めた scene に戻ります)
 - **Stop で戻らないもの**: `saveData` で書いた Persistence(§8.12)。ファイルに書いたものはそのまま残り、次の Play でも読めます
-- `--start-state` を省いて起動した engine(単体の player と今の Studio)は、起動した瞬間から `playing` で、セッションはありません。そこから `edit` へ移ったときは何も戻らず、今の authoring から作り直すだけです
+- `--start-state` を省いて起動した engine(単体の player など)は、起動した瞬間から `playing` で、セッションはありません。そこから `edit` へ移ったときは何も戻らず、今の authoring から作り直すだけです
 
 ### ドメインファサード
 

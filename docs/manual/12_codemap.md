@@ -106,23 +106,12 @@ pelican2/
 
 ## 12.4 1 フレームの流れ(中核は [`framephase.cpp` 内](../../src/core/appflow/framephase.cpp#L143) `updateFrameState`。headless も同順)
 
-```
-①時刻を進める                appflow/enginetime.cpp … realtime か fixed_step(1/fps)
-  --- ここから ⑦ まで updateFrameState の中(appflow/framephase.cpp) ---
-②イベント凍結              userpublic/details/event/ … pending をフレーム内不変の列へ移す
-③入力スナップショット確定    os/inputstate.cpp   … フレーム内不変・直列化可能
-④アクション凍結              os/actionmap.cpp    … actions.json のセットスタック
-⑤イベント配送                userpublic/details/event/ … 前フレームに emit された分(次フレーム頭配送)
-⑥ECS 内部システム            ecs/predefined/     … transform 伝播・modelview 等
-⑦ゲームシステム update       userpublic/details/system/ … order 昇順→名前辞書順(決定的)
-  --- ここまで ---
-⑧描画                        vkcore/renderer.cpp → renderer/ 各パス実装
-```
+フレーム全体の順序は[第1章のフレーム順の図](01_overview.md#frame-order)を参照してください。
 
-- ①: 時刻の前進は `updateFrameState` の**中ではなく**、それを呼ぶ直前で行われます。三経路に三つ書かれていたこの前進は、いまは [`FrameStep::advance()`](../../src/core/appflow/loop.cpp#L422) の 1 箇所だけで、headless / 通常 / XR の三ドライバ([`runHeadlessFrames()`](../../src/core/appflow/loop.cpp#L634) / [`runInteractive()`](../../src/core/appflow/loop.cpp#L695) / [`runXrFrame()`](../../src/core/appflow/loop.cpp#L548))がそれぞれフレーム先頭でこれを呼びます。`updateFrameState` のフェーズ列([framephase.hpp](../../src/core/appflow/framephase.hpp) の `FramePhase`)は `freeze_events` / `freeze_input` / `freeze_actions` / `deliver_events` / `update_game` の 5 つで、時刻前進も描画も含みません
-- ③: [inputstate.cpp](../../src/core/os/inputstate.cpp) — GLFW コールバックはキューに積むだけで、フレーム先頭で 1 回だけ `InputSnapshot` を確定します(決定性・記録可能性の土台)
-- ⑦: ゲームコードの `update(GameContext&)` はここで呼ばれます。登録機構は [details/system/registerer.hpp](../../src/core/userpublic/details/system/registerer.hpp)。**エンジン同梱のシステムも特権なしで同じ (order, 名前) 総順序に参加**します — オブジェクト behavior を回す `BehaviorSystem`(order = 50。[`behavior.hpp` 内](../../src/core/userpublic/behavior.hpp#L19)、実体は [gamelogic/behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp))/ カメラコントローラ `BuiltinCameraControllerSystem`(order = 10000。[userpublic/cameracontrollersystem.cpp](../../src/core/userpublic/cameracontrollersystem.cpp))/ トリガー判定 `PhysicsTriggerSystem`(order = `INT_MAX`。[phys/physworld.cpp](../../src/core/phys/physworld.cpp))。order がこれらより大きいユーザーシステムは、それぞれより後に走ります
-- ⑧: パス種別ごとの実装は [materialrender.cpp](../../src/core/renderer/materialrender.cpp)(gbuffer)・[fullscreenpassrenderer.cpp](../../src/core/renderer/fullscreenpassrenderer.cpp)・[shadowdepthpasscontainer.cpp](../../src/core/renderer/shadowdepthpasscontainer.cpp)・[debugdraw.cpp](../../src/core/renderer/debugdraw.cpp)・[debugtext.cpp](../../src/core/renderer/debugtext.cpp)・[uirenderer.cpp](../../src/core/renderer/uirenderer.cpp)
+- 時刻:  時刻の前進は `updateFrameState` の**中ではなく**、それを呼ぶ直前で行われます。三経路に三つ書かれていたこの前進は、いまは [`FrameStep::advance()`](../../src/core/appflow/loop.cpp#L422) の 1 箇所だけで、headless / 通常 / XR の三ドライバ([`runHeadlessFrames()`](../../src/core/appflow/loop.cpp#L634) / [`runInteractive()`](../../src/core/appflow/loop.cpp#L695) / [`runXrFrame()`](../../src/core/appflow/loop.cpp#L548))がそれぞれフレーム先頭でこれを呼びます。`updateFrameState` のフェーズ列([framephase.hpp](../../src/core/appflow/framephase.hpp) の `FramePhase`)は `freeze_events` / `freeze_input` / `freeze_actions` / `deliver_events` / `update_game` の 5 つで、時刻前進も描画も含みません
+- 入力:  [inputstate.cpp](../../src/core/os/inputstate.cpp) — GLFW コールバックはキューに積むだけで、フレーム先頭で 1 回だけ `InputSnapshot` を確定します(決定性・記録可能性の土台)
+- ゲームシステム:  ゲームコードの `update(GameContext&)` はここで呼ばれます。登録機構は [details/system/registerer.hpp](../../src/core/userpublic/details/system/registerer.hpp)。**エンジン同梱のシステムも特権なしで同じ (order, 名前) 総順序に参加**します — オブジェクト behavior を回す `BehaviorSystem`(order = 50。[`behavior.hpp` 内](../../src/core/userpublic/behavior.hpp#L19)、実体は [gamelogic/behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp))/ カメラコントローラ `BuiltinCameraControllerSystem`(order = 10000。[userpublic/cameracontrollersystem.cpp](../../src/core/userpublic/cameracontrollersystem.cpp))/ トリガー判定 `PhysicsTriggerSystem`(order = `INT_MAX`。[phys/physworld.cpp](../../src/core/phys/physworld.cpp))。order がこれらより大きいユーザーシステムは、それぞれより後に走ります
+- 描画:  パス種別ごとの実装は [materialrender.cpp](../../src/core/renderer/materialrender.cpp)(gbuffer)・[fullscreenpassrenderer.cpp](../../src/core/renderer/fullscreenpassrenderer.cpp)・[shadowdepthpasscontainer.cpp](../../src/core/renderer/shadowdepthpasscontainer.cpp)・[debugdraw.cpp](../../src/core/renderer/debugdraw.cpp)・[debugtext.cpp](../../src/core/renderer/debugtext.cpp)・[uirenderer.cpp](../../src/core/renderer/uirenderer.cpp)
 
 ## 12.5 データ → コード対応表(JSON はどこで読まれるか)
 
@@ -208,8 +197,7 @@ pelican2/
    [`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)(startup / rpc / pending / import v1 / v2)、
    import 側の [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L275)。
 2. [`scene.cpp`](../../src/core/loader/scene.cpp#L1650) の `SceneLoader::load` —— executor 本体。
-   phase は `prepare → early_publish → publish → activate → commit_metadata → retire → flush → finish` で、
-   **記録するのは executor ではなく各 participant** です(WP380c/d)。
+   段と commit 点は[第4章のロード図](04_scene_ecs.md#scene-load-transaction)、participant の順序は[読解ガイド](../source-code-guide/03_project_and_loading.md#scene-load-lanes)を参照してください。
    `load()` 自身は 18 個の [`SceneLoadParticipant`](../../src/core/loader/sceneloadparticipant.hpp#L55) を
    phase ごとの順序表で回す driver で、候補状態は `SceneLoadContext`、fault 注入は
    [`SceneLoadMutationGate`](../../src/core/loader/sceneloadparticipant.hpp#L96) にあります。

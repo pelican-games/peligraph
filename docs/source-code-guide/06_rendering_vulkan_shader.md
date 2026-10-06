@@ -14,6 +14,7 @@
 
 **先に 1 文だけ定義しておく語。** 以下は第6章の本文が説明なしに使い始める語です。深い扱いは各節にあります。
 
+- **面** — 「編集面」「公開面」は操作の入口・対象範囲で、「cube の面」「表面」は幾何の face / surface です。
 - **feature** — rendering config に pass・render target・shader define・宣言をまとめて足し引きできる合成単位。`engine://features/*.json` か project 側の JSON として書かれ、外すとその feature が持ち込んだ pass と target が丸ごと消えます([用語集](../manual/14_glossary.md#feature))。
 - **frame graph** — 1 フレームで実行する pass / compute task を node、`reads` / `writes` / `after` / `before` を辺とする有向グラフ。実行順と barrier はここから決まります(§6.3、[用語集](../manual/14_glossary.md#frame-graphフレームグラフ))。
 - **view family** — 同じ graph を複数の視点で実行するときの「視点の束」の論理名(`$main`、`$shadow/directional` など)。視点数(cardinality)を決めるのは runtime 側の provider です(§6.4、[用語集](../manual/14_glossary.md#view-familyビューファミリ))。
@@ -80,6 +81,8 @@
 > RHI variant.
 
 ## 6.1 設定から1フレームの実行計画ができるまで
+
+**この節の語**: **lowering** は宣言を backend が扱う形へ落とす処理、**IR** はその途中の中間表現で、[共通グラフの流れ](03_project_and_loading.md#graph-dataflow)を参照してください。
 
 起点は [`loadDefaultRenderingPassFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L585) です。`ProjectBasicConfig` が保持する rendering JSON と現在の出力サイズを使い、[`registerRenderingPassConfigVariantsData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1606) へ入ります。ここから先の合成・変換・計画は、この関数が自分で行うのではなく **1 つの compiler program へ委譲されます**(冒頭の層表)。
 
@@ -1076,6 +1079,8 @@ test は `headless_material_draw_loop_test` の「MP-1 get_frame_plan lists the 
 
 ## 6.6 Frame target: window と headless の共通インターフェース
 
+**この節の語**: **epoch** は target / swapchain のある状態の世代識別子、**lease** はその世代の資源を使用中に保持する所有参照で、GPU の **submission**（投入した仕事）が完了するまでの寿命は[§6.11 の図](#generation-lifetime)を参照してください。
+
 [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254) が描画先の抽象インターフェースです。
 
 ```cpp
@@ -1618,18 +1623,36 @@ companion リクエストを shader キーと material ドキュメントに仕�
 
 Vulkan object は C++ の所有権上不要になっても、前の frame の command buffer が GPU 上で参照中かもしれません。即時 destructor は use-after-free になります。
 
-Pelican の [`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L17) は、任意の movable resource を型消去(type erasure — 型ごとの違いを仮想関数の裏へ隠し、`std::unique_ptr<基底クラス>` として種類の違う object を同じ配列に並べられるようにする手法。ここで共通の口として残すのは「解放できる」ことだけです)した `DeferredResource<T>` に包み、**現在の retirement batch** へ積みます。解放の契機は frame 数ではありません。submission が [`DeletionQueueCore::leaseForNextSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L63) でその batch を掴む lease を受け取り、[`DeletionQueueCore::confirmSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L78) が次の batch へ切り替えます。batch は `shared_ptr` で、**それを掴んでいた lease が全て落ちた時点で破棄され**、包んだ resource がそこで解放されます。つまり寿命は「対応する GPU submission が完了したか」に直結しており、「何 frame 前か」を数えません。
+<a id="generation-lifetime"></a>
 
-hot reload で入れ替えた古い pipeline/layout は [`PipelineFactory::replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L1384) がこの queue へ渡します。終了時に pending が残っていれば、destructor は `device.waitIdle()` 後に safety flush します。
-
-teardown 経路では **受け入れ停止** が入りました。`DeletionQueueCore` は [`accepting` / `draining`](../../src/core/vkcore/deletionqueue.hpp#L78) を持ち、`defer()` の先頭で [`requireAccepting()`](../../src/core/vkcore/deletionqueue.hpp#L81) を呼びます。[`drainForTeardown()`](../../src/core/vkcore/deletionqueue.hpp#L103) 後の `defer()` はエラーです。詳細は [この節の submission lease と teardown の注意](#gpu-retirement-gotchas) を参照してください。
-
-これが描画層で最も重要な寿命ルールです。
-
-```text
-CPU:  old pipelineを置換 ---- defer -------- 2 frame経過 ---- destroy
-GPU:           frame N が参照 ----- 完了 -----|
+```mermaid
+sequenceDiagram
+    participant R as Renderer / CPU
+    participant P as 公開 root
+    participant Q as DeletionQueue
+    participant T as FrameTarget / GPU
+    R->>P: 記録する世代 G を取得して保持
+    R->>Q: 置換した旧 pipeline 等を defer（batch B）
+    R->>Q: leaseForNextSubmission（G を含む資源）
+    Q-->>R: lease = 資源 + B の強参照
+    R->>T: 記録・submit（lease を渡す）
+    T->>T: 完了 fence まで lease を保持
+    R->>Q: 成功した submission を confirm（B を seal）
+    Q->>Q: current_batch を次の batch に交換
+    opt ray joint の staged 世代がある
+        R->>P: publishFrameGeneration（G を公開）
+    end
+    Note over P,T: root が別世代に変わっても、参照中の G は存続
+    T->>T: GPU 完了を観測し lease を解放
+    Note over R,T: B の最後の強参照が落ちると deferred resource を破棄<br/>G と arena もそれぞれ最後の所有者が手放すまで存続
 ```
+根拠: [`framegraphruntime.hpp:143`](../../src/core/renderingpass/framegraphruntime.hpp#L143)、[`renderer.cpp:5703`](../../src/core/vkcore/renderer.cpp#L5703) / [`renderer.cpp:6059`](../../src/core/vkcore/renderer.cpp#L6059) / [`renderer.cpp:6762`](../../src/core/vkcore/renderer.cpp#L6762)、[`deletionqueue.cpp:63`](../../src/core/vkcore/deletionqueue.cpp#L63)。
+
+**この節の語**: **submission** は GPU に投入した仕事の単位、**lease** はその仕事が使う資源を完了まで保持する所有参照です（target の取得 token と GPU 完了待ちの lease は寿命が異なります）。
+
+**注**: `DeferredResource<T>` は任意の movable resource を「解放できる」という共通の口へ型消去し、batch に保持します。`PipelineFactory::replacePipeline()` が旧 pipeline/layout を積む入口です。frame 数による猶予はなく、複数 submission が同じ batch を保持すれば最後の lease まで残ります。通常の世代公開はフレーム記録前にも起き、図の submit 後の公開は ray joint 経路です。view 終端で submit する target はそこで batch を seal し、後の seal は重複しません。
+
+出力 image が得られず未送信なら staged 世代を次フレームへ持ち越す経路があり、その他の未公開終了は guard が巻き戻します。送信後は出力公開が失敗しても世代を戻しません（[`StagedRuntimeRollbackGuard`](../../src/core/vkcore/renderer.cpp#L3201)、[`publishFrameGeneration()`](../../src/core/vkcore/renderer.cpp#L6065)）。`flushAll()` は GPU を待たないため呼び手の wait-idle が必要で、終了時に pending が残った destructor は wait-idle 後に safety flush します。teardown の受け入れ停止と再入禁止は以下の注を参照してください。
 
 ### submission lease と teardown の変更時の注意 {#gpu-retirement-gotchas}
 
@@ -1662,23 +1685,7 @@ teardown の最終段は phase で分岐します。
 >
 > もう 1 つが `draining` で、`draining` を立てて 4 行の `DrainScope` で必ず倒す形は「念のための再入禁止」に見えますが、塞いでいるのは具体的な事故です。`release()` の実体は [`resource.reset()`](../../src/core/vkcore/deletionqueue.hpp#L45)、つまり**走るのは寝かせた型のデストラクタで、その中身は各 container のコード**です([`VertBufContainer::releaseModelGeometry()`](../../src/core/model/vertbufcontainer.cpp#L600) が defer する `DeferredRelease` のデストラクタは、lease を取り直したうえで owner のメソッドを呼び戻します)。そこから `defer()` が来ると [`resources.push_back`](../../src/core/vkcore/deletionqueue.hpp#L58) が走査中の vector を再確保し、`confirmSubmission()` が来ると `batches.push_back` が `flushAll()` のイテレータを無効にします。だから 3 本とも先頭で [`DeletionQueueCore::requireAccepting()`](../../src/core/vkcore/deletionqueue.cpp#L54) を呼び、drain 中は `std::logic_error` にします。これは「壊れる」を「その場で分かる」へ変える置き換えで、`DrainScope` が try-catch でなく RAII なのは、`releaseAll()` が throw しても、後から早期 return を足しても、1 か所でフラグを倒せるからです。`flushAll()` 自身の再入も同じく `std::logic_error` です。
 >
-> **骨子**:
-> ```text
-> defer(r)                 requireAccepting(); current_batch->add(r)
-> leaseForNextSubmission() requireAccepting(); return shared_ptr{ upstream, current_batch }
-> confirmSubmission()      requireAccepting(); ++completed_submissions
->                          batch が空なら何もしない
->                          batches.push_back(new); current_batch = new
->                          ↑ ここで旧 batch の強参照は lease だけになる
->                            lease が無ければ refcount 0 → 即破棄
->
-> フレーム側                target.endLogicalFrame(lease) → slot に保持
->                          fence 完了を観測 → slots.complete(slot) → lease 解放 → 破棄
->
-> flushAll()               draining=true + DrainScope(RAII で false へ戻す)
->                          batches を走査し lock() できた batch を releaseAll()
->                          ↑ この中から defer / lease / confirm が来たら logic_error
-> ```
+> **流れ**: [世代と lease のタイムライン](#generation-lifetime)を参照してください。`leaseForNextSubmission()` が次の batch を準備し、`confirmSubmission()` はその準備済み batch へ交換します。
 >
 > **手がかり**: `flushAll()` は fence も wait-idle も見ません(待つのはデストラクタの [`wait_idle_hook()`](../../src/core/vkcore/deletionqueue.cpp#L34) と、`wait_idle` step を先に通す [`runtime_teardown_order`](../../src/core/appflow/teardown.hpp#L23) と、それを走査する [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp#L122))。`pendingCount()` は [`PendingCounter`](../../src/core/vkcore/deletionqueue.hpp#L18) を `DeferredResource` の生成/解放で増減させた live 数で、デストラクタはこれが 0 でなければ WARNING を出して wait-idle → flush する安全網に入ります([`DeletionQueueCore::~DeletionQueueCore()`](../../src/core/vkcore/deletionqueue.cpp#L22))。テストは [`"DeletionQueueCore releases resources only after the bound GPU submission completes"`](../../test/deletionqueue_test.cpp#L37)(lease を手放すまで破棄されない)/ [`"WP384 DeletionQueue keeps the old generation until its submission fence"`](../../test/deletionqueue_test.cpp#L60)(batch ごとに独立して retire する)/ [`"DeletionQueueCore teardown drain closes the queue and rejects late resources"`](../../test/deletionqueue_test.cpp#L145)(drain 後は 3 本とも throw)です。
 >

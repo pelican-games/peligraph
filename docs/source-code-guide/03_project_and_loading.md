@@ -2,6 +2,22 @@
 
 [索引へ戻る](README.md) / [前章](02_runtime_lifecycle.md)
 
+**この章の地図**
+
+```mermaid
+flowchart LR
+    A["形式・設定・パス<br/>§3.1–3.4"] --> B["scene と component<br/>§3.5–3.7"]
+    B --> C["asset・形式・codec<br/>§3.8–3.13"]
+    C --> D["共通グラフ・package<br/>§3.14–3.16"]
+```
+根拠（章構成）: `03_project_and_loading.md:21` 以降の節見出し（矢印は読む順で、実行順ではありません）。
+
+**この章の語。**
+
+- **digest** — 文書の bytes から計算する照合値で、保存前提の比較は[第13章の所有節](../manual/13_editor.md#digest-cas)を参照してください。
+- **CAS** — 読んだときの値と現在値が一致する場合だけ更新する方式で、文書編集の比較時点は[同節](../manual/13_editor.md#digest-cas)にあります。
+- **revision** — scene 文書が更新されるたびに進む版番号で、ファイルの digest とは別です（[編集の座標系](../manual/13_editor.md#134-同時編集--actor-と-revision)）。
+
 ## 3.1 純粋パーサとruntime bindingを分ける
 
 ここでいう **runtime binding** は、検証済みのデータをエンジンの実体（解決済みpath、ECS Component、GPU資源、module参照）へ結び付ける段のことです。前段の純粋パーサ（`src/project`）はVulkanもquillもmodule containerも知らず、構文・schema・version・形式上の意味検証と正規化だけを行います（§3.3）。「同じ検証規則をエンジン非依存のまま devstudio や CLI からも使う」ためにこの線が引かれています（[用語集](../manual/14_glossary.md#結合binding) の「結合(binding)」）。データロードの基本形はこの二段です。
@@ -322,7 +338,7 @@ ecs_objects = prepareSceneBindings(
 
 **眠った attachment は pending とは別物です（✅PM-1b）。**`edit` 状態（`--start-state edit` か `set_play_state {state: "edit"}`）では、arena 全体に眠りの flag が立ちます（[`BehaviorAttachmentArena::setDormant()`](../../src/core/gamelogic/behaviorarena.cpp#L818)）。眠っている間の scene load・reconciliation・spawn・editor の attach は、attachment を handle・attachment_seq・type・owner・正規化した params 付きで作りますが、instance を作りません（上のリンクの行の `!dormant_` と、[`activatePublished()` の冒頭](../../src/core/gamelogic/behaviorarena.cpp#L940)・[reconciliation の activate の先頭](../../src/core/gamelogic/behaviorarena.cpp#L581) で何もせず戻る）。`update()` と `dispatchEvent()` も入口で戻るので、眠った attachment を起こす道はありません。editor の `set_params` は保存した params を替えるだけです。`pending` は付かないので、editor はこれを編集の正しい相手として扱います。眠りを解いただけでは instance はできず、次の scene load（Play のときの作り直し）の activate 段で constructor と `onInit` が走ります。眠りを切り替えるときは、game のコードが積んだ遅延ミューテーションを捨てます。`edit` で読み込んだ runtime の `scene_start_time` は、今の時刻ではなく 0 です（`LoaderStateParticipant::prepare`）。
 
-behavior は executor の participant の 1 つです。entity を作った後に `BehaviorAttachmentArena::prepareSceneReconciliation()` で candidate を作り（[early_publish 段末尾の呼び出し](../../src/core/loader/scene.cpp#L1539)）、publish 段で `noexcept` に arena へ swap し（[`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L1546)）、**activate 段**で `onInit` を走らせます（[`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L1548)）。activate は executor で**唯一の失敗しうる段**で、`onInit` が投げると executor の [`rollback` ラムダ](../../src/core/loader/scene.cpp#L1734) が **全 participant** を旧世代へ戻し、結果は `PreCommitFailure{phase = activate}` になります（[activate 失敗の戻り値](../../src/core/loader/scene.cpp#L1789)）。document / projection / current scene / authority は commit 前なので旧世代のまま、arena も旧 attachment が戻ります。旧経路の [`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L1939) は定義が残っていますが `load()` からは呼ばれません。
+behavior は executor の participant の 1 つです。entity を作った後に `BehaviorAttachmentArena::prepareSceneReconciliation()` で candidate を作り（[early_publish 段末尾の呼び出し](../../src/core/loader/scene.cpp#L1539)）、publish 段で `noexcept` に arena へ swap し（[`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L1546)）、**activate 段**で `onInit` を走らせます（[`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L1548)）。activate は publish 後の**最後の pre-commit 失敗点**で、`onInit` が投げると executor の [`rollback` ラムダ](../../src/core/loader/scene.cpp#L1734) が **全 participant** を旧世代へ戻し、結果は `PreCommitFailure{phase = activate}` になります（[activate 失敗の戻り値](../../src/core/loader/scene.cpp#L1789)）。document / projection / current scene / authority は commit 前なので旧世代のまま、arena も旧 attachment が戻ります。旧経路の [`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L1939) は定義が残っていますが `load()` からは呼ばれません。
 
 > **設計決定:** game logic DLLが無い状態でsceneを開くのは、ツールや検証では正常なケースです。そこで「DLLが有るのに型名が引けない」ときだけfailにし、DLL不在は保留にしています。ロード可否がビルド構成に依存してぶれない、という線引きです。
 
@@ -343,18 +359,49 @@ behavior は executor の participant の 1 つです。entity を作った後�
 
 [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L1650) は「旧 scene を消してから新 scene を作る」形ではありません。[`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L222)（committed projection を借りる `Borrowed`、または import の candidate と `MetadataCommitToken` を持つ `Owned`）を受け取り、[`SceneLoadResult`](../../src/core/loader/sceneload.hpp#L188)（`SceneLoadCommitted` / `PreCommitFailure` / `CommittedWithEffectFailure`）を返す **executor** で、段は次の順です。executor 本体は 18 個の [`SceneLoadParticipant`](../../src/core/loader/sceneloadparticipant.hpp#L55) を段ごとの順序表（`prepare_order` / `early_publish_order` / `publish_order` / `rollback_order` ほか）に沿って回す driver で、以前 `load()` のローカル変数だった候補群は [`SceneLoadContext`](../../src/core/loader/scene.cpp#L643) が持ち、fault 注入は [`SceneLoadMutationGate`](../../src/core/loader/sceneloadparticipant.hpp#L96) が一手に引き受けます。
 
-```text
-prepare（失敗可）
-→ early_publish（失敗可。ECS は WP375 の inverse token で先に publish）
-→ publish（noexcept。prepare 済み storage の swap だけ）
-→ activate（失敗可。behavior の onInit。失敗しうる最後の段）
-→ commit_metadata（noexcept。SceneMetadataState の 1 回の swap）
-→ retire（noexcept。旧 state を次フレームの retirement queue へ積む）
-→ flush（noexcept。prepare で確保した outbox slot から SceneLoaded を push）
-→ finish（noexcept。early_publish で publish 済みの ECS create token を確定し、rollback 権を手放す）
-```
+<a id="scene-load-lanes"></a>
 
-段を記録するのは原則 executor ではなく participant 自身で、`SceneLoadPhaseTrace` へ書くのは metadata token（[`prepareRuntimeIdentity()`](../../src/core/loader/basicconfig.cpp#L549) が prepare、[`commit()`](../../src/core/loader/basicconfig.cpp#L584) が commit_metadata）、renderer（[`publishPreparedScene()`](../../src/core/renderer/polygoninstancecontainer.cpp#L714) が early_publish、[`enqueueSceneRetirement()`](../../src/core/renderer/polygoninstancecontainer.cpp#L850) が retire）、SeqPlayer / VatPlayer / Camera / Light / Physics の publish（いずれも trace を取る scene 専用 overload。例: [`Camera::publishPrepared()`](../../src/core/renderer/camera.cpp#L368)）、behavior arena（[`publish()`](../../src/core/gamelogic/behaviorarena.cpp#L558) / [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L620) / [`finish()`](../../src/core/gamelogic/behaviorarena.cpp#L637) が publish / activate / retire）、retirement queue（[`RetirementState::enqueue()`](../../src/core/loader/scene.cpp#L153)）、RNG（[`publishPreparedSequence()`](../../src/core/userpublic/deterministicrng.cpp#L129) が flush）、event outbox（[`PreparedEventOutbox::flush()`](../../src/core/userpublic/details/event/registerer.cpp#L279)）です。executor 自身が書くのは 2 か所だけで、pending swap 直前の [`record(SceneLoadPhase::flush)` の 1 行](../../src/core/loader/scene.cpp#L1800) と、created-entity batch を 1 participant と見なす [`record(SceneLoadPhase::finish)` の 1 行](../../src/core/loader/scene.cpp#L1808) です（WP380d。token 個別の `finish()` は記録しないので、`objects: []` の空 scene でも finish が列に出ます）。結果は [`SceneLoadCommitted::phase_trace`](../../src/core/loader/sceneload.hpp#L178) として返り、[`record()`](../../src/core/loader/sceneload.hpp#L47) は直前と同じ段なら足さないので、同じ段を複数の participant が通っても列は 1 つにまとまります。枠は 8 段ぶんの固定確保で、9 件目以降は列に入らない代わりに [`overflow`](../../src/core/loader/sceneload.hpp#L45) が立ちます（黙って落としません）。8 という数は [`SceneLoadPhase`](../../src/core/loader/sceneload.hpp#L27) の値数そのもの（[`sceneLoadPhaseCount = 8`](../../src/core/loader/sceneload.hpp#L38)）で、`record()` が直前と同じ段を足さない以上、段が上の順に1回ずつ現れる限り必ず収まります。つまり `overflow` が立つのは「一度離れた段へ戻った」ときだけで、確保を増やすべき状況ではなく**順序が壊れた**という信号です。`SceneLoadPhaseTrace` のコメントもそう書いています — `A trace is a fixed pre-commit allocation. Never silently discard an ordering observation: callers must reject an overflowing trace.`
+```mermaid
+sequenceDiagram
+    participant E as executor
+    participant D as 文書・metadata
+    participant R as scene runtime 群
+    participant B as behavior
+    participant O as outbox・副作用
+    Note over E,O: 1 prepare（候補作成・容量予約、失敗可）
+    E->>D: metadata → scene_document（検証）
+    E->>R: loader_state → procedural → scene_bindings → renderer → camera → light → seq → vat → ecs
+    E->>O: rng → pending_scene → event_outbox → effects
+    Note over E,O: 2 early_publish（失敗可、inverse token を保持）
+    E->>R: renderer → ecs → physics
+    E->>B: behavior 候補を準備
+    E->>R: ecs_retire（旧 entity を unpublish）
+    Note over E,O: 3 publish（noexcept）
+    E->>R: loader_state → seq → vat → camera → light → physics → procedural
+    E->>B: publish
+    E->>D: metadata の publish 段
+    Note over E,O: 4 activate（最後の pre-commit 失敗点）
+    E->>B: onInit（candidate runtime を観測）
+    Note over E,O: 5 commit_metadata（ここから取り消さない）
+    E->>D: metadata を 1 回 swap
+    E->>R: loader_state commit
+    E->>O: effects commit
+    E->>B: finish（旧 attachment の retire）
+    Note over E,O: 6 retire（noexcept、旧資源を queue へ）
+    E->>R: loader_state → renderer → procedural
+    E->>O: event_outbox（SceneLoaded を予約 slot へ）
+    Note over E,O: 7 flush（noexcept）
+    E->>O: rng → pending_scene → event_outbox → effects
+    Note over E,O: 8 finish（noexcept）
+    E->>R: ecs（create token の rollback 権を解放）
+```
+根拠: [`scene.cpp:1706`](../../src/core/loader/scene.cpp#L1706) の各順序表と [`scene.cpp:1792`](../../src/core/loader/scene.cpp#L1792) の確定点、[`sceneparticipantmanifest.cpp:81`](../../src/core/loader/sceneparticipantmanifest.cpp#L81) の参加範囲。
+
+図の runtime レーンは participant をまとめた表示で、矢印内の順序は呼び出し順です（`seq` / `vat` は各 player）。prepare 失敗は候補を破棄し、early_publish / activate 失敗は `rollback_order` で戻します。これは全 participant の単純な逆順ではありません。副作用の失敗は commit 後の結果に残し、scene は戻しません。
+
+**trace の注**: 記録主体は metadata（prepare / commit_metadata）、renderer（early_publish / retire）、SeqPlayer / VatPlayer / Camera / Light / Physics（publish）、behavior（publish / activate / finish 時の retire）、retirement queue、RNG と event outbox（flush）です。executor 自身は flush と finish だけを記録するため、空 scene でも finish が残ります。結果の `SceneLoadCommitted::phase_trace` は連続する同一段をまとめる固定 8 slot で、超過時は `overflow` を立てます。段を順に通れば収まるため、overflow は容量不足でなく順序違反として扱います（[`SceneLoadPhaseTrace::record()`](../../src/core/loader/sceneload.hpp#L47)）。
+
+以下は図の各段に載せきれない候補の作り方・失敗時の注です。
 
 **prepare**（[prepare 段の先頭](../../src/core/loader/scene.cpp#L1741) から [`return fail(SceneLoadPhase::prepare, ...)`](../../src/core/loader/scene.cpp#L1745) まで）では、candidate authority を 1 回だけ消費し（[`next_authority_epoch++`](../../src/core/loader/scene.cpp#L1666)。失敗しても再利用しません）、metadata token に scene id と authority を書き（[`prepareRuntimeIdentity()`](../../src/core/loader/scene.cpp#L621)）、resolved scene を検証して（[`validateResolvedSceneFeatureBindings()`](../../src/core/loader/scene.cpp#L840)）、各 participant の candidate を live に触らずに作ります: renderer（[`prepareSceneReplacement()`](../../src/core/loader/scene.cpp#L1044)。model の staging もここ）、camera（[`prepareSceneCameras()`](../../src/core/loader/scene.cpp#L1111)）、light（[`LightContainer::prepareLoad()`](../../src/core/loader/scene.cpp#L1147)）、SeqPlayer / VatPlayer（[`prepareSceneLoad()`](../../src/core/loader/scene.cpp#L1174)）、retirement queue の容量予約（[`reserveOne()`](../../src/core/loader/scene.cpp#L151)）、RNG 列（[`prepareSequence()`](../../src/core/loader/scene.cpp#L1566)）、event outbox（[`PreparedEventOutbox`](../../src/core/loader/scene.cpp#L1603)。`SceneLoaded` の payload はここで確保します）。model は [`ModelAssetContainer::getModelTemplateByName()`](../../src/core/loader/scene.cpp#L1056) で引きますが、`ModelAssetContainer` は **participant ではなく warm cache** です。candidate が失敗しても lazy load された model record / GPU resource は残り、戻しません（manifest の [`model_asset` / `warm_cache` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L181)。どの scene にも束縛されない record なので世代混在にはなりません）。
 
@@ -501,7 +548,7 @@ scene の `components` 配列に見えても runtime binding は一様ではあ�
 
 `ColliderComponent` に `init/deinit` があっても、現在の scene loader は special case です。`ECSCoreTemplatePublic::tryComponent<ColliderComponent>()` で取れる通常 ECS component だとは考えないでください。behavior も同様で、ECS の component として問い合わせても見つかりません。
 
-behavior は scene load executor(第 3 章 §3.5 の 3。WP380a)の participant の 1 つです。candidate は [`prepareSceneReconciliation()`](../../src/core/loader/scene.cpp#L1539) で作られ、publish 段で `noexcept` に swap され([`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L1546))、`onInit` は activate 段([`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L1548))で走ります。activate は executor で**唯一の失敗しうる段**で、投げると [`rollback` ラムダ](../../src/core/loader/scene.cpp#L1734) が renderer / ECS / camera / light / physics / behavior / event outbox / RNG / pending scene を**全部**旧世代へ戻し、結果は [`PreCommitFailure{phase = activate}`](../../src/core/loader/scene.cpp#L1789) です。document / projection / current scene / authority の commit([`metadata.commit()`](../../src/core/loader/scene.cpp#L635))はその後なので旧世代のままです。「behavior 型名を間違えると scene が半分だけロードされる」「document は新、runtime は旧」ということはありません(型名の誤りはそもそも prepare 段で落ちます)。旧経路の `clearRuntimeScene()` は `load()` から呼ばれません。
+behavior は scene load executor(第 3 章 §3.5 の 3。WP380a)の participant の 1 つです。candidate は [`prepareSceneReconciliation()`](../../src/core/loader/scene.cpp#L1539) で作られ、publish 段で `noexcept` に swap され([`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L1546))、`onInit` は activate 段([`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L1548))で走ります。activate は publish 後の**最後の pre-commit 失敗点**で、投げると [`rollback` ラムダ](../../src/core/loader/scene.cpp#L1734) が renderer / ECS / camera / light / physics / behavior / event outbox / RNG / pending scene を**全部**旧世代へ戻し、結果は [`PreCommitFailure{phase = activate}`](../../src/core/loader/scene.cpp#L1789) です。document / projection / current scene / authority の commit([`metadata.commit()`](../../src/core/loader/scene.cpp#L635))はその後なので旧世代のままです。「behavior 型名を間違えると scene が半分だけロードされる」「document は新、runtime は旧」ということはありません(型名の誤りはそもそも prepare 段で落ちます)。旧経路の `clearRuntimeScene()` は `load()` から呼ばれません。
 
 ### phase trace は participant が記録する。executor に `record` 文を足さない {#scene-phase-trace-owner}
 
@@ -1539,7 +1586,39 @@ P-2a-4b までは、`rendering` 相当の中身を最上位に直接書く **leg
 
 ## 3.15 共通グラフ文書 `pelican.graph` ✅実装済み（AG-0 / P-1）
 
-`pelican.graph` は「スカラ・描画・姿勢をまたぐ1本の宣言グラフ」の文書形式です。純粋層だけで**展開 → 検証 → 実行領域への分割**まで進み、GPUにもECSにも触れません。
+`pelican.graph` はスカラ・描画・姿勢をまたぐ正本文書で、編集はその候補に適用します。
+
+**この節の語**: **lowering** は宣言を実行先が扱う形へ変換する処理、**IR**（中間表現）はその途中の導出形式で、ここでは正本文書として保存しません。
+
+<a id="graph-dataflow"></a>
+
+```mermaid
+flowchart TD
+    D["正本文書 pelican.graph"] --> E["editGraphDocument：ops を候補へ適用"]
+    E --> X["expand：instance と loop の雛形を展開・検証"]
+    D --> X
+    X --> P["partition：module が宣言した実行領域で 3 分割"]
+    P --> V["values：value.* / audio.* / render.scalar<br/>lowered IR → ValueGraph"]
+    P --> A["animation：pose.* → PoseGraph"]
+    P --> R["rendering：render.*<br/>LoweredRenderGraphDocument"]
+    R --> C["preset / feature 合成"]
+    C --> L["合成後の解決：loop 複写・target / history / run"]
+    L --> GPU["plan / compile → 描画 runtime"]
+    V --> AN["Animation phase：専用 EvaluationState で必要スカラを評価"]
+    A --> AN
+    AN --> SY["UI 更新後：scene Graph runtime の所有・parameter を同期"]
+    SY --> RPC["windowed RPC の dispatch"]
+    RPC --> DR["render：values を評価・sink へ publish、GPU command を記録"]
+    V --> DR
+    GPU --> DR
+    DR --> SNAP["値の snapshot を公開：RPC 読取は再評価しない"]
+```
+根拠: [`graphcomposition.cpp:2496`](../../src/project/graphcomposition.cpp#L2496)、[`graphpartition.cpp:343`](../../src/project/graphpartition.cpp#L343)、[`featurecompose.cpp:3472`](../../src/project/featurecompose.cpp#L3472) / [`featurecompose.cpp:4104`](../../src/project/featurecompose.cpp#L4104)、[`renderingpassconfigregistration.cpp:1028`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1028)、[`animationsystem.cpp:363`](../../src/core/ecs/predefined/animationsystem.cpp#L363)、[`scenegraphruntime.cpp:350`](../../src/core/loader/scenegraphruntime.cpp#L350)、[`renderer.cpp:6328`](../../src/core/vkcore/renderer.cpp#L6328)。
+
+**図の注**: 上半分はデータの依存、下半分は窓ありフレームの順序です。文書の展開・検証・分割は純粋層で行い、GPU や ECS を変更しません。分割は各 consumer の構築時に呼ばれ、1 回の中央 dispatcher ではありません。編集は最後に 1 回展開検証し、失敗時は正本を変更しません。展開 ID / origins は書き戻さず、instance 入力は edge → parameters → default の優先順です。loop は雛形の型検査と合成後の複写を分け、draw_loop は draw queue の実行になります（[ループの図](../manual/06_rendering.md#loop-expansion)）。
+
+Animation は描画用とは別の `EvaluationState` で同じ入力のスカラを評価するため、相手の時計を進めません。値の受渡名は `$pose/<node>/<port>`、instance 入力の観測名は `$value/<instance path>/<port>` です。Animation 無効ビルドではその経路はありません。フレームの gate と headless の違いは[フレーム順](../manual/01_overview.md#frame-order)を参照してください。
+
 
 ### 文書の形
 
@@ -1677,13 +1756,7 @@ test は `renderconfigeditor_test` の `CT-2 …` 2 本(編集の ticket の道�
 
 [`partitionGraphDocument()`](../../src/project/graphpartition.hpp#L28) は文書全体を検証してから、[`GraphExecutionPartitions`](../../src/project/graphpartition.hpp#L7) の3つへ分けます。どのopがどの領域かは、opを登録したモジュールが宣言します（[`GraphExecutionDomain`](../../src/project/graphcomposition.hpp#L263)）。CPUのスカラopを1つ足しても、分割側に新しいop名を教える必要はありません。
 
-```text
-values     … CPUのスカラ評価（value.* / audio.* / render.scalar）
-rendering  … 描画資源とパス（render.*）
-animation  … 姿勢（pose.*）。同じフレームの values より 1 段 前 に走る
-```
-
-**`animation` が values の1段前に走るのに、animationのノードは values のスカラを読みます。** 矛盾しないのは、animation フェーズが values 分割を**自分の `EvaluationState` で自分で評価し直す**からです（[`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L376)）。runtime で値を手渡しているのではなく、分割のときに「animationノードが必要とするスカラ」へ専用の出力名が付いており、animation 側はその名前で自分の評価結果から拾います。名前は [`graphAnimationScalarOutput()`](../../src/project/graphpartition.cpp#L461) が決める **`$pose/<node>/<port>`** で、両側がこの1関数を呼びます。2つの状態は同じ入力で1フレームに1回ずつ進むので、どちらも相手のクロックを進めません（[コメントの規範](../../src/core/ecs/predefined/animationsystem.cpp#L363)）。流れは values → animation の一方向で、逆はありません。同じ仕組みで instance 入力ポートの値も **`$value/<instance path>/<port>`**（[`graphInstanceInputOutput()`](../../src/project/graphpartition.cpp#L465)）として出力に現れます —— edge で繋がれたポートは自分のノードを持たないので、展開が出力として名付けて初めて「描いたフレームが何を使ったか」を観測できるためです。
+分割後の評価順と専用 state・出力名は[データフロー図の注](#graph-dataflow)を参照してください。
 
 ### lowered IR と評価器（`ValueGraph`）
 

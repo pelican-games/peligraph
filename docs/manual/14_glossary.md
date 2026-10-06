@@ -324,7 +324,11 @@ feature の挿入先になる 8 つの標準ノード。ノード間への挿入
 
 ### scope(スコープ)
 
-物理プランで 1 回の dynamic rendering にまとめるノードの束。 定義: [第6章 Vulkan physical fragment][def-72]・[source-code-guide 第6章][def-721]。
+物理プランの scope は同じ実行条件でまとめる単位です。定義: [第6章](06_rendering.md#physical-plan-scope)。
+
+### グラフ編集の scope
+
+グラフ編集の scope は root または definition の編集対象です。定義: [第13章](13_editor.md#graph-edit-scope)。
 
 ### view family(ビューファミリ)
 
@@ -504,14 +508,17 @@ materialize 済み feature 1 本と宿主への要求をまとめ、別 project 
 | lowering | 宣言や中間表現を、実行方式に近い具体的な表現へ変換する処理。たとえば描画グラフから Vulkan 向けの計画を作ります。 |
 | backend（バックエンド） | 共通の仕様を、Vulkan などの具体的な実行方式で実現する部分。 |
 | dialect | 共通グラフ内で、ある処理分野が使う型・操作・規則のまとまり。 |
-| capability | あるビルド・実装・デバイスが利用できる機能。単にカタログに名前が載ることとは区別します。 |
+| capability | 利用可能な機能を指す用法と、対象への操作権限を持つ token を指す用法があります（[ガイド第5章](../source-code-guide/05_gameplay_and_services.md)）。 |
 | op（operation） | グラフのノードが行う操作の種類。JSON の `op` に `value.constant` などを指定します。 |
 | port（ポート） / edge（辺） | ノードの値の出入口と、その接続。辺がデータや実行順序の依存を表します。 |
 | sink（出力先） | グラフの評価結果を、姿勢や描画用バッファなどの外部の状態へ反映する出口。 |
 | identity | 対象が同じものかを判別する識別情報。単なる表示名とは限りません。 |
-| digest（ダイジェスト） | 内容から計算するハッシュ値。文書の変更検出などに使います。 |
-| CAS（Compare And Swap） | 想定していた値と現在値が一致するときだけ更新する方式。編集 RPC では文書の digest を比較し、他の編集を上書きするのを防ぎます。CPU の原子命令を指す場合もあります。 |
-| epoch / generation / revision | 状態の世代や変更回数を識別する値。何を更新したときに進むかは型ごとに異なり、相互に置き換えられません。 |
+| digest（ダイジェスト） | 内容の照合値で、文書の `source_digest` と要求の base の関係は[第13章](13_editor.md#digest-cas)を参照してください。 |
+| CAS（Compare And Swap） | 想定値と現在値が一致したときだけ更新する方式で、文書編集の規則は[第13章](13_editor.md#digest-cas)を参照してください（CPU の原子命令を指す用法もあります）。 |
+| epoch / generation / revision | 型ごとに対象が異なる世代・版の識別値で、描画の generation は[第6章](06_rendering.md#render-generation)を参照してください。 |
+| 描画の世代 / publish / commit | 描画で同時に使う snapshot とその公開・確定で、定義は[第6章](06_rendering.md#render-generation)にあります。 |
+| preset | rendering config が選ぶ基本構成で、engine / project と fork の関係は[第6章](06_rendering.md#render-preset)を参照してください。 |
+| stale_source_digest / external_modification | commit 時の保持版・ディスクとの不一致を区別する code で、受付時との違いは[第13章](13_editor.md#digest-cas)を参照してください。 |
 | lease（リース） | 資源の利用権や寿命を保持する仕組み。GPU テストの排他実行と、GPU 送信完了までの資源保持では対象が異なります。 |
 | submission | GPU キューへコマンドを送ること、またはその送信単位。CPU 側での送信と GPU 側での完了は別です。 |
 | refit / rebuild | 加速構造の既存の構成を利用した更新と、作り直し。使い分けの条件は [加速構造の解説](../source-code-guide/11_ray_query_acceleration_structures.md) を参照してください。 |

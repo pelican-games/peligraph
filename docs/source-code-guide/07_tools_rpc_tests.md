@@ -8,6 +8,26 @@
 - `pelican_studio`: **Qt Widgets** 製の開発 UI。静的ライブラリ 8 本 + exe(ほかに resource の embed proxy target が 1 つ)で、`src/devstudio` は **31,588 行**(`.cpp` / `.hpp` 73 ファイルの合計)。8 本目は Q-1 が足した [`pelican_studio_automation`](../../src/devstudio/automation/CMakeLists.txt#L8) です。QML は 1 行も使っていません —— 足すとしても葉パネルの内部に限る、というのが §7.6 の規律です。
 - RPC と test: headless engine を外から決定論的に操作し、仕様を固定する仕組み。
 
+**この章の地図**
+
+```mermaid
+flowchart LR
+    A["CLI・project・asset<br/>§7.1–7.5c"] --> B["Studio<br/>§7.6"]
+    B --> C["RPC・ticket・preview<br/>§7.7"]
+    C --> D["テスト構成と実行<br/>§7.8–7.10"]
+    D --> E["Python client・ImGui<br/>§7.11–7.12"]
+```
+根拠（章構成）: `07_tools_rpc_tests.md:31` 以降の節見出し（矢印は読む順で、実行順ではありません）。
+
+**この章の語。**
+
+- **digest / CAS** — 文書の照合値 / その一致を条件にした更新方式で、[第13章](../manual/13_editor.md#digest-cas)が受付時と確定時の規則を所有します。
+- **revision** — scene 文書の版番号で、受付後の再照合と preview の確定は[RPC の図](#rpc-threads-preview)を参照してください。
+- **lease** — live preview が特定 actor と書き込み範囲に対して持つ一時的な排他権です（[予約から終了まで](#rpc-threads-preview)）。
+- **sink** — 操作の値・副作用を受け取る出口で、公開 API の transaction sink は[第5章](05_gameplay_and_services.md#515-scene-transaction中の公開apieffect-transaction-sink-実装済み)を参照してください。
+- **capability（機能）** — codec や adapter がその操作に対応できるという情報で、live preview では対応する値の編集だけを受理します（[RPC の図の注](#rpc-threads-preview)）。
+- **capability（権限）** — 特定対象へ操作する権限を持つ token / handle を指す用法で、backend の対応機能という意味とは区別します（[横断パターン](00_cross_cutting_patterns.md)）。
+
 ## 7.1 `pelican_cli` の全体像
 
 [`src/devcli/main.cpp`](../../src/devcli/main.cpp#L17) は第1引数を見て11系統へそのまま dispatch します。dispatch の順が
@@ -799,6 +819,53 @@ RPC は build option `PELICAN_WITH_RPC` で切り替わります。無効時は 
 
 詳細な frame 境界の位置は [第2章](02_runtime_lifecycle.md)を参照してください。windowed RPC では ImGui UI が無効になる点は §7.12 と [第9章](09_black_magic_and_gotchas.md)で扱います。
 
+<a id="rpc-threads-preview"></a>
+
+```mermaid
+flowchart TD
+    subgraph ST["Studio process"]
+        UI["Qt UI / RpcClient"]
+    end
+    subgraph RD["player process：reader thread"]
+        IN["stdin の行を読む"] --> Q["mutex で保護した要求 queue"]
+        IN -->|容量超過| BUSY["busy を即答"]
+    end
+    subgraph EN["player process：engine thread"]
+        DISP["updateFrameState 後に queue を交換して dispatch"]
+        DISP --> ACCEPT["service：検査・ticket 受付"]
+        ACCEPT --> PEND["pending / accepted 結果"]
+        PEND -->|次の commit hook| HOOK["preview 処理 → scene 編集 → extension の描画・asset 編集"]
+        HOOK --> RESULT["結果を保持"]
+        DISP -->|get_edit_result / get_preview_result| RESULT
+    end
+    UI -->|JSON-RPC / stdio| IN
+    Q --> DISP
+    BUSY --> UI
+    PEND -->|accepted| UI
+    RESULT -->|stdout / request id| UI
+    subgraph LE["同じ engine thread：live preview lease の状態"]
+        NONE["lease なし"] -->|open 受付| RES["reservation：領域を先に確保"]
+        RES -->|境界で成功| OPEN["open：runtime の仮表示"]
+        RES -->|失敗・gate 変化| NONE
+        OPEN -->|update：owner と write_set が一致| OPEN
+        OPEN -->|commit：base revision 一致・確定成功| DONE["終了：tombstone を保持"]
+        OPEN -->|abort：復元成功| DONE
+        OPEN -->|gate 閉鎖・scene 変化・revision stale| ABORT["forceAbort を試みる"]
+        ABORT -->|復元成功| DONE
+        ABORT -->|復元失敗：診断、lease を保持| OPEN
+        DONE -->|次の open が可能| NONE
+    end
+    ACCEPT -->|open_preview| RES
+    HOOK -->|予約と要求を処理| LE
+```
+根拠: [`windowedrpchost.cpp:53`](../../src/core/communication/windowedrpchost.cpp#L53) / [`windowedrpchost.cpp:119`](../../src/core/communication/windowedrpchost.cpp#L119)、[`editorcommandservice.cpp:604`](../../src/core/communication/editorcommandservice.cpp#L604)、[`editorjournal.cpp:3781`](../../src/core/communication/editorjournal.cpp#L3781) / [`editorjournal.cpp:3826`](../../src/core/communication/editorjournal.cpp#L3826) / [`editorjournal.cpp:4091`](../../src/core/communication/editorjournal.cpp#L4091) / [`editorjournal.cpp:4774`](../../src/core/communication/editorjournal.cpp#L4774)、[`loop.cpp:712`](../../src/core/appflow/loop.cpp#L712)。
+
+**図の注**: 図は windowed RPC です。reader は通常要求を dispatch せず、容量 64 の queue が溢れた場合だけ `-32000` / `reason: busy` を返します。出力は mutex で 1 行ずつ保護しますが、busy と通常応答の順は request `id` で照合します。headless は `runEngineRpcServer()` の読み取り loop で、同じ reader/queue 構成ではありません。ブロック中の reader は destructor で detach するため、入力 stream は process 寿命が前提です。
+
+live preview の reservation は受理から境界までの衝突を防ぎ、lease と両方を照合します。open / update は runtime だけを変更し、commit は revision を再照合して journal に確定します。update で write_set は広げられず、対象は live preview 対応の transform / light の値です。終了済み ticket への abort は tombstone の `final_status` を返すので冪等です。`eval_preview` / `render_preview` の隔離評価はこの lease と別経路です。
+
+`gate_epoch` は gate の観測状態が変わると進み、閉じて開き直した場合も受付時との不一致を検出します。通常 edit の確定後も残った lease を強制終了します。復元失敗は `EditorPreviewAbortError` になり、呼び手が結果や診断へ変換し、`commitPending()` の `noexcept` 境界からは漏らしません。描画編集の CAS / source commit は[第13章のシーケンス](../manual/13_editor.md#render-edit-sequence)を参照してください。
+
 ### protocol 層: `pelican_project`
 
 [`jsonrpc.hpp`](../../src/project/jsonrpc.hpp#L13) と [`jsonrpc.cpp`](../../src/project/jsonrpc.cpp#L148) は engine module を知りません。
@@ -1158,30 +1225,7 @@ package の文書が壊れていれば `available: false` + `unavailable_reason`
 >
 > **不変条件**: 3検査はAND。順番は変えてよいが、どれも消してはいけない。undoが成功したら `undo_stack.pop_back()` と `redo_stack.push_back()` は必ず対で動かす(片方だけだとredoが別トランザクションを指します)。
 
-> 🧩 **難所 — preview leaseの状態機械**([`commitPendingPreview()`](../../src/core/communication/editorjournal.cpp#L3826) / [`forceAbort()`](../../src/core/communication/editorjournal.cpp#L3781))
->
-> **何をする所か**: `open_preview` / `update_preview` / `commit_preview` / `abort_preview` をフレーム境界でまとめて処理し、lease(排他権)の取得・維持・破棄と、外部要因による強制破棄を行います。
->
-> **素朴に読むと**: 状態が `preview_reservation`(受理済み・未開通) / `preview_lease`(開通中) / `preview_tombstones`(終了済み)の3つに分かれ、遷移が「受理時」と「フレーム境界」の2箇所にまたがっています。予約が要るのは、`open_preview` を受理してから実際に開くまでの間に別actorの `open_preview` や重なる `edit` を通してはいけないからで、`conflictingLease()` はleaseとreservationの**両方**を見ます。失敗経路で予約を消し忘れるとpreviewが永久に開けなくなるため、明示的な `reset()` が各失敗経路に置かれています。tombstone(実体を消しても「このticketは確かに存在して終了した」という痕跡だけを残すレコード)は `abort_preview` の冪等性 — 同じ操作を何度行っても結果が変わらない性質 — のためで、既に終了したticketへのabortは「成功 + `final_status`」を返します。`forceAbort()` が `noexcept` で、leaseが無いときも失敗したときも `false` を返すだけなのは、ゲート閉鎖・シーン遷移・base revision陳腐化のいずれからも呼ばれるからです。呼び出し元の [`commitPending()`](../../src/core/communication/editorjournal.cpp#L4984) 自体が `noexcept` のフレーム境界フックとして登録されていて、ここから例外が漏れれば `std::terminate` でプロセスごと落ちます(「フレームの一部だけ失敗する」ではありません)。だから `forceAbort()` の唯一の逃げ道は `false` を返して次のフレーム境界に委ねることです。
->
-> **骨子**:
-> ```text
-> commitPending():                                   # フレーム境界フック
->   commitPendingPreview()
->   lease あり かつ (ゲート閉 or scene が変わった) -> forceAbort(理由)
->   ticket ごとにゲートepoch / scene id / base revision を受理時の値と再照合
->   edit 成功後に lease が残っていれば forceAbort("base_revision_stale")
-> commitPendingPreview():
->   open   : lease 占有中なら preview_lease_busy、成功で reservation -> lease、epoch++
->   update : 所有者一致 + write_set が完全一致(sameStableSet)でなければ拒否
->   commit : base revision 不一致なら reject して即 forceAbort("stale_revision")
->            一致すれば journal へ確定し、tombstone を置いて lease を落とす
->   abort  : ライブ状態を committed へ復元し、tombstone を置いて lease を落とす
-> ```
->
-> **手がかり**: [`gateSnapshot()`](../../src/core/communication/editorjournal.cpp#L3403) は観測値が変わったときだけ `gate_epoch` を進めます。つまりepochは「ゲートの状態が変わった回数」であって時刻ではなく、受理時epochと実行時epochの比較が「閉じて開き直した」ケースも捕まえます。[`sameStableSet()`](../../src/core/communication/editorjournal.cpp#L2937) が完全一致を要求するのでupdateでleaseの範囲を広げられません(広げられると、受理時に通した衝突判定の結論が後から嘘になります)。[`requireLivePreviewCapability()`](../../src/core/communication/editorjournal.cpp#L2921) は transform / light の `set_component_value` 以外を全部弾きます。テストは [`editorjournal_test.cpp` 内](../../test/editorjournal_test.cpp#L1192)(lease matrix)と [開通後の runtime 検証](../../test/editorjournal_test.cpp#L1267)。
->
-> **不変条件**: `forceAbort()` の内部でthrowさせない。予約は成功でも失敗でも必ず落とす。leaseの `write_set` はopenで確定しupdateで変えない。editがcommitしたらpreview leaseは必ず落とす。
+live preview の予約・開通・終了と例外処理は[スレッドと lease の図および注](#rpc-threads-preview)を参照してください。
 
 > 🧩 **難所 — previewの状態不変性検証**([`isolated()`](../../src/core/communication/editorpreviewservice.cpp#L158) / [`requireStateUnchanged()`](../../src/core/communication/editorpreviewservice.cpp#L145))
 >
@@ -1240,7 +1284,7 @@ transform update も即適用ではなく pending です。複数 update をま�
 
 ### [`attachment_handle` / `attachment_seq` / witness](../../src/core/communication/editorjournalops.cpp#L351) — 3 識別子の主キー {#reading-note-046}
 
-**`attachment_handle` が主キー相当**(runtime arena が採番する不透明な実体ハンドル。0 は無効)、`attachment_seq` は `(object_index<<32)|component_index` の**宣言位置由来の順序キー**、`attachment_identity`(witness)は object / component_index / behavior type / origin から作る**内容照合用の指紋**で、[resolver が返した runtime identity と食い違えば](../../src/core/communication/editorjournal.cpp#L1835) `journal_integrity_error` です。→ [§9.22](09_black_magic_and_gotchas.md#922-横断パターン初読で-5-つ以上の領域に同じ形で現れるもの)「identity / canonical key / lease の三層」。
+**`attachment_handle` が主キー相当**(runtime arena が採番する不透明な実体ハンドル。0 は無効)、`attachment_seq` は `(object_index<<32)|component_index` の**宣言位置由来の順序キー**、`attachment_identity`(witness)は object / component_index / behavior type / origin から作る**内容照合用の指紋**で、[resolver が返した runtime identity と食い違えば](../../src/core/communication/editorjournal.cpp#L1835) `journal_integrity_error` です。→ [§9.22](00_cross_cutting_patterns.md#922-横断パターン初読で-5-つ以上の領域に同じ形で現れるもの)「identity / canonical key / lease の三層」。
 
 ### [`sceneBehaviorAttachmentSeq()`](../../src/core/gamelogic/behaviorarena.cpp#L72) — 存在する関数 {#reading-note-047}
 

@@ -2432,7 +2432,17 @@ Render Features タブだけを扱う節はありません。この章では次�
 - Render Features の編集の Undo / Redo: §15.14
 - `edit_render_features` の契約: [第13章「レンダー設定を編集する」](13_editor.md#レンダー設定を編集する)
 
+<a id="render-edit-completion"></a>
+
+### 描画編集の保存結果
+
+描画編集の結果を確認できない間は共通の `RenderEditTicket` が 500 ms ごとに再確認し、panel の「Saving…」表示を保ちます(通常の pending の確認は 25 ms、検査が running のときは 500 ms)。追跡を止めても engine に受け付けられた編集が取り消されるわけではありません([追跡](../../src/devstudio/model/rendereditticket.cpp#L13))。
+
+確定後に engine 側の適用が失敗した `post_commit_error` は、保存済みであることと失敗の内容を status bar に **同じ commit につき1回だけ**表示します。再起動が必要なら、その案内も続けて表示します([共通の表示](../../src/devstudio/model/rendereditcompletion.hpp#L71))。保存・公開・再起動の関係は[第13章のシーケンス](13_editor.md#render-edit-sequence)を参照してください。
+
 ## 15.11 Rendering settings
+
+この panel の `?` は本節を開きます。
 
 ### Studio の Rendering settings タブ(RSX)
 
@@ -2479,6 +2489,8 @@ Render Features タブだけを扱う節はありません。この章では次�
 - **制限**: engine 同梱 preset の値は表示できません。Render strategy / Graph transforms の name と parameters(JSON)、XR の Advanced は手入力です。
 
 ## 15.12 Ray layout
+
+この panel の `?` は本節を開きます。
 
 <a id="studio-で-rt-を組む--ray-layout-の節hit-group-の割り当てgraph-の-rt-の節rtl-2s"></a>
 
@@ -2616,16 +2628,39 @@ Layers は Graph タブの詳細表の上に出る節です。§15.6 の次の�
 
 ### render の編集を戻す —— Undo / Redo
 
-**render の編集を戻す —— Undo / Redo**: Frame Plan・Pass Editor・Render Features(と、そこから開く Task Editor などの dialog)でした render の編集は、1 つの履歴に積まれ、Undo / Redo で戻せます([`RenderEditHistory`](../../src/devstudio/model/renderedithistory.hpp#L50))。Graph タブの Undo(上の「Undo」)と、Inspector の scene の Undo は、それぞれ別の履歴です。
+<a id="undo-map"></a>
 
-- **押す所**:
-  - Frame Plan の toolbar の、Refresh の右の **Undo** / **Redo**( / `.redoButton`)。tooltip が次に戻す項目を言います(`Undo Edit pass present`、`Nothing to undo` など)([ボタンを置く所](../../src/devstudio/view/frameplanwidget.cpp#L5661))。
-  - **Edit ▸ Undo Render Edit** / **Redo Render Edit**( / `.redoRenderEdit`)。
-  - **Ctrl+Z**(Undo)、**Ctrl+Y** と **Ctrl+Shift+Z**(Redo)。キーは focus のある panel に従います([キーの範囲](../../src/devstudio/view/mainwindow.cpp#L1445))。
-    - Frame Plan・Pass Editor・Render Features と、Render Features から開く dialog(Task Editor・Fork・Regions・Records・Scene AS・frame node の順)の中では、この履歴です。
-    - Graph タブでは Graph タブの Undo、Inspector では scene の Undo / Redo のボタンと同じです(Inspector のキーは RU-1 で足しました)。
-    - focus がテキスト欄にあるときは、その欄の文字の Undo が先に取ります。
-- **戻るもの**: render の文書を書く編集です([記録する編集の method の表](../../src/devstudio/model/renderedithistory.cpp#L29))。`edit_batch` も記録し、batch ごと 1 回で戻ります(上の「書き手を繋ぎ、1 本の edit_batch で足す」)。pass の編集、Decompose into loop、Replace with loop version…(LP-4f2。`apply_graph_template`)、task の追加・編集・削除、render target、feature、frame node の順、route の既定、callable の record、scene の acceleration structure、region の置き換え、RSX からの Rendering settings の `edit_rendering_keys`、そして文書を作る・消す編集(Add pass / Remove pass、Fork、Make editable、feature の import)です。
+Undo の入口は focus と編集対象で分かれます。Graph タブは自分の Graph 編集と描画編集を `TabEditOrder` で送信順に追跡し、最後に送った確定済み編集から戻します。
+
+```mermaid
+flowchart TD
+    K[Ctrl+Z / Undo] --> F{focus のある場所}
+    F -->|編集できる文字欄| Q[Qt の文字の Undo]
+    F -->|Inspector の通常欄| S[Scene: actor ごとの journal / Undo・Redo]
+    F -->|Graph キャンバス| T[TabEditOrder: このタブの送信順]
+    T -->|Graph 編集| G[Graph: graph 文書の履歴]
+    T -->|描画編集| C{共有描画履歴の先頭はこのタブの編集か}
+    C -->|はい| R[描画: RenderEditHistory / Undo・Redo]
+    C -->|いいえ| N[notice / 他 panel の編集は戻さない]
+    F -->|Frame Plan・Pass Editor・Render Features・Rendering settings と配下 dialog| R
+    F -->|Materials| M[Materials: 文書・割当の専用 Undo]
+    F -->|Assets| A[Assets: project 設定の専用 Undo]
+    I[Inspector の Material 行の Undo ボタン] --> B[Material 行: model 全体の bind_material を戻す]
+    I -->|object 単位の変更は通常の Scene Undo| S
+    RT[RT records の編集] -->|procedural_records の逆操作も保持| R
+    E[外部の render 文書を再読込] --> X[Graph・描画履歴とタブ送信記録を消去 / 境界を越えて Undo しない]
+```
+根拠: [mainwindow.cpp:1434](../../src/devstudio/view/mainwindow.cpp#L1434)、[graphcanvaswidget.cpp:4204](../../src/devstudio/view/graphcanvaswidget.cpp#L4204)、[tabeditorder.cpp:99](../../src/devstudio/model/tabeditorder.cpp#L99)、[materialsmodel.hpp:630](../../src/devstudio/model/materialsmodel.hpp#L630)、[assetsdock.cpp:145](../../src/devstudio/view/assetsdock.cpp#L145)、[renderedithistory.hpp:121](../../src/devstudio/model/renderedithistory.hpp#L121)、[editorjournal.hpp:247](../../src/core/communication/editorjournal.hpp#L247)。
+
+注: 図は Scene / Graph / 描画 / Materials / Inspector の Material 行 / Assets / RT records の7つの対象を示します。RT records は現在、独立した Undo ではなく共有の描画履歴へ入ります。Inspector の Material 行専用 Undo はその行のボタンで呼び、Inspector 全体の Ctrl+Z は Scene の Undo です。Materials と Assets の専用履歴は Undo のみで、すべてを横断する単一の履歴ではありません。
+
+注: Graph は返事が届いた順でなく送信順を覚え、未確定の送信があれば待ちます。描画履歴内の独立文書の返答順が前後した場合は、このタブが所有する共有履歴の先頭を戻します。他 panel の編集が先頭なら `A later render edit from another panel is on top…` と表示します。別 project への切替と外部再読込ではタブの記録も消えます。同じ project の再接続だけでは確定済み履歴を捨てません。
+
+注: `documents` が無い・object でない・`no_change: true` でないのに空の commit 応答は `render_history.invalid_commit_response@1` の **barrier**(そこを越えて戻せない項目)になります。履歴を黙って通り抜けません([検査](../../src/devstudio/model/renderedithistory.cpp#L652))。
+
+描画履歴は Frame Plan の Refresh の右にある Undo / Redo、または Edit ▸ Undo Render Edit / Redo Render Edit からも操作できます。tooltip に次の項目を表示し、Redo のキーは Ctrl+Y / Ctrl+Shift+Z です。
+
+- **戻るもの**: render の文書を書く編集です- **戻るもの**: render の文書を書く編集です([記録する編集の method の表](../../src/devstudio/model/renderedithistory.cpp#L29))。`edit_batch` も記録し、batch ごと 1 回で戻ります(上の「書き手を繋ぎ、1 本の edit_batch で足す」)。pass の編集、Decompose into loop、Replace with loop version…(LP-4f2。`apply_graph_template`)、task の追加・編集・削除、render target、feature、frame node の順、route の既定、callable の record、scene の acceleration structure、region の置き換え、RSX からの Rendering settings の `edit_rendering_keys`、そして文書を作る・消す編集(Add pass / Remove pass、Fork、Make editable、feature の import)です。
   - `edit_rendering_keys` の項目の名前は、1 つのキーを書けば `Set <key>`、1 つのキーを消せば `Remove <key>`、それ以外は `Edit rendering settings` です([名前を決める所](../../src/devstudio/model/renderedithistory.cpp#L321))。
   - GL-3a / GL-4a から、記録する編集に `fold_nodes`(`Fold group <group>`、`folded: null` なら `Unfold <group>`)・`edit_target_planning`(`Edit planning decisions`)・`verify_fold`(`Verify <group>`)が入りました([fold の編集の項目の名前](../../src/devstudio/model/renderedithistory.cpp#L333))。結果が `running`(検査中の `verify_fold`)の間は、`pending` の 25 ms ではなく 500 ms ごとに問います。この 3 つを履歴から戻す test はありません(未確認)。
   - Frame Plan の `edit_vulkan_plan_pins`(`Pin backend <candidate>`、`pin: null` なら `Unpin backend`)と `put_vulkan_physical_fragment`(`Freeze physical plan`、`fragment: null` なら `Remove frozen physical plan`)も記録します(記録する method は 22 から 24 に)。
@@ -2673,9 +2708,9 @@ Graph タブの編集の Undo は §15.6 の「Undo」の段落にあります�
 - Frame Plan は、plan を読んでいるか・前に出ているかによらず、それを監視する path に足します([Graph タブの shader を監視に足す所](../../src/devstudio/view/frameplanwidget.cpp#L1740))。
 - 読み直しが通ったとき、または pass が新しい shader を断ったとき、Frame Plan は Graph タブに知らせ、Graph タブは Refresh と同じく文書と plan を読み直します(どのタブが前でも。[`GraphCanvasWidget::shadersReloaded`](../../src/devstudio/view/graphcanvaswidget.cpp#L10435))。ソケットは shader の宣言から出るので、外のエディタで宣言を足すと、Refresh を押さずに Graph の node のソケットが増えます。
 
-**外のエディタで書き換えた render の文書を拾います**: Studio の engine(`--rpc`)は file watcher の gate が閉じているので、Studio の外で root の JSON などを書き換えても engine は気づかず、次の GUI の編集が `external_modification` で断られていました(GB-2 の記録)。Studio が engine の RL-1 の `reload_render_documents` を呼んで取り込みます(engine の契約は §13.5 の「ディスクで書き換えた render 文書を取り込む」)。中身は Qt に依存しない [`RenderDocumentReload`](../../src/devstudio/model/renderdocumentreload.hpp#L52) で、つなぐのは MainWindow です([読み直しの役を MainWindow につなぐ所](../../src/devstudio/view/mainwindow.cpp#L1512))。
+**外のエディタで書き換えた render の文書を拾います**: MainWindow が文書を監視し、`reload_render_documents` で engine に取り込みます。読み直しの方針は `RenderDocumentReload`、file の監視は `RenderDocumentWatcher` が担います([配線](../../src/devstudio/view/mainwindow.cpp#L1512))。
 
-- **見張るもの**: engine が答え始めたら `get_render_documents` を読み、その文書(`engine://` と `#` 付きの reference は除く)の file を見張ります。見張り役は上の shader の監視と同じ Frame Plan の 1 つで、文書の file は shader とは別の口で知らせます([文書の file を足す所](../../src/devstudio/view/renderdocumentwatcher.cpp#L31))。書き込みは 300 ms 途切れてから 1 回調べます。「消して書き直す」保存のエディタで見張りが外れないよう、変わるたびにその path を足し直します([RenderDocumentWatcher::rewatch()](../../src/devstudio/view/renderdocumentwatcher.cpp#L42))。読めない file(置き換えの途中)は 3 回まで調べ直してから、それでも読み直しを頼みます。
+- **見張るもの**: engine が答え始めたら `get_render_documents` を読み、その文書(`engine://` と `#` 付きの reference は除く)の file を見張ります。見張り役 `RenderDocumentWatcher` は MainWindow が所有し、Frame Plan が表示されているかどうかに依存しません([文書の file を足す所](../../src/devstudio/view/renderdocumentwatcher.cpp#L31))。書き込みは 300 ms 途切れてから 1 回調べます。「消して書き直す」保存のエディタで見張りが外れないよう、変わるたびにその path を足し直します([RenderDocumentWatcher::rewatch()](../../src/devstudio/view/renderdocumentwatcher.cpp#L42))。読めない file(置き換えの途中)は 3 回まで調べ直してから、それでも読み直しを頼みます。
 - **自分の書き込みは頼みません**: 文書ごとに最後に見た digest(読んだ一覧、Studio の render の編集の commit の `documents`、読み直しの結果)を覚え、file の今の sha256 がそれと同じなら何もしません([`RenderDocumentReload::check`](../../src/devstudio/model/renderdocumentreload.cpp#L192)、[commit の `documents` を覚える所](../../src/devstudio/model/renderdocumentreload.cpp#L343))。
 - **頼む**: 違えば `reload_render_documents` を 1 本だけ送ります。返事が `reload_busy` なら 500 ms 後にもう一度で、理由が `preview_open` なら notice に `Close the scene preview to pick up the change to <file>.` を 1 回出します([`RenderDocumentReload::busy`](../../src/devstudio/model/renderdocumentreload.cpp#L469))。ticket の結果は 100 ms ごとに問います。読んだ後にディスクがまた変わって `external_modification` が返ったら、もう一度調べ直します。
 - **結果**([`RenderDocumentReload::committed`](../../src/devstudio/model/renderdocumentreload.cpp#L367)):
@@ -2818,7 +2853,35 @@ project の今の問題を 1 行 1 件で並べ、行を押すと直す場所へ
 
 ### Studio で game を再生・停止する
 
-engine の play の RPC(§13.5 の「一時停止と 1 歩ずつ進める」「edit 状態」「再生のセッション」 「spawn された object を読む」。RPC の形、止まるもの・止まらないもの、Stop で戻るもの・戻らないものはそちら)を Studio のボタンにしたものです。設計は [design_play_mode.md](../design_play_mode.md) §12。Pause / Step と状態表示、edit での起動、Play / Stop・Keep、Outliner の runtime の行を利用できます。
+<a id="play-state-map"></a>
+
+Play は edit から再生セッションを始め、Stop は開始前の scene と履歴を戻します。RPC の引数・戻り値・拒否は[第13章](13_editor.md#再生のセッション)を参照してください。
+
+```mermaid
+stateDiagram-v2
+    [*] --> edit: Studio の通常起動
+    edit --> playing: Play / DLL 再読込・セッション保存・scene 再構築
+    edit --> paused: Step の前半 / onInit を終え frame 0
+    playing --> paused: Pause
+    paused --> playing: Pause を解除して Resume
+    paused --> paused: Step / 1 game frame 進める
+    playing --> edit: Stop / 開始前へ復元して keep を再適用
+    paused --> edit: Stop / 開始前へ復元して keep を再適用
+    note right of edit
+        Stop: scene 全体・開始 scene・editor 履歴・game 時刻を復元
+        spawn object は消滅、音は停止
+        keep が適用できた編集は 1 つの Undo 項目
+    end note
+    note right of playing
+        再生中の scene 編集を記録
+        render・graph・material 等のファイル編集と saveData は Stop で戻らない
+    end note
+```
+根拠: [playmode.cpp:63](../../src/core/appflow/playmode.cpp#L63)、[rpcserver.cpp:2180](../../src/core/communication/rpcserver.cpp#L2180)、[playsession.cpp:18](../../src/core/communication/playsession.cpp#L18)、[editorjournal.cpp:5036](../../src/core/communication/editorjournal.cpp#L5036)、[playstatemodel.cpp:272](../../src/devstudio/model/playstatemodel.cpp#L272)。
+
+注: 図は scene を読み、edit から始めたセッションです。scene が無い場合は保存するセッションを作りません。最初から playing で起動した場合、最初の Stop は現在の authoring から edit の runtime を作り直します。同じ状態への要求は何も変えず成功します。scene 編集が未確定か preview 中なら Play / Stop は `play_busy`、DLL の再読込が失敗したら Play は始まりません(replay / golden は再読込を省きます)。
+
+注: Stop は `scene_revision`・ID 採番・ticket / transaction 番号を戻しません。game 時刻は戻しますが、game frame は次の Play まで最後の値を保ちます。keep は scene 編集だけを記録順に再適用し、適用できない項目は `not_kept` に残して Stop を完了します。未知の transaction ID は Stop 自体を拒否します。runtime で動いた値を残すには、その値を authoring に書く編集を先に送って Keep を付けます。
 
 **edit で起動する**
 

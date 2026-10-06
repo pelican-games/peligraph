@@ -20,7 +20,7 @@ Pelican が「こう呼んでいる」基本語(scene、asset、feature、render
 
 コードベース固有の難しさは各章の `🧩 難所` ブロックにまとめてあります(下の難所インデックス)。
 
-設計上の「契約」「正本」「面」や lowering、IR、capability、digest などは [用語集 §14.8](../manual/14_glossary.md#148-設計コード解説で頻出する用語) で説明しています。
+設計上の「契約」「正本」「面」や lowering、IR、capability、digest などは各章の「この章の語」と [用語集 §14.8](../manual/14_glossary.md#148-設計コード解説で頻出する用語) で説明しています。
 
 ## このガイドの特徴
 
@@ -34,6 +34,7 @@ Pelican が「こう呼んでいる」基本語(scene、asset、feature、render
 
 | 章 | 内容 | 最初に読むべき人 |
 |---|---|---|
+| [第0章 横断パターン](00_cross_cutting_patterns.md) | 複数領域に現れる構造と所有節への索引 | 全員 |
 | [第1章 全体構造とビルド](01_architecture_and_build.md) | ターゲット、ディレクトリ、依存方向、外部ライブラリ、ビルド機能フラグ | 全員 |
 | [第2章 起動・モジュール・1フレーム](02_runtime_lifecycle.md) | `main()` から初期化、5フェーズ更新、通常/headless/RPC、終了処理 | 実行経路を掴みたい人 |
 | [第3章 プロジェクトデータとロード](03_project_and_loading.md) | `project.json`、パス解決、scene、asset、純粋パーサと実行時バインド | データ形式を追加する人 |

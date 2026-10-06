@@ -2,6 +2,8 @@
 
 [索引へ戻る](README.md) / [前章](01_architecture_and_build.md)
 
+**この章の語**: 「編集面」「公開面」の**面**は操作や API の入口・対象範囲で、幾何の面（三角形や cube face）とは別です。
+
 ## 2.1 起動経路の全体
 
 `pelican_player` の起動は、次の三段に分かれます。
@@ -315,12 +317,7 @@ void start(std::istream &input, std::ostream &output) {
 }
 ```
 
-この経路の要点は、readerスレッドとエンジンスレッドの分業です。
-
-- 読み取り専用スレッドは**行をqueueへ積むだけ**で、エンジン状態に一切触りません。
-- dispatchは [`WindowedRpcHost::processFrameBoundary()`](../../src/core/communication/windowedrpchost.cpp#L119) がエンジンスレッドで行い、呼び出し点は `updateFrameState()` の直後（[loop.cpp](../../src/core/appflow/loop.cpp#L712)）です。
-- queue容量は [`defaultWindowedRpcQueueCapacity = 64`](../../src/core/communication/rpcserver.hpp#L187) です。溢れたリクエストには**readerスレッドが即座に**エラーを返します（[`busyResponse()`](../../src/core/communication/windowedrpchost.cpp#L39)）。コードは `-32000`（`applicationError`）、メッセージは `windowed rpc request queue is busy`、`data` に `reason: "busy"` と `queue_capacity` が入ります。
-- デストラクタは、`std::istream` に移植可能なキャンセル手段がないため、readerがまだブロック中なら `detach()` します（[`windowedrpchost.cpp` 内](../../src/core/communication/windowedrpchost.cpp#L95)）。本番はプロセス寿命の `std::cin` を使う前提です。
+reader・queue・dispatch の分業と終了時の注意は[第7章の RPC 図と注](07_tools_rpc_tests.md#rpc-threads-preview)を参照してください。
 
 > **設計決定:** windowed RPCは「フレームの状態更新が終わった直後に一括処理」であり、任意タイミングの割り込みではありません。エディタからの編集要求がフレームの途中でECSやGPU資源へ触れないため、決定性とteardown順序の契約をそのまま保てます。
 
@@ -348,7 +345,7 @@ const bool xr_frame_renderable =
 
 つまり `beginFrame()` が `ready` を返し、**かつ** display timingが描画を要求したときだけ `locateViews()` と `renderLogicalFrame()` を実行します。描画しないフレームでも状態更新（`update_interactive_state`）は必ず走るため、ゲーム状態とXRの表示リズムは分離されています。
 
-mirror表示の結果はsessionへ戻され、`xr_session->recordMirrorStatistics(presented, dropped, failures)`（[loop.cpp](../../src/core/appflow/loop.cpp#L608)）で presented / dropped / failures が記録されます。
+mirror表示の結果はsessionへ戻され、`xr_session->recordMirrorStatistics(presented, dropped, failures)`（[loop.cpp](../../src/core/appflow/loop.cpp#L712)）で presented / dropped / failures が記録されます。
 
 両eyeのposeはこのフレーム境界で取得したactive cameraへanchorされ、stable eye ID付き
 `$main` familyになります（WP131/WP223、
@@ -687,21 +684,41 @@ directoryを決めた直後に [`sweepStaleShadowDirectories()`](../../src/core/
 
 ### 自動pollは「2回一致 → read lease → busyなら保留」
 
-[`pollAttempt()`](../../src/core/gamelogic/gamelogicreload.cpp#L742) は `force` でなければ次を順に見ます。
+<a id="dll-reload-sequence"></a>
 
-```text
-指紋 = (last_write_time, file_size)
-指紋 == observed_source            -> 何もしない(settling を捨てる)
-settling が無い / 指紋が違う        -> settling = 指紋 で return   # 1 回目の観測
-(Windows) read lease を取れない:
-    writer が居る -> pending にして source_busy_retries++
-                     3 回目で game_logic_source_busy@1 を last_error へ
-    それ以外      -> game_logic_unavailable@1(readiness_open_failed)
-lease 保持中に取り直した指紋が違う  -> settling を更新して return
-ここまで通れば observed_source を更新して reloadTransaction()
+```mermaid
+sequenceDiagram
+    participant P as frame_start / poll
+    participant R as GameLogicReloader
+    participant F as 原本 DLL / shadow copy
+    participant L as OS loader
+    participant S as runtime / scene / arena
+    P->>R: 変更した指紋を 2 回連続で観測
+    R->>F: Windows read lease を取得・指紋を再確認
+    alt writer が使用中
+        R-->>P: pending（次の poll で再試行）
+    else 安定した原本を読める
+        Note over R,S: reloadTransaction の範囲
+        R->>F: candidate の shadow copy を作成（失敗なら旧 DLL を維持して終了）
+        R->>L: loadCopy：raw import 診断 → LoadLibraryW
+        R->>R: validateCandidate（登録・behavior source の検査）
+        R->>L: 検査用 candidate を unload
+        alt candidate の検査に成功
+            R->>S: runtimeTeardown
+            R->>L: 旧 DLL unload → candidate を loadCopy
+            R->>R: provider owner を activate
+            R->>S: rebuildCurrentScene（scene load で arena を再構築）
+            R-->>P: generation 更新・成功
+        else 事前検査に失敗
+            R-->>P: 旧 DLL を維持・診断を返す
+        end
+    end
 ```
+根拠: [`gamelogicreload.cpp:742`](../../src/core/gamelogic/gamelogicreload.cpp#L742)（poll）、[`gamelogicreload.cpp:584`](../../src/core/gamelogic/gamelogicreload.cpp#L584)（transaction）、[`gamelogicreload.cpp:405`](../../src/core/gamelogic/gamelogicreload.cpp#L405)（診断とロード）、[`gamelogicreload.cpp:897`](../../src/core/gamelogic/gamelogicreload.cpp#L897)（再構築）。
 
-2回続けて同じ指紋を見るのは、リンカがtruncate→refillしている最中の部分的なDLLを診断へ渡さないためです。それでも足りないので、コピーを取る間だけwriterを排除するread leaseを重ねます（[そのコメント](../../src/core/gamelogic/gamelogicreload.cpp#L774) が規範）。busyは**失敗ではなく保留**で、[`sourceBusyRetryLimit = 3`](../../src/core/gamelogic/gamelogicreload.cpp#L236) 回連続して初めて `game_logic_source_busy@1`（`path` と `retries` 付き）を公開し、writerが閉じれば次のpollで [`clearSourceBusy()`](../../src/core/gamelogic/gamelogicreload.cpp#L327) がその error code だけを消します。状態は [`GameLogicReloadStatus`](../../src/core/gamelogic/gamelogicreload.hpp#L17) の `pending` / `source_busy_retries` から読めます。
+**注**: 指紋は `(last_write_time, file_size)` で、既に観測済みなら何もせず、変化の 1 回目は settling に置きます。Windows は write share を許さない read lease を保持して再検査し、変われば再び待ちます。busy は pending のまま 3 回目から `game_logic_source_busy@1`（path / retries）を公開し、writer が閉じれば次の poll で再試行してその診断を消します。busy 以外の open 失敗は `game_logic_unavailable@1` です。`force` はこの安定待ち・lease の分岐を通りません。
+
+**切替失敗の注**: teardown 後の load / rebuild 失敗は candidate を片付け、旧 DLL を再ロードして rebuild します。旧 DLL をまだ unload していなければ元の handle / owner を再利用し、rollback 自体の失敗は `rollback_error` に残します。DLL 所有の例外を catch の外へ出してから unload する必要があります。scene が空なら rebuild は何もしません。Windows の事前 import 診断と Linux の `dlopen(RTLD_NOW | RTLD_LOCAL)` は異なり、Linux には raw import reader がありません。
 
 pollを駆動するのはreload serviceのruntime participant `game_logic` で（[登録箇所](../../src/core/watch/reloadservice.cpp#L777)）、境界は `frame_start` です。**headless / RPC では `poll` triggerが無視され**（[その早期return](../../src/core/watch/reloadservice.cpp#L788)）、明示コマンドだけが効きます。windowedのF5は「要求」を出すだけで、実際の適用はフレーム境界です（[F5の呼び出し](../../src/core/appflow/loop.cpp#L713)）。
 

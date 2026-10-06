@@ -39,6 +39,20 @@ project.json ──rendering_config_json──▶ rendering config JSON
 
 `basic_config.default_rendering_pass` が rendering config 内のどのパス列(`rendering_passes[].name`)を使うかを決めます。エンジンは常にパージ不能な終端 `output_transform` ノード(リニア → 表示エンコードの 1 箇所)を生成し、**このノードが終端に来ないパス列を既定に指定すると起動時エラー**です(§6.3)。なお authored な `"swapchain"` 出力は合成時に `display` RT へ置換されるため、`display` を誰も書かない構成はフレームグラフ検証で落ちます(§6.11)。
 
+<a id="render-generation"></a>
+
+### 描画の世代・公開・確定
+
+ここで扱う描画世代の公開は、[シーンロードの prepare / publish / activate / commit](04_scene_ecs.md#scene-load-transaction)とは別の transaction です。**描画の世代**(`RendererRuntimeGeneration`)は、同時に使うプログラム・実行計画・GPU 資源の所有をまとめた snapshot で、番号だけを指す語ではありません。
+
+`registerRenderingPassConfigVariantsData` は **prepare → allocate → registerVariants → publish** の順で候補を作ります。prepare は宣言・provider・資産・グラフを検証し、allocate は GPU 登録の checkpoint を開き、registerVariants は flat / XR などのプログラムを登録します。publish では候補世代を検証し、通常経路なら公開中の snapshot を差し替えます([実装](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1606))。
+
+**公開(publish)** は runtime の参照先を切り替える操作、**確定(commit)** はその transaction の変更を保持すると決める操作です。描画編集では文書の transaction を `before_publish` で確定してから世代を公開します。文書が保存済みでも、live material の物理契約や ray layout の mode により `restart_required` となる場合は稼働中の世代を変えません([編集シーケンス](13_editor.md#render-edit-sequence))。
+
+ray の joint 経路は候補を **staged 世代**として保ち、ray 側との共同確定まで通常の公開 snapshot を替えません。候補を描画準備に使う `renderingSnapshot` と、公開済みを返す `snapshot` は区別します。公開前の失敗は GPU 登録を checkpoint へ戻し、staged 候補の rollback は保持した transaction と候補を解放します([staging](../../src/core/renderingpass/framegraphruntime.cpp#L655))。
+
+旧世代の GPU 資源は公開切替と同時には破棄されず、frame / submission が保持する lease と retirement の条件に従います([寿命の図](../source-code-guide/06_rendering_vulkan_shader.md#generation-lifetime))。Graph の状態は新旧 graph の対応に従って value と pose の両方へ引き継ぎ、owner が変わった scope はリセットします。parameter と音も保持可能なものだけを引き継ぎます([状態移送](../../src/core/loader/scenegraphruntime.cpp#L358))。owner だけの変更では条件を満たす persistent buffer も引き継ぎますが、通常の authoring 編集で全資源の内容が保存されるという約束ではありません([buffer の移送](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1400))。
+
 <a id="座標の規約cc-1-c8367b87cc-2-1501685a"></a>
 
 ### 座標の規約(CC-1 、CC-2 )
@@ -70,6 +84,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 
 | キー | 型 | 内容 |
 |---|---|---|
+| `pipeline` | object | `preset` に描画 preset の参照、任意の `settings` に設定値を指定 |
 | `features` | string 配列 | feature fragment の参照(§6.5) |
 | `shader_defines` | string 配列 | 全シェーダのコンパイルに注入する define |
 | `render_targets` | 配列 | レンダーターゲット(RT)宣言 |
@@ -82,6 +97,10 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `graph_transforms` | 配列 | 論理グラフ全体を変換する provider の順序付き chain(後述「差し替えプロバイダの入口」)WP202a |
 | `render_strategy` | object | renderer の seed config そのものを生成する provider の選択(同上)WP202b |
 | `material_route_default` | string | automatic な material に当てる route の既定。`"auto"`(省略時)/ `"forward"`(§6.7「material の route の既定」)G-4 |
+
+<a id="render-preset"></a>
+
+**preset** は、描画パスや target などの構成を再利用する `pelican.render_pipeline` v1 文書です。root の `rendering.pipeline.preset` で選び、`settings` で対応する設定を渡します。engine preset(`engine://…`)は同梱の構成、project preset(`project://…`)は project が所有する編集可能な構成です。engine preset の構造を編集するときは `fork_render_pipeline` で project の新規ファイルへ複製し、root の参照先も切り替えます。preset 自身から別の preset を選ぶ再帰はできません([形式の検査](../../src/project/renderpipeline.cpp#L907)、[fork](../../src/core/communication/renderconfigeditor.cpp#L3589))。
 
 このほか `target_planning`(§6.6)、`vulkan_plan_pins` / `vulkan_physical_fragments`(§6.6)、`xr`(§6.12)もトップレベルキーです。
 
@@ -1709,15 +1728,34 @@ render / compute / transfer / output / marker のノード本体は provider の
 
 #### 3 つの representation と、その選ばれ方
 
-自動計画は attachment 1 枚ごとに次の 3 つから 1 つを選びます。利用者が直接指定する field はありません。
+<a id="target-planning-tree"></a>
 
-| representation | 何をしないか | GPU 上の効果 | 選ばれる条件(概略) |
-|---|---|---|---|
-| `materialized_image` | 何も省かない(既定・安全側) | 通常の device-local メモリに 1 枚確保し、内容を保存する | 下の 2 つの条件を満たさないときは常にこれ |
-| `transient_attachment` | 描画区間の外への**内容の永続化**を要求しない | lazily allocated memory を優先し、最後の Store を Discard にする | attachment としてしか使わず、後段の read も history も無い(= 書きっぱなし) |
-| `tile_local_attachment` | メモリへの**書き戻し**自体をしない | producer と consumer が同じ dynamic rendering instance で走り、値がタイル内に留まる | 上に加えて、直後の consumer が全員 `same_pixel` で読み、extent が一致し、device が `VK_KHR_dynamic_rendering_local_read` を持つ |
+論理グラフから複数の物理候補を作り、device が実行できる候補を比較します。図の分岐は各候補内の image の表現であり、資源ごとに独立して最安候補を選ぶという意味ではありません。
 
-下へ行くほど得ですが条件が厳しく、1 つでも外れると 1 段上へ自動で戻ります(黙って壊れる方向へは倒れません)。以下はそれぞれの条件の詳細です。
+```mermaid
+flowchart TD
+    A[論理グラフ: 資源・read/write・依存] --> B[device facts・profile・制約から 3 候補を構築]
+    B --> C{各候補で image を分類}
+    C -->|tile 候補かつ same_pixel 読み書き・単一 sample・local 条件を満たす| T[tile_local_attachment]
+    C -->|transient 有効候補かつ write-only・virtual・単一 sample・store 不要| U[transient_attachment]
+    C -->|上の条件に合わない| M[materialized_image]
+    T --> S[scope 構築・融合可否・locality 検査]
+    U --> S
+    M --> S
+    S --> D{feature・format/usage・attachment budget 等の probe に通るか}
+    D -->|いいえ| X[その候補を不採用]
+    D -->|はい| E[実行可能候補: pin があれば照合 / なければ cost 順]
+    E --> F[選択した物理 plan: representation・scope・alias]
+```
+根拠: [targetrenderplanning.cpp:2636](../../src/project/targetrenderplanning.cpp#L2636)、[targetrenderplanning.cpp:2897](../../src/project/targetrenderplanning.cpp#L2897)、[targetrenderplanning.cpp:3602](../../src/project/targetrenderplanning.cpp#L3602)、[targetplanning.cpp:91](../../src/project/targetplanning.cpp#L91)。
+
+<a id="physical-plan-scope"></a>
+
+**物理プランの scope** は、Vulkan で一緒に実行する node のまとまりです。rendering scope の融合では producer と consumer を同じ dynamic rendering instance に入れます。これは[グラフ文書の編集 scope](13_editor.md#graph-edit-scope)とは別の区切りです。
+
+注: `materialized_image` は通常の device-local image として内容を保存し、`transient_attachment` は lazily allocated memory を優先して区間外に内容を残さず最後の Store を Discard にする attachment、`tile_local_attachment` は同じ scope 内の same-pixel read に値を渡す attachment です。transient は write-only、tile-local は read があるため、3 種を段階的に 1 段ずつ落とす関係にはなりません。external 資源・buffer・使わない semantic resource はこの image の三分岐の対象外です。
+
+注: tile-local の storage / transfer / host / non-render access、snapshot 由来、history / materialization 必須、store 必須、external depth export は対象外です。scope 融合には view family / view_select / sample 数の一致、node 制約、extent などの検査も要ります。cost は rendering scopes → materialized resources → external stores → transient bytes → bandwidth class → candidate 名の順で比較します。候補が全滅した場合や固定した pin が不適合なら拒否します。各表現のメモリと shader の扱い、format 非対応や複数 graph 共有の例外は以下に残します。
 
 #### 自動 transient attachment
 
@@ -3711,14 +3749,27 @@ ANIMATION と AUDIO が ON の build では 5 module / 37 op(AB-1 の `value.sam
 
 ### 全体像 —— 展開は 2 段
 
-グラフの lowering は preset と feature の合成より**先に**走りますが、ループの回数・target の有無・挿入先の pass は合成の**後**でないと決まりません。そこで処理が 2 段に分かれています。
+<a id="loop-expansion"></a>
 
-| 段 | いつ | 何をする | 拒否が出る時 |
-|---|---|---|---|
-| 形の検査 | 編集のたび・読み込みのたび([`expandGraphDocument()`](../../src/project/graphcomposition.cpp#L1137)) | ループの parameters の形、分岐の入出力、入れ子、段の分類、式の文法と置き場所、展開名の参照 | 編集 RPC がその場で断る |
-| 解決の段 | 組み直し(preset・feature・integration・surface resources・snapshot を合成した後。[`resolveGraphDocumentAfterComposition()`](../../src/project/rendergraphcomposition.cpp#L1511)) | target の参照と history の検査、ループの回数と body の複写、`pass_replacements` の適用 | 組み直しが断る(編集 RPC では ticket の結果、起動では起動エラー) |
+ループはまず形を検査し、preset・feature 等の合成後に target と回数を解決します。以下は利用者から見た集合操作の順序で、保存されるのは元の文書だけです。
 
-保存されるのは書いた文書だけです。ループの展開結果(複写した pass・target、どの要素がどの分岐に入ったか)は派生物で、文書に書き戻されません。
+```mermaid
+flowchart TD
+    A[graph.loop の形・body・式・tier を検査] --> B{over と body}
+    B -->|range / view_axis + render・value| C[合成後に over の要素を確定]
+    C --> D[where で絞る] --> E[order で並べる] --> F[limit で先頭 N 個]
+    F --> G[branches: 最初に合う when / 最後は else]
+    G --> H[expand: body を要素ごとに複写]
+    H --> I[carry・出力・依存・挿入先を解決 → frame graph]
+    B -->|draw_items + draw のみ| J[pass の material を over・where で選ぶ]
+    J --> K[order: phase_default の queue 順を維持]
+    K --> L[branches: material 属性で最初の一致]
+    L --> M[draw_loop: 1 material pass 内で draw 列を実行]
+    B -->|混在・入れ子・未対応集合| X[名前付き拒否]
+```
+根拠: [graphcomposition.cpp:409](../../src/project/graphcomposition.cpp#L409)、[graphcomposition.cpp:469](../../src/project/graphcomposition.cpp#L469)、[rendergraphcomposition.cpp:2192](../../src/project/rendergraphcomposition.cpp#L2192)、[materialdrawloop.cpp:141](../../src/project/materialdrawloop.cpp#L141)。
+
+注: 形の検査は読み込み・編集時、回数・target/history・pass replacement の解決は合成後です。形の拒否は編集の受付時、解決の拒否は ticket の結果（起動時なら起動エラー）に現れます。expand は並べた後の index と count を branch の条件に渡します(実装は昇順/降順に列挙しながら where と limit を適用します)。draw_loop に limit / carry は書けません。`body: null` は expand では何も生成せず carry を保持し、draw_loop ではその material を描きません。展開結果や branch の選択を原文書へ書き戻すことはありません。上限・名前・依存の例外は以下の「expand の展開の規則」、draw の拒否と queue の条件は「draw_loop」を参照してください。
 
 <a id="既存の-target-を指す--rendertarget_reflp-0a"></a>
 
@@ -4161,12 +4212,7 @@ float pelican_sample_table(sampler2D table, uint feature, uint rows_per_feature,
 
 ### 段 —— expand と draw_loop
 
-ループがどこで実行されるかは `over` と body の中身で決まります([`classifyGraphLoopTier()`](../../src/project/graphcomposition.cpp#L409))。v0 では段が黙って変わることはなく、合わなければ断ります。
-
-| `over` | body | 段 | 実行 |
-|---|---|---|---|
-| `range`、`view_axis` | `render.*` と `value.*` | **expand** | 組み直しのとき body を回の数だけ複写し、ふつうの pass・compute task・target として frame graph に渡す |
-| `draw_items` | `draw.*` だけ | **draw_loop** | 1 つの material pass の中で、今の queue のまま、material ごとに分岐が決めた描き方で描く |
+段の選択は[ループの図](#loop-expansion)のとおりです。宣言の `tier` と実際の段が違えば拒否し、黙って別の段に変えません。
 
 断るときは `graph.loop_tier_unsupported@1` `{node, reason}` です。
 
@@ -4183,7 +4229,7 @@ float pelican_sample_table(sampler2D table, uint feature, uint rows_per_feature,
 
 解決の段の [`expandRenderGraphLoops()`](../../src/project/rendergraphcomposition.cpp#L2192) が、ループを依存の順に 1 本ずつ展開します。
 
-1. **要素**: `range` は 0〜count-1、`view_axis` は 0〜軸の長さ-1(長さは組み直し時の provider の値。cascade は `cascade_count`、face は 6)。`where` → `order` → `limit` の順で絞って並べ、回ごとに最初に合った分岐を選びます。
+1. **要素と分岐**: [ループの図](#loop-expansion)の順で決めます。range は 0〜count−1、view_axis は 0〜軸長−1(cascade は `cascade_count`、face は 6)です。
 2. **上限**: 1 つのループの回は 64 まで([`graphLoopIterationLimit`](../../src/project/graphloop.hpp#L164))、graph 全体の pass と compute task は(ループの外の graph node を含めて)128 までで、超えると `graph.loop_expansion_limit@1` `{node, count, limit}`。
 3. **名前と出所**: 複写した node は `<loop>/<element>/<node>`(要素の**値**で名付けるので、回数や順を変えても残る回の名前は変わらない)。body の中の `render.image` は回ごとに別の target になります。複写した pass・task・target・buffer には出所 `loop_origin: {loop, element, node}` が付き、`get_frame_plan` の node と resource にも載ります。ループの回に限らず graph の node が作った pass と task には、`get_frame_plan` の node に作った node の `origin`(`{graph, node, definition?, instance_path?, loop?, loop_branch?, element?}`)も付きます。preset・feature の pass には付かないので、preset が `engine://` で `source` が同じ `"engine"` でも graph の pass を見分けられます(形は第13章「`get_frame_plan` に足されたもの」)。
 4. **順序**: body の外の資源(`render.target_ref`、ループの入力、外の image や buffer、carry の値、他のループの回)に触る回は、読みだけの回も含めて、**要素の順に明示の `after` でつながれます**。展開器は名前を辞書順に並べる(`<loop>/10/x` は `<loop>/9/x` より前)ので、宣言順には頼りません。回ごとの `render.image` だけに触る回どうしはつながれません。

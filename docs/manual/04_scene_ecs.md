@@ -397,21 +397,35 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 ## 4.3 シーンロードの流れ
 
-[`SceneLoader::load(SceneLoadRequest)`](../../src/core/loader/scene.cpp#L1650) は **1 つのトランザクション**です(✅WP380a〜e)。**トランザクション**とは、途中の状態を外から見せず「全部成功して切り替わる」か「1 つも変わらない」かのどちらかにする実行単位のことです([用語集](14_glossary.md#scene-load-transactionシーンロードのトランザクション))。「旧シーンを消してから新シーンを作る」のではなく、新シーンの候補を全部作って一斉に切り替え、失敗したら全部を旧シーンに戻します。
+<a id="scene-load-transaction"></a>
 
-**この経路は 1 本だけ**です。起動時のロード / rpc `load_scene` / `ctx.loadScene()` の遅延適用(pending)/ エディタからのスナップショット import は、入口([SceneLoadRoot](../../src/core/loader/sceneload.hpp#L82))が違うだけで同じ executor を通ります。実際の処理順:
+起動・RPC・pending load・snapshot import は同じシーンロード transaction を通ります。commit 前の失敗では旧シーンを保ち、commit 後の作用の失敗では新シーンを保ちます。
 
-1. **正規化・検証**(解釈レイヤ `sceneformat.cpp`): エンベロープ・識別子・name 一意性をチェック。不正は fail-fast。
-2. **prepare**: 各オブジェクトの components を振り分け: `light` → LightContainer、`collider` → PhysWorld、**`behavior` → BehaviorAttachmentArena**、**それ以外 → ECS**(未知名・未登録の behavior 型名はここでエラー)。ライトだけのオブジェクトは ECS entity を作りませんが、**behavior だけのオブジェクトには作られます**。描画・カメラ・ライト・SeqPlayer/VAT・乱数列・イベント送信箱の候補も、稼働中の状態に触らずここで作ります。モデル資産(`ModelAssetContainer`)だけは候補ではなくキャッシュで、失敗しても読み込んだモデルは残ります(どのシーンにも属さないので世代混在にはなりません)。
-3. **early_publish**: ECS オブジェクトを**トランザクション生成**(§4.4)し、name があり transform を持つオブジェクトの「name → GameObjectId」束縛(rpc の宛先になる)と物理・behavior の候補を作り、旧 entity を **unpublish** します。unpublish とは、ID から entity を引けなくすること(id テーブルの live を落とし、generation を 1 つ進める)です。コンポーネントの値はその場では壊さず破棄トークンへ退避され、実際に壊れるのは retire の完了時です([publishDestroy](../../src/core/ecs/archetypemigration.cpp#L760))。JSON 不正はここまでで全部戻して例外。
-4. **publish**(失敗しない): 候補を稼働中の状態と入れ替えます(swap だけ)。
-5. **activate**: **behavior を宣言順に有効化**して `onInit` を呼びます。ここが**失敗しうる最後の段**で、途中で例外が出たら init 済みの分を逆順に `onDestroy` した上で、**描画・ECS・カメラ・ライト・物理・behavior・イベント・乱数・シーン遷移要求の全部**を旧シーンに戻します。document・現在シーン名・authority も旧シーンのままです(`onInit` の `emit` / `loadScene()` も一緒に捨てられます)。
-6. **commit_metadata**: シーン文書・現在シーン名・epoch などの metadata を 1 回の swap で切り替えます。**ここが commit 点**で、以降は `PreCommitFailure` になりません。
-7. **retire**(旧シーンの後片付け): 旧シーンの entity・モデルインスタンス・一時モデルは即座には消さず、次フレーム(次の pending load 適用時と描画更新の先頭)に消費される retirement queue に積みます。旧 behavior の `onDestroy` はこの段で、`attachment_seq` の逆順に走ります。
-8. **flush**: 溜めておいた作用を実際に外へ出します — `SceneLoaded` イベントの emit([第8章](08_gameplay.md))、乱数列の公開、音の再生/停止/バス音量、`user://` への書き込み。
-9. **finish**: 生成済み entity のトークンを確定します。
+```mermaid
+flowchart TD
+    A[prepare: 文書の解釈・検証と候補の構築] --> B[early_publish: renderer → ECS → physics → behavior → 旧 ECS の unpublish]
+    B --> C[publish: 候補を noexcept swap]
+    C --> D[activate: 新 behavior の onInit]
+    D --> E[commit_metadata: metadata を swap / ここで確定]
+    E --> F[retire: 旧シーンを退役]
+    F --> G[flush: RNG・pending scene・イベント・音・保存を公開]
+    G --> H[finish: entity 生成トークンを確定]
+    A -->|失敗| X[候補を破棄 / PreCommitFailure]
+    B -->|失敗| R[rollback: 反映済み状態を旧シーンへ戻す]
+    D -->|失敗| R
+    R --> X
+    G -->|作用の失敗を記録して続行| H
+    H --> I{effect_errors があるか}
+    I -->|なし| J[SceneLoadCommitted]
+    I -->|あり| K[CommittedWithEffectFailure / 新シーンは維持]
+```
+根拠: [scene.cpp:1650](../../src/core/loader/scene.cpp#L1650)、[scene.cpp:1706](../../src/core/loader/scene.cpp#L1706)、[scene.cpp:1740](../../src/core/loader/scene.cpp#L1740)、[sceneloadparticipant.hpp:75](../../src/core/loader/sceneloadparticipant.hpp#L75)。
 
-2〜9 の 8 段が [SceneLoadPhase](../../src/core/loader/sceneload.hpp#L27) の 8 値(`prepare` / `early_publish` / `publish` / `activate` / `commit_metadata` / `retire` / `flush` / `finish`)にそのまま対応します(1 は executor に入る前の解釈レイヤなので phase ではありません)。ロード結果に付く phase trace は内部の順序検証(と fault injection)のためのもので、rpc には出ていません。
+注: 8 段は `prepare` から `finish` までです。prepare で `light` / `collider` / `behavior` をそれぞれの所有者へ、それ以外を ECS へ振り分けます。light だけの object には ECS entity を作らず、behavior だけなら作ります。未知 component は拒否し、未登録 behavior は DLL がある場合に拒否、DLL 不在なら pending 扱いです。モデル資産はシーンに属さないキャッシュなので、失敗しても読み込み済み資産は残ります。
+
+注: early_publish で name と transform を持つ object の名前束縛を作り、旧 entity の ID を無効化しますが、値は破棄トークンに残します。activate の失敗では init 済み behavior の `onDestroy` を逆順に呼び、描画・ECS・カメラ・ライト・物理・behavior・イベント・乱数・遷移要求を戻します。文書・現在シーン名・authority は commit 点まで旧シーンのままです。
+
+注: 旧 behavior の `onDestroy` は metadata 確定後の `behavior.finish()`（executor の commit 列内）で走ります。旧 entity・モデルインスタンス・一時モデルの破棄は retirement queue で遅延します。図の retire は即時の GPU 破棄ではありません。phase trace は内部検証用で RPC には出ません。participant ごとの順序は[読解ガイドのスイムレーン](../source-code-guide/03_project_and_loading.md#scene-load-lanes)、作用の staging・読み取り・拒否と commit 後の診断は以下の各注を参照してください。
 
 **モデルのインスタンスの枠(`8bde3c2f`。利用者の codex の変更、handoff 05)。**同時に置けるモデルのインスタンスは今までどおり 1,024 で、それを超えると `Model instance capacity exceeded` です。一方、内部の物理的な slot は 2,048 にしました([インスタンスの上限](../../src/core/renderer/polygoninstancecontainer.cpp#L31))。prepare で新しいシーンの候補を作る間も、公開中の旧シーンの slot は rollback のために残るので、旧と新の合計が 1,024 を超えると置き換えができなかったためです(codex の報告では、約 1,000 model のシーンの最初の再読込で起きていました)。
 
@@ -419,7 +433,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 - 代わりに払うもの: device の buffer が 18.2 MiB 増えます(うち skin palette の 2 本で 16 MiB。commit の説明の値)。連続した load では必要に応じて GPU を待ちます。frame ごとの新しい待ちは足していません(codex の報告)。
 - codex の報告では、998 個の cube と Anchor・Camera の 1,000 object のシーンで、前は 3 回とも最初の再読込が失敗し、今は 3 回とも 6 回の再読込が通りました。test: `modelinstance_slotmap_test` の [「Full-capacity scene replacement keeps rollback slots and reclaims older generations」](../../test/modelinstance_slotmap_test.cpp#L390)(1,024 個のモデルで候補の作成・公開後の rollback・frame を挟まない 3 回の置き換え。報告では GPU の test)。
 
-> **ビルドから外した機能を要求するシーンは prepare で止まります(✅AG-1b / ✅PG-1)。** `PELICAN_WITH_ANIMATION=OFF` のビルドで `animation` コンポーネントを含むシーンをロードすると、**2 の prepare 段**で `animation.module_unavailable@1`(オブジェクト名入り)になります。`PELICAN_WITH_PHYSICS=OFF` のビルドの `collider` も同じ形で `physics.module_unavailable@1` です。どのコンポーネントがどの機能を要るかは codec の `required_feature` が持ち、判定は [`resolvedObjectFeatureRefusal()`](../../src/core/loader/resolvedscene.cpp#L78) の 1 か所です。エディタの `add_component` / `spawn` も同じ関数を呼ぶので、ロードで拒否されるものは編集でも同じ名前で拒否されます。commit 前なので**ロールバックの契約に乗り**、稼働中の旧シーンはそのまま残ります —— 「読めたが誰も評価しないので rest pose のまま動かない」という状態を作りません。コンポーネントの **codec は OFF でも残る**ので、ツールは同じビルドでシーンを読み書きできます(読めることと動かせることを分けています)。
+> **ビルドから外した機能を要求するシーンは prepare で止まります(✅AG-1b / ✅PG-1)。** `PELICAN_WITH_ANIMATION=OFF` のビルドで `animation` コンポーネントを含むシーンをロードすると、**prepare 段**で `animation.module_unavailable@1`(オブジェクト名入り)になります。`PELICAN_WITH_PHYSICS=OFF` のビルドの `collider` も同じ形で `physics.module_unavailable@1` です。どのコンポーネントがどの機能を要るかは codec の `required_feature` が持ち、判定は [`resolvedObjectFeatureRefusal()`](../../src/core/loader/resolvedscene.cpp#L78) の 1 か所です。エディタの `add_component` / `spawn` も同じ関数を呼ぶので、ロードで拒否されるものは編集でも同じ名前で拒否されます。commit 前なので**ロールバックの契約に乗り**、稼働中の旧シーンはそのまま残ります —— 「読めたが誰も評価しないので rest pose のまま動かない」という状態を作りません。コンポーネントの **codec は OFF でも残る**ので、ツールは同じビルドでシーンを読み書きできます(読めることと動かせることを分けています)。
 
 ### ロード中の「作用」はトランザクションに溜まる(✅WP380b〜e)
 
@@ -460,10 +474,7 @@ flush で音やディスク書き込みが失敗しても、**シーンは新し
 
 ### フレームループの順序(ヘッドレスも同順)
 
-```
-時刻 advance → イベント凍結 → 入力スナップショット → アクション凍結 → イベント配送 → ECS システム群
-→ ゲームシステム(order 順) → SeqPlayer → シーン遷移の適用 → 描画
-```
+フレーム全体の順序は[第1章のフレーム順の図](01_overview.md#frame-order)を参照してください。
 
 **prepare / publish / commit** — 状態の更新を段階に分けるための名前です。**prepare** は確保・検証などの準備、**publish** は準備した状態の反映、**commit** は更新の確定を表します。ただし、具体的な段階と失敗時の扱いは機能ごとに異なります。シーンロードでは publish 後も activate などで失敗する可能性があり、commit 前なら反映済みの状態も巻き戻します。`noexcept` は例外を呼び出し元へ出さないという C++ の指定であり、それだけで一連の更新の原子性（全体を適用するか、全体を戻すか）を保証するものではありません。
 

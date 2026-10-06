@@ -22,6 +22,69 @@ Studio の panel ごとの操作は [第15章 Studio の操作](15_studio.md) �
 
 エラーの読み方だけは先に §13.6 を見てください —— `edit` 系の失敗は JSON-RPC の `error` ではなく**成功応答の中の `result.status`** に出ます。
 
+<a id="digest-cas"></a>
+
+### digest・CAS・external_modification
+
+**digest** は文書の bytes から計算する SHA-256(64 桁の小文字 hex)です。読み取り応答の `source_digest` が読んだ版を示し、要求はその版を `base_source_digest` に入れます。**CAS** は「想定した版と現在の版が一致するときだけ変更する」比較付き更新です。JSON の意味が同じでも、bytes が変われば digest は変わります。
+
+| 照合する段階 | 比較対象と拒否 |
+|---|---|
+| 受付 | `base_source_digest` と engine が保持する root、さらに保持版とディスクを照合し、不一致なら `external_modification` |
+| commit hook | 受付済み ticket の base と現在の保持版が違えば `stale_source_digest`(同じ root の別 ticket が先に commit) |
+| commit hook のディスク再検査 | ディスクが期待値と違えば `external_modification`。reload の期待値は「読み直した候補の digest」 |
+| 文書の transaction | root 以外の preset / feature なども期待 digest で照合し、書き込み直前の変更を拒否 |
+
+`stale_source_digest` と `external_modification` の上の区別は **commitPending 内**のものです。受付での `external_modification` には古い panel の保持版も含まれるため、コード名だけで「別のアプリが保存した」とは断定できません。拒否後は文書と編集内容を読み直し、digest だけを新しい値に差し替えて古い操作を送り直さないでください([受付](../../src/core/communication/renderconfigeditor.cpp#L2094)、[commit 時](../../src/core/communication/renderconfigeditor.cpp#L8204))。
+
+Studio の `RenderConfigDigest` は panel が読んだり commit した digest を他 panel に通知して再読込を促します。ただし各 panel は**自分が読んだ文脈と対になる digest の写し**を保持します。共有の最新値だけを送ると、古い文脈から作った要求が新しい版を装ってしまうためです([注釈と実装](../../src/devstudio/view/renderconfigdigest.hpp#L13))。
+
+`project.json` の `project_digest` / `base_project_digest` も bytes の CAS で、描画文書と同じ project document transaction を使いますが、照合する文書と値は別です([project.json の保存形式](03_project_format.md#project-settings-cas)、[共通 transaction の別名](../../src/core/communication/renderconfigtransaction.hpp#L11))。scene 編集の `base_revision` はメモリ上の文書の revision で、digest とは交換できません(§13.4)。
+
+<a id="render-edit-sequence"></a>
+
+### 描画編集が確定するまで
+
+通常の root 編集は受付時に候補を検査し、フレーム境界で再検査して文書と描画世代を確定します。
+
+```mermaid
+sequenceDiagram
+    participant S as Studio
+    participant E as engine / 編集サービス
+    participant R as engine / renderer
+    participant D as ディスク
+    S->>E: base_source_digest と編集
+    E->>D: 受付時の digest 照合
+    E->>E: 候補文書を合成・variant preflight
+    E-->>S: accepted と ticket
+    Note over E,R: フレーム境界の commit hook
+    E->>E: gate と保持版を再照合
+    E->>D: ディスクの digest を再照合
+    E->>R: 候補を構築・compile / preflight
+    R->>R: live material と候補世代の検査
+    alt 公開可能
+        R->>E: before_publish / source_commit
+        E->>D: 文書 transaction の CAS・commit
+        R->>R: publish / ray joint は staged 完了時
+        R-->>E: completion
+    else 再起動で適用する契約変更
+        R-->>E: 物理契約または ray layout mode の拒否
+        E->>D: 文書 transaction の CAS・commit
+        E->>E: restart_required / 稼働世代は維持
+    else その他の検査失敗
+        R-->>E: 拒否 / 候補・必要なら書込済み文書を rollback
+    end
+    loop 結果が pending の間
+        S->>E: get_edit_result(ticket)
+        E-->>S: pending または確定した結果
+    end
+```
+根拠: [renderconfigeditor.cpp:2148](../../src/core/communication/renderconfigeditor.cpp#L2148)、[renderconfigeditor.cpp:8172](../../src/core/communication/renderconfigeditor.cpp#L8172)、[renderer_config.cpp:672](../../src/core/vkcore/renderer_config.cpp#L672)、[renderconfigeditor.cpp:7876](../../src/core/communication/renderconfigeditor.cpp#L7876)、[renderconfigtransaction.hpp:22](../../src/core/communication/renderconfigtransaction.hpp#L22)。
+
+注: 受付・再照合で拒否すれば後続処理へ進みません。`edit_batch` は最後の候補を一度だけ preflight します。配置などの `source_only` 編集は文書だけを commit し `recomposed: false`、変更なしなら `no_change` で世代を替えません。reload は書き込みをせず読み取った bytes の一致を確認します。ray joint の staged ticket は completion が来るまで pending です。GPU 資源と状態の扱いは[描画世代の所有節](06_rendering.md#render-generation)を参照してください。
+
+注: 文書 rollback 自体の失敗は `render_config_rollback_failed`、確定後の適用エラーは `post_commit_error` として結果に残ります。`committed` は文書の確定を示し、常に新世代で描画中という意味ではありません。Studio の各 panel は共通の `RenderEditTicket` で ticket を追跡し、結果が確認できない間は 500 ms ごとに再確認するため「Saving…」が続きます。
+
 ## 13.1 全体像 — 何ができるようになったか
 
 実行中の `pelican_player` に対して、外部からシーンを編集する API を使えます。オブジェクトの生成・削除・親子付け替え・コンポーネントの追加削除・値の変更・undo/redo・プレビュー・保存が、すべて JSON-RPC のメソッドとして呼べます。
@@ -200,7 +263,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `unpack_prefab` | `object`(このほかのキーは拒否) | prefab インスタンスを素のオブジェクトへ展開 |
 | `duplicate` | `object_id`, `declaration_index?`(このほかのキーは拒否) | 子孫ごと複製(OL-1。下記) |
 
-`get_procedural_assets` / `edit_procedural_asset` は **`edit` の op ではなく独立した RPC メソッド**です ([登録](../../src/core/communication/editorrpchandlers.cpp#L318))。`edit_procedural_asset` は `base_source_digest` と `asset_name` を取り、編集は `aabb` / `record`、新規は `operation: "create"` と両方の値、 削除は `operation: "delete"` だけです。実行モデルはレンダー設定側(§13.5)と同じ digest CAS です。
+`get_procedural_assets` / `edit_procedural_asset` は **`edit` の op ではなく独立した RPC メソッド**です ([登録](../../src/core/communication/editorrpchandlers.cpp#L318))。`edit_procedural_asset` は `base_source_digest` と `asset_name` を取り、編集は `aabb` / `record`、新規は `operation: "create"` と両方の値、 削除は `operation: "delete"` だけです。照合の意味は[digest / CAS の所有節](#digest-cas)を参照してください。
 ほかの RPC が asset_data を書いて engine が publish した後も `external_modification` になりません(§13.5 の 「project の中の model ファイルを登録する・外す」)。
 
 **JSON pointer**(RFC 6901)は `/intensity` や `/pos/1` のように `/` 区切りで JSON 内の位置を指す文字列です。配列は 0 始まりの添字で指し、鍵に含まれる `/` と `~` はそれぞれ `~1` / `~0` と書きます。
@@ -399,6 +462,8 @@ revisionはauthoringの変更を表し、runtimeやプレビュー値の監視�
 
 ### セッションと編集
 
+Studio の履歴と focus ごとの Undo の入口は[第15章の履歴の地図](15_studio.md#undo-map)を参照してください。
+
 | メソッド | params |
 |---|---|
 | `open_editor_session` / `resume_editor_session` | `{display_name?}` / `{reconnect_token}` |
@@ -483,12 +548,7 @@ revisionはauthoringの変更を表し、runtimeやプレビュー値の監視�
 
 `edit` から `playing` / `paused` へ移ると**再生のセッション**が始まり、`edit` へ戻るとセッションが終わって scene が再生の前に戻ります(設計は [design_play_mode.md](../design_play_mode.md) §6・§7。実体は [`set_play_state` の handler](../../src/core/communication/rpcserver.cpp#L2129) と [`PlaySession`](../../src/core/communication/playsession.hpp#L51))。Studio の Play / Stop と Keep は PM-3b です(§13.1「Studio で game を再生・停止する」)。
 
-**Play でセッションが始まるとき。**
-
-1. scene の編集の ticket が受け付けたまま commit されていない、または live preview が開いていると、`play_busy` で断ります(何も変わりません)
-2. game logic の DLL を読んでいれば、**新しい写しを読み直します**。game の system の static な状態は、Play のたびに初めからです(第 8 章 §8.4 の「再生のセッションとゲームコード」)。`--replay` と golden の起動では読み直しません(その run の決定性を壊すため)。読み直しに失敗すると、その reload のエラーの code で断り、セッションは始まりません
-3. authoring(全 scene と各 object の `authoring_object_id`)、今の scene、editor の履歴(journal・誰が最後に書いたか・actor ごとの undo / redo の stack)を覚えます。scene を読んでいない engine はセッションを作らず、PM-1b と同じく作り直すだけです
-4. そのあとは上の「`edit` から出る(Play)」のとおりです
+Play / Pause / Step / Stop の遷移とセッション保存は[第15章の状態図と注](15_studio.md#play-state-map)を参照してください。
 
 **再生中。**Inspector などの編集は今までどおり authoring と runtime の両方に効き、履歴にも積まれます。セッションはこの間に commit された編集を記録し、`get_status.play` に出します。
 
@@ -497,20 +557,7 @@ revisionはauthoringの変更を表し、runtimeやプレビュー値の監視�
 - `save_scene` / `load_scene` / `import_scene_snapshot` は `-32000` の `play_session_active`(`data` は `{code, method, state}`)で断られます。**セッションがあるときだけ**で、`--start-state` を省いて起動した engine の最初の `playing` のようにセッションが無ければ断りません。ImGui の inspector の Save ボタンは RPC を通らないので、この拒否の対象ではありません
 - game のコードが `ctx.loadScene` で scene を替えてもかまいません。Stop ではセッションを始めた scene に戻ります
 
-**Stop でセッションが終わるとき。**
-
-| 戻るもの | 戻らないもの |
-|---|---|
-| scene の authoring の中身と `authoring_object_id`(全 scene) | ファイルへ直接書く編集: render の構成(Frame Plan / Pass Editor の編集、rendering 節、preset、graph 文書、authored pass)、material・shader・code・asset |
-| 今の scene(`ctx.loadScene` で替えていても、始めた scene) | game が書いた Persistence(`saveData`) |
-| editor の履歴(journal・誰が最後に書いたか・undo / redo の stack)。再生の前の編集の undo は Stop の後もそのまま効きます | 番号: `scene_revision` は戻らず、今の値より大きい新しい revision になります。次に振る `authoring_object_id` は、覚えた値と今の値の大きい方です。ticket・transaction の番号も戻りません |
-| game の時計(Play の前の時刻) | |
-
-- 設計(§6.4)は、再生中の `runtime_only_changes`(`update_transforms` / `load_gltf`)も runtime の作り直しで消えるとしています。test では確かめていません(未確認)
-- 音はすべて止まります(`Audio::stopAll`)
-- spawn した object は消え、behavior には `onDestroy` が走ります。runtime は眠った `edit` の runtime として作り直されます
-- 戻したあとは editor の gate の epoch が進むので、Stop の前に受け付けた編集は commit できません
-- Stop のときも、commit されていない ticket か開いた live preview があると `play_busy` です
+Stop で戻る範囲・戻らないもの・セッションの無い起動は[第15章の状態図と注](15_studio.md#play-state-map)を参照してください。復元後は editor gate の epoch が進み、復元前の編集は commit できません。
 
 **残す(`keep`)。**`set_play_state {state: "edit", keep: "all" | ["<transaction_id>", …]}` で、記録した編集のうち挙げたものを、戻した authoring の上に記録の順で当て直します。
 
@@ -1040,7 +1087,7 @@ asset_data の `models[]` の形は [第5章](05_assets.md) §5.2 です。
 
 ### レンダー設定を編集する
 
-**シーン編集とは実行モデルが違います。**混ぜると壊れます。違う理由は対象が違うからです —— シーン編集の対象がメモリ上の `AuthoringSceneDocument`(正は `SceneRevision`)なのに対し、こちらは**ディスク上の rendering config ファイルそのもの**で、正はその sha256 digest です。したがって版の比較も、undo の有無も、書き込みの作法も別建てになります。
+描画編集はディスク上の文書を扱い、照合・確定の規則は[digest / CAS の所有節](#digest-cas)、Studio の Undo は[履歴の地図](15_studio.md#undo-map)を参照してください。
 
 | メソッド | 何をするか |
 |---|---|
@@ -2072,8 +2119,7 @@ Graph タブで rendering 節の pass を選ぶと詳細欄と右クリックに
 
 - **`actor_id` もセッションも要りません。**
 - **undo / redo の RPC はありません。journal にも載りません。**戻すには、編集の前に `get_render_documents` で読んだ文書を `restore_render_documents` で書き戻します(RD-1 / RD-1b。下の「ループと分解の RPC」)。
-- **CAS は SceneRevision ではなく、ルート設定ファイルの sha256 digest** です。
-  **メモリ上の文書とディスク上の実物の両方**を照合します。**受付の時点**でどちらかが食い違えば `external_modification`。**受付のあと**、フレーム境界までの間に**別のチケットがメモリ上の文書を先に更新していれば `stale_source_digest`**、ディスク側が変わっていれば `external_modification` です。いずれも**何も書きません**。
+- 受付・commit 時の digest 照合と拒否は[所有節](#digest-cas)に従い、不一致なら何も書きません。
 - 書き込みは原子的置換で、**engine が文書を所有します。編集側はファイルに触れません。**
 - **v1 は `operations` が最大 1 要素**。`op` は `add` / `remove` / `set_parameters` / `materialize` の 4 つで、
   それ以外は `edit_render_features operation op must be 'add', 'remove' or 'set_parameters'` です
@@ -2083,7 +2129,7 @@ Graph タブで rendering 節の pass を選ぶと詳細欄と右クリックに
 - **可用性の判定は engine 側**です。studio が理由を組み立てることはありません。
   モジュールの動的生成を要する feature は名指しで断られます([第6章](06_rendering.md) §6.5)。
 - **no-op は runtime にもファイルにも届きません**(digest が一致すれば `no_change`)。
-  同じ内容で 2 回適用しても世代は進まず、履歴も reset されません。
+  同じ内容で 2 回適用しても[描画世代](06_rendering.md#render-generation)は進まず、履歴も reset されません。
 
 **編集面が存在しないプロジェクトがあります。
 現在は**初期化操作が `features: []` を byte-lossless に挿入する**ので、 手書きの config でも編集面が作られます。最上位が `pelican.graph` でない config(旧い legacy root)は、 MG-2b から起動時の読み込みで `render_config.legacy_root@1` になり、編集文書も同じ名前で断ります。
@@ -2123,6 +2169,11 @@ engine 内部の例外名は
 - 読み: `get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `get_graph_node_values`(§13.5 の読み取り表)。
 
 #### `ops[]` と `scope`
+
+<a id="graph-edit-scope"></a>
+
+グラフ編集の **scope** は、1 つの op が操作する文書内の範囲(root または名前付き definition の本体)です。op ごとに候補から解決するので、同じ `ops[]` の先行 op による変更を見ます([resolveEditScope](../../src/project/graphcomposition.cpp#L1524))。GPU 実行をまとめる[第6章の物理プランの scope](06_rendering.md#physical-plan-scope)とは別の語です。
+
 
 | op | フィールド | 意味 |
 |---|---|---|
@@ -2187,9 +2238,7 @@ op の形が壊れているだけのもの(`ops` が配列でない、`source` �
   別の project を開くと、digest が同じでも破棄します([`GraphCanvasModel::forgetHistory()`](../../src/devstudio/model/graphcanvasmodel.cpp#L2791))。送信中だった編集は engine と一緒に捨てます。
   接続が切れている間は Undo / Redo を押せません。
   シーン・Features・Pass Editorを横断する統一Undoではありません。RPCからも同じ編集opを使えます。
-- **CAS は `SceneRevision` ではなく `base_source_digest`** —— 文書全体の sha256 です。受付でずれていれば
-  `external_modification`、受付のあとフレーム境界までの間に別のチケットが先に書けば `stale_source_digest`。
-  どちらも**何も書きません**。
+- `base_source_digest` の照合は[所有節](#digest-cas)に従い、不一致なら何も書きません。
 - **1 操作 = 1 op 列 = 1 チケット**。同じフレームに 2 本目を投げても、後から来た方が CAS で落ちます。
   結果は `get_edit_result`(ヘッドレスなら `step_frame` の `edit_results[]`)で受け取ります。
 - 書き戻しは root の `nodes` が常に、`definitions` は**変化したときだけ**です([definitions の書き戻し](../../src/core/communication/renderconfigeditor.cpp#L3835))。root の `outputs` も変化したときだけ書き戻します([root の outputs の書き戻し](../../src/core/communication/renderconfigeditor.cpp#L3839))。

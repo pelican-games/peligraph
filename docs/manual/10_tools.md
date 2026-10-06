@@ -366,7 +366,7 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 | 断片の決定 | `get_fold_groups` / `fold_nodes`(group の宣言)/ `verify_fold`(開いた形と比べて印を付ける非同期の ticket) | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
 | 音の解析 | `bake_audio_analysis`(音の解析を焼く非同期の ticket)/ `list_derived_assets`(取り込みで作った file と、古いか) | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
 | まとめて 1 回 | `edit_batch`(文書を書き換える編集 method を 1 つの ticket で) | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
-| render 文書の丸ごと | `get_render_documents` / `restore_render_documents`(丸ごと読む・CAS で戻す)/ `reload_render_documents`(ディスクから読み直して組み直す) | [第13章 ループと分解の RPC](13_editor.md#ループと分解の-rpc--engine-の契約lp-0alp-vb--rd-1--rd-1b) |
+| render 文書の丸ごと | `get_render_documents` / `restore_render_documents`(丸ごと読む・[CAS](13_editor.md#digest-cas) で戻す)/ `reload_render_documents`(ディスクから読み直して組み直す) | [第13章 ループと分解の RPC](13_editor.md#ループと分解の-rpc--engine-の契約lp-0alp-vb--rd-1--rd-1b) |
 | ループと分解 | `decompose_material_pass`(一体版の material pass を分解版へ)/ `get_graph_templates` / `apply_graph_template`(同梱の分解版の雛形) | [第13章 ループと分解の RPC](13_editor.md#ループと分解の-rpc--engine-の契約lp-0alp-vb--rd-1--rd-1b) |
 | 共通グラフ | `get_graph_instances` / `get_graph_catalog` / `get_engine_shaders`/ `get_shader_interface`/ `get_registered_providers`/ `get_graph_values` / `get_graph_node_values` / `edit_graph_document` / `edit_graph_instances` | [第13章 読み取り](13_editor.md#読み取り)・[グラフの装着を編集する](13_editor.md#グラフの装着を編集する) |
 | 共有部品と package | `export_render_feature` / `import_render_feature` / `install_package` / `uninstall_package` | [第13章 レンダー設定を編集する](13_editor.md#レンダー設定を編集する) |
