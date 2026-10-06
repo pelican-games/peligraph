@@ -1,5 +1,6 @@
 #include "graphattachmentwidget.hpp"
 #include "jsonrpcrequest.hpp"
+#include "renderconfigdigest.hpp"
 
 #include <QComboBox>
 #include <QDialog>
@@ -52,18 +53,21 @@ struct GraphAttachmentWidget::Impl {
     bool submitted = false;
 
     explicit Impl(GraphAttachmentWidget &widget) : view(widget) {
-        // Q-2 looked at stopping this clock while there is no ticket to chase,
-        // and left it running: it is not only a poll. Watching an instance
-        // queues reads on the model from inside synchronize(), which does not
-        // flush them -- the tick does, through dispatch(). Idle it asks the
-        // engine for nothing (the model guards the poll), so the cost is
-        // UI-thread wakeups, not RPC.
+        // Ticket polls use the component's 25 / 500 ms schedule. The older
+        // dispatch clock only flushes reads queued by synchronize() when it
+        // starts watching an instance; it never polls an edit ticket.
+        model.scheduleEdit = [this](int ms, std::function<void()> task) {
+            QTimer::singleShot(ms, &view, [this, task = std::move(task)] {
+                task();
+                synchronize();
+                dispatch();
+            });
+        };
         poll_timer = new QTimer(&view);
         poll_timer->setObjectName(
             QStringLiteral("pelican.graphAttachmentPollTimer"));
         poll_timer->setInterval(100);
         QObject::connect(poll_timer, &QTimer::timeout, &view, [this] {
-            model.poll();
             dispatch();
         });
         poll_timer->start();
@@ -386,6 +390,12 @@ struct GraphAttachmentWidget::Impl {
 GraphAttachmentWidget::GraphAttachmentWidget(QWidget *parent)
     : QWidget(parent), impl_(std::make_unique<Impl>(*this)) {}
 GraphAttachmentWidget::~GraphAttachmentWidget() = default;
+
+void GraphAttachmentWidget::setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> hub) {
+    impl_->model.publishDigest = [this, hub = std::move(hub)](const std::string &digest) {
+        if (hub) hub->publish(digest, this);
+    };
+}
 
 void GraphAttachmentWidget::setConnected(bool connected) {
     if (!connected && impl_->dialog) impl_->dialog->reject();

@@ -1,3 +1,4 @@
+#include "graphattachmentwidget.hpp"
 #include "mainwindow.hpp"
 #include "assetsdock.hpp"
 #include "materialsdock.hpp"
@@ -1030,6 +1031,8 @@ void MainWindow::createWorkspace() {
     render_features_->setRenderConfigDigest(render_digest_);
     rendering_settings_->setRenderConfigDigest(render_digest_);
     ray_layout_->setRenderConfigDigest(render_digest_);
+    if (auto *attachments = inspector_->findChild<GraphAttachmentWidget *>())
+        attachments->setRenderConfigDigest(render_digest_);
     // UX-6b: one reader of the frame's GPU time and the plan's size for the
     // two panels that show them; every request passes it (createRenderHistory
     // hands it the observer's calls).

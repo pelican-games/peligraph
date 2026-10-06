@@ -31,6 +31,9 @@ add_library(pelican_studio_inspector_model STATIC
     # RSX: the one reading of a render config ticket's last answer.
     rendereditcompletion.cpp
     rendereditcompletion.hpp
+    # RT-A: one part follows a render edit's ticket for every panel that sends one.
+    rendereditticket.cpp
+    rendereditticket.hpp
     # RT-C: the one reading of a synchronous write's applied / restart_required.
     appliedstate.cpp
     appliedstate.hpp

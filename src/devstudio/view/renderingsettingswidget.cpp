@@ -1,4 +1,5 @@
 #include "renderingsettingswidget.hpp"
+#include "rendereditticketclient.hpp"
 
 #include "panelhelp.hpp"
 #include "renderconfigdigest.hpp"
@@ -263,7 +264,7 @@ const std::vector<std::string> &RenderingSettingsWidget::editableKeys() {
 }
 
 struct RenderingSettingsWidget::Impl {
-    enum class Request { None, Read, Submit, Result };
+    enum class Request { Read, Submit };
 
     // One edit_rendering_keys: one key, in `set` or in `remove`. UX-10: or
     // one set_material_route_default (`method`), whose value is the key's.
@@ -275,6 +276,7 @@ struct RenderingSettingsWidget::Impl {
 
     RenderingSettingsWidget &owner;
     EmbeddedViewport &viewport;
+    RenderEditTicketClient client;
     std::shared_ptr<RenderConfigDigest> digest_hub;
     std::function<void(const QString &)> engine_restart_action;
     bool restart_asked = false;
@@ -334,7 +336,6 @@ struct RenderingSettingsWidget::Impl {
     // --- and xr.view_execution, with the whole xr under Advanced.
     QComboBox *xr_view_execution = nullptr;
     QPushButton *xr_advanced = nullptr;
-    QTimer *poll = nullptr;
     // RTL-2s: where another section (the Ray layout) goes, under the form.
     QVBoxLayout *body_layout = nullptr;
     int section_at = 0;
@@ -358,9 +359,6 @@ struct RenderingSettingsWidget::Impl {
     qint64 context_request = 0;
     std::vector<std::string> snapshot_candidates;
 
-    qint64 request_id = 0;
-    Request request_kind = Request::None;
-    QString ticket;
     std::optional<Edit> submitted;
     // A change made while another was in flight: sent once that one is done
     // and the root read again (the latest change of the field wins).
@@ -370,7 +368,7 @@ struct RenderingSettingsWidget::Impl {
     bool filling = false;
 
     Impl(RenderingSettingsWidget &widget, EmbeddedViewport &embedded)
-        : owner{widget}, viewport{embedded} {
+        : owner{widget}, viewport{embedded}, client{embedded, &widget} {
         owner.setObjectName(QStringLiteral("pelican.renderingSettings"));
         owner.setFont(studioPanelFont());
         auto *outer = new QVBoxLayout(&owner);
@@ -643,26 +641,28 @@ struct RenderingSettingsWidget::Impl {
         scroll->setWidget(body);
         outer->addWidget(scroll);
 
-        poll = new QTimer(&owner);
-        poll->setInterval(25);
-        QObject::connect(poll, &QTimer::timeout, &owner, [this] { requestResult(); });
+
 
         QObject::connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable, &owner, [this] {
             forget();
             read(false);
         });
-        QObject::connect(&viewport, &EmbeddedViewport::engineRpcBecameUnavailable, &owner,
-                         [this](const QString &message) {
+        client.unavailable = [this](const QString &message) {
                              forget();
                              have_root = false;
                              restart_asked = false;
                              showError(message);
                              controls();
-                         });
-        QObject::connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded, &owner,
-                         [this](qint64 id, const QByteArray &bytes) { receive(id, bytes); });
-        QObject::connect(&viewport, &EmbeddedViewport::inspectorRpcFailed, &owner,
-                         [this](qint64 id, const QString &message) { fail(id, message); });
+                         };
+        client.failed = [this](const QString &error) {
+            submitted.reset();
+            showError(error);
+            followWhenIdle();
+            controls();
+        };
+        client.completed = [this](const auto &outcome) { edited(outcome); };
+        client.unhandledResult = [this](qint64 id, const QByteArray &bytes) { receive(id, bytes); };
+        client.unhandledFailure = [this](qint64 id, const QString &message) { fail(id, message); };
 
         fill();
         if (viewport.rpcReady())
@@ -682,30 +682,26 @@ struct RenderingSettingsWidget::Impl {
     }
     void showSuccess(const QString &message) { showNotice(QStringLiteral("color: #388e3c;"), message); }
 
-    [[nodiscard]] bool busy() const { return request_id != 0 || !ticket.isEmpty(); }
+    [[nodiscard]] bool busy() const { return client.busy(); }
 
     void forget() {
+        client.abandon();
         providers_request = 0;
         context_request = 0;
-        request_id = 0;
-        request_kind = Request::None;
-        ticket.clear();
-        poll->stop();
         submitted.reset();
         retried = false;
     }
 
     bool send(Request kind, const QString &method, const Json &params) {
-        QString error;
-        const auto id = viewport.requestRpc(method, toQt(params), &error);
-        if (id == 0) {
-            showError(error);
-            return false;
-        }
-        request_id = id;
-        request_kind = kind;
+        bool sent = false;
+        if (kind == Request::Submit) sent = client.submit(method, params);
+        else sent = client.read(method, params, [this](const auto &response) {
+            consumeRead(response);
+            followWhenIdle();
+            controls();
+        });
         controls();
-        return true;
+        return sent;
     }
 
     // --- Reading the root.
@@ -1489,33 +1485,29 @@ struct RenderingSettingsWidget::Impl {
             submitted.reset();
     }
 
-    void consumeSubmit(const Json &response) {
-        const auto found = response.find("ticket");
-        if (response.value("status", std::string{}) == "accepted" && found != response.end() &&
-            found->is_string() && !found->get<std::string>().empty()) {
-            ticket = text(found->get<std::string>());
-            poll->start();
-            requestResult();
-            return;
-        }
-        // A committed answer at once is read as a ticket's last answer.
-        if (readRenderEditCompletion(response).committed) {
-            consumeResult(response);
-            return;
-        }
-        refused(response);
-    }
 
-    void requestResult() {
-        if (ticket.isEmpty() || request_id != 0) return;
-        (void)send(Request::Result, QStringLiteral("get_edit_result"),
-                   Json{{"ticket", ticket.toStdString()}});
+
+
+
+    void edited(const RenderEditTicketClient::Outcome &outcome) {
+        using Kind = RenderEditTicketClient::Kind;
+        if (outcome.kind == Kind::Accepted || outcome.kind == Kind::Pending) return;
+        if (outcome.kind == Kind::Committed) consumeResult(outcome.result);
+        else if (outcome.kind == Kind::Refused ||
+                 (outcome.kind == Kind::Failed && outcome.result.is_object() && outcome.result.contains("error")))
+            refused(outcome.result);
+        else {
+            showError(text(outcome.error));
+            if (outcome.kind == Kind::Failed) {
+                submitted.reset();
+                read(false);
+            }
+        }
+        followWhenIdle();
+        controls();
     }
 
     void consumeResult(const Json &response) {
-        if (response.value("status", std::string{}) == "pending") return;
-        poll->stop();
-        ticket.clear();
         // RSX, decision 1: the reading every panel uses. restart_required
         // hands the restart to the window before this returns.
         const auto completion = completeRenderEdit(response, [this](const std::string &line) {
@@ -1531,7 +1523,6 @@ struct RenderingSettingsWidget::Impl {
         retried = false;
         if (!completion.source_digest.empty()) {
             digest = completion.source_digest;
-            if (digest_hub) digest_hub->publish(digest, &owner);
         }
         // The root is read from the engine that comes back.
         if (completion.restart_required) return;
@@ -1604,27 +1595,6 @@ struct RenderingSettingsWidget::Impl {
             }
             return;
         }
-        if (id == 0 || id != request_id) return;
-        const auto kind = std::exchange(request_kind, Request::None);
-        request_id = 0;
-        const auto response =
-            Json::parse(bytes.constData(), bytes.constData() + bytes.size(), nullptr, false);
-        if (!response.is_object()) {
-            if (kind == Request::Result) {
-                ticket.clear();
-                poll->stop();
-            }
-            submitted.reset();
-            showError(owner.tr("The engine answered something that is not an object."));
-        } else if (kind == Request::Read) {
-            consumeRead(response);
-        } else if (kind == Request::Submit) {
-            consumeSubmit(response);
-        } else if (kind == Request::Result) {
-            consumeResult(response);
-        }
-        followWhenIdle();
-        controls();
     }
 
     void fail(qint64 id, const QString &message) {
@@ -1641,18 +1611,6 @@ struct RenderingSettingsWidget::Impl {
             context_request = 0;
             return;
         }
-        if (id == 0 || id != request_id) return;
-        const auto kind = std::exchange(request_kind, Request::None);
-        request_id = 0;
-        if (kind == Request::Result) {
-            ticket.clear();
-            poll->stop();
-        }
-        if (kind != Request::Read) submitted.reset();
-        showError(message);
-        if (kind == Request::Submit) read(false);
-        followWhenIdle();
-        controls();
     }
 
     void followWhenIdle() {
@@ -1680,6 +1638,7 @@ RenderingSettingsWidget::RenderingSettingsWidget(EmbeddedViewport *viewport, QWi
 RenderingSettingsWidget::~RenderingSettingsWidget() = default;
 
 void RenderingSettingsWidget::setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> digest) {
+    impl_->client.setRenderConfigDigest(digest);
     impl_->digest_hub = std::move(digest);
     if (impl_->digest_hub)
         impl_->digest_hub->subscribe(this, [impl = impl_.get()](const std::string &moved) {

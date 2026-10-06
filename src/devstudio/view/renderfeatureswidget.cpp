@@ -1,4 +1,5 @@
 #include "renderfeatureswidget.hpp"
+#include "rendereditticketclient.hpp"
 #include "featureparameterform.hpp"
 #include "featurerefusalfix.hpp"
 #include "fullscreenshadertemplate.hpp"
@@ -124,6 +125,13 @@ RenderEditCompletion completeEdit(const QJsonObject &response,
         });
 }
 
+RenderEditCompletion completeEdit(const nlohmann::json &response,
+                                  const EngineRestartAction &restart) {
+    return completeRenderEdit(response, [&restart](const std::string &line) {
+        if (restart) restart(QString::fromStdString(line));
+    });
+}
+
 // RSX: the editors Render features opens are given its restart.
 struct RestartsEngine {
     EngineRestartAction restart;
@@ -134,48 +142,35 @@ struct RestartsEngine {
 
 class FrameNodeOrderDialog final : public QDialog, public RestartsEngine {
   EmbeddedViewport &viewport;
-  std::function<void()> committed;
-  QString graph, digest, ticket;
+  RenderEditTicketClient client;
+  std::function<void(const std::string &)> committed;
+  QString graph, digest;
   const quint64 expected_generation;
   QJsonObject orders;
   QListWidget *nodes;
   QLabel *notice;
   QPushButton *up, *down, *apply, *reset, *retry;
-  QTimer poll;
-  qint64 request_id = 0;
-  enum class Request {
-    Context,
-    Submit,
-    Result
-  } request_kind = Request::Context;
+
+  enum class Request { Context, Submit };
 
   void controls() {
-    const bool idle = request_id == 0 && ticket.isEmpty();
+    const bool idle = !client.busy();
     const int row = nodes->currentRow();
     nodes->setEnabled(idle);
     up->setEnabled(idle && row > 0);
     down->setEnabled(idle && row >= 0 && row + 1 < nodes->count());
     apply->setEnabled(idle && viewport.rpcReady() && !digest.isEmpty());
     reset->setEnabled(apply->isEnabled());
-    retry->setEnabled(viewport.rpcReady() && request_id == 0);
+    retry->setEnabled(viewport.rpcReady() && !client.awaitingResponse());
   }
-  void request(Request kind, const QString &method,
-               const QJsonObject &params = {}) {
-    if (request_id)
-      return;
-    QString error;
-    request_kind = kind;
-    request_id = viewport.requestRpc(method, params, &error);
-    if (!request_id) {
-      poll.stop();
-      notice->setText(error);
-    }
+  void request(Request kind, const QString &method, const QJsonObject &params = {}) {
+    if (client.busy()) return;
+    const auto json = nlohmann::json::parse(QJsonDocument{params}.toJson(QJsonDocument::Compact).toStdString());
+    if (kind == Request::Submit) client.submit(method, json);
+    else client.read(method, json, [this](const auto &value) { consumeRead(value); });
     controls();
   }
-  void readResult() {
-    if (!ticket.isEmpty())
-      request(Request::Result, "get_edit_result", {{"ticket", ticket}});
-  }
+  void readResult() { client.resume(); }
   // FO-1s, decision 1 (engine FO-1): a refused order is one sentence, and
   // the two rows it put the wrong way round are red until a row moves or the
   // order is sent again.
@@ -224,58 +219,50 @@ class FrameNodeOrderDialog final : public QDialog, public RestartsEngine {
     request(Request::Submit, "edit_frame_node_order",
             {{"base_source_digest", digest}, {"orders", edited}});
   }
-  void receive(qint64 id, const QByteArray &bytes) {
-    if (!id || id != request_id)
-      return;
-    request_id = 0;
-    QString error;
-    const auto response = decodeObject(bytes, &error);
-    if (!response) {
-      poll.stop();
-      notice->setText(error);
-      controls();
-      return;
-    }
-    if (request_kind == Request::Context) {
+  void consumeRead(const nlohmann::json &value) {
+    const auto response = QJsonDocument::fromJson(QByteArray::fromStdString(value.dump())).object();
+
       const auto next_digest =
-          response->value("source_digest").toObject().value("hex").toString();
-      const auto published_generation = response->value("published_generation").toInteger(-1);
+          response.value("source_digest").toObject().value("hex").toString();
+      const auto published_generation = response.value("published_generation").toInteger(-1);
       digest.clear();
       if (published_generation <= 0 || static_cast<quint64>(published_generation) != expected_generation) {
         notice->setText(tr("The Frame Plan is stale. Refresh the Frame Plan and reopen this dialog."));
-      } else if (next_digest.isEmpty() || !response->value("orders").isObject()) {
+      } else if (next_digest.isEmpty() || !response.value("orders").isObject()) {
         notice->setText(tr("Invalid node order response."));
       } else {
         digest = next_digest;
-        orders = response->value("orders").toObject();
+        orders = response.value("orders").toObject();
         notice->setText(
             tr("Move nodes, then Apply. Data dependencies and the AS "
                "publication boundary are enforced by the compiler."));
       }
-    } else if (request_kind == Request::Submit) {
-      if (response->value("status").toString() == "accepted") {
-        ticket = response->value("ticket").toString();
-        if (ticket.isEmpty())
-          notice->setText(tr("The engine returned no edit ticket."));
-        else {
-          poll.start();
-          readResult();
-        }
-      } else
-        refused(*response);
-    } else if (response->value("status").toString() != "pending") {
-      poll.stop();
-      ticket.clear();
-      if (const auto completion = completeEdit(*response, restart);
+
+    controls();
+  }
+  void edited(const RenderEditTicketClient::Outcome &outcome) {
+    using Kind = RenderEditTicketClient::Kind;
+    if (outcome.kind == Kind::Accepted) {
+      controls();
+      return;
+    }
+    if (outcome.kind == Kind::Pending) return;
+    if ((outcome.kind == Kind::Failed && !(outcome.result.is_object() && outcome.result.contains("error"))) || outcome.kind == Kind::Unconfirmed || (outcome.kind == Kind::Refused && !outcome.error.empty())) {
+      notice->setText(QString::fromStdString(outcome.error));
+      controls();
+      return;
+    }
+    const auto response = QJsonDocument::fromJson(QByteArray::fromStdString(outcome.result.dump())).object();
+if (const auto completion = completeEdit(outcome.result, restart);
           completion.committed) {
         // RSX: Render features says the engine restarts; nothing is read
         // from the engine about to stop.
-        if (!completion.restart_required) committed();
+        if (!completion.restart_required) committed(completion.source_digest);
         close();
         return;
       }
-      refused(*response);
-    }
+      refused(response);
+
     controls();
   }
 
@@ -293,10 +280,11 @@ class FrameNodeOrderDialog final : public QDialog, public RestartsEngine {
   }
 
 public:
+  void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> hub) { client.setRenderConfigDigest(std::move(hub)); }
   FrameNodeOrderDialog(EmbeddedViewport &embedded, QWidget *parent,
                        QString graph_name, const QStringList &names, quint64 generation,
-                       std::function<void()> on_committed)
-      : QDialog(parent), viewport(embedded), committed(std::move(on_committed)),
+                       std::function<void(const std::string &)> on_committed)
+      : QDialog(parent), viewport(embedded), client(embedded, this), committed(std::move(on_committed)),
         graph(std::move(graph_name)), expected_generation(generation) {
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowTitle(tr("Node order: %1").arg(graph));
@@ -341,34 +329,25 @@ public:
     connect(apply, &QPushButton::clicked, this, [this] { submit(false); });
     connect(reset, &QPushButton::clicked, this, [this] { submit(true); });
     connect(retry, &QPushButton::clicked, this, [this] {
-      if (!ticket.isEmpty())
+      if (client.editing())
         readResult();
       else
         request(Request::Context, "get_frame_node_order");
     });
-    poll.setInterval(100);
-    connect(&poll, &QTimer::timeout, this, [this] { readResult(); });
-    connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded, this,
-            [this](qint64 id, const QByteArray &bytes) { receive(id, bytes); });
-    connect(&viewport, &EmbeddedViewport::inspectorRpcFailed, this,
-            [this](qint64 id, const QString &error) {
-              if (!id || id != request_id)
-                return;
-              request_id = 0;
-              poll.stop();
-              notice->setText(error);
-              controls();
-            });
-    connect(&viewport, &EmbeddedViewport::engineRpcBecameUnavailable, this,
-            [this] {
-              request_id = 0;
-              ticket.clear();
+
+    client.completed = [this](const auto &outcome) { edited(outcome); };
+    client.failed = [this](const QString &error) {
+      notice->setText(error);
+      controls();
+    };
+    client.unavailable = [this](const QString &message) {
+
               digest.clear();
-              poll.stop();
+
               notice->setText(tr("Engine disconnected. The order is retained; "
                                  "retry after reconnecting."));
               controls();
-            });
+            };
     connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable, this,
             [this] { controls(); });
     request(Request::Context, "get_frame_node_order");
@@ -377,7 +356,8 @@ public:
 
 class ComputeTaskDialog final : public QDialog, public RestartsEngine {
   EmbeddedViewport &viewport;
-  std::function<void()> committed;
+  RenderEditTicketClient client;
+  std::function<void(const std::string &)> committed;
   // Q-10: the rendering document's own reference, asked for each time it is
   // needed because Render features may learn it after this dialog opened.
   std::function<QString()> root_reference;
@@ -425,10 +405,9 @@ class ComputeTaskDialog final : public QDialog, public RestartsEngine {
   QHash<QString, TaskDraft> drafts;
   QHash<QString, QString> original_declarations;
   QHash<QString, TaskDraft> retained_drafts;
-  QString root_digest, ticket, requested_task;
-  QTimer poll;
-  qint64 request_id = 0;
-  enum class Request { Read, Submit, Result } request_kind = Request::Read;
+  QString root_digest, requested_task;
+
+  enum class Request { Read, Submit };
   int creationIndex() const {
     const int index = task_box->currentIndex() - tasks.size();
     return index >= 0 && index < 2 ? index : -1;
@@ -802,7 +781,7 @@ private:
     }
   }
   void controls() {
-    const bool idle = request_id == 0 && ticket.isEmpty();
+    const bool idle = !client.busy();
     task_box->setEnabled(idle);
     const bool creating = creationIndex() >= 0;
     const bool editable = creating || editableRow(selected());
@@ -825,7 +804,7 @@ private:
     view_field->setEnabled(dispatch_form->isEnabled());
     apply->setEnabled(idle && viewport.rpcReady() && editable &&
                       !root_digest.isEmpty());
-    refresh->setEnabled(viewport.rpcReady() && request_id == 0);
+    refresh->setEnabled(viewport.rpcReady() && !client.awaitingResponse());
     const bool from_node = !creating && graphNode(selected()).has_value();
     open_in_graph->setVisible(from_node);
     open_in_graph->setEnabled(from_node && static_cast<bool>(open_graph_node));
@@ -880,29 +859,17 @@ private:
     loadView();
     controls();
   }
-  void request(Request kind, const QString &method, QJsonObject params = {}) {
-    if (request_id)
-      return;
-    QString error;
-    request_kind = kind;
-    request_id = viewport.requestRpc(method, params, &error);
-    if (!request_id) {
-      if (kind == Request::Read)
-        discard_new_drafts_on_read = false;
-      poll.stop();
-      notice->setText(error);
-    } else if (kind == Request::Submit) {
-      submitted_retried = std::exchange(retrying, false);
-    }
+  void request(Request kind, const QString &method, const QJsonObject &params = {}) {
+    if (client.busy()) return;
+    const auto json = nlohmann::json::parse(QJsonDocument{params}.toJson(QJsonDocument::Compact).toStdString());
+    if (kind == Request::Submit) submitted_retried = std::exchange(retrying, false);
+    if (kind == Request::Submit) client.submit(method, json);
+    else client.read(method, json, [this](const auto &value) { consumeRead(value); });
     controls();
   }
-  void result() {
-    if (!ticket.isEmpty())
-      request(Request::Result, QStringLiteral("get_edit_result"),
-              {{"ticket", ticket}});
-  }
+  void result() { client.resume(); }
   void read() {
-    if (!ticket.isEmpty())
+    if (client.editing())
       result();
     else
       request(Request::Read, QStringLiteral("get_compute_task_authoring"));
@@ -996,7 +963,7 @@ private:
       removeTask();
     else
       submit();
-    if (std::exchange(retrying, false) && request_id == 0)
+    if (std::exchange(retrying, false) && !client.awaitingResponse())
       notice->setText(tr("The document changed outside this editor. Press "
                          "Refresh to read it again."));
   }
@@ -1020,7 +987,7 @@ private:
   void documentMoved(const std::string &digest) {
     if (root_digest.isEmpty() || root_digest == QString::fromStdString(digest))
       return;
-    if (request_id != 0 || !ticket.isEmpty() || retry_pending) {
+    if (client.busy() || retry_pending) {
       reread_when_idle = true;
       return;
     }
@@ -1031,7 +998,7 @@ private:
     read();
   }
   void followWhenIdle() {
-    if (!reread_when_idle || request_id != 0 || !ticket.isEmpty() ||
+    if (!reread_when_idle || client.busy() ||
         retry_pending)
       return;
     reread_when_idle = false;
@@ -1049,6 +1016,7 @@ private:
 
 public:
   void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> hub) {
+    client.setRenderConfigDigest(hub);
     digest_hub = std::move(hub);
     if (!digest_hub)
       return;
@@ -1073,24 +1041,12 @@ private:
              {"base_task_source_digest", draft.source_digest},
              {"task_name", submitted_name}});
   }
-  void receive(qint64 id, const QByteArray &bytes) {
-    if (!id || id != request_id)
-      return;
-    request_id = 0;
-    QString error;
-    const auto response = decodeObject(bytes, &error);
-    if (!response) {
-      if (request_kind == Request::Read)
-        discard_new_drafts_on_read = rebase_on_read = false;
-      poll.stop();
-      notice->setText(error);
-      controls();
-      return;
-    }
-    if (request_kind == Request::Read) {
+  void consumeRead(const nlohmann::json &value) {
+    const auto response = QJsonDocument::fromJson(QByteArray::fromStdString(value.dump())).object();
+
       const auto digest =
-          response->value("source_digest").toObject().value("hex").toString();
-      if (digest.isEmpty() || !response->value("tasks").isArray()) {
+          response.value("source_digest").toObject().value("hex").toString();
+      if (digest.isEmpty() || !response.value("tasks").isArray()) {
         discard_new_drafts_on_read = false;
         rebase_on_read = false;
         notice->setText(
@@ -1099,9 +1055,9 @@ private:
         const auto previous =
             requested_task.isEmpty() ? task_box->currentText() : requested_task;
         root_digest = digest;
-        tasks = response->value("tasks").toArray();
+        tasks = response.value("tasks").toArray();
         resource_catalog.clear();
-        for (const auto &entry : response->value("resources").toArray()) {
+        for (const auto &entry : response.value("resources").toArray()) {
           const auto resource = entry.toObject();
           resource_catalog.push_back({resource.value("name").toString(),
                                       resource.value("kind").toString()});
@@ -1164,20 +1120,24 @@ private:
           resumeRetry();
         }
       }
-    } else if (request_kind == Request::Submit) {
-      if (response->value("status").toString() == "accepted") {
-        ticket = response->value("ticket").toString();
-        if (!ticket.isEmpty()) {
-          poll.start();
-          result();
-        } else
-          notice->setText(tr("The engine returned no edit ticket."));
-      } else if (!refusedForMovedDocument(*response))
-        notice->setText(responseError(*response));
-    } else if (response->value("status").toString() != "pending") {
-      poll.stop();
-      ticket.clear();
-      if (const auto completion = completeEdit(*response, restart);
+
+    controls();
+    followWhenIdle();
+  }
+  void edited(const RenderEditTicketClient::Outcome &outcome) {
+    using Kind = RenderEditTicketClient::Kind;
+    if (outcome.kind == Kind::Accepted) {
+      controls();
+      return;
+    }
+    if (outcome.kind == Kind::Pending) return;
+    if ((outcome.kind == Kind::Failed && !(outcome.result.is_object() && outcome.result.contains("error"))) || outcome.kind == Kind::Unconfirmed || (outcome.kind == Kind::Refused && !outcome.error.empty())) {
+      notice->setText(QString::fromStdString(outcome.error));
+      controls();
+      return;
+    }
+    const auto response = QJsonDocument::fromJson(QByteArray::fromStdString(outcome.result.dump())).object();
+if (const auto completion = completeEdit(outcome.result, restart);
           completion.committed) {
         for (const auto &entry : tasks) {
           const auto task = entry.toObject();
@@ -1196,21 +1156,21 @@ private:
         if (completion.restart_required) {
           notice->setText(QString::fromStdString(completion.restart_line));
         } else {
-          committed();
+          committed(completion.source_digest);
           read();
         }
-      } else if (!refusedForMovedDocument(*response))
-        notice->setText(responseError(*response));
-    }
+      } else if (!refusedForMovedDocument(response))
+        notice->setText(responseError(response));
+
     controls();
     followWhenIdle();
   }
 
 public:
   ComputeTaskDialog(EmbeddedViewport &embedded, QWidget *parent, QString task,
-                    std::function<void()> on_committed, const QStringList &outputs = {},
+                    std::function<void(const std::string &)> on_committed, const QStringList &outputs = {},
                     std::function<QString()> root = {})
-      : QDialog(parent), viewport(embedded), committed(std::move(on_committed)),
+      : QDialog(parent), viewport(embedded), client(embedded, this), committed(std::move(on_committed)),
         root_reference(std::move(root)), requested_task(std::move(task)) {
     setAttribute(Qt::WA_DeleteOnClose);
     setWindowTitle(tr("Compute and ray tracing tasks"));
@@ -1352,7 +1312,7 @@ public:
             editor->toPlainText();
     });
     connect(refresh, &QPushButton::clicked, this, [this] {
-      if (!ticket.isEmpty()) {
+      if (client.editing()) {
         result();
         return;
       }
@@ -1373,32 +1333,22 @@ public:
             [this] { task_box->setCurrentIndex(tasks.size() + 1); });
     connect(remove, &QPushButton::clicked, this, [this] { removeTask(); });
     connect(apply, &QPushButton::clicked, this, [this] { submit(); });
-    poll.setInterval(100);
-    connect(&poll, &QTimer::timeout, this, [this] { result(); });
-    connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded, this,
-            [this](qint64 id, const QByteArray &bytes) { receive(id, bytes); });
-    connect(&viewport, &EmbeddedViewport::inspectorRpcFailed, this,
-            [this](qint64 id, const QString &error) {
-              if (!id || id != request_id)
-                return;
-              request_id = 0;
-              if (request_kind == Request::Read)
-                discard_new_drafts_on_read = rebase_on_read = false;
-              poll.stop();
-              notice->setText(error);
-              controls();
-            });
-    connect(&viewport, &EmbeddedViewport::engineRpcBecameUnavailable, this,
-            [this] {
-              request_id = 0;
+
+    client.completed = [this](const auto &outcome) { edited(outcome); };
+    client.failed = [this](const QString &error) {
+      discard_new_drafts_on_read = rebase_on_read = false;
+      notice->setText(error);
+      controls();
+    };
+    client.unavailable = [this](const QString &message) {
               discard_new_drafts_on_read = false;
-              ticket.clear();
+
               root_digest.clear();
-              poll.stop();
+
               notice->setText(tr("Engine disconnected. Local edits are "
                                  "retained; refresh after reconnecting."));
               controls();
-            });
+            };
     connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable, this,
             [this] { controls(); });
     read();
@@ -1407,11 +1357,13 @@ public:
 
 class PresetEditDialog final : public QDialog, public RestartsEngine {
 public:
+  void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> hub) { client.setRenderConfigDigest(std::move(hub)); }
   enum class Mode { Fork, Region };
 private:
   Mode mode;
   EmbeddedViewport &viewport;
-  std::function<void()> on_committed;
+  RenderEditTicketClient client;
+  std::function<void(const std::string &)> on_committed;
   QLabel *notice;
   QLineEdit *destination;
   QComboBox *regions = nullptr;
@@ -1422,39 +1374,29 @@ private:
   QLabel *provider_caption = nullptr;
   QPushButton *apply;
   QPushButton *refresh;
-  QTimer poll;
-  QString root_digest, preset_digest, ticket, committed_reference;
-  qint64 request_id = 0;
-  enum class Request { Context, Fork, Result } request_kind = Request::Context;
+
+  QString root_digest, preset_digest, committed_reference;
+
+  enum class Request { Context, Fork };
   void controls() {
-    const bool idle = request_id == 0 && ticket.isEmpty();
+    const bool idle = !client.busy();
     destination->setEnabled(idle);
     if (regions) regions->setEnabled(idle);
     if (providers) providers->setEnabled(idle);
     apply->setEnabled(idle && viewport.rpcReady() && !root_digest.isEmpty() &&
                       !preset_digest.isEmpty() && (!regions || regions->currentIndex() >= 0));
-    refresh->setEnabled(viewport.rpcReady() && request_id == 0);
+    refresh->setEnabled(viewport.rpcReady() && !client.awaitingResponse());
   }
-  void request(Request kind, const QString &method,
-               const QJsonObject &params = {}) {
-    if (request_id)
-      return;
-    QString error;
-    request_kind = kind;
-    request_id = viewport.requestRpc(method, params, &error);
-    if (!request_id) {
-      poll.stop();
-      notice->setText(error);
-    }
+  void request(Request kind, const QString &method, const QJsonObject &params = {}) {
+    if (client.busy()) return;
+    const auto json = nlohmann::json::parse(QJsonDocument{params}.toJson(QJsonDocument::Compact).toStdString());
+    if (kind == Request::Fork) client.submit(method, json);
+    else client.read(method, json, [this](const auto &value) { consumeRead(value); });
     controls();
   }
-  void result() {
-    if (!ticket.isEmpty())
-      request(Request::Result, QStringLiteral("get_edit_result"),
-              {{"ticket", ticket}});
-  }
+  void result() { client.resume(); }
   void read() {
-    if (!ticket.isEmpty())
+    if (client.editing())
       result();
     else
       request(Request::Context, QStringLiteral("get_render_authoring_context"));
@@ -1488,28 +1430,18 @@ private:
     }
     providers->setCurrentIndex(std::max(0, index));
   }
-  void receive(qint64 id, const QByteArray &bytes) {
-    if (!id || id != request_id)
-      return;
-    request_id = 0;
-    QString error;
-    const auto response = decodeObject(bytes, &error);
-    if (!response) {
-      poll.stop();
-      notice->setText(error);
-      controls();
-      return;
-    }
-    if (request_kind == Request::Context) {
+  void consumeRead(const nlohmann::json &value) {
+    const auto response = QJsonDocument::fromJson(QByteArray::fromStdString(value.dump())).object();
+
       root_digest.clear();
       preset_digest.clear();
-      if (response->value("config_kind").toString() != "preset") {
+      if (response.value("config_kind").toString() != "preset") {
         notice->setText(tr("This project uses a direct rendering config. There "
                            "is no preset to fork."));
       } else {
-        const auto preset = response->value("pipeline_preset").toObject();
+        const auto preset = response.value("pipeline_preset").toObject();
         root_digest =
-            response->value("source_digest").toObject()["hex"].toString();
+            response.value("source_digest").toObject()["hex"].toString();
         preset_digest = preset["source_digest"].toObject()["hex"].toString();
         notice->setText(
             tr("Source preset: %1\nCopy this preset into the project and "
@@ -1521,12 +1453,12 @@ private:
         if (mode == Mode::Region) {
           regions->clear();
           destination->clear();
-          fillProviders(response->value("region_providers").toArray());
+          fillProviders(response.value("region_providers").toArray());
           if (!preset["reference"].toString().startsWith(QStringLiteral("project://"))) {
             preset_digest.clear();
             notice->setText(tr("Fork the preset into the project before editing region replacements."));
           } else {
-            for (const auto &graph_value : response->value("graphs").toArray()) {
+            for (const auto &graph_value : response.value("graphs").toArray()) {
               const auto graph = graph_value.toObject();
               QStringList seen;
               for (const auto &pass_value : graph["passes"].toArray()) {
@@ -1550,21 +1482,24 @@ private:
           }
         }
       }
-    } else if (request_kind == Request::Fork) {
-      if (response->value("status").toString() == "accepted") {
-        ticket = response->value("ticket").toString();
-        committed_reference = response->value("preset_reference").toString();
-        if (!ticket.isEmpty()) {
-          poll.start();
-          result();
-        } else
-          notice->setText(tr("The engine returned no edit ticket."));
-      } else
-        notice->setText(responseError(*response));
-    } else if (response->value("status").toString() != "pending") {
-      poll.stop();
-      ticket.clear();
-      if (const auto completion = completeEdit(*response, restart);
+
+    controls();
+  }
+  void edited(const RenderEditTicketClient::Outcome &outcome) {
+    using Kind = RenderEditTicketClient::Kind;
+    if (outcome.kind == Kind::Accepted) {
+      committed_reference = QString::fromStdString(outcome.result.value("preset_reference", std::string{}));
+      controls();
+      return;
+    }
+    if (outcome.kind == Kind::Pending) return;
+    if ((outcome.kind == Kind::Failed && !(outcome.result.is_object() && outcome.result.contains("error"))) || outcome.kind == Kind::Unconfirmed || (outcome.kind == Kind::Refused && !outcome.error.empty())) {
+      notice->setText(QString::fromStdString(outcome.error));
+      controls();
+      return;
+    }
+    const auto response = QJsonDocument::fromJson(QByteArray::fromStdString(outcome.result.dump())).object();
+if (const auto completion = completeEdit(outcome.result, restart);
           completion.restart_required) {
         // RSX: written; the engine that comes back runs it.
         root_digest.clear();
@@ -1575,17 +1510,17 @@ private:
         preset_digest.clear();
         notice->setText(mode == Mode::Fork ? tr("Preset copied and selected: %1").arg(committed_reference)
                                           : tr("Region replacement saved. Refresh to edit another region."));
-        on_committed();
+        on_committed(completion.source_digest);
       } else
-        notice->setText(responseError(*response));
-    }
+        notice->setText(responseError(response));
+
     controls();
   }
 
 public:
   PresetEditDialog(EmbeddedViewport &embedded, QWidget *parent,
-                   std::function<void()> committed, Mode operation = Mode::Fork)
-      : QDialog(parent), mode(operation), viewport(embedded),
+                   std::function<void(const std::string &)> committed, Mode operation = Mode::Fork)
+      : QDialog(parent), mode(operation), viewport(embedded), client(embedded, this),
         on_committed(std::move(committed)) {
     setAttribute(Qt::WA_DeleteOnClose);
     setObjectName(mode == Mode::Fork ? QStringLiteral("pelican.presetFork") : QStringLiteral("pelican.regionReplacement"));
@@ -1646,30 +1581,21 @@ public:
                {"base_preset_digest", preset_digest},
                {"destination_reference", destination->text()}});
     });
-    poll.setInterval(100);
-    connect(&poll, &QTimer::timeout, this, [this] { result(); });
-    connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded, this,
-            [this](qint64 id, const QByteArray &bytes) { receive(id, bytes); });
-    connect(&viewport, &EmbeddedViewport::inspectorRpcFailed, this,
-            [this](qint64 id, const QString &error) {
-              if (!id || id != request_id)
-                return;
-              request_id = 0;
-              poll.stop();
-              notice->setText(error);
-              controls();
-            });
-    connect(
-        &viewport, &EmbeddedViewport::engineRpcBecameUnavailable, this, [this] {
-          request_id = 0;
-          poll.stop();
-          ticket.clear();
+
+    client.completed = [this](const auto &outcome) { edited(outcome); };
+    client.failed = [this](const QString &error) {
+      notice->setText(error);
+      controls();
+    };
+    client.unavailable = [this](const QString &message) {
+
+
           root_digest.clear();
           preset_digest.clear();
           notice->setText(tr(
               "Engine disconnected. Refresh the source after reconnecting."));
           controls();
-        });
+        };
     connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable, this,
             [this] { controls(); });
     read();
@@ -1678,6 +1604,7 @@ public:
 
 class CallableRecordsDialog final : public QDialog, public RestartsEngine {
   EmbeddedViewport &viewport;
+  RenderEditTicketClient client;
   QComboBox *task_box;
   QComboBox *record_box;
   QTableWidget *fields;
@@ -1686,41 +1613,32 @@ class CallableRecordsDialog final : public QDialog, public RestartsEngine {
   QPushButton *refresh;
   QPushButton *reset;
   QJsonArray tasks;
-  QTimer poll;
-  QString digest, ticket;
-  qint64 request_id = 0;
-  enum class Request { Read, Submit, Result } request_kind = Request::Read;
+
+  QString digest;
+
+  enum class Request { Read, Submit };
   void controls() {
-    const bool idle = request_id == 0 && ticket.isEmpty();
+    const bool idle = !client.busy();
     for (QWidget *widget :
          std::array<QWidget *, 4>{task_box, record_box, fields, reset})
       widget->setEnabled(idle);
     apply->setEnabled(idle && viewport.rpcReady() && !digest.isEmpty());
-    refresh->setEnabled(viewport.rpcReady() && request_id == 0);
+    refresh->setEnabled(viewport.rpcReady() && !client.awaitingResponse());
   }
-  void request(Request kind, const QString &method, QJsonObject params = {}) {
-    if (request_id)
-      return;
-    QString error;
-    request_kind = kind;
-    request_id = viewport.requestRpc(method, params, &error);
-    if (!request_id) {
-      poll.stop();
-      notice->setText(error);
-    }
+  void request(Request kind, const QString &method, const QJsonObject &params = {}) {
+    if (client.busy()) return;
+    const auto json = nlohmann::json::parse(QJsonDocument{params}.toJson(QJsonDocument::Compact).toStdString());
+    if (kind == Request::Submit) client.submit(method, json);
+    else client.read(method, json, [this](const auto &value) { consumeRead(value); });
     controls();
   }
   void read() {
-    if (!ticket.isEmpty())
+    if (client.editing())
       result();
     else
       request(Request::Read, QStringLiteral("get_ray_callable_records"));
   }
-  void result() {
-    if (!ticket.isEmpty())
-      request(Request::Result, QStringLiteral("get_edit_result"),
-              {{"ticket", ticket}});
-  }
+  void result() { client.resume(); }
   void showRecord() {
     fields->setRowCount(0);
     const int ti = task_box->currentIndex(), ri = record_box->currentIndex();
@@ -1831,26 +1749,16 @@ class CallableRecordsDialog final : public QDialog, public RestartsEngine {
     request(Request::Submit, QStringLiteral("edit_ray_callable_records"),
             {{"base_source_digest", digest}, {"task_records", mapping}});
   }
-  void receive(qint64 id, const QByteArray &bytes) {
-    if (!id || id != request_id)
-      return;
-    request_id = 0;
-    QString error;
-    const auto response = decodeObject(bytes, &error);
-    if (!response) {
-      poll.stop();
-      notice->setText(error);
-      controls();
-      return;
-    }
-    if (request_kind == Request::Read) {
+  void consumeRead(const nlohmann::json &value) {
+    const auto response = QJsonDocument::fromJson(QByteArray::fromStdString(value.dump())).object();
+
       const auto next_digest =
-          response->value("source_digest").toObject()["hex"].toString();
-      if (next_digest.isEmpty() || !response->value("tasks").isArray())
+          response.value("source_digest").toObject()["hex"].toString();
+      if (next_digest.isEmpty() || !response.value("tasks").isArray())
         notice->setText(tr("Invalid callable record document."));
       else {
         digest = next_digest;
-        tasks = response->value("tasks").toArray();
+        tasks = response.value("tasks").toArray();
         {
           const QSignalBlocker blocker(task_box);
           task_box->clear();
@@ -1860,35 +1768,39 @@ class CallableRecordsDialog final : public QDialog, public RestartsEngine {
         showTask();
         notice->setText(tasks.isEmpty()
                             ? tr("No tasks declare callable records.")
-                            : response->value("source_reference").toString());
+                            : response.value("source_reference").toString());
       }
-    } else if (request_kind == Request::Submit) {
-      if (response->value("status").toString() == "accepted") {
-        ticket = response->value("ticket").toString();
-        if (!ticket.isEmpty()) {
-          poll.start();
-          result();
-        } else
-          notice->setText(tr("The engine returned no edit ticket."));
-      } else
-        notice->setText(responseError(*response));
-    } else if (response->value("status").toString() != "pending") {
-      poll.stop();
-      ticket.clear();
-      if (const auto completion = completeEdit(*response, restart);
+
+    controls();
+  }
+  void edited(const RenderEditTicketClient::Outcome &outcome) {
+    using Kind = RenderEditTicketClient::Kind;
+    if (outcome.kind == Kind::Accepted) {
+      controls();
+      return;
+    }
+    if (outcome.kind == Kind::Pending) return;
+    if ((outcome.kind == Kind::Failed && !(outcome.result.is_object() && outcome.result.contains("error"))) || outcome.kind == Kind::Unconfirmed || (outcome.kind == Kind::Refused && !outcome.error.empty())) {
+      notice->setText(QString::fromStdString(outcome.error));
+      controls();
+      return;
+    }
+    const auto response = QJsonDocument::fromJson(QByteArray::fromStdString(outcome.result.dump())).object();
+if (const auto completion = completeEdit(outcome.result, restart);
           completion.restart_required)
         notice->setText(QString::fromStdString(completion.restart_line));
       else if (completion.committed)
         read();
       else
-        notice->setText(responseError(*response));
-    }
+        notice->setText(responseError(response));
+
     controls();
   }
 
 public:
+  void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> hub) { client.setRenderConfigDigest(std::move(hub)); }
   CallableRecordsDialog(EmbeddedViewport &embedded, QWidget *parent)
-      : QDialog(parent), viewport(embedded) {
+      : QDialog(parent), viewport(embedded), client(embedded, this) {
     setAttribute(Qt::WA_DeleteOnClose);
     setObjectName(QStringLiteral("pelican.callableRecords"));
     setWindowTitle(tr("Callable record initial values"));
@@ -1938,28 +1850,19 @@ public:
     });
     connect(refresh, &QPushButton::clicked, this, [this] { read(); });
     connect(apply, &QPushButton::clicked, this, [this] { submit(); });
-    poll.setInterval(100);
-    connect(&poll, &QTimer::timeout, this, [this] { result(); });
-    connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded, this,
-            [this](qint64 id, const QByteArray &bytes) { receive(id, bytes); });
-    connect(&viewport, &EmbeddedViewport::inspectorRpcFailed, this,
-            [this](qint64 id, const QString &error) {
-              if (!id || id != request_id)
-                return;
-              request_id = 0;
-              poll.stop();
-              notice->setText(error);
-              controls();
-            });
-    connect(
-        &viewport, &EmbeddedViewport::engineRpcBecameUnavailable, this, [this] {
-          request_id = 0;
-          ticket.clear();
+
+    client.completed = [this](const auto &outcome) { edited(outcome); };
+    client.failed = [this](const QString &error) {
+      notice->setText(error);
+      controls();
+    };
+    client.unavailable = [this](const QString &message) {
+
           digest.clear();
-          poll.stop();
+
           notice->setText(tr("Engine disconnected. Local edits are retained."));
           controls();
-        });
+        };
     connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable, this,
             [this] { controls(); });
     read();
@@ -1968,6 +1871,7 @@ public:
 
 class SceneAccelerationStructuresDialog final : public QDialog, public RestartsEngine {
     EmbeddedViewport &viewport;
+  RenderEditTicketClient client;
     QTableWidget *table;
     QTableWidget *connections;
     QLabel *notice;
@@ -1984,21 +1888,20 @@ class SceneAccelerationStructuresDialog final : public QDialog, public RestartsE
     QPushButton *remove;
     QPushButton *apply;
     QPushButton *refresh;
-    QTimer poll;
+
     QString digest;
-    QString ticket;
-    qint64 request_id = 0;
-    enum class Request { Read, Submit, Result } request_kind = Request::Read;
+
+    enum class Request { Read, Submit };
 
     void controls() {
-        const bool busy = request_id != 0 || !ticket.isEmpty();
+        const bool busy = client.busy();
         table->setEnabled(!busy);
         triangle_space->setEnabled(!busy && geometry_editable && !digest.isEmpty());
         procedural_space->setEnabled(!busy && procedural_editable && !digest.isEmpty());
         connections->setEnabled(!busy);
         add->setEnabled(!busy);
         remove->setEnabled(!busy);
-        refresh->setEnabled(viewport.rpcReady() && request_id == 0);
+        refresh->setEnabled(viewport.rpcReady() && !client.awaitingResponse());
         apply->setEnabled(viewport.rpcReady() && !busy && !digest.isEmpty());
     }
     void connectionOptions() {
@@ -2026,28 +1929,20 @@ class SceneAccelerationStructuresDialog final : public QDialog, public RestartsE
         table->setCellWidget(index, 1, value);
     }
     void request(Request kind, const QString &method, const QJsonObject &params = {}) {
-        if (request_id != 0) return;
-        QString error;
-        request_id = viewport.requestRpc(method, params, &error);
-        request_kind = kind;
-        if (!request_id) {
-            poll.stop();
-            notice->setText(error);
-        }
-        controls();
-    }
+    if (client.busy()) return;
+    const auto json = nlohmann::json::parse(QJsonDocument{params}.toJson(QJsonDocument::Compact).toStdString());
+    if (kind == Request::Submit) client.submit(method, json);
+    else client.read(method, json, [this](const auto &value) { consumeRead(value); });
+    controls();
+  }
     void read() {
-        if (!ticket.isEmpty()) {
+        if (client.editing()) {
             result();
             return;
         }
         request(Request::Read, QStringLiteral("get_scene_acceleration_structures"));
     }
-    void result() {
-        if (!ticket.isEmpty())
-            request(Request::Result, QStringLiteral("get_edit_result"),
-                    {{QStringLiteral("ticket"), ticket}});
-    }
+    void result() { client.resume(); }
     void submit() {
         QJsonArray definitions;
         QSet<QString> names;
@@ -2081,26 +1976,17 @@ class SceneAccelerationStructuresDialog final : public QDialog, public RestartsE
         }
         request(Request::Submit, QStringLiteral("edit_scene_acceleration_structures"), params);
     }
-    void receive(qint64 id, const QByteArray &bytes) {
-        if (id != request_id || !request_id) return;
-        request_id = 0;
-        QString error;
-        const auto response = decodeObject(bytes, &error);
-        if (!response) {
-            poll.stop();
-            notice->setText(error);
-            controls();
-            return;
-        }
-        if (request_kind == Request::Read) {
-            const auto next_digest = response->value(QStringLiteral("source_digest"))
+    void consumeRead(const nlohmann::json &value) {
+    const auto response = QJsonDocument::fromJson(QByteArray::fromStdString(value.dump())).object();
+
+            const auto next_digest = response.value(QStringLiteral("source_digest"))
                 .toObject().value(QStringLiteral("hex")).toString();
-            const auto definitions = response->value(QStringLiteral("definitions"));
+            const auto definitions = response.value(QStringLiteral("definitions"));
             if (next_digest.isEmpty() || !definitions.isArray()) {
                 notice->setText(tr("The engine did not return an editable scene AS document."));
             } else {
                 digest = next_digest;
-                const auto geometry = response->value(QStringLiteral("triangle_geometry")).toObject();
+                const auto geometry = response.value(QStringLiteral("triangle_geometry")).toObject();
                 original_space = geometry.value(QStringLiteral("space")).toString();
                 layout_digest = geometry.value(QStringLiteral("source_digest")).toObject().value(QStringLiteral("hex")).toString();
                 geometry_editable = geometry.value(QStringLiteral("editable")).toBool();
@@ -2108,7 +1994,7 @@ class SceneAccelerationStructuresDialog final : public QDialog, public RestartsE
                 triangle_source->setText(geometry_editable
                     ? geometry.value(QStringLiteral("source_reference")).toString()
                     : geometry.value(QStringLiteral("reason")).toString());
-                const auto procedural = response->value(QStringLiteral("procedural_geometry")).toObject();
+                const auto procedural = response.value(QStringLiteral("procedural_geometry")).toObject();
                 original_procedural_space = procedural.value(QStringLiteral("space")).toString();
                 procedural_editable = procedural.value(QStringLiteral("editable")).toBool();
                 procedural_space->setCurrentIndex(procedural_space->findData(original_procedural_space));
@@ -2122,7 +2008,7 @@ class SceneAccelerationStructuresDialog final : public QDialog, public RestartsE
                         definition.value(QStringLiteral("instance_mask")).toInt(255));
                 }
                 connections->setRowCount(0);
-                for (const auto &entry : response->value(QStringLiteral("task_connections")).toArray()) {
+                for (const auto &entry : response.value(QStringLiteral("task_connections")).toArray()) {
                     const auto task = entry.toObject();
                     const auto index = connections->rowCount();
                     connections->insertRow(index);
@@ -2136,34 +2022,36 @@ class SceneAccelerationStructuresDialog final : public QDialog, public RestartsE
                     connections->setCellWidget(index, 1, combo);
                 }
                 connectionOptions();
-                notice->setText(response->value(QStringLiteral("source_reference")).toString());
+                notice->setText(response.value(QStringLiteral("source_reference")).toString());
             }
-        } else if (request_kind == Request::Submit) {
-            if (response->value(QStringLiteral("status")).toString() == QStringLiteral("accepted")) {
-                ticket = response->value(QStringLiteral("ticket")).toString();
-                if (!ticket.isEmpty()) {
-                    notice->setText(tr("Applying scene acceleration structures..."));
-                    poll.start();
-                    result();
-                } else notice->setText(tr("The engine returned no edit ticket."));
-            } else notice->setText(responseError(*response));
-        } else {
-            const auto status = response->value(QStringLiteral("status")).toString();
-            if (status != QStringLiteral("pending")) {
-                poll.stop();
-                ticket.clear();
-                if (const auto completion = completeEdit(*response, restart);
+
+    controls();
+  }
+  void edited(const RenderEditTicketClient::Outcome &outcome) {
+    using Kind = RenderEditTicketClient::Kind;
+    if (outcome.kind == Kind::Accepted) {
+      notice->setText(tr("Applying scene acceleration structures..."));
+      controls();
+      return;
+    }
+    if (outcome.kind == Kind::Pending) return;
+    if ((outcome.kind == Kind::Failed && !(outcome.result.is_object() && outcome.result.contains("error"))) || outcome.kind == Kind::Unconfirmed || (outcome.kind == Kind::Refused && !outcome.error.empty())) {
+      notice->setText(QString::fromStdString(outcome.error));
+      controls();
+      return;
+    }
+    const auto response = QJsonDocument::fromJson(QByteArray::fromStdString(outcome.result.dump())).object();
+if (const auto completion = completeEdit(outcome.result, restart);
                     completion.restart_required)
                     notice->setText(QString::fromStdString(completion.restart_line));
                 else if (completion.committed) read();
-                else notice->setText(responseError(*response));
-            }
-        }
-        controls();
-    }
+                else notice->setText(responseError(response));
+    controls();
+  }
   public:
+    void setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> hub) { client.setRenderConfigDigest(std::move(hub)); }
     SceneAccelerationStructuresDialog(EmbeddedViewport &embedded, QWidget *parent)
-        : QDialog(parent), viewport(embedded) {
+        : QDialog(parent), viewport(embedded), client(embedded, this) {
         setAttribute(Qt::WA_DeleteOnClose);
         setObjectName(QStringLiteral("pelican.sceneAccelerationStructures"));
         setWindowTitle(tr("Scene acceleration structures"));
@@ -2223,7 +2111,7 @@ class SceneAccelerationStructuresDialog final : public QDialog, public RestartsE
         refresh->setToolTip(tr("Reload from the engine and replace local edits."));
         for (auto *button : {add, remove, refresh, apply}) buttons->addWidget(button);
         layout->addLayout(buttons);
-        poll.setInterval(100);
+
         connect(add, &QPushButton::clicked, this, [this] { row({}, 255); });
         connect(remove, &QPushButton::clicked, this, [this] {
             if (table->currentRow() >= 0) table->removeRow(table->currentRow());
@@ -2231,26 +2119,19 @@ class SceneAccelerationStructuresDialog final : public QDialog, public RestartsE
         });
         connect(refresh, &QPushButton::clicked, this, [this] { read(); });
         connect(apply, &QPushButton::clicked, this, [this] { submit(); });
-        connect(&poll, &QTimer::timeout, this, [this] { result(); });
-        connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded, this,
-            [this](qint64 id, const QByteArray &bytes) { receive(id, bytes); });
-        connect(&viewport, &EmbeddedViewport::inspectorRpcFailed, this,
-            [this](qint64 id, const QString &message) {
-                if (id != request_id || !id) return;
-                request_id = 0;
-                poll.stop();
-                notice->setText(message);
-                controls();
-            });
-        connect(&viewport, &EmbeddedViewport::engineRpcBecameUnavailable, this,
-            [this](const QString &message) {
-                request_id = 0;
-                ticket.clear();
+
+        client.completed = [this](const auto &outcome) { edited(outcome); };
+        client.failed = [this](const QString &error) {
+      notice->setText(error);
+      controls();
+    };
+        client.unavailable = [this](const QString &message) {
+
                 digest.clear();
-                poll.stop();
+
                 notice->setText(message);
                 controls();
-            });
+            };
         connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable, this, [this] { controls(); });
         controls();
         if (viewport.rpcReady()) read();
@@ -2336,6 +2217,9 @@ struct RenderFeaturesWidget::Impl {
     bool notice_sticky = false;
     QHash<qint64, PendingRequest> pending;
     quint64 refresh_generation = 0;
+    QString refresh_digest;
+    bool refresh_complete = false;
+    bool refresh_failed = false;
     // --- UX-10, decision 1: the open parameters dialog, and the change it
     // gathered that is not sent yet.
     struct LiveParameters {
@@ -2667,7 +2551,8 @@ struct RenderFeaturesWidget::Impl {
         fork_preset->setObjectName(QStringLiteral("pelican.renderFeatures.forkPreset"));
         actions->addWidget(fork_preset);
         QObject::connect(fork_preset, &QPushButton::clicked, &owner, [this] {
-            auto *dialog = new PresetEditDialog(viewport, &owner, [this] { requestRefresh(); });
+            auto *dialog = new PresetEditDialog(viewport, &owner, [this](const std::string &digest) { requestRefresh(QString::fromStdString(digest)); });
+            dialog->setRenderConfigDigest(digest_hub);
             dialog->setEngineRestartAction(restartAction());
             adoptHistoryActions(dialog);
             dialog->show();
@@ -2676,10 +2561,11 @@ struct RenderFeaturesWidget::Impl {
         region_replacements->setObjectName(QStringLiteral("pelican.renderFeatures.regionReplacements"));
         actions->addWidget(region_replacements);
         QObject::connect(region_replacements, &QPushButton::clicked, &owner, [this] {
-            auto *dialog = new PresetEditDialog(viewport, &owner, [this] {
-                requestRefresh();
+            auto *dialog = new PresetEditDialog(viewport, &owner, [this](const std::string &digest) {
+                requestRefresh(QString::fromStdString(digest));
                 emit owner.renderConfigCommitted();
             }, PresetEditDialog::Mode::Region);
+            dialog->setRenderConfigDigest(digest_hub);
             dialog->setEngineRestartAction(restartAction());
             adoptHistoryActions(dialog);
             dialog->show();
@@ -2691,6 +2577,7 @@ struct RenderFeaturesWidget::Impl {
         actions->addWidget(callable_records);
         QObject::connect(callable_records, &QPushButton::clicked, &owner, [this] {
             auto *dialog = new CallableRecordsDialog(viewport, &owner);
+            dialog->setRenderConfigDigest(digest_hub);
             dialog->setEngineRestartAction(restartAction());
             adoptHistoryActions(dialog);
             dialog->show();
@@ -2699,6 +2586,7 @@ struct RenderFeaturesWidget::Impl {
         actions->addWidget(scene_as);
         QObject::connect(scene_as, &QPushButton::clicked, &owner, [this] {
             auto *dialog = new SceneAccelerationStructuresDialog(viewport, &owner);
+            dialog->setRenderConfigDigest(digest_hub);
             dialog->setEngineRestartAction(restartAction());
             adoptHistoryActions(dialog);
             dialog->show();
@@ -2739,6 +2627,8 @@ struct RenderFeaturesWidget::Impl {
             &EmbeddedViewport::engineRpcBecameAvailable,
             &owner, [this] {
                 pending.clear();
+                refresh_digest.clear();
+                refresh_complete = false;
                 active_ticket.clear();
                 result_poll->stop();
                 requestRefresh();
@@ -2748,6 +2638,8 @@ struct RenderFeaturesWidget::Impl {
             &EmbeddedViewport::engineRpcBecameUnavailable,
             &owner, [this](const QString &message) {
                 pending.clear();
+                refresh_digest.clear();
+                refresh_complete = false;
                 active_ticket.clear();
                 result_poll->stop();
                 can_edit = false;
@@ -2817,6 +2709,7 @@ struct RenderFeaturesWidget::Impl {
         const auto id = viewport.requestRpc(
             method, params, &error);
         if (id == 0) {
+            if (generation != 0) refresh_failed = true;
             showError(error);
             return 0;
         }
@@ -2827,12 +2720,33 @@ struct RenderFeaturesWidget::Impl {
         return id;
     }
 
-    void requestRefresh() {
+    bool refreshInFlight() const {
+        for (const auto &request : pending)
+            if (request.refresh_generation == refresh_generation && request.refresh_generation != 0)
+                return true;
+        return false;
+    }
+
+    void finishRefresh() {
+        if (!refreshInFlight() && !refresh_failed && have_current) {
+            // A read may return a newer revision than the notification named.
+            refresh_digest = source_digest;
+            refresh_complete = true;
+        }
+    }
+
+    void requestRefresh(const QString &digest = {}) {
         if (!viewport.rpcReady()) {
             showError(owner.tr(
                 "The engine RPC connection is not ready."));
             return;
         }
+        // Explicit Refresh and domain retries (no digest) still read again.
+        // A hub notification and its completion callback name the same revision.
+        if (!digest.isEmpty() && digest == refresh_digest &&
+            (refreshInFlight() || refresh_complete)) return;
+        refresh_digest = digest;
+        refresh_complete = refresh_failed = false;
         ++refresh_generation;
         have_current = false;
         have_catalog = false;
@@ -3781,26 +3695,26 @@ struct RenderFeaturesWidget::Impl {
         if (found == pending.end()) return;
         const auto request = found.value();
         pending.erase(found);
+        if (request.refresh_generation != 0 && request.refresh_generation != refresh_generation) return;
         QString error;
         const auto decoded = decodeObject(
             result_json, &error);
         if (!decoded) {
+            if (request.refresh_generation != 0) refresh_failed = true;
             showError(error);
             updateControls();
             return;
         }
-        if (request.refresh_generation != 0 &&
-            request.refresh_generation != refresh_generation) {
-            return;
-        }
         if (request.kind == RequestKind::Catalog) {
             owner.receiveCatalogResult(result_json);
+            finishRefresh();
             return;
         }
         if (request.kind == RequestKind::Templates) {
             templates = graphTemplatesFromResponse(nlohmann::json::parse(
                 result_json.toStdString(), nullptr, false));
             have_templates = true;
+            finishRefresh();
             updateControls();
             return;
         }
@@ -3839,6 +3753,7 @@ struct RenderFeaturesWidget::Impl {
         case RequestKind::ChainSubmit:
             break;
         }
+        if (request.refresh_generation != 0) finishRefresh();
         followWhenIdle();
         updateControls();
         flushLiveParameters();
@@ -3874,8 +3789,11 @@ struct RenderFeaturesWidget::Impl {
                         const QString &message) {
         const auto found = pending.find(request_id);
         if (found == pending.end()) return;
+        const auto generation = found->refresh_generation;
         const auto kind = found->kind;
         pending.erase(found);
+        if (generation != 0 && generation != refresh_generation) return;
+        if (generation != 0) refresh_failed = true;
         // LP-4f2: an engine without get_graph_templates offers no loop
         // version; the panel is otherwise as it was.
         if (kind == RequestKind::Templates) {
@@ -3951,6 +3869,7 @@ struct RenderFeaturesWidget::Impl {
         const auto decoded = decodeObject(
             result_json, &error);
         if (!decoded) {
+            refresh_failed = true;
             showError(error);
             updateControls();
             return;
@@ -4035,7 +3954,7 @@ struct RenderFeaturesWidget::Impl {
             refresh_when_idle = true;
             return;
         }
-        requestRefresh();
+        requestRefresh(QString::fromStdString(digest));
     }
 
     void followWhenIdle() {
@@ -4424,8 +4343,8 @@ void RenderFeaturesWidget::editComputeTask(const QString &name) {
 }
 
 void RenderFeaturesWidget::editComputeTaskConnection(const QString &name, const QStringList &outputs) {
-    auto *dialog = new ComputeTaskDialog(impl_->viewport, this, name, [this] {
-        impl_->requestRefresh();
+    auto *dialog = new ComputeTaskDialog(impl_->viewport, this, name, [this](const std::string &digest) {
+        impl_->requestRefresh(QString::fromStdString(digest));
         emit renderConfigCommitted();
     }, outputs, [this] { return impl_->root_reference; });
     dialog->setGraphNodeOpenAction(impl_->graph_node_open_action);
@@ -4438,10 +4357,11 @@ void RenderFeaturesWidget::editComputeTaskConnection(const QString &name, const 
 }
 
 void RenderFeaturesWidget::editFrameNodeOrder(const QString &graph, const QStringList &names, quint64 generation) {
-    auto *dialog = new FrameNodeOrderDialog(impl_->viewport, this, graph, names, generation, [this] {
-        impl_->requestRefresh();
+    auto *dialog = new FrameNodeOrderDialog(impl_->viewport, this, graph, names, generation, [this](const std::string &digest) {
+        impl_->requestRefresh(QString::fromStdString(digest));
         emit renderConfigCommitted();
     });
+    dialog->setRenderConfigDigest(impl_->digest_hub);
     dialog->setEngineRestartAction(impl_->restartAction());
     impl_->adoptHistoryActions(dialog);
     dialog->show();

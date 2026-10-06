@@ -20,6 +20,8 @@
 #include "renderedithistory.hpp"
 #include "renderfeatureswidget.hpp"
 #include "renderingsettingswidget.hpp"
+#include "raylayoutwidget.hpp"
+#include "raylayoutmodel.hpp"
 
 // Everything embeddedviewport.hpp includes, first, so that only its own class
 // is opened up (as in the Task Editor's test).
@@ -1826,6 +1828,130 @@ TEST_CASE("UX-13d decisions 2 and 3: a colour target the catalog types as a colo
     CHECK(legacy.at(0).at("op") == "set_node_parameters");
     CHECK(legacy.at(0).at("parameters").at("type") == ColorSignal);
     CHECK(legacy.at(1) == connect);
+}
+
+
+TEST_CASE("RT-A Settings resumes unconfirmed polls then reads and sends its queued edit", "[devstudio][rta][widget]") {
+    Transport engine;
+    RenderingSettingsWidget settings{&engine.viewport};
+    auto hub = std::make_shared<RenderConfigDigest>();
+    settings.setRenderConfigDigest(hub);
+    settingsRead(engine, RootA, {{"draw_sort", DefaultDrawSort}});
+    auto &sort = required<QComboBox>(settings, "pelican.renderingSettings.draw_sort");
+    auto &resolver = required<QComboBox>(settings, "pelican.renderingSettings.resolver_version");
+    auto &notice = required<QLabel>(settings, "pelican.renderingSettings.notice");
+    sort.setCurrentIndex(0);
+    const auto edit = engine.next("edit_rendering_keys");
+    REQUIRE(edit);
+    engine.answer(*edit, {{"status", "accepted"}, {"ticket", "settings-retry"}});
+    auto poll = engine.next("get_edit_result");
+    REQUIRE(poll);
+    emit engine.viewport.inspectorRpcSucceeded(poll->at("id").get<qint64>(), "invalid JSON");
+    const auto first_error = notice.text();
+    REQUIRE_FALSE(first_error.isEmpty());
+    // This programmatic change reaches the same queued path as a field edit.
+    REQUIRE(resolver.count() > 1);
+    resolver.setCurrentIndex(1);
+    const auto queued_value = Json::parse(resolver.currentData().toString().toStdString());
+    hub->publish(RootB); // read_when_idle while the original ticket is busy.
+    for (const auto &result : {Json{{"error", "temporary service error"}}, Json{{"status", "unexpected"}}}) {
+        QElapsedTimer interval;
+        interval.start();
+        poll = engine.next("get_edit_result", 1500);
+        REQUIRE(poll);
+        CHECK(interval.elapsed() >= 400);
+        CHECK(poll->at("params") == Json{{"ticket", "settings-retry"}});
+        CHECK(notice.text() == first_error);
+        engine.answer(*poll, result);
+    }
+    CHECK_FALSE(engine.next("get_render_documents", 100));
+    CHECK_FALSE(engine.next("edit_rendering_keys", 100));
+    poll = engine.next("get_edit_result", 1500);
+    REQUIRE(poll);
+    const bool committed = GENERATE(false, true);
+    engine.answer(*poll, committed ? liveCommit(RootB) :
+        Json{{"status", "rejected"}, {"error", {{"code", "gate_closed"}, {"message", "refused"}}}});
+    settingsRead(engine, RootB, Json::object());
+    const auto queued = engine.next("edit_rendering_keys");
+    REQUIRE(queued);
+    CHECK(queued->at("params") == Json{{"base_source_digest", RootB}, {"set", {{"resolver_version", queued_value}}}});
+    engine.answer(*queued, liveCommit(RootC));
+    settingsRead(engine, RootC, {{"resolver_version", queued_value}});
+    CHECK(resolver.isEnabled());
+    CHECK(hub->current() == RootC);
+}
+
+TEST_CASE("RT-A Ray layout resumes the same unconfirmed sequence and enables editing", "[devstudio][rta][widget]") {
+    Transport engine;
+    RayLayoutWidget ray{&engine.viewport};
+    auto layout = defaultRayLayout();
+    const auto read = [&](const std::string &digest) {
+        const auto request = engine.next("get_ray_layout");
+        REQUIRE(request);
+        engine.answer(*request, {{"source_digest", {{"hex", digest}}}, {"mode", "layout"},
+            {"layout", {{"reference", "project://passes/ray_layout.json"}, {"digest", digest}, {"document", layout}}},
+            {"bindings", nullptr}, {"selectable_materials", Json::array()}, {"selectable_procedural_assets", Json::array()}});
+        const auto documents = engine.next("get_render_documents");
+        REQUIRE(documents);
+        engine.answer(*documents, {{"documents", Json::array()}});
+    };
+    read(RootA);
+    auto &name = required<QLineEdit>(ray, "pelican.rayLayout.group.default.name");
+    REQUIRE(name.isEnabled());
+    name.setText("renamed");
+    emit name.editingFinished();
+    const auto edit = engine.next("edit_ray_layout");
+    REQUIRE(edit);
+    engine.answer(*edit, {{"status", "accepted"}, {"ticket", "ray-retry"}});
+    auto poll = engine.next("get_edit_result");
+    REQUIRE(poll);
+    emit engine.viewport.inspectorRpcSucceeded(poll->at("id").get<qint64>(), "invalid JSON");
+    auto &notice = required<QLabel>(ray, "pelican.rayLayout.notice");
+    const auto first_error = notice.text();
+    ray.refresh();
+    for (const auto &result : {Json{{"error", "temporary service error"}}, Json{{"status", "unexpected"}}}) {
+        CHECK_FALSE(name.isEnabled());
+        poll = engine.next("get_edit_result", 1500);
+        REQUIRE(poll);
+        CHECK(poll->at("params") == Json{{"ticket", "ray-retry"}});
+        engine.answer(*poll, result);
+        CHECK(notice.text() == first_error);
+    }
+    poll = engine.next("get_edit_result", 1500);
+    REQUIRE(poll);
+    engine.answer(*poll, liveCommit(RootB));
+    layout["groups"][0]["name"] = "renamed";
+    layout["default_group"] = "renamed";
+    read(RootB);
+    auto &next = required<QLineEdit>(ray, "pelican.rayLayout.group.renamed.name");
+    REQUIRE(next.isEnabled());
+    next.setText("again");
+    emit next.editingFinished();
+    REQUIRE(engine.next("edit_ray_layout"));
+}
+
+
+TEST_CASE("RT-A Settings engine loss cancels the unconfirmed resume reservation", "[devstudio][rta][widget]") {
+    Transport engine;
+    RenderingSettingsWidget settings{&engine.viewport};
+    settingsRead(engine, RootA, {{"draw_sort", DefaultDrawSort}});
+    auto &sort = required<QComboBox>(settings, "pelican.renderingSettings.draw_sort");
+    sort.setCurrentIndex(0);
+    auto edit = engine.next("edit_rendering_keys");
+    REQUIRE(edit);
+    engine.answer(*edit, {{"status", "accepted"}, {"ticket", "lost-engine"}});
+    auto poll = engine.next("get_edit_result");
+    REQUIRE(poll);
+    emit engine.viewport.inspectorRpcFailed(poll->at("id").get<qint64>(), "temporary service error");
+    engine.viewport.rpc_ready_ = false;
+    emit engine.viewport.engineRpcBecameUnavailable("engine lost");
+    CHECK_FALSE(engine.next("get_edit_result", 650));
+    engine.answer(*poll, liveCommit(RootB)); // old reply after abandon
+    CHECK_FALSE(sort.isEnabled());
+    engine.viewport.rpc_ready_ = true;
+    emit engine.viewport.engineRpcBecameAvailable();
+    settingsRead(engine, RootB, {{"draw_sort", DefaultDrawSort}});
+    CHECK(sort.isEnabled());
 }
 
 } // namespace PelicanStudio

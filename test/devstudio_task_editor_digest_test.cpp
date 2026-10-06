@@ -49,6 +49,8 @@
 #include <nlohmann/json.hpp>
 
 #include <deque>
+#include <algorithm>
+#include <vector>
 #include <memory>
 #include <optional>
 #include <string>
@@ -106,9 +108,10 @@ struct Rig {
         std::make_shared<RenderConfigDigest>();
     std::unique_ptr<RenderFeaturesWidget> features;
     std::deque<Json> pending;
+    std::vector<Json> requests;
     QString buffer;
 
-    Rig() {
+    Rig(bool hub = true) {
         QObject::connect(&viewport, &EmbeddedViewport::engineStandardErrorReceived,
                          [this](const QString &text) { receive(text); });
         QString error;
@@ -118,7 +121,7 @@ struct Rig {
         REQUIRE(viewport.process_.waitForStarted(5000));
         viewport.rpc_ready_ = true;
         features = std::make_unique<RenderFeaturesWidget>(&viewport);
-        features->setRenderConfigDigest(digest);
+        if (hub) features->setRenderConfigDigest(digest);
     }
 
     ~Rig() { features.reset(); }
@@ -130,8 +133,11 @@ struct Rig {
             const QString line = buffer.left(end).trimmed();
             buffer.remove(0, end + 1);
             const QString prefix = QStringLiteral("rpc-hold-request:");
-            if (line.startsWith(prefix))
-                pending.push_back(Json::parse(line.mid(prefix.size()).toStdString()));
+            if (line.startsWith(prefix)) {
+                auto request = Json::parse(line.mid(prefix.size()).toStdString());
+                requests.push_back(request);
+                pending.push_back(std::move(request));
+            }
         }
     }
 
@@ -148,6 +154,31 @@ struct Rig {
                 if (request.value("method", std::string{}) == method) return request;
             }
             if (clock.elapsed() >= milliseconds) return std::nullopt;
+            QTest::qWait(5);
+        }
+    }
+
+    std::size_t count(const std::string &method) const {
+        return std::count_if(requests.begin(), requests.end(), [&](const auto &request) {
+            return request.value("method", std::string{}) == method;
+        });
+    }
+
+    Json take(const std::string &method, int milliseconds = 1500) {
+        QElapsedTimer clock;
+        clock.start();
+        for (;;) {
+            QApplication::processEvents();
+            const auto found = std::find_if(pending.begin(), pending.end(), [&](const auto &request) {
+                return request.value("method", std::string{}) == method;
+            });
+            if (found != pending.end()) {
+                auto request = *found;
+                pending.erase(found);
+                return request;
+            }
+            INFO(method);
+            REQUIRE(clock.elapsed() < milliseconds);
             QTest::qWait(5);
         }
     }
@@ -719,4 +750,122 @@ TEST_CASE("FO-1s decision 1: a refused node order is one sentence by its reason,
           "shade must stay before sprite: the stages of a frame run in a fixed order (__anchor_sprite stands "
           "between them) (frame_node_order.conflicts_dependency@1).");
 }
+
+TEST_CASE("RT-A dialog unconfirmed recovery coalesces one feature refresh per committed digest", "[devstudio][rta][task-editor][widget]") {
+    const bool hub = GENERATE(false, true);
+    const int kind = GENERATE(0, 1, 2); // FrameNodeOrder, ComputeTask, Preset.
+    INFO("hub=" << hub << " dialog=" << kind);
+    Rig rig{hub};
+    const std::vector<std::string> methods{"can_edit", "get_render_features", "list_render_features", "get_graph_templates"};
+    const auto refresh = [&](const std::string &digest) {
+        rig.answer(rig.take("can_edit"), {{"can_edit", true}});
+        rig.answer(rig.take("get_render_features"), {{"source_reference", "passes/main.json"},
+            {"source_digest", {{"hex", digest}}}, {"feature_instances", Json::array({
+                {{"index", 0}, {"reference", "engine://features/blur.json"}, {"editable", false}, {"removable", true}, {"scope", "root"}}})}});
+        rig.answer(rig.take("list_render_features"), {{"features", Json::array({
+            {{"name", "Blur " + digest.substr(0, 1)}, {"reference", "engine://features/blur.json"}, {"available", true}}})}});
+        rig.answer(rig.take("get_graph_templates"), {{"templates", Json::array()}});
+    };
+    refresh(RootA);
+    QDialog *dialog = nullptr;
+    std::string submit;
+    const char *apply_name = nullptr;
+    if (kind == 0) {
+        rig.features->editFrameNodeOrder("main_render", {"left", "right", "present"}, 5);
+        rig.answer(rig.take("get_frame_node_order"), {{"published_generation", 5}, {"source_digest", {{"hex", RootA}}}, {"orders", Json::object()}});
+        dialog = rig.features->findChild<QDialog *>("pelican.frameNodeOrder");
+        REQUIRE(dialog);
+        auto &nodes = required<QListWidget>(*dialog, "pelican.frameNodeOrder.nodes");
+        nodes.setCurrentRow(2);
+        required<QPushButton>(*dialog, "pelican.frameNodeOrder.up").click();
+        submit = "edit_frame_node_order";
+        apply_name = "pelican.frameNodeOrder.apply";
+    } else if (kind == 1) {
+        rig.features->editComputeTask("blur");
+        rig.answer(rig.take("get_compute_task_authoring"), taskContext(RootA));
+        dialog = rig.editor();
+        REQUIRE(dialog);
+        required<QPlainTextEdit>(*dialog, "pelican.computeTasks.declaration").setPlainText(
+            QString::fromStdString(blurDeclaration("project://shaders/blur_wide").dump(2)));
+        submit = "edit_compute_task";
+        apply_name = "pelican.computeTasks.apply";
+    } else {
+        required<QPushButton>(*rig.features, "pelican.renderFeatures.forkPreset").click();
+        rig.answer(rig.take("get_render_authoring_context"), {{"config_kind", "preset"}, {"source_digest", {{"hex", RootA}}},
+            {"pipeline_preset", {{"reference", "engine://render_pipelines/hybrid_v1.json"}, {"source_digest", {{"hex", TaskDigest}}}}}});
+        dialog = rig.features->findChild<QDialog *>("pelican.presetFork");
+        REQUIRE(dialog);
+        submit = "fork_render_pipeline";
+        apply_name = "pelican.presetFork.apply";
+    }
+    auto &apply = required<QPushButton>(*dialog, apply_name);
+    REQUIRE(apply.isEnabled());
+    apply.click();
+    rig.answer(rig.take(submit), {{"status", "accepted"}, {"ticket", "dialog-retry"}});
+    auto poll = rig.take("get_edit_result");
+    emit rig.viewport.inspectorRpcSucceeded(poll.at("id").get<qint64>(), "invalid JSON");
+    for (const auto &result : {Json{{"error", "temporary service error"}}, Json{{"status", "unexpected"}}}) {
+        CHECK_FALSE(apply.isEnabled());
+        poll = rig.take("get_edit_result");
+        CHECK(poll.at("params") == Json{{"ticket", "dialog-retry"}});
+        rig.answer(poll, result);
+    }
+    poll = rig.take("get_edit_result");
+    std::vector<std::size_t> before;
+    for (const auto &method : methods) before.push_back(rig.count(method));
+    rig.answer(poll, {{"status", "committed"}, {"committed", true}, {"restart_required", false},
+                     {"published_generation", 6}, {"source_digest", {{"hex", RootB}}}});
+    refresh(RootB);
+    if (kind == 1) rig.answer(rig.take("get_compute_task_authoring"), taskContext(RootB));
+    QTest::qWait(100);
+    for (std::size_t i = 0; i < methods.size(); ++i) {
+        INFO("first commit: " << methods[i]);
+        CHECK(rig.count(methods[i]) == before[i] + 1);
+    }
+    // A second successful dialog completion naming the already fetched
+    // revision must also be suppressed after all four responses have arrived.
+    rig.features->editFrameNodeOrder("main_render", {"left", "right"}, 6);
+    rig.answer(rig.take("get_frame_node_order"), {{"published_generation", 6}, {"source_digest", {{"hex", RootB}}}, {"orders", Json::object()}});
+    auto *same = rig.features->findChild<QDialog *>("pelican.frameNodeOrder");
+    REQUIRE(same);
+    auto &same_nodes = required<QListWidget>(*same, "pelican.frameNodeOrder.nodes");
+    same_nodes.setCurrentRow(1);
+    required<QPushButton>(*same, "pelican.frameNodeOrder.up").click();
+    required<QPushButton>(*same, "pelican.frameNodeOrder.apply").click();
+    rig.answer(rig.take("edit_frame_node_order"), {{"status", "committed"}, {"committed", true},
+        {"source_digest", {{"hex", RootB}}}, {"no_change", true}});
+    QTest::qWait(100);
+    for (std::size_t i = 0; i < methods.size(); ++i) {
+        INFO("same digest after completion: " << methods[i]);
+        CHECK(rig.count(methods[i]) == before[i] + 1);
+    }
+    // A reader telling another revision still starts a fresh set.
+    if (hub) {
+        rig.digest->publish(RootC);
+        refresh(RootB); // The read returned B while the notification named C.
+        if (kind == 1) rig.answer(rig.take("get_compute_task_authoring"), taskContext(RootB));
+        rig.digest->publish(RootC); // C has not actually been fetched yet.
+        refresh(RootC);
+        if (kind == 1) rig.answer(rig.take("get_compute_task_authoring"), taskContext(RootC));
+        rig.digest->publish(RootB);
+        refresh(RootB);
+        if (kind == 1) rig.answer(rig.take("get_compute_task_authoring"), taskContext(RootB));
+    }
+    QTest::qWait(100);
+    for (std::size_t i = 0; i < methods.size(); ++i) {
+        INFO(methods[i]);
+        CHECK(rig.count(methods[i]) == before[i] + (hub ? 4 : 1));
+    }
+    auto &current = required<QListWidget>(*rig.features, "pelican.renderFeatures.current");
+    REQUIRE(current.count() == 1);
+    CHECK(current.item(0)->text() == "Blur b");
+    CHECK(required<QPushButton>(*rig.features, "pelican.renderFeatures.forkPreset").isEnabled());
+    if (hub) CHECK(rig.digest->current() == RootB);
+    // Without a hub, the displayed revision is used by the next real edit.
+    current.setCurrentRow(0);
+    required<QPushButton>(*rig.features, "pelican.renderFeatures.remove").click();
+    required<QPushButton>(*rig.features, "pelican.renderFeatures.apply").click();
+    CHECK(rig.take("edit_render_features").at("params").at("base_source_digest") == RootB);
+}
+
 } // namespace PelicanStudio

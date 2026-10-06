@@ -1,4 +1,5 @@
 #include "raylayoutwidget.hpp"
+#include "rendereditticketclient.hpp"
 
 #include "panelhelp.hpp"
 #include "inspectormodel.hpp"
@@ -128,10 +129,10 @@ QString refusalLine(const Json &response) {
 } // namespace
 
 struct RayLayoutWidget::Impl {
-    enum class Request { None, Submit, Result };
 
     RayLayoutWidget &owner;
     EmbeddedViewport &viewport;
+    RenderEditTicketClient client;
     std::shared_ptr<RenderConfigDigest> digest_hub;
     std::function<void(const QString &)> engine_restart_action;
     std::function<void(const QString &)> show_document_action;
@@ -150,7 +151,6 @@ struct RayLayoutWidget::Impl {
     QVBoxLayout *tables_layout = nullptr;
     QWidget *tables = nullptr;
     QLabel *notice = nullptr;
-    QTimer *poll = nullptr;
     QPointer<QDialog> dialog;
 
     // --- What was read.
@@ -163,15 +163,12 @@ struct RayLayoutWidget::Impl {
     bool read_again = false;
 
     // --- What is in flight.
-    qint64 request_id = 0;
-    Request request_kind = Request::None;
-    QString ticket;
     std::optional<RayLayoutPlan> submitted;
     std::optional<RayLayoutRead> submitted_from;
     // Decision 7: the reads before the edits that rewrote procedural records.
     QString pending_reveal;
 
-    Impl(RayLayoutWidget &widget, EmbeddedViewport &embedded) : owner{widget}, viewport{embedded} {
+    Impl(RayLayoutWidget &widget, EmbeddedViewport &embedded) : owner{widget}, viewport{embedded}, client{embedded, &widget} {
         owner.setObjectName(QStringLiteral("pelican.rayLayout"));
         owner.setFont(studioPanelFont());
         auto *layout = new QVBoxLayout(&owner);
@@ -240,23 +237,20 @@ struct RayLayoutWidget::Impl {
             if (acceleration_action) acceleration_action();
         });
 
-        poll = new QTimer(&owner);
-        poll->setInterval(25);
-        QObject::connect(poll, &QTimer::timeout, &owner, [this] { requestResult(); });
+
         QObject::connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable, &owner, [this] {
             forget();
             restart_asked = false;
             read();
         });
-        QObject::connect(&viewport, &EmbeddedViewport::engineRpcBecameUnavailable, &owner, [this](const QString &) {
+        client.unavailable = [this](const QString &message) {
             forget();
             read_state.reset();
             fill();
-        });
-        QObject::connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded, &owner,
-                         [this](qint64 id, const QByteArray &bytes) { receive(id, bytes); });
-        QObject::connect(&viewport, &EmbeddedViewport::inspectorRpcFailed, &owner,
-                         [this](qint64 id, const QString &message) { fail(id, message); });
+        };
+        client.completed = [this](const auto &outcome) { edited(outcome); };
+        client.unhandledResult = [this](qint64 id, const QByteArray &bytes) { receive(id, bytes); };
+        client.unhandledFailure = [this](qint64 id, const QString &message) { fail(id, message); };
         fill();
         if (viewport.rpcReady()) read();
     }
@@ -270,19 +264,16 @@ struct RayLayoutWidget::Impl {
     void showInformation(const QString &message) { say(QStringLiteral("color: #4f7cac;"), message); }
     void showSuccess(const QString &message) { say(QStringLiteral("color: #388e3c;"), message); }
 
-    [[nodiscard]] bool busy() const { return request_id != 0 || !ticket.isEmpty(); }
+    [[nodiscard]] bool busy() const { return client.busy(); }
     [[nodiscard]] std::filesystem::path projectRoot() const {
         return std::filesystem::path{viewport.projectRoot().toStdWString()};
     }
 
     void forget() {
+        client.abandon();
         layout_request = documents_request = 0;
         layout_answer.reset();
         documents_answer.reset();
-        request_id = 0;
-        request_kind = Request::None;
-        ticket.clear();
-        poll->stop();
         submitted.reset();
         submitted_from.reset();
     }
@@ -349,17 +340,9 @@ struct RayLayoutWidget::Impl {
                 files.push_back({write.path.string(), write.previous, write.content});
             shader_history_action(std::move(files));
         }
-        QString error;
-        const auto id = viewport.requestRpc(text(request.method), toQt(request.params), &error);
-        if (id == 0) {
-            revertShaders(plan);
-            showError(error);
-            return;
-        }
-        request_id = id;
-        request_kind = Request::Submit;
         submitted_from = read_state;
         submitted = std::move(plan);
+        if (!client.submit(text(request.method), request.params)) return;
         showInformation(owner.tr("Saving the ray layout (%1)...").arg(text(submitted->label)));
         controls();
     }
@@ -375,33 +358,30 @@ struct RayLayoutWidget::Impl {
         }
     }
 
-    void requestResult() {
-        if (ticket.isEmpty() || request_id != 0) return;
-        QString error;
-        request_id = viewport.requestRpc(QStringLiteral("get_edit_result"),
-                                         QJsonObject{{QStringLiteral("ticket"), ticket}}, &error);
-        request_kind = request_id != 0 ? Request::Result : Request::None;
-    }
 
-    void consumeSubmit(const Json &response) {
-        const auto found = response.find("ticket");
-        if (response.value("status", std::string{}) == "accepted" && found != response.end() && found->is_string()) {
-            ticket = text(found->get<std::string>());
-            poll->start();
-            requestResult();
-            return;
+
+
+
+    void edited(const RenderEditTicketClient::Outcome &outcome) {
+        using Kind = RenderEditTicketClient::Kind;
+        if (outcome.kind == Kind::Accepted || outcome.kind == Kind::Pending) return;
+        if (outcome.kind == Kind::Committed) consumeResult(outcome.result);
+        else if (outcome.kind == Kind::Refused ||
+                 (outcome.kind == Kind::Failed && outcome.result.is_object() && outcome.result.contains("error")))
+            refused(outcome.result);
+        else {
+            showError(text(outcome.error));
+            if (outcome.kind == Kind::Failed) {
+                if (submitted) revertShaders(*submitted);
+                submitted_from.reset();
+                submitted.reset();
+                read();
+            }
         }
-        if (readRenderEditCompletion(response).committed) {
-            consumeResult(response);
-            return;
-        }
-        refused(response);
+        controls();
     }
 
     void consumeResult(const Json &response) {
-        if (response.value("status", std::string{}) == "pending") return;
-        poll->stop();
-        ticket.clear();
         const auto completion = completeRenderEdit(response, [this](const std::string &line) {
             restart_asked = true;
             if (engine_restart_action) engine_restart_action(text(line));
@@ -413,7 +393,6 @@ struct RayLayoutWidget::Impl {
         }
         auto plan = std::exchange(submitted, std::nullopt);
         submitted_from.reset();
-        if (!completion.source_digest.empty() && digest_hub) digest_hub->publish(completion.source_digest, &owner);
         if (completion.restart_required) return;
         QString line = plan ? owner.tr("Saved: %1.").arg(text(plan->label)) : owner.tr("Saved.");
         if (plan)
@@ -454,19 +433,6 @@ struct RayLayoutWidget::Impl {
             readArrived();
             return;
         }
-        if (id != request_id) return;
-        const auto kind = std::exchange(request_kind, Request::None);
-        request_id = 0;
-        if (!response.is_object()) {
-            ticket.clear();
-            poll->stop();
-            refused(Json::object());
-        } else if (kind == Request::Submit) {
-            consumeSubmit(response);
-        } else if (kind == Request::Result) {
-            consumeResult(response);
-        }
-        controls();
     }
 
     void fail(qint64 id, const QString &message) {
@@ -478,17 +444,6 @@ struct RayLayoutWidget::Impl {
             showError(message);
             return;
         }
-        if (id != request_id) return;
-        request_id = 0;
-        request_kind = Request::None;
-        ticket.clear();
-        poll->stop();
-        if (submitted) revertShaders(*submitted);
-        submitted.reset();
-        submitted_from.reset();
-        showError(message);
-        read();
-        controls();
     }
 
     // --- Decision 2.
@@ -1053,6 +1008,7 @@ RayLayoutWidget::RayLayoutWidget(EmbeddedViewport *viewport, QWidget *parent) : 
 RayLayoutWidget::~RayLayoutWidget() = default;
 
 void RayLayoutWidget::setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> digest) {
+    impl_->client.setRenderConfigDigest(digest);
     impl_->digest_hub = std::move(digest);
     if (impl_->digest_hub)
         impl_->digest_hub->subscribe(this, [impl = impl_.get()](const std::string &moved) { impl->documentMoved(moved); });

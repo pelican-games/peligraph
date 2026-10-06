@@ -10,6 +10,8 @@ add_library(pelican_studio_view STATIC
     frameplaneditcapability.cpp
     frameplaneditcapability.hpp
     renderconfigdigest.hpp
+    rendereditticketclient.cpp
+    rendereditticketclient.hpp
     # UX-6b: the frame's GPU time and the last edit's before and after.
     planperfhub.cpp
     planperfhub.hpp

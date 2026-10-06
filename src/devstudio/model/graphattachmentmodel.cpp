@@ -32,6 +32,52 @@ std::string diagnostic(const Json &response) {
 }
 } // namespace
 
+GraphAttachmentModel::GraphAttachmentModel()
+    : edit_({[this](const std::string &method, const Json &params, std::string *) {
+                 const auto id = next_request_++;
+                 requests_.push_back({id, method, params});
+                 return static_cast<std::int64_t>(id);
+             },
+             [this](int ms, std::function<void()> task) {
+                 if (scheduleEdit) scheduleEdit(ms, std::move(task));
+                 else if (ms == 0) task();
+                 else scheduled_poll_ = std::move(task);
+             }},
+            [this](const std::string &digest) {
+                if (publishDigest) publishDigest(digest);
+            }) {
+    edit_.changed = [this](const auto &outcome) { edited(outcome); };
+}
+
+void GraphAttachmentModel::edited(const RenderEditTicket::Outcome &outcome) {
+    using Kind = RenderEditTicket::Kind;
+    const auto revision = edit_selection_revision_;
+    if (outcome.kind == Kind::Accepted || outcome.kind == Kind::Pending) return;
+    if (outcome.kind == Kind::Unconfirmed) {
+        if (revision == selection_revision_)
+            notice_ = {InspectorNoticeKind::Error, outcome.error};
+        return;
+    }
+    scheduled_poll_ = {};
+    if (outcome.kind == Kind::Refused || outcome.kind == Kind::Failed) {
+        const auto &response = outcome.result;
+        fail(outcome.cause == RenderEditTicket::Cause::MissingTicket
+             ? "The engine returned no graph edit ticket." :
+             response.is_object() && response.contains("error") ? diagnostic(response) :
+             !outcome.error.empty() ? outcome.error : "The engine rejected the graph edit.", revision);
+        return;
+    }
+    if (outcome.kind != Kind::Committed) return;
+    if (auto completion = readRenderEditCompletion(outcome.result); completion.restart_required) {
+        notice_ = {InspectorNoticeKind::Information, completion.restart_line};
+        engine_restart_ = std::move(completion.restart_line);
+        return;
+    }
+    if (revision == selection_revision_)
+        notice_ = {InspectorNoticeKind::Success, "Graph changes saved."};
+    refresh();
+}
+
 void GraphAttachmentModel::clearContext() {
     digest_.clear();
     definitions_ = Json::object();
@@ -57,7 +103,8 @@ void GraphAttachmentModel::setConnected(bool connected) {
     catalog_requested_ = false;
     catalog_ = Json::object();
     requests_.clear();
-    ticket_.clear();
+    edit_.abandon();
+    scheduled_poll_ = {};
     clearContext();
     notice_ = {};
     refresh();
@@ -118,8 +165,9 @@ void GraphAttachmentModel::refresh() {
 }
 
 void GraphAttachmentModel::poll() {
-    if (pollWanted())
-        request(RequestKind::Result, "get_edit_result", {{"ticket", ticket_}});
+    if (!pollWanted()) return;
+    if (scheduled_poll_) std::exchange(scheduled_poll_, {})();
+    else edit_.resume();
 }
 
 std::vector<InspectorRpcRequest> GraphAttachmentModel::takeRpcRequests() {
@@ -127,7 +175,8 @@ std::vector<InspectorRpcRequest> GraphAttachmentModel::takeRpcRequests() {
 }
 
 void GraphAttachmentModel::fail(std::string message, std::uint64_t revision) {
-    ticket_.clear();
+    edit_.abandon();
+    scheduled_poll_ = {};
     if (revision == selection_revision_)
         notice_ = {InspectorNoticeKind::Error, std::move(message)};
     else
@@ -143,17 +192,10 @@ void GraphAttachmentModel::receiveRpcFailure(std::uint64_t id, std::string messa
         if (kind == RequestKind::Catalog) catalog_requested_ = false;
         return;
     }
+    if (edit_.fail(static_cast<std::int64_t>(id), message).kind != RenderEditTicket::Kind::NotMine) return;
     if (!pending_ || pending_->id != id) return;
-    const auto revision = pending_->kind == RequestKind::Context
-        ? pending_->selection_revision : edit_selection_revision_;
-    const auto kind = pending_->kind;
+    const auto revision = pending_->selection_revision;
     pending_.reset();
-    if (kind == RequestKind::Result) {
-        // A failed poll does not cancel the engine ticket or permit another edit.
-        if (revision == selection_revision_)
-            notice_ = {InspectorNoticeKind::Error, std::move(message)};
-        return;
-    }
     fail(std::move(message), revision);
 }
 
@@ -179,20 +221,19 @@ void GraphAttachmentModel::receiveRpcResult(std::uint64_t id, std::string_view t
         }
         return;
     }
+    if (edit_.receive(static_cast<std::int64_t>(id), Json::parse(text, nullptr, false)).kind !=
+        RenderEditTicket::Kind::NotMine) return;
     if (!pending_ || pending_->id != id) return;
-    const auto pending = *pending_;
+    const auto revision = pending_->selection_revision;
     pending_.reset();
-    const auto revision = pending.kind == RequestKind::Context
-        ? pending.selection_revision : edit_selection_revision_;
+    if (revision != selection_revision_) return;
     try {
         const auto response = Json::parse(text);
         if (response.contains("error")) {
-            if (pending.kind == RequestKind::Result && response.value("status", std::string{}) != "rejected")
-                throw std::runtime_error(diagnostic(response));
             fail(diagnostic(response), revision);
             return;
         }
-        if (pending.kind == RequestKind::Context) {
+
             auto definitions = response.at("definitions");
             auto instances = response.at("instances");
             auto nodes = response.value("nodes", Json::array());
@@ -217,42 +258,9 @@ void GraphAttachmentModel::receiveRpcResult(std::uint64_t id, std::string_view t
             values_ = Json::array();
             ++report_revision_;
             requestValues();
-        } else if (pending.kind == RequestKind::Submit) {
-            if (response.at("status") != "accepted")
-                throw std::invalid_argument("The engine did not accept the graph edit.");
-            ticket_ = response.at("ticket").get<std::string>();
-            if (ticket_.empty()) throw std::invalid_argument("The engine returned no graph edit ticket.");
-            poll();
-        } else {
-            const auto status = response.at("status").get<std::string>();
-            if (status == "pending") return;
-            if (status == "rejected") {
-                fail("The engine rejected the graph edit.", revision);
-                return;
-            }
-            if (status != "committed")
-                throw std::invalid_argument("Graph edit did not commit: " + status);
-            ticket_.clear();
-            // RSX, decision 1: written, but the engine runs it only after a
-            // restart. The owner restarts it; the attachments are read from
-            // the engine that comes back.
-            if (auto completion = readRenderEditCompletion(response);
-                completion.restart_required) {
-                notice_ = {InspectorNoticeKind::Information, completion.restart_line};
-                engine_restart_ = std::move(completion.restart_line);
-                return;
-            }
-            if (revision == selection_revision_)
-                notice_ = {InspectorNoticeKind::Success, "Graph changes saved."};
-            refresh();
-        }
+
     } catch (const std::exception &error) {
-        if (pending.kind == RequestKind::Result && !ticket_.empty()) {
-            if (revision == selection_revision_)
-                notice_ = {InspectorNoticeKind::Error, error.what()};
-        } else {
-            fail(error.what(), revision);
-        }
+        fail(error.what(), revision);
     }
 }
 
@@ -282,9 +290,8 @@ bool GraphAttachmentModel::submit(Json attach, Json detach) {
     if (!canEdit()) return false;
     edit_selection_revision_ = selection_revision_;
     notice_ = {InspectorNoticeKind::Information, "Saving graph changes..."};
-    request(RequestKind::Submit, "edit_graph_instances",
+    return edit_.submit("edit_graph_instances",
             {{"base_source_digest", digest_}, {"attach", std::move(attach)}, {"detach", std::move(detach)}});
-    return true;
 }
 
 bool GraphAttachmentModel::attach(std::string id, std::string definition, Json parameters) {
@@ -484,9 +491,8 @@ bool GraphAttachmentModel::submitOps(Json ops) {
     notice_ = {InspectorNoticeKind::Information, "Saving graph changes..."};
     // One Inspector action is one op list, one ticket and one CAS: two edits in
     // the same frame cannot both land.
-    request(RequestKind::Submit, "edit_graph_document",
+    return edit_.submit("edit_graph_document",
             {{"base_source_digest", digest_}, {"ops", std::move(ops)}});
-    return true;
 }
 
 bool GraphAttachmentModel::setInstanceParameter(const std::string &instance, const std::string &port, double value) {
