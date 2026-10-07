@@ -2,7 +2,18 @@
 #include "rendereditticketclient.hpp"
 #include "raylayoutwidget.hpp"
 #include "projectmigrationwidget.hpp"
+#include "engineattach.hpp"
+#include "enginefailuremodel.hpp"
+#include "engineprocess.hpp"
+#include "nativewindowhost.hpp"
+#include "viewportgeometry.hpp"
+#define private public
 #include "embeddedviewport.hpp"
+#undef private
+#include "raylayoutmodel.hpp"
+#include <QLabel>
+#include <QLineEdit>
+#include <QTreeWidget>
 #include "../src/devstudio/guitrace.hpp"
 #include <QScopeGuard>
 #include "graphattachmentmodel.hpp"
@@ -424,20 +435,51 @@ TEST_CASE("RenderEditTicket unconfirmed retry stops after abandon and engine los
     REQUIRE_FALSE(h.edit.busy());
 }
 
-TEST_CASE("DL-1 unrelated RPC bytes bypass ticket JSON parsing", "[devstudio][automation][dl1]") {
+TEST_CASE("DL-2 unrelated RPC bytes bypass parsing and owned replies update state", "[devstudio][automation][dl1]") {
     ensureApplication();
     using namespace PelicanStudio;
     EmbeddedViewport viewport;
+    QString error;
+    REQUIRE(viewport.process_.start(
+        {QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH), {QStringLiteral("rpc-hold")}, {}}, &error));
+    REQUIRE(viewport.process_.waitForStarted(5000));
+    viewport.rpc_ready_ = true;
+    struct Call { qint64 id; QString method; QJsonObject params; };
+    std::deque<Call> calls;
+    viewport.setRpcObserver({{}, [&](qint64 id, const QString &method, const QJsonObject &params) {
+        REQUIRE(id != 0);
+        calls.push_back({id, method, params});
+    }});
+    const auto take = [&](const char *method) {
+        const auto found = std::find_if(calls.begin(), calls.end(), [&](const Call &call) {
+            return call.method == QString::fromLatin1(method);
+        });
+        REQUIRE(found != calls.end());
+        auto call = *found;
+        calls.erase(found);
+        return call;
+    };
     QObject context;
     RenderEditTicketClient client{viewport, &context};
+    auto hub = std::make_shared<RenderConfigDigest>();
+    client.setRenderConfigDigest(hub);
+    int completions = 0;
+    client.completed = [&](const auto &outcome) {
+        CHECK(outcome.kind == Kind::Committed);
+        CHECK(outcome.result.at("published_generation").get<std::uint64_t>() == 9007199254740993ULL);
+        ++completions;
+    };
     RayLayoutWidget ray{&viewport};
-    ProjectMigrationWidget migration{ProjectMigrationWidget::RequestRpc{}};
+    ProjectMigrationWidget migration{[&](const QString &method, const QJsonObject &params, QString *message) {
+        return viewport.requestRpc(method, params, message);
+    }};
     int forwarded = 0, parsed = 0;
     const QByteArray bytes = "{\"unowned\": [1,2,3]}";
     client.unhandledResult = [&](qint64 id, const QByteArray &raw) {
-        CHECK(id == 71);
-        CHECK(raw == bytes);
-        ++forwarded;
+        if (id == 71) {
+            CHECK(raw == bytes);
+            ++forwarded;
+        }
     };
     const auto previous_sink = GuiTrace::sink;
     void *previous_owner = GuiTrace::owner;
@@ -446,9 +488,64 @@ TEST_CASE("DL-1 unrelated RPC bytes bypass ticket JSON parsing", "[devstudio][au
     GuiTrace::sink = [](void *owner, const char *stage, int64_t, int64_t, double, double) {
         if (QString::fromLatin1(stage) == "ticket_client_json_parse" || QString::fromLatin1(stage) == "ray_layout_json_parse" || QString::fromLatin1(stage) == "migration_json_parse") ++*static_cast<int *>(owner);
     };
+    // Unknown replies must preserve pending ownership as well as skip parsing.
+    REQUIRE(client.submit("edit_rendering_keys", Json::object()));
+    const auto edit = take("edit_rendering_keys");
+    migration.begin("fixture-project", "project.migration_required@1: {}");
+    migration.engineReady();
+    CHECK(migration.stage() == ProjectMigrationWidget::Stage::reading_plan);
+    const auto plan = take("plan_project_migration");
+    const auto layout = take("get_ray_layout");
+    const auto documents = take("get_render_documents");
     viewport.inspectorRpcSucceeded(71, bytes);
     CHECK_FALSE(migration.acceptRpcResult(71, bytes));
     CHECK(forwarded == 1);
     CHECK(parsed == 0);
+    CHECK(client.busy());
+    CHECK(migration.stage() == ProjectMigrationWidget::Stage::reading_plan);
+
+    const auto reply = [&](qint64 id, const Json &value) {
+        viewport.inspectorRpcSucceeded(id, QByteArray::fromStdString(value.dump()));
+    };
+    reply(edit.id, commit());
+    CHECK(completions == 1);
+    CHECK(hub->current() == std::string(64, 'b'));
     CHECK_FALSE(client.busy());
+    CHECK(parsed == 1);
+    Json read_value;
+    REQUIRE(client.read("get_graph_instances", Json::object(), [&](const Json &value) { read_value = value; }));
+    CHECK(client.busy());
+    reply(take("get_graph_instances").id, {{"nodes", Json::array({"owned-node"})}});
+    CHECK(read_value == Json{{"nodes", Json::array({"owned-node"})}});
+    CHECK_FALSE(client.busy());
+    CHECK(parsed == 2);
+
+    reply(layout.id, {{"source_digest", {{"hex", std::string(64, 'a')}}}, {"mode", "layout"},
+        {"layout", {{"reference", "project://passes/ray_layout.json"}, {"digest", std::string(64, 'a')},
+                    {"document", defaultRayLayout()}}},
+        {"bindings", nullptr}, {"selectable_materials", Json::array()}, {"selectable_procedural_assets", Json::array()}});
+    reply(documents.id, {{"documents", Json::array()}});
+    auto *name = ray.findChild<QLineEdit *>("pelican.rayLayout.group.default.name");
+    REQUIRE(name != nullptr);
+    CHECK(name->text() == "default");
+    CHECK(name->isEnabled());
+    CHECK(parsed == 4);
+
+    const QByteArray plan_bytes = R"({"required":true,"engine_version":"owned-engine","saved_by_engine":"old-engine","documents":[{"path":"passes/owned.json","schema":"pelican.pass","from":1,"to":2}],"expected":{"passes/owned.json":"owned-digest"}})";
+    REQUIRE(migration.acceptRpcResult(plan.id, plan_bytes));
+    CHECK(migration.stage() == ProjectMigrationWidget::Stage::planned);
+    auto *tree = migration.findChild<QTreeWidget *>();
+    REQUIRE(tree != nullptr);
+    REQUIRE(tree->topLevelItemCount() == 1);
+    CHECK(tree->topLevelItem(0)->text(0) == "passes/owned.json");
+    auto *apply = migration.findChild<QPushButton *>("pelican.projectMigration.migrate");
+    REQUIRE(apply != nullptr);
+    REQUIRE(apply->isEnabled());
+    apply->click();
+    const auto apply_call = take("apply_project_migration");
+    CHECK(apply_call.params.value("expected").toObject() == QJsonObject{{"passes/owned.json", "owned-digest"}});
+    CHECK(migration.stage() == ProjectMigrationWidget::Stage::applying);
+    CHECK(parsed == 5);
+    CHECK_FALSE(migration.acceptRpcResult(plan.id, plan_bytes));
+    CHECK(parsed == 5);
 }

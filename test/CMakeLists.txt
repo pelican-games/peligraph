@@ -388,6 +388,9 @@ endif()
 if(TARGET pelican_studio_inspector_model)
   pelican_define_test(devstudio_rendereditticket_test QT QT_OFFSCREEN
     pelican_studio_view pelican_studio_viewport pelican_studio_inspector_model Qt6::Widgets)
+  target_compile_definitions(pelican_test_devstudio_rendereditticket_test PRIVATE
+    PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>")
+  add_dependencies(pelican_test_devstudio_rendereditticket_test pelican_test_process_fixture_child)
   pelican_define_test(devstudio_graphattachment_test pelican_studio_inspector_model)
   pelican_define_test(devstudio_graphcanvas_test pelican_studio_inspector_model)
   # RU-1: the render edit history over a list of what was sent -- no Qt, no

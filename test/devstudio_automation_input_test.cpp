@@ -1338,14 +1338,111 @@ TEST_CASE("DL-1 paint coverage rejects an actual mid-gesture painting blackout",
         const auto trace = view.dragTrace().dump();
         INFO(QJsonDocument{trace.value("summary").toObject()}.toJson().toStdString());
         CHECK(trace.value("final_position_painted").toBool() == (mode != 2));
-        CHECK(trace.value("acceptance").toObject().value("paint_coverage").toBool() == !blackout);
+        CHECK(trace.value("acceptance").toObject().value("paint_coverage").toBool() == (mode != 2));
         CHECK(trace.value("acceptance").toObject().value("passed").toBool() == !blackout);
         if (blackout) {
             CHECK(trace.value("painted_moves").toInt() > 0);
             CHECK(trace.value("unpainted_moves").toInt() > 10);
             CHECK(trace.value("unpainted_tail_ms").toDouble() > 100);
-        } else CHECK(trace.value("unpainted_moves").toInt() == 0);
+        } else CHECK(trace.value("unpainted_tail_ms").toDouble() <= 33.3);
     }
+}
+
+TEST_CASE("DL-2 distinguishes blackout final latency painted hold and coalescing", "[devstudio][automation][dl2]") {
+    (void)application();
+    using namespace PelicanStudio;
+    QGraphicsScene scene;
+    auto *node = new MovableNodeItem(nodePath(false), [](const QPointF &) {});
+    node->setFlag(QGraphicsItem::ItemIsMovable);
+    scene.addItem(node);
+    for (int mode : {0, 1, 2, 3, 4, 5}) {
+        INFO("mode: " << mode);
+        NodeDragTrace trace;
+        trace.setEnabled(true);
+        trace.begin(scene, node);
+        // A long healthy prefix keeps one final outlier below latency p95.
+        const qint64 base = NodeDragTrace::now() - (mode == 1 || mode == 5 ? 2'008'000'000LL : 3'000'000'000LL);
+        const auto ns = [&](double ms) { return base + qint64(ms * 1e6); };
+        for (int i = 1; i <= 250; ++i) {
+            const auto move = trace.nextMove();
+            trace.append("mouse_move", ns(i * 8), ns(i * 8 + .1), move);
+            trace.append("position", ns(i * 8 + .1), ns(i * 8 + .1), move);
+            const bool blackout = mode == 0 && i >= 100 && i < 110;
+            const bool coalesced = mode == 3 && i % 2 != 0;
+            if (!blackout && !coalesced) {
+                const double delay = i == 250 ? (mode == 1 ? 24 : mode == 5 ? 300 : 1) : 1;
+                trace.append("paint", ns(i * 8 + delay - .1), ns(i * 8 + delay), move);
+            }
+        }
+        if (mode == 4) { // A no-op final move still refers to the last changed position.
+            trace.append("mouse_move", ns(2008), ns(2008.1), trace.nextMove());
+        }
+        // Modes 1/5 place the final paint after release; others hold >100 ms on a painted position.
+        trace.release();
+        const auto result = trace.dump();
+        const auto acceptance = result.value("acceptance").toObject();
+        INFO(QJsonDocument{result.value("summary").toObject()}.toJson().toStdString());
+        CHECK(acceptance.value("measured").toBool());
+        CHECK(acceptance.value("paint_coverage").toBool());
+        CHECK(result.value("final_position_painted").toBool());
+        CHECK(result.value("summary").toObject().value("input_to_paint").toObject().value("p95_ms").toDouble() <= 16.7);
+        CHECK(acceptance.value("passed").toBool() == (mode >= 2 && mode <= 4));
+        CHECK(result.value("final_position_latency_ms").toDouble() == Catch::Approx(mode == 1 ? 24 : mode == 5 ? 300 : 1));
+        if (mode == 0) CHECK(result.value("unpainted_tail_ms").toDouble() == Catch::Approx(81));
+        if (mode == 2 || mode == 4) CHECK(result.value("unpainted_tail_ms").toDouble() == Catch::Approx(1));
+        if (mode == 3) {
+            CHECK(result.value("unpainted_moves").toInt() == 125);
+            CHECK(result.value("unpainted_tail_ms").toDouble() == Catch::Approx(9));
+        }
+        const auto intervals = result.value("unpainted_intervals").toArray();
+        REQUIRE_FALSE(intervals.isEmpty());
+        CHECK(intervals.last().toObject().value("resolved").toBool());
+    }
+}
+
+TEST_CASE("DL-2 final paint remains monitored beyond the release collection timer", "[devstudio][automation][dl2]") {
+    (void)application();
+    using namespace PelicanStudio;
+    struct FinalDelay : QObject {
+        int moves = 0;
+        bool suppress = false;
+        bool eventFilter(QObject *object, QEvent *event) override {
+            if (event->type() == QEvent::MouseMove && ++moves == 20) suppress = true;
+            if (event->type() == QEvent::MouseButtonRelease) {
+                auto *port = static_cast<QWidget *>(object);
+                QTimer::singleShot(550, this, [this, port] {
+                    suppress = false;
+                    port->update();
+                });
+            }
+            return event->type() == QEvent::Paint && suppress;
+        }
+    } filter;
+    QGraphicsScene scene;
+    NodeCanvasView view{&scene};
+    scene.setSceneRect(-500, -500, 1500, 1500);
+    auto *node = new MovableNodeItem(nodePath(false), [](const QPointF &) {});
+    node->setFlags(QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges);
+    scene.addItem(node);
+    view.resize(800, 600);
+    view.show();
+    view.centerOn(node);
+    QApplication::processEvents();
+    view.viewport()->installEventFilter(&filter);
+    view.dragPaced(view.mapFromScene(QPointF{60, 15}), QPoint{80, 20}, 160, 8);
+    REQUIRE(filter.moves == 20);
+    CHECK(view.dragTrace().recording());
+    CHECK_FALSE(view.dragTrace().finalPositionPainted());
+    QElapsedTimer wait;
+    wait.start();
+    while (view.dragTrace().recording() && wait.elapsed() < 1500) QTest::qWait(10);
+    CHECK_FALSE(view.dragTrace().recording());
+    CHECK(view.dragTrace().finalPositionPainted());
+    const auto trace = view.dragTrace().dump();
+    CHECK(trace.value("final_position_painted").toBool());
+    CHECK(trace.value("final_position_latency_ms").toDouble() >= 550);
+    CHECK(trace.value("summary").toObject().value("paint_interval").toObject().value("max_ms").toDouble() >= 550);
+    CHECK_FALSE(trace.value("acceptance").toObject().value("passed").toBool());
 }
 
 TEST_CASE("DL-1 paced request refuses wrong types ranges and ambiguous selection", "[devstudio][automation][dl1]") {

@@ -243,7 +243,7 @@ void NodeDragTrace::begin(QGraphicsScene &scene, QGraphicsItem *node) {
     // Allocate and enumerate once, outside the timed move path.
     records_.resize(Capacity);
     written_ = 0;
-    move_ = changed_ = 0;
+    move_ = changed_ = painted_ = 0;
     release_ = 0;
     ++generation_;
     const QString name = node->data(NodeGraphNameRole).toString();
@@ -314,6 +314,7 @@ void NodeDragTrace::append(const char *stage, qint64 begin, qint64 end,
                            quint64 move, double x, double y) {
     if (!recording_) return;
     records_[written_++ % Capacity] = Record{stage, begin, end, move, x, y};
+    if (move && std::strcmp(stage, "paint") == 0) painted_ = move;
 }
 
 NodeDragTraceSpan::NodeDragTraceSpan(QGraphicsScene *scene, const char *stage)
@@ -337,7 +338,7 @@ QJsonObject NodeDragTrace::dump() const {
         return a.begin < b.begin;
     });
     std::map<QString, std::vector<double>> metrics;
-    std::map<quint64, qint64> moves;
+    std::map<quint64, qint64> moves, first_paint_ends;
     std::set<quint64> changed, painted;
     // Prefix sums keep post-gesture recovery linearithmic even at ring capacity.
     std::vector<qint64> lookup_starts;
@@ -347,7 +348,15 @@ QJsonObject NodeDragTrace::dump() const {
         lookup_sums.push_back(lookup_sums.back() + record.end - record.begin);
     }
     QJsonArray raw;
-    qint64 previous_input = 0, previous_paint = 0;
+    qint64 previous_input = 0;
+    // Recover changes at their input entry and paints at completion. A newer
+    // move can supersede a position without ending its outstanding interval.
+    std::vector<Record> positions_and_paints;
+    for (const auto &r : records) {
+        if (std::strcmp(r.stage, "mouse_move") == 0) moves[r.move] = r.begin;
+        if (std::strcmp(r.stage, "position") == 0 || std::strcmp(r.stage, "paint") == 0)
+            positions_and_paints.push_back(r);
+    }
     const qint64 end = release_ ? release_ : (origin_ ? now() : 0);
     for (const auto &r : records) {
         const QString stage = QString::fromLatin1(r.stage);
@@ -364,12 +373,10 @@ QJsonObject NodeDragTrace::dump() const {
         }
         if (stage == QLatin1String{"position"}) changed.insert(r.move);
         if (stage == QLatin1String{"paint"}) {
-            if (r.begin <= end) {
-                if (previous_paint) metrics["paint_interval"].push_back((r.begin - previous_paint) / 1e6);
-                previous_paint = r.begin;
-            }
-            if (r.move && moves.contains(r.move) && painted.insert(r.move).second)
+            if (r.move && moves.contains(r.move) && painted.insert(r.move).second) {
+                first_paint_ends[r.move] = r.end;
                 metrics["input_to_paint"].push_back((r.end - moves.at(r.move)) / 1e6);
+            }
         }
         // Route time minus its nested endpoint searches is geometry/Qt updates.
         if (stage == QLatin1String{"route"}) {
@@ -379,9 +386,51 @@ QJsonObject NodeDragTrace::dump() const {
             metrics["geometry"].push_back(std::max<qint64>(0, r.end - r.begin - lookup) / 1e6);
         }
     }
-    const double unpainted_tail_ms = (end - (previous_paint ? previous_paint : origin_)) / 1e6;
-    metrics["paint_tail"].push_back(unpainted_tail_ms);
+    // Preserve actual paint cadence as a diagnostic. Its observation window
+    // includes post-release paint until the final changed position completes.
+    const qint64 paint_monitor_end = !changed.empty() && first_paint_ends.contains(*changed.rbegin()) ?
+        first_paint_ends.at(*changed.rbegin()) : now();
+    qint64 previous_paint = 0;
+    for (const auto &r : records) if (std::strcmp(r.stage, "paint") == 0 && r.begin <= paint_monitor_end) {
+        if (previous_paint) metrics["paint_interval"].push_back((r.begin - previous_paint) / 1e6);
+        previous_paint = r.begin;
+    }
+    const auto stamp = [](const Record &r) {
+        return std::strcmp(r.stage, "paint") == 0 ? r.end : r.begin;
+    };
+    std::stable_sort(positions_and_paints.begin(), positions_and_paints.end(),
+        [&](const Record &a, const Record &b) { return stamp(a) < stamp(b); });
+    std::optional<qint64> pending_since;
+    quint64 latest_position = 0;
+    double unpainted_tail_ms = 0;
+    QJsonArray unpainted_intervals;
+    const auto outstanding = [&](qint64 until, bool resolved) {
+        const double duration = (until - *pending_since) / 1e6;
+        unpainted_tail_ms = std::max(unpainted_tail_ms, duration);
+        metrics["paint_tail"].push_back(duration);
+        unpainted_intervals.append(QJsonObject{
+            {"begin_ms", (*pending_since - origin_) / 1e6},
+            {"end_ms", (until - origin_) / 1e6}, {"duration_ms", duration},
+            {"resolved", resolved}});
+    };
+    for (const auto &r : positions_and_paints) {
+        if (std::strcmp(r.stage, "position") == 0) {
+            latest_position = r.move;
+            if (!pending_since) pending_since = moves.contains(r.move) ? moves.at(r.move) : r.begin;
+        } else if (pending_since && r.move == latest_position) {
+            // Post-release paints still close outstanding time at their end;
+            // painted idle time never starts an outstanding interval.
+            outstanding(r.end, true);
+            pending_since.reset();
+        }
+    }
+    if (pending_since) outstanding(std::max(end, now()), false);
+    if (!metrics.contains("paint_tail")) metrics["paint_tail"].push_back(0);
     const bool final_painted = changed.empty() || painted.contains(*changed.rbegin());
+    const double final_position_latency_ms = changed.empty() || !moves.contains(*changed.rbegin()) ? 0 :
+        (final_painted && moves.contains(*changed.rbegin()) ?
+         (first_paint_ends.at(*changed.rbegin()) - moves.at(*changed.rbegin())) / 1e6 :
+         (std::max(end, now()) - moves.at(*changed.rbegin())) / 1e6);
     QJsonObject summary;
     for (auto &[name, values] : metrics) {
         std::sort(values.begin(), values.end());
@@ -399,11 +448,12 @@ QJsonObject NodeDragTrace::dump() const {
     for (quint64 move : changed) if (!painted.contains(move)) ++unpainted;
     const bool measured = first == 0 && !moves.empty() && !painted.empty() &&
                           summary.contains("input_interval") && summary.contains("paint_interval");
-    const bool coverage = unpainted == 0 && final_painted && unpainted_tail_ms <= 33.3;
-    const bool passed = measured && coverage && summary.value("input_to_paint").toObject().value("p95_ms").toDouble() <= 16.7 &&
+    const bool coverage = final_painted;
+    const bool passed = measured && coverage &&
+        final_position_latency_ms <= 16.7 && unpainted_tail_ms <= 33.3 &&
+        summary.value("input_to_paint").toObject().value("p95_ms").toDouble() <= 16.7 &&
         summary.value("mouse_move").toObject().value("p95_ms").toDouble() <= 2.0 &&
-        summary.value("input_interval").toObject().value("over_33_3").toInteger() == 0 &&
-        summary.value("paint_interval").toObject().value("over_33_3").toInteger() == 0;
+        summary.value("input_interval").toObject().value("over_33_3").toInteger() == 0;
     const bool required = metadata_.value("release_build").toBool();
     return QJsonObject{{"schema", "pelican.node_drag_trace"}, {"version", 1},
                       {"acceptance", QJsonObject{{"required", required}, {"measured", measured},
@@ -414,7 +464,9 @@ QJsonObject NodeDragTrace::dump() const {
                       {"changed_moves", qint64(changed.size())}, {"painted_moves", qint64(painted.size())},
                       {"unpainted_moves", unpainted}, {"final_position_painted", final_painted},
                       {"unpainted_tail_ms", unpainted_tail_ms},
-                      {"latency_definition", "move entry to first paint end containing that exact latest position; superseded positions are unpainted; not display present"}};
+                      {"unpainted_intervals", unpainted_intervals},
+                      {"final_position_latency_ms", final_position_latency_ms},
+                      {"latency_definition", "move entry to first paint end containing that exact latest position; superseded positions counted but allowed; not display present"}};
 }
 
 bool NodeDragTrace::write(const QString &path) const {
@@ -486,7 +538,7 @@ QJsonObject NodeCanvasView::dragPaced(const QPoint &from, const QPoint &delta,
     loop.exec();
     send(QEvent::MouseButtonRelease, last, Qt::LeftButton, Qt::NoButton);
     // Let the final paint and the unchanged 300 ms save debounce run. This
-    // tail is recorded, but excluded from gesture input/paint interval gaps.
+    // tail is recorded; outstanding positions remain monitored after release.
     QTimer::singleShot(450, &loop, &QEventLoop::quit);
     loop.exec();
     return QJsonObject{{"steps", step}, {"nominal_ms", duration_ms}, {"scheduled_ms", steps * interval_ms},
@@ -1140,14 +1192,22 @@ void NodeCanvasView::mouseReleaseEvent(QMouseEvent *event) {
     QGraphicsView::mouseReleaseEvent(event);
     if (event->button() == Qt::LeftButton && drag_trace_.recording()) {
         const quint64 generation = drag_trace_.generation();
-        QTimer::singleShot(400, this, [this, generation] {
-            if (drag_trace_.generation() != generation) return;
-            drag_trace_.stop();
-            trace_probe_->stop();
-            const QString path = qEnvironmentVariable("PELICAN_STUDIO_DRAG_TRACE");
-            if (!path.isEmpty()) setProperty("pelicanDragTraceWritten", drag_trace_.write(path));
-        });
+        QTimer::singleShot(400, this, [this, generation] { finishDragTrace(generation); });
     }
+}
+
+void NodeCanvasView::finishDragTrace(quint64 generation) {
+    if (drag_trace_.generation() != generation || !drag_trace_.recording()) return;
+    if (!drag_trace_.finalPositionPainted()) {
+        // Keep the bounded trace alive until the outstanding final position is
+        // painted. A new gesture or destruction cancels this generation.
+        QTimer::singleShot(16, this, [this, generation] { finishDragTrace(generation); });
+        return;
+    }
+    drag_trace_.stop();
+    trace_probe_->stop();
+    const QString path = qEnvironmentVariable("PELICAN_STUDIO_DRAG_TRACE");
+    if (!path.isEmpty()) setProperty("pelicanDragTraceWritten", drag_trace_.write(path));
 }
 
 void NodeCanvasView::keyPressEvent(QKeyEvent *event) {

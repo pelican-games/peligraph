@@ -56,6 +56,7 @@ public:
     [[nodiscard]] quint64 generation() const { return generation_; }
     [[nodiscard]] quint64 latestMove() const { return move_; }
     [[nodiscard]] quint64 latestChangedMove() const { return changed_; }
+    [[nodiscard]] bool finalPositionPainted() const { return changed_ == 0 || painted_ == changed_; }
     [[nodiscard]] QRectF changedBounds() const { return changed_bounds_; }
     static qint64 now();
     static NodeDragTrace *forScene(QGraphicsScene *scene);
@@ -74,7 +75,7 @@ private:
     QPointer<QGraphicsScene> scene_;
     static thread_local NodeDragTrace *active_;
     bool enabled_ = false, recording_ = false;
-    quint64 generation_ = 0, move_ = 0, changed_ = 0;
+    quint64 generation_ = 0, move_ = 0, changed_ = 0, painted_ = 0;
     qint64 origin_ = 0, release_ = 0;
     std::vector<Record> records_;
     std::size_t written_ = 0;
@@ -389,6 +390,7 @@ class NodeCanvasView : public QGraphicsView {
     void applyZoom(qreal requested);
     void publishZoom(qreal scale, const QString &boundary);
     void rememberScope();
+    void finishDragTrace(quint64 generation);
     // Keep the view's own scene rect big enough that there is always somewhere
     // to pan to. QGraphicsView centres a scene rect that fits the viewport, and
     // that centring cancels a translated transform exactly -- which is why a
