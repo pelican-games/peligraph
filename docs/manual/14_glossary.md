@@ -530,13 +530,13 @@ materialize 済み feature 1 本と宿主への要求をまとめ、別 project 
 
 ## 関連文書
 
-- [第11章 実装状況と文書マップ](11_status.md) — WP 台帳と設計文書マップ。語の出所をたどるときの起点
+- [第11章 実装状況と文書マップ](11_status.md) — WP 台帳・履歴への索引と設計文書マップ。語の出所をたどるときの起点
 - [第12章 コード読解ガイド](12_codemap.md) — JSON がどのパーサで読まれるかの対応表
 - [../source-code-guide/10_background_knowledge.md](../source-code-guide/10_background_knowledge.md) — Vulkan / glTF / C++ / OS の**一般知識**の詳説(本章の一般用語はここへ繋がります)
 - [../source-code-guide/README.md](../source-code-guide/README.md) — クラス単位の内部構造解説
 
-[def-0]: 11_status.md#111-wp-全台帳
-[def-1]: 11_status.md#111-wp-全台帳
+[def-0]: 11_status.md#111-wp-の台帳はどこにあるか
+[def-1]: 11_status.md#111-wp-の台帳はどこにあるか
 [def-2]: 13_editor.md#131-全体像--何ができるようになったか
 [def-3]: 08_gameplay.md#ゲーム-dll-の-abiwp381381a382a
 [def-4]: 08_gameplay.md#810-決定性--なぜ毎回同じ結果になるのか
@@ -619,7 +619,7 @@ materialize 済み feature 1 本と宿主への要求をまとめ、別 project 
 [def-78]: 06_rendering.md#標準-taawp113
 [def-79]: 06_rendering.md#projection-jitterwp112115
 [def-80]: 05_assets.md#54-焼き込みアニメーション2--pelicanvat-v1wp20
-[def-81]: 11_status.md#111-wp-全台帳
+[def-81]: 11_status.md#111-wp-の台帳はどこにあるか
 [def-82]: 06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383
 [def-83]: 06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383
 [def-84]: 06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383

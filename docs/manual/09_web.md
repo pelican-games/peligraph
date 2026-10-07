@@ -23,7 +23,7 @@ pelican2 のプロジェクト(`project.json` + passes/scenes/assets)は、ネ�
 | `my_webpage/apps/site/` | Astro サイト。`/lab` ページの **Shader Dock** がビューア本体(Result / Passes ノードグラフ / Code / Buffers タブ) |
 | `my_webpage/docs/` | web 側の設計文書(`implementation_plan_web.md`、`pelican2-webgpu-compat.md` = rendering config 互換の正) |
 
-web 側の作業単位は **WW**(Web Work Package)という番号で `implementation_plan_web.md` に並びます —— エンジン側の WP([第11章 §11.1](11_status.md#111-wp-全台帳))に対応する番号体系ですが、実体は my_webpage リポジトリにあり pelican2 側からは状態を確認できません(一覧は §9.6。名前の正は [../design_project_format_web_profile.md](../design_project_format_web_profile.md) の 「web 側(my_webpage。WW = Web Work Package)」節)。
+web 側の作業単位は **WW**(Web Work Package)という番号で `implementation_plan_web.md` に並びます —— エンジン側の WP([第11章 §11.1](11_status.md#111-wp-の台帳はどこにあるか))に対応する番号体系ですが、実体は my_webpage リポジトリにあり pelican2 側からは状態を確認できません(一覧は §9.6。名前の正は [../design_project_format_web_profile.md](../design_project_format_web_profile.md) の 「web 側(my_webpage。WW = Web Work Package)」節)。
 
 ## 9.2 サブセット原則(不変条件)
 
