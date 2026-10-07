@@ -623,7 +623,7 @@ Refresh の左(Undo / Redo の後ろ)に **Auto layout** と **Fit view** のボ
    見出し左の三角でソケット欄を**折り畳め**ます(tooltip は `Fold the sockets away` / `Show the sockets`)。
    折り畳んだノードでは、辺は見出し帯の左右中央の 1 点に集まります。辺の tooltip は    `<from>.<port> -> <to>.<port>  (select and press Delete to cut)` です。
 4. **ソケットの形が型です** —— 色だけでなく形(`circle` / `diamond` / `square` / `hexagon`)でも型を表します。
-   決め方は 1 か所で、**モジュールが自分の型 schema に書いた `display{}` → Studio の既定表 → traits → `unknown`**    の順([解決順](../../src/devstudio/view/nodegraphics.hpp#L267)、入口は [`socketStyleFor`](../../src/devstudio/view/nodegraphics.hpp#L269))。
+   決め方は 1 か所で、**モジュールが自分の型 schema に書いた `display{}` → Studio の既定表 → traits → `unknown`**    の順([解決順](../../src/devstudio/view/nodegraphics.hpp#L268)、入口は [`socketStyleFor`](../../src/devstudio/view/nodegraphics.hpp#L270))。
    既定表の中はさらに 2 段で、**型名の完全一致 → `prefixes` の前方一致**です([nodegraphics.cpp:126](../../src/devstudio/view/nodegraphics.cpp#L150)) ——    だから  のような名前空間まるごとに 1 行で形を与えられます。既定表は    [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json#L1)( v1)で、    **新しい型に形を与えるのに C++ を触る必要はありません** —— この JSON に名前を 1 行足すだけです。
 5. **右の詳細表** —— `label` / `type` / `domain` / `evaluation` / `id` / `sink` と、あれば `definition` /    `parameters` / `inputs` / `outputs`([組み立て](../../src/devstudio/view/graphcanvaswidget.cpp#L9759))。
    port の型が宣言されていなければ `(not declared)`、カタログをまだ取れていなければ `domain` / `evaluation` が    `(catalog not fetched)` です。入力行の tooltip は、その port を**カタログが宣言した**(`declared by the catalog`)のか、    **文書から読んだ**(`read from the document`)のかを区別します。
@@ -1989,15 +1989,15 @@ engine の AB-1 は表を graph を組む時に読むので、graph を組み直
 revision が変わって消えたノードの位置は捨てられます。初期配置は最長経路による段組みで、辺は必ず左から右へ進みます。
 
 **ズーム・パン・fit は 2 つのキャンバスで同じです(N-3)。**ホイールはカーソルの下の点を動かさずに拡大・縮小し、
-倍率は **0.25〜4.0** で止まります([ホイール](../../src/devstudio/view/nodegraphics.cpp#L980))。パンは**中ボタン**ドラッグ、
-または **Space を押しながら左**ドラッグ([判定](../../src/devstudio/view/nodegraphics.cpp#L1090))。**`F`** キーと
+倍率は **0.25〜4.0** で止まります([ホイール](../../src/devstudio/view/nodegraphics.cpp#L1032))。パンは**中ボタン**ドラッグ、
+または **Space を押しながら左**ドラッグ([判定](../../src/devstudio/view/nodegraphics.cpp#L1142))。**`F`** キーと
 右クリックメニューの **Fit view** で内容全体が view に収まります(Graph タブの右クリックは「Add node... / Fit view」の
 2 項目です。[メニュー](../../src/devstudio/view/graphcanvaswidget.cpp#L3654))。この 3 つの操作は共有部品
-[`NodeCanvasView`](../../src/devstudio/view/nodegraphics.hpp#L319) が 1 か所で持っていて、**Graph タブも Frame Plan の
+[`NodeCanvasView`](../../src/devstudio/view/nodegraphics.hpp#L320) が 1 か所で持っていて、**Graph タブも Frame Plan の
 Logical graph も同じ view** です。**まだ見ていない scope は自動で fit** され、戻ってきた scope は離れたときの倍率と
-スクロール位置に復帰します([`showScope`](../../src/devstudio/view/nodegraphics.cpp#L1063)) —— 倍率も位置も文書には
+スクロール位置に復帰します([`showScope`](../../src/devstudio/view/nodegraphics.cpp#L1115)) —— 倍率も位置も文書には
 書かない、セッション内の状態です。値の帯やラベルを編集している最中の `F` はただの文字です(開いている editor が
-キーボードを持ちます。[条件](../../src/devstudio/view/nodegraphics.cpp#L1153))。
+キーボードを持ちます。[条件](../../src/devstudio/view/nodegraphics.cpp#L1213))。
 
 **テーマはライトとダークの 2 つです。**切り替えは **View ▸ Theme ▸ Light / Dark** ([メニューの構築](../../src/devstudio/view/mainwindow.cpp#L1772))で、**再起動は要りません** —— 選んだ名前は QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L26) に残り、次に開いた窓は そのテーマで始まります。追随するのは **Graph タブと Frame Plan の両方のキャンバス**で、背景・grid・辺・ ノードの body と縁・見出しの字・値の帯の色をテーマの表から引き直して描き直します。**ソケットの型別の色だけは テーマに依存しません**(型の識別色なので、どちらのテーマでも同じ色です。テーマが決めるのは縁と、どの型とも 言えないソケットの色)。既定は `dark` で、`dark` のキャンバスの色は N-5 以前の色と同じ値です(完了記録 )。
 
