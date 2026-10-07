@@ -67,6 +67,7 @@
     {"label": "still unverified", "expect": "rpc_equals", "method": "get_fold_groups", "params": {}, "path": "fold_groups[0].state", "value": "unverified"},
 
     {"label": "the Frame Plan tab", "cmd": "action", "name": "pelican.view.renderTools.frame_plan"},
+    {"label": "the automatic plan read has finished", "cmd": "wait", "name": "pelican.framePlanRefresh", "enabled": true, "timeout_ms": 120000},
     {"label": "read the plan again", "cmd": "click", "name": "pelican.framePlanRefresh"},
     {"label": "its Raw JSON", "cmd": "action", "name": "pelican.framePlan.tab.raw-json"},
     {"label": "the plan's diagnostics carry fold_unverified (the decisions are not applied)", "cmd": "wait", "name": "pelican.framePlanRawJson", "contains": "fold_unverified", "timeout_ms": 120000},
@@ -97,6 +98,7 @@
     {"label": "and its Decisions row says where it landed", "cmd": "wait", "name": "pelican.graphCanvasFold.isolate.applied0", "text": "applied → render_fullscreen_2", "timeout_ms": 60000},
     {"label": "a picture of the verified group", "expect": "screenshot", "path": "graph_fold_decisions_verified.png"},
     {"label": "the Frame Plan tab", "cmd": "action", "name": "pelican.view.renderTools.frame_plan"},
+    {"label": "the automatic plan read has finished", "cmd": "wait", "name": "pelican.framePlanRefresh", "enabled": true, "timeout_ms": 120000},
     {"label": "read the plan again", "cmd": "click", "name": "pelican.framePlanRefresh"},
     {"label": "its Raw JSON", "cmd": "action", "name": "pelican.framePlan.tab.raw-json"},
     {"label": "the plan's decision carries from_fold", "cmd": "wait", "name": "pelican.framePlanRawJson", "contains": "\"from_fold\": \"fold_1\"", "timeout_ms": 120000},
@@ -111,6 +113,7 @@
     {"label": "and its frame", "cmd": "wait", "name": "pelican.graphCanvasView::graph_fold_group#fold_1", "missing": true, "timeout_ms": 60000},
 
     {"label": "the Frame Plan tab", "cmd": "action", "name": "pelican.view.renderTools.frame_plan"},
+    {"label": "the automatic plan read has finished", "cmd": "wait", "name": "pelican.framePlanRefresh", "enabled": true, "timeout_ms": 120000},
     {"label": "read the plan again", "cmd": "click", "name": "pelican.framePlanRefresh"},
     {"label": "its Logical graph", "cmd": "action", "name": "pelican.framePlan.tab.logical-graph"},
     {"label": "the plan is read: the second pass is drawn", "cmd": "wait", "name": "pelican.framePlanLogicalView::node#render_fullscreen_2", "visible": true, "timeout_ms": 120000},

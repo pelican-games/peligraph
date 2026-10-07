@@ -41,6 +41,8 @@
 #include <QCheckBox>
 #include <QGroupBox>
 #include <QDialog>
+#include <QEventLoop>
+#include <QTimer>
 #include <QDir>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -89,6 +91,18 @@ QApplication &application() {
     static char *arguments[] = {application_name};
     static QApplication instance{argument_count, arguments};
     return instance;
+}
+
+// RT-A defers the first ticket poll to the Qt event loop. Let the widget's
+// actual scheduler send it; the caller still checks the method and ticket.
+void waitForGraphEditPoll(GraphAttachmentWidget &panel) {
+    QEventLoop loop;
+    QObject::connect(&panel, &GraphAttachmentWidget::rpcRequested, &loop,
+                     [&loop](quint64, const QString &method, const QJsonObject &) {
+                         if (method == QStringLiteral("get_edit_result")) loop.quit();
+                     });
+    QTimer::singleShot(1000, &loop, &QEventLoop::quit);
+    loop.exec();
 }
 
 std::string readText(const std::filesystem::path &path) {
@@ -2761,7 +2775,9 @@ TEST_CASE("Inspector graph panel authors attachments and preserves rejected draf
     save.click();
     REQUIRE(requests.back().params.value("base_source_digest").toString() == "source-after-conflict");
     reply({{"status", "accepted"}, {"ticket", "ticket-1"}});
+    waitForGraphEditPoll(panel);
     REQUIRE(requests.back().method == "get_edit_result");
+    REQUIRE(requests.back().params.value("ticket").toString() == "ticket-1");
     reply({{"status", "committed"}});
     REQUIRE_FALSE(dialog.isVisible());
     REQUIRE(requests.back().method == "get_graph_instances");
@@ -2777,6 +2793,9 @@ TEST_CASE("Inspector graph panel authors attachments and preserves rejected draf
     panel.setOwner(GraphAttachmentOwner{"main", 73});
     REQUIRE(list.count() == 0);
     reply({{"status", "accepted"}, {"ticket", "ticket-2"}});
+    waitForGraphEditPoll(panel);
+    REQUIRE(requests.back().method == "get_edit_result");
+    REQUIRE(requests.back().params.value("ticket").toString() == "ticket-2");
     reply({{"status", "committed"}});
     reply(context);
     REQUIRE(list.count() == 1);
@@ -2863,7 +2882,9 @@ TEST_CASE("Inspector instance inputs show their supply and switch one to a curve
 
     // Once the edit lands, the row reads "connected" and offers the way back.
     reply({{"status", "accepted"}, {"ticket", "ticket-1"}});
+    waitForGraphEditPoll(panel);
     REQUIRE(requests.back().method == "get_edit_result");
+    REQUIRE(requests.back().params.value("ticket").toString() == "ticket-1");
     reply({{"status", "committed"}});
     REQUIRE(requests.back().method == "get_graph_instances");
     Json connected = context;

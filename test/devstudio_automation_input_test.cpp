@@ -10,6 +10,8 @@
 #include "automationcommands.hpp"
 #include "../src/devstudio/view/nodegraphics.hpp"
 #include <QFile>
+#include <QFileInfo>
+#include <QDir>
 #include <QTemporaryDir>
 #include <QScopeGuard>
 #include "automationserver.hpp"
@@ -1371,4 +1373,44 @@ TEST_CASE("DL-1 paced request refuses wrong types ranges and ambiguous selection
         CHECK_FALSE(result.ok);
         CHECK(result.code == "automation.drag_paced.invalid_" + field + "@1");
     }
+}
+
+TEST_CASE("FX-1 fold scenario waits for the automatic plan read before Refresh",
+          "[devstudio][automation][fx1]") {
+    Fixture fixture;
+    fixture.button->setObjectName(QStringLiteral("pelican.framePlanRefresh"));
+    int clicks = 0;
+    QObject::connect(fixture.button, &QPushButton::clicked, &fixture.window,
+                     [&] { ++clicks; });
+    QFile scenario{QFileInfo(QString::fromUtf8(__FILE__)).dir().filePath(
+        QStringLiteral("studio_scenarios/graph_fold_decisions.json"))};
+    REQUIRE(scenario.open(QIODevice::ReadOnly));
+    const auto steps = QJsonDocument::fromJson(scenario.readAll()).object()
+                           .value(QStringLiteral("steps")).toArray();
+    REQUIRE_FALSE(steps.isEmpty());
+    int visits = 0;
+    for (const auto &value : steps) {
+        auto step = value.toObject();
+        const auto name = step.value(QStringLiteral("name")).toString();
+        const auto command = step.value(QStringLiteral("cmd")).toString();
+        if (name == QStringLiteral("pelican.view.renderTools.frame_plan")) {
+            ++visits;
+            // Showing the stale plan starts a read. The pipe's next command
+            // can arrive before its reply; no engine or GPU is needed here.
+            fixture.button->setEnabled(false);
+            QTimer::singleShot(100, fixture.button, [button = fixture.button] {
+                button->setEnabled(true);
+            });
+        } else if (name == QStringLiteral("pelican.framePlanRefresh")) {
+            INFO("scenario step: " << step.value(QStringLiteral("label")).toString().toStdString());
+            // Use the scenario's actual commands, with only a shorter CPU
+            // timeout. Removing its wait must expose the disabled click.
+            if (command == QStringLiteral("wait")) step.insert(QStringLiteral("timeout_ms"), 1000);
+            const auto reply = fixture.run(command, step);
+            INFO(describe(reply).toStdString());
+            REQUIRE(reply.ok);
+        }
+    }
+    CHECK(visits == 3);
+    CHECK(clicks == visits);
 }
