@@ -1,4 +1,5 @@
 #include "embeddedviewport.hpp"
+#include "../guitrace.hpp"
 #include "studioplayerarguments.hpp"
 #include "../model/selection.hpp"
 
@@ -832,12 +833,15 @@ void EmbeddedViewport::attachEngineWindow(NativeWindowHandle window) {
 }
 
 void EmbeddedViewport::emitStatus(qint64 request_id, const QByteArray &result_json) {
+    const GuiTraceSpan trace{"status_response"};
     emit engineStatusRead(result_json);
     // Parsed only once, and only when someone reads it parsed.
     if (!isSignalConnected(QMetaMethod::fromSignal(&EmbeddedViewport::engineStatusParsed))) return;
-    const auto status = nlohmann::json::parse(result_json.constData(),
-                                              result_json.constData() + result_json.size(), nullptr,
-                                              false);
+    const auto status = [&] {
+        const GuiTraceSpan parse{"status_json_parse", double(result_json.size())};
+        return nlohmann::json::parse(result_json.constData(),
+                                    result_json.constData() + result_json.size(), nullptr, false);
+    }();
     static const nlohmann::json none;
     emit engineStatusParsed(request_id, status.is_discarded() ? none : status);
 }
@@ -936,6 +940,7 @@ void EmbeddedViewport::focusEmbeddedWindow() {
 }
 
 void EmbeddedViewport::pollPointerFocus() {
+    const GuiTraceSpan trace{"viewport_poll_5ms"};
     const bool pointer_button_down =
         child_window_ != 0 && NativeWindowHost::pointerButtonDownOver(child_window_);
     if (pointer_button_down && !pointer_button_was_down_) {
@@ -997,6 +1002,7 @@ void EmbeddedViewport::setGizmoNotice(const QString &message) {
 }
 
 void EmbeddedViewport::updateDiagnostics() {
+    const GuiTraceSpan trace{"viewport_diagnostics"};
     if (child_window_ == 0) {
         return;
     }

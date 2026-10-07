@@ -1071,6 +1071,116 @@ AutomationReply commandClick(const AutomationHost &host,
     });
 }
 
+// A timer-driven gesture returns to the GUI event loop between moves. Both
+// automation and the offscreen harness use NodeCanvasView::dragPaced.
+AutomationReply commandDragPaced(const AutomationHost &host, const QJsonObject &request) {
+    const auto invalid = [](const char *field) {
+        return AutomationReply::failure(QStringLiteral("automation.drag_paced.invalid_%1@1").arg(field),
+                                        QStringLiteral("Invalid drag_paced field: %1").arg(field));
+    };
+    const auto integer = [](const QJsonValue &value, int low, int high) {
+        const double n = value.toDouble();
+        return value.isDouble() && std::isfinite(n) && std::trunc(n) == n && n >= low && n <= high;
+    };
+    for (const char *field : {"name", "node", "pick"})
+        if (request.contains(field) && (!request.value(field).isString() || request.value(field).toString().isEmpty()))
+            return invalid(field);
+    if (request.contains("node") == request.contains("pick")) return invalid("selection");
+    if (request.contains("pick") && request.value("pick") != "most_connected_derived") return invalid("pick");
+    if (request.contains("duration_ms") && !integer(request.value("duration_ms"), 1, 10000)) return invalid("duration_ms");
+    if (request.contains("interval_ms") && !integer(request.value("interval_ms"), 1, 100)) return invalid("interval_ms");
+    if (request.contains("hold_ms") && !integer(request.value("hold_ms"), 0, 2000)) return invalid("hold_ms");
+    const int duration = request.value("duration_ms").toInt(NodeCanvasView::DragDurationMs);
+    const int interval = request.value("interval_ms").toInt(NodeCanvasView::DragIntervalMs);
+    const int hold = request.value("hold_ms").toInt(NodeCanvasView::DragHoldMs);
+    if (duration < interval) return invalid("duration_ms");
+    QPoint delta{NodeCanvasView::DragDeltaX, NodeCanvasView::DragDeltaY};
+    if (request.contains("delta")) {
+        const auto values = request.value("delta").toArray();
+        if (!request.value("delta").isArray() || values.size() != 2 ||
+            !integer(values[0], -10000, 10000) || !integer(values[1], -10000, 10000)) return invalid("delta");
+        delta = QPoint{values[0].toInt(), values[1].toInt()};
+    }
+    auto *view = dynamic_cast<NodeCanvasView *>(findGraphicsView(
+        host, request.value("name").toString(QStringLiteral("pelican.graphCanvasView"))));
+    if (view == nullptr || view->scene() == nullptr)
+        return AutomationReply::failure(BadRequest, QStringLiteral("drag_paced needs a node canvas"));
+    // Let initial context/plan replies settle before choosing a fixed path.
+    QEventLoop settling;
+    QTimer::singleShot(500, &settling, &QEventLoop::quit);
+    settling.exec();
+    QGraphicsItem *picked = nullptr;
+    int best_degree = -1;
+    const bool derived = request.value("pick").toString() == QLatin1String{"most_connected_derived"};
+    const QString requested = request.value("node").toString();
+    const auto items = view->scene()->items();
+    for (QGraphicsItem *item : items) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem} ||
+            !item->isVisible() || !(item->flags() & QGraphicsItem::ItemIsMovable)) continue;
+        const QString name = item->data(NodeGraphNameRole).toString();
+        if (!derived) {
+            if (name == requested && item->data(GraphCanvasZoneScopeRole).toString().isEmpty()) {
+                picked = item;
+                break;
+            }
+            continue;
+        }
+        if (!item->data(GraphCanvasDerivedRole).toBool()) continue;
+        int degree = 0;
+        for (QGraphicsItem *edge : items) {
+            const QString kind = nodeGraphItemKind(*edge);
+            if ((kind == QLatin1String{GraphCanvasDerivedEdgeItem} ||
+                 kind == QLatin1String{GraphCanvasPassInputEdgeItem}) &&
+                (edge->data(NodeGraphFromNameRole).toString() == name ||
+                 edge->data(NodeGraphToNameRole).toString() == name)) ++degree;
+        }
+        if (degree > best_degree || (degree == best_degree && picked &&
+            name < picked->data(NodeGraphNameRole).toString())) {
+            picked = item;
+            best_degree = degree;
+        }
+    }
+    if (picked == nullptr)
+        return AutomationReply::failure(BadRequest, QStringLiteral("drag_paced node was not found"));
+    const QString name = picked->data(NodeGraphNameRole).toString();
+    view->centerOn(picked);
+    // Flush the centering before choosing the fixed viewport coordinates.
+    QCoreApplication::processEvents();
+    // A queued context may rebuild the scene while centering is delivered.
+    picked = nullptr;
+    for (auto *item : view->scene()->items())
+        if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasNodeItem} &&
+            item->data(NodeGraphNameRole).toString() == name &&
+            item->data(GraphCanvasZoneScopeRole).toString().isEmpty()) { picked = item; break; }
+    if (!picked) return AutomationReply::failure(BadRequest, QStringLiteral("drag_paced node disappeared"));
+    const QVariant hotspot = picked->data(NodeGraphHotspotRole);
+    const QPointF local = hotspot.isValid() ? hotspot.toPointF() : QPointF{60.0, 15.0};
+    const QPoint from = view->mapFromScene(picked->mapToScene(local));
+    if (!view->viewport()->rect().contains(from) || !view->viewport()->rect().contains(from + delta))
+        return AutomationReply::failure(BadRequest, QStringLiteral("drag_paced path leaves the viewport"));
+    auto result = view->dragPaced(from, delta, duration, interval, hold);
+    result.insert("pick", request.contains("pick") ? request.value("pick").toString() : QStringLiteral("node"));
+    result.insert("node", name);
+    return AutomationReply::success(result);
+}
+
+AutomationReply commandTraceDump(const AutomationHost &host, const QJsonObject &request) {
+    auto *view = dynamic_cast<NodeCanvasView *>(findGraphicsView(
+        host, request.value("name").toString(QStringLiteral("pelican.graphCanvasView"))));
+    if (view == nullptr)
+        return AutomationReply::failure(BadRequest, QStringLiteral("trace_dump needs a node canvas"));
+    if (request.contains("enabled")) view->dragTrace().setEnabled(request.value("enabled").toBool());
+    if (view->scene() && view->scene()->mouseGrabberItem())
+        return AutomationReply::failure(BadRequest, QStringLiteral("trace_dump waits until the gesture ends"));
+    const QString path = request.value("path").toString();
+    if (!path.isEmpty() && !view->dragTrace().write(path))
+        return AutomationReply::failure(BadRequest, QStringLiteral("trace_dump could not write the file"));
+    auto result = view->dragTrace().dump();
+    if (!request.value("records").toBool(true)) result.remove("records");
+    return AutomationReply::success(result);
+}
+
+
 AutomationReply commandDrag(const AutomationHost &host,
                             const QJsonObject &request) {
     const auto endpoint = [&](const QString &key, Target *target,
@@ -2567,6 +2677,7 @@ AutomationReply commandProjectState(const AutomationHost &host,
 QStringList automationCommandNames() {
     return {QStringLiteral("list"),         QStringLiteral("click"),
             QStringLiteral("double_click"), QStringLiteral("drag"),
+            QStringLiteral("drag_paced"), QStringLiteral("trace_dump"),
             QStringLiteral("wheel"),        QStringLiteral("move"),
             QStringLiteral("press"),        QStringLiteral("release"),
             QStringLiteral("key"),          QStringLiteral("type"),
@@ -2590,6 +2701,8 @@ AutomationReply runAutomationCommand(const AutomationHost &host,
     if (command == QLatin1String("double_click"))
         return commandClick(host, request, true);
     if (command == QLatin1String("drag")) return commandDrag(host, request);
+    if (command == QLatin1String("drag_paced")) return commandDragPaced(host, request);
+    if (command == QLatin1String("trace_dump")) return commandTraceDump(host, request);
     if (command == QLatin1String("wheel")) return commandWheel(host, request);
     if (command == QLatin1String("move"))
         return commandPointer(host, request, PointerAction::move);

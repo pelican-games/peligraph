@@ -1,0 +1,159 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "dl1_drag_example",
+  "tab": "graph",
+  "viewport": null,
+  "steps": [
+    {
+      "label": "Wait for the embedded engine",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "Wait for graph nodes or zones (list uses literal substrings)",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.graphCanvasView::graph_"
+      },
+      "path": "count",
+      "op": "gt",
+      "value": 0,
+      "retry_ms": 30000
+    },
+    {
+      "label": "Record graph diagnostics",
+      "cmd": "text",
+      "name": "pelican.graphCanvasDiagnosticsList"
+    },
+    {
+      "label": "Record engine graph document",
+      "cmd": "rpc",
+      "method": "get_graph_instances",
+      "params": {}
+    },
+    {
+      "label": "Wait for the anchored loop zone",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.graphCanvasView::graph_zone#loop"
+      },
+      "path": "count",
+      "op": "gt",
+      "value": 0,
+      "retry_ms": 30000
+    },
+    {
+      "label": "Fit the whole graph before the fixed gesture",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "Center and select the target without changing its position",
+      "cmd": "drag_paced",
+      "name": "pelican.graphCanvasView",
+      "delta": [
+        0,
+        0
+      ],
+      "duration_ms": 8,
+      "interval_ms": 8,
+      "node": "loop"
+    },
+    {
+      "label": "Setup did not move any item",
+      "expect": "result",
+      "command": {
+        "cmd": "trace_dump",
+        "records": false
+      },
+      "path": "changed_moves",
+      "value": 0
+    },
+    {
+      "label": "Record the actual view scale and bounds",
+      "cmd": "view_state",
+      "name": "pelican.graphCanvasView"
+    },
+    {
+      "label": "Record initial appearance",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvasView",
+      "path": "{artifacts}/before.png"
+    },
+    {
+      "label": "Two second gesture at eight millisecond intervals",
+      "cmd": "drag_paced",
+      "name": "pelican.graphCanvasView",
+      "delta": [
+        140,
+        40
+      ],
+      "duration_ms": 2000,
+      "interval_ms": 8,
+      "node": "loop"
+    },
+    {
+      "label": "Recover the raw gesture trace",
+      "cmd": "trace_dump",
+      "path": "{artifacts}/drag_trace.json",
+      "records": true
+    },
+    {
+      "label": "All move inputs recorded",
+      "expect": "result",
+      "command": {
+        "cmd": "trace_dump",
+        "records": false
+      },
+      "path": "moves",
+      "value": 250
+    },
+    {
+      "label": "Trace ring did not overflow",
+      "expect": "result",
+      "command": {
+        "cmd": "trace_dump",
+        "records": false
+      },
+      "path": "overflow",
+      "value": 0
+    },
+    {
+      "label": "Actual changed positions reached paint",
+      "expect": "result",
+      "command": {
+        "cmd": "trace_dump",
+        "records": false
+      },
+      "path": "painted_moves",
+      "op": "gt",
+      "value": 0
+    },
+    {
+      "label": "Record final appearance for comparison across revisions",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvasView",
+      "path": "{artifacts}/after.png"
+    },
+    {
+      "label": "Release acceptance thresholds; Debug records reference numbers only",
+      "expect": "result",
+      "command": {
+        "cmd": "trace_dump",
+        "records": false
+      },
+      "path": "acceptance.required_pass",
+      "value": true
+    },
+    {
+      "label": "Wait for the released placement to be saved before checking history",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 120000
+    }
+  ]
+}

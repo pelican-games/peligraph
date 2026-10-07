@@ -1,4 +1,5 @@
 #include "rendereditticketclient.hpp"
+#include "../guitrace.hpp"
 #include "embeddedviewport.hpp"
 #include "jsonrpcrequest.hpp"
 #include "renderconfigdigest.hpp"
@@ -73,7 +74,17 @@ bool RenderEditTicketClient::read(const QString &method, const Json &params,
 }
 
 void RenderEditTicketClient::receive(qint64 id, const QByteArray &bytes) {
-    const auto json = Json::parse(bytes.constData(), bytes.constData() + bytes.size(), nullptr, false);
+    const GuiTraceSpan trace{"ticket_client_receive", double(bytes.size())};
+    // Every viewport reply is broadcast here, including large status windows.
+    // Forward unrelated bytes without constructing and destroying a JSON tree.
+    if (!reads_.contains(id) && !edit_.owns(id)) {
+        if (unhandledResult) unhandledResult(id, bytes);
+        return;
+    }
+    const auto json = [&] {
+        const GuiTraceSpan parse{"ticket_client_json_parse", double(bytes.size())};
+        return Json::parse(bytes.constData(), bytes.constData() + bytes.size(), nullptr, false);
+    }();
     if (auto found = reads_.find(id); found != reads_.end()) {
         auto read = std::move(found->second);
         reads_.erase(found);

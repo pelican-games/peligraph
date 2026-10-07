@@ -1,4 +1,10 @@
 #include "rendereditticket.hpp"
+#include "rendereditticketclient.hpp"
+#include "raylayoutwidget.hpp"
+#include "projectmigrationwidget.hpp"
+#include "embeddedviewport.hpp"
+#include "../src/devstudio/guitrace.hpp"
+#include <QScopeGuard>
 #include "graphattachmentmodel.hpp"
 #include "graphattachmentwidget.hpp"
 #include "graphcanvaswidget.hpp"
@@ -416,4 +422,33 @@ TEST_CASE("RenderEditTicket unconfirmed retry stops after abandon and engine los
     h.tick(500);
     REQUIRE(h.calls.empty());
     REQUIRE_FALSE(h.edit.busy());
+}
+
+TEST_CASE("DL-1 unrelated RPC bytes bypass ticket JSON parsing", "[devstudio][automation][dl1]") {
+    ensureApplication();
+    using namespace PelicanStudio;
+    EmbeddedViewport viewport;
+    QObject context;
+    RenderEditTicketClient client{viewport, &context};
+    RayLayoutWidget ray{&viewport};
+    ProjectMigrationWidget migration{ProjectMigrationWidget::RequestRpc{}};
+    int forwarded = 0, parsed = 0;
+    const QByteArray bytes = "{\"unowned\": [1,2,3]}";
+    client.unhandledResult = [&](qint64 id, const QByteArray &raw) {
+        CHECK(id == 71);
+        CHECK(raw == bytes);
+        ++forwarded;
+    };
+    const auto previous_sink = GuiTrace::sink;
+    void *previous_owner = GuiTrace::owner;
+    const auto restore = qScopeGuard([&] { GuiTrace::sink = previous_sink; GuiTrace::owner = previous_owner; });
+    GuiTrace::owner = &parsed;
+    GuiTrace::sink = [](void *owner, const char *stage, int64_t, int64_t, double, double) {
+        if (QString::fromLatin1(stage) == "ticket_client_json_parse" || QString::fromLatin1(stage) == "ray_layout_json_parse" || QString::fromLatin1(stage) == "migration_json_parse") ++*static_cast<int *>(owner);
+    };
+    viewport.inspectorRpcSucceeded(71, bytes);
+    CHECK_FALSE(migration.acceptRpcResult(71, bytes));
+    CHECK(forwarded == 1);
+    CHECK(parsed == 0);
+    CHECK_FALSE(client.busy());
 }

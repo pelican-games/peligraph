@@ -1,4 +1,5 @@
 #include "graphcanvasfoldgroups.hpp"
+#include <QScopeGuard>
 
 #include "frameplanedit.hpp"
 #include "graphcanvasdrawing.hpp"
@@ -1027,10 +1028,63 @@ void GraphCanvasFoldController::gateNodeFields(const std::vector<QWidget *> &fie
 // --- The canvas.
 
 void GraphCanvasFoldController::scheduleRedraw() {
-    if (redraw_timer_ != nullptr) redraw_timer_->start();
+    if (redraw_timer_ != nullptr) redraw_timer_->start(0);
+}
+
+void GraphCanvasFoldController::followGeometry() {
+    const NodeDragTraceSpan trace{scene_, "fold_geometry"};
+    for (const auto &live : live_frames_) {
+        QRectF box;
+        for (auto *member : live.members) {
+            const QRectF own = member->sceneBoundingRect().united(member->mapRectToScene(member->childrenBoundingRect()));
+            box = box.isNull() ? own : box.united(own);
+        }
+        QRectF frame = box.adjusted(-GraphCanvasFoldPadding,
+            -GraphCanvasFoldPadding - GraphCanvasFoldHeadingHeight, GraphCanvasFoldPadding, GraphCanvasFoldPadding);
+        if (frame.width() < live.minimum_width) frame.setWidth(live.minimum_width);
+        const qreal delta = frame.width() - live.heading->path().boundingRect().width();
+        live.outline->setPath(roundedRect(QRectF{QPointF{}, frame.size()}, 10.0));
+        live.outline->setPos(frame.topLeft());
+        live.heading->setPath(roundedRect(QRectF{0, 0, frame.width(), GraphCanvasFoldHeadingHeight}, 10.0));
+        live.heading->setPos(frame.topLeft());
+        for (auto *child : live.heading->childItems())
+            if (kindOf(*child) == QLatin1String{GraphCanvasFoldToggleItem} ||
+                kindOf(*child) == QLatin1String{GraphCanvasFoldVerifyItem})
+                child->moveBy(delta, 0);
+        if (auto *index = NodeGraphIndex::forScene(scene_)) {
+            index->touch(*live.outline);
+            index->touch(*live.heading);
+        }
+    }
+    for (const auto &live : live_links_) {
+        const QPointF inner = live.inner->sceneBoundingRect().center();
+        const QRectF box = live.outside->sceneBoundingRect();
+        const QPointF outer = live.socket ? box.center() :
+            QPointF{live.into ? box.right() : box.left(), box.center().y()};
+        live.line->setPath((live.into ? curveGeometryBetween(outer, inner) : curveGeometryBetween(inner, outer)).path);
+        if (auto *index = NodeGraphIndex::forScene(scene_)) index->touch(*live.line);
+    }
 }
 
 void GraphCanvasFoldController::redraw() {
+    const NodeDragTraceSpan trace{scene_, "fold_redraw"};
+    // The scene can have rebuilt underneath the decorations; never retain a
+    // pointer from a different item generation.
+    if (drawing_generation_ != scene_.routingGeneration()) {
+        live_frames_.clear();
+        live_links_.clear();
+        has_drawing_ = false;
+    }
+    if (groups_.empty() && !has_drawing_) return;
+    if (scene_.dragging()) {
+        followGeometry();
+        // One bounded retry also covers a controller used without a widget's
+        // release hook. No item is removed while the hand owns the scene.
+        redraw_timer_->start(16);
+        return;
+    }
+
+    const NodeDragTraceSpan structure_trace{scene_, "fold_structure"};
     // What the last draw put there, and what it hid.
     std::vector<QGraphicsItem *> old;
     for (QGraphicsItem *item : scene_.items()) {
@@ -1049,6 +1103,15 @@ void GraphCanvasFoldController::redraw() {
             return;
         }
     }
+    if (old.empty() && (!onRealRoot() || groups_.empty())) return;
+    scene_.invalidateRoutingIndex();
+    live_frames_.clear();
+    live_links_.clear();
+    has_drawing_ = false;
+    const auto routing = qScopeGuard([this] {
+        scene_.rebuildRoutingIndex();
+        drawing_generation_ = scene_.routingGeneration();
+    });
     for (QGraphicsItem *item : old) {
         scene_.removeItem(item);
         delete item;
@@ -1146,6 +1209,7 @@ void GraphCanvasFoldController::redraw() {
             item->setFlag(QGraphicsItem::ItemIsMovable, false);
             item->setFlag(QGraphicsItem::ItemIsSelectable, false);
             markTree(item, name);
+            has_drawing_ = true;
             const QString tip =
                 QObject::tr("Fold group %1: %2 nodes, drawn folded (only how it is looked at).\n"
                             "Double-click or Open shows them again.")
@@ -1161,18 +1225,20 @@ void GraphCanvasFoldController::redraw() {
             for (const auto &crossing : crossings) {
                 QPointF inner;
                 bool found_row = false;
+                QGraphicsItem *inner_item = nullptr;
                 for (QGraphicsItem *child : rows)
                     if (kindOf(*child) == QLatin1String{GraphCanvasDerivedSocketItem} &&
                         child->data(GraphCanvasPortRole).toString().toStdString() == crossing.row()) {
                         inner = child->sceneBoundingRect().center();
                         found_row = true;
+                        inner_item = child;
                     }
                 const auto outside = nodes.find(crossing.outside);
                 if (!found_row || outside == nodes.end()) continue;
                 QPointF outer;
-                if (QGraphicsItem *socket = socketOf(everything, crossing.outside,
-                                                     crossing.outside_port, crossing.into))
-                    outer = socket->sceneBoundingRect().center();
+                QGraphicsItem *socket = socketOf(everything, crossing.outside,
+                                                  crossing.outside_port, crossing.into);
+                if (socket) outer = socket->sceneBoundingRect().center();
                 else {
                     const QRectF rect = outside->second->sceneBoundingRect();
                     outer = crossing.into ? QPointF{rect.right(), rect.center().y()}
@@ -1182,6 +1248,8 @@ void GraphCanvasFoldController::redraw() {
                                                     : curveGeometryBetween(inner, outer);
                 auto *link = new QGraphicsPathItem(geometry.path);
                 scene_.addItem(link);
+                live_links_.push_back({link, inner_item, socket ? socket : outside->second,
+                                       crossing.into, socket != nullptr});
                 link->setZValue(0.0);
                 QPen pen{theme.canvas.derived_border, 1.4};
                 pen.setStyle(Qt::DashLine);
@@ -1259,6 +1327,8 @@ void GraphCanvasFoldController::redraw() {
         auto *band = new QGraphicsPathItem(band_path);
         scene_.addItem(band);
         band->setPos(frame.topLeft());
+        has_drawing_ = true;
+        if (!folded) live_frames_.push_back({outline, band, members, heading_width});
         band->setZValue(1.6);
         QColor band_fill = theme.canvas.tab_selected;
         band_fill.setAlphaF(picked ? 0.55F : 0.30F);

@@ -37,6 +37,7 @@ public:
     void abandon();
     bool busy() const noexcept { return busy_; }
     bool awaitingResponse() const noexcept { return request_ != 0; }
+    bool owns(std::int64_t id) const noexcept { return id != 0 && id == request_; }
     const std::string &ticket() const noexcept { return ticket_; }
     // Owned outcomes, including scheduled transport failures. Repeated
     // Unconfirmed replies are returned, but only the first notifies the UI.

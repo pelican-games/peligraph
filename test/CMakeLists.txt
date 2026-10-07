@@ -710,6 +710,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   # what it got.
   if(TARGET pelican_studio_automation)
     pelican_define_test(devstudio_automation_input_test QT QT_OFFSCREEN
+      pelican_studio_view
       pelican_studio_automation
       pelican_studio_viewport
       Qt6::Core
@@ -2980,8 +2981,10 @@ if(TARGET pelican_studio_viewport)
     pelican_studio_viewport Qt6::Core)
   # Q-9: `wait_engine` is asked of a real (fixture) engine across a restart,
   # the way the automation pipe asks it.
+  # DL-1: automation drives the Graph canvas (dragPaced, trace_dump), so it
+  # needs the view library's NodeCanvasView beside it.
   pelican_define_test(devstudio_viewport_test QT pelican_studio_viewport
-    pelican_studio_automation Qt6::Core Qt6::Test Qt6::Widgets)
+    pelican_studio_view pelican_studio_automation Qt6::Core Qt6::Test Qt6::Widgets)
   target_compile_definitions(pelican_test_devstudio_viewport_test PRIVATE
     PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
     PELICAN_ENGINE_OWNER_FIXTURE_PATH="$<TARGET_FILE:pelican_test_devstudio_engine_owner_fixture>"
@@ -3762,6 +3765,12 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
             if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_${pelican_studio_scenario_name}/project.json")
                 set(pelican_studio_scenario_fixture
                     "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_${pelican_studio_scenario_name}")
+            endif()
+            # DL-1 measures copies of the shipped projects, not the tiny GUI fixture.
+            if(pelican_studio_scenario_name STREQUAL "dl1_drag_example")
+                set(pelican_studio_scenario_fixture "${CMAKE_SOURCE_DIR}/projects/example")
+            elseif(pelican_studio_scenario_name STREQUAL "dl1_drag_posegraph")
+                set(pelican_studio_scenario_fixture "${CMAKE_SOURCE_DIR}/projects/posegraph_demo")
             endif()
             set(pelican_studio_scenario_game_logic)
             if(TARGET pelican_studio_${pelican_studio_scenario_name}_game_logic)

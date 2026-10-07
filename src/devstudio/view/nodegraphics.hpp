@@ -1,6 +1,9 @@
 #pragma once
+#include <QPointer>
 
 #include <QColor>
+#include <QHash>
+#include <QJsonObject>
 #include <QList>
 #include <QEvent>
 #include <QLineF>
@@ -31,12 +34,105 @@ class QKeyEvent;
 class QMouseEvent;
 class QPainter;
 class QWheelEvent;
+class QTimer;
 
 namespace PelicanStudio {
 
-// One geometry-only routing operation shares one ordered item snapshot.
-// Do not add/remove items or change identity data inside this scope. Positions,
-// paths and polygons remain live. Nothing survives a redraw or the next drag.
+// DL-1: opt-in, bounded, GUI-thread trace. Serialization happens only after
+// input has returned to the event loop; recording never writes a log.
+class GraphCanvasScene;
+class NodeDragTrace {
+public:
+    static constexpr std::size_t Capacity = 65536;
+    struct Record {
+        const char *stage = "";
+        qint64 begin = 0, end = 0;
+        quint64 move = 0;
+        double x = 0, y = 0;
+    };
+    void setEnabled(bool enabled) { enabled_ = enabled; }
+    [[nodiscard]] bool enabled() const { return enabled_; }
+    [[nodiscard]] bool recording() const { return recording_; }
+    [[nodiscard]] quint64 generation() const { return generation_; }
+    [[nodiscard]] quint64 latestMove() const { return move_; }
+    [[nodiscard]] quint64 latestChangedMove() const { return changed_; }
+    [[nodiscard]] QRectF changedBounds() const { return changed_bounds_; }
+    static qint64 now();
+    static NodeDragTrace *forScene(QGraphicsScene *scene);
+    static NodeDragTrace *forScene(GraphCanvasScene *scene);
+    void begin(QGraphicsScene &scene, QGraphicsItem *node);
+    void release();
+    ~NodeDragTrace();
+    void stop();
+    quint64 nextMove() { return ++move_; }
+    void positionChanged(QGraphicsItem &item);
+    void append(const char *stage, qint64 begin, qint64 end, quint64 move,
+                double x = 0, double y = 0);
+    [[nodiscard]] QJsonObject dump() const;
+    bool write(const QString &path) const;
+private:
+    QPointer<QGraphicsScene> scene_;
+    static thread_local NodeDragTrace *active_;
+    bool enabled_ = false, recording_ = false;
+    quint64 generation_ = 0, move_ = 0, changed_ = 0;
+    qint64 origin_ = 0, release_ = 0;
+    std::vector<Record> records_;
+    std::size_t written_ = 0;
+    QJsonObject metadata_;
+    QRectF changed_bounds_;
+};
+
+class NodeDragTraceSpan {
+public:
+    NodeDragTraceSpan(QGraphicsScene *scene, const char *stage);
+    NodeDragTraceSpan(GraphCanvasScene *scene, const char *stage);
+    NodeDragTraceSpan(GraphCanvasScene &scene, const char *stage) : NodeDragTraceSpan(&scene, stage) {}
+    NodeDragTraceSpan(QGraphicsScene &scene, const char *stage)
+        : NodeDragTraceSpan(&scene, stage) {}
+    ~NodeDragTraceSpan();
+    NodeDragTraceSpan(const NodeDragTraceSpan &) = delete;
+    NodeDragTraceSpan &operator=(const NodeDragTraceSpan &) = delete;
+private:
+    NodeDragTrace *trace_;
+    const char *stage_;
+    qint64 begin_;
+    quint64 move_;
+};
+
+
+// Scene-owned routing identity index. Owners invalidate before a structural
+// edit and publish a complete index afterwards; geometry never invalidates it.
+// Scenes without an index (e.g. Frame Plan) keep the shared linear fallback.
+class NodeGraphIndex {
+public:
+    explicit NodeGraphIndex(QGraphicsScene &scene);
+    ~NodeGraphIndex();
+    NodeGraphIndex(const NodeGraphIndex &) = delete;
+    NodeGraphIndex &operator=(const NodeGraphIndex &) = delete;
+    static NodeGraphIndex *forScene(QGraphicsScene &scene);
+    void invalidate();
+    void publish(const QList<QGraphicsItem *> &items);
+    void insert(const QStringList &key, QGraphicsItem *item, bool last = false);
+    [[nodiscard]] QGraphicsItem *find(const QStringList &key) const;
+    void connect(const QStringList &key, QGraphicsItem *item);
+    [[nodiscard]] QList<QGraphicsItem *> connected(const QStringList &key) const;
+    [[nodiscard]] const QList<QGraphicsItem *> &items() const { return items_; }
+    [[nodiscard]] quint64 generation() const { return generation_; }
+    void touch(QGraphicsItem &item);
+    QRectF takeChangedBounds();
+private:
+    QGraphicsScene &scene_;
+    bool valid_ = false;
+    quint64 generation_ = 0;
+    QList<QGraphicsItem *> items_;
+    QHash<QStringList, QGraphicsItem *> identities_;
+    QHash<QStringList, QList<QGraphicsItem *>> connections_;
+    QRectF changed_bounds_;
+};
+
+
+// A routing operation uses the scene index when published, otherwise one
+// ordered snapshot. No structural edit is allowed inside this scope.
 class NodeGraphLookupScope {
 public:
     explicit NodeGraphLookupScope(QGraphicsScene &scene);
@@ -239,6 +335,12 @@ class NodeCanvasView : public QGraphicsView {
 
     // Put the whole content on screen, within the zoom clamp.
     void fitView();
+    NodeDragTrace &dragTrace() { return drag_trace_; }
+    static constexpr int DragDurationMs = 2000, DragIntervalMs = 8, DragHoldMs = 0;
+    static constexpr int DragDeltaX = 200, DragDeltaY = 60;
+    QJsonObject dragPaced(const QPoint &from, const QPoint &delta,
+                         int duration_ms = DragDurationMs, int interval_ms = DragIntervalMs,
+                         int hold_ms = DragHoldMs);
 
     // UX-5a: a canvas whose words must stay readable after a fit. The fit
     // stops at `floor`; content still bigger than the pane is then looked at
@@ -265,6 +367,7 @@ class NodeCanvasView : public QGraphicsView {
     // The ground both canvases stand on: the theme's canvas colour and one
     // grid at a fixed scene pitch. A view that painted its own background
     // would be a second place a theme has to be taught about.
+    void paintEvent(QPaintEvent *event) override;
     void drawBackground(QPainter *painter, const QRectF &rect) override;
     // A theme switch changes the ground the cached background pixmap holds.
     void changeEvent(QEvent *event) override;
@@ -292,6 +395,8 @@ class NodeCanvasView : public QGraphicsView {
     // pan on a small graph used to do nothing at all.
     void growPanRoom();
 
+    NodeDragTrace drag_trace_;
+    QTimer *trace_probe_ = nullptr;
     ZoomObserver zoom_observer_;
     // The grid drawn last time, kept so an exposed rect the view has already
     // ground out does not have to be ground out again. The theme colour is

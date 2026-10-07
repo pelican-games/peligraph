@@ -9,6 +9,7 @@
 #include "graphcanvasrenderfields.hpp"
 #include "graphcanvasvaluefields.hpp"
 #include "graphcanvaswidget.hpp"
+#include "graphcanvasfoldgroups.hpp"
 #include "rendertargetform.hpp"
 #include "renderedithistory.hpp"
 #include "renderconfigdigest.hpp"
@@ -40,6 +41,7 @@
 #include <QGraphicsPathItem>
 #include <QImage>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QPainter>
 #include <QGraphicsScene>
@@ -8683,8 +8685,16 @@ struct Ux2Tab {
     RecordedCapability transport;
     std::unique_ptr<PelicanStudio::GraphCanvasWidget> widget;
 
-    explicit Ux2Tab(bool authoring) {
+    explicit Ux2Tab(bool authoring, bool frame_plan = false, bool fold_groups = false) {
         auto capability = transport.capability();
+        if (fold_groups) capability.requestFoldGroups = [this](QString *) {
+            transport.calls.push_back({QStringLiteral("get_fold_groups")});
+            return transport.next++;
+        };
+        if (frame_plan) capability.requestFramePlan = [this](QString *) {
+            transport.calls.push_back({QStringLiteral("get_frame_plan")});
+            return transport.next++;
+        };
         if (authoring) {
             capability.requestRenderAuthoringContext = [this](QString *) {
                 transport.calls.push_back({QStringLiteral("get_render_authoring_context")});
@@ -14925,4 +14935,515 @@ TEST_CASE("RT-D Redo refuses another panel top and resumes after that panel rest
     tab.finishRestore();
     CHECK(tab.document == content);
     CHECK(tab.history.undoStack().back().serial == own);
+}
+
+// DL-1: this is a QWidget/QGraphicsView gesture, including queued work and
+// paints. It intentionally does not claim to be the GPU/project scenario.
+TEST_CASE("DL-1 paced gestures correlate exact painted positions and queued work",
+          "[devstudio][graph-canvas][scene][dl1][drag-trace]") {
+    (void)application();
+    const bool benchmark = qEnvironmentVariableIsSet("PELICAN_STUDIO_DRAG_BENCHMARK");
+    const QString output = qEnvironmentVariable("PELICAN_STUDIO_DRAG_BENCHMARK_DIR");
+    for (const bool derived : {false, true}) {
+        Ux2Tab tab{false, derived};
+        Json document = connectedDocument();
+        document["layout"]["nodes"]["left"] = {{"x", 328}, {"y", 100}};
+        auto read = derived ? gl1bRead() : context(document);
+        if (derived) read["root_schema"] = "pelican.graph";
+        tab.answer("get_graph_instances", read);
+        if (derived) tab.answer("get_frame_plan", gl1bPlan());
+        auto &scene = tab.widget->scene();
+        tab.widget->model().setDomainShown("value", true);
+        scene.repopulate();
+        (void)ux12aWait([] { return false; }, 350);
+        const QString name = derived ? QStringLiteral("lighting") : QStringLiteral("left");
+        auto *node = nodeItem(scene, name);
+        REQUIRE(node != nullptr);
+        auto *view = dynamic_cast<PelicanStudio::NodeCanvasView *>(
+            tab.field<QGraphicsView>("pelican.graphCanvasView"));
+        REQUIRE(view != nullptr);
+        // Unrelated scene content makes accidental O(d*I) work visible. These
+        // are deliberately outside the viewport: painting is measured separately.
+        for (int i = 0; i < 1500; ++i) scene.addRect(10000 + i % 100, 10000 + i / 100, 1, 1);
+        const QString update = qEnvironmentVariable("PELICAN_STUDIO_DRAG_UPDATE_MODE");
+        if (update == "bounding") view->setViewportUpdateMode(QGraphicsView::BoundingRectViewportUpdate);
+        if (update == "smart") view->setViewportUpdateMode(QGraphicsView::SmartViewportUpdate);
+        if (qEnvironmentVariableIsSet("PELICAN_STUDIO_DRAG_TEXT_CACHE"))
+            for (auto *item : scene.items())
+                if (dynamic_cast<QGraphicsSimpleTextItem *>(item)) item->setCacheMode(QGraphicsItem::DeviceCoordinateCache);
+        view->setTransform(QTransform{});
+        view->centerOn(node);
+        QCoreApplication::processEvents();
+        const QPoint from = view->mapFromScene(node->mapToScene(QPointF{60, 15}));
+        REQUIRE(view->viewport()->rect().contains(from));
+        const QPointF before = node->pos();
+        const auto delivery = view->dragPaced(from, QPoint{140, 40}, benchmark ? 2000 : 160, 8);
+        REQUIRE(delivery.value("view_alive").toBool());
+        const auto trace = view->dragTrace().dump();
+        if (!output.isEmpty()) {
+            const QString stem = derived ? QStringLiteral("derived_harness") : QStringLiteral("normal_harness");
+            REQUIRE(view->dragTrace().write(output + '/' + stem + ".json"));
+        }
+        node = nodeItem(scene, name);
+        REQUIRE(node != nullptr);
+        INFO("before=" << before.x() << "," << before.y() << " after=" << node->pos().x() << "," << node->pos().y());
+        INFO(QJsonDocument{trace.value("summary").toObject()}.toJson().toStdString());
+        REQUIRE(trace.value("overflow").toInteger() == 0);
+        REQUIRE(trace.value("moves").toInteger() == (benchmark ? 250 : 20));
+        REQUIRE(trace.value("changed_moves").toInteger() > 0);
+        REQUIRE(trace.value("painted_moves").toInteger() > 0);
+        const auto summary = trace.value("summary").toObject();
+        REQUIRE(summary.contains("input_to_paint"));
+        REQUIRE(summary.contains("apply_rect"));
+        REQUIRE(summary.contains("endpoint_lookup"));
+        if (qEnvironmentVariableIsSet("PELICAN_STUDIO_DRAG_REQUIRE_2MS"))
+            CHECK(summary.value("mouse_move").toObject().value("p95_ms").toDouble() <= 2.0);
+        CHECK_FALSE(summary.contains("fold_structure"));
+        REQUIRE(summary.contains("scene_bounds_grow"));
+        CHECK(summary.value("scene_bounds_full").toObject().value("count").toInteger() == 1);
+        REQUIRE((node->pos() - before - QPointF{140, 40}).manhattanLength() < 3.0);
+        const auto metadata = trace.value("metadata").toObject();
+        CHECK(metadata.value("I").toInt() >= 1500);
+        CHECK(metadata.value("d").toInt() > 0);
+        CHECK(metadata.value("kind").toString() == (derived ? "derived" : "normal"));
+        // A reported latency must have the very same move entry and paint end,
+        // never the first paint of a later (coalesced) position.
+        std::map<qint64, double> entered;
+        std::set<qint64> painted;
+        const auto records = trace.value("records").toArray();
+        for (const auto &value : records) {
+            const auto row = value.toObject();
+            const auto move = row.value("move").toInteger();
+            if (row.value("begin_ms").toDouble() <= trace.value("duration_ms").toDouble())
+                CHECK(row.value("stage") != "synchronize_heavy");
+            if (row.value("stage") == "scene_bounds_full")
+                CHECK(row.value("begin_ms").toDouble() >= trace.value("duration_ms").toDouble());
+            if (row.value("stage") == "mouse_move") entered[move] = row.value("begin_ms").toDouble();
+            if (row.value("stage") == "paint" && move) {
+                REQUIRE(entered.contains(move));
+                CHECK(row.value("end_ms").toDouble() >= entered.at(move));
+                painted.insert(move);
+            }
+        }
+        CHECK(trace.value("painted_moves").toInteger() == qint64(painted.size()));
+        if (!output.isEmpty()) {
+            const QString stem = derived ? QStringLiteral("derived_harness") : QStringLiteral("normal_harness");
+            REQUIRE(view->dragTrace().write(output + '/' + stem + ".json"));
+            QImage image(view->viewport()->size(), QImage::Format_ARGB32_Premultiplied);
+            image.fill(Qt::transparent);
+            QPainter painter{&image};
+            view->viewport()->render(&painter);
+            painter.end();
+            REQUIRE(image.save(output + '/' + stem + ".png"));
+            const QString reference = qEnvironmentVariable("PELICAN_STUDIO_DRAG_REFERENCE_DIR");
+            if (!reference.isEmpty()) CHECK(image == QImage{reference + '/' + stem + ".png"}.convertToFormat(image.format()));
+        }
+    }
+}
+
+TEST_CASE("DL-1 routing lookup follows rename deletion and scene reconstruction",
+          "[devstudio][graph-canvas][scene][dl1][lookup]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    auto document = connectedDocument();
+    model.setConnected(true);
+    answer(model, document);
+    scene.setModel(&model);
+    auto check = [&](const QString &name) {
+        const auto *index = PelicanStudio::NodeGraphIndex::forScene(scene);
+        REQUIRE(index != nullptr);
+        auto *node = nodeItem(scene, name);
+        REQUIRE(node != nullptr);
+        REQUIRE(index->find({"node", PelicanStudio::GraphCanvasNodeItem, "", name}) == node);
+        const auto edges = index->connected({"edge", "", name});
+        REQUIRE(edges.size() == 1);
+        auto *edge = dynamic_cast<QGraphicsPathItem *>(edges.front());
+        REQUIRE(edge != nullptr);
+        const auto before = edge->path();
+        node->moveBy(23, 17);
+        CHECK(edge->path() != before);
+        auto *socket = index->find({"socket", "", name, "gain", "input"});
+        REQUIRE(socket != nullptr);
+        const auto actual = edge->mapToScene(edge->path().pointAtPercent(1));
+        CHECK((actual - socket->sceneBoundingRect().center()).manhattanLength() < 0.01);
+    };
+    check("left");
+    const auto first_generation = scene.routingGeneration();
+    for (auto &node : document["nodes"]) if (node["id"] == "left") node["id"] = "renamed";
+    model.refresh();
+    answer(model, document);
+    scene.repopulate();
+    REQUIRE(scene.routingGeneration() > first_generation);
+    REQUIRE(PelicanStudio::NodeGraphIndex::forScene(scene)->find({"node", PelicanStudio::GraphCanvasNodeItem, "", "left"}) == nullptr);
+    check("renamed");
+    auto &nodes = document["nodes"];
+    nodes.erase(std::remove_if(nodes.begin(), nodes.end(), [](const Json &node) { return node["id"] == "renamed"; }), nodes.end());
+    model.refresh();
+    answer(model, document);
+    scene.repopulate();
+    auto *index = PelicanStudio::NodeGraphIndex::forScene(scene);
+    REQUIRE(index != nullptr);
+    CHECK(index->find({"node", PelicanStudio::GraphCanvasNodeItem, "", "renamed"}) == nullptr);
+    CHECK(index->connected({"edge", "", "renamed"}).isEmpty());
+    scene.clear();
+    CHECK(PelicanStudio::NodeGraphIndex::forScene(scene) == nullptr);
+    scene.repopulate();
+    REQUIRE(PelicanStudio::NodeGraphIndex::forScene(scene) != nullptr);
+    CHECK(PelicanStudio::NodeGraphIndex::forScene(scene)->find({"node", PelicanStudio::GraphCanvasNodeItem, "", "clock"}) == nodeItem(scene, "clock"));
+}
+
+namespace {
+void dl1Mouse(PelicanStudio::NodeCanvasView &view, QEvent::Type type, QPoint point,
+              Qt::MouseButton button, Qt::MouseButtons held) {
+    auto *port = view.viewport();
+    QMouseEvent event{type, QPointF{point}, QPointF{point}, port->mapToGlobal(QPointF{point}),
+                      button, held, Qt::NoModifier};
+    QApplication::sendEvent(port, &event);
+    QCoreApplication::processEvents();
+}
+}
+
+TEST_CASE("DL-1 holding a node still saves after the unchanged debounce",
+          "[devstudio][graph-canvas][scene][dl1][save]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = ux12aBufferDocument(Json{{"element", "vec4"}, {"size", 16}});
+    tab.read(document, "dl1-save");
+    (void)ux12aWait([] { return false; }, 350);
+    auto &scene = tab.widget->scene();
+    auto *node = nodeItem(scene, "buf");
+    REQUIRE(node != nullptr);
+    auto *view = dynamic_cast<PelicanStudio::NodeCanvasView *>(tab.field<QGraphicsView>("pelican.graphCanvasView"));
+    REQUIRE(view != nullptr);
+    view->centerOn(node);
+    QCoreApplication::processEvents();
+    const QPoint from = view->mapFromScene(node->mapToScene(QPointF{60, 15}));
+    dl1Mouse(*view, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    dl1Mouse(*view, QEvent::MouseMove, from + QPoint{35, 20}, Qt::NoButton, Qt::LeftButton);
+    REQUIRE(scene.dragging());
+    CHECK(tab.reads("edit_graph_document") == 0);
+    (void)ux12aWait([] { return false; }, 150);
+    CHECK(tab.reads("edit_graph_document") == 0);
+    REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == 1; }, 800));
+    REQUIRE(scene.dragging());
+    const auto &call = tab.transport.calls[std::size_t(tab.transport.idOf("edit_graph_document") - 1)];
+    const auto ops = Json::parse(call.body.toStdString());
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0]["op"] == "set_layout");
+    dl1Mouse(*view, QEvent::MouseButtonRelease, from + QPoint{35, 20}, Qt::LeftButton, Qt::NoButton);
+}
+
+TEST_CASE("DL-1 an arriving context still permits saving while the mouse stays held",
+          "[devstudio][graph-canvas][scene][dl1][synchronize]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = ux12aBufferDocument(Json{{"element", "vec4"}, {"size", 16}});
+    tab.read(document, "dl1-context-before");
+    (void)ux12aWait([] { return false; }, 350);
+    auto &scene = tab.widget->scene();
+    auto *node = nodeItem(scene, "buf");
+    REQUIRE(node != nullptr);
+    auto *view = dynamic_cast<PelicanStudio::NodeCanvasView *>(tab.field<QGraphicsView>("pelican.graphCanvasView"));
+    REQUIRE(view != nullptr);
+    view->centerOn(node);
+    QCoreApplication::processEvents();
+    const QPoint from = view->mapFromScene(node->mapToScene(QPointF{60, 15}));
+    tab.widget->refresh();
+    const auto revision = tab.widget->model().contentRevision();
+    dl1Mouse(*view, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    REQUIRE(scene.dragging());
+    document["nodes"][0]["parameters"]["size"] = 64;
+    tab.read(document, "dl1-context-after");
+    // UNMET D3/context deferral: retaining this reply until release would
+    // leave the model busy and prevent the unchanged held-stop save.
+    CHECK(tab.widget->model().contentRevision() > revision);
+    CHECK(tab.widget->model().digest() == "dl1-context-after");
+    dl1Mouse(*view, QEvent::MouseMove, from + QPoint{35, 20}, Qt::NoButton, Qt::LeftButton);
+    REQUIRE(scene.dragging());
+    REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == 1; }, 800));
+    CHECK(scene.dragging());
+    dl1Mouse(*view, QEvent::MouseButtonRelease, from, Qt::LeftButton, Qt::NoButton);
+    REQUIRE(ux12aWait([&] { return tab.widget->model().digest() == "dl1-context-after"; }));
+    CHECK(tab.widget->model().contentRevision() > revision);
+}
+
+TEST_CASE("DL-1 fold frame geometry follows a held node without rebuilding items",
+          "[devstudio][graph-canvas][scene][dl1][fold]") {
+    (void)application();
+    Ux2Tab tab{false, false, true};
+    tab.widget->model().setDomainShown("value", true);
+    auto read = context(connectedDocument());
+    read["root_schema"] = "pelican.graph";
+    read["source_reference"] = "fixture";
+    tab.answer("get_graph_instances", read);
+    tab.answer("get_fold_groups", Json{{"source_digest", {{"hex", "source-a"}}},
+        {"fold_groups", Json::array({{{"group", "test_group"}, {"nodes", {"clock", "left"}},
+            {"kind", "decisions"}, {"digest", std::string(64, 'a')}, {"state", "unverified"}}})}});
+    (void)ux12aWait([] { return false; }, 350);
+    auto &scene = tab.widget->scene();
+    auto frames = itemsOfKind(scene, PelicanStudio::GraphCanvasFoldGroupItem);
+    REQUIRE(frames.size() == 1);
+    auto *frame = frames.front();
+    const auto box = frame->sceneBoundingRect();
+    auto *node = nodeItem(scene, "left");
+    REQUIRE(node != nullptr);
+    auto *view = dynamic_cast<PelicanStudio::NodeCanvasView *>(tab.field<QGraphicsView>("pelican.graphCanvasView"));
+    REQUIRE(view != nullptr);
+    view->setTransform(QTransform{});
+    view->centerOn(node);
+    QCoreApplication::processEvents();
+    const auto generation = scene.routingGeneration();
+    const QPoint from = view->mapFromScene(node->mapToScene(QPointF{60, 15}));
+    dl1Mouse(*view, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+    dl1Mouse(*view, QEvent::MouseMove, from + QPoint{90, 70}, Qt::NoButton, Qt::LeftButton);
+    (void)ux12aWait([] { return false; }, 40);
+    REQUIRE(scene.dragging());
+    REQUIRE(scene.routingGeneration() == generation);
+    CHECK(itemsOfKind(scene, PelicanStudio::GraphCanvasFoldGroupItem).front() == frame);
+    CHECK(frame->sceneBoundingRect() != box);
+    CHECK(frame->sceneBoundingRect().contains(node->sceneBoundingRect()));
+    dl1Mouse(*view, QEvent::MouseButtonRelease, from + QPoint{90, 70}, Qt::LeftButton, Qt::NoButton);
+    REQUIRE(ux12aWait([&] { return scene.routingGeneration() > generation; }));
+    REQUIRE(itemsOfKind(scene, PelicanStudio::GraphCanvasFoldGroupItem).size() == 1);
+}
+
+TEST_CASE("DL-1 clearing the scene invalidates every borrowed lookup pointer",
+          "[devstudio][graph-canvas][scene][dl1][lookup-lifetime]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    answer(model, connectedDocument());
+    scene.setModel(&model);
+    REQUIRE(PelicanStudio::NodeGraphIndex::forScene(scene) != nullptr);
+    scene.clear();
+    REQUIRE(PelicanStudio::NodeGraphIndex::forScene(scene) == nullptr);
+}
+
+
+TEST_CASE("DL-1 release alone finalizes bounds after queued moves have drained", "[devstudio][graph-canvas][scene][dl1]") {
+    (void)application();
+    using namespace PelicanStudio;
+    // Bypass the scene's release implementation, while doing Qt's ungrab.
+    // This is the disabled release-hook side of the SAME test.
+    struct NoReleaseHook : QObject {
+        bool eventFilter(QObject *object, QEvent *event) override {
+            if (event->type() != QEvent::GraphicsSceneMouseRelease) return false;
+            auto *scene = static_cast<QGraphicsScene *>(object);
+            if (auto *grabber = scene->mouseGrabberItem()) grabber->ungrabMouse();
+            return true;
+        }
+    } disabled;
+    for (bool hook : {true, false}) {
+        Ux2Tab tab{false, true};
+        tab.answer("get_graph_instances", gl1bRead());
+        tab.answer("get_frame_plan", gl1bPlan());
+        (void)ux12aWait([] { return false; }, 350);
+        auto &scene = tab.widget->scene();
+        auto *node = nodeItem(scene, "lighting");
+        REQUIRE(node);
+        auto *view = dynamic_cast<NodeCanvasView *>(tab.field<QGraphicsView>("pelican.graphCanvasView"));
+        REQUIRE(view);
+        view->setTransform(QTransform{});
+        view->centerOn(node);
+        QCoreApplication::processEvents();
+        view->dragTrace().setEnabled(true);
+        const QPoint from = view->mapFromScene(node->mapToScene(QPointF{60,15}));
+        dl1Mouse(*view, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+        dl1Mouse(*view, QEvent::MouseMove, from + QPoint{2000, 1000}, Qt::NoButton, Qt::LeftButton);
+        (void)ux12aWait([] { return false; }, 30);
+        const auto expanded = scene.sceneRect();
+        dl1Mouse(*view, QEvent::MouseMove, from + QPoint{20, 10}, Qt::NoButton, Qt::LeftButton);
+        (void)ux12aWait([] { return false; }, 30);
+        REQUIRE(scene.dragging());
+        const auto before = view->dragTrace().dump();
+        CHECK(before.value("summary").toObject().value("scene_bounds_full").toObject().value("count").toInt() == 0);
+        CHECK(scene.sceneRect() == expanded);
+        const auto content = scene.itemsBoundingRect().adjusted(-60, -60, 60, 60);
+        REQUIRE(content != expanded);
+        const auto center = view->mapToScene(view->viewport()->rect().center());
+        if (!hook) scene.installEventFilter(&disabled);
+        dl1Mouse(*view, QEvent::MouseButtonRelease, from + QPoint{20, 10}, Qt::LeftButton, Qt::NoButton);
+        (void)ux12aWait([] { return false; }, 40);
+        CHECK_FALSE(scene.dragging());
+        const auto after = view->dragTrace().dump();
+        CHECK(after.value("summary").toObject().value("scene_bounds_full").toObject().value("count").toInt() == (hook ? 1 : 0));
+        CHECK((scene.sceneRect() == content) == hook);
+        CHECK((view->mapToScene(view->viewport()->rect().center()) - center).manhattanLength() < 2);
+    }
+}
+
+TEST_CASE("DL-1 routing index excludes a restored inline editor before its deletion", "[devstudio][graph-canvas][scene][dl1]") {
+    (void)application();
+    using namespace PelicanStudio;
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    answer(model, connectedDocument());
+    scene.setModel(&model);
+    REQUIRE(scene.beginLabelEdit("left"));
+    scene.repopulate();
+    REQUIRE(scene.editingInline());
+    scene.rebuildRoutingIndex(); // also done by a subsequent fold redraw
+    auto *index = NodeGraphIndex::forScene(scene);
+    REQUIRE(index);
+    const auto proxies = itemsOfKind(scene, GraphCanvasEditorItem);
+    REQUIRE_FALSE(proxies.empty());
+    for (auto *proxy : proxies) CHECK_FALSE(index->items().contains(proxy));
+    for (auto *item : index->items()) CHECK(nodeGraphItemKind(*item) != GraphCanvasEditorItem);
+    scene.cancelInlineEdit();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    nodeItem(scene, "left")->moveBy(20, 10);
+    REQUIRE(NodeGraphIndex::forScene(scene));
+    CHECK_FALSE(scene.editingInline());
+}
+
+TEST_CASE("DL-1 an outside derived drag updates folded crossing endpoints", "[devstudio][graph-canvas][scene][dl1]") {
+    (void)application();
+    using namespace PelicanStudio;
+    for (bool geometry_hook : {true, false}) {
+        Ux2Tab tab{false, true, true};
+        tab.answer("get_graph_instances", gl1bRead());
+        tab.answer("get_frame_plan", gl1bPlan());
+        tab.answer("get_fold_groups", Json{{"source_digest", {{"hex", "source-a"}}},
+            {"fold_groups", Json::array({{{"group", "crossing"}, {"nodes", {"blur"}},
+                {"kind", "decisions"}, {"digest", std::string(64, 'a')}, {"state", "unverified"}}})}});
+        (void)ux12aWait([] { return false; }, 350);
+        auto &scene = tab.widget->scene();
+        const auto toggles = itemsOfKind(scene, GraphCanvasFoldToggleItem);
+        REQUIRE_FALSE(toggles.empty());
+        click(scene, toggles.front()->sceneBoundingRect().center());
+        REQUIRE(ux12aWait([&] { return !itemsOfKind(scene, GraphCanvasFoldLinkItem).empty(); }));
+        scene.selectNode("present"); // clear the controller's group selection before pressing
+        (void)ux12aWait([] { return false; }, 40);
+        auto *node = nodeItem(scene, "present");
+        REQUIRE(node);
+        REQUIRE(node->data(GraphCanvasDerivedRole).toBool());
+        auto endpoint_matches = [&] {
+            auto *current = nodeItem(scene, "present");
+            const auto box = current->sceneBoundingRect();
+            std::vector<QPointF> ends{QPointF{box.left(),box.center().y()}};
+            for (auto *item : current->childItems())
+                if (nodeGraphItemKind(*item) == GraphCanvasDerivedSocketItem)
+                    ends.push_back(item->sceneBoundingRect().center());
+            for (auto *item : itemsOfKind(scene, GraphCanvasFoldLinkItem)) {
+                auto *line = dynamic_cast<QGraphicsPathItem *>(item);
+                REQUIRE(line);
+                for (const auto &end : ends)
+                    if ((line->mapToScene(line->path().pointAtPercent(1)) - end).manhattanLength() < .01) return true;
+            }
+            return false;
+        };
+        REQUIRE(endpoint_matches());
+        auto *view = dynamic_cast<NodeCanvasView *>(tab.field<QGraphicsView>("pelican.graphCanvasView"));
+        REQUIRE(view);
+        view->setTransform(QTransform{});
+        view->centerOn(node);
+        QCoreApplication::processEvents();
+        (void)ux12aWait([] { return false; }, 30);
+        if (!geometry_hook) scene.geometryChanged = {};
+        view->dragTrace().setEnabled(true);
+        const QPointF original = node->pos();
+        const QPoint from = view->mapFromScene(node->mapToScene(QPointF{60,15}));
+        dl1Mouse(*view, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+        dl1Mouse(*view, QEvent::MouseMove, from + QPoint{90,70}, Qt::NoButton, Qt::LeftButton);
+        (void)ux12aWait([] { return false; }, 40);
+        REQUIRE(scene.dragging());
+        INFO("hook=" << geometry_hook << " original=" << original.x() << "," << original.y()
+             << " now=" << nodeItem(scene, "present")->pos().x() << "," << nodeItem(scene, "present")->pos().y());
+        INFO(QJsonDocument{view->dragTrace().dump().value("summary").toObject()}.toJson().toStdString());
+        REQUIRE((nodeItem(scene, "present")->pos() - original).manhattanLength() > 100);
+        CHECK(endpoint_matches() == geometry_hook);
+        dl1Mouse(*view, QEvent::MouseButtonRelease, from + QPoint{90,70}, Qt::LeftButton, Qt::NoButton);
+        (void)ux12aWait([] { return false; }, 40);
+        INFO("hook=" << geometry_hook << " original=" << original.x() << "," << original.y()
+             << " now=" << nodeItem(scene, "present")->pos().x() << "," << nodeItem(scene, "present")->pos().y());
+        INFO(QJsonDocument{view->dragTrace().dump().value("summary").toObject()}.toJson().toStdString());
+        REQUIRE((nodeItem(scene, "present")->pos() - original).manhattanLength() > 100);
+        CHECK(endpoint_matches() == geometry_hook);
+    }
+}
+
+TEST_CASE("DL-1 two paced drags return to the starting placement with two keyboard Undos",
+          "[devstudio][graph-canvas][scene][dl1][drag-history]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = ux12aBufferDocument(Json{{"element", "vec4"}, {"size", 16}});
+    document["layout"]["nodes"]["buf"] = {{"x", 328.0}, {"y", 100.0}};
+    std::string digest = "dl1-undo-start";
+    tab.read(document, digest);
+    (void)ux12aWait([] { return false; }, 350);
+    auto &scene = tab.widget->scene();
+    auto &model = tab.widget->model();
+    auto *view = dynamic_cast<PelicanStudio::NodeCanvasView *>(
+        tab.field<QGraphicsView>("pelican.graphCanvasView"));
+    REQUIRE(view != nullptr);
+    auto *undo = tab.field<QAction>("pelican.graphCanvas.undo");
+    auto *notice = tab.field<QLabel>("pelican.graphCanvasNotice");
+    const auto start = document.at("layout");
+    std::vector<Json> placements{start};
+    int edits = 0;
+    const auto commitPlacement = [&] {
+        REQUIRE(ux12aWait([&] { return tab.reads("edit_graph_document") == edits + 1; }));
+        ++edits;
+        const auto id = tab.transport.idOf(QStringLiteral("edit_graph_document"));
+        const auto ops = Json::parse(tab.transport.calls[std::size_t(id - 1)].body.toStdString());
+        REQUIRE(ops.size() == 1);
+        REQUIRE(ops[0].at("op") == "set_layout");
+        document["layout"] = ops[0].at("layout");
+        digest = "dl1-undo-" + std::to_string(edits);
+        tab.commit(document, digest);
+        REQUIRE(ux12aWait([&] { return !scene.layoutPending() && !model.busy(); }));
+        REQUIRE(notice->text() == QStringLiteral("Graph change saved."));
+    };
+    for (int gesture = 0; gesture < 2; ++gesture) {
+        auto *node = nodeItem(scene, "buf");
+        REQUIRE(node != nullptr);
+        const auto before = node->pos();
+        view->setTransform(QTransform{});
+        view->centerOn(node);
+        QCoreApplication::processEvents();
+        const auto from = view->mapFromScene(node->mapToScene(QPointF{60, 15}));
+        // A live document reply during the gesture must defer the heavy UI
+        // synchronization without losing either this move or committed history.
+        tab.widget->refresh();
+        bool replied_while_held = false;
+        QTimer::singleShot(40, tab.widget.get(), [&] {
+            replied_while_held = scene.dragging();
+            tab.read(document, digest);
+        });
+        const auto delivery = view->dragPaced(from, QPoint{70, 30}, 160, 8);
+        REQUIRE(delivery.value("view_alive").toBool());
+        REQUIRE(replied_while_held);
+        const auto trace = view->dragTrace().dump();
+        for (const auto &value : trace.value("records").toArray()) {
+            const auto row = value.toObject();
+            if (row.value("begin_ms").toDouble() < trace.value("duration_ms").toDouble())
+                CHECK(row.value("stage").toString() != QStringLiteral("synchronize_heavy"));
+        }
+        REQUIRE_FALSE(scene.dragging());
+        REQUIRE((nodeItem(scene, "buf")->pos() - before - QPointF{70, 30}).manhattanLength() < 3.0);
+        commitPlacement();
+        placements.push_back(document.at("layout"));
+        REQUIRE(ux12aWait([&] { return undo->isEnabled(); }));
+    }
+    for (int remaining = 1; remaining >= 0; --remaining) {
+        REQUIRE(model.canUndo());
+        REQUIRE(scene.canUndoAny());
+        REQUIRE(undo->isEnabled());
+        pressKey(scene, Qt::Key_Z, Qt::ControlModifier);
+        commitPlacement();
+        CHECK(document.at("layout") == placements[std::size_t(remaining)]);
+        const auto position = document.at("layout").at("nodes").at("buf");
+        REQUIRE(nodeItem(scene, "buf") != nullptr);
+        CHECK(nodeItem(scene, "buf")->pos() == QPointF{position.at("x").get<double>(),
+                                                       position.at("y").get<double>()});
+        if (remaining) REQUIRE(ux12aWait([&] { return undo->isEnabled(); }));
+    }
+    CHECK(edits == 4);
+    CHECK(document.at("layout") == start);
+    CHECK_FALSE(model.canUndo());
+    CHECK_FALSE(scene.canUndoAny());
+    CHECK(model.canRedo());
 }

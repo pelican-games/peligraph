@@ -152,6 +152,9 @@ ValueEditorKind editorKindFor(const nlohmann::json &value) {
 QGraphicsItem *findSocket(QGraphicsScene &scene, const QString &scope,
                           const QString &node, const QString &port,
                           const QString &direction) {
+    const NodeDragTraceSpan trace{scene, "endpoint_lookup"};
+    if (const auto *index = NodeGraphIndex::forScene(scene))
+        return index->find({"socket", scope, node, port, direction});
     for (QGraphicsItem *item : nodeGraphItems(scene)) {
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem} ||
             item->data(GraphCanvasScopeRole).toString() != scope ||
@@ -183,6 +186,7 @@ QGraphicsItem *findSocketOrAnchor(QGraphicsScene &scene, const QString &scope,
 // not draw a socket for falls back to the node box, so a missing contract
 // degrades the line rather than losing it.
 void routeGraphCanvasEdge(QGraphicsScene &scene, QGraphicsPathItem &edge) {
+    const NodeDragTraceSpan trace{scene, "route"};
     const QString scope = edge.data(GraphCanvasScopeRole).toString();
     const QString from_name = edge.data(NodeGraphFromNameRole).toString();
     const QString to_name = edge.data(NodeGraphToNameRole).toString();
@@ -222,14 +226,23 @@ void routeGraphCanvasEdge(QGraphicsScene &scene, QGraphicsPathItem &edge) {
             ? curveGeometryBetween(start, tip)
             : curveGeometry(from->sceneBoundingRect(), to->sceneBoundingRect());
     edge.setPath(edge.mapFromScene(geometry.path));
+    if (auto *index = NodeGraphIndex::forScene(scene)) index->touch(edge);
     if (auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(findEndpointArtifact(
             scene, graphCanvasKinds().arrow, scope, from_name, to_name)))
+    {
         arrow->setPolygon(arrow->mapFromScene(geometry.arrow));
+        if (auto *index = NodeGraphIndex::forScene(scene)) index->touch(*arrow);
+    }
     // LP-4d2, decision 4: the element a dashed line reads sits over its
     // middle, and goes where the line goes.
     if (edge.data(GraphCanvasEdgeElementRole).toString().isEmpty()) return;
     const QString to_port = edge.data(GraphCanvasToPortRole).toString();
-    for (QGraphicsItem *item : nodeGraphItems(scene)) {
+    const auto *index = NodeGraphIndex::forScene(scene);
+    const QList<QGraphicsItem *> labels = index
+        ? QList<QGraphicsItem *>{index->find({"edge_label", scope, to_name, to_port})}
+        : nodeGraphItems(scene);
+    for (QGraphicsItem *item : labels) {
+        if (item == nullptr) continue;
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasEdgeLabelItem} ||
             item->data(GraphCanvasScopeRole).toString() != scope ||
             item->data(NodeGraphNameRole).toString() != to_name ||
@@ -239,6 +252,7 @@ void routeGraphCanvasEdge(QGraphicsScene &scene, QGraphicsPathItem &edge) {
         const QRectF box = item->boundingRect();
         const QPointF at{middle.x() - box.width() / 2.0, middle.y() - box.height() - 2.0};
         item->setPos(item->parentItem() != nullptr ? item->parentItem()->mapFromScene(at) : at);
+        if (auto *index = NodeGraphIndex::forScene(scene)) index->touch(*item);
         break;
     }
 }
@@ -246,34 +260,52 @@ void routeGraphCanvasEdge(QGraphicsScene &scene, QGraphicsPathItem &edge) {
 // LP-4d1: a body output's line, from the port that makes it to the inside
 // end of that output on the zone's right edge.
 void routeZoneLink(QGraphicsScene &scene, QGraphicsPathItem &link) {
+    const NodeDragTraceSpan trace{scene, "route"};
     const QString scope = link.data(GraphCanvasScopeRole).toString();
     QGraphicsItem *from = findSocketOrAnchor(scene, scope,
                                              link.data(NodeGraphFromNameRole).toString(),
                                              link.data(GraphCanvasFromPortRole).toString(),
                                              QStringLiteral("output"));
     QGraphicsItem *to = nullptr;
-    for (QGraphicsItem *item : scene.items())
-        if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasZoneSocketItem} &&
+    { const NodeDragTraceSpan lookup_trace{scene, "endpoint_lookup"};
+    const auto *index = NodeGraphIndex::forScene(scene);
+    const QList<QGraphicsItem *> sockets = index
+        ? QList<QGraphicsItem *>{index->find({"zone_socket", link.data(NodeGraphNameRole).toString(),
+                                            link.data(GraphCanvasPortRole).toString()})}
+        : nodeGraphItems(scene);
+    for (QGraphicsItem *item : sockets)
+        if (item && nodeGraphItemKind(*item) == QLatin1String{GraphCanvasZoneSocketItem} &&
             item->data(NodeGraphNameRole) == link.data(NodeGraphNameRole) &&
             item->data(GraphCanvasPortRole) == link.data(GraphCanvasPortRole)) {
             to = item;
             break;
         }
+    }
     if (from == nullptr || to == nullptr) return;
     const CurveGeometry geometry = curveGeometryBetween(from->sceneBoundingRect().center(),
                                                         to->sceneBoundingRect().center());
     link.setPath(link.mapFromScene(geometry.path));
+    if (auto *index = NodeGraphIndex::forScene(scene)) index->touch(link);
 }
 
 // GL-1, decision 2: a line the frame plan implies, from the row of the
 // resource it names on a folded node (or the heading of a graph node) to the
 // row that reads it. Drawing only: nothing about it is kept or sent.
 void routeDerivedEdge(QGraphicsScene &scene, QGraphicsPathItem &line) {
+    const NodeDragTraceSpan trace{scene, "route"};
     const QString scope = line.data(GraphCanvasScopeRole).toString();
     const QString resource = line.data(GraphCanvasFromPortRole).toString();
     const auto end = [&](const QString &name, bool output) -> std::optional<QPointF> {
+        const NodeDragTraceSpan lookup_trace{scene, "endpoint_lookup"};
         QGraphicsItem *node = nullptr;
-        for (QGraphicsItem *item : nodeGraphItems(scene)) {
+        const auto *index = NodeGraphIndex::forScene(scene);
+        if (index) {
+            if (auto *socket = index->find({"derived_socket", scope, name, resource,
+                                            output ? QStringLiteral("output") : QStringLiteral("input")}))
+                return socket->sceneBoundingRect().center();
+            node = index->find({"root_node", scope, name});
+        }
+        for (QGraphicsItem *item : index ? QList<QGraphicsItem *>{} : nodeGraphItems(scene)) {
             if (item->data(NodeGraphNameRole).toString() != name ||
                 item->data(GraphCanvasScopeRole).toString() != scope ||
                 !item->data(GraphCanvasZoneScopeRole).toString().isEmpty())
@@ -294,12 +326,14 @@ void routeDerivedEdge(QGraphicsScene &scene, QGraphicsPathItem &line) {
     const auto tip = end(line.data(NodeGraphToNameRole).toString(), false);
     if (!start || !tip) return;
     line.setPath(line.mapFromScene(curveGeometryBetween(*start, *tip).path));
+    if (auto *index = NodeGraphIndex::forScene(scene)) index->touch(line);
 }
 
 // GL-1e, decision 2: one item of a rendering-section pass's `input`, from the
 // output it names -- a graph node's socket, or the row of a folded node -- to
 // the pass's socket for that item.
 void routePassInputEdge(QGraphicsScene &scene, QGraphicsPathItem &line) {
+    const NodeDragTraceSpan trace{scene, "route"};
     const QString scope = line.data(GraphCanvasScopeRole).toString();
     const QString from = line.data(NodeGraphFromNameRole).toString();
     const QString from_port = line.data(GraphCanvasFromPortRole).toString();
@@ -308,7 +342,14 @@ void routePassInputEdge(QGraphicsScene &scene, QGraphicsPathItem &line) {
     QGraphicsItem *start = nullptr;
     QGraphicsItem *from_node = nullptr;
     QGraphicsItem *end = nullptr;
-    for (QGraphicsItem *item : scene.items()) {
+    { const NodeDragTraceSpan lookup_trace{scene, "endpoint_lookup"};
+    const auto *lookup = NodeGraphIndex::forScene(scene);
+    if (lookup) {
+        start = lookup->find({"pass_output", scope, from, from_port});
+        from_node = lookup->find({"root_node", scope, from});
+        end = lookup->find({"pass_input", scope, pass, QString::number(index)});
+    }
+    for (QGraphicsItem *item : lookup ? QList<QGraphicsItem *>{} : nodeGraphItems(scene)) {
         if (item->data(GraphCanvasScopeRole).toString() != scope ||
             !item->data(GraphCanvasZoneScopeRole).toString().isEmpty())
             continue;
@@ -330,6 +371,7 @@ void routePassInputEdge(QGraphicsScene &scene, QGraphicsPathItem &line) {
             item->data(GraphCanvasPassInputRole).toLongLong() == index)
             end = item;
     }
+    }
     if (end == nullptr || (start == nullptr && from_node == nullptr)) return;
     const QPointF tip = end->sceneBoundingRect().center();
     const QPointF origin = start != nullptr
@@ -338,6 +380,7 @@ void routePassInputEdge(QGraphicsScene &scene, QGraphicsPathItem &line) {
                                          from_node->sceneBoundingRect().top() +
                                              GraphCanvasHeaderHeight / 2.0};
     line.setPath(line.mapFromScene(curveGeometryBetween(origin, tip).path));
+    if (auto *index = NodeGraphIndex::forScene(scene)) index->touch(line);
 }
 
 // GL-1b, decision 1: a folded node's key in the one placement. It cannot be a
@@ -346,8 +389,10 @@ std::string foldedLayoutKey(const std::string &id) { return std::string{"\x01" "
 bool isFoldedLayoutKey(const std::string &key) { return key.starts_with('\x01'); }
 
 void rerouteDerivedEdges(QGraphicsScene &scene, const std::string &node) {
+    const NodeDragTraceSpan trace{scene, "reroute_derived"};
     const QString name = qtext(node);
-    for (QGraphicsItem *item : nodeGraphItems(scene)) {
+    const auto *index = NodeGraphIndex::forScene(scene);
+    for (QGraphicsItem *item : index ? index->connected({"derived", name}) : nodeGraphItems(scene)) {
         const QString kind = nodeGraphItemKind(*item);
         const bool pass_input = kind == QLatin1String{GraphCanvasPassInputEdgeItem};
         if ((kind != QLatin1String{GraphCanvasDerivedEdgeItem} && !pass_input) ||
@@ -364,12 +409,14 @@ void rerouteDerivedEdges(QGraphicsScene &scene, const std::string &node) {
 
 void rerouteGraphCanvasEdges(QGraphicsScene &scene, const std::string &scope,
                              const std::string &node) {
+    const NodeDragTraceSpan trace{scene, "reroute"};
     const NodeGraphLookupScope lookup{scene};
     // GL-1: the lines the plan implies follow a root node too.
     if (scope.empty()) rerouteDerivedEdges(scene, node);
     const QString expected_scope = qtext(scope);
     const QString expected_node = qtext(node);
-    for (QGraphicsItem *item : nodeGraphItems(scene)) {
+    const auto *index = NodeGraphIndex::forScene(scene);
+    for (QGraphicsItem *item : index ? index->connected({"edge", expected_scope, expected_node}) : nodeGraphItems(scene)) {
         if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasZoneLinkItem} &&
             item->data(GraphCanvasScopeRole).toString() == expected_scope &&
             item->data(NodeGraphFromNameRole).toString() == expected_node) {
@@ -729,6 +776,7 @@ void GraphCanvasScene::holdRootPlaces(const std::string &root) {
 }
 
 void GraphCanvasScene::keepFoldedPlaces() {
+    const NodeDragTraceSpan trace{this, "keep_folded"};
     for (QGraphicsItem *item : items()) {
         if (!item->data(GraphCanvasDerivedRole).toBool() ||
             nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem})
@@ -859,6 +907,7 @@ void GraphCanvasScene::pruneLayout(const std::string &scope) {
 }
 
 void GraphCanvasScene::noteLayoutChange(const std::string &scope) {
+    const NodeDragTraceSpan trace{this, "note_layout"};
     // GL-1: a folded view is Studio's drawing; where its nodes sit is not
     // kept anywhere.
     if (model_ != nullptr && model_->foldedView()) return;
@@ -924,6 +973,7 @@ bool GraphCanvasScene::followDocumentPlacement() {
 }
 
 void GraphCanvasScene::flushLayout() {
+    const NodeDragTraceSpan trace{this, "flush_layout"};
     if (model_ == nullptr) return;
     // A scope the canvas has left goes first: it is the gesture that was
     // finished before the canvas moved on.
@@ -1491,6 +1541,70 @@ void GraphCanvasScene::refreshLayerBands() {
         }
     }
 }
+
+void GraphCanvasScene::clear() {
+    routing_index_.invalidate();
+    QGraphicsScene::clear();
+}
+
+void GraphCanvasScene::rebuildRoutingIndex() {
+    routing_index_.invalidate();
+    QList<QGraphicsItem *> all;
+    for (QGraphicsItem *item : items()) {
+        const QString kind = nodeGraphItemKind(*item);
+        if (kind != GraphCanvasNodeItem && kind != GraphCanvasSocketItem &&
+            kind != GraphCanvasEdgeItem && kind != GraphCanvasEdgeArrowItem &&
+            kind != GraphCanvasEdgeLabelItem && kind != GraphCanvasDerivedSocketItem &&
+            kind != GraphCanvasDerivedEdgeItem && kind != GraphCanvasPassInputEdgeItem &&
+            kind != GraphCanvasZoneItem && kind != GraphCanvasZoneSocketItem &&
+            kind != GraphCanvasZoneLinkItem && kind != GraphCanvasZoneLabelItem &&
+            kind != GraphCanvasFoldLinkItem) continue;
+        all.push_back(item);
+        const QString scope = item->data(GraphCanvasScopeRole).toString();
+        const QString name = item->data(NodeGraphNameRole).toString();
+        const QString port = item->data(GraphCanvasPortRole).toString();
+        const QString direction = item->data(GraphCanvasSocketDirectionRole).toString();
+        const QString from = item->data(NodeGraphFromNameRole).toString();
+        const QString to = item->data(NodeGraphToNameRole).toString();
+        routing_index_.insert({"node", kind, scope, name}, item);
+        routing_index_.insert({"artifact", kind, scope, from, to}, item);
+        if (kind == QLatin1String{GraphCanvasSocketItem}) {
+            routing_index_.insert({"socket", scope, name, port, direction}, item);
+            const QString bound = item->data(GraphCanvasBoundPortRole).toString();
+            if (!bound.isEmpty()) routing_index_.insert({"socket", scope, name, bound, direction}, item);
+        }
+        if (kind == QLatin1String{GraphCanvasZoneSocketItem})
+            routing_index_.insert({"zone_socket", name, port}, item);
+        if (kind == QLatin1String{GraphCanvasEdgeLabelItem})
+            routing_index_.insert({"edge_label", scope, name, port}, item);
+        if (item->data(GraphCanvasZoneScopeRole).toString().isEmpty()) {
+            if (kind == QLatin1String{GraphCanvasNodeItem})
+                routing_index_.insert({"root_node", scope, name}, item, true);
+            if (kind == QLatin1String{GraphCanvasDerivedSocketItem}) {
+                routing_index_.insert({"derived_socket", scope, name, port, direction}, item);
+                if (direction != QLatin1String{"output"} && item->data(GraphCanvasPassInputRole).isValid())
+                    routing_index_.insert({"pass_input", scope, name,
+                        QString::number(item->data(GraphCanvasPassInputRole).toLongLong())}, item, true);
+            }
+            if ((kind == QLatin1String{GraphCanvasDerivedSocketItem} || kind == QLatin1String{GraphCanvasSocketItem}) &&
+                direction == QLatin1String{"output"} && !port.isEmpty())
+                routing_index_.insert({"pass_output", scope, name, port}, item, true);
+        }
+        const bool derived = kind == QLatin1String{GraphCanvasDerivedEdgeItem} ||
+                             kind == QLatin1String{GraphCanvasPassInputEdgeItem};
+        if (derived) {
+            routing_index_.connect({"derived", from}, item);
+            if (from != to) routing_index_.connect({"derived", to}, item);
+        }
+        if (kind == QLatin1String{GraphCanvasEdgeItem} || kind == QLatin1String{GraphCanvasZoneLinkItem}) {
+            routing_index_.connect({"edge", scope, from}, item);
+            if (from != to && kind != QLatin1String{GraphCanvasZoneLinkItem})
+                routing_index_.connect({"edge", scope, to}, item);
+        }
+    }
+    routing_index_.publish(all);
+}
+
 
 void GraphCanvasScene::repopulate() {
     ++rebuild_generation_;
@@ -2077,12 +2191,15 @@ void GraphCanvasScene::repopulate() {
             // GL-1b: the first place the document is given ends the one
             // placement; the folded nodes stay where it put them.
             if (!anchored) keepFoldedPlaces();
+            {
+                const NodeDragTraceSpan trace{this, "placement"};
             session_node_positions_[position_key] = at;
             // And the document, once the drag has settled. The control
             // points do not move with it: they are absolute, which is the
             // whole point of decision 1. (A zone's body is drawn inside its
             // frame, so it comes along without being written.)
             placement(scope).layout.nodes[position_key.second] = at;
+            }
             noteLayoutChange(scope);
             rerouteGraphCanvasEdges(*this, scope, position_key.second);
             // Growing the scene rect from inside itemChange re-enters this
@@ -2183,7 +2300,10 @@ void GraphCanvasScene::repopulate() {
         const std::string id = folded.id;
         QGraphicsItem *item = drawing.addDerivedNode(folded, position, [this, key, id](const QPointF &at) {
             if (rebuilding_) return;
+            {
+                const NodeDragTraceSpan trace{this, "placement"};
             session_node_positions_[key] = at;
+            }
             rerouteDerivedEdges(*this, id);
             scheduleSceneRectUpdate();
         });
@@ -2326,8 +2446,11 @@ void GraphCanvasScene::repopulate() {
                     // it from. The root's nodes keep the places they have
                     // for the session; the root is not written.
                     if (!anchored) holdRootPlaces(scope);
+                    {
+                        const NodeDragTraceSpan trace{this, "placement"};
                     session_node_positions_[key] = moved;
                     placement(key.first).layout.nodes[key.second] = moved;
+                    }
                     noteLayoutChange(key.first);
                     rerouteGraphCanvasEdges(*this, key.first, key.second);
                     // LP-4d2, decision 7: the frame keeps round its body
@@ -2456,6 +2579,7 @@ void GraphCanvasScene::repopulate() {
     setProperty("pelicanLayoutReversedEdges",
                 static_cast<qulonglong>(layout.reversed_edges.size()));
     rebuilding_ = false;
+    rebuildRoutingIndex();
     applySceneRectNow();
     // The editor goes back over the thing it was editing. A node or port the
     // draw no longer holds simply has nothing to open over, and the edit ends
@@ -2695,6 +2819,8 @@ void GraphCanvasScene::applyEdgeEmphasis() {
 }
 
 void GraphCanvasScene::scheduleSceneRectUpdate() {
+    const NodeDragTraceSpan trace{this, "schedule_rect"};
+    if (geometryChanged) geometryChanged();
     if (scene_rect_update_queued_) return;
     scene_rect_update_queued_ = true;
     // A gesture (a node dragged, a reroute or a tie moved) only grows the
@@ -2702,12 +2828,22 @@ void GraphCanvasScene::scheduleSceneRectUpdate() {
     // left -- dragging the leftmost node (a folded feature) moved the
     // scene's edge under the view and the whole canvas slid.
     QMetaObject::invokeMethod(
-        this, [this] { applySceneRectNow(/*grow_only=*/true); }, Qt::QueuedConnection);
+        this, [this] { applySceneRectNow(/*grow_only=*/!scene_rect_finalize_); }, Qt::QueuedConnection);
 }
 
 void GraphCanvasScene::applySceneRectNow(bool grow_only) {
+    const NodeDragTraceSpan trace{this, "apply_rect"};
     scene_rect_update_queued_ = false;
-    QRectF rect = itemsBoundingRect().adjusted(-60.0, -60.0, 60.0, 60.0);
+    scene_rect_finalize_ = false;
+    QRectF rect;
+    const QRectF changed = routing_index_.takeChangedBounds();
+    if (grow_only && dragging() && !changed.isNull()) {
+        const NodeDragTraceSpan bounds_trace{this, "scene_bounds_grow"};
+        rect = changed.adjusted(-60.0, -60.0, 60.0, 60.0);
+    } else {
+        const NodeDragTraceSpan bounds_trace{this, "scene_bounds_full"};
+        rect = itemsBoundingRect().adjusted(-60.0, -60.0, 60.0, 60.0);
+    }
     if (grow_only) {
         rect = rect.united(sceneRect());
         if (rect == sceneRect()) return;
@@ -3373,6 +3509,10 @@ void GraphCanvasScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
         return;
     }
     QGraphicsScene::mouseReleaseEvent(event);
+    // Finalize content bounds independently of the last move's queued work.
+    scene_rect_finalize_ = true;
+    scheduleSceneRectUpdate();
+    if (gestureEnded) gestureEnded();
 }
 
 void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
@@ -5278,6 +5418,8 @@ struct GraphCanvasWidget::Impl {
     QTimer *poll_timer = nullptr;
     QTimer *details_timer = nullptr;
     QHash<qint64, quint64> transport_requests;
+    bool synchronize_after_drag = false;
+
     std::uint64_t rendered_content = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t rendered_report = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t rendered_placement = std::numeric_limits<std::uint64_t>::max();
@@ -6299,9 +6441,15 @@ struct GraphCanvasWidget::Impl {
         // Q-5: the notice says "Saving" the moment a placement changes, not
         // when the wait before sending it runs out. Only the label: this runs
         // from inside a drag and from inside a rebuild.
-        scene->placementChanged = [this] {
-            showNoticeLabel();
-            // GL-3a: a group's frame follows its nodes.
+        scene->gestureEnded = [this] {
+            if (!synchronize_after_drag) return;
+            QTimer::singleShot(0, &view, [this] {
+                if (scene->dragging()) return;
+                synchronize();
+            });
+        };
+        scene->placementChanged = [this] { showNoticeLabel(); };
+        scene->geometryChanged = [this] {
             if (folds) folds->scheduleRedraw();
         };
         // LP-4d2: a zone gesture refused before it was sent says why.
@@ -7439,6 +7587,7 @@ struct GraphCanvasWidget::Impl {
     }
 
     void deliverResult(qint64 request_id, const QByteArray &result_json) {
+        const NodeDragTraceSpan trace{scene, "deliver_result"};
         if (deliverPassEdit(request_id, result_json)) return;
         // GL-5a, decision 5: the root's planning decisions.
         if (folded_pass_fields != nullptr && folded_pass_fields->deliverResult(request_id, result_json)) {
@@ -7665,8 +7814,9 @@ struct GraphCanvasWidget::Impl {
             else
                 error = QObject::tr("The graph canvas cannot issue %1.")
                             .arg(qtext(request.method));
-            if (transport != 0)
+            if (transport != 0) {
                 transport_requests.insert(transport, request.request_id);
+            }
             else
                 model.receiveRpcFailure(request.request_id, error.toStdString());
         }
@@ -9755,6 +9905,16 @@ struct GraphCanvasWidget::Impl {
     }
 
     void synchronize() {
+        const NodeDragTraceSpan trace{scene, "synchronize"};
+        if (scene->dragging()) {
+            synchronize_after_drag = true;
+            undo_action->setEnabled(false);
+            redo_action->setEnabled(false);
+            showNoticeLabel();
+            return;
+        }
+        synchronize_after_drag = false;
+        const NodeDragTraceSpan heavy_trace{scene, "synchronize_heavy"};
         // GL-3a: the fold groups follow the document the tab holds.
         if (folds) folds->follow();
         // GL-5b: New render target… waits for the context, then for its target.

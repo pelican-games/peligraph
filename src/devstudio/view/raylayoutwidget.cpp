@@ -1,4 +1,5 @@
 #include "raylayoutwidget.hpp"
+#include "../guitrace.hpp"
 #include "rendereditticketclient.hpp"
 
 #include "panelhelp.hpp"
@@ -419,7 +420,8 @@ struct RayLayoutWidget::Impl {
 
     // --- Replies.
     void receive(qint64 id, const QByteArray &bytes) {
-        if (id == 0) return;
+        if (id == 0 || (id != layout_request && id != documents_request)) return;
+        const GuiTraceSpan trace{"ray_layout_json_parse", double(bytes.size())};
         const auto response = Json::parse(bytes.constData(), bytes.constData() + bytes.size(), nullptr, false);
         if (id == layout_request) {
             layout_request = 0;

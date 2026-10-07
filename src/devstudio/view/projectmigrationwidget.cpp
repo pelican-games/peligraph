@@ -1,4 +1,5 @@
 #include "projectmigrationwidget.hpp"
+#include "../guitrace.hpp"
 
 #include "panelhelp.hpp"
 
@@ -200,7 +201,8 @@ void ProjectMigrationWidget::end() {
 
 bool ProjectMigrationWidget::acceptRpcResult(qint64 request_id,
                                              const QByteArray &result_json) {
-    if (request_id == 0) return false;
+    if (request_id == 0 || (request_id != plan_request_ && request_id != apply_request_)) return false;
+    const GuiTraceSpan trace{"migration_json_parse", double(result_json.size())};
     const QJsonObject result = QJsonDocument::fromJson(result_json).object();
     if (request_id == plan_request_) {
         plan_request_ = 0;

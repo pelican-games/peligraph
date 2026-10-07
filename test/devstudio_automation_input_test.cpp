@@ -8,6 +8,10 @@
 // The offscreen platform is enough for that: these are Qt events, not pixels.
 
 #include "automationcommands.hpp"
+#include "../src/devstudio/view/nodegraphics.hpp"
+#include <QFile>
+#include <QTemporaryDir>
+#include <QScopeGuard>
 #include "automationserver.hpp"
 #include "../src/devstudio/viewport/embeddedviewport.hpp"
 
@@ -1231,4 +1235,140 @@ TEST_CASE("QD-1: a fixed viewport remains inside its collapsible live container"
     REQUIRE(runAutomationCommand(host, request(QStringLiteral("viewport_size"),
         {{QStringLiteral("free"), true}})).ok);
     CHECK(surface->parentWidget()->minimumWidth() == original_minimum);
+}
+
+TEST_CASE("DL-1 automation paced drag and both trace recovery paths use real paints",
+          "[devstudio][automation][dl1]") {
+    (void)application();
+    using namespace PelicanStudio;
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const QByteArray previous = qgetenv("PELICAN_STUDIO_DRAG_TRACE");
+    const QString automatic_path = temporary.filePath("automatic.json");
+    qputenv("PELICAN_STUDIO_DRAG_TRACE", automatic_path.toUtf8());
+    const auto restore = qScopeGuard([&] {
+        if (previous.isNull()) qunsetenv("PELICAN_STUDIO_DRAG_TRACE");
+        else qputenv("PELICAN_STUDIO_DRAG_TRACE", previous);
+    });
+    QMainWindow window;
+    QGraphicsScene scene;
+    auto *view = new NodeCanvasView(&scene, &window);
+    view->setObjectName("pelican.graphCanvasView");
+    window.setCentralWidget(view);
+    scene.setSceneRect(-500, -500, 1500, 1500);
+    auto *node = new MovableNodeItem(nodePath(false), [](const QPointF &) {});
+    node->setData(NodeGraphItemKindRole, "graph_node");
+    node->setData(NodeGraphNameRole, "trace_node");
+    node->setFlags(QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges);
+    scene.addItem(node);
+    window.resize(800, 600);
+    window.show();
+    QApplication::processEvents();
+    AutomationHost host;
+    host.window = &window;
+    REQUIRE(automationCommandNames().contains("drag_paced"));
+    REQUIRE(automationCommandNames().contains("trace_dump"));
+    const auto drag = runAutomationCommand(host, request("drag_paced", {
+        {"node", "trace_node"}, {"duration_ms", 160}, {"interval_ms", 8}, {"delta", QJsonArray{80, 20}}}));
+    INFO(describe(drag).toStdString());
+    REQUIRE(drag.ok);
+    CHECK(drag.result.toObject().value("steps").toInt() == 20);
+    CHECK(drag.result.toObject().value("nominal_ms").toInt() == 160);
+    CHECK(drag.result.toObject().value("scheduled_ms").toInt() == 160);
+    CHECK(drag.result.toObject().value("interval_ms").toInt() == 8);
+    CHECK(drag.result.toObject().value("hold_ms").toInt() == 0);
+    CHECK(drag.result.toObject().value("delta").toArray() == QJsonArray{80, 20});
+    CHECK(drag.result.toObject().value("node") == "trace_node");
+    CHECK(drag.result.toObject().value("pick") == "node");
+    CHECK((node->pos() - QPointF{80, 20}).manhattanLength() < 2);
+    QFile automatic{automatic_path};
+    REQUIRE(automatic.open(QIODevice::ReadOnly));
+    const auto file_trace = QJsonDocument::fromJson(automatic.readAll()).object();
+    CHECK(file_trace.value("moves").toInt() == 20);
+    CHECK(file_trace.value("painted_moves").toInt() > 0);
+    REQUIRE(file_trace.value("records").toArray().size() > 20);
+    const QString requested_path = temporary.filePath("requested.json");
+    const auto dump = runAutomationCommand(host, request("trace_dump", {{"records", false}, {"path", requested_path}}));
+    REQUIRE(dump.ok);
+    CHECK_FALSE(dump.result.toObject().contains("records"));
+    CHECK(dump.result.toObject().value("moves").toInt() == file_trace.value("moves").toInt());
+    CHECK(dump.result.toObject().value("summary") == file_trace.value("summary"));
+    CHECK(QFile::exists(requested_path));
+}
+
+
+TEST_CASE("DL-1 paint coverage rejects an actual mid-gesture painting blackout", "[devstudio][automation][dl1]") {
+    (void)application();
+    using namespace PelicanStudio;
+    struct Blackout : QObject {
+        int paints = 0;
+        bool suppress = false, restore_on_release = true;
+        bool eventFilter(QObject *object, QEvent *event) override {
+            if (event->type() == QEvent::MouseButtonRelease && restore_on_release) {
+                suppress = false;
+                static_cast<QWidget *>(object)->update();
+            }
+            return event->type() == QEvent::Paint && suppress && ++paints > 2;
+        }
+    } filter;
+    QGraphicsScene scene;
+    NodeCanvasView view{&scene};
+    scene.setSceneRect(-500, -500, 1500, 1500);
+    auto *node = new MovableNodeItem(nodePath(false), [](const QPointF &) {});
+    node->setFlags(QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemSendsGeometryChanges);
+    scene.addItem(node);
+    view.resize(800, 600);
+    view.show();
+    view.viewport()->installEventFilter(&filter);
+    for (int mode : {0, 1, 2}) {
+        const bool blackout = mode != 0;
+        filter.suppress = false;
+        filter.restore_on_release = mode != 2;
+        node->setPos(0, 0);
+        view.centerOn(node);
+        QApplication::processEvents();
+        view.dragTrace().setEnabled(blackout); // check restoration in both directions
+        filter.suppress = blackout;
+        filter.paints = 0;
+        const auto result = view.dragPaced(view.mapFromScene(QPointF{60, 15}), QPoint{80, 20}, 240, 8);
+        CHECK(result.value("steps").toInt() == 30);
+        CHECK(view.dragTrace().enabled() == blackout);
+        const auto trace = view.dragTrace().dump();
+        INFO(QJsonDocument{trace.value("summary").toObject()}.toJson().toStdString());
+        CHECK(trace.value("final_position_painted").toBool() == (mode != 2));
+        CHECK(trace.value("acceptance").toObject().value("paint_coverage").toBool() == !blackout);
+        CHECK(trace.value("acceptance").toObject().value("passed").toBool() == !blackout);
+        if (blackout) {
+            CHECK(trace.value("painted_moves").toInt() > 0);
+            CHECK(trace.value("unpainted_moves").toInt() > 10);
+            CHECK(trace.value("unpainted_tail_ms").toDouble() > 100);
+        } else CHECK(trace.value("unpainted_moves").toInt() == 0);
+    }
+}
+
+TEST_CASE("DL-1 paced request refuses wrong types ranges and ambiguous selection", "[devstudio][automation][dl1]") {
+    (void)application();
+    AutomationHost host;
+    const std::vector<std::pair<QJsonObject, QString>> cases{
+        {{{"node", "n"}, {"delta", QJsonArray{"bad",40}}}, "delta"},
+        {{{"node", "n"}, {"delta", QJsonArray{1}}}, "delta"},
+        {{{"node", "n"}, {"delta", QJsonArray{1.5,2}}}, "delta"},
+        {{{"node", "n"}, {"duration_ms", -1}}, "duration_ms"},
+        {{{"node", "n"}, {"duration_ms", 10001}}, "duration_ms"},
+        {{{"node", "n"}, {"duration_ms", "2000"}}, "duration_ms"},
+        {{{"node", "n"}, {"interval_ms", 0}}, "interval_ms"},
+        {{{"node", "n"}, {"interval_ms", 101}}, "interval_ms"},
+        {{{"node", "n"}, {"hold_ms", true}}, "hold_ms"},
+        {{{"node", "n"}, {"hold_ms", 2001}}, "hold_ms"},
+        {{{"node", "n"}, {"duration_ms", 4}, {"interval_ms", 8}}, "duration_ms"},
+        {{{"node", "n"}, {"pick", "most_connected_derived"}}, "selection"},
+        {{{"pick", "invalid"}}, "pick"},
+        {{{"node", 7}}, "node"},
+        {{}, "selection"}
+    };
+    for (const auto &[fields, field] : cases) {
+        const auto result = runAutomationCommand(host, request("drag_paced", fields));
+        CHECK_FALSE(result.ok);
+        CHECK(result.code == "automation.drag_paced.invalid_" + field + "@1");
+    }
 }

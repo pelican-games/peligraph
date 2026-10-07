@@ -308,6 +308,10 @@ class GraphCanvasScene final : public QGraphicsScene {
     // the scene keeps (positions, folds, placements, the selection) is filed
     // under (scope, id). A folded zone is the loop's node, as LP-4c drew it.
     void repopulate();
+    void clear();
+    void rebuildRoutingIndex();
+    void invalidateRoutingIndex() { routing_index_.invalidate(); }
+    quint64 routingGeneration() const { return routing_index_.generation(); }
     // UX-6b, decision 2: each plan node's GPU time (get_status gpu_timing,
     // by plan node name). A root node's band says the sum of its passes';
     // the bands on screen change in place, nothing else is drawn again.
@@ -338,6 +342,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     // The scene finished drawing a scope. The view needs this to know when a
     // scope it has never shown is on screen, so it can fit it.
     std::function<void()> repopulated;
+    std::function<void()> gestureEnded;
+    std::function<void()> geometryChanged;
+    bool drag_trace_active = false;
     // LP-4c, decision 6: "Per iteration..." on an input of a root loop. The
     // owner asks which loop's p[] it reads.
     std::function<void(const std::string &node, const std::string &port)>
@@ -808,6 +815,7 @@ class GraphCanvasScene final : public QGraphicsScene {
     // canvas rather than beside a selected node.
     bool rebuilding_ = false;
     bool scene_rect_update_queued_ = false;
+    bool scene_rect_finalize_ = false;
     // A breadcrumb click rebuilds the scene from inside the base class's event
     // dispatch. Anything that ran before it must not then read the new items
     // as if they were the ones the user pressed on.
@@ -837,6 +845,7 @@ class GraphCanvasScene final : public QGraphicsScene {
     // places they are drawn at now (a body node is being dragged in a root
     // the document does not place).
     void holdRootPlaces(const std::string &root);
+    NodeGraphIndex routing_index_{*this};
     void scheduleSceneRectUpdate();
     void applySceneRectNow(bool grow_only = false);
     void clearControlSelection();
