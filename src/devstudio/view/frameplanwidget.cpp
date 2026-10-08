@@ -477,7 +477,8 @@ struct FramePlanWidget::Impl {
     // that line and nothing else.
     QString shown_reload_notice;
     // VI-3a: what the edit in flight says once it has committed, and what
-    // the last committed one said; it outlasts the refreshed plan's summary
+    // the last committed one (including Render Undo / Redo) said; it
+    // outlasts the refreshed plan's summary
     // until the next edit is sent.
     QString submitted_notice;
     QString commit_notice;
@@ -1623,6 +1624,7 @@ struct FramePlanWidget::Impl {
     }
 
     void showUnavailable(const QString &reason) {
+        commit_notice.clear();
         pending_request = 0;
         plan_reread = false;
         pending_gpu_timing_request = 0;
@@ -5685,6 +5687,10 @@ void FramePlanWidget::setRenderHistoryActions(QAction *undo, QAction *redo) {
 
 void FramePlanWidget::showRenderHistoryLine(const QString &line) {
     if (line.isEmpty()) return;
+    // FX-5: restoring documents starts a plan read before the history
+    // announces its result. Keep that result when the reply arrives later,
+    // just as a canvas edit's completion survives its own plan refresh.
+    impl_->commit_notice = line;
     impl_->status->setStyleSheet({});
     impl_->showStatus(line);
 }

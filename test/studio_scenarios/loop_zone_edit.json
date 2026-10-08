@@ -308,6 +308,14 @@
       "name": "pelican.view.renderTools.frame_plan"
     },
     {
+      "label": "the automatic read on showing Frame Plan has finished: Refresh takes input",
+      "cmd": "wait",
+      "name": "pelican.framePlanRefresh",
+      "enabled": true,
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
       "label": "the Frame Plan is a snapshot: read it again after the Graph tab's edits",
       "cmd": "click",
       "name": "pelican.framePlanRefresh"

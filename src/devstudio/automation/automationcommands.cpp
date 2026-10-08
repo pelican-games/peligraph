@@ -2518,6 +2518,17 @@ QJsonObject historyControlJson(const NamedControls &controls, const QString &nam
         control.insert(QStringLiteral("visible"), action->isVisible());
         control.insert(QStringLiteral("text"), withoutMnemonic(action->text()));
         control.insert(QStringLiteral("tooltip"), action->toolTip());
+        // FX-5: Graph's labels are simply Undo / Redo. The model's monotonic
+        // item identity distinguishes another edit even when those labels
+        // and enabled state did not change. Strings preserve all 64 bits.
+        if (auto *graph = dynamic_cast<GraphCanvasWidget *>(action->parent());
+            graph && (name == QLatin1String("pelican.graphCanvas.undo") ||
+                      name == QLatin1String("pelican.graphCanvas.redo"))) {
+            const auto serial = name.endsWith(QLatin1String(".undo"))
+                                    ? graph->model().undoSerial()
+                                    : graph->model().redoSerial();
+            control.insert(QStringLiteral("graph_serial"), QString::number(serial));
+        }
         return control;
     }
     control.insert(QStringLiteral("found"), false);

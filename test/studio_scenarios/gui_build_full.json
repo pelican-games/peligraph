@@ -187,6 +187,7 @@
     {"label": "saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
     {"label": "fit", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
     {"label": "the boundary input's value socket is drawn again after the save", "cmd": "wait", "name": "pelican.graphCanvasView::graph_socket#loop_body/color/value", "visible": true, "timeout_ms": 60000},
+    {"label": "the new body output's inside socket is drawn after the document is read back", "cmd": "wait", "name": "pelican.graphCanvasView::graph_zone_socket#loop/out:color", "visible": true, "timeout_ms": 60000},
     {"label": "carry: the body output's inside end back onto the boundary input", "cmd": "drag", "from": {"name": "pelican.graphCanvasView::graph_zone_socket#loop/out:color"}, "to": {"name": "pelican.graphCanvasView::graph_socket#loop_body/color/value"}, "steps": 8},
     {"label": "saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
     {"label": "fit", "cmd": "action", "name": "pelican.graphCanvas.fitView"},

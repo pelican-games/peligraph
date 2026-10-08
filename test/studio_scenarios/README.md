@@ -889,6 +889,9 @@ Two commands serve this, and a scenario can use them too:
   found, enabled, visible, text, tooltip}, redo: {...} | null}}}`. With `kind` and
   `step` (`undo` / `redo`) it presses that control the way it is pressed (whether
   or not its panel is on screen); switched off is refused, as `click` refuses it.
+  FX-5 adds `graph_serial` to the Graph controls: the model's Undo / Redo item
+  identity, a decimal string (`"0"` for an empty stack). Comparing it detects
+  a new Graph edit even when text / tooltip both still say `Undo`.
 * `project_state` -- `{dir, engine_ready, engine_process_id, files: [{path, size,
   sha256}], rpc: {<method>: <answer> | {error}}}`; `brief: true` leaves out the
   files and the engine, `journal: false` leaves out `query_journal`.
@@ -3575,7 +3578,7 @@ manifest と照合する(`asset_stores` の manifest。engine の ✅AV-1)場所
   - Use in a shader の写す 1 行と notice も、この include を言います(上の AB-1s の節)。
 - **Re-bake の後は reload が表を拾う**: Re-bake の後に送っていた同じ値の `set_node_parameters` を外しました(上の AB-1s の節)。代わりに、IA-1s の見張りに渡す一覧([`GraphCanvasModel::initialAssets()`](../../src/devstudio/model/graphcanvasmodel.cpp#L8354))が、`render.image` の `initial.asset` に加えて `value.sample_table` の表(`project://` を外した綴り)も集めます。Re-bake が表を書き換えると、ほかの file の書き換えと同じく `reload_render_documents` を頼み、engine の IA-3 が新しい世代で表を読み直し、notice が `Picked up the change to <表>.` を言います(上の「画像ファイルを image の初期内容に(✅IA-1s)」の見張り)。
   - 答えの `changed_assets` は `project://` を外して並べ、同じ file を 2 度言いません。image の `initial.asset` と `value.sample_table` の `asset` は同じ表を別の綴り(`assets/…` と `project://assets/…`)で書くためです([`changed_assets` の名前を揃える所](../../src/devstudio/model/renderdocumentreload.cpp#L393))。
-- **シナリオ**: `gui_build_curve` と `gui_build_audio_reactive` の shader は include の形で書き、buffer の port は pass の Buffers の **+ Buffer port** で足します(下の「Studio の自動化面」)。`gui_build_audio_reactive` は、Re-bake の後に `Graph change saved.` が出ないこと、Graph の Undo が押せないこと、`Picked up the change to assets/analysis/beat.ktx2` が出ること、GPU の道の画素も変わることを見ます。
+- **シナリオ**: `gui_build_curve` と `gui_build_audio_reactive` の shader は include の形で書き、buffer の port は pass の Buffers の **+ Buffer port** で足します(下の「Studio の自動化面」)。`gui_build_audio_reactive` は、Re-bake の後に `Graph change saved.` が出ないこと、Graph の Undo の状態(`history` の `kinds.graph.undo`: enabled・text・tooltip を含む)が Re-bake 前と後で同じであること、`Picked up the change to assets/analysis/beat.ktx2` が出ること、GPU の道の画素も変わることを見ます。
 - test: `devstudio_graphcanvas_test` の [「UX-13a decision 1: a buffer binding is the read the engine binds there -- after the images, in the order of the buffers the ports read, not of the ports' names; a pelican_resource_<port> block is its port's wherever it sits」](../../test/devstudio_graphcanvas_test.cpp#L4763)・[「UX-13a decision 2: Use in a shader connects the layout by the name the shader reads through pelican_resource_ports.glsl, which no reflection shows before the port is there; the line to copy reads it through the include」](../../test/devstudio_graphcanvas_test.cpp#L4812)、`devstudio_graphcanvas_scene_test` の [「UX-13a decision 3: a Re-bake sends no edit of its own; the table it rewrites is watched beside the images' initial assets, for the reload to pick up (IA-3)」](../../test/devstudio_graphcanvas_scene_test.cpp#L12744)、`devstudio_shadertemplate_compile_test` の「F-3 the shader template declares each input with the engine's macros and compiles」の SECTION [「a buffer input is named for the author, not declared」](../../test/devstudio_shadertemplate_compile_test.cpp#L120)(include が 1 回、`binding 0` を書かない、compile が通る)。
 ````
 
@@ -4688,3 +4691,19 @@ shader の診断、Assets のドック、Frame Plan の致命の行にばらば�
 シナリオ `play_pause_step`・`play_mode_roundtrip`・`play_runtime_objects` は §13.5 の「Studio の自動化面」に
 書きます。
 ````
+
+### FX-5: Release の非同期更新を待つ
+
+- `gui_build_full` / `gui_build_ocean`: `Graph change saved.` は commit の通知で、
+  文書の再取得と描画の完了ではありません。carry を引く前に、新設した
+  `graph_zone_socket#loop/out:color` が見えるまで待ちます。以前からある入力 socket だけでは足りません。
+- `gui_folded_pass_edit` / `loop_zone_edit`: 編集後に Frame Plan を開くと自動で読み直します。
+  Refresh が enabled になるまで待ってから、明示的な Refresh と結果の確認を続けます。
+- `rendering_settings_from_blank`: Undo が開始した Frame Plan の応答が後で着いても、
+  完了通知を summary で上書きしません。`FX-5 Render Undo and Redo notices survive a late frame plan reply`
+  が応答の前後・非表示のタブ・続けて届く読込・Redo を CPU で確認します。
+- `gui_build_audio_reactive`: UD-6 の asset だけの reload はそれ以前の Graph 履歴を残します。
+  Re-bake 前に Undo が有効なことを確認して control 全体(履歴番号 `graph_serial` も含む)を remember し、Bake と reload の完了後に
+  `value_of` で比較します。新しい Undo 項目を作らない検査と、`Graph change saved.` が出ない検査は両方残します。
+  古い「履歴が切れる」前提の root 文書の `undo_exempt` も外します。
+- 6 本の Studio scenario は統合側で Release / Debug の両方を実行します。

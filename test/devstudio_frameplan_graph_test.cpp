@@ -13026,3 +13026,67 @@ TEST_CASE("Frame Plan mouse drag preserves the grabbed screen point after event 
     CHECK(worst <= 2.0);
 }
 } // namespace PelicanStudio
+
+
+namespace PelicanStudio {
+
+TEST_CASE("FX-5 Render Undo and Redo notices survive a late frame plan reply",
+          "[devstudio][frame-plan][fx5]") {
+    application();
+    const bool reply_first = GENERATE(false, true);
+    const bool hidden = GENERATE(false, true);
+    const auto line = GENERATE(QStringLiteral("Undid \"Set shader_defines\"."),
+                               QStringLiteral("Redid \"Set shader_defines\"."));
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    qint64 request = 9000;
+    widget.setPlanRequest([&](QString *) { return ++request; });
+    widget.resize(900, 600);
+    if (!hidden) widget.show();
+    QApplication::processEvents();
+    auto *status = widget.findChild<QLabel *>(QStringLiteral("pelican.framePlanStatus"));
+    REQUIRE(status != nullptr);
+    const auto answer = [&] {
+        Q_EMIT viewport.inspectorRpcSucceeded(
+            request, QByteArray::fromStdString(mixedEditingWire().dump()));
+        QApplication::processEvents();
+    };
+
+    // MainWindow::renderDocumentsRestored starts this read; the history's
+    // changed notification then names the completed Undo / Redo. Exercise
+    // both delivery orders without sleeps or a running engine.
+    widget.refresh();
+    if (reply_first) answer();
+    widget.showRenderHistoryLine(line);
+    if (!reply_first) answer();
+    CHECK(status->text() == line);
+    widget.show();
+    QApplication::processEvents();
+    CHECK(status->isVisible());
+    CHECK(status->text() == line);
+
+    // A second history operation replaces the first, including a read
+    // already in flight when another commit queues one more snapshot.
+    widget.refresh();
+    widget.planChangedByCommit();
+    const auto next_line = QStringLiteral("Undid \"Set graph_transforms\".");
+    widget.showRenderHistoryLine(next_line);
+    const auto previous_request = request;
+    answer();
+    REQUIRE(request == previous_request + 1);
+    answer();
+    CHECK(status->text() == next_line);
+
+    // A failed refresh still reports its error, not an old success.
+    widget.refresh();
+    Q_EMIT viewport.inspectorRpcFailed(request, QStringLiteral("fixture read failure"));
+    CHECK(status->text().contains(QStringLiteral("fixture read failure")));
+
+    // Disconnection / switching projects must not resurrect the old notice.
+    widget.setPlanRequest({});
+    widget.refresh();
+    widget.receiveResult(QByteArray::fromStdString(mixedEditingWire().dump()));
+    CHECK_FALSE(status->text().contains(QStringLiteral("Undid")));
+}
+
+} // namespace PelicanStudio

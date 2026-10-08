@@ -1586,3 +1586,70 @@ TEST_CASE("UD-5 fix2 named click reveals an off-viewport loop and updates Layers
         {"scene", QJsonArray{0, 0}}})).ok);
     CHECK(view->mapToScene(view->viewport()->rect().center()) == centre);
 }
+
+
+TEST_CASE("FX-5 history distinguishes Graph items with identical Undo labels",
+          "[devstudio][automation][fx5]") {
+    (void)application();
+    using namespace PelicanStudio;
+    using Json = nlohmann::json;
+    GraphCanvasWidget widget{GraphCanvasReadCapability{}};
+    auto &model = widget.model();
+    AutomationHost host;
+    host.window = &widget;
+    const auto control = [&](const QString &direction) {
+        const auto reply = runAutomationCommand(host, request(QStringLiteral("history")));
+        REQUIRE(reply.ok);
+        return reply.result.toObject().value("kinds").toObject()
+            .value("graph").toObject().value(direction).toObject();
+    };
+    CHECK(control("undo").value("graph_serial").toString() == QStringLiteral("0"));
+    CHECK(control("redo").value("graph_serial").toString() == QStringLiteral("0"));
+    Json document{{"source_reference", "project://passes/main.json"},
+                  {"source_digest", {{"hex", "initial"}}},
+                  {"root_schema", "pelican.graph"},
+                  {"definitions", Json::object()},
+                  {"nodes", Json::array({{{"id", "node"}, {"op", "value.literal"},
+                                         {"parameters", {{"value", 1}}}}})}};
+    const auto deliver = [&](const std::string &method, const Json &result) {
+        bool found = false;
+        for (const auto &call : model.takeRpcRequests()) {
+            if (call.method != method) continue;
+            REQUIRE_FALSE(found);
+            found = true;
+            model.receiveRpcResult(call.request_id, result.dump());
+        }
+        REQUIRE(found);
+    };
+    model.setConnected(true);
+    deliver("get_graph_instances", document);
+    const auto commit = [&](const std::string &digest, const std::string &label) {
+        deliver("edit_graph_document", {{"status", "accepted"}, {"ticket", "edit"}});
+        deliver("get_edit_result", {{"status", "committed"}, {"source_digest", {{"hex", digest}}}});
+        document["source_digest"]["hex"] = digest;
+        document["nodes"][0]["label"] = label;
+        deliver("get_graph_instances", document);
+    };
+    REQUIRE(model.setNodeLabel("node", "first"));
+    commit("first", "first");
+    const auto first = control("undo");
+    REQUIRE(first.value("graph_serial").toString() != QStringLiteral("0"));
+    REQUIRE(model.setNodeLabel("node", "second"));
+    commit("second", "second");
+    const auto second = control("undo");
+    CHECK(second.value("text") == first.value("text"));
+    CHECK(second.value("tooltip") == first.value("tooltip"));
+    CHECK(second.value("enabled") == first.value("enabled"));
+    CHECK(second.value("graph_serial") != first.value("graph_serial"));
+    // Reading unchanged documents (as an asset-only reload does) adds none.
+    model.refresh();
+    deliver("get_graph_instances", document);
+    CHECK(control("undo") == second);
+    REQUIRE(model.undo());
+    commit("first", "first");
+    CHECK(control("undo").value("graph_serial") == first.value("graph_serial"));
+    CHECK(control("redo").value("graph_serial") == second.value("graph_serial"));
+    model.forgetHistory();
+    CHECK(control("undo").value("graph_serial").toString() == QStringLiteral("0"));
+    CHECK(control("redo").value("graph_serial").toString() == QStringLiteral("0"));
+}
