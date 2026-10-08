@@ -11,7 +11,7 @@ Integration executed the eleven prescribed scenarios with the UD-1 + UD-2 + UD-3
 
 UD-3 fixes the Graph history inverse: the palette entry that adds a forward material pass did not restore `material_route_default` when undone. One Undo now sends the pass removal and the restored route default (null removes a default that was absent) in a single `edit_graph_document`, and the engine restarts once.
 
-The six remaining reports differ only in `scene:(answer)` and `scene:(semantic)`; no file or render document differs. The walk presses Graph before scene. The Graph Undo that returns the pipeline to blank (no material pass) restarts the engine (UD-1's `material_passes_removed`) while a scene Undo such as Add Object is still pressable; `undo.notes` records `scene: Undo was pressable but unconsumed before the engine restart`. The restart drops the engine's scene journal, so the Inspector Undo reports `actor has no committed transaction to undo`; the scene content itself remains. This is a product limitation. Whether to carry the journal across the restart or to switch without restarting awaits the user's decision (v1 candidate). The driver waits for Graph/Render histories to recover after the restart (`restart_history_ready: true` in all six), so a temporarily disabled button is not the cause. A pressable but unconsumed scene Undo is not exempted: the reports retain and compare its scene keys. No scenario mark, comparison or pixel expectation is relaxed.
+The six remaining reports differ only in `scene:(answer)` and `scene:(semantic)`; no file or render document differs. The walk presses Graph before scene. The Graph Undo that returns the pipeline to blank (no material pass) restarts the engine (UD-1's `material_passes_removed`) while a scene Undo such as Add Object is still pressable; `undo.notes` records `scene: Undo was pressable but unconsumed before the engine restart`. The restart drops the engine's scene journal, so the Inspector Undo reports `actor has no committed transaction to undo`; the scene content itself remains. This is a product limitation. Carrying the journal across the restart (v1; the user decided on 2026-10-08 not to change it in v0) is the planned fix; it applies to every engine restart, not only this Undo. The driver waits for Graph/Render histories to recover after the restart (`restart_history_ready: true` in all six), so a temporarily disabled button is not the cause. A pressable but unconsumed scene Undo is not exempted: the reports retain and compare its scene keys. No scenario mark, comparison or pixel expectation is relaxed.
 
 ## Evidence and interpretation
 
@@ -127,7 +127,7 @@ The diff excerpts below come from the executed reports (expected start/end versu
 ### QD1-R5: add_primitive_object / undo
 **Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
-Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart, or switching without restarting, awaits the user's decision (v1 candidate). The scene keys remain compared and this finding remains open.
+Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08). The scene keys remain compared and this finding remains open.
 
 Reproduce through ordinary step 56, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/add_primitive_object/report.json`, started `2026-10-08T14:12:48`.
 
@@ -164,7 +164,7 @@ The ticket remains until the scene-journal decision. No invariant exemption or p
 ### QD1-R6: deferred_loop_from_scratch / undo
 **Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
-Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart, or switching without restarting, awaits the user's decision (v1 candidate). The scene keys remain compared and this finding remains open.
+Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08). The scene keys remain compared and this finding remains open.
 
 Reproduce through ordinary step 98, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/deferred_loop_from_scratch/report.json`, started `2026-10-08T14:13:29`.
 
@@ -222,7 +222,7 @@ Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 ### QD1-R11: graph_from_blank_forward / undo
 **Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
-Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart, or switching without restarting, awaits the user's decision (v1 candidate). The scene keys remain compared and this finding remains open.
+Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08). The scene keys remain compared and this finding remains open.
 
 Reproduce through ordinary step 69, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/graph_from_blank_forward/report.json`, started `2026-10-08T14:15:37`.
 
@@ -275,7 +275,7 @@ Undo differs: `file:project.json`, `get_project_settings:`.
 ### QD1-R14: gui_build_A / undo
 **Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
-Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart, or switching without restarting, awaits the user's decision (v1 candidate). The scene keys remain compared and this finding remains open.
+Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08). The scene keys remain compared and this finding remains open.
 
 Reproduce through ordinary step 41, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/gui_build_A/report.json`, started `2026-10-08T14:16:28`.
 
@@ -312,7 +312,7 @@ The ticket remains until the scene-journal decision. No invariant exemption or p
 ### QD1-R15: gui_build_B / undo
 **Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
-Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart, or switching without restarting, awaits the user's decision (v1 candidate). The scene keys remain compared and this finding remains open.
+Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08). The scene keys remain compared and this finding remains open.
 
 Reproduce through ordinary step 69, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/gui_build_B/report.json`, started `2026-10-08T14:17:13`.
 
@@ -421,7 +421,7 @@ Redo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 ### QD1-R19: gui_build_E / undo
 **Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
-Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart, or switching without restarting, awaits the user's decision (v1 candidate). The scene keys remain compared and this finding remains open.
+Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08). The scene keys remain compared and this finding remains open.
 
 Reproduce through ordinary step 69, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/gui_build_E/report.json`, started `2026-10-08T14:18:09`.
 
