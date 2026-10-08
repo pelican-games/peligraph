@@ -3757,6 +3757,8 @@ OrderedJson RenderConfigEditorService::getGraphInstances(const Json &params) con
         // name a producer that is already there, and has to avoid an id that
         // is already taken.
         {"nodes", std::move(nodes)},
+        // UD-3: preserve absence as well as the authored value for Graph Undo.
+        {"material_route_default", renderingSectionOrEmpty(root).value("material_route_default", Json{})},
         {"definitions", root.value("definitions", Json::object())},
         // CT-5: who uses each definition (graphDefinitionInstances).
         {"definition_instances", graphDefinitionInstances(root)},
@@ -4684,7 +4686,12 @@ RenderConfigEditorService::requestedRouteDefault(const Json &params,
     RequestedRouteDefault requested;
     const auto found = params.find("material_route_default");
     if (found == params.end()) return requested;
-    requested.value = requestedMaterialRouteDefault(*found, method);
+    if (method == "edit_graph_document" && found->is_null()) {
+        requested.value = MaterialRouteDefault::automatic;
+        requested.remove = true;
+    } else {
+        requested.value = requestedMaterialRouteDefault(*found, method);
+    }
     if (*requested.value == MaterialRouteDefault::forward &&
         !runtime_shader_compiler_available) {
         requested.refusal = rejection(
@@ -4700,9 +4707,14 @@ RenderConfigEditorService::requestedRouteDefault(const Json &params,
 
 bool RenderConfigEditorService::writeRouteDefault(
     AuthoredRenderConfigDocument &candidate,
-    MaterialRouteDefault requested) const {
+    MaterialRouteDefault requested, bool remove) const {
     const auto current = readMaterialRouteDefault(
         renderingSectionOrEmpty(Json::parse(document_.bytes())));
+    if (remove) {
+        candidate = candidate.withoutSectionValue(materialRouteDefaultKey);
+        // Removing explicit auto only restores source presence, not routes.
+        return requested != current;
+    }
     if (requested == current) return false;
     candidate = candidate.withSectionValue(
         std::string{materialRouteDefaultKey},
@@ -4725,7 +4737,7 @@ OrderedJson RenderConfigEditorService::queueGraphRootEdit(
             // section is refused by queueRootEdit as
             // render_config_section_unlocated, as add_authored_pass refuses it.
             if (route_default.value)
-                restart_required = writeRouteDefault(candidate, *route_default.value);
+                restart_required = writeRouteDefault(candidate, *route_default.value, route_default.remove);
             return std::nullopt;
         },
         {}, std::nullopt,

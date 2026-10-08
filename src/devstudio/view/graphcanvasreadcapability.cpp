@@ -89,7 +89,7 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
         },
         .requestEditGraphDocument = [&viewport](const QString &digest,
                                                 const QByteArray &ops_json,
-                                                const QString &material_route_default,
+                                                const QJsonValue &material_route_default,
                                                 QString *error) {
             // The ops are built as JSON by the model, so they cross into Qt's
             // transport by being parsed back rather than rebuilt by hand: a
@@ -105,7 +105,7 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
             }
             QJsonObject params{{QStringLiteral("base_source_digest"), digest},
                                {QStringLiteral("ops"), document.array()}};
-            if (!material_route_default.isEmpty())
+            if (!material_route_default.isUndefined())
                 params.insert(QStringLiteral("material_route_default"),
                               material_route_default);
             return viewport.requestRpc(QStringLiteral("edit_graph_document"), params,

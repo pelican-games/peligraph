@@ -794,8 +794,8 @@ fires them without a popup: `pelican.graphCanvas.autoLayout`,
 ## What every scenario is held to (QD-1)
 
 Executed findings and the complete 84-case matrix are in [QD1_FINDINGS.md](QD1_FINDINGS.md).
-There are 33 ticketed `known_red` checks in 33 scenarios:
-33 Undo/Redo findings and 0 health findings. These marks retain
+There are 28 ticketed `known_red` checks in 28 scenarios:
+28 Undo/Redo findings and 0 health findings. These marks retain
 observed failures, including restoration gaps whose root cause is not isolated;
 they are not a count of independent product defects. A mark never excuses an
 exception or an incomplete history traversal in the checker.
@@ -828,6 +828,10 @@ found.
    sidebar edits. Failure to inspect or close an editor fails the check.
    Undo goes in that order, each kind until its control is off or a press moves
    nothing. A blocked kind is retried after another kind changes documents.
+   After a restart during either walk, Graph/Render/Materials histories are read
+   until surviving controls recover and their state stays unchanged for one
+   second, within 30 seconds and the walk's 240-second budget. A
+   `restart_history_wait_timeout` note fails the check as incomplete.
    Redo presses, last first, one Redo per Undo that moved something. Only if no
    Redo was already available at the ordinary endpoint does it drain remaining
    Redo; existing endpoint history must not carry the check past its snapshot.
@@ -836,7 +840,10 @@ found.
    happen to match. Not compared, and said in the report when it is what
    differs: a scene file on disk (Save is not undone; the scene in memory is
    compared), the scene after the engine was started again (the journal lives in the
-   engine), the Frame Plan's placement (`layout.frame_plan`, kept through Undo by
+   engine, including restarts during the Undo walk). A pressable scene Undo left
+   unconsumed before a walk restart keeps scene keys compared; the journal is
+   read again after scene presses to distinguish actual consumption from clicks.
+   Other exclusions are the Frame Plan's placement (`layout.frame_plan`, kept through Undo by
    RU-1, including empty ancestor containers left solely by removing that
    explicitly exempt subtree), and, after an Undo of a kind with no Redo, the Redo half. The documents
    are read with `project_state` (below): every file under the project but

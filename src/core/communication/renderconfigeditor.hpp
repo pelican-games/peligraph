@@ -572,11 +572,14 @@ class RenderConfigEditorService {
     // G-4 / RS-2: the material_route_default a ticket may carry, read and
     // judged by one rule for every ticket that takes it
     // (add_authored_pass, set_material_route_default, edit_graph_document,
-    // edit_graph_instances). A value other than "auto" / "forward" throws
+    // edit_graph_instances). edit_graph_document also accepts null to remove
+    // the member (automatic). A value other than "auto" / "forward" throws
     // std::invalid_argument; "forward" on a build without the runtime shader
     // compiler is the returned refusal (material_route_default_unavailable@1).
     struct RequestedRouteDefault {
         std::optional<MaterialRouteDefault> value;
+        // UD-3: edit_graph_document null restores an absent root member.
+        bool remove = false;
         std::optional<nlohmann::ordered_json> refusal;
     };
     RequestedRouteDefault requestedRouteDefault(
@@ -586,7 +589,7 @@ class RenderConfigEditorService {
     // reads the key once at start, so a change is a restart. Throws
     // RenderConfigSectionUnlocated when the root has no rendering section.
     bool writeRouteDefault(AuthoredRenderConfigDocument &candidate,
-                           MaterialRouteDefault requested) const;
+                           MaterialRouteDefault requested, bool remove = false) const;
     // RS-2: queueRootEdit for a ticket that writes the graph document and may
     // carry material_route_default: the graph edit and the route default are
     // one candidate, judged with the routes the new default gives every

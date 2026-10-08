@@ -8754,6 +8754,72 @@ TEST_CASE("G-4 without the runtime shader compiler the forward default is refuse
 }
 #endif
 
+// UD-3: the inverse's root parameter and graph ops form one candidate/ticket.
+#if PELICAN_RUNTIME_SHADER_COMPILER
+TEST_CASE("UD-3 edit_graph_document removes the route default with graph ops in one ticket",
+          "[render-config-editor][g4][ud3]") {
+    const bool direct = GENERATE(true, false);
+    RenderTargetHarness harness{direct};
+    const auto before = Json::parse(readBytes(harness.project.render_config));
+    CHECK(harness.service->getGraphInstances(Json::object()).at("material_route_default").is_null());
+    const auto apply = [&](const Json &ops, const Json &route) {
+        const auto accepted = harness.service->editGraphDocument(
+            {{"base_source_digest", harness.digest()}, {"ops", ops}, {"material_route_default", route}});
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        const auto calls = harness.runtime.apply_calls;
+        harness.service->commitPending();
+        const auto result = harness.service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        CHECK(harness.runtime.apply_calls == calls + 1);
+        harness.service->commitPending();
+        CHECK(harness.runtime.apply_calls == calls + 1);
+        return result;
+    };
+    const Json added{{"id", "ud3_value"}, {"op", "value.constant"},
+                     {"parameters", {{"value", 1.0}}}, {"outputs", {"value"}}};
+    const auto forward = apply(Json::array({{{"op", "add_node"}, {"scope", "root"}, {"node", added}}}), "forward");
+    REQUIRE(forward.at("restart_required") == true);
+    CHECK(harness.service->getGraphInstances(Json::object()).at("material_route_default") == "forward");
+    bool judged_inverse = false;
+    harness.runtime.validate_candidate = [&](const RenderConfigCandidateDocumentSet &documents) {
+        const auto candidate = Json::parse(documents.rootDocument().bytes);
+        judged_inverse = !candidate.at("rendering").contains("material_route_default") &&
+                         candidate.at("nodes") == before.at("nodes");
+    };
+    const auto inverse = apply(Json::array({{{"op", "remove_node"}, {"scope", "root"},
+                                            {"node", "ud3_value"}}}), nullptr);
+    CHECK(judged_inverse);
+    CHECK(inverse.at("restart_required") == true);
+    CHECK(inverse.at("restart_reason").at("code") == "material_route_default_changed");
+    CHECK(Json::parse(readBytes(harness.project.render_config)) == before);
+    CHECK(harness.service->getGraphInstances(Json::object()).at("material_route_default").is_null());
+}
+#endif
+
+TEST_CASE("UD-3 removing explicit auto restores absence without changing runtime routes",
+          "[render-config-editor][g4][ud3]") {
+    RenderTargetHarness harness{true};
+    auto root = AuthoredRenderConfigDocument::inspect(readBytes(harness.project.render_config));
+    writeBytes(harness.project.render_config, root.withSectionValue("material_route_default", "\"auto\"").bytes());
+    harness.service = makeProjectService(harness.project, harness.resolver, harness.runtime);
+    CHECK(harness.service->getGraphInstances(Json::object()).at("material_route_default") == "auto");
+    const auto accepted = harness.service->editGraphDocument(
+        {{"base_source_digest", harness.digest()},
+         {"ops", Json::array({{{"op", "set_layout"}, {"scope", "root"}, {"layout", nullptr}}})},
+         {"material_route_default", nullptr}});
+    REQUIRE(accepted.at("status") == "accepted");
+    harness.service->commitPending();
+    const auto result = harness.service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("committed") == true);
+    CHECK_FALSE(result.value("restart_required", false));
+    CHECK_FALSE(Json::parse(readBytes(harness.project.render_config)).at("rendering").contains("material_route_default"));
+    REQUIRE_THROWS(harness.service->setMaterialRouteDefault(
+        {{"base_source_digest", harness.digest()}, {"material_route_default", nullptr}}));
+}
+
 // --- G-6: an edit is composed by every graph variant the engine registered.
 
 namespace {

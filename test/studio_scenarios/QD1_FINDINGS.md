@@ -2,12 +2,16 @@
 
 Original inventory dated 2026-10-05. Ordinary scenario assertions passed in that 84-case inventory. The matrix preserves observed failures even when a ticketed `known_red` mark lets CTest pass.
 
-There are now **31 marks in 31 scenarios**: 31 Undo/Redo checks and 0 health checks. The original inventory had 49 marks in 46 scenarios; the October 5 follow-up resolved 16 marks and UD-1 resolved 2 more. These are reproduction records, not a count of independent root causes. No reopen check is marked known red.
+There are now **28 marks in 28 scenarios**: 28 Undo/Redo checks and 0 health checks. The original inventory had 49 marks in 46 scenarios; the October 5 follow-up resolved 16 marks, UD-1 resolved 2 more and UD-3 resolved 3 more. These are reproduction records, not a count of independent root causes. No reopen check is marked known red.
 
 
-## UD-1 recheck (2026-10-08)
+## UD-1 + UD-2 + UD-3 integration recheck (2026-10-08)
 
-2 of the eleven prescribed runs reached green Undo/Redo, reopen and health and are marked Resolved (UD-1) below. The other runs stopped during ordinary pixel comparisons whose sampled pixels were black, before the Undo epilogue; their existing tickets remain. These incomplete rechecks do not replace the earlier Undo reproduction evidence. No pixel expectation or invariant comparison was relaxed.
+Integration executed the eleven prescribed scenarios with the UD-1 + UD-2 + UD-3 build (`<作業ディレクトリ>/ud3_work/gpu11.log`: 11/11 CTest passes, 538.74 s). Ordinary assertions, reopen and health are green in all eleven, and no Redo comparison differs. Undo/Redo is green in `graph_from_blank`, `frameplan_layout_then_edit`, `gui_frameplan_delegates`, `gui_graph_new_target` and `gui_graph_only_edits_2`; the last three were resolved by UD-3. The remaining six Undo checks (`add_primitive_object`, `deferred_loop_from_scratch`, `graph_from_blank_forward`, `gui_build_A`, `gui_build_B`, `gui_build_E`) are `known_red`. Their measured `undo_differs`, `undo.log` and `undo.notes` are quoted below.
+
+UD-3 fixes the Graph history inverse: the palette entry that adds a forward material pass did not restore `material_route_default` when undone. One Undo now sends the pass removal and the restored route default (null removes a default that was absent) in a single `edit_graph_document`, and the engine restarts once.
+
+The six remaining reports differ only in `scene:(answer)` and `scene:(semantic)`; no file or render document differs. The walk presses Graph before scene. The Graph Undo that returns the pipeline to blank (no material pass) restarts the engine (UD-1's `material_passes_removed`) while a scene Undo such as Add Object is still pressable; `undo.notes` records `scene: Undo was pressable but unconsumed before the engine restart`. The restart drops the engine's scene journal, so the Inspector Undo reports `actor has no committed transaction to undo`; the scene content itself remains. This is a product limitation. Whether to carry the journal across the restart or to switch without restarting awaits the user's decision (v1 candidate). The driver waits for Graph/Render histories to recover after the restart (`restart_history_ready: true` in all six), so a temporarily disabled button is not the cause. A pressable but unconsumed scene Undo is not exempted: the reports retain and compare its scene keys. No scenario mark, comparison or pixel expectation is relaxed.
 
 ## Evidence and interpretation
 
@@ -31,21 +35,21 @@ Remaining marks are still executable reproductions. They include intentional rou
 
 | Scenario | Ordinary | Undo / Redo | Reopen | Health | Tickets | Evidence |
 |---|---|---|---|---|---|---|
-| add_primitive_object | pass | red | green | green | QD1-R5 | follow-up |
+| add_primitive_object | pass | red | green | green | QD1-R5 | integration 2026-10-08 14:12 |
 | canvas_zoom_pan | pass | green | green | green |  | full run |
-| deferred_loop_from_scratch | pass | red | green | green | QD1-R6 | follow-up |
+| deferred_loop_from_scratch | pass | red | green | green | QD1-R6 | integration 2026-10-08 14:13 |
 | engine_window_embedded | pass | green | green | green |  | full run |
 | forward_loop_from_scratch | pass | green | green | green |  | full run |
 | frameplan_edit_roundtrip | pass | green | green | green |  | full run |
-| frameplan_layout_then_edit | pass | green | green | green |  | UD-1 2026-10-08 |
+| frameplan_layout_then_edit | pass | green | green | green |  | integration 2026-10-08 14:14 |
 | fullscreen_pass_from_template | pass | green | green | green |  | fixes recheck 21:08 |
 | graph_auto_layout | pass | green | green | green |  | fixes recheck 21:09 |
 | graph_canvas_zoom_pan | pass | green | green | green |  | full run |
 | graph_edit_roundtrip | pass | green | green | green |  | full run |
 | graph_fold_decisions | pass | red | green | green | QD1-R10 | fixes recheck 21:28 |
 | graph_folded_features | pass | green | green | green |  | full run |
-| graph_from_blank | pass | green | green | green |  | UD-1 2026-10-08 |
-| graph_from_blank_forward | pass | red | green | green | QD1-R11 | follow-up |
+| graph_from_blank | pass | green | green | green |  | integration 2026-10-08 14:15 |
+| graph_from_blank_forward | pass | red | green | green | QD1-R11 | integration 2026-10-08 14:15 |
 | graph_layers_origin | pass | green | green | green |  | full run |
 | graph_loop_expand | pass | green | green | green |  | final check |
 | graph_observe_roundtrip | pass | green | green | green |  | full run |
@@ -54,13 +58,13 @@ Remaining marks are still executable reproductions. They include intentional rou
 | graph_reroute_tie | pass | green | green | green |  | full run |
 | graph_template_bloom | pass | green | green | green |  | full run |
 | gui_assets_watch_verify | pass | red | green | green | QD1-R13 | final check |
-| gui_build_A | pass | red | green | green | QD1-R14 | follow-up |
+| gui_build_A | pass | red | green | green | QD1-R14 | integration 2026-10-08 14:16 |
 | gui_build_audio_reactive | pass | green | green | green |  | follow-up |
-| gui_build_B | pass | red | green | green | QD1-R15 | follow-up |
+| gui_build_B | pass | red | green | green | QD1-R15 | integration 2026-10-08 14:17 |
 | gui_build_C | pass | red | green | green | QD1-R16 | follow-up |
 | gui_build_curve | pass | red | green | green | QD1-R17 | full run |
 | gui_build_D | pass | red | green | green | QD1-R18 | full run |
-| gui_build_E | pass | red | green | green | QD1-R19 | follow-up |
+| gui_build_E | pass | red | green | green | QD1-R19 | integration 2026-10-08 14:18 |
 | gui_build_full | pass | red | green | green | QD1-R20 | follow-up |
 | gui_build_ltc | pass | red | green | green | QD1-R21 | full run |
 | gui_build_music | pass | green | green | green |  | full run |
@@ -69,11 +73,11 @@ Remaining marks are still executable reproductions. They include intentional rou
 | gui_build_optimize | pass | red | green | green | QD1-R24 | full run |
 | gui_build_rt_from_blank | pass | red | green | green | QD1-R25 | follow-up |
 | gui_folded_pass_edit | pass | green | green | green |  | full run |
-| gui_frameplan_delegates | pass | red | green | green | QD1-R2 | full run |
+| gui_frameplan_delegates | pass | green | green | green |  | integration 2026-10-08 14:19 |
 | gui_graph_folded_edits | pass | green | green | green |  | full run |
-| gui_graph_new_target | pass | red | green | green | QD1-R26 | follow-up |
+| gui_graph_new_target | pass | green | green | green |  | integration 2026-10-08 14:19 |
 | gui_graph_only_edits | pass | red | green | green | QD1-R27 | fixes recheck 21:30 |
-| gui_graph_only_edits_2 | pass | red | green | green | QD1-R28 | follow-up |
+| gui_graph_only_edits_2 | pass | green | green | green |  | integration 2026-10-08 14:20 |
 | gui_graph_order | pass | green | green | green |  | full run |
 | gui_graph_task_delete | pass | green | green | green |  | full run |
 | gui_lower_layer_pin_freeze | pass | green | green | green |  | pilot |
@@ -121,48 +125,78 @@ Remaining marks are still executable reproductions. They include intentional rou
 The diff excerpts below come from the executed reports (expected start/end versus found). They are deliberately short; the report holds the remaining keys and first diff lines.
 
 ### QD1-R5: add_primitive_object / undo
+**Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
-**Studio/engine / authoring contract.** The history walk encounters an engine route contract refusal: `No pass draws the forward_opaque route, which pelican.builtin.transparent (engine built-i…`. Remaining document changes are listed below. Equality with a restart snapshot does not prove that the restart cleared the history. Decide intended rollback semantics before changing production.
+Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart, or switching without restarting, awaits the user's decision (v1 candidate). The scene keys remain compared and this finding remains open.
 
-Reproduce through ordinary step 56, then the `undo` epilogue.
+Reproduce through ordinary step 56, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/add_primitive_object/report.json`, started `2026-10-08T14:12:48`.
 
-Observed panel notices: `No pass draws the forward_opaque route, which pelican.builtin.transparent (engine built-i…`.
+`undo.log`: 2 Graph Undo presses moved documents. The walk records `pid 15980 -> 44508`, `restart_history_ready: true` after 1.06 s for `graph`, `render`. The later scene press reports `Undo failed: method_unavailable - actor has no committed transaction to undo`.
 
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+`undo.notes`: `scene: Undo was pressable but unconsumed before the engine restart; scene keys remain compared`
+
+`undo_differs` keys and first diff lines (expected start versus found):
+
+`scene:(answer)` (changed):
 
 ```diff
-@@ -1,6 +1,118 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
+@@ -17,3 +17,3 @@
+      "algorithm": "sha256",
+-     "hex": "65164c470fcd5c5fb8a3eebacbd207d6d08bd06a6afe4ef579577c4e4d48357e"
++     "hex": "1463cc6a501c574b51cd897cf040c473da8ec7a01d73b8f47ec8d29a7532e51b"
+     },
 ```
 
-The last same-project restart is step 32; after-Undo matches that restart snapshot. Only scene history is excluded solely because of restart.
+`scene:(semantic)` (changed):
+
+```diff
+@@ -50,2 +50,58 @@
+      "name": "KeyLight"
++    },
++    {
++     "components": [
++      {
++       "name": "transform",
+```
+
+The ticket remains until the scene-journal decision. No invariant exemption or pixel expectation was changed.
 
 ### QD1-R6: deferred_loop_from_scratch / undo
+**Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
-**Studio/engine / authoring contract.** The history walk encounters an engine route contract refusal: `No pass draws the deferred_geometry route, which pelican.builtin.transparent (engine buil…`. Remaining document changes are listed below. Equality with a restart snapshot does not prove that the restart cleared the history. Decide intended rollback semantics before changing production.
+Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart, or switching without restarting, awaits the user's decision (v1 candidate). The scene keys remain compared and this finding remains open.
 
-Reproduce through ordinary step 98, then the `undo` epilogue.
+Reproduce through ordinary step 98, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/deferred_loop_from_scratch/report.json`, started `2026-10-08T14:13:29`.
 
-Observed panel notices: `No pass draws the deferred_geometry route, which pelican.builtin.transparent (engine buil…`.
+`undo.log`: 4 Graph Undo presses moved documents. The walk records `pid 18536 -> 51168`, `restart_history_ready: true` after 1.09 s for `graph`, `render`. The later scene press reports `Undo failed: method_unavailable - actor has no committed transaction to undo`.
 
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+`undo.notes`: `scene: Undo was pressable but unconsumed before the engine restart; scene keys remain compared`
+
+`undo_differs` keys and first diff lines (expected start versus found):
+
+`scene:(answer)` (changed):
 
 ```diff
-@@ -1,4 +1,223 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
+@@ -17,3 +17,3 @@
+      "algorithm": "sha256",
+-     "hex": "65164c470fcd5c5fb8a3eebacbd207d6d08bd06a6afe4ef579577c4e4d48357e"
++     "hex": "88dedd002bb0b497516df1baeac1fdbf122cf7acc515b6d39d9ae9493eb1e348"
+     },
 ```
+
+`scene:(semantic)` (changed):
+
+```diff
+@@ -40,4 +40,4 @@
+        "direction": [
+-        -0.5,
+-        -1.0,
++        0.5,
++        -1,
+         -0.25
+```
+
+The ticket remains until the scene-journal decision. No invariant exemption or pixel expectation was changed.
 
 ### QD1-R10: graph_fold_decisions / undo
 
@@ -186,40 +220,41 @@ Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 ```
 
 ### QD1-R11: graph_from_blank_forward / undo
+**Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
-**Studio/engine / authoring contract.** The history walk encounters an engine route contract refusal: `No pass draws the forward_opaque route, which pelican.builtin.transparent (engine built-i…`. Remaining document changes are listed below. Equality with a restart snapshot does not prove that the restart cleared the history. Decide intended rollback semantics before changing production.
+Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart, or switching without restarting, awaits the user's decision (v1 candidate). The scene keys remain compared and this finding remains open.
 
-Reproduce through ordinary step 69, then the `undo` epilogue.
+Reproduce through ordinary step 69, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/graph_from_blank_forward/report.json`, started `2026-10-08T14:15:37`.
 
-Observed panel notices: `No pass draws the forward_opaque route, which pelican.builtin.transparent (engine built-i…`; `logical shadow graph node 'present' reads unknown resource 'render_material_pass__color'…`.
+`undo.log`: 4 Graph Undo presses moved documents. The walk records `pid 11912 -> 52212`, `restart_history_ready: true` after 1.08 s for `graph`, `render`. The later scene press reports `Undo failed: method_unavailable - actor has no committed transaction to undo`.
 
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+`undo.notes`: `scene: Undo was pressable but unconsumed before the engine restart; scene keys remain compared`
+
+`undo_differs` keys and first diff lines (expected start versus found):
+
+`scene:(answer)` (changed):
 
 ```diff
-@@ -1,6 +1,118 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
+@@ -17,3 +17,3 @@
+      "algorithm": "sha256",
+-     "hex": "65164c470fcd5c5fb8a3eebacbd207d6d08bd06a6afe4ef579577c4e4d48357e"
++     "hex": "7e5b4c472f22f14500c0ee1d440680f8f692dec4f98f00e9ef41ea2b8d678f44"
+     },
+```
+
+`scene:(semantic)` (changed):
+
+```diff
+@@ -50,2 +50,30 @@
+      "name": "KeyLight"
++    },
 +    {
++     "components": [
++      {
++       "name": "transform",
 ```
 
-Redo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -112,60 +112,2 @@
-    }
--  },
--  {
--   "id": "render_fullscreen__color",
--   "op": "render.image",
--   "outputs": [
--    "resource"
-```
-
-The last same-project restart is step 22; after-Undo matches that restart snapshot. Only scene history is excluded solely because of restart.
+The ticket remains until the scene-journal decision. No invariant exemption or pixel expectation was changed.
 
 ### QD1-R13: gui_assets_watch_verify / undo
 
@@ -238,48 +273,78 @@ Undo differs: `file:project.json`, `get_project_settings:`.
 ```
 
 ### QD1-R14: gui_build_A / undo
+**Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
-**Studio/engine / authoring contract.** The history walk encounters an engine route contract refusal: `No pass draws the forward_opaque route, which pelican.builtin.transparent (engine built-i…`. Remaining document changes are listed below. Equality with a restart snapshot does not prove that the restart cleared the history. Decide intended rollback semantics before changing production.
+Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart, or switching without restarting, awaits the user's decision (v1 candidate). The scene keys remain compared and this finding remains open.
 
-Reproduce through ordinary step 41, then the `undo` epilogue.
+Reproduce through ordinary step 41, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/gui_build_A/report.json`, started `2026-10-08T14:16:28`.
 
-Observed panel notices: `No pass draws the forward_opaque route, which pelican.builtin.transparent (engine built-i…`.
+`undo.log`: 2 Graph Undo presses moved documents. The walk records `pid 49572 -> 36504`, `restart_history_ready: true` after 1.08 s for `graph`, `render`. The later scene press reports `Undo failed: method_unavailable - actor has no committed transaction to undo`.
 
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+`undo.notes`: `scene: Undo was pressable but unconsumed before the engine restart; scene keys remain compared`
+
+`undo_differs` keys and first diff lines (expected start versus found):
+
+`scene:(answer)` (changed):
 
 ```diff
-@@ -1,6 +1,118 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
+@@ -17,3 +17,3 @@
+      "algorithm": "sha256",
+-     "hex": "65164c470fcd5c5fb8a3eebacbd207d6d08bd06a6afe4ef579577c4e4d48357e"
++     "hex": "7e5b4c472f22f14500c0ee1d440680f8f692dec4f98f00e9ef41ea2b8d678f44"
+     },
 ```
 
-The last same-project restart is step 21; after-Undo matches that restart snapshot. Only scene history is excluded solely because of restart.
+`scene:(semantic)` (changed):
+
+```diff
+@@ -50,2 +50,30 @@
+      "name": "KeyLight"
++    },
++    {
++     "components": [
++      {
++       "name": "transform",
+```
+
+The ticket remains until the scene-journal decision. No invariant exemption or pixel expectation was changed.
 
 ### QD1-R15: gui_build_B / undo
+**Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
-**Studio/engine / authoring contract.** The history walk encounters an engine route contract refusal: `No pass draws the deferred_geometry route, which pelican.builtin.transparent (engine buil…`. Remaining document changes are listed below. Equality with a restart snapshot does not prove that the restart cleared the history. Decide intended rollback semantics before changing production.
+Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart, or switching without restarting, awaits the user's decision (v1 candidate). The scene keys remain compared and this finding remains open.
 
-Reproduce through ordinary step 69, then the `undo` epilogue.
+Reproduce through ordinary step 69, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/gui_build_B/report.json`, started `2026-10-08T14:17:13`.
 
-Observed panel notices: `No pass draws the deferred_geometry route, which pelican.builtin.transparent (engine buil…`.
+`undo.log`: 5 Graph Undo presses moved documents. The walk records `pid 35224 -> 46076`, `restart_history_ready: true` after 1.09 s for `graph`, `render`. The later scene press reports `Undo failed: method_unavailable - actor has no committed transaction to undo`.
 
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+`undo.notes`: `scene: Undo was pressable but unconsumed before the engine restart; scene keys remain compared`
+
+`undo_differs` keys and first diff lines (expected start versus found):
+
+`scene:(answer)` (changed):
 
 ```diff
-@@ -1,4 +1,224 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
+@@ -17,3 +17,3 @@
+      "algorithm": "sha256",
+-     "hex": "65164c470fcd5c5fb8a3eebacbd207d6d08bd06a6afe4ef579577c4e4d48357e"
++     "hex": "7e5b4c472f22f14500c0ee1d440680f8f692dec4f98f00e9ef41ea2b8d678f44"
+     },
 ```
+
+`scene:(semantic)` (changed):
+
+```diff
+@@ -50,2 +50,30 @@
+      "name": "KeyLight"
++    },
++    {
++     "components": [
++      {
++       "name": "transform",
+```
+
+The ticket remains until the scene-journal decision. No invariant exemption or pixel expectation was changed.
 
 ### QD1-R16: gui_build_C / undo
 
@@ -354,25 +419,41 @@ Redo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 ```
 
 ### QD1-R19: gui_build_E / undo
+**Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
-**Studio/engine / authoring contract.** The history walk encounters an engine route contract refusal: `No pass draws the deferred_geometry route, which pelican.builtin.transparent (engine buil…`. Remaining document changes are listed below. Equality with a restart snapshot does not prove that the restart cleared the history. Decide intended rollback semantics before changing production.
+Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart, or switching without restarting, awaits the user's decision (v1 candidate). The scene keys remain compared and this finding remains open.
 
-Reproduce through ordinary step 69, then the `undo` epilogue.
+Reproduce through ordinary step 69, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/gui_build_E/report.json`, started `2026-10-08T14:18:09`.
 
-Observed panel notices: `No pass draws the deferred_geometry route, which pelican.builtin.transparent (engine buil…`.
+`undo.log`: 4 Graph Undo presses moved documents. The walk records `pid 49936 -> 49240`, `restart_history_ready: true` after 1.08 s for `graph`, `render`. The later scene press reports `Undo failed: method_unavailable - actor has no committed transaction to undo`.
 
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+`undo.notes`: `scene: Undo was pressable but unconsumed before the engine restart; scene keys remain compared`
+
+`undo_differs` keys and first diff lines (expected start versus found):
+
+`scene:(answer)` (changed):
 
 ```diff
-@@ -1,4 +1,224 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
+@@ -17,3 +17,3 @@
+      "algorithm": "sha256",
+-     "hex": "65164c470fcd5c5fb8a3eebacbd207d6d08bd06a6afe4ef579577c4e4d48357e"
++     "hex": "db9635dd26647a75fb9d0f4d2012d4bf198b14639c52f331397c437fa99da9ad"
+     },
 ```
+
+`scene:(semantic)` (changed):
+
+```diff
+@@ -50,2 +50,58 @@
+      "name": "KeyLight"
++    },
++    {
++     "components": [
++      {
++       "name": "transform",
+```
+
+The ticket remains until the scene-journal decision. No invariant exemption or pixel expectation was changed.
 
 ### QD1-R20: gui_build_full / undo
 
@@ -503,52 +584,6 @@ Redo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 -   },
 ```
 
-### QD1-R2: gui_frameplan_delegates / undo
-
-**Studio/engine / authoring contract.** The history walk encounters an engine route contract refusal: `No pass draws the forward_opaque route, which pelican.builtin.transparent (engine built-i…`. Remaining document changes are listed below. Equality with a restart snapshot does not prove that the restart cleared the history. Decide intended rollback semantics before changing production.
-
-Reproduce through ordinary step 69, then the `undo` epilogue.
-
-Observed panel notices: `No pass draws the forward_opaque route, which pelican.builtin.transparent (engine built-i…`.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -1,6 +1,118 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
-```
-
-The last same-project restart is step 30; after-Undo matches that restart snapshot. Only scene history is excluded solely because of restart.
-
-### QD1-R26: gui_graph_new_target / undo
-
-**Studio/engine / authoring contract.** The history walk encounters an engine route contract refusal: `No pass draws the forward_opaque route, which pelican.builtin.transparent (engine built-i…`. Remaining document changes are listed below. Equality with a restart snapshot does not prove that the restart cleared the history. Decide intended rollback semantics before changing production.
-
-Reproduce through ordinary step 60, then the `undo` epilogue.
-
-Observed panel notices: `No pass draws the forward_opaque route, which pelican.builtin.transparent (engine built-i…`.
-
-Undo differs: `file:passes/authoring/render-targets.json`, `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`, `render:project://passes/authoring/render-targets.json`.
-
-```diff
-@@ -0,0 +1,24 @@
-+{
-+  "schema": "pelican.render_feature",
-+  "version": 1,
-+  "name": "authored_render_targets",
-+  "runtime_shader_compiler": "optional",
-+  "pelican_editor_managed": {
-+    "schema": "pelican.authored_render_fragment",
-```
-
-The last same-project restart is step 41; after-Undo matches that restart snapshot. Only scene history is excluded solely because of restart.
-
 ### QD1-R27: gui_graph_only_edits / undo
 
 **Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
@@ -566,29 +601,6 @@ Undo differs: `file:passes/authoring/render-targets.json`, `file:passes/main_ren
 +  "runtime_shader_compiler": "optional",
 +  "pelican_editor_managed": {
 +    "schema": "pelican.authored_render_fragment",
-```
-
-The last same-project restart is step 31; after-Undo also differs from that restart snapshot. Only scene history is excluded solely because of restart.
-
-### QD1-R28: gui_graph_only_edits_2 / undo
-
-**Studio/engine / authoring contract.** The history walk encounters an engine route contract refusal: `No pass draws the forward_opaque route, which pelican.builtin.transparent (engine built-i…`. Remaining document changes are listed below. Equality with a restart snapshot does not prove that the restart cleared the history. Decide intended rollback semantics before changing production.
-
-Reproduce through ordinary step 103, then the `undo` epilogue.
-
-Observed panel notices: `No pass draws the forward_opaque route, which pelican.builtin.transparent (engine built-i…`.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -1,6 +1,119 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
 ```
 
 The last same-project restart is step 31; after-Undo also differs from that restart snapshot. Only scene history is excluded solely because of restart.
@@ -1190,4 +1202,149 @@ Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 +  "render_material_pass_draw": {
 +   "nodes": [
 +    {
+```
+
+
+### QD1-R2: gui_frameplan_delegates / undo
+
+**Resolved (UD-3), 2026-10-08.** Undoing the Graph palette entry that adds a forward material pass now restores `material_route_default` (null removes a default that was absent) in the same `edit_graph_document` as the pass removal, so the engine restarts once. The integration rerun (report started `2026-10-08T14:19:02`) verified Undo/Redo, reopen and health green.
+
+Original reproduction (UD-1 + UD-2 build, retained as evidence):
+
+**Studio / Graph history inverse(route default).** Integration measured this on 2026-10-08 (UD-1 + UD-2 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences.
+
+The palette addition sends `material_route_default: "forward"` with its pass in one Graph history entry, but the inverse sent only graph ops. Undo removed the pass and left the root default forward. The history was missing the root inverse.
+
+Reproduce through ordinary step 69, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/gui_frameplan_delegates/report.json`, started `2026-10-08T13:45:32`.
+
+`undo.log`: 2 Graph Undo presses moved documents. The walk records `pid 29068 -> 4744`, `restart_history_ready: true` after 1.08 s for `graph`, `render`. The later scene press reports `Undo failed: method_unavailable - actor has no committed transaction to undo`.
+
+`undo.notes`: empty.
+
+`undo_differs` keys and first diff lines (expected start versus found):
+
+`file:passes/main_rendering_config.json` (changed):
+
+```diff
+@@ -5,2 +5,3 @@
+  "rendering": {
++  "material_route_default": "forward",
+   "rendering_passes": [
+```
+
+`render:passes/main_rendering_config.json` (changed):
+
+```diff
+@@ -5,2 +5,3 @@
+  "rendering": {
++  "material_route_default": "forward",
+   "rendering_passes": [
+```
+
+
+### QD1-R26: gui_graph_new_target / undo
+
+**Resolved (UD-3), 2026-10-08.** Undoing the Graph palette entry that adds a forward material pass now restores `material_route_default` (null removes a default that was absent) in the same `edit_graph_document` as the pass removal, so the engine restarts once. The integration rerun (report started `2026-10-08T14:19:47`) verified Undo/Redo, reopen and health green.
+
+Original reproduction (UD-1 + UD-2 build, retained as evidence):
+
+**Studio / Graph history inverse(route default).** Integration measured this on 2026-10-08 (UD-1 + UD-2 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences.
+
+The palette addition sends `material_route_default: "forward"` with its pass in one Graph history entry, but the inverse sent only graph ops. Undo removed the pass and left the root default forward. The history was missing the root inverse.
+
+The authored render-target fragment and its root `features` reference also remain. After the Graph restart, Render Undo refuses `Add render target render_target` because `passes/main_rendering_config.json changed since. Undo the later edit first, or refresh.` The remaining root default prevents the earlier target edit from passing CAS; this report does not establish a separate target inverse defect.
+
+Reproduce through ordinary step 60, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/gui_graph_new_target/report.json`, started `2026-10-08T13:42:39`.
+
+`undo.log`: 3 Graph Undo presses moved documents. The walk records `pid 43524 -> 45400`, `restart_history_ready: true` after 1.06 s for `graph`, `render`. The later graph press reports `Graph change saved.`. The later render press reports `"Add render target render_target" cannot be undone: passes/main_rendering_config.json changed since. Undo the later edit first, or refresh.`.
+
+`undo.notes`: empty.
+
+`undo_differs` keys and first diff lines (expected start versus found):
+
+`file:passes/authoring/render-targets.json` (added):
+
+```diff
+@@ -0,0 +1,24 @@
++{
++  "schema": "pelican.render_feature",
++  "version": 1,
++  "name": "authored_render_targets",
++  "runtime_shader_compiler": "optional",
++  "pelican_editor_managed": {
++    "schema": "pelican.authored_render_fragment",
+```
+
+`file:passes/main_rendering_config.json` (changed):
+
+```diff
+@@ -5,2 +5,6 @@
+  "rendering": {
++  "features": [
++   "project://passes/authoring/render-targets.json"
++  ],
++  "material_route_default": "forward",
+   "rendering_passes": [
+```
+
+`render:passes/main_rendering_config.json` (changed):
+
+```diff
+@@ -5,2 +5,6 @@
+  "rendering": {
++  "features": [
++   "project://passes/authoring/render-targets.json"
++  ],
++  "material_route_default": "forward",
+   "rendering_passes": [
+```
+
+`render:project://passes/authoring/render-targets.json` (added):
+
+```diff
+@@ -0,0 +1,24 @@
++{
++ "name": "authored_render_targets",
++ "pelican_editor_managed": {
++  "id": "render-targets",
++  "owner": "pelican.devstudio",
++  "schema": "pelican.authored_render_fragment",
++  "version": 1
+```
+
+
+### QD1-R28: gui_graph_only_edits_2 / undo
+
+**Resolved (UD-3), 2026-10-08.** Undoing the Graph palette entry that adds a forward material pass now restores `material_route_default` (null removes a default that was absent) in the same `edit_graph_document` as the pass removal, so the engine restarts once. The integration rerun (report started `2026-10-08T14:20:30`) verified Undo/Redo, reopen and health green.
+
+Original reproduction (UD-1 + UD-2 build, retained as evidence):
+
+**Studio / Graph history inverse(route default).** Integration measured this on 2026-10-08 (UD-1 + UD-2 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences.
+
+The palette addition sends `material_route_default: "forward"` with its pass in one Graph history entry, but the inverse sent only graph ops. Undo removed the pass and left the root default forward. The history was missing the root inverse.
+
+Reproduce through ordinary step 103, then the `undo` epilogue. Evidence: `<build>/test_artifacts/studio_scenarios/gui_graph_only_edits_2/report.json`, started `2026-10-08T13:43:20`.
+
+`undo.log`: 12 Graph Undo presses moved documents. The walk records `pid 41016 -> 42008`, `restart_history_ready: true` after 1.06 s for `graph`, `render`. The later scene press reports `Undo failed: method_unavailable - actor has no committed transaction to undo`.
+
+`undo.notes`: empty.
+
+`undo_differs` keys and first diff lines (expected start versus found):
+
+`file:passes/main_rendering_config.json` (changed):
+
+```diff
+@@ -5,2 +5,3 @@
+  "rendering": {
++  "material_route_default": "forward",
+   "rendering_passes": [
+```
+
+`render:passes/main_rendering_config.json` (changed):
+
+```diff
+@@ -5,2 +5,3 @@
+  "rendering": {
++  "material_route_default": "forward",
+   "rendering_passes": [
 ```

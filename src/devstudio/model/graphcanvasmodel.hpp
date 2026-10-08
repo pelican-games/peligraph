@@ -1038,6 +1038,8 @@ class GraphCanvasModel {
     // rather than letting the user read a refused write as a bug.
     std::string root_schema_;
     std::string source_reference_;
+    // UD-3: the authored root value; null means the member is absent.
+    nlohmann::json material_route_default_;
     nlohmann::json nodes_ = nlohmann::json::array();
     nlohmann::json definitions_ = nlohmann::json::object();
     // UX-13b, decision 4 (engine CT-5): get_graph_instances'
@@ -1147,11 +1149,10 @@ class GraphCanvasModel {
     struct HistoryEntry {
         nlohmann::json forward;
         nlohmann::json inverse;
-        // GL-1d, decision 3: what the forward list sends beside its ops
-        // (`material_route_default`), or null. An Undo sends the inverse
-        // alone: the route default is the project's, not the list's.
+        // Params travel with the corresponding op list in the same request.
         nlohmann::json params;
         std::uint64_t serial = 0;
+        nlohmann::json inverse_params;
     };
     enum class HistoryAction { Edit, Undo, Redo };
     struct PendingHistory {

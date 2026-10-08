@@ -832,6 +832,8 @@ struct GraphHistoryHarness {
         return {{"source_reference", "fixture"}, {"root_schema", "pelican.graph"},
                 {"source_digest", {{"hex", digest()}}},
                 {"nodes", document.at("nodes")},
+                {"material_route_default", document.value("rendering", Json::object())
+                                                    .value("material_route_default", Json{})},
                 {"definitions", document.at("definitions")},
                 {"layout", document.value("layout", Json::object())}};
     }
@@ -848,6 +850,10 @@ struct GraphHistoryHarness {
         last_ops = submit.params.at("ops");
         last_params = submit.params;
         auto edited = Pelican::editGraphDocument(document, submit.params.at("ops"));
+        if (const auto route = submit.params.find("material_route_default"); route != submit.params.end()) {
+            if (route->is_null()) edited["rendering"].erase("material_route_default");
+            else edited["rendering"]["material_route_default"] = *route;
+        }
         client.reply(submit, {{"status", "accepted"}, {"ticket", "edit"}});
         REQUIRE_FALSE(client.model.canUndo());
         const auto poll = client.take("get_edit_result");
@@ -2059,9 +2065,9 @@ TEST_CASE("GL-1d a forward material pass sets the route default, and falls back 
         ++h.generation;
         h.client.reply(poll, {{"status", "committed"}, {"source_digest", {{"hex", h.digest()}}}});
         h.refresh();
-        // Its Undo does not send it: the default is the project's.
+        // UD-3: Undo restores the absent default in the pass removal request.
         REQUIRE(h.client.model.undo());
-        CHECK_FALSE(h.client.take("edit_graph_document").params.contains("material_route_default"));
+        CHECK(h.client.take("edit_graph_document").params.at("material_route_default").is_null());
     }
     SECTION("an engine that does not know the field is asked again without it") {
         h.client.model.receiveRpcFailure(
@@ -2095,6 +2101,46 @@ TEST_CASE("GL-1d a forward material pass sets the route default, and falls back 
             return request.method == "edit_graph_document";
         }));
     }
+}
+
+// UD-3: one palette gesture owns both its pass and its root route default.
+TEST_CASE("UD-3 Graph Undo restores the authored route default with the forward pass",
+          "[studio][graph-canvas][graph-history][ud3]") {
+    DrawLoopHarness h;
+    h.document["nodes"] = Json::array();
+    h.document["definitions"] = Json::object();
+    h.document["rendering"] = Json::object();
+    SECTION("the blank root has no default") {
+        CHECK_FALSE(h.document.at("rendering").contains("material_route_default"));
+    }
+    SECTION("the root already draws forward") {
+        h.document["rendering"]["material_route_default"] = "forward";
+        CHECK(h.document.at("rendering").at("material_route_default") == "forward");
+    }
+    SECTION("the root explicitly uses auto") {
+        h.document["rendering"]["material_route_default"] = "auto";
+        CHECK(h.document.at("rendering").at("material_route_default") == "auto");
+    }
+    const auto before = h.document;
+    h.open();
+    REQUIRE(h.client.model.addNode("render.material_pass", "forward_opaque_v1"));
+    h.commit();
+    CHECK(h.last_params.at("material_route_default") == "forward");
+    CHECK(h.document.at("rendering").at("material_route_default") == "forward");
+    CHECK(std::ranges::any_of(h.document.at("nodes"), [](const Json &node) {
+        return node.at("op") == "render.material_pass";
+    }));
+    const auto added = h.document;
+    REQUIRE(h.client.model.undo());
+    h.commit();
+    // Full equality also checks that the pass, draw loop and body are gone.
+    CHECK(h.document == before);
+    CHECK(h.last_params.at("material_route_default") ==
+          before.at("rendering").value("material_route_default", Json{}));
+    REQUIRE(h.client.model.redo());
+    h.commit();
+    CHECK(h.last_params.at("material_route_default") == "forward");
+    CHECK(h.document == added);
 }
 
 // GL-1d: a deferred material pass in the root, or one the frame plan routes

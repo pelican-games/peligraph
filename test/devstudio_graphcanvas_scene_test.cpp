@@ -2300,7 +2300,7 @@ struct RecordedCapability {
         // that edit produced.
         QByteArray body;
         // GL-1d: the material_route_default it carried beside the ops.
-        QString route_default;
+        QJsonValue route_default{QJsonValue::Undefined};
     };
     std::vector<Call> calls;
     qint64 next = 1;
@@ -2338,7 +2338,7 @@ struct RecordedCapability {
             return note(QStringLiteral("render_frame"));
         };
         seam.requestEditGraphDocument = [this](const QString &, const QByteArray &ops,
-                                               const QString &route_default, QString *) {
+                                               const QJsonValue &route_default, QString *) {
             calls.push_back(
                 Call{QStringLiteral("edit_graph_document"), {}, 0, ops, route_default});
             return next++;
@@ -5656,6 +5656,63 @@ Json withCount(Json document, int count) {
 }
 
 } // namespace
+
+// UD-3: exercise the widget dispatch boundary, not just the model's JSON.
+TEST_CASE("UD-3 Graph widget sends a null route inverse and distinguishes an absent parameter",
+          "[devstudio][graph-canvas][scene][ud3]") {
+    (void)application();
+    Q18Tab tab;
+    Json document{{"schema", "pelican.graph"}, {"version", 1},
+                  {"definitions", Json::object()}, {"nodes", Json::array()},
+                  {"outputs", Json::object()}, {"rendering", Json::object()}};
+    const auto read = [&](const std::string &digest) {
+        auto context = q18Context(document, digest);
+        context["root_schema"] = "pelican.graph";
+        context["material_route_default"] = document.at("rendering").value("material_route_default", Json{});
+        tab.answer(QStringLiteral("get_graph_instances"), context);
+    };
+    auto catalog = visualCatalog();
+    for (const char *op : {"render.material_pass", "draw.material"})
+        catalog["modules"][1]["operations"].push_back(
+            {{"op", op}, {"domain", "rendering"}, {"evaluation", "direct"},
+             {"sink", false}, {"ports", "parameter_dependent"}});
+    read("ud3-0");
+    tab.answer(QStringLiteral("get_graph_catalog"), catalog);
+    const auto last = [&]() -> const RecordedCapability::Call & {
+        const auto id = tab.transport.idOf(QStringLiteral("edit_graph_document"));
+        REQUIRE(id != 0);
+        return tab.transport.calls.at(static_cast<std::size_t>(id - 1));
+    };
+    REQUIRE(tab.widget->model().addNode("render.material_pass", "forward_opaque_v1"));
+    tab.widget->poll();
+    REQUIRE(tab.reads("edit_graph_document") == 1);
+    CHECK(last().route_default.toString() == QStringLiteral("forward"));
+    document = Pelican::editGraphDocument(document, Json::parse(last().body.toStdString()));
+    document["rendering"]["material_route_default"] = "forward";
+    tab.commit("ud3-1");
+    read("ud3-1");
+    REQUIRE(tab.widget->model().undo());
+    tab.widget->poll();
+    REQUIRE(tab.reads("edit_graph_document") == 2);
+    CHECK(last().route_default.isNull());
+    CHECK_FALSE(last().route_default.isUndefined());
+    document = Pelican::editGraphDocument(document, Json::parse(last().body.toStdString()));
+    document["rendering"].erase("material_route_default");
+    tab.commit("ud3-2");
+    read("ud3-2");
+    REQUIRE(tab.widget->model().redo());
+    tab.widget->poll();
+    REQUIRE(tab.reads("edit_graph_document") == 3);
+    CHECK(last().route_default.toString() == QStringLiteral("forward"));
+    document = Pelican::editGraphDocument(document, Json::parse(last().body.toStdString()));
+    document["rendering"]["material_route_default"] = "forward";
+    tab.commit("ud3-3");
+    read("ud3-3");
+    REQUIRE(tab.widget->model().setNodeLabel("render_material_pass", "Forward pass"));
+    tab.widget->poll();
+    REQUIRE(tab.reads("edit_graph_document") == 4);
+    CHECK(last().route_default.isUndefined());
+}
 
 TEST_CASE("Q-18 a Graph tab commit reads the plan again and tells the owner; a placement tells "
           "nobody",

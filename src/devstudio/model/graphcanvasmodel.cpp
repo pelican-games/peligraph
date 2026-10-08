@@ -673,6 +673,7 @@ void GraphCanvasModel::clearContext() {
     // through forgetHistory().
     discardPendingHistory();
     digest_.clear();
+    material_route_default_ = nullptr;
     layout_retry_.reset();
     layout_retrying_ = false;
     nodes_ = Json::array();
@@ -1481,6 +1482,7 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         nodes_ = std::move(nodes);
         root_schema_ = std::move(root_schema);
         source_reference_ = std::move(source_reference);
+        material_route_default_ = response.value("material_route_default", Json{});
         digest_ = response.value("source_digest", Json::object()).value("hex", std::string{});
         if (!history_digest_.empty() && digest_ != history_digest_) {
             const auto restored_digest = std::exchange(render_restore_digest_, std::string{});
@@ -2758,10 +2760,10 @@ bool GraphCanvasModel::submitHistory(HistoryAction action, HistoryEntry entry) {
             return op.is_object() && op.value("op", std::string{}) == "set_layout";
         });
     Json params{{"base_source_digest", digest_}, {"ops", std::move(ops)}};
-    // GL-1d, decision 3: what the list sends beside its ops goes with it and
-    // with its Redo, never with its Undo.
-    if (action != HistoryAction::Undo && entry.params.is_object())
-        for (const auto &[key, value] : entry.params.items())
+    // UD-3: the inverse restores root values in the same ticket as its ops.
+    const auto &history_params = action == HistoryAction::Undo ? entry.inverse_params : entry.params;
+    if (history_params.is_object())
+        for (const auto &[key, value] : history_params.items())
             if (!(route_default_unknown_ && key == "material_route_default"))
                 params[key] = value;
     pending_history_ = PendingHistory{action, std::move(entry)};
@@ -2785,6 +2787,7 @@ bool GraphCanvasModel::retryWithoutRouteDefault(const std::string &message) {
     auto retry = std::move(*pending_history_);
     discardPendingHistory();
     retry.entry.params.erase("material_route_default");
+    retry.entry.inverse_params.erase("material_route_default");
     return submitHistory(retry.action, std::move(retry.entry));
 }
 
@@ -3657,8 +3660,10 @@ bool GraphCanvasModel::addNodeIn(std::string_view scope, const std::string &op,
     if (params.empty()) return submitOps(std::move(ops));
     if (folded_stash_) return refuseFoldedEdit(ops);
     auto inverse = inverseOps(ops);
-    return submitHistory(HistoryAction::Edit,
-                         {std::move(ops), std::move(inverse), std::move(params)});
+    HistoryEntry entry{std::move(ops), std::move(inverse), std::move(params)};
+    if (entry.params.contains("material_route_default"))
+        entry.inverse_params = Json{{"material_route_default", material_route_default_}};
+    return submitHistory(HistoryAction::Edit, std::move(entry));
 }
 
 Json GraphCanvasModel::addNodeParams(std::string_view scope, const std::string &op,

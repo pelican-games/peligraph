@@ -6,6 +6,7 @@
 
 class QByteArray;
 class QJsonObject;
+class QJsonValue;
 class QObject;
 class QString;
 
@@ -71,13 +72,12 @@ struct GraphCanvasReadCapability {
     std::function<qint64(double time, QString *error)> requestSetTime;
     std::function<qint64(QString *error)> requestRenderFrame;
     // One gesture, one op list, one CAS. `ops_json` is the serialised array the
-    // model built; the digest is the document it was built against. GL-1d:
-    // `material_route_default` goes beside the ops when it is not empty (a
-    // Forward opaque material pass added where no pass draws deferred
-    // materials).
+    // model built; the digest is the document it was built against. UD-3:
+    // the route default preserves undefined (not requested), null (remove),
+    // and its authored string, so Undo can restore absence in the same call.
     std::function<qint64(const QString &base_source_digest,
                          const QByteArray &ops_json,
-                         const QString &material_route_default, QString *error)>
+                         const QJsonValue &material_route_default, QString *error)>
         requestEditGraphDocument;
     std::function<qint64(const QString &ticket, QString *error)>
         requestEditResult;

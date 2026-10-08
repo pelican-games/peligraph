@@ -7806,7 +7806,7 @@ struct GraphCanvasWidget::Impl {
                     qtext(request.params.value("base_source_digest", std::string{})),
                     QByteArray::fromStdString(
                         request.params.value("ops", nlohmann::json::array()).dump()),
-                    qtext(request.params.value("material_route_default", std::string{})),
+                    exactJsonRpcObject(request.params).value(QStringLiteral("material_route_default")),
                     &error);
             else if (request.method == "get_edit_result" && graph.requestEditResult)
                 transport = graph.requestEditResult(

@@ -97,6 +97,8 @@ DEFAULT_UNDO_EXEMPT_ADDED = (
 
 MAX_PRESSES_PER_KIND = 400
 UNDO_BUDGET_S = 240.0
+RESTART_HISTORY_WAIT_S = 30.0
+RESTART_HISTORY_STABLE_S = 1.0
 DIFF_LINES = 12
 TEXT_LIMIT = 512 * 1024
 
@@ -194,6 +196,15 @@ def journal_depths(journal: Any) -> dict[str, dict[str, int]]:
             "redo": redo.get(actor, 0),
         }
     return depths
+
+
+def inspector_undo_depth(journal: Any) -> int | None:
+    """None when unread; zero distinguishes empty, always-enabled buttons."""
+
+    if not isinstance(journal, dict) or not isinstance(journal.get("records"), list):
+        return None
+    return sum(depth["undo"] for actor, depth in journal_depths(journal).items()
+               if actor.startswith(INSPECTOR_ACTOR))
 
 
 def available_redo(kinds: dict[str, Any], journal: Any) -> list[str]:
@@ -409,6 +420,8 @@ class Epilogue:
         self.opened_projects: list[int] = []
         self.timings: dict[str, float] = {}
         self.results: dict[str, Any] = {}
+        # Seeded from the endpoint journal; empty Inspector buttons stay on.
+        self.scene_undo_remaining: int | None = None
 
     # -- while the scenario runs --------------------------------------------
 
@@ -594,6 +607,11 @@ class Epilogue:
         # The material widget disables its button when its history is empty;
         # visibility does not tell us whether there is an edit to take back.
         # The reading the last press settled on, when nothing came between.
+        scene_control = (kinds.get("scene") or {}).get("undo") or {}
+        scene_unpressed = (step == "undo"
+                           and (self.scene_undo_remaining is None
+                                or self.scene_undo_remaining > (1 if kind == "scene" else 0))
+                           and scene_control.get("found") and scene_control.get("enabled"))
         before = self.settled if self.settled is not None else self.signature()
         self.settled = None
         reply = self.call({"cmd": "history", "kind": kind, "step": step}, timeout=60.0)
@@ -613,6 +631,15 @@ class Epilogue:
             entry["documents_moved"] = before[1] != after[1]
             if before[2] != after[2]:
                 entry["engine_started_again"] = f"pid {before[2]} -> {after[2]}"
+                entry["restart_histories"] = [
+                    name for name in ("graph", "render", "materials")
+                    if (name != kind or name not in NO_REDO)
+                    and any(control and control.get("found") and control.get("enabled")
+                            for control in (kinds.get(name) or {}).values())
+                ]
+                if scene_unpressed:
+                    entry["scene_undo_unpressed_before_restart"] = True
+                self.scene_undo_remaining = 0  # that engine's journal no longer exists
         notice_of = {"scene": "pelican.inspectorNotice", "graph": "pelican.graphCanvasNotice",
                      "materials": "pelican.materials.notice", "render": "pelican.framePlanStatus"}
         if kind in notice_of:
@@ -620,8 +647,65 @@ class Epilogue:
             notice = self.call({"cmd": "text", "name": notice_of[kind]}, timeout=30.0)
             if notice.get("ok") and isinstance(notice.get("result"), dict):
                 entry["notice"] = str(notice["result"].get("text", ""))[:300]
+        if kind == "scene" and step == "undo" and entry["moved"]:
+            # A control/notice can change on a refused press too. The journal,
+            # rather than the number of clicks, says what was actually undone.
+            scene_state = self.state(journal=True)
+            self.scene_undo_remaining = inspector_undo_depth(scene_state.journal if scene_state else None)
         log.append(entry)
         return "moved" if entry["moved"] else "still"
+
+    def wait_after_restart(self, entry: dict[str, Any], step: str,
+                           deadline: float, notes: list[str]) -> bool:
+        """Do not mistake the panels' temporary disabled controls for empty stacks.
+
+        A surviving Graph/Render stack has its inverse control after the press;
+        Materials has to recover any unconsumed Undo it had before the restart.
+        Observe all three panels together, including their labels, until they
+        stay unchanged for a second. An all-off reading alone proves nothing.
+        """
+
+        started = time.monotonic()
+        wait_end = min(deadline, started + RESTART_HISTORY_WAIT_S)
+        last = None
+        stable_since = started
+        required = entry.get("restart_histories") or []
+        ready = False
+        while time.monotonic() < wait_end:
+            remaining = wait_end - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                reply = self.call({"cmd": "history"}, timeout=min(30.0, remaining))
+            except TimeoutError:
+                break
+            kinds = (reply.get("result") or {}).get("kinds") if reply.get("ok") else None
+            panels = {kind: (kinds.get(kind) or {})
+                      for kind in ("graph", "render", "materials")} if isinstance(kinds, dict) else {}
+            available = {
+                kind for kind, panel in panels.items()
+                if any(control and control.get("found") and control.get("enabled")
+                       for control in panel.values())
+            }
+            current = canonical(panels) if panels else None
+            now = time.monotonic()
+            if current != last:
+                last, stable_since = current, now
+            # Empty or unreadable controls cannot establish that a restart's
+            # asynchronous document reads have finished.
+            if (now < wait_end and available and set(required) <= available
+                    and now - stable_since >= RESTART_HISTORY_STABLE_S):
+                ready = True
+                break
+            time.sleep(min(0.2, max(0.0, wait_end - time.monotonic())))
+        entry["restart_history_wait_s"] = round(time.monotonic() - started, 2)
+        entry["restart_history_ready"] = ready
+        self.settled = None  # the signature from before these reads is stale
+        if not ready:
+            notes.append(f"{step}: restart_history_wait_timeout after "
+                         f"{entry['restart_history_wait_s']:.2f} s ({entry['engine_started_again']}); "
+                         "Graph/Render/Materials histories did not settle before the wait limit or time budget")
+        return ready
 
     def press_all(self, step: str, deadline: float) -> dict[str, Any]:
         """Press `step` of every history until none has anything left."""
@@ -640,7 +724,14 @@ class Epilogue:
                     continue
                 count = 0
                 while count < MAX_PRESSES_PER_KIND and time.monotonic() < deadline:
+                    prior_log_size = len(log)
                     outcome = self.press_once(kind, step, log, notes)
+                    if len(log) > prior_log_size and log[-1].get("engine_started_again"):
+                        exhausted.clear()
+                        if not self.wait_after_restart(log[-1], step, deadline, notes):
+                            if outcome == "moved":
+                                sequence.append(kind)
+                            return self.pressed_summary(log, sequence, notes)
                     # "still": pressed, and neither a control nor a document
                     # moved -- the history has nothing left (the scene's buttons
                     # stay on with an empty journal) or it said no.
@@ -690,7 +781,13 @@ class Epilogue:
             if time.monotonic() >= deadline:
                 notes.append(f"redo: stopped at the time budget ({UNDO_BUDGET_S:.0f} s)")
                 break
+            prior_log_size = len(log)
             outcome = self.press_once(kind, "redo", log, notes)
+            if len(log) > prior_log_size and log[-1].get("engine_started_again"):
+                if not self.wait_after_restart(log[-1], "redo", deadline, notes):
+                    if outcome == "moved":
+                        sequence.append(kind)
+                    return self.pressed_summary(log, sequence, notes)
             if outcome == "moved":
                 sequence.append(kind)
             else:
@@ -772,6 +869,8 @@ def check_undo(epilogue: Epilogue) -> dict[str, Any]:
         )
         return result
     restarted = start.pid != end.pid
+    walk_restart_reason: str | None = None
+    walk_scene_unpressed = False
     exemptions, subtrees = undo_exemptions(epilogue.scenario)
 
     def skip_for_undo(key: str, change: str) -> str | None:
@@ -796,7 +895,9 @@ def check_undo(epilogue: Epilogue) -> dict[str, Any]:
                 return f"the engine did not answer it at the start: {unread}"
         if key in start.scene_files or key in end.scene_files:
             return "a scene file on disk: Save is not undone; the scene in memory is compared"
-        if restarted and key.startswith("scene:"):
+        if walk_restart_reason and key.startswith("scene:"):
+            return walk_restart_reason
+        if restarted and not walk_scene_unpressed and key.startswith("scene:"):
             return (
                 f"the engine was started again during the run (pid {start.pid} -> {end.pid}); "
                 "the scene journal lives in the engine and does not survive it"
@@ -825,10 +926,22 @@ def check_undo(epilogue: Epilogue) -> dict[str, Any]:
         for kind, entry in kinds.items()
         if any(control and control.get("found") for control in entry.values())
     }
+    epilogue.scene_undo_remaining = inspector_undo_depth(end.journal)
     budget_end = time.monotonic() + UNDO_BUDGET_S
     started = time.perf_counter()
     undone = epilogue.press_all("undo", budget_end)
     result["undo"] = undone
+    walk_restarts = [entry for entry in undone["log"] if entry.get("engine_started_again")]
+    if walk_restarts:
+        result["undo_started_again"] = [entry["engine_started_again"] for entry in walk_restarts]
+        walk_scene_unpressed = any(entry.get("scene_undo_unpressed_before_restart") for entry in walk_restarts)
+        if not walk_scene_unpressed:
+            walk_restart_reason = (
+                f"the engine was started again during the Undo walk ({walk_restarts[0]['engine_started_again']}); "
+                "the scene journal lives in the engine and does not survive it")
+        else:
+            undone["notes"].append("scene: Undo was pressable but unconsumed before the engine restart; "
+                                   "scene keys remain compared")
     after_undo = epilogue.state(journal=True)
     result["undo_s"] = round(time.perf_counter() - started, 1)
     if after_undo is None:
@@ -880,7 +993,7 @@ def check_undo(epilogue: Epilogue) -> dict[str, Any]:
         reasons.append(f"what is left is exactly what the engine was started again with at "
                        f"step {epilogue.cut['step']}: no Undo reaches back past that start")
     incomplete = [note for walk in (undone, redone) for note in walk.get("notes", [])
-                  if "stopped at the time budget" in note]
+                  if "stopped at the time budget" in note or "restart_history_wait_timeout" in note]
     if incomplete:
         # An interrupted traversal did not establish the invariant, even if
         # its final snapshots happen to match. A known product finding must

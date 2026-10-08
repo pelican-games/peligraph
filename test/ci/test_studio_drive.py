@@ -765,5 +765,199 @@ class QD1InvariantTest(unittest.TestCase):
 
 
 
+
+class UD2RestartHistoryTest(unittest.TestCase):
+    """The controls may all be off while surviving histories read the engine again."""
+
+    def restarting_walk(self, step="undo", *, never_ready=False):
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "restart"})
+        clock = {"now": 0.0}
+        state = {"pid": 7, "graph": 2, "render": 1, "materials": 1, "restarted": False}
+        requests = []
+
+        def histories():
+            kinds = {}
+            for kind, ready_at in (("graph", 3.0), ("render", 4.0), ("materials", 5.0)):
+                loaded = not state["restarted"] or (not never_ready and clock["now"] >= ready_at)
+                kinds[kind] = {
+                    step: {"found": True, "enabled": loaded and state[kind] > 0,
+                           "tooltip": f"{step} {kind} {state[kind]}"},
+                    ("redo" if step == "undo" else "undo"): {
+                        "found": True, "enabled": loaded and kind != "materials",
+                        "tooltip": "inverse"},
+                }
+            return kinds
+
+        def call(request, timeout=30.0):
+            requests.append((dict(request), timeout, clock["now"]))
+            if request["cmd"] == "text":
+                return {"ok": True, "result": {"text": ""}}
+            self.assertEqual(request["cmd"], "history")
+            if request.get("kind"):
+                kind = request["kind"]
+                self.assertTrue(histories()[kind][step]["enabled"])
+                state[kind] -= 1
+                if not state["restarted"]:
+                    state.update(pid=8, restarted=True)
+            return {"ok": True, "result": {"kinds": histories()}}
+
+        epilogue.call = call
+        epilogue.signature = lambda: (studio_invariants.canonical(histories()),
+                                      str([state[k] for k in ("graph", "render", "materials")]), state["pid"])
+        epilogue.settle = lambda before: epilogue.signature()
+
+        def sleep(seconds):
+            clock["now"] += seconds
+
+        return epilogue, state, clock, requests, sleep
+
+    def test_off_histories_after_restart_are_consumed_when_the_panels_finish_reading(self):
+        epilogue, state, clock, requests, sleep = self.restarting_walk()
+        with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+              mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+            result = epilogue.press_all("undo", 40.0)
+        self.assertEqual(result["sequence"], ["graph", "graph", "render", "materials"])
+        self.assertEqual([state[k] for k in ("graph", "render", "materials")], [0, 0, 0])
+        self.assertEqual(result["notes"], [])
+        self.assertTrue(result["log"][0]["restart_history_ready"])
+        resumed = [now for req, _, now in requests if req.get("kind")][1]
+        self.assertGreaterEqual(resumed, 6.0)  # the last panel loaded at 5, then was stable
+
+    def test_reverse_redo_also_waits_after_a_restart(self):
+        epilogue, state, clock, _, sleep = self.restarting_walk("redo")
+        with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+              mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+            result = epilogue.redo_in_reverse({"sequence": ["graph", "graph"]}, 40.0,
+                                             drain_remaining=False)
+        self.assertEqual(result["sequence"], ["graph", "graph"])
+        self.assertEqual(state["graph"], 0)
+        self.assertTrue(result["log"][0]["restart_history_ready"])
+
+    def test_restart_wait_timeout_is_named_and_never_extends_the_walk_budget(self):
+        for deadline, expected_elapsed in ((40.0, 2.0), (0.7, 0.7)):
+            with self.subTest(deadline=deadline):
+                epilogue, state, clock, requests, sleep = self.restarting_walk(never_ready=True)
+                with (mock.patch.object(studio_invariants, "RESTART_HISTORY_WAIT_S", 2.0),
+                      mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+                      mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+                    result = epilogue.press_all("undo", deadline)
+                self.assertAlmostEqual(clock["now"], expected_elapsed)
+                self.assertEqual(result["sequence"], ["graph"])
+                self.assertEqual(state["graph"], 1)
+                self.assertFalse(result["log"][0]["restart_history_ready"])
+                self.assertIn("undo: restart_history_wait_timeout", result["notes"][0])
+                self.assertIn("pid 7 -> 8", result["notes"][0])
+                for request, timeout, now in requests:
+                    if request == {"cmd": "history"} and now > 0:
+                        self.assertLessEqual(timeout, expected_elapsed - now + 1e-9)
+
+    def test_readiness_arriving_after_the_deadline_is_a_timeout(self):
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "late-reply"})
+        clock = {"now": 0.0}
+        def call(request, timeout):
+            clock["now"] += 2.0
+            return {"ok": True, "result": {"kinds": {
+                "graph": {"undo": {"found": True, "enabled": True}}}}}
+        epilogue.call = call
+        entry = {"engine_started_again": "pid 7 -> 8", "restart_histories": ["graph"]}
+        notes = []
+        with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+              mock.patch.object(studio_invariants.time, "sleep")):
+            self.assertFalse(epilogue.wait_after_restart(entry, "undo", 1.0, notes))
+        self.assertIn("restart_history_wait_timeout", notes[0])
+
+    def test_timeout_cannot_pass_even_when_the_documents_match(self):
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "timeout"})
+        epilogue.start = project_state({}, {})
+        epilogue.state = mock.Mock(return_value=epilogue.start)
+        epilogue.history = lambda: {}
+        epilogue.close_graph_drafts = lambda: []
+        epilogue.press_all = mock.Mock(return_value={
+            "presses": {}, "sequence": [], "log": [],
+            "notes": ["undo: restart_history_wait_timeout after 30 s (pid 7 -> 8)"]})
+        epilogue.redo_in_reverse = mock.Mock(return_value={
+            "presses": {}, "sequence": [], "log": [], "notes": []})
+        result = studio_invariants.check_undo(epilogue)
+        self.assertEqual(result["status"], "red")
+        self.assertTrue(result["check_error"])
+        self.assertIn("restart_history_wait_timeout", result["reason"])
+
+    def scene_comparison(self, *, pressable=False, consumed=False, pending=1,
+                         render_diff=False, restarted_during_run=False):
+        def reading(pid, scene_value, render_value, journal=None):
+            return studio_invariants.ProjectState({
+                "engine_ready": True, "engine_process_id": pid,
+                "rpc": {"export_scene_snapshot": {
+                    "semantic_scene_bytes": '{"objects": [%d]}' % scene_value,
+                    "object_count": scene_value},
+                    "get_render_documents": {"documents": [
+                        {"reference": "main.json", "content": '{"nodes": [%d]}' % render_value}]},
+                    "query_journal": journal}})
+        records = [{"actor_id": 1, "actor_display_name": studio_invariants.INSPECTOR_ACTOR,
+                    "operation_kind": "edit"} for _ in range(pending)]
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "scene"})
+        epilogue.start = reading(6 if restarted_during_run else 7, 0, 0)
+        end = reading(7, 1, 1, {"records": records})
+        after_scene = [reading(7, 0, 1, {"records": records[:-1]})] if consumed else []
+        epilogue.state = mock.Mock(side_effect=[end, *after_scene,
+            reading(8, 1, 1 if render_diff else 0), reading(8, 1, 1)])
+        epilogue.history = lambda: {
+            "graph": {"undo": {"found": True, "enabled": True}},
+            "scene": {"undo": {"found": True, "enabled": pressable}}}
+        epilogue.close_graph_drafts = lambda: []
+        epilogue.signature = lambda: ("before-history", "before-documents", 7)
+        epilogue.settle = mock.Mock(side_effect=(
+            [("history", "scene-undone", 7), ("history", "graph-undone", 8)] if consumed
+            else [("history", "graph-undone", 8)]))
+        epilogue.call = mock.Mock(return_value={"ok": True, "result": {"text": ""}})
+        def walk(step, deadline):
+            log, sequence, notes = [], [], []
+            if consumed:
+                self.assertEqual(epilogue.press_once("scene", step, log, notes), "moved")
+                sequence.append("scene")
+            self.assertEqual(epilogue.press_once("graph", step, log, notes), "moved")
+            sequence.append("graph")
+            return epilogue.pressed_summary(log, sequence, notes)
+        epilogue.press_all = walk
+        epilogue.redo_in_reverse = mock.Mock(return_value={
+            "presses": {}, "sequence": [], "log": [], "notes": []})
+        return studio_invariants.check_undo(epilogue)
+
+    def test_restart_inside_undo_exempts_only_scene_keys_and_names_the_walk(self):
+        result = self.scene_comparison(render_diff=True)
+        self.assertEqual(result["status"], "red")
+        self.assertEqual([entry["key"] for entry in result["undo_differs"]], ["render:main.json"])
+        self.assertEqual([entry["key"] for entry in result["undo_skipped"]],
+                         ["scene:(answer)", "scene:(semantic)"])
+        for entry in result["undo_skipped"]:
+            self.assertIn("during the Undo walk (pid 7 -> 8)", entry["reason"])
+            self.assertIn("scene journal lives in the engine", entry["reason"])
+        self.assertEqual(self.scene_comparison()["status"], "green")
+
+    def test_pressable_unconsumed_scene_undo_before_restart_stays_red(self):
+        for restarted in (False, True):
+            with self.subTest(restarted_during_run=restarted):
+                result = self.scene_comparison(pressable=True, restarted_during_run=restarted)
+                self.assertEqual(result["status"], "red")
+                self.assertEqual([entry["key"] for entry in result["undo_differs"]],
+                                 ["scene:(answer)", "scene:(semantic)"])
+                self.assertEqual(result["undo_skipped"], [])
+                self.assertTrue(result["undo"]["log"][0]["scene_undo_unpressed_before_restart"])
+
+    def test_one_scene_press_does_not_hide_another_unconsumed_transaction(self):
+        result = self.scene_comparison(pressable=True, consumed=True, pending=2)
+        self.assertEqual(result["status"], "red")
+        self.assertEqual(result["undo_skipped"], [])
+        self.assertTrue(result["undo"]["log"][-1]["scene_undo_unpressed_before_restart"])
+
+    def test_consumed_scene_undo_and_empty_journal_are_not_unpressed_history(self):
+        result = self.scene_comparison(pressable=True, consumed=True)
+        self.assertEqual(result["status"], "green")
+        self.assertNotIn("scene_undo_unpressed_before_restart", result["undo"]["log"][-1])
+        result = self.scene_comparison(pressable=True, pending=0)
+        self.assertEqual(result["status"], "green")
+        self.assertEqual(len(result["undo_skipped"]), 2)
+
+
 if __name__ == "__main__":
     unittest.main()
