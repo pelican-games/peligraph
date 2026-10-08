@@ -84,8 +84,18 @@ A step is either a **command**, sent to Studio as-is:
      "name": "pelican.graphCanvasView::graph_value_pill#left/gain"}
 
 optionally with `"expect_error": "automation.widget_missing@1"`, which turns the
-step green only when the command is refused with exactly that code; or an
-**expectation**, which issues the command it needs and compares:
+step green only when the command is refused with exactly that code.
+
+For `click`, `double_click`, `action`, `select`, and `history` with an `undo` or
+`redo` step, the driver waits when Studio refuses the operation with
+`automation.bad_request@1` saying the target is disabled. It resends the same
+command every 100 ms for up to 15 seconds, stopping as soon as it succeeds.
+Only these pre-operation refusals are retried; an accepted operation is sent
+once. A step with `expect_error` never waits, and other refusals fail immediately.
+The step's report records `waited_for_enabled_ms` when this wait was needed;
+on failure, the reason includes the last refusal and the time waited (FX-7).
+
+An **expectation** issues the command it needs and compares:
 
 | `expect`      | fields                             | passes when                                  |
 |---------------|------------------------------------|----------------------------------------------|

@@ -57,6 +57,10 @@ AUDIO_BACKEND_VARIABLE = "PELICAN_AUDIO_BACKEND"
 # a top-level "viewport": [width, height], or "viewport": null to leave the
 # viewport to the layout (one that checks the layout itself).
 DEFAULT_VIEWPORT = (720, 450)
+# FX-7: only refusals made before an operation can be safely retried.
+ENABLED_WAIT_TIMEOUT_S = 15.0
+ENABLED_WAIT_POLL_S = 0.1
+_ENABLED_WAIT_COMMANDS = frozenset({"click", "double_click", "action", "select", "history"})
 
 
 class AutomationError(RuntimeError):
@@ -661,6 +665,7 @@ class Run:
         detail: str = "",
         started: float = 0.0,
         screenshot: str | None = None,
+        waited_for_enabled_ms: int | None = None,
     ) -> dict[str, Any]:
         index = len(self.steps) + 1
         # perf_counter uses the high-resolution performance clock on Windows;
@@ -681,6 +686,8 @@ class Run:
             "response": response,
             "detail": detail,
         }
+        if waited_for_enabled_ms is not None:
+            entry["waited_for_enabled_ms"] = waited_for_enabled_ms
         if screenshot:
             entry["screenshot"] = screenshot
         self.steps.append(entry)
@@ -766,15 +773,59 @@ def command_of(step: dict[str, Any]) -> dict[str, Any]:
 _META_KEYS = {"label", "expect", "expect_error", "note", "wait_s"}
 
 
+def _disabled_operation(request: dict[str, Any], reply: dict[str, Any]) -> bool:
+    """Recognise only Studio's pre-operation disabled refusals, not other errors."""
+    if request.get("cmd") not in _ENABLED_WAIT_COMMANDS or reply.get("ok"):
+        return False
+    if request.get("cmd") == "history" and request.get("step") not in {"undo", "redo"}:
+        return False
+    error = reply.get("error") or {}
+    if error.get("code") != "automation.bad_request@1":
+        return False
+    message = error.get("message")
+    return isinstance(message, str) and (
+        message == "the window under the point is disabled"
+        or (
+            message.startswith(('the widget named "', 'the action named "', 'the action "'))
+            and message.endswith('" is disabled')
+        )
+    )
+
+
 def run_command_step(run: Run, step: dict[str, Any], label: str) -> bool:
     started = time.perf_counter()
     request = command_of(step)
     expected_error = step.get("expect_error")
+    timeout = float(step.get("wait_s", 180))
+    wait_started = None
+    waited_for_enabled_ms = None
+    reply = None
     try:
-        reply = run.call(request, timeout=float(step.get("wait_s", 180)))
+        reply = run.call(request, timeout=timeout)
+        if "expect_error" not in step:
+            while _disabled_operation(request, reply):
+                if wait_started is None:
+                    wait_started = time.monotonic()
+                remaining = ENABLED_WAIT_TIMEOUT_S - (time.monotonic() - wait_started)
+                if remaining <= 0:
+                    break
+                time.sleep(min(ENABLED_WAIT_POLL_S, remaining))
+                # Sleep and channel calls can take longer than requested. Never
+                # resend after the deadline, even if the last refusal was disabled.
+                remaining = ENABLED_WAIT_TIMEOUT_S - (time.monotonic() - wait_started)
+                if remaining <= 0:
+                    break
+                reply = run.call(request, timeout=min(timeout, remaining))
+        if wait_started is not None:
+            waited_for_enabled_ms = round((time.monotonic() - wait_started) * 1000)
     except AutomationError as error:
+        detail = str(error)
+        if wait_started is not None:
+            waited_for_enabled_ms = round((time.monotonic() - wait_started) * 1000)
+            detail += f"; waited_for_enabled_ms={waited_for_enabled_ms}; last reply: {reply}"
         run.record(
-            "cmd", label, ok=False, request=request, detail=str(error), started=started
+            "cmd", label, ok=False, request=request, detail=detail, started=started,
+            response=reply, waited_for_enabled_ms=waited_for_enabled_ms,
         )
         return False
     if expected_error:
@@ -814,15 +865,22 @@ def run_command_step(run: Run, step: dict[str, Any], label: str) -> bool:
         return True
     if not reply.get("ok"):
         error = reply.get("error") or {}
+        detail = f"{error.get('code', 'error')}: {error.get('message', '')}"
+        if waited_for_enabled_ms is not None:
+            detail += (
+                f"; waited_for_enabled_ms={waited_for_enabled_ms}"
+                f" (limit {ENABLED_WAIT_TIMEOUT_S * 1000:.0f} ms)"
+            )
         run.record(
             "cmd",
             label,
             ok=False,
             request=request,
             response=reply,
-            detail=f"{error.get('code', 'error')}: {error.get('message', '')}",
+            detail=detail,
             started=started,
             screenshot=run.capture(f"step{len(run.steps) + 1}_failure"),
+            waited_for_enabled_ms=waited_for_enabled_ms,
         )
         return False
     if request.get("cmd") == "screenshot":
@@ -832,7 +890,10 @@ def run_command_step(run: Run, step: dict[str, Any], label: str) -> bool:
     waited = (reply.get("result") or {}).get("waited_ms") if isinstance(reply.get("result"), dict) else None
     if request.get("cmd") == "select" and isinstance(waited, (int, float)) and waited > 1000:
         run.warnings.append(f'"{label}": select waited {waited:.0f} ms for its entry')
-    run.record("cmd", label, ok=True, request=request, response=reply, started=started)
+    run.record(
+        "cmd", label, ok=True, request=request, response=reply, started=started,
+        waited_for_enabled_ms=waited_for_enabled_ms,
+    )
     return True
 
 

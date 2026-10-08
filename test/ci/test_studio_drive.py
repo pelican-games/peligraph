@@ -33,6 +33,181 @@ class StudioDriveTimingTest(unittest.TestCase):
                 (measured["finished_perf_s"] - measured["started_perf_s"]) * 1000, 0.25)
 
 
+class StudioDriveEnabledWaitTest(unittest.TestCase):
+    """FX-7: retry only refused operations, within one enabled-wait budget."""
+
+    @staticmethod
+    def refused(message: str, code: str = "automation.bad_request@1") -> dict:
+        return {"ok": False, "error": {"code": code, "message": message}}
+
+    def drive(self, step: dict, answers, *, oversleep: float = 0.0):
+        clock = 0.0
+
+        def sleep(seconds: float) -> None:
+            nonlocal clock
+            clock += seconds + oversleep
+
+        with tempfile.TemporaryDirectory() as directory:
+            run = studio_drive.Run({"name": "enabled_wait"}, Path(directory))
+            run.channel = mock.Mock(spec=studio_drive.Channel)
+            run.channel.send.side_effect = answers
+            run.capture = mock.Mock(return_value="failure.png")
+            with (
+                mock.patch.object(studio_drive.time, "monotonic", side_effect=lambda: clock),
+                mock.patch.object(studio_drive.time, "sleep", side_effect=sleep) as sleeper,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                succeeded = studio_drive.run_command_step(run, step, "operation")
+            return succeeded, run, sleeper
+
+    def test_disabled_operations_retry_until_success_and_record_wait(self) -> None:
+        cases = [
+            ({"cmd": "click", "name": "x"}, 'the widget named "x" is disabled'),
+            ({"cmd": "click", "name": "x"}, 'the action named "x" is disabled'),
+            ({"cmd": "click", "point": [2, 3]}, 'the window under the point is disabled'),
+            ({"cmd": "double_click", "name": "x"}, 'the widget named "x" is disabled'),
+            ({"cmd": "action", "text": "Add loop"}, 'the action "Add loop" is disabled'),
+            ({"cmd": "select", "name": "x", "text": "row"}, 'the widget named "x" is disabled'),
+            ({"cmd": "history", "kind": "graph", "step": "undo"}, 'the widget named "x" is disabled'),
+            ({"cmd": "history", "kind": "graph", "step": "redo"}, 'the action named "x" is disabled'),
+        ]
+        success = {"ok": True, "result": {"pressed": "x"}}
+        for request, message in cases:
+            with self.subTest(request=request, message=message):
+                succeeded, run, sleeper = self.drive(
+                    dict(request, label="operation", note="a note", wait_s=3),
+                    [self.refused(message), self.refused(message), success],
+                )
+                self.assertTrue(succeeded)
+                self.assertEqual(run.channel.send.call_args_list, [mock.call(request, 3.0)] * 3)
+                self.assertEqual(sleeper.call_args_list, [mock.call(0.1)] * 2)
+                self.assertEqual(len(run.steps), 1)
+                self.assertEqual(run.steps[0]["waited_for_enabled_ms"], 200)
+                self.assertEqual(run.steps[0]["request"], request)
+                self.assertIs(run.steps[0]["response"], success)
+                self.assertEqual(run.failures, [])
+                run.capture.assert_not_called()
+
+    def test_enabled_operation_is_sent_only_once(self) -> None:
+        succeeded, run, sleeper = self.drive(
+            {"cmd": "click", "name": "x"}, [{"ok": True, "result": {}}],
+        )
+        self.assertTrue(succeeded)
+        run.channel.send.assert_called_once_with({"cmd": "click", "name": "x"}, 180.0)
+        sleeper.assert_not_called()
+        self.assertNotIn("waited_for_enabled_ms", run.steps[0])
+
+    def test_wait_limit_fails_with_last_refusal_and_elapsed_time(self) -> None:
+        replies = []
+
+        def refuse(request: dict, timeout: float) -> dict:
+            reply = self.refused(f'the widget named "attempt-{len(replies) + 1}" is disabled')
+            replies.append(reply)
+            return reply
+
+        with mock.patch.object(studio_drive, "ENABLED_WAIT_TIMEOUT_S", 0.25):
+            succeeded, run, sleeper = self.drive({"cmd": "click", "name": "x"}, refuse)
+        self.assertFalse(succeeded)
+        self.assertEqual(run.channel.send.call_count, 3)
+        self.assertAlmostEqual(sum(call.args[0] for call in sleeper.call_args_list), 0.25)
+        timeouts = [call.args[1] for call in run.channel.send.call_args_list]
+        self.assertAlmostEqual(timeouts[1], 0.15)
+        self.assertAlmostEqual(timeouts[2], 0.05)
+        self.assertEqual(run.steps[0]["waited_for_enabled_ms"], 250)
+        self.assertIs(run.steps[0]["response"], replies[-1])
+        self.assertIs(run.failures[0]["response"], replies[-1])
+        self.assertIn('automation.bad_request@1: the widget named "attempt-3" is disabled',
+                      run.failures[0]["reason"])
+        self.assertIn("waited_for_enabled_ms=250", run.failures[0]["reason"])
+        self.assertIn("limit 250 ms", run.failures[0]["reason"])
+        run.capture.assert_called_once()
+
+    def test_sleep_past_deadline_does_not_resend(self) -> None:
+        with mock.patch.object(studio_drive, "ENABLED_WAIT_TIMEOUT_S", 0.25):
+            succeeded, run, sleeper = self.drive(
+                {"cmd": "click", "name": "x"},
+                [self.refused('the widget named "x" is disabled')], oversleep=0.3,
+            )
+        self.assertFalse(succeeded)
+        self.assertEqual(run.channel.send.call_count, 1)
+        sleeper.assert_called_once_with(0.1)
+        self.assertEqual(run.steps[0]["waited_for_enabled_ms"], 400)
+
+    def test_expect_error_never_waits_even_when_disabled_is_expected(self) -> None:
+        for expected in ("automation.bad_request@1", "automation.widget_missing@1", "", None):
+            with self.subTest(expected=expected):
+                succeeded, run, sleeper = self.drive(
+                    {"cmd": "click", "name": "x", "expect_error": expected},
+                    [self.refused('the widget named "x" is disabled')],
+                )
+                self.assertEqual(succeeded, expected == "automation.bad_request@1")
+                run.channel.send.assert_called_once_with({"cmd": "click", "name": "x"}, 180.0)
+                sleeper.assert_not_called()
+                self.assertNotIn("waited_for_enabled_ms", run.steps[0])
+
+    def test_other_refusals_never_wait(self) -> None:
+        replies = [
+            self.refused('the widget named "x" is disabled', "automation.widget_missing@1"),
+            self.refused('no widget or drawn item is named "x"', "automation.widget_missing@1"),
+            self.refused('button must be left, right or middle'),
+            self.refused('"is disabled" names 2 actions'),
+            self.refused('the widget named "is disabled" did not keep the selected entry'),
+            self.refused('the widget named "x" is disabled: another reason'),
+        ]
+        for reply in replies:
+            with self.subTest(reply=reply):
+                succeeded, run, sleeper = self.drive({"cmd": "select", "name": "x", "text": "row"}, [reply])
+                self.assertFalse(succeeded)
+                self.assertEqual(run.channel.send.call_count, 1)
+                sleeper.assert_not_called()
+                self.assertNotIn("waited_for_enabled_ms", run.steps[0])
+                self.assertIs(run.failures[0]["response"], reply)
+
+    def test_other_refusal_after_disabled_stops_immediately(self) -> None:
+        last_reply = self.refused('no widget or drawn item is named "x"', "automation.widget_missing@1")
+        succeeded, run, sleeper = self.drive(
+            {"cmd": "click", "name": "x"},
+            [self.refused('the widget named "x" is disabled'), last_reply, {"ok": True}],
+        )
+        self.assertFalse(succeeded)
+        self.assertEqual(run.channel.send.call_count, 2)
+        sleeper.assert_called_once_with(0.1)
+        self.assertEqual(run.steps[0]["waited_for_enabled_ms"], 100)
+        self.assertIs(run.failures[0]["response"], last_reply)
+
+    def test_commands_without_pre_operation_disabled_refusals_never_retry(self) -> None:
+        for cmd in ("key", "type", "text", "drag", "drag_paced", "wheel", "move", "press", "release", "rpc"):
+            with self.subTest(cmd=cmd):
+                succeeded, run, sleeper = self.drive(
+                    {"cmd": cmd, "name": "x"}, [self.refused('the widget named "x" is disabled')],
+                )
+                self.assertFalse(succeeded)
+                self.assertEqual(run.channel.send.call_count, 1)
+                sleeper.assert_not_called()
+
+    def test_history_read_never_retries(self) -> None:
+        succeeded, run, sleeper = self.drive(
+            {"cmd": "history"}, [self.refused('the action named "x" is disabled')],
+        )
+        self.assertFalse(succeeded)
+        self.assertEqual(run.channel.send.call_count, 1)
+        sleeper.assert_not_called()
+
+    def test_transport_failure_after_disabled_is_not_resent(self) -> None:
+        last_reply = self.refused('the widget named "x" is disabled')
+        succeeded, run, sleeper = self.drive(
+            {"cmd": "click", "name": "x"}, [last_reply, studio_drive.AutomationError("pipe closed"), {"ok": True}],
+        )
+        self.assertFalse(succeeded)
+        self.assertEqual(run.channel.send.call_count, 2)
+        sleeper.assert_called_once_with(0.1)
+        self.assertEqual(run.steps[0]["waited_for_enabled_ms"], 100)
+        self.assertIs(run.failures[0]["response"], last_reply)
+        self.assertIn("pipe closed", run.failures[0]["reason"])
+        self.assertIn("waited_for_enabled_ms=100", run.failures[0]["reason"])
+        self.assertIn(str(last_reply), run.failures[0]["reason"])
+
+
 def answer_viewport_size(request: dict, timeout: float) -> dict:
     """What a Studio answers: the size it was asked for, anything else ok."""
 
