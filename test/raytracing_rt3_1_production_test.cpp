@@ -3532,6 +3532,10 @@ TEST_CASE(
     std::filesystem::create_directories(appearing_dll.parent_path());
     REQUIRE_FALSE(std::filesystem::exists(appearing_dll));
 
+    // Retire modules before static destruction: shader registration leases
+    // still consult diagnostics while their runtime generation is released.
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
     (void)configureWp374aRuntime(project.path);
     GET_MODULE(EngineLaunchConfig).game_logic_dll = appearing_dll;
     REQUIRE_FALSE(initializeConfiguredGameLogic());
@@ -3632,9 +3636,6 @@ TEST_CASE(
                     {{"scene_id", "main"}, {"name", "BehaviorHost"}})
                     .at("components") == host.at("components"));
     }
-    GET_MODULE(BehaviorAttachmentArena).deactivateAll();
-    shutdownConfiguredGameLogic();
-    GET_MODULE(VulkanManageCore).waitIdle();
 #else
     FAIL("WP375b production behavior fixture was not composed");
 #endif
