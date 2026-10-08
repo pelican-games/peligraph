@@ -393,7 +393,7 @@ GraphAttachmentWidget::~GraphAttachmentWidget() = default;
 
 void GraphAttachmentWidget::setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> hub) {
     impl_->model.publishDigest = [this, hub = std::move(hub)](const std::string &digest) {
-        if (hub) hub->publish(digest, this);
+        if (hub) hub->publishCommitted(digest, this);
     };
 }
 

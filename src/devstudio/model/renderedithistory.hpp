@@ -203,6 +203,9 @@ class RenderEditHistory {
     // The item the next Undo / Redo is about; empty when there is none.
     [[nodiscard]] std::string undoLabel() const;
     [[nodiscard]] std::string redoLabel() const;
+    // Submission order, including requests whose terminal reply is still pending.
+    // A Graph submission captures this boundary to order foreign Render entries.
+    [[nodiscard]] std::uint64_t lastSubmission() const noexcept { return next_submission_ - 1; }
     [[nodiscard]] const std::vector<Entry> &undoStack() const noexcept { return undo_; }
     [[nodiscard]] const std::vector<Entry> &redoStack() const noexcept { return redo_; }
     // The one line about the last Undo / Redo (or why it was not sent).

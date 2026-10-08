@@ -36,7 +36,11 @@ void TabEditOrder::setRenderHistory(RenderEditHistory *history) {
 
 std::uint64_t TabEditOrder::submitted(History history) {
     const auto sent = next_sent_++;
-    edits_.push_back({history, sent, 0});
+    Record record{history, sent, 0, render_ ? render_->lastSubmission() : 0, {}};
+    if (history == History::Graph && render_)
+        for (const auto &entry : render_->redoStack())
+            record.render_already_undone.push_back(entry.serial);
+    edits_.push_back(std::move(record));
     constexpr std::size_t capacity = 256;
     if (edits_.size() > capacity) edits_.erase(edits_.begin());
     return sent;
@@ -111,7 +115,27 @@ bool TabEditOrder::available(bool redo) const {
 bool TabEditOrder::move(bool redo) {
     if (!available(redo)) return false;
     const auto &record = (redo ? undone_ : edits_).back();
-    if (record.history == History::Graph) return redo ? graph_.redo() : graph_.undo();
+    if (record.history == History::Graph) {
+        if (render_) {
+            const auto &stack = redo ? render_->redoStack() : render_->undoStack();
+            // Undo visits newer submissions first; Redo visits older ones
+            // first. Use the submission boundary, never commit arrival order
+            // or a digest equality that can recur on either side of an edit.
+            const bool blocked = std::ranges::any_of(stack, [&](const RenderEditHistory::Entry &entry) {
+                return redo ? entry.submitted <= record.render_submission &&
+                                  std::ranges::find(record.render_already_undone, entry.serial) ==
+                                      record.render_already_undone.end()
+                            : entry.submitted > record.render_submission;
+            });
+            if (blocked) {
+                graph_.setEditNotice({InspectorNoticeKind::Information,
+                    redo ? "A later render edit from another panel is on top. Redo it there first, or refresh."
+                         : "A later render edit from another panel is on top. Undo it there first, or refresh."});
+                return false;
+            }
+        }
+        return redo ? graph_.redo() : graph_.undo();
+    }
     const auto &stack = redo ? render_->redoStack() : render_->undoStack();
     const auto &records = redo ? undone_ : edits_;
     // Independent documents can be observed in a different order from the
@@ -128,7 +152,6 @@ bool TabEditOrder::move(bool redo) {
                  : "A later render edit from another panel is on top. Undo it there first, or refresh."});
         return false;
     }
-    graph_.keepHistoryThroughNextDigest();
     const bool started = redo ? render_->redo() : render_->undo();
     if (!started && !render_->line().empty())
         graph_.setEditNotice({InspectorNoticeKind::Information, render_->line()});

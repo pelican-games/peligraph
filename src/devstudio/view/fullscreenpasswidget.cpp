@@ -3102,7 +3102,7 @@ struct FullscreenPassWidget::Impl {
                 submitted_kind = AuthoringRequest::none;
                 // Q-13: every other panel learns the revision this made.
                 if (digest_hub)
-                    digest_hub->publish(response.value("source_digest", Json::object())
+                    digest_hub->publishCommitted(response.value("source_digest", Json::object())
                                             .value("hex", std::string{}),
                                         &owner);
                 // RSX, decision 1: written, but the engine runs it only after

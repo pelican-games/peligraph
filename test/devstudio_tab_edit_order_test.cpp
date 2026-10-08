@@ -1,6 +1,7 @@
 #include "tabeditorder.hpp"
 #include "renderdocumentreload.hpp"
 #include "graphcomposition.hpp"
+#include "graphmodule.hpp"
 #include "renderconfigdocument.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -725,20 +726,300 @@ TEST_CASE("RT-D stale source layout refusal rereads without automatic resubmissi
 }
 
 
+// UD-5: real Graph inverse construction and real Render document restores.
+// Only the engine's transport is replaced; every write checks its current CAS.
+TEST_CASE("UD-5 Ray layout batch suspends Graph history until Render Undo and Redo",
+          "[devstudio][tab-edit-order][ud5]") {
+    Rig rig;
+    rig.content_digests = true;
+    rig.graph.refresh();
+    rig.readGraph();
+    const auto commitGraph = [&](const Request &request) {
+        REQUIRE(request.params.at("base_source_digest") == rig.digest());
+        rig.commitGraph(request);
+    };
+    const auto readCommit = [&] {
+        rig.graph.renderDocumentCommitted(rig.digest());
+        rig.graph.refresh();
+        rig.readGraph();
+    };
+    rig.history.restored = [&](const Json &, bool) { readCommit(); };
+    const auto initial = rig.document;
+    commitGraph(rig.submitGraph("before ray layout"));
+    const auto graph_side = rig.document;
+    const auto graph_record = rig.order.undoRecords().back();
+    const auto poll = rig.accept(rig.submitRender("edit_batch", false));
+    rig.document["nodes"].push_back({{"id", "ray"}, {"op", "render.compute"},
+        {"parameters", {{"shader", "project://shaders/ray"}, {"ray_tracing", true}}}});
+    rig.document["rendering"] = {{"ray_layout", {{"hit_groups", true}}}};
+    rig.commitRender(poll);
+    readCommit();
+    const auto final = rig.document;
+    REQUIRE(rig.order.undoRecords().back() == graph_record);
+    CHECK_FALSE(rig.order.canUndo());
+    CHECK_FALSE(rig.graph.undo());
+    REQUIRE(rig.history.undo());
+    rig.restore();
+    CHECK(rig.document == graph_side);
+    REQUIRE(rig.order.canUndo());
+    REQUIRE(rig.order.undo());
+    commitGraph(rig.graphRequest("edit_graph_document"));
+    CHECK(rig.document == initial);
+    REQUIRE(rig.order.redo());
+    commitGraph(rig.graphRequest("edit_graph_document"));
+    CHECK(rig.document == graph_side);
+    REQUIRE(rig.history.redo());
+    rig.restore();
+    CHECK(rig.document == final);
+    CHECK_FALSE(rig.graph.canUndo());
+    REQUIRE(rig.history.undo());
+    rig.restore();
+    REQUIRE(rig.order.undo());
+    commitGraph(rig.graphRequest("edit_graph_document"));
+    CHECK(rig.document == initial);
+}
+
+TEST_CASE("UD-5 Decompose preserves Graph Redo on both sides of the Render entry",
+          "[devstudio][tab-edit-order][ud5]") {
+    const bool restart = GENERATE(false, true);
+    const bool own = GENERATE(false, true);
+    Rig rig;
+    rig.content_digests = true;
+    rig.graph.refresh();
+    rig.readGraph();
+    const auto commitGraph = [&](const Request &request) {
+        REQUIRE(request.params.at("base_source_digest") == rig.digest());
+        rig.commitGraph(request);
+    };
+    const auto readCommit = [&] {
+        rig.graph.renderDocumentCommitted(rig.digest());
+        if (restart) {
+            rig.graph.setConnected(false);
+            rig.graph.setConnected(true);
+        } else rig.graph.refresh();
+        rig.readGraph();
+    };
+    rig.history.restored = [&](const Json &, bool) { readCommit(); };
+    const auto initial = rig.document;
+    const auto poll = rig.accept(rig.submitRender("decompose_material_pass", own));
+    rig.document["definitions"]["draws"] = {{"nodes", rig.document["nodes"]},
+                                               {"outputs", Json::object()}};
+    rig.document["nodes"] = Json::array({{{"id", "draw_loop"}, {"op", "graph.loop"},
+        {"parameters", {{"over", {{"range", {{"count", 1}}}}},
+                        {"branches", Json::array({{{"body", "draws"}}})}}}}});
+    rig.commitRender(poll);
+    readCommit();
+    const auto decomposed = rig.document;
+    REQUIRE(rig.graph.setNodeLabel("draws", "value", "Edited branch"));
+    commitGraph(rig.graphRequest("edit_graph_document"));
+    const auto final = rig.document;
+    REQUIRE(rig.order.undo());
+    commitGraph(rig.graphRequest("edit_graph_document"));
+    CHECK(rig.document == decomposed);
+    const auto graph_redo = rig.order.redoRecords();
+    REQUIRE((own ? rig.order.undo() : rig.history.undo()));
+    rig.restore();
+    CHECK(rig.document == initial);
+    if (!own) CHECK(rig.order.redoRecords() == graph_redo);
+    CHECK(rig.order.canRedo() == own);
+    CHECK_FALSE(rig.graph.redo());
+    REQUIRE((own ? rig.order.redo() : rig.history.redo()));
+    rig.restore();
+    CHECK(rig.document == decomposed);
+    REQUIRE(rig.order.canRedo());
+    REQUIRE(rig.order.redo());
+    commitGraph(rig.graphRequest("edit_graph_document"));
+    CHECK(rig.document == final);
+}
+
+
+TEST_CASE("UD-5 out-of-order Graph Undo and Redo stop before sending any restore",
+          "[devstudio][tab-edit-order][ud5]") {
+    const bool render_first = GENERATE(false, true);
+    Rig rig;
+    rig.content_digests = true;
+    rig.graph.refresh();
+    rig.readGraph();
+    const auto readCommit = [&] {
+        rig.graph.renderDocumentCommitted(rig.digest());
+        rig.graph.refresh();
+        rig.readGraph();
+    };
+    rig.history.restored = [&](const Json &, bool) { readCommit(); };
+    const auto commitGraph = [&](const Request &request) {
+        REQUIRE(request.params.at("base_source_digest") == rig.digest());
+        rig.commitGraph(request);
+    };
+    const auto initial = rig.document;
+    const auto graphEdit = [&] { commitGraph(rig.submitGraph("graph edit")); };
+    const auto renderEdit = [&] {
+        const auto poll = rig.accept(rig.submitRender("edit_render_features", false));
+        rig.document["rendering"] = {{"features", Json::array({"project://features/lighting.json"})}};
+        rig.commitRender(poll);
+        readCommit();
+    };
+    if (render_first) { renderEdit(); graphEdit(); }
+    else { graphEdit(); renderEdit(); }
+    const auto final = rig.document;
+    const auto kept = rig.order.undoRecords();
+    REQUIRE(kept.size() == 1);
+    const auto checkBlocked = [&](bool redo) {
+        rig.graph.takeRpcRequests(); // Discard read-only refreshes.
+        const auto requests = rig.requests.size();
+        const auto before = rig.document;
+        const auto undo = rig.order.undoRecords();
+        const auto undone = rig.order.redoRecords();
+        CHECK((redo ? rig.order.canRedo() : rig.order.canUndo()));
+        CHECK_FALSE((redo ? rig.order.redo() : rig.order.undo()));
+        CHECK(rig.graph.notice().message == (redo
+            ? "A later render edit from another panel is on top. Redo it there first, or refresh."
+            : "A later render edit from another panel is on top. Undo it there first, or refresh."));
+        CHECK(rig.graph.takeRpcRequests().empty());
+        CHECK(rig.requests.size() == requests);
+        CHECK(rig.document == before);
+        CHECK(rig.order.undoRecords() == undo);
+        CHECK(rig.order.redoRecords() == undone);
+    };
+    if (!render_first) {
+        checkBlocked(false);
+        REQUIRE(rig.history.undo());
+        rig.restore();
+    }
+    REQUIRE(rig.order.undo());
+    commitGraph(rig.graphRequest("edit_graph_document"));
+    if (render_first) {
+        REQUIRE(rig.history.undo());
+        rig.restore();
+    }
+    CHECK(rig.document == initial);
+    CHECK(rig.order.undoRecords().empty());
+    CHECK(rig.order.redoRecords() == kept);
+    CHECK(rig.history.undoStack().empty());
+    REQUIRE(rig.history.redoStack().size() == 1);
+    if (render_first) {
+        checkBlocked(true);
+        REQUIRE(rig.history.redo());
+        rig.restore();
+    }
+    REQUIRE(rig.order.redo());
+    commitGraph(rig.graphRequest("edit_graph_document"));
+    if (!render_first) {
+        REQUIRE(rig.history.redo());
+        rig.restore();
+    }
+    CHECK(rig.document == final);
+    CHECK(rig.order.undoRecords() == kept);
+    CHECK(rig.order.redoRecords().empty());
+    CHECK(rig.history.redoStack().empty());
+}
+
+TEST_CASE("UD-5 foreign Render barriers use submission order despite delayed commit replies",
+          "[devstudio][tab-edit-order][ud5]") {
+    const bool render_first = GENERATE(false, true);
+    Rig rig;
+    std::uint64_t poll = 0;
+    if (render_first) poll = rig.accept(rig.submitRender("edit_render_features", false));
+    const auto edit = rig.submitGraph();
+    if (!render_first) poll = rig.accept(rig.submitRender("edit_render_features", false));
+    rig.commitGraph(edit);
+    rig.commitRender(poll);
+    const auto records = rig.order.undoRecords();
+    REQUIRE(records.size() == 1);
+    CHECK(rig.order.undo() == render_first);
+    if (!render_first) {
+        CHECK(rig.graph.notice().message.find("A later render edit from another panel is on top.") == 0);
+        CHECK(rig.order.undoRecords() == records);
+        const auto requests = rig.graph.takeRpcRequests();
+        CHECK(std::ranges::none_of(requests, [](const Request &request) {
+            return request.method == "edit_graph_document";
+        }));
+    }
+}
+
+TEST_CASE("UD-5 fix2 fullscreen placement roundtrips after an older Render Undo",
+          "[devstudio][tab-edit-order][ud5][ud5-fix2]") {
+    const bool own = GENERATE(false, true);
+    Rig rig;
+    rig.content_digests = true;
+    rig.document["nodes"] = Json::array();
+    rig.document["rendering"] = {{"present", {{"shader", {{"fragment", "project://shaders/invert"}}}}}};
+    rig.graph.setConnected(false);
+    rig.graph.setConnected(true);
+    for (const auto &request : rig.graph.takeRpcRequests()) {
+        if (request.method == "get_graph_catalog")
+            rig.graph.receiveRpcResult(request.request_id,
+                Pelican::makeBuiltinGraphModuleRegistry().catalog().dump());
+        else if (request.method == "get_graph_instances") {
+            auto context = rig.document;
+            context["source_reference"] = Root;
+            context["source_digest"] = {{"hex", rig.digest()}};
+            rig.graph.receiveRpcResult(request.request_id, context.dump());
+        }
+    }
+    const auto readCommit = [&] {
+        rig.graph.renderDocumentCommitted(rig.digest());
+        rig.graph.refresh();
+        rig.readGraph();
+    };
+    rig.history.restored = [&](const Json &, bool) { readCommit(); };
+    const auto initial = rig.document;
+    const auto poll = rig.accept(rig.submitRender("edit_render_features", own));
+    rig.document["rendering"]["features"] = Json::array({"project://features/lighting.json"});
+    rig.commitRender(poll);
+    readCommit();
+    REQUIRE((own ? rig.order.undo() : rig.history.undo()));
+    rig.restore();
+    REQUIRE(rig.document == initial);
+    REQUIRE(rig.history.redoStack().size() == 1);
+    const auto old_redo = rig.history.redoStack().back().serial;
+    const auto commitGraph = [&] {
+        const auto request = rig.graphRequest("edit_graph_document");
+        CHECK(request.params.at("base_source_digest") == rig.digest());
+        rig.commitGraph(request);
+    };
+    REQUIRE(rig.graph.addNode("render.fullscreen"));
+    commitGraph();
+    REQUIRE(rig.document.at("nodes").size() == 2);
+    const auto placed = rig.document;
+    const auto serial = rig.graph.undoSerial();
+    REQUIRE(rig.order.undo());
+    commitGraph();
+    CHECK(rig.document == initial);
+    CHECK(rig.graph.redoSerial() == serial);
+    REQUIRE(rig.order.canRedo());
+    // This Render entry was already undone when the pass was placed. It
+    // is not a predecessor on the Graph edit's branch, despite its age.
+    REQUIRE(rig.history.redoStack().back().serial == old_redo);
+    const auto render_requests = rig.requests.size();
+    const bool sent = rig.order.redo();
+    INFO(rig.graph.notice().message);
+    REQUIRE(sent);
+    commitGraph();
+    CHECK(rig.document == placed);
+    CHECK(rig.document.at("nodes").size() == 2);
+    CHECK(rig.document.at("rendering") == initial.at("rendering"));
+    CHECK(rig.graph.undoSerial() == serial);
+    CHECK(rig.requests.size() == render_requests);
+}
+
 TEST_CASE("UD-6 asset-only reload preserves Graph and Render Undo and Redo",
           "[devstudio][tab-edit-order][ud6][render_reload]") {
     Rig rig;
     rig.content_digests = true;
     rig.graph.refresh();
     rig.readGraph();
+    // UD-5: a confirmed restore is announced to the Graph as MainWindow does.
+    rig.history.restored = [&](const Json &commit, bool) {
+        rig.graph.renderHistoryRestored(commit.at("source_digest").at("hex"));
+    };
     const auto initial = rig.document;
     rig.commitGraph(rig.submitGraph("authored label"));
     const auto after_graph = rig.document;
     const auto render = rig.submitRender();
     const auto render_poll = rig.accept(render);
     rig.document["rendering"] = {{"draw_sort", "state"}};
-    rig.graph.keepHistoryThroughNextDigest();
     rig.commitRender(render_poll);
+    rig.graph.renderDocumentCommitted(rig.digest());
     rig.graph.refresh();
     rig.readGraph();
     const auto after_render = rig.document;
@@ -809,6 +1090,10 @@ TEST_CASE("UD-6 asset-only reload preserves Graph and Render Undo and Redo",
 TEST_CASE("UD-6 external document reload still cuts Graph and Render histories",
           "[devstudio][tab-edit-order][ud6][render_reload]") {
     Rig rig;
+    // UD-5: a confirmed restore is announced to the Graph as MainWindow does.
+    rig.history.restored = [&](const Json &commit, bool) {
+        rig.graph.renderHistoryRestored(commit.at("source_digest").at("hex"));
+    };
     rig.commitGraph(rig.submitGraph());
     const auto render = rig.submitRender();
     rig.commitRender(rig.accept(render));

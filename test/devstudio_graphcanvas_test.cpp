@@ -5025,7 +5025,7 @@ TEST_CASE("UD-4 Graph Undo keeps its serial and inverse after refusal and a Rend
     present["input"] = {"render_material_pass__albedo"};
     present["shader"]["fragment"] = "engine://passthrough";
     ++h.generation;
-    h.client.model.keepHistoryThroughNextDigest();
+    h.client.model.renderDocumentCommitted(h.digest());
     h.client.model.refresh();
     h.refresh();
     const auto connected = h.document;

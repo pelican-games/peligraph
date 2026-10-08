@@ -24,7 +24,7 @@ RenderEditTicketClient::RenderEditTicketClient(EmbeddedViewport &viewport, QObje
                  QTimer::singleShot(ms, this, std::move(task));
              }},
             [this](const std::string &digest) {
-                if (hub_) hub_->publish(digest, context_);
+                if (hub_) hub_->publishCommitted(digest, context_);
             }) {
     edit_.changed = [this](const Outcome &outcome) {
         if (completed) completed(outcome);

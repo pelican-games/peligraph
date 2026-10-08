@@ -19,6 +19,12 @@ class TabEditOrder {
         History history;
         std::uint64_t sent;
         std::uint64_t serial = 0;
+        // Render submissions at the time this Graph edit was sent. Retained
+        // across Undo/Redo, independently of commit notification order.
+        std::uint64_t render_submission = 0;
+        // Entries already undone when this Graph edit was submitted are on
+        // an older branch, not prerequisites for replaying this edit.
+        std::vector<std::uint64_t> render_already_undone;
         bool operator==(const Record &) const = default;
     };
 

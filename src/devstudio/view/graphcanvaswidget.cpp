@@ -6769,13 +6769,13 @@ struct GraphCanvasWidget::Impl {
         // this tab reads the document, the plan and the context again.
         const auto digest = response.value("source_digest", nlohmann::json::object())
                                 .value("hex", std::string{});
-        if (digest_hub && !digest.empty()) digest_hub->publish(digest, &view);
+        model.renderDocumentCommitted(digest);
+        if (digest_hub && !digest.empty()) digest_hub->publishCommitted(digest, &view);
         // RSX, decision 1: a pass edit the engine can run only after a
         // restart restarts it, as the tab's own graph edits do (GL-1b).
         if (const auto completion = readRenderEditCompletion(response);
             completion.restart_required) {
             model.setEditNotice({InspectorNoticeKind::Information, completion.restart_line});
-            model.keepHistoryThroughNextDigest();
             showNotice();
             if (engine_restart_action) {
                 restart_asked = true;
@@ -6787,7 +6787,6 @@ struct GraphCanvasWidget::Impl {
                              pass_edit_notice.empty() ? std::string{"Pass inputs saved."}
                                                       : pass_edit_notice});
         // RU-1: the tab's Undo takes this back first.
-        model.keepHistoryThroughNextDigest();
         if (plan_commit_action) plan_commit_action();
         model.refresh();
         // GL-5b: the target is waited for among the context's (followNewTarget).
@@ -7529,8 +7528,8 @@ struct GraphCanvasWidget::Impl {
     void foldEditCommitted(const nlohmann::json &response, const std::string &line) {
         const auto digest = response.value("source_digest", nlohmann::json::object())
                                 .value("hex", std::string{});
-        if (digest_hub && !digest.empty()) digest_hub->publish(digest, &view);
-        model.keepHistoryThroughNextDigest();
+        model.renderDocumentCommitted(digest);
+        if (digest_hub && !digest.empty()) digest_hub->publishCommitted(digest, &view);
         if (const auto completion = readRenderEditCompletion(response);
             completion.restart_required) {
             model.setEditNotice({InspectorNoticeKind::Information, completion.restart_line});
@@ -10566,10 +10565,14 @@ void GraphCanvasWidget::setOpenRayLayout(std::function<void()> open) {
 void GraphCanvasWidget::setRenderConfigDigest(
     std::shared_ptr<RenderConfigDigest> digest) {
     impl_->digest_hub = std::move(digest);
-    if (impl_->digest_hub)
+    if (impl_->digest_hub) {
+        impl_->digest_hub->subscribeCommitted(this, [impl = impl_.get()](const std::string &moved) {
+            impl->model.renderDocumentCommitted(moved);
+        });
         impl_->digest_hub->subscribe(this, [impl = impl_.get()](const std::string &moved) {
             impl->documentMoved(moved);
         });
+    }
 }
 
 void GraphCanvasWidget::setTimelineScrubBlocked(const QString &reason) {

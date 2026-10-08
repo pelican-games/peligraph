@@ -4,6 +4,7 @@
 #include "projectformat.hpp"
 #include "projectpathresolver.hpp"
 #include "rendereditcompletion.hpp"
+#include "renderconfigdocument.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1463,16 +1464,14 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
             }
             return scopes;
         };
-        // GL-5g: the graph itself as the history last read it.
-        const bool same_graph = context_received_ && nodes == nodes_ &&
-                                withoutPlacement(incoming_definitions) ==
-                                    withoutPlacement(definitions_);
         const bool placement_only =
             context_received_ && failure_.kind == InspectorNoticeKind::None &&
             reported == definitions_reported_ && nodes == nodes_ &&
             root_schema == root_schema_ && source_reference == source_reference_ &&
             (layout != layout_ || incoming_definitions != definitions_) &&
             withoutPlacement(incoming_definitions) == withoutPlacement(definitions_);
+        history_graph_ = Pelican::renderConfigSourceDigest(
+            Json{{"nodes", nodes}, {"definitions", withoutPlacement(incoming_definitions)}}.dump());
         definitions_reported_ = reported;
         definitions_ = std::move(incoming_definitions);
         // UX-13b, decision 4 (engine CT-5): who runs each definition.
@@ -1485,14 +1484,17 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
         material_route_default_ = response.value("material_route_default", Json{});
         digest_ = response.value("source_digest", Json::object()).value("hex", std::string{});
         if (!history_digest_.empty() && digest_ != history_digest_) {
-            const auto restored_digest = std::exchange(render_restore_digest_, std::string{});
-            const bool restored = !restored_digest.empty() && digest_ == restored_digest;
-            const bool tab_edit = std::exchange(keep_history_through_digest_, false);
-            if ((restored || tab_edit) && same_graph)
+            const auto committed_digest = std::exchange(render_commit_digest_, std::string{});
+            if (!committed_digest.empty() && digest_ == committed_digest)
                 history_digest_ = digest_;
             else
                 clearHistory();
         }
+        // The first read of our own commit supplies the engine's actual graph,
+        // also after a restart. Render commits never rewrite this association.
+        if (digest_ == history_digest_ && !undo_.empty() && undo_.back().after_graph.empty() &&
+            undo_.back().after_source_digest == digest_)
+            undo_.back().after_graph = history_graph_;
         context_received_ = true;
         failure_ = {};
         // Q-13: the placement a moved document refused, against this one.
@@ -2766,6 +2768,7 @@ bool GraphCanvasModel::submitHistory(HistoryAction action, HistoryEntry entry) {
         for (const auto &[key, value] : history_params.items())
             if (!(route_default_unknown_ && key == "material_route_default"))
                 params[key] = value;
+    if (action == HistoryAction::Edit) entry.before_graph = history_graph_;
     pending_history_ = PendingHistory{action, std::move(entry)};
     edit_notice_ = {InspectorNoticeKind::Information, "Saving the graph change..."};
     if (action == HistoryAction::Edit && historySubmitted) historySubmitted();
@@ -2808,8 +2811,7 @@ void GraphCanvasModel::clearHistory() {
     redo_.clear();
     discardPendingHistory();
     history_digest_.clear();
-    render_restore_digest_.clear();
-    keep_history_through_digest_ = false;
+    render_commit_digest_.clear();
     if (historyCleared) historyCleared();
 }
 
@@ -2828,7 +2830,10 @@ void GraphCanvasModel::commitHistory(const Json &response) {
                                                                   : pending.entry.forward)
         if (op.is_object() && text(op, "op") == "rename_definition")
             committed_renames_[text(op, "from")] = text(op, "to");
-    if (pending.action == HistoryAction::Edit) pending.entry.serial = next_history_serial_++;
+    if (pending.action == HistoryAction::Edit) {
+        pending.entry.serial = next_history_serial_++;
+        pending.entry.after_source_digest = digest;
+    }
     const auto serial = pending.entry.serial;
     if (pending.action == HistoryAction::Undo) {
         undo_.pop_back();
@@ -2840,6 +2845,7 @@ void GraphCanvasModel::commitHistory(const Json &response) {
         if (undo_.size() > historyCapacity) undo_.erase(undo_.begin());
     }
     history_digest_ = digest;
+    render_commit_digest_.clear();
     const auto move = pending.action == HistoryAction::Edit ? HistoryMove::Push
                     : pending.action == HistoryAction::Undo ? HistoryMove::Undo : HistoryMove::Redo;
     if (historyMoved) historyMoved(serial, move, true);

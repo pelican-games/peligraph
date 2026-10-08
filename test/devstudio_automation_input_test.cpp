@@ -8,6 +8,8 @@
 // The offscreen platform is enough for that: these are Qt events, not pixels.
 
 #include "automationcommands.hpp"
+#include "graphcanvaswidget.hpp"
+#include <QGraphicsItem>
 #include "../src/devstudio/view/nodegraphics.hpp"
 #include <QFile>
 #include <QFileInfo>
@@ -1510,4 +1512,77 @@ TEST_CASE("FX-1 fold scenario waits for the automatic plan read before Refresh",
     }
     CHECK(visits == 3);
     CHECK(clicks == visits);
+}
+
+TEST_CASE("UD-5 fix2 named click reveals an off-viewport loop and updates Layers",
+          "[devstudio][automation][ud5][ud5-fix2]") {
+    (void)application();
+    using namespace PelicanStudio;
+    using Json = nlohmann::json;
+    GraphCanvasWidget widget{GraphCanvasReadCapability{}};
+    widget.resize(1100, 800);
+    widget.show();
+    auto &model = widget.model();
+    model.setConnected(true);
+    for (const auto &call : model.takeRpcRequests()) {
+        if (call.method != "get_graph_instances") continue;
+        const Json document{
+            {"source_reference", "project://passes/main.json"},
+            {"source_digest", {{"hex", "loop-selection"}}},
+            {"root_schema", "pelican.graph"},
+            {"nodes", Json::array({
+                {{"id", "render_fullscreen_4"}, {"op", "render.fullscreen"}},
+                {{"id", "loop"}, {"op", "graph.loop"},
+                 {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                                  {"branches", Json::array({{{"body", "body"}}})}}}}})},
+            {"definitions", {{"body", {{"nodes", Json::array()}, {"outputs", Json::object()}}}}},
+            {"layout", {{"nodes", {{"loop", {{"x", 4000}, {"y", -1500}}},
+                                     {"render_fullscreen_4", {{"x", 0}, {"y", 0}}}}}}}};
+        model.receiveRpcResult(call.request_id, document.dump());
+    }
+    widget.scene().repopulate();
+    widget.scene().selectNode("render_fullscreen_4");
+    auto *view = widget.findChild<QGraphicsView *>("pelican.graphCanvasView");
+    auto *layers = widget.findChild<QPushButton *>("pelican.graphCanvasLayersToggle");
+    REQUIRE(view);
+    REQUIRE(layers);
+    QApplication::processEvents();
+    view->centerOn(0, 0);
+    QGraphicsItem *loop = nullptr;
+    for (auto *item : widget.scene().items())
+        if (item->data(NodeGraphItemKindRole).toString() == "graph_node" &&
+            item->data(NodeGraphNameRole).toString() == "loop") loop = item;
+    REQUIRE(loop);
+    const auto spot = loop->data(NodeGraphHotspotRole).toPointF();
+    REQUIRE_FALSE(view->viewport()->rect().contains(view->mapFromScene(loop->mapToScene(spot))));
+    REQUIRE(layers->text().contains("Layers: render_fullscreen_4"));
+    const auto transform = view->transform();
+    AutomationHost host;
+    host.window = &widget;
+    const auto clicked = runAutomationCommand(host, request("click", {
+        {"name", "pelican.graphCanvasView::graph_node#loop"}}));
+    INFO(describe(clicked).toStdString());
+    REQUIRE(clicked.ok);
+    // Selection is immediate; the detail pane deliberately waits until the
+    // press/release gesture has finished before rebuilding its editors.
+    QElapsedTimer settled;
+    settled.start();
+    while (!layers->text().contains("Layers: loop") && settled.elapsed() < 1000)
+        QTest::qWait(5);
+    const auto point = clicked.result.toObject().value("point").toArray();
+    CHECK(view->viewport()->rect().contains(QPoint{point[0].toInt(), point[1].toInt()}));
+    CHECK(widget.scene().selectedNode() == std::optional<std::string>{"loop"});
+    CHECK(layers->text().contains("Layers: loop"));
+    CHECK(view->transform() == transform);
+    CHECK_FALSE(widget.scene().dragging());
+    // Once in view, another named click must not pan again.
+    const auto centre = view->mapToScene(view->viewport()->rect().center());
+    REQUIRE(runAutomationCommand(host, request("click", {
+        {"name", "pelican.graphCanvasView::graph_node#loop"}})).ok);
+    CHECK(view->mapToScene(view->viewport()->rect().center()) == centre);
+    // Explicit positions retain their meaning and must never auto-pan.
+    REQUIRE(runAutomationCommand(host, request("click", {
+        {"name", "pelican.graphCanvasView::graph_node#loop"},
+        {"scene", QJsonArray{0, 0}}})).ok);
+    CHECK(view->mapToScene(view->viewport()->rect().center()) == centre);
 }

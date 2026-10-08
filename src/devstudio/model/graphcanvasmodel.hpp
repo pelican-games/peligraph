@@ -1153,6 +1153,11 @@ class GraphCanvasModel {
         nlohmann::json params;
         std::uint64_t serial = 0;
         nlohmann::json inverse_params;
+        // UD-5: a render entry can temporarily replace the graph. The inverse
+        // and forward become available again only on their corresponding side.
+        std::string before_graph;
+        std::string after_graph;
+        std::string after_source_digest;
     };
     enum class HistoryAction { Edit, Undo, Redo };
     struct PendingHistory {
@@ -1185,8 +1190,8 @@ class GraphCanvasModel {
     // History belongs to exactly one committed document. A refresh showing
     // another writer's revision invalidates it instead of overwriting them.
     std::string history_digest_;
-    bool keep_history_through_digest_ = false;
-    std::string render_restore_digest_;
+    std::string render_commit_digest_;
+    std::string history_graph_;
     static constexpr std::size_t historyCapacity = 100;
     // LP-4c, decision 7: each op is inverted against the document the ops
     // before it produced, which a copy of the document is walked through.
@@ -1533,18 +1538,14 @@ class GraphCanvasModel {
     std::function<void(std::uint64_t, HistoryMove, bool)> historyMoved;
     [[nodiscard]] std::uint64_t undoSerial() const { return undo_.empty() ? 0 : undo_.back().serial; }
     [[nodiscard]] std::uint64_t redoSerial() const { return redo_.empty() ? 0 : redo_.back().serial; }
-    // GL-5g: a render edit the tab itself sends, takes back or gives again
-    // moves the root's digest and not its graph. The next read that brings
-    // another digest keeps the history when the nodes and the definitions
-    // (placement aside) are the ones the history was written against; any
-    // other change clears it, as before.
-    void keepHistoryThroughNextDigest() { keep_history_through_digest_ = true; }
-    // Render Undo/Redo from any panel may change the root without changing
-    // its graph. Preserve history only for this confirmed commit's digest
-    // and only when the next context still has the same graph.
-    void renderHistoryRestored(std::string digest) {
+    // Only a confirmed Studio commit may advance the history's CAS base.
+    // Merely observing a digest (including a file reload) grants no permission.
+    void renderDocumentCommitted(std::string digest) {
         if (!history_digest_.empty() && digest != history_digest_)
-            render_restore_digest_ = std::move(digest);
+            render_commit_digest_ = std::move(digest);
+    }
+    void renderHistoryRestored(std::string digest) {
+        renderDocumentCommitted(std::move(digest));
     }
 
     void refresh();
@@ -1769,10 +1770,12 @@ class GraphCanvasModel {
     // to hold the document still between the read and the write.
     bool canEdit() const noexcept { return canRefresh() && !digest_.empty(); }
     bool canUndo() const noexcept {
-        return canEdit() && !undo_.empty() && digest_ == history_digest_;
+        return canEdit() && !undo_.empty() && digest_ == history_digest_ &&
+               undo_.back().after_graph == history_graph_;
     }
     bool canRedo() const noexcept {
-        return canEdit() && !redo_.empty() && digest_ == history_digest_;
+        return canEdit() && !redo_.empty() && digest_ == history_digest_ &&
+               redo_.back().before_graph == history_graph_;
     }
     bool undo();
     bool redo();

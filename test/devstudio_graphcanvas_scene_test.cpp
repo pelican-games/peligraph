@@ -16,6 +16,7 @@
 #include "graphfoldgroups.hpp"
 #include "inspectormodel.hpp"
 #include "graphcomposition.hpp"
+#include "renderconfigdocument.hpp"
 #include "graphmodule.hpp"
 #include "graphpartition.hpp"
 #include "panelhelp.hpp"
@@ -23,6 +24,7 @@
 #include "studiotheme.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <nlohmann/json.hpp>
@@ -2301,6 +2303,7 @@ struct RecordedCapability {
         QByteArray body;
         // GL-1d: the material_route_default it carried beside the ops.
         QJsonValue route_default{QJsonValue::Undefined};
+        QString base_digest;
     };
     std::vector<Call> calls;
     qint64 next = 1;
@@ -2337,10 +2340,10 @@ struct RecordedCapability {
         seam.requestRenderFrame = [note](QString *) {
             return note(QStringLiteral("render_frame"));
         };
-        seam.requestEditGraphDocument = [this](const QString &, const QByteArray &ops,
+        seam.requestEditGraphDocument = [this](const QString &digest, const QByteArray &ops,
                                                const QJsonValue &route_default, QString *) {
             calls.push_back(
-                Call{QStringLiteral("edit_graph_document"), {}, 0, ops, route_default});
+                Call{QStringLiteral("edit_graph_document"), {}, 0, ops, route_default, digest});
             return next++;
         };
         seam.requestEditResult = [note](const QString &, QString *) {
@@ -6666,6 +6669,7 @@ struct RtdTab {
     std::set<qint64> tab_reads;
     std::int64_t next_history = 100000;
     int generation = 0;
+    bool content_digests = false;
     Json document;
     QAction render_undo{QStringLiteral("Undo Render Edit")};
     QAction render_redo{QStringLiteral("Redo Render Edit")};
@@ -6733,7 +6737,10 @@ struct RtdTab {
         transport.calls.push_back(std::move(call));
         return transport.next++;
     }
-    std::string digest() const { return std::string(63, 'a') + "0123456789abcdef"[generation % 16]; }
+    std::string digest() const {
+        return content_digests ? Pelican::renderConfigSourceDigest(document.dump())
+                               : std::string(63, 'a') + "0123456789abcdef"[generation % 16];
+    }
     Json snapshot() const {
         return {{"documents", Json::array({{{"reference", "project://passes/main_rendering_config.json"},
                                             {"kind", "root"}, {"digest", digest()},
@@ -15503,4 +15510,115 @@ TEST_CASE("DL-1 two paced drags return to the starting placement with two keyboa
     CHECK_FALSE(model.canUndo());
     CHECK_FALSE(scene.canUndoAny());
     CHECK(model.canRedo());
+}
+
+
+TEST_CASE("UD-5 confirmed other-panel commits retain Graph history behind the Render Undo barrier",
+          "[devstudio][graph-canvas][scene][ud5]") {
+    const auto panel = GENERATE(std::string{"features"}, std::string{"present"},
+                                std::string{"planning"});
+    RtdTab tab;
+    tab.content_digests = true;
+    tab.widget->refresh();
+    tab.readTab();
+    auto hub = std::make_shared<PelicanStudio::RenderConfigDigest>();
+    tab.widget->setRenderConfigDigest(hub);
+    const auto commitGraph = [&] {
+        const auto id = tab.transport.idOf(QStringLiteral("edit_graph_document"));
+        REQUIRE(id != 0);
+        CHECK(tab.transport.calls[static_cast<std::size_t>(id - 1)].base_digest.toStdString() == tab.digest());
+        tab.graphCommit();
+    };
+    const auto initial = tab.document;
+    tab.graphLabel();
+    const auto graph_side = tab.document;
+    const auto graph_serial = tab.widget->model().undoSerial();
+    const std::string method = panel == "features" ? "edit_render_features" : "edit_preset_pass";
+    tab.history.beforeRequest(method, {{"base_source_digest", tab.digest()}});
+    tab.history.requestSent(90000, method, {});
+    tab.readHistory();
+    REQUIRE(tab.history.receiveResult(90000, {{"status", "accepted"}, {"ticket", "other-panel"}}));
+    if (panel == "features")
+        tab.document["rendering"]["features"] = Json::array({"project://features/lighting.json"});
+    else if (panel == "present")
+        tab.document["rendering"]["present"]["input"] = Json::array({"shade__color"});
+    else
+        tab.document["rendering"]["planning"] = {{"no_alias", Json::array({"shade__color"})}};
+    ++tab.generation;
+    REQUIRE(tab.history.receiveResult(tab.lastHistory("get_edit_result").id, tab.committed()));
+    tab.readHistory();
+    hub->publishCommitted(tab.digest());
+    tab.readTab();
+    const auto final = tab.document;
+    const auto edits = tab.transport.countOf(QStringLiteral("edit_graph_document"));
+    // RT-D leaves the action enabled so a click can explain the barrier.
+    REQUIRE(tab.widget->scene().canUndoAny());
+    CHECK_FALSE(tab.widget->scene().canRedoAny());
+    tab.widget->scene().undoEdit();
+    CHECK(tab.widget->model().notice().message ==
+          "A later render edit from another panel is on top. Undo it there first, or refresh.");
+    CHECK(tab.transport.countOf(QStringLiteral("edit_graph_document")) == edits);
+    CHECK(tab.historyCount("restore_render_documents") == 0);
+    CHECK(tab.document == final);
+    CHECK(tab.widget->model().undoSerial() == graph_serial);
+    CHECK(tab.widget->model().redoSerial() == 0);
+    REQUIRE(tab.history.undoStack().size() == 1);
+    CHECK(tab.history.redoStack().empty());
+    REQUIRE(tab.render_undo.isEnabled());
+    tab.render_undo.trigger();
+    tab.finishRestore();
+    CHECK(tab.document == graph_side);
+    REQUIRE(tab.widget->scene().canUndoAny());
+    tab.widget->scene().undoEdit();
+    commitGraph();
+    CHECK(tab.document == initial);
+    CHECK_FALSE(tab.widget->scene().canUndoAny());
+    CHECK(tab.widget->model().undoSerial() == 0);
+    CHECK(tab.widget->model().redoSerial() == graph_serial);
+    REQUIRE(tab.widget->scene().canRedoAny());
+    tab.widget->scene().redoEdit();
+    commitGraph();
+    CHECK(tab.document == graph_side);
+    REQUIRE(tab.render_redo.isEnabled());
+    tab.render_redo.trigger();
+    tab.finishRestore();
+    CHECK(tab.document == final);
+    CHECK(tab.history.redoStack().empty());
+    CHECK_FALSE(tab.widget->scene().canRedoAny());
+}
+
+TEST_CASE("UD-5 an observed external digest cuts Graph history even with unchanged graph",
+          "[devstudio][graph-canvas][scene][ud5]") {
+    const bool race = GENERATE(false, true);
+    RtdTab tab;
+    auto hub = std::make_shared<PelicanStudio::RenderConfigDigest>();
+    tab.widget->setRenderConfigDigest(hub);
+    tab.graphLabel();
+    if (race) {
+        ++tab.generation;
+        hub->publishCommitted(tab.digest());
+        // The external writer wins before the committed context is read.
+    }
+    // Model an external file write followed by the engine's next document read.
+    const auto path = std::filesystem::temp_directory_path() /
+        ("pelican-ud5-external-" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()) + ".json");
+    struct Remove {
+        std::filesystem::path path;
+        ~Remove() { std::error_code error; std::filesystem::remove(path, error); }
+    } remove{path};
+    auto external = tab.document;
+    external["rendering"]["external"] = true;
+    { std::ofstream file{path}; file << external.dump(); REQUIRE(file.good()); }
+    { std::ifstream file{path}; file >> tab.document; }
+    ++tab.generation;
+    hub->publish(tab.digest());
+    tab.readTab();
+    CHECK_FALSE(tab.widget->scene().canUndoAny());
+    CHECK_FALSE(tab.widget->scene().canRedoAny());
+    CHECK_FALSE(tab.widget->model().canUndo());
+    CHECK_FALSE(tab.widget->model().canRedo());
+    const auto edits = tab.transport.countOf(QStringLiteral("edit_graph_document"));
+    tab.widget->scene().undoEdit();
+    CHECK(tab.transport.countOf(QStringLiteral("edit_graph_document")) == edits);
 }

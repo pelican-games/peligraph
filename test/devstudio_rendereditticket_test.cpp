@@ -339,7 +339,12 @@ TEST_CASE("RenderEditTicket Attachment widget schedules polls resumes unconfirme
     attachment.setRenderConfigDigest(hub);
     QObject observer;
     int publications = 0;
-    hub->subscribe(&observer, [&](const auto &) { ++publications; });
+    int committed_publications = 0;
+    hub->subscribeCommitted(&observer, [&](const auto &) { ++committed_publications; });
+    hub->subscribe(&observer, [&](const auto &) {
+        CHECK(committed_publications == 1); // History permission precedes the reread.
+        ++publications;
+    });
     QObject::connect(&attachment, &PelicanStudio::GraphAttachmentWidget::rpcRequested,
                      &attachment, [&](quint64 id, const QString &method, const QJsonObject &params) {
                          calls.push_back({id, method, params});
@@ -463,6 +468,8 @@ TEST_CASE("DL-2 unrelated RPC bytes bypass parsing and owned replies update stat
     RenderEditTicketClient client{viewport, &context};
     auto hub = std::make_shared<RenderConfigDigest>();
     client.setRenderConfigDigest(hub);
+    std::vector<std::string> committed_digests;
+    hub->subscribeCommitted(&context, [&](const auto &digest) { committed_digests.push_back(digest); });
     int completions = 0;
     client.completed = [&](const auto &outcome) {
         CHECK(outcome.kind == Kind::Committed);
@@ -507,7 +514,9 @@ TEST_CASE("DL-2 unrelated RPC bytes bypass parsing and owned replies update stat
     const auto reply = [&](qint64 id, const Json &value) {
         viewport.inspectorRpcSucceeded(id, QByteArray::fromStdString(value.dump()));
     };
+    CHECK(committed_digests.empty());
     reply(edit.id, commit());
+    CHECK(committed_digests == std::vector<std::string>{std::string(64, 'b')});
     CHECK(completions == 1);
     CHECK(hub->current() == std::string(64, 'b'));
     CHECK_FALSE(client.busy());

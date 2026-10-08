@@ -1058,6 +1058,16 @@ AutomationReply commandClick(const AutomationHost &host,
             BadRequest, QStringLiteral("unknown keyboard modifier"));
     QPoint point;
     if (!pointFor(request, target, &point, &rejected)) return rejected;
+    // A named scene item may be outside the current pan. Qt can silently
+    // drop an off-viewport press; bring its hotspot (a loop's heading, not
+    // its body) into view before sending the ordinary mouse event. Explicit
+    // coordinates still mean exactly the position the caller requested.
+    if (target.isSceneItem() && !request.contains(QStringLiteral("point")) &&
+        !request.contains(QStringLiteral("scene")) &&
+        !target.view->viewport()->rect().contains(point)) {
+        target.view->centerOn(target.view->mapToScene(point));
+        point = hotspot(target);
+    }
     const QRect where = globalRect(target);
     QWidget *receiver = pointerReceiver(target, &point);
     if (double_click)

@@ -3060,7 +3060,7 @@ struct RenderFeaturesWidget::Impl {
             response.value(QStringLiteral("source_digest")).toObject().value(QStringLiteral("hex")).toString();
         if (!digest.isEmpty()) {
             source_digest = digest;
-            if (digest_hub) digest_hub->publish(digest.toStdString(), &owner);
+            if (digest_hub) digest_hub->publishCommitted(digest.toStdString(), &owner);
         }
         if (completeEdit(response, restartAction()).restart_required) {
             chain.reset();
@@ -4071,7 +4071,7 @@ struct RenderFeaturesWidget::Impl {
         submitted_staged.reset();
         // Q-13: every other panel learns the revision this commit made.
         if (digest_hub)
-            digest_hub->publish(response.value(QStringLiteral("source_digest"))
+            digest_hub->publishCommitted(response.value(QStringLiteral("source_digest"))
                                     .toObject()
                                     .value(QStringLiteral("hex"))
                                     .toString()
