@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -323,6 +324,11 @@ void configureExplicitProject(ParsedLaunchConfig &parsed, const std::string &val
 // The time becomes a frame number here and nowhere else. `llround` is the
 // quantization: a time between two frames names the nearer one, and the engine
 // is never handed a time that falls between steps.
+// A seek replays actual rendered frames. Allow up to one hour of timeline
+// time at any fps, including ordinary music-length seeks, while refusing
+// enormous times before replay. Frame conversion is checked separately.
+constexpr double kMaxOfflineStartSeconds = 3600.0;
+
 std::uint64_t parseStartFrame(const std::string &text, double fps) {
     double seconds = 0.0;
     std::size_t consumed = 0;
@@ -335,11 +341,21 @@ std::uint64_t parseStartFrame(const std::string &text, double fps) {
         throw std::runtime_error(
             "offline.time_invalid@1: --start-time must be a finite, non-negative time in seconds: " + text);
     }
-    const auto frame = std::llround(seconds * fps);
-    if (frame < 0) {
-        throw std::runtime_error("offline.time_invalid@1: --start-time does not land on a frame: " + text);
+    const double frame_position = seconds * fps;
+    const double rounded_frame = std::round(frame_position);
+    // Check before llround: overflow / NaN and an out-of-range conversion
+    // must never reach it. double rounds LLONG_MAX up to 2^63, so reject that
+    // endpoint as well. The timeline limit applies to the input seconds,
+    // preserving the existing nearest-frame quantization within the limit.
+    if (seconds > kMaxOfflineStartSeconds ||
+        !std::isfinite(fps) || fps <= 0.0 || !std::isfinite(rounded_frame) ||
+        rounded_frame >= static_cast<double>(std::numeric_limits<long long>::max()) ||
+        !std::isfinite(1.0 / fps) || !std::isfinite(rounded_frame / fps)) {
+        throw std::runtime_error(
+            "offline.time_invalid@1: --start-time requires a representable frame, finite engine time and at most " +
+            std::to_string(kMaxOfflineStartSeconds) + " seconds: " + text);
     }
-    return static_cast<std::uint64_t>(frame);
+    return static_cast<std::uint64_t>(std::llround(frame_position));
 }
 
 ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
@@ -378,7 +394,8 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     program.add_argument("--start-time")
         .default_value(std::string{})
         .metavar("seconds")
-        .help("headless: replay up to this time, then render --frames frames from there");
+        .help("headless: replay up to this time, then render --frames frames from there (seconds <= " +
+              std::to_string(kMaxOfflineStartSeconds) + "; nearest frame)");
     program.add_argument("--size").default_value(std::string{"1280x720"}).metavar("WxH").help("headless render size");
     program.add_argument("--render-out").default_value(std::string{}).metavar("path").help("render output path");
     program.add_argument("--log-file")

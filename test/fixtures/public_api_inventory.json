@@ -103,13 +103,15 @@
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "AnimationContext",
       "signature": "Animation::Status setParameter(GameObjectId object,std::string_view name,double value)const",
-      "classification": "getter"
+      "classification": "mutator",
+      "manifest": "refuse.transaction-scope"
     },
     {
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "AnimationContext",
       "signature": "Animation::Status forceState(GameObjectId object,std::string_view state)const",
-      "classification": "getter"
+      "classification": "mutator",
+      "manifest": "refuse.transaction-scope"
     },
     {
       "header": "src/core/userpublic/gamecontext.hpp",
@@ -183,7 +185,8 @@
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "RenderContext",
       "signature": "bool emitValueGraphEvent(GameObjectId object,std::string_view input,Animation::CurvePlaybackCommand command)const",
-      "classification": "getter"
+      "classification": "mutator",
+      "manifest": "refuse.transaction-scope"
     },
     {
       "header": "src/core/userpublic/gamecontext.hpp",

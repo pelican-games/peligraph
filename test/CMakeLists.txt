@@ -3305,6 +3305,18 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_offline_start_time_headless.cmake
 )
 pelican_gpu_test_properties(offline_start_time_headless_player 300)
+# Parse-only acceptance reaches a later, named CLI error after an accepted
+# boundary. It never initializes Vulkan or waits through warm-up.
+add_test(
+    NAME offline_start_time_limits_player
+    COMMAND ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/offline_start_time_limits
+        -DLIMITS_ONLY=ON
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_offline_start_time_headless.cmake)
+set_tests_properties(offline_start_time_limits_player PROPERTIES
+    TIMEOUT 60 LABELS "cpu;contract")
 
 # PM-1b: what --start-state edit cannot be combined with, refused by name
 # while the command line is read, so no run reaches the GPU.
@@ -4131,6 +4143,13 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
         --repo-root ${CMAKE_SOURCE_DIR})
     set_property(TEST pelican_public_api_inventory APPEND PROPERTY
         LABELS "WP380b;cpu;contract")
+
+    pelican_define_python_test(
+        gpu_lease_log_cleanup
+        ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_gpu_lease_log_cleanup.py
+        --launcher $<TARGET_FILE:pelican_gpu_lease_run>
+        --work-dir ${CMAKE_BINARY_DIR}/test_artifacts/gpu_lease_log_cleanup)
+    set_tests_properties(gpu_lease_log_cleanup PROPERTIES TIMEOUT 60 LABELS "python;cpu;contract")
 
     # F-2: every FetchContent dependency has a row in the third-party notices
     # generator, so THIRD_PARTY_NOTICES.md can be regenerated when one is added.

@@ -36,6 +36,7 @@ MUTATORS = {
     "setCursorMode",
 }
 HOST_ENTRANCES = {"emit"}
+NON_MUTATING_NAMES = {("SaveContext", "loadData"), ("GameContext", "save")}
 NON_MUTATING_VOID = {"logInfo", "logWarning", "logError"}
 
 def strip_comments(text: str) -> str:
@@ -144,12 +145,14 @@ def generate(root: Path) -> dict:
         text = strip_comments((root / relative).read_text(encoding="utf-8"))
         for signature in public_functions(class_body(text, class_name)):
             name = method_name(signature)
+            # Classify the method name independently of its return type:
+            # Status, nodiscard and qualified return types do not make a
+            # state-changing API a getter. loadData reads a save slot.
             looks_mutating = (
-                name not in NON_MUTATING_VOID and (
+                name not in NON_MUTATING_VOID and (class_name, name) not in NON_MUTATING_NAMES and (
                     signature.startswith("void ") or
-                    re.match(r"(?:template<[^>]+>)?(?:static )?(?:auto|bool|GameObjectId|SoundHandle) "
-                             r"(?:set|save|create|remove|play|stop|load|random|debug|add)",
-                             signature) is not None
+                    re.match(r"(?:set|force|save|create|remove|play|stop|load|random|debug|add|emit)"
+                             r"(?:[A-Z_]|$)", name) is not None
                 )
             )
             classification = (
@@ -189,7 +192,8 @@ def main() -> int:
     encoded = json.dumps(actual, indent=2, ensure_ascii=False) + "\n"
     if args.write:
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(encoded, encoding="utf-8")
+        newline = "\r\n" if output.exists() and b"\r\n" in output.read_bytes() else "\n"
+        output.write_bytes(encoded.replace("\n", newline).encode("utf-8"))
         print(output)
         return 0
     if not output.exists() or output.read_text(encoding="utf-8") != encoded:

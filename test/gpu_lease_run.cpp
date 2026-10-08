@@ -161,6 +161,38 @@ void prepare_shader_cache_directory() {
   sweep_shader_cache_directory(directory);
 }
 
+// FX-6: a launch leaves one log in TEMP. Keep only the last 24 hours,
+// excluding this process's own log. Retention is best-effort and independent
+// of acquiring the lease (including launches with the lease disabled).
+void sweep_lease_logs() noexcept {
+  try {
+    namespace fs = std::filesystem;
+#ifdef _WIN32
+    const auto pid = GetCurrentProcessId();
+#else
+    const auto pid = getpid();
+#endif
+    const auto own_filename = lease_name() + "." + std::to_string(pid) + ".log";
+    const auto now = fs::file_time_type::clock::now();
+    constexpr auto lifetime = std::chrono::hours(24);
+    std::error_code error;
+    fs::directory_iterator it(log_directory(), error);
+    for (; !error && it != fs::directory_iterator(); it.increment(error)) {
+      std::error_code entry_error;
+      const auto path = it->path();
+      const auto filename = path.filename().string();
+      if (filename == own_filename || !filename.starts_with(kDefaultLeaseName) ||
+          !filename.ends_with(".log")) continue;
+      if (!fs::is_regular_file(it->symlink_status(entry_error)) || entry_error) continue;
+      const auto written = fs::last_write_time(path, entry_error);
+      if (entry_error || written >= now || now - written <= lifetime) continue;
+      // An open Windows log may deny deletion; that must not affect a lease.
+      fs::remove(path, entry_error);
+    }
+  } catch (...) {
+  }
+}
+
 void log_event(const std::string& name, const std::string& own,
                const char* event, long long pid) {
   std::ofstream log(log_directory() + "/" + name + "." + std::to_string(pid) + ".log",
@@ -351,6 +383,7 @@ int main(int argc, char** argv) {
     std::cerr << "usage: pelican_gpu_lease_run [--timeout-seconds N] -- <command> [args...]\n";
     return 2;
   }
+  sweep_lease_logs();
   prepare_shader_cache_directory();
   if (const char* mode = std::getenv("PELICAN_GPU_LEASE"); mode && std::strcmp(mode, "off") == 0) {
 #ifdef _WIN32
