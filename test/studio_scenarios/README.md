@@ -794,9 +794,10 @@ fires them without a popup: `pelican.graphCanvas.autoLayout`,
 ## What every scenario is held to (QD-1)
 
 Executed findings and the complete 84-case matrix are in [QD1_FINDINGS.md](QD1_FINDINGS.md).
-There are 28 ticketed `known_red` checks in 28 scenarios:
-28 Undo/Redo findings and 0 health findings. These marks retain
-observed failures, including restoration gaps whose root cause is not isolated;
+There are 17 ticketed `known_red` checks in 17 scenarios:
+17 Undo/Redo findings and 0 health findings. These marks retain
+observed failures: 13 lose the scene journal at an engine restart inside the
+Undo walk (v1), 3 are documented limits and 1 has an unsteady ordinary step;
 they are not a count of independent product defects. A mark never excuses an
 exception or an incomplete history traversal in the checker.
 

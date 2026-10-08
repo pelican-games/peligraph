@@ -1,8 +1,5 @@
 {
-  "invariants": {
-    "undo": "known_red",
-    "undo_ticket": "QD1-R35"
-  },
+  "invariants": {},
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "gui_rt_two_rays_two_misses",

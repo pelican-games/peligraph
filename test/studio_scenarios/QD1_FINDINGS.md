@@ -2,8 +2,26 @@
 
 Original inventory dated 2026-10-05. Ordinary scenario assertions passed in that 84-case inventory. The matrix preserves observed failures even when a ticketed `known_red` mark lets CTest pass.
 
-There are now **28 marks in 28 scenarios**: 28 Undo/Redo checks and 0 health checks. The original inventory had 49 marks in 46 scenarios; the October 5 follow-up resolved 16 marks, UD-1 resolved 2 more and UD-3 resolved 3 more. These are reproduction records, not a count of independent root causes. No reopen check is marked known red.
+There are now **17 marks in 17 scenarios**: 17 Undo/Redo checks and 0 health checks. The original inventory had 49 marks in 46 scenarios; the October 5 follow-up resolved 16 marks, UD-1 resolved 2 more, UD-3 resolved 3 more, and the 2026-10-08/09 rechecks resolved 11 more. The 17 that remain fall into three classes: 13 are bundle B (engine restart inside the Undo walk / scene journal, v1 by user decision on 2026-10-08), 3 are documented limits D / E / F, and 1 (R24) was not measured because an ordinary step is unsteady. These are reproduction records, not a count of independent root causes. No reopen check is marked known red.
 
+
+## UD-4 to UD-7 recheck (2026-10-08 to 2026-10-09)
+
+Fixes on develop after the UD-1 + UD-2 + UD-3 recheck below:
+
+- UD-4 (`5c0af0912`): an edit the engine accepts for a restart is checked as a start would check it before it commits.
+- UD-5 (`2d732ae39`): another panel's confirmed edit no longer wipes the Graph tab's Undo/Redo, and Graph Undo/Redo is sent in time order (RT-D), refused before sending while a newer edit from another panel is on top. Its fix2 no longer makes an old Render branch a precondition of Redo, and a named click first brings an off-screen item into view.
+- UD-6 (`f09ef4014`): an external reload that changes only images keeps the Graph and Render histories (bundle C), and the driver compares JSON documents by parsed content (bundle G).
+- UD-7 (`05c198b80`): the driver answers the unsaved-scene question (`pelican.unsavedScenePrompt`) that a restart asks during the walk with Save, and records `answered_unsaved_scene_prompt: "save"`.
+
+Results (bundle letters are those of `<作業ディレクトリ>/qd_triage_report.md`):
+
+- Full run at `33b761ecd` on 2026-10-08 (`<build>/test_artifacts/studio_scenarios/<name>/report.json`): `gui_build_curve` (R17), `gui_build_ocean` (R22), `gui_build_ocean_compute` (R23), `gui_build_rt_from_blank` (R25) and `gui_graph_only_edits` (R27) are Undo green, resolved by RT-A to RT-D and UD-1 to UD-3.
+- UD-6 runs: `gui_rt_procedural_callable` (R34), `gui_rt_two_rays_two_misses` (R35) and `gui_assets_watch_verify` (R13) are Undo green. In `gui_build_ltc` (R21) the render differences are gone and only the scene keys differ (bundle B).
+- UD-5 landing check (`<作業ディレクトリ>/ud5_work/w1_final/<name>.json`): `graph_fold_decisions` (R10), `material_pass_authoring` (R4) and `material_loop_decompose` (R42) are Undo green. `gui_build_D` (R18), `gui_build_full` (R20), `gui_settings_choose` (R36), `sockets_fix_and_show` (R44) and `input_needs_shader` (R37) return to the start on Undo, and after Redo only `scene:(answer)` / `scene:(semantic)` differ (bundle B). `gui_rt_hit_groups_from_blank` (R33) differs only in the New material files and `list_materials` (limit F). `gui_build_optimize` (R24) stops at an unsteady ordinary step before the epilogue.
+- `gui_build_C` (R16) is the same cause as bundle B (investigation). `gui_material_ray_query_from_blank` (R3, limits D and F) and `sockets_from_shader` (R45, limit E) are design limits.
+
+The eleven green marks come off. Remaining: bundle B, 13 (R5, R6, R11, R14, R15, R16, R18, R19, R20, R21, R36, R37, R44); limits D / E / F, 3 (R3, R33, R45); not measured, 1 (R24). No comparison, exemption or pixel expectation was relaxed.
 
 ## UD-1 + UD-2 + UD-3 integration recheck (2026-10-08)
 
@@ -18,7 +36,7 @@ The six remaining reports differ only in `scene:(answer)` and `scene:(semantic)`
 - Full run: 84 scenarios at `8c8752119`, 5212.34 s wall time; 38 CTest passes / 46 failures before the final inventory marks.
 - Checker corrections at `0828834f5`: seven pilot cases and 23 affected follow-up cases were rerun. The matrix uses the latest executed result for each case. This is not a claim that all 84 ran together at the final revision.
 - Final representative run at `f91453a6e`: 6/6 CTest passes in 327.25 s; four Undo and one health result remain explicitly `known_red`. No ordinary or reopen failure occurred. The 84 recorded outcomes also passed an offline policy audit; that audit is not a GUI rerun.
-- Ordinary assertions, reopen and health are separate from Undo/Redo. `red` below means the invariant detected the recorded difference; `N/A` has a stated scope reason.
+- Ordinary assertions, reopen and health are separate from Undo/Redo. `red` below means the invariant detected the recorded difference; `N/A` has a stated scope reason. The letter after `red` is the class used in Remaining findings (B, D, E, F); `not measured` means the epilogue did not run.
 - Each case is reproducible with `ctest --test-dir <build> -C Debug -R "^studio_scenario_<scenario>$" -j1 --output-on-failure`. Reports are in `<build>/test_artifacts/studio_scenarios/<scenario>/report.json`; invariant steps immediately follow the ordinary scenario steps.
 - The full-run and targeted-run reports/logs were archived before final mark verification. The integration report records their local locations.
 - Studio CPU: 774/774. Python CI: 79/79 including the final incomplete-traversal guard. Nine isolated Python mutations each failed the relevant test and passed after restoration. This was not a mutation campaign across every C++ command. No golden was regenerated.
@@ -29,15 +47,15 @@ Production fixes cover project-scoped Material history, the Materials dock's mis
 
 Validation is targeted, not a second all-84 run: 125 Graph/Materials/Render-history CPU cases, 81 Python CI cases, engine procedural-record and shader regression cases, GPU late-model teardown and shader-retirement cases, and the dated GUI rechecks in the matrix. Earlier in the fix series the complete Studio CPU set passed 776/776. Local reports/logs are archived in `<作業ディレクトリ>/studio_fixes_final_evidence.zip`; intermediate diagnostic evidence is in `<作業ディレクトリ>/studio_fixes_mid_evidence.zip` and `<作業ディレクトリ>/studio_fixes_lifetime_evidence.zip`.
 
-Remaining marks are still executable reproductions. They include intentional route-contract refusals, the documented value-only Assets Undo, and Graph/Render ordering or missing-inverse cases that are not resolved by these fixes. A CTest pass with `known_red` is not an invariant pass.
+On 2026-10-05 the remaining marks were still executable reproductions. They included intentional route-contract refusals, the documented value-only Assets Undo, and Graph/Render ordering or missing-inverse cases that these fixes did not resolve; see the rechecks above for their current classification. A CTest pass with `known_red` is not an invariant pass.
 
 ## All 84 scenarios
 
 | Scenario | Ordinary | Undo / Redo | Reopen | Health | Tickets | Evidence |
 |---|---|---|---|---|---|---|
-| add_primitive_object | pass | red | green | green | QD1-R5 | integration 2026-10-08 14:12 |
+| add_primitive_object | pass | red (B) | green | green | QD1-R5 | integration 2026-10-08 14:12 |
 | canvas_zoom_pan | pass | green | green | green |  | full run |
-| deferred_loop_from_scratch | pass | red | green | green | QD1-R6 | integration 2026-10-08 14:13 |
+| deferred_loop_from_scratch | pass | red (B) | green | green | QD1-R6 | integration 2026-10-08 14:13 |
 | engine_window_embedded | pass | green | green | green |  | full run |
 | forward_loop_from_scratch | pass | green | green | green |  | full run |
 | frameplan_edit_roundtrip | pass | green | green | green |  | full run |
@@ -46,10 +64,10 @@ Remaining marks are still executable reproductions. They include intentional rou
 | graph_auto_layout | pass | green | green | green |  | fixes recheck 21:09 |
 | graph_canvas_zoom_pan | pass | green | green | green |  | full run |
 | graph_edit_roundtrip | pass | green | green | green |  | full run |
-| graph_fold_decisions | pass | red | green | green | QD1-R10 | fixes recheck 21:28 |
+| graph_fold_decisions | pass | green | green | green |  | UD-5 landing 2026-10-08 23:46 |
 | graph_folded_features | pass | green | green | green |  | full run |
 | graph_from_blank | pass | green | green | green |  | integration 2026-10-08 14:15 |
-| graph_from_blank_forward | pass | red | green | green | QD1-R11 | integration 2026-10-08 14:15 |
+| graph_from_blank_forward | pass | red (B) | green | green | QD1-R11 | integration 2026-10-08 14:15 |
 | graph_layers_origin | pass | green | green | green |  | full run |
 | graph_loop_expand | pass | green | green | green |  | final check |
 | graph_observe_roundtrip | pass | green | green | green |  | full run |
@@ -57,32 +75,32 @@ Remaining marks are still executable reproductions. They include intentional rou
 | graph_read | pass | green | green | green |  | full run |
 | graph_reroute_tie | pass | green | green | green |  | full run |
 | graph_template_bloom | pass | green | green | green |  | full run |
-| gui_assets_watch_verify | pass | red | green | green | QD1-R13 | final check |
-| gui_build_A | pass | red | green | green | QD1-R14 | integration 2026-10-08 14:16 |
+| gui_assets_watch_verify | pass | green | green | green |  | UD-6 integration 2026-10-08 |
+| gui_build_A | pass | red (B) | green | green | QD1-R14 | integration 2026-10-08 14:16 |
 | gui_build_audio_reactive | pass | green | green | green |  | follow-up |
-| gui_build_B | pass | red | green | green | QD1-R15 | integration 2026-10-08 14:17 |
-| gui_build_C | pass | red | green | green | QD1-R16 | follow-up |
-| gui_build_curve | pass | red | green | green | QD1-R17 | full run |
-| gui_build_D | pass | red | green | green | QD1-R18 | full run |
-| gui_build_E | pass | red | green | green | QD1-R19 | integration 2026-10-08 14:18 |
-| gui_build_full | pass | red | green | green | QD1-R20 | follow-up |
-| gui_build_ltc | pass | red | green | green | QD1-R21 | full run |
+| gui_build_B | pass | red (B) | green | green | QD1-R15 | integration 2026-10-08 14:17 |
+| gui_build_C | pass | red (B) | green | green | QD1-R16 | full run 2026-10-08 19:54 |
+| gui_build_curve | pass | green | green | green |  | full run 2026-10-08 19:59 |
+| gui_build_D | pass | red (B) | green | green | QD1-R18 | UD-5 landing 2026-10-08 23:48 |
+| gui_build_E | pass | red (B) | green | green | QD1-R19 | integration 2026-10-08 14:18 |
+| gui_build_full | pass | red (B) | green | green | QD1-R20 | UD-5 landing 2026-10-08 23:50 |
+| gui_build_ltc | pass | red (B) | green | green | QD1-R21 | UD-6 integration 2026-10-08 |
 | gui_build_music | pass | green | green | green |  | full run |
-| gui_build_ocean | pass | red | green | green | QD1-R22 | full run |
-| gui_build_ocean_compute | pass | red | green | green | QD1-R23 | full run |
-| gui_build_optimize | pass | red | green | green | QD1-R24 | full run |
-| gui_build_rt_from_blank | pass | red | green | green | QD1-R25 | follow-up |
+| gui_build_ocean | pass | green | green | green |  | full run 2026-10-08 20:07 |
+| gui_build_ocean_compute | pass | green | green | green |  | full run 2026-10-08 20:11 |
+| gui_build_optimize | red (unsteady step) | not measured | not run | not run | QD1-R24 | UD-5 landing 2026-10-08 23:55 |
+| gui_build_rt_from_blank | pass | green | green | green |  | full run 2026-10-08 20:20 |
 | gui_folded_pass_edit | pass | green | green | green |  | full run |
 | gui_frameplan_delegates | pass | green | green | green |  | integration 2026-10-08 14:19 |
 | gui_graph_folded_edits | pass | green | green | green |  | full run |
 | gui_graph_new_target | pass | green | green | green |  | integration 2026-10-08 14:19 |
-| gui_graph_only_edits | pass | red | green | green | QD1-R27 | fixes recheck 21:30 |
+| gui_graph_only_edits | pass | green | green | green |  | full run 2026-10-08 20:23 |
 | gui_graph_only_edits_2 | pass | green | green | green |  | integration 2026-10-08 14:20 |
 | gui_graph_order | pass | green | green | green |  | full run |
 | gui_graph_task_delete | pass | green | green | green |  | full run |
 | gui_lower_layer_pin_freeze | pass | green | green | green |  | pilot |
 | gui_material_from_blank | pass | green | green | green |  | fixes recheck 21:31 |
-| gui_material_ray_query_from_blank | pass | red | green | green | QD1-R3 | follow-up |
+| gui_material_ray_query_from_blank | pass | red (D, F) | green | green | QD1-R3 | full run 2026-10-08 20:29 |
 | gui_material_repair | pass | green | green | green |  | fixes recheck 21:32 |
 | gui_model_from_file | pass | green | green | green |  | full run |
 | gui_node_parameters | pass | green | green | green |  | full run |
@@ -90,19 +108,19 @@ Remaining marks are still executable reproductions. They include intentional rou
 | gui_render_fallback | pass | green | green | green |  | full run |
 | gui_rt_checks | pass | green | green | green |  | fixes recheck 21:33 |
 | gui_rt_full_from_blank | pass | green | green | green |  | fixes recheck 21:34 |
-| gui_rt_hit_groups_from_blank | pass | red | green | green | QD1-R33 | follow-up |
+| gui_rt_hit_groups_from_blank | pass | red (F) | green | green | QD1-R33 | UD-5 landing 2026-10-08 23:57 |
 | gui_rt_layout_edits | pass | green | green | green |  | fixes recheck 21:35 |
-| gui_rt_procedural_callable | pass | red | green | green | QD1-R34 | fixes recheck 21:36 |
-| gui_rt_two_rays_two_misses | pass | red | green | green | QD1-R35 | fixes recheck 21:37 |
-| gui_settings_choose | pass | red | green | green | QD1-R36 | fixes recheck 21:15 |
-| input_needs_shader | pass | red | green | green | QD1-R37 | pilot |
+| gui_rt_procedural_callable | pass | green | green | green |  | UD-6 integration 2026-10-08 |
+| gui_rt_two_rays_two_misses | pass | green | green | green |  | UD-6 integration 2026-10-08 |
+| gui_settings_choose | pass | red (B) | green | green | QD1-R36 | UD-5 landing 2026-10-08 23:59 |
+| input_needs_shader | pass | red (B) | green | green | QD1-R37 | UD-5 landing 2026-10-09 00:02 |
 | lighting_pass_template | pass | green | green | green |  | fixes recheck 21:17 |
 | loop_view_axis | pass | green | green | green |  | full run |
 | loop_zone_edit | pass | green | green | green |  | fixes recheck 21:19 |
 | loop_zone_read | pass | green | green | green |  | fixes recheck 21:19 |
 | loop_zone_wire | pass | green | green | green |  | fixes recheck 21:20 |
-| material_loop_decompose | pass | red | green | green | QD1-R42 | full run |
-| material_pass_authoring | pass | red | green | green | QD1-R4 | full run |
+| material_loop_decompose | pass | green | green | green |  | UD-5 landing 2026-10-09 00:02 |
+| material_pass_authoring | pass | green | green | green |  | UD-5 landing 2026-10-09 00:03 |
 | menu_actions | pass | green | green | green |  | pilot |
 | new_blank_project | pass | green | green | green |  | full run |
 | outliner_edit_roundtrip | pass | green | green | green |  | full run |
@@ -114,8 +132,8 @@ Remaining marks are still executable reproductions. They include intentional rou
 | render_target_authoring | pass | green | green | green |  | full run |
 | render_undo_roundtrip | pass | green | green | green |  | fixes recheck 21:38 |
 | rendering_settings_from_blank | pass | green | green | green |  | pilot |
-| sockets_fix_and_show | pass | red | green | green | QD1-R44 | full run |
-| sockets_from_shader | pass | red | green | green | QD1-R45 | follow-up |
+| sockets_fix_and_show | pass | red (B) | green | green | QD1-R44 | UD-5 landing 2026-10-09 00:04 |
+| sockets_from_shader | pass | red (E) | green | green | QD1-R45 | full run 2026-10-08 21:04 |
 | theme_switch | pass | green | green | green |  | full run |
 | view_select_field | pass | green | green | green |  | full run |
 | whole_frame_first_steps | pass | green | green | green |  | full run |
@@ -125,7 +143,7 @@ Remaining marks are still executable reproductions. They include intentional rou
 The diff excerpts below come from the executed reports (expected start/end versus found). They are deliberately short; the report holds the remaining keys and first diff lines.
 
 ### QD1-R5: add_primitive_object / undo
-**Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
+**Bundle B: engine restart inside the Undo walk / scene journal (v1, user decision 2026-10-08).** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
 Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08). The scene keys remain compared and this finding remains open.
 
@@ -159,10 +177,10 @@ Reproduce through ordinary step 56, then the `undo` epilogue. Evidence: `<build>
 +       "name": "transform",
 ```
 
-The ticket remains until the scene-journal decision. No invariant exemption or pixel expectation was changed.
+The ticket remains until the scene journal is carried across a restart (v1). No invariant exemption or pixel expectation was changed.
 
 ### QD1-R6: deferred_loop_from_scratch / undo
-**Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
+**Bundle B: engine restart inside the Undo walk / scene journal (v1, user decision 2026-10-08).** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
 Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08). The scene keys remain compared and this finding remains open.
 
@@ -196,31 +214,10 @@ Reproduce through ordinary step 98, then the `undo` epilogue. Evidence: `<build>
          -0.25
 ```
 
-The ticket remains until the scene-journal decision. No invariant exemption or pixel expectation was changed.
-
-### QD1-R10: graph_fold_decisions / undo
-
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
-
-Reproduce through ordinary step 103, then the `undo` epilogue.
-
-Observed panel notices: `Unfolded fold_1: the group and its decisions are gone; the nodes stay.`.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -2,3 +2,163 @@
-  "definitions": {},
-- "nodes": [],
-+ "layout": {
-+  "nodes": {
-+   "render_fullscreen": {
-+    "x": 428,
-+    "y": 0
-```
+The ticket remains until the scene journal is carried across a restart (v1). No invariant exemption or pixel expectation was changed.
 
 ### QD1-R11: graph_from_blank_forward / undo
-**Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
+**Bundle B: engine restart inside the Undo walk / scene journal (v1, user decision 2026-10-08).** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
 Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08). The scene keys remain compared and this finding remains open.
 
@@ -254,26 +251,10 @@ Reproduce through ordinary step 69, then the `undo` epilogue. Evidence: `<build>
 +       "name": "transform",
 ```
 
-The ticket remains until the scene-journal decision. No invariant exemption or pixel expectation was changed.
-
-### QD1-R13: gui_assets_watch_verify / undo
-
-**Documented value-based Undo / strict byte check.** After exempting the manifest update that is outside Assets Undo, `project.json` still differs by bytes while its canonical JSON diff is empty; `get_project_settings` also reports a changed project digest. The Assets Undo documentation in [manual 13](../../docs/manual/13_editor.md) explicitly says that it restores values and does not restore the original digest, because the engine formats JSON with two spaces. This record is therefore not evidence of a lost setting. The strict byte check remains marked until a narrowly scoped comparison policy is chosen; do not change production values or suppress the whole project document to make it pass.
-
-Reproduce through ordinary step 46, then the `undo` epilogue.
-
-Undo differs: `file:project.json`, `get_project_settings:`.
-
-```diff
-@@ -3,3 +3,3 @@
-  "hot_reload": null,
-- "project_digest": "1f89682d9c9d93f3eb3947905ef6308b468827a3cb9d02390ff15fd9fc58ea7f"
-+ "project_digest": "6d686b445dff8e16d35888272f6cab79b08d5f0d2ca0b41a26d8cca55abbf0d6"
- }
-```
+The ticket remains until the scene journal is carried across a restart (v1). No invariant exemption or pixel expectation was changed.
 
 ### QD1-R14: gui_build_A / undo
-**Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
+**Bundle B: engine restart inside the Undo walk / scene journal (v1, user decision 2026-10-08).** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
 Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08). The scene keys remain compared and this finding remains open.
 
@@ -307,10 +288,10 @@ Reproduce through ordinary step 41, then the `undo` epilogue. Evidence: `<build>
 +       "name": "transform",
 ```
 
-The ticket remains until the scene-journal decision. No invariant exemption or pixel expectation was changed.
+The ticket remains until the scene journal is carried across a restart (v1). No invariant exemption or pixel expectation was changed.
 
 ### QD1-R15: gui_build_B / undo
-**Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
+**Bundle B: engine restart inside the Undo walk / scene journal (v1, user decision 2026-10-08).** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
 Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08). The scene keys remain compared and this finding remains open.
 
@@ -344,82 +325,50 @@ Reproduce through ordinary step 69, then the `undo` epilogue. Evidence: `<build>
 +       "name": "transform",
 ```
 
-The ticket remains until the scene-journal decision. No invariant exemption or pixel expectation was changed.
+The ticket remains until the scene journal is carried across a restart (v1). No invariant exemption or pixel expectation was changed.
 
 ### QD1-R16: gui_build_C / undo
+**Bundle B: engine restart inside the Undo walk / scene journal (v1, user decision 2026-10-08).** Full run at `33b761ecd` on 2026-10-08 (report started `2026-10-08T19:54:28`); the investigation (`<作業ディレクトリ>/qd_triage_report.md`, bundle B) found the same cause as R5 to R19. Ordinary assertions, reopen and health are green; the file and render documents return to the start and only the scene keys differ.
 
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+21 Graph Undo presses move documents. The last one returns the pipeline to blank and restarts the engine (`pid 50936 -> 39900`, `restart_history_ready: true` after 1.09 s) while the scene Undo for the Outliner's Cube (step 24) and the Inspector's intensity (step 32) is still unconsumed. The later scene press reports `Undo failed: method_unavailable - actor has no committed transaction to undo`; the scene content itself remains. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08).
+
+`undo.notes`: `scene: Undo was pressable but unconsumed before the engine restart; scene keys remain compared`
 
 Reproduce through ordinary step 164, then the `undo` epilogue.
 
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+`scene:(semantic)` (expected start versus found):
 
 ```diff
-@@ -1,6 +1,440 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "loop_body": {
-+   "nodes": [
-+    {
+@@ -44,3 +44,3 @@
+        ],
+-       "intensity": 1.0,
++       "intensity": 6,
+        "name": "light",
 ```
 
-The last same-project restart is step 21; after-Undo also differs from that restart snapshot. Only scene history is excluded solely because of restart.
-
-### QD1-R17: gui_build_curve / undo
-
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
-
-Reproduce through ordinary step 94, then the `undo` epilogue.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -2,3 +2,114 @@
-  "definitions": {},
-- "nodes": [],
-+ "nodes": [
-+  {
-+   "id": "render_fullscreen__color",
-+   "op": "render.image",
-+   "outputs": [
-```
+The ticket remains until the scene journal is carried across a restart (v1). No invariant exemption or pixel expectation was changed.
 
 ### QD1-R18: gui_build_D / undo
+**Bundle B: engine restart inside the Undo walk / scene journal (v1, user decision 2026-10-08).** UD-5 landing check on 2026-10-09 (`<作業ディレクトリ>/ud5_work/w1_final/gui_build_D.json`, started `2026-10-08T23:48:51`). Ordinary assertions, reopen and health are green. Undo returns every compared key to the start (`undo_differs` is empty).
 
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+The walk presses 6 Graph, 1 Render and 2 scene Undo. Scene Undo is pressed before the Graph Undo that removes the last material pass; that Graph Undo restarts the engine (`pid 48760 -> 38480`, the driver answers the unsaved-scene question with Save, `restart_history_ready: true` after 1.09 s). The restart drops the scene journal, including the entries already undone, so every scene Redo reports `Redo failed: method_unavailable - actor has no successful revert to redo`. After Redo only `scene:(answer)` and `scene:(semantic)` differ. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08).
 
 Reproduce through ordinary step 99, then the `undo` epilogue.
 
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+`scene:(semantic)` after Redo (expected endpoint versus found):
 
 ```diff
-@@ -1,4 +1,328 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
+@@ -50,58 +50,2 @@
+      "name": "KeyLight"
+-    },
+-    {
+-     "components": [
 ```
 
-Redo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -261,9 +261,3 @@
-    "op": "render.material_pass",
--   "outputs": [
--    "albedo",
--    "normal",
--    "material",
--    "worldpos",
--    "emissive"
-```
+The ticket remains until the scene journal is carried across a restart (v1). No invariant exemption or pixel expectation was changed.
 
 ### QD1-R19: gui_build_E / undo
-**Engine restart inside the Undo walk / scene journal.** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
+**Bundle B: engine restart inside the Undo walk / scene journal (v1, user decision 2026-10-08).** Integration measured this on 2026-10-08 (UD-1 + UD-2 + UD-3 build). Ordinary assertions, reopen and health are green; Undo is `known_red`, and Redo has no compared differences. The file and render documents return to the start; only the scene keys differ.
 
 Graph is walked before scene. Graph Undo returns the pipeline to blank and restarts the engine while scene Undo is still unconsumed. The engine loses its scene journal, so the later scene press cannot restore the start; the scene content itself remains. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08). The scene keys remain compared and this finding remains open.
 
@@ -453,167 +402,49 @@ Reproduce through ordinary step 69, then the `undo` epilogue. Evidence: `<build>
 +       "name": "transform",
 ```
 
-The ticket remains until the scene-journal decision. No invariant exemption or pixel expectation was changed.
+The ticket remains until the scene journal is carried across a restart (v1). No invariant exemption or pixel expectation was changed.
 
 ### QD1-R20: gui_build_full / undo
+**Bundle B: engine restart inside the Undo walk / scene journal (v1, user decision 2026-10-08).** UD-5 landing check on 2026-10-09 (`<作業ディレクトリ>/ud5_work/w1_final/gui_build_full.json`, started `2026-10-08T23:50:07`). Ordinary assertions, reopen and health are green. Undo returns every compared key to the start (`undo_differs` is empty).
 
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+The walk presses 32 Graph, 1 Render and 3 scene Undo. Scene Undo is pressed before the Graph Undo that removes the last material pass; that Graph Undo restarts the engine (`pid 55048 -> 54084`, the driver answers the unsaved-scene question with Save, `restart_history_ready: true` after 1.11 s). The restart drops the scene journal, including the entries already undone, so every scene Redo reports `Redo failed: method_unavailable - actor has no successful revert to redo`. After Redo only `scene:(answer)` and `scene:(semantic)` differ. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08).
 
 Reproduce through ordinary step 284, then the `undo` epilogue.
 
-Observed panel notices: `logical shadow graph node 'present' reads unknown resource 'render_fullscreen_3__color' (…`.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+`scene:(semantic)` after Redo (expected endpoint versus found):
 
 ```diff
-@@ -1,6 +1,977 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "loop_body": {
-+   "nodes": [
-+    {
+@@ -44,3 +44,3 @@
+        ],
+-       "intensity": 6,
++       "intensity": 1.0,
+        "name": "light",
 ```
+
+The ticket remains until the scene journal is carried across a restart (v1). No invariant exemption or pixel expectation was changed.
 
 ### QD1-R21: gui_build_ltc / undo
+**Bundle B: engine restart inside the Undo walk / scene journal (v1, user decision 2026-10-08).** Before UD-6, the image-only external reload at step 189 (`ltc_2.ktx2` replaced outside Studio) cut the Graph and Render histories (bundle C), so the render documents never returned. UD-6 keeps both histories across such a reload. In the UD-6 integration run on 2026-10-08 the file and render documents return to the start and only `scene:(answer)` and `scene:(semantic)` differ: the Graph Undo that removes the last material pass restarts the engine and drops the scene journal. Reopen and health are green. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08).
 
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+Reproduce through ordinary step 192, then the `undo` epilogue. The report of that run was not kept; rerun the case for a current excerpt.
 
-Reproduce through ordinary step 192, then the `undo` epilogue.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -1,4 +1,532 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
-```
-
-### QD1-R22: gui_build_ocean / undo
-
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
-
-Reproduce through ordinary step 259, then the `undo` epilogue.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -1,4 +1,634 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "loop_body": {
-+   "nodes": [
-+    {
-```
-
-### QD1-R23: gui_build_ocean_compute / undo
-
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
-
-Reproduce through ordinary step 268, then the `undo` epilogue.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -1,4 +1,635 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "loop_body": {
-+   "nodes": [
-+    {
-```
+The ticket remains until the scene journal is carried across a restart (v1). No invariant exemption or pixel expectation was changed.
 
 ### QD1-R24: gui_build_optimize / undo
+**Unsteady ordinary step; Undo not measured (2026-10-09).** In the UD-5 landing check (`<作業ディレクトリ>/ud5_work/w1_final/gui_build_optimize.json`, started `2026-10-08T23:55:04`) and on the primary build at `33b761ecd` before UD-5 (report started `2026-10-09T00:06:49`) the ordinary steps stop at report index 318, `the loop's Layers` (`Layers: render_fullscreen_4` instead of `Layers: loop`), right after the `pick the loop` click (index 317), whose effect varies with the canvas layout. The `undo` epilogue did not run, so this mark is neither confirmed nor cleared; it stays until a run reaches the epilogue. The step is listed in the engine backlog.
 
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
-
-Reproduce through ordinary step 495, then the `undo` epilogue.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -1,6 +1,1179 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "loop_body": {
-+   "nodes": [
-+    {
-```
-
-The last same-project restart is step 469; after-Undo also differs from that restart snapshot. Only scene history is excluded solely because of restart.
-
-### QD1-R25: gui_build_rt_from_blank / undo
-
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
-
-Reproduce through ordinary step 79, then the `undo` epilogue.
-
-Observed panel notices: `logical shadow graph node 'present' reads unknown resource 'render_compute__color' (rende…`.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -2,2 +2,3 @@
-  "definitions": {},
-+ "layout": {},
-  "nodes": [],
-```
-
-Redo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -2,16 +2,3 @@
-  "definitions": {},
-- "layout": {
--  "nodes": {
--   "render_compute": {
--    "x": 428,
--    "y": 0
--   },
-```
-
-### QD1-R27: gui_graph_only_edits / undo
-
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
-
-Reproduce through ordinary step 138, then the `undo` epilogue.
-
-Undo differs: `file:passes/authoring/render-targets.json`, `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`, `render:project://passes/authoring/render-targets.json`.
-
-```diff
-@@ -0,0 +1,34 @@
-+{
-+  "schema": "pelican.render_feature",
-+  "version": 1,
-+  "name": "authored_render_targets",
-+  "runtime_shader_compiler": "optional",
-+  "pelican_editor_managed": {
-+    "schema": "pelican.authored_render_fragment",
-```
-
-The last same-project restart is step 31; after-Undo also differs from that restart snapshot. Only scene history is excluded solely because of restart.
+Reproduce through ordinary step 495, then the `undo` epilogue. The last measured Undo difference (2026-10-05) was in `file:passes/main_rendering_config.json` and `render:passes/main_rendering_config.json`.
 
 ### QD1-R3: gui_material_ray_query_from_blank / undo
+**Limits D and F (documented design limits).** Full run at `33b761ecd` on 2026-10-08 (report started `2026-10-08T20:29:29`). Ordinary assertions, reopen and health are green.
 
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+D: step 57 creates a material whose surface queries the acceleration structure, and step 104 repairs the pass by turning Ray query on. Undoing that repair would leave the remaining material incompatible, so the engine refuses it twice (`Material pass 'render_material_pass' uses an acceleration structure but does not declare…`), and the Render `Undo Edit pass present` behind it reports `changed since`. The repair can be undone only after the material is removed or changed.
+
+F: New material is not in Materials Undo by design (`test/devstudio_materials_test.cpp:701`; [README](README.md), the Materials dock section), so the material file, its registry entry and `list_materials` remain. Only the Material row assignment moves (1 press); a Material row Undo has no Redo, so the Redo half is not covered.
 
 Reproduce through ordinary step 118, then the `undo` epilogue.
 
-Observed panel notices: `Material pass 'render_material_pass' uses an acceleration structure but does not declare…`.
-
-Undo differs: `file:assets/asset_data.json`, `file:materials/material.material.json`, `file:passes/main_rendering_config.json`, `list_materials:`, `render:passes/main_rendering_config.json`.
+Undo differs: `file:assets/asset_data.json`, `file:materials/material.material.json` (added), `file:passes/main_rendering_config.json`, `list_materials:`, `render:passes/main_rendering_config.json`.
 
 ```diff
 @@ -1,2 +1,7 @@
@@ -621,22 +452,16 @@ Undo differs: `file:assets/asset_data.json`, `file:materials/material.material.j
 + "materials": [
 +  {
 +   "path": "materials/material.material.json"
-+  }
-+ ],
-  "models": [],
 ```
 
-The last same-project restart is step 32; after-Undo also differs from that restart snapshot. Only scene history is excluded solely because of restart.
-
-Redo coverage limit: material_row: a Material row's Undo (Every <model>) has no Redo.
-
 ### QD1-R33: gui_rt_hit_groups_from_blank / undo
+**Limit F (New material is outside Undo).** UD-5 landing check (`<作業ディレクトリ>/ud5_work/w1_final/gui_rt_hit_groups_from_blank.json`, started `2026-10-08T23:57:57`). Ordinary assertions, reopen and health are green.
 
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+Render (5 presses, including the ray layout edits; one restarts the engine, `pid 56228 -> 49896`), Material row (2) and Graph (1) Undo return the pass documents to the start. The remaining differences are the two materials created with New material at steps 33 and 39, which is not in Materials Undo by design (`test/devstudio_materials_test.cpp:701`; [README](README.md), the Materials dock section). A Material row Undo has no Redo, so the Redo half is not covered.
 
 Reproduce through ordinary step 134, then the `undo` epilogue.
 
-Undo differs: `file:assets/asset_data.json`, `file:materials/material.material.json`, `file:materials/material_2.material.json`, `file:passes/main_rendering_config.json`, `list_materials:`, `render:passes/main_rendering_config.json`.
+Undo differs: `file:assets/asset_data.json`, `file:materials/material.material.json` (added), `file:materials/material_2.material.json` (added), `list_materials:`.
 
 ```diff
 @@ -1,2 +1,10 @@
@@ -644,164 +469,75 @@ Undo differs: `file:assets/asset_data.json`, `file:materials/material.material.j
 + "materials": [
 +  {
 +   "path": "materials/material.material.json"
-+  },
-+  {
-+   "path": "materials/material_2.material.json"
-```
-
-The last same-project restart is step 83; after-Undo also differs from that restart snapshot. Only scene history is excluded solely because of restart.
-
-Redo coverage limit: material_row: a Material row's Undo (Every <model>) has no Redo.
-
-### QD1-R34: gui_rt_procedural_callable / undo
-
-**Follow-up diagnosis:** the inline editor was the `trace/dispatch` value editor, not a lost history. After cancelling its uncommitted draft, four Graph inverses and their Redo restore all authored JSON values. The only remaining Undo difference is raw file identity; canonical JSON and the engine document agree. The strict byte check remains marked. The original semantic-difference excerpt below is historical.
-
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
-
-Reproduce through ordinary step 42, then the `undo` epilogue.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -60,2 +60,3 @@
-     "ray_tracing": {
-+     "callable": "project://shaders/trace_callable",
-      "hit_shaders": {
-@@ -63,4 +64,4 @@
-        "ball": {
--        "closesthit": "project://shaders/start",
--        "intersection": "project://shaders/none"
-```
-
-### QD1-R35: gui_rt_two_rays_two_misses / undo
-
-**Follow-up diagnosis:** the inline editor was the `trace/dispatch` value editor, not a lost history. After cancelling its uncommitted draft, four Graph inverses and their Redo restore all authored JSON values. The only remaining Undo difference is raw file identity; canonical JSON and the engine document agree. The strict byte check remains marked. The original semantic-difference excerpt below is historical.
-
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
-
-Reproduce through ordinary step 48, then the `undo` epilogue.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -65,2 +65,7 @@
-        }
-+      },
-+      "shadow": {
-+       "mesh": {
-+        "closesthit": "project://shaders/trace_shadow_mesh"
-+       }
-       }
 ```
 
 ### QD1-R36: gui_settings_choose / undo
+**Bundle B: engine restart inside the Undo walk / scene journal (v1, user decision 2026-10-08).** UD-5 landing check on 2026-10-09 (`<作業ディレクトリ>/ud5_work/w1_final/gui_settings_choose.json`, started `2026-10-08T23:59:10`). Ordinary assertions, reopen and health are green. Undo returns every compared key to the start (`undo_differs` is empty).
 
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+The walk presses 7 Graph, 9 Render and 3 scene Undo. Scene Undo is pressed before the Graph Undo that removes the last material pass; that Graph Undo restarts the engine (`pid 49688 -> 38824`, the driver answers the unsaved-scene question with Save, `restart_history_ready: true` after 1.06 s). The restart drops the scene journal, including the entries already undone, so every scene Redo reports `Redo failed: method_unavailable - actor has no successful revert to redo`. After Redo only `scene:(answer)` and `scene:(semantic)` differ. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08).
 
 Reproduce through ordinary step 206, then the `undo` epilogue.
 
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+`scene:(semantic)` after Redo (expected endpoint versus found):
 
 ```diff
-@@ -1,6 +1,665 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
+@@ -40,5 +40,5 @@
+        "direction": [
+-        0.4364723549092421,
+-        -0.8728369164014821,
+-        -0.21828330391198672
++        -0.5,
++        -1.0,
++        -0.25
 ```
 
-### QD1-R37: input_needs_shader / undo
+The ticket remains until the scene journal is carried across a restart (v1). No invariant exemption or pixel expectation was changed.
 
-**Studio/engine / history dependencies.** The Graph history is retried after other histories change documents, but restoration still leaves the root graph different. A notice references an unknown render resource. The remaining ordering/contract interaction is not isolated.
+### QD1-R37: input_needs_shader / undo
+**Bundle B: engine restart inside the Undo walk / scene journal (v1, user decision 2026-10-08).** UD-5 landing check on 2026-10-09 (`<作業ディレクトリ>/ud5_work/w1_final/input_needs_shader.json`, started `2026-10-09T00:02:01`). Ordinary assertions, reopen and health are green. Undo returns every compared key to the start (`undo_differs` is empty).
+
+The walk presses 2 Graph, 1 Render and 1 scene Undo. Scene Undo is pressed before the Graph Undo that removes the last material pass; that Graph Undo restarts the engine (`pid 56560 -> 50000`, the driver answers the unsaved-scene question with Save, `restart_history_ready: true` after 1.08 s). The restart drops the scene journal, including the entries already undone, so every scene Redo reports `Redo failed: method_unavailable - actor has no successful revert to redo`. After Redo only `scene:(answer)` and `scene:(semantic)` differ. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08).
 
 Reproduce through ordinary step 71, then the `undo` epilogue.
 
-Observed panel notices: `logical shadow graph node 'present' reads unknown resource 'render_material_pass__albedo'…`.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+`scene:(semantic)` after Redo (expected endpoint versus found):
 
 ```diff
-@@ -1,4 +1,223 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
-```
-
-### QD1-R42: material_loop_decompose / undo
-
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
-
-Reproduce through ordinary step 46, then the `undo` epilogue.
-
-Redo differs: `file:passes/main.json`, `render:passes/main.json`.
-
-```diff
-@@ -3,20 +3,2 @@
-   "forward_opaque_draw": {
--   "nodes": [
+@@ -50,30 +50,2 @@
+      "name": "KeyLight"
+-    },
 -    {
--     "id": "step",
--     "op": "draw.material",
--     "outputs": [
--      "draws"
+-     "components": [
 ```
 
-### QD1-R4: material_pass_authoring / undo
-
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
-
-Reproduce through ordinary step 38, then the `undo` epilogue.
-
-Undo differs: `file:passes/main.json`, `render:passes/main.json`.
-
-```diff
-@@ -1,6 +1,118 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
-```
-
-The last same-project restart is step 15; after-Undo matches that restart snapshot. Only scene history is excluded solely because of restart.
+The ticket remains until the scene journal is carried across a restart (v1). No invariant exemption or pixel expectation was changed.
 
 ### QD1-R44: sockets_fix_and_show / undo
+**Bundle B: engine restart inside the Undo walk / scene journal (v1, user decision 2026-10-08).** UD-5 landing check on 2026-10-09 (`<作業ディレクトリ>/ud5_work/w1_final/sockets_fix_and_show.json`, started `2026-10-09T00:04:49`). Ordinary assertions, reopen and health are green. Undo returns every compared key to the start (`undo_differs` is empty).
 
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+The walk presses 1 Graph, 4 Render and 1 scene Undo. Scene Undo is pressed before the Graph Undo that removes the last material pass; that Graph Undo restarts the engine (`pid 36972 -> 44652`, the driver answers the unsaved-scene question with Save, `restart_history_ready: true` after 1.06 s). The restart drops the scene journal, including the entries already undone, so every scene Redo reports `Redo failed: method_unavailable - actor has no successful revert to redo`. After Redo only `scene:(answer)` and `scene:(semantic)` differ. Carrying the journal across the restart is deferred to v1 (user decision, 2026-10-08).
 
 Reproduce through ordinary step 96, then the `undo` epilogue.
 
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+`scene:(semantic)` after Redo (expected endpoint versus found):
 
 ```diff
-@@ -1,4 +1,223 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
+@@ -50,30 +50,2 @@
+      "name": "KeyLight"
+-    },
+-    {
+-     "components": [
 ```
 
-### QD1-R45: sockets_from_shader / undo
+The ticket remains until the scene journal is carried across a restart (v1). No invariant exemption or pixel expectation was changed.
 
-**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+### QD1-R45: sockets_from_shader / undo
+**Limit E (a connection made against an externally edited shader).** Full run at `33b761ecd` on 2026-10-08 (report started `2026-10-08T21:04:28`). Ordinary assertions, reopen and health are green.
+
+Step 75 removes binding 1 from the shader in an external editor, and step 83's Disconnect brings the document in line with it. The top Render entry, `Undo Edit pass present`, would restore the connection to binding 1, which the shader no longer declares, so the engine refuses it twice (`Fullscreen pass input texture/local-read contract does not match shader reflection: …`); Graph Undo waits behind that newer Render edit (`A later render edit from another panel is on top.`). Only scene Undo/Redo moves (1 press each). The connection can be undone only after the shader's binding is restored.
 
 Reproduce through ordinary step 94, then the `undo` epilogue.
 
-Observed panel notices: `A shader the graph draws with did not reload: Fullscreen pass input texture/local-read co…`.
-
 Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
 
 ```diff
@@ -810,9 +546,6 @@ Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 - "definitions": {},
 - "nodes": [],
 + "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
 ```
 
 ## Explicit coverage limits
@@ -1348,3 +1081,285 @@ Reproduce through ordinary step 103, then the `undo` epilogue. Evidence: `<build
 +  "material_route_default": "forward",
    "rendering_passes": [
 ```
+
+
+### QD1-R10: graph_fold_decisions / undo
+
+**Resolved (UD-5), 2026-10-09.** Graph Undo/Redo is no longer wiped by another panel's confirmed edit and is sent in time order with the Render edits. The UD-5 landing check (`<作業ディレクトリ>/ud5_work/w1_final/graph_fold_decisions.json`, started `2026-10-08T23:46:46`) verified Undo/Redo, reopen and health green (6 Render and 4 Graph Undo presses).
+
+Original reproduction (retained as evidence):
+
+**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+
+Reproduce through ordinary step 103, then the `undo` epilogue.
+
+Observed panel notices: `Unfolded fold_1: the group and its decisions are gone; the nodes stay.`.
+
+Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+
+```diff
+@@ -2,3 +2,163 @@
+  "definitions": {},
+- "nodes": [],
++ "layout": {
++  "nodes": {
++   "render_fullscreen": {
++    "x": 428,
++    "y": 0
+```
+
+
+### QD1-R13: gui_assets_watch_verify / undo
+
+**Resolved (UD-6), 2026-10-08.** Assets Undo restores values, and the remaining difference was formatting and the resulting digest. The driver now compares JSON by parsed content and excludes `project_digest` only when `project.json` matches by content on both sides; the UD-6 integration run verified Undo green.
+
+Original reproduction (retained as evidence):
+
+**Documented value-based Undo / strict byte check.** After exempting the manifest update that is outside Assets Undo, `project.json` still differs by bytes while its canonical JSON diff is empty; `get_project_settings` also reports a changed project digest. The Assets Undo documentation in [manual 13](../../docs/manual/13_editor.md) explicitly says that it restores values and does not restore the original digest, because the engine formats JSON with two spaces. This record is therefore not evidence of a lost setting. The strict byte check remains marked until a narrowly scoped comparison policy is chosen; do not change production values or suppress the whole project document to make it pass.
+
+Reproduce through ordinary step 46, then the `undo` epilogue.
+
+Undo differs: `file:project.json`, `get_project_settings:`.
+
+```diff
+@@ -3,3 +3,3 @@
+  "hot_reload": null,
+- "project_digest": "1f89682d9c9d93f3eb3947905ef6308b468827a3cb9d02390ff15fd9fc58ea7f"
++ "project_digest": "6d686b445dff8e16d35888272f6cab79b08d5f0d2ca0b41a26d8cca55abbf0d6"
+ }
+```
+
+
+### QD1-R17: gui_build_curve / undo
+
+**Resolved (RT-A to RT-D, UD-1 to UD-3), 2026-10-08.** The full run at `33b761ecd` (report started `2026-10-08T19:59:32`) verified Undo/Redo, reopen and health green: 9 Graph Undo presses return the start and their Redo the endpoint.
+
+Original reproduction (retained as evidence):
+
+**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+
+Reproduce through ordinary step 94, then the `undo` epilogue.
+
+Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+
+```diff
+@@ -2,3 +2,114 @@
+  "definitions": {},
+- "nodes": [],
++ "nodes": [
++  {
++   "id": "render_fullscreen__color",
++   "op": "render.image",
++   "outputs": [
+```
+
+
+### QD1-R22: gui_build_ocean / undo
+
+**Resolved (RT-A to RT-D, UD-1 to UD-3), 2026-10-08.** The full run at `33b761ecd` (report started `2026-10-08T20:07:41`) verified Undo/Redo, reopen and health green (39 Graph Undo presses).
+
+Original reproduction (retained as evidence):
+
+**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+
+Reproduce through ordinary step 259, then the `undo` epilogue.
+
+Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+
+```diff
+@@ -1,4 +1,634 @@
+ {
+- "definitions": {},
+- "nodes": [],
++ "definitions": {
++  "loop_body": {
++   "nodes": [
++    {
+```
+
+
+### QD1-R23: gui_build_ocean_compute / undo
+
+**Resolved (RT-A to RT-D, UD-1 to UD-3), 2026-10-08.** The full run at `33b761ecd` (report started `2026-10-08T20:11:49`) verified Undo/Redo, reopen and health green (37 Graph Undo presses).
+
+Original reproduction (retained as evidence):
+
+**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+
+Reproduce through ordinary step 268, then the `undo` epilogue.
+
+Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+
+```diff
+@@ -1,4 +1,635 @@
+ {
+- "definitions": {},
+- "nodes": [],
++ "definitions": {
++  "loop_body": {
++   "nodes": [
++    {
+```
+
+
+### QD1-R25: gui_build_rt_from_blank / undo
+
+**Resolved (RT-A to RT-D, UD-1 to UD-3), 2026-10-08.** The full run at `33b761ecd` (report started `2026-10-08T20:20:31`) verified Undo/Redo, reopen and health green (4 Graph and 1 scene Undo presses).
+
+Original reproduction (retained as evidence):
+
+**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+
+Reproduce through ordinary step 79, then the `undo` epilogue.
+
+Observed panel notices: `logical shadow graph node 'present' reads unknown resource 'render_compute__color' (rende…`.
+
+Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+
+```diff
+@@ -2,2 +2,3 @@
+  "definitions": {},
++ "layout": {},
+  "nodes": [],
+```
+
+Redo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+
+```diff
+@@ -2,16 +2,3 @@
+  "definitions": {},
+- "layout": {
+-  "nodes": {
+-   "render_compute": {
+-    "x": 428,
+-    "y": 0
+-   },
+```
+
+
+### QD1-R27: gui_graph_only_edits / undo
+
+**Resolved (RT-A to RT-D, UD-1 to UD-3), 2026-10-08.** The full run at `33b761ecd` (report started `2026-10-08T20:23:51`) verified Undo/Redo, reopen and health green: 15 Graph Undo presses, one of which restarts the engine with `restart_history_ready: true`.
+
+Original reproduction (retained as evidence):
+
+**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+
+Reproduce through ordinary step 138, then the `undo` epilogue.
+
+Undo differs: `file:passes/authoring/render-targets.json`, `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`, `render:project://passes/authoring/render-targets.json`.
+
+```diff
+@@ -0,0 +1,34 @@
++{
++  "schema": "pelican.render_feature",
++  "version": 1,
++  "name": "authored_render_targets",
++  "runtime_shader_compiler": "optional",
++  "pelican_editor_managed": {
++    "schema": "pelican.authored_render_fragment",
+```
+
+The last same-project restart is step 31; after-Undo also differs from that restart snapshot. Only scene history is excluded solely because of restart.
+
+
+### QD1-R34: gui_rt_procedural_callable / undo
+
+**Resolved (UD-6), 2026-10-08.** The values were already restored; only the file formatting differed. The driver now compares JSON documents by parsed content and reports a byte-only difference as formatting, and the UD-6 integration run verified Undo green.
+
+Original reproduction (retained as evidence):
+
+**Follow-up diagnosis:** the inline editor was the `trace/dispatch` value editor, not a lost history. After cancelling its uncommitted draft, four Graph inverses and their Redo restore all authored JSON values. The only remaining Undo difference is raw file identity; canonical JSON and the engine document agree. The strict byte check remains marked. The original semantic-difference excerpt below is historical.
+
+**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+
+Reproduce through ordinary step 42, then the `undo` epilogue.
+
+Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+
+```diff
+@@ -60,2 +60,3 @@
+     "ray_tracing": {
++     "callable": "project://shaders/trace_callable",
+      "hit_shaders": {
+@@ -63,4 +64,4 @@
+        "ball": {
+-        "closesthit": "project://shaders/start",
+-        "intersection": "project://shaders/none"
+```
+
+
+### QD1-R35: gui_rt_two_rays_two_misses / undo
+
+**Resolved (UD-6), 2026-10-08.** The values were already restored; only the file formatting differed. The driver now compares JSON documents by parsed content and reports a byte-only difference as formatting, and the UD-6 integration run verified Undo green.
+
+Original reproduction (retained as evidence):
+
+**Follow-up diagnosis:** the inline editor was the `trace/dispatch` value editor, not a lost history. After cancelling its uncommitted draft, four Graph inverses and their Redo restore all authored JSON values. The only remaining Undo difference is raw file identity; canonical JSON and the engine document agree. The strict byte check remains marked. The original semantic-difference excerpt below is historical.
+
+**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+
+Reproduce through ordinary step 48, then the `undo` epilogue.
+
+Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+
+```diff
+@@ -65,2 +65,7 @@
+        }
++      },
++      "shadow": {
++       "mesh": {
++        "closesthit": "project://shaders/trace_shadow_mesh"
++       }
+       }
+```
+
+
+### QD1-R42: material_loop_decompose / undo
+
+**Resolved (UD-5), 2026-10-09.** The Redo half that differed now returns the endpoint. The UD-5 landing check (`<作業ディレクトリ>/ud5_work/w1_final/material_loop_decompose.json`, started `2026-10-09T00:02:59`) verified Undo/Redo, reopen and health green (3 Graph and 1 Render presses each way).
+
+Original reproduction (retained as evidence):
+
+**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+
+Reproduce through ordinary step 46, then the `undo` epilogue.
+
+Redo differs: `file:passes/main.json`, `render:passes/main.json`.
+
+```diff
+@@ -3,20 +3,2 @@
+   "forward_opaque_draw": {
+-   "nodes": [
+-    {
+-     "id": "step",
+-     "op": "draw.material",
+-     "outputs": [
+-      "draws"
+```
+
+
+### QD1-R4: material_pass_authoring / undo
+
+**Resolved (UD-5), 2026-10-09.** The UD-5 landing check (`<作業ディレクトリ>/ud5_work/w1_final/material_pass_authoring.json`, started `2026-10-09T00:03:29`) verified Undo/Redo, reopen and health green: 1 Render and 1 Graph Undo press, the Graph one restarting the engine with `restart_history_ready: true`.
+
+Original reproduction (retained as evidence):
+
+**Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
+
+Reproduce through ordinary step 38, then the `undo` epilogue.
+
+Undo differs: `file:passes/main.json`, `render:passes/main.json`.
+
+```diff
+@@ -1,6 +1,118 @@
+ {
+- "definitions": {},
+- "nodes": [],
++ "definitions": {
++  "render_material_pass_draw": {
++   "nodes": [
++    {
+```
+
+The last same-project restart is step 15; after-Undo matches that restart snapshot. Only scene history is excluded solely because of restart.

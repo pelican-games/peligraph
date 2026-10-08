@@ -11,9 +11,7 @@
         "path": "file:assets.manifest.json",
         "reason": "Update Manifest writes this generated manifest outside Assets Undo; the scenario explicitly confirms that separate operation."
       }
-    ],
-    "undo": "known_red",
-    "undo_ticket": "QD1-R13"
+    ]
   },
   "steps": [
     {
