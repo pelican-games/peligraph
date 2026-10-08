@@ -2704,7 +2704,15 @@ InspectorWidget::InspectorWidget(EmbeddedViewport *viewport, QWidget *parent)
     impl_ = std::make_unique<Impl>(*this, *viewport);
 }
 
-InspectorWidget::~InspectorWidget() = default;
+InspectorWidget::~InspectorWidget() {
+    // QWidget clears focus before QObject disconnects its children. Stop the
+    // editors' callbacks now, while Impl and their bindings are still alive.
+    // This also covers text fields and every numeric representation.
+    for (QObject *child : findChildren<QObject *>()) {
+        child->removeEventFilter(this);
+        QObject::disconnect(child, nullptr, this, nullptr);
+    }
+}
 
 void InspectorWidget::setGraphSourceRevealAction(
     std::function<void(const QString &, const QString &)> action) {

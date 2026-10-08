@@ -10,6 +10,7 @@
 // failed only some of the time.
 
 #include "inspectorwidget.hpp"
+#include "graphattachmentwidget.hpp"
 
 // EmbeddedViewport is final and has no test seam. As in the frame-plan test,
 // this translation unit reaches its process and readiness members so the
@@ -28,6 +29,8 @@
 #include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
 #include <QPointer>
 #include <QPushButton>
 #include <QTest>
@@ -71,7 +74,7 @@ class FakeEngine {
     Json transform{{"pos", Json::array({1.0, 2.0, 3.0})},
                    {"rotation", Json::array({0.0, 0.0, 0.0, 1.0})},
                    {"scale", Json::array({1.0, 1.0, 1.0})}};
-    Json flags{{"enabled", true}};
+    Json flags{{"enabled", true}, {"amount", 1.0}, {"note", "original"}};
     // MI-1s: a simplemodelview on the object, when a test gives it one.
     std::optional<Json> model_view;
     std::uint64_t revision = 1;
@@ -186,7 +189,9 @@ class FakeEngine {
                        {"editable", true},
                        {"pending", false},
                        {"codec", {{"state", "registered"}}},
-                       {"schema", schema(Json::array({{{"name", "enabled"}, {"type", "bool"}}}))}}})}};
+                       {"schema", schema(Json::array({{{"name", "enabled"}, {"type", "bool"}},
+                                                      {{"name", "amount"}, {"type", "f64"}},
+                                                      {{"name", "note"}, {"type", "string"}}}))}}})}};
     }
 
     Json answer(const std::string &method, const Json &params) {
@@ -440,6 +445,97 @@ TEST_CASE("T-1 a rotation is typed as angles and stored as the quaternion",
     about_y->setFocus(Qt::OtherFocusReason);
     rig.pumpFor(300);
     CHECK(rig.engine.revision == committed);
+}
+
+
+TEST_CASE("FX-4 destroying the Inspector disconnects a focused scalar field",
+          "[devstudio][inspector][lifetime]") {
+    Rig rig;
+    QPointer<QDoubleSpinBox> field = rig.field("pelican.inspectorNumeric.fixture_flags.amount");
+    REQUIRE(field);
+    field->setFocus(Qt::OtherFocusReason);
+    REQUIRE(field->hasFocus());
+    int finished = 0;
+    QObject::connect(field, &QDoubleSpinBox::editingFinished, &rig.viewport, [&] { ++finished; });
+    const auto revision = rig.engine.revision;
+    rig.inspector.reset();
+    // Qt really delivered the teardown signal; only the dead receiver's
+    // callback was removed. No late edit was sent and the field is gone.
+    CHECK(finished > 0);
+    CHECK(field.isNull());
+    rig.pumpFor(100);
+    CHECK(rig.engine.revision == revision);
+}
+
+TEST_CASE("FX-4 destroying the Inspector disconnects a modified text field",
+          "[devstudio][inspector][lifetime]") {
+    Rig rig;
+    QPointer<QLineEdit> field =
+        rig.inspector->findChild<QLineEdit *>(QStringLiteral("pelican.inspectorString"));
+    REQUIRE(field);
+    field->setFocus(Qt::OtherFocusReason);
+    field->selectAll();
+    QTest::keyClicks(field, QStringLiteral("unfinished"));
+    REQUIRE(field->hasFocus());
+    REQUIRE(field->isModified());
+    int finished = 0;
+    QObject::connect(field, &QLineEdit::editingFinished, &rig.viewport, [&] { ++finished; });
+    const auto revision = rig.engine.revision;
+    rig.inspector.reset();
+    CHECK(finished > 0);
+    CHECK(field.isNull());
+    rig.pumpFor(100);
+    CHECK(rig.engine.revision == revision);
+    CHECK(rig.engine.flags.at("note") == "original");
+}
+
+TEST_CASE("FX-4 destroying Attached graphs disconnects a modified input port",
+          "[devstudio][inspector][graph-attachment][lifetime]") {
+    auto &app = application();
+    std::deque<std::pair<quint64, QString>> requests;
+    auto graph = std::make_unique<GraphAttachmentWidget>();
+    QObject::connect(graph.get(), &GraphAttachmentWidget::rpcRequested, &app,
+                     [&](quint64 id, const QString &method, const QJsonObject &) {
+                         requests.emplace_back(id, method);
+                     });
+    graph->setOwner(GraphAttachmentOwner{"main", 41});
+    graph->setConnected(true);
+    REQUIRE(requests.size() == 1);
+    REQUIRE(requests.front().second == QStringLiteral("get_graph_instances"));
+    const auto id = requests.front().first;
+    requests.clear();
+    const Json instance{{"id", "left"}, {"op", "graph.instance"}, {"definition", "unit"},
+                        {"owner", {{"scene", "main"}, {"object", 41}}},
+                        {"parameters", {{"gain", 2.0}}}};
+    const Json document{{"source_digest", {{"hex", "source-a"}}},
+                        {"definitions", {{"unit", {{"nodes", Json::array({
+                            {{"id", "gain"}, {"op", "graph.input"}, {"default", 2.0}}})}}}}},
+                        {"instances", Json::array({instance})},
+                        {"nodes", Json::array({instance})}};
+    graph->receiveRpcResult(id, QByteArray::fromStdString(document.dump()));
+    auto *instances = graph->findChild<QListWidget *>(QStringLiteral("pelican.graphAttachments"));
+    REQUIRE(instances != nullptr);
+    REQUIRE(instances->count() == 1);
+    instances->setCurrentRow(0);
+    graph->show();
+    graph->activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(graph.get()));
+    QPointer<QLineEdit> field =
+        graph->findChild<QLineEdit *>(QStringLiteral("pelican.graphPort.value.gain"));
+    REQUIRE(field);
+    REQUIRE(field->isEnabled());
+    field->setFocus(Qt::OtherFocusReason);
+    field->selectAll();
+    QTest::keyClicks(field, QStringLiteral("3"));
+    REQUIRE(field->hasFocus());
+    REQUIRE(field->isModified());
+    requests.clear();
+    int finished = 0;
+    QObject::connect(field, &QLineEdit::editingFinished, &app, [&] { ++finished; });
+    graph.reset();
+    CHECK(finished > 0);
+    CHECK(field.isNull());
+    CHECK(requests.empty());
 }
 
 

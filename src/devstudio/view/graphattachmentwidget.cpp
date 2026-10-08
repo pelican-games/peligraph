@@ -389,7 +389,12 @@ struct GraphAttachmentWidget::Impl {
 
 GraphAttachmentWidget::GraphAttachmentWidget(QWidget *parent)
     : QWidget(parent), impl_(std::make_unique<Impl>(*this)) {}
-GraphAttachmentWidget::~GraphAttachmentWidget() = default;
+GraphAttachmentWidget::~GraphAttachmentWidget() {
+    // A focused port can emit editingFinished from QWidget's destructor,
+    // after impl_ has gone. Its model must not receive that final signal.
+    for (QObject *child : findChildren<QObject *>())
+        QObject::disconnect(child, nullptr, this, nullptr);
+}
 
 void GraphAttachmentWidget::setRenderConfigDigest(std::shared_ptr<RenderConfigDigest> hub) {
     impl_->model.publishDigest = [this, hub = std::move(hub)](const std::string &digest) {
