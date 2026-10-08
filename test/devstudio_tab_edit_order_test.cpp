@@ -1,4 +1,5 @@
 #include "tabeditorder.hpp"
+#include "renderdocumentreload.hpp"
 #include "graphcomposition.hpp"
 #include "renderconfigdocument.hpp"
 
@@ -721,4 +722,135 @@ TEST_CASE("RT-D stale source layout refusal rereads without automatic resubmissi
     CHECK(std::ranges::none_of(requests, [](const auto &r) { return r.method == "edit_graph_document"; }));
     CHECK(rig.order.undoRecords().empty());
     CHECK(rig.graph.canEdit());
+}
+
+
+TEST_CASE("UD-6 asset-only reload preserves Graph and Render Undo and Redo",
+          "[devstudio][tab-edit-order][ud6][render_reload]") {
+    Rig rig;
+    rig.content_digests = true;
+    rig.graph.refresh();
+    rig.readGraph();
+    const auto initial = rig.document;
+    rig.commitGraph(rig.submitGraph("authored label"));
+    const auto after_graph = rig.document;
+    const auto render = rig.submitRender();
+    const auto render_poll = rig.accept(render);
+    rig.document["rendering"] = {{"draw_sort", "state"}};
+    rig.graph.keepHistoryThroughNextDigest();
+    rig.commitRender(render_poll);
+    rig.graph.refresh();
+    rig.readGraph();
+    const auto after_render = rig.document;
+    REQUIRE(rig.history.canUndo());
+    REQUIRE(rig.graph.canUndo());
+
+    // The live digest read by each panel is the one before the outside image
+    // write. Use the real reload policy, histories, and tab order together.
+    PelicanStudio::RenderDocumentReload reload{{
+        .request = [](const std::string &, const Json &, std::string *) { return std::int64_t{1}; },
+        .schedule = [](int, std::function<void()>) {},
+    }};
+    reload.open("project_root");
+    reload.engineReady();
+    REQUIRE(reload.receiveResult(1, rig.snapshot()));
+    int boundaries = 0;
+    int refreshed = 0;
+    reload.historyBoundary = [&] {
+        ++boundaries;
+        rig.history.cut("reloaded from disk");
+        rig.graph.forgetHistory();
+        rig.order.clear();
+    };
+    reload.reloaded = [&](const Json &) {
+        ++refreshed;
+        rig.graph.refresh();
+        rig.readGraph();
+    };
+    const auto image_reload = [&] {
+        reload.reloadNow();
+        auto commit = rig.commit();
+        commit["changed"] = Json::array();
+        commit["changed_assets"] = Json::array({"assets/images/ltc_2.ktx2"});
+        REQUIRE(reload.receiveResult(1, commit));
+    };
+    image_reload();
+    CHECK(boundaries == 0);
+    CHECK(refreshed == 1);
+    REQUIRE(rig.history.canUndo());
+    REQUIRE(rig.graph.canUndo());
+    REQUIRE(rig.order.canUndo());
+    REQUIRE(rig.order.undo());
+    rig.restore();
+    rig.graph.refresh();
+    rig.readGraph();
+    CHECK(rig.document == after_graph);
+    REQUIRE(rig.order.undo());
+    rig.commitGraph(rig.graphRequest("edit_graph_document"));
+    CHECK(rig.document == initial);
+    REQUIRE(rig.graph.canRedo());
+    REQUIRE(rig.history.canRedo());
+
+    // A second image update must preserve Redo as well as Undo.
+    reload.observeReply(rig.commit());
+    image_reload();
+    CHECK(boundaries == 0);
+    CHECK(refreshed == 2);
+    REQUIRE(rig.order.redo());
+    rig.commitGraph(rig.graphRequest("edit_graph_document"));
+    CHECK(rig.document == after_graph);
+    REQUIRE(rig.order.redo());
+    rig.restore();
+    rig.graph.refresh();
+    rig.readGraph();
+    CHECK(rig.document == after_render);
+}
+
+TEST_CASE("UD-6 external document reload still cuts Graph and Render histories",
+          "[devstudio][tab-edit-order][ud6][render_reload]") {
+    Rig rig;
+    rig.commitGraph(rig.submitGraph());
+    const auto render = rig.submitRender();
+    rig.commitRender(rig.accept(render));
+    REQUIRE(rig.graph.canUndo());
+    REQUIRE(rig.history.canUndo());
+    SECTION("Undo entries") { REQUIRE(rig.order.canUndo()); }
+    SECTION("Redo entries") {
+        REQUIRE(rig.order.undo());
+        rig.restore();
+        rig.graph.refresh();
+        rig.readGraph();
+        REQUIRE(rig.order.undo());
+        rig.commitGraph(rig.graphRequest("edit_graph_document"));
+        REQUIRE(rig.graph.canRedo());
+        REQUIRE(rig.history.canRedo());
+    }
+    PelicanStudio::RenderDocumentReload reload{{
+        .request = [](const std::string &, const Json &, std::string *) { return std::int64_t{1}; },
+        .schedule = [](int, std::function<void()>) {},
+    }};
+    reload.open("project_root");
+    reload.engineReady();
+    REQUIRE(reload.receiveResult(1, rig.snapshot()));
+    int boundaries = 0;
+    reload.historyBoundary = [&] {
+        ++boundaries;
+        rig.history.cut("reloaded from disk");
+        rig.graph.forgetHistory();
+        rig.order.clear();
+    };
+    reload.reloadNow();
+    auto commit = rig.commit();
+    // Do not rely on changed or changed_assets to establish a boundary.
+    commit["documents"][Root] = std::string(64, 'f');
+    commit["changed"] = Json::array();
+    commit["changed_assets"] = Json::array({"assets/images/ltc_2.ktx2"});
+    REQUIRE(reload.receiveResult(1, commit));
+    CHECK(boundaries == 1);
+    CHECK_FALSE(rig.graph.canUndo());
+    CHECK_FALSE(rig.graph.canRedo());
+    CHECK_FALSE(rig.history.canUndo());
+    CHECK_FALSE(rig.history.canRedo());
+    CHECK(rig.order.undoRecords().empty());
+    CHECK(rig.order.redoRecords().empty());
 }

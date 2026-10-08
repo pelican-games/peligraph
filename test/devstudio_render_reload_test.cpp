@@ -56,6 +56,7 @@ struct Rig {
     std::vector<Notice> notices;
     std::vector<Json> reloads;
     int watch_changes = 0;
+    int history_boundaries = 0;
     std::int64_t next_id = 1;
     RenderDocumentReload reload{RenderDocumentReload::Transport{
         .request = [this](const std::string &method, const Json &params, std::string *) {
@@ -76,6 +77,7 @@ struct Rig {
         reload.watchChanged = [this] { ++watch_changes; };
         reload.notice = [this](const Notice &notice) { notices.push_back(notice); };
         reload.reloaded = [this](const Json &commit) { reloads.push_back(commit); };
+        reload.historyBoundary = [this] { ++history_boundaries; };
         setRenderDocumentsRefusedOnDisk(false);
     }
 
@@ -545,6 +547,37 @@ TEST_CASE("EB-6s decision 8: a file broken outside, refused, then put back to th
     const auto settled = rig.sent.size();
     rig.saved(rig.rootPath(), RootA);
     CHECK(rig.sent.size() == settled);
+}
+
+} // namespace PelicanStudio
+
+
+namespace PelicanStudio {
+TEST_CASE("UD-6 reload history boundary compares the whole document set and digests",
+          "[devstudio][render_reload][ud6]") {
+    Rig rig;
+    rig.opened();
+    Json documents{{Root, RootA}, {Fragment, FragmentA}};
+    const auto verify = [&](bool boundary = true) {
+        rig.reload.reloadNow();
+        auto commit = Rig::committed(documents, Json::array());
+        commit["changed_assets"] = Json::array({"assets/images/ltc_2.ktx2"});
+        rig.ticket(commit);
+        CHECK(rig.history_boundaries == (boundary ? 1 : 0));
+        REQUIRE(rig.reloads.size() == 1); // Every committed reload still refreshes the panels.
+        CHECK(rig.notices.back().kind == Notice::Kind::Success);
+    };
+    SECTION("same documents with an image update") { verify(false); }
+    SECTION("changed root digest") { documents[Root] = RootB; verify(); }
+    SECTION("changed fragment digest") { documents[Fragment] = RootB; verify(); }
+    SECTION("added fragment") { documents["project://passes/new.json"] = RootA; verify(); }
+    SECTION("removed fragment") { documents.erase(Fragment); verify(); }
+    SECTION("same size with a different fragment") {
+        documents.erase(Fragment);
+        documents["project://passes/new.json"] = FragmentA;
+        verify();
+    }
+    SECTION("missing documents is not proof of an asset-only change") { documents = nullptr; verify(); }
 }
 
 } // namespace PelicanStudio

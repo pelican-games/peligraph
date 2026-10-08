@@ -1555,6 +1555,12 @@ void MainWindow::createRenderReload() {
         // (no_change too) takes the render pipeline's problems away.
         if (problems_dock_ != nullptr) problems_dock_->readNow();
     };
+    render_reload_->historyBoundary = [this] {
+        // A real outside document edit invalidates both histories. Reloading
+        // only an image leaves their documents and inverse operations intact.
+        if (render_history_) render_history_->cut("\xE2\x80\x94 reloaded from disk \xE2\x80\x94");
+        graph_canvas_->documentsReloadedFromDisk();
+    };
     render_reload_->reloaded = [this](const nlohmann::json &commit) {
         renderDocumentsReloaded(commit);
     };
@@ -1728,10 +1734,8 @@ void MainWindow::openPlanPassOnGraph(const QString &pass) {
 }
 
 void MainWindow::renderDocumentsReloaded(const nlohmann::json &commit) {
-    // Decision 4: the reload is not an Undo entry, and what the histories
-    // hold was written before the disk changed under them: both end here.
-    if (render_history_) render_history_->cut("\xE2\x80\x94 reloaded from disk \xE2\x80\x94");
-    graph_canvas_->documentsReloadedFromDisk();
+    // Reload is not an Undo entry. The policy already cut history if the
+    // render documents changed; panels still reread an asset-only commit.
     // BS-1s, decision 3: the placeholder may have given way.
     if (render_fallback_ != nullptr) render_fallback_->reloadCommitted();
     if (problems_dock_ != nullptr) problems_dock_->readNow();

@@ -366,6 +366,8 @@ void RenderDocumentReload::observeReply(const Json &result) {
 
 void RenderDocumentReload::committed(const Json &commit) {
     // What the reload read is the whole set the engine composes now.
+    // Missing documents cannot establish an asset-only reload.
+    bool documents_changed = true;
     if (const auto read = commit.find("documents"); read != commit.end() && read->is_object()) {
         std::map<std::string, Document> documents;
         for (const auto &[reference, digest] : read->items()) {
@@ -374,6 +376,12 @@ void RenderDocumentReload::committed(const Json &commit) {
             if (!path) continue;
             documents.insert_or_assign(reference, Document{*path, digest.get<std::string>()});
         }
+        documents_changed = documents.size() != documents_.size() ||
+            !std::equal(documents.begin(), documents.end(), documents_.begin(),
+                        [](const auto &before, const auto &after) {
+                            return before.first == after.first &&
+                                   before.second.digest == after.second.digest;
+                        });
         documents_ = std::move(documents);
         if (watchChanged) watchChanged();
     }
@@ -413,6 +421,7 @@ void RenderDocumentReload::committed(const Json &commit) {
             listed != commit.end() && listed->is_array())
             for (const auto &reference : *listed)
                 if (reference.is_string()) changed.push_back(reference.get<std::string>());
+        if (documents_changed && historyBoundary) historyBoundary();
         if (reloaded) reloaded(commit);
         auto names = joined(fileNames(changed.empty() && changed_assets.empty() ? differing_
                                                                                  : changed));

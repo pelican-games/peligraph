@@ -29,7 +29,8 @@ namespace PelicanStudio {
 //      time; reload_busy (a render edit's ticket still pending, or a scene
 //      preview open) asks again BusyRetryMs later.
 //   4. The answer. Committed: "Picked up the change to <file>", and the owner
-//      reads the panels again and cuts the render undo history (`reloaded`).
+//      reads the panels again (`reloaded`). A changed document set or digest
+//      cuts history (`historyBoundary`); an asset-only reload preserves it.
 //      no_change: nothing. A refusal (the file does not parse, the pipeline
 //      does not compose, a shader is missing): which file and why, with the
 //      engine keeping its previous version until the file is fixed and saved.
@@ -150,6 +151,10 @@ class RenderDocumentReload {
     // A reload committed with a change: its commit result (source_digest,
     // documents, changed, restart_required).
     std::function<void(const Json &commit)> reloaded;
+    // UD-6: called before reloaded only when the render document set/digests
+    // changed (or the answer did not prove them unchanged). Assets alone are
+    // not a boundary for edits of the render documents.
+    std::function<void()> historyBoundary;
     // BS-1s, decision 4: a refused reload, with the engine's error as it
     // came ({code, message, ...}), after the notice said it.
     std::function<void(const Json &error)> refusedWith;

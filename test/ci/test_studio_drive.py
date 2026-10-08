@@ -959,5 +959,174 @@ class UD2RestartHistoryTest(unittest.TestCase):
         self.assertEqual(len(result["undo_skipped"]), 2)
 
 
+
+class UD6ContentComparisonTest(unittest.TestCase):
+    """Formatting is reported; actual file and settings changes still fail."""
+
+    def state(self, root, files, settings=None):
+        import hashlib
+        entries = []
+        for name, content in files.items():
+            data = content.encode("utf-8")
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            entries.append({"path": name, "size": len(data),
+                            "sha256": hashlib.sha256(data).hexdigest()})
+        rpc = {} if settings is None else {"get_project_settings": settings}
+        return studio_invariants.ProjectState({"dir": str(root), "engine_ready": True,
+            "engine_process_id": 7, "files": entries, "rpc": rpc})
+
+    def undo_result(self, before, after):
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "content"})
+        epilogue.start = before
+        epilogue.state = mock.Mock(side_effect=[after, after, after])
+        epilogue.history = lambda: {}
+        epilogue.close_graph_drafts = lambda: []
+        walk = {"presses": {}, "sequence": [], "log": [], "notes": []}
+        epilogue.press_all = mock.Mock(return_value=walk)
+        epilogue.redo_in_reverse = mock.Mock(return_value=walk)
+        return studio_invariants.check_undo(epilogue)
+
+    def test_equal_json_content_is_green_and_reports_formatting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root, {"passes/main.json": '{"nodes":[],"version":1}'})
+            after = self.state(root, {"passes/main.json": '{\r\n "version": 1, "nodes": []\r\n}\r\n'})
+            result = self.undo_result(before, after)
+        self.assertEqual(result["status"], "green")
+        self.assertEqual(result["undo_differs"], [])
+        self.assertEqual(result["undo_skipped"][0]["key"], "file:passes/main.json")
+        self.assertIn("formatting difference", result["undo_skipped"][0]["reason"])
+
+    def test_changed_json_content_is_red_with_a_content_diff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root, {"passes/main.json": '{"nodes":[]}'})
+            after = self.state(root, {"passes/main.json": '{"nodes":[1]}'})
+            result = self.undo_result(before, after)
+        self.assertEqual(result["status"], "red")
+        self.assertEqual(result["undo_skipped"], [])
+        self.assertEqual(result["undo_differs"][0]["key"], "file:passes/main.json")
+        self.assertTrue(result["undo_differs"][0]["diff"])
+
+    def test_project_digest_is_exempt_only_for_matching_project_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root, {"project.json": '{"hot_reload":[]}'},
+                                {"project_digest": "old", "hot_reload": []})
+            after = self.state(root, {"project.json": '{ "hot_reload": [] }\n'},
+                               {"project_digest": "new", "hot_reload": []})
+            result = self.undo_result(before, after)
+        self.assertEqual(result["status"], "green")
+        reasons = {item["key"]: item["reason"] for item in result["undo_skipped"]}
+        self.assertIn("formatting difference", reasons["file:project.json"])
+        self.assertIn("JSON content matches", reasons["get_project_settings:project_digest"])
+
+    def test_changed_project_content_keeps_project_digest_compared_even_if_file_is_exempt(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root, {"project.json": '{"hot_reload":[]}'},
+                                {"project_digest": "old", "hot_reload": []})
+            after = self.state(root, {"project.json": '{"hot_reload":["images"]}'},
+                               {"project_digest": "new", "hot_reload": ["images"]})
+            for skip in (lambda key, change: None,
+                         lambda key, change: "external write" if key == "file:project.json" else None):
+                differing, _ = studio_invariants.diff_states(before, after, skip=skip)
+                settings = next(item for item in differing if item["key"] == "get_project_settings:")
+                self.assertTrue(any("project_digest" in line for line in settings["diff"]))
+
+    def test_matching_project_does_not_hide_other_settings_or_other_digests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root, {"project.json": '{}'},
+                                {"project_digest": "old", "hot_reload": [], "other_digest": "old"})
+            after = self.state(root, {"project.json": '{}'},
+                               {"project_digest": "new", "hot_reload": ["images"], "other_digest": "new"})
+            result = self.undo_result(before, after)
+        self.assertEqual(result["status"], "red")
+        diff = result["undo_differs"][0]["diff"]
+        self.assertTrue(any("other_digest" in line for line in diff))
+        self.assertTrue(any("images" in line for line in diff))
+
+    def test_missing_invalid_or_unreadable_project_never_exempts_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for files in ({}, {"project.json": "broken JSON"}):
+                before = self.state(root, files, {"project_digest": "old"})
+                after = self.state(root, files, {"project_digest": "new"})
+                differing, skipped = studio_invariants.diff_states(before, after)
+                self.assertEqual([item["key"] for item in differing], ["get_project_settings:"])
+                self.assertEqual(skipped, [])
+            before = self.state(root, {"project.json": '{}'}, {"project_digest": "old"})
+            after = self.state(root, {"project.json": '{}'}, {"project_digest": "new"})
+            after.texts.clear()
+            self.assertEqual(len(studio_invariants.diff_states(before, after)[0]), 1)
+
+    def test_non_json_and_invalid_json_still_compare_bytes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, old, new in (("shader.frag", "void main(){}", "void main(){}\n"),
+                                   ("broken.json", "{broken", "{broken\n")):
+                before = self.state(root, {name: old})
+                after = self.state(root, {name: new})
+                differing, skipped = studio_invariants.diff_states(before, after)
+                self.assertEqual([item["key"] for item in differing], ["file:" + name])
+                self.assertEqual(skipped, [])
+
+    def test_added_removed_json_and_array_order_changes_are_not_formatting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            empty = self.state(root, {})
+            present = self.state(root, {"a.json": '[1,2]'})
+            reordered = self.state(root, {"a.json": '[2,1]'})
+            for before, after in ((empty, present), (present, empty), (present, reordered)):
+                differing, skipped = studio_invariants.diff_states(before, after)
+                self.assertEqual(len(differing), 1)
+                self.assertEqual(skipped, [])
+
+    def test_json_content_is_recognized_without_a_json_extension(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root, {"model.gltf": '{"asset":{"version":"2.0"}}'})
+            after = self.state(root, {"model.gltf": '{ "asset": { "version": "2.0" } }\n'})
+            differing, skipped = studio_invariants.diff_states(before, after)
+            self.assertEqual(differing, [])
+            self.assertIn("formatting difference", skipped[0]["reason"])
+
+    def test_large_json_is_compared_by_content(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = {"value": "x" * studio_invariants.TEXT_LIMIT}
+            for name in ("large.json", "large.txt"):
+                before = self.state(root, {name: json.dumps(payload)})
+                after = self.state(root, {name: " " * 5000 + json.dumps(payload, indent=2) + "\n"})
+                differing, skipped = studio_invariants.diff_states(before, after)
+                self.assertEqual(differing, [])
+                self.assertIn("formatting difference", skipped[0]["reason"])
+
+    def test_other_project_cannot_exempt_a_project_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root / "a", {"project.json": '{}'}, {"project_digest": "old"})
+            after = self.state(root / "b", {"project.json": '{}'}, {"project_digest": "new"})
+            differing, skipped = studio_invariants.diff_states(before, after)
+            self.assertEqual([item["key"] for item in differing], ["get_project_settings:"])
+            self.assertEqual(skipped, [])
+
+    def test_concurrent_file_write_cannot_supply_text_for_a_different_captured_sha(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            before = self.state(root, {"project.json": '{}'}, {"project_digest": "old"})
+            captured = dict(before.raw)
+            captured["rpc"] = {"get_project_settings": {"project_digest": "new"}}
+            (root / "project.json").write_text('{ "changed": true }', encoding="utf-8")
+            after = studio_invariants.ProjectState(captured)
+            self.assertNotIn("file:project.json", after.texts)
+            differing, skipped = studio_invariants.diff_states(before, after)
+            self.assertEqual([item["key"] for item in differing], ["get_project_settings:"])
+            self.assertEqual(skipped, [])
+
+
 if __name__ == "__main__":
     unittest.main()

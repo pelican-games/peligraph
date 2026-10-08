@@ -166,6 +166,17 @@ def content_text(content: Any) -> str:
     return canonical(content)
 
 
+def json_text(text: str | None) -> str | None:
+    """Canonical JSON only when the whole text parses; unreadable stays unknown."""
+
+    if text is None:
+        return None
+    try:
+        return canonical(json.loads(text))
+    except ValueError:
+        return None
+
+
 def journal_depths(journal: Any) -> dict[str, dict[str, int]]:
     """Per editor session (by name): what its Undo and its Redo can still reach."""
 
@@ -237,10 +248,27 @@ class ProjectState:
         for entry in reply.get("files") or []:
             key = "file:" + str(entry.get("path"))
             self.entries[key] = str(entry.get("sha256") or f"unreadable: {entry.get('error')}")
-            if root is None or int(entry.get("size") or 0) > TEXT_LIMIT:
+            if root is None:
                 continue
             try:
-                text = (root / str(entry["path"])).read_bytes().decode("utf-8")
+                with (root / str(entry["path"])).open("rb") as stream:
+                    if int(entry.get("size") or 0) > TEXT_LIMIT:
+                        # Large binary assets stay byte comparisons. A JSON
+                        # value can start with any of these bytes, regardless
+                        # of extension; leading whitespace/BOM is formatting.
+                        prefix = stream.read(4096).removeprefix(b"\xef\xbb\xbf")
+                        while prefix and not prefix.strip(b" \t\r\n"):
+                            prefix = stream.read(4096)
+                        first = prefix.lstrip(b" \t\r\n")[:1]
+                        if not first or first not in b'{["-0123456789tfn':
+                            continue
+                        stream.seek(0)
+                    data = stream.read()
+                # The RPC hashed before this read. A concurrent outside save
+                # must not let a newer text hide the captured byte difference.
+                if hashlib.sha256(data).hexdigest() != entry.get("sha256"):
+                    continue
+                text = data.decode("utf-8-sig")
             except (OSError, UnicodeDecodeError):
                 continue
             if chr(0) in text:
@@ -329,6 +357,12 @@ def diff_states(
 
     differing: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
+    project_key = "file:project.json"
+    project_before = json_text(before.text_of(project_key))
+    project_after = json_text(after.text_of(project_key))
+    same_project = (project_key in before.entries and project_key in after.entries
+                    and project_before is not None and project_before == project_after
+                    and bool(before.dir) and before.dir == after.dir)
     for key in sorted(set(before.entries) | set(after.entries)):
         was = before.entries.get(key)
         now = after.entries.get(key)
@@ -340,6 +374,27 @@ def diff_states(
             continue
         old_text = before.text_of(key) if was is not None else ""
         new_text = after.text_of(key) if now is not None else ""
+        if was is not None and now is not None and key.startswith("file:"):
+            old_json, new_json = json_text(old_text), json_text(new_text)
+            if old_json is not None and new_json is not None:
+                if old_json == new_json:
+                    skipped.append({"key": key, "reason": "formatting difference: JSON content matches; "
+                                    "only the file bytes differ"})
+                    continue
+                old_text, new_text = old_json, new_json
+        digest_left_out = False
+        if key == "get_project_settings:" and same_project and was is not None and now is not None:
+            old_stripped = without_subtree(old_text, "project_digest")
+            new_stripped = without_subtree(new_text, "project_digest")
+            if old_stripped is not None and new_stripped is not None:
+                digest_left_out = old_stripped != old_text or new_stripped != new_text
+                if digest_left_out:
+                    skipped.append({"key": key + "project_digest", "reason":
+                                    "file:project.json JSON content matches in the same project; "
+                                    "project_digest describes bytes, not setting values"})
+                old_text, new_text = old_stripped, new_stripped
+                if old_text == new_text:
+                    continue
         left_out = []
         for exemption in subtrees:
             if was is None or now is None or not fnmatch.fnmatchcase(key, exemption["path"]):
@@ -360,6 +415,8 @@ def diff_states(
         }
         if left_out:
             entry["left_out"] = left_out
+        if digest_left_out:
+            entry.setdefault("left_out", []).append("project_digest: project document JSON content matches")
         if old_text is not None and new_text is not None:
             lines = list(
                 difflib.unified_diff(
