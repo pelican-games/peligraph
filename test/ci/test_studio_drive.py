@@ -804,7 +804,7 @@ class UD2RestartHistoryTest(unittest.TestCase):
         epilogue.call = call
         epilogue.signature = lambda: (studio_invariants.canonical(histories()),
                                       str([state[k] for k in ("graph", "render", "materials")]), state["pid"])
-        epilogue.settle = lambda before: epilogue.signature()
+        epilogue.settle = lambda before, **kwargs: epilogue.signature()
 
         def sleep(seconds):
             clock["now"] += seconds
@@ -958,6 +958,190 @@ class UD2RestartHistoryTest(unittest.TestCase):
         self.assertEqual(result["status"], "green")
         self.assertEqual(len(result["undo_skipped"]), 2)
 
+
+
+class UD7UnsavedScenePromptTest(unittest.TestCase):
+    """Only the Undo/Redo walk answers the restart prompt, using Save."""
+
+    def walk(self, *, step="undo", prompt="visible", delayed=False, root=None,
+             scene_pressable=False, scene_file_exists=True):
+        import hashlib
+
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {"name": "unsaved-scene"})
+        clock = {"now": 0.0}
+        state = {"graph": int(step == "undo"), "pid": 7, "pending": False}
+        requests = []
+        scene_path = root / "scene.json" if root else None
+        if scene_path and scene_file_exists:
+            scene_path.write_text('{"schema":"pelican.scene","objects":[]}', encoding="utf-8")
+
+        def histories():
+            return {
+                "graph": {
+                    "undo": {"found": True, "enabled": state["graph"] == 1},
+                    "redo": {"found": True, "enabled": state["graph"] == 0}},
+                "scene": {"undo": {"found": scene_pressable,
+                    "enabled": scene_pressable and state["pid"] == 7}}}
+
+        def reading(*, graph=None, scene=1, journal=False, quick=False):
+            files = []
+            if scene_path and scene_path.exists():
+                data = scene_path.read_bytes()
+                files = [{"path": "scene.json", "size": len(data),
+                          "sha256": hashlib.sha256(data).hexdigest()}]
+            records = [{"actor_id": 1, "actor_display_name": studio_invariants.INSPECTOR_ACTOR,
+                        "operation_kind": "edit"}] if state["pid"] == 7 and prompt == "visible" else []
+            return studio_invariants.ProjectState({
+                "dir": str(root) if root else "", "files": files,
+                "engine_ready": not (delayed and state["pending"]),
+                "engine_process_id": state["pid"],
+                "rpc": {"export_scene_snapshot": {
+                    "semantic_scene_bytes": json.dumps({"objects": [scene]}), "object_count": scene},
+                    "get_render_documents": {"documents": [{"reference": "main.json",
+                        "content": {"nodes": [state["graph"] if graph is None else graph]}}]},
+                    "query_journal": {"records": records}}})
+
+        def call(request, timeout=30.0):
+            requests.append(dict(request))
+            cmd = request["cmd"]
+            if cmd == "history":
+                if request.get("kind"):
+                    self.assertEqual(request["kind"], "graph")
+                    state["graph"] = int(request["step"] == "redo")
+                    state["pending"] = prompt == "visible"
+                return {"ok": True, "result": {"kinds": histories()}}
+            if cmd == "text":
+                if request["name"] == "pelican.unsavedScenePrompt":
+                    if prompt == "missing":
+                        return {"ok": False, "error": {"code": "not_found"}}
+                    visible = state["pending"] and (not delayed or clock["now"] >= 0.6)
+                    return {"ok": True, "result": {"visible": visible}}
+                return {"ok": True, "result": {"text": ""}}
+            if cmd == "click":
+                self.assertEqual(request["name"], "pelican.unsavedScenePrompt.save")
+                self.assertTrue(state["pending"])
+                state.update(pending=False, pid=state["pid"] + 1)
+                if scene_path:
+                    scene_path.write_text('{"schema":"pelican.scene","objects":[1]}', encoding="utf-8")
+                return {"ok": True}
+            self.assertEqual(cmd, "wait_engine")
+            self.assertLessEqual(request["timeout_ms"], 1000)
+            clock["now"] += request["timeout_ms"] / 1000.0
+            return {"ok": not state["pending"]}
+
+        epilogue.call = call
+        epilogue.state = reading
+        epilogue.start = reading(graph=0, scene=0)
+        epilogue.close_graph_drafts = lambda: []
+
+        def sleep(seconds):
+            clock["now"] += seconds
+
+        return epilogue, state, clock, requests, sleep
+
+    def test_walk_saves_a_visible_prompt_and_records_it_for_undo_and_redo(self):
+        for step in ("undo", "redo"):
+            for delayed in (False, True):
+                with self.subTest(step=step, delayed=delayed):
+                    epilogue, state, clock, requests, sleep = self.walk(step=step, delayed=delayed)
+                    with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+                          mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+                        result = (epilogue.press_all("undo", 60.0) if step == "undo" else
+                                  epilogue.redo_in_reverse({"sequence": ["graph"]}, 60.0,
+                                                           drain_remaining=False))
+                    self.assertEqual(result["sequence"], ["graph"])
+                    self.assertEqual(result["log"][0].get("answered_unsaved_scene_prompt"), "save")
+                    self.assertEqual(result["log"][0]["engine_started_again"], "pid 7 -> 8")
+                    self.assertTrue(result["log"][0]["restart_history_ready"])
+                    self.assertEqual([r for r in requests if r["cmd"] == "click"],
+                                     [{"cmd": "click", "name": "pelican.unsavedScenePrompt.save"}])
+                    self.assertFalse(state["pending"])
+
+    def test_walk_does_not_click_a_missing_or_hidden_prompt(self):
+        for step in ("undo", "redo"):
+            for prompt in ("missing", "hidden"):
+                with self.subTest(step=step, prompt=prompt):
+                    epilogue, _, clock, requests, sleep = self.walk(step=step, prompt=prompt)
+                    with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+                          mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+                        result = epilogue.press_all(step, 60.0)
+                    self.assertEqual(result["sequence"], ["graph"])
+                    self.assertFalse(any(r["cmd"] == "click" for r in requests))
+                    self.assertNotIn("answered_unsaved_scene_prompt", result["log"][0])
+
+    def test_settle_outside_a_walk_leaves_a_visible_prompt_to_the_scenario(self):
+        epilogue, state, clock, requests, sleep = self.walk()
+        state["pending"] = True
+        with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+              mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+            self.assertIsNotNone(epilogue.settle(None))
+        epilogue.start = None
+        epilogue.after_step({"cmd": "wait_engine"}, 0, True)
+        self.assertTrue(state["pending"])
+        self.assertFalse(any(r["cmd"] in ("text", "click") for r in requests))
+
+    def test_restart_history_wait_also_answers_and_records_a_visible_prompt(self):
+        epilogue, state, clock, requests, sleep = self.walk()
+        state["pending"] = True
+        entry = {"engine_started_again": "pid 6 -> 7", "restart_histories": ["graph"]}
+        notes = []
+        with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+              mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+            self.assertTrue(epilogue.wait_after_restart(entry, "undo", 10.0, notes))
+        self.assertEqual(entry["answered_unsaved_scene_prompt"], "save")
+        self.assertEqual(notes, [])
+        self.assertEqual(sum(r["cmd"] == "click" for r in requests), 1)
+
+    def test_restart_wait_does_not_click_after_the_prompt_probe_uses_its_budget(self):
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {})
+        clock = {"now": 0.0}
+        def call(request, timeout):
+            self.assertEqual(request["cmd"], "text")
+            self.assertLessEqual(timeout, 0.5)
+            clock["now"] += 0.5
+            return {"ok": True, "result": {"visible": True}}
+        epilogue.call = mock.Mock(side_effect=call)
+        entry = {"engine_started_again": "pid 7 -> 8"}
+        notes = []
+        with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+              mock.patch.object(studio_invariants.time, "sleep")):
+            self.assertFalse(epilogue.wait_after_restart(entry, "undo", 0.5, notes))
+        self.assertEqual(epilogue.call.call_count, 1)
+        self.assertNotIn("answered_unsaved_scene_prompt", entry)
+        self.assertIn("restart_history_wait_timeout", notes[0])
+
+    def test_failed_save_click_is_not_recorded_as_answered(self):
+        epilogue = studio_invariants.Epilogue(mock.Mock(), {})
+        epilogue.call = mock.Mock(side_effect=[
+            {"ok": True, "result": {"visible": True}}, {"ok": False}])
+        entry = {}
+        with self.assertRaisesRegex(ValueError, "could not answer"):
+            epilogue.answer_unsaved_scene_prompt(entry)
+        self.assertNotIn("answered_unsaved_scene_prompt", entry)
+
+    def test_save_uses_the_existing_scene_file_exemption_and_preserves_ud2(self):
+        for pressable, existing_file in ((False, False), (False, True), (True, False), (True, True)):
+            with (self.subTest(scene_undo_pressable=pressable, existing_file=existing_file),
+                  tempfile.TemporaryDirectory() as directory):
+                epilogue, _, clock, _, sleep = self.walk(root=Path(directory), scene_pressable=pressable,
+                                                       scene_file_exists=existing_file)
+                with (mock.patch.object(studio_invariants.time, "monotonic", side_effect=lambda: clock["now"]),
+                      mock.patch.object(studio_invariants.time, "sleep", side_effect=sleep)):
+                    result = studio_invariants.check_undo(epilogue)
+                reason = "a scene file on disk: Save is not undone; the scene in memory is compared"
+                for walk in ("undo", "redo"):
+                    saved_file = [e for e in result[walk + "_skipped"] if e["key"] == "file:scene.json"]
+                    self.assertEqual(saved_file, [{"key": "file:scene.json", "reason": reason}])
+                    self.assertFalse(any(e["key"] == "file:scene.json" for e in result[walk + "_differs"]))
+                self.assertEqual(result["undo"]["log"][0]["answered_unsaved_scene_prompt"], "save")
+                self.assertEqual(result["redo"]["log"][0]["answered_unsaved_scene_prompt"], "save")
+                if pressable:
+                    self.assertEqual(result["status"], "red")
+                    self.assertEqual([e["key"] for e in result["undo_differs"]],
+                                     ["scene:(answer)", "scene:(semantic)"])
+                    self.assertTrue(result["undo"]["log"][0]["scene_undo_unpressed_before_restart"])
+                else:
+                    self.assertEqual(result["status"], "green")
 
 
 class UD6ContentComparisonTest(unittest.TestCase):

@@ -595,18 +595,40 @@ class Epilogue:
             return None
         return canonical(kinds), state.fingerprint(), state.pid
 
-    def settle(self, before: tuple[str, str] | None) -> tuple[str, str] | None:
-        """The reading once Studio and the engine have stopped moving."""
+    def answer_unsaved_scene_prompt(self, entry: dict[str, Any], timeout: float = 30.0) -> None:
+        """Save only a visible prompt encountered while walking Undo/Redo."""
+
+        deadline = time.monotonic() + timeout
+        reply = self.call({"cmd": "text", "name": "pelican.unsavedScenePrompt"}, timeout=timeout)
+        if not reply.get("ok") or not (reply.get("result") or {}).get("visible"):
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("unsaved scene prompt probe exhausted the wait budget")
+        saved = self.call({"cmd": "click", "name": "pelican.unsavedScenePrompt.save"}, timeout=remaining)
+        if not saved.get("ok"):
+            raise ValueError("could not answer the unsaved scene prompt with Save")
+        entry["answered_unsaved_scene_prompt"] = "save"
+
+    def settle(self, before: tuple[str, str, Any] | None, *,
+               entry: dict[str, Any] | None = None) -> tuple[str, str, Any] | None:
+        """The stable reading; only a walk's press may answer a scene prompt."""
 
         pressed = time.monotonic()
         time.sleep(0.25)
-        last: tuple[str, str] | None = None
+        last: tuple[str, str, Any] | None = None
         deadline = pressed + 30.0
         while time.monotonic() < deadline:
+            if entry is not None:
+                self.answer_unsaved_scene_prompt(entry)
             current = self.signature()
             if current is None:
-                # An engine restarting (an Undo of a restart_required edit).
-                self.call({"cmd": "wait_engine", "timeout_ms": 60000}, timeout=90.0)
+                # During a walk, poll briefly so a prompt that appears after
+                # this reading can be answered before waiting for the engine.
+                if entry is not None:
+                    self.call({"cmd": "wait_engine", "timeout_ms": 1000}, timeout=30.0)
+                else:
+                    self.call({"cmd": "wait_engine", "timeout_ms": 60000}, timeout=90.0)
                 last = None
                 continue
             if current == last and (current != before or time.monotonic() - pressed > 1.5):
@@ -681,7 +703,7 @@ class Epilogue:
             entry["refused"] = (reply.get("error") or {}).get("message", "refused")
             log.append(entry)
             return "refused"
-        after = self.settle(before)
+        after = self.settle(before, entry=entry)
         self.settled = after
         entry["moved"] = not (after is not None and after == before)
         if before is not None and after is not None:
@@ -733,6 +755,10 @@ class Epilogue:
             if remaining <= 0:
                 break
             try:
+                self.answer_unsaved_scene_prompt(entry, timeout=min(30.0, remaining))
+                remaining = wait_end - time.monotonic()
+                if remaining <= 0:
+                    break
                 reply = self.call({"cmd": "history"}, timeout=min(30.0, remaining))
             except TimeoutError:
                 break
@@ -950,7 +976,7 @@ def check_undo(epilogue: Epilogue) -> dict[str, Any]:
             prefix = {"get_render_documents": "render", "export_scene_snapshot": "scene"}.get(method, method)
             if key.startswith(prefix + ":"):
                 return f"the engine did not answer it at the start: {unread}"
-        if key in start.scene_files or key in end.scene_files:
+        if key in start.scene_files or key in end.scene_files or key in after_undo.scene_files:
             return "a scene file on disk: Save is not undone; the scene in memory is compared"
         if walk_restart_reason and key.startswith("scene:"):
             return walk_restart_reason
@@ -965,6 +991,12 @@ def check_undo(epilogue: Epilogue) -> dict[str, Any]:
         for pattern, reason in exemptions:
             if fnmatch.fnmatchcase(key, pattern):
                 return f"exempt: {reason}"
+        # A Save answered during either walk also persists through Redo.
+        # Use the same disk-file rule; scene values keep the UD-2 comparison.
+        saved_in_walk = any(entry.get("answered_unsaved_scene_prompt") == "save"
+                            for walk in (undone, redone) for entry in walk["log"])
+        if saved_in_walk and (key in end.scene_files or key in after_redo.scene_files):
+            return "a scene file on disk: Save is not undone; the scene in memory is compared"
         return None
 
     result["end_journal"] = journal_depths(end.journal)
