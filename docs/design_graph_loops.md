@@ -156,6 +156,7 @@ view family のしくみ:
   - surface の reload(`prepareSurfaceMaterialReload`、`materialcontainer.hpp:373`)は、世代を変えずに pipeline と layout を差し替える。
 - **受け皿の無い material**
   - 受け皿の無い material は、`material_route_unserved@1` で断る(`src/core/material/materialgenerationplanner.cpp:779-836`)。
+  - 追記(UD-1、上の前提の後の変更): material pass を 1 つも持たない候補が、公開中の世代の描いていた route を落とすときは断らない。文書を commit して `restart_required: true`・`restart_reason.code: "material_passes_removed"` を返し、再起動で受け入れる(次の起動は Blank と同じく material を受け皿の無いものとして登録する)。material pass を持つ候補の受け皿の不足と、§4.2 の 5 の `graph.loop` の描き漏れ(LP-3a)は、変わらず `material_route_unserved@1` で断る。どちらも `requireEveryMaterialServed()` の中で、loop の検査は material pass を持つ候補にだけ掛かる。
 - **影と velocity**:影と velocity の pass は、queue 全体を描く(`materialrender.cpp:375, 406`)。
 
 ## 2. ループの形(利用者が触るもの)

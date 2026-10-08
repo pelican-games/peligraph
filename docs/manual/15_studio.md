@@ -1392,6 +1392,9 @@ GL-1c で直しました。
 - 確認で Cancel したとき(か、別の問いの最中で見送ったとき)は、notice が `The engine was not restarted. The setting is saved and applies the next time the engine starts.` を言い、走っている engine から文書と plan を読み直します([`GraphCanvasModel::engineRestartDeclined`](../../src/devstudio/model/graphcanvasmodel.cpp#L779))。
 - 読むのは `restart_reason.code` だけです。統合側が Release を仮想モニタで操作して見つけました)。
 - 再起動の後、文書が同じなら Graph タブの Undo はそのまま効きます(OT-1。§13.5 の「シーン編集との違い」)。
+- 最後の material pass を外す graph の編集も、同じ道で起こし直します。Undo で Blank の起動時の文書へ戻す場合もこれに当たり、notice の code は `material_passes_removed` です(engine 側の形は [第13章](13_editor.md) §13.5 の「最後の material pass を外す編集」)。Studio の側に専用の処理はありません。
+  - その Undo の後も、Graph タブの履歴は起こし直しをまたいで残り、Redo できます(test: `devstudio_graphcanvas_test` の [「UD-1 Graph Undo committed for restart retains Redo on reconnect」](../../test/devstudio_graphcanvas_test.cpp#L1019))。
+  - scene の Undo の履歴(editor journal)は engine の中にあってファイルに書かれないので、起こし直すと消えます(コードの読み)。ほかの理由で起こし直すときと同じです。
 - RS-1 より前の engine は、この編集を `changes the physical rendering contract of live material` を含む文で断ります。Studio はその文の後に ` — this change needs an engine restart, which the engine does not offer for graph edits yet` を足し([句を足す所](../../src/devstudio/model/graphcanvasmodel.cpp#L1366))、notice の 1 行を切り詰めるときもこの句は残します。
 
 **どのパネルの render の編集も、再起動が要れば同じ形で起動し直します(RSX)**: engine は RS-1 から、runtime に届く render config の ticket の完了すべてに、live に載せられないとき `restart_required: true` と `restart_reason` を付けます。RSX の前に Studio がこれを見ていたのは、Graph タブ・Frame Plan・render の編集の履歴(Undo / Redo)の 3 か所だけでした。Render Features は再起動が要る編集の後でも `Applied without restarting (runtime generation N).` を言っていました(engine session の調査)。
