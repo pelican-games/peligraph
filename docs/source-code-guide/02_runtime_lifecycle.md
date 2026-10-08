@@ -32,12 +32,12 @@ sequenceDiagram
 
 ### 段階A: `main()` でプロセス条件を確定
 
-入口は [`src/player/main.cpp` の `main()`](../../src/player/main.cpp#L714) です。先に [`parseLaunchConfig()`](../../src/player/main.cpp#L345) が次を決めます。
+入口は [`src/player/main.cpp` の `main()`](../../src/player/main.cpp#L731) です。先に [`parseLaunchConfig()`](../../src/player/main.cpp#L361) が次を決めます。
 
 - windowedかheadlessか
 - RPCを使うか（`--rpc`）
 - headlessの解像度・フレーム数・固定FPS
-- headlessの開始時刻（`--start-time`、[引数宣言](../../src/player/main.cpp#L378)。後述）
+- headlessの開始時刻（`--start-time`、[引数宣言](../../src/player/main.cpp#L394)。後述）
 - project rootと`project.json`
 - asset検証をstrictにするか
 - render出力、frame plan dump（`--dump-frame-plan`）
@@ -49,23 +49,23 @@ sequenceDiagram
 - 入力の記録/再生（`--record-input` / `--replay` / `--input-profile`）
 - camera bake（`--bake-camera-output`、headless + replay 必須）
 
-> **設計決定:** `--rpc` は `--headless` を要求しません（WP156。以後この文書に出る `WP<番号>` は work package = 台帳 [`docs/implementation_plan.md`](../implementation_plan.md) が「独立に依頼できる単位」として採番した作業の番号で、`-fix` / `a` / `b` は同じ作業の分割・追補です。[用語集](../manual/14_glossary.md#wpwork-package)）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L352)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
+> **設計決定:** `--rpc` は `--headless` を要求しません（WP156。以後この文書に出る `WP<番号>` は work package = 台帳 [`docs/implementation_plan.md`](../implementation_plan.md) が「独立に依頼できる単位」として採番した作業の番号で、`-fix` / `a` / `b` は同じ作業の分割・追補です。[用語集](../manual/14_glossary.md#wpwork-package)）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L368)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
 
-`--project` がなければ、実行ファイルの祖先から `projects/example/project.json` を探索します（[`configureImplicitProject()`](../../src/player/main.cpp#L271)）。明示projectなら、directoryまたは`project.json`そのものを受け付けます（[`configureExplicitProject()`](../../src/player/main.cpp#L286)）。
+`--project` がなければ、実行ファイルの祖先から `projects/example/project.json` を探索します（[`configureImplicitProject()`](../../src/player/main.cpp#L272)）。明示projectなら、directoryまたは`project.json`そのものを受け付けます（[`configureExplicitProject()`](../../src/player/main.cpp#L287)）。
 
 #### `--start-time`: 秒はここでフレーム番号になる ✅実装済み（O-1）
 
 `--start-time <秒>` は「その時刻から `--frames` 枚を出す」オフライン出力用の引数です。押さえる点は3つあります。
 
-**engineは frame 番号しか受け取りません。** 変換は [`parseStartFrame()`](../../src/player/main.cpp#L326) 1箇所だけで、`llround(seconds * fps)` によって固定ステップのタイムライン上のフレーム番号に落ちます（フレームとフレームの間の時刻は近い方のフレームへ丸められ、engineへ渡ることはありません）。結果は [`EngineLaunchConfig::start_frames`](../../src/core/launchconfig.hpp#L94) に入ります。非常に大きな秒数では `llround` が溢れますが、これは台帳 O-1 が既知の穴として記録している範囲で、実用的な入力では起きません。
+**engineは frame 番号しか受け取りません。** 変換は [`parseStartFrame()`](../../src/player/main.cpp#L332) 1箇所だけで、`llround(seconds * fps)` によって固定ステップのタイムライン上のフレーム番号に落ちます（フレームとフレームの間の時刻は近い方のフレームへ丸められ、engineへ渡ることはありません）。結果は [`EngineLaunchConfig::start_frames`](../../src/core/launchconfig.hpp#L94) に入ります。秒の上限は [`kMaxOfflineStartSeconds`](../../src/player/main.cpp#L330)(3600。`--fps` によらない)です。`llround` を呼ぶ前に、秒が上限以下か、`fps` が有限で正か、丸めた frame が有限で `long long` の範囲に収まるか、`1/fps` と `frame/fps` が有限かを確かめ、外れれば `offline.time_invalid@1` で断ります([範囲の検査](../../src/player/main.cpp#L350))。巨大な時刻で warm-up が終わらない・`llround` の範囲外の変換が起きる、の 2 つをここで塞いでいます。
 
-**失敗は全部ひとつの名前になります。** argparse に `double` としてscanさせず、テキストのまま `std::stod` で読んで「文字を全部消費したか・有限か・非負か」を自分で確かめます（[検査](../../src/player/main.cpp#L334)）。綴り間違いも負の時刻も同じ `offline.time_invalid@1` で、理由は「そんなフレームは存在しない」の一言に畳めるからです。
+**失敗は全部ひとつの名前になります。** argparse に `double` としてscanさせず、テキストのまま `std::stod` で読んで「文字を全部消費したか・有限か・非負か」を自分で確かめます（[検査](../../src/player/main.cpp#L340)）。綴り間違いも負の時刻も同じ `offline.time_invalid@1` で、理由は「そんなフレームは存在しない」の一言に畳めるからです。
 
-**組み合わせの衝突は黙って無視しません。** 固定ステップのタイムラインが存在するのは headless だけなので、`--headless` が無ければ `offline.headless_required@1`。そして「このrunのフレームがどこから来るか」を決める引数なので、同じことを決める `--rpc` / `--replay` / `--record-input` / `--bake-camera-output` との併用は [`offline.mode_conflict@1`](../../src/player/main.cpp#L657) で、どのフラグと衝突したかを名前で返します。
+**組み合わせの衝突は黙って無視しません。** 固定ステップのタイムラインが存在するのは headless だけなので、`--headless` が無ければ `offline.headless_required@1`。そして「このrunのフレームがどこから来るか」を決める引数なので、同じことを決める `--rpc` / `--replay` / `--record-input` / `--bake-camera-output` との併用は [`offline.mode_conflict@1`](../../src/player/main.cpp#L674) で、どのフラグと衝突したかを名前で返します。
 
 #### `--start-state`: edit で起こす ✅実装済み（PM-1b）
 
-`--start-state edit|playing`（既定 `playing`）は、engine が最初にどの再生の状態で動くかを決めます。値は [`parseStartState()`](../../src/player/main.cpp#L155) が読み、それ以外の値は `--start-state must be one of: edit, playing` です。結果は [`EngineLaunchConfig::start_state`](../../src/core/launchconfig.hpp#L54) に入ります。`edit` の engine はクライアントが `set_play_state` で game を始めるのを待つので、run の最初のフレームから進み方を決める引数（`--bake-camera-output` / `--replay` / `--record-input` / `--start-time` / `--rpc` の無い `--headless`）は、`--start-time` と同じ形の [`offline.mode_conflict@1: --start-state edit cannot be combined with <引数>`](../../src/player/main.cpp#L632) で断ります（挙げた順に調べ、最初に当たった 1 つを名前で返す）。この検査は `--start-time` の衝突の検査より前にあります。通れば [`completeEditStartLaunch()`](../../src/core/appflow/playmode.cpp#L46) が、`--free-camera` の無い起動に既定の free camera とその入力 overlay を足します（editor camera になる。`--editor-transform` は足さない）。
+`--start-state edit|playing`（既定 `playing`）は、engine が最初にどの再生の状態で動くかを決めます。値は [`parseStartState()`](../../src/player/main.cpp#L156) が読み、それ以外の値は `--start-state must be one of: edit, playing` です。結果は [`EngineLaunchConfig::start_state`](../../src/core/launchconfig.hpp#L54) に入ります。`edit` の engine はクライアントが `set_play_state` で game を始めるのを待つので、run の最初のフレームから進み方を決める引数（`--bake-camera-output` / `--replay` / `--record-input` / `--start-time` / `--rpc` の無い `--headless`）は、`--start-time` と同じ形の [`offline.mode_conflict@1: --start-state edit cannot be combined with <引数>`](../../src/player/main.cpp#L649) で断ります（挙げた順に調べ、最初に当たった 1 つを名前で返す）。この検査は `--start-time` の衝突の検査より前にあります。通れば [`completeEditStartLaunch()`](../../src/core/appflow/playmode.cpp#L46) が、`--free-camera` の無い起動に既定の free camera とその入力 overlay を足します（editor camera になる。`--editor-transform` は足さない）。
 
 ### 段階B: `run()` 前に共有moduleへ起動情報を注入
 

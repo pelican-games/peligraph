@@ -2195,7 +2195,7 @@ output schema・format・MSAA(sample 数)・local-read・attachment state で描
   - ReloadService は Renderer を作るときに必ず作られます([reload の参加者を登録する所](../../src/core/vkcore/renderer.cpp#L3411))。
     ReloadService が無い場合の分岐では照合が効き、今までどおり断ります([照合を切り替える所](../../src/core/vkcore/renderer_config.cpp#L683))。
     ただし通常の起動でこの分岐を通る道は見当たりません(コードからの推論)。
-  - file watcher が動くのは、窓ありで、`--rpc`・`--replay`・`--strict-assets` のどれも付けない起動だけです     ([gate の条件](../../src/core/watch/reloadgate.cpp#L46)、[headless では読み直しを要求しない所](../../src/player/main.cpp#L513))。
+  - file watcher が動くのは、窓ありで、`--rpc`・`--replay`・`--strict-assets` のどれも付けない起動だけです     ([gate の条件](../../src/core/watch/reloadgate.cpp#L46)、[headless では読み直しを要求しない所](../../src/player/main.cpp#L530))。
     `PELICAN_WITH_HOT_RELOAD=OFF` の build(配布 build)では起動のしかたに関係なく動きません([第10章](10_tools.md) §10.5)。
     project.json に `hot_reload` を宣言すると `--rpc` の下でも watcher は動きますが、`--rpc` の下では watcher の変更は     この経路(`pelican.render_pipeline` の参加者)に届きません([除外する所](../../src/core/watch/reloadservice.cpp#L979))。
     Studio が起こす engine には常に `--rpc` が付くので([Studio の起動引数](../../src/devstudio/viewport/studioplayerarguments.cpp#L90))、     Studio の中の engine はこの経路を通りません。Studio の外でディスクの文書を書き換えたときは、`reload_render_documents`で取り込みます。
@@ -3321,7 +3321,7 @@ rendering config のファイルは **`pelican.graph` root** です。最上位�
 ### 起動時に組めない構成と `--render-fallback`(BS-1  / BS-1b )
 
 rendering の構成が起動時に組めないとき(graph の名前付きの拒否、無い shader、JSON として読めない文書 …)の engine の動きは、player の起動引数
-`--render-fallback`([BS-1 の `--render-fallback` の引数](../../src/player/main.cpp#L355))の有無で分かれます。
+`--render-fallback`([BS-1 の `--render-fallback` の引数](../../src/player/main.cpp#L371))の有無で分かれます。
 
 | 起動 | 構成が組めないとき |
 |---|---|
@@ -3329,7 +3329,7 @@ rendering の構成が起動時に組めないとき(graph の名前付きの拒
 | `--rpc --render-fallback` | 終了せず、**engine 内蔵の fallback の世代**で動き続けます。直した構成を RPC で受け取ると、その世代に替わります |
 
 `--render-fallback` には `--rpc` が要ります(理由を読み、直した構成を送れるのは RPC の client だけなので。コードの注記)。`--rpc` が無ければ引数の誤りで、
-stderr に `--render-fallback requires --rpc` と usage を出し、終了コード -1 です([BS-1 の `--rpc` を求める所](../../src/player/main.cpp#L484))。
+stderr に `--render-fallback requires --rpc` と usage を出し、終了コード -1 です([BS-1 の `--rpc` を求める所](../../src/player/main.cpp#L501))。
 
 **fallback の世代**([`renderPipelineFallbackConfigJson()`](../../src/core/vkcore/renderer_config.cpp#L421))は、project の文書を何も読まない `pelican.graph` root 1 つです。
 

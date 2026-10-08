@@ -1249,6 +1249,8 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 | `nonparticipant.ui-document` | `ui().setText` / `setVisible` / `setValue`（GP-3） | 曲がらない。UI 文書は scene の参加者ではなく、書き込みは `UiModule` の command buffer に積まれて次のフレーム境界で入る。load が失敗しても残る（[manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L228)） |
 | `covered.spawn-queue` | `spawn` / `destroy`（GP-2） | その場では検査して積むだけ。要求は呼んだ時点で `objectRun()` が返す run（load の callback の中なら候補の run）に属し、次のフレーム境界で実行される。load が失敗した候補の run の要求は、境界で live でないので捨てられる（[spawn / destroy の manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L217)） |
 | `nonparticipant.window-cursor` | `input().setCursorMode`（GP-4） | 曲がらない。カーソルのモードは scene ではなく窓のもので、load 中に頼んでも load の成否に関係なく次のフレームで適用される（[manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L234)） |
+| `refuse.transaction-scope` | `audio().setSoundVolume` / `setSoundPitch` / `setSoundPaused`、`render().setRenderValues` / `setValueGraphParameter` / `emitValueGraphEvent`、`animation().setParameter` / `forceState` | transaction が開いていれば何もせずに断る。`bool` を返すものは `false`、`setParameter` / `forceState` は `Animation::Status::phase_order_error`（[refuse.transaction-scope の manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L243)、[`setParameter()` の分岐](../../src/core/userpublic/gamecontext.cpp#L536)） |
+| `reject.transaction-scope` | `render().setRayTracingDispatchExtent` / `setRayTracingCallableRecord` | transaction が開いていれば `SceneTransactionMutationRejected` を**throw**（[reject.transaction-scope の manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L224)） |
 
 縫い目が1つではない点に注意してください。`shadow_outbox.*` と、退役済みobjectを見る `covered.candidate-or-retired-reject` だけが `activeEffectTransaction()` を読みます。RNG・pending scene・eventは**それぞれ自前のscope**（`RngSequenceScope` / `PendingSceneTransactionScope` / `EventOutboxScope`）を持ち、light / camera は分岐すら持ちません。executorがこれら全部を同じ寿命で開く（§3.5 の 3）ので、外から見た挙動が揃います。
 
@@ -1298,12 +1300,12 @@ outboxのentryは呼び出しごとに1件ではありません。
 
 ### 公開APIの棚卸しは双方向
 
-上の分類表が現実と食い違わないことを機械で確かめるのが [`tools/public_api_inventory.py`](../../tools/public_api_inventory.py#L1) です。`gamecontext.hpp` / `gameobjects.hpp` / `behavior.hpp` の3ヘッダから public な関数宣言を素の走査で拾い（[`public_functions()`](../../tools/public_api_inventory.py#L69)）、名前と戻り値の形から `mutator` / `host_entrance` / `getter` へ分類したうえで、runtime manifest と**両方向**に突き合わせます。
+上の分類表が現実と食い違わないことを機械で確かめるのが [`tools/public_api_inventory.py`](../../tools/public_api_inventory.py#L1) です。`gamecontext.hpp` / `gameobjects.hpp` / `behavior.hpp` の3ヘッダから public な関数宣言を素の走査で拾い（[`public_functions()`](../../tools/public_api_inventory.py#L70)）、名前と戻り値の形から `mutator` / `host_entrance` / `getter` へ分類したうえで、runtime manifest と**両方向**に突き合わせます。
 
-- mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L170)）
-- manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L177)）
+- mutator（と `emit`）なのに manifest に分類が無い → `mutator lacks manifest classification`（[その throw](../../tools/public_api_inventory.py#L173)）
+- manifest にあるのに inventory 側で消費されなかった → `runtime manifest API absent from inventory`（[その throw](../../tools/public_api_inventory.py#L180)）
 
-結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4129)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
+結果は [check-in された inventory JSON](../../test/fixtures/public_api_inventory.json#L2) へ書き出され、CTestの `pelican_public_api_inventory`（[定義](../../test/CMakeLists.txt#L4141)）が「生成物とcheck-in済みJSONが完全一致すること」を確かめます。したがって公開APIを1本増やすと、(1) fixtureの再生成と (2) manifestへの分類追加の**両方**を通らないとテストが赤になります。署名は正規化された文字列として manifest に**そのまま**書かれているので、引数の型を変えるだけでも突き合わせが外れます。
 
 ## 5.16 姿勢を駆動する2つの様式 ✅実装済み（AG-1a / AG-1b / AG-2）
 

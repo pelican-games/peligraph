@@ -98,7 +98,7 @@ Pelican が「こう呼んでいる」基本語(scene、asset、feature、render
 
 エンジン全体を最短で追うなら、次のリンクを順に開いてください。
 
-1. [`main()`](../../src/player/main.cpp#L714) — CLIで起動条件を確定する。
+1. [`main()`](../../src/player/main.cpp#L731) — CLIで起動条件を確定する。
 2. [`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L100) — 設定、ECS、scene、loopを組み立てる。
 3. [`Loop::run()`](../../src/core/appflow/loop.cpp#L772) — 通常/XR/headless/RPCの実行方式を分ける（一覧はwindowed + RPCを含む5項目。RPCはwindowedへ追加する層です）。
 4. [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L152) — 1フレームのゲーム状態更新を5フェーズで実行する。

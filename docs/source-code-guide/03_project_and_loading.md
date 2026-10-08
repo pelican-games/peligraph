@@ -55,7 +55,7 @@ Runtime object
 
 `project.json` のschema/version/`engine_min_version`ゲートは、まず [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L311) が検証します。`--ignore-engine-version`で継続する場合も純粋層はログを出さずwarning文字列を返し、engine adapterだけがそれをquillへ渡します。検証規則の正本はこの関数だけで、`basicconfig.cpp`やdevcliに写しはありません。`engine_min_version` が新しすぎるときの拒否は MG-1 から `project.engine_too_old@1` という名前で始まります（[`projectEngineTooOldCode`](../../src/project/projectformat.hpp#L19)）。
 
-player ではこの parse の**前**に、MG-1 の入口 [`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563) が 1 回だけ走ります（[呼ぶ場所](../../src/player/main.cpp#L739)）。落ちたプロセスが残した project 文書の transaction を復旧してから、project root の下の `*.json` の最上位の `schema` / `version` を parser を通さずに読み、登録された移行手順の `from` に当たる文書があれば `project.migration_required@1` で止めます。parser の version 検査より前に置くのは、project.json 自身の版が上がったときも「知らない版」ではなく「移行が要る」で止めるためです。v0 の登録表は空で、そのときは root を歩きもしません。流れ全体は [manual 第3章 §3.13](../manual/03_project_format.md) にあります。
+player ではこの parse の**前**に、MG-1 の入口 [`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563) が 1 回だけ走ります（[呼ぶ場所](../../src/player/main.cpp#L756)）。落ちたプロセスが残した project 文書の transaction を復旧してから、project root の下の `*.json` の最上位の `schema` / `version` を parser を通さずに読み、登録された移行手順の `from` に当たる文書があれば `project.migration_required@1` で止めます。parser の version 検査より前に置くのは、project.json 自身の版が上がったときも「知らない版」ではなく「移行が要る」で止めるためです。v0 の登録表は空で、そのときは root を歩きもしません。流れ全体は [manual 第3章 §3.13](../manual/03_project_format.md) にあります。
 
 [`ProjectEnvelope`](../../src/project/projectformat.hpp#L39) が持つのは `name` / `engine_min_version` / `saved_by_engine` / `requirements` / `basic_config` / `asset_stores` / `hot_reload` / `prefabs` の8つです(`hot_reload` は HW-1 で増えた。下の箇条)。`saved_by_engine`（MG-1）は最後に project.json を書いたエンジンの版の**記録**で、何の判定にも使いません（文字列でなければ無視します）。このうち `requirements` は P-2b で入った **`requires`** キーで（`requires` はC++のキーワードなのでフィールド名だけずらしてあります）、「このプロジェクトが無いと動かないビルド機能」を宣言します。
 
@@ -223,7 +223,7 @@ resource追加には次の三箇所が必要です。
 
 ## 3.4 asset manifestの起動検証
 
-playerはcore起動前に module [`AssetsVerification`](../../src/core/loader/assetsverification.hpp#L86) の [`verifyAtStartup()`](../../src/core/loader/assetsverification.cpp#L175) を呼びます([呼び出し](../../src/player/main.cpp#L790)。✅AV-1 から。それまでは自由関数 `verifyAssetsAtStartup()` を直接呼んでいました)。`verifyAtStartup()` は store の一覧・hash cache の path・strict を覚えてから、今も残る [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L148)(中身は無名名前空間の `verifyAssetStores(..., log = true)`)を呼び、store ごとの結果 [`AssetStoreVerification`](../../src/core/loader/assetsverification.hpp#L27)(`StartupAssetsVerificationSummary::results`)を `Record {verified_at, stores}` として持ちます。log の行と strict の判定は AV-1 の前と同じです。純粋な実作業は [`verifyAssetsManifest()`](../../src/project/assetsmanifest.cpp#L574) です。
+playerはcore起動前に module [`AssetsVerification`](../../src/core/loader/assetsverification.hpp#L86) の [`verifyAtStartup()`](../../src/core/loader/assetsverification.cpp#L175) を呼びます([呼び出し](../../src/player/main.cpp#L807)。✅AV-1 から。それまでは自由関数 `verifyAssetsAtStartup()` を直接呼んでいました)。`verifyAtStartup()` は store の一覧・hash cache の path・strict を覚えてから、今も残る [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L148)(中身は無名名前空間の `verifyAssetStores(..., log = true)`)を呼び、store ごとの結果 [`AssetStoreVerification`](../../src/core/loader/assetsverification.hpp#L27)(`StartupAssetsVerificationSummary::results`)を `Record {verified_at, stores}` として持ちます。log の行と strict の判定は AV-1 の前と同じです。純粋な実作業は [`verifyAssetsManifest()`](../../src/project/assetsmanifest.cpp#L574) です。
 
 - file size、SHA-256、missing/extra/case mismatch/unreadableを分類。
 - `.pelican/assets-hash-cache.json`で再hashを減らす。
@@ -476,7 +476,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 
 以前は audio にだけ4値目の `uninstalled` がありましたが、PG-2 で消えました。audio を外したビルドでも scene の callback が音の effect（`playSound` / `stopSound` / `setBusVolume`）を積もうとすることはあり、effect transaction がそれを `build_feature_disabled@1` で拒否するので、audio は `stub` です。seqplayer の宣言は scene 文書ではなく起動オプション `--play-seq` から来ます。それでも `stub` に入れてあり、「scene に来うる」を厳密に読めば `absent` になりうる行です（PG-2 が残した論点）。
 
-`role` は10値あり（[`SceneManifestRole`](../../src/core/loader/sceneparticipantmanifest.hpp#L20)、名前は [`sceneManifestRoleName()`](../../src/core/loader/sceneparticipantmanifest.cpp#L290)）、**executorの外に居るものも明示的に載る**のが要点です。
+`role` は10値あり（[`SceneManifestRole`](../../src/core/loader/sceneparticipantmanifest.hpp#L20)、名前は [`sceneManifestRoleName()`](../../src/core/loader/sceneparticipantmanifest.cpp#L293)）、**executorの外に居るものも明示的に載る**のが要点です。
 
 | role | 意味 | 例 |
 |---|---|---|
@@ -568,7 +568,7 @@ metadata の commit 以降は「失敗しない尾部」です。executor はそ
 
 ### [manifest 配列](../../src/core/loader/sceneparticipantmanifest.cpp#L81) — この表は何の権威か {#reading-note-002}
 
-「scene transaction に関与する**独立に観測できるフィールド 1 個 = 1 行**」の表で、snapshot 比較・変異テスト・契約テストが参照する唯一の分類権威です。列は [`SceneParticipantManifestEntry`](../../src/core/loader/sceneparticipantmanifest.hpp#L36) の **10 個**(owner / field / presence / role / prepare_owner / publication / rollback / retirement / snapshot_schema / mutation_id)で、「16 フィールド」は誤りです。行数も **100 行**(`manifest`)で、166 は配列末尾の行番号にすぎません。[`public_api_manifest`](../../src/core/loader/sceneparticipantmanifest.cpp#L206) は別表で 32 行です。
+「scene transaction に関与する**独立に観測できるフィールド 1 個 = 1 行**」の表で、snapshot 比較・変異テスト・契約テストが参照する唯一の分類権威です。列は [`SceneParticipantManifestEntry`](../../src/core/loader/sceneparticipantmanifest.hpp#L36) の **10 個**(owner / field / presence / role / prepare_owner / publication / rollback / retirement / snapshot_schema / mutation_id)で、「16 フィールド」は誤りです。行数は **105 行**(`manifest`)で、配列末尾の行番号とは別の数です。[`public_api_manifest`](../../src/core/loader/sceneparticipantmanifest.cpp#L206) は別表で 49 行です。
 
 ### [`resolveParentOrder()`](../../src/core/loader/componentcodec.hpp#L116) — 巡回検査の fresh→active→done {#reading-note-003}
 

@@ -41,20 +41,20 @@
 | `--feature-overlay <uri>` | なし | `pelican.render_feature_overlay` v1 の feature bundle(= `schema` / `version` / `name` / `features` だけを持つ小さな JSON。`features` の各要素は feature 参照文字列か `{ref, parameters}` — [renderfeatureoverlay.cpp](../../src/project/renderfeatureoverlay.cpp#L17))を**この起動だけ**重ねる。公開 CLI なので Studio 以外の profiler 等も利用可能 |
 | `--headless` | off | ウィンドウなし実行(時刻は固定ステップになる) |
 | `--rpc` | off | stdio JSON-RPC モード。**`--headless` は不要です**: ヘッドレスでは stdin を読み切るまでブロッキング、**ウィンドウモードではフレーム境界処理 + 有界キュー(既定 64 件)**。溢れると `busy` エラーを即返します。※`--rpc` を付けると ImGui UI は無効([第13章](13_editor.md)) |
-| `--embedded` | off | 別 process の窓に埋め込まれる前提で起動する(EW-1、[引数](../../src/player/main.cpp#L348))。render 窓を `GLFW_VISIBLE` / `GLFW_FOCUSED` / `GLFW_FOCUS_ON_SHOW` = `GLFW_FALSE` で作る(非表示・focus 無し。見せるのは埋め込む側 — [window.cpp](../../src/core/os/window.cpp#L199))。project の `basic_config.fullscreen` が true でも無視して `basic_config.window_size` の窓で作り、log に `--embedded: the project's fullscreen setting is ignored; the window is created windowed` を 1 行出す。この引数を読むのは窓の作成だけで、時刻や game の動きは通常の窓あり起動と同じ。`--headless` との併用は引数の誤り(stderr に `--embedded cannot be combined with --headless` と usage、終了コード -1 — [併用の拒否](../../src/player/main.cpp#L477))。Studio が viewport の engine に渡す。窓の目印は下の段落 |
-| `--render-fallback` | off | `--rpc` と一緒に使う(BS-1、[`--render-fallback` の引数の定義](../../src/player/main.cpp#L355))。起動時に rendering の構成が組めなくても終わらず、engine 内蔵の一色の fallback の世代で動き、理由を `get_status.render_pipeline` で言い、`reload_render_documents` か render の編集で直した構成を受け取る。`--rpc` が無ければ引数の誤り(stderr に `--render-fallback requires --rpc` と usage、終了コード -1)。付けない起動では、構成が組めなければ今までどおり致命(終了コード 1)。Studio は 起こす engine にいつも付ける(§10.7 の Studio の所有する引数)。詳細は [第6章](06_rendering.md) §6.16 の「起動時に組めない構成と `--render-fallback`」と [第13章](13_editor.md) §13.5 |
+| `--embedded` | off | 別 process の窓に埋め込まれる前提で起動する(EW-1、[引数](../../src/player/main.cpp#L364))。render 窓を `GLFW_VISIBLE` / `GLFW_FOCUSED` / `GLFW_FOCUS_ON_SHOW` = `GLFW_FALSE` で作る(非表示・focus 無し。見せるのは埋め込む側 — [window.cpp](../../src/core/os/window.cpp#L199))。project の `basic_config.fullscreen` が true でも無視して `basic_config.window_size` の窓で作り、log に `--embedded: the project's fullscreen setting is ignored; the window is created windowed` を 1 行出す。この引数を読むのは窓の作成だけで、時刻や game の動きは通常の窓あり起動と同じ。`--headless` との併用は引数の誤り(stderr に `--embedded cannot be combined with --headless` と usage、終了コード -1 — [併用の拒否](../../src/player/main.cpp#L494))。Studio が viewport の engine に渡す。窓の目印は下の段落 |
+| `--render-fallback` | off | `--rpc` と一緒に使う(BS-1、[`--render-fallback` の引数の定義](../../src/player/main.cpp#L371))。起動時に rendering の構成が組めなくても終わらず、engine 内蔵の一色の fallback の世代で動き、理由を `get_status.render_pipeline` で言い、`reload_render_documents` か render の編集で直した構成を受け取る。`--rpc` が無ければ引数の誤り(stderr に `--render-fallback requires --rpc` と usage、終了コード -1)。付けない起動では、構成が組めなければ今までどおり致命(終了コード 1)。Studio は 起こす engine にいつも付ける(§10.7 の Studio の所有する引数)。詳細は [第6章](06_rendering.md) §6.16 の「起動時に組めない構成と `--render-fallback`」と [第13章](13_editor.md) §13.5 |
 | `--frames <n>` | 3 | ヘッドレスのフレーム数。**0 = 無制限** |
 | `--size WxH` | 1280x720 | ヘッドレスの描画サイズ |
 | `--render-out <path>` | なし | PNG 出力先(sRGB エンコード)。`%04d` 等で毎フレーム連番 |
 | `--fps <f>` | 60.0 | ヘッドレス固定ステップのレート(dt = 1/fps) |
-| `--start-time <秒>` | なし | **ヘッドレス専用**。この時刻の frame から `--frames` 枚を出す。`llround(秒 × fps)` で **parse 時に frame 番号へ量子化**され、engine には「frame の間の時刻」が渡りません([parseStartFrame()](../../src/player/main.cpp#L326))。`--headless` が無ければ `offline.headless_required@1`、負・非有限・数でない綴りは**すべて** `offline.time_invalid@1`、`--rpc` / `--replay` / `--record-input` / `--bake-camera-output` との併用は `offline.mode_conflict@1`([検査](../../src/player/main.cpp#L638))。`--frames` は併用です |
-| `--start-state <edit\|playing>` | `playing` | 起動時の再生の状態(PM-1b、[引数](../../src/player/main.cpp#L373))。`edit` は behavior を眠らせ(instance を作らない)、game の時計を止め、editor camera を用意して、RPC の `set_play_state` を待つ(`--free-camera` が無ければ `blender` の free camera とその overlay を足す。`--editor-transform` は足さない)。`--replay` / `--record-input` / `--bake-camera-output` / `--start-time` / `--rpc` の無い `--headless` との併用は `offline.mode_conflict@1: --start-state edit cannot be combined with <引数>`([併用の拒否](../../src/player/main.cpp#L632))、他の値は `--start-state must be one of: edit, playing`(どちらも引数の誤りとして usage を出して終了コード -1)。edit 状態の中身は [第13章](13_editor.md) §13.5 の「edit 状態」。Studio は `edit` を渡す(第13章 §13.1「Studio で game を再生・停止する」) |
+| `--start-time <秒>` | なし | **ヘッドレス専用**。この時刻の frame から `--frames` 枚を出す。`llround(秒 × fps)` で **parse 時に frame 番号へ量子化**され、engine には「frame の間の時刻」が渡りません([parseStartFrame()](../../src/player/main.cpp#L332))。`--headless` が無ければ `offline.headless_required@1`、負・非有限・数でない綴り、3600 秒(1 時間。`--fps` によらない)を超える秒、丸めた frame 番号やその時刻が有限でない(frame 番号が `llround` の範囲を超えるものを含む)ものは**すべて** `offline.time_invalid@1`([範囲の検査](../../src/player/main.cpp#L350))、`--rpc` / `--replay` / `--record-input` / `--bake-camera-output` との併用は `offline.mode_conflict@1`([検査](../../src/player/main.cpp#L655))。`--frames` は併用です |
+| `--start-state <edit\|playing>` | `playing` | 起動時の再生の状態(PM-1b、[引数](../../src/player/main.cpp#L389))。`edit` は behavior を眠らせ(instance を作らない)、game の時計を止め、editor camera を用意して、RPC の `set_play_state` を待つ(`--free-camera` が無ければ `blender` の free camera とその overlay を足す。`--editor-transform` は足さない)。`--replay` / `--record-input` / `--bake-camera-output` / `--start-time` / `--rpc` の無い `--headless` との併用は `offline.mode_conflict@1: --start-state edit cannot be combined with <引数>`([併用の拒否](../../src/player/main.cpp#L649))、他の値は `--start-state must be one of: edit, playing`(どちらも引数の誤りとして usage を出して終了コード -1)。edit 状態の中身は [第13章](13_editor.md) §13.5 の「edit 状態」。Studio は `edit` を渡す(第13章 §13.1「Studio で game を再生・停止する」) |
 | `--dump-frame-plan` | off | 解決済みフレームプラン JSON を **stderr** へ出力([第6章](06_rendering.md)) |
 | `--gpu-labels` | off | Vulkan debug object 名と command label を有効化。validation layer の選択とは独立([第6章](06_rendering.md) §6.14) |
 | `--vulkan-validation <off\|on>` | `_DEBUG`: on / それ以外: off | Khronos validation layer と synchronization validation を一体で選択。要求時に `VK_LAYER_KHRONOS_validation` が無ければ名前付き hard error |
 | `--allow-absolute-paths` | off | CLI 由来のコンテンツ参照に限り絶対パスを許可。JSON 内の絶対パスは常に拒否 |
 | `--user-dir <dir>` | なし | `user://` ルートの差し替え |
-| `--log-file <path>` | なし | この起動のログを `<path>` に書く。親 directory は作り、**起動ごとに切り詰めます**(1 ファイル = 1 回の実行)。省略時は従来どおり cwd の `pelican.log` に追記します([main.cpp](../../src/player/main.cpp#L384)、[log.cpp](../../src/core/log.cpp#L34))。Studio は project ごとの log をこれで渡します(§10.7) |
+| `--log-file <path>` | なし | この起動のログを `<path>` に書く。親 directory は作り、**起動ごとに切り詰めます**(1 ファイル = 1 回の実行)。省略時は従来どおり cwd の `pelican.log` に追記します([main.cpp](../../src/player/main.cpp#L401)、[log.cpp](../../src/core/log.cpp#L34))。Studio は project ごとの log をこれで渡します(§10.7) |
 | `--ignore-engine-version` | off | `engine_min_version` 不適合を hard error → WARN に降格 |
 | `--play-seq <path.jsonl>` | なし | `pelican.transform_seq` の再生(`PELICAN_WITH_SEQPLAYER` ビルドユニットが ON のビルドでのみ使えます — [第2章](02_getting_started.md) §2.2) |
 | `--seq-mesh <builtin:sphere\|path.glb>` | builtin:sphere | transform_seq 全オブジェクトに使うメッシュ |
@@ -71,7 +71,7 @@
 | `--editor-transform [blender\|grab]` | off (`blender` が省略時 preset) | runtime の transform 編集アクションを有効化。`grab` は handle のドラッグだけを残す |
 | `--xr off\|auto\|on` | off | OpenXR(PCVR)起動(WP125。`auto` = 不在なら flat 続行 / `on` = 不在・headless・rpc・リプレイでは名指しエラー — [第2章](02_getting_started.md)) |
 | `--bake-camera-output <path.jsonl>` | なし | リプレイ中のカメラ軌跡を transform_seq v1 で出力。`--headless` + `--replay` 必須 |
-| `--audio-backend device\|offline\|null` | 環境変数 `PELICAN_AUDIO_BACKEND`、それも無ければ窓あり = `device` / ヘッドレス = `offline` | 音のバックエンドを名指しする(AU-3、[読み取り](../../src/player/main.cpp#L490))。**引数があると環境変数は読まない**。空の環境変数は未設定の扱い。未知の値は `audio.backend_unknown@1` で起動を止める。`null` はデバイスを開かない(退避ではないので `get_status` の `audio` に `fallback_reason` は付かない)。`device` / `offline` は開けなければ `null` へ退避する。`PELICAN_WITH_AUDIO=OFF` の build では `null` だけを受け付け(`offline` / `device` は `This binary was built with PELICAN_WITH_AUDIO=OFF: --audio-backend <値> is unavailable`)、環境変数は読まない。詳細は [第8章 §8.11](08_gameplay.md) |
+| `--audio-backend device\|offline\|null` | 環境変数 `PELICAN_AUDIO_BACKEND`、それも無ければ窓あり = `device` / ヘッドレス = `offline` | 音のバックエンドを名指しする(AU-3、[読み取り](../../src/player/main.cpp#L507))。**引数があると環境変数は読まない**。空の環境変数は未設定の扱い。未知の値は `audio.backend_unknown@1` で起動を止める。`null` はデバイスを開かない(退避ではないので `get_status` の `audio` に `fallback_reason` は付かない)。`device` / `offline` は開けなければ `null` へ退避する。`PELICAN_WITH_AUDIO=OFF` の build では `null` だけを受け付け(`offline` / `device` は `This binary was built with PELICAN_WITH_AUDIO=OFF: --audio-backend <値> is unavailable`)、環境変数は読まない。詳細は [第8章 §8.11](08_gameplay.md) |
 
 よく使う組み合わせ:
 
@@ -128,6 +128,7 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 だからです。開始時に stderr へ 1 行 `offline: start_time=… start_frame=… replay=… frames=…` が出ます。
 最初に capture される frame が指定時刻の frame で、`--start-time 2.0 --frames 2 --fps 60` の `0001` は
 通常起動の 120 枚目と同じ画です(`--start-time 0` は通常起動と同一)。
+指定できる秒は 3600 までです。replay は実際に frame を描いて回すので、巨大な時刻は replay の前に断ります([上限の定数とコメント](../../src/player/main.cpp#L330))。
 
 **render 窓の目印(EW-1、Windows)**: 窓あり起動の render 窓には、`--embedded` の有無に関係なく常に Win32 の窓 property `PelicanEngineRenderWindow`(値 1)が付きます。窓を作った直後に `SetPropW` で付け([付ける所](../../src/core/os/window.cpp#L218))、窓を壊す前に `RemovePropW` で外します([外す所](../../src/core/os/window.cpp#L309)。埋め込む側が親ごと窓を壊した後なら外すものは無い)。名前の定数は [`Pelican::engineRenderWindowProperty`](../../src/core/os/enginewindowproperty.hpp#L15) で、engine の型に依らない header だけのファイルなので、engine を link しない埋め込み側も include できます。埋め込む側は「その process の、owner の無い top-level 窓で、この property を持つもの」を、見えているかどうかを問わず探します(`--embedded` の窓は非表示で作られるため。GLFW の helper 窓には property が付きません)。Studio がこの規則で窓を探す仕組みは [第13章](13_editor.md) の「engine の窓は Studio の外に出ません」の段落を見てください。なお `get_status` の `input.cursor.embedded`(§10.3)はこの引数を見ず、`--rpc` の窓が `WS_CHILD` にされているかで決まります([判定](../../src/core/os/window.cpp#L348))。
 
@@ -438,7 +439,7 @@ params は `get_assets_verification` / `verify_assets` が空の object だけ�
 - **ふつうに動いている engine** も 2 つに答えます([登録](../../src/core/communication/rpcserver.cpp#L1893))。移行の要る project はそもそも入口で止まるので、ここに来るのは空の plan(`required: false`)です(動いている間に文書が前の版に戻された場合を除く)。
 - **移行専用 endpoint**: `--rpc` の player が開くときの入口で `project.migration_required@1` に当たると、engine を起動せずに
   この 2 method **だけ**に答える JSON-RPC endpoint になります([`runProjectMigrationRpcServer()`](../../src/core/communication/projectmigrationrpc.cpp#L98)、
-  [player 側](../../src/player/main.cpp#L752))。ほかの method は application error で、message は入口が出した
+  [player 側](../../src/player/main.cpp#L769))。ほかの method は application error で、message は入口が出した
   `project.migration_required@1: {"documents":[…]}` です。apply が済んだ後は `project.migration_restart_required@1: {"message":"the project was migrated; start a new player to open it"}` に変わります。
   入力が終われば終了し、終了コードは apply が行われたら 0、行われなかったら 1 です。移した project は新しい player で開き直します。
   stderr には入口の 1 行(`project.migration_required@1: …`)が先に出ます。
@@ -1123,10 +1124,11 @@ HEAD が動くと configure が再実行される。
 - **GPU テストの共有 shader cache**: `pelican_gpu_lease_run` は子を起こす前に、`PELICAN_SHADER_CACHE_DIR` が未設定なら `%LOCALAPPDATA%/pelican/test_shader_cache`(Windows 以外は `$XDG_CACHE_HOME/pelican/test_shader_cache`、無ければ `~/.cache/pelican/test_shader_cache`)を作って設定します([`prepare_shader_cache_directory()`](../../test/gpu_lease_run.cpp#L136))。環境変数として子へ継承されるので、全 GPU テスト・全 worktree・Studio のシナリオが起こす player が 1 つの cache を共有します。既に設定されていれば触らず、directory を作れなければ設定しません(各 project の `.pelican/shader_cache` のまま)。`PELICAN_GPU_LEASE=off` の素通しでも設定されます。
   - project の cache directory を列挙して miss を数える GPU テスト(`WP366 renderer A B recovers q r group miss and WP384 preserves frame publication`)は、テストの中で変数を外しています。lease_run を通らない非 GPU のテストには変数が付きません。開発者が変数を全体に設定すると、「初回は miss」を前提にする非 GPU のテスト(`shader_library_test` の hot reload の 1 本)が赤になりうる、と TS-1 の報告にあります。
   - launcher は自分で決めた共有 directory を 1 日 1 回掃除します([`sweep_shader_cache_directory()`](../../test/gpu_lease_run.cpp#L101))。印のファイル `last_sweep.stamp` の更新時刻から 24 時間たっていれば、directory 直下の普通のファイルのうち 14 日書かれていないものを消します(下の directory には入りません)。失敗は全部無視し、テストの起動は止めません。呼び手が `PELICAN_SHADER_CACHE_DIR` を決めていれば何もしません。cache に当たってもファイルの更新時刻は変わらないので、使っている entry も 14 日ごとに 1 回 compile し直されます。
+- **lease の log の掃除**: launcher は起動のたびに 1 本 log(`<lease 名>.<pid>.log`)を書きます。置き場は `PELICAN_GPU_LEASE_LOG_DIR`、無ければ Windows では `%TEMP%`(Windows 以外は `$XDG_RUNTIME_DIR`、無ければ `/tmp`)です。起動のたびに最初に、その directory の `pelican_gpu_lease_v1` で始まり `.log` で終わる普通のファイルのうち、24 時間より前に書かれたものを消します(自分の log は除く。[`sweep_lease_logs()`](../../test/gpu_lease_run.cpp#L167))。失敗は全部無視し、lease の取得には関わりません。`PELICAN_GPU_LEASE=off` の素通しでも掃除します。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。例: `run_devcli_assets`/ `run_event_schema_compile`/ `run_dump_lowered_material`/ `run_devcli_gltf_extract`/ `run_spvlink_golden`/ `run_devcli_rules_import`/ `run_devcli_bake_camera` + `run_input_record_replay_headless`/ `run_ui_u2_rpc_replay`など。
 - 統合テスト: [`run_devcli_graph_catalog.cmake`](../../test/run_devcli_graph_catalog.cmake)(ctest 名 `devcli_graph_catalog`。`pelican_cli graph-catalog` の出力を検査し、**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` / `:end` のコメントで区切られていて、誰も比べない写しを 2 つ目の正にしないための仕掛けです)、`package_install_smoke`(X-1。install → カタログ → 描画 → uninstall を実 player で。`gpu` ラベル)、[`run_project_catalog_smoke.cmake`](../../test/run_project_catalog_smoke.cmake)(出荷 project の走査。`project.json` の `requires` が満たせない project は**名前を出して skip** し、player の中で落ちません)。
 - **Studio のシナリオ(Q-1)**: `test/studio_scenarios/*.json` は 1 本が 1 つの ctest `studio_scenario_<名前>` になり
-([登録](../../test/CMakeLists.txt#L3748))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
+([登録](../../test/CMakeLists.txt#L3760))、`pelican_gpu_lease_run` 経由の **GPU lane** で走ります —— 実物の窓に
 実物の player が埋まるので `QT_QPA_PLATFORM=offscreen` は掛けません。Studio target と Python 製テストを有効にし、
 Python 3.11 以上を用意します。`uv` は不要です。完全な GPU gate はシナリオの未登録・skip を失敗にするため、
 `SKIP_DEVSTUDIO=OFF` と `PELICAN_PYTHON_TESTS=ON` を指定します。[`run_studio_scenario.cmake`](../../test/run_studio_scenario.cmake#L30) が fixture
@@ -1187,8 +1189,8 @@ tools/codex_bg_status.sh <tag> [tail 行数]   # RUNNING か DONE:<exit> と log
 
 ### `tools/public_api_inventory.py` — 公開 API の inventory
 
-`GameContext` / `GameObjects` / `BehaviorContext` の **public メンバ関数を exact signature で
-列挙**し、`test/fixtures/public_api_inventory.json` に書きます。
+`gamecontext.hpp` の context(`PhysicsContext` / `AudioContext` / `AnimationContext` / `SaveContext` / `RenderContext` / `ObjectsContext` / `UiContext` / `InputContext` / `GameContext`)と `GameObjects` / `BehaviorContext` の **public メンバ関数を exact signature で
+列挙**し([対象の表](../../tools/public_api_inventory.py#L11))、`test/fixtures/public_api_inventory.json` に書きます。
 
 ```sh
 uv run tools/public_api_inventory.py           # 照合(古ければ非 0)
@@ -1196,6 +1198,8 @@ uv run tools/public_api_inventory.py --write   # 生成
 ```
 
 各行は `getter` / `mutator` / `host_entrance` に分類され、**mutator と host_entrance は [`sceneparticipantmanifest.cpp`](../../src/core/loader/sceneparticipantmanifest.cpp) の runtime manifest に 対応する行が無いと生成が失敗します**。逆に manifest にあって inventory に無い API も失敗です (双方向。WP380e)。ゲーム API に mutator を足したら、scene transaction 側の分類も同時に足す、 という結び付きをこの 1 本が強制しています。
+
+mutator かどうかは**戻り値の型によらず名前で**決めます([分類する所](../../tools/public_api_inventory.py#L148))。名前の表(`MUTATORS`)にあるもの、または `void` を返すもの、または名前が `set` / `force` / `save` / `create` / `remove` / `play` / `stop` / `load` / `random` / `debug` / `add` / `emit` に大文字か `_` が続く形(あるいはその語だけ)のものが mutator です。例外は `logInfo` / `logWarning` / `logError` と、`SaveContext::loadData`・`GameContext::save` で、これらは getter です。`emit` は host_entrance です。この規則で、`Animation::Status` を返す `AnimationContext::setParameter` / `forceState` と `RenderContext::emitValueGraphEvent` も mutator に数えられ、manifest にはこの 3 本の `refuse.transaction-scope` の行があります([3 本の manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L248))。scene の transaction が開いている間、この 3 本は何もせずに断ります(`setParameter` / `forceState` は `Animation::Status::phase_order_error`、`emitValueGraphEvent` は `false`。[`setParameter()`](../../src/core/userpublic/gamecontext.cpp#L535))。
 
 ### `tools/doclink.py` — 行番号リンクの追随
 

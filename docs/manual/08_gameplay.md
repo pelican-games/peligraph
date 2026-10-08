@@ -189,7 +189,7 @@ engine は RPC の `set_play_state` で一時停止でき、`advance_frames` で
 |---|---|---|
 | [`physics()`](../../src/core/userpublic/gamecontext.hpp#L357) → [`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L49) | `raycastAll(ray, filter)` / `raycastClosest(ray, filter)` / `overlapAll(shape, filter)` / `shapeCastAll(shape, delta, filter)` / `shapeCastClosest(shape, delta, filter)` | §8.8。`filter` は省略可。`PELICAN_WITH_PHYSICS` 無しビルドでは全問い合わせが `BuildFeatureCallDisabledError`(`build_feature_disabled@1`)、provider が 0 本のビルドでは `phys::ProviderUnavailableError`(`physics.provider_unavailable@1`)。どちらも「何にも当たらなかった」とは答えません(下の「機能を外した build」) |
 | [`audio()`](../../src/core/userpublic/gamecontext.hpp#L358) → [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L84) | `playSound(path)` / `playSound(path, bus)`→SoundHandle / `stopSound(h)` / `setBusVolume(bus,v)` / `busVolume(bus)` / `isPlaying(h)` / `setSoundVolume(h,v)` / `setSoundPitch(h,p)` / `setSoundPaused(h,b)` / `soundState(h)`→optional | §8.11。`PELICAN_WITH_AUDIO` 無しビルドは `BuildFeatureCallDisabledError`(`build_feature_disabled@1`。下の「機能を外した build」) |
-| [`animation()`](../../src/core/userpublic/gamecontext.hpp#L359) → [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L114) | `setParameter(object, name, value)`→`Animation::Status` / `forceState(object, state)`→`Animation::Status` | **`animation` コンポーネントの `graph`**(`pelican.anim_graph`)に装着された評価器を動かす。初回装着の前と取り外し後は `not_found`、シーンのロード/破棄トランザクション中は `phase_order_error`([宣言](../../src/core/userpublic/gamecontext.hpp#L116)) |
+| [`animation()`](../../src/core/userpublic/gamecontext.hpp#L359) → [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L114) | `setParameter(object, name, value)`→`Animation::Status` / `forceState(object, state)`→`Animation::Status` | **`animation` コンポーネントの `graph`**(`pelican.anim_graph`)に装着された評価器を動かす。初回装着の前と取り外し後は `not_found`、シーンのロード/破棄トランザクション中は `phase_order_error`([宣言](../../src/core/userpublic/gamecontext.hpp#L116)。公開 API の manifest の分類は `refuse.transaction-scope`、[setParameter / forceState の manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L249)) |
 | [`save()`](../../src/core/userpublic/gamecontext.hpp#L360) → [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L123) | `saveData(slot, json)` / `loadData(slot)`→optional / `listSaves()`→`SlotInfo` 列 | §8.12(✅WP65) |
 | [`render()`](../../src/core/userpublic/gamecontext.hpp#L361) → [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L138) ライト | `setDirectionalLightDirection(name, dir)` / `setDirectionalLightIntensity(name, f)` / `setPointLightPosition(name, pos)` / `setSpotLightDirection(name, dir)` — いずれも→bool | ✅WP142。[第4章](04_scene_ecs.md) §4.2 の light をオブジェクト `name` で指す。未知名は例外ではなく **false** が返る |
 | `render()` カメラ | `setCamera(name)` | §8.9 |
@@ -862,7 +862,7 @@ ctx.audio().stopSound(h);
 
 AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは **rpc で動いていても窓があれば `device`** です(Studio の埋め込み player で音が出るのはこのため)。
 
-**起動で名指しする(✅AU-3)。** player は次の順でバックエンドを決めます([引数と環境変数の読み取り](../../src/player/main.cpp#L490)、[`EngineLaunchConfig::audio_backend`](../../src/core/launchconfig.hpp#L75))。
+**起動で名指しする(✅AU-3)。** player は次の順でバックエンドを決めます([引数と環境変数の読み取り](../../src/player/main.cpp#L507)、[`EngineLaunchConfig::audio_backend`](../../src/core/launchconfig.hpp#L75))。
 
 | 優先 | 指定 | 値 |
 |---|---|---|
@@ -870,8 +870,8 @@ AU-1 より前は「ヘッドレス / rpc なら null」でしたが、いまは
 | 2 | 環境変数 `PELICAN_AUDIO_BACKEND` | 同上 |
 | 3 | どちらも無い | 上の表(窓あり = `device`、ヘッドレス = `offline`) |
 
-- **引数があると環境変数は読みません。** 環境変数が空文字列なら未設定と同じ扱いです([`audioBackendEnvironment`](../../src/player/main.cpp#L123))。
-- 値は完全一致です(`Null` や空文字列の引数は通らない。[`audioBackendKindFromName`](../../src/core/audio/audiobackendkind.hpp#L31))。それ以外の値は起動を止め、`audio.backend_unknown@1: --audio-backend must be one of: device, offline, null: <値>` で失敗します(環境変数から来たときは `--audio-backend` の所が `PELICAN_AUDIO_BACKEND` になります。[`parseAudioBackend`](../../src/player/main.cpp#L111))。
+- **引数があると環境変数は読みません。** 環境変数が空文字列なら未設定と同じ扱いです([`audioBackendEnvironment`](../../src/player/main.cpp#L124))。
+- 値は完全一致です(`Null` や空文字列の引数は通らない。[`audioBackendKindFromName`](../../src/core/audio/audiobackendkind.hpp#L31))。それ以外の値は起動を止め、`audio.backend_unknown@1: --audio-backend must be one of: device, offline, null: <値>` で失敗します(環境変数から来たときは `--audio-backend` の所が `PELICAN_AUDIO_BACKEND` になります。[`parseAudioBackend`](../../src/player/main.cpp#L112))。
 - `device` / `offline` を名指ししても、開けなければ名指ししないときと同じく `null` へ退避し、`fallback_reason` が付きます。
 - **Studio の埋め込み player は Studio の環境を継承します**。Studio を `PELICAN_AUDIO_BACKEND=null` で起動すれば、埋め込み player は音を出しません。シナリオの実行規則は[test の案内](../../test/studio_scenarios/README.md)を参照してください。
 - **`PELICAN_WITH_AUDIO=OFF` の build** では `--audio-backend null` だけを受け付けます。`offline` / `device` は `This binary was built with PELICAN_WITH_AUDIO=OFF: --audio-backend <値> is unavailable` で起動を止めます(未知の値は、その前に `audio.backend_unknown@1`)。**環境変数は読みません**(継承した値で OFF の player が止まらないように)。

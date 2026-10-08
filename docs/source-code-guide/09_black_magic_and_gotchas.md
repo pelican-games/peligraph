@@ -1288,13 +1288,13 @@ marker は自分が属する manifest に digest で縛られます。[`transact
 
 **素朴に読むと**: 「この時刻から出力する」なので、engine には秒が渡ってどこかで seek する、と読めます。
 
-**実際は**: 秒が frame 番号になるのは [`parseStartFrame()`](../../src/player/main.cpp#L326) の 1 箇所だけで、`llround(seconds * fps)` が量子化です([規範コメント](../../src/player/main.cpp#L317))。**engine はフレームの間の時刻を渡されません**。parse 自体は [`std::stod()`](../../src/player/main.cpp#L330) を呼びますが、**消費した文字数を突き合わせる**ので([検査](../../src/player/main.cpp#L334))、綴り間違い・非有限・負のすべてが同じ [`offline.time_invalid@1` のメッセージ](../../src/player/main.cpp#L336) になります(「そのようなフレームは無い」という 1 つの答えだから、という理由がコメントにあります)。
+**実際は**: 秒が frame 番号になるのは [`parseStartFrame()`](../../src/player/main.cpp#L332) の 1 箇所だけで、`llround(seconds * fps)` が量子化です([規範コメント](../../src/player/main.cpp#L318))。**engine はフレームの間の時刻を渡されません**。parse 自体は [`std::stod()`](../../src/player/main.cpp#L336) を呼びますが、**消費した文字数を突き合わせる**ので([検査](../../src/player/main.cpp#L340))、綴り間違い・非有限・負のすべてが同じ [`offline.time_invalid@1` のメッセージ](../../src/player/main.cpp#L342) になります(「そのようなフレームは無い」という 1 つの答えだから、という理由がコメントにあります)。
 
 seek が無い代わりに置かれているのが **replay prologue** です。[`loop.cpp` の該当分岐](../../src/core/appflow/loop.cpp#L672)が `start_frames − 1` フレームを capture 無しで回し、`offline: start_time=… start_frame=… replay=… frames=…` を stderr に出してから通常の capture ループへ入ります。理由はコメントが規範で、**フレームの見た目を決める状態は時計だけからは到達できない**(グラフの clock は `render()` の中でしか進まず、project のシステムは自分で dt を積分する)からです。
 
-**不変条件**: 量子化を `floor` などへ変えないこと(同じ時刻指定が別のフレームを指し、連番出力の byte 比較が壊れます)。replay フレームで capture 以外の処理を省かないこと。3 つの失敗を別々の名前に分けないこと。既知の穴として、`llround` の overflow は検査の前に溢れます(溢れるのは `seconds * fps` が 9.223e18 を超えるときなので、既定の **fps=60 でおよそ 1.54e17 秒**。`--fps` は[利用者が指定できます](../../src/player/main.cpp#L570))(`docs/v0_freeze.md` §4)。
+**不変条件**: 量子化を `floor` などへ変えないこと(同じ時刻指定が別のフレームを指し、連番出力の byte 比較が壊れます)。replay フレームで capture 以外の処理を省かないこと。3 つの失敗を別々の名前に分けないこと。`llround` の前の範囲の検査([その条件](../../src/player/main.cpp#L350))を外さないこと —— 秒の上限 3600([`kMaxOfflineStartSeconds`](../../src/player/main.cpp#L330)、`--fps` によらない)が無いと巨大な時刻で warm-up が終わらず、`long long` を超える frame では `llround` の結果が処理系定義になります。`double` は `LLONG_MAX` を 2^63 に丸めるので、範囲の端も `>=` で断っています。
 
-**読む場所**: [`parseStartFrame()`](../../src/player/main.cpp#L326) → [`--start-time` の宣言](../../src/player/main.cpp#L378) → [replay prologue](../../src/core/appflow/loop.cpp#L672)。
+**読む場所**: [`parseStartFrame()`](../../src/player/main.cpp#L332) → [`--start-time` の宣言](../../src/player/main.cpp#L394) → [replay prologue](../../src/core/appflow/loop.cpp#L672)。
 
 ### 難所 — 解決できない owner は警告を出して非アクティブになる、警告は 1 回だけ
 
@@ -1352,6 +1352,16 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 **不変条件**: 物理の契約の拒否より後ろで新しい検査を走らせないこと —— RS-1 の経路はそこで止まるので、その検査が見るはずの誤りを抱えた候補が commit されます。足すなら `validateCompatibility()` の中で、`physical_change` を投げる前に。editor で型付きの拒否以外を commit に回さないこと。
 
 **読む場所**: [`materialphysicalcontractchanged.hpp`](../../src/core/material/materialphysicalcontractchanged.hpp#L39) → [`validateCompatibility()`](../../src/core/material/materialgenerationplanner.cpp#L1215) → [`physicalContractRestartReason()`](../../src/core/communication/renderconfigeditor.cpp#L217) → [`completeCommitTransaction()` の RS-1 の枝](../../src/core/communication/renderconfigeditor.cpp#L7965)。利用者から見た結果の形は manual の第13章 §13.5。
+
+### 難所 — Studio の widget の破棄では、Impl が QWidget の基底より先に消える(FX-4)
+
+**素朴に読むと**: 子の widget の signal から親の lambda への接続は、QObject が破棄のときに自動で外すので、destructor は `= default` でよい、と読めます。
+
+**実際は**: `std::unique_ptr<Impl>` のメンバは、派生クラスの destructor の本体が終わった直後、`QWidget::~QWidget()` より先に消えます。その後の `QWidget::~QWidget()` が窓を閉じて焦点を外すので、焦点を持っていた欄(`QLineEdit` など)が `editingFinished` を出し、消えた Impl や binding を捕まえた lambda が走ります。QObject の自動の切断はその後なので間に合いません。Inspector では、数値・文字の欄の binding(`NumericBinding` / `TextBinding`)を Impl が持っています。対策は destructor の最初で、子から自分への接続を全部外すことです([`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2707)。event filter も外す)。[`GraphAttachmentWidget::~GraphAttachmentWidget()`](../../src/devstudio/view/graphattachmentwidget.cpp#L392)(入力 port の欄)と [`MaterialAssignWidget::~MaterialAssignWidget()`](../../src/devstudio/view/materialassignwidget.cpp#L337) も同じ形です。test は `test/devstudio_inspector_widget_test.cpp` にあり、焦点のある欄・書きかけの欄・書きかけの入力 port を持つ widget を壊して、遅れた編集が送られないことを見ます。
+
+**不変条件**: 子の欄の signal を、Impl やその中の binding を捕まえた lambda に繋ぐ widget は、destructor を `= default` にしないこと。destructor の最初で `findChildren<QObject *>()` の各子から `this` への接続を外します。
+
+**読む場所**: [`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2707) → [`GraphAttachmentWidget::~GraphAttachmentWidget()`](../../src/devstudio/view/graphattachmentwidget.cpp#L392)。
 
 ---
 
