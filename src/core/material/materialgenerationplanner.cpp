@@ -2,6 +2,7 @@
 #include "materialdrawlooptable.hpp"
 #include "materiallimits.hpp"
 #include "materialphysicalcontractchanged.hpp"
+#include "materialpassesremoved.hpp"
 #include "materialstartupunserved.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../renderingpass/framegraphruntime.hpp"
@@ -759,9 +760,9 @@ MaterialGenerationPlanner::resolveLiveMaterialBindings(
     // G-4: the same rule as registration. A graph with one material pass must
     // serve every registered material, whether or not the published graph
     // did. A graph with no material pass at all (an RT-only project) draws
-    // no material, but may not drop a route the published graph consumed;
-    // MaterialGenerationPlanner::requireEveryMaterialServed has refused both
-    // already, and this is the per-material backstop for the first.
+    // no material. Dropping a previously consumed route requires a restart;
+    // requireEveryMaterialServed has requested it before this per-material
+    // backstop is reached.
     if (!generationHasMaterialPasses(generation)) {
         return std::nullopt;
     }
@@ -794,12 +795,10 @@ MaterialGenerationPlanner::candidateRoute(
 void MaterialGenerationPlanner::requireEveryMaterialServed(
     const MaterialContainer &container,
     const RendererRuntimeGeneration &generation) {
-    // Two rules, one code. A candidate with any material pass must serve
-    // every registered material. A candidate with none (an RT-only graph)
-    // may draw no material, but it may not drop a route the published graph
-    // did consume. With nothing published yet (a ray-tracing startup
-    // generation stays staged until its first submitted frame) no route was
-    // consumed, so there is nothing to drop.
+    // A candidate with material passes must serve every material (G-4).
+    // Without any, it is a valid startup document. If live materials used
+    // the old passes, request a restart instead of retaining their pipeline
+    // and binding metadata in a no-material-pass generation (UD-1).
     const bool has_material_passes =
         generationHasMaterialPasses(generation);
     std::shared_ptr<const RendererRuntimeGeneration> previous;
@@ -896,6 +895,7 @@ void MaterialGenerationPlanner::requireEveryMaterialServed(
         }
     }
     if (unserved.empty()) return;
+    if (!has_material_passes) throw MaterialPassesRemoved{};
     throw std::runtime_error(materialRouteUnservedMessage(
         unserved, activeRenderingConfigReference()));
 }

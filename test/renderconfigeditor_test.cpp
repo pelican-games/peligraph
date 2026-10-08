@@ -12,6 +12,7 @@
 #include "../src/core/communication/rpcserver.hpp"
 #include "../src/core/fullscreenpass/fullscreeninputbindingmismatch.hpp"
 #include "../src/core/material/materialphysicalcontractchanged.hpp"
+#include "../src/core/material/materialpassesremoved.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
@@ -8092,6 +8093,31 @@ TEST_CASE("LP-2 a draw-loop refusal the renderer raises comes back as a named re
 // start, with restart_required and the reason; any other refusal still leaves
 // every document as it was. The running renderer's own case is in
 // engine_primitives_test.
+TEST_CASE("UD-1 a no-material-pass restart commits documents and retains the published generation",
+          "[render-config-editor][ud1][material-pass]") {
+    RenderTargetHarness harness{true};
+    const auto before = readBytes(harness.project.render_config);
+    const auto generation = harness.runtime.snapshot.published_generation;
+    harness.runtime.validate_candidate = [](const RenderConfigCandidateDocumentSet &) {
+        throw MaterialPassesRemoved{};
+    };
+    const auto accepted = harness.edit(addOp(sceneTarget("ud1_target")));
+    REQUIRE(accepted.at("status") == "accepted");
+    harness.service->commitPending();
+    const auto result = harness.service->getResult({{"ticket", accepted.at("ticket")}});
+    INFO(result.dump());
+    REQUIRE(result.at("status") == "committed");
+    CHECK(result.at("committed") == true);
+    CHECK(result.at("restart_required") == true);
+    CHECK(result.at("restart_reason").at("code") == "material_passes_removed");
+    CHECK(result.at("published_generation") == generation);
+    CHECK(harness.runtime.snapshot.published_generation == generation);
+    const auto after = readBytes(harness.project.render_config);
+    CHECK(after != before);
+    CHECK(result.at("source_digest").at("hex") == renderConfigSourceDigest(after));
+    CHECK_FALSE(result.at("documents").empty());
+}
+
 TEST_CASE("RS-1 a candidate refused live only for a material's physical contract is committed with restart_required",
           "[render-config-editor][rs1][material-pass]") {
     RenderTargetHarness harness{true};

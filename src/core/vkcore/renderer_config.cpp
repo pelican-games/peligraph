@@ -5,6 +5,7 @@
 #include "../launchconfig.hpp"
 #include "../log.hpp"
 #include "../material/materialcontainer.hpp"
+#include "../material/materialpassesremoved.hpp"
 #include "../profiler.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../renderer/debugtext.hpp"
@@ -795,6 +796,11 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
             "Failed to load main rendering configuration: {}",
             named.what());
         throw named;
+    } catch (const MaterialPassesRemoved &restart) {
+        // UD-1: this is a valid document committed for the next startup,
+        // not a configuration error. Keep the typed restart reason intact.
+        LOG_INFO(logger, "Render configuration requires restart: {}", restart.what());
+        throw;
     } catch (const std::exception &error) {
         // CT-2: the graph refusals that travel as "<code>: <JSON>" (the
         // view_select and draw-loop codes) take the same fields. Only a plain

@@ -13,6 +13,7 @@
 #include "../src/core/log.hpp"
 #include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/engineprimitives.hpp"
 #include "../src/core/fullscreenpass/fullscreenpasscontainer.hpp"
@@ -606,6 +607,109 @@ void writeForwardOnlyProject(const std::filesystem::path &root, bool forward_def
 }
 
 } // namespace
+
+TEST_CASE("UD-1 removing the last material pass commits for restart and starts like a blank project",
+          "[ud1][primitives][material-routing][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("ud1_restart");
+    const auto root = dir.root / "project";
+    initializeProjectTemplate(root, ProjectTemplate::Blank);
+    const auto path = root / "passes/main_rendering_config.json";
+    const auto blank = readFile(path);
+    const auto capture = dir.root / "capture.png";
+    const auto blank_shader = readFile(root / "shaders/present.frag");
+    // Compare a fresh blank startup with the startup after the edit. Both
+    // register a cube but have no material pass to draw it.
+    std::vector<unsigned char> blank_pixels;
+    const auto spawn = [](Rpc &rpc) {
+        (void)rpc.result("step_frame");
+        const auto actor = rpc.result("open_editor_session", {{"display_name", "UD-1"}})
+                               .at("actor_id").get<std::uint64_t>();
+        const auto result = rpc.edit(actor, spawnCube("engine://primitives/cube"));
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+    };
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        spawn(rpc);
+        blank_pixels = rpc.frame(capture);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    writeForwardOnlyProject(root, true);
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        const auto background = rpc.frame(capture);
+        spawn(rpc);
+        const auto drawn = rpc.frame(capture);
+        REQUIRE(differingPixels(background, drawn) > 64);
+        const auto generation = GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+        REQUIRE(generation != nullptr);
+        const auto settle = [&](const Json &accepted) {
+            REQUIRE(accepted.at("status") == "accepted");
+            Json result;
+            for (int attempt = 0; attempt < 8; ++attempt) {
+                (void)rpc.result("step_frame");
+                result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+                if (result.value("status", std::string{}) != "pending") return result;
+            }
+            FAIL("UD-1 render edit stayed pending");
+            return result;
+        };
+        const auto current = rpc.result("get_render_documents").at("documents").at(0);
+        auto incompatible = readFile(path);
+        const std::string opaque = "forward_opaque_v1";
+        const auto contract = incompatible.find(opaque);
+        REQUIRE(contract != std::string::npos);
+        incompatible.replace(contract, opaque.size(), "forward_transparent_v1");
+        const auto refused = settle(rpc.result("restore_render_documents",
+            {{"documents", Json::array({{{"reference", current.at("reference")},
+                                         {"base_digest", current.at("digest")},
+                                         {"content", incompatible}}})}}));
+        INFO(refused.dump(2));
+        REQUIRE(refused.at("status") == "rejected");
+        CHECK(refused.at("error").at("code") == "material_route_unserved@1");
+        CHECK_FALSE(refused.contains("restart_required"));
+        CHECK(GET_MODULE(FrameGraphRuntimeContainer).snapshot() == generation);
+        CHECK(readFile(path) == current.at("content").get<std::string>());
+        const auto accepted = rpc.result("restore_render_documents",
+            {{"documents", Json::array({{{"reference", current.at("reference")},
+                                         {"base_digest", current.at("digest")},
+                                         {"content", blank}}})}});
+        REQUIRE(accepted.at("status") == "accepted");
+        Json result;
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            (void)rpc.result("step_frame");
+            result = rpc.result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+            if (result.value("status", std::string{}) != "pending") break;
+        }
+        INFO(result.dump(2));
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("restart_required") == true);
+        CHECK(result.at("restart_reason").at("code") == "material_passes_removed");
+        CHECK(readFile(path) == blank);
+        CHECK(GET_MODULE(FrameGraphRuntimeContainer).snapshot() == generation);
+        // The commit must not retire resources still used by the old frame.
+        CHECK(differingPixels(drawn, rpc.frame(capture)) == 0);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    writeFile(root / "shaders/present.frag", blank_shader);
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        spawn(rpc);
+        CHECK_FALSE(GET_MODULE(RenderingPassContainer).hasMaterialPasses());
+        CHECK(differingPixels(blank_pixels, rpc.frame(capture)) == 0);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+}
 
 TEST_CASE("G-4 a forward-only direct root draws the basic cube once material_route_default is forward",
           "[g4][primitives][material-routing][gpu]") {

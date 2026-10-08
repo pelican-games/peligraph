@@ -1,8 +1,13 @@
 # QD-1: scenario invariant findings
 
-Inventory dated 2026-10-05. Ordinary scenario assertions pass in all 84 cases. The matrix preserves observed failures even when a ticketed `known_red` mark lets CTest pass.
+Original inventory dated 2026-10-05. Ordinary scenario assertions passed in that 84-case inventory. The matrix preserves observed failures even when a ticketed `known_red` mark lets CTest pass.
 
-There are now **33 marks in 33 scenarios**: 33 Undo/Redo checks and 0 health checks. The original inventory had 49 marks in 46 scenarios; this follow-up resolved 16 marks. These are reproduction records, not a count of independent root causes. No reopen check is marked known red.
+There are now **31 marks in 31 scenarios**: 31 Undo/Redo checks and 0 health checks. The original inventory had 49 marks in 46 scenarios; the October 5 follow-up resolved 16 marks and UD-1 resolved 2 more. These are reproduction records, not a count of independent root causes. No reopen check is marked known red.
+
+
+## UD-1 recheck (2026-10-08)
+
+2 of the eleven prescribed runs reached green Undo/Redo, reopen and health and are marked Resolved (UD-1) below. The other runs stopped during ordinary pixel comparisons whose sampled pixels were black, before the Undo epilogue; their existing tickets remain. These incomplete rechecks do not replace the earlier Undo reproduction evidence. No pixel expectation or invariant comparison was relaxed.
 
 ## Evidence and interpretation
 
@@ -32,14 +37,14 @@ Remaining marks are still executable reproductions. They include intentional rou
 | engine_window_embedded | pass | green | green | green |  | full run |
 | forward_loop_from_scratch | pass | green | green | green |  | full run |
 | frameplan_edit_roundtrip | pass | green | green | green |  | full run |
-| frameplan_layout_then_edit | pass | red | green | green | QD1-R7 | full run |
+| frameplan_layout_then_edit | pass | green | green | green |  | UD-1 2026-10-08 |
 | fullscreen_pass_from_template | pass | green | green | green |  | fixes recheck 21:08 |
 | graph_auto_layout | pass | green | green | green |  | fixes recheck 21:09 |
 | graph_canvas_zoom_pan | pass | green | green | green |  | full run |
 | graph_edit_roundtrip | pass | green | green | green |  | full run |
 | graph_fold_decisions | pass | red | green | green | QD1-R10 | fixes recheck 21:28 |
 | graph_folded_features | pass | green | green | green |  | full run |
-| graph_from_blank | pass | red | green | green | QD1-R1 | final check |
+| graph_from_blank | pass | green | green | green |  | UD-1 2026-10-08 |
 | graph_from_blank_forward | pass | red | green | green | QD1-R11 | follow-up |
 | graph_layers_origin | pass | green | green | green |  | full run |
 | graph_loop_expand | pass | green | green | green |  | final check |
@@ -159,27 +164,6 @@ Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 +    {
 ```
 
-### QD1-R7: frameplan_layout_then_edit / undo
-
-**Studio/engine / authoring contract.** The history walk encounters an engine route contract refusal: `No pass draws the deferred_geometry route, which pelican.builtin.transparent (engine buil…`. Remaining document changes are listed below. Equality with a restart snapshot does not prove that the restart cleared the history. Decide intended rollback semantics before changing production.
-
-Reproduce through ordinary step 50, then the `undo` epilogue.
-
-Observed panel notices: `No pass draws the deferred_geometry route, which pelican.builtin.transparent (engine buil…`.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -1,4 +1,228 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
-```
-
 ### QD1-R10: graph_fold_decisions / undo
 
 **Studio / history restoration, cause not isolated.** The available per-kind history walk does not restore the compared documents. This records an observed coverage or restoration gap; it does not establish an independent product defect or prove that an engine restart deleted history. A focused reproduction must distinguish history invalidation, shared Graph/Render ordering and a missing inverse.
@@ -199,27 +183,6 @@ Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rend
 +   "render_fullscreen": {
 +    "x": 428,
 +    "y": 0
-```
-
-### QD1-R1: graph_from_blank / undo
-
-**Studio/engine / authoring contract.** The history walk encounters an engine route contract refusal: `No pass draws the deferred_geometry route, which pelican.builtin.transparent (engine buil…`. Remaining document changes are listed below. Equality with a restart snapshot does not prove that the restart cleared the history. Decide intended rollback semantics before changing production.
-
-Reproduce through ordinary step 48, then the `undo` epilogue.
-
-Observed panel notices: `No pass draws the deferred_geometry route, which pelican.builtin.transparent (engine buil…`.
-
-Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
-
-```diff
-@@ -1,4 +1,223 @@
- {
-- "definitions": {},
-- "nodes": [],
-+ "definitions": {
-+  "render_material_pass_draw": {
-+   "nodes": [
-+    {
 ```
 
 ### QD1-R11: graph_from_blank_forward / undo
@@ -1175,4 +1138,56 @@ Redo differs: `file:passes/main.json`, `render:passes/main.json`.
 -   "op": "render.target_ref",
 -   "outputs": [
 -    "resource"
+```
+
+
+### QD1-R1: graph_from_blank / undo
+
+**Resolved (UD-1), 2026-10-08.** Removing the last material pass commits for an engine restart. The one prescribed scenario run verified Undo/Redo, reopen and health green.
+
+Original reproduction (retained as evidence):
+
+**Studio/engine / authoring contract.** The history walk encounters an engine route contract refusal: `No pass draws the deferred_geometry route, which pelican.builtin.transparent (engine buil…`. Remaining document changes are listed below. Equality with a restart snapshot does not prove that the restart cleared the history. Decide intended rollback semantics before changing production.
+
+Reproduce through ordinary step 48, then the `undo` epilogue.
+
+Observed panel notices: `No pass draws the deferred_geometry route, which pelican.builtin.transparent (engine buil…`.
+
+Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+
+```diff
+@@ -1,4 +1,223 @@
+ {
+- "definitions": {},
+- "nodes": [],
++ "definitions": {
++  "render_material_pass_draw": {
++   "nodes": [
++    {
+```
+
+
+### QD1-R7: frameplan_layout_then_edit / undo
+
+**Resolved (UD-1), 2026-10-08.** Removing the last material pass commits for an engine restart. The one prescribed scenario run verified Undo/Redo, reopen and health green.
+
+Original reproduction (retained as evidence):
+
+**Studio/engine / authoring contract.** The history walk encounters an engine route contract refusal: `No pass draws the deferred_geometry route, which pelican.builtin.transparent (engine buil…`. Remaining document changes are listed below. Equality with a restart snapshot does not prove that the restart cleared the history. Decide intended rollback semantics before changing production.
+
+Reproduce through ordinary step 50, then the `undo` epilogue.
+
+Observed panel notices: `No pass draws the deferred_geometry route, which pelican.builtin.transparent (engine buil…`.
+
+Undo differs: `file:passes/main_rendering_config.json`, `render:passes/main_rendering_config.json`.
+
+```diff
+@@ -1,4 +1,228 @@
+ {
+- "definitions": {},
+- "nodes": [],
++ "definitions": {
++  "render_material_pass_draw": {
++   "nodes": [
++    {
 ```

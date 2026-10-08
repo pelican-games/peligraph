@@ -20,6 +20,7 @@
 #include "../fullscreenpass/fullscreeninputbindingmismatch.hpp"
 #include "../fullscreenpass/shaderinputmismatchjson.hpp"
 #include "../material/materialphysicalcontractchanged.hpp"
+#include "../material/materialpassesremoved.hpp"
 #include "../renderingpass/passshaderdefines.hpp"
 #include "../loader/engineresources.hpp"
 #include "../renderingpass/frameplanner.hpp"
@@ -210,7 +211,8 @@ OrderedJson withPreflightRefusalFields(OrderedJson details,
 // material's physical rendering contract, or nullopt for any other failure.
 // RTL-1b: or only the ray layout mode (whether the root names a ray group
 // layout), {code: ray_layout_mode_changed, from, to: "none" | "layout",
-// message}. Both are raised after every other check of the candidate passed.
+// message}. UD-1 also accepts removing all material passes for the next
+// startup, while the current generation keeps its resources until restart.
 std::optional<OrderedJson> physicalContractRestartReason(
     const std::exception_ptr &error) {
     if (!error) return std::nullopt;
@@ -223,6 +225,9 @@ std::optional<OrderedJson> physicalContractRestartReason(
             {"to", std::string{rayLayoutModeName(change.to())}},
             {"message", change.what()},
         };
+    } catch (const MaterialPassesRemoved &change) {
+        return OrderedJson{{"code", materialPassesRemovedCode},
+                           {"message", change.what()}};
     } catch (const MaterialPhysicalContractChanged &change) {
         const auto &info = change.info();
         return OrderedJson{

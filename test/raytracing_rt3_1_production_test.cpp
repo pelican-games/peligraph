@@ -44,6 +44,7 @@
 #include "../src/core/log.hpp"
 #include "../src/core/light/lightcontainer.hpp"
 #include "../src/core/material/materialcontainer.hpp"
+#include "../src/core/material/materialpassesremoved.hpp"
 #include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/vertbufcontainer.hpp"
@@ -6918,6 +6919,7 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
     };
     writeWp374aText(project.path / "shaders/first.rcall", callable_source(dynamic_records ? 1 : 100));
     writeWp374aText(project.path / "shaders/second.rcall", callable_source(dynamic_records ? 1 : 200));
+    {
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
     (void)configureWp374aRuntime(project.path);
@@ -6950,8 +6952,15 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
     REQUIRE_NOTHROW(GET_MODULE(MaterialContainer).prepareRuntimeGenerationReload(*published));
     if (!dynamic_records) {
         const RendererRuntimeGeneration missing_routes;
-        REQUIRE_THROWS(GET_MODULE(MaterialContainer).validateRuntimeGenerationCompatibility(missing_routes));
-        REQUIRE_THROWS(GET_MODULE(MaterialContainer).prepareRuntimeGenerationReload(missing_routes));
+        // UD-1: a valid startup document needs a restart, not an unserved
+        // route refusal. Neither validation nor preparation retires the
+        // published generation's material/RT resources before that restart.
+        REQUIRE_THROWS_AS(GET_MODULE(MaterialContainer).validateRuntimeGenerationCompatibility(missing_routes),
+                          MaterialPassesRemoved);
+        REQUIRE_THROWS_AS(GET_MODULE(MaterialContainer).prepareRuntimeGenerationReload(missing_routes),
+                          MaterialPassesRemoved);
+        CHECK(GET_MODULE(FrameGraphRuntimeContainer).renderingSnapshot() == published);
+        CHECK(marker() == 207u);
     }
     if (dynamic_records) {
         const auto observed_increment = [&] {
@@ -7038,6 +7047,55 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
         CHECK(marker() == 1807u);
         edit(Json::object());
         CHECK(marker() == 607u);
+    }
+    if (!dynamic_records) {
+        auto service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
+        std::uint64_t rpc_id = 91000;
+        const auto documents = runWp374aRpcBytes(*service, rpc_id++, "get_render_documents", Json::object());
+        const auto &root = documents.at("documents").at(0);
+        auto authored = Json::parse(root.at("content").get<std::string>());
+        auto &rendering = renderingSectionOf(authored);
+        rendering.erase("pipeline");
+        rendering["rendering_passes"] = Json::array({
+            {{"name", "main_render"}, {"passes", Json::array({
+                {{"name", "present"}, {"type", "fullscreen"}, {"input", Json::array()},
+                 {"output", {{"color", {"swapchain"}}, {"depth", nullptr}}},
+                 {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "project://shaders/rt_present"}}}}
+            })}}});
+        writeWp374aText(project.path / "shaders/rt_present.frag",
+            "#version 450\nlayout(location=0) out vec4 color;\nvoid main() { color = vec4(0,0,0,1); }\n");
+        const auto bytes = authored.dump();
+        const auto accepted = runWp374aRpcBytes(*service, rpc_id++, "restore_render_documents",
+            {{"documents", Json::array({{{"reference", root.at("reference")},
+                                         {"base_digest", root.at("digest")}, {"content", bytes}}})}});
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPendingEdits();
+        CHECK(marker() == 307u);
+        const auto result = runWp374aRpcBytes(*service, rpc_id++, "get_edit_result",
+                                             {{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "committed");
+        CHECK(result.at("restart_required") == true);
+        CHECK(result.at("restart_reason").at("code") == "material_passes_removed");
+        CHECK(GET_MODULE(FrameGraphRuntimeContainer).renderingSnapshot() == published);
+        CHECK(readWp374aText(project.path / "hybrid.json") == bytes);
+    }
+    } // Retire the old generation only when its engine stops.
+    if (!dynamic_records) {
+        FastModuleContainer modules;
+        Wp380RuntimeCleanup cleanup;
+        (void)configureWp374aRuntime(project.path);
+        GET_MODULE(ECSPredefinedRegistration).reg();
+        test_support::loadScene(GET_MODULE(SceneLoader), "main");
+        (void)GET_MODULE(StandardMaterialResource);
+        (void)renderWp374aProductionRows();
+        CHECK_FALSE(GET_MODULE(RenderingPassContainer).hasMaterialPasses());
+        const auto output = RendererTestAccess::readRenderTarget(GET_MODULE(Renderer),
+            "wp386_out", ImageSubresourceRange{});
+        REQUIRE(output.bytes.size() >= sizeof(std::uint32_t));
+        std::uint32_t value;
+        std::memcpy(&value, output.bytes.data(), sizeof(value));
+        CHECK(value == 307u);
     }
 }
 

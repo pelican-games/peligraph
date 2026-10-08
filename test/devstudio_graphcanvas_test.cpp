@@ -1016,6 +1016,33 @@ TEST_CASE("Graph history never replays across another writer or a reconnect",
 // the live materials cannot take) reconnects Studio. The history is about the
 // document, not the connection: the same digest read back keeps Undo, another
 // one clears it, and another project clears it whatever the digest.
+TEST_CASE("UD-1 Graph Undo committed for restart retains Redo on reconnect",
+          "[studio][graph-canvas][graph-history][ud1]") {
+    GraphHistoryHarness h;
+    h.open();
+    const auto before = h.document;
+    REQUIRE(h.client.model.setNodeLabel("clock", "Clock"));
+    h.commit();
+    const auto after = h.document;
+    REQUIRE(h.client.model.undo());
+    const auto submit = h.client.take("edit_graph_document");
+    h.document = Pelican::editGraphDocument(h.document, submit.params.at("ops"));
+    h.client.reply(submit, {{"status", "accepted"}, {"ticket", "undo"}});
+    const auto poll = h.client.take("get_edit_result");
+    ++h.generation;
+    h.client.reply(poll, {{"status", "committed"}, {"committed", true},
+                         {"source_digest", {{"hex", h.digest()}}},
+                         {"restart_required", true},
+                         {"restart_reason", {{"code", "material_passes_removed"}}}});
+    CHECK(h.document == before);
+    h.client.model.setConnected(false);
+    h.open();
+    REQUIRE(h.client.model.canRedo());
+    REQUIRE(h.client.model.redo());
+    h.commit();
+    CHECK(h.document == after);
+}
+
 TEST_CASE("OT-1 an engine restart keeps the graph history for the same document",
           "[studio][graph-canvas][graph-history]") {
     GraphHistoryHarness h;
