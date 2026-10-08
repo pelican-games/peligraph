@@ -1,10 +1,12 @@
 #include "audioanalysistables.hpp"
 #include "graphcanvasmodel.hpp"
+#include "tabeditorder.hpp"
 #include "graphcomposition.hpp"
 #include "graphmodule.hpp"
 #include "graphpartition.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <filesystem>
@@ -4993,4 +4995,93 @@ TEST_CASE("Authoring refresh after layout save updates the editing digest withou
         deliver();
         CHECK(h.model.reportRevision() > report);
     }
+}
+
+TEST_CASE("UD-4 Graph Undo keeps its serial and inverse after refusal and a Render Undo",
+          "[studio][graph-canvas][graph-history][ud4]") {
+    DrawLoopHarness h;
+    h.document = {{"schema", "pelican.graph"}, {"version", 1},
+                  {"nodes", Json::array()}, {"definitions", Json::object()},
+                  {"outputs", Json::object()},
+                  {"rendering", {{"rendering_passes", Json::array({
+                      {{"name", "main_render"}, {"passes", Json::array({
+                          {{"name", "present"}, {"type", "fullscreen"}, {"input", Json::array()},
+                           {"output", {{"color", {"display"}}, {"depth", nullptr}}},
+                           {"shader", {{"fragment", "project://shaders/gradient"},
+                                       {"vertex", "engine://fullscreen"}}}}
+                      })}}
+                  })}}}};
+    PelicanStudio::TabEditOrder order{h.client.model};
+    h.open();
+    REQUIRE(h.client.model.addNode("render.material_pass", "deferred_geometry_v1"));
+    h.commit();
+    const auto added = h.document;
+    const auto records = order.undoRecords();
+    REQUIRE(records.size() == 1);
+    const auto serial = h.client.model.undoSerial();
+
+    // The Frame Plan connects present without changing the Graph nodes.
+    auto &present = h.document["rendering"]["rendering_passes"][0]["passes"][0];
+    present["input"] = {"render_material_pass__albedo"};
+    present["shader"]["fragment"] = "engine://passthrough";
+    ++h.generation;
+    h.client.model.keepHistoryThroughNextDigest();
+    h.client.model.refresh();
+    h.refresh();
+    const auto connected = h.document;
+    const Json refusal{{"status", "rejected"}, {"committed", false},
+                       {"error", {{"code", "render_pipeline_preflight_failed"},
+                                  {"message", "logical shadow graph node 'present' reads unknown resource 'render_material_pass__albedo'"}}}};
+    Json inverse;
+    REQUIRE(order.undo());
+    auto request = h.client.take("edit_graph_document");
+    inverse = request.params.at("ops");
+    const bool refused_at_commit = GENERATE(false, true);
+    CAPTURE(refused_at_commit);
+    if (!refused_at_commit) { h.client.reply(request, refusal); }
+    else {
+        h.client.reply(request, {{"status", "accepted"}, {"ticket", "ud4"}});
+        h.client.reply(h.client.take("get_edit_result"), refusal);
+    }
+    h.refresh();
+    CHECK(h.document == connected);
+    CHECK(h.client.model.undoSerial() == serial);
+    CHECK(order.undoRecords() == records);
+    CHECK(order.redoRecords().empty());
+    CHECK_FALSE(h.client.model.takeEngineRestart().has_value());
+    CHECK(h.client.model.editNotice().message.find("render_material_pass__albedo") != std::string::npos);
+
+    // Render Undo restores only the rendering section, then announces the
+    // committed digest as MainWindow does. The Graph inverse must survive.
+    h.document["rendering"] = added.at("rendering");
+    ++h.generation;
+    h.client.model.renderHistoryRestored(h.digest());
+    h.client.model.refresh();
+    h.refresh();
+    REQUIRE(order.undoRecords() == records);
+    REQUIRE(order.undo());
+    request = h.client.take("edit_graph_document");
+    CHECK(request.params.at("ops") == inverse);
+    CHECK(request.params.at("base_source_digest") == h.digest());
+    const auto candidate = Pelican::editGraphDocument(h.document, inverse);
+    CHECK(candidate.at("nodes").empty());
+    CHECK(candidate.at("definitions").empty());
+    CHECK(candidate.at("rendering") == added.at("rendering"));
+
+    // Even another refusal of the retried inverse moves neither history.
+    h.client.reply(request, {{"status", "accepted"}, {"ticket", "ud4-retry"}});
+    h.client.reply(h.client.take("get_edit_result"), refusal);
+    h.refresh();
+    CHECK(h.client.model.undoSerial() == serial);
+    CHECK(order.undoRecords() == records);
+    CHECK(order.redoRecords().empty());
+    REQUIRE(order.undo());
+    h.commit();
+    CHECK(h.document.at("nodes").empty());
+    CHECK(h.document.at("rendering") == added.at("rendering"));
+    REQUIRE(order.redoRecords() == records);
+    REQUIRE(order.redo());
+    h.commit();
+    CHECK(h.document == added);
+    CHECK(order.undoRecords() == records);
 }

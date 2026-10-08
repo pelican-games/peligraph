@@ -24,6 +24,7 @@
 #include "../renderingpass/passshaderdefines.hpp"
 #include "../loader/engineresources.hpp"
 #include "../renderingpass/frameplanner.hpp"
+#include "../renderingpass/renderingsamplecount.hpp"
 #include "../renderer/viewfamilyproviderregistry.hpp"
 #include "../renderingpass/passdefinitionjsonparser.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
@@ -1404,6 +1405,28 @@ std::optional<OrderedJson> RenderConfigEditorService::preflightGraphVariants(
             return rejection(refusal->first, error.what(), std::move(details));
         }
         return preflightRejection(error, std::move(details));
+    }
+    return std::nullopt;
+}
+
+// UD-4: a live lifetime/route refusal is not proof that the source is
+// startup-readable. Resolve the candidate's documents again, without the
+// published generation's resources, and use startup's logical graph compiler
+// before allowing either kind of restart commit to write any document.
+std::optional<OrderedJson> RenderConfigEditorService::restartGraphRejection(
+    const RenderConfigCandidateDocumentSet &candidate) const {
+    const auto details = OrderedJson{{"participant", "pelican.render_pipeline"},
+                                    {"document", dependencies_.source_reference}};
+    if (!dependencies_.resolve_authoring_context)
+        return rejection("render_config_restart_validation_unavailable",
+                         "The restart candidate requires the project document resolver", details);
+    try {
+        const auto composed = dependencies_.resolve_authoring_context(candidate);
+        const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
+        const auto targets = parseRenderTargetDefinitionsFromJson(composed.config);
+        (void)compileRenderingLogicalGraphs(graphs, targets);
+    } catch (const std::exception &error) {
+        return preflightRejection(error, details);
     }
     return std::nullopt;
 }
@@ -7946,6 +7969,10 @@ void RenderConfigEditorService::completeCommitTransaction(
             restart_reason =
                 physicalContractRestartReason(applied.exception);
             if (restart_reason) {
+                if (auto refused = restartGraphRejection(*transaction->ticket.candidate_documents)) {
+                    finish(std::move(*refused));
+                    return;
+                }
                 const auto runtime = dependencies_.runtime_snapshot();
                 try {
                     if (transaction->ticket.reload) {
@@ -8321,6 +8348,15 @@ void RenderConfigEditorService::commitPending() noexcept {
                     {"documents", std::move(written_documents)},
                 }, runtime.preview));
                 continue;
+            }
+
+            // A route-default edit can apply live yet still ask for a
+            // restart. Judge its startup graph before apply can commit it.
+            if (ticket.restart_required && ticket.candidate_documents) {
+                if (auto refused = restartGraphRejection(*ticket.candidate_documents)) {
+                    finish(std::move(*refused));
+                    continue;
+                }
             }
 
             transaction = std::make_shared<CommitTransaction>(

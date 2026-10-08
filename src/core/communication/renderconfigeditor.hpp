@@ -672,6 +672,9 @@ class RenderConfigEditorService {
     std::optional<nlohmann::ordered_json> preflightGraphVariants(
         const RenderConfigCandidateDocumentSet &candidate,
         nlohmann::ordered_json details) const;
+    // Startup's logical graph/resource checks before a restart commit.
+    std::optional<nlohmann::ordered_json> restartGraphRejection(
+        const RenderConfigCandidateDocumentSet &candidate) const;
     const RenderFeatureCatalogEntry *findCatalogReference(
         std::string_view reference) const noexcept;
     RenderConfigCandidateDocumentSet currentDocumentSet() const;

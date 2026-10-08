@@ -13508,4 +13508,159 @@ TEST_CASE("EB-2 restore_render_documents takes asset_data's procedural records b
     }
 }
 
+
+namespace {
+
+// The palette's deferred pass, from the existing Blank-project fixture.
+// Keep exactly its loop, six images and material pass; the lighting template
+// and shadow feature are separate edits and are absent in input_needs_shader.
+Json ud4MaterialOps(bool remove) {
+    const auto fixture = Json::parse(readBytes(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+        "test/fixtures/fr3_blank_graph/main_rendering_config.graph"));
+    Json ops = Json::array();
+    if (remove) {
+        for (int index = 7; index >= 0; --index)
+            ops.push_back({{"op", "remove_node"},
+                           {"node", fixture.at("nodes").at(index).at("id")}});
+        ops.push_back({{"op", "remove_definition"}, {"name", "render_material_pass_draw"}});
+    } else {
+        ops.push_back({{"op", "add_definition"}, {"name", "render_material_pass_draw"},
+                       {"definition", fixture.at("definitions").at("render_material_pass_draw")}});
+        for (int index = 0; index < 8; ++index) {
+            auto node = fixture.at("nodes").at(index);
+            if (index == 1 || index == 5) node["parameters"]["format"] = "B8G8R8A8_SRGB";
+            ops.push_back({{"op", "add_node"}, {"node", std::move(node)}});
+        }
+    }
+    return ops;
+}
+
+struct Ud4Harness : G6Harness {
+    Ud4Harness() : G6Harness(false) {
+        runtime.validate_candidate = [this](const RenderConfigCandidateDocumentSet &documents) {
+            // The real startup compiler, with no device. Only the live
+            // material lifetime check needs a stand-in in this CPU fixture.
+            vf1CompileAsRenderer(documents, resolver);
+            if (Json::parse(documents.rootDocument().bytes).at("nodes").empty())
+                throw MaterialPassesRemoved{};
+        };
+    }
+    auto graph(bool remove) {
+        return settle(service->editGraphDocument(
+            {{"base_source_digest", digest()}, {"ops", ud4MaterialOps(remove)}}));
+    }
+    auto restore(const std::string &bytes, const std::string &base) {
+        return settle(service->restoreRenderDocuments({{"documents", Json::array({
+            {{"reference", "passes/main.json"}, {"base_digest", base}, {"content", bytes}}
+        })}}));
+    }
+    void compileSaved() {
+        const auto bytes = readBytes(project.render_config);
+        vf1CompileAsRenderer(RenderConfigCandidateDocumentSet{
+            "passes/main.json", {{.reference = "passes/main.json",
+                                  .normalized_reference = "passes/main.json",
+                                  .path = project.render_config,
+                                  .operation = RenderConfigDocumentOperation::replace,
+                                  .expected = {RenderConfigDocumentExistence::present,
+                                               renderConfigSourceDigest(bytes)},
+                                  .bytes = bytes}}}, resolver);
+    }
+};
+} // namespace
+
+TEST_CASE("UD-4 input_needs_shader Undo refuses the connected removal then restarts only from a readable root",
+          "[render-config-editor][ud4][graph-history]") {
+    Ud4Harness h;
+    const auto start = readBytes(h.project.render_config);
+    REQUIRE(h.graph(false).at("committed") == true);
+    const auto disconnected = readBytes(h.project.render_config);
+    REQUIRE(h.settle(h.present(Json::array({"render_material_pass__albedo"}))).at("committed") == true);
+    const auto connected = readBytes(h.project.render_config);
+    const auto generation = h.runtime.snapshot.published_generation;
+
+    // First Graph Undo: present still consumes the image being removed.
+    const auto rejected = h.graph(true);
+    INFO(rejected.dump());
+    REQUIRE(rejected.at("status") == "rejected");
+    CHECK(rejected.at("committed") == false);
+    CHECK(rejected.at("error").at("code") == "render_pipeline_preflight_failed");
+    CHECK(rejected.at("error").at("message").get<std::string>().find("render_material_pass__albedo") != std::string::npos);
+    CHECK(readBytes(h.project.render_config) == connected);
+    CHECK(h.runtime.snapshot.published_generation == generation);
+
+    // Render Undo disconnects present. An older Render Undo cannot skip the
+    // outstanding Graph edit: its digest still names the pre-addition root.
+    REQUIRE(h.restore(disconnected, h.digest()).at("committed") == true);
+    const auto conflict = h.restore(start, renderConfigSourceDigest(start));
+    REQUIRE(conflict.at("status") == "rejected");
+    CHECK(conflict.at("error").at("code") == "external_modification");
+    CHECK(readBytes(h.project.render_config) == disconnected);
+
+    // Scene Undo in the scenario changes no render document. Retry exactly
+    // the same Graph inverse after the Render restore, against its digest.
+    const auto live_generation = h.runtime.snapshot.published_generation;
+    const auto removed = h.graph(true);
+    INFO(removed.dump());
+    REQUIRE(removed.at("committed") == true);
+    CHECK(removed.at("restart_required") == true);
+    CHECK(removed.at("restart_reason").at("code") == "material_passes_removed");
+    CHECK(h.runtime.snapshot.published_generation == live_generation);
+    CHECK(Json::parse(readBytes(h.project.render_config)) == Json::parse(start));
+    REQUIRE_NOTHROW(h.compileSaved());
+
+    // Redo is also a startup-readable document, before reconnecting present.
+    REQUIRE(h.graph(false).at("committed") == true);
+    REQUIRE(h.restore(connected, h.digest()).at("committed") == true);
+    REQUIRE_NOTHROW(h.compileSaved());
+}
+
+TEST_CASE("UD-4 restart boundary rejects an unreadable candidate even if the runtime returns an early restart reason",
+          "[render-config-editor][ud4][restart]") {
+    Ud4Harness h;
+    REQUIRE(h.graph(false).at("committed") == true);
+    REQUIRE(h.settle(h.present(Json::array({"render_material_pass__albedo"}))).at("committed") == true);
+    std::exception_ptr early = std::make_exception_ptr(MaterialPassesRemoved{});
+    const auto reason = GENERATE(0, 1, 2);
+    CAPTURE(reason);
+    const bool route_default = reason == 2;
+    if (reason == 1) {
+        early = std::make_exception_ptr(MaterialPhysicalContractChanged{
+            "physical contract changed", MaterialPhysicalContractChangeInfo{
+                .material_id = 0, .material = "default", .pass = "render_material_pass",
+                .detail = {materialPhysicalContractColorFormats}}});
+    }
+    int source_commits = 0;
+    h.service = makeProjectService(h.project, h.resolver, h.runtime,
+        g6ProductionPreflight(h.resolver, false), {}, {}, {},
+        [&](RenderConfigEditorDependencies &dependencies) {
+            // Deliberately adversarial runtime: this exercises the independent
+            // commit boundary, not a claim that the scenario took this path.
+            dependencies.apply_candidate = [&](RenderConfigCandidateDocumentSet,
+                RenderConfigSourceCommit commit, RenderConfigRuntimeApplyCompletion) {
+                if (route_default) {
+                    ++source_commits;
+                    commit();
+                    return RenderConfigRuntimeApplyResult{.committed = true, .published_generation = 38};
+                }
+                return RenderConfigRuntimeApplyResult{.error = "early live restart refusal", .exception = early};
+            };
+        });
+    const auto before = readBytes(h.project.render_config);
+    const auto generation = h.runtime.snapshot.published_generation;
+    Json params{{"base_source_digest", h.digest()}, {"ops", ud4MaterialOps(true)}};
+    if (route_default) params["material_route_default"] = "forward";
+    const auto rejected = h.settle(h.service->editGraphDocument(params));
+    INFO(rejected.dump());
+    REQUIRE(rejected.at("status") == "rejected");
+    CHECK(rejected.at("committed") == false);
+    CHECK(rejected.at("error").at("code") == "render_pipeline_preflight_failed");
+    CHECK(rejected.at("error").at("message").get<std::string>().find("render_material_pass__albedo") != std::string::npos);
+    CHECK_FALSE(rejected.contains("restart_required"));
+    CHECK(source_commits == 0);
+    CHECK(readBytes(h.project.render_config) == before);
+    CHECK(h.service->documentForTesting().sourceDigest() == renderConfigSourceDigest(before));
+    CHECK(h.runtime.snapshot.published_generation == generation);
+}
+
 } // namespace Pelican
