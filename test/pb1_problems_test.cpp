@@ -5,6 +5,7 @@
 // stdin/stdout.
 
 #include "../src/project/projecttemplate.hpp"
+#include "skeletal_fixture.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -123,6 +124,7 @@ struct TempProject {
 // One --rpc player. Requests are written one line at a time and each answer
 // is read before the next request goes out.
 class PlayerRpc {
+    std::filesystem::path stderr_log_;
     HANDLE stdin_write_ = nullptr;
     HANDLE stdout_read_ = nullptr;
     PROCESS_INFORMATION process_{};
@@ -159,6 +161,7 @@ class PlayerRpc {
 
     PlayerRpc(const std::filesystem::path &project, const std::filesystem::path &stderr_log,
               const std::wstring &flags) {
+        stderr_log_ = stderr_log;
         SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
         HANDLE stdin_read = nullptr;
         HANDLE stdout_write = nullptr;
@@ -234,6 +237,7 @@ class PlayerRpc {
                 if (response.is_object() && response.value("id", -1) == id) return response;
             }
             INFO("waiting for the answer to " << method);
+            INFO(readFile(stderr_log_));
             REQUIRE_FALSE(closed_);
             REQUIRE(arrived_.wait_until(lock, deadline) != std::cv_status::timeout);
         }
@@ -652,6 +656,132 @@ TEST_CASE("PB-1 a project shader that does not compile is listed as the shader's
         INFO(answer.dump(2));
         CHECK(answer.at("committed") == true);
     }
+    requireNoProblems(player);
+    player.close();
+    CHECK(player.exit_code == 0u);
+}
+#endif
+
+#ifdef _WIN32
+TEST_CASE("AN-2 animation component RPC admission and invalid scene Problems recover without stopping frames",
+          "[an2][animation][pb1][problems][rpc][gpu]") {
+    TempProject project{"animation"};
+    Pelican::TestSkeletalFixture::writeGlb(project.root / "assets/models/character.glb");
+    Pelican::TestSkeletalFixture::writeGlb(project.root / "assets/models/other.glb");
+    writeFile(project.root / "assets/asset_data.json",
+              R"({"schema":"pelican.asset_data","version":2,"models":[{"name":"character","path":"assets/models/character.glb"}]})");
+    const std::string clip = "assets/models/character.glb#animation/Turn";
+    const auto scene_path = project.root / "scenes/main.scene.json";
+    auto scene = Json::parse(readFile(scene_path));
+    auto object = [&](const char *name, const char *model, bool invalid) {
+        Json components = Json::array({{{"name", "transform"}},
+                                      {{"name", "simplemodelview"}, {"model", model}}});
+        if (invalid) components.push_back({{"name", "animation"}, {"clip", clip}});
+        return Json{{"name", name}, {"components", components}};
+    };
+    auto &objects = scene["scenes"]["default_scene"]["objects"];
+    objects.push_back(object("Cube", "engine://primitives/cube", true));
+    objects.push_back(object("Character", "character", false));
+    writeFile(scene_path, scene.dump(2));
+    const auto disk_before = readFile(scene_path);
+    // The finite non-RPC loop lets the startup mutation reach the engine's
+    // top-level catch, instead of being translated into a step_frame RPC error.
+    {
+        const auto log = project.stderrLog("animation-finite");
+        PlayerRpc startup{project.root, log, L"--headless --frames 3"};
+        startup.close();
+        INFO(readFile(log));
+        REQUIRE(startup.exit_code == 0u);
+    }
+    PlayerRpc player{project.root, project.stderrLog("animation"), headless_flags + L" --start-state edit"};
+    (void)player.result("step_frame");
+    auto id = [&](const char *name) {
+        const auto tree = player.result("scene_tree");
+        for (const auto &entry : tree.at("objects"))
+            if (entry.value("name", std::string{}) == name)
+                return entry.at("authoring_object_id").get<std::uint64_t>();
+        FAIL("missing scene object " << name);
+        return std::uint64_t{};
+    };
+    const auto cube = id("Cube"), character = id("Character");
+    const auto actor = player.result("open_editor_session", {{"display_name", "AN-2"}}).at("actor_id");
+    auto edit = [&](Json operation) {
+        return player.settle(player.result("edit", {
+            {"actor_id", actor},
+            {"base_revision", player.result("get_scene_revision").at("scene_revision")},
+            {"operations", Json::array({operation})}}));
+    };
+    auto add = [&](std::uint64_t target, const std::string &reference) {
+        return Json{{"op", "add_component"}, {"object_id", target},
+                    {"component", {{"name", "animation"}, {"clip", reference}}}};
+    };
+    auto set = [&](std::uint64_t target, const char *slot, const char *field, const std::string &value) {
+        return Json{{"op", "set_component_value"}, {"object_id", target},
+                    {"component_slot", slot}, {"field_path", field}, {"value", value}};
+    };
+    auto remove = [&](std::uint64_t target) {
+        return Json{{"op", "remove_component"}, {"object_id", target}, {"component_slot", "animation"}};
+    };
+    auto refuse = [&](const Json &operation, const std::string &reason) {
+        const auto revision = player.result("get_scene_revision");
+        const auto before = player.result("scene_tree");
+        const auto answer = edit(operation);
+        INFO(answer.dump(2));
+        REQUIRE(answer.at("status") == "rejected");
+        CHECK(answer.at("error").at("code") == "animation.component_invalid@1");
+        CHECK_THAT(answer.at("error").at("message").get<std::string>(),
+                   Catch::Matchers::ContainsSubstring(reason));
+        CHECK(player.result("get_scene_revision") == revision);
+        CHECK(player.result("scene_tree") == before);
+        CHECK(readFile(scene_path) == disk_before);
+        return answer;
+    };
+
+    // T2: authored invalid data survives startup and several ECS frames, once per entity.
+    const auto problem = onlyProblem(player);
+    CHECK(problem.at("code") == "animation.component_invalid@1");
+    CHECK(problem.at("fields").at("object") == cube);
+    CHECK(problem.at("fields").at("name") == "Cube");
+    CHECK(problem.at("fields").at("scene_id") == "default_scene");
+    CHECK_THAT(problem.at("message").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("without a glTF skin"));
+    const auto frame = player.result("get_status").at("frame").get<std::uint64_t>();
+    const auto revision = revisionOf(player);
+    (void)player.result("step_frame");
+    (void)player.result("step_frame");
+    CHECK(player.result("get_status").at("frame").get<std::uint64_t>() > frame);
+    CHECK(onlyProblem(player).at("id") == problem.at("id"));
+    CHECK(revisionOf(player) == revision);
+    SECTION("remove the invalid component") {
+        REQUIRE(edit(remove(cube)).at("status") == "committed");
+    }
+    SECTION("repair the model while keeping its clip") {
+        REQUIRE(edit(set(cube, "simplemodelview", "/model", "character")).at("status") == "committed");
+        (void)player.result("step_frame");
+        requireNoProblems(player);
+        REQUIRE(edit(remove(cube)).at("status") == "committed");
+        REQUIRE(edit(set(cube, "simplemodelview", "/model", "engine://primitives/cube")).at("status") == "committed");
+    }
+    (void)player.result("step_frame");
+    requireNoProblems(player);
+
+    // T1: no skin, wrong file, wrong fragment, missing clip; the valid clip commits.
+    refuse(add(cube, clip), "without a glTF skin");
+    refuse(add(character, "assets/models/other.glb#animation/Turn"), "source does not match");
+    refuse(add(character, "assets/models/character.glb#mesh/Cube"), "must be a #animation fragment");
+    refuse(add(character, "assets/models/character.glb#animation/Absent"), "Absent");
+    REQUIRE(edit(add(character, clip)).at("status") == "committed");
+    (void)player.result("step_frame");
+    requireNoProblems(player);
+    refuse(set(character, "animation", "/clip", "assets/models/other.glb#animation/Turn"),
+           "source does not match");
+
+    // T3: model replacement is rejected with the removal-first hint.
+    const auto refused = refuse(set(character, "simplemodelview", "/model", "engine://primitives/cube"),
+                               "without a glTF skin");
+    CHECK_THAT(refused.dump(), Catch::Matchers::ContainsSubstring("Remove animation first"));
+    REQUIRE(edit(remove(character)).at("status") == "committed");
+    REQUIRE(edit(set(character, "simplemodelview", "/model", "engine://primitives/cube")).at("status") == "committed");
     requireNoProblems(player);
     player.close();
     CHECK(player.exit_code == 0u);

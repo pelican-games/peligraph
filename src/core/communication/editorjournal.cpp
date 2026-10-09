@@ -7,6 +7,9 @@
 #include "../loader/authoringsceneauthority.hpp"
 
 #include "../appflow/framephase.hpp"
+#include "../asset/model.hpp"
+#include "../model/animationcomponentvalidation.hpp"
+#include "../userpublic/components/animation.hpp"
 #include "../ecs/componentinfo.hpp"
 #include "../gamelogic/behaviorarena.hpp"
 #include "../loader/componentcodec.hpp"
@@ -2035,6 +2038,41 @@ void requireObjectFeatures(const ResolvedScene &resolved,
     }
 }
 
+// Validate the resolved prospective object, including prefab components, before
+// any document or runtime publication. Document-only hosts have no model assets.
+void requireObjectAnimation(const ResolvedScene &resolved, AuthoringObjectId id,
+                            bool model_change) {
+    auto *models = FastModuleContainer::tryGet<ModelAssetContainer>();
+    auto *resolver = FastModuleContainer::tryGet<PathResolver>();
+    if (!models || !resolver) return;
+    for (const auto &scene : resolved.scenes()) {
+        for (const auto &object : scene.objects) {
+            if (object.authoring_object_id != id) continue;
+            const AnimationComponent *animation = nullptr;
+            const SimpleModelViewCodecData *view = nullptr;
+            for (const auto &component : object.components) {
+                if (component.name == "animation")
+                    animation = std::any_cast<AnimationComponent>(&component.requireRuntimeValue());
+                if (component.name == "simplemodelview")
+                    view = std::any_cast<SimpleModelViewCodecData>(&component.requireRuntimeValue());
+            }
+            if (!animation || !animation->graph.empty()) return;
+            try {
+                const auto *model = view ? models->getModelTemplateByName(view->model).skeletal.get() : nullptr;
+                (void)requireAnimationComponentClip(model, animation->clip, *resolver);
+            } catch (const std::exception &error) {
+                editFailure(EditorEditErrorCode::animation_component_invalid,
+                            {{"object", id.value}, {"slot", "animation"},
+                             {"clip", animation->clip},
+                             {"hint", model_change ? "Remove animation first before changing the model." :
+                                                     "Choose an animation clip from the skinned model's file."}},
+                            error.what());
+            }
+            return;
+        }
+    }
+}
+
 PreparedBatch prepareBatch(const Json &raw_operations,
                            const AuthoringSceneDocument &source,
                            std::string_view current_scene,
@@ -2136,6 +2174,13 @@ PreparedBatch prepareBatch(const Json &raw_operations,
                 requireObjectFeatures(local->projectionResolvedScene(),
                                       AuthoringObjectId{id.get<std::uint64_t>()});
             }
+        }
+        if (op == "add_component" || op == "set_component_value") {
+            const auto component = prepared.forward.value("component_slot", std::string{});
+            if (component == "animation" || component == "simplemodelview")
+                requireObjectAnimation(local->projectionResolvedScene(),
+                    AuthoringObjectId{prepared.forward.at("object_id").get<std::uint64_t>()},
+                    component == "simplemodelview");
         }
         batch.canonical_forward.push_back(
             freezeJournalOperation(prepared.forward,
@@ -3188,6 +3233,7 @@ std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
     case EditorEditErrorCode::trs_unrepresentable: return "trs_unrepresentable";
     case EditorEditErrorCode::preserve_missing: return "preserve_missing";
     case EditorEditErrorCode::method_unavailable: return "method_unavailable";
+    case EditorEditErrorCode::animation_component_invalid: return "animation.component_invalid@1";
     case EditorEditErrorCode::module_unavailable: return "module_unavailable@1";
     }
     return "method_unavailable";

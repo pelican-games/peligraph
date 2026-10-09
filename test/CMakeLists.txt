@@ -3959,7 +3959,7 @@ if(PELICAN_WITH_RPC AND WIN32)
     add_dependencies(pelican_test_bs1_render_fallback_test pelican_player)
     # PB-1: the engine's problem list (get_status.problems, get_problems),
     # through a headless --rpc --render-fallback player.
-    pelican_define_test(pb1_problems_test GPU pelican_project)
+    pelican_define_test(pb1_problems_test GPU pelican_project glm)
     target_compile_definitions(pelican_test_pb1_problems_test PRIVATE
         PELICAN_PB1_PLAYER="$<TARGET_FILE:pelican_player>")
     add_dependencies(pelican_test_pb1_problems_test pelican_player)

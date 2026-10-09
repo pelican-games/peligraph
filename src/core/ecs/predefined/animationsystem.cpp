@@ -11,6 +11,8 @@
 #include "../../asset/model.hpp"
 #include "../../loader/pathresolver.hpp"
 #include "../../model/skeletalanimation.hpp"
+#include "../../model/animationcomponentvalidation.hpp"
+#include "../../watch/problemlist.hpp"
 #include "../../renderer/polygoninstancecontainer.hpp"
 #if PELICAN_WITH_ANIMATION
 #include "../../animation/posegraphruntime.hpp"
@@ -56,6 +58,7 @@ struct AnimationSystemState {
                 Animation::animationServiceRuntime().unregisterObject(object_name);
         }
     };
+    std::unordered_map<EntityId, const SkeletalAnimationClip *> clips;
     Animation::AnimationAssetRegistry assets;
     std::vector<EntityId> candidates;
     // AG-3a. `<model name>\0<clip reference>` -> the clip's own [start, end].
@@ -83,11 +86,43 @@ void AnimationSystem::prepareEcsWorkerDependencies(DependencyQuery chunks) {
         const auto entities = std::get<EntityId *>(chunk.components);
         state->candidates.insert(state->candidates.end(), entities, entities + chunk.count);
     }
-    if (chunks.empty()) return;
-    engine_time = &GET_MODULE(EngineTime);
-    instances = &GET_MODULE(PolygonInstanceContainer);
-    models = &GET_MODULE(ModelAssetContainer);
-    path_resolver = &GET_MODULE(PathResolver);
+    state->clips.clear();
+    std::vector<nlohmann::json> problems;
+    if (!chunks.empty()) {
+        engine_time = &GET_MODULE(EngineTime);
+        instances = &GET_MODULE(PolygonInstanceContainer);
+        models = &GET_MODULE(ModelAssetContainer);
+        path_resolver = &GET_MODULE(PathResolver);
+        for (const auto &chunk : chunks) {
+            const auto entities = std::get<EntityId *>(chunk.components);
+            const auto animations = std::get<AnimationComponent *>(chunk.components);
+            const auto views = std::get<SimpleModelViewComponent *>(chunk.components);
+            for (size_t i = 0; i < chunk.count; ++i) {
+                if (!animations[i].graph.empty() || !views[i].model_instance_id) continue;
+                try {
+                    const auto &model = models->getModelTemplateByName(views[i].model_name);
+                    state->clips.emplace(entities[i], &requireAnimationComponentClip(
+                        model.skeletal.get(), animations[i].clip, *path_resolver));
+                } catch (const std::exception &error) {
+                    auto &scene = GET_MODULE(SceneLoader);
+                    const auto entity = toString(entities[i]);
+                    nlohmann::json problem{
+                        {"id", problemId({{"code", "animation.component_invalid@1"},
+                                          {"scope", scene.runtimeSceneEpoch()}, {"node", entity}})},
+                        {"severity", problemSeverityError}, {"source", "ecs"},
+                        {"code", "animation.component_invalid@1"}, {"message", error.what()},
+                        {"document_kind", problemKindScene},
+                        {"fields", {{"entity", entity},
+                                    {"object", views[i].authoring_object_id},
+                                    {"name", scene.objectName(entities[i]).value_or(entity)},
+                                    {"scene_id", scene.currentScene()},
+                                    {"component", "animation"}, {"clip", animations[i].clip}}}};
+                    problems.push_back(std::move(problem));
+                }
+            }
+        }
+    }
+    GET_MODULE(ProblemList).replace("animation_components", std::move(problems));
 }
 
 void AnimationSystem::process(QueryComponents components, size_t count) {
@@ -106,25 +141,10 @@ void AnimationSystem::process(QueryComponents components, size_t count) {
     for (size_t i = 0; i < count; ++i) {
         if (!animations[i].graph.empty()) continue;
         if (!model_views[i].model_instance_id) continue;
+        const auto found = state->clips.find(std::get<EntityId *>(components)[i]);
+        if (found == state->clips.end()) continue;
         auto &model = models->getModelTemplateByName(model_views[i].model_name);
-        if (!model.skeletal) {
-            throw std::runtime_error("animation component clip '" + animations[i].clip +
-                                     "' is attached to a model without a glTF skin");
-        }
-        const auto resolved = path_resolver->resolveExistingFileReference(animations[i].clip);
-        const auto *reference = std::get_if<ResolvedPathFragment>(&resolved);
-        if (reference == nullptr || reference->fragment.kind != "animation") {
-            throw std::runtime_error("animation component clip must be a #animation fragment: " +
-                                     animations[i].clip);
-        }
-        std::error_code source_error, clip_error;
-        const auto model_source = std::filesystem::weakly_canonical(model.skeletal->source_path, source_error);
-        const auto clip_source = std::filesystem::weakly_canonical(reference->path, clip_error);
-        if (source_error || clip_error || model_source != clip_source) {
-            throw std::runtime_error("animation component clip source does not match the skinned model: " +
-                                     animations[i].clip);
-        }
-        const auto &clip = findAnimationClip(*model.skeletal, reference->fragment.path);
+        const auto &clip = *found->second;
         const auto &asset = state->assets.getOrCreate(*model.skeletal);
         const auto &clip_resource = Animation::findClip(asset, clip);
 
@@ -435,6 +455,7 @@ std::vector<AnimationComponentTrace> AnimationSystem::componentTrace() {
             trace.transition_progress = status.transition_progress;
             trace.frame_revision = status.frame_revision;
         } else if (!animation->clip.empty()) {
+            if (!state->clips.contains(entity)) continue;
             const auto *view = ecs.tryComponent<SimpleModelViewComponent>(entity);
             if (view == nullptr || !view->model_instance_id) continue;
             if (models == nullptr || path_resolver == nullptr) continue;

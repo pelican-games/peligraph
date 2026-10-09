@@ -2824,3 +2824,18 @@ TEST_CASE("MT-2s decision 5: the Material rows' set_object_material is an edit o
     const auto undo = takeAll("undo");
     CHECK(undo.params.at("actor_id") == 9);
 }
+
+TEST_CASE("AN-2 animation model refusal shows the removal-first hint in the Inspector", "[animation][inspector]") {
+    InspectorHarness harness;
+    harness.open();
+    const auto field = harness.field("fixture_flags", "enabled").field_key;
+    REQUIRE(harness.model.commitWidgetValue(field, false));
+    harness.reply(harness.take("edit"),
+                  {{"status", "rejected"}, {"error", {
+                      {"code", "animation.component_invalid@1"},
+                      {"message", "animation component clip is attached to a model without a glTF skin"},
+                      {"payload", {{"hint", "Remove animation first before changing the model."}}}}}});
+    CHECK(harness.model.notice().kind == InspectorNoticeKind::Error);
+    CHECK(harness.model.notice().message.find("without a glTF skin") != std::string::npos);
+    CHECK(harness.model.notice().message.find("Remove animation first") != std::string::npos);
+}

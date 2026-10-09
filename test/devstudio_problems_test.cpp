@@ -556,3 +556,31 @@ TEST_CASE("RTL-3s decision 8: a material its pass does not declare enough for go
           "materials/query.material.json: The material queries the scene's acceleration structure, and pass "
           "forward_opaque, which draws it, does not declare ray_query: turn Ray query on for the pass.");
 }
+
+TEST_CASE("AN-2 animation Problems open the affected object in the Inspector and clear on recovery",
+          "[animation][problems][pb1]") {
+    application();
+    Rig rig;
+    rig.dock.engineAvailable();
+    rig.dock.observeStatus(statusAt(1, 1));
+    const Json problem{{"id", "0000000000000a02"}, {"severity", "error"}, {"source", "ecs"},
+                       {"code", "animation.component_invalid@1"},
+                       {"message", "animation component clip 'character.glb#animation/Turn' is attached to a model without a glTF skin"},
+                       {"document_kind", "scene"},
+                       {"fields", {{"object", 42}, {"name", "Cube"}, {"scene_id", "default_scene"}}}};
+    rig.answer(1, Json::array({problem}));
+    auto *item = rig.rowFor("0000000000000a02");
+    REQUIRE(item != nullptr);
+    CHECK(item->text(4) == QStringLiteral("Inspector: Cube"));
+    rig.click(item);
+    REQUIRE(rig.opened.size() == 1);
+    const auto &opened = rig.opened.front();
+    CHECK(opened.place == ProblemRow::Place::SceneObject);
+    CHECK(opened.object == 42);
+    CHECK(opened.object_name == "Cube");
+    CHECK(opened.scene_id == "default_scene");
+    CHECK(opened.message == problem.at("message").get<std::string>());
+    rig.dock.observeStatus(statusAt(2, 0));
+    rig.answer(2, Json::array());
+    CHECK(rig.tree()->topLevelItemCount() == 0);
+}

@@ -264,6 +264,15 @@ std::string resultErrorMessage(const Json &result) {
     }
     // MI-1s, decision 5 (engine MI-1): a model the project has not registered.
     if (auto unknown = modelUnknownEditDescription(*error); !unknown.empty()) return unknown;
+    if (error->value("code", std::string{}) == "animation.component_invalid@1") {
+        auto message = error->value("message", std::string{});
+        const auto payload = error->find("payload");
+        if (payload != error->end() && payload->is_object()) {
+            const auto hint = payload->value("hint", std::string{});
+            if (!hint.empty()) message += "\n" + hint;
+        }
+        return message;
+    }
     const auto message = error->find("message");
     return message != error->end() && message->is_string()
                ? message->get<std::string>()
