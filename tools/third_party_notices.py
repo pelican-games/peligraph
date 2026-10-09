@@ -222,11 +222,34 @@ THIRD_PARTY: list[Entry] = [
           notes=["The LGPL-3.0 text below is the FSF's text copied into "
                  "third_party/licenses (see its README.md); the GPL-3.0 text it "
                  "supplements is the standard text as it appears in "
-                 "nlohmann/json's LICENSES/GPL-3.0-only.txt."],
-          missing=["the texts of the non-Qt DLLs Qt's deploy script copies (a "
-                   "Debug install of 2026-10 had D3Dcompiler_47.dll, "
-                   "dxcompiler.dll, icuuc.dll and opengl32sw.dll, and Qt6Svg "
-                   "for the deployed plugins)"]),
+                 "nlohmann/json's LICENSES/GPL-3.0-only.txt.",
+                 "The non-Qt libraries Qt's deploy script copies next to "
+                 "pelican_studio.exe have their own entry below."]),
+    Entry("Libraries Qt's deploy script installs with Pelican Studio",
+          upstream="ICU: https://icu.unicode.org; DirectX Shader Compiler: "
+                   "https://github.com/microsoft/DirectXShaderCompiler; Mesa "
+                   "(opengl32sw.dll, Qt's software OpenGL): https://mesa3d.org; "
+                   "D3Dcompiler_47.dll: Microsoft",
+          version="as shipped with Qt 6.10.3 for MSVC 2022 x64",
+          use="Qt's deploy script copies icuuc.dll (ICU), dxcompiler.dll "
+              "(DirectX Shader Compiler), opengl32sw.dll (a Mesa llvmpipe build) "
+              "and D3Dcompiler_47.dll next to pelican_studio.exe for Qt's "
+              "rendering back ends. They are unmodified and can be replaced.",
+          license="ICU: Unicode License v3; DirectX Shader Compiler: University "
+                  "of Illinois/NCSA Open Source License (with LLVM's terms); "
+                  "Mesa: MIT (per file licenses listed by Mesa); "
+                  "D3Dcompiler_47.dll: Microsoft redistributable code",
+          texts=[("repo", "third_party/licenses/icu-LICENSE"),
+                 ("repo", "third_party/licenses/DirectXShaderCompiler-LICENSE.TXT"),
+                 ("repo", "third_party/licenses/mesa-license.rst"),
+                 ("repo", "third_party/licenses/mesa-MIT")],
+          notes=["The texts are the upstream files copied into "
+                 "third_party/licenses (see its README.md), not files read "
+                 "from the Qt installation; they are the current upstream "
+                 "texts, not necessarily those of the exact builds Qt ships.",
+                 "D3Dcompiler_47.dll is Microsoft redistributable code from the "
+                 "Windows SDK, distributed under the Windows SDK's license "
+                 "terms; there is no separate text to reproduce."]),
     Entry("Microsoft Visual C++ redistributable runtime",
           upstream="Microsoft",
           version="the installed MSVC toolset's",
