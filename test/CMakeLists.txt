@@ -3400,7 +3400,7 @@ endif()
 add_executable(pelican_test_project_library_boundary project_library_boundary.cpp)
 set_target_properties(pelican_test_project_library_boundary PROPERTIES
     CXX_STANDARD 20
-    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
 )
 target_compile_definitions(pelican_test_project_library_boundary PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -4288,7 +4288,9 @@ if(MSVC)
   # stays green even if pelican_studio stops calling it. This one reads what
   # the real Debug studio build left behind. The archive module and its
   # dump-visible PDB name are Debug-only; other configurations do not archive.
-  if(TARGET pelican_studio)
+  # A single-config tree that is not Debug never archives, so the test is not
+  # registered there (ctest without -C would run it and find nothing).
+  if(TARGET pelican_studio AND (CMAKE_CONFIGURATION_TYPES OR CMAKE_BUILD_TYPE STREQUAL "Debug"))
     add_test(
       NAME crash_symbol_production_wiring
       CONFIGURATIONS Debug
@@ -4300,6 +4302,24 @@ if(MSVC)
     set_tests_properties(crash_symbol_production_wiring
                          PROPERTIES TIMEOUT 60)
   endif()
+endif()
+
+# DS-1 uses the production main and link setup with an empty project game DLL.
+if(WIN32 AND PELICAN_WITH_ANIMATION)
+    pelican_configure_player_target(pelican_test_ds1_path_player)
+    target_compile_definitions(pelican_test_ds1_path_player PRIVATE
+        PELICAN_GAME_LOGIC_DLL_NAME="pelican_ds1_game_logic${CMAKE_SHARED_LIBRARY_SUFFIX}")
+    add_library(pelican_ds1_game_logic SHARED)
+    pelican_configure_game_logic_target(pelican_ds1_game_logic
+        HOST_TARGET pelican_test_ds1_path_player)
+    add_test(NAME player_arguments_ds1_path COMMAND $<TARGET_FILE:pelican_gpu_lease_run> --
+        ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_test_ds1_path_player>
+        -DGAME_DLL=$<TARGET_FILE:pelican_ds1_game_logic>
+        -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/animgraph_demo
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/ds1_path
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ds1_path_player.cmake)
+    pelican_gpu_test_properties(player_arguments_ds1_path 90)
 endif()
 
 # JP-1: use the same executable manifest as production for the UTF-8 contract.
@@ -4355,7 +4375,20 @@ if(WIN32)
     SKIP_REGULAR_EXPRESSION "CRT_PROBE_SKIPPED")
 endif()
 
-
+# DS-1 distribution startup contracts do not initialize a GPU.
+if(WIN32)
+    pelican_define_test(player_diagnostics_test GROUP ds1)
+endif()
+add_test(NAME build_units_ds1_git_identity COMMAND ${CMAKE_COMMAND}
+    -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+    -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/ds1_identity
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ds1_git_identity.cmake)
+add_test(NAME player_arguments_ds1_fatal_errors COMMAND ${CMAKE_COMMAND}
+    -DPLAYER=$<TARGET_FILE:pelican_player>
+    -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/ds1_errors
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ds1_player_errors.cmake)
+set_tests_properties(build_units_ds1_git_identity player_arguments_ds1_fatal_errors
+    PROPERTIES TIMEOUT 90)
 # Keep this last: it links the CRT routing into every executable defined above.
 include(${CMAKE_CURRENT_SOURCE_DIR}/crt_report_to_stderr.cmake)
 pelican_route_test_crt_reports_to_stderr()

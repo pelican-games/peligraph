@@ -13,7 +13,7 @@ function(embed_shader file_name)
             ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}
             -V
             --target-env ${PELICAN_SHADER_TARGET_ENV}
-            -o ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}.spv
+            -o ${CMAKE_CURRENT_BINARY_DIR}/${file_name}.spv
         DEPENDS ${file_name} shaders/include/pelican_sets.glsl
                 shaders/include/pelican_frame.glsl
                 shaders/include/pelican_view.glsl
@@ -29,9 +29,9 @@ function(embed_shader file_name)
                 shaders/include/pelican_skinning.glsl
                 shaders/include/pelican_morph.glsl
                 shaders/include/pelican_vat.glsl
-        OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/${file_name}.spv
+        OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/${file_name}.spv
     )
-    b_embed(pelican_resources ${file_name}.spv)
+    b_embed(pelican_resources ${file_name}.spv "${CMAKE_CURRENT_BINARY_DIR}/${file_name}.spv")
 endfunction(embed_shader)
 
 embed_shader(default.vert)

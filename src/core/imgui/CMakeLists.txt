@@ -34,7 +34,7 @@ add_library(pelican_imgui OBJECT
 )
 set_target_properties(pelican_imgui PROPERTIES
   CXX_STANDARD 20
-  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
 )
 target_include_directories(pelican_imgui PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/..

@@ -1,11 +1,36 @@
 #include "devicefeaturepolicy.hpp"
 
 #include <algorithm>
+#include <optional>
 #include <array>
 #include <stdexcept>
 #include <utility>
 
 namespace Pelican {
+
+std::size_t selectVulkanPhysicalDevice(std::span<const VulkanDeviceCandidate> devices,
+                                      const std::string &override_device) {
+    std::optional<std::size_t> selected;
+    int best_score = -1;
+    std::string diagnostic = "No suitable Vulkan 1.3 GPU";
+    if (!override_device.empty()) diagnostic += " for --gpu '" + override_device + "'";
+    diagnostic += ". Devices:";
+    for (std::size_t i = 0; i < devices.size(); ++i) {
+        const auto &device = devices[i];
+        diagnostic += " [" + std::to_string(i) + "] " + device.name + " (Vulkan " +
+            std::to_string(VK_API_VERSION_MAJOR(device.api_version)) + "." +
+            std::to_string(VK_API_VERSION_MINOR(device.api_version)) + ")";
+        if (device.api_version < VK_API_VERSION_1_3 || !device.suitable) continue;
+        if (!override_device.empty() && override_device != std::to_string(i) &&
+            override_device != device.name) continue;
+        const int score = (device.type == vk::PhysicalDeviceType::eDiscreteGpu ? 1000 : 0) +
+                          (device.unified_queue ? 100 : 0);
+        if (score > best_score) { selected = i; best_score = score; }
+    }
+    if (!selected) throw std::runtime_error(diagnostic);
+    return *selected;
+}
+
 
 RayQueryDeviceSelection selectRayQueryDeviceFeatures(
     const RayQueryDeviceSupport &support) {

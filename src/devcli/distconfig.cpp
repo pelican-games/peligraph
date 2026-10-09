@@ -889,7 +889,8 @@ DistConfigResult deriveDistConfig(const std::filesystem::path &project_arg,
     DistConfigResult result;
     result.project_root = project.root;
     result.project_file = project.project_file;
-    result.with_rpc = options.with_rpc;
+    result.with_studio = options.with_studio;
+    result.with_rpc = options.with_rpc || options.with_studio;
     result.with_seqplayer = options.with_seqplayer;
     result.with_openxr = options.with_openxr;
     result.with_exr = !scan.exr_refs.empty();
@@ -897,7 +898,7 @@ DistConfigResult deriveDistConfig(const std::filesystem::path &project_arg,
                             ? firstWithCount(scan.exr_refs)
                             : "no .exr references in asset_data_json or ui_config_json";
     result.with_vat = deriveVatEnabled(scan, result.vat_reason);
-    result.rpc_reason = result.with_rpc ? "enabled by --with rpc"
+    result.rpc_reason = result.with_studio ? "enabled by --with-studio" : result.with_rpc ? "enabled by --with rpc"
                                         : "distribution default; pass --with rpc to enable";
     result.seqplayer_reason = result.with_seqplayer ? "enabled by --with seqplayer"
                                                     : "distribution default; pass --with seqplayer to enable";
@@ -928,6 +929,7 @@ std::string renderDistConfigPreset(const DistConfigResult &result) {
     out << "# PELICAN_WITH_SPIRV_LINK: OFF - experimental linker is a developer-only build unit\n";
     out << "# BUILD_TESTING: OFF - distribution builds exclude developer tests and test tooling\n\n";
 
+    out << "set(SKIP_DEVSTUDIO " << boolString(!result.with_studio) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_VAT " << boolString(result.with_vat) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_EXR " << boolString(result.with_exr) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_RPC " << boolString(result.with_rpc) << " CACHE BOOL \"\" FORCE)\n";
@@ -945,6 +947,7 @@ std::string renderDistConfigPreset(const DistConfigResult &result) {
 int runDistConfigCommand(int argc, char *argv[]) {
     argparse::ArgumentParser program("Pelican Cli dist-config");
     program.add_argument("project").help("project directory or project.json");
+    program.add_argument("--with-studio").flag().help("include Studio and its RPC transport");
     program.add_argument("--with")
         .default_value(std::string{})
         .metavar("rpc,seqplayer,openxr")
@@ -959,7 +962,8 @@ int runDistConfigCommand(int argc, char *argv[]) {
 
     try {
         program.parse_args(argc, argv);
-        const auto options = parseWithList(program.get<std::string>("--with"));
+        auto options = parseWithList(program.get<std::string>("--with"));
+        options.with_studio = program.get<bool>("--with-studio");
         const auto result = deriveDistConfig(program.get<std::string>("project"), options);
         // EB-1: a distribution ships the assets its manifests name. Every
         // store that declares a manifest is checked as `assets verify --full`

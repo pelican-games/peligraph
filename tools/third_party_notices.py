@@ -73,6 +73,12 @@ THIRD_PARTY: list[Entry] = [
           use="Compiled into pelican_core when audio is enabled.",
           license="Public Domain (Unlicense) or MIT No Attribution",
           texts=[("deps", "LICENSE")]),
+    Entry("stb_vorbis (bundled with miniaudio)",
+          upstream="https://github.com/mackron/miniaudio/blob/0.11.25/extras/stb_vorbis.c",
+          version="1.22 (miniaudio 0.11.25)",
+          use="Ogg Vorbis decoder compiled into the audio backend.",
+          license="MIT OR Unlicense",
+          texts=[("deps:miniaudio", "extras/stb_vorbis.c", 5548, 5586)]),
     Entry("JSON for Modern C++ (nlohmann/json)", fetch="nlohmann",
           use="Header-only, compiled into the executables.",
           license="MIT",
@@ -111,7 +117,7 @@ THIRD_PARTY: list[Entry] = [
               "miniz, zstd and ZFP are not compiled.",
           license="BSD-3-Clause (NOTICE lists the third-party parts)",
           texts=[("deps", "LICENSE"), ("deps", "NOTICE")]),
-    Entry("OpenXR-SDK-Source (loader)", fetch="openxr_sdk",
+    Entry("OpenXR-SDK (loader)", fetch="openxr_sdk",
           use="The OpenXR loader, statically linked when OpenXR is enabled. "
               "The loader embeds JsonCpp.",
           license="Apache-2.0 OR MIT (loader); JsonCpp: Public Domain or MIT",
@@ -203,6 +209,17 @@ THIRD_PARTY: list[Entry] = [
                  "The shaderc, glslang and Vulkan-Loader texts are their "
                  "upstream LICENSE files copied into third_party/licenses "
                  "(see its README.md), not files read from the SDK."]),
+    Entry("Vulkan-Hpp / Vulkan-Headers",
+          upstream="https://github.com/KhronosGroup/Vulkan-Hpp; "
+                   "https://github.com/KhronosGroup/Vulkan-Headers",
+          version="Vulkan SDK 1.4.309.0",
+          use="C++ bindings and Vulkan API declarations compiled into the engine.",
+          license="Apache-2.0 OR MIT (per file; vulkan_core.h is Apache-2.0)",
+          texts=[("sdk", "Include/vulkan/vulkan.hpp", 1, 4),
+                 ("sdk", "Include/vulkan/vulkan_core.h", 4, 8),
+                 ("deps:battery-embed", "LICENSE")],
+          notes=["Distributed under Apache-2.0. The full Apache-2.0 text below "
+                 "is the same standard license included with battery-embed."]),
     Entry("Qt 6 (LGPL-3.0)",
           upstream="https://www.qt.io; source: https://download.qt.io/archive/qt/ "
                    "and https://code.qt.io",

@@ -67,7 +67,7 @@ add_library(pelican_project
 )
 
 set_target_properties(pelican_project PROPERTIES CXX_STANDARD 20)
-set_target_properties(pelican_project PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set_target_properties(pelican_project PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 target_compile_definitions(pelican_project PUBLIC
     PELICAN_WITH_OPENXR=$<BOOL:${PELICAN_WITH_OPENXR}>
     PELICAN_WITH_ANIMATION=$<BOOL:${PELICAN_WITH_ANIMATION}>

@@ -1,4 +1,7 @@
 #include <argparse/argparse.hpp>
+#include "../core/executabledirectory.hpp"
+#include "../core/playerdiagnostics.hpp"
+#include "../platform/playerconsole.hpp"
 #include <array>
 #include <cmath>
 #include <cstdint>
@@ -247,11 +250,6 @@ std::filesystem::path weaklyCanonicalPath(const std::filesystem::path &path, con
     return canonical;
 }
 
-std::filesystem::path executableDirectory(char *argv0) {
-    const auto exe_path = weaklyCanonicalPath(std::filesystem::absolute(std::filesystem::path{argv0}), "executable");
-    return exe_path.parent_path();
-}
-
 std::optional<std::filesystem::path> findExampleProjectNearExecutable(const std::filesystem::path &exe_dir) {
     auto current = exe_dir;
     while (!current.empty()) {
@@ -270,7 +268,7 @@ std::optional<std::filesystem::path> findExampleProjectNearExecutable(const std:
 }
 
 void configureImplicitProject(ParsedLaunchConfig &parsed, char *argv0) {
-    parsed.project_root = executableDirectory(argv0);
+    parsed.project_root = Pelican::executableDirectory();
     auto project_file = parsed.project_root / "project.json";
     if (!std::filesystem::is_regular_file(project_file)) {
         if (const auto example_project = findExampleProjectNearExecutable(parsed.project_root)) {
@@ -403,6 +401,9 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .metavar("path")
         .help("write this run's log to path (truncated) instead of appending to pelican.log in the working directory");
     program.add_argument("--dump-frame-plan").flag().help("dump the resolved frame plan JSON to stderr");
+    program.add_argument("--console").flag().help("attach to the parent console");
+    program.add_argument("--gpu").default_value(std::string{}).metavar("index|name")
+        .help("override automatic Vulkan GPU selection (zero-based index or device name)");
     program.add_argument("--gpu-labels").flag().help("enable Vulkan debug object names and command labels");
     program.add_argument("--vulkan-validation")
         .metavar("off|on")
@@ -578,6 +579,7 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
             config.render_out = std::filesystem::path{render_out};
         }
         config.dump_frame_plan = program.get<bool>("--dump-frame-plan");
+        config.gpu = program.get<std::string>("--gpu");
         config.gpu_labels = program.get<bool>("--gpu-labels");
         if (program.is_used("--vulkan-validation")) {
             config.vulkan_validation = parseVulkanValidationMode(
@@ -709,7 +711,7 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         }
 
 #ifdef PELICAN_GAME_LOGIC_DLL_NAME
-        config.game_logic_dll = executableDirectory(argv[0]) / PELICAN_GAME_LOGIC_DLL_NAME;
+        config.game_logic_dll = Pelican::executableDirectory() / PELICAN_GAME_LOGIC_DLL_NAME;
 #endif
         const auto game_logic = program.get<std::string>("--game-logic");
         if (!game_logic.empty()) {
@@ -729,13 +731,21 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
 } // namespace
 
 int main(int argc, char *argv[]) {
+    Pelican::preparePlayerConsole(argc, argv);
+    bool rpc = false, embedded = false;
+    for (int i = 1; i < argc; ++i) {
+        rpc |= std::string_view(argv[i]) == "--rpc";
+        embedded |= std::string_view(argv[i]) == "--embedded";
+    }
     ParsedLaunchConfig parsed_launch_config;
     try {
         parsed_launch_config = parseLaunchConfig(argc, argv);
-    } catch (const std::exception &) {
+    } catch (const std::exception &error) {
+        Pelican::reportPlayerFatalError(error.what(), rpc, embedded);
         return -1;
     }
 
+    try {
     const auto &launch_config = parsed_launch_config.engine;
     if (!parsed_launch_config.log_file.empty()) {
         Pelican::setLogFilePath(parsed_launch_config.log_file);
@@ -761,7 +771,7 @@ int main(int argc, char *argv[]) {
             parsed_launch_config.project_json =
                 readTextFile(parsed_launch_config.project_file);
         } catch (const Pelican::ProjectMigrationError &error) {
-            std::cerr << error.what() << std::endl;
+            Pelican::reportPlayerFatalError(error.what(), rpc, embedded);
             if (error.code() != Pelican::projectMigrationRequiredCode) {
                 return 1;
             }
@@ -779,7 +789,7 @@ int main(int argc, char *argv[]) {
                       << std::endl;
             return 1;
         } catch (const std::exception &error) {
-            std::cerr << error.what() << std::endl;
+            Pelican::reportPlayerFatalError(error.what(), rpc, embedded);
             return 1;
         }
 
@@ -793,7 +803,7 @@ int main(int argc, char *argv[]) {
                 {.ignore_engine_version =
                      parsed_launch_config.ignore_engine_version});
         } catch (const std::exception &error) {
-            std::cerr << error.what() << std::endl;
+            Pelican::reportPlayerFatalError(error.what(), rpc, embedded);
             return 1;
         }
         path_resolver.setup(parsed_launch_config.project_root, launch_config.allow_absolute_paths,
@@ -826,4 +836,8 @@ int main(int argc, char *argv[]) {
     }
 
     return pl.run() ? 0 : 1;
+    } catch (const std::exception &error) {
+        Pelican::reportPlayerFatalError(error.what(), rpc, embedded);
+        return 1;
+    }
 }

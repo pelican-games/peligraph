@@ -9,7 +9,13 @@ function(pelican_read_git_identity)
     message(FATAL_ERROR "pelican_read_git_identity requires SOURCE_DIR, COMMIT_OUT, and GIT_OUT")
   endif()
 
-  find_package(Git REQUIRED)
+  find_package(Git QUIET)
+  if(NOT Git_FOUND OR NOT EXISTS "${IDENTITY_SOURCE_DIR}/.git")
+    message(WARNING "Cannot identify source commit for crash symbols: Git or .git is unavailable; using unknown")
+    set(${IDENTITY_COMMIT_OUT} "unknown" PARENT_SCOPE)
+    set(${IDENTITY_GIT_OUT} "" PARENT_SCOPE)
+    return()
+  endif()
   execute_process(
     COMMAND "${GIT_EXECUTABLE}" -C "${IDENTITY_SOURCE_DIR}" rev-parse --verify HEAD
     RESULT_VARIABLE git_commit_result
@@ -21,8 +27,10 @@ function(pelican_read_git_identity)
   if(NOT git_commit_result EQUAL 0 OR
      NOT git_commit_length EQUAL 40 OR
      NOT git_commit MATCHES "^[0-9a-fA-F]+$")
-    message(FATAL_ERROR
-        "Cannot identify the source commit for crash symbols: ${git_commit_error}")
+    message(WARNING "Cannot identify source commit for crash symbols; using unknown: ${git_commit_error}")
+    set(${IDENTITY_COMMIT_OUT} "unknown" PARENT_SCOPE)
+    set(${IDENTITY_GIT_OUT} "" PARENT_SCOPE)
+    return()
   endif()
   string(TOLOWER "${git_commit}" git_commit)
 
@@ -99,8 +107,8 @@ function(pelican_preserve_crash_symbols)
   endif()
 
   string(LENGTH "${ARCHIVE_SOURCE_COMMIT}" commit_length)
-  if(NOT commit_length EQUAL 40 OR
-     NOT ARCHIVE_SOURCE_COMMIT MATCHES "^[0-9a-fA-F]+$")
+  if(NOT ARCHIVE_SOURCE_COMMIT STREQUAL "unknown" AND
+     (NOT commit_length EQUAL 40 OR NOT ARCHIVE_SOURCE_COMMIT MATCHES "^[0-9a-fA-F]+$"))
     message(FATAL_ERROR "SOURCE_COMMIT must be a full 40-digit hexadecimal commit")
   endif()
   string(TOLOWER "${ARCHIVE_SOURCE_COMMIT}" source_commit)
@@ -111,7 +119,6 @@ function(pelican_preserve_crash_symbols)
   get_filename_component(archive_root "${ARCHIVE_ARCHIVE_ROOT}" ABSOLUTE
                          BASE_DIR "${CMAKE_SOURCE_DIR}")
   foreach(forbidden_root IN ITEMS
-      "${CMAKE_BINARY_DIR}"
       "${CMAKE_SOURCE_DIR}/dist"
       "${CMAKE_SOURCE_DIR}/dist_debug")
     _pelican_path_is_within("${archive_root}" "${forbidden_root}" archive_is_forbidden)
@@ -121,8 +128,9 @@ function(pelican_preserve_crash_symbols)
     endif()
   endforeach()
 
-  if((ARCHIVE_SOURCE_DIR AND NOT ARCHIVE_GIT_EXECUTABLE) OR
-     (ARCHIVE_GIT_EXECUTABLE AND NOT ARCHIVE_SOURCE_DIR))
+  if(NOT ARCHIVE_SOURCE_COMMIT STREQUAL "unknown" AND
+     ((ARCHIVE_SOURCE_DIR AND NOT ARCHIVE_GIT_EXECUTABLE) OR
+      (ARCHIVE_GIT_EXECUTABLE AND NOT ARCHIVE_SOURCE_DIR)))
     message(FATAL_ERROR "SOURCE_DIR and GIT_EXECUTABLE must be provided together")
   endif()
   # Keep the established dist_debug PDB filename, but make the CodeView record

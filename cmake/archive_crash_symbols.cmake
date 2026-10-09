@@ -18,8 +18,8 @@ if(NOT PELICAN_ARCHIVE_TARGET MATCHES "^[A-Za-z0-9_.-]+$")
   message(FATAL_ERROR "Invalid crash-symbol target name: ${PELICAN_ARCHIVE_TARGET}")
 endif()
 string(LENGTH "${PELICAN_ARCHIVE_COMMIT}" commit_length)
-if(NOT commit_length EQUAL 40 OR
-   NOT PELICAN_ARCHIVE_COMMIT MATCHES "^[0-9a-f]+$")
+if(NOT PELICAN_ARCHIVE_COMMIT STREQUAL "unknown" AND
+   (NOT commit_length EQUAL 40 OR NOT PELICAN_ARCHIVE_COMMIT MATCHES "^[0-9a-f]+$"))
   message(FATAL_ERROR "Invalid crash-symbol commit: ${PELICAN_ARCHIVE_COMMIT}")
 endif()
 if(NOT PELICAN_ARCHIVE_MAX_GENERATIONS MATCHES "^[1-9][0-9]*$")

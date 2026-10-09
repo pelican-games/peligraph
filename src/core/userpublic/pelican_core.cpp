@@ -1,4 +1,5 @@
 #include "pelican_core.hpp"
+#include "../playerdiagnostics.hpp"
 #include "../appflow/loop.hpp"
 #include "../appflow/playmode.hpp"
 #include "../appflow/teardown.hpp"
@@ -101,6 +102,10 @@ bool PelicanCore::run() {
     FastModuleContainer container;
     RuntimeTeardownGuard teardown{RuntimeTeardownMode::terminal_shutdown};
     bool succeeded = true;
+    const auto report_fatal = [](const char *message) {
+        const auto &config = GET_MODULE(EngineLaunchConfig);
+        reportPlayerFatalError(message, config.rpc, config.embedded);
+    };
     try {
         GET_MODULE(StartupMetrics).begin();
         auto &launch_config = GET_MODULE(EngineLaunchConfig);
@@ -200,12 +205,15 @@ bool PelicanCore::run() {
         // CT-2: a graph refusal raised anywhere in startup names the
         // rendering root its node was written in (kept when it already does).
         LOG_ERROR(logger, "Pelican fatal error : {}", startupGraphRefusal(e).what());
+        report_fatal(startupGraphRefusal(e).what());
         succeeded = false;
     } catch (std::exception &e) {
         LOG_ERROR(logger, "Pelican fatal error : {}", e.what());
+        report_fatal(e.what());
         succeeded = false;
     } catch (...) {
         LOG_ERROR(logger, "Pelican fatal error: non-standard exception");
+        report_fatal("Pelican fatal error: non-standard exception");
         succeeded = false;
     }
     internal::runTerminalShutdown(teardown);

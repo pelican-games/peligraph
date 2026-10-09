@@ -1,32 +1,41 @@
-add_executable(pelican_player main.cpp)
-pelican_runtime_target(pelican_player)
-set_target_properties(pelican_player PROPERTIES
-    CXX_STANDARD 20
-    ENABLE_EXPORTS TRUE
-)
+function(pelican_configure_player_target target_name)
+    add_executable(${target_name} WIN32
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/main.cpp"
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../platform/gpupreference.cpp")
+    if(MSVC)
+        target_link_options(${target_name} PRIVATE /ENTRY:mainCRTStartup)
+    endif()
+    set_target_properties(${target_name} PROPERTIES
+        CXX_STANDARD 20
+        ENABLE_EXPORTS TRUE
+    )
 
-# The hot-reload game DLL imports the public SDK from the player executable.
-# Keep every pelican_core object in that export host even when the player does
-# not call a particular public helper itself (for example FlipbookClip).
-if(MSVC)
-    target_link_options(pelican_player PRIVATE
-        "/WHOLEARCHIVE:$<TARGET_LINKER_FILE:pelican_core>"
-    )
-    target_link_libraries(pelican_player pelican_core argparse)
-elseif(APPLE)
-    target_link_libraries(pelican_player
-        "-Wl,-force_load,$<TARGET_FILE:pelican_core>"
-        argparse
-    )
-else()
-    target_link_libraries(pelican_player
-        "-Wl,--whole-archive"
-        pelican_core
-        "-Wl,--no-whole-archive"
-        argparse
-    )
-endif()
-target_include_directories(pelican_player PRIVATE ${Vulkan_INCLUDE_DIRS})
+    # The hot-reload game DLL imports the public SDK from the player executable.
+    # Keep every pelican_core object in that export host even when the player does
+    # not call a particular public helper itself (for example FlipbookClip).
+    if(MSVC)
+        target_link_options(${target_name} PRIVATE
+            "/WHOLEARCHIVE:$<TARGET_LINKER_FILE:pelican_core>"
+        )
+        target_link_libraries(${target_name} pelican_core argparse)
+    elseif(APPLE)
+        target_link_libraries(${target_name}
+            "-Wl,-force_load,$<TARGET_FILE:pelican_core>"
+            argparse
+        )
+    else()
+        target_link_libraries(${target_name}
+            "-Wl,--whole-archive"
+            pelican_core
+            "-Wl,--no-whole-archive"
+            argparse
+        )
+    endif()
+    target_include_directories(${target_name} PRIVATE ${Vulkan_INCLUDE_DIRS})
+endfunction()
+
+pelican_configure_player_target(pelican_player)
+pelican_runtime_target(pelican_player)
 
 function(pelican_classify_game_logic_target target_name game_logic_class game_logic_role)
     set_property(TARGET ${target_name} PROPERTY PELICAN_GAME_DLL_CLASS

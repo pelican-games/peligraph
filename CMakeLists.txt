@@ -1,11 +1,11 @@
-cmake_minimum_required(VERSION 3.13)
+cmake_minimum_required(VERSION 3.20)
+cmake_policy(SET CMP0091 NEW)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
 # battery::embed writes each target's embed.hpp with file(GENERATE) from its own directory,
 # but the consuming target lives in src/core/resources. Under CMP0118's OLD behaviour the
 # GENERATED property does not cross that directory boundary, so the generate step rejects
-# the header as a missing source. 3.13 above leaves the policy unset, which CMake 4.x
-# resolves as OLD -- configure then fails for anyone on a current CMake even though CI's
-# older toolchain still passes.
+# the header as a missing source. Keep generated headers visible across directories.
 if(POLICY CMP0118)
   cmake_policy(SET CMP0118 NEW)
 endif()
@@ -256,7 +256,7 @@ if(PELICAN_WITH_EXR)
 endif()
 
 if(PELICAN_WITH_OPENXR)
-  # OpenXR-SDK-Source release-1.1.61. The release tag is annotated, so pin the
+  # OpenXR-SDK release-1.1.61. The release tag is annotated, so pin the
   # peeled commit rather than the movable tag object.
   set(BUILD_LOADER ON CACHE BOOL "" FORCE)
   set(BUILD_ALL_EXTENSIONS OFF CACHE BOOL "" FORCE)
@@ -268,16 +268,11 @@ if(PELICAN_WITH_OPENXR)
   set(DYNAMIC_LOADER OFF CACHE BOOL "" FORCE)
   FetchContent_Declare(
     openxr_sdk
-    GIT_REPOSITORY https://github.com/KhronosGroup/OpenXR-SDK-Source.git
-    GIT_TAG        211e2f4f0b79932300a845f3a8ed75026dbfa4a3
+    GIT_REPOSITORY https://github.com/KhronosGroup/OpenXR-SDK.git
+    GIT_TAG        5267613edf3d937e3d77556a106a65c2f82b25c6 # release-1.1.61
   )
-  function(pelican_add_openxr_sdk)
-    # This pinned OpenXR-SDK-Source checkout can require Python to generate
-    # dispatch headers, independently of Pelican's Python-backed test option.
-    # Preserve the caller's package policy and let the SDK find its generator.
-    FetchContent_MakeAvailable(openxr_sdk)
-  endfunction()
-  pelican_add_openxr_sdk()
+  # The SDK ships generated loader sources and headers; no Python generator.
+  FetchContent_MakeAvailable(openxr_sdk)
   foreach(PELICAN_UNUSED_OPENXR_TARGET openxr-gfxwrapper openxr-glad-loader)
     if(TARGET ${PELICAN_UNUSED_OPENXR_TARGET})
       set_target_properties(${PELICAN_UNUSED_OPENXR_TARGET} PROPERTIES EXCLUDE_FROM_ALL TRUE)
@@ -286,7 +281,21 @@ if(PELICAN_WITH_OPENXR)
 endif()
 
 ## vulkan
-find_package(Vulkan)
+find_package(Vulkan REQUIRED)
+# FindVulkan in the minimum supported CMake predates Vulkan_VERSION.
+file(STRINGS "${Vulkan_INCLUDE_DIRS}/vulkan/vulkan_core.h" pelican_vk_patch
+    REGEX "^#define VK_HEADER_VERSION [0-9]+")
+file(STRINGS "${Vulkan_INCLUDE_DIRS}/vulkan/vulkan_core.h" pelican_vk_complete
+    REGEX "^#define VK_HEADER_VERSION_COMPLETE ")
+string(REGEX REPLACE ".*VK_HEADER_VERSION ([0-9]+).*" "\\1" pelican_vk_patch "${pelican_vk_patch}")
+string(REGEX MATCH "VK_MAKE_API_VERSION\\(0, ([0-9]+), ([0-9]+)," _ "${pelican_vk_complete}")
+set(pelican_vk_version "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${pelican_vk_patch}")
+if(pelican_vk_version VERSION_LESS "1.4.309")
+  message(FATAL_ERROR
+    "Vulkan SDK 1.4.309 or newer is required (found ${pelican_vk_version}). "
+    "Vulkan SDK 1.4.x (verified with 1.4.350; 1.3.x is no longer supported since vma-hpp v3.3.0). "
+    "Install the SDK and set VULKAN_SDK; see README.md.")
+endif()
 
 if(PELICAN_RUNTIME_SHADER_COMPILER)
   # Runtime compilation belongs to the PC development toolchain. Cross targets
@@ -454,8 +463,12 @@ add_subdirectory(src/devcli)
 
 ## pelican studio
 set(PELICAN_CRASH_SYMBOL_ARCHIVE_DIR
-    "${CMAKE_SOURCE_DIR}/.pelican/crash-symbols" CACHE PATH
-    "Directory outside build outputs that retains pelican_studio crash symbols")
+    "$ENV{PELICAN_CRASH_SYMBOL_ARCHIVE_DIR}" CACHE PATH
+    "Directory that retains pelican_studio crash symbols")
+if(NOT PELICAN_CRASH_SYMBOL_ARCHIVE_DIR)
+  set(PELICAN_CRASH_SYMBOL_ARCHIVE_DIR "${CMAKE_BINARY_DIR}/crash-symbols" CACHE PATH
+      "Directory that retains pelican_studio crash symbols" FORCE)
+endif()
 set(PELICAN_CRASH_SYMBOL_GENERATIONS "8" CACHE STRING
     "Maximum number of retained pelican_studio crash-symbol generations")
 if(NOT SKIP_DEVSTUDIO)

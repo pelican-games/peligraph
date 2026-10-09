@@ -10,6 +10,25 @@
 #include <string>
 
 namespace Pelican {
+
+TEST_CASE("device_feature_policy selects discrete Vulkan 1.3 devices and honors overrides", "[vulkan][device_feature_policy]") {
+    std::vector<VulkanDeviceCandidate> devices{
+        {"Integrated", VK_API_VERSION_1_3, vk::PhysicalDeviceType::eIntegratedGpu, true, true},
+        {"Discrete", VK_API_VERSION_1_3, vk::PhysicalDeviceType::eDiscreteGpu, true, false},
+        {"Old discrete", VK_API_VERSION_1_2, vk::PhysicalDeviceType::eDiscreteGpu, true, true},
+    };
+    REQUIRE(selectVulkanPhysicalDevice(devices) == 1);
+    REQUIRE(selectVulkanPhysicalDevice(devices, "0") == 0);
+    REQUIRE(selectVulkanPhysicalDevice(devices, "Integrated") == 0);
+    REQUIRE_THROWS_WITH(selectVulkanPhysicalDevice(devices, "2"), Catch::Matchers::ContainsSubstring("Old discrete"));
+    REQUIRE_THROWS(selectVulkanPhysicalDevice(devices, "missing"));
+    devices[1].suitable = false;
+    REQUIRE(selectVulkanPhysicalDevice(devices) == 0);
+    devices[0].api_version = VK_API_VERSION_1_2;
+    REQUIRE_THROWS_WITH(selectVulkanPhysicalDevice(devices), Catch::Matchers::ContainsSubstring("Vulkan 1.3"));
+    REQUIRE_THROWS_WITH(selectVulkanPhysicalDevice(devices), Catch::Matchers::ContainsSubstring("Integrated"));
+}
+
 namespace {
 
 bool hasExtension(const RayQueryDeviceSelection &selection,

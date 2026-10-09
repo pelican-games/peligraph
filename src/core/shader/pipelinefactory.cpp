@@ -1,4 +1,5 @@
 #include "pipelinefactory.hpp"
+#include "../executabledirectory.hpp"
 #include <set>
 #include "raygrouplayout.hpp"
 #include "raytracingvalidation.hpp"
@@ -84,24 +85,6 @@ size_t descriptorBindingHash(const vk::DescriptorSetLayoutBinding &binding) {
     seed = hashCombine(seed, std::hash<uint32_t>{}(binding.descriptorCount));
     seed = hashCombine(seed, std::hash<VkShaderStageFlags>{}(static_cast<VkShaderStageFlags>(binding.stageFlags)));
     return seed;
-}
-
-std::filesystem::path executableDirectory() {
-#ifdef _WIN32
-    std::wstring buffer(32768, L'\0');
-    const auto size = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (size > 0 && size < buffer.size()) {
-        buffer.resize(size);
-        return std::filesystem::path{buffer}.parent_path();
-    }
-#else
-    std::error_code ec;
-    const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (!ec) {
-        return exe.parent_path();
-    }
-#endif
-    return std::filesystem::current_path();
 }
 
 std::vector<std::byte> readPipelineCacheData(const std::filesystem::path &path) {

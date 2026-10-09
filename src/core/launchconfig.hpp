@@ -98,6 +98,7 @@ DECLARE_MODULE(EngineLaunchConfig) {
     bool strict_assets = false;
     bool dump_frame_plan = false;
     bool gpu_labels = false;
+    std::string gpu;
     VulkanValidationMode vulkan_validation =
         VulkanValidationMode::build_default;
     // Tool-declared startup inputs. These are deliberately absent from
