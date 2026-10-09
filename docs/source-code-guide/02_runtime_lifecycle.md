@@ -1,6 +1,6 @@
 # 第2章 起動・モジュール・1フレーム
 
-最終確認: 2026-10-07(develop d975ee9c0)
+最終確認: 2026-10-07
 
 [索引へ戻る](README.md) / [前章](01_architecture_and_build.md)
 

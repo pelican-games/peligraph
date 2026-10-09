@@ -1,6 +1,6 @@
 # 第8章 クラス・インターフェース索引
 
-最終確認: 2026-10-07(develop d975ee9c0)
+最終確認: 2026-10-07
 
 [索引へ戻る](README.md) / [前章](07_tools_rpc_tests.md) / [次章](09_black_magic_and_gotchas.md)
 

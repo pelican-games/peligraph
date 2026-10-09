@@ -1,6 +1,6 @@
 # 第6章 描画・Vulkan・Shader
 
-最終確認: 2026-10-07(develop d975ee9c0)
+最終確認: 2026-10-07
 
 [索引へ戻る](README.md) / [前章](05_gameplay_and_services.md) / [次章](07_tools_rpc_tests.md)
 
