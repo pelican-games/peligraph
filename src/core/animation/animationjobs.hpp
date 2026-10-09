@@ -48,13 +48,20 @@ struct AnimationClipResource {
 
 struct AnimationAsset {
     const SkeletalModelData *source{};
+    std::weak_ptr<const SkeletalModelData> source_identity;
     AnimationRig rig;
     std::vector<AnimationSkinBinding> skin_bindings;
     std::vector<AnimationClipResource> clips;
 };
 
+struct AnimationAssetRegistryTestAccess;
+
 class AnimationAssetRegistry {
+    friend struct AnimationAssetRegistryTestAccess;
   public:
+    const AnimationAsset &getOrCreate(const std::shared_ptr<const SkeletalModelData> &model);
+    // Borrowed assets are owned by the animation service, which explicitly
+    // reloads/invalidates them before releasing their source storage.
     const AnimationAsset &getOrCreate(const SkeletalModelData &model);
     // Replaces one logical model asset. Handles from the replaced asset become
     // stale while handles issued for every other asset remain valid.

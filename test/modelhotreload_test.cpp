@@ -1,3 +1,5 @@
+#include "animationassetregistry_testaccess.hpp"
+#include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/asset/model.hpp"
 #include "../src/core/phys/physworld.hpp"
 #include "../src/core/ecs/predefined.hpp"
@@ -751,6 +753,101 @@ TEST_CASE("HR2-G survives 1000 geometry reloads without allocation growth",
     REQUIRE(materials.materialCountForTesting() == material_count);
     REQUIRE(geometry.allocatedIndexCountForTesting() == indices);
     REQUIRE(geometry.allocatedVertexCountForTesting() == vertices);
+}
+
+TEST_CASE("AN1 animation clip reload refreshes ECS rig pose and status bounds", "[animation][modelhotreload][an1][gpu]") {
+    setupLogger();
+    auto sandbox = makeSandbox("an1_clip_reload");
+    const auto glb = sandbox.root / "model.glb";
+    TestSkeletalFixture::writeGlb(glb);
+    FastModuleContainer modules;
+    configureProject(sandbox.root, nlohmann::json::array({{{"name", "live"}, {"path", "model.glb"}}}));
+    std::filesystem::create_directories(sandbox.root / "passes");
+    writeText(sandbox.root / "passes/main_rendering_config.json",
+        R"({"schema":"pelican.graph","version":1,"definitions":{},"nodes":[],"outputs":{},"rendering":{"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},"features":[]}})");
+    writeText(sandbox.root / "scene.json", R"json({"schema":"pelican.scene","version":2,
+      "scenes":{"default_scene":{"objects":[{"name":"Character","components":[
+        {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+        {"name":"simplemodelview","model":"live"},
+        {"name":"animation","clip":"model.glb#animation/Turn","loop":false}]}]}}})json");
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = GET_MODULE(SceneLoader);
+    test_support::loadScene(scene, "default_scene");
+    auto &models = GET_MODULE(ModelAssetContainer);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    auto &system = GET_MODULE(AnimationSystem);
+    auto &registry = test_support::AnimationSystemTestAccess::assets(system);
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 0.5);
+    const auto object = scene.objectId("Character");
+    REQUIRE(object);
+    const auto instance = [&] {
+        const auto *view = GET_MODULE(ECSCore).getTemplatePublicModule()
+            .tryComponent<SimpleModelViewComponent>(*object);
+        REQUIRE(view);
+        REQUIRE(view->model_instance_id);
+        return *view->model_instance_id;
+    };
+    const auto evaluate = [&] {
+        time.advance();
+        GET_MODULE(ECSCore).update();
+        CHECK(PolygonInstanceTestAccess::currentAnimationRevision(instances, instance()) == time.evaluationIndex());
+        CHECK(instances.animationFrameWriter(instance()).kind == AnimationFrameWriterKind::animation_component_clip);
+    };
+    REQUIRE_NOTHROW(evaluate());
+    const auto &first_model = models.getModelTemplateByName("live");
+    REQUIRE(first_model.skeletal);
+    CHECK(first_model.skeletal->joint_nodes.size() == 2);
+    CHECK(PolygonInstanceTestAccess::animationNodeCount(instances, instance()) == 3);
+    const auto *old_key = first_model.skeletal.get();
+    const auto old_asset = Animation::AnimationAssetRegistryTestAccess::entry(registry, old_key);
+    REQUIRE(old_asset.source_identity.lock() == first_model.skeletal);
+    const auto before = system.componentTrace();
+    REQUIRE(before.size() == 1);
+    REQUIRE(before.front().cursors.size() == 1);
+    CHECK(before.front().cursors.front().time_seconds == Catch::Approx(0.5));
+    CHECK(before.front().cursors.front().normalized_phase == Catch::Approx(0.25));
+
+    // Keep the old source alive through the first status read: bounds must
+    // detect a different identity as well as an expired one.
+    auto retired = first_model.skeletal;
+    TestSkeletalFixture::writeGlb(glb, {.animation_time_offset = 5.0f,
+                                      .animation_time_scale = 3.0f, .extra_joint = true});
+    REQUIRE(GET_MODULE(watch::ReloadService).applyRequestForTesting(modified("model.glb")));
+    CHECK(models.contentRevisionForTesting("live") == 2);
+    const auto &next_model = models.getModelTemplateByName("live");
+    REQUIRE(next_model.skeletal);
+    CHECK(next_model.skeletal->joint_nodes.size() == 3);
+    REQUIRE(next_model.skeletal != retired);
+    const auto changed = system.componentTrace();
+    REQUIRE(changed.size() == 1);
+    REQUIRE(changed.front().cursors.size() == 1);
+    CHECK(changed.front().cursors.front().time_seconds == Catch::Approx(5.5));
+    CHECK(changed.front().cursors.front().normalized_phase == Catch::Approx(0.5 / 6.0));
+    retired.reset();
+    GET_MODULE(DeletionQueue).flushAll();
+    REQUIRE(old_asset.source_identity.expired());
+    // The real loader may allocate at a new address. Force its next registry
+    // lookup to encounter the expired old entry, exactly as address reuse does.
+    Animation::AnimationAssetRegistryTestAccess::reuseKey(registry, old_key, next_model.skeletal.get());
+    REQUIRE(Animation::AnimationAssetRegistryTestAccess::entry(registry, next_model.skeletal.get()).source_identity.expired());
+    REQUIRE_NOTHROW(evaluate());
+    const auto &fresh = Animation::AnimationAssetRegistryTestAccess::entry(registry, next_model.skeletal.get());
+    CHECK(fresh.source_identity.lock() == next_model.skeletal);
+    CHECK(fresh.rig.handle.identity != old_asset.rig.handle.identity);
+    CHECK(fresh.rig.rest_pose.size() == 4);
+    CHECK(PolygonInstanceTestAccess::animationNodeCount(instances, instance()) == 4);
+    const auto after = system.componentTrace();
+    REQUIRE(after.size() == 1);
+    REQUIRE(after.front().cursors.size() == 1);
+    CHECK(after.front().cursors.front().time_seconds == Catch::Approx(6.0));
+    CHECK(after.front().cursors.front().normalized_phase == Catch::Approx(1.0 / 6.0));
+    CHECK(after.front().frame_revision == time.evaluationIndex());
+    // A second read reuses the refreshed bounds.
+    CHECK(system.componentTrace().front().cursors.front().normalized_phase == Catch::Approx(1.0 / 6.0));
+    GET_MODULE(VulkanManageCore).waitIdle();
 }
 
 } // namespace Pelican

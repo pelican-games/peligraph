@@ -64,7 +64,12 @@ struct AnimationSystemState {
     // AG-3a. `<model name>\0<clip reference>` -> the clip's own [start, end].
     // A status read resolves a clip reference once; the bounds are a property
     // of the asset, so a second read of the same clip is arithmetic only.
-    std::map<std::string, std::pair<double, double>> clip_bounds;
+    struct ClipBounds {
+        std::weak_ptr<const SkeletalModelData> identity;
+        double begin;
+        double end;
+    };
+    std::map<std::string, ClipBounds> clip_bounds;
     std::unordered_map<EntityId, std::unique_ptr<GraphBinding>> graphs;
 
     AnimationGraph::EvaluatorV1 *currentEvaluator(EntityId entity) const {
@@ -79,6 +84,8 @@ struct AnimationSystemState {
 
 AnimationSystem::AnimationSystem() : state{std::make_unique<AnimationSystemState>()} {}
 AnimationSystem::~AnimationSystem() = default;
+
+Animation::AnimationAssetRegistry &AnimationSystem::assetRegistry() { return state->assets; }
 
 void AnimationSystem::prepareEcsWorkerDependencies(DependencyQuery chunks) {
     state->candidates.clear();
@@ -145,7 +152,7 @@ void AnimationSystem::process(QueryComponents components, size_t count) {
         if (found == state->clips.end()) continue;
         auto &model = models->getModelTemplateByName(model_views[i].model_name);
         const auto &clip = *found->second;
-        const auto &asset = state->assets.getOrCreate(*model.skeletal);
+        const auto &asset = state->assets.getOrCreate(model.skeletal);
         const auto &clip_resource = Animation::findClip(asset, clip);
 
         auto local_pose = Animation::PoseViewV1{};
@@ -461,23 +468,27 @@ std::vector<AnimationComponentTrace> AnimationSystem::componentTrace() {
             if (models == nullptr || path_resolver == nullptr) continue;
             const auto key = view->model_name + '\0' + animation->clip;
             auto bounds = state->clip_bounds.find(key);
-            if (bounds == state->clip_bounds.end()) {
-                try {
-                    auto &model = models->getModelTemplateByName(view->model_name);
-                    if (!model.skeletal) continue;
+            try {
+                const auto &model = models->getModelTemplateByName(view->model_name);
+                if (!model.skeletal) continue;
+                if (bounds == state->clip_bounds.end() || bounds->second.identity.expired() ||
+                    bounds->second.identity.lock() != model.skeletal ||
+                    bounds->second.identity.owner_before(model.skeletal) ||
+                    model.skeletal.owner_before(bounds->second.identity)) {
                     const auto resolved = path_resolver->resolveExistingFileReference(animation->clip);
                     const auto *reference = std::get_if<ResolvedPathFragment>(&resolved);
                     if (reference == nullptr || reference->fragment.kind != "animation") continue;
                     const auto &clip = findAnimationClip(*model.skeletal, reference->fragment.path);
-                    bounds = state->clip_bounds.emplace(key,
-                        std::pair<double, double>{clip.start, clip.end}).first;
-                } catch (const std::exception &) {
-                    // An unresolvable clip is the frame's own error to raise;
-                    // observing the frame must not raise it a second time.
-                    continue;
+                    bounds = state->clip_bounds.insert_or_assign(key,
+                        AnimationSystemState::ClipBounds{model.skeletal, clip.start, clip.end}).first;
                 }
+            } catch (const std::exception &) {
+                // An unresolvable clip is the frame's own error to raise;
+                // observing the frame must not raise it a second time.
+                continue;
             }
-            const auto [begin, end] = bounds->second;
+            const auto begin = bounds->second.begin;
+            const auto end = bounds->second.end;
             const auto at = sampled(begin, end, time.now(), animation->speed,
                                     animation->loop != 0, animation->start_time);
             const auto span = end - begin;

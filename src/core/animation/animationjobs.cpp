@@ -205,6 +205,26 @@ AnimationAsset AnimationAssetRegistry::buildAsset(
     return asset;
 }
 
+const AnimationAsset &AnimationAssetRegistry::getOrCreate(
+    const std::shared_ptr<const SkeletalModelData> &model) {
+    if (!model) throw std::invalid_argument("animation asset requires a skeletal model");
+    std::scoped_lock lock{mutex_};
+    if (const auto found = assets_.find(model.get()); found != assets_.end()) {
+        const auto &identity = found->second.source_identity;
+        if (!identity.expired() && !identity.owner_before(model) && !model.owner_before(identity))
+            return found->second;
+        // Never inspect the retired source: its address may already have been
+        // reused, including the addresses of its clips. Invalidate copied handles.
+        auto &generation = found->second.rig.generation_state->current;
+        if (++generation == 0) ++generation;
+        assets_.erase(found);
+    }
+    auto generation_state = std::make_shared<AnimationResourceGeneration>();
+    auto asset = buildAsset(*model, generation_state, 1, nullptr);
+    asset.source_identity = model;
+    return assets_.emplace(model.get(), std::move(asset)).first->second;
+}
+
 const AnimationAsset &AnimationAssetRegistry::getOrCreate(const SkeletalModelData &model) {
     std::scoped_lock lock{mutex_};
     if (const auto found = assets_.find(&model); found != assets_.end()) return found->second;
