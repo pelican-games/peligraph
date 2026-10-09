@@ -15836,3 +15836,148 @@ TEST_CASE("FX-8 a loop draft refused by an intervening read names the unsent cha
     Q_EMIT count->editingFinished();
     CHECK(tab.sent(1).at("parameters").at("over").at("range").at("count") == 4);
 }
+
+namespace {
+Json ga1ParallelDocument(bool zone) {
+    const Json nodes = Json::array({
+        {{"id", "A"}, {"op", "value.constant"}, {"parameters", {{"value", 1.0}}},
+         {"outputs", Json::array({"value", "other"})}},
+        {{"id", "B"}, {"op", "value.add"},
+         {"inputs", {{"a", {{"node", "A"}, {"port", "value"}}},
+                     {"b", {{"node", "A"}, {"port", "other"}}}}},
+         {"outputs", Json::array({"value"})}}});
+    Json document{{"schema", "pelican.graph"}, {"version", 1}, {"nodes", nodes},
+                  {"outputs", Json::object()}, {"definitions", Json::object()}};
+    if (zone) {
+        // Reuse A/B at the root and in the body: scope is part of identity.
+        document["definitions"]["body"] = {
+            {"nodes", nodes}, {"outputs", {{"out", {{"node", "B"}, {"port", "value"}}}}}};
+        document["nodes"].push_back({
+            {"id", "steps"}, {"op", "graph.loop"},
+            {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                            {"branches", Json::array({{{"body", "body"}}})}}},
+            {"outputs", Json::array({"out", "out[]"})}});
+    }
+    return document;
+}
+
+void ga1CheckArrows(GraphCanvasScene &scene, const QString &scope, bool parented) {
+    using namespace PelicanStudio;
+    int count = 0;
+    std::set<QString> ports;
+    for (auto *item : scene.items()) {
+        if (nodeGraphItemKind(*item) != GraphCanvasEdgeArrowItem ||
+            item->data(GraphCanvasScopeRole).toString() != scope)
+            continue;
+        ++count;
+        const QString from_port = item->data(GraphCanvasFromPortRole).toString();
+        const QString to_port = item->data(GraphCanvasToPortRole).toString();
+        INFO("scope=" << scope.toStdString() << " port=" << to_port.toStdString());
+        ports.insert(to_port);
+        REQUIRE(item->data(NodeGraphFromNameRole).toString() == "A");
+        REQUIRE(item->data(NodeGraphToNameRole).toString() == "B");
+        REQUIRE((item->parentItem() != nullptr) == parented);
+        auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(item);
+        REQUIRE(arrow != nullptr);
+        REQUIRE(arrow->polygon().size() == 3);
+        auto *socket = scopedItem(scene, GraphCanvasSocketItem, scope, "B", to_port, "input");
+        REQUIRE(socket != nullptr);
+        CHECK(QLineF{arrow->mapToScene(arrow->polygon().front()), centreOf(socket)}.length() <= 0.5);
+        auto *line = dynamic_cast<QGraphicsPathItem *>(
+            scopedEdge(scene, scope, "A", from_port, "B", to_port));
+        REQUIRE(line != nullptr);
+        auto *source = scopedItem(scene, GraphCanvasSocketItem, scope, "A", from_port, "output");
+        REQUIRE(source != nullptr);
+        CHECK(QLineF{line->mapToScene(line->path().pointAtPercent(0)), centreOf(source)}.length() <= 0.5);
+        CHECK(QLineF{line->mapToScene(line->path().pointAtPercent(1)), centreOf(socket)}.length() <= 0.5);
+        if (const auto *index = NodeGraphIndex::forScene(scene)) {
+            CHECK(index->find({"artifact", graphCanvasKinds().arrow, scope,
+                               "A", from_port, "B", to_port}) == arrow);
+            CHECK(index->find({"artifact", graphCanvasKinds().arrow, scope,
+                               "A", "missing", "B", to_port}) == nullptr);
+        }
+    }
+    CHECK(count == 2);
+    CHECK(ports == std::set<QString>{"a", "b"});
+}
+
+void ga1MoveParallelNodes(bool zone, bool indexed, bool mouse) {
+    (void)application();
+    ZoneHarness h{ga1ParallelDocument(zone)};
+    h.catalog["modules"][0]["operations"][1]["outputs"].push_back(declaredOutput("other"));
+    h.open();
+    auto &scene = h.scene;
+    const QString scope = zone ? QStringLiteral("body") : QString{};
+    UxView shown{scene};
+    auto &view = shown.view;
+    view.setTransform(QTransform{});
+    // B first catches stationary second arrowheads. A then exercises the
+    // outgoing-edge route too. Check during the grab, before a zone can rebuild.
+    for (const QString &name : {QStringLiteral("B"), QStringLiteral("A")}) {
+        INFO("zone=" << zone << " indexed=" << indexed << " mouse=" << mouse
+             << " moved=" << name.toStdString());
+        auto *node = scopedNode(scene, scope, name);
+        REQUIRE(node != nullptr);
+        view.centerOn(node);
+        QCoreApplication::processEvents();
+        node = scopedNode(scene, scope, name);
+        REQUIRE(node != nullptr);
+        if (!indexed) scene.invalidateRoutingIndex();
+        REQUIRE((PelicanStudio::NodeGraphIndex::forScene(scene) != nullptr) == indexed);
+        const QPointF before = node->scenePos();
+        const QPoint delta{65, 45};
+        if (mouse) {
+            const QPoint from = view.mapFromScene(node->mapToScene(QPointF{60, 15}));
+            REQUIRE(view.viewport()->rect().contains(from));
+            dl1Mouse(view, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
+            dl1Mouse(view, QEvent::MouseMove, from + delta, Qt::NoButton, Qt::LeftButton);
+            CHECK(QLineF{node->scenePos(), before + delta}.length() < 3.0);
+            ga1CheckArrows(scene, scope, zone);
+            if (zone) ga1CheckArrows(scene, QString{}, false);
+            dl1Mouse(view, QEvent::MouseButtonRelease, from + delta, Qt::LeftButton, Qt::NoButton);
+        } else {
+            node->setPos(node->pos() + delta);
+            CHECK(QLineF{node->scenePos(), before + delta}.length() < 0.5);
+            ga1CheckArrows(scene, scope, zone);
+            if (zone) ga1CheckArrows(scene, QString{}, false);
+        }
+        // Run any queued refit before the next endpoint is acquired.
+        QCoreApplication::processEvents();
+        if (indexed) scene.rebuildRoutingIndex();
+    }
+}
+} // namespace
+
+TEST_CASE("GA-1 T1 graphcanvas parallel arrowheads follow both endpoint nodes",
+          "[devstudio][graph-canvas][scene][ga1]") {
+    const bool indexed = GENERATE(true, false);
+    const bool mouse = GENERATE(false, true);
+    ga1MoveParallelNodes(false, indexed, mouse);
+}
+
+TEST_CASE("GA-1 T2 graphcanvas loop arrowheads retain scene coordinates",
+          "[devstudio][graph-canvas][scene][ga1]") {
+    const bool indexed = GENERATE(true, false);
+    const bool mouse = GENERATE(false, true);
+    ga1MoveParallelNodes(true, indexed, mouse);
+}
+
+TEST_CASE("GA-1 graphcanvas selection highlights only the matching port arrowhead",
+          "[devstudio][graph-canvas][scene][ga1]") {
+    (void)application();
+    ZoneHarness h{ga1ParallelDocument(false)};
+    h.open();
+    h.scene.selectEdge("", PelicanStudio::GraphCanvasEdge{"A", "value", "B", "a"}, false);
+    int count = 0;
+    for (auto *item : h.scene.items()) {
+        if (PelicanStudio::nodeGraphItemKind(*item) != PelicanStudio::GraphCanvasEdgeArrowItem)
+            continue;
+        auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(item);
+        REQUIRE(arrow != nullptr);
+        const bool selected = item->data(PelicanStudio::GraphCanvasToPortRole).toString() == "a";
+        const auto &theme = PelicanStudio::currentStudioTheme();
+        CHECK(arrow->brush().color() == (selected ? theme.canvas.edge_selected : theme.canvas.edge));
+        ++count;
+    }
+    CHECK(count == 2);
+}

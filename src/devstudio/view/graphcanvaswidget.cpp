@@ -182,6 +182,27 @@ QGraphicsItem *findSocketOrAnchor(QGraphicsScene &scene, const QString &scope,
     return findSocket(scene, scope, node, QString{}, direction);
 }
 
+// Graph arrows belong to one pair of ports, even when several lines join
+// the same nodes. Keep the indexed and unpublished-scene paths identical.
+QGraphicsItem *findGraphCanvasArrow(QGraphicsScene &scene, const QString &scope,
+                                    const QString &from, const QString &from_port,
+                                    const QString &to, const QString &to_port) {
+    const NodeDragTraceSpan trace{scene, "endpoint_lookup"};
+    const QString &kind = graphCanvasKinds().arrow;
+    if (const auto *index = NodeGraphIndex::forScene(scene))
+        return index->find({"artifact", kind, scope, from, from_port, to, to_port});
+    for (QGraphicsItem *item : nodeGraphItems(scene)) {
+        if (nodeGraphItemKind(*item) == kind &&
+            item->data(GraphCanvasScopeRole).toString() == scope &&
+            item->data(NodeGraphFromNameRole).toString() == from &&
+            item->data(GraphCanvasFromPortRole).toString() == from_port &&
+            item->data(NodeGraphToNameRole).toString() == to &&
+            item->data(GraphCanvasToPortRole).toString() == to_port)
+            return item;
+    }
+    return nullptr;
+}
+
 // An edge runs socket centre to socket centre. Only a port the canvas could
 // not draw a socket for falls back to the node box, so a missing contract
 // degrades the line rather than losing it.
@@ -227,8 +248,9 @@ void routeGraphCanvasEdge(QGraphicsScene &scene, QGraphicsPathItem &edge) {
             : curveGeometry(from->sceneBoundingRect(), to->sceneBoundingRect());
     edge.setPath(edge.mapFromScene(geometry.path));
     if (auto *index = NodeGraphIndex::forScene(scene)) index->touch(edge);
-    if (auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(findEndpointArtifact(
-            scene, graphCanvasKinds().arrow, scope, from_name, to_name)))
+    if (auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(findGraphCanvasArrow(
+            scene, scope, from_name, edge.data(GraphCanvasFromPortRole).toString(),
+            to_name, edge.data(GraphCanvasToPortRole).toString())))
     {
         arrow->setPolygon(arrow->mapFromScene(geometry.arrow));
         if (auto *index = NodeGraphIndex::forScene(scene)) index->touch(*arrow);
@@ -1567,7 +1589,12 @@ void GraphCanvasScene::rebuildRoutingIndex() {
         const QString from = item->data(NodeGraphFromNameRole).toString();
         const QString to = item->data(NodeGraphToNameRole).toString();
         routing_index_.insert({"node", kind, scope, name}, item);
-        routing_index_.insert({"artifact", kind, scope, from, to}, item);
+        if (kind == QLatin1String{GraphCanvasEdgeArrowItem})
+            routing_index_.insert({"artifact", kind, scope, from,
+                                   item->data(GraphCanvasFromPortRole).toString(), to,
+                                   item->data(GraphCanvasToPortRole).toString()}, item);
+        else
+            routing_index_.insert({"artifact", kind, scope, from, to}, item);
         if (kind == QLatin1String{GraphCanvasSocketItem}) {
             routing_index_.insert({"socket", scope, name, port, direction}, item);
             const QString bound = item->data(GraphCanvasBoundPortRole).toString();
@@ -2781,11 +2808,10 @@ void GraphCanvasScene::applyEdgeEmphasis() {
                            qtext(drawn.from_node) &&
                        item->data(NodeGraphToNameRole).toString() ==
                            qtext(drawn.to_node) &&
-                       (!edge ||
-                        (item->data(GraphCanvasFromPortRole).toString() ==
-                             qtext(drawn.from_port) &&
-                         item->data(GraphCanvasToPortRole).toString() ==
-                             qtext(drawn.to_port)));
+                       item->data(GraphCanvasFromPortRole).toString() ==
+                           qtext(drawn.from_port) &&
+                       item->data(GraphCanvasToPortRole).toString() ==
+                           qtext(drawn.to_port);
             });
         const StudioTheme &theme = currentStudioTheme();
         const QColor colour = picked    ? theme.canvas.edge_selected
