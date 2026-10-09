@@ -49,8 +49,27 @@ Token scan(std::string_view bytes, std::size_t &cursor, const Json &value) {
 }
 
 bool equal(const Json &a, const Json &b) {
-    // Object order is presentation, not a semantic edit.
-    return nlohmann::json(a) == nlohmann::json(b);
+    // Object order is presentation. Numeric categories are not: reusing 0.0
+    // for an encoded integer 0 makes the saved scene differ from RPC answers.
+    // Untouched values still carry their original category and reuse bytes.
+    if (a.is_object() && b.is_object()) {
+        if (a.size() != b.size()) return false;
+        for (const auto &[key, value] : a.items()) {
+            const auto found = b.find(key);
+            if (found == b.end() || !equal(value, *found)) return false;
+        }
+        return true;
+    }
+    if (a.is_array() && b.is_array()) {
+        if (a.size() != b.size()) return false;
+        for (std::size_t i = 0; i < a.size(); ++i)
+            if (!equal(a[i], b[i])) return false;
+        return true;
+    }
+    if (a.is_number_float() != b.is_number_float()) return false;
+    if (a.is_number_float() && a == 0 && b == 0)
+        return std::signbit(a.get<double>()) == std::signbit(b.get<double>());
+    return a == b;
 }
 
 std::string scalar(const Json &value) {

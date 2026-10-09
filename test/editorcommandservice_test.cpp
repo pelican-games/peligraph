@@ -1575,3 +1575,48 @@ TEST_CASE("scene_outline rejects malformed selectors on the registered RPC wire"
 }
 
 } // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("SV1f export_scene_snapshot preserves numeric semantics across Save and reopen",
+          "[editor-command][snapshot][sv1f]") {
+    for (const auto transform : {
+             R"({"name":"transform","pos":[0,1,-2],"rotation":[0,0,0,1]})",
+             R"({"name":"transform","pos":[0.0,1.0,-2.0],"rotation":[0.0,0.0,0.0,1.0]})"}) {
+        CAPTURE(transform);
+        const std::string untouched = R"({ "name":"unknown_read_only", "payload":[0.0,1e-03] })";
+        const std::string bytes = std::string{"\xef\xbb\xbf"} +
+            "{\r\n  \"schema\":\"pelican.scene\",\"version\":2,\r\n"
+            "  \"next_authoring_object_id\":2,\"scenes\":{\"main\":{\"objects\":[{"
+            "\"name\":\"Mover\",\"authoring_object_id\":1,\"components\":[" +
+            transform + "," + untouched + "]}]}}}\r\n";
+        auto document = AuthoringSceneDocument::load(bytes, SceneRevision{1});
+        CHECK(AuthoringSceneAuthority::encodePersistent(document) == bytes);
+        const auto check_reopen = [&](const AuthoringSceneDocument &before) {
+            const auto answer = makeQueryService(before).exportSceneSnapshotV2({});
+            const auto saved = AuthoringSceneAuthority::encodePersistent(before);
+            const auto reopened = AuthoringSceneDocument::load(saved, SceneRevision{1});
+            const auto after = makeQueryService(reopened).exportSceneSnapshotV2({});
+            // Like QD-1's canonical JSON text, this distinguishes 0 from 0.0.
+            // json::operator== alone would silently accept that regression.
+            CHECK(after.semantic_scene_bytes == answer.semantic_scene_bytes);
+            CHECK(after.digest.hex == answer.digest.hex);
+            CHECK(saved.find(untouched) != std::string::npos);
+            CHECK(saved.starts_with("\xef\xbb\xbf"));
+            CHECK(saved.ends_with("\r\n"));
+            CHECK(AuthoringSceneAuthority::encodePersistent(reopened) == saved);
+            return saved;
+        };
+        check_reopen(document);
+        auto raw = test_support::authoring(document).rawJson();
+        auto component = raw["scenes"]["main"]["objects"][0]["components"][0];
+        component["pos"] = {5.0, 0.0, -2.0};
+        makeSetComponentValueCommand("main", "Mover", "transform", component).apply(raw);
+        const auto edited = test_support::authoring(document).stage(raw, SceneRevision{2});
+        const auto saved = nlohmann::json::parse(check_reopen(edited));
+        const auto &saved_component = saved["scenes"]["main"]["objects"][0]["components"][0];
+        CHECK(saved_component["pos"].dump() == "[5,0,-2]");
+        CHECK(saved_component["rotation"].dump() == "[0,0,0,1]");
+        CHECK_FALSE(saved_component.contains("scale"));
+    }
+}
+} // namespace Pelican

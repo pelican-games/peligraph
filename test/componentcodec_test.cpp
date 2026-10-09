@@ -768,3 +768,31 @@ TEST_CASE("componentcodec SV1 numeric boundaries remain accepted by the unchange
     }
 }
 }
+
+namespace Pelican {
+TEST_CASE("componentcodec SV1f canonical and saved numbers share their JSON types",
+          "[componentcodec][sv1f]") {
+    for (const float value : {0.0f, 1.0f, -2.0f, 0.5f, 0.1f, -0.0f, 3e10f}) {
+        CAPTURE(value);
+        const auto number = internal::authoredJsonNumber(value);
+        const auto saved = nlohmann::json::parse(renderJsonDocument(number, {}));
+        CHECK(saved.dump() == number.dump());
+    }
+    CHECK(internal::authoredJsonNumber(0.0f).dump() == "0");
+    CHECK(internal::authoredJsonNumber(1.0f).dump() == "1");
+    CHECK(internal::authoredJsonNumber(-2.0f).dump() == "-2");
+    CHECK(internal::authoredJsonNumber(-0.0f).dump() == "-0.0");
+    const auto &codec = requireComponentCodec("transform");
+    for (const auto source : {
+             R"({"name":"transform","pos":[0,1,-2]})",
+             R"({"name":"transform","pos":[0.0,1.0,-2.0]})"}) {
+        const auto decoded = codec.decodeAuthored(nlohmann::json::parse(source));
+        REQUIRE(decoded);
+        const auto answer = codec.encodeCanonical(decoded.value());
+        CHECK(answer["pos"].dump() == "[0,1,-2]");
+        const auto reopened = codec.decodeAuthored(nlohmann::json::parse(renderJsonDocument(answer, {})));
+        REQUIRE(reopened);
+        CHECK(codec.encodeCanonical(reopened.value()).dump() == answer.dump());
+    }
+}
+} // namespace Pelican
