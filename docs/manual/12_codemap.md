@@ -209,5 +209,4 @@ owner の払い出しと builtin 登録は game DLL のヘッダから外れ、
 - [第1章 エンジン全体像](01_overview.md) — レイヤ規則・設計原則の利用者向け説明
 - [第11章 §11.1](11_status.md#111-wp-の台帳はどこにあるか) — WP 台帳・履歴への索引(この章の ⚠注記の出典を辿る入口)
 - [../adding_features.md](../adding_features.md) — 機能追加レシピ集(公式 cookbook)
-- [../agent_operations.md](../agent_operations.md) — 開発体制・WP 運用
 - [../shader_contract.md](../shader_contract.md) — シェーダ契約(実装から読み取った正)

@@ -126,7 +126,6 @@ Studio と編集 RPC の機能ごとの記録は [Studio の履歴](../history/s
 | [v1_development_plan.md](../v1_development_plan.md) | v1 の現況・残件・開発運用。v0 の段(AG / P / X / O / R / N)の**出所**であり、「v0 で凍結するもの / 広く約束しないもの」の 5 行表を持つ(その表を実名に展開したのが [v0_freeze.md](../v0_freeze.md)) |
 | [roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md) | 今後の候補 47 件・6 ティア + D-P / SA トラック(セッション引き継ぎ用。ウェーブ表は 2026-07-16 夜時点) |
 | [adding_features.md](../adding_features.md) | 機能追加レシピ集 |
-| [agent_operations.md](../agent_operations.md) | マルチエージェント運用 |
 | [rendering_phase1_review.md](../rendering_phase1_review.md) | Validation Run の流儀 |
 | `design_reviews/` | codex の監査・敵対レビュー・WP レポート(一次資料) |
 | `schemas/` | pelican.ui 系 JSON Schema 4 本(U0 成果物) |
@@ -242,5 +241,4 @@ game DLL ABI / 宣言 schema v3 / GPU lease)を §11.1 の追補表として足�
 - [../implementation_plan.md](../implementation_plan.md) — WP 台帳の一次資料
 - [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md) — 今後の候補(47 件・6 ティア)
 - [../README.md](../README.md) — 設計文書の索引
-- [../agent_operations.md](../agent_operations.md) — 開発体制
 - [第1章 エンジン全体像](01_overview.md) / [目次](00_index.md)

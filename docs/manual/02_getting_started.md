@@ -182,7 +182,7 @@ example のほかに、機能別のデモプロジェクトが 6 つあります
 - [projects/posegraph_demo](../../projects/posegraph_demo) — 共通グラフの姿勢(`pose.clip_sample` 2 本を曲線で blend。code 無しのデータだけの project。`requires: ["animation"]`)
 - [projects/vrm_xr_demo](../../projects/vrm_xr_demo) — VRM キャラクター(表情・視線・一人称)+ OpenXR。**flat-first** — XR なしでも WASD で完全動作(下記)
 - [projects/raytracing_demo](../../projects/raytracing_demo) — 手続き幾何のレイトレーシング(intersection shader で球を解く。Vulkan ray tracing 対応 GPU が要る)。自分の project でレイトレーシングを始めるなら、JSON を手で書くより先に Studio の道があります: Blank の project の Graph タブで palette の `render.compute` の New… から RT の task を置き、Rendering settings タブの Ray layout の節の **Enable hit groups** で物ごとの hit group に広げます([第13章](13_editor.md) §13.5 の「RT を Graph で組む(✅CT-6s)」と「Studio で RT を組む(✅RTL-2s)」)
-- [projects/pathtrace_demo](../../projects/pathtrace_demo) — frame をまたいで蓄積する path tracer。Principled BSDF(ガラス・金属・coat)、scene の camera(透視 / 正射影)、glTF の mesh。engine を変えずに project 側の shader だけで組んである。設計と検証は [design_pathtracing.md](../design_pathtracing.md)(Vulkan ray tracing 対応 GPU が要る)
+- [projects/pathtrace_demo](../../projects/pathtrace_demo) — frame をまたいで蓄積する path tracer。Principled BSDF(ガラス・金属・coat)、scene の camera(透視 / 正射影)、glTF の mesh。engine を変えずに project 側の shader だけで組んである。中身は [projects/pathtrace_demo/README.md](../../projects/pathtrace_demo/README.md)、ray layout の書き方は [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v3-と-pelican_ray_instancert3-1--wp374374a377379383)(Vulkan ray tracing 対応 GPU が要る)
 
 ### XR モードで起動する(PCVR / Quest Link)✅WP125〜138
 

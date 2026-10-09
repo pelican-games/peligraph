@@ -176,7 +176,7 @@ vkcore(Vulkan 低層)
 
 ## 1.6 開発体制と文書の読み方
 
-このリポジトリは**マルチエージェント開発**で作られています([../agent_operations.md](../agent_operations.md)):
+このリポジトリは**マルチエージェント開発**で作られています:
 
 - **ユーザー(enjoyoriori)** = 意思決定。**Claude** = 設計文書・WP(Work Package)指示書・レビュー・マージ。**codex** = 実装・監査・敵対レビュー。
 - 作業単位は WP。**1 WP = 1 ブランチ = 1 マージ**で、受け入れ基準がマージ基準です。番号には枝番や記号 ID もあります。台帳は[実装指示書](../implementation_plan.md)、過去の着地は[履歴](../history/manual_landing_notes_2026.md)、今後の候補は[v1 開発計画](../v1_development_plan.md)を参照してください。
@@ -214,5 +214,4 @@ vkcore(Vulkan 低層)
 - [../README.md](../README.md) — 設計文書の索引(凍結/ドラフトの区分)
 - [../implementation_plan.md](../implementation_plan.md) — WP 指示書と共通規則
 - [../adding_features.md](../adding_features.md) — 機能追加レシピ集
-- [../agent_operations.md](../agent_operations.md) — マルチエージェント運用
 - [../design_project_format.md](../design_project_format.md) / [../design_project_format_web_profile.md](../design_project_format_web_profile.md) — 二大凍結文書
