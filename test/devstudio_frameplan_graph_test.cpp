@@ -12024,7 +12024,8 @@ TEST_CASE("LP-4e a material pass a draw_loop draws in says so under its heading,
                                           {"pass", "wp343_mixed_a"}, {"count", 300},
                                           {"elements", Json::array({
                                               {{"element", "project://m.material.json#metal"},
-                                               {"index", 0}, {"branch", 0}},
+                                               {"index", 0}, {"branch", 0},
+                                               {"vertex_modes", Json::array({"standard", "skinned"})}},
                                               {{"element", "asset://box.glb#material[0]"},
                                                {"index", 1}, {"branch", 1}}})},
                                           {"unmatched_branches", Json::array({2})},
@@ -12033,6 +12034,7 @@ TEST_CASE("LP-4e a material pass a draw_loop draws in says so under its heading,
     REQUIRE(model.loops.size() == 1);
     CHECK(model.loops[0].pass == "wp343_mixed_a");
     CHECK(model.loops[0].elements[0].key == "project://m.material.json#metal");
+    CHECK(model.loops[0].elements[0].vertex_modes == std::vector<std::string>{"standard", "skinned"});
     CHECK(model.loops[0].elementCount() == 300);
     CHECK(framePlanDrawLoopLine(model, "wp343_mixed_a") ==
           "loop: wp343_mixed_a_draws (300 materials)");
@@ -12062,6 +12064,7 @@ TEST_CASE("LP-4e a material pass a draw_loop draws in says so under its heading,
     const auto joined = texts.join(QLatin1Char{'\n'});
     CHECK(joined.contains(QStringLiteral("Draw loop wp343_mixed_a_draws (300)")));
     CHECK(joined.contains(QStringLiteral("Material | project://m.material.json#metal")));
+    CHECK(joined.contains(QStringLiteral("Vertex modes | standard / skinned")));
     CHECK(joined.contains(QStringLiteral("Material | asset://box.glb#material[0]")));
     CHECK(joined.contains(QStringLiteral("none: no material takes this branch")));
     CHECK(joined.contains(QStringLiteral("2 of 300 shown")));

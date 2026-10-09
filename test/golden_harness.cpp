@@ -5009,10 +5009,12 @@ void renderSkeletalToonFrame(RenderTarget &render_target) {
     const auto authored = parseMaterialFormatJson(material_json, catalog).materials.front();
     const auto lowered = lowerMaterial(authored, surface);
     auto &standard = GET_MODULE(StandardMaterialResource);
+    const auto standard_bundles = GET_MODULE(ShaderLibrary).loadFromSurface(
+        surface, "project://shaders/toon.surface", SurfacePass::main);
     MaterialInfo info{
-        .vert_shader = bundles.vertex,
+        .vert_shader = standard_bundles.vertex,
         .frag_shader = bundles.fragment,
-        .skinned = true,
+        .skinned_vert_shader = bundles.vertex,
         .base_color_texture = standard.whiteTexture(),
         .metallic_roughness_texture = standard.metallicRoughnessDefaultTexture(),
         .normal_texture = standard.normalDefaultTexture(),

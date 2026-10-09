@@ -166,7 +166,8 @@ void appendPathUnique(std::vector<std::filesystem::path> &paths,
 
 bool isCompilerOwnedSurfaceDefine(
     std::string_view define) {
-    return define.starts_with(
+    return define == "PELICAN_SKINNED" || define.starts_with("PELICAN_SKINNED=") ||
+           define.starts_with(
                surfaceScreenInputLocalReadDefinePrefix) ||
            define.starts_with(
                surfaceResourceLocalReadDefinePrefix);
@@ -770,6 +771,15 @@ bool ShaderLibrary::runtimeCompilerAvailable() noexcept {
 #endif
 }
 
+std::optional<ShaderBundleId> ShaderLibrary::surfaceFragmentForVertex(ShaderBundleId vertex) const {
+    const auto found = unit_by_bundle.find(vertex);
+    if (found == unit_by_bundle.end()) return std::nullopt;
+    const auto &unit = reload_units.at(found->second);
+    if (!std::holds_alternative<SurfaceReloadRecipe>(unit.recipe) ||
+        unit.bundle_ids.size() != 2 || unit.bundle_ids[0] != vertex) return std::nullopt;
+    return unit.bundle_ids[1];
+}
+
 SurfaceShaderBundleIds ShaderLibrary::compileWithAdditionalDefines(
     ShaderBundleId vertex, ShaderBundleId fragment,
     std::span<const std::string> additional_defines) {
@@ -804,6 +814,21 @@ SurfaceShaderBundleIds ShaderLibrary::compileWithAdditionalDefines(
         }
     }
     const auto compile_file = [&](ShaderBundleId id) {
+        // A skinned surface vertex shares the standard surface fragment. Compile
+        // each stage from its own recipe so vertex-only defines stay vertex-only.
+        if (const auto unit = unit_by_bundle.find(id); unit != unit_by_bundle.end()) {
+            const auto &reload = reload_units.at(unit->second);
+            if (const auto *surface = std::get_if<SurfaceReloadRecipe>(&reload.recipe);
+                surface && reload.bundle_ids.size() == 2) {
+                const bool is_vertex = reload.bundle_ids[0] == id;
+                const auto document = surface->embedded_surface
+                    ? *surface->embedded_surface
+                    : parseSurfaceFormat(readBinaryFile(surface->path.string()), surface->source_name);
+                const auto compiled = loadFromSurface(document, surface->source_name,
+                    surface->pass, appended(surface->defines), surface->material_output_schema);
+                return is_vertex ? compiled.vertex : compiled.fragment;
+            }
+        }
         const auto &bundle = bundles.get(id);
         if (bundle.source_path.empty() ||
             lowerExtension(bundle.source_path) == ".spv") {
@@ -903,8 +928,8 @@ ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
             std::erase_if(
                 effective_defines,
                 [](const auto &define) {
-                    return isCompilerOwnedSurfaceDefine(
-                        define);
+                    return define.starts_with(surfaceScreenInputLocalReadDefinePrefix) ||
+                           define.starts_with(surfaceResourceLocalReadDefinePrefix);
                 });
             for (const auto &define :
                  override->physical_defines) {
@@ -1034,7 +1059,7 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurfaceForMaterial(
         }
     }
     if (std::any_of(
-            defines.begin(), defines.end(),
+            material.defines.begin(), material.defines.end(),
             isCompilerOwnedSurfaceDefine)) {
         throw std::runtime_error(
             "material defines cannot override the compiler-owned "

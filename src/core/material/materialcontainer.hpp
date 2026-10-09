@@ -35,6 +35,14 @@
 
 namespace Pelican {
 
+// Geometry selects the vertex program; appearance remains one material.
+// Extend this mode when VAT playback moves from materials to geometry.
+enum class VertexMode { standard, skinned };
+inline constexpr std::array vertexModes{VertexMode::standard, VertexMode::skinned};
+inline constexpr VertexMode vertexMode(bool skinned) noexcept {
+    return skinned ? VertexMode::skinned : VertexMode::standard;
+}
+
 class MaterialContainer;
 namespace test_support {
 void setMaterialReleaseFailureForTesting(MaterialContainer &, bool) noexcept;
@@ -128,7 +136,10 @@ DECLARE_MODULE(MaterialContainer) {
         using ScreenInputDescriptor =
             MaterialScreenInputDescriptorSet;
 
-        PipelineHandle pipeline;
+        std::array<std::optional<PipelineHandle>, 2> pipeline;
+        PipelineHandle pipelineFor(VertexMode mode = VertexMode::standard) const {
+            return pipeline.at(static_cast<std::size_t>(mode)).value();
+        }
         std::uint64_t ray_generation = 0;
         std::shared_ptr<const void> ray_lease;
         std::string name;
@@ -158,7 +169,7 @@ DECLARE_MODULE(MaterialContainer) {
         std::vector<SurfaceResourcePortDefinition>
             declared_resource_ports;
         SurfaceRenderState render_state;
-        bool skinned = false;
+        std::optional<ShaderBundleId> skinned_vert_shader;
         GlobalTextureId base_color_texture;
         GlobalTextureId metallic_roughness_texture;
         GlobalTextureId normal_texture;
@@ -204,7 +215,6 @@ DECLARE_MODULE(MaterialContainer) {
         // A hidden runtime resource must never enter a draw queue through
         // the parent's selection tags.
         variant.tags.clear();
-        variant.skinned = base.skinned;
         variant.base_color_texture =
             base.base_color_texture;
         variant.metallic_roughness_texture =
@@ -488,23 +498,31 @@ DECLARE_MODULE(MaterialContainer) {
         GlobalMaterialId material,
         std::optional<PipelineHandle> pipeline,
         MaterialDrawBindState &bound,
-        RenderPassViewInvocation invocation = {}) const;
+        RenderPassViewInvocation invocation = {},
+        VertexMode mode = VertexMode::standard) const;
     // LP-2: the registered materials a draw-loop rule is asked about: every
     // material except the records registered for named variants.
     std::vector<GlobalMaterialId> drawLoopMaterials() const;
-    MaterialDrawSubject drawLoopSubject(GlobalMaterialId material) const;
-    PipelineHandle materialPipeline(GlobalMaterialId material) const;
+    MaterialDrawSubject drawLoopSubject(GlobalMaterialId material,
+        VertexMode mode = VertexMode::standard) const;
+    std::vector<MaterialDrawSubject> drawLoopSubjects() const;
+    bool supportsVertexMode(GlobalMaterialId material, VertexMode mode) const;
+    PipelineHandle materialPipeline(GlobalMaterialId material,
+        VertexMode mode = VertexMode::standard) const;
     // The base material's live pipeline description with the render state
     // overridden (blend factors, cull, depth), as makeMaterialPipelineDesc
     // would have written it for that state.
     GraphicsPipelineDesc drawOverridePipelineDesc(
         GlobalMaterialId base,
-        const MaterialDrawRenderStateOverride &render_state) const;
+        const MaterialDrawRenderStateOverride &render_state,
+        VertexMode mode = VertexMode::standard) const;
     void rebindScreenInputs(const RenderTargetImageViewResolver &rt_views) const;
     vk::PipelineLayout getPipelineLayout() const;
-    vk::PipelineLayout pipelineLayout(GlobalMaterialId material) const;
+    vk::PipelineLayout pipelineLayout(GlobalMaterialId material,
+        VertexMode mode = VertexMode::standard) const;
     vk::PipelineLayout pipelineLayout(const PassDefinition &pass,
-                                      GlobalMaterialId material) const;
+                                      GlobalMaterialId material,
+                                      VertexMode mode = VertexMode::standard) const;
 };
 
 } // namespace Pelican

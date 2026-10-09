@@ -292,6 +292,7 @@ DECLARE_MODULE(ShaderLibrary) {
         const LoweredMaterial &material,
         std::vector<std::string> additional_defines = {});
     const ShaderBundle &get(ShaderBundleId id) const;
+    std::optional<ShaderBundleId> surfaceFragmentForVertex(ShaderBundleId vertex) const;
     // LP-2: whether this build can compile GLSL at run time.
     static bool runtimeCompilerAvailable() noexcept;
     // LP-2: compiles a material's vertex and fragment shader again with

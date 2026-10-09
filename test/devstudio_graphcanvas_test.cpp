@@ -1779,7 +1779,8 @@ std::string lp4eMaterial(std::size_t index) {
 Json lp4eFramePlan(std::size_t total, std::size_t offset, std::size_t held) {
     auto elements = Json::array();
     for (std::size_t index = offset; index < offset + held && index < total; ++index)
-        elements.push_back({{"element", lp4eMaterial(index)}, {"index", index}, {"branch", 0}});
+        elements.push_back({{"element", lp4eMaterial(index)}, {"index", index}, {"branch", 0},
+                            {"vertex_modes", Json::array({"standard", "skinned"})}});
     return {{"schema", "pelican.frame_plan"}, {"version", 1},
             {"loops", Json::array({{{"node", "forward_opaque_draws"}, {"tier", "draw_loop"},
                                     {"pass", "forward_opaque"}, {"count", total},

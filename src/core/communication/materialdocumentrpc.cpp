@@ -1737,6 +1737,13 @@ Json bindMaterial(const Json &params, PathResolver &paths, watch::ReloadService 
     auto previous = Json::array();
     std::map<std::string, BindingMaterial> resolved;
     for (const auto &[key, material] : requested) {
+        const auto slot = std::find_if(state.slots.begin(), state.slots.end(), [&](const auto &candidate) {
+            return candidate.mesh == key.first && candidate.primitive == key.second;
+        });
+        if (slot != state.slots.end() && slot->vat_deformed) {
+            refuse(method, "VAT primitives keep their baked material", bindingInvalidCode,
+                   {{"model", model}, {"reason", "VAT primitives keep their baked material"}});
+        }
         auto found = resolved.find(material);
         if (found == resolved.end())
             found = resolved.emplace(material, resolveBindingMaterial(method, material, state, asset_data, paths)).first;

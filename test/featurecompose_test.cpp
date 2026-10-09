@@ -6904,9 +6904,12 @@ TEST_CASE("LP-3a a draw_loop's branches choose each material's draw steps",
                                                  {outlined, unlit, skipped, hidden, plain, deferred});
     CHECK(filled.at("loops").at(0) == Json{
         {"node", "forward_opaque_draws"}, {"tier", "draw_loop"}, {"count", 3},
-        {"elements", Json::array({{{"element", "m.json#outlined"}, {"index", 0}, {"branch", 0}},
-                                  {{"element", "m.json#skip"}, {"index", 1}, {"branch", 1}},
-                                  {{"element", "asset.glb#material[0]"}, {"index", 2}, {"branch", 2}}})},
+        {"elements", Json::array({{{"element", "m.json#outlined"}, {"index", 0}, {"branch", 0},
+                                   {"vertex_modes", Json::array({"standard"})}},
+                                  {{"element", "m.json#skip"}, {"index", 1}, {"branch", 1},
+                                   {"vertex_modes", Json::array({"standard"})}},
+                                  {{"element", "asset.glb#material[0]"}, {"index", 2}, {"branch", 2},
+                                   {"vertex_modes", Json::array({"standard"})}}})},
         {"unmatched_branches", Json::array()}, {"pass", "forward_opaque"}});
     applyMaterialDrawLoopElementsToFramePlanJson(plan, *composed.material_draw_loops, {plain});
     CHECK(plan.at("loops").at(0).at("unmatched_branches") == Json::array({0, 1}));

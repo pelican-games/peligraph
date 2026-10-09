@@ -1,3 +1,12 @@
+#include "skeletal_fixture.hpp"
+#include "vat_fixture.hpp"
+#include "polygoninstancecontainer_testaccess.hpp"
+#include "../src/core/material/materialdrawlooptable.hpp"
+#include "../src/core/communication/materialdocumentrpc.hpp"
+#include "../src/core/communication/rpcserver.hpp"
+#include "../src/core/renderer/materialrender.hpp"
+#include <glm/gtc/matrix_transform.hpp>
+#include <sstream>
 #include "../src/core/appflow/enginetime.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "../src/project/renderconfigsection.hpp"
@@ -10044,9 +10053,9 @@ TEST_CASE(
 
         const auto skinned_material =
             materials.registerMaterial(MaterialInfo{
-                .vert_shader = standard.skinnedVertShader(),
+                .vert_shader = standard.standardVertShader(),
                 .frag_shader = standard.standardFragShader(),
-                .skinned = true,
+                .skinned_vert_shader = standard.skinnedVertShader(),
                 .base_color_texture =
                     standard.transparentTexture(),
                 .metallic_roughness_texture =
@@ -10344,11 +10353,9 @@ TEST_CASE(
             auto &materials = GET_MODULE(MaterialContainer);
             const auto make_material = [&](bool skinned) {
                 return materials.registerMaterial(MaterialInfo{
-                    .vert_shader =
-                        skinned ? standard.skinnedVertShader()
-                                : standard.standardVertShader(),
+                    .vert_shader = standard.standardVertShader(),
                     .frag_shader = standard.standardFragShader(),
-                    .skinned = skinned,
+                    .skinned_vert_shader = standard.skinnedVertShader(),
                     .base_color_texture = standard.whiteTexture(),
                     .metallic_roughness_texture =
                         standard.metallicRoughnessDefaultTexture(),
@@ -10584,9 +10591,9 @@ TEST_CASE(
         auto &materials = GET_MODULE(MaterialContainer);
         const auto skinned_material =
             materials.registerMaterial(MaterialInfo{
-                .vert_shader = standard.skinnedVertShader(),
+                .vert_shader = standard.standardVertShader(),
                 .frag_shader = standard.standardFragShader(),
-                .skinned = true,
+                .skinned_vert_shader = standard.skinnedVertShader(),
                 .base_color_texture = standard.whiteTexture(),
                 .metallic_roughness_texture =
                     standard.metallicRoughnessDefaultTexture(),
@@ -15689,4 +15696,344 @@ void main() {
 #endif
 }
 
+} // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("SK1 skinned material bindings depth coverage and reload", "[headless][gpu][material][sk1]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    const auto root = makeTempProjectDir();
+    struct Cleanup { std::filesystem::path path; ~Cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); } } cleanup{root};
+    FastModuleContainer modules;
+    RuntimeTeardownGuard teardown{RuntimeTeardownMode::terminal_shutdown};
+    TestSkeletalFixture::writeGlb(root / "character.glb");
+    TestVatFixture::writeTinyVatGlb(root / "vat.glb");
+    TestSkeletalFixture::writeGltf(root / "mixed.gltf", "mixed.bin");
+    auto mixed_source = nlohmann::json::parse(std::ifstream{root / "mixed.gltf"});
+    mixed_source["nodes"].push_back({{"name", "Static"}, {"mesh", 0}});
+    mixed_source["scenes"][0]["nodes"].push_back(3);
+    writeTextFile(root / "mixed.gltf", mixed_source.dump());
+    // Distinct mesh coordinates ensure slot selection must cover both modes.
+    auto slots_source = mixed_source;
+    slots_source["materials"][0]["name"] = "Body";
+    slots_source["meshes"].push_back(slots_source["meshes"][0]);
+    slots_source["nodes"][3]["mesh"] = 1;
+    writeTextFile(root / "slots.gltf", slots_source.dump());
+    const std::string surface_source = R"(//! pelican.surface v1
+//! language: glsl
+void pelican_surface_v1(in PelicanSurfaceInputV1 input_data, inout PelicanSurfaceV1 surface) {
+    surface.base_color = vec4(0.2, 0.6, 0.8, 1.0);
+}
+vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 input_data) {
+    return vec3(0.2, 0.6, 0.8);
+}
+)";
+    writeTextFile(root / "paint.surface", surface_source);
+    writeTextFile(root / "paint.material.json", R"({"schema":"pelican.material","version":1,"materials":[{"name":"Paint","surface":"project://paint.surface","routing":{"alpha_mode":"opaque","double_sided":false}}]})");
+    writeTextFile(root / "scene.json", R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})");
+    writeTextFile(root / "assets.json", R"({"schema":"pelican.asset_data","version":2,"models":[{"name":"character","path":"character.glb"},{"name":"vat","path":"vat.glb"},{"name":"slots","path":"slots.gltf"}],"materials":[{"path":"paint.material.json"}]})");
+    auto config = nlohmann::json::parse(R"({
+      "render_targets":[
+        {"name":"gbuffer_albedo","extent_scale":1.0,"format":"B8G8R8A8_UNORM","format_class":"scene","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"gbuffer_normal","extent_scale":1.0,"format":"R16G16B16A16_SFLOAT","format_class":"data","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"gbuffer_material","extent_scale":1.0,"format":"R8G8B8A8_UNORM","format_class":"data","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"gbuffer_worldpos","extent_scale":1.0,"format":"R16G16B16A16_SFLOAT","format_class":"data","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"g_emissive","extent_scale":1.0,"format":"B8G8R8A8_UNORM","format_class":"scene","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"scene_depth","extent_scale":1.0,"format":"D32_SFLOAT","format_class":"data","usage":["DEPTH_STENCIL_ATTACHMENT","TRANSFER_SRC"]}],
+      "rendering_passes":[{"name":"main_render","passes":[
+        {"name":"deferred_geometry","type":"material","material_contract":"deferred_geometry_v1","output":{"color":["gbuffer_albedo","gbuffer_normal","gbuffer_material","gbuffer_worldpos","g_emissive"],"depth":"scene_depth"},"depth_store_op":"store"},
+        {"name":"present","type":"fullscreen","output":{"color":"swapchain","depth":null},"shader":{"vertex":"engine://fullscreen","fragment":"engine://shader_lab_hello"}}]}]})");
+    config["render_targets"].push_back({{"name", "lit_color"}, {"extent_scale", 1.0},
+        {"format", "R16G16B16A16_SFLOAT"}, {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+        {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}});
+    auto &passes = config["rendering_passes"][0]["passes"];
+    passes.insert(passes.begin()+1, nlohmann::json{{"name", "forward_opaque"}, {"type", "material"},
+        {"material_contract", "forward_opaque_v1"}, {"after", {"deferred_geometry"}},
+        {"output", {{"color", {"lit_color"}}, {"depth", "scene_depth"}}},
+        {"depth_load_op", "load"}, {"depth_store_op", "store"}});
+    writeTextFile(root / "hybrid.json", TestSupport::renderGraphRootWithTaskFeature(config, root).dump());
+    configureRayQueryTestRuntime(root);
+    GET_MODULE(EngineLaunchConfig).headless_extent = vk::Extent2D{128, 128};
+    TestSupport::requireVulkanDevice("SK1 requires Vulkan");
+    auto mode_rules = std::make_shared<MaterialDrawLoopRules>();
+    GraphLoopDrawCondition mode_condition; mode_condition.skinned = true;
+    mode_rules->passes["forward_opaque"].rule = [mode_condition](const MaterialDrawSubject &subject)
+        -> std::optional<MaterialDrawStepList> {
+        if (subject.name != "Paint" || !graphLoopDrawConditionMatches(mode_condition, subject)) return std::nullopt;
+        MaterialDrawRenderStateOverride state; state.cull = SurfaceCullMode::none;
+        return MaterialDrawStepList{MaterialDrawStep::overridden(state, {"SK1_OVERRIDE"})};
+    };
+    GET_MODULE(FrameGraphRuntimeContainer).setMaterialDrawLoopRuleSource(
+        [mode_rules](const RendererRuntimeGeneration &) { return mode_rules; });
+    std::vector<MaterialDrawRecord> draw_records;
+    GET_MODULE(MaterialRenderer).recordMaterialDrawsForTesting(&draw_records);
+    struct ResetRecords { ~ResetRecords() { GET_MODULE(MaterialRenderer).recordMaterialDrawsForTesting(nullptr); } } reset_records;
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    auto &models = GET_MODULE(ModelAssetContainer);
+    auto &materials = GET_MODULE(MaterialContainer);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    auto &project = GET_MODULE(ProjectMaterialAssetContainer);
+    const auto paint = project.materialByName("Paint");
+    REQUIRE(materials.supportsVertexMode(paint, VertexMode::skinned));
+    auto authored_defines = lowerSurfaceDefaults(parseSurfaceFormat(surface_source, "project://paint.surface"), "project://paint.surface");
+    authored_defines.defines.push_back("PELICAN_SKINNED");
+    REQUIRE_THROWS_WITH(GET_MODULE(ShaderLibrary).loadFromSurfaceForMaterial(
+        parseSurfaceFormat(surface_source, "project://paint.surface"), "project://paint.surface", authored_defines),
+        Catch::Matchers::ContainsSubstring("compiler-owned"));
+    const auto original = models.getModelTemplateByName("character");
+    REQUIRE(original.named_materials.size() == 1);
+    const auto gltf_material = original.named_materials[0].material;
+    REQUIRE(original.material_primitives[0].material == gltf_material);
+    const auto before_mixed = materials.materialCountForTesting();
+    const auto mixed = GET_MODULE(GltfLoader).loadGltf((root / "mixed.gltf").string());
+    REQUIRE(materials.materialCountForTesting() == before_mixed + 1);
+    REQUIRE(mixed.named_materials.size() == 1);
+    REQUIRE(mixed.material_primitives.size() == 1);
+    REQUIRE(mixed.material_primitives[0].primitives.size() == 2);
+    REQUIRE(mixed.material_primitives[0].primitives[0].skinned != mixed.material_primitives[0].primitives[1].skinned);
+    for (const auto id : materials.drawLoopMaterials()) CHECK(materials.materialName(id) != "pelican.builtin.skinned_fallback");
+    auto &camera = GET_MODULE(Camera);
+    camera.setPos({0.0F, 1.0F, 4.0F});
+    camera.setDir({0.0F, 0.0F, -1.0F});
+    camera.setUp({0.0F, 1.0F, 0.0F});
+    const std::array palette{
+        glm::mat4{1.0F},
+        glm::translate(glm::mat4{1.0F}, glm::vec3{0.0F, 1.0F, 0.0F}) *
+        glm::rotate(glm::mat4{1.0F}, glm::radians(35.0F), glm::vec3{0,0,1}) *
+        glm::translate(glm::mat4{1.0F}, glm::vec3{0.0F, -1.0F, 0.0F})};
+    const auto check_items = [&](ModelInstanceId instance, GlobalMaterialId expected) {
+        bool found = false;
+        for (const auto &item : PolygonInstanceTestAccess::drawItems(instances)) {
+            if (item.stable_identity.instance != instance) continue;
+            found = true;
+            REQUIRE(item.pipeline_material_key.material == expected);
+            REQUIRE(item.pipeline_material_key.skinned);
+            REQUIRE(materials.supportsVertexMode(expected, VertexMode::skinned));
+        }
+        REQUIRE(found);
+    };
+    const auto capture = [&](const ModelTemplate &model, GlobalMaterialId expected,
+                             std::shared_ptr<const InstanceMaterialOverrides> overrides = nullptr) {
+        const auto id = instances.placeModelInstance(model, overrides);
+        check_items(id, expected);
+        instances.setSkinningPalette(id, palette);
+        renderer.render();
+        core.waitIdle();
+        const auto image = RendererTestAccess::readRenderTarget(renderer, "scene_depth", {});
+        REQUIRE(image.format == vk::Format::eD32Sfloat);
+        std::vector<float> depth(image.bytes.size() / sizeof(float));
+        std::memcpy(depth.data(), image.bytes.data(), image.bytes.size());
+        REQUIRE(instances.removeModelInstance(id));
+        return depth;
+    };
+    const auto baseline = capture(original, gltf_material);
+    const auto bbox = [](const std::vector<float> &depth) {
+        std::array<int, 4> box{128,128,-1,-1};
+        for (int y=0; y<128; ++y) for (int x=0; x<128; ++x) {
+            if (!(depth[y*128+x] < 1.0F)) continue;
+            box[0]=std::min(box[0],x); box[1]=std::min(box[1],y);
+            box[2]=std::max(box[2],x); box[3]=std::max(box[3],y);
+        }
+        return box;
+    };
+    const auto base_box = bbox(baseline);
+    REQUIRE(base_box[2] - base_box[0] > 5);
+    REQUIRE(base_box[3] - base_box[1] > 10);
+    const auto equivalent = [&](const std::vector<float> &depth) {
+        REQUIRE(depth.size() == baseline.size());
+        std::size_t difference = 0;
+        for (std::size_t i=0; i<depth.size(); ++i) difference += (depth[i]<1.0F) != (baseline[i]<1.0F);
+        CHECK(difference * 1000 <= depth.size());
+        const auto box = bbox(depth);
+        CHECK(box == base_box);
+        CHECK(box[0] >= base_box[0]-1); CHECK(box[1] >= base_box[1]-1);
+        CHECK(box[2] <= base_box[2]+1); CHECK(box[3] <= base_box[3]+1);
+    };
+    const auto bind = [&](ModelTemplate model, std::string name) {
+        auto document = parsePrimitiveMaterialBindingJson(nlohmann::json::parse(R"({"schema":"pelican.material_bindings","version":1,"model":"character.glb","bindings":[{"usd_path":"/Body","mesh":0,"primitive":0,"material":"Paint","routing":{"alpha_mode":"opaque","double_sided":false}}]})"));
+        document.bindings[0].material = std::move(name);
+        applyPrimitiveMaterialBindings(model, document, "character", std::nullopt, project.namedMaterials());
+        return model;
+    };
+    auto painted_mixed = bind(mixed, "Paint");
+    const auto mixed_instance = instances.placeModelInstance(painted_mixed);
+    instances.setSkinningPalette(mixed_instance, palette);
+    draw_records.clear();
+    renderer.render(); core.waitIdle();
+    std::size_t static_draws = 0, skin_draws = 0;
+    for (const auto &record : draw_records) {
+        if (record.effective_material != paint.value) continue;
+        const auto &desc = GET_MODULE(PipelineFactory).graphicsDesc(PipelineHandle{record.pipeline});
+        if (desc.use_skinned_vertex_layout) {
+            ++skin_draws;
+            CHECK(record.pipeline != materials.materialPipeline(paint, VertexMode::skinned).value);
+        } else {
+            ++static_draws;
+            CHECK(record.pipeline == materials.materialPipeline(paint, VertexMode::standard).value);
+        }
+    }
+    REQUIRE(static_draws == 1); REQUIRE(skin_draws == 1);
+    REQUIRE(instances.removeModelInstance(mixed_instance));
+    auto painted = bind(original, "Paint");
+    equivalent(capture(painted, paint));
+    equivalent(capture(bind(original, "Skin"), gltf_material));
+    auto overrides = std::make_shared<InstanceMaterialOverrides>();
+    overrides->push_back({std::nullopt, "Paint"});
+    equivalent(capture(original, paint, overrides));
+
+    // The same material has two independently classified subjects and override pipelines.
+    auto rules = std::make_shared<MaterialDrawLoopRules>();
+    GraphLoopDrawCondition skin_condition; skin_condition.skinned = true;
+    rules->passes["forward_opaque"].rule = [skin_condition](const MaterialDrawSubject &subject)
+        -> std::optional<MaterialDrawStepList> {
+        if (subject.name != "Paint" || !graphLoopDrawConditionMatches(skin_condition, subject)) return std::nullopt;
+        MaterialDrawRenderStateOverride state; state.cull = SurfaceCullMode::none;
+        return MaterialDrawStepList{MaterialDrawStep::overridden(state, {"SK1_OVERRIDE"})};
+    };
+    MaterialDrawLoopTable table{987654};
+    table.install(rules);
+    REQUIRE(table.find("forward_opaque", paint, VertexMode::standard) == nullptr);
+    const auto *steps = table.find("forward_opaque", paint, VertexMode::skinned);
+    REQUIRE(steps != nullptr); REQUIRE(steps->size() == 1); REQUIRE(steps->front().pipeline);
+    auto &factory = GET_MODULE(PipelineFactory);
+    const auto override_pipeline = *steps->front().pipeline;
+    REQUIRE(factory.graphicsDesc(override_pipeline).use_skinned_vertex_layout);
+    REQUIRE(factory.graphicsDesc(override_pipeline).vert != factory.graphicsDesc(materials.materialPipeline(paint, VertexMode::skinned)).vert);
+    const auto skin_pipeline = materials.materialPipeline(paint, VertexMode::skinned);
+    const auto standard_pipeline = materials.materialPipeline(paint, VertexMode::standard);
+    const auto before_skin = factory.pipeline(skin_pipeline);
+    const auto before_standard = factory.pipeline(standard_pipeline);
+    const auto before_override = factory.pipeline(override_pipeline);
+    writeTextFile(root / "paint.surface", surface_source + "\nvoid pelican_vertex_displace_v1(inout PelicanVertexV1 vertex) { vertex.position.z += 0.00001; }\n");
+    auto &reload = GET_MODULE(watch::ReloadService);
+    REQUIRE(reload.applyRequestForTesting({.key = watch::makeAssetKey("paint.surface")}));
+    CHECK(factory.pipeline(skin_pipeline) != before_skin);
+    CHECK(factory.pipeline(standard_pipeline) != before_standard);
+    CHECK(factory.pipeline(override_pipeline) != before_override);
+    equivalent(capture(painted, paint));
+
+    const auto &vat = models.getModelTemplateByName("vat");
+    REQUIRE(vat.material_primitives[0].primitives[0].vat_deformed);
+    REQUIRE_THROWS_WITH(bind(vat, "Paint"), Catch::Matchers::ContainsSubstring("VAT primitives keep their baked material"));
+    const auto vat_instance = instances.placeModelInstance(vat, overrides);
+    REQUIRE(instances.instancePrimitiveMaterials(vat_instance)[0].material == vat.material_primitives[0].material);
+    REQUIRE(instances.removeModelInstance(vat_instance));
+    auto unsupported = original;
+    unsupported.material_primitives[0].material = vat.material_primitives[0].material;
+    REQUIRE_THROWS_WITH(instances.placeModelInstance(unsupported), Catch::Matchers::ContainsSubstring("no skinned vertex pipeline"));
+
+    std::istringstream input; std::ostringstream output;
+    RpcServer rpc{input, output};
+    configureMaterialDocumentRpcHandlers(rpc, GET_MODULE(PathResolver), &reload);
+    const auto call = [&](std::string method, nlohmann::json params) {
+        auto response = nlohmann::json::parse(rpc.processLine(nlohmann::json{{"jsonrpc","2.0"},{"id",1},{"method",method},{"params",params}}.dump()));
+        INFO(response.dump());
+        return response;
+    };
+    const auto refused = call("bind_material", {{"model","vat"},{"material","Paint"}});
+    REQUIRE(refused.contains("error"));
+    CHECK(refused["error"]["data"]["error_code"] == "material.binding_invalid@1");
+    CHECK(refused["error"]["data"]["error_fields"]["reason"] == "VAT primitives keep their baked material");
+    const auto bound = call("bind_material", {{"model","character"},{"material","Paint"}});
+    REQUIRE(bound.contains("result"));
+    const auto bindings = call("get_material_bindings", {{"model","character"}});
+    REQUIRE(bindings.contains("result"));
+    CHECK(bindings["result"]["primitives"][0]["material"] == "Paint");
+    equivalent(capture(models.getModelTemplateByName("character"), paint));
+
+    // T9: one named glTF slot routes both skinned and static primitives.
+    const auto &slot_model = models.getModelTemplateByName("slots");
+    REQUIRE(slot_model.named_materials.size() == 1);
+    REQUIRE(slot_model.named_materials[0].name == "Body");
+    REQUIRE(slot_model.material_primitives.size() == 1);
+    const auto &slot_primitives = slot_model.material_primitives[0].primitives;
+    REQUIRE(slot_primitives.size() == 2);
+    REQUIRE(slot_primitives[0].skinned != slot_primitives[1].skinned);
+    REQUIRE(slot_primitives[0].mesh_index != slot_primitives[1].mesh_index);
+    const auto slots = models.materialSlots("slots");
+    REQUIRE(slots.size() == 2);
+    for (const auto &slot : slots) {
+        CAPTURE(slot.mesh, slot.primitive);
+        CHECK(slot.slot == "Body");
+        REQUIRE(slot.routing.has_value());
+        CHECK(slot.routing == slot_model.named_materials[0].routing);
+    }
+    const auto slot_bindings = call("get_material_bindings", {{"model", "slots"}});
+    REQUIRE(slot_bindings.contains("result"));
+    REQUIRE(slot_bindings["result"]["primitives"].size() == 2);
+    for (const auto &primitive : slot_bindings["result"]["primitives"]) {
+        CHECK(primitive["slot"] == "Body");
+        CHECK(primitive["material"] == "Body");
+    }
+    const auto check_slot_items = [&](GlobalMaterialId expected) {
+        std::size_t skinned = 0, standard = 0;
+        for (const auto &item : PolygonInstanceTestAccess::drawItems(instances)) {
+            CHECK(item.pipeline_material_key.material == expected);
+            if (item.pipeline_material_key.skinned) ++skinned;
+            else ++standard;
+        }
+        REQUIRE(skinned == 1);
+        REQUIRE(standard == 1);
+    };
+    const auto slot_bound = call("bind_material", {{"model", "slots"}, {"slot", "Body"}, {"material", "Paint"}});
+    REQUIRE(slot_bound.contains("result"));
+    CHECK(slot_bound["result"]["committed"] == true);
+    CHECK(slot_bound["result"]["applied"] == "live");
+    const auto slot_instance = instances.placeModelInstance(models.getModelTemplateByName("slots"));
+    check_slot_items(paint);
+    REQUIRE(instances.removeModelInstance(slot_instance));
+
+    // Reset the model first so object-slot coverage cannot pass on model bindings alone.
+    const auto slot_reset = call("bind_material", {{"model", "slots"}, {"slot", "Body"}, {"material", "Body"}});
+    REQUIRE(slot_reset.contains("result"));
+    CHECK(slot_reset["result"]["committed"] == true);
+    REQUIRE(slot_reset["result"]["material_bindings"].is_null());
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(EngineLaunchConfig).rpc = true;
+    EngineRpcEndpoint endpoint{input, output};
+    const auto engine_result = [&](std::string method, nlohmann::json params = nlohmann::json::object()) {
+        const auto response = nlohmann::json::parse(endpoint.processLine(
+            nlohmann::json{{"jsonrpc", "2.0"}, {"id", 2}, {"method", method}, {"params", params}}.dump()));
+        INFO(method << " -> " << response.dump());
+        REQUIRE(response.contains("result"));
+        return response.at("result");
+    };
+    const auto commit_edit = [&](const nlohmann::json &accepted) {
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        (void)engine_result("step_frame");
+        const auto committed = engine_result("get_edit_result", {{"ticket", accepted.at("ticket")}});
+        INFO(committed.dump());
+        REQUIRE(committed.at("status") == "committed");
+    };
+    (void)engine_result("load_scene", {{"name", "default_scene"}});
+    (void)engine_result("step_frame");
+    const auto actor = engine_result("open_editor_session", {{"display_name", "SK1 slots"}}).at("actor_id");
+    const auto revision = engine_result("get_scene_revision").at("scene_revision");
+    commit_edit(engine_result("edit", {{"actor_id", actor}, {"base_revision", revision},
+        {"operations", nlohmann::json::array({{{"op", "spawn"}, {"scene_id", "default_scene"},
+            {"object", {{"name", "MixedSlots"}, {"components", nlohmann::json::array({
+                {{"name", "transform"}, {"pos", {0, 0, 0}}, {"rotation", {0, 0, 0, 1}}, {"scale", {1, 1, 1}}},
+                {{"name", "simplemodelview"}, {"model", "slots"}}})}}}}})}}));
+    const auto tree = engine_result("scene_tree");
+    REQUIRE(tree.at("objects").size() == 1);
+    const auto object = tree.at("objects")[0].at("authoring_object_id");
+    check_slot_items(models.getModelTemplateByName("slots").named_materials[0].material);
+    commit_edit(engine_result("set_object_material", {{"actor_id", actor}, {"object", object},
+        {"slot", "Body"}, {"material", "Paint"}}));
+    const auto object_materials = engine_result("get_object_materials", {{"object", object}});
+    REQUIRE(object_materials.at("materials").size() == 2);
+    REQUIRE(object_materials.at("primitives").size() == 2);
+    for (const auto &primitive : object_materials.at("primitives")) {
+        CHECK(primitive.at("slot") == "Body");
+        CHECK(primitive.at("source") == "object");
+        CHECK(primitive.at("model_material") == "Body");
+        CHECK(primitive.at("drawn") == "Paint");
+    }
+    check_slot_items(paint);
+#else
+    SKIP("runtime shader compiler unavailable");
+#endif
+}
 } // namespace Pelican

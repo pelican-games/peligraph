@@ -145,10 +145,10 @@ void MaterialDrawLoopTable::materialReleasedFromLiveTables(
 
 const std::vector<ResolvedMaterialDrawStep> *
 MaterialDrawLoopTable::find(std::string_view pass,
-                            GlobalMaterialId material) const {
+                            GlobalMaterialId material, VertexMode mode) const {
     const auto entries = passes_.find(pass);
     if (entries == passes_.end()) return nullptr;
-    const auto found = entries->second.find(material);
+    const auto found = entries->second.find({material.value, mode});
     return found == entries->second.end() ? nullptr : &found->second;
 }
 
@@ -208,7 +208,7 @@ void MaterialDrawLoopTable::evaluateMaterial(GlobalMaterialId material) {
 void MaterialDrawLoopTable::forgetMaterial(
     GlobalMaterialId material) noexcept {
     for (auto entries = passes_.begin(); entries != passes_.end();) {
-        entries->second.erase(material);
+        for (const auto mode : vertexModes) entries->second.erase({material.value, mode});
         if (entries->second.empty()) {
             entries = passes_.erase(entries);
         } else {
@@ -222,36 +222,39 @@ void MaterialDrawLoopTable::evaluateInto(
     std::map<std::string, Entries, std::less<>> &passes,
     Additions &additions) {
     const auto &materials = GET_MODULE(MaterialContainer);
-    const auto subject = materials.drawLoopSubject(material);
-    for (const auto &[pass, pass_rule] : rules_->passes) {
-        if (!pass_rule.rule) continue;
-        const auto steps = pass_rule.rule(subject);
-        if (!steps) continue;
-        std::vector<ResolvedMaterialDrawStep> resolved;
-        resolved.reserve(steps->size());
-        for (const auto &step : *steps) {
-            validateMaterialDrawStep(
-                step, subject, pass_rule.node,
-                ShaderLibrary::runtimeCompilerAvailable());
-            switch (step.kind) {
-            case MaterialDrawStepKind::material:
-                resolved.push_back({material, std::nullopt});
-                break;
-            case MaterialDrawStepKind::variant:
-                resolved.push_back(
-                    {materials.materialVariantResource(material,
-                                                       step.variant),
-                     std::nullopt});
-                break;
-            case MaterialDrawStepKind::override_pipeline:
-                resolved.push_back(
-                    {material, ensureOverride(material, subject, step,
-                                              pass_rule.node,
-                                              additions)});
-                break;
+    for (const auto mode : vertexModes) {
+        if (!materials.supportsVertexMode(material, mode)) continue;
+        const auto subject = materials.drawLoopSubject(material, mode);
+        for (const auto &[pass, pass_rule] : rules_->passes) {
+            if (!pass_rule.rule) continue;
+            const auto steps = pass_rule.rule(subject);
+            if (!steps) continue;
+            std::vector<ResolvedMaterialDrawStep> resolved;
+            resolved.reserve(steps->size());
+            for (const auto &step : *steps) {
+                validateMaterialDrawStep(
+                    step, subject, pass_rule.node,
+                    ShaderLibrary::runtimeCompilerAvailable());
+                switch (step.kind) {
+                case MaterialDrawStepKind::material:
+                    resolved.push_back({material, std::nullopt});
+                    break;
+                case MaterialDrawStepKind::variant:
+                    resolved.push_back(
+                        {materials.materialVariantResource(material,
+                                                           step.variant),
+                         std::nullopt});
+                    break;
+                case MaterialDrawStepKind::override_pipeline:
+                    resolved.push_back(
+                        {material, ensureOverride(material, subject, step,
+                                                  pass_rule.node,
+                                                  additions)});
+                    break;
+                }
             }
+            passes[pass][{material.value, mode}] = std::move(resolved);
         }
-        passes[pass][material] = std::move(resolved);
     }
 }
 
@@ -261,7 +264,7 @@ PipelineHandle MaterialDrawLoopTable::ensureOverride(
     Additions &additions) {
     const auto &materials = GET_MODULE(MaterialContainer);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
-    const auto base_pipeline = materials.materialPipeline(base);
+    const auto base_pipeline = materials.materialPipeline(base, vertexMode(subject.skinned));
     const auto key = std::to_string(base_pipeline.value) + "|" +
                      materialDrawOverrideKey(step);
     if (const auto found = overrides_.find(key);
@@ -270,7 +273,7 @@ PipelineHandle MaterialDrawLoopTable::ensureOverride(
     }
 
     auto desc =
-        materials.drawOverridePipelineDesc(base, step.render_state);
+        materials.drawOverridePipelineDesc(base, step.render_state, vertexMode(subject.skinned));
     std::optional<SurfaceShaderBundleIds> define_bundles;
     if (!step.defines.empty()) {
         if (!desc.frag) {
@@ -315,7 +318,7 @@ PipelineHandle MaterialDrawLoopTable::ensureOverride(
             throwMaterialDrawLoopRefusal(
                 materialDrawOverrideInterfaceCode,
                 {{"node", node},
-                 {"material", subject.key},
+                 {"material", subject.materialKey()},
                  {"binding", *difference}});
         }
     }
@@ -335,7 +338,7 @@ PipelineHandle MaterialDrawLoopTable::ensureOverride(
         throwMaterialDrawLoopRefusal(
             materialDrawOverrideInterfaceCode,
             {{"node", node},
-             {"material", subject.key},
+             {"material", subject.materialKey()},
              {"binding", *difference}});
     }
     return pipeline;

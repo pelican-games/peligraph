@@ -867,11 +867,14 @@ void MaterialGenerationPlanner::requireEveryMaterialServed(
             }
         }
         if (!rules.empty()) {
-            const auto ids = container.drawLoopMaterials();
+            std::vector<GlobalMaterialId> ids;
             std::vector<MaterialDrawSubject> subjects;
-            subjects.reserve(ids.size());
-            for (const auto id : ids) {
-                subjects.push_back(container.drawLoopSubject(id));
+            for (const auto id : container.drawLoopMaterials()) {
+                for (const auto mode : vertexModes) {
+                    if (!container.supportsVertexMode(id, mode)) continue;
+                    ids.push_back(id);
+                    subjects.push_back(container.drawLoopSubject(id, mode));
+                }
             }
             for (const auto index :
                  materialDrawLoopUnservedSubjects(rules, subjects)) {
@@ -1232,8 +1235,10 @@ void MaterialGenerationPlanner::validateCompatibility(
             const auto live =
                 liveRenderingContract(material);
             for (const auto &binding : *bindings) {
-                if (!binding.ray_query && GET_MODULE(PipelineFactory).pipelineUsesRayQueryFrameSet(material.pipeline))
-                    throw std::runtime_error("Material pass '" + binding.pass_name + "' uses an acceleration structure but does not declare ray_query");
+                for (const auto pipeline : material.pipeline) {
+                    if (pipeline && !binding.ray_query && GET_MODULE(PipelineFactory).pipelineUsesRayQueryFrameSet(*pipeline))
+                        throw std::runtime_error("Material pass '" + binding.pass_name + "' uses an acceleration structure but does not declare ray_query");
+                }
                 if (binding.output_schema !=
                     material.output_schema) {
                     const auto live_schema =
@@ -1331,8 +1336,11 @@ MaterialGenerationPlanner::prepareReload(
             generation, material.route, material.shader_contract, material.exact_pass);
         const bool allowed = !bindings.empty() && std::all_of(
             bindings.begin(), bindings.end(), [](const auto &binding) { return binding.ray_query; });
-        auto [entry, inserted] = pipeline_ray_query.emplace(material.pipeline.value, allowed);
-        if (!inserted) entry->second = entry->second && allowed;
+        for (const auto pipeline : material.pipeline) {
+            if (!pipeline) continue;
+            auto [entry, inserted] = pipeline_ray_query.emplace(pipeline->value, allowed);
+            if (!inserted) entry->second = entry->second && allowed;
+        }
     });
     std::vector<MetadataUpdate> metadata_updates;
     // LP-2: what a base pipeline this plan rebuilds is rebuilt for, so the
@@ -1471,77 +1479,85 @@ MaterialGenerationPlanner::prepareReload(
             auto candidate_resource_interface =
                 std::move(resource_plan.updated_bindings);
 
-            auto pipeline_desc =
-                pipeline_factory.graphicsDesc(
-                    material.pipeline);
-            if (!pipeline_desc.frag) {
-                throw std::logic_error(
-                    "material pipeline has no fragment shader");
-            }
-            if (candidate_schema !=
-                    material.output_schema ||
-                candidate_physical_defines !=
-                    current_physical_defines) {
-                append_shader_override({
-                    .fragment =
-                        *pipeline_desc.frag,
-                    .physical_defines =
-                        std::move(
-                            candidate_physical_defines),
-                    .material_output_schema =
-                        candidate_schema,
-                });
-            }
+            for (const auto pipeline : material.pipeline) {
+                if (!pipeline) continue;
+                auto pipeline_desc = pipeline_factory.graphicsDesc(*pipeline);
+                if (!pipeline_desc.frag) {
+                    throw std::logic_error(
+                        "material pipeline has no fragment shader");
+                }
+                if (candidate_schema !=
+                        material.output_schema ||
+                    candidate_physical_defines !=
+                        current_physical_defines) {
+                    append_shader_override({
+                        .fragment =
+                            *pipeline_desc.frag,
+                        .physical_defines = candidate_physical_defines,
+                        .material_output_schema =
+                            candidate_schema,
+                    });
+                    if (const auto paired = GET_MODULE(ShaderLibrary).surfaceFragmentForVertex(pipeline_desc.vert);
+                        paired && *paired != *pipeline_desc.frag) {
+                        append_shader_override({
+                            .fragment = *paired,
+                            .physical_defines = candidate_physical_defines,
+                            .material_output_schema = candidate_schema,
+                        });
+                    }
+                }
 
-            MaterialInfo validation_info;
-            validation_info.output_schema =
-                candidate_schema;
-            validation_info.render_state =
-                material.render_state;
-            validation_info.vat = material.vat;
-            validation_info.custom_textures.resize(
-                material
-                    .custom_sampler_resolutions
-                    .size());
-            validateMaterialCapabilities(
-                validation_info,
-                candidate_rendering);
+                MaterialInfo validation_info;
+                validation_info.output_schema =
+                    candidate_schema;
+                validation_info.render_state =
+                    material.render_state;
+                validation_info.vat = material.vat;
+                validation_info.custom_textures.resize(
+                    material
+                        .custom_sampler_resolutions
+                        .size());
+                validateMaterialCapabilities(
+                    validation_info,
+                    candidate_rendering);
 
-            auto candidate_pipeline_desc =
-                pipeline_desc;
-            candidate_pipeline_desc.allow_ray_query = pipeline_ray_query.at(material.pipeline.value);
-            candidate_pipeline_desc.color_formats =
-                candidate_rendering.color_formats;
-            candidate_pipeline_desc.depth_format =
-                candidate_rendering.depth_format;
-            candidate_pipeline_desc
-                .rasterization_samples =
-                candidate_rendering
-                    .rasterization_samples;
-            candidate_pipeline_desc.local_read =
-                candidate_rendering.local_read;
-            candidate_pipeline_desc.resource_interface =
-                candidate_resource_interface;
-            candidate_pipeline_desc
-                .color_attachment_states =
-                candidate_rendering
-                        .output_states.empty()
-                    ? std::vector<
-                          GraphicsPipelineColorAttachmentState>{}
-                    : resolveMaterialColorAttachmentStates(
-                          validation_info,
-                          candidate_rendering);
-            if (candidate_pipeline_desc !=
-                pipeline_desc) {
-                append_pipeline_override({
-                    .handle = material.pipeline,
-                    .desc = std::move(
-                        candidate_pipeline_desc),
-                });
-                overridden_bases.try_emplace(
-                    material.pipeline.value,
-                    OverriddenBase{validation_info,
-                                   candidate_rendering});
+                auto candidate_pipeline_desc =
+                    pipeline_desc;
+                candidate_pipeline_desc.allow_ray_query = pipeline_ray_query.at(pipeline->value);
+                candidate_pipeline_desc.color_formats =
+                    candidate_rendering.color_formats;
+                candidate_pipeline_desc.depth_format =
+                    candidate_rendering.depth_format;
+                candidate_pipeline_desc
+                    .rasterization_samples =
+                    candidate_rendering
+                        .rasterization_samples;
+                candidate_pipeline_desc.local_read =
+                    candidate_rendering.local_read;
+                candidate_pipeline_desc.resource_interface =
+                    candidate_resource_interface;
+                candidate_pipeline_desc
+                    .color_attachment_states =
+                    candidate_rendering
+                            .output_states.empty()
+                        ? std::vector<
+                              GraphicsPipelineColorAttachmentState>{}
+                        : resolveMaterialColorAttachmentStates(
+                              validation_info,
+                              candidate_rendering);
+                if (candidate_pipeline_desc !=
+                    pipeline_desc) {
+                    append_pipeline_override({
+                        .handle = *pipeline,
+                        .desc = std::move(
+                            candidate_pipeline_desc),
+                    });
+                    overridden_bases.try_emplace(
+                        pipeline->value,
+                        OverriddenBase{validation_info,
+                                       candidate_rendering});
+                }
+
             }
 
             // accumulate

@@ -235,6 +235,7 @@ struct FramePlanLoopElement {
     // LP-4e: a draw_loop's element is a material, named by its matching key
     // (`<document>#<name>`, `<asset>#material[<index>]`); `element` is then 0.
     std::string key;
+    std::vector<std::string> vertex_modes;
 
     bool operator==(const FramePlanLoopElement &) const = default;
 };

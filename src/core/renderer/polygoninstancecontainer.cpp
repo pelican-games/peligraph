@@ -381,6 +381,11 @@ DrawItemSnapshot makeDrawItemSnapshot(
             "model primitive is missing the draw bounds source");
     }
     const auto &materials = GET_MODULE(MaterialContainer);
+    if (!materials.supportsVertexMode(effective, vertexMode(primitive.skinned))) {
+        throw std::runtime_error("material '" + materials.materialName(effective) +
+            "' has no skinned vertex pipeline for mesh " + std::to_string(primitive.mesh_index) +
+            " primitive " + std::to_string(primitive.primitive_index));
+    }
     const auto material_generation =
         materials.rayMaterialGeneration(effective);
     const auto material_lease =
@@ -442,11 +447,17 @@ struct ResolvedInstanceMaterials {
 
     GlobalMaterialId effective(const ModelTemplate::PrimitiveRefInfo &primitive,
                                GlobalMaterialId model_material) const {
-        if (const auto found = primitives.find(
-                {primitive.mesh_index, primitive.primitive_index});
-            found != primitives.end())
-            return found->second;
-        return every.value_or(model_material);
+        auto selected = every.value_or(model_material);
+        if (const auto found = primitives.find({primitive.mesh_index, primitive.primitive_index});
+            found != primitives.end()) selected = found->second;
+        if (primitive.vat_deformed && selected != model_material &&
+            !GET_MODULE(MaterialContainer).rayDeformationMaterial(selected).vat) {
+            LOG_WARNING(logger,
+                "material '{}' for mesh {} primitive {} refused: VAT primitives keep their baked material",
+                GET_MODULE(MaterialContainer).materialName(selected), primitive.mesh_index, primitive.primitive_index);
+            return model_material;
+        }
+        return selected;
     }
 };
 

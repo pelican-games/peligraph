@@ -3572,16 +3572,24 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
     // builtinMaterialNamePrefix (describeUnservedMaterial reads it so too).
     auto materials = OrderedJson::array();
     std::set<std::string> material_tags;
+    std::map<std::string, std::size_t> material_rows;
     if (dependencies_.draw_loop_materials) {
         for (const auto &subject : dependencies_.draw_loop_materials()) {
             material_tags.insert(subject.tags.begin(), subject.tags.end());
-            materials.push_back({
-                {"id", subject.key},
+            const auto [row, inserted] = material_rows.try_emplace(
+                subject.materialKey(), materials.size());
+            if (inserted) materials.push_back({
+                {"id", subject.materialKey()},
                 {"name", subject.name},
                 {"tags", subject.tags},
                 {"variants", subject.variants},
                 {"builtin", subject.name.starts_with(builtinMaterialNamePrefix)},
+                {"vertex_modes", OrderedJson::array()},
             });
+            auto &modes = materials.at(row->second).at("vertex_modes");
+            const auto mode = subject.skinned ? "skinned" : "standard";
+            if (std::find(modes.begin(), modes.end(), mode) == modes.end())
+                modes.push_back(mode);
         }
     }
     result["materials"] = std::move(materials);

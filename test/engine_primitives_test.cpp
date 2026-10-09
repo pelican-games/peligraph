@@ -743,7 +743,7 @@ TEST_CASE("G-4 a forward-only direct root draws the basic cube once material_rou
     auto &standard = GET_MODULE(StandardMaterialResource);
     CHECK(materials.routeForMaterial(standard.standardTransparentMaterial()) ==
           MaterialRouteClass::forward_opaque);
-    for (const auto *suffix : {"sphere", "skinned_fallback", "default"}) {
+    for (const auto *suffix : {"sphere", "default"}) {
         CAPTURE(suffix);
         const auto info = standard.builtinMaterialInfo(suffix, standard.whiteTexture());
         CHECK(info.route == MaterialRouteClass::forward_opaque);
@@ -1881,6 +1881,9 @@ TEST_CASE("EL-1 get_render_authoring_context lists the materials a draw_loop jud
     const auto tagged_entry = listed("el1_tagged");
     const auto named_entry = listed("el1_named");
     CHECK(outlined_entry.at("id") == "materials/el1.material.json#el1_outlined");
+    CHECK(outlined_entry.at("vertex_modes") == Json::array({"standard", "skinned"}));
+    CHECK(std::count_if(context.at("materials").begin(), context.at("materials").end(),
+                       [&](const Json &entry) { return entry.at("id") == outlined_entry.at("id"); }) == 1);
     CHECK(outlined_entry.at("tags") == Json::array({"el1_hero"}));
     CHECK(outlined_entry.at("variants") == Json::array({"outline"}));
     CHECK(outlined_entry.at("builtin") == false);
@@ -1942,7 +1945,10 @@ TEST_CASE("EL-1 get_render_authoring_context lists the materials a draw_loop jud
     REQUIRE(loop.is_object());
     const auto branch_of = [&](const Json &material_entry) {
         for (const auto &element : loop.at("elements"))
-            if (element.at("element") == material_entry.at("id")) return element.at("branch").get<int>();
+            if (element.at("element") == material_entry.at("id")) {
+                CHECK(element.at("vertex_modes") == Json::array({"standard", "skinned"}));
+                return element.at("branch").get<int>();
+            }
         FAIL("the draw_loop has no element " << material_entry.at("id"));
         return -1;
     };

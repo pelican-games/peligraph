@@ -193,3 +193,25 @@ TEST_CASE("lowered material binder resolves overridden texture references by dec
 }
 
 } // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("SK1 material bindings retain primitive skin mode and refuse unbaked VAT", "[material][sk1]") {
+    auto model = twoPrimitiveModel();
+    model.material_primitives[0].primitives[0].skinned = true;
+    const auto bindings = bindingDocument();
+    applyPrimitiveMaterialBindings(model, bindings, "mixed");
+    REQUIRE(model.material_primitives[0].primitives[0].skinned);
+    REQUIRE_FALSE(model.material_primitives[1].primitives[0].skinned);
+    REQUIRE(model.material_primitives[0].material == GlobalMaterialId{20});
+    model = twoPrimitiveModel();
+    model.material_primitives[0].primitives[0].vat_deformed = true;
+    REQUIRE_THROWS_WITH(applyPrimitiveMaterialBindings(model, bindings, "vat"),
+        Catch::Matchers::ContainsSubstring("VAT primitives keep their baked material"));
+    REQUIRE(model.material_primitives.size() == 1);
+    auto keep = bindings;
+    keep.bindings[0].material = "baked-private";
+    applyPrimitiveMaterialBindings(model, keep, "vat", std::nullopt, {},
+        [](const auto &binding) { return binding.material == "baked-private"; });
+    REQUIRE(model.material_primitives[0].material == GlobalMaterialId{10});
+}
+} // namespace Pelican

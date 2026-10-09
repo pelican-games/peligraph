@@ -174,6 +174,7 @@ MaterialInfo StandardMaterialResource::builtinMaterialInfo(
     MaterialInfo info{
         .vert_shader = std_vert,
         .frag_shader = builtin_frag,
+        .skinned_vert_shader = skinnedVertShader(),
         .base_color_texture = base_color_texture,
         .metallic_roughness_texture = tex_metallic_roughness_default,
         .normal_texture = tex_normal_default,

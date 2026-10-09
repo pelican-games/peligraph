@@ -142,12 +142,19 @@ struct MaterialDrawSubject {
     // LP-3a: the one material pass the material asks for by name, if any
     // (materialPassAcceptsMaterial).
     std::optional<std::string> exact_pass;
+    // Authored selectors retain their mode-independent material identity.
+    std::string material_key;
+
+    // Public identity has no vertex mode. Legacy/test subjects use key alone.
+    const std::string &materialKey() const noexcept {
+        return material_key.empty() ? key : material_key;
+    }
 };
 
 std::string materialDrawSubjectKey(
     std::string_view name, std::string_view source_document,
     std::string_view source_asset,
-    std::optional<std::uint32_t> source_material_index);
+    std::optional<std::uint32_t> source_material_index, std::optional<bool> skinned = std::nullopt);
 
 bool materialRouteIsTransparent(MaterialRouteClass route) noexcept;
 

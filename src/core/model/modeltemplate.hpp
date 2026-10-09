@@ -142,6 +142,8 @@ struct ModelTemplate {
         std::string name;
         GlobalMaterialId material;
         std::optional<MaterialVariantRouting> routing;
+        // Retained for CPU-only binding validation as well as live loads.
+        bool vat_playback = false;
     };
 
     std::vector<MaterialPrimitives> material_primitives;

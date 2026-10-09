@@ -107,11 +107,11 @@ static void validateMaterialInputAttachmentFormat(
 static std::string makePipelineKey(
     const MaterialInfo &info,
     const MaterialPipelineRenderingContract
-        &rendering, bool allow_ray_query) {
+        &rendering, bool allow_ray_query, VertexMode mode) {
     std::ostringstream key;
     key << "ray_query=" << allow_ray_query << ':';
-    key << info.vert_shader.value << ':' << info.frag_shader.value << ':'
-        << info.skinned << ':'
+    key << (mode == VertexMode::skinned ? *info.skinned_vert_shader : info.vert_shader).value
+        << ':' << info.frag_shader.value << ':' << static_cast<int>(mode) << ':'
         << static_cast<int>(info.shader_contract) << ':'
         << static_cast<int>(info.render_state.blend) << ':'
         << static_cast<int>(info.render_state.cull) << ':'
@@ -426,15 +426,15 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(
     const MaterialPipelineRenderingContract
         &rendering,
     std::vector<ShaderResourceInterfaceBinding>
-        resource_interface, bool allow_ray_query) {
+        resource_interface, bool allow_ray_query, VertexMode mode) {
     GraphicsPipelineDesc desc;
     desc.allow_ray_query = allow_ray_query;
-    desc.vert = info.vert_shader;
+    desc.vert = mode == VertexMode::skinned ? *info.skinned_vert_shader : info.vert_shader;
     desc.frag = info.frag_shader;
     desc.color_formats = rendering.color_formats;
     desc.depth_format = rendering.depth_format;
-    desc.use_engine_vertex_layout = !info.skinned;
-    desc.use_skinned_vertex_layout = info.skinned;
+    desc.use_engine_vertex_layout = mode == VertexMode::standard;
+    desc.use_skinned_vertex_layout = mode == VertexMode::skinned;
     desc.depth_test = info.render_state.depth_test;
     desc.depth_write = info.render_state.depth_write;
     desc.depth_compare = toVkCompare(info.render_state.depth_compare);
@@ -852,34 +852,49 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         info.route, info.shader_contract, info.exact_pass);
     const bool allow_ray_query = !pass_bindings.empty() && std::all_of(
         pass_bindings.begin(), pass_bindings.end(), [](const auto &binding) { return binding.ray_query; });
-    const auto pipeline_key =
-        makePipelineKey(info, rendering, allow_ray_query);
-    auto pipeline_it = pipelines.find(pipeline_key);
-    if (pipeline_it == pipelines.end() || GET_MODULE(PipelineFactory).graphicsDesc(pipeline_it->second).allow_ray_query != allow_ray_query) {
-        const auto pipeline_handle = [&] {
-            try {
-                return GET_MODULE(PipelineFactory)
-                    .create(makeMaterialPipelineDesc(
-                        info, rendering,
-                        resource_interface, allow_ray_query));
-            } catch (const PassContractRefusal &refusal) {
-                // FO-2: named by the material and the passes that do not
-                // declare what its surface uses; the sentence stays.
-                std::vector<std::string> passes;
-                for (const auto &binding : pass_bindings)
-                    if (refusal.requirement() != "ray_query" || !binding.ray_query)
-                        if (std::find(passes.begin(), passes.end(), binding.pass_name) == passes.end())
-                            passes.push_back(binding.pass_name);
-                throw PassContractRefusal(refusal.requirement(), std::move(passes), info.name,
-                                          refusal.what());
+    std::array<std::optional<PipelineHandle>, 2> mode_pipelines;
+    for (const auto mode : vertexModes) {
+        if (mode == VertexMode::skinned && !info.skinned_vert_shader) continue;
+        const auto pipeline_key =
+            makePipelineKey(info, rendering, allow_ray_query, mode);
+        auto pipeline_it = pipelines.find(pipeline_key);
+        if (pipeline_it == pipelines.end() || GET_MODULE(PipelineFactory).graphicsDesc(pipeline_it->second).allow_ray_query != allow_ray_query) {
+            const auto pipeline_handle = [&] {
+                try {
+                    return GET_MODULE(PipelineFactory)
+                        .create(makeMaterialPipelineDesc(
+                            info, rendering,
+                            resource_interface, allow_ray_query, mode));
+                } catch (const PassContractRefusal &refusal) {
+                    // FO-2: named by the material and the passes that do not
+                    // declare what its surface uses; the sentence stays.
+                    std::vector<std::string> passes;
+                    for (const auto &binding : pass_bindings)
+                        if (refusal.requirement() != "ray_query" || !binding.ray_query)
+                            if (std::find(passes.begin(), passes.end(), binding.pass_name) == passes.end())
+                                passes.push_back(binding.pass_name);
+                    throw PassContractRefusal(refusal.requirement(), std::move(passes), info.name,
+                                              refusal.what());
+                }
+            }();
+            pipeline_it = pipelines.insert_or_assign(pipeline_key, pipeline_handle).first;
+            if (!default_pipeline && mode == VertexMode::standard) {
+                default_pipeline = pipeline_handle;
             }
-        }();
-        pipeline_it = pipelines.insert_or_assign(pipeline_key, pipeline_handle).first;
-        if (!default_pipeline) {
-            default_pipeline = pipeline_handle;
+        }
+        mode_pipelines[static_cast<std::size_t>(mode)] = pipeline_it->second;
+    }
+    const auto pipeline = *mode_pipelines[0];
+    if (mode_pipelines[1]) {
+        const auto &factory = GET_MODULE(PipelineFactory);
+        for (const auto set : std::array<std::uint32_t, 2>{imageDescriptorSetNumber, PELICAN_SET_PASS_INPUT}) {
+            if (makeDescriptorSetLayoutBindings(factory.reflection(pipeline), set) !=
+                makeDescriptorSetLayoutBindings(factory.reflection(*mode_pipelines[1]), set)) {
+                throw std::runtime_error("material '" + info.name +
+                    "' has incompatible standard/skinned descriptor set " + std::to_string(set));
+            }
         }
     }
-    const auto pipeline = pipeline_it->second;
     const auto &pipeline_reflection =
         GET_MODULE(PipelineFactory)
             .reflection(pipeline);
@@ -1095,7 +1110,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
 
     const auto gpu_data = makeMaterialGpuData(info);
     const auto material_id = materials.reg(InternalMaterialInfo{
-        .pipeline = pipeline,
+        .pipeline = mode_pipelines,
         .ray_generation = ray_generation,
         .ray_lease = std::move(ray_lease),
         .name = std::move(info.name),
@@ -1127,7 +1142,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .declared_resource_ports =
             std::move(info.resource_ports),
         .render_state = info.render_state,
-        .skinned = info.skinned,
+        .skinned_vert_shader = info.skinned_vert_shader,
         .base_color_texture = info.base_color_texture,
         .metallic_roughness_texture = info.metallic_roughness_texture,
         .normal_texture = info.normal_texture,
@@ -1599,7 +1614,7 @@ MaterialContainer::stageTextureRebind(
         vk::DescriptorSetAllocateInfo allocation;
         allocation.descriptorPool = descriptor_builder.materialPool();
         const auto layout = GET_MODULE(PipelineFactory).descriptorSetLayout(
-            material.pipeline, imageDescriptorSetNumber);
+            material.pipelineFor(), imageDescriptorSetNumber);
         allocation.setSetLayouts({layout});
         auto descriptor = std::move(device.allocateDescriptorSetsUnique(allocation).front());
 
@@ -2300,7 +2315,7 @@ MaterialContainer::ensureScreenInputDescriptor(
 
     auto [inserted, unused] = material.screen_input_descriptors.emplace(
         key, descriptor_builder.build(
-                 material.pipeline, std::move(resources),
+                 material.pipelineFor(), std::move(resources),
                  rt_views,
                  next_screen_input_binding_revision));
     (void)unused;
@@ -2321,16 +2336,16 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
     }
     const auto &material = materials.get(material_id);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
-    const auto pipeline_layout = pipeline_factory.layout(material.pipeline);
+    const auto pipeline_layout = pipeline_factory.layout(material.pipelineFor());
 
     if (!isValidMaterialId(prev_material_id)) {
-        cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_factory.pipeline(material.pipeline));
+        cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_factory.pipeline(material.pipelineFor()));
         cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout, imageDescriptorSetNumber,
                                    {material.descset.get()}, {});
     } else {
         const auto &prev_material = materials.get(prev_material_id);
-        if (material.pipeline != prev_material.pipeline)
-            cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_factory.pipeline(material.pipeline));
+        if (material.pipelineFor() != prev_material.pipelineFor())
+            cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_factory.pipeline(material.pipelineFor()));
         if (material.descset.get() != prev_material.descset.get())
             cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipeline_layout,
                                        imageDescriptorSetNumber, {material.descset.get()}, {});
@@ -2367,11 +2382,11 @@ MaterialContainer::bindMaterialDraw(
     GlobalMaterialId material_id,
     std::optional<PipelineHandle> pipeline_override,
     MaterialDrawBindState &bound,
-    RenderPassViewInvocation invocation) const {
+    RenderPassViewInvocation invocation, VertexMode mode) const {
     const auto &material = materials.get(material_id);
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     const auto pipeline =
-        pipeline_override.value_or(material.pipeline);
+        pipeline_override.value_or(material.pipelineFor(mode));
     MaterialDrawBinding binding{
         .layout = pipeline_factory.layout(pipeline),
         .pipeline = pipeline,
@@ -2382,7 +2397,7 @@ MaterialContainer::bindMaterialDraw(
                              pipeline_factory.pipeline(pipeline));
         binding.pipeline_bound = true;
     }
-    if (!bound.pipeline ||
+    if (!bound.pipeline || *bound.pipeline != pipeline ||
         bound.descriptor_set != binding.descriptor_set) {
         cmd_buf.bindDescriptorSets(
             vk::PipelineBindPoint::eGraphics, binding.layout,
@@ -2442,19 +2457,21 @@ MaterialContainer::drawLoopMaterials() const {
 }
 
 MaterialDrawSubject MaterialContainer::drawLoopSubject(
-    GlobalMaterialId material_id) const {
+    GlobalMaterialId material_id, VertexMode mode) const {
     const auto &material = materials.get(material_id);
     MaterialDrawSubject subject{
         .key = materialDrawSubjectKey(
             material.name, material.source_document,
             material.source_asset,
-            material.source_material_index),
+            material.source_material_index, mode == VertexMode::skinned),
         .name = material.name,
         .tags = material.tags,
         .route = material.route,
         .contract = material.shader_contract,
-        .skinned = material.skinned,
+        .skinned = mode == VertexMode::skinned,
         .exact_pass = material.exact_pass,
+        .material_key = materialDrawSubjectKey(material.name, material.source_document,
+            material.source_asset, material.source_material_index),
     };
     for (const auto &[name, record] : material.variants) {
         (void)record;
@@ -2463,9 +2480,23 @@ MaterialDrawSubject MaterialContainer::drawLoopSubject(
     return subject;
 }
 
+bool MaterialContainer::supportsVertexMode(GlobalMaterialId material, VertexMode mode) const {
+    return materials.get(material).pipeline.at(static_cast<std::size_t>(mode)).has_value();
+}
+
+std::vector<MaterialDrawSubject> MaterialContainer::drawLoopSubjects() const {
+    std::vector<MaterialDrawSubject> result;
+    for (const auto material : drawLoopMaterials()) {
+        for (const auto mode : vertexModes) {
+            if (supportsVertexMode(material, mode)) result.push_back(drawLoopSubject(material, mode));
+        }
+    }
+    return result;
+}
+
 PipelineHandle MaterialContainer::materialPipeline(
-    GlobalMaterialId material) const {
-    return materials.get(material).pipeline;
+    GlobalMaterialId material, VertexMode mode) const {
+    return materials.get(material).pipelineFor(mode);
 }
 
 GraphicsPipelineDesc materialDrawOverridePipelineDesc(
@@ -2512,14 +2543,14 @@ GraphicsPipelineDesc materialDrawOverridePipelineDesc(
 
 GraphicsPipelineDesc MaterialContainer::drawOverridePipelineDesc(
     GlobalMaterialId base,
-    const MaterialDrawRenderStateOverride &render_state) const {
+    const MaterialDrawRenderStateOverride &render_state, VertexMode mode) const {
     const auto &material = materials.get(base);
     MaterialInfo state;
     state.render_state = material.render_state;
     state.output_schema = material.output_schema;
     state.vat = material.vat;
     return materialDrawOverridePipelineDesc(
-        GET_MODULE(PipelineFactory).graphicsDesc(material.pipeline), state,
+        GET_MODULE(PipelineFactory).graphicsDesc(material.pipelineFor(mode)), state,
         render_state,
         MaterialPipelineRenderingContract{
             .color_formats = material.pipeline_color_formats,
@@ -2563,7 +2594,7 @@ void MaterialContainer::rebindScreenInputs(
             }
             auto replacement =
                 descriptor_builder.build(
-                    material.pipeline,
+                    material.pipelineFor(),
                     descriptor->second.resources,
                     rt_views,
                     next_screen_input_binding_revision);
@@ -2608,18 +2639,18 @@ vk::PipelineLayout MaterialContainer::getPipelineLayout() const {
 }
 
 vk::PipelineLayout MaterialContainer::pipelineLayout(
-    GlobalMaterialId material_id) const {
+    GlobalMaterialId material_id, VertexMode mode) const {
     const auto &material = materials.get(material_id);
-    return GET_MODULE(PipelineFactory).layout(material.pipeline);
+    return GET_MODULE(PipelineFactory).layout(material.pipelineFor(mode));
 }
 
 vk::PipelineLayout MaterialContainer::pipelineLayout(
     const PassDefinition &pass,
-    GlobalMaterialId material_id) const {
+    GlobalMaterialId material_id, VertexMode mode) const {
     material_id =
         resolveMaterialForPass(pass, material_id);
     const auto &material = materials.get(material_id);
-    return GET_MODULE(PipelineFactory).layout(material.pipeline);
+    return GET_MODULE(PipelineFactory).layout(material.pipelineFor(mode));
 }
 
 } // namespace Pelican

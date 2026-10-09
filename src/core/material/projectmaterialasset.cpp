@@ -158,9 +158,14 @@ MaterialInfo makeMaterialInfo(
             surface, surface_reference, lowered,
             {shader_defines.begin(),
              shader_defines.end()});
+    std::vector<std::string> skinned_defines{shader_defines.begin(), shader_defines.end()};
+    skinned_defines.emplace_back("PELICAN_SKINNED");
+    const auto skinned_bundles = shaders.loadFromSurfaceForMaterial(
+        surface, surface_reference, lowered, std::move(skinned_defines));
     MaterialInfo info{
         .vert_shader = bundles.vertex,
         .frag_shader = bundles.fragment,
+        .skinned_vert_shader = skinned_bundles.vertex,
         .base_color_texture =
             resolveOptionalTexture(
                 textures, base.base_color_texture,

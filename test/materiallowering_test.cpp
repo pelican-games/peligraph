@@ -867,3 +867,54 @@ TEST_CASE("LP-2 materials are matched by document name or glTF index",
 }
 
 } // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("SK1 draw-loop subjects distinguish geometry mode for one material", "[material][sk1]") {
+    MaterialDrawSubject standard;
+    standard.key = materialDrawSubjectKey("paint", "paint.material.json", "", std::nullopt, false);
+    standard.material_key = materialDrawSubjectKey("paint", "paint.material.json", "", std::nullopt);
+    standard.name = "paint";
+    auto skinned = standard;
+    skinned.key = materialDrawSubjectKey("paint", "paint.material.json", "", std::nullopt, true);
+    skinned.skinned = true;
+    REQUIRE(standard.key != skinned.key);
+    GraphLoopDrawCondition condition;
+    condition.material = standard.material_key;
+    REQUIRE(graphLoopDrawConditionMatches(condition, standard));
+    REQUIRE(graphLoopDrawConditionMatches(condition, skinned));
+    condition.skinned = true;
+    REQUIRE_FALSE(graphLoopDrawConditionMatches(condition, standard));
+    REQUIRE(graphLoopDrawConditionMatches(condition, skinned));
+
+    MaterialDrawLoopRules rules;
+    MaterialDrawLoopPassRule rule;
+    rule.branch_count = 2;
+    rule.classify = [](const MaterialDrawSubject &) {
+        return std::optional{MaterialDrawLoopChoice{0, true}};
+    };
+    rules.passes.emplace("opaque", rule);
+    nlohmann::json plan = {{"loops", {{{"tier", "draw_loop"}, {"pass", "opaque"}}}}};
+    applyMaterialDrawLoopElementsToFramePlanJson(plan, rules, {standard, skinned});
+    auto &loop = plan.at("loops").at(0);
+    REQUIRE(loop.at("count") == 1);
+    CHECK(loop.at("elements").at(0).at("element") == standard.material_key);
+    CHECK(loop.at("elements").at(0).at("vertex_modes") ==
+          nlohmann::json::array({"standard", "skinned"}));
+    CHECK(loop.at("unmatched_branches") == nlohmann::json::array({1}));
+
+    rules.passes.at("opaque").classify = [](const MaterialDrawSubject &subject) {
+        return std::optional{MaterialDrawLoopChoice{subject.skinned ? 1u : 0u, true}};
+    };
+    applyMaterialDrawLoopElementsToFramePlanJson(plan, rules, {standard, skinned});
+    REQUIRE(loop.at("count") == 2);
+    for (std::size_t i = 0; i != 2; ++i) {
+        const auto &element = loop.at("elements").at(i);
+        CHECK(element.at("element") == standard.material_key);
+        CHECK(element.at("index") == i);
+        CHECK(element.at("branch") == i);
+        CHECK(element.at("vertex_modes") ==
+              nlohmann::json::array({i == 0 ? "standard" : "skinned"}));
+    }
+    CHECK(loop.at("unmatched_branches").empty());
+}
+} // namespace Pelican

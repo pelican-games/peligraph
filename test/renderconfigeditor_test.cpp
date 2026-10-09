@@ -13663,4 +13663,44 @@ TEST_CASE("UD-4 restart boundary rejects an unreadable candidate even if the run
     CHECK(h.runtime.snapshot.published_generation == generation);
 }
 
+TEST_CASE("EL-1 material authoring context groups vertex modes under one public id",
+          "[render-config-editor][material][el1]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    MaterialDrawSubject standard;
+    standard.name = "paint";
+    standard.material_key = materialDrawSubjectKey("paint", "materials/paint.material.json", "", std::nullopt);
+    standard.key = materialDrawSubjectKey("paint", "materials/paint.material.json", "", std::nullopt, false);
+    standard.tags = {"hero"};
+    standard.variants = {"outline"};
+    auto skinned = standard;
+    skinned.skinned = true;
+    skinned.key = materialDrawSubjectKey("paint", "materials/paint.material.json", "", std::nullopt, true);
+    MaterialDrawSubject builtin;
+    builtin.name = "pelican.builtin.transparent";
+    builtin.key = builtin.name;
+    auto service = makeProjectService(project, resolver, runtime, {}, {}, {}, {},
+        [&](RenderConfigEditorDependencies &dependencies) {
+            dependencies.draw_loop_materials = [&] {
+                return std::vector{standard, skinned, builtin};
+            };
+        });
+    const auto context = service->getRenderAuthoringContext(Json::object());
+    const auto &materials = context.at("materials");
+    REQUIRE(materials.size() == 2);
+    const auto &paint = materials.at(0);
+    CHECK(paint.at("id") == "materials/paint.material.json#paint");
+    CHECK(paint.at("name") == "paint");
+    CHECK(paint.at("vertex_modes") == Json::array({"standard", "skinned"}));
+    CHECK(paint.at("tags") == Json::array({"hero"}));
+    CHECK(paint.at("variants") == Json::array({"outline"}));
+    CHECK_FALSE(paint.at("builtin").get<bool>());
+    CHECK(materials.at(1).at("id") == builtin.name);
+    CHECK(materials.at(1).at("vertex_modes") == Json::array({"standard"}));
+    CHECK(materials.at(1).at("builtin").get<bool>());
+    CHECK(context.at("material_tags") == Json::array({"hero"}));
+}
+
 } // namespace Pelican

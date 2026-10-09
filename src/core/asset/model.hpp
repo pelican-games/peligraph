@@ -44,6 +44,7 @@ struct ModelMaterialSlot {
     std::uint32_t primitive = 0;
     std::string slot;
     std::optional<MaterialVariantRouting> routing;
+    bool vat_deformed = false;
 };
 
 // Logical owner of project model templates. Physical glTF files and fragment

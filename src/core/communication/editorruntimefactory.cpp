@@ -2336,12 +2336,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         }
                         const auto &materials =
                             GET_MODULE(MaterialContainer);
-                        for (const auto material :
-                             materials.drawLoopMaterials()) {
-                            subjects.push_back(
-                                materials.drawLoopSubject(material));
-                        }
-                        return subjects;
+                        return materials.drawLoopSubjects();
                     },
                     .region_providers = [] {
                         std::vector<RenderAuthoringRegionProvider> result;

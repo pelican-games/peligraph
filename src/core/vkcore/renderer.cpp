@@ -4754,10 +4754,7 @@ nlohmann::json Renderer::currentFramePlanJson() const {
         generation->material_draw_loops->rules() != nullptr &&
         FastModuleContainer::isInitialized<MaterialContainer>()) {
         const auto &materials = GET_MODULE(MaterialContainer);
-        std::vector<MaterialDrawSubject> subjects;
-        for (const auto material : materials.drawLoopMaterials()) {
-            subjects.push_back(materials.drawLoopSubject(material));
-        }
+        const auto subjects = materials.drawLoopSubjects();
         applyMaterialDrawLoopElementsToFramePlanJson(
             result, *generation->material_draw_loops->rules(), subjects);
     }
@@ -5137,13 +5134,13 @@ RenderTargetReadback Renderer::readRenderTargetForTesting(
     const auto metadata = targets.getMetadata(target_id);
     const auto texel_bytes = formatTexelBytes(metadata.format);
     if (metadata.samples != 1 || texel_bytes == 0 ||
-        snapshotAspect(metadata.format) !=
-            vk::ImageAspectFlagBits::eColor ||
+        (snapshotAspect(metadata.format) != vk::ImageAspectFlagBits::eColor &&
+         metadata.format != vk::Format::eD32Sfloat) ||
         (metadata.usage & vk::ImageUsageFlagBits::eTransferSrc) !=
             vk::ImageUsageFlagBits::eTransferSrc) {
         throw std::runtime_error(
             "render-target readback requires a supported single-sample "
-            "color transfer source: " +
+            "color or D32 transfer source: " +
             std::string{name});
     }
     const auto range = resolveImageSubresourceRange(
@@ -5197,7 +5194,7 @@ RenderTargetReadback Renderer::readRenderTargetForTesting(
                 vk::ImageLayout::eTransferSrcOptimal);
             vk::BufferImageCopy copy;
             copy.imageSubresource = {
-                vk::ImageAspectFlagBits::eColor,
+                snapshotAspect(metadata.format),
                 range.base_mip_level,
                 range.base_array_layer,
                 range.layer_count};

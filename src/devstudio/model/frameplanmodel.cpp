@@ -279,7 +279,8 @@ std::vector<FramePlanLoop> optionalLoops(const Json &root) {
                         entry.value("index", Json{0}), element_context + ".index")),
                     static_cast<std::size_t>(unsignedInteger(
                         entry.value("branch", Json{0}), element_context + ".branch")),
-                    material ? element->get<std::string>() : std::string{}});
+                    material ? element->get<std::string>() : std::string{},
+                    entry.value("vertex_modes", std::vector<std::string>{})});
             }
         }
         loop.pass = optionalStringField(value, "pass", context);

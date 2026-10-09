@@ -895,6 +895,7 @@ std::vector<ModelMaterialSlot> ModelAssetContainer::materialSlots(const std::str
                                   .routing = named != preview.named_materials.end()
                                                  ? named->routing
                                                  : std::optional<MaterialVariantRouting>{},
+                                  .vat_deformed = primitive.vat_deformed,
                               });
         }
     }

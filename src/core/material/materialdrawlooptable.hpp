@@ -5,6 +5,7 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "material.hpp"
+#include "materialcontainer.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -18,6 +19,8 @@
 #include <vector>
 
 namespace Pelican {
+
+enum class VertexMode;
 
 // One resolved step: the material record that supplies the descriptor set,
 // the GPU material index and the screen inputs, and the pipeline to draw
@@ -61,7 +64,7 @@ class MaterialDrawLoopTable {
     // nullptr: the pass has no entry for this material and draws it the
     // default way. An empty list draws nothing.
     const std::vector<ResolvedMaterialDrawStep> *find(
-        std::string_view pass, GlobalMaterialId material) const;
+        std::string_view pass, GlobalMaterialId material, VertexMode mode = VertexMode::standard) const;
     bool empty() const noexcept { return passes_.empty(); }
     std::uint64_t generation() const noexcept { return generation_; }
     const std::shared_ptr<const MaterialDrawLoopRules> &rules() const noexcept {
@@ -105,9 +108,8 @@ class MaterialDrawLoopTable {
     struct CompiledDefines {
         SurfaceShaderBundleIds bundles;
     };
-    using Entries = std::unordered_map<
-        GlobalMaterialId, std::vector<ResolvedMaterialDrawStep>,
-        GlobalMaterialId::Hash>;
+    using Entries = std::map<std::pair<int, VertexMode>,
+                             std::vector<ResolvedMaterialDrawStep>>;
     // What a build adds, so a refusal can release exactly that.
     struct Additions {
         std::vector<std::string> override_keys;

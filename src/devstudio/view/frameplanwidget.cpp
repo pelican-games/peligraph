@@ -4734,10 +4734,9 @@ struct FramePlanWidget::Impl {
             elements.insert(elements.end(), more->second.begin(), more->second.end());
         const auto total = std::max(loop.elementCount(), elements.size());
         auto *group = groupItem(item, owner.tr("Draw loop %1").arg(text(loop.node)), total);
-        std::map<std::size_t, std::vector<std::string>> by_branch;
+        std::map<std::size_t, std::vector<const FramePlanLoopElement *>> by_branch;
         for (const auto &element : elements)
-            by_branch[element.branch].push_back(
-                element.key.empty() ? std::to_string(element.element) : element.key);
+            by_branch[element.branch].push_back(&element);
         for (const auto branch : loop.unmatched_branches) by_branch.try_emplace(branch);
         for (const auto &[branch, keys] : by_branch) {
             auto *row = groupItem(group, owner.tr("Branch %1").arg(branch), keys.size());
@@ -4746,7 +4745,16 @@ struct FramePlanWidget::Impl {
                         owner.tr("none: no material takes this branch"));
                 continue;
             }
-            for (const auto &key : keys) addFact(row, owner.tr("Material"), text(key));
+            for (const auto *element : keys) {
+                auto *material = new QTreeWidgetItem(row);
+                material->setText(1, owner.tr("Material"));
+                material->setText(2,
+                    text(element->key.empty() ? std::to_string(element->element) : element->key));
+                QStringList modes;
+                for (const auto &mode : element->vertex_modes) modes.push_back(text(mode));
+                if (!modes.empty()) addFact(material, owner.tr("Vertex modes"),
+                                           modes.join(QStringLiteral(" / ")));
+            }
         }
         if (elements.size() < total) {
             auto *more = new QTreeWidgetItem(group);

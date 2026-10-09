@@ -149,6 +149,11 @@ void applyPrimitiveMaterialBindings(
                                      "' references missing material '" +
                                      binding.material + "'");
         }
+        if (available.at(key)->vat_deformed && !material->vat_playback) {
+            throw std::runtime_error(context + " " +
+                primitiveText(binding.mesh_index, binding.primitive_index) +
+                " material '" + binding.material + "': VAT primitives keep their baked material");
+        }
         if (!material->routing) {
             throw std::runtime_error(
                 context + " USD path '" +
