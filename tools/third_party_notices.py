@@ -163,12 +163,10 @@ THIRD_PARTY: list[Entry] = [
               "projects/pathtrace_demo/shaders/pt_rng.glsl is PCG's RXS-M-XS "
               "output over a 32-bit LCG step.",
           license="Apache-2.0",
-          texts=[("deps:spirv_tools", "LICENSE")],
-          notes=["The license text below is the Apache License 2.0 as it "
-                 "appears in SPIRV-Tools' LICENSE file; pcg-c-basic itself was "
-                 "not fetched, so its own LICENSE and any NOTICE file are not "
-                 "reproduced."],
-          missing=["pcg-c-basic's own LICENSE / NOTICE files"]),
+          texts=[("repo", "third_party/licenses/pcg-c-basic-LICENSE.txt")],
+          notes=["The license text below is pcg-c-basic's own LICENSE.txt "
+                 "(third_party/licenses/README.md says where and when it was "
+                 "copied). pcg-c-basic has no NOTICE file."]),
     Entry("boost::hash_combine (mixing step)",
           upstream="https://www.boost.org",
           version="-",
@@ -196,11 +194,15 @@ THIRD_PARTY: list[Entry] = [
               "driver and is not distributed. glslang also runs at build time.",
           license="per component (the SDK's LICENSE.txt below points to the "
                   "LunarG licensing registry)",
-          texts=[("sdk", "Licenses/LICENSE.txt")],
-          missing=["shaderc LICENSE", "glslang LICENSE (glslang is under several "
-                   "licenses)", "Vulkan-Loader LICENSE"],
+          texts=[("sdk", "Licenses/LICENSE.txt"),
+                 ("repo", "third_party/licenses/shaderc-LICENSE"),
+                 ("repo", "third_party/licenses/glslang-LICENSE.txt"),
+                 ("repo", "third_party/licenses/Vulkan-Loader-LICENSE.txt")],
           notes=["The SPIRV-Tools entry's text is that of the version CMake "
-                 "fetched, not necessarily of the one inside shaderc_combined."]),
+                 "fetched, not necessarily of the one inside shaderc_combined.",
+                 "The shaderc, glslang and Vulkan-Loader texts are their "
+                 "upstream LICENSE files copied into third_party/licenses "
+                 "(see its README.md), not files read from the SDK."]),
     Entry("Qt 6 (LGPL-3.0)",
           upstream="https://www.qt.io; source: https://download.qt.io/archive/qt/ "
                    "and https://code.qt.io",
@@ -215,12 +217,13 @@ THIRD_PARTY: list[Entry] = [
               "parts of their own; Qt's SBOM files in the Qt installation "
               "(sbom/qtbase-<version>.spdx) list them.",
           license="LGPL-3.0-only (Qt open source); the LGPL-3.0 supplements the GPL-3.0",
-          texts=[("deps:nlohmann", "LICENSES/GPL-3.0-only.txt")],
-          notes=["The GPL-3.0 text below is the standard text as it appears in "
+          texts=[("repo", "third_party/licenses/lgpl-3.0.txt"),
+                 ("deps:nlohmann", "LICENSES/GPL-3.0-only.txt")],
+          notes=["The LGPL-3.0 text below is the FSF's text copied into "
+                 "third_party/licenses (see its README.md); the GPL-3.0 text it "
+                 "supplements is the standard text as it appears in "
                  "nlohmann/json's LICENSES/GPL-3.0-only.txt."],
-          missing=["the GNU Lesser General Public License v3 text (not on this "
-                   "machine: the Qt installation carries no license files)",
-                   "the texts of the non-Qt DLLs Qt's deploy script copies (a "
+          missing=["the texts of the non-Qt DLLs Qt's deploy script copies (a "
                    "Debug install of 2026-10 had D3Dcompiler_47.dll, "
                    "dxcompiler.dll, icuuc.dll and opengl32sw.dll, and Qt6Svg "
                    "for the deployed plugins)"]),
