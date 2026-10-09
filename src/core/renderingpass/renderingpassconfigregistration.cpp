@@ -339,9 +339,13 @@ std::vector<CompiledComputeTask> compileComputeTasks(
                 &dependencies.runtime
                      .shader_defines,
                 ray_tracing_project,
-            });
+            }, true);
         compiled.push_back(CompiledComputeTask{definition, task_id});
     }
+    std::vector<ComputeTaskId> ids;
+    ids.reserve(compiled.size());
+    for (const auto &task : compiled) ids.push_back(task.task_id);
+    dependencies.compute_task_container.prepareDescriptorGeneration(ids);
     return compiled;
 }
 

@@ -1502,6 +1502,15 @@ ReloadTransitionFacts ReloadService::transitionFacts() const {
 nlohmann::json ReloadService::statusJson() const {
     const auto gate = GET_MODULE(ReloadGate).snapshot();
     const auto resources = transactions_.status();
+    const auto runtime = runtimeStatusJson();
+    auto render_error = nlohmann::json(nullptr);
+    if (const auto found = runtime.find(std::string{renderPipelineReloadParticipantName});
+        found != runtime.end()) {
+        render_error = found->value("details", nlohmann::json::object())
+                            .value("domain_error", nlohmann::json(nullptr));
+        if (!found->value("details", nlohmann::json::object()).contains("domain_error"))
+            render_error = found->value("last_error", nlohmann::json(nullptr));
+    }
     auto resource_error = nlohmann::json(nullptr);
     if (resources.last_reload_error) {
         resource_error = {{"path", resources.last_reload_error->path},
@@ -1520,7 +1529,8 @@ nlohmann::json ReloadService::statusJson() const {
                 {"error", gate.reason.empty() ? nlohmann::json(nullptr) : nlohmann::json(gate.reason)},
                 {"applied", resources.applied}, {"failed", resources.failed},
                 {"participants", participantNames()},
-                {"runtime", runtimeStatusJson()},
+                {"runtime", runtime},
+            {"last_error", render_error},
                 {"model_catalog", model_catalog},
                 {"last_reload_error", std::move(resource_error)},
                 {"watch", watch},
@@ -1535,7 +1545,8 @@ nlohmann::json ReloadService::statusJson() const {
             {"error", status.error.empty() ? nlohmann::json(nullptr) : nlohmann::json(status.error)},
             {"applied", resources.applied}, {"failed", resources.failed},
             {"participants", participantNames()},
-            {"runtime", runtimeStatusJson()},
+            {"runtime", runtime},
+            {"last_error", render_error},
             {"model_catalog", model_catalog},
             {"last_reload_error", std::move(resource_error)},
             {"watch", watch},

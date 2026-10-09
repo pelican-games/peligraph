@@ -30,11 +30,11 @@ namespace Pelican {
 
 namespace {
 
+thread_local std::optional<std::uint64_t> descriptor_allocation_failure_after;
+
 thread_local bool ray_group_layout_virtual_include_hookup_enabled =
     true;
 
-constexpr uint32_t max_compute_descriptor_sets = 256;
-constexpr uint32_t max_compute_descriptors = 1024;
 constexpr vk::DeviceSize compute_dispatch_command_size =
     sizeof(vk::DispatchIndirectCommand);
 
@@ -736,18 +736,14 @@ vk::UniqueSampler createSampler(
     return device.createSamplerUnique(create_info);
 }
 
-vk::UniqueDescriptorPool createDescriptorPool(vk::Device device) {
-    std::array<vk::DescriptorPoolSize, 3> pool_sizes{
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, max_compute_descriptors},
-        vk::DescriptorPoolSize{vk::DescriptorType::eStorageImage, max_compute_descriptors},
-        vk::DescriptorPoolSize{
-            vk::DescriptorType::eCombinedImageSampler,
-            max_compute_descriptors},
-    };
-
+vk::UniqueDescriptorPool createDescriptorPool(vk::Device device,
+                                               const ComputeDescriptorBudget &budget) {
+    std::vector<vk::DescriptorPoolSize> pool_sizes;
+    for (const auto &[type, count] : budget.descriptors)
+        if (count) pool_sizes.emplace_back(type, ComputeDescriptorBudget::capacity(count));
     vk::DescriptorPoolCreateInfo create_info;
     create_info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-    create_info.maxSets = max_compute_descriptor_sets;
+    create_info.maxSets = ComputeDescriptorBudget::capacity(budget.sets);
     create_info.setPoolSizes(pool_sizes);
     return device.createDescriptorPoolUnique(create_info);
 }
@@ -1014,9 +1010,18 @@ ResolvedRayTracingShaders resolveRayTracingShaders(
 }
 } // namespace
 
+ScopedComputeDescriptorAllocationFailureForTesting::ScopedComputeDescriptorAllocationFailureForTesting(
+    std::uint64_t successful_attempts)
+    : previous_{descriptor_allocation_failure_after} {
+    descriptor_allocation_failure_after = successful_attempts;
+}
+
+ScopedComputeDescriptorAllocationFailureForTesting::~ScopedComputeDescriptorAllocationFailureForTesting() {
+    descriptor_allocation_failure_after = previous_;
+}
+
 ComputeTaskContainer::ComputeTaskContainer()
-    : device{GET_MODULE(VulkanManageCore).getDevice()},
-      descriptor_pool{createDescriptorPool(device)} {}
+    : device{GET_MODULE(VulkanManageCore).getDevice()} {}
 
 ComputeTaskContainer::~ComputeTaskContainer() = default;
 
@@ -1040,6 +1045,11 @@ ComputeTaskContainer::DescriptorSetRecord ComputeTaskContainer::createDescriptor
     alloc_info.descriptorPool = pool;
     alloc_info.descriptorSetCount = 1;
     alloc_info.pSetLayouts = &layout;
+    if (descriptor_allocation_failure_after) {
+        if (*descriptor_allocation_failure_after == 0)
+            throw vk::OutOfPoolMemoryError("injected compute descriptor allocation failure");
+        --*descriptor_allocation_failure_after;
+    }
     auto descriptor_sets = device.allocateDescriptorSetsUnique(alloc_info);
     auto descriptor_set = std::move(descriptor_sets.front());
 
@@ -1263,7 +1273,7 @@ ComputeTaskContainer::createTaskDescriptorSets(
          view_index < descriptor_variant_count;
          ++view_index) {
         for (std::uint32_t frame_index = 0;
-             frame_index < 2; ++frame_index) {
+             frame_index < computeDescriptorParities; ++frame_index) {
             auto binding = createDescriptorSet(
                 pool, pipeline, resources,
                 resource_interface,
@@ -1297,7 +1307,8 @@ vk::Sampler ComputeTaskContainer::samplerFor(
 
 ComputeTaskId ComputeTaskContainer::registerComputeTask(
     const ComputeTaskDefinition &definition,
-    const ComputeTaskRuntimeDependencies &dependencies) {
+    const ComputeTaskRuntimeDependencies &dependencies,
+    bool defer_descriptors) {
     if (auto found = name_to_id.find(definition.name); found != name_to_id.end()) {
         // LC-1: a recompile may expand the task's loop to another count.
         if (const auto task = tasks.find(found->second.value); task != tasks.end())
@@ -1409,6 +1420,9 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                 if (shader) stages.push_back(library.get(*shader).reflection);
             for (const auto shader : shaders.callables)
                 stages.push_back(library.get(shader).reflection);
+            validateComputeDescriptorLayout(merge(stages),
+                GET_MODULE(VulkanManageCore).getPhysDevice().getProperties().limits,
+                definition.name);
             bindShaderResourceInterfaceByReflectedName(
                 resource_interface, merge(stages),
                 PELICAN_SET_PASS_INPUT);
@@ -1450,6 +1464,9 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
             dependencies.shader_library.get(shader)
                 .reflection,
             PELICAN_SET_PASS_INPUT);
+        validateComputeDescriptorLayout(dependencies.shader_library.get(shader).reflection,
+            GET_MODULE(VulkanManageCore).getPhysDevice().getProperties().limits,
+            definition.name);
         pipeline = pipeline_factory.createCompute(
             ComputePipelineDesc{
                 .shader = shader,
@@ -1527,12 +1544,6 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
             }
         }
     }
-    auto task_descriptors = createTaskDescriptorSets(
-        descriptor_pool.get(), pipeline,
-        resolved_resources, resource_interface,
-        render_target_container,
-        frame_graph_resources,
-        descriptor_variant_count);
 
     registration_order.reserve(registration_order.size() + 1);
     if (next_task_id == std::numeric_limits<int>::max()) {
@@ -1543,20 +1554,13 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
     const auto [task_it, task_inserted] = tasks.emplace(
         id.value,
         TaskRecord{
+            .descriptor_variant_count = descriptor_variant_count,
             .definition = definition,
             .resource_bindings =
                 std::move(resolved_resources),
             .resource_interface =
                 std::move(resource_interface),
             .pipeline = pipeline,
-            .descriptor_sets =
-                std::move(
-                    task_descriptors
-                        .descriptor_sets),
-            .bound_image_views =
-                std::move(
-                    task_descriptors
-                        .bound_image_views),
             .binding_revision =
                 next_binding_revision++,
             .ray_tracing =
@@ -1587,7 +1591,53 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
         throw;
     }
     registration_order.push_back(id);
+    if (!defer_descriptors) {
+        try {
+            prepareDescriptorGeneration({id});
+        } catch (...) {
+            name_to_id.erase(definition.name);
+            tasks.erase(id.value);
+            registration_order.pop_back();
+            throw;
+        }
+    }
     return id;
+}
+
+void ComputeTaskContainer::prepareDescriptorGeneration(const std::vector<ComputeTaskId> &ids) {
+    ComputeDescriptorBudget budget;
+    std::vector<ComputeTaskId> pending;
+    for (const auto id : ids) {
+        const auto &task = tasks.at(id.value);
+        if (task.descriptor_pool) continue;
+        pending.push_back(id);
+        budget.add(GET_MODULE(PipelineFactory).reflection(task.pipeline),
+                   task.descriptor_variant_count);
+    }
+    if (pending.empty()) return;
+    auto pool = std::make_shared<vk::UniqueDescriptorPool>(createDescriptorPool(device, budget));
+    // Complete the whole candidate before assigning anything to task records.
+    std::vector<TaskDescriptorSets> prepared;
+    prepared.reserve(pending.size());
+    for (const auto id : pending) {
+        const auto &task = tasks.at(id.value);
+        try {
+            prepared.push_back(createTaskDescriptorSets(pool->get(), task.pipeline,
+                task.resource_bindings, task.resource_interface,
+                GET_MODULE(RenderTargetContainer), GET_MODULE(FrameGraphResourceContainer),
+                task.descriptor_variant_count));
+        } catch (const vk::OutOfPoolMemoryError &) {
+            throw std::runtime_error("compute.descriptor_pool_exhausted@1: " +
+                nlohmann::json{{"result", "ErrorOutOfPoolMemory"}, {"task", task.definition.name}, {"tasks", pending.size()},
+                               {"sets", budget.sets}, {"max_sets", ComputeDescriptorBudget::capacity(budget.sets)}}.dump());
+        }
+    }
+    for (std::size_t i = 0; i < pending.size(); ++i) {
+        auto &task = tasks.at(pending[i].value);
+        task.descriptor_pool = pool;
+        task.descriptor_sets = std::move(prepared[i].descriptor_sets);
+        task.bound_image_views = std::move(prepared[i].bound_image_views);
+    }
 }
 
 ScopedRayGroupLayoutVirtualIncludeHookupOverrideForTesting::
@@ -1605,15 +1655,25 @@ ScopedRayGroupLayoutVirtualIncludeHookupOverrideForTesting::
 
 void ComputeTaskContainer::rebindRenderTargets(
     RenderTargetContainer &render_target_container) {
-    auto next_pool = createDescriptorPool(device);
+    // Preserve generation boundaries during a resize too: a retired
+    // generation must not share a replacement pool with the live generation.
+    std::map<const vk::UniqueDescriptorPool *, ComputeDescriptorBudget> budgets;
+    for (const auto &[id, task] : tasks)
+        budgets[task.descriptor_pool.get()].add(
+            GET_MODULE(PipelineFactory).reflection(task.pipeline), task.descriptor_variant_count);
+    std::map<const vk::UniqueDescriptorPool *, std::shared_ptr<vk::UniqueDescriptorPool>> next_pools;
+    for (const auto &[owner, budget] : budgets)
+        next_pools.emplace(owner, std::make_shared<vk::UniqueDescriptorPool>(
+            createDescriptorPool(device, budget)));
     struct ReboundTask {
+        std::shared_ptr<vk::UniqueDescriptorPool> pool;
         int id = -1;
         std::vector<
-            std::array<vk::UniqueDescriptorSet, 2>>
+            std::array<vk::UniqueDescriptorSet, computeDescriptorParities>>
             descriptor_sets;
         std::vector<
             std::array<
-                std::vector<vk::ImageView>, 2>>
+                std::vector<vk::ImageView>, computeDescriptorParities>>
             bound_image_views;
         std::optional<
             std::array<std::uint32_t, 3>>
@@ -1625,6 +1685,8 @@ void ComputeTaskContainer::rebindRenderTargets(
         GET_MODULE(FrameGraphResourceContainer);
     for (const auto &[id, task] : tasks) {
         ReboundTask next;
+        next.pool = next_pools.at(task.descriptor_pool.get());
+        const auto &budget = budgets.at(task.descriptor_pool.get());
         next.id = id;
         if (task.image_extent_dispatch) {
             const auto &dispatch =
@@ -1652,15 +1714,21 @@ void ComputeTaskContainer::rebindRenderTargets(
                         .ray_tracing_facts);
             }
         }
-        auto rebound_descriptors =
-            createTaskDescriptorSets(
-                next_pool.get(), task.pipeline,
+        TaskDescriptorSets rebound_descriptors;
+        try {
+            rebound_descriptors = createTaskDescriptorSets(
+                next.pool->get(), task.pipeline,
                 task.resource_bindings,
                 task.resource_interface,
                 render_target_container,
                 frame_graph_resources,
                 static_cast<std::uint32_t>(
                     task.descriptor_sets.size()));
+        } catch (const vk::OutOfPoolMemoryError &) {
+            throw std::runtime_error("compute.descriptor_pool_exhausted@1: " +
+                nlohmann::json{{"result", "ErrorOutOfPoolMemory"}, {"task", task.definition.name}, {"tasks", tasks.size()},
+                               {"sets", budget.sets}, {"max_sets", ComputeDescriptorBudget::capacity(budget.sets)}}.dump());
+        }
         next.descriptor_sets = std::move(
             rebound_descriptors.descriptor_sets);
         next.bound_image_views = std::move(
@@ -1668,21 +1736,23 @@ void ComputeTaskContainer::rebindRenderTargets(
         rebound.push_back(std::move(next));
     }
 
-    auto retired_pool = std::move(descriptor_pool);
+    std::vector<std::shared_ptr<vk::UniqueDescriptorPool>> retired_pools;
+    retired_pools.reserve(tasks.size());
     std::vector<
         std::vector<
             std::array<
-                vk::UniqueDescriptorSet, 2>>>
+                vk::UniqueDescriptorSet, computeDescriptorParities>>>
         retired_descriptor_sets;
     retired_descriptor_sets.reserve(tasks.size());
     for (auto &[id, task] : tasks) {
         (void)id;
+        retired_pools.push_back(std::move(task.descriptor_pool));
         retired_descriptor_sets.push_back(
             std::move(task.descriptor_sets));
     }
-    descriptor_pool = std::move(next_pool);
     for (auto &next : rebound) {
         auto &task = tasks.at(next.id);
+        task.descriptor_pool = std::move(next.pool);
         task.descriptor_sets = std::move(next.descriptor_sets);
         task.bound_image_views = std::move(next.bound_image_views);
         if (next.dispatch_groups) {
@@ -1695,10 +1765,12 @@ void ComputeTaskContainer::rebindRenderTargets(
         }
         task.binding_revision = next_binding_revision++;
     }
-    deferRetiredDescriptorResources(
-        GET_MODULE(DeletionQueue),
-        std::move(retired_pool),
-        std::move(retired_descriptor_sets));
+    struct RetiredGeneration {
+        decltype(retired_pools) pools;
+        decltype(retired_descriptor_sets) sets;
+    };
+    GET_MODULE(DeletionQueue).defer(RetiredGeneration{
+        std::move(retired_pools), std::move(retired_descriptor_sets)});
 }
 
 const ComputeTaskDefinition &ComputeTaskContainer::definition(ComputeTaskId task_id) const {

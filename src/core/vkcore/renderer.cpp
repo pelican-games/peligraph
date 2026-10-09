@@ -244,11 +244,11 @@ void RenderPipelinePublicationTransaction::rollback(
         rolled_back.staged_generation = 0;
         rolled_back.last_error = failure;
         ++rolled_back.failed;
-        // PB-1: a hot reload refused after it was staged.
-        if (!authored) {
+        // A reload or edit refused after staging keeps the previous generation.
+        {
             try {
                 recordRenderPipelineProblem(
-                    problemSourceHotReload,
+                    authored ? problemSourceEditRpc : problemSourceHotReload,
                     renderPipelineRefusalJson(std::runtime_error{failure}, {},
                                               rolled_back.source_reference),
                     rolled_back.source_reference);
@@ -4066,6 +4066,12 @@ Renderer::applyRenderPipelineAuthoringCandidate(
     } catch (const std::exception &caught) {
         result.error = caught.what();
         result.exception = std::current_exception();
+        try {
+            recordRenderPipelineProblem(problemSourceEditRpc,
+                renderPipelineRefusalJson(caught, {}, state.source_reference),
+                state.source_reference);
+        } catch (...) {
+        }
     } catch (...) {
         result.error =
             "unknown render pipeline authoring apply failure";

@@ -1,4 +1,6 @@
 #include "../src/core/watch/reloadservice.hpp"
+#include "../src/core/watch/problemlist.hpp"
+#include "../src/core/renderingpass/computedescriptorbudget.hpp"
 #include "../src/core/watch/reloadtransaction.hpp"
 #include "../src/core/watch/reloadgate.hpp"
 #include "../src/core/container.hpp"
@@ -951,6 +953,94 @@ TEST_CASE("ReloadService schedules runtime participants at their declared bounda
     REQUIRE(status.at("failed") == 1);
     REQUIRE(status.at("last_error") == "manual failure");
     REQUIRE(status.at("details").at("kind") == "fake");
+}
+
+TEST_CASE("CP1 compute descriptor budget counts reflected arrays views and parity", "[compute][cp1]") {
+    ShaderReflection reflection;
+    reflection.bindings = {
+        {.set = PELICAN_SET_PASS_INPUT, .type = vk::DescriptorType::eStorageBuffer, .count = 3},
+        {.set = PELICAN_SET_PASS_INPUT, .type = vk::DescriptorType::eStorageImage, .count = 2},
+        {.set = PELICAN_SET_PASS_INPUT, .type = vk::DescriptorType::eCombinedImageSampler, .count = 1},
+        {.set = 0, .type = vk::DescriptorType::eUniformBuffer, .count = 9},
+    };
+    ComputeDescriptorBudget budget;
+    for (int task = 0; task < 80; ++task) budget.add(reflection, 2);
+    CHECK(budget.sets == 320);
+    CHECK(budget.descriptors.at(vk::DescriptorType::eStorageBuffer) == 960);
+    CHECK(budget.descriptors.at(vk::DescriptorType::eStorageImage) == 640);
+    CHECK(budget.descriptors.at(vk::DescriptorType::eCombinedImageSampler) == 320);
+    CHECK(budget.descriptors.count(vk::DescriptorType::eUniformBuffer) == 0);
+    CHECK(ComputeDescriptorBudget::capacity(budget.sets) == 416);
+    CHECK(ComputeDescriptorBudget::capacity(960) == 1216);
+    CHECK(ComputeDescriptorBudget::capacity(1) == 18);
+    budget.add(ShaderReflection{}, 2);
+    CHECK(budget.sets == 320);
+    CHECK_THROWS(ComputeDescriptorBudget::capacity(std::uint64_t{1} << 32));
+    CHECK_THROWS(budget.add(reflection, std::numeric_limits<std::uint32_t>::max()));
+}
+
+TEST_CASE("CP1 compute descriptor limits apply to each layout not the pool aggregate", "[compute][cp1]") {
+    ShaderReflection reflection;
+    reflection.bindings = {{.set = PELICAN_SET_PASS_INPUT,
+                            .type = vk::DescriptorType::eStorageBuffer, .count = 3}};
+    vk::PhysicalDeviceLimits limits;
+    limits.maxDescriptorSetStorageBuffers = 3;
+    ComputeDescriptorBudget budget;
+    for (int task = 0; task < 80; ++task) {
+        CHECK_NOTHROW(validateComputeDescriptorLayout(reflection, limits, "probe"));
+        budget.add(reflection, 2);
+    }
+    CHECK(budget.descriptors.at(vk::DescriptorType::eStorageBuffer) == 960);
+    limits.maxDescriptorSetStorageBuffers = 2;
+    try {
+        validateComputeDescriptorLayout(reflection, limits, "probe");
+        FAIL("layout above device limit was accepted");
+    } catch (const std::runtime_error &error) {
+        const std::string text = error.what();
+        CHECK(text.starts_with("compute.descriptor_budget@1: "));
+        const auto fields = nlohmann::json::parse(text.substr(text.find(": ") + 2));
+        CHECK(fields.at("count") == 3);
+        CHECK(fields.at("limit") == 2);
+        CHECK(fields.at("task") == "probe");
+    }
+}
+
+TEST_CASE("CP1 compute apply problems replace one row and clear after repair", "[compute][problems][cp1]") {
+    FastModuleContainer modules;
+    auto &problems = GET_MODULE(ProblemList);
+    const nlohmann::json refusal{{"code", "compute.descriptor_pool_exhausted@1"},
+        {"message", "descriptor pool exhausted"}, {"task", "probe"}, {"sets", 320}};
+    recordRenderPipelineProblem(problemSourceHotReload, refusal, "pipeline.json");
+    recordRenderPipelineProblem(problemSourceHotReload, refusal, "pipeline.json");
+    auto rows = problems.problemsOf(renderPipelineProblemDomain);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows[0].at("code") == "render.config_apply_failed@1");
+    CHECK(rows[0].at("fields").at("reason_code") == "compute.descriptor_pool_exhausted@1");
+    CHECK(rows[0].at("fields").at("reason").at("sets") == 320);
+    clearRenderPipelineProblems();
+    CHECK(problems.problemsOf(renderPipelineProblemDomain).empty());
+}
+
+TEST_CASE("CP1 render apply status exposes and clears the current generation error", "[compute][cp1][reload]") {
+    FastModuleContainer modules;
+    if (!logger) setupLogger();
+    ReloadService service;
+    nlohmann::json current_error = "compute.descriptor_budget@1: rejected";
+    service.registerParticipant(ReloadParticipant{
+        .name = std::string{renderPipelineReloadParticipantName},
+        .runtime = RuntimeReloadParticipant{
+            .apply = [&](RuntimeReloadTrigger) {
+                return RuntimeReloadResult{.attempted = true, .error = current_error.get<std::string>()};
+            },
+            .describe = [&](nlohmann::json &out) { out = {{"domain_error", current_error}}; },
+        },
+    });
+    REQUIRE_FALSE(service.applyRuntimeNow(renderPipelineReloadParticipantName).committed);
+    CHECK(service.statusJson().at("last_error") == current_error);
+    // An authored publication may clear the renderer's error before a watcher
+    // has attempted another reload; the participant's old failure is stale.
+    current_error = nullptr;
+    CHECK(service.statusJson().at("last_error").is_null());
 }
 
 } // namespace Pelican::watch

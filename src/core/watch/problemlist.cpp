@@ -377,8 +377,16 @@ void recordRenderPipelineProblem(std::string_view source,
     auto roles = renderDocumentRoles(root_bytes.value_or(std::string{}),
                                      root_reference, load);
     roles.shader_document = projectDocumentOfFile;
+    auto effective = refusal;
+    const auto reason_code = refusal.value("code", std::string{});
+    if (reason_code.starts_with("compute.descriptor_")) {
+        effective["code"] = "render.config_apply_failed@1";
+        effective["reason_code"] = reason_code;
+        effective["reason"] = refusal;
+        effective["document"] = graphDocumentReference(root_reference).value_or(std::string{root_reference});
+    }
     problems->replace(renderPipelineProblemDomain,
-                      {renderPipelineProblem(source, refusal, roles, currentFrame())});
+                      {renderPipelineProblem(source, effective, roles, currentFrame())});
 }
 
 void clearRenderPipelineProblems() {

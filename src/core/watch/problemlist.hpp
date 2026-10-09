@@ -31,8 +31,8 @@ namespace Pelican {
 // copied out of `fields` when the refusal has them; nothing is guessed (a
 // document that is not JSON has no node).
 //
-// An edit RPC's refusal is not listed: the client that sent the edit reads it
-// in the answer, and a list entry would go stale with the next edit. EB-6: an
+// An edit RPC's preflight refusal stays in its answer. A failure while the
+// renderer applies a candidate is listed until a generation commits. EB-6: an
 // edit RPC that wrote its documents but whose engine state cannot draw them
 // yet (a material its pass does not declare what for, answered applied
 // "unusable") is listed, source edit_rpc, until the engine takes it in.

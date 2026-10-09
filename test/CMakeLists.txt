@@ -2295,6 +2295,8 @@ pelican_define_test(headless_render_test GROUP headless_gpu GPU pelican_core
                     pelican_test_raytracing_oracle
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_headless_render_test PRIVATE
+    PELICAN_CP1_PLAYER="$<TARGET_FILE:pelican_player>"
+    PELICAN_CP1_CMAKE="${CMAKE_COMMAND}"
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
@@ -2305,6 +2307,7 @@ if(MSVC)
     target_compile_options(pelican_test_headless_render_test PRIVATE /bigobj)
 endif()
 target_sources(pelican_test_headless_render_test PRIVATE
+    cp1_compute_descriptor_gpu.cpp
     headless_native_scope_test.cpp
     headless_material_draw_loop_test.cpp
 )
