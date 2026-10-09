@@ -1,4 +1,6 @@
 #include "../src/core/appflow/enginetime.hpp"
+#include "../src/core/asset/model.hpp"
+#include "gltf_fragment_fixture.hpp"
 #include "../src/core/communication/rpcserver.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/predefined.hpp"
@@ -222,6 +224,94 @@ Json spawnCube() {
 }
 
 } // namespace
+
+TEST_CASE("MB-1 materialdocumentrpc preserves embedded glTF names across partial binding and restart",
+          "[mb1][material][rpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("mb1");
+    const auto root = makeBlankBoxProject(dir.root);
+    const std::string model = "two_parts";
+    const std::string path = "assets/models/two_parts.glb";
+
+    // Reuse the fragment fixture's binary geometry, with two primitives in one mesh.
+    auto bytes = TestGltfFragmentFixture::makeGlb(false, false, false, true);
+    const auto json_size = static_cast<std::uint32_t>(bytes[12]) |
+                           (static_cast<std::uint32_t>(bytes[13]) << 8) |
+                           (static_cast<std::uint32_t>(bytes[14]) << 16) |
+                           (static_cast<std::uint32_t>(bytes[15]) << 24);
+    auto gltf = Json::parse(bytes.begin() + 20, bytes.begin() + 20 + json_size);
+    gltf["materials"][0]["name"] = "Material.001";
+    gltf["materials"][1]["name"] = "Body (skin)";
+    gltf["meshes"][0]["primitives"].push_back(gltf["meshes"][1]["primitives"][0]);
+    gltf["meshes"].erase(1);
+    gltf["nodes"] = Json::array({{{"mesh", 0}}});
+    gltf["scenes"][0]["nodes"] = Json::array({0});
+    gltf.erase("animations");
+    auto json_bytes = gltf.dump();
+    while (json_bytes.size() % 4 != 0) json_bytes.push_back(' ');
+    std::vector<std::uint8_t> fixture;
+    const auto append = [&](std::uint32_t value) { TestGltfFragmentFixture::detail::appendU32(fixture, value); };
+    append(0x46546c67);
+    append(2);
+    append(static_cast<std::uint32_t>(bytes.size() - json_size + json_bytes.size()));
+    append(static_cast<std::uint32_t>(json_bytes.size()));
+    append(0x4e4f534a);
+    fixture.insert(fixture.end(), json_bytes.begin(), json_bytes.end());
+    fixture.insert(fixture.end(), bytes.begin() + 20 + json_size, bytes.end());
+    std::filesystem::create_directories((root / path).parent_path());
+    TestGltfFragmentFixture::detail::writeBytes(root / path, fixture);
+
+    const auto checkBindings = [&](Rpc &rpc) {
+        const auto result = rpc.result("get_material_bindings", {{"model", model}});
+        const auto &primitives = result.at("primitives");
+        REQUIRE(primitives.size() == 2);
+        CHECK(primitives.at(0).at("slot") == "Material.001");
+        CHECK(primitives.at(0).at("material") == "paint");
+        CHECK(primitives.at(1).at("mesh") == 0);
+        CHECK(primitives.at(1).at("primitive") == 1);
+        CHECK(primitives.at(1).at("slot") == "Body (skin)");
+        CHECK(primitives.at(1).at("material") == "Body (skin)");
+        CHECK_FALSE(primitives.at(0).contains("unresolved"));
+        CHECK_FALSE(primitives.at(1).contains("unresolved"));
+        const auto saved = Json::parse(readFile(root / result.at("material_bindings").get<std::string>()));
+        CHECK(saved.at("bindings").at(0).at("usd_path") == "/mesh_0/primitive_0");
+        CHECK(saved.at("bindings").at(1).at("usd_path") == "/mesh_0/primitive_1");
+        CHECK(saved.at("bindings").at(1).at("material") == "Body (skin)");
+    };
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        REQUIRE(rpc.result("register_model", {{"path", path}, {"name", model}}).at("committed") == true);
+        REQUIRE(rpc.result("create_material", {{"path", "materials/paint.material.json"},
+                                               {"surface", openPbrOpaque}}).at("committed") == true);
+        const auto bound = rpc.result("bind_material", {{"model", model},
+            {"primitive", {{"mesh", 0}, {"primitive", 0}}}, {"material", "paint"}});
+        REQUIRE(bound.at("committed") == true);
+        checkBindings(rpc);
+        // A non-identifier glTF name also passes through bind_material's input unchanged.
+        REQUIRE(rpc.result("bind_material", {{"model", model},
+            {"primitive", {{"mesh", 0}, {"primitive", 1}}}, {"material", "Material.001"}}).at("committed") == true);
+        CHECK(rpc.result("get_material_bindings", {{"model", model}})
+                  .at("primitives").at(1).at("material") == "Material.001");
+        REQUIRE(rpc.result("bind_material", {{"model", model},
+            {"primitive", {{"mesh", 0}, {"primitive", 1}}}, {"material", "Body (skin)"}}).at("committed") == true);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        auto &models = GET_MODULE(ModelAssetContainer);
+        REQUIRE(models.hasModel(model));
+        REQUIRE_NOTHROW(models.getModelTemplateByName(model));
+        Rpc rpc;
+        checkBindings(rpc);
+        CHECK(rpc.result("get_problems").at("problems").empty());
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+}
 
 TEST_CASE("MT-1 a Blank box is given a material made, bound and recoloured over RPC without a restart",
           "[mt1][material][rpc][gpu]") {

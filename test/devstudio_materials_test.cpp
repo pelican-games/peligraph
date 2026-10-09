@@ -1483,6 +1483,39 @@ TEST_CASE("FO-1s decision 2: a material document the engine refused at its start
     CHECK(bindings->params == Json{{"model", Cube}});
 }
 
+TEST_CASE("MB-1 Materials dock preserves glTF names in display and binding requests",
+          "[devstudio][materials][mb1]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    FakeEngine engine;
+    MaterialsDock dock{engine.dockHooks()};
+    dock.show();
+    readyWithPaint(dock, engine, project(temporary));
+    for (const std::string name : {"Material.001", "Body (skin)",
+                                   "\xe8\x82\x8c.001 (\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e)"}) {
+        DYNAMIC_SECTION(name) {
+            dock.revealModel(name, {});
+            while (engine.asked("list_materials")) answer(dock, engine, "list_materials", listResult());
+            answer(dock, engine, "get_material_bindings",
+                   Json{{"model", name}, {"material_bindings", nullptr},
+                        {"primitives", Json::array({{{"mesh", 0}, {"primitive", 0},
+                                                      {"slot", name + " default"}, {"material", name}}})}});
+            auto *choice = named<QComboBox>(dock, QStringLiteral("pelican.materials.model.choice"));
+            CHECK(choice->currentText().toUtf8().toStdString() == name);
+            CHECK(choice->currentData().toString().toUtf8().toStdString() == name);
+            REQUIRE(choice->isEnabled());
+            choice->setCurrentIndex(0);
+            const auto request = engine.take("bind_material");
+            REQUIRE(request.has_value());
+            CHECK(request->params == Json{{"model", name},
+                {"bindings", Json::array({{{"mesh", 0}, {"primitive", 0}, {"material", name + " default"}}})}});
+            REQUIRE(dock.receiveResult(request->id,
+                QByteArray::fromStdString(Json{{"changed", false}}.dump())));
+        }
+    }
+}
+
 TEST_CASE("FO-1s decision 3: Delete… and Rename… on a material's row -- in_use is one sentence with a button to "
           "each place, a delete is undone with register_material and a rename with the rename back",
           "[devstudio][materials][fo1s]") {

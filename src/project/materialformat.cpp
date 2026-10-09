@@ -839,11 +839,9 @@ parsePrimitiveMaterialBindingJson(const nlohmann::json &document_json) {
         targets.emplace(target, usd_path);
 
         auto material = requireString(binding, "material", context);
-        try {
-            validateMaterialName(material);
-        } catch (const std::exception &error) {
-            throw std::runtime_error(context + " material '" + material + "': " +
-                                     error.what());
+        // Bindings can also name embedded glTF materials, not just project identifiers.
+        if (material.empty()) {
+            throw std::runtime_error(context + " material name must not be empty");
         }
         const auto &routing = requireMember(binding, "routing", context);
         document.bindings.push_back(PrimitiveMaterialBinding{

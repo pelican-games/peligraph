@@ -1749,8 +1749,7 @@ Json bindMaterial(const Json &params, PathResolver &paths, watch::ReloadService 
 
     // MT-2b: every primitive back on the material its model file (or engine
     // primitive) gives it is the model with no bindings: the declaration and
-    // its document are taken off instead of written (a binding document could
-    // not even name the engine primitive's pelican.primitive.default).
+    // its document are taken off instead of retaining redundant bindings.
     const bool model_default = std::all_of(state.slots.begin(), state.slots.end(), [&](const ModelMaterialSlot &slot) {
         const auto &entry = state.current.at({slot.mesh, slot.primitive});
         return !slot.slot.empty() && entry.material == slot.slot && entry.routing == slot.routing;

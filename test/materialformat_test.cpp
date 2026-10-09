@@ -387,6 +387,35 @@ TEST_CASE("primitive material binding schema rejects duplicate collision fragmen
     }
 }
 
+TEST_CASE("MB-1 materialformat bindings preserve arbitrary nonempty glTF names",
+          "[material-format][material-binding][mb1]") {
+    auto input = readJson(bindingFixtureRoot() / "valid" / "six_variants.json");
+    for (const std::string name : {"Material.001", "Body (skin)",
+                                   "\xe8\x82\x8c.001 (\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e)",
+                                   " ", "quote\" / slash\\"}) {
+        DYNAMIC_SECTION(name) {
+            input["bindings"][0]["material"] = name;
+            const auto parsed = parsePrimitiveMaterialBindingJson(
+                nlohmann::json::parse(input.dump()));
+            REQUIRE(parsed.bindings.front().material == name);
+        }
+    }
+    input["bindings"][0]["material"] = "";
+    REQUIRE_THROWS_WITH(parsePrimitiveMaterialBindingJson(input),
+                        Catch::Matchers::ContainsSubstring("material name must not be empty"));
+    input["bindings"][0]["material"] = 42;
+    REQUIRE_THROWS_WITH(parsePrimitiveMaterialBindingJson(input),
+                        Catch::Matchers::ContainsSubstring("requires string material"));
+    input["bindings"][0].erase("material");
+    REQUIRE_THROWS_WITH(parsePrimitiveMaterialBindingJson(input),
+                        Catch::Matchers::ContainsSubstring("requires material"));
+
+    auto project = readJson(fixtureRoot() / "valid" / "minimal.json");
+    project["materials"][0]["name"] = "Material.001";
+    REQUIRE_THROWS_WITH(parseMaterialFormatJson(project),
+                        Catch::Matchers::ContainsSubstring("material name must match"));
+}
+
 TEST_CASE("six OpenPBR routing states have a byte-stable dump and fixed boundaries",
           "[material-binding][routing][golden]") {
     const auto document = parsePrimitiveMaterialBindingJson(
