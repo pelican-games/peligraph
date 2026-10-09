@@ -113,6 +113,7 @@ ON のまま配布します。OFF は必要な shader variant を全て事前生
 
 OFF でビルドした機能を使おうとすると、黙って無視されるのではなく `This binary was built with PELICAN_WITH_X=OFF: ...` という**名指しのエラー**で止まります(fail-fast 方針。[第1章](01_overview.md) 参照)。
 ゲームコードの呼び出し(`ctx.audio()` / `ctx.physics()` / `ctx.animation()`)が外した build で何を返すか(例外の型と `code()`、animation の `Status`、物理 provider が 0 本のとき)は [第8章 §8.4「機能を外した build」](08_gameplay.md) の表にまとめてあります。
+
 `PELICAN_WITH_STANDARD_RENDER_ALGORITHMS`だけは機構ではなく既定実装packageなので、
 OFFでも対応feature自体は利用できます。その場合はfeatureのshader asset parameterへ
 `project://`実装を明示し、存在しない既定`engine://render_algorithms/...`を選ばないでください。
@@ -276,15 +277,21 @@ mygame/
 
 各フィールドの意味は [第3章](03_project_format.md) で詳しく説明します。
 
-`camera` に `up` はありません。✅CC-1(`c8367b87`)で camera の up は transform の回転から取るようになり、`basic_config.camera.up` は撤去されました(書いてあると `project.camera_up_removed@1` で開けません。前に作った project の直し方は [第3章 §3.13](03_project_format.md) の「camera の向きの規約の変換」)。雛形の `scenes/main.scene.json` の `MainCamera` は `pos` が `(0, 0, 3)`・回転なしで、回転なしの camera は −Z を向くので原点を見ます([雛形の scene](../../src/project/projecttemplate.cpp#L133))。同じ scene の `KeyLight`(directional)の `direction` は `(-0.5, -1, -0.25)` で、光は −Z の側へ進み、camera から見える面を照らします([雛形の KeyLight の向き](../../src/project/projecttemplate.cpp#L148))。✅CC-1c(`b0b2fc77`)の前は `(-0.5, -1, 0.25)` のままで、CC-1 で camera が z = +3 に移った後は光が +Z へ進み、camera の見る面が光の裏になって黒く写っていました(commit の記録は ambient が無いことを理由に挙げています。Studio の scenario 7 本(`add_primitive_object`・`forward_loop_from_scratch`・`gui_build_A` / `B` / `C` / `full` / `optimize`)で見つかりました)。この scene は Standard と Blank の両方の雛形が書きます([`templateFiles()`](../../src/project/projecttemplate.cpp#L350))。座標の規約は [第6章 §6.1](06_rendering.md) の「座標の規約」です。
+`camera` に `up` はありません。✅CC-1(`c8367b87`)で camera の up は transform の回転から取るようになり、`basic_config.camera.up` は撤去されました(書いてあると `project.camera_up_removed@1` で開けません。前に作った project の直し方は [第3章 §3.13](03_project_format.md) の「camera の向きの規約の変換」)。
+
+雛形の `scenes/main.scene.json` の `MainCamera` は `pos` が `(0, 0, 3)`・回転なしで、回転なしの camera は −Z を向くので原点を見ます([雛形の scene](../../src/project/projecttemplate.cpp#L133))。同じ scene の `KeyLight`(directional)の `direction` は `(-0.5, -1, -0.25)` で、光は −Z の側へ進み、camera から見える面を照らします([雛形の KeyLight の向き](../../src/project/projecttemplate.cpp#L148))。
+
+✅CC-1c(`b0b2fc77`)の前は `(-0.5, -1, 0.25)` のままで、CC-1 で camera が z = +3 に移った後は光が +Z へ進み、camera の見る面が光の裏になって黒く写っていました(commit の記録は ambient が無いことを理由に挙げています。Studio の scenario 7 本(`add_primitive_object`・`forward_loop_from_scratch`・`gui_build_A` / `B` / `C` / `full` / `optimize`)で見つかりました)。この scene は Standard と Blank の両方の雛形が書きます([`templateFiles()`](../../src/project/projecttemplate.cpp#L350))。座標の規約は [第6章 §6.1](06_rendering.md) の「座標の規約」です。
 
 **描画パイプラインを 0 から組みたいときは `--template blank`** です(✅F-2。既定は上の `standard`)。
 `pelican_cli project init mygame --template blank` は上と同じ 16 エントリを書きますが、
 `passes/main_rendering_config.json` の `rendering` 節は preset も features も `render_targets` も持たず、
 fullscreen pass `present` 1 本が `display` に UV の gradient を描くだけです。
+
 `present` の fragment は engine 同梱の `engine://passthrough` なので、雛形は shader を 1 本も書きません(`shaders/` もありません。✅VI-2)。
 この shader は入力が無ければ gradient を描き、`present` に入力を足すとその 0 番目をそのまま出します。
 起動すると画面全体に gradient が出ます。
+
 Studio からは File > New Project... で同じ雛形を選べます([第13章](13_editor.md)「Studio で新しい project を作る」)。
 オプションの詳細は [第10章 §10.4](10_tools.md) にあります。
 

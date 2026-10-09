@@ -93,7 +93,11 @@ template は外部 resource file ではなく、[`projecttemplate.cpp` 内の ra
 
 この command の end-to-end 仕様は [`run_devcli_project_init.cmake`](../../test/run_devcli_project_init.cmake) です。file が揃っているかの確認だけでなく、生成した project directory を **prebuilt の `pelican_player`** に `--headless --frames 2 --render-out` で食わせ、exit 0・出力に `Validation Error` / `VUID-` が出ないこと・PNG が空でないことまで見ます(生成された `code/game.cpp` を build する経路ではありません)。空でない directory を拒否し、そのエラーが directory 名を含むことも同じ script が固定しています。実 device を要するので CTest では `gpu` label 付きです([`test/CMakeLists.txt`](../../test/CMakeLists.txt) の `devcli_project_init_command`)。
 
-**`blank` 雛形(F-2)。**`--template blank` は上の 16 エントリと同じファイルの組を書き、`passes/main_rendering_config.json` の `rendering` 節だけを差し替えます(VI-2 までは `shaders/present.frag` も足していました)。中身は `pipeline` キーの無い direct config で、preset・`features`・`render_targets` を持たず、fullscreen pass `present` 1 本が `display` へ UV の gradient を書きます([`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L228))。`present` の fragment は engine 同梱の `engine://passthrough` で、入力がすべて可変です —— 入力が 0 本なら gradient、入力があれば入力 0 をそのまま出します([shader](../../src/core/resources/passthrough.frag))。同じ `run_devcli_project_init.cmake` がこの project を headless で 2 frame 描かせ、PNG が 100 色以上で、最も多い 1 色以外の画素が 9 割以上(最多色が 1 割以下)であることを `pelican_test_png_nonuniform_check` で見ます([検査](../../test/run_devcli_project_init.cmake#L232))。描く前に、`present` の fragment が `engine://passthrough` で `shaders/` が無いことも確かめます(描かれた frame が雛形の書いた shader のものでないこと)。ファイルの形は GPU 無しの `devcli_project_templates`([`run_devcli_project_templates.cmake`](../../test/run_devcli_project_templates.cmake))が見ます —— 既定と `--template standard` の 16 ファイルが F-2 前の出力と SHA-256 で一致すること(MG-2b が `"version": 2` に変えた `scenes/main.scene.json` と `assets/asset_data.json` の 2 行だけは取り直し。`passes/main_rendering_config.json` の digest は変わっていません)、blank の形(`passes/main_rendering_config.json` 以外の 15 ファイルが standard と同じ digest で、`shaders/` が無く、`present` の fragment が `engine://passthrough` で `shader.defines` を持たないこと)、知らない template 名の拒否です。
+**`blank` 雛形(F-2)。**`--template blank` は上の 16 エントリと同じファイルの組を書き、`passes/main_rendering_config.json` の `rendering` 節だけを差し替えます(VI-2 までは `shaders/present.frag` も足していました)。中身は `pipeline` キーの無い direct config で、preset・`features`・`render_targets` を持たず、fullscreen pass `present` 1 本が `display` へ UV の gradient を書きます([`blank_rendering_config_json`](../../src/project/projecttemplate.cpp#L228))。
+
+`present` の fragment は engine 同梱の `engine://passthrough` で、入力がすべて可変です —— 入力が 0 本なら gradient、入力があれば入力 0 をそのまま出します([shader](../../src/core/resources/passthrough.frag))。同じ `run_devcli_project_init.cmake` がこの project を headless で 2 frame 描かせ、PNG が 100 色以上で、最も多い 1 色以外の画素が 9 割以上(最多色が 1 割以下)であることを `pelican_test_png_nonuniform_check` で見ます([検査](../../test/run_devcli_project_init.cmake#L232))。描く前に、`present` の fragment が `engine://passthrough` で `shaders/` が無いことも確かめます(描かれた frame が雛形の書いた shader のものでないこと)。
+
+ファイルの形は GPU 無しの `devcli_project_templates`([`run_devcli_project_templates.cmake`](../../test/run_devcli_project_templates.cmake))が見ます —— 既定と `--template standard` の 16 ファイルが F-2 前の出力と SHA-256 で一致すること(MG-2b が `"version": 2` に変えた `scenes/main.scene.json` と `assets/asset_data.json` の 2 行だけは取り直し。`passes/main_rendering_config.json` の digest は変わっていません)、blank の形(`passes/main_rendering_config.json` 以外の 15 ファイルが standard と同じ digest で、`shaders/` が無く、`present` の fragment が `engine://passthrough` で `shader.defines` を持たないこと)、知らない template 名の拒否です。
 
 ### 生成される rendering config は preset 参照の `pelican.graph` root(WP240a → P-2a-4b)
 
@@ -203,7 +207,9 @@ GLB 候補は asset catalog と project 以下の import manifest の両方か�
 
 command line は [`runDistConfigCommand()`](../../src/devcli/distconfig.cpp#L945)、結合仕様は [`run_devcli_dist_config.cmake`](../../test/run_devcli_dist_config.cmake#L1) です。
 
-**asset の照合(✅EB-1、`aaa7b2da`)。**`runDistConfigCommand()` は導出の後、preset を書く前に [`verifyAssetsForDistribution()`](../../src/devcli/distconfig.cpp#L835) を呼びます(`--skip-assets-verify` なら呼ばずに `assets verify: skipped (--skip-assets-verify)` の 1 行)。中身は `assetscommand.cpp` から公開した [`verifyDeclaredAssetStores()`](../../src/devcli/assetscommand.cpp#L366) で、manifest を宣言した store ごとに `pelican_cli assets verify --full` と同じ照合(`include_content` と `force_rehash`、`.pelican/local.json` の root の上書きも同じ)をします。issue があれば store ごとに `assets_manifest_mismatch@1` の行と、`assetManifestIssueKindLabel()` の名前でファイルを 1 行ずつ stderr に出して 1 を返し、preset は書きません。照合が例外で失敗すれば `assets_verify_failed@1` で 1 です。manifest を宣言した store が無ければ 1 行の注記で通します。出力の全形は manual 第10章 §10.4 の `dist-config`。結合仕様の `run_devcli_dist_config.cmake` に、一致・差分・skip・store 無しの 4 場面が足されました。
+**asset の照合(✅EB-1、`aaa7b2da`)。**`runDistConfigCommand()` は導出の後、preset を書く前に [`verifyAssetsForDistribution()`](../../src/devcli/distconfig.cpp#L835) を呼びます(`--skip-assets-verify` なら呼ばずに `assets verify: skipped (--skip-assets-verify)` の 1 行)。中身は `assetscommand.cpp` から公開した [`verifyDeclaredAssetStores()`](../../src/devcli/assetscommand.cpp#L366) で、manifest を宣言した store ごとに `pelican_cli assets verify --full` と同じ照合(`include_content` と `force_rehash`、`.pelican/local.json` の root の上書きも同じ)をします。
+
+issue があれば store ごとに `assets_manifest_mismatch@1` の行と、`assetManifestIssueKindLabel()` の名前でファイルを 1 行ずつ stderr に出して 1 を返し、preset は書きません。照合が例外で失敗すれば `assets_verify_failed@1` で 1 です。manifest を宣言した store が無ければ 1 行の注記で通します。出力の全形は manual 第10章 §10.4 の `dist-config`。結合仕様の `run_devcli_dist_config.cmake` に、一致・差分・skip・store 無しの 4 場面が足されました。
 
 > 🧩 **難所 — 前方一致では判定しない**([`isWithinRoot()`](../../src/devcli/distconfig.cpp#L122) / [`pathComponents()`](../../src/devcli/distconfig.cpp#L114))
 >
@@ -271,7 +277,9 @@ module → types / operations / sinks の順に並びます。**並びは名前�
 module 数(既定 5。常に登録される `pelican.value` / `pelican.render` / `pelican.ui` の 3 に、`pelican.audio` と `pelican.pose` を足す。`pelican.ui` は GP-3 で加わった。`PELICAN_WITH_ANIMATION=OFF` と `PELICAN_WITH_AUDIO=OFF` でそれぞれ 1 減る)、各 operation が `domain` / `evaluation` /
 **`change.default`**(`change` は入れ子の object で、script が読むのはその `default`。[読む位置](../../test/run_devcli_graph_catalog.cmake#L60))/ `sink` を
 持つこと、`value.trigger_clock` の評価分類が `replay`、`render.buffer` の parameter change が `rebuild` であることを
-見ます。**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` /
+見ます。
+
+**さらに `docs/v0_freeze.md` の操作表と突き合わせます** —— 表は `<!-- graph-op-table:begin -->` /
 `<!-- graph-op-table:end -->` のコメントで区切られており、script の中のコメントがその理由です。
 
 > A copy nobody compares is a second source of truth, so the same run that reads the catalog
@@ -341,20 +349,27 @@ widget ごとに**名前の付いた少数の関数だけを持つ struct** へ�
 `EmbeddedViewport *` を直接受け取ります(絞り込みはこの 2 つには入っていません)。
 
 [`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L220) は Project / Outliner /
-Inspector / Output / Engine Log / Frame Plan / Pass Editor / Assets / Materials / Problems の 10 パネルを stable object name を持つ dock として作ります(Assets は ✅HW-2s / AV-1s で増えた素材のフォルダのドックで、既定では Project の隣のタブ。[第13章](../manual/13_editor.md) §13.1 の「Studio の Assets のドック」。Materials は ✅MT-1s で増えた material のドックで、既定では Assets の隣のタブ。同じ節の「Studio の Materials のドック」。Problems は ✅PB-1s で増えた今の問題の一覧のドックで、既定では Engine Log の次のタブ。同じ節の「Studio の Problems のドック」)。パネルは
+Inspector / Output / Engine Log / Frame Plan / Pass Editor / Assets / Materials / Problems の 10 パネルを stable object name を持つ dock として作ります(Assets は ✅HW-2s / AV-1s で増えた素材のフォルダのドックで、既定では Project の隣のタブ。[第13章](../manual/13_editor.md) §13.1 の「Studio の Assets のドック」。Materials は ✅MT-1s で増えた material のドックで、既定では Assets の隣のタブ。同じ節の「Studio の Materials のドック」。Problems は ✅PB-1s で増えた今の問題の一覧のドックで、既定では Engine Log の次のタブ。同じ節の「Studio の Problems のドック」)。
+
+パネルは
 移動、float、タブ化でき、`View > Panels` から再表示できます。シェル責務は Widgets に固定し、QML を
 追加する場合も `QQuickWidget` に載せた葉パネルの内部だけに限定します。
 
 **外の model の持ち込み(✅MI-1s、`70298f88`)は新しいドックを作りません。**Add Object > Model from file…・Inspector の model 欄の Import…・
 Assets のドックの Remove from project… の 3 つの入口が、`MainWindow` の持つ 1 つの [`ModelRegistrationSession`](../../src/devstudio/model/modelimport.hpp#L57)
-(`src/devstudio/model/modelimport.{hpp,cpp}`。Qt を使わず、`pelican_studio_inspector_model` の lib に入ります)を通ります。session は
+(`src/devstudio/model/modelimport.{hpp,cpp}`。Qt を使わず、`pelican_studio_inspector_model` の lib に入ります)を通ります。
+
+session は
 `register_model` / `get_material_bindings` / `unregister_model` を `Transport::request` で送り(MainWindow が viewport の `requestRpc()` につなぐ。
 [つなぐ所](../../src/devstudio/view/mainwindow.cpp#L545))、答えの id で振り分けます。ファイルの置き方は [`placeProjectModelFile()`](../../src/devstudio/model/modelimport.cpp#L65)
 (project の中ならそのまま、外の `.gltf` は断る、外の `.glb` / `.vrm` はコピー)、送り直しの名前は `numberedModelName()`(`<stem>_001`…)、
 `list_assets` の絶対 path を project 相対に直すのは [`projectRelativeAssetPath()`](../../src/devstudio/model/modelimport.cpp#L96) です。
+
 コピーは [`copyIntoProjectAssets()`](../../src/devstudio/model/graphcanvasvalues.cpp#L1044)(宣言は `graphcanvasmodel.hpp`。`assets/<folder>/` に元の名前か
 `<stem>_2`… で、上書きしない)で、Graph の parameter の Import… もこれでコピーするようになりました([Import… の共用の所](../../src/devstudio/view/graphcanvasparameterfields.cpp#L1530)。
-前は `graphcanvasparameterfields.cpp` の中の `freeName` を使っていて、MI-1s で消しました。画像の `importProjectImage()` は今も `graphcanvasvalues.cpp` の別の `freeName()` を使います)。登録の拒否の 1 文と object の宣言は
+前は `graphcanvasparameterfields.cpp` の中の `freeName` を使っていて、MI-1s で消しました。画像の `importProjectImage()` は今も `graphcanvasvalues.cpp` の別の `freeName()` を使います)。
+
+登録の拒否の 1 文と object の宣言は
 `inspectormodel.cpp` の `modelRefusalDescription()` / `modelUnknownEditDescription()` / `modelObjectDeclaration()` / `modelObjectBaseName()` です。
 見え方は [第13章](../manual/13_editor.md) §13.1 の「Studio で外の model を持ち込む(✅MI-1s)」です。
 
@@ -366,7 +381,9 @@ Assets のドックの Remove from project… の 3 つの入口が、`MainWindo
 - Graph の側は `graphcanvascomputefields.{hpp,cpp}` の `GraphCanvasRayTracingFields`(layout のある project の RT の task の節)で、layout は `GraphCanvasModel::rayLayoutRead()`(同じ `parseRayLayoutRead()`)から読みます。Frame Plan の Hit groups (SBT) は `frameplanwidget.cpp` が object ごとに `get_ray_occurrences` を問うて作ります。
 - 配線は `MainWindow` の 3 か所のまとまり(Ray layout の節を作る所、Inspector の `setAssignHitGroupAction` / `setEnableHitGroupsAction`、Graph の `setOpenRayLayout` / `setOpenCallableRecords`)です。見え方は [第13章](../manual/13_editor.md) §13.5 の「Studio で RT を組む(✅RTL-2s)」です。
 
-**Graph が Frame Plan の関数を呼ぶ口(✅GL-5d〜GL-5f)。**Graph タブは Frame Plan の編集の入口を自分で作り直さず、`FramePlanWidget` の公開の関数を `MainWindow` 経由で呼びます。GL-5d の `orderNodes()` / `fixSockets()` / `makeSocketsVariadic()` に、✅GL-5e が `removePass()` / `runShaderContract()` / `runReloadRefusal()` / `pinBackendCandidate()` / `unpinBackend()` / `freezePhysicalPlan()` / `removeFrozenPhysicalPlan()`(どれも Impl の既存の関数を呼ぶだけ)を足し、Graph の側は [`GraphCanvasWidget::setFramePlanEdits()`](../../src/devstudio/view/graphcanvaswidget.cpp#L10261) の struct `FramePlanEdits` で受けます。Frame Plan が隠れていても、[`FramePlanWidget::whenRead()`](../../src/devstudio/view/frameplanwidget.hpp#L222) が plan と authoring context(✅GL-5f から、引数 `tasks` が真なら compute task の catalog も)を読み直してから走らせます。
+**Graph が Frame Plan の関数を呼ぶ口(✅GL-5d〜GL-5f)。**Graph タブは Frame Plan の編集の入口を自分で作り直さず、`FramePlanWidget` の公開の関数を `MainWindow` 経由で呼びます。GL-5d の `orderNodes()` / `fixSockets()` / `makeSocketsVariadic()` に、✅GL-5e が `removePass()` / `runShaderContract()` / `runReloadRefusal()` / `pinBackendCandidate()` / `unpinBackend()` / `freezePhysicalPlan()` / `removeFrozenPhysicalPlan()`(どれも Impl の既存の関数を呼ぶだけ)を足し、Graph の側は [`GraphCanvasWidget::setFramePlanEdits()`](../../src/devstudio/view/graphcanvaswidget.cpp#L10261) の struct `FramePlanEdits` で受けます。
+
+Frame Plan が隠れていても、[`FramePlanWidget::whenRead()`](../../src/devstudio/view/frameplanwidget.hpp#L222) が plan と authoring context(✅GL-5f から、引数 `tasks` が真なら compute task の catalog も)を読み直してから走らせます。
 
 **Frame Plan dock の中身は 3 枚の tab を持つ `QTabWidget`** です(object name `pelican.renderTools`)。
 `FramePlanWidget` / `RenderFeaturesWidget` / `GraphCanvasWidget` がこの順で入ります
@@ -384,7 +401,9 @@ tab は CLI から選べます。`pelican_studio --project <dir> --tab frame_pla
 `pelican_player` を [`EngineProcess`](../../src/devstudio/viewport/engineprocess.hpp#L24) で別 process
 として起動・監視し、実 render window を Qt の native host HWND へ再親付けします。
 [`NativeWindowHost`](../../src/devstudio/viewport/nativewindowhost.hpp#L38) が Windows style、parent、
-focus、physical-pixel resize だけを扱い、renderer や swapchain を直接再生成しません。したがって
+focus、physical-pixel resize だけを扱い、renderer や swapchain を直接再生成しません。
+
+したがって
 resize は player の通常の GLFW framebuffer callback から既存の Surface/Swapchain epoch 経路へ
 入ります。通常の resize は最後の寸法イベントから 50 ms 静止するまで native child を凍結し、
 最終 physical extent だけを 1 回適用します。DPR 変更だけは物理画素寸法を壊さないよう即時適用です。
@@ -399,7 +418,9 @@ child の stdout は行単位で JSON-RPC 応答と通常出力に分け、stder
 output signal として viewport 経由で Engine Log dock へ送ります。RPC は 5 秒で明示 timeout し、
 process 終了時も pending request を失敗にするため、入力 pipe や feature の問題を黙殺しません。
 [`EngineLogBuffer`](../../src/devstudio/viewport/enginelogbuffer.hpp#L7)
-は UTF-8 換算 1 MiB の末尾だけを保持し、通常は最古の途中行も捨てます。この大きさは診断用の長い
+は UTF-8 換算 1 MiB の末尾だけを保持し、通常は最古の途中行も捨てます。
+
+この大きさは診断用の長い
 履歴を残しながら、model と `QPlainTextEdit` に複製される text の常駐量を長時間起動でも制限するため
 です。単一の巨大行だけでも末尾を残し、UTF-8 の途中 byte から復号しません。上限規則と両 stream の
 到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L112) が view 表示なしで検査します。
@@ -452,13 +473,18 @@ attachment load/store、material route、backend 非依存 execution facts へ�
 `FramePlanReadCapability`、書きは [`RenderPassAuthoringCapability`](../../src/devstudio/view/renderpassauthoringcapability.hpp#L19)
 (`get_render_authoring_context` / `add_authored_pass` / `remove_authored_pass` / `edit_preset_pass` /
 `get_edit_result` の 5 つだけ。context は `requestContext` という別名で持ちます。[結線](../../src/devstudio/view/renderpassauthoringcapability.cpp#L30))です。
+
 ✅UX-4a で 6 つ目の `get_scene_acceleration_structures`(`requestSceneAccelerationStructures`。Ray scene の combo の一覧。任意で、答えは同じ `result` / `failure` に来ます)が足されました([scene AS の読みの結線](../../src/devstudio/view/renderpassauthoringcapability.cpp#L77))。
 フォームは `fullscreen` 固定でもありません —— material の契約・設定・routing、raster の draw と raster state の欄を持ちます。
+
 ✅UX-4a(`ad1e0771`)から、これらは JSON の欄ではなく `src/devstudio/view/passforms/` の部品(`RasterStateForm` / `ShaderDefinesForm` /
 `MaterialSettingsForm` / `MaterialRoutingForm`、出力の行は `AttachmentOpsForm`)で、Graph の詳細欄にも埋め込める形です([部品を並べる所](../../src/devstudio/view/fullscreenpasswidget.cpp#L539))。
-部品の共通の形は [`PassForm`](../../src/devstudio/view/passforms/passform.hpp#L28) です: 宣言の今の値(JSON)を受け、変えた後の値(JSON)を返し、`changed` を出し、知らない鍵は受けたまま返します。子の objectName は `<prefix>.<field>` で、prefix は使う側が渡します(Pass Editor は `pelican.fullscreenPass`、✅RSX の Rendering settings タブは `ShaderDefinesForm` を `pelican.renderingSettings` で使います)。`src/devstudio/view/passforms/` の部品は `pelican_studio_view` の lib に入ります(`src/devstudio/view/CMakeLists.txt`。Graph タブへの埋め込みは UX-4b で、まだありません)。
+部品の共通の形は [`PassForm`](../../src/devstudio/view/passforms/passform.hpp#L28) です: 宣言の今の値(JSON)を受け、変えた後の値(JSON)を返し、`changed` を出し、知らない鍵は受けたまま返します。
+
+子の objectName は `<prefix>.<field>` で、prefix は使う側が渡します(Pass Editor は `pelican.fullscreenPass`、✅RSX の Rendering settings タブは `ShaderDefinesForm` を `pelican.renderingSettings` で使います)。`src/devstudio/view/passforms/` の部品は `pelican_studio_view` の lib に入ります(`src/devstudio/view/CMakeLists.txt`。Graph タブへの埋め込みは UX-4b で、まだありません)。
 
 render の編集の完了の読みは ✅RSX から 1 か所です: [`readRenderEditCompletion()` / `completeRenderEdit()`](../../src/devstudio/model/rendereditcompletion.hpp#L61)(`src/devstudio/model/rendereditcompletion.*`。Qt に依存しない model で、`pelican_studio_inspector_model` の lib に入ります)。Graph タブ・Frame Plan・Pass Editor・Render Features と dialog・Inspector のグラフ装着・Rendering settings・render の編集の履歴が、ticket の最後の答えをこれで読み、`restart_required` なら MainWindow の `requestEngineRestart()` に渡します。見え方は [第13章](../manual/13_editor.md) の「どのパネルの render の編集も、再起動が要れば同じ形で起動し直します(✅RSX)」です。
+
 ボタンは **Save authored pass** / **Remove authored pass** / **New pass**
 ([構築](../../src/devstudio/view/fullscreenpasswidget.cpp#L728))で、preset 由来の pass を開いているときは
 save の文言が **Save preset**(feature 由来なら **Save feature**)に変わります(N-7 で短くなった)
@@ -470,12 +496,15 @@ save の文言が **Save preset**(feature 由来なら **Save feature**)に変�
 [`FramePlanWidget`](../../src/devstudio/view/frameplanwidget.hpp#L28) はその model を **9 枚の tool tab** に投影します ——
 Logical graph / Passes / Resources / Physical plan / Decisions / Backends / Barriers / Materials / Raw JSON
 ([登録](../../src/devstudio/view/frameplanwidget.cpp#L1383))。tab は掴んで並べ替えられ、その順序は保存されます。
+
 **読み取り専用でもありません**: toolbar に **Order nodes...** / **Edit task...** / **Edit pass...** があり、
 `Shift-drag: connect resources` のラベルどおり **Shift + 左ドラッグ**で出力元から task / preset pass へ線を引くと、
 その編集画面が開きます([toolbar](../../src/devstudio/view/frameplanwidget.cpp#L779))。保存自体は
 `RenderFeaturesWidget` と `FullscreenPassWidget` が持つ編集 RPC を通ります。
 初期状態は順序、名前、種別、入力、出力の pass 行だけで、
-attachment ops、resource use、material filter、前後 barrier は折りたたみ配下です。filter も全 tree の
+attachment ops、resource use、material filter、前後 barrier は折りたたみ配下です。
+
+filter も全 tree の
 要約と子項目に掛かるため、raw JSON を全部展開しなくても流れを追えます。取得契機は **player の RPC が
 利用可能になった直後の1回と Refresh ボタンだけ**です。毎 frame の取得は大きな JSON の pipe 転送、
 二度の parse、tree 再構築を描画周期ごとに行うため採りません。hot reload 後など変化を確認したい時は
@@ -491,7 +520,9 @@ attachment ops、resource use、material filter、前後 barrier は折りたた
 **値の問い合わせが次の文書再取得を待たせないため**で、遅れて届いた古い答えは捨てられます。
 提供するのは scope 一覧(`root` + definition 名)、scope ごとの node と edge、root scope の `graph.instance` へ
 重ねる値の overlay、そして `contentRevision()` / `reportRevision()` の 2 つの世代です
-([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L1735))。編集側は 6 つの操作
+([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L1735))。
+
+編集側は 6 つの操作
 (`connectInput` / `disconnectInput` / `setNodeParameter` / `removeNode` / `setNodeLabel` / `addNode`)で、
 **どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L2340))。
 `addNodeOps()` だけは複数 op を返します —— 必須の scalar 入力を持つ操作は、未接続のままでは engine が受け取らないので、
@@ -501,40 +532,57 @@ attachment ops、resource use、material filter、前後 barrier は折りたた
 Graph タブの履歴の 1 項目(`GraphCanvasModel::HistoryEntry`)は、前向きの ops と逆の ops に加えて、それぞれと一緒に送る root の値 `params` / `inverse_params` を持ちます。
 Edit と Redo は `params`、Undo は `inverse_params` を ops の横に載せ、どちらも 1 つの `edit_graph_document` になります([選ぶ所](../../src/devstudio/model/graphcanvasmodel.cpp#L2766))。
 今これを使うのは palette の forward_opaque の material pass だけです。`params` は `material_route_default: "forward"` で、`inverse_params` には、最後の `get_graph_instances` で読んだ root の書かれた値(不在なら `null`)を入れます([入れる所](../../src/devstudio/model/graphcanvasmodel.cpp#L3671))。
+
 engine 側は `requestedRouteDefault()` が `edit_graph_document` の `null` だけを「member を消す」と読みます(利用者向けは manual 第13章の「material の route の既定と、受け皿の無い material の拒否」)。
 ⚠ Qt の transport では「送らない」と「`null` を送る」を分ける必要があります。`requestEditGraphDocument` の route の引数は `QJsonValue` で、undefined なら param を付けず、`null` ならそのまま `null` を送ります([付けるか決める所](../../src/devstudio/view/graphcanvasreadcapability.cpp#L108))。
 文字列で受けると `null` が空文字になり、Undo の route の復元が黙って落ちます(UD-3 より前はこの形でした)。
 
 **履歴の基準を動かしてよいのは確認済みの commit だけです。**model は履歴を 1 つの digest(`history_digest_`)に結び、読んだ文書の digest がそれと違えば履歴を捨てます([判定](../../src/devstudio/model/graphcanvasmodel.cpp#L1487))。
 例外は、Studio のパネルが commit を確認した digest です。[`RenderConfigDigest`](../../src/devstudio/view/renderconfigdigest.hpp#L25) には観測の `publish` と別に [`publishCommitted`](../../src/devstudio/view/renderconfigdigest.hpp#L49) があり、RenderEditTicket の committed の道・Frame Plan・Pass Editor・Render Features・Graph タブの pass と fold の編集がこちらを呼びます。
+
 `publishCommitted` は購読者が文書を読み直す前に commit の購読者へ知らせ、Graph タブはそれを [`renderDocumentCommitted`](../../src/devstudio/model/graphcanvasmodel.hpp#L1543) で覚えます(render の履歴の戻しの `renderHistoryRestored` も同じ所に入ります)。次の読みの digest がそれと同じときだけ `history_digest_` を進め、違えば今までどおり捨てます。
 ⚠ 観測だけの `publish`(読んだ digest、reload で保った版の digest)をこの道に乗せないこと。外の書き手の版を「確認済み」と見なすと、その上で古い逆の ops が通ってしまいます。
 
 HistoryEntry は前後の graph の hash も持ちます。`before_graph` は送る時の graph([入れる所](../../src/devstudio/model/graphcanvasmodel.cpp#L2771))、`after_graph` は自分の commit を初めて読んだ時の graph、`after_source_digest` は commit の digest です。graph の hash は nodes と配置を除く definitions から作ります([作る所](../../src/devstudio/model/graphcanvasmodel.cpp#L1473))。
+
 `canUndo()` は `undo_.back().after_graph`、`canRedo()` は `redo_.back().before_graph` が今の graph と同じことも求めます([判定](../../src/devstudio/model/graphcanvasmodel.hpp#L1772))。graph を変える render の項目(Ray layout の batch、Decompose)が確認済みで入っても、stack も TabEditOrder の serial も捨てず、その項目が戻って graph が一致すれば再び使えます。
 
 [`TabEditOrder`](../../src/devstudio/model/tabeditorder.hpp#L15) は、Graph の送信ごとに `RenderEditHistory::lastSubmission()` を `render_submission` に、その時点で render の Redo の側にある項目の serial を `render_already_undone` に記録します([記録する所](../../src/devstudio/model/tabeditorder.cpp#L37))。
+
 [`TabEditOrder::move`](../../src/devstudio/model/tabeditorder.cpp#L115) は、Graph の Undo なら render の Undo の側に `submitted > render_submission` の項目が、Redo なら Redo の側に `submitted <= render_submission` で `render_already_undone` に無い項目がある間は送らずに notice を出します。
 境界は送信番号で引きます。commit の届いた順や digest の一致は、編集の前後で同じ値が繰り返し現れうるので使いません。利用者向けの振る舞いは manual 第15章 §15.14 の「Graph タブの履歴と他パネルの編集」です。
 
 [`view/nodegraphics.{hpp,cpp}`](../../src/devstudio/view/nodegraphics.hpp#L152) は
-`frameplangraphics.cpp` から**共有部分を抜き出した**ものです。`MovableNodeItem`、`CurveGeometry` と
-`curveGeometry(Between)`、`routeLogicalBundle` / `rerouteConnectedBundles`、`findNodeItem` /
-`findEndpointArtifact`、`nodePath` / `roundedEntityPath`、配置定数、そして
+`frameplangraphics.cpp` から**共有部分を抜き出した**ものです。
+
+- `MovableNodeItem`、
+- `CurveGeometry` と
+`curveGeometry(Between)`、
+- `routeLogicalBundle` / `rerouteConnectedBundles`、
+- `findNodeItem` /
+`findEndpointArtifact`、
+- `nodePath` / `roundedEntityPath`、
+- 配置定数、
+- そして
 [`longestPathColumns()`](../../src/devstudio/view/nodegraphics.hpp#L312)(model に依存しない最長経路の段組み)です。
+
 item data の role 番号は **Frame Plan が既に公開していた値のまま**で、挙動を変えないための選択です。
 N-1b でソケットの語彙が加わりました: [`SocketShape` / `SocketStyle` / `socketStyleFor()` /
 `socketPath()`](../../src/devstudio/view/nodegraphics.hpp#L239)。型を形でも表すのは、**利用者が型を足せるキャンバスでは
 色相が足りない**からで、形は色覚と暗いテーマの両方を越えます。解決順は 1 箇所に集約されていて、
 (i) catalog の型 schema が宣言した `display{}` → (ii) Studio の既定表 → (iii) traits → (iv) `unknown` です。
+
 既定表は [`resources/graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json#L1)
 (`pelican.studio.socket_styles` v1)で、**型に形を与えるのに C++ を触りません**。
 `resources/CMakeLists.txt` は `b_embed_proxy_target(pelican_studio_view pelican_studio_resources)` で
 proxy target を作ります —— view の `.cpp` を直接 compile する scene test も、同じ埋め込みテーブルを link できるようにするためです。
+
 ✅VI-3b から、同じ target に engine の `src/core/resources/passthrough.frag` の byte も入ります。`b_embed` はこの directory の下の
 file しか取らないので、[custom command](../../src/devstudio/resources/CMakeLists.txt#L23) が自前の script
 [`embed_engine_shader.cmake`](../../src/devstudio/resources/embed_engine_shader.cmake) で C++ の配列を生成し(engine の file が変われば作り直す)、
-Studio は [`engineFragmentSource()`](../../src/devstudio/view/fullscreenshadertemplate.cpp#L776) で引きます。Fix sockets と Open the shader が
+Studio は [`engineFragmentSource()`](../../src/devstudio/view/fullscreenshadertemplate.cpp#L776) で引きます。
+
+Fix sockets と Open the shader が
 `engine://passthrough` を project に複製するときの中身で、repo に写しは置きません(利用者向けは [manual 第13章](../manual/13_editor.md) の「engine://passthrough は project に複製してから直します」)。
 抽出が Frame Plan の挙動を変えていないことは、`devstudio_frameplan_graph_test`(2,133 assertion)と
 `devstudio_fullscreen_pass_test`(803 assertion)が**全数不変**であることで押さえました
@@ -546,7 +594,9 @@ heading_text, dim_text, pill_bg}, domain_tint, source_tint}` で、描画側は�
 [`currentStudioTheme()`](../../src/devstudio/view/studiotheme.hpp#L86) 越しに引きます。値の出所は
 埋め込みの [`resources/studio_themes.json`](../../src/devstudio/resources/studio_themes.json#L1)
 (`pelican.studio.themes` v1、`light` / `dark` の 2 preset で既定は `dark`)なので、3 つ目のテーマを足すのに
-C++ は要りません。切り替えの通知は Qt signal ではなく**素の関数リスト**
+C++ は要りません。
+
+切り替えの通知は Qt signal ではなく**素の関数リスト**
 ([理由はヘッダのコメント](../../src/devstudio/view/studiotheme.hpp#L110)) —— scene test が view の `.cpp` を
 moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L1609)、
 Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphics.cpp#L2302) で追随します
@@ -561,12 +611,16 @@ Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphic
 折り畳みます(折り畳むと辺は見出し帯の左右中央 1 点へ集まります)。編集はすべて**即時**で Apply ボタンがなく、
 ソケット間ドラッグ = `set_input`、辺の `Delete` = `set_input{null}`、値の帯のその場編集 =
 `set_node_parameters`、見出しの double-click = `set_node_label`、右クリックの palette = `add_node`、
-node の `Delete` = `remove_node` です。位置と折り畳みは `(scope, node id)` を鍵にした**セッション内の状態**で、
+node の `Delete` = `remove_node` です。
+
+位置と折り畳みは `(scope, node id)` を鍵にした**セッション内の状態**で、
 文書には書かず、revision で消えた node の分は捨てられます。
 engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L37) が
 名前で持つ 5 つ(`get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` /
 `get_edit_result`)だけで、それ以外は `The graph canvas cannot issue %1.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L7758))。規範は struct の宣言そのもの
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L7758))。
+
+規範は struct の宣言そのもの
 ([メンバ 5 本](../../src/devstudio/view/graphcanvasreadcapability.hpp#L46))で、その上の宣言コメントは
 **読みを 3 つと数えたまま**です —— メンバは `requestGraphInstances` / `requestGraphCatalog` /
 `requestGraphValues` / `requestEditResult` の 4 読み + `requestEditGraphDocument` の 1 編集なので、
@@ -588,6 +642,7 @@ engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view
 feature パラメータ(**Parameters...**)、materialize(**Make editable...**)、preset の fork、region replacement、
 compute / RT task、callable record、scene acceleration structure、frame node order、procedural asset で、
 ボタンの構築は [1 箇所](../../src/devstudio/view/renderfeatureswidget.cpp#L2375)に並んでいます。
+
 dialog は `pelican.featureMaterialize`(+ `.destination`)と `pelican.featureParameters`(+ `.<name>`)です。
 **export / import と package の UI はここにありません** —— 対応する RPC(§7.7)は engine 側にだけあります。
 
@@ -595,6 +650,7 @@ dialog は `pelican.featureMaterialize`(+ `.destination`)と `pelican.featurePar
 ライブラリです。ファイル版と `QMainWindow` state 版をともに現行値へ固定し、版違い、破損、Qt に
 よる state 拒否のどれでも saved state を適用せず既定配置 callback へ落とします。全体 preset は
 `QStandardPaths::AppConfigLocation/layouts` に置き、project 単位の `user://` resolver には触れません。
+
 保存・復元・fallback と、6 dock の頃に保存した state を **10 dock 構成**(Pass Editor と、✅HW-2s の Assets と ✅MT-1s の Materials と ✅PB-1s の Problems が増えた後。その 3 つのドックが置き場を持つことも見る)で読めることは
 `test/devstudio_layoutpreset_test.cpp` の TEST_CASE
 [`Saved devstudio layouts remain restorable as later docks are added`](../../test/devstudio_layoutpreset_test.cpp#L118)
@@ -624,7 +680,9 @@ GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始
 ✅UX-13c(`4405641a`)から、engine に繋いだ Outliner の木は `scene_tree` ではなく `scene_outline` の答えから作ります
 ([`ProjectOutlinerModel::updateSceneOutline()`](../../src/devstudio/model/project.cpp#L219)。`scene_tree` の答えは
 `updateSceneTree()` が同じ [`updateScene()`](../../src/devstudio/model/project.cpp#L229) で読む)。違いは親の引き方で、
-`scene_outline` は `parent_authoring_object_id`、`scene_tree` は親の名前です。`not_modified: true` の答えは持っている revision の
+`scene_outline` は `parent_authoring_object_id`、`scene_tree` は親の名前です。
+
+`not_modified: true` の答えは持っている revision の
 ときだけ受け、何も作り直さず false を返します(持っていない revision なら例外)。問いを出すのは
 [`MainWindow::requestOutlinerRefresh()`](../../src/devstudio/view/mainwindow.cpp#L3162) で、scene を 1 つ持った後は
 `{scene_id, if_scene_revision}` の条件付きの poll、失敗や読めない答えの次は条件無し、`-32601` で断る engine にはその engine の間
@@ -639,12 +697,22 @@ revision、背景での解除、feature/RPC 失敗時の選択維持を純粋 mo
 `pick_object` と同じ identity だけで同じ意味論を実装できます。
 
 [`InspectorModel`](../../src/devstudio/model/inspectormodel.hpp) も view/Qt から独立した公開 RPC client
-です。選択の object を一覧の `authoring_object_id` で確かめてから(選択が id を持てば id で、持たなければ
+です。
+
+選択の object を一覧の `authoring_object_id` で確かめてから(選択が id を持てば id で、持たなければ
 `declaration_index` で引く。一覧は ✅UX-13c から `scene_outline {scene_id}`、`-32601` で断る engine にはその session の間
 `scene_tree`。[問いを積む所](../../src/devstudio/model/inspectormodel.cpp#L2833)、[`-32601` を覚える所](../../src/devstudio/model/inspectormodel.cpp#L3832)。
 `-32601` は `InspectorWidget` が `EmbeddedViewport::engineRpcRefused` から拾って `receiveRpcFailure(..., unknown_method)` で渡す)
-`get_components` を読み、component 応答の `schema.fields` だけから整数、浮動小数、真偽、列挙、文字列、
-vector、quaternion の [`InspectorWidgetDescriptor`](../../src/devstudio/model/inspectormodel.hpp) を作ります。
+`get_components` を読み、component 応答の `schema.fields` だけから次の型 の [`InspectorWidgetDescriptor`](../../src/devstudio/model/inspectormodel.hpp) を作ります。
+
+- 整数
+- 浮動小数
+- 真偽
+- 列挙
+- 文字列
+- vector
+- quaternion
+
 component 名や transform の field 名を view 側で型判定しません。
 
 数値操作は `open_preview` / `update_preview` / `commit_preview`、通常の確定操作は `edit` を使い、
@@ -666,11 +734,13 @@ Inspector の properties の下には [`GraphAttachmentWidget`](../../src/devstu
 (list + **Attach...** / **Detach** / **Refresh**)と `Instance inputs` グループ(port ごとに mode / 著作値 /
 実測値と 4 つのボタン)で、object name は `pelican.graphAttachments` /
 `pelican.graphPort.<kind>.<port>` の規則です([構築](../../src/devstudio/view/graphattachmentwidget.cpp#L55))。
+
 [`GraphAttachmentModel`](../../src/devstudio/model/graphattachmentmodel.hpp) が Qt 非依存の相方で、
 mode は**文書から**決めます(edge があれば `connected`、なければ `parameter` か `default`)
 ([判定](../../src/devstudio/model/graphattachmentmodel.cpp#L351)) —— 展開結果から読まないのは、
 接続された port には読み取れる node が残らないからです。
 GUI の 1 操作は必ず 1 つの op 列 + 1 ticket + 1 CAS です([submitOps](../../src/devstudio/model/graphattachmentmodel.cpp#L488))。
+
 拒否の文は ✅UX-13b から、graph の名前付きの code なら Graph タブと同じ `graphLoopRefusalDescription()`、ほかの既知の code なら
 `knownRefusalDescription()`、どちらでもなければ message に code を添えたものです([`diagnostic()`](../../src/devstudio/model/graphattachmentmodel.cpp#L16))。
 「曲線で制御」が作る node の集合は [`curveControlOps()`](../../src/devstudio/model/graphattachmentmodel.cpp#L416) に
@@ -690,7 +760,9 @@ Outliner の `(scene_id, declaration_index)` を `kind:declaration` の厳密な
 `dot(logical_pointer_delta, drag_direction) * value_per_logical_pixel` の一式で pointer 移動を軸へ
 拘束して Inspector と同じ preview lease へ値を渡します。release は commit、選択・mode
 変更や player 停止は abort になり、Inspector の数値表示もドラッグ中に追従します。handle の外側は
-従来の object pick へ戻ります。この Qt 非依存状態遷移は
+従来の object pick へ戻ります。
+
+この Qt 非依存状態遷移は
 [`devstudio_gizmo_test.cpp`](../../test/devstudio_gizmo_test.cpp) が headless に検査します。
 同期、無名 object、stale 応答、背景、feature 無効の意味論は
 [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp) が headless に固定し、stdio の
@@ -715,13 +787,17 @@ link せず、link の輪ができません。
 protocol は**改行区切り JSON 1 行 = 1 命令**で、`{id, cmd, ...}` に `{id, ok, result}` か
 `{id, ok:false, error:{code, message}}` を返します([組み立て](../../src/devstudio/automation/automationserver.cpp#L19))。
 命令は 23 個(✅PX-2 の `viewport_size` を含む。長く 20 個と書いていましたが、`select` と `layout_stats` も一覧にあります。[一覧](../../src/devstudio/automation/automationcommands.cpp#L2872))、拒否は 10 種の名前付きコード
-([定数](../../src/devstudio/automation/automationcommands.cpp#L243))。`quit` は**答えてから**イベントループを畳み
+([定数](../../src/devstudio/automation/automationcommands.cpp#L243))。
+
+`quit` は**答えてから**イベントループを畳み
 ([順序](../../src/devstudio/automation/automationserver.cpp#L112))、`rpc` と `wait` 系は入れ子のイベントループを
 回すので、実行中に届いた次の行は `automation.busy@1` で断ります
 ([逐次](../../src/devstudio/automation/automationserver.cpp#L104)) —— 割り込ませて状態を混ぜるより、正直に断る側です。
 指す名前は widget の `objectName` か、キャンバスの中に描かれたものの合成名
 `<view>::<kind>#<node>[/<port>]`([生成](../../src/devstudio/automation/automationcommands.cpp#L285))で、`list` が
-両方を publish します。`type` / `key` / `text` は `QGraphicsProxyWidget` が抱える埋め込み widget へ直接届くので、
+両方を publish します。
+
+`type` / `key` / `text` は `QGraphicsProxyWidget` が抱える埋め込み widget へ直接届くので、
 **どの窓が activate されているかに依存しません**([理由](../../src/devstudio/automation/automationcommands.cpp#L542))。
 `text` は描かれた字ではなく item が data role に入れた値を優先します
 ([優先](../../src/devstudio/automation/automationcommands.cpp#L558))。
@@ -729,10 +805,14 @@ protocol は**改行区切り JSON 1 行 = 1 命令**で、`{id, cmd, ...}` に 
 driver は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1599)(stdlib のみ)。シナリオ JSON の step を順に送り、
 `rpc_equals` / `text_equals` / `visible` / `list_count` / `screenshot` の期待を検査し、`verdict` / `summary` /
 `failures` / `steps` / `studio_log` を持つ `report.json` を書きます([組み立て](../../tools/studio_drive.py#L1800))。
-最後の `shutdown` step で終了コード 0 と強制終了されていないことを検査します。異常終了や終了待ちのタイムアウトは
+最後の `shutdown` step で終了コード 0 と強制終了されていないことを検査します。
+
+異常終了や終了待ちのタイムアウトは
 失敗になり、`studio_exit_code` / `studio_shutdown_forced` と `failures` に結果を記録します。
 ✅PX-2(`28bc5ef9`)から、driver はつないだ直後・最初の step の前に [`fix_viewport()`](../../tools/studio_drive.py#L1490) で `viewport_size` を送り、
-engine の viewport を [`DEFAULT_VIEWPORT`](../../tools/studio_drive.py#L59)(720x450、画の画素)に固定します。命令の実体は
+engine の viewport を [`DEFAULT_VIEWPORT`](../../tools/studio_drive.py#L59)(720x450、画の画素)に固定します。
+
+命令の実体は
 [`commandViewportSize()`](../../src/devstudio/automation/automationcommands.cpp#L2347) で、`pelican.viewportHost` に `setFixedSize` をかけて窓を差の分だけ伸縮し、
 ドックはそのままにします(後でドックを開閉しても viewport は変わらない)。シナリオの最上位の `"viewport": [w, h] | null` で大きさを変えるか固定を外し、
 答えが 1 画素を超えてずれたら run は step を送らずに赤です。画素を読む 33 本の点はこの大きさで選んであるので、既定を変えると全部の点を測り直すことになります
@@ -744,7 +824,9 @@ engine の viewport を [`DEFAULT_VIEWPORT`](../../tools/studio_drive.py#L59)(72
 `press` / `move` / `release` は「押している button」を面の状態として共有し、ポインタ系はすべて scroll area の
 **viewport** へ配送されます(frame 宛ては `QAbstractScrollArea` が捨てるため、Q-1b 以前は view の objectName を
 指した gesture が無音で消えていました)。`key` の `route`(`widget` 既定 / `window`)は届け先を分け、
-shortcut map を通る `window` だけが `QAction` を shortcut で発火できます。`list` の各項目は `shortcut` を持ち、
+shortcut map を通る `window` だけが `QAction` を shortcut で発火できます。
+
+`list` の各項目は `shortcut` を持ち、
 `QAction` 自体は widget ではないので `menu_list`(一覧)と `action`(発火)が別命令です —— どちらも popup の
 modal ループに入りません。メニュー・dock・gizmo の action は `pelican.file.*` / `pelican.view.panels.*` /
 `pelican.gizmo.*` の objectName で指します。✅SK-1 から、[`commandList()`](../../src/devstudio/automation/automationcommands.cpp#L943) は
@@ -766,7 +848,9 @@ check できる `QAbstractButton`(`QCheckBox` など)の項目にだけ `checked
 ([layout](../../test/CMakeLists.txt#L329) / [outliner](../../test/CMakeLists.txt#L352) /
 [inspector model](../../test/CMakeLists.txt#L388) / [gizmo model](../../test/CMakeLists.txt#L426) /
 [frame plan](../../test/CMakeLists.txt#L474) / [viewport + frame plan](../../test/CMakeLists.txt#L484) /
-[viewport](../../test/CMakeLists.txt#L2975))。`SKIP_DEVSTUDIO=ON` の build ではこれらの lib が作られないので、
+[viewport](../../test/CMakeLists.txt#L2975))。
+
+`SKIP_DEVSTUDIO=ON` の build ではこれらの lib が作られないので、
 **そのどれも登録されません** —— 緑でも走っていない、という形になるので、Studio を触った変更は
 Studio 入りの build で全数を見ます。**例外が 1 つ**あります: `devstudio_d0_boundary_negative` は
 どの囲いの中にもいない素の [`add_test()`](../../test/CMakeLists.txt#L263) なので、`SKIP_DEVSTUDIO=ON` でも
@@ -948,7 +1032,11 @@ throw JsonRpcHandlerError{
      {"source", "rpc"}}};
 ```
 
-engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1552) と、そこから呼ぶ登録の関数に集まっています。登録の関数は、`rpcserver.cpp` の [`configurePhysicsRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1243)・[`configureGameLogicReloadRpcHandler()`](../../src/core/communication/rpcserver.cpp#L1312)・`configureShaderReloadRpcHandler()`・`configureAssetsVerificationRpcHandlers()` と、別のファイルの `configureProjectSettingsRpcHandlers()`(`projectsettingsrpc.cpp`。method の名前は定数で渡す)・`configureMaterialDocumentRpcHandlers()`(`materialdocumentrpc.cpp`)・`configureProjectMigrationRpcHandlers()`(`projectmigrationrpc.cpp`)・[`configureEditorRpcHandlers()`](../../src/core/communication/editorrpchandlers.cpp#L66) です。数えるときは、これらの中で `server.setHandler()` **または `server.setOrderedHandler()`** に渡す公開 method 文字列を 1 つと数えます。ファイルをまたいだ名前の重複と、登録の中の条件コンパイルはありません。
+engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1552) と、そこから呼ぶ登録の関数に集まっています。
+
+登録の関数は、`rpcserver.cpp` の [`configurePhysicsRpcHandlers()`](../../src/core/communication/rpcserver.cpp#L1243)・[`configureGameLogicReloadRpcHandler()`](../../src/core/communication/rpcserver.cpp#L1312)・`configureShaderReloadRpcHandler()`・`configureAssetsVerificationRpcHandlers()` と、別のファイルの `configureProjectSettingsRpcHandlers()`(`projectsettingsrpc.cpp`。method の名前は定数で渡す)・`configureMaterialDocumentRpcHandlers()`(`materialdocumentrpc.cpp`)・`configureProjectMigrationRpcHandlers()`(`projectmigrationrpc.cpp`)・[`configureEditorRpcHandlers()`](../../src/core/communication/editorrpchandlers.cpp#L66) です。
+
+数えるときは、これらの中で `server.setHandler()` **または `server.setOrderedHandler()`** に渡す公開 method 文字列を 1 つと数えます。ファイルをまたいだ名前の重複と、登録の中の条件コンパイルはありません。
 
 `setOrderedHandler()` は `nlohmann::ordered_json` を返す版です([宣言](../../src/core/communication/rpcserver.hpp#L98))。登録で渡す述語が応答に真を返したときだけ、`RpcServer` は鍵の順を保って直列化します。使うのは `get_components` / `get_ray_occurrences` / `get_ray_table` / `resolve_ray_occurrence`(述語は `embedsResolutionError`)、`get_material`、`plan_project_migration` / `apply_project_migration`(述語は常に真)です —— `setHandler` だけを探すと、これらが漏れます。
 
@@ -1086,9 +1174,21 @@ editor service を通らず、handler が project の文書の transaction(読�
 - 残る穴: `edit_region_replacement` / `decompose_material_pass` / `apply_graph_template` は、今も `currentDocumentSet()` の authoring context の `pipeline_preset_bytes` の digest を呼び手の `base_preset_digest` と比べます。`currentDocumentSet()` は batch の中では `batch_->documents` を含むので、同じ batch の前の edit が preset を書いた後にこの 3 つを送ると `external_modification` です(コードの読み。この組み合わせの test はありません)。
 - test: `renderconfigeditor_test` の「FR-4 edit_batch takes edit_graph_document and edit_preset_pass as one ticket, and RD-1 undoes both」と「FR-4 edit_batch takes edit_preset_pass with a compute task edit on one project preset or feature, each on what the edit before it made」、`engine_primitives_test` の「FR-4 edit_batch puts the sky on present with edit_graph_document and edit_preset_pass in one ticket, through the running renderer」(GPU)。FR-3 の test の外した method の一覧から 3 つを除き、入っていることを確かめる形にしました。
 
-**`verify_fold` の子 process(✅FG-2)。**[`verifyFold()`](../../src/core/communication/renderconfigeditor.cpp#L3988) は、受けた時に engine の thread で [`FoldVerifyJob`](../../src/core/communication/graphfoldverify.hpp#L53)(開いた形と決定ありの形の root の bytes、managed fragment、数)を作り切り、worker は editor の状態を読みません。子を起こす口は依存として差し込まれる [`FoldVerifyRunner`](../../src/core/communication/renderconfigeditor.hpp#L262) で、本番は [`runFoldVerifyProcesses()`](../../src/core/communication/graphfoldverify.cpp#L438)(factory が親の起動引数から [`foldVerifyProcessOptions()`](../../src/core/communication/editorruntimefactory.cpp#L2020) を 1 度だけ読んで包む)、test は偽の runner です。worker は `std::async` の thread で走り([始める所](../../src/core/communication/renderconfigeditor.cpp#L4069))、frame と RPC は待ちません。`commitPending()` は frame の境界ごとに最初に [`harvestFoldVerifies()`](../../src/core/communication/renderconfigeditor.cpp#L4077) を呼び、終わった run を [`judgeFoldVerifyRuns()`](../../src/core/communication/graphfoldverify.cpp#L388)(純関数)で判定し、通れば `queueFoldGroupEdit()` で印を書く ticket を同じ ticket の番号で作って待ち行列の先頭に置きます。CAS は受けた時の `base_source_digest` なので、間に root が変われば `external_modification` です。子は [`runChild()`](../../src/core/communication/graphfoldverify.cpp#L157) が `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` の job object に入れ、時間切れと終了は job の handle を閉じて終わらせます(名前や pid で探しません)。editor の destructor は止めの flag を立てて全部の worker を待ちます。
+**`verify_fold` の子 process(✅FG-2)。**[`verifyFold()`](../../src/core/communication/renderconfigeditor.cpp#L3988) は、受けた時に engine の thread で [`FoldVerifyJob`](../../src/core/communication/graphfoldverify.hpp#L53)(開いた形と決定ありの形の root の bytes、managed fragment、数)を作り切り、worker は editor の状態を読みません。
 
-**`reload_render_documents` の ticket(✅RL-1)。**[`reloadRenderDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L7625) は、ディスクの root と managed fragment を読み、`renderDocumentsOf()`(`get_render_documents` と同じ範囲)で残りの render 文書を足し、各文書の今の bytes を `expected` の digest にした候補を作ります。`changed` は editor が書いた digest(`known_document_digests_`)・managed fragment の基準・live の世代の文書(依存の `published_documents`。[作る所](../../src/core/communication/editorruntimefactory.cpp#L2362))の順に引いた前の digest と比べます。ticket(`render-config-reload-<N>`)は `reload` の印を持ち、commit の時の source commit は書く代わりに [`verifyReloadedDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L7510) で読んだ bytes がまだディスクに在るかを照らします。何も違わなければ runtime に渡さず `no_change` で終えます。✅IA-2(`cdcdebc1`)から、文書の比較の後に、依存の `published_assets`(IA-2 の時の名前は `published_initial_assets`、要素の型は `RenderConfigPublishedAsset`。[作る所 IA-2](../../src/core/communication/editorruntimefactory.cpp#L2384)。live の世代の各 program の `frame_graph.image_initial_assets` を `{asset, file, sha256}` にしたもの。✅IA-3 からその後に値の graph の表と manifest も)の各 file を `assetFileSha256()` で読み直して比べ、違うか読めない asset を `changed_assets` にします([比べる所 IA-2](../../src/core/communication/renderconfigeditor.cpp#L7821))。`std::map` で asset ごとにまとめるので辞書順・重複なしです。`no_change` は `changed` と `changed_assets` の両方が空のときだけで、`changed_assets` は ticket の `reload_changed_assets` に載って committed の結果に入ります(`no_change` の道では空の配列)。比べる相手の sha256 は、世代を組む段で decode の前に取った [`RenderImageInitialAsset::content_sha256`](../../src/core/renderingpass/framegraphruntime.hpp#L53) です(manifest の値の `sha256` とは別)。待っている・処理中の ticket が在るか scene の preview が開いていれば `reload_busy` です([断る所](../../src/core/communication/renderconfigeditor.cpp#L7640)。preview の判定は `EditorCommandService::reloadRenderDocuments()`)。✅IA-3(`26473e75`)から、`published_assets` には live の世代の各 program の `frame_graph.value_graph->sampleTables()` の表が、表の KTX2 と隣の `.import.json` の 2 行ずつ、どちらも表の参照(`asset`)の名前で入ります。`asset` ごとにまとめる比較はそのままなので、manifest だけが違っても `changed_assets` には表の名前が出ます。✅PV-1(`a173e70c`)から、reload を含む render の編集の committed の結果に、公開した世代の `preview`(`RenderConfigRuntimeSnapshot::preview`)が付きます(`commitPending()` の 3 つの committed の道と `completeCommitTransaction()`)。
+子を起こす口は依存として差し込まれる [`FoldVerifyRunner`](../../src/core/communication/renderconfigeditor.hpp#L262) で、本番は [`runFoldVerifyProcesses()`](../../src/core/communication/graphfoldverify.cpp#L438)(factory が親の起動引数から [`foldVerifyProcessOptions()`](../../src/core/communication/editorruntimefactory.cpp#L2020) を 1 度だけ読んで包む)、test は偽の runner です。
+
+worker は `std::async` の thread で走り([始める所](../../src/core/communication/renderconfigeditor.cpp#L4069))、frame と RPC は待ちません。`commitPending()` は frame の境界ごとに最初に [`harvestFoldVerifies()`](../../src/core/communication/renderconfigeditor.cpp#L4077) を呼び、終わった run を [`judgeFoldVerifyRuns()`](../../src/core/communication/graphfoldverify.cpp#L388)(純関数)で判定し、通れば `queueFoldGroupEdit()` で印を書く ticket を同じ ticket の番号で作って待ち行列の先頭に置きます。
+
+CAS は受けた時の `base_source_digest` なので、間に root が変われば `external_modification` です。子は [`runChild()`](../../src/core/communication/graphfoldverify.cpp#L157) が `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` の job object に入れ、時間切れと終了は job の handle を閉じて終わらせます(名前や pid で探しません)。editor の destructor は止めの flag を立てて全部の worker を待ちます。
+
+**`reload_render_documents` の ticket(✅RL-1)。**[`reloadRenderDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L7625) は、ディスクの root と managed fragment を読み、`renderDocumentsOf()`(`get_render_documents` と同じ範囲)で残りの render 文書を足し、各文書の今の bytes を `expected` の digest にした候補を作ります。`changed` は editor が書いた digest(`known_document_digests_`)・managed fragment の基準・live の世代の文書(依存の `published_documents`。[作る所](../../src/core/communication/editorruntimefactory.cpp#L2362))の順に引いた前の digest と比べます。ticket(`render-config-reload-<N>`)は `reload` の印を持ち、commit の時の source commit は書く代わりに [`verifyReloadedDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L7510) で読んだ bytes がまだディスクに在るかを照らします。
+
+何も違わなければ runtime に渡さず `no_change` で終えます。✅IA-2(`cdcdebc1`)から、文書の比較の後に、依存の `published_assets`(IA-2 の時の名前は `published_initial_assets`、要素の型は `RenderConfigPublishedAsset`。[作る所 IA-2](../../src/core/communication/editorruntimefactory.cpp#L2384)。live の世代の各 program の `frame_graph.image_initial_assets` を `{asset, file, sha256}` にしたもの。✅IA-3 からその後に値の graph の表と manifest も)の各 file を `assetFileSha256()` で読み直して比べ、違うか読めない asset を `changed_assets` にします([比べる所 IA-2](../../src/core/communication/renderconfigeditor.cpp#L7821))。`std::map` で asset ごとにまとめるので辞書順・重複なしです。
+
+`no_change` は `changed` と `changed_assets` の両方が空のときだけで、`changed_assets` は ticket の `reload_changed_assets` に載って committed の結果に入ります(`no_change` の道では空の配列)。比べる相手の sha256 は、世代を組む段で decode の前に取った [`RenderImageInitialAsset::content_sha256`](../../src/core/renderingpass/framegraphruntime.hpp#L53) です(manifest の値の `sha256` とは別)。待っている・処理中の ticket が在るか scene の preview が開いていれば `reload_busy` です([断る所](../../src/core/communication/renderconfigeditor.cpp#L7640)。preview の判定は `EditorCommandService::reloadRenderDocuments()`)。
+
+✅IA-3(`26473e75`)から、`published_assets` には live の世代の各 program の `frame_graph.value_graph->sampleTables()` の表が、表の KTX2 と隣の `.import.json` の 2 行ずつ、どちらも表の参照(`asset`)の名前で入ります。`asset` ごとにまとめる比較はそのままなので、manifest だけが違っても `changed_assets` には表の名前が出ます。✅PV-1(`a173e70c`)から、reload を含む render の編集の committed の結果に、公開した世代の `preview`(`RenderConfigRuntimeSnapshot::preview`)が付きます(`commitPending()` の 3 つの committed の道と `completeCommitTransaction()`)。
 
 **起動時の拒否と fallback の世代(✅BS-1 `d9811bfc` / BS-1b `40318ffe`)。**利用者から見た形は manual 第6章 §6.16 の「起動時に組めない構成と `--render-fallback`」と第13章 §13.5 の「起動時に断られた構成を直す」です。
 
@@ -1170,11 +1270,17 @@ root だけの編集が definition のバイト列を動かさないようにす
 (`graph.input_referenced@1` / `graph.nested_instance@1` / `graph.input_scope@1`)の判定は [分岐](../../src/project/graphcomposition.cpp#L2303) です。
 形が壊れているだけのものは名前を持たず `invalid_graph_document` に落ちます。
 
-✅RS-9 から、render の node の `parameters` の欠落も `graph.render_node_parameters_missing@1` `{node, op, missing}` で名前付きになりました。op ごとの必須は [`renderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L262) の表で、[`checkRenderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L269) が検査します。RS-9 では render の op の契約を作る `renderPorts()` の頭で呼んでいましたが、✅RS-15 から [`GraphModuleRegistry::resolveOperation()`](../../src/project/graphmodule.cpp#L676) が factory を呼ぶ前の 1 か所で呼び([呼ぶ所](../../src/project/graphmodule.cpp#L685))、宣言だけの契約の op(`render.scalar`、`value.*`、`audio.*`、`ui.*`)にも同じに効きます。`parameters` が無い・`null` の node は空の object として通し、op が要るものが無ければここで断ります。✅RS-15 から、表の名前は node の `inputs` に同名の edge があっても満たされます。
+✅RS-9 から、render の node の `parameters` の欠落も `graph.render_node_parameters_missing@1` `{node, op, missing}` で名前付きになりました。op ごとの必須は [`renderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L262) の表で、[`checkRenderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L269) が検査します。
 
-✅CT-1 から、同じ表を [`operationJson()`](../../src/project/graphmodule.cpp#L550) が catalog の `required_parameters` に写し(表は 1 つ)、`value.input` の `input_names` は [`graphFrameInputNames()`](../../src/project/graphmodule.cpp#L927) の表を、catalog と frame の検査 [`validateGraphInputs()`](../../src/core/renderingpass/graphinputs.cpp#L13) の両方が読みます。render の pass の port の欠けは [`checkRenderPortDeclaration()`](../../src/project/graphmodule.cpp#L313) が `graph.port_field_missing@1` `{node, port, field}` で、resource の型の中の欠け(`element`、`type.semantic` など)は呼び手が渡す `MissingField` で port なら同じ code、node の parameters なら `graph.render_node_parameters_missing@1` で断ります。graph の展開器の欠けた鍵は [`member()`](../../src/project/graphcomposition.cpp#L32) が場所を名指す `std::invalid_argument` にします。
+RS-9 では render の op の契約を作る `renderPorts()` の頭で呼んでいましたが、✅RS-15 から [`GraphModuleRegistry::resolveOperation()`](../../src/project/graphmodule.cpp#L676) が factory を呼ぶ前の 1 か所で呼び([呼ぶ所](../../src/project/graphmodule.cpp#L685))、宣言だけの契約の op(`render.scalar`、`value.*`、`audio.*`、`ui.*`)にも同じに効きます。`parameters` が無い・`null` の node は空の object として通し、op が要るものが無ければここで断ります。✅RS-15 から、表の名前は node の `inputs` に同名の edge があっても満たされます。
 
-✅CT-3 から、`renderNodeRequiredParameters()` の表は [`graphparameterschema.cpp` の CT-3 の parameter の表](../../src/project/graphparameterschema.cpp#L397) に置き換わり、RS-9 の必須はその `required` の entry から作ります(新しく必須になったのは `pose.clip_sample` の `rig` / `clip`、`pose.state_machine` の `rig` / `graph`、`pose.retarget` の `profile`、`draw.variant` の `variant`)。同じ表が値の kind・enum・範囲も持ち、`resolveOperation()` が RS-9 の検査の直後に [`checkGraphNodeParameterTypes()`](../../src/project/graphparameterschema.cpp#L877) を呼んで、合わない値を `graph.render_node_parameter_invalid@1` `{node, op, parameter, expected, reason: type | enum | range, allowed? | min? / max?}` で断ります。`GraphRegistryError` なので、編集の ticket では CT-2 の `rejection()` が `document` を足して rejected にします(test: `renderconfigeditor_test` の「CT-3 an edit with a parameter of the wrong kind, enum or range is refused by name」)。表の形と検査の規則は第3章 §3.15「op の parameter の表」です。
+✅CT-1 から、同じ表を [`operationJson()`](../../src/project/graphmodule.cpp#L550) が catalog の `required_parameters` に写し(表は 1 つ)、`value.input` の `input_names` は [`graphFrameInputNames()`](../../src/project/graphmodule.cpp#L927) の表を、catalog と frame の検査 [`validateGraphInputs()`](../../src/core/renderingpass/graphinputs.cpp#L13) の両方が読みます。
+
+render の pass の port の欠けは [`checkRenderPortDeclaration()`](../../src/project/graphmodule.cpp#L313) が `graph.port_field_missing@1` `{node, port, field}` で、resource の型の中の欠け(`element`、`type.semantic` など)は呼び手が渡す `MissingField` で port なら同じ code、node の parameters なら `graph.render_node_parameters_missing@1` で断ります。graph の展開器の欠けた鍵は [`member()`](../../src/project/graphcomposition.cpp#L32) が場所を名指す `std::invalid_argument` にします。
+
+✅CT-3 から、`renderNodeRequiredParameters()` の表は [`graphparameterschema.cpp` の CT-3 の parameter の表](../../src/project/graphparameterschema.cpp#L397) に置き換わり、RS-9 の必須はその `required` の entry から作ります(新しく必須になったのは `pose.clip_sample` の `rig` / `clip`、`pose.state_machine` の `rig` / `graph`、`pose.retarget` の `profile`、`draw.variant` の `variant`)。
+
+同じ表が値の kind・enum・範囲も持ち、`resolveOperation()` が RS-9 の検査の直後に [`checkGraphNodeParameterTypes()`](../../src/project/graphparameterschema.cpp#L877) を呼んで、合わない値を `graph.render_node_parameter_invalid@1` `{node, op, parameter, expected, reason: type | enum | range, allowed? | min? / max?}` で断ります。`GraphRegistryError` なので、編集の ticket では CT-2 の `rejection()` が `document` を足して rejected にします(test: `renderconfigeditor_test` の「CT-3 an edit with a parameter of the wrong kind, enum or range is refused by name」)。表の形と検査の規則は第3章 §3.15「op の parameter の表」です。
 
 利用者向けの手順と GUI の対応は [manual 第13章](../manual/13_editor.md) §13.5 が正です。
 
@@ -1185,7 +1291,9 @@ root だけの編集が definition のバイト列を動かさないようにす
 ([entry の定義](../../src/core/communication/renderconfigeditor.hpp#L60))。package 側の列挙は
 [`enumeratePackageRenderFeatureDocuments()`](../../src/core/communication/renderconfigeditor.cpp#L1067) で、
 **`noexcept` で、`std::exception` の失敗を entry として報告します** —— `project.json` が読めなければ package は 0 個、
-package の文書が壊れていれば `available: false` + `unavailable_reason` の行として並びます。ただし
+package の文書が壊れていれば `available: false` + `unavailable_reason` の行として並びます。
+
+ただし
 **「全部の失敗が行になる」わけではありません**: `std::exception` を継承しない例外を捕まえる
 [package の文書を読む `readPackageFeatureDocuments` の呼び出しを包む `catch (...)`](../../src/core/communication/renderconfigeditor.cpp#L1084) は `continue` するだけなので、
 その package は entry を 1 つも残さずに catalog から落ちます(記録した穴)。
@@ -1240,7 +1348,11 @@ package の文書が壊れていれば `available: false` + `unavailable_reason`
 >
 > **不変条件**: プリフライトはlive文書とliveランタイムに副作用を持たない。inverseは必ずforwardの逆順。spawnの `object_id` は必ずプリフライト結果から取る(自前で採番しない)。
 
-**受付のプリフライトを実行時に使い回す道(`8bde3c2f`。利用者の codex の変更、handoff 01)。**`prepareBatch()` は受付([`enqueue()`](../../src/core/communication/editorjournal.cpp#L4417) の中)と、フレーム境界の実行(`commitPending()` の中)の 2 回走っていました。今は、受付で作った `PreparedBatch` を ticket の `accepted_batch` に、その時の `SceneProjectionState::snapshotIdentity()` を `accepted_snapshot` に残し、実行時に今の projection state の識別子が同じで authoring の文書もその state のものなら、`prepareBatch()` を呼ばずにそれを使います([実行時に使い回す分岐](../../src/core/communication/editorjournal.cpp#L4188))。残すのは、操作が 1 つで `set_component_value`・`component_slot: "transform"`・`object_id` で指し(`address` 無し)、文書が prefab を使わず、受付の前後で識別子が変わらなかった編集だけです(構造・behavior・prefab・生成物・list の編集は、プリフライトが変わりうる registry や runtime の identity も見るので残さない、とコードの注記)。識別子は [`SceneProjectionState::snapshot_identity_`](../../src/core/loader/resolvedscene.hpp#L331)(組を作るたびに新しい `shared_ptr`)で、revision や resolver の世代の番号が同じ別の組とは一致しません。`swap()` は識別子も入れ替え、fault injection の `publishDocumentOnlyForFaultInjection()` は両方の識別子を捨てます。gate・scene・revision・CAS の検査、preview lease の重なりの検査、実際の projection の commit は使い回しても走ります。使い回した回数は `reusedPreflightCountForTesting()` で test が読みます。test: `editorjournal_test` の `Transform preflight` で始まる 5 本([「Transform preflight reuse preserves commit journal undo and redo」](../../test/editorjournal_test.cpp#L2454) から)。codex の報告と commit の説明では、10,000 object の transform の編集 1 回が 1,102 → 751 ms(Release、前後 3 組の中央値)です。
+**受付のプリフライトを実行時に使い回す道(`8bde3c2f`。利用者の codex の変更、handoff 01)。**`prepareBatch()` は受付([`enqueue()`](../../src/core/communication/editorjournal.cpp#L4417) の中)と、フレーム境界の実行(`commitPending()` の中)の 2 回走っていました。今は、受付で作った `PreparedBatch` を ticket の `accepted_batch` に、その時の `SceneProjectionState::snapshotIdentity()` を `accepted_snapshot` に残し、実行時に今の projection state の識別子が同じで authoring の文書もその state のものなら、`prepareBatch()` を呼ばずにそれを使います([実行時に使い回す分岐](../../src/core/communication/editorjournal.cpp#L4188))。
+
+残すのは、操作が 1 つで `set_component_value`・`component_slot: "transform"`・`object_id` で指し(`address` 無し)、文書が prefab を使わず、受付の前後で識別子が変わらなかった編集だけです(構造・behavior・prefab・生成物・list の編集は、プリフライトが変わりうる registry や runtime の identity も見るので残さない、とコードの注記)。識別子は [`SceneProjectionState::snapshot_identity_`](../../src/core/loader/resolvedscene.hpp#L331)(組を作るたびに新しい `shared_ptr`)で、revision や resolver の世代の番号が同じ別の組とは一致しません。`swap()` は識別子も入れ替え、fault injection の `publishDocumentOnlyForFaultInjection()` は両方の識別子を捨てます。
+
+gate・scene・revision・CAS の検査、preview lease の重なりの検査、実際の projection の commit は使い回しても走ります。使い回した回数は `reusedPreflightCountForTesting()` で test が読みます。test: `editorjournal_test` の `Transform preflight` で始まる 5 本([「Transform preflight reuse preserves commit journal undo and redo」](../../test/editorjournal_test.cpp#L2454) から)。codex の報告と commit の説明では、10,000 object の transform の編集 1 回が 1,102 → 751 ms(Release、前後 3 組の中央値)です。
 
 > 🧩 **難所 — undo前提の三段検証**([`requireRevertPreconditions()`](../../src/core/communication/editorjournal.cpp#L3549))
 >
@@ -1386,9 +1498,15 @@ cmake_parse_arguments(PELICAN_TEST
 
 > Golden GPU fixtures are part of the one GPU serialization domain.
 
-`RESOURCE_LOCK` が直列化するのは 1 つの `ctest` 実行の中だけなので、process を跨ぐ側は launcher が持ちます。`gpu` label の付いた CTest は [`pelican_gpu_lease_run`](../../test/CMakeLists.txt#L27) 経由で起動され(Catch2 が discover した分は build 後に [`add_test()` 行を書き換える](../../test/patch_catch_gpu_lease_tests.cmake#L89)、手書き `add_test()` は `COMMAND` に直接書く — [launcher を渡す箇所](../../test/CMakeLists.txt#L241))、この launcher が Windows では `Global\` 名前空間の machine-wide mutex を取ります([lease 本体](../../test/gpu_lease_run.cpp#L261))。待ち時間が締め切りを越えたら skip ではなく `gpu_lease_timeout@1{holder_pid=...}` / exit 124 の失敗で、CTest の `TIMEOUT` は `lease_timeout_max + intrinsic + grace` で生成されます(数値の出所は [`gpu_lease_config.cmake`](../../test/gpu_lease_config.cmake#L3) の 1 箇所)。この lease があるので、別 worktree の `ctest` を同時に走らせても GPU は 1 プロセスずつ使われます([`tools/worktree.sh`](../../tools/worktree.sh#L2) が worktree ごとの build と manifest 検査を担当します)。
+`RESOURCE_LOCK` が直列化するのは 1 つの `ctest` 実行の中だけなので、process を跨ぐ側は launcher が持ちます。`gpu` label の付いた CTest は [`pelican_gpu_lease_run`](../../test/CMakeLists.txt#L27) 経由で起動され(Catch2 が discover した分は build 後に [`add_test()` 行を書き換える](../../test/patch_catch_gpu_lease_tests.cmake#L89)、手書き `add_test()` は `COMMAND` に直接書く — [launcher を渡す箇所](../../test/CMakeLists.txt#L241))、この launcher が Windows では `Global\` 名前空間の machine-wide mutex を取ります([lease 本体](../../test/gpu_lease_run.cpp#L261))。
 
-✅TS-1 から、この launcher は子を起こす前に shader の disk cache の置き場も決めます。[`prepare_shader_cache_directory()`](../../test/gpu_lease_run.cpp#L136) は、`PELICAN_SHADER_CACHE_DIR` が未設定なら `%LOCALAPPDATA%/pelican/test_shader_cache` を作って設定します(既に設定されていれば触らず、作れなければ設定しません)。GPU テストは毎回新しい temp project を作るので、それまでは `.pelican/shader_cache` が毎回空から始まっていました。環境変数は子へ継承されるので、`test/CMakeLists.txt` を変えずに、全 GPU テストと Studio のシナリオが起こす player が 1 つの cache を共有します。cache そのものを数えるテスト(`WP366 renderer A B recovers q r group miss…`)は、テストの中でこの変数を外します。✅TS-2 から、自分で directory を決めて設定したときだけ、続けて [`sweep_shader_cache_directory()`](../../test/gpu_lease_run.cpp#L101) が 1 日 1 回(印のファイル `last_sweep.stamp` の更新時刻で判定)、直下の regular file のうち 14 日書かれていないものを消します(失敗は例外も含めて全部無視。cache の hit は更新時刻を変えないので、使っている entry も 14 日ごとに compile し直されます。test は `gpu_lease_runtime` の case `shader_cache_sweep`)。launcher は起動のたびに最初に [`sweep_lease_logs()`](../../test/gpu_lease_run.cpp#L167) も呼び、log の置き場(`PELICAN_GPU_LEASE_LOG_DIR`、無ければ Windows は `%TEMP%`)にある `pelican_gpu_lease_v1*.log` のうち、24 時間より前に書かれたものを自分の log を除いて消します(失敗は全部無視し、lease の取得には関わらない。`PELICAN_GPU_LEASE=off` でも走る。test は `test/ci/test_gpu_lease_log_cleanup.py`)。鍵の作りは第6章の disk cache の節、置き場の説明は manual 第10章にあります。
+待ち時間が締め切りを越えたら skip ではなく `gpu_lease_timeout@1{holder_pid=...}` / exit 124 の失敗で、CTest の `TIMEOUT` は `lease_timeout_max + intrinsic + grace` で生成されます(数値の出所は [`gpu_lease_config.cmake`](../../test/gpu_lease_config.cmake#L3) の 1 箇所)。この lease があるので、別 worktree の `ctest` を同時に走らせても GPU は 1 プロセスずつ使われます([`tools/worktree.sh`](../../tools/worktree.sh#L2) が worktree ごとの build と manifest 検査を担当します)。
+
+✅TS-1 から、この launcher は子を起こす前に shader の disk cache の置き場も決めます。[`prepare_shader_cache_directory()`](../../test/gpu_lease_run.cpp#L136) は、`PELICAN_SHADER_CACHE_DIR` が未設定なら `%LOCALAPPDATA%/pelican/test_shader_cache` を作って設定します(既に設定されていれば触らず、作れなければ設定しません)。GPU テストは毎回新しい temp project を作るので、それまでは `.pelican/shader_cache` が毎回空から始まっていました。環境変数は子へ継承されるので、`test/CMakeLists.txt` を変えずに、全 GPU テストと Studio のシナリオが起こす player が 1 つの cache を共有します。
+
+cache そのものを数えるテスト(`WP366 renderer A B recovers q r group miss…`)は、テストの中でこの変数を外します。✅TS-2 から、自分で directory を決めて設定したときだけ、続けて [`sweep_shader_cache_directory()`](../../test/gpu_lease_run.cpp#L101) が 1 日 1 回(印のファイル `last_sweep.stamp` の更新時刻で判定)、直下の regular file のうち 14 日書かれていないものを消します(失敗は例外も含めて全部無視。cache の hit は更新時刻を変えないので、使っている entry も 14 日ごとに compile し直されます。test は `gpu_lease_runtime` の case `shader_cache_sweep`)。
+
+launcher は起動のたびに最初に [`sweep_lease_logs()`](../../test/gpu_lease_run.cpp#L167) も呼び、log の置き場(`PELICAN_GPU_LEASE_LOG_DIR`、無ければ Windows は `%TEMP%`)にある `pelican_gpu_lease_v1*.log` のうち、24 時間より前に書かれたものを自分の log を除いて消します(失敗は全部無視し、lease の取得には関わらない。`PELICAN_GPU_LEASE=off` でも走る。test は `test/ci/test_gpu_lease_log_cleanup.py`)。鍵の作りは第6章の disk cache の節、置き場の説明は manual 第10章にあります。
 
 登録経路は 3 本あり、label が違います。
 
@@ -1447,7 +1565,11 @@ cmake_parse_arguments(PELICAN_TEST
 
 なお [`gltf_scene_extract_test`](../../test/gltf_scene_extract_test.cpp) は `SceneLoader` roundtrip case が Vulkan instance を要求するため **GPU ラベル** に変わりました。`xrsession_test` は `get_status` 投影を検証するので `PELICAN_WITH_RPC` でも囲まれています。
 
-**executable 名とファイル名は 1 対 1 ではありません。** `GROUP` を持つ source はソース別 object target を保ったまま、同じリンク閉包・discovery properties を持つ連続区間ごとの `pelican_test_group_<group>` executable に入ります。また `target_sources()` で別の `TEST_CASE` を足している箇所もあります。WP238e の [`headless_native_scope_test.cpp`](../../test/headless_native_scope_test.cpp) が後者で、`headless_render_test` の実行体へ混ぜられています(したがって `gpu` label もそちらの discovery properties から継承します)。ただし CTest 名まで消えるわけではありません。[`pelican_define_test()`](../../test/CMakeLists.txt#L81) は `catch_discover_tests()` で登録するので **CTest 名は常に TEST_CASE の文字列**で、この case は `WP238e NativeScope records Vulkan commands and rebuilds through renderer generations` という独立した名前を持ちます。逆に `headless_render_test` という CTest 名は存在しないため、`ctest -R headless_native_scope` も `ctest -R headless_render_test` も 1 件も引っかかりません。ファイル名でも実行体名でもテストを引けないのがここの落とし穴です。なお `gltf_scene_extract_test` / `processrunner_test` の `target_sources()` は `src/devcli/*.cpp`(TEST_CASE を持たない実装コード)を link するだけで、これとは別の形です。
+**executable 名とファイル名は 1 対 1 ではありません。** `GROUP` を持つ source はソース別 object target を保ったまま、同じリンク閉包・discovery properties を持つ連続区間ごとの `pelican_test_group_<group>` executable に入ります。また `target_sources()` で別の `TEST_CASE` を足している箇所もあります。WP238e の [`headless_native_scope_test.cpp`](../../test/headless_native_scope_test.cpp) が後者で、`headless_render_test` の実行体へ混ぜられています(したがって `gpu` label もそちらの discovery properties から継承します)。
+
+ただし CTest 名まで消えるわけではありません。[`pelican_define_test()`](../../test/CMakeLists.txt#L81) は `catch_discover_tests()` で登録するので **CTest 名は常に TEST_CASE の文字列**で、この case は `WP238e NativeScope records Vulkan commands and rebuilds through renderer generations` という独立した名前を持ちます。
+
+逆に `headless_render_test` という CTest 名は存在しないため、`ctest -R headless_native_scope` も `ctest -R headless_render_test` も 1 件も引っかかりません。ファイル名でも実行体名でもテストを引けないのがここの落とし穴です。なお `gltf_scene_extract_test` / `processrunner_test` の `target_sources()` は `src/devcli/*.cpp`(TEST_CASE を持たない実装コード)を link するだけで、これとは別の形です。
 
 ### subsystem ごとの「最初に読むテスト」
 
@@ -1570,9 +1692,13 @@ rg -n -A3 "catch \(const std::exception" test --glob "*.cpp" | rg -B1 "SKIP\("
 
 #### gate 側の受け止め
 
-skip が緑を汚さない以上、`ctest` の exit code だけでは検出できません。そのため gate 側が **許可した名前以外の skip をすべて失敗にする**方針を持っています。判定は [`validate_skip_policy()`](../../test/ci/skip_policy.py#L74)(CPU/GPU 両 gate 共通)で、GPU 側の driver が [`run_gpu_gate.py`](../../test/ci/run_gpu_gate.py)、許可リストが [`test/ci/gpu_skip_allowlist.txt`](../../test/ci/gpu_skip_allowlist.txt) です。現在の GPU allowlist は、clone / worktree 外の corpus を `PELICAN_TEST_PROJECTS_DIR` で指定する `project_catalog_headless_smoke` の未指定 skip と、Debug 専用の故障注入を持つ `wsi_fault_window_player` の非 Debug skip を載せています。上の 4 件の broad exception skip は載せません。entry を消せば未指定時の skip が非許可になり、逆にテスト名自体が現れなければ stale entry として失敗するので、リストは腐りません([`skip_policy.py` 内](../../test/ci/skip_policy.py#L98))。
+skip が緑を汚さない以上、`ctest` の exit code だけでは検出できません。そのため gate 側が **許可した名前以外の skip をすべて失敗にする**方針を持っています。判定は [`validate_skip_policy()`](../../test/ci/skip_policy.py#L74)(CPU/GPU 両 gate 共通)で、GPU 側の driver が [`run_gpu_gate.py`](../../test/ci/run_gpu_gate.py)、許可リストが [`test/ci/gpu_skip_allowlist.txt`](../../test/ci/gpu_skip_allowlist.txt) です。
 
-なお `gpu` ラベルは Catch2 の `[gpu]` タグではなく CTest の LABELS で、付き方が 2 通りある点に注意してください。Catch2 テストは [`pelican_define_test(<name> GPU ...)`](../../test/CMakeLists.txt#L81) が target 単位で付け、CTest 名は [`catch_discover_tests()`](../../test/CMakeLists.txt#L207) が `TEST_CASE` の文字列をそのまま使います。もう一方は `add_test()` で登録した e2e / player テストに [`pelican_gpu_test_properties(seqplayer_headless_player ...)`](../../test/CMakeLists.txt#L36) の形で個別に付けるもので(呼び出しは 26 か所。うち 1 つは `foreach` の中なので、登録されるテスト数はこれより多くなります)、この場合の CTest 名は `add_test()` の名前です。この関数は label だけでなく `RESOURCE_LOCK pelican_gpu` と生成した `TIMEOUT` も同時に付けます([定義](../../test/CMakeLists.txt#L36))。allowlist は完全一致の名前を要求するので、どちらの経路で付いたラベルかで書くべき名前が変わります。gate の起動方法は [`docs/ci.md`](../ci.md) にあります。
+現在の GPU allowlist は、clone / worktree 外の corpus を `PELICAN_TEST_PROJECTS_DIR` で指定する `project_catalog_headless_smoke` の未指定 skip と、Debug 専用の故障注入を持つ `wsi_fault_window_player` の非 Debug skip を載せています。上の 4 件の broad exception skip は載せません。entry を消せば未指定時の skip が非許可になり、逆にテスト名自体が現れなければ stale entry として失敗するので、リストは腐りません([`skip_policy.py` 内](../../test/ci/skip_policy.py#L98))。
+
+なお `gpu` ラベルは Catch2 の `[gpu]` タグではなく CTest の LABELS で、付き方が 2 通りある点に注意してください。Catch2 テストは [`pelican_define_test(<name> GPU ...)`](../../test/CMakeLists.txt#L81) が target 単位で付け、CTest 名は [`catch_discover_tests()`](../../test/CMakeLists.txt#L207) が `TEST_CASE` の文字列をそのまま使います。
+
+もう一方は `add_test()` で登録した e2e / player テストに [`pelican_gpu_test_properties(seqplayer_headless_player ...)`](../../test/CMakeLists.txt#L36) の形で個別に付けるもので(呼び出しは 26 か所。うち 1 つは `foreach` の中なので、登録されるテスト数はこれより多くなります)、この場合の CTest 名は `add_test()` の名前です。この関数は label だけでなく `RESOURCE_LOCK pelican_gpu` と生成した `TIMEOUT` も同時に付けます([定義](../../test/CMakeLists.txt#L36))。allowlist は完全一致の名前を要求するので、どちらの経路で付いたラベルかで書くべき名前が変わります。gate の起動方法は [`docs/ci.md`](../ci.md) にあります。
 
 ## 7.9 テストの実行方法
 
@@ -1748,9 +1874,13 @@ engine 内蔵の開発者 UI に、読み取り専用の [`AssetBrowserPanel`](.
 > The ImGui WP consumes the same typed service. This fake is deliberately kept
 > free of ImGui headers so equivalence is testable in the CPU-only suite.
 
-inspector のウィジェットは component schema から決まります。[`makeInspectorWidgetPlan(const EditorComponentQueryResult &)`](../../src/core/imgui/inspector.hpp#L76) が [`InspectorWidgetKind`](../../src/core/imgui/inspector.hpp#L53) の 8 種(`SignedIntegerDrag` / `UnsignedIntegerDrag` / `FloatingPointDrag` / `BooleanCheckbox` / `EnumCombo` / `StringInput` / `VectorDrag` / `QuaternionDrag`)を割り当て、編集対象の位置は [`inspectorJsonPointer(schema_field_name)`](../../src/core/imgui/inspector.hpp#L74) が JSON pointer(RFC 6901 の標準記法 — `/a/b/0` のようにスラッシュ区切りで JSON 文書内の 1 箇所を指す書き方)で表します。schema 側の宣言は [第5章 §5.14](05_gameplay_and_services.md) です。
+inspector のウィジェットは component schema から決まります。[`makeInspectorWidgetPlan(const EditorComponentQueryResult &)`](../../src/core/imgui/inspector.hpp#L76) が [`InspectorWidgetKind`](../../src/core/imgui/inspector.hpp#L53) の 8 種(`SignedIntegerDrag` / `UnsignedIntegerDrag` / `FloatingPointDrag` / `BooleanCheckbox` / `EnumCombo` / `StringInput` / `VectorDrag` / `QuaternionDrag`)を割り当て、編集対象の位置は [`inspectorJsonPointer(schema_field_name)`](../../src/core/imgui/inspector.hpp#L74) が JSON pointer(RFC 6901 の標準記法 — `/a/b/0` のようにスラッシュ区切りで JSON 文書内の 1 箇所を指す書き方)で表します。
 
-外部からの変更検知は watch token のポーリングです。[`inspectorWatchPollFrameInterval = 30`](../../src/core/imgui/inspector.hpp#L25) フレームごとに [`pollInspectorWatch(state, refresh_blocked, query, refresh)`](../../src/core/imgui/inspector.hpp#L42) が [`InspectorWatchState`](../../src/core/imgui/inspector.hpp#L32) を更新します。ただし preview lease の保持中または schema widget の編集中は [`inspectorRefreshBlocked()`](../../src/core/imgui/inspector.hpp#L27) がポーリングと snapshot refresh を止め、編集中の `authored_json` を保持します。保留した refresh は編集終了後に実行し、自分の commit / abort / save 後は同時に新しい watch token を観測します。非編集中の外部変更は従来どおり refresh されます。この2経路は [`WP245 active inspector edits suppress watch refresh and retain the dragged value`](../../test/inspector_test.cpp#L700) と [`WP245 idle inspector watch still refreshes external scene changes`](../../test/inspector_test.cpp#L754) で別々に固定しています。
+schema 側の宣言は [第5章 §5.14](05_gameplay_and_services.md) です。
+
+外部からの変更検知は watch token のポーリングです。[`inspectorWatchPollFrameInterval = 30`](../../src/core/imgui/inspector.hpp#L25) フレームごとに [`pollInspectorWatch(state, refresh_blocked, query, refresh)`](../../src/core/imgui/inspector.hpp#L42) が [`InspectorWatchState`](../../src/core/imgui/inspector.hpp#L32) を更新します。
+
+ただし preview lease の保持中または schema widget の編集中は [`inspectorRefreshBlocked()`](../../src/core/imgui/inspector.hpp#L27) がポーリングと snapshot refresh を止め、編集中の `authored_json` を保持します。保留した refresh は編集終了後に実行し、自分の commit / abort / save 後は同時に新しい watch token を観測します。非編集中の外部変更は従来どおり refresh されます。この2経路は [`WP245 active inspector edits suppress watch refresh and retain the dragged value`](../../test/inspector_test.cpp#L700) と [`WP245 idle inspector watch still refreshes external scene changes`](../../test/inspector_test.cpp#L754) で別々に固定しています。
 
 ### ゲート: `--rpc` を付けると ImGui は動かない
 
@@ -1761,7 +1891,9 @@ return !config.headless && !config.rpc && !config.input_replay && !config.golden
        !config.xr_active;
 ```
 
-つまり **`--rpc` を付けた windowed セッションでは ImGui UI(したがって inspector)は動きません**。排他の実体は「リクエストを処理する間だけ UI を止める」「stdin 読み取りでブロックする」といった実行時の調停ではなく、**config を見るだけの一枚のゲート**です。同じ述語は frame graph の合成時にも通るため([`renderingpassconfigregistration.cpp` 内](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L251))、`--rpc` のセッションには `imgui_pass` がそもそも合成グラフに入りません。実行時も [`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L80) が毎フレーム同じ述語を評価し、偽なら `ImGuiSystem` を frame state に載せないので、パネルの callback は一度も呼ばれません。ヘッダのコメント「Deterministic drivers therefore skip callbacks, instead of running an invisible ImGui frame.」がこの並び(headless / rpc / replay / golden)の意図です。ゲートが**実行中に**閉じうるのは XR activation と replay 開始で、そのとき開始済みの ImGui フレームは `endFrameIfStarted()` で閉じられます。XR を除外している理由だけは別で、実装側のコメントにあるとおり「XR グラフに ImGui pass が無いので、開始した ImGui フレームに対応する Render/EndFrame が無くなる」ためです。
+つまり **`--rpc` を付けた windowed セッションでは ImGui UI(したがって inspector)は動きません**。排他の実体は「リクエストを処理する間だけ UI を止める」「stdin 読み取りでブロックする」といった実行時の調停ではなく、**config を見るだけの一枚のゲート**です。同じ述語は frame graph の合成時にも通るため([`renderingpassconfigregistration.cpp` 内](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L251))、`--rpc` のセッションには `imgui_pass` がそもそも合成グラフに入りません。
+
+実行時も [`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L80) が毎フレーム同じ述語を評価し、偽なら `ImGuiSystem` を frame state に載せないので、パネルの callback は一度も呼ばれません。ヘッダのコメント「Deterministic drivers therefore skip callbacks, instead of running an invisible ImGui frame.」がこの並び(headless / rpc / replay / golden)の意図です。ゲートが**実行中に**閉じうるのは XR activation と replay 開始で、そのとき開始済みの ImGui フレームは `endFrameIfStarted()` で閉じられます。XR を除外している理由だけは別で、実装側のコメントにあるとおり「XR グラフに ImGui pass が無いので、開始した ImGui フレームに対応する Render/EndFrame が無くなる」ためです。
 
 テストは [`test/assetbrowser_test.cpp`](../../test/assetbrowser_test.cpp) と [`test/inspector_test.cpp`](../../test/inspector_test.cpp) です。
 

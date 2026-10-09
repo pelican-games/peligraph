@@ -292,7 +292,9 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 | `loop` | 任意 | true | 非 bool は名指しエラー。**`clip` のときだけ** |
 | `start_time` | 任意 | 0.0 | 開始オフセット秒。**`clip` のときだけ** |
 
-`graph` と一緒に `speed` / `loop` / `start_time` を書くと拒否されます —— メッセージは**書いた鍵を名指し**するので、`field 'animation.speed' is clip-only; graph states define their playback clocks` のほか `field 'animation.loop' …` / `field 'animation.start_time' …` の形も出ます([componentcodec.cpp:1009](../../src/core/loader/componentcodec.cpp#L1547))—— ステートマシンでは再生時計を各ステートが決めるからで、黙って無視はされません。実行時にパラメータを動かす API は [第8章 §8.13](08_gameplay.md)(`animation().setParameter` / `animation().forceState`)です。**出荷プロジェクトの scene.json には、今日 `animation` コンポーネント自体がありません**(2026-09-17 実測)。`animgraph_demo` は同じ形のステートマシンを**ゲームコードから**駆動しており(`code/` の `EvaluatorV1`)、`animgraph_demo` / `vrm_xr_demo` の `movement.anim_graph.json` はどちらの scene からも参照されていません。姿勢をデータだけで装着する実物は `posegraph_demo`(様式 (2)、下記)です。
+`graph` と一緒に `speed` / `loop` / `start_time` を書くと拒否されます —— メッセージは**書いた鍵を名指し**するので、`field 'animation.speed' is clip-only; graph states define their playback clocks` のほか `field 'animation.loop' …` / `field 'animation.start_time' …` の形も出ます([componentcodec.cpp:1009](../../src/core/loader/componentcodec.cpp#L1547))—— ステートマシンでは再生時計を各ステートが決めるからで、黙って無視はされません。実行時にパラメータを動かす API は [第8章 §8.13](08_gameplay.md)(`animation().setParameter` / `animation().forceState`)です。
+
+**出荷プロジェクトの scene.json には、今日 `animation` コンポーネント自体がありません**(2026-09-17 実測)。`animgraph_demo` は同じ形のステートマシンを**ゲームコードから**駆動しており(`code/` の `EvaluatorV1`)、`animgraph_demo` / `vrm_xr_demo` の `movement.anim_graph.json` はどちらの scene からも参照されていません。姿勢をデータだけで装着する実物は `posegraph_demo`(様式 (2)、下記)です。
 
 制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128。モーフターゲットは描画対応 ✅WP121(初期 weight で表示)ですが、**クリップの `weights` チャネルは v1 非対応**(表情などの weight 駆動は [第8章](08_gameplay.md) §8.13 の VRM service 経由)。時刻源は `EngineTime`(rpc `set_time` と同一経路 = 決定的)。`PELICAN_WITH_ANIMATION=OFF` のビルドでは、このコンポーネントを持つシーンは**ロードの prepare 段で** `animation.module_unavailable@1` になります(§4.3)。
 

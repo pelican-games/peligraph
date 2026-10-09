@@ -51,18 +51,25 @@
 1 のファイルを project の中に置いた後、RPC `register_model {path, name?}` で `models[]` に `{name, path}` を足させ、その場で登録させられます
 (`name` を省くとファイル名の stem。起動時と同じ読み込みの検査を通らないファイルは断られ、asset_data は変わりません)。
 外すのは `unregister_model {name}` で、`models[]` から外しますが、ファイルは消しません。ファイルを project にコピーするのは
-呼び手の役目です。rig を持つ model(VRM の大半)を外したときと、登録できなかったときは、書いたうえで `restart_required` を返し、
+呼び手の役目です。
+
+rig を持つ model(VRM の大半)を外したときと、登録できなかったときは、書いたうえで `restart_required` を返し、
 engine を起こし直すと効きます。引数・拒否・live になる条件は [第13章](13_editor.md#project-の中の-model-ファイルを登録する外すmi-1) §13.5 の「project の中の model ファイルを登録する・外す」です。
+
 登録した model は `list_assets` に出ます。`path` は asset_data に書いた project 相対の綴り、`resolved_path` は解決した絶対 path です。
 Studio の画面からこの RPC を呼ぶ道は下の「Studio から持ち込む」です。
 
 **Studio から持ち込む**: Studio で project を開いて engine が動いている間に、Outliner の右クリックか Scene の toolbar の
 **Add Object > Model from file…** を押し、ファイルダイアログで `.glb` / `.vrm` を選びます。project の外のファイルは `assets/models/` にコピーされ
 (同じ名前が既にあれば `<stem>_2`…)、上の 2 の登録(`register_model`)と 3 の object(原点に、ファイル名の stem を名前にした model を描く object)を
-Studio がします。名前が既にある model と重なれば `<stem>_001`… で登録します。いま選んでいる object の model を替えるときは、Inspector の
+Studio がします。名前が既にある model と重なれば `<stem>_001`… で登録します。
+
+いま選んでいる object の model を替えるときは、Inspector の
 model 欄の右の **Import…** で同じようにファイルを選ぶと、その欄が登録した model になります。File > Save Scene で scene に残ります。
+
 外の `.gltf` は隣の `.bin` と画像を読むので選んでも断られます。関連するファイルごと project のフォルダに置いてから選ぶと、その場所のまま登録されます。
 engine が登録を書いたもののその場で使えなかったとき(`restart_required`)は、object は置かれず、Outliner の下に再起動の案内と **Restart engine** が出ます。
+
 登録を外すのは Assets のドックのそのファイルの行の右クリックの **Remove from project…** で、ファイルは消えません。
 詳しくは [第13章](13_editor.md) §13.1 の「Studio で外の model を持ち込む(✅MI-1s)」です。
 
@@ -262,7 +269,9 @@ pelican_player --headless --project <dir> --frames 3 --size 160x90 --fps 30 \
 
 現状の注意: 変換ツール集 **pelican-import-tools は独立リポジトリとして実装済み**(✅WP81 = K3。Python 製 `psd_extract` + `atlas_pack`、出力は `pelican.atlas` + import manifest)ですが、本リポジトリには含まれません。Houdini アダプタも別リポジトリです。Blender ブリッジは依然 📐(FBX→glb の標準変換レーンは「Blender headless」と決定済み)。エンジン側の受け口(headless 描画・SeqPlayer・VAT・import・rules)はすべて完成しています。
 
-**USD レーン(✅WP118/119/124/240c)**: ここでいう**レーン**は「ある入力形式をランタイム層へ運ぶ、決まった経路一式(外部ツールのレシピ + 納品物の形 + manifest)」のことです。import-tools に production の `usd` レシピが入りました。USD/USDZ を「`model.glb` + `scene.json`(pelican.scene)+ `materials.json`(pelican.material v1 — OpenPBR values + routing)+ `material_bindings.json` + PNG 群 + `manifest.json`」の決定的 delivery に変換します(二回ビルドの hash 一致 gate 付き。toolchain は `usd-core==26.5` に pin)。**エンジンは USD を 1 byte も読みません**(二層モデル不変)。delivery の `materials.json` を `asset_data.json` の `materials[]` で索引すれば、engine runtime が OpenPBR material と primitive binding をロードします。`pelican_cli import --rules` のレシピ表に usd はありません。UsdMtlx は Windows wheel 非同梱のため外部 .mtlx は評価されず、authored 値のみ解釈されます。
+**USD レーン(✅WP118/119/124/240c)**: ここでいう**レーン**は「ある入力形式をランタイム層へ運ぶ、決まった経路一式(外部ツールのレシピ + 納品物の形 + manifest)」のことです。import-tools に production の `usd` レシピが入りました。USD/USDZ を「`model.glb` + `scene.json`(pelican.scene)+ `materials.json`(pelican.material v1 — OpenPBR values + routing)+ `material_bindings.json` + PNG 群 + `manifest.json`」の決定的 delivery に変換します(二回ビルドの hash 一致 gate 付き。toolchain は `usd-core==26.5` に pin)。
+
+**エンジンは USD を 1 byte も読みません**(二層モデル不変)。delivery の `materials.json` を `asset_data.json` の `materials[]` で索引すれば、engine runtime が OpenPBR material と primitive binding をロードします。`pelican_cli import --rules` のレシピ表に usd はありません。UsdMtlx は Windows wheel 非同梱のため外部 .mtlx は評価されず、authored 値のみ解釈されます。
 
 > ⚠ **MG-2b からエンジンは pelican.scene v2 しか読みません。** この repo の USD fixture(`test/fixtures/usd0b/` など)の manifest と `scene.json` は v2 に書き換えましたが、別 repo の import-tools の `usd` レシピが v2 を出すようになったかは未確認です(台帳の IMPORT-1)。v1 を名乗る delivery は `pelican_cli import` が `expected=2, actual=1` で断ります。
 

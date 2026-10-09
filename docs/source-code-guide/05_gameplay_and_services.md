@@ -23,7 +23,22 @@ flowchart LR
 
 ## 5.1 `GameContext`は公開ファサード
 
-ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L284) が主要サービスを薄く包みます。面は根と8つのドメインファサードに分かれ、物理 / 音 / アニメーション / セーブ / 描画 / ポインタとカーソル / シーンオブジェクトの名前解決 / UI は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L357) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L358) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L359) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L360) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L361) / [`input()`](../../src/core/userpublic/gamecontext.hpp#L362)（GP-4）/ [`objects()`](../../src/core/userpublic/gamecontext.hpp#L363)（GP-1）/ [`ui()`](../../src/core/userpublic/gamecontext.hpp#L364)（GP-3）が返す値越しに呼びます。ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L49) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L84) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L114) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L123) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L138) / [`InputContext`](../../src/core/userpublic/gamecontext.hpp#L244) / [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L214)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。例外は [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L271) で、`ui(document_key)` の key を `std::string_view` のまま 1 本だけ持ちます（`ui()` なら空の view）。key の文字列はファサードを使い終わるまで生かしておく必要があります。委譲先は分割前と同じです。
+ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L284) が主要サービスを薄く包みます。
+
+面は根と8つのドメインファサードに分かれ、次のメソッドが返す値越しに呼びます。
+
+- 物理: [`physics()`](../../src/core/userpublic/gamecontext.hpp#L357)
+- 音: [`audio()`](../../src/core/userpublic/gamecontext.hpp#L358)
+- アニメーション: [`animation()`](../../src/core/userpublic/gamecontext.hpp#L359)
+- セーブ: [`save()`](../../src/core/userpublic/gamecontext.hpp#L360)
+- 描画: [`render()`](../../src/core/userpublic/gamecontext.hpp#L361)
+- ポインタとカーソル: [`input()`](../../src/core/userpublic/gamecontext.hpp#L362)（GP-4）
+- シーンオブジェクトの名前解決: [`objects()`](../../src/core/userpublic/gamecontext.hpp#L363)（GP-1）
+- UI: [`ui()`](../../src/core/userpublic/gamecontext.hpp#L364)（GP-3）
+
+ファサードは空のクラス（[`PhysicsContext`](../../src/core/userpublic/gamecontext.hpp#L49) / [`AudioContext`](../../src/core/userpublic/gamecontext.hpp#L84) / [`AnimationContext`](../../src/core/userpublic/gamecontext.hpp#L114) / [`SaveContext`](../../src/core/userpublic/gamecontext.hpp#L123) / [`RenderContext`](../../src/core/userpublic/gamecontext.hpp#L138) / [`InputContext`](../../src/core/userpublic/gamecontext.hpp#L244) / [`ObjectsContext`](../../src/core/userpublic/gamecontext.hpp#L214)）で、状態もポインタも持たないので、返り値を持ち回っても何も持っていないのと同じです。
+
+例外は [`UiContext`](../../src/core/userpublic/gamecontext.hpp#L271) で、`ui(document_key)` の key を `std::string_view` のまま 1 本だけ持ちます（`ui()` なら空の view）。key の文字列はファサードを使い終わるまで生かしておく必要があります。委譲先は分割前と同じです。
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
@@ -65,7 +80,9 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 [[nodiscard]] bool setSpotLightDirection(std::string_view name, vec3 direction) const;
 ```
 
-setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L370)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L548) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。ここでの shadow 用 view-projection は、directional shadow の view family に属する各 view（ライト × cascade）の `projection * view` 行列を並べたもので、shading 側が world 座標を shadow map の座標へ写すために使います（組み立ては同関数内の [`view_projections.push_back()`](../../src/core/vkcore/renderer.cpp#L598) の周辺）。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
+setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L370)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L548) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。
+
+ここでの shadow 用 view-projection は、directional shadow の view family に属する各 view（ライト × cascade）の `projection * view` 行列を並べたもので、shading 側が world 座標を shadow map の座標へ写すために使います（組み立ては同関数内の [`view_projections.push_back()`](../../src/core/vkcore/renderer.cpp#L598) の周辺）。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
 
 > **設計決定:** ライトの時間変化は**ユーザー空間の責務**です。engine側にライト名（`"KeyLight"`など）を見て時刻から値を書き換える経路はありません。[`LightContainer`](../../src/core/light/lightcontainer.hpp) が持つのは現在値の配列と名前→indexのmapだけで、時刻を受け取るAPIも、scene読み込み時の原本値を控える配列もありません。従ってsetterで上書きした値を元へ戻したければ、ユーザーコード側で覚えておく必要があります。実例は [`updateLightAnimation()`](../../projects/example/code/playercontrol.cpp#L31) で、`ctx.time()`から毎フレーム**絶対値を計算して**4本のsetterへ渡しています。移行時の注意は[第9章](09_black_magic_and_gotchas.md)を参照してください。
 
@@ -88,9 +105,13 @@ setterは対象ライトのstructを書き換えるだけです（[`LightContain
 5. PG-1 の `resolvedObjectFeatureRefusal()`（[spawn からの呼び出し](../../src/core/loader/runtimespawn.cpp#L238)。scene load の prepare と editor の `add_component` / `spawn` と同じ判定）、light / camera の拒否、behavior の準備（`prepareResolvedSceneBehaviorAttachments`）。
 6. 展開済みの `ResolvedObject` と behavior を `Request` として積み、ref を返します。
 
-**境界**: [`RuntimeSpawner::applyBoundary()`](../../src/core/loader/runtimespawn.cpp#L353) は [`updateFrameState()` から、game の 1 歩のフレームに 1 回だけ](../../src/core/appflow/framephase.cpp#L187) 呼ばれます(一時停止中の、歩を取らないフレームでは呼ばれない。✅PM-1a)。置き場所は audio の回収・DLL reload の `applyFrame()`・editor の commit queue hook の**後**（これらは scene run を置き換えうる）、`forEachFramePhase` の最初の相（`freeze_events`）の**前**です。したがって前のフレームのどこで積んだ要求も、このフレームのゲームコードの全部から見えます。`applyBoundary()` は `ProjectBasicConfig::activeSceneAuthority()` が追跡中の run と違えば、run を切り替えて境界の数を 0 に戻し、別の run の `live` を捨ててから数を 1 進めます。待ち行列は swap して要求順に処理し、run が live でない要求（旧 run のもの、失敗した load 候補のもの）は黙って捨てます。1 件の失敗は `LOG_ERROR` に出して次の要求へ進みます。
+**境界**: [`RuntimeSpawner::applyBoundary()`](../../src/core/loader/runtimespawn.cpp#L353) は [`updateFrameState()` から、game の 1 歩のフレームに 1 回だけ](../../src/core/appflow/framephase.cpp#L187) 呼ばれます(一時停止中の、歩を取らないフレームでは呼ばれない。✅PM-1a)。置き場所は audio の回収・DLL reload の `applyFrame()`・editor の commit queue hook の**後**（これらは scene run を置き換えうる）、`forEachFramePhase` の最初の相（`freeze_events`）の**前**です。
 
-**投影**: [`materialize(Request&)`](../../src/core/loader/runtimespawn.cpp#L400) は editor の spawn と同じ `SceneObjectProjectionAdapter` を、文書無しの入口 [`prepareTransientSpawn()`](../../src/core/loader/editorprojectionadapters.hpp#L92) で使います。ECS の entity と描画のインスタンスは editor の spawn と同じ staging、collider と model の衝突 mesh は `runtime_only` の physics binding（名前は `SpawnParams::name` か `spawn:<境界>.<番号>`）になり、scene の runtime object binding・camera・light には触りません。`publish()` の後に [`BehaviorAttachmentArena::attachSpawned()`](../../src/core/gamelogic/behaviorarena.hpp#L305) で behavior を付けて `onInit` を呼び、それが投げたら adapter を `rollback()` します（その spawn だけが戻る）。[`retire()`](../../src/core/loader/runtimespawn.cpp#L452) は逆順で、`preDestroyEntity()`（`onDestroy`）→ [`prepareTransientDestroy()`](../../src/core/loader/editorprojectionadapters.hpp#L94)（physics の binding を外し、entity を消す）です。
+したがって前のフレームのどこで積んだ要求も、このフレームのゲームコードの全部から見えます。`applyBoundary()` は `ProjectBasicConfig::activeSceneAuthority()` が追跡中の run と違えば、run を切り替えて境界の数を 0 に戻し、別の run の `live` を捨ててから数を 1 進めます。待ち行列は swap して要求順に処理し、run が live でない要求（旧 run のもの、失敗した load 候補のもの）は黙って捨てます。1 件の失敗は `LOG_ERROR` に出して次の要求へ進みます。
+
+**投影**: [`materialize(Request&)`](../../src/core/loader/runtimespawn.cpp#L400) は editor の spawn と同じ `SceneObjectProjectionAdapter` を、文書無しの入口 [`prepareTransientSpawn()`](../../src/core/loader/editorprojectionadapters.hpp#L92) で使います。ECS の entity と描画のインスタンスは editor の spawn と同じ staging、collider と model の衝突 mesh は `runtime_only` の physics binding（名前は `SpawnParams::name` か `spawn:<境界>.<番号>`）になり、scene の runtime object binding・camera・light には触りません。
+
+`publish()` の後に [`BehaviorAttachmentArena::attachSpawned()`](../../src/core/gamelogic/behaviorarena.hpp#L305) で behavior を付けて `onInit` を呼び、それが投げたら adapter を `rollback()` します（その spawn だけが戻る）。[`retire()`](../../src/core/loader/runtimespawn.cpp#L452) は逆順で、`preDestroyEntity()`（`onDestroy`）→ [`prepareTransientDestroy()`](../../src/core/loader/editorprojectionadapters.hpp#L94)（physics の binding を外し、entity を消す）です。
 
 **scene run の終わり**: scene load の behavior participant は arena の reconciliation を `BehaviorSpawnedAttachments::retire` で準備します（[behavior participant の指定](../../src/core/loader/scene.cpp#L1541)）。`runtime_spawned` の attachment は新しい vector へ運ばれず、load の commit 後の finish で旧 scene の behavior と一緒に `onDestroy` を受けます（rollback なら戻ります）。editor の編集の reconciliation（[`editorprojectionadapters.cpp` の呼び出し](../../src/core/loader/editorprojectionadapters.cpp#L1040)）は引数を省くので既定の `carry` で運びます。scene transaction 中の `spawn` / `destroy` の分類は `covered.spawn-queue`（§5.15）です。
 
@@ -130,7 +151,9 @@ registry実体は [`getGameSystemRegisterer()`](../../src/core/userpublic/detail
 
 従ってtranslation unitの静的初期化順には依存せず、最終実行順は決定的です。組み込み [`BuiltinCameraControllerSystem`](../../src/core/userpublic/cameracontrollersystem.cpp#L429) はorder 10000なので、通常のゲームSystemの後に動きます。
 
-**一時停止中のフレーム(✅PM-1a)。**[`updateRegisteredGameSystems(ctx, scope)`](../../src/core/userpublic/details/system/registerer.cpp#L80) は、game の 1 歩でないフレームには `GameSystemScope::editor_only` で呼ばれ、[`markEditorGameSystem()`](../../src/core/userpublic/details/system/registerer.cpp#L57) で印の付いた system だけを同じ order 順で呼びます。印を付けるのは engine だけで、camera controller と modal transform の登録がそれぞれ `registerSystem<...>()` の token に付けます(公開の登録の形は変えていない)。印の付いた system を呼ぶ間は `ScopedEditorClock` が立ち、`GameContext::deltaTime()` はそのフレーム自身の `dt` を返します。`frameIndex()` はどちらの場合も評価の番号です。behavior(`BehaviorSystem`)・DLL の system・physics trigger には印が無いので、一時停止中は呼ばれません。
+**一時停止中のフレーム(✅PM-1a)。**[`updateRegisteredGameSystems(ctx, scope)`](../../src/core/userpublic/details/system/registerer.cpp#L80) は、game の 1 歩でないフレームには `GameSystemScope::editor_only` で呼ばれ、[`markEditorGameSystem()`](../../src/core/userpublic/details/system/registerer.cpp#L57) で印の付いた system だけを同じ order 順で呼びます。
+
+印を付けるのは engine だけで、camera controller と modal transform の登録がそれぞれ `registerSystem<...>()` の token に付けます(公開の登録の形は変えていない)。印の付いた system を呼ぶ間は `ScopedEditorClock` が立ち、`GameContext::deltaTime()` はそのフレーム自身の `dt` を返します。`frameIndex()` はどちらの場合も評価の番号です。behavior(`BehaviorSystem`)・DLL の system・physics trigger には印が無いので、一時停止中は呼ばれません。
 
 ### System instance の寿命 {#system-instance-lifetime}
 
@@ -202,7 +225,9 @@ registered game systems must define update(ctx) or onEvent(event, ctx)
 
 runtime update 順は static 初期化順ではなく、[`sortGameSystemRegistrations()`](../../src/core/userpublic/details/system/registerer.cpp#L35) が `(order, name)` で決めます。ここは決定論的です。Behavior もこの全順序に order 50 の 1 点として参加します([第5章 §5.13](05_gameplay_and_services.md))。
 
-registry の各登録には [`RegistrationOwner`](../../src/core/userpublic/details/system/registerer.hpp#L33)(engine / game DLL)が付きます。game DLL reload では [`unregisterGameSystems(owner)`](../../src/core/userpublic/details/system/registerer.hpp#L172) が旧 DLL の static 登録を外し、新 DLL の static 初期化が再登録します。個別解除用に [`unregisterGameSystem(token)`](../../src/core/userpublic/details/system/registerer.hpp#L171) もあります。また event 型は静的記述子 `pelican_payload`([`EventPayloadDescriptor`](../../src/core/userpublic/details/event/payloadschema.hpp#L43) / 実体化後は [`EventPayloadSchema`](../../src/core/userpublic/details/event/payloadschema.hpp#L26))で payload の field schema を宣言できるようになり、`fail_*` fixture は compile-time 検証([`run_event_schema_compile.cmake`](../../test/run_event_schema_compile.cmake))になっています。
+registry の各登録には [`RegistrationOwner`](../../src/core/userpublic/details/system/registerer.hpp#L33)(engine / game DLL)が付きます。game DLL reload では [`unregisterGameSystems(owner)`](../../src/core/userpublic/details/system/registerer.hpp#L172) が旧 DLL の static 登録を外し、新 DLL の static 初期化が再登録します。個別解除用に [`unregisterGameSystem(token)`](../../src/core/userpublic/details/system/registerer.hpp#L171) もあります。
+
+また event 型は静的記述子 `pelican_payload`([`EventPayloadDescriptor`](../../src/core/userpublic/details/event/payloadschema.hpp#L43) / 実体化後は [`EventPayloadSchema`](../../src/core/userpublic/details/event/payloadschema.hpp#L26))で payload の field schema を宣言できるようになり、`fail_*` fixture は compile-time 検証([`run_event_schema_compile.cmake`](../../test/run_event_schema_compile.cmake))になっています。
 
 ## 5.4 Event bus
 
@@ -313,7 +338,9 @@ flowchart LR
 
 [`Window`](../../src/core/os/window.hpp#L17) がGLFW callbackを`InputEvent`へ変換します。RPCの`inject_input`も同じ`InputState.queueEvents()`へ合流するため、下流は入力源を区別しません。
 
-XRセッション中は **XR action backend** もこの層に入ります。`syncActions()`の結果を`internal::setInputActionBackendFrame()`と`queuePoseSamples()`でInputStateへ流し込みます（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L570)）。また [`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L61) によるrecord/replayが、この層のevent queue境界に挿入されます。record/replayは `--record-input` / `--replay`（[第2章 §2.1](02_runtime_lifecycle.md)）で、記録・再生されるのは**この層の順序付き `InputEvent` 列とフレーム境界のmarker**（GP-4 の v2 からは、窓座標 → framebuffer ピクセルの換算も。下の「pointer の換算とカーソル」）です — 上位のL3 snapshotやL4のAction結果ではありません（再生時はそれらを記録から復元するのではなく、注入した event 列から**同じ手順で作り直します**）。番号合わせの詳細は次の難所にあります。
+XRセッション中は **XR action backend** もこの層に入ります。`syncActions()`の結果を`internal::setInputActionBackendFrame()`と`queuePoseSamples()`でInputStateへ流し込みます（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L570)）。
+
+また [`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L61) によるrecord/replayが、この層のevent queue境界に挿入されます。record/replayは `--record-input` / `--replay`（[第2章 §2.1](02_runtime_lifecycle.md)）で、記録・再生されるのは**この層の順序付き `InputEvent` 列とフレーム境界のmarker**（GP-4 の v2 からは、窓座標 → framebuffer ピクセルの換算も。下の「pointer の換算とカーソル」）です — 上位のL3 snapshotやL4のAction結果ではありません（再生時はそれらを記録から復元するのではなく、注入した event 列から**同じ手順で作り直します**）。番号合わせの詳細は次の難所にあります。
 
 ### L2: 順序付きInputEvent
 
@@ -353,7 +380,9 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 
 [`parseInputActionsJson()`](../../src/core/os/actionmap.cpp#L885) が`pelican.input_actions` v1を読みます。現対応bindingはkeyboard key/chord、mouse delta/wheel axis、WASD/arrows composite、gamepad（[`gamepad_button` / `gamepad_axis1` / `gamepad_axis2`](../../src/core/os/actionmap.cpp#L26)）などです。プロファイルは `input/profiles/*.json` から選べます（起動オプション`--input-profile`、RPC `set_input_profile`）。
 
-起動時だけ必要な道具の入力は [`applyInputActionOverlays()`](../../src/project/inputactionoverlay.cpp#L194) で project actions の後ろへ合成します。bundle URI は `EngineLaunchConfig::input_action_overlays` にだけあり、`ProjectBasicConfig` には入りません。project profile は project 定義だけ、overlay profile はその overlay 定義だけを相手に検証してから binding を併合するため、片方の profile がもう片方の action を偶然取り込むこともありません。action / action set の同名は衝突名を含む例外です。入力 runtime の project-only 読み込みは [`loadInputActionsRuntimeSourceFromProject()`](../../src/core/userpublic/userinput.cpp#L37)、明示的な startup-overlay 経路は [`loadInputActionsRuntimeSourceWithStartupActionOverlays()`](../../src/core/userpublic/userinput.cpp#L51) に分かれています。
+起動時だけ必要な道具の入力は [`applyInputActionOverlays()`](../../src/project/inputactionoverlay.cpp#L194) で project actions の後ろへ合成します。bundle URI は `EngineLaunchConfig::input_action_overlays` にだけあり、`ProjectBasicConfig` には入りません。project profile は project 定義だけ、overlay profile はその overlay 定義だけを相手に検証してから binding を併合するため、片方の profile がもう片方の action を偶然取り込むこともありません。
+
+action / action set の同名は衝突名を含む例外です。入力 runtime の project-only 読み込みは [`loadInputActionsRuntimeSourceFromProject()`](../../src/core/userpublic/userinput.cpp#L37)、明示的な startup-overlay 経路は [`loadInputActionsRuntimeSourceWithStartupActionOverlays()`](../../src/core/userpublic/userinput.cpp#L51) に分かれています。
 
 action set stackの実体は`std::vector<std::string>`（set名の列）で、[`Actions::pushActionSet` / `popActionSet`](../../src/core/userpublic/userinput.hpp#L182) が`push_back` / `pop_back`する本物のLIFOです（実体は [`InputActionsRuntime::pushSet()`](../../src/core/userpublic/userinput.cpp#L331)）。[`evaluateInputActions()`](../../src/core/os/actionmap.cpp#L1094) はこのvectorを`rbegin()`→`rend()`、つまり**末尾要素から先頭要素へ**走査します。最後にpushしたsetが最初に評価される＝高優先、ということです。上位setが使ったcontrolを`ConsumedControls`へ記録し、下位setでは同じkey/axisを無視します。
 
@@ -414,7 +443,9 @@ GP-4 の [`rayThroughPixel()`](../../src/core/renderer/camera.cpp#L434) は、fr
 
 `RenderContext::setCamera(name)`(`ctx.render().setCamera`)は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L534) を呼び、以後そのcameraのpose/projectionをactiveにします。
 
-このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L90)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L409) と CC-1 で足された [`Camera::setRotation()`](../../src/core/renderer/camera.cpp#L423)(回転から dir と up を `cameraBasis()` で作る)がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L330)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L486) を通るため、このフラグの影響を受けません。
+このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L90)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L409) と CC-1 で足された [`Camera::setRotation()`](../../src/core/renderer/camera.cpp#L423)(回転から dir と up を `cameraBasis()` で作る)がこのフラグを見て先頭で早期returnし、何も書き換えません。
+
+つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L330)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L486) を通るため、このフラグの影響を受けません。
 
 ### controller
 
@@ -461,7 +492,9 @@ physicsはビルドフラグ `PELICAN_WITH_PHYSICS` の配下にあります（O
 
 ### provider ABI
 
-ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/abi_v2.hpp)（現行の唯一の受理版。shapeCastとcapability bitsを含む）と、そのpayload型を切り出した [`query_types.hpp`](../../src/core/userpublic/physics/query_types.hpp) です。`query_types.hpp` に残る `V1` suffix はV2が内包するpayload layoutの版であり、Physics API/provider V1の受理経路ではありません。組み込みの [`BuiltinPhysicsProvider`](../../src/core/phys/builtinphysicsprovider.hpp) と、optionalの [`JoltPhysicsProvider`](../../src/core/phys/joltphysicsprovider.hpp)（`PELICAN_WITH_JOLT_PHYSICS`）があります。[`physicsservice.cpp`](../../src/core/phys/physicsservice.cpp) がABI面を、[`physicsruntime`](../../src/core/phys/physicsruntime.hpp) がprovider選択を担います。DLL providerのfixtureは [`test/fixtures/physics_provider_dll/`](../../test/fixtures/physics_provider_dll) です。
+ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/abi_v2.hpp)（現行の唯一の受理版。shapeCastとcapability bitsを含む）と、そのpayload型を切り出した [`query_types.hpp`](../../src/core/userpublic/physics/query_types.hpp) です。`query_types.hpp` に残る `V1` suffix はV2が内包するpayload layoutの版であり、Physics API/provider V1の受理経路ではありません。
+
+組み込みの [`BuiltinPhysicsProvider`](../../src/core/phys/builtinphysicsprovider.hpp) と、optionalの [`JoltPhysicsProvider`](../../src/core/phys/joltphysicsprovider.hpp)（`PELICAN_WITH_JOLT_PHYSICS`）があります。[`physicsservice.cpp`](../../src/core/phys/physicsservice.cpp) がABI面を、[`physicsruntime`](../../src/core/phys/physicsruntime.hpp) がprovider選択を担います。DLL providerのfixtureは [`test/fixtures/physics_provider_dll/`](../../test/fixtures/physics_provider_dll) です。
 
 > 🧩 **難所 — provider 索引の再マップ**([`selectColliders()`](../../src/core/phys/physicsruntime.cpp#L227) / [`invokeProvider()`](../../src/core/phys/physicsruntime.cpp#L246))
 >
@@ -593,7 +626,9 @@ collider 列は、ECS transformをresolveし、local collider offset/rotationと
 
 ### collider snapshot の共有 {#collider-snapshot-cache}
 
-query は [`PhysWorld::colliderSnapshot()`](../../src/core/phys/physworld.cpp#L469) から `shared_ptr<const vector<phys::Collider>>` を受け取ります。`colliderSnapshot()` は毎回、mesh でない各 binding の今の transform(`GameObjectId` なら `tryComponent<TransformComponent>`、static ならその値)を読み、前に列を作ったときの値と float の bit で比べます。binding の数が同じで全部が一致すれば前の列を返し、1 つでも違えば(entity が消えて transform が引けない場合も)列を作り直して検証します。`publishPrepared()`・`clear()`・`bindCollider()` は列を捨てます(`invalidateColliderSnapshot()`)。ECS の transform は client が直接書けるので、同じ frame の 2 つの query の間の書き換えも次の query に出ます([キャッシュの宣言の注記](../../src/core/phys/physworld.hpp#L77))。列の読み書きは mutex で守り、provider を呼ぶ前に lock を外します。共有するのは `queryRaycastAll` / `queryOverlapAll` / `queryShapeCastAll` / `updateTriggers` / `enqueueDebugDraw` で、mesh の query と最も近い hit の選び方は変えていません。test: `physworld_test` の [「PhysWorld snapshot follows same-frame writes and binding cutovers」](../../test/physworld_test.cpp#L1150)。
+query は [`PhysWorld::colliderSnapshot()`](../../src/core/phys/physworld.cpp#L469) から `shared_ptr<const vector<phys::Collider>>` を受け取ります。`colliderSnapshot()` は毎回、mesh でない各 binding の今の transform(`GameObjectId` なら `tryComponent<TransformComponent>`、static ならその値)を読み、前に列を作ったときの値と float の bit で比べます。binding の数が同じで全部が一致すれば前の列を返し、1 つでも違えば(entity が消えて transform が引けない場合も)列を作り直して検証します。`publishPrepared()`・`clear()`・`bindCollider()` は列を捨てます(`invalidateColliderSnapshot()`)。
+
+ECS の transform は client が直接書けるので、同じ frame の 2 つの query の間の書き換えも次の query に出ます([キャッシュの宣言の注記](../../src/core/phys/physworld.hpp#L77))。列の読み書きは mutex で守り、provider を呼ぶ前に lock を外します。共有するのは `queryRaycastAll` / `queryOverlapAll` / `queryShapeCastAll` / `updateTriggers` / `enqueueDebugDraw` で、mesh の query と最も近い hit の選び方は変えていません。test: `physworld_test` の [「PhysWorld snapshot follows same-frame writes and binding cutovers」](../../test/physworld_test.cpp#L1150)。
 
 builtin providerは **broad phase spatial index** を持たず、queryごとに全bindingを走査します。broad phase spatial index とは、BVHやgridのような空間索引で「明らかに当たらないcollider」をまとめて落とす前段のことで、その後に残った少数だけを厳密に判定する（= narrow phase）という二段構えの前半です。builtinにはその前段が無く、[`collectColliders()`](../../src/core/phys/physworld.cpp#L532) が全bindingからcollider列を作り、provider側も渡された配列を先頭から1件ずつ判定します（[`builtinphysicsprovider.cpp` の raycast ループ](../../src/core/phys/builtinphysicsprovider.cpp#L67)）。だから1クエリの計算量がcollider数Nに比例し、大量colliderではO(N)が支配的です(列を作り直す分は transform が変わらない間は省けますが、各 query で transform を N 個比べる分と、provider の判定の O(N) は残ります)。
 
@@ -688,7 +723,9 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 
 **このリポジトリでは**: `src/core/phys/physquerysweep.cpp` が両方を持ちます。反復上限は定数で `kGjkIterations = 40` / `kEpaIterations = 256`、EPA の収束判定は `kEpaTolerance = 1.0e-6F`(19〜21 行)。GJK 側は 442 行のループで最近接点と分離判定を出し、交差した組だけ `EpaFace` を張り替える `penetration()`(657 行)へ進んで貫通量を求めます。呼び出し面と、ε クラスタや collider identity による順序付けの契約は [第5章](05_gameplay_and_services.md) の physics query 節にあります。
 
-内訳の関数は次のとおりです(2026-09-04 追記)。形状ごとの support 関数が [support()](../../src/core/phys/physquerysweep.cpp#L155)、Minkowski 差の支持点(`support(A,d) - support(B,-d)`)が [supportDifference()](../../src/core/phys/physquerysweep.cpp#L256)、GJK 本体が [convexDistance()](../../src/core/phys/physquerysweep.cpp#L433) です。単体から原点への最近点は、部分集合をビットマスクで列挙して各々の重心座標を連立方程式で解き、負の重みが出ない解のうち最短を選ぶ **Johnson のアルゴリズム**([closestForSubset()](../../src/core/phys/physquerysweep.cpp#L310) と [closestToOrigin()](../../src/core/phys/physquerysweep.cpp#L373))で、四面体が原点を含むかは符号付き体積の比 = 重心座標が全て非負かで判定します([tetraContainsOrigin()](../../src/core/phys/physquerysweep.cpp#L519)、面上のケースを内側へ倒す数値マージン付き)。掃引判定の入口は [shapeCast()](../../src/core/phys/physquerysweep.cpp#L757) です。
+内訳の関数は次のとおりです(2026-09-04 追記)。形状ごとの support 関数が [support()](../../src/core/phys/physquerysweep.cpp#L155)、Minkowski 差の支持点(`support(A,d) - support(B,-d)`)が [supportDifference()](../../src/core/phys/physquerysweep.cpp#L256)、GJK 本体が [convexDistance()](../../src/core/phys/physquerysweep.cpp#L433) です。
+
+単体から原点への最近点は、部分集合をビットマスクで列挙して各々の重心座標を連立方程式で解き、負の重みが出ない解のうち最短を選ぶ **Johnson のアルゴリズム**([closestForSubset()](../../src/core/phys/physquerysweep.cpp#L310) と [closestToOrigin()](../../src/core/phys/physquerysweep.cpp#L373))で、四面体が原点を含むかは符号付き体積の比 = 重心座標が全て非負かで判定します([tetraContainsOrigin()](../../src/core/phys/physquerysweep.cpp#L519)、面上のケースを内側へ倒す数値マージン付き)。掃引判定の入口は [shapeCast()](../../src/core/phys/physquerysweep.cpp#L757) です。
 
 ## 5.8 決定的乱数
 
@@ -719,11 +756,15 @@ headlessでもplay/stop/isPlayingの状態遷移は模倣されるため、ゲ�
 
 形式は WAV と Ogg Vorbis です(AU-2)。[`detectSoundFormat`](../../src/core/audio/sounddecode.cpp#L263) が拡張子(小文字にしたもの)と先頭 bytes の両方で決め、食い違えば decode の前に `audio.format_unsupported@1` を投げます。Ogg Vorbis の decoder は miniaudio の `extras/stb_vorbis.c` で、ファイルの先頭で宣言だけを miniaudio より前に include し、実装はファイルの末尾で miniaudio の実装の後に include します(コードのコメントによれば miniaudio 自身の tools と同じ並べ方。miniaudio 側は未確認)。これで miniaudio が Vorbis の decoding backend を組み込みます。
 
-header が言う長さが 10 秒を超える音は streaming です。[`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L515) は `readSoundHeader` で長さだけを読み、長ければ PCM を作らず、`DecodedSound::encoded`(符号化 bytes の `shared_ptr`)と header の値だけを cache に入れます。backend の [`play`](../../src/core/audio/audio.cpp#L269) は `streamed()` を見て、voice ごとに `ma_decoder_init_memory` で自分の decoder を開き、それを data source にします(短い音は従来どおり共有 PCM の上の `ma_audio_buffer_ref`)。範囲・ループ点・開始位置はどちらでも同じ data source の API に渡すので、一体版のネイティブループも分解版の seek も同じ意味で動きます。短い WAV は自前の `decodeWav` で、streaming の WAV は miniaudio の WAV decoder で読みますが、登録時の検査は長さによらず同じ `parseWav` の規則を通ります。
+header が言う長さが 10 秒を超える音は streaming です。[`Audio::prepareSound()`](../../src/core/audio/audio.cpp#L515) は `readSoundHeader` で長さだけを読み、長ければ PCM を作らず、`DecodedSound::encoded`(符号化 bytes の `shared_ptr`)と header の値だけを cache に入れます。
+
+backend の [`play`](../../src/core/audio/audio.cpp#L269) は `streamed()` を見て、voice ごとに `ma_decoder_init_memory` で自分の decoder を開き、それを data source にします(短い音は従来どおり共有 PCM の上の `ma_audio_buffer_ref`)。範囲・ループ点・開始位置はどちらでも同じ data source の API に渡すので、一体版のネイティブループも分解版の seek も同じ意味で動きます。短い WAV は自前の `decodeWav` で、streaming の WAV は miniaudio の WAV decoder で読みますが、登録時の検査は長さによらず同じ `parseWav` の規則を通ります。
 
 busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更時はlive voice全てへ再適用します。
 
-**decode の置き場所(AB-1)。**✅AB-1(`892a1455`)で、形式の判定と decode(`detectSoundFormat` / `parseWav` / `decodeWav` / `readSoundHeader` / `decodeOgg` と `maErrorMessage` / `decoderConfig`)を `audio.cpp` から [`sounddecode.hpp`](../../src/core/audio/sounddecode.hpp#L19) / `sounddecode.cpp` の namespace `Pelican::AudioDecode` に移しました。engine を link しない `pelican_cli audio analyze` が、voice と同じ規則・同じ拒否・同じ sample で音を読むためです(ヘッダの注記)。`DecodedSound` もこちらに移っています。miniaudio と stb_vorbis の実装は実行ファイルごとに 1 回だけ compile するので、engine では `audio.cpp`、CLI では [`miniaudioimpl.cpp`](../../src/devcli/miniaudioimpl.cpp#L6) が持ちます(どちらも stb_vorbis の宣言 → miniaudio の実装 → stb_vorbis の実装の順)。新しく足した [`decodeWholeSound()`](../../src/core/audio/sounddecode.cpp#L345) は、長さによらず全体を decode します(streaming にしない)。
+**decode の置き場所(AB-1)。**✅AB-1(`892a1455`)で、形式の判定と decode(`detectSoundFormat` / `parseWav` / `decodeWav` / `readSoundHeader` / `decodeOgg` と `maErrorMessage` / `decoderConfig`)を `audio.cpp` から [`sounddecode.hpp`](../../src/core/audio/sounddecode.hpp#L19) / `sounddecode.cpp` の namespace `Pelican::AudioDecode` に移しました。engine を link しない `pelican_cli audio analyze` が、voice と同じ規則・同じ拒否・同じ sample で音を読むためです(ヘッダの注記)。
+
+`DecodedSound` もこちらに移っています。miniaudio と stb_vorbis の実装は実行ファイルごとに 1 回だけ compile するので、engine では `audio.cpp`、CLI では [`miniaudioimpl.cpp`](../../src/devcli/miniaudioimpl.cpp#L6) が持ちます(どちらも stb_vorbis の宣言 → miniaudio の実装 → stb_vorbis の実装の順)。新しく足した [`decodeWholeSound()`](../../src/core/audio/sounddecode.cpp#L345) は、長さによらず全体を decode します(streaming にしない)。
 
 ### 音の解析を焼く(AB-1) ✅実装済み
 
@@ -738,13 +779,23 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 | GPU で読む | [`pelican_sample_table.glsl`](../../src/core/resources/shaders/include/pelican_sample_table.glsl#L4) | `pelican_sample_table(...)` |
 | CLI | [`audiocommand.cpp`](../../src/devcli/audiocommand.cpp#L84) | `pelican_cli audio analyze` |
 
-**決定性の作り。**同じ bytes と settings からは同じ 2 つの file が書かれます。manifest は `created` を持たず、`settings` は既定を埋めた JSON をそのまま書き、`settings_sha256` はその `dump()` の sha256 です([`audioAnalysisSettingsJson()` と sha256 の所](../../src/project/audioanalysisformat.cpp#L132))。2 つの file は隣の `.tmp` に書いてから rename します。置き換えは `pelican_project` の共通の [`writeFileReplacing()` を bake が呼ぶ所](../../src/core/audio/audioanalysis.cpp#L210)で、Windows で読む側が出力を開いていれば 50 ms から倍々に合計 2 秒までやり直し、開かれたままなら [`FileReplaceLocked` を `audio.analysis_failed@1` の `reason: "output_locked"` と `path` にする所](../../src/core/audio/audioanalysis.cpp#L218)を通ります。RPC 側は `path` を要求の `out` か `<out>.import.json` の綴りに直します([AB-2 の `path` の直し](../../src/core/communication/renderconfigaudioanalysis.cpp#L90))。置き換えの中身は第3章 §3.9 の「読む側が開いている file の置き換え —— `filereplace`」です。
+**決定性の作り。**同じ bytes と settings からは同じ 2 つの file が書かれます。manifest は `created` を持たず、`settings` は既定を埋めた JSON をそのまま書き、`settings_sha256` はその `dump()` の sha256 です([`audioAnalysisSettingsJson()` と sha256 の所](../../src/project/audioanalysisformat.cpp#L132))。2 つの file は隣の `.tmp` に書いてから rename します。
 
-**bake の ticket の流れ。**[`bakeAudioAnalysis()` の RPC 側](../../src/core/communication/renderconfigaudioanalysis.cpp#L36)は、engine の thread で引数と settings を見て(settings の拒否と `audio.analysis_busy@1` はここですぐ返す)、`asset` / `out` を `resolve_document_path` で解き、`std::async` の thread に bake を渡します。worker は engine の状態を読みません(コードの注記)。結果は `AudioAnalysisBakeOutcome`(committed の fields か、拒否の code・message・fields)で返り、`commitPending()` が frame の境界ごとに最初に呼ぶ [`harvestAudioBakes()`](../../src/core/communication/renderconfigaudioanalysis.cpp#L113) が終わったものを `results_` と `completed_` に移します([呼ぶ所 AB-1](../../src/core/communication/renderconfigeditor.cpp#L8219))。render 文書を書かないので、待っている編集の ticket とは関係なく終わります。editor の destructor は走っている bake を待ちます。この file は audio の有無によらず `pelican_core` に入り、`PELICAN_WITH_AUDIO=OFF` の build では `bake_audio_analysis` が settings を見た後に `audio.analysis_unavailable@1` を返すだけになります(`list_derived_assets` は同じに動きます)。
+置き換えは `pelican_project` の共通の [`writeFileReplacing()` を bake が呼ぶ所](../../src/core/audio/audioanalysis.cpp#L210)で、Windows で読む側が出力を開いていれば 50 ms から倍々に合計 2 秒までやり直し、開かれたままなら [`FileReplaceLocked` を `audio.analysis_failed@1` の `reason: "output_locked"` と `path` にする所](../../src/core/audio/audioanalysis.cpp#L218)を通ります。RPC 側は `path` を要求の `out` か `<out>.import.json` の綴りに直します([AB-2 の `path` の直し](../../src/core/communication/renderconfigaudioanalysis.cpp#L90))。置き換えの中身は第3章 §3.9 の「読む側が開いている file の置き換え —— `filereplace`」です。
 
-**古さの判定。**[`readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250) は manifest の最初の output を asset とし、source と output の file の有無と sha256、`pelican.audio_analysis` の manifest なら版と `settings_sha256` を見ます。sha256 は file の更新時刻と大きさが変わったときだけ計算し直します([`fileSha256()` の cache](../../src/project/audioanalysisformat.cpp#L60)。`get_frame_plan` が呼ばれるたびに派生 asset の全部を見るため、とコードの注記)。✅AB-2 から、manifest は読み終えて閉じてから source と output を hash します(bake の置き換えが待つのはこの読みの間だけ、とコードの注記)。`get_frame_plan` 側は `Renderer::currentFramePlanJson()` が `initial_asset` の file に [`derivedAssetStatusOf()`](../../src/core/vkcore/renderer.cpp#L4983) を当てます。
+**bake の ticket の流れ。**[`bakeAudioAnalysis()` の RPC 側](../../src/core/communication/renderconfigaudioanalysis.cpp#L36)は、engine の thread で引数と settings を見て(settings の拒否と `audio.analysis_busy@1` はここですぐ返す)、`asset` / `out` を `resolve_document_path` で解き、`std::async` の thread に bake を渡します。worker は engine の状態を読みません(コードの注記)。
 
-**`value.sample_table` の作り。**lowering は `time` の edge が無ければ `<id>/$scene_time` の input node を足し([lowering の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L216))、`Graph` の構築で `Op::sample_table` の node が表を `loadSampleTable()` で読んで `shared_ptr` で持ちます([構築の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L474))。評価は memory を読むだけです([評価の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L859))。`loadSampleTable()` の cache は `weak_ptr` で、✅IA-3(`26473e75`)から表と manifest の中身の sha256 の 2 つが同じあいだ同じ表を返します(IA-3 の前は更新時刻と大きさの 4 つでした)。毎回 2 つの file を読んで hash し、parse するのも hash したのと同じ bytes です(間の書き込みで、sha256 と中身が食い違う表ができないため。コードの注記)。`SampleTable` は読んだ file の path と 2 つの sha256(`file` / `manifest` / `file_sha256` / `manifest_sha256`)を持ちます。graph が持つのは構築の時の表なので、焼き直しは graph を組み直した新しい世代で届きます。✅IA-3 から [`Graph::sampleTables()`](../../src/core/userpublic/valuegraph.cpp#L813) が node・asset の参照・表を返し、`reload_render_documents` の比較(依存 `published_assets`)と hot reload の監視(`renderPipelineWatchSources()`)がこれを読みます(第6章「persistent の image の初期内容と KTX2 の float(IA-1)」の IA-3 の項、第7章 §7.7 の `reload_render_documents`)。拒否の code は [`valuegraph.hpp` の AB-1 の code](../../src/core/userpublic/valuegraph.hpp#L24) です。
+結果は `AudioAnalysisBakeOutcome`(committed の fields か、拒否の code・message・fields)で返り、`commitPending()` が frame の境界ごとに最初に呼ぶ [`harvestAudioBakes()`](../../src/core/communication/renderconfigaudioanalysis.cpp#L113) が終わったものを `results_` と `completed_` に移します([呼ぶ所 AB-1](../../src/core/communication/renderconfigeditor.cpp#L8219))。render 文書を書かないので、待っている編集の ticket とは関係なく終わります。editor の destructor は走っている bake を待ちます。この file は audio の有無によらず `pelican_core` に入り、`PELICAN_WITH_AUDIO=OFF` の build では `bake_audio_analysis` が settings を見た後に `audio.analysis_unavailable@1` を返すだけになります(`list_derived_assets` は同じに動きます)。
+
+**古さの判定。**[`readDerivedAssetStatus()`](../../src/project/audioanalysisformat.cpp#L250) は manifest の最初の output を asset とし、source と output の file の有無と sha256、`pelican.audio_analysis` の manifest なら版と `settings_sha256` を見ます。sha256 は file の更新時刻と大きさが変わったときだけ計算し直します([`fileSha256()` の cache](../../src/project/audioanalysisformat.cpp#L60)。`get_frame_plan` が呼ばれるたびに派生 asset の全部を見るため、とコードの注記)。
+
+✅AB-2 から、manifest は読み終えて閉じてから source と output を hash します(bake の置き換えが待つのはこの読みの間だけ、とコードの注記)。`get_frame_plan` 側は `Renderer::currentFramePlanJson()` が `initial_asset` の file に [`derivedAssetStatusOf()`](../../src/core/vkcore/renderer.cpp#L4983) を当てます。
+
+**`value.sample_table` の作り。**lowering は `time` の edge が無ければ `<id>/$scene_time` の input node を足し([lowering の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L216))、`Graph` の構築で `Op::sample_table` の node が表を `loadSampleTable()` で読んで `shared_ptr` で持ちます([構築の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L474))。評価は memory を読むだけです([評価の AB-1 の分](../../src/core/userpublic/valuegraph.cpp#L859))。
+
+`loadSampleTable()` の cache は `weak_ptr` で、✅IA-3(`26473e75`)から表と manifest の中身の sha256 の 2 つが同じあいだ同じ表を返します(IA-3 の前は更新時刻と大きさの 4 つでした)。毎回 2 つの file を読んで hash し、parse するのも hash したのと同じ bytes です(間の書き込みで、sha256 と中身が食い違う表ができないため。コードの注記)。`SampleTable` は読んだ file の path と 2 つの sha256(`file` / `manifest` / `file_sha256` / `manifest_sha256`)を持ちます。graph が持つのは構築の時の表なので、焼き直しは graph を組み直した新しい世代で届きます。
+
+✅IA-3 から [`Graph::sampleTables()`](../../src/core/userpublic/valuegraph.cpp#L813) が node・asset の参照・表を返し、`reload_render_documents` の比較(依存 `published_assets`)と hot reload の監視(`renderPipelineWatchSources()`)がこれを読みます(第6章「persistent の image の初期内容と KTX2 の float(IA-1)」の IA-3 の項、第7章 §7.7 の `reload_render_documents`)。拒否の code は [`valuegraph.hpp` の AB-1 の code](../../src/core/userpublic/valuegraph.hpp#L24) です。
 
 test: `ab1_audio_analysis_test`(3 本。`PELICAN_WITH_AUDIO` の build だけで登録され、`audiocommand.cpp` を test の source に入れる)と、`shader_compiler_reflection_test` の include の compile の 1 本。GPU で表を描いて値を見る test はありません。
 
@@ -948,7 +999,9 @@ class PELICAN_API Behavior {
 > behavior boundary. A deferred create has no live EntityId yet and
 > therefore returns invalidGameObjectId.
 
-WP380e 以降、遅延は `BehaviorContext` の override だけの性質ではありません。基底の [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L105) / [`createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L118) 自身が [`internal::behaviorCallbackActive()`](../../src/core/gamelogic/behaviorarena.cpp#L1665) を見て、behavior callback の中なら arena へ defer し `invalidGameObjectId` を返します。つまり behavior から `GameContext` として呼んでも即時生成には落ちません（`removeObject` は両者とも [`GameObjects::remove()`](../../src/core/userpublic/gameobjects.cpp#L32) 経由で、遅延するかは同関数の [`routeBehaviorObjectRemoval()`](../../src/core/userpublic/gameobjects.cpp#L41) が決めます）。
+WP380e 以降、遅延は `BehaviorContext` の override だけの性質ではありません。基底の [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L105) / [`createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L118) 自身が [`internal::behaviorCallbackActive()`](../../src/core/gamelogic/behaviorarena.cpp#L1665) を見て、behavior callback の中なら arena へ defer し `invalidGameObjectId` を返します。
+
+つまり behavior から `GameContext` として呼んでも即時生成には落ちません（`removeObject` は両者とも [`GameObjects::remove()`](../../src/core/userpublic/gameobjects.cpp#L32) 経由で、遅延するかは同関数の [`routeBehaviorObjectRemoval()`](../../src/core/userpublic/gameobjects.cpp#L41) が決めます）。
 
 ### 登録マクロ
 
@@ -1042,7 +1095,11 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
 | 実行時生成（GP-2） | [`attachSpawned(entity, prepared, boundary, spawn_index)`](../../src/core/gamelogic/behaviorarena.hpp#L305)。`RuntimeSpawner` が境界で呼ぶ。生きている entity に付け、`attachment_seq` 順に `onInit`。投げたら init 済みを逆順に `onDestroy`、この呼び出しが足した attachment とそれらが積んだ deferred mutation を捨てて投げ直す。付いた attachment は `runtime_spawned = true` |
 | teardown | `deactivateAllForTeardown()` / `drainDeferredMutationsForTeardown()` / `releaseOwner(owner)` |
 
-attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L120) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L204) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。editorの編集由来は `(commit_seq, command index, attachment index)` を引数に受ける [`reserveRuntimeAttachmentIdentity()`](../../src/core/gamelogic/behaviorarena.cpp#L1230) が予約する単調な値です（引数は今の実装では使っていません）。GP-2 の実行時生成由来は、commit_seq を持たないので組 `(scene run の中の境界の番号, その境界の中の spawn の番号, prefab の中の behavior の番号)` だけから [`runtimeSpawnAttachmentSeq()`](../../src/core/gamelogic/behaviorarena.cpp#L82) が `2^52 | boundary<<24 | spawn_index<<8 | behavior_index`（28 / 16 / 8 bit。超えたら `std::length_error`、spawn 側では先に `object.spawn_sequence_exhausted@1`）として作ります。以前の単調カウンタを置き換えたもので、同じ入力なら2回の実行で同じidになります。2^52 は object が 2^20 個未満のsceneのどの値よりも上、JSON で正確に運べる 2^53 未満で、editor の予約はこの値の手前で `overflow_error` にしてあります（[その判定](../../src/core/gamelogic/behaviorarena.cpp#L1238)）。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L133) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
+attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L120) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L204) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。editorの編集由来は `(commit_seq, command index, attachment index)` を引数に受ける [`reserveRuntimeAttachmentIdentity()`](../../src/core/gamelogic/behaviorarena.cpp#L1230) が予約する単調な値です（引数は今の実装では使っていません）。
+
+GP-2 の実行時生成由来は、commit_seq を持たないので組 `(scene run の中の境界の番号, その境界の中の spawn の番号, prefab の中の behavior の番号)` だけから [`runtimeSpawnAttachmentSeq()`](../../src/core/gamelogic/behaviorarena.cpp#L82) が `2^52 | boundary<<24 | spawn_index<<8 | behavior_index`（28 / 16 / 8 bit。超えたら `std::length_error`、spawn 側では先に `object.spawn_sequence_exhausted@1`）として作ります。
+
+以前の単調カウンタを置き換えたもので、同じ入力なら2回の実行で同じidになります。2^52 は object が 2^20 個未満のsceneのどの値よりも上、JSON で正確に運べる 2^53 未満で、editor の予約はこの値の手前で `overflow_error` にしてあります（[その判定](../../src/core/gamelogic/behaviorarena.cpp#L1238)）。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L133) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
 
 teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-callbacks`と`deferred-mutations`がこのarenaに対応します。
 
@@ -1050,7 +1107,9 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 
 切替と失敗時の復旧は [DLL reload のシーケンス](02_runtime_lifecycle.md#dll-reload-sequence)を参照し、ここでは behavior params の互換検査を読みます。
 
-[`GameLogicReloader::validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L466) は [`ResolvedScene::behaviorReloadSources()`](../../src/core/loader/resolvedscene.hpp#L288) からcore-privateな中立DTOを取得し、[`internal::validateBehaviorReloadSources()`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85) へ渡します。DTOはauthored `source_params` とscene / object / authored component indexのprovenanceを保ち、候補DLL側のcodecだけが [`candidate->canonicalize_params(source.source_params)`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L123) を一度実行します。これにより `schema_version` の差分と型の消滅を候補DLL採用前に検証しつつ、active側の既定値で二重補完することを防ぎます。validatorはcore-privateであり、`src/core/userpublic` の公開面は変更していません。
+[`GameLogicReloader::validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L466) は [`ResolvedScene::behaviorReloadSources()`](../../src/core/loader/resolvedscene.hpp#L288) からcore-privateな中立DTOを取得し、[`internal::validateBehaviorReloadSources()`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85) へ渡します。
+
+DTOはauthored `source_params` とscene / object / authored component indexのprovenanceを保ち、候補DLL側のcodecだけが [`candidate->canonicalize_params(source.source_params)`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L123) を一度実行します。これにより `schema_version` の差分と型の消滅を候補DLL採用前に検証しつつ、active側の既定値で二重補完することを防ぎます。validatorはcore-privateであり、`src/core/userpublic` の公開面は変更していません。
 
 回帰テストは [`test/run_behavior_dll_reload.ps1`](../../test/run_behavior_dll_reload.ps1) の9ケースです（`test/CMakeLists.txt`の`foreach(wp162_case ...)`）。
 
@@ -1142,7 +1201,9 @@ template <class Policy, class... PolicyFields>
 consteval auto structFields(Policy policy, PolicyFields... policy_fields);
 ```
 
-policyは可変長パラメータの**手前にある通常の引数**なので、省略して`structFields(required(field<&T::a>("a")))`と書くと`Policy`がフィールド型のほうへ推論されます。関数本体の先頭が`if constexpr (!internal::StructUseSitePolicy<Policy>)`（[`StructUseSitePolicy`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L775) のconcept。`EventPayloadPolicy` / `BehaviorParamsPolicy` / `ComponentPolicy` の3種のみ）で、外れた枝の`static_assert(always_false_v<Policy>, ...)`が`structFields requires an explicit EventPayloadPolicy, BehaviorParamsPolicy, or ComponentPolicy`というメッセージで落とします。同様にフィールド側の`required(...)` / `defaulted(...)`忘れは次の枝の`every struct field requires an explicit required(...) or defaulted(...) policy`です。
+policyは可変長パラメータの**手前にある通常の引数**なので、省略して`structFields(required(field<&T::a>("a")))`と書くと`Policy`がフィールド型のほうへ推論されます。関数本体の先頭が`if constexpr (!internal::StructUseSitePolicy<Policy>)`（[`StructUseSitePolicy`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L775) のconcept。`EventPayloadPolicy` / `BehaviorParamsPolicy` / `ComponentPolicy` の3種のみ）で、外れた枝の`static_assert(always_false_v<Policy>, ...)`が`structFields requires an explicit EventPayloadPolicy, BehaviorParamsPolicy, or ComponentPolicy`というメッセージで落とします。
+
+同様にフィールド側の`required(...)` / `defaulted(...)`忘れは次の枝の`every struct field requires an explicit required(...) or defaulted(...) policy`です。
 
 | policy | 取得方法 | 強制されること |
 |---|---|---|
@@ -1265,11 +1326,21 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 - **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L464) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L139)）。だから `onDestroy` から自分の最後のtransformを読めます。
 - **書き**: [`rejectRetiredMutation(api, id)`](../../src/core/loader/effecttransaction.cpp#L475) が同じ列を引き、当たれば `SceneRetiredObjectMutationRejected` を診断へ1件積んで `true` を返します。呼び手のsetterは `false` を返すだけで**throwしません**（`onDestroy` は `noexcept` です）。
 
-`onDestroy` の間だけ phase を切り替えるのが [`EffectDestroyScope`](../../src/core/loader/effecttransaction.cpp#L770) で、使うのは [`BehaviorAttachmentArena::destroyInstance()` の中の1行](../../src/core/gamelogic/behaviorarena.cpp#L922) の1箇所です。phase が `destroy` の間は、各sinkのcatch節が**例外を診断へ変換して飲みます**（それ以外の phase では `throw` し直します。例えば `playSound()` の catch は、先頭の1行 `if (phase_ != CallbackPhase::destroy) throw;` で再送出し、destroy のときだけ [診断を積む `record(sequence, ErrorApi::play_sound, ...)`](../../src/core/loader/effecttransaction.cpp#L163) へ進みます）。`onDestroy` が `noexcept` である以上、そこから投げれば `std::terminate` なので、「捨てる」ではなく「記録して返る」に倒してあります。
+`onDestroy` の間だけ phase を切り替えるのが [`EffectDestroyScope`](../../src/core/loader/effecttransaction.cpp#L770) で、使うのは [`BehaviorAttachmentArena::destroyInstance()` の中の1行](../../src/core/gamelogic/behaviorarena.cpp#L922) の1箇所です。
 
-`PELICAN_WITH_AUDIO=OFF` のビルドでは、音の5つの sink（`playSound` / `stopSound` / `setBusVolume` / `busVolume` / `isPlaying`）の本体が [`throwBuildFeatureCallDisabled()`](../../src/core/build_features.hpp#L58) の1行になり、transaction の外の `AudioContext` と同じ [`BuildFeatureCallDisabledError`](../../src/core/build_features.hpp#L45) を投げます（PG-2）。この型は ABI を固定した `BuildFeatureDisabledError` の派生で、`code()` が `build_feature_disabled@1`、`feature()` が `"PELICAN_WITH_AUDIO"` です。散文の message（`This binary was built with PELICAN_WITH_AUDIO=OFF: playSound is unavailable`）は PG-2 の前と同じです。activate 相ではこの例外がそのまま呼び手へ出て、destroy 相では同じ catch が `ErrorCode::build_feature_disabled` として記録します。記録を文字列へ起こす [`effectErrors()` の該当行](../../src/core/loader/effecttransaction.cpp#L645) は `BuildFeatureCallDisabledError::error_code` を返すので、例外の `code()` と `effect_errors` の `error_code` は同じ定数から出ます。同じ理由で `loadScene()` も phase で分かれ、`destroy` 中は [`requestLoadDuringRetire()`](../../src/core/loader/effecttransaction.cpp#L450) 経由になり、拒否されれば `scene_retire_load_rejected@1` が記録されます。
+phase が `destroy` の間は、各sinkのcatch節が**例外を診断へ変換して飲みます**（それ以外の phase では `throw` し直します。例えば `playSound()` の catch は、先頭の1行 `if (phase_ != CallbackPhase::destroy) throw;` で再送出し、destroy のときだけ [診断を積む `record(sequence, ErrorApi::play_sound, ...)`](../../src/core/loader/effecttransaction.cpp#L163) へ進みます）。`onDestroy` が `noexcept` である以上、そこから投げれば `std::terminate` なので、「捨てる」ではなく「記録して返る」に倒してあります。
 
-**facade 側の同じ扱い(PG-2b)。** 上の catch は transaction の sink の中にあるので、transaction を通らない facade(`soundState` と `setSoundVolume` / `setSoundPitch` / `setSoundPaused` の build 側、physics の 5 query)は PG-2b まで destroy 相の分岐を持たず、機能を外した build や provider 0 本の build で `onDestroy` から呼ぶと `std::terminate` でした。今は `AudioContext` の 9 本と `PhysicsContext` の 5 本がすべて [`answerEmptyInDestroy()`](../../src/core/userpublic/gamecontext.cpp#L368) で包まれ、`BuildFeatureCallDisabledError` か `phys::ProviderUnavailableError` を捕まえると [`absorbDestroyRefusal()`](../../src/core/loader/effecttransaction.cpp#L793) に渡します。scene transaction があればその phase が `destroy` のときだけ `build_feature_disabled@1` / `physics.provider_unavailable@1` を effect error として積み、transaction が無ければ `EffectDestroyScope` が立てる thread-local の深さ([`destroy_scope_depth`](../../src/core/loader/effecttransaction.cpp#L23))で「破棄 callback の中」かを見て engine log に出します。どちらでも facade は既定値(無効 handle / `false` / `0` / `nullopt` / 空の配列)を返します。activate 相と通常の呼び出しでは `absorbDestroyRefusal()` が `false` を返し、facade はそのまま投げ直します。残した穴: `setRayTracingDispatchExtent` / `setRayTracingCallableRecord` は transaction 中の呼び出しを [`SceneTransactionMutationRejected`](../../src/core/userpublic/gamecontext.cpp#L298) で投げ、`answerEmptyInDestroy()` で包まれていないので、scene load 中の `onDestroy`(`noexcept`)から呼ぶと terminate しえます(コードからの推論。実行では未確認)。
+`PELICAN_WITH_AUDIO=OFF` のビルドでは、音の5つの sink（`playSound` / `stopSound` / `setBusVolume` / `busVolume` / `isPlaying`）の本体が [`throwBuildFeatureCallDisabled()`](../../src/core/build_features.hpp#L58) の1行になり、transaction の外の `AudioContext` と同じ [`BuildFeatureCallDisabledError`](../../src/core/build_features.hpp#L45) を投げます（PG-2）。
+
+この型は ABI を固定した `BuildFeatureDisabledError` の派生で、`code()` が `build_feature_disabled@1`、`feature()` が `"PELICAN_WITH_AUDIO"` です。散文の message（`This binary was built with PELICAN_WITH_AUDIO=OFF: playSound is unavailable`）は PG-2 の前と同じです。activate 相ではこの例外がそのまま呼び手へ出て、destroy 相では同じ catch が `ErrorCode::build_feature_disabled` として記録します。
+
+記録を文字列へ起こす [`effectErrors()` の該当行](../../src/core/loader/effecttransaction.cpp#L645) は `BuildFeatureCallDisabledError::error_code` を返すので、例外の `code()` と `effect_errors` の `error_code` は同じ定数から出ます。同じ理由で `loadScene()` も phase で分かれ、`destroy` 中は [`requestLoadDuringRetire()`](../../src/core/loader/effecttransaction.cpp#L450) 経由になり、拒否されれば `scene_retire_load_rejected@1` が記録されます。
+
+**facade 側の同じ扱い(PG-2b)。** 上の catch は transaction の sink の中にあるので、transaction を通らない facade(`soundState` と `setSoundVolume` / `setSoundPitch` / `setSoundPaused` の build 側、physics の 5 query)は PG-2b まで destroy 相の分岐を持たず、機能を外した build や provider 0 本の build で `onDestroy` から呼ぶと `std::terminate` でした。今は `AudioContext` の 9 本と `PhysicsContext` の 5 本がすべて [`answerEmptyInDestroy()`](../../src/core/userpublic/gamecontext.cpp#L368) で包まれ、`BuildFeatureCallDisabledError` か `phys::ProviderUnavailableError` を捕まえると [`absorbDestroyRefusal()`](../../src/core/loader/effecttransaction.cpp#L793) に渡します。
+
+scene transaction があればその phase が `destroy` のときだけ `build_feature_disabled@1` / `physics.provider_unavailable@1` を effect error として積み、transaction が無ければ `EffectDestroyScope` が立てる thread-local の深さ([`destroy_scope_depth`](../../src/core/loader/effecttransaction.cpp#L23))で「破棄 callback の中」かを見て engine log に出します。どちらでも facade は既定値(無効 handle / `false` / `0` / `nullopt` / 空の配列)を返します。
+
+activate 相と通常の呼び出しでは `absorbDestroyRefusal()` が `false` を返し、facade はそのまま投げ直します。残した穴: `setRayTracingDispatchExtent` / `setRayTracingCallableRecord` は transaction 中の呼び出しを [`SceneTransactionMutationRejected`](../../src/core/userpublic/gamecontext.cpp#L298) で投げ、`answerEmptyInDestroy()` で包まれていないので、scene load 中の `onDestroy`(`noexcept`)から呼ぶと terminate しえます(コードからの推論。実行では未確認)。
 
 ### coalesceの規則
 

@@ -52,7 +52,9 @@ DECLARE_COMPONENT(型, 数値ID)
 | 18 | `SpriteViewComponent` | `sprite_view` | 2D sprite表示（登録は [`registerSpriteViewComponent()`](../../src/core/userpublic/components/spriteview.cpp#L55) 経由） |
 | 19 | [`RayInstanceComponent`](../../src/core/userpublic/components/rayinstance.hpp#L67) | `pelican_ray_instance` | ray tracing の instance 宣言（mask / instance flags / custom index）。**条件付き登録** |
 
-最後の1件だけは無条件ではありません。[`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) は [`RayLayoutRuntimeState::builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L206) が真のとき、すなわち起動時に `ray_group_layout` が configure されたとき(読める layout は MG-2a から version 3 だけ)にだけ [`registerComponent<RayInstanceComponent>("pelican_ray_instance")`](../../src/core/ecs/predefined.cpp#L39) を呼びます。したがって layout を持たないプロジェクトでは、この Component は**そもそも登録されていません**。scene 側に宣言があると [`scene.cpp` の gate](../../src/core/loader/scene.cpp#L114) が `pelican.ray_instance_requires_layout_v2@1` で止めます。code 名の `_v2` は公開したときの名前を据え置いたもので、今の意味は「layout が無い」です（意味論は[第6章](06_rendering_vulkan_shader.md)）。
+最後の1件だけは無条件ではありません。[`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) は [`RayLayoutRuntimeState::builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L206) が真のとき、すなわち起動時に `ray_group_layout` が configure されたとき(読める layout は MG-2a から version 3 だけ)にだけ [`registerComponent<RayInstanceComponent>("pelican_ray_instance")`](../../src/core/ecs/predefined.cpp#L39) を呼びます。
+
+したがって layout を持たないプロジェクトでは、この Component は**そもそも登録されていません**。scene 側に宣言があると [`scene.cpp` の gate](../../src/core/loader/scene.cpp#L114) が `pelican.ray_instance_requires_layout_v2@1` で止めます。code 名の `_v2` は公開したときの名前を据え置いたもので、今の意味は「layout が無い」です（意味論は[第6章](06_rendering_vulkan_shader.md)）。
 
 IDは単なる外部識別子ではありません。ECS内部では、次の二つの番号を使い分けます。
 
@@ -114,7 +116,9 @@ v3 は v2 の `ComponentLoaderInfo` を入れ子で再利用**しません**。h
 
 ### 名前が引けないときは `component_unknown@1`
 
-[`ComponentInfoManager::getComponentIdByName()`](../../src/core/ecs/componentinfo.cpp#L144) は、未登録名に対して `nullptr` や `-1` ではなく [`ComponentUnknownError`](../../src/core/ecs/componentinfo.hpp#L29) を投げます。`what()` は [`componentUnknownErrorCode`](../../src/core/ecs/componentinfo.hpp#L26)（`component_unknown@1`）に `{"name": ...}` の JSON を連結した文字列で、`payload()` からその JSON だけを取れます。末尾の `@1` はこのリポジトリの名前付きエラーコードに付く**版番号**です（エラーの種類を表す番号ではありません）。`@2` を持つコードは調査時点で `pelican.vulkan_target_plan.logical_graph@2` と `pelican.vulkan_automatic_target_plan@2` の2件だけで、どちらも同名の `@1` はソースに残っていません。**版を上げたときに旧版を残すのかどうかを規範として書いた文書は見つかっていません（未確認）。**「未登録」と「登録済みだが編集できない」を混ぜないための型です。
+[`ComponentInfoManager::getComponentIdByName()`](../../src/core/ecs/componentinfo.cpp#L144) は、未登録名に対して `nullptr` や `-1` ではなく [`ComponentUnknownError`](../../src/core/ecs/componentinfo.hpp#L29) を投げます。`what()` は [`componentUnknownErrorCode`](../../src/core/ecs/componentinfo.hpp#L26)（`component_unknown@1`）に `{"name": ...}` の JSON を連結した文字列で、`payload()` からその JSON だけを取れます。
+
+末尾の `@1` はこのリポジトリの名前付きエラーコードに付く**版番号**です（エラーの種類を表す番号ではありません）。`@2` を持つコードは調査時点で `pelican.vulkan_target_plan.logical_graph@2` と `pelican.vulkan_automatic_target_plan@2` の2件だけで、どちらも同名の `@1` はソースに残っていません。**版を上げたときに旧版を残すのかどうかを規範として書いた文書は見つかっていません（未確認）。**「未登録」と「登録済みだが編集できない」を混ぜないための型です。
 
 この2つは編集面で別の code に写ります（[第7章](07_tools_rpc_tests.md)）。
 
@@ -684,7 +688,9 @@ behaviorも**ECS Componentではありません**。`BehaviorAttachmentArena` �
 
 以前は engine が `"KeyLight"` / `"FillLight"` / `"PointLight1"` / `"SpotLight1"` といった名前を特別扱いし、時刻を渡すと engine 側が勝手にアニメーションさせていました。**この挙動と、原本値を保持していた配列は削除されました。**
 
-現在の [`LightContainer`](../../src/core/light/lightcontainer.hpp#L29) には **時間を引数に取る更新関数がありません**。ライト値を書き換える口は、scene load([`prepareLoad()`](../../src/core/light/lightcontainer.hpp#L46) → [`publishPrepared()`](../../src/core/light/lightcontainer.hpp#L48) の [§9.17](09_black_magic_and_gotchas.md#917-編集-transaction-の落とし穴prepare--publish--cas--ticket) 型。`load()` はこの 2 段に警告出力を挟んだ入口です)と、名前指定の setter 4 本([`setDirectionalLightDirection()`](../../src/core/light/lightcontainer.hpp#L79) ほか。名前が引けなければ **`false` を返すだけ** で例外にはなりません)の 2 系統だけです。`update()` の overload 群は shadow 行列と sky ambient を受け取って現在値を GPU バッファへ書き出すもので、値そのものは動かしません。
+現在の [`LightContainer`](../../src/core/light/lightcontainer.hpp#L29) には **時間を引数に取る更新関数がありません**。
+
+ライト値を書き換える口は、scene load([`prepareLoad()`](../../src/core/light/lightcontainer.hpp#L46) → [`publishPrepared()`](../../src/core/light/lightcontainer.hpp#L48) の [§9.17](09_black_magic_and_gotchas.md#917-編集-transaction-の落とし穴prepare--publish--cas--ticket) 型。`load()` はこの 2 段に警告出力を挟んだ入口です)と、名前指定の setter 4 本([`setDirectionalLightDirection()`](../../src/core/light/lightcontainer.hpp#L79) ほか。名前が引けなければ **`false` を返すだけ** で例外にはなりません)の 2 系統だけです。`update()` の overload 群は shadow 行列と sky ambient を受け取って現在値を GPU バッファへ書き出すもので、値そのものは動かしません。
 
 - 代替は公開 API 4 本([`RenderContext::setDirectionalLightDirection()` ほか](../../src/core/userpublic/gamecontext.hpp#L140))で、ライトの時間変化は **ユーザー空間の責務** になりました。実例は [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L31) の `updateLightAnimation()` です。
 - setter の結果は `Renderer` の per-frame [`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L548)(呼び出しは [ここ](../../src/core/vkcore/renderer.cpp#L1609))で GPU バッファへ反映されます。
@@ -720,7 +726,11 @@ Light cap exceeded: <type> light #<ordinal> '<name>' will not be rendered (cap <
 
 ## 4.15 ユーザー独自Componentの現在地
 
-`DECLARE_COMPONENT`と型付きregistererは実装されていますが、通常のゲームコード向けに安定した自動Component登録マクロはまだ公開されていません（`PELICAN_REGISTER_COMPONENT`はリポジトリ全体に不在）。**game DLL からの登録そのものは通ります** — `details/component/registerer.hpp` を直接includeして静的初期化から [`registerComponent<T>(name)`](../../src/core/userpublic/details/component/registerer.hpp#L185) を呼ぶ形で、実物は [`fixtures/ray_namespace_component/component.cpp`](../../test/fixtures/ray_namespace_component/component.cpp#L12)（WP379 の production 受け入れで実 DLL として動きます）と [`fixtures/wp382a_schema/v3_fixture.cpp`](../../test/fixtures/wp382a_schema/v3_fixture.cpp#L150)、[`fixtures/wp380b_effect/behavior.cpp`](../../test/fixtures/wp380b_effect/behavior.cpp#L69) です。engine 側の登録箇所は組み込み [`predefined.cpp`](../../src/core/ecs/predefined.cpp#L22)、benchmark、lifecycle testです。
+`DECLARE_COMPONENT`と型付きregistererは実装されていますが、通常のゲームコード向けに安定した自動Component登録マクロはまだ公開されていません（`PELICAN_REGISTER_COMPONENT`はリポジトリ全体に不在）。
+
+**game DLL からの登録そのものは通ります** — `details/component/registerer.hpp` を直接includeして静的初期化から [`registerComponent<T>(name)`](../../src/core/userpublic/details/component/registerer.hpp#L185) を呼ぶ形で、実物は [`fixtures/ray_namespace_component/component.cpp`](../../test/fixtures/ray_namespace_component/component.cpp#L12)（WP379 の production 受け入れで実 DLL として動きます）と [`fixtures/wp382a_schema/v3_fixture.cpp`](../../test/fixtures/wp382a_schema/v3_fixture.cpp#L150)、[`fixtures/wp380b_effect/behavior.cpp`](../../test/fixtures/wp380b_effect/behavior.cpp#L69) です。
+
+engine 側の登録箇所は組み込み [`predefined.cpp`](../../src/core/ecs/predefined.cpp#L22)、benchmark、lifecycle testです。
 
 owner の出どころが両者を分けます。game DLL は自分で owner を確保しません — host が [`ScopedRegistrationOwner registration_scope{owner}`](../../src/core/gamelogic/gamelogicreload.cpp#L423) で `LoadLibrary` を包むので、DLL の静的初期化子はその external owner の下で走ります。game System/Eventの登録も同じ [`RegistrationOwner`](../../src/core/userpublic/details/reload/registrationowner.hpp#L11) 単位で、reload時に`unregisterGameSystems(owner)`されます。
 
@@ -784,7 +794,9 @@ cannot unregister component '<name>': dependent ECS system '<sys>' remains
 cannot unregister component '<name>': dependent ECS system '<sys>' remains
 ```
 
-この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2802))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
+この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。
+
+これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L2802))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
 
 #### custom Component の現状
 

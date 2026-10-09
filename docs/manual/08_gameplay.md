@@ -133,7 +133,20 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 
 ## 8.4 GameContext API 一覧
 
-`GameContext` は状態を持たない薄いファサードです([gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp))。面は「根 + 8 つのドメインファサード」に分かれています — 根には入力(アクション)・時刻・ログ・オブジェクト・乱数・シーン・イベント・設定が残り、物理 / 音 / アニメーション / セーブ / 描画 / ポインタとカーソル / シーンオブジェクトの名前解決 / UI は [`physics()`](../../src/core/userpublic/gamecontext.hpp#L357) / [`audio()`](../../src/core/userpublic/gamecontext.hpp#L358) / [`animation()`](../../src/core/userpublic/gamecontext.hpp#L359) / [`save()`](../../src/core/userpublic/gamecontext.hpp#L360) / [`render()`](../../src/core/userpublic/gamecontext.hpp#L361) / [`input()`](../../src/core/userpublic/gamecontext.hpp#L362) / [`objects()`](../../src/core/userpublic/gamecontext.hpp#L363) / [`ui()`](../../src/core/userpublic/gamecontext.hpp#L364) 経由です。ファサードはどれも**状態を持たない空の値**(`ui(document_key)` の返す `UiContext` だけは文書の key を view で持つので、key の文字列を使い終わるまで生かしておきます)なので、`ctx.audio().playSound(...)` は 1 回の呼び出しであって検索ではありません。
+`GameContext` は状態を持たない薄いファサードです([gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp))。
+
+面は「根 + 8 つのドメインファサード」に分かれています — 根には入力(アクション)・時刻・ログ・オブジェクト・乱数・シーン・イベント・設定が残り、物理 / 音 / アニメーション / セーブ / 描画 / ポインタとカーソル / シーンオブジェクトの名前解決 / UI は次の API 経由です。
+
+- [`physics()`](../../src/core/userpublic/gamecontext.hpp#L357)
+- [`audio()`](../../src/core/userpublic/gamecontext.hpp#L358)
+- [`animation()`](../../src/core/userpublic/gamecontext.hpp#L359)
+- [`save()`](../../src/core/userpublic/gamecontext.hpp#L360)
+- [`render()`](../../src/core/userpublic/gamecontext.hpp#L361)
+- [`input()`](../../src/core/userpublic/gamecontext.hpp#L362)
+- [`objects()`](../../src/core/userpublic/gamecontext.hpp#L363)
+- [`ui()`](../../src/core/userpublic/gamecontext.hpp#L364)
+
+ファサードはどれも**状態を持たない空の値**(`ui(document_key)` の返す `UiContext` だけは文書の key を view で持つので、key の文字列を使い終わるまで生かしておきます)なので、`ctx.audio().playSound(...)` は 1 回の呼び出しであって検索ではありません。
 
 ### 根 `GameContext`([宣言](../../src/core/userpublic/gamecontext.hpp#L284))
 
@@ -717,7 +730,11 @@ ctx.loadScene("scene_flow_second");   // 予約(名前はその場で検証。�
 
 ### 落とし穴: システム状態はシーン切替で消えない
 
-システムのインスタンスは static シングルトンなので、メンバに保持した `GameObjectId` は切替後「死んだ ID」になります(`setLocalTransform` / `removeObject` は false を返し、`localTransform` は例外になり得ます)。保持した `ObjectRef`(§8.4 の objects())も、切替後は `object.stale_authority@1` で拒否されます。**`spawn` した `TransientObjectRef` も同じで、シーンの切替(同じシーンの読み直しを含む)で stale になります。** spawn した object 自体も切替で消え、作り直されることはありません。同じフレームで `spawn` の後に `loadScene` を呼ぶと、その spawn は実体化しないまま捨てられます(切替がフレームの末尾、spawn の実体化が次のフレームの先頭のため)。**`SceneLoaded` の `onEvent` で状態をリセットする**(`ObjectRef` なら `resolve` し直す、`TransientObjectRef` は捨てて必要なら spawn し直す)のが正道です。「シーンをまたいで残るオブジェクト」(persistent)の仕組みは v1 にはありません。
+システムのインスタンスは static シングルトンなので、メンバに保持した `GameObjectId` は切替後「死んだ ID」になります(`setLocalTransform` / `removeObject` は false を返し、`localTransform` は例外になり得ます)。保持した `ObjectRef`(§8.4 の objects())も、切替後は `object.stale_authority@1` で拒否されます。
+
+**`spawn` した `TransientObjectRef` も同じで、シーンの切替(同じシーンの読み直しを含む)で stale になります。** spawn した object 自体も切替で消え、作り直されることはありません。同じフレームで `spawn` の後に `loadScene` を呼ぶと、その spawn は実体化しないまま捨てられます(切替がフレームの末尾、spawn の実体化が次のフレームの先頭のため)。
+
+**`SceneLoaded` の `onEvent` で状態をリセットする**(`ObjectRef` なら `resolve` し直す、`TransientObjectRef` は捨てて必要なら spawn し直す)のが正道です。「シーンをまたいで残るオブジェクト」(persistent)の仕組みは v1 にはありません。
 
 ## 8.8 物理クエリとトリガー(✅P1/P2/WP107/179)
 

@@ -75,7 +75,9 @@ flowchart TD
 
 注: `updateFrameState` は時刻 advance と render を含みません。headless の固定フレームと RPC `step_frame` も同じ状態更新順ですが、図の窓あり RPC pump は通りません。edit / paused ではイベント凍結・配送と通常のゲーム処理・pending scene load を飛ばし、入力・editor 用システム・停止時刻の Animation / seq / Graph・描画は続きます(paused の明示的な step はゲーム処理を進めます)。Animation は有効な build のみ、UI 書込確定後の camera bake 記録は該当機能がある場合のみです。
 
-`behavior` はシーンのオブジェクトに直接ぶら下がる毎フレーム処理です。シーンロード時に `behavior` コンポーネントだけが ECS の振り分けから外れて BehaviorAttachmentArena(**arena** = エンジン側が behavior の実体をまとめて所有する置き場)に渡り([scene.cpp](../../src/core/loader/scene.cpp) → [behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp))、実行はゲームシステムと同じ総順序に `order=50` / 名前 `"BehaviorSystem"` で参加します([behavior.hpp](../../src/core/userpublic/behavior.hpp))。ここでいう**総順序**は、登録された全ゲームシステムを `order`(登録時に書く整数)の昇順、同じ `order` なら登録名の辞書順に並べた、1 つに定まる実行順のことです([sortGameSystemRegistrations()](../../src/core/userpublic/details/system/registerer.cpp#L35))。書き方は [第8章](08_gameplay.md)、JSON 側の語彙は [第4章](04_scene_ecs.md) を参照してください。
+`behavior` はシーンのオブジェクトに直接ぶら下がる毎フレーム処理です。シーンロード時に `behavior` コンポーネントだけが ECS の振り分けから外れて BehaviorAttachmentArena(**arena** = エンジン側が behavior の実体をまとめて所有する置き場)に渡り([scene.cpp](../../src/core/loader/scene.cpp) → [behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp))、実行はゲームシステムと同じ総順序に `order=50` / 名前 `"BehaviorSystem"` で参加します([behavior.hpp](../../src/core/userpublic/behavior.hpp))。
+
+ここでいう**総順序**は、登録された全ゲームシステムを `order`(登録時に書く整数)の昇順、同じ `order` なら登録名の辞書順に並べた、1 つに定まる実行順のことです([sortGameSystemRegistrations()](../../src/core/userpublic/details/system/registerer.cpp#L35))。書き方は [第8章](08_gameplay.md)、JSON 側の語彙は [第4章](04_scene_ecs.md) を参照してください。
 
 描画の「世代」は同時に使う runtime と資源の snapshot で、公開・確定・寿命は[第6章の所有節](06_rendering.md#render-generation)を参照してください。
 

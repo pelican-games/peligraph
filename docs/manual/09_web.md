@@ -61,7 +61,13 @@ web 側の作業単位は **WW**(Web Work Package)という番号で `implementa
 
 ### rendering config の web 対応範囲
 
-web が理解するのは([第6章](06_rendering.md) の語彙のうち): RT フォーマット 7 種(**エンジン側は 45 種**)・usage 6 種、パス 3 種 `material` / `fullscreen` / `ui`(**エンジン側は 8 種 + `PELICAN_WITH_IMGUI` ビルド時のみの `imgui` = 8+1 種**)、`push_constants` 3 種、従来の G-buffer 5 枚契約です。**`"schema": "pelican.graph"` を名乗る rendering config(rendering config 全体が `rendering` の下に入る root。[第6章 §6.16](06_rendering.md))は web 未対応なので、その root を持つ config は web 側で明示的に拒否する必要があります**(エンジン側は MG-2b から rendering config をこの root だけにし、最上位に rendering のキーを直接並べた旧い形は `render_config.legacy_root@1` で拒否します。出荷 7 本もすべてこの形です)。未知キーとして読み飛ばすと `render_targets` 0 枚・`rendering_passes` 0 本の**空 config として受理**してしまい、「web は pelican より緩くしてはならない」に違反します —— この拡張については web の追随順は「無視 → 対応」ではなく「**拒否** → 対応」です(読み飛ばしが緩い方向になる拡張だから)。web は v0 形式への追従中(WEB-1)です。それまで web は新しい出荷 sample を開けません。my_webpage 側の状態は pelican2 側からは確認できません。native の `pelican.material_outputs` v1（任意枚数・float/SINT/UINT output）と`material_output_states`（output別blend/write-mask）はまだ web 未対応なので、そのキーを持つ config は web 側で**明示的に拒否**する必要があります。未知キーとして読み飛ばして5枚扱いにするとサブセット原則違反です。`shadow_depth` / `debug_draw` / `debug_text` / `features` / `compute_tasks` も web 未対応です。互換の正は `my_webpage/docs/pelican2-webgpu-compat.md` を参照してください。
+web が理解するのは([第6章](06_rendering.md) の語彙のうち): RT フォーマット 7 種(**エンジン側は 45 種**)・usage 6 種、パス 3 種 `material` / `fullscreen` / `ui`(**エンジン側は 8 種 + `PELICAN_WITH_IMGUI` ビルド時のみの `imgui` = 8+1 種**)、`push_constants` 3 種、従来の G-buffer 5 枚契約です。
+
+**`"schema": "pelican.graph"` を名乗る rendering config(rendering config 全体が `rendering` の下に入る root。[第6章 §6.16](06_rendering.md))は web 未対応なので、その root を持つ config は web 側で明示的に拒否する必要があります**(エンジン側は MG-2b から rendering config をこの root だけにし、最上位に rendering のキーを直接並べた旧い形は `render_config.legacy_root@1` で拒否します。出荷 7 本もすべてこの形です)。未知キーとして読み飛ばすと `render_targets` 0 枚・`rendering_passes` 0 本の**空 config として受理**してしまい、「web は pelican より緩くしてはならない」に違反します —— この拡張については web の追随順は「無視 → 対応」ではなく「**拒否** → 対応」です(読み飛ばしが緩い方向になる拡張だから)。
+
+web は v0 形式への追従中(WEB-1)です。それまで web は新しい出荷 sample を開けません。my_webpage 側の状態は pelican2 側からは確認できません。
+
+native の `pelican.material_outputs` v1（任意枚数・float/SINT/UINT output）と`material_output_states`（output別blend/write-mask）はまだ web 未対応なので、そのキーを持つ config は web 側で**明示的に拒否**する必要があります。未知キーとして読み飛ばして5枚扱いにするとサブセット原則違反です。`shadow_depth` / `debug_draw` / `debug_text` / `features` / `compute_tasks` も web 未対応です。互換の正は `my_webpage/docs/pelican2-webgpu-compat.md` を参照してください。
 
 Web の語彙は engine の語彙の部分集合です。engine の RT format と pass 種別は[第6章](06_rendering.md)を参照してください。過去の件数は[調査履歴](../history/manual_landing_notes_2026.md)にあります。
 

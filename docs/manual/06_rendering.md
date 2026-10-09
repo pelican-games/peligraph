@@ -406,7 +406,9 @@ color attachment stateは「未指定」の空表現を保ちます。省略をo
 
 **stem(ステム)** はファイル名から拡張子を落とした部分のことです([用語集](14_glossary.md#stemステム))。シェーダは**拡張子なしの stem** で参照します(例: `"shaders/lava"`、`"engine://ssao"`)。`.vert` / `.frag` / `.spv` などの拡張子を書くと「use an extensionless <stage> shader stem」エラーになります(WP63)。
 
-拡張子は stem ではなく、**その参照を書いた場所(どのシェーダステージか)**が決めます。`shader.vertex` に書いた `"shaders/lava"` なら `.vert`、`shader.fragment` なら `.frag`、compute の `shader` なら `.comp` です。そのうえで解決順は ① `<stem>.<ステージ拡張子>`(GLSL ソース → 実行時コンパイル)→ ② `<stem>.<ステージ拡張子>.spv`(ビルド済み SPIR-V)。つまり fragment に `"shaders/lava"` と書くと `shaders/lava.frag` → `shaders/lava.frag.spv` の順に探します。①の候補は**実行時コンパイラを含むビルドでのみ**列に入る(`PELICAN_RUNTIME_SHADER_COMPILER` — [第2章](02_getting_started.md))ので、**明示的に compiler を OFF にしたビルドでは** `.spv` だけを探します([shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp#L588))。現在の `dist-config` は compiler を OFF にせず、既定の ON のままなので、配布ビルドでも GLSL を実行時にコンパイルします。どちらも無ければ試行パス一覧付きエラー。
+拡張子は stem ではなく、**その参照を書いた場所(どのシェーダステージか)**が決めます。`shader.vertex` に書いた `"shaders/lava"` なら `.vert`、`shader.fragment` なら `.frag`、compute の `shader` なら `.comp` です。そのうえで解決順は ① `<stem>.<ステージ拡張子>`(GLSL ソース → 実行時コンパイル)→ ② `<stem>.<ステージ拡張子>.spv`(ビルド済み SPIR-V)。つまり fragment に `"shaders/lava"` と書くと `shaders/lava.frag` → `shaders/lava.frag.spv` の順に探します。
+
+①の候補は**実行時コンパイラを含むビルドでのみ**列に入る(`PELICAN_RUNTIME_SHADER_COMPILER` — [第2章](02_getting_started.md))ので、**明示的に compiler を OFF にしたビルドでは** `.spv` だけを探します([shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp#L588))。現在の `dist-config` は compiler を OFF にせず、既定の ON のままなので、配布ビルドでも GLSL を実行時にコンパイルします。どちらも無ければ試行パス一覧付きエラー。
 
 (**GLSL** は Vulkan/OpenGL 系のシェーダ言語、**SPIR-V** はそれをコンパイルした GPU 向け中間バイナリ形式です。)
 
@@ -434,11 +436,15 @@ message は `Fullscreen pass input texture/local-read contract does not match sh
 
 #### shader にだけある入力の補完
 
-逆向き —— shader が、pass の渡す入力の数以上の binding を set 1 に宣言している —— は、engine がその binding を既定の resource で埋めます。combined image sampler と separate image(2D / 2D array / cube の view)は 1x1 の黒 (0,0,0,0)、sampler は既定の sampler(linear / repeat)、storage buffer は 0 で埋めた 64 KiB の buffer です。配列の binding は全要素に同じ resource が入ります。入力が 0 個の fullscreen pass でも、shader が set 1 を宣言していれば set 1 を bind します(入力を持つ raster pass も同じ関数を通ります。入力の無い raster pass は通りません。[埋められる宣言](../../src/core/fullscreenpass/fullscreenpasscontainer.cpp#L100)、[既定の resource](../../src/core/fullscreenpass/fullscreenpasscontainer.cpp#L590))。見るのは reflection なので、宣言しただけで読まない binding も埋まります。storage buffer の block が 64 KiB より大きくても検出しません(reflection が block の大きさを持たないため)。埋めたときは編集は成功し、compile ごとに LOG_WARNING が 1 行出ます —— 下の拒否と同じ文(埋めた最小の binding について)の後に `; the engine binds a default resource (zeros) at set 1 binding(s) 1, 2` のように埋めた binding が続きます([警告を出す所](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L2496))。
+逆向き —— shader が、pass の渡す入力の数以上の binding を set 1 に宣言している —— は、engine がその binding を既定の resource で埋めます。combined image sampler と separate image(2D / 2D array / cube の view)は 1x1 の黒 (0,0,0,0)、sampler は既定の sampler(linear / repeat)、storage buffer は 0 で埋めた 64 KiB の buffer です。配列の binding は全要素に同じ resource が入ります。入力が 0 個の fullscreen pass でも、shader が set 1 を宣言していれば set 1 を bind します(入力を持つ raster pass も同じ関数を通ります。入力の無い raster pass は通りません。[埋められる宣言](../../src/core/fullscreenpass/fullscreenpasscontainer.cpp#L100)、[既定の resource](../../src/core/fullscreenpass/fullscreenpasscontainer.cpp#L590))。
+
+見るのは reflection なので、宣言しただけで読まない binding も埋まります。storage buffer の block が 64 KiB より大きくても検出しません(reflection が block の大きさを持たないため)。埋めたときは編集は成功し、compile ごとに LOG_WARNING が 1 行出ます —— 下の拒否と同じ文(埋めた最小の binding について)の後に `; the engine binds a default resource (zeros) at set 1 binding(s) 1, 2` のように埋めた binding が続きます([警告を出す所](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L2496))。
 
 #### 補完できない入力の拒否
 
-埋められない種類の宣言 —— input attachment、storage image、上に無い次元の画像(3D など)、uniform buffer、dynamic buffer、texel buffer、acceleration structure など —— が 1 つでもあれば pass は組めず、同じ `render_pipeline_preflight_failed` / `shader_input_mismatch` で断られます(ほかの binding が埋められる種類でも、全体が断られます)。このとき `direction` は `"shader_input_unsupplied"`、`binding` は埋められない宣言のうち最小の binding、`kind` は宣言の種類(`"texture"` / `"buffer"` / `"other"`)、`expected` は `"none"` で、`resource` は付きません。message は `Fullscreen shader declares a pass input the pass does not supply: pass '<pass>' supplies <M> pass inputs, but fragment '<fragment>' declares a uniform buffer at set 1 binding <binding> (shader declares <N> pass inputs)` の形です(M が 1 なら `pass input`。[message を組む所](../../src/core/fullscreenpass/fullscreeninputbindingmismatch.cpp#L32))。
+埋められない種類の宣言 —— input attachment、storage image、上に無い次元の画像(3D など)、uniform buffer、dynamic buffer、texel buffer、acceleration structure など —— が 1 つでもあれば pass は組めず、同じ `render_pipeline_preflight_failed` / `shader_input_mismatch` で断られます(ほかの binding が埋められる種類でも、全体が断られます)。このとき `direction` は `"shader_input_unsupplied"`、`binding` は埋められない宣言のうち最小の binding、`kind` は宣言の種類(`"texture"` / `"buffer"` / `"other"`)、`expected` は `"none"` で、`resource` は付きません。
+
+message は `Fullscreen shader declares a pass input the pass does not supply: pass '<pass>' supplies <M> pass inputs, but fragment '<fragment>' declares a uniform buffer at set 1 binding <binding> (shader declares <N> pass inputs)` の形です(M が 1 なら `pass input`。[message を組む所](../../src/core/fullscreenpass/fullscreeninputbindingmismatch.cpp#L32))。
 
 #### 配列と実行時サイズの制限
 
@@ -459,7 +465,9 @@ message は `Fullscreen pass input texture/local-read contract does not match sh
 - **raster の vertex を自前に替えても fragment は `engine://passthrough` のままでよい。**reflection を合わせるときに可変の組の名前を残すので、組は欠けずに読まれます。fragment が可変の組を持たなければ固定の名前を使います。
 - 可変の組の宣言は `sampler2D` だけです。2D array や input attachment を要る入力(layered・multiview・local read)を組で受ける形はありません(そういう入力を組の binding に渡したときの挙動は test が無く未確認です)。
 
-**pass ごとの `shader.defines`。**fullscreen pass と raster pass の `shader` は任意の `defines` を持てます。root の `shader_defines` と同じ `"NAME"` / `"NAME=VALUE"` の文字列の配列で、その pass の shader の compile に足されます([読む所](../../src/core/renderingpass/passshaderdefines.cpp#L61))。engine が pass の compile で自分で定義する名前(`PELICAN_PASS_TEXTURE_INPUT_COUNT` など)や、識別子でない名前、同じ名前の 2 回目は断られます。編集 RPC では `render_pipeline_preflight_failed` に `pass_shader_define {pass, define, name, index, reason}` が付きます(予約の名前の一覧は [第13章](13_editor.md) §13.5「pass ごとの `shader.defines` の拒否」)。`.spv` の shader には今までどおり defines を渡せません(`Shader defines and generated includes require GLSL source`)。ただし defines が engine の入れる `PELICAN_PASS_TEXTURE_INPUT_COUNT` だけなら、`.spv` は断られず define を読まずにそのまま使われます(compile 済みの module はこの define を読めないので、これだけを理由には断らない。[判定](../../src/core/shader/shaderlibrary.cpp#L332))。
+**pass ごとの `shader.defines`。**fullscreen pass と raster pass の `shader` は任意の `defines` を持てます。root の `shader_defines` と同じ `"NAME"` / `"NAME=VALUE"` の文字列の配列で、その pass の shader の compile に足されます([読む所](../../src/core/renderingpass/passshaderdefines.cpp#L61))。engine が pass の compile で自分で定義する名前(`PELICAN_PASS_TEXTURE_INPUT_COUNT` など)や、識別子でない名前、同じ名前の 2 回目は断られます。編集 RPC では `render_pipeline_preflight_failed` に `pass_shader_define {pass, define, name, index, reason}` が付きます(予約の名前の一覧は [第13章](13_editor.md) §13.5「pass ごとの `shader.defines` の拒否」)。
+
+`.spv` の shader には今までどおり defines を渡せません(`Shader defines and generated includes require GLSL source`)。ただし defines が engine の入れる `PELICAN_PASS_TEXTURE_INPUT_COUNT` だけなら、`.spv` は断られず define を読まずにそのまま使われます(compile 済みの module はこの define を読めないので、これだけを理由には断らない。[判定](../../src/core/shader/shaderlibrary.cpp#L332))。
 
 **`engine://passthrough`。**engine 同梱の fragment で、入力はすべて可変(`PELICAN_DECLARE_VARIADIC_INPUTS(0, 8)`)です。`PELICAN_PASSTHROUGH_INPUT`(既定 0。pass の `shader.defines` に `"PELICAN_PASSTHROUGH_INPUT=2"` のように書く)番の入力をそのまま書き出します。入力が 1 つも無いときは UV の gradient `vec4(u, v, 0.5, 1)` を書くので、pass が動いていることが見えます。渡していない番号(組の中)を指すと既定の resource を読んで (0,0,0,0)、capture では黒になります([shader](../../src/core/resources/passthrough.frag#L22))。整数の target・配列・cube を渡したときの挙動は test が無く未確認です。blank 雛形の `present` はこの shader で描きます(VI-2。[第10章](10_tools.md) の `blank` 雛形)。
 
@@ -490,7 +498,30 @@ GLSL からは `#include "pelican_sets.glsl"` / `#include "pelican_frame.glsl"` 
 
 push constant は 128B(エンジン 64B + シェーダ 64B)で、**リフレクション段階で enforcement 済み**です(4B align・128B 上限・エンジン領域の部分使用をパイプライン作成前に拒否)。エンジン領域 offset 0..63 の `engineMvp` は**名前に反して MVP ではなく `view_projection_jittered`(world → jittered clip)**です — 独自 vertex シェーダは model 行列で作った world position にこれを 1 回掛けるだけにし、**jitter を後から足してはいけません**(§6.8 の projection jitter が二重適用になります)。この意味論・64B の範囲・symbol 名は v1 で凍結です([../shader_contract.md](../shader_contract.md) の「`engineMvp` v1 の規範意味論」)。エンジン頂点レイアウトは location 0=`inPos`, 1=`inNormal`, 2=`inTexUV`, 3=`inColor`, 4=`inTangent`。
 
-エンジン同梱シェーダ(`engine://`、抜粋): `fullscreen` / **`passthrough`**(VI-1。上の「`engine://passthrough`」) / `ssao` / `ssao_blur` / `bloom_*` / `tonemap` / **`sky_ambient`** / **`output_transform`** / `shadow_depth` / `skinned` / `skinned_shadow_depth` / **`velocity` / `velocity_skinned`** / **`taa_resolve` / `taa_composite`** / **`sprite`** / `debug_draw` / `debug_text` / `default` / `vat` / `ui`、マテリアルテンプレート `shaders/material/surface_v1.{vert,frag}` + `standard_lighting.glsl` / `toon_lighting.glsl` / **`openpbr_lighting.glsl`**、**OpenPBR wrapper 6 種 `engine://surfaces/openpbr/*.surface`**、公開 include 群 `shaders/include/pelican_*.glsl`。
+エンジン同梱シェーダ(`engine://`、抜粋):
+
+- `fullscreen`
+- **`passthrough`**(VI-1。上の「`engine://passthrough`」)
+- `ssao`
+- `ssao_blur`
+- `bloom_*`
+- `tonemap`
+- **`sky_ambient`**
+- **`output_transform`**
+- `shadow_depth`
+- `skinned`
+- `skinned_shadow_depth`
+- **`velocity` / `velocity_skinned`**
+- **`taa_resolve` / `taa_composite`**
+- **`sprite`**
+- `debug_draw`
+- `debug_text`
+- `default`
+- `vat`
+- `ui`
+- マテリアルテンプレート `shaders/material/surface_v1.{vert,frag}` + `standard_lighting.glsl` / `toon_lighting.glsl` / **`openpbr_lighting.glsl`**
+- **OpenPBR wrapper 6 種 `engine://surfaces/openpbr/*.surface`**
+- 公開 include 群 `shaders/include/pelican_*.glsl`。
 
 🚧 HLSL / Slang: `.surface` の `language` フィールドとして形式上は受理されますが、既定バックエンドは GLSL 以外を reject します(他言語は spv-link experimental の視野 — §6.7)。
 
@@ -510,7 +541,9 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、**リフレク�
 { "features": [ "engine://features/shadow_directional.json", "engine://features/velocity.json" ], ... }
 ```
 
-エンジン同梱 feature([src/core/resources/features/](../../src/core/resources/features/) の **21 ファイル**・すべて実装済み)。うち 20 本が `pelican.render_feature`、`editor.json` だけは `pelican.render_feature_overlay`(他の feature を並べて参照するオーバーレイ)です。表に出る業界用語を先に 1 行ずつ: **SSAO**(screen-space ambient occlusion = 深度と法線から「物が近接して光が届きにくい隅」を推定して暗くする画面空間の手法)、**bloom**(明るい部分をぼかして周囲へにじませる後処理)、**TAA**(temporal anti-aliasing = 毎フレーム微妙に投影をずらして描き、前フレームの結果と混ぜてジャギーを消す手法。§6.8)、**IBL**(image-based lighting = 環境画像を光源として使う照明)、**CSM**(cascaded shadow map = 距離帯ごとに解像度の違う影マップを使い分ける方式)、**cluster**(画面を格子に切って「その格子に効くライトの一覧」を先に作る手法)。いずれも [用語集](14_glossary.md#ssaoscreen-space-ambient-occlusion) にも項目があります。
+エンジン同梱 feature([src/core/resources/features/](../../src/core/resources/features/) の **21 ファイル**・すべて実装済み)。うち 20 本が `pelican.render_feature`、`editor.json` だけは `pelican.render_feature_overlay`(他の feature を並べて参照するオーバーレイ)です。
+
+表に出る業界用語を先に 1 行ずつ: **SSAO**(screen-space ambient occlusion = 深度と法線から「物が近接して光が届きにくい隅」を推定して暗くする画面空間の手法)、**bloom**(明るい部分をぼかして周囲へにじませる後処理)、**TAA**(temporal anti-aliasing = 毎フレーム微妙に投影をずらして描き、前フレームの結果と混ぜてジャギーを消す手法。§6.8)、**IBL**(image-based lighting = 環境画像を光源として使う照明)、**CSM**(cascaded shadow map = 距離帯ごとに解像度の違う影マップを使い分ける方式)、**cluster**(画面を格子に切って「その格子に効くライトの一覧」を先に作る手法)。いずれも [用語集](14_glossary.md#ssaoscreen-space-ambient-occlusion) にも項目があります。
 
 | feature | 内容 |
 |---|---|
@@ -536,7 +569,20 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、**リフレク�
 | `editor.json` | **唯一の `pelican.render_feature_overlay`**(RT もパスも持たない)。`gizmo.json` / `picking.json` / `gpu_timing.json` の 3 本を並べて参照するだけの束ねで、`--feature-overlay` で editor 用の 3 機能を一括で足すために使う |
 | `gpu_timing.json` | パスなしの計測フラグ。フレームグラフの**ノードごとに `barriers` / `body` の GPU タイムスタンプ**を取り、ログ・`get_status.gpu_timing`・ImGui に出す(WP29/143。XR では左右眼とミラーを別 view として分離。§6.14) |
 
-fragment(`pelican.render_feature` v1)に書けるもの: `render_targets` / `buffers` / `compute_tasks`(追加。名前衝突はエラー。RT には `format_class` / `role` / `history` / `format_candidates` も書ける)、`render_target_overrides`(既存 RT の format/usage 上書きと `format_candidates` の重複なし追記)、`passes`(`insert: "begin" | "before:<アンカー|パス名>" | "after:<...>" | "end"`。`begin` は `rendering_passes` がちょうど 1 本のときだけ有効)、`pass_overrides`(既存パスへの `input` / `resource_ports` / `material_resources` 追加。この 3 キー以外は `render feature pass override has unsupported field '<key>'`)、`shader_defines`、`required_capabilities`(全 rendering graph の target planning 要求へ合流)、`runtime_shader_compiler`(`"required"` または `"optional"`。省略時 required。optional は define / 生成 include 不要の埋め込み SPIR-V feature 用)、**`parameters`(下記)**、**`surface_resources`(下記)**、**`projection_jitter`(§6.8)**、**`integrations`(下記)**、`required_targets`(FR-1。pipeline に要る target の型の宣言。下の「feature が pipeline に求める target と挿入先」)。
+fragment(`pelican.render_feature` v1)に書けるもの:
+
+- `render_targets` / `buffers` / `compute_tasks`(追加。名前衝突はエラー。RT には `format_class` / `role` / `history` / `format_candidates` も書ける)
+- `render_target_overrides`(既存 RT の format/usage 上書きと `format_candidates` の重複なし追記)
+- `passes`(`insert: "begin" | "before:<アンカー|パス名>" | "after:<...>" | "end"`。`begin` は `rendering_passes` がちょうど 1 本のときだけ有効)
+- `pass_overrides`(既存パスへの `input` / `resource_ports` / `material_resources` 追加。この 3 キー以外は `render feature pass override has unsupported field '<key>'`)
+- `shader_defines`
+- `required_capabilities`(全 rendering graph の target planning 要求へ合流)
+- `runtime_shader_compiler`(`"required"` または `"optional"`。省略時 required。optional は define / 生成 include 不要の埋め込み SPIR-V feature 用)
+- **`parameters`(下記)**
+- **`surface_resources`(下記)**
+- **`projection_jitter`(§6.8)**
+- **`integrations`(下記)**
+- `required_targets`(FR-1。pipeline に要る target の型の宣言。下の「feature が pipeline に求める target と挿入先」)。
 
 `shadow_directional.json` の全文例は前版と同じです。
 
@@ -659,15 +705,18 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
 展開後はノード宣言やshader define、必要ならprovider用の`bound_parameters`を直接編集します。
 `edit_render_features`の`materialize`操作は、この展開文書の新規保存と選択instanceの参照切替を
 同じtransactionで行います。通常の合成順で確定したresource bindingを使います。
+
 StudioではRender featuresで対象を選び、**Make editable...**で新しいprojectファイルを指定し、
 **Apply**で保存・参照切替を行います。未適用の変更がある場合は先にApplyしてください。
 展開後の通常passはFrame Planから既存のPass Editorで編集できます。
 有効なintegrationが追加したpassやcompute taskも、出所のintegration fragmentへ保存できます。
 条件判定を編集側でやり直さず、合成結果のprovider情報で元宣言を選びます。
+
 対象featureが追加・直接上書きするpass、有効なintegrationが上書きするpass、surface resourceの接続先を含む
 タグ付き領域では、差し替えproviderの指定も同じ保存で解除します。無効なintegrationは対象を増やしません。
 対象領域は既存の差し替えregistryが対応するfullscreen pass構成です。
 他の領域の指定は保持します。差し替え指定の保存先がengine presetの場合は先にFork presetしてください。
+
 一般的なコンパイラ最適化は維持します。XR/preview向けの実行variantを独立した文書へ変換する操作ではありません。
 
 
@@ -1110,13 +1159,17 @@ compute シェーダは `<stem>.comp`、`reads` / `writes` の宣言だけでfra
 `#include "pelican_frame.glsl"`からtime/camera/resolution/lightを読めます。
 portは既存の`reads` / `writes`を注釈するだけで、新しいedgeや順序を作りません。
 
-**port の binding は shader の反映の名前で決まります。**compute task(下の RT pipeline task を含む)の resource port の set 1 の binding は、engine が shader を読み込んだ後に、その反映の set 1 で `pelican_resource_<port>` の名前を持つ descriptor の binding になります(RT task は raygen / miss / closest-hit / any-hit / intersection / callable の全 stage の反映を合わせて引きます。[名前で引く所](../../src/core/renderingpass/computetaskcontainer.cpp#L1389)、[`bindShaderResourceInterfaceByReflectedName()`](../../src/core/shader/shaderresourceinterface.cpp#L941))。descriptor set layout はその反映から作られ、descriptor の書き込みも同じ binding で port を引くので、両者は名前で一致します。したがって port を書く順(graph の `ports` の object の鍵の順、`reads` / `writes` の並び)は binding に影響しません。`pelican_resource_ports.glsl` の生成 include で compile される shader は include が振った binding がそのまま反映に出るので結果は以前と同じで、変わるのは binding を自分で書いた shader や事前 compile の shader を使う場合です(engine の `rt_shadow_mask_pipeline` の raygen は world position・normal・shadow mask を set 1 の binding 0・1・2 に書いています)。
+**port の binding は shader の反映の名前で決まります。**compute task(下の RT pipeline task を含む)の resource port の set 1 の binding は、engine が shader を読み込んだ後に、その反映の set 1 で `pelican_resource_<port>` の名前を持つ descriptor の binding になります(RT task は raygen / miss / closest-hit / any-hit / intersection / callable の全 stage の反映を合わせて引きます。[名前で引く所](../../src/core/renderingpass/computetaskcontainer.cpp#L1389)、[`bindShaderResourceInterfaceByReflectedName()`](../../src/core/shader/shaderresourceinterface.cpp#L941))。descriptor set layout はその反映から作られ、descriptor の書き込みも同じ binding で port を引くので、両者は名前で一致します。
+
+したがって port を書く順(graph の `ports` の object の鍵の順、`reads` / `writes` の並び)は binding に影響しません。`pelican_resource_ports.glsl` の生成 include で compile される shader は include が振った binding がそのまま反映に出るので結果は以前と同じで、変わるのは binding を自分で書いた shader や事前 compile の shader を使う場合です(engine の `rt_shadow_mask_pipeline` の raygen は world position・normal・shadow mask を set 1 の binding 0・1・2 に書いています)。
 
 反映が名前を持たない port は番号を変えず、pipeline の作成時の検査が今までどおり `... is absent from shader reflection; include <pelican_resource_ports.glsl> and use its generated accessor` で断ります(RT では ray tracing の ABI の検査の後)。1 つの名前が 2 つの binding にあれば `Shader resource port '<port>' (resource '<resource>') reflected descriptor 'pelican_resource_<port>' at bindings <a> and <b>` で断ります。
 
 shader の hot reload では binding を決め直しません(登録のときの pipeline の記述のまま組み直します)。fullscreen / raster pass は変わっていません(binding は pass の入力の位置のまま。§6.4 の「fullscreen pass の入力と shader の宣言の契約」)。
 
-**生成 include は port ごとに define を出します。**resource port を持つ pass・task の shader を compile するときに生成する `pelican_resource_ports.glsl` は、port ごとに `#define PELICAN_RESOURCE_PORT_<port> 1` を書きます([書く所](../../src/core/shader/shaderresourceinterface.cpp#L667))。port を持たない pass では、engine に組み込まれた空の `pelican_resource_ports.glsl`([中身](../../src/core/resources/shaders/include/pelican_resource_ports.glsl#L4))で compile されます。そのため port を任意にした shader は `#ifdef PELICAN_RESOURCE_PORT_<port>` で既定値に切り替えられます(`engine://bloom_composite` の `bloomIntensity`。§6.5 の bloom)。条件無しにアクセサを呼ぶ shader は、port の無い pass では今までどおりアクセサの名前で compile に失敗します。
+**生成 include は port ごとに define を出します。**resource port を持つ pass・task の shader を compile するときに生成する `pelican_resource_ports.glsl` は、port ごとに `#define PELICAN_RESOURCE_PORT_<port> 1` を書きます([書く所](../../src/core/shader/shaderresourceinterface.cpp#L667))。port を持たない pass では、engine に組み込まれた空の `pelican_resource_ports.glsl`([中身](../../src/core/resources/shaders/include/pelican_resource_ports.glsl#L4))で compile されます。
+
+そのため port を任意にした shader は `#ifdef PELICAN_RESOURCE_PORT_<port>` で既定値に切り替えられます(`engine://bloom_composite` の `bloomIntensity`。§6.5 の bloom)。条件無しにアクセサを呼ぶ shader は、port の無い pass では今までどおりアクセサの名前で compile に失敗します。
 
 `view`は既定`shared_2d`、eyeごとのtargetは`per_view`です。sampled portの
 `sampling.filter`は`linear|nearest`、`sampling.address`は
@@ -1156,6 +1209,7 @@ typed buffer未実装時や特殊descriptor用のescape hatchとして維持さ�
 subresource、2D viewの複数layer、storage viewの複数mipは起動時エラーです。
 material sampled portでも同じ指定を使えますが、subresource viewは`same_pixel` local readへ
 変換されずsamplerとして実行されます。
+
 generated image interfaceは`pelican_base_mip_<port>`と
 `pelican_base_layer_<port>`も公開します。これはgraphが選んだ絶対base subresourceであり、
 shaderがtask名やVulkan image viewを推測せず、mipごとのkernel parameterを決めるために使えます。
@@ -1241,6 +1295,7 @@ RT pipeline task も最上位 `compute_tasks` を使います。これは `vkCmd
 stage stem は順に `.rgen` / `.rmiss` / `.rchit`（または埋め込み `.spv`）へ解決されます。`shader` との併記、compute 用 `groups` / `groups_from` の指定はエラーです。`rays_from` は指定image mipの幅・高さから実行サイズを決め、resize/rebind後に再計算します。callableは`ray_tracing.callable`、any-hit/intersectionはray group layoutから指定します。resource port の binding は、全 stage の反映を合わせた中の `pelican_resource_<port>` の名前で決まり、port を書く順には依りません(RS-5。上の「compute タスク」の「port の binding は shader の反映の名前で決まります」)。[加速構造とRT pipelineの説明](../source-code-guide/11_ray_query_acceleration_structures.md)も参照してください。
 
 Studio では Graph タブの `render.compute` の **New…**(compute の欄の Shader の横と palette の行)が、この形の最小の組 `shaders/<名前>.rgen` / `.rmiss` / `.rchit`(ray group layout の無い形。画素ごとに 1 本 trace し、当たった面の法線を色にする)を書いて、その組で trace する task にします。Task Editor の New ray tracing も同じ組を書きます。中身と残る穴は [第13章](13_editor.md) §13.5 の「RT を Graph で組む」です。
+
 ray group layout のある project では、同じ New… が layout の形の雛形(生成 include を使い、ray type と miss を名前で指し、closest hit が `pelicanRayFetchNormal` で法線を読む)を書きます。layout の無い project を hit group のある形にするのは Rendering settings タブの Ray layout の節の Enable hit groups です(§6.15 と [第13章](13_editor.md) §13.5 の「Studio で RT を組む」)。
 
 Callable recordの初期値は、StudioのRender Features → Callable Records...で編集できます。
@@ -1289,6 +1344,7 @@ RT taskごとに対象の集合を変える場合は、rendering configの`scene
 `"acceleration_structure":"actors"`を指定します。instanceのmaskと指定maskのbit ANDが
 非ゼロの個体だけが対象です。省略時は`"scene"`（シーン全体）。定義のmaskは0〜255で、
 0は空の集合、省略時は255です。BLASとSBTは共有し、TLASと選択用descriptorを分けます。
+
 compute shaderのray queryでも、taskへ`"ray_query":{"acceleration_structure":"actors"}`を
 指定して同じ集合を選べます。この宣言でray query用のAS構築も有効になります。
 シーン全体を使うcomputeでも`"ray_query":{"acceleration_structure":"scene"}`を明記します。
@@ -1316,9 +1372,11 @@ layout v3で`engine_record`に`procedural_transform`を宣言済みなら、Scen
 **AABB coordinate space**からgeometry/worldを切り替えられます。三角形の設定と同時に保存でき、
 既存のshader record配置は保持します。未対応のlayoutは編集不可の理由を表示します。
 シェーダー側も以下の変換helperに対応させてから使用してください。
+
 元の座標系で交差を計算するshaderは、`gl_ObjectRayOriginEXT`/`gl_ObjectRayDirectionEXT`の代わりに
 `pelicanProceduralRayOrigin(record)`/`pelicanProceduralRayDirection(record)`を使います。返された方向を正規化しないでください。
 組込み`procedural_sphere`はこの宣言に対応しています。同じassetを使う複数個体でも各transformを保持し、移動に追随します。
+
 新しいengine recordを宣言するとshader recordのABIが変わるので、`PELICAN_RAY_ENGINE_RECORD_MEMBERS`を使って再コンパイルします。
 未指定のgeometryモードと既存shaderの契約は変わりません。現行material_alpha_v1 profileとの併用は対象外です。
 
@@ -1367,13 +1425,17 @@ StudioのRender Features画面から「Scene AS...」を開くと、名前付き
 表で編集できます。Add／Removeで行を増減し、Applyで再コンパイルと保存を行います。
 不正な定義や使用中のASを削除する変更は適用されず、失敗時は表の編集内容を保持します。
 別の編集で元ファイルが変わった場合は競合として拒否します。Refreshはengineの現在値で
-表を読み直す操作です。下段のRay task表ではtaskごとのASを選択できます。
+表を読み直す操作です。
+
+下段のRay task表ではtaskごとのASを選択できます。
 接続先はprojectの`ray_task_acceleration_structures`に保存され、共有featureの設定は変更しません。
 元のASへ戻すと、そのtaskの上書き指定を除きます。
+
 Frame Planの **Order nodes...** では、名前付きASの構築とconsumerを交互に配置できます。
 例えばleft AS→leftを使うtask→right ASという順序が可能です。
 consumerを自身の接続先ASより前に置く変更は拒否します。ASを使わないcompute・通常anchor・copyは、
 データ依存に反しなければ共有ASより前へ配置できます。
+
 Frame Planの**Edit pass...**は、project presetに加えてproject内のfeatureファイルが明示的に宣言した
 fullscreen・material・raster passを編集します。featureの保存は元のファイルに反映され、同じfeatureを使うgraphにも適用されます。
 自動生成やパラメーター展開を伴うノード、engine内蔵featureなどは、対応する編集宣言がない理由を表示します。
@@ -1394,8 +1456,10 @@ trueのpassは共有AS構築後に実行し、falseのpassは共有AS前にも�
 falseでASを使うshaderはロード・shader再読込時に拒否します。
 固定shaderを使うspriteもAS構築を待ちません。色・depthを用意する描画など、通常の依存を満たせば
 Frame Planの`__anchor_sprite`を共有AS構築より前に配置できます。
+
 Studioのfullscreen pass編集では **Use scene ray query** で切り替え、保存で確定します。
 既存project presetの編集時も元の値を読み込み、チェックを外すとfalseを保存します。
+
 名前付きTLASを選ぶ場合は`"ray_query": {"acceleration_structure": "actors"}`のように指定します。
 Studioの **Acceleration structure** 欄では`scene`（scene全体）または登録済みTLAS名を入力します。
 passは共有ASと選択したTLASの構築を待ち、そのTLASをquery用descriptorへbindします。未登録名は保存・ロード時に拒否します。
@@ -1903,7 +1967,9 @@ BY_REGIONのlocal-read dependencyを入れます。fullscreen shaderの
 `subpassInput` variantへコンパイルされます。materialの
 `pelican_screen_<name>` / `pelican_sample_<name>`も公開sourceを変えず、
 samplerまたはinput attachmentへ物理解決されます。descriptor bindingと
-input attachment indexは別の番号空間です。scope外へ値を残さないためproducerのStoreは
+input attachment indexは別の番号空間です。
+
+scope外へ値を残さないためproducerのStoreは
 Discardです。allocatorは`INPUT_ATTACHMENT | TRANSIENT_ATTACHMENT`を付け、lazy memoryを
 優先します。local-read対象だけを`RENDERING_LOCAL_READ_KHR` layoutへ置き、同じscopeの
 output-only attachmentは通常のcolor/depth attachment layoutを保ちます。
@@ -2168,7 +2234,9 @@ Vulkan デバイスの `maxColorAttachments` と、選択した format / MSAA �
 
 `type` は `float/vec2/vec3/vec4`、`int/ivec2/ivec3/ivec4`、
 `uint/uvec2/uvec3/uvec4`。ここでいう**数値クラス**は「その値を浮動小数(floating)・符号付き整数(SINT)・符号なし整数(UINT)のどれとして扱うか」の 3 区分で、成分数(vec2 か vec4 か)とは別の軸です。RT format とこの数値クラスが一致しない
-設定は GPU pipeline 作成前に拒否します(たとえば `"type": "uint"` の出力を `R8G8B8A8_UNORM` の RT へ向けるのは不可)。組み込み `source` は
+設定は GPU pipeline 作成前に拒否します(たとえば `"type": "uint"` の出力を `R8G8B8A8_UNORM` の RT へ向けるのは不可)。
+
+組み込み `source` は
 `surface.base_color`、`surface.normal`、`surface.normal_encoded`、
 `surface.material`、`input.world_position`、`surface.emissive`、
 `lighting.scene_color`。`source` は「その出力スロットに何を書くか」の指定です。組み込み名を書けばエンジンが対応する値を自動で入れ、`custom` を書いた場合だけ**値の供給を `.surface` 側に委ねます** — 下の `pelican_material_outputs_v1()` を書き、`outputs.<outputs[].name>` へ代入するのが供給の唯一の口です。上の例の `object_id` は `"source": "custom"` なので、次のスニペットの `outputs.object_id = 73u;` がその値になります。代入しなければ未初期化のままなので、`custom` を書いたら必ずこの関数で埋めてください。
@@ -2211,7 +2279,9 @@ schema の変更は今までどおり断られます。編集 RPC の経路で�
 表は `hdr` feature が有効かどうかで 2 つあります。SDR の表は albedo と emissive が `B8G8R8A8_SRGB`、HDR の表はそれらも `R16G16B16A16_SFLOAT` で、 normal と worldpos はどちらでも `R16G16B16A16_SFLOAT`、material はどちらでも `R8G8B8A8_UNORM` です([G-buffer の互換の表(SDR と HDR)](../../src/core/renderingpass/materialpassattachments.hpp#L15))。
 
 Blank には `hdr` feature が無いので、live の material は SDR の表を持ちます。graph に足す G-buffer の image の format は `hdr` に合わせます。
-SDR の表の format で足した deferred の material pass は起こし直さずに live に載り、HDR の表の format で足すと color の format が変わるので、 上の RS-1 の `restart_required`(`detail: ["color_formats"]`)です。本当に契約が変わる場合をその場で組み直すことは、v0 では行わず v0 の後の候補です ( 利用者の判断)。test: `engine_primitives_test` の [「MC-1 the palette's deferred material pass on the graph's nodes is applied without a restart」](../../test/engine_primitives_test.cpp#L1113) (GPU。Blank に palette と同じ op で pass を足す。SDR の表では committed・`restart_required` 無し・frame plan に pass が出て、present に albedo を繋ぐと spawn した cube が描かれる。HDR の表では `material_physical_contract_changed`・`pass: "render_material_pass"`・`detail: ["color_formats"]`)。
+SDR の表の format で足した deferred の material pass は起こし直さずに live に載り、HDR の表の format で足すと color の format が変わるので、 上の RS-1 の `restart_required`(`detail: ["color_formats"]`)です。本当に契約が変わる場合をその場で組み直すことは、v0 では行わず v0 の後の候補です ( 利用者の判断)。
+
+test: `engine_primitives_test` の [「MC-1 the palette's deferred material pass on the graph's nodes is applied without a restart」](../../test/engine_primitives_test.cpp#L1113) (GPU。Blank に palette と同じ op で pass を足す。SDR の表では committed・`restart_required` 無し・frame plan に pass が出て、present に albedo を繋ぐと spawn した cube が描かれる。HDR の表では `material_physical_contract_changed`・`pass: "render_material_pass"`・`detail: ["color_formats"]`)。
 
 Studio の Graph の palette は Frame Plan の form と同じ表で `hdr` に合わせた format の image を足すので、Blank で deferred の material pass を置いても engine は起こし直しません([第13章](13_editor.md) の「render.material_pass と draw.* の node」)。
 
@@ -2319,7 +2389,9 @@ material passが`view: "family_array"`を宣言したsampled imageは`sampler2DA
 `pelican_sample_<name>(uv)` / `pelican_sample_lod_<name>(uv, lod)`は現在のlogical viewを
 自動選択します。明示的に別viewを読む場合はview index付きoverloadを使います。1-view familyが
 scalar 2D imageへ物理化された場合も、runtimeが1-layer array viewを作るため同じsurface ABIを
-維持できます。consumer-owned layered multiviewの一般sampled inputはまだ未対応で、
+維持できます。
+
+consumer-owned layered multiviewの一般sampled inputはまだ未対応で、
 local input attachment経路だけを利用できます。現在のgenerated image accessorは
 floating-point `vec4`契約で、UINT/SINT input attachmentはtyped image port追加まで拒否します。
 全active graph variantはsampler/local種別、input attachment index、正規化後のshader view ABIが
@@ -2490,7 +2562,9 @@ rendering 文書の root に `material_route_default` を置くと、automatic �
 - material pass を 1 つでも持つ候補で受け皿の無い material があるときと、`graph.loop` の描き漏れ(§6.18 の「draw_loop —— material ごとの描き方」)は、`material_route_unserved@1` で断ります。
 
 受け皿が無いと load は `material_route_unserved@1` の fatal で止まり、文は route と shader 契約・material の 名前と出所(組込は `(engine built-in)`)・直し方の hint を言います([load 時の fatal の文](../../src/core/material/materialgenerationplanner.cpp#L265))。
-たとえば forward の pass だけの pipeline を `"auto"` のまま起動すると、 `material_route_unserved@1: rendering config '<参照>' has no material pass for route 'deferred_geometry' (gbuffer_v1), needed by '<名前>' ... Hint: set material_route_default to "forward" on the rendering config root, or add a deferred_geometry_v1 material pass` の形で止まります。編集 RPC は同じ規則を編集の候補にも当て、同じ code で断ります([第13章](13_editor.md) §13.5)。forward の pass だけで組むときは `"forward"` を置けば automatic な material が forward の pass に集まります。ただし blend の material が あれば、`forward_transparent_v1` の pass も要ります(deferred だけの構成で透過 material を救う仕組みはありません)。
+たとえば forward の pass だけの pipeline を `"auto"` のまま起動すると、 `material_route_unserved@1: rendering config '<参照>' has no material pass for route 'deferred_geometry' (gbuffer_v1), needed by '<名前>' ... Hint: set material_route_default to "forward" on the rendering config root, or add a deferred_geometry_v1 material pass` の形で止まります。
+
+編集 RPC は同じ規則を編集の候補にも当て、同じ code で断ります([第13章](13_editor.md) §13.5)。forward の pass だけで組むときは `"forward"` を置けば automatic な material が forward の pass に集まります。ただし blend の material が あれば、`forward_transparent_v1` の pass も要ります(deferred だけの構成で透過 material を救う仕組みはありません)。
 
 `--rpc --render-fallback` の起動では、起動の間に登録する material の受け皿が無くても止まらず、fallback の世代で動き続けます (§6.16 の「engine が持つ今の問題の一覧」の engine_backlog 23 の段落)。フラグを付けない起動と、起動の後の登録は今までどおりです。
 
@@ -3161,7 +3235,9 @@ layout の骨格:
 | 無し | `LegacyNoLayout` | 宣言層は無効。`acceleration_structure` も `pelican_ray_instance` も書けない |
 | 有り(version 3) | `LayoutV3` | `acceleration_structure` と `pelican_ray_instance` が使える |
 
-MG-2a より前は version 1(`LayoutV1Q`: 行の `instance_custom_index` を常に q で上書き)と version 2(`LayoutV2`)を別の mode として持っていましたが、どちらも消えました。mode はプロセスの間は変わりません。layout の有無が変わる候補(編集・`restore_render_documents`・`reload_render_documents` で layout を足す / 外す)は、**拒否ではなく、文書を書いたうえで `restart_required` の答え**になります(下の「文書を RPC で読み書きする」)。RTL-1b の前は `pelican.ray_layout_mode_change_requires_restart@1` で断られて文書は書かれず、Studio は 1 文 `Whether the project has a ray group layout changes only when the engine restarts: restart it to apply this` を出すだけでした([第13章](13_editor.md) §13.5 の「RT を Graph で組む」)。組み込みの `pelican_ray_instance` codec は **layout があるときだけ codec 表に載ります**([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L2265))。codec 表は既定で 8 件、layout があるプロジェクトだけ 9 件目としてこれが載る、という形です([第4章](04_scene_ecs.md) §4.2 に「条件付き」として別項があります)。
+MG-2a より前は version 1(`LayoutV1Q`: 行の `instance_custom_index` を常に q で上書き)と version 2(`LayoutV2`)を別の mode として持っていましたが、どちらも消えました。mode はプロセスの間は変わりません。layout の有無が変わる候補(編集・`restore_render_documents`・`reload_render_documents` で layout を足す / 外す)は、**拒否ではなく、文書を書いたうえで `restart_required` の答え**になります(下の「文書を RPC で読み書きする」)。RTL-1b の前は `pelican.ray_layout_mode_change_requires_restart@1` で断られて文書は書かれず、Studio は 1 文 `Whether the project has a ray group layout changes only when the engine restarts: restart it to apply this` を出すだけでした([第13章](13_editor.md) §13.5 の「RT を Graph で組む」)。
+
+組み込みの `pelican_ray_instance` codec は **layout があるときだけ codec 表に載ります**([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L2265))。codec 表は既定で 8 件、layout があるプロジェクトだけ 9 件目としてこれが載る、という形です([第4章](04_scene_ecs.md) §4.2 に「条件付き」として別項があります)。
 
 ### 状態表
 
@@ -3596,7 +3672,13 @@ op は **module** が登録します。登録済み module はエンジンに最
 | | `pose.skeletal` | **sink**。owner 個体の姿勢としてコミットする |
 | | `pose.transform` | **sink**。catalog には載りますが、**v0 では装着時に必ず拒否されます**(`pose.transform has no root writer yet`。[posegraphruntime.cpp:374](../../src/core/animation/posegraphruntime.cpp#L433))。root motion は `pose.clip_sample` の parameter として運ばれます |
 
-登録されている **semantic 型は 12 個**です: `pelican.value.scalar@1`([logicalrendertype.cpp:557](../../src/project/logicalrendertype.cpp#L560))、`pelican.audio.voice@1` / `pelican.event.playback_control@1`([:562](../../src/project/logicalrendertype.cpp#L567))、6 つの `pelican.render.*`(`storage_buffer` / `attribute` / `color_signal` / `depth` / `legacy_opaque_image` / `legacy_opaque_resource`。[:580](../../src/project/logicalrendertype.cpp#L583) 〜 [:627](../../src/project/logicalrendertype.cpp#L630))、LP-3a の `pelican.render.draw_stream@1`(stream。draw_loop の 1 material の描き方の列。[:637](../../src/project/logicalrendertype.cpp#L637))、`pelican.pose@1` / `pelican.rig@1`([posegraphmodule.cpp:74](../../src/project/posegraphmodule.cpp#L74))。
+登録されている **semantic 型は 12 個**です:
+
+- `pelican.value.scalar@1`([logicalrendertype.cpp:557](../../src/project/logicalrendertype.cpp#L560))
+- `pelican.audio.voice@1` / `pelican.event.playback_control@1`([:562](../../src/project/logicalrendertype.cpp#L567))
+- 6 つの `pelican.render.*`(`storage_buffer` / `attribute` / `color_signal` / `depth` / `legacy_opaque_image` / `legacy_opaque_resource`。[:580](../../src/project/logicalrendertype.cpp#L583) 〜 [:627](../../src/project/logicalrendertype.cpp#L630))
+- LP-3a の `pelican.render.draw_stream@1`(stream。draw_loop の 1 material の描き方の列。[:637](../../src/project/logicalrendertype.cpp#L637))
+- `pelican.pose@1` / `pelican.rig@1`([posegraphmodule.cpp:74](../../src/project/posegraphmodule.cpp#L74))。
 
 スカラーの経路を流れるのは `pelican.value.scalar@1` ですが、`render.*` のノードも型付きのポートを持ちます —— `render.buffer` / `render.attribute` は `outputs["resource"]` を、`render.image` は宣言から作った resource 型を、`render.compute` / `render.fullscreen` / `render.raster` は `parameters.ports` の各ポートを `pelican.render.*` で型付けします([`renderPorts()`](../../src/project/graphmodule.cpp#L328))。
 
@@ -3674,7 +3756,9 @@ RPC なら `get_graph_catalog`([第10章](10_tools.md))。どちらも同じ `pe
 
 読む順序は **`modules[].operations[]` → `op` → `domain` / `evaluation` / `change` → `inputs` / `outputs`** です。`sink: true` の op は `outputs` が空で、module の `sinks` 配列にも名前が出ます。`outputs` の要素は `{port, type}` のほか、`{port, type_from_input}` があります(型を持たず、`type_from_input` が名指す入力 socket に入る edge の型になる。今は `render.shadow_depth` の `depth` と `render.snapshot_copy` の `destination`)。`ports: "parameter_dependent"` の op は `inputs` / `outputs` のキー自体が無く、ノードの書きぶりで決まります。
 
-**必須の parameter と value.input の名前。**どの op にも `required_parameters` が付きます。中身は、node をその op で組むときに `graph.render_node_parameters_missing@1` を出す検査と**同じ表**([`renderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L262))から作った配列で、単独の必須は `{name}`、どれか 1 つでよい組は `{one_of: [...]}`、必須の無い op は `[]` です([組む所](../../src/project/graphmodule.cpp#L576))。例: `render.scalar` は `[{"name": "target"}]`、`render.compute` は `[{"name": "ports"}, {"one_of": ["shader", "ray_tracing"]}]`、`audio.volume` は `[{"one_of": ["target", "voice"]}]`、`value.add` は `[]`。名前は同名の入力 edge でも満たせます(`audio.volume` の `voice` の edge など。下の §6.18「名前付きの拒否の一覧」の RS-9 / RS-15 の項)。
+**必須の parameter と value.input の名前。**どの op にも `required_parameters` が付きます。中身は、node をその op で組むときに `graph.render_node_parameters_missing@1` を出す検査と**同じ表**([`renderNodeRequiredParameters()`](../../src/project/graphmodule.cpp#L262))から作った配列で、単独の必須は `{name}`、どれか 1 つでよい組は `{one_of: [...]}`、必須の無い op は `[]` です([組む所](../../src/project/graphmodule.cpp#L576))。
+
+例: `render.scalar` は `[{"name": "target"}]`、`render.compute` は `[{"name": "ports"}, {"one_of": ["shader", "ray_tracing"]}]`、`audio.volume` は `[{"one_of": ["target", "voice"]}]`、`value.add` は `[]`。名前は同名の入力 edge でも満たせます(`audio.volume` の `voice` の edge など。下の §6.18「名前付きの拒否の一覧」の RS-9 / RS-15 の項)。
 
 `value.input` の op にだけ `input_names: [{name, type, description}]` が付き、`value.input` の `name` に書ける名前を並べます —— `time`(game の時計の秒)・`delta_time`(この frame の長さの秒)・`scene_time`(今の scene が始まってからの秒)で、`type` は `pelican.value.scalar@1` を catalog の型の書き方(`{semantic, ...}`)にしたものです([`graphFrameInputNames()`](../../src/project/graphmodule.cpp#L927))。
 
@@ -3691,7 +3775,9 @@ frame が値を渡す名前の検査(`validateGraphInputs()`)も同じ表を読�
 - **`expression: true`** は、ループの body で `$expr` / `$format` を書ける所です(LP-1b の許可の表。下の §6.18「ループの式」)。
 - **`parameters_complete`** が `false` なら、並んだものは正しいが、parser はほかにも読みます。今 `false` の op は `render.image` / `render.fullscreen` / `render.raster` / `render.material_pass` の 4 つです(CT-3 のときは `render.compute` を含む 5 つでした。CT-6 で `render.compute` が `true` になっています)。`ports` の中の port の形、`raster_state`・draw の中身は出していません(`json` か、`fields` の無い `object` として並びます。`render.compute` の `ports` も `fields` の無い `object` のままです)。表に載っていない op は `parameters: []`・`parameters_complete: false` です。parameter を持たない op(`value.add`・`pose.blend`・`draw.material` など)は `parameters: []`・`parameters_complete: true` です。
 
-例(test の期待): `pose.clip_sample` は `rig`(`asset`、必須)・`clip`(`string`、必須)・`speed` `{"name": "speed", "kind": "number", "default": 1.0}`・`start_time`(既定 0)・`loop` `{"name": "loop", "kind": "bool", "default": true}`・`root_motion`(`enum` `["none", "extract"]`、既定 `none`)・`root_node` の順です。`render.buffer` の `element` は必須の `enum`(13 個)、`size` は `integer` で `min: 0`、`lifetime` は `["persistent", "transient"]` で既定 `persistent` です。`render.shadow_depth` の `shader` は `kind: "shader"` で、`fields` が `[{"name": "vertex", "kind": "string", "required": true}]`、`default` が `{"vertex": "engine://shadow_depth"}` です。`render.image` の `type` は `object` で、`fields` が `semantic`(`string`)と `arguments`(`items` が `string` の map)です。`initial` の `fields` は `[{"name": "asset", "kind": "asset", "required": true}]` で、この要素に `"asset_kind": "image"`・`"extensions": [".ktx2", ".png", ".jpg"]` も付きます。
+例(test の期待): `pose.clip_sample` は `rig`(`asset`、必須)・`clip`(`string`、必須)・`speed` `{"name": "speed", "kind": "number", "default": 1.0}`・`start_time`(既定 0)・`loop` `{"name": "loop", "kind": "bool", "default": true}`・`root_motion`(`enum` `["none", "extract"]`、既定 `none`)・`root_node` の順です。`render.buffer` の `element` は必須の `enum`(13 個)、`size` は `integer` で `min: 0`、`lifetime` は `["persistent", "transient"]` で既定 `persistent` です。`render.shadow_depth` の `shader` は `kind: "shader"` で、`fields` が `[{"name": "vertex", "kind": "string", "required": true}]`、`default` が `{"vertex": "engine://shadow_depth"}` です。
+
+`render.image` の `type` は `object` で、`fields` が `semantic`(`string`)と `arguments`(`items` が `string` の map)です。`initial` の `fields` は `[{"name": "asset", "kind": "asset", "required": true}]` で、この要素に `"asset_kind": "image"`・`"extensions": [".ktx2", ".png", ".jpg"]` も付きます。
 
 必須の名前は `pose.clip_sample` の `rig` / `clip`、`pose.state_machine` の `rig` / `graph`、`pose.retarget` の `profile`、`draw.variant` の `variant` です。不足すると `graph.render_node_parameters_missing@1` で断られます。
 
@@ -3728,7 +3814,9 @@ frame が値を渡す名前の検査(`validateGraphInputs()`)も同じ表を読�
 - **op の `placement`**: どの op にも `"anywhere"` か `"owned_instance"` が付きます([CT-4 で op に placement を足す所](../../src/project/graphmodule.cpp#L588))。`owned_instance` は `owner` 付きの `graph.instance` の中にしか置けない op で、`pose.clip_sample` / `pose.blend` / `pose.state_machine` / `pose.retarget` / `pose.skeletal` / `pose.transform` と `value.morph_weight` です(owner の model を読む・owner の skeletal の sink に書くため。コードの注記)。ANIMATION=OFF の build では `value.morph_weight` だけです。
   - 外に置くと `graph.op_requires_owned_instance@1` `{node, op}` で断ります。検査は graph の partition の中で、編集でも読み込みでも同じ所を通ります([CT-4 の placement の検査を呼ぶ所](../../src/project/graphpartition.cpp#L374)、[`checkGraphOperationPlacement()`](../../src/project/graphparameterschema.cpp#L827))。`node` は展開名で、owner の無い instance の中なら `hero/walk` のようになります。`graph.` の code なので CT-2 の `document`(と、body の node なら `definition`)も付きます。owner を付ければ同じ文書が通ります(test)。
 
-例(test の期待): `render.scalar` の `target` は `{"graph_nodes": ["render.buffer", "render.attribute"]}`(はこれに `where` が付きます。下の CT-5 の段落)、`render.shadow_depth` の `pass_set` は `{"rpc": "get_render_authoring_context", "key": "graphs", "field": "name"}`、`render.shadow_depth` の `ray_query` は `{"kind": "union", "default": false, "variants": [{"kind": "bool"}, {"kind": "object", "fields": [{"name": "acceleration_structure", "kind": "string", "required": true}]}]}`、`render.image` の `width` は `max: 4294967295`・`soft_max: 8192` です。test: `curve_test` の [「CT-4 the catalog says where a value is chosen from, an asset's kind, a union's shapes, a slider's range and where an op may stand」](../../test/curve_test.cpp#L1427) と、`renderconfigeditor_test` の [「CT-4 an edit placing an owned-instance op at the root is refused by name」](../../test/renderconfigeditor_test.cpp#L1505)(root に置いた `value.morph_weight` と `pose.clip_sample` の編集が rejected で、`document: "project://passes/main.json"` が付き、文書は書かれないこと)。
+例(test の期待): `render.scalar` の `target` は `{"graph_nodes": ["render.buffer", "render.attribute"]}`(はこれに `where` が付きます。下の CT-5 の段落)、`render.shadow_depth` の `pass_set` は `{"rpc": "get_render_authoring_context", "key": "graphs", "field": "name"}`、`render.shadow_depth` の `ray_query` は `{"kind": "union", "default": false, "variants": [{"kind": "bool"}, {"kind": "object", "fields": [{"name": "acceleration_structure", "kind": "string", "required": true}]}]}`、`render.image` の `width` は `max: 4294967295`・`soft_max: 8192` です。
+
+test: `curve_test` の [「CT-4 the catalog says where a value is chosen from, an asset's kind, a union's shapes, a slider's range and where an op may stand」](../../test/curve_test.cpp#L1427) と、`renderconfigeditor_test` の [「CT-4 an edit placing an owned-instance op at the root is refused by name」](../../test/renderconfigeditor_test.cpp#L1505)(root に置いた `value.morph_weight` と `pose.clip_sample` の編集が rejected で、`document: "project://passes/main.json"` が付き、文書は書かれないこと)。
 
 **値の出どころの条件、asset の manifest、残りの一覧。**GUI の UX-12e の報告で、CT-4 の表に残っていた出どころの無い string を、engine が実際に読む一覧があるものだけ埋めました。CT-3 の検査の規則は変わりません。
 
@@ -4031,11 +4119,15 @@ node の `inputs` は body の `graph.input` へ、`outputs` は body の出力�
 | ループの分岐の `when` の値 | 整数 | `element` / `index` / `count` |
 | ループの入力 edge の `element` | 整数 | 受け手がループなら `element` / `index` / `count`、そうでなければ定数だけ |
 
-変数は `element`(集合の値。`view_axis` では軸の値)、`index`(並べた後の位置)、`count`(並べた後の回数)です。表の外(root の node、instance の definition、body の node の許可されていない field)に式を書くと `field_not_allowed` です([`bodyExpressionPlace()`](../../src/project/graphcomposition.cpp#L586))。`mip_levels_of` / `layers_of` は合成後の target の `mip_levels` / `layers`(省略なら 1、cube の `layers` は 6)で、合成後に無い target、`shadow_depth` の pass が書く target(実行時に layer が伸びる)、extent に従う値は `not_static` です([`composedConstants()`](../../src/project/rendergraphcomposition.cpp#L1920))。ただし `mip_levels: "full"` の target でも、`width` と `height` が正の整数で書かれ、`format_class` が `display` でなければ、`mip_levels_of` は `floor(log2(max(width, height))) + 1` を定数として返します(256×256 なら 9。[その規則](../../src/project/rendergraphcomposition.cpp#L1931))。大きさが画面に従う target の `"full"` は今までどおり `not_static` です。
+変数は `element`(集合の値。`view_axis` では軸の値)、`index`(並べた後の位置)、`count`(並べた後の回数)です。表の外(root の node、instance の definition、body の node の許可されていない field)に式を書くと `field_not_allowed` です([`bodyExpressionPlace()`](../../src/project/graphcomposition.cpp#L586))。
+
+`mip_levels_of` / `layers_of` は合成後の target の `mip_levels` / `layers`(省略なら 1、cube の `layers` は 6)で、合成後に無い target、`shadow_depth` の pass が書く target(実行時に layer が伸びる)、extent に従う値は `not_static` です([`composedConstants()`](../../src/project/rendergraphcomposition.cpp#L1920))。ただし `mip_levels: "full"` の target でも、`width` と `height` が正の整数で書かれ、`format_class` が `display` でなければ、`mip_levels_of` は `floor(log2(max(width, height))) + 1` を定数として返します(256×256 なら 9。[その規則](../../src/project/rendergraphcomposition.cpp#L1931))。大きさが画面に従う target の `"full"` は今までどおり `not_static` です。
 
 **`log2(n)`。**正の整数 n の 2 を底とする対数を切り捨てた整数です(`log2(256)` は 8、`log2(255)` は 7)。n が整数でないとき、1 未満のときは `not_integer` で断ります([評価する所](../../src/project/graphloopexpression.cpp#L252))。GB-3(Blank から GUI で組んだ試験)で、ループの回数を `log2(N)` で書けなかった件から足しました。
 
-**body の image の大きさ。**ループの body の `render.image` の `width` / `height` / `layers` / `mip_levels` に整数の式を書けます。式の結果の整数は、書いた数と同じく render target を読む所で検査されます。結果が整数でなければ `not_integer` です。例: `"width": {"$expr": "64 + element"}` の body を 3 回まわすと、回の image の幅は 64・65・66 になります。test: `featurecompose_test` の [「RS-15 a loop body image takes its width and height from an expression」](../../test/featurecompose_test.cpp#L6214) と [「RS-15 log2 rounds down, and mip_levels_of a fixed-size full chain is static」](../../test/featurecompose_test.cpp#L6244)。body に value node があるループは、回数・`where`・`when` が合成の前に決まらなければなりません(決まらなければ `not_static`)。
+**body の image の大きさ。**ループの body の `render.image` の `width` / `height` / `layers` / `mip_levels` に整数の式を書けます。式の結果の整数は、書いた数と同じく render target を読む所で検査されます。結果が整数でなければ `not_integer` です。例: `"width": {"$expr": "64 + element"}` の body を 3 回まわすと、回の image の幅は 64・65・66 になります。
+
+test: `featurecompose_test` の [「RS-15 a loop body image takes its width and height from an expression」](../../test/featurecompose_test.cpp#L6214) と [「RS-15 log2 rounds down, and mip_levels_of a fixed-size full chain is static」](../../test/featurecompose_test.cpp#L6244)。body に value node があるループは、回数・`where`・`when` が合成の前に決まらなければなりません(決まらなければ `not_static`)。
 
 式の拒否はすべて `graph.loop_expression_invalid@1` `{node, pointer, reason}` で、`reason` は `syntax` / `unknown_variable` / `not_integer` / `not_static` / `division_by_zero` / `overflow` / `too_long` / `field_not_allowed`、`pointer` は**書いた文書の中の JSON pointer** です(回ごとの評価で断られても、書いた場所を指します)。
 
@@ -4207,7 +4299,9 @@ rendering 節に直接書いた once は graph lowering の拒否検査を通り
 - **文書の変更で新しく足した asset**: 比べるのは live の世代がすでに読んだ asset だけなので、文書を書き換えて新しく `initial` に足した asset は `changed_assets` には出ず、その文書が `changed` に出ます(コードの読み)。
 - **合わない asset**: 書き換えた asset が image に合わないときは、ticket が受けられた(`accepted`)後、次の frame の組み直しの段で `graph.image_initial_mismatch@1` の rejected になり(asset を読むのは世代を組む段だけで、ticket を取る前の preflight は読みません。コードの読み)、live の世代は前のまま、画面も前の値のままです(GPU の test。64×64 の 1 成分の KTX2 を RGBA32F の image の asset に上書きして `node` / `asset` / `what: "format"` を見る)。CT-2 の規則で error に `document` も付くはずですが、この test は `document` を確かめていません(未確認)。
 
-**`get_frame_plan`。**`physical_target_plan.resources[]` のうち `initial` を持つ image の要素に `initial_asset: {asset, sha256}` が付きます([IA-1 で `initial_asset` を足す所](../../src/core/vkcore/renderer.cpp#L4966))。`asset` は書いた参照のまま、`sha256` はその file を持つ asset store の `assets.manifest` の値で、manifest に載っていなければ `null` です。object にしてあるのは、後の WP が焼いた元の情報を足せるようにするためです(コードの注記)。asset の隣に `<asset>.import.json` があれば `derived_from: {source, tool: {name, version}}`・`stale`・`stale_reasons` も付きます(`list_derived_assets` と同じ値。[AB-1 で `initial_asset` に足す所](../../src/core/vkcore/renderer.cpp#L4983)。理由の一覧は [第5章](05_assets.md) §5.8「音の解析を焼いた表」)。
+**`get_frame_plan`。**`physical_target_plan.resources[]` のうち `initial` を持つ image の要素に `initial_asset: {asset, sha256}` が付きます([IA-1 で `initial_asset` を足す所](../../src/core/vkcore/renderer.cpp#L4966))。`asset` は書いた参照のまま、`sha256` はその file を持つ asset store の `assets.manifest` の値で、manifest に載っていなければ `null` です。object にしてあるのは、後の WP が焼いた元の情報を足せるようにするためです(コードの注記)。
+
+asset の隣に `<asset>.import.json` があれば `derived_from: {source, tool: {name, version}}`・`stale`・`stale_reasons` も付きます(`list_derived_assets` と同じ値。[AB-1 で `initial_asset` に足す所](../../src/core/vkcore/renderer.cpp#L4983)。理由の一覧は [第5章](05_assets.md) §5.8「音の解析を焼いた表」)。
 
 **assets。**manifest は store の中の file を全部数えるので、`initial` の asset もほかの file と同じく manifest と検証の対象です。engine に asset を消すパージはありません。
 
@@ -4344,7 +4438,9 @@ feature の instance は object 形で `pass_replacements` を持てます。値
 - feature の pass・task でない名前は `render_feature.pass_replacement_unknown@1` `{feature, pass}`、graph の pass・task・ループでない置き換え先は `graph.node_missing@1` `{node, feature, pass}` です。置き換え先の family にその pass の family の pass が無ければ `graph.insert_family_mismatch@1`。draw_loop の id は書けません(その `render.material_pass` の id を書く)。
 - 置き換え先の node には、`get_frame_plan` で `replaces: [{feature, pass}]` が付きます(GL-2a。ループなら置き換えた pass と同じ family の回に)。
 
-**変種で外れる feature への依存。**preview / XR の変種で feature が外れると、その feature に依存する graph の node は同じ変種で**非活性**になります(変種の組み直し全体は落ちません。[`withoutExcludedGraphDependents()`](../../src/project/rendergraphcomposition.cpp#L2622))。理由([`RenderGraphDeactivatedNode`](../../src/project/renderloopreport.hpp#L59))は `target_ref`(その feature の target を指す)/ `insert`(その feature の pass か非活性の graph pass を anchor にする)/ `order`(`after` / `before` がその pass を指す)/ `pass_replacement`(その pass を置き換える)/ `loop_output`(非活性のループの出力を読む、または carry する)です。合成結果の `deactivated_graph_nodes` と、diagnostic の kind `graph_node_deactivated`(detail は `<variant>:<reason>:<feature>`)に出ます(`get_frame_plan` の最上位に `deactivated_graph_nodes` と `diagnostics` として出ます)。draw_loop は、その material pass と一緒に非活性になります。
+**変種で外れる feature への依存。**preview / XR の変種で feature が外れると、その feature に依存する graph の node は同じ変種で**非活性**になります(変種の組み直し全体は落ちません。[`withoutExcludedGraphDependents()`](../../src/project/rendergraphcomposition.cpp#L2622))。理由([`RenderGraphDeactivatedNode`](../../src/project/renderloopreport.hpp#L59))は `target_ref`(その feature の target を指す)/ `insert`(その feature の pass か非活性の graph pass を anchor にする)/ `order`(`after` / `before` がその pass を指す)/ `pass_replacement`(その pass を置き換える)/ `loop_output`(非活性のループの出力を読む、または carry する)です。
+
+合成結果の `deactivated_graph_nodes` と、diagnostic の kind `graph_node_deactivated`(detail は `<variant>:<reason>:<feature>`)に出ます(`get_frame_plan` の最上位に `deactivated_graph_nodes` と `diagnostics` として出ます)。draw_loop は、その material pass と一緒に非活性になります。
 
 ### 出荷する分解版 —— `engine://graphs/*.json`(LP-1c / LP-1d / LP-Vb)
 

@@ -57,7 +57,9 @@ sequenceDiagram
 
 `--start-time <秒>` は「その時刻から `--frames` 枚を出す」オフライン出力用の引数です。押さえる点は3つあります。
 
-**engineは frame 番号しか受け取りません。** 変換は [`parseStartFrame()`](../../src/player/main.cpp#L332) 1箇所だけで、`llround(seconds * fps)` によって固定ステップのタイムライン上のフレーム番号に落ちます（フレームとフレームの間の時刻は近い方のフレームへ丸められ、engineへ渡ることはありません）。結果は [`EngineLaunchConfig::start_frames`](../../src/core/launchconfig.hpp#L94) に入ります。秒の上限は [`kMaxOfflineStartSeconds`](../../src/player/main.cpp#L330)(3600。`--fps` によらない)です。`llround` を呼ぶ前に、秒が上限以下か、`fps` が有限で正か、丸めた frame が有限で `long long` の範囲に収まるか、`1/fps` と `frame/fps` が有限かを確かめ、外れれば `offline.time_invalid@1` で断ります([範囲の検査](../../src/player/main.cpp#L350))。巨大な時刻で warm-up が終わらない・`llround` の範囲外の変換が起きる、の 2 つをここで塞いでいます。
+**engineは frame 番号しか受け取りません。** 変換は [`parseStartFrame()`](../../src/player/main.cpp#L332) 1箇所だけで、`llround(seconds * fps)` によって固定ステップのタイムライン上のフレーム番号に落ちます（フレームとフレームの間の時刻は近い方のフレームへ丸められ、engineへ渡ることはありません）。
+
+結果は [`EngineLaunchConfig::start_frames`](../../src/core/launchconfig.hpp#L94) に入ります。秒の上限は [`kMaxOfflineStartSeconds`](../../src/player/main.cpp#L330)(3600。`--fps` によらない)です。`llround` を呼ぶ前に、秒が上限以下か、`fps` が有限で正か、丸めた frame が有限で `long long` の範囲に収まるか、`1/fps` と `frame/fps` が有限かを確かめ、外れれば `offline.time_invalid@1` で断ります([範囲の検査](../../src/player/main.cpp#L350))。巨大な時刻で warm-up が終わらない・`llround` の範囲外の変換が起きる、の 2 つをここで塞いでいます。
 
 **失敗は全部ひとつの名前になります。** argparse に `double` としてscanさせず、テキストのまま `std::stod` で読んで「文字を全部消費したか・有限か・非負か」を自分で確かめます（[検査](../../src/player/main.cpp#L340)）。綴り間違いも負の時刻も同じ `offline.time_invalid@1` で、理由は「そんなフレームは存在しない」の一言に畳めるからです。
 
@@ -65,7 +67,9 @@ sequenceDiagram
 
 #### `--start-state`: edit で起こす ✅実装済み（PM-1b）
 
-`--start-state edit|playing`（既定 `playing`）は、engine が最初にどの再生の状態で動くかを決めます。値は [`parseStartState()`](../../src/player/main.cpp#L156) が読み、それ以外の値は `--start-state must be one of: edit, playing` です。結果は [`EngineLaunchConfig::start_state`](../../src/core/launchconfig.hpp#L54) に入ります。`edit` の engine はクライアントが `set_play_state` で game を始めるのを待つので、run の最初のフレームから進み方を決める引数（`--bake-camera-output` / `--replay` / `--record-input` / `--start-time` / `--rpc` の無い `--headless`）は、`--start-time` と同じ形の [`offline.mode_conflict@1: --start-state edit cannot be combined with <引数>`](../../src/player/main.cpp#L649) で断ります（挙げた順に調べ、最初に当たった 1 つを名前で返す）。この検査は `--start-time` の衝突の検査より前にあります。通れば [`completeEditStartLaunch()`](../../src/core/appflow/playmode.cpp#L46) が、`--free-camera` の無い起動に既定の free camera とその入力 overlay を足します（editor camera になる。`--editor-transform` は足さない）。
+`--start-state edit|playing`（既定 `playing`）は、engine が最初にどの再生の状態で動くかを決めます。値は [`parseStartState()`](../../src/player/main.cpp#L156) が読み、それ以外の値は `--start-state must be one of: edit, playing` です。結果は [`EngineLaunchConfig::start_state`](../../src/core/launchconfig.hpp#L54) に入ります。
+
+`edit` の engine はクライアントが `set_play_state` で game を始めるのを待つので、run の最初のフレームから進み方を決める引数（`--bake-camera-output` / `--replay` / `--record-input` / `--start-time` / `--rpc` の無い `--headless`）は、`--start-time` と同じ形の [`offline.mode_conflict@1: --start-state edit cannot be combined with <引数>`](../../src/player/main.cpp#L649) で断ります（挙げた順に調べ、最初に当たった 1 つを名前で返す）。この検査は `--start-time` の衝突の検査より前にあります。通れば [`completeEditStartLaunch()`](../../src/core/appflow/playmode.cpp#L46) が、`--free-camera` の無い起動に既定の free camera とその入力 overlay を足します（editor camera になる。`--editor-transform` は足さない）。
 
 ### 段階B: `run()` 前に共有moduleへ起動情報を注入
 
@@ -220,7 +224,9 @@ Renderer
 
 ## 2.3 明示teardownが必要な理由
 
-moduleのC++ destructorだけに任せると、ECS Componentの`deinit()`が参照する描画moduleが先に壊れるほか、pending/frozen event、behavior deferred mutation、GPU deletion callbackがowner/DLLの破棄後まで残る可能性があります。ここでの **pending event** は `emit()` されてまだ配送されていない列（[`pending_events`](../../src/core/userpublic/details/event/registerer.hpp#L110)）、**frozen event** はフレーム冒頭の `freeze_events` でそこから移された「今回配送する分」の列（[`deliver_now_events`](../../src/core/userpublic/details/event/registerer.hpp#L111)）です。どちらも payload を `shared_ptr<const void>` と発行元の `RegistrationOwner` で持つ（[`QueuedEvent`](../../src/core/userpublic/details/event/registerer.hpp#L37)）ので、game DLL 由来のpayloadが列に残ったままDLLを外せない、というのが下の7番の理由です（列の意味は §2.5 の「eventの1フレーム遅延」）。そこで [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp) が、module optionalの存在を確認して次の順で明示解放します。
+moduleのC++ destructorだけに任せると、ECS Componentの`deinit()`が参照する描画moduleが先に壊れるほか、pending/frozen event、behavior deferred mutation、GPU deletion callbackがowner/DLLの破棄後まで残る可能性があります。ここでの **pending event** は `emit()` されてまだ配送されていない列（[`pending_events`](../../src/core/userpublic/details/event/registerer.hpp#L110)）、**frozen event** はフレーム冒頭の `freeze_events` でそこから移された「今回配送する分」の列（[`deliver_now_events`](../../src/core/userpublic/details/event/registerer.hpp#L111)）です。
+
+どちらも payload を `shared_ptr<const void>` と発行元の `RegistrationOwner` で持つ（[`QueuedEvent`](../../src/core/userpublic/details/event/registerer.hpp#L37)）ので、game DLL 由来のpayloadが列に残ったままDLLを外せない、というのが下の7番の理由です（列の意味は §2.5 の「eventの1フレーム遅延」）。そこで [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp) が、module optionalの存在を確認して次の順で明示解放します。
 
 1. Vulkan `waitIdle()`
 2. behavior owner callbackを完了
@@ -271,11 +277,14 @@ terminal shutdownはこの前に`FastModuleContainer::beginShutdown()`で新規m
 ## 2.4 `Loop::run()` の五経路
 
 中心は [`Loop::run()`](../../src/core/appflow/loop.cpp#L772) です。loop本体へ入る前に、入力のrecord/replay（[`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L61)、[loop.cpp](../../src/core/appflow/loop.cpp#L784)）、replay時のfixed_step切替（[その分岐](../../src/core/appflow/loop.cpp#L783)）、camera bakeの開始（[その呼び出し](../../src/core/appflow/loop.cpp#L795)）、[`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L259) と [`FastModuleContainer::freezeCreation()`](../../src/core/appflow/loop.cpp#L806) が実行されます。
+
 ✅PB-1(`a55d1eaf`)から、この 2 つの間で [`Renderer::enterStartupFallbackForUnservedMaterials()`](../../src/core/vkcore/renderer.cpp#L3318) を呼びます([呼ぶ所(PB-1)](../../src/core/appflow/loop.cpp#L800))。
 `collecting` を倒し、`--render-fallback` の起動で route を受ける pass の無い material が書き留められていれば、`material_route_unserved@1` の拒否を作って一覧に記録し、
 fallback の JSON を publish して組み直し(登録済みの material は fallback と照らさない `validate_live_materials = false`)、fallback の世代で loop に入ります。module の生成は固める前なので、ここで組み直せます。
 
-フレームそのものは三つの経路で三度書かれてはいません。[`FrameStep`](../../src/core/appflow/loop.cpp#L413) が `advance` → `update` → `render` → `record` の4段を1箇所に書き、三つのドライバ([`runHeadlessFrames()`](../../src/core/appflow/loop.cpp#L634) / [`runInteractive()`](../../src/core/appflow/loop.cpp#L695) / [`runXrFrame()`](../../src/core/appflow/loop.cpp#L548))はこの4呼び出しへ渡すものだけが違います。経路差は三つの enum として明示され、差が無い呼び出し点でも値を書きます — [`AdvanceTiming`](../../src/core/appflow/loop.cpp#L375)(update 計測を timeline advance の前に開くか後に開くか)、[`GraphVariantSelection`](../../src/core/appflow/loop.cpp#L387)(graph variant を driver が選ぶか `Renderer::render()` に任せるか)、[`FramerateWait`](../../src/core/appflow/loop.cpp#L401)(`FramerateAdjust` で待つか)。
+フレームそのものは三つの経路で三度書かれてはいません。[`FrameStep`](../../src/core/appflow/loop.cpp#L413) が `advance` → `update` → `render` → `record` の4段を1箇所に書き、三つのドライバ([`runHeadlessFrames()`](../../src/core/appflow/loop.cpp#L634) / [`runInteractive()`](../../src/core/appflow/loop.cpp#L695) / [`runXrFrame()`](../../src/core/appflow/loop.cpp#L548))はこの4呼び出しへ渡すものだけが違います。
+
+経路差は三つの enum として明示され、差が無い呼び出し点でも値を書きます — [`AdvanceTiming`](../../src/core/appflow/loop.cpp#L375)(update 計測を timeline advance の前に開くか後に開くか)、[`GraphVariantSelection`](../../src/core/appflow/loop.cpp#L387)(graph variant を driver が選ぶか `Renderer::render()` に任せるか)、[`FramerateWait`](../../src/core/appflow/loop.cpp#L401)(`FramerateAdjust` で待つか)。
 
 入口の分岐は headless RPC / headless 固定フレーム / windowed の 3 つです。windowed 内の通常 / XR と追加の RPC 層まで分類した一覧は、次の 5 項目になります。
 
@@ -389,7 +398,9 @@ RPCモードでは通常のfor-loopへ入らず、[`runEngineRpcServer(std::cin,
 
 ### 全経路に共通する `setCurrentFrameIndex()`
 
-`engine_time.advance()` の直後に `vulkan_.setCurrentFrameIndex(engine_time_.evaluationIndex())` を呼ぶのは、いまや三経路に一つずつではなく [`FrameStep::advance()`](../../src/core/appflow/loop.cpp#L422) の中の[評価の番号を渡すこの1行](../../src/core/appflow/loop.cpp#L426)だけです(渡すのは game のフレームではなく評価の番号。§2.6。✅PM-1a)。headless RPC の `step_frame` / `advance_frames` は `FrameStep` を通らず、[`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp#L2093) の中で同じ 2 行を自分で呼びます。三つのドライバはどれもフレームの先頭でこの `advance` を呼ぶので、「ある経路だけ呼び忘れる」形が構造として作れません。これが [`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36) 側の `logical_frame` 軸になり、debug-utilsラベルとGPU timingの計測が同じフレーム番号で並びます。
+`engine_time.advance()` の直後に `vulkan_.setCurrentFrameIndex(engine_time_.evaluationIndex())` を呼ぶのは、いまや三経路に一つずつではなく [`FrameStep::advance()`](../../src/core/appflow/loop.cpp#L422) の中の[評価の番号を渡すこの1行](../../src/core/appflow/loop.cpp#L426)だけです(渡すのは game のフレームではなく評価の番号。§2.6。✅PM-1a)。
+
+headless RPC の `step_frame` / `advance_frames` は `FrameStep` を通らず、[`rpcserver.cpp`](../../src/core/communication/rpcserver.cpp#L2093) の中で同じ 2 行を自分で呼びます。三つのドライバはどれもフレームの先頭でこの `advance` を呼ぶので、「ある経路だけ呼び忘れる」形が構造として作れません。これが [`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36) 側の `logical_frame` 軸になり、debug-utilsラベルとGPU timingの計測が同じフレーム番号で並びます。
 
 ### F11 RenderDocキャプチャ（windowedのflat描画のみ） ✅実装済み
 
@@ -464,9 +475,19 @@ ECSCore::update()
 → SceneLoader::applyPendingLoad()      # game の 1 歩のときだけ
 ```
 
-**一時停止の分岐(✅PM-1a)。**`updateFrameState()` は reload 公開と commit hook の後で [`EngineTime::gameStepping()`](../../src/core/appflow/enginetime.cpp#L84) を 1 回読み、そのフレームが game の 1 歩か(`playing` か、`paused` で `advance_frames` の歩を取るフレームか)を [`game_step`](../../src/core/appflow/framephase.cpp#L174) に取ります。1 歩でないフレームでは、`runtime_spawner.applyBoundary()`・`freeze_events` と `deliver_events`(片方だけ止めると event の registerer のフレームの検査に当たるので一緒に止める)・`applyPendingLoad()` を飛ばし、game の UI には [`setEventsSuppressed(true)`](../../src/core/ui/module.hpp#L116) で event を積ませず、game system は [`GameSystemScope::editor_only`](../../src/core/userpublic/details/system/registerer.hpp#L145)(engine が [`markEditorGameSystem()`](../../src/core/userpublic/details/system/registerer.hpp#L155) で印を付けた camera controller と modal transform だけ)、animation の phase は `PhaseOwners::engine_only`(game DLL が登録した phase を外す)で走らせます。入力の凍結・内部 ECS・engine 側の animation・seq・描画は毎フレーム走り、止まった game の時刻で評価し直します。editor の system を呼ぶ間は [`ScopedEditorClock`](../../src/core/userpublic/details/system/registerer.hpp#L160) が立ち、`GameContext::deltaTime()` が game の `dt` ではなく `EngineTime::editorDt()` を返します。
+**一時停止の分岐(✅PM-1a)。**`updateFrameState()` は reload 公開と commit hook の後で [`EngineTime::gameStepping()`](../../src/core/appflow/enginetime.cpp#L84) を 1 回読み、そのフレームが game の 1 歩か(`playing` か、`paused` で `advance_frames` の歩を取るフレームか)を [`game_step`](../../src/core/appflow/framephase.cpp#L174) に取ります。
 
-**edit の分岐(✅PM-1b)。**`edit` は `gameStepping()` が常に偽の状態なので(歩は `paused` でしか頼めない)、上の「1 歩でないフレーム」の分岐がそのまま効きます。PM-1b が `updateFrameState()` に足したのは 3 つです。音の全体の一時停止を毎フレーム状態に揃え直し(`playing` 以外なら止める。[`setAllPaused()` の呼び出し](../../src/core/appflow/framephase.cpp#L161)。RPC を 1 度も受けていない `edit` 起動の engine も黙る)、`edit` では game の UI へ入力を渡さず([分岐](../../src/core/appflow/framephase.cpp#L208))、`--start-state edit` で起動した engine の `playing` のフレームでは game system を [`GameSystemScope::game_only`](../../src/core/userpublic/details/system/registerer.hpp#L148) で呼んで editor の system を外します([`system_scope`](../../src/core/appflow/framephase.cpp#L177))。状態の移り方そのものはフレームの外、RPC の `set_play_state` が呼ぶ [`internal::changePlayState()`](../../src/core/appflow/playmode.cpp#L63) にあります。`edit` と他の 2 つの間を移るときは、pending の event を捨て、`EngineTime` のセッションを始めるか終え(§2.6)、behavior の arena の眠りを切り替えてから、渡された関数で今の scene を作り直します(RPC 側は `load_scene` と同じ `SceneLoadRoot::rpc` の読み込み)。作り直しが投げたら、眠り・状態・時計を元に戻して例外を通します。最後に [`applyPlayStateSurroundings()`](../../src/core/appflow/playmode.cpp#L28) が音を揃え、`--start-state edit` の起動に限って editor の入力 overlay を stack から外すか積み直し([`setEditorInputOverlaysStacked()`](../../src/core/userpublic/userinput.hpp#L210))、見る camera を `edit` なら editor、それ以外なら game に切り替えます。`playing ↔ paused` の移り方は PM-1a のまま(時計の状態・音・overlay・camera だけ)で、作り直しません。
+1 歩でないフレームでは、`runtime_spawner.applyBoundary()`・`freeze_events` と `deliver_events`(片方だけ止めると event の registerer のフレームの検査に当たるので一緒に止める)・`applyPendingLoad()` を飛ばし、game の UI には [`setEventsSuppressed(true)`](../../src/core/ui/module.hpp#L116) で event を積ませず、game system は [`GameSystemScope::editor_only`](../../src/core/userpublic/details/system/registerer.hpp#L145)(engine が [`markEditorGameSystem()`](../../src/core/userpublic/details/system/registerer.hpp#L155) で印を付けた camera controller と modal transform だけ)、animation の phase は `PhaseOwners::engine_only`(game DLL が登録した phase を外す)で走らせます。
+
+入力の凍結・内部 ECS・engine 側の animation・seq・描画は毎フレーム走り、止まった game の時刻で評価し直します。editor の system を呼ぶ間は [`ScopedEditorClock`](../../src/core/userpublic/details/system/registerer.hpp#L160) が立ち、`GameContext::deltaTime()` が game の `dt` ではなく `EngineTime::editorDt()` を返します。
+
+**edit の分岐(✅PM-1b)。**`edit` は `gameStepping()` が常に偽の状態なので(歩は `paused` でしか頼めない)、上の「1 歩でないフレーム」の分岐がそのまま効きます。PM-1b が `updateFrameState()` に足したのは 3 つです。
+
+音の全体の一時停止を毎フレーム状態に揃え直し(`playing` 以外なら止める。[`setAllPaused()` の呼び出し](../../src/core/appflow/framephase.cpp#L161)。RPC を 1 度も受けていない `edit` 起動の engine も黙る)、`edit` では game の UI へ入力を渡さず([分岐](../../src/core/appflow/framephase.cpp#L208))、`--start-state edit` で起動した engine の `playing` のフレームでは game system を [`GameSystemScope::game_only`](../../src/core/userpublic/details/system/registerer.hpp#L148) で呼んで editor の system を外します([`system_scope`](../../src/core/appflow/framephase.cpp#L177))。
+
+状態の移り方そのものはフレームの外、RPC の `set_play_state` が呼ぶ [`internal::changePlayState()`](../../src/core/appflow/playmode.cpp#L63) にあります。`edit` と他の 2 つの間を移るときは、pending の event を捨て、`EngineTime` のセッションを始めるか終え(§2.6)、behavior の arena の眠りを切り替えてから、渡された関数で今の scene を作り直します(RPC 側は `load_scene` と同じ `SceneLoadRoot::rpc` の読み込み)。作り直しが投げたら、眠り・状態・時計を元に戻して例外を通します。
+
+最後に [`applyPlayStateSurroundings()`](../../src/core/appflow/playmode.cpp#L28) が音を揃え、`--start-state edit` の起動に限って editor の入力 overlay を stack から外すか積み直し([`setEditorInputOverlaysStacked()`](../../src/core/userpublic/userinput.hpp#L210))、見る camera を `edit` なら editor、それ以外なら game に切り替えます。`playing ↔ paused` の移り方は PM-1a のまま(時計の状態・音・overlay・camera だけ)で、作り直しません。
 
 **再生のセッション(✅PM-2)。**`changePlayState()` の外側、[`set_play_state` の handler](../../src/core/communication/rpcserver.cpp#L2129) が、`edit` との間の移りを「セッション」として包みます。セッションの持ち物は endpoint の `Impl` が 1 つ持つ [`internal::PlaySession`](../../src/core/communication/playsession.hpp#L51) です。
 
@@ -487,13 +508,19 @@ ECSCore::update()
 | `update_game`（animation） | [`AnimationSystem::updatePoseGraphs()`](../../src/core/ecs/predefined/animationsystem.cpp#L261) | animation 分割の node が今フレーム消費するスカラを集める | [`poseGraphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L153) |
 | `render()` | [`Renderer` の publish](../../src/core/vkcore/renderer.cpp#L6328) | rendering 分割の sink（バッファ、音声、RT値）へ実際に書く | [`graphEvaluationState()`](../../src/core/loader/scenegraphruntime.cpp#L149) |
 
-**2回評価するのに state を分けているのが要点**です。`value.trigger_clock` のような「前回の評価が何をしたか」に依存する op は state を進めるので、1つの state を共有させると1フレームで2回進んでしまいます。だから `SceneLoader` は同じ文書に対して2つの `EvaluationState` を持ち、グラフ世代の切り替えでも両方を一緒に移送します（片方だけ置いていくと、描画側は走り続けたまま姿勢側のクロックだけが巻き戻ります）。順序は固定で、animation 分割は values 分割の1段後ろに置かれます（[分割の順序](../../src/project/graphpartition.hpp#L10) / [段の定義](../../src/project/graphcomposition.hpp#L260)）。ただし animation 側が描画側の評価結果を受け取っているわけではありません —— animation フェーズは**自分の state で values 分割を自分で評価し直します**（[`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L376)）。2つの state が「同じ入力で1フレームに1回ずつ進む」ので、姿勢側と描画側は互いのクロックを進めないまま同じ数値を読みます（[コメントの規範](../../src/core/ecs/predefined/animationsystem.cpp#L363)）。
+**2回評価するのに state を分けているのが要点**です。`value.trigger_clock` のような「前回の評価が何をしたか」に依存する op は state を進めるので、1つの state を共有させると1フレームで2回進んでしまいます。だから `SceneLoader` は同じ文書に対して2つの `EvaluationState` を持ち、グラフ世代の切り替えでも両方を一緒に移送します（片方だけ置いていくと、描画側は走り続けたまま姿勢側のクロックだけが巻き戻ります）。順序は固定で、animation 分割は values 分割の1段後ろに置かれます（[分割の順序](../../src/project/graphpartition.hpp#L10) / [段の定義](../../src/project/graphcomposition.hpp#L260)）。
+
+ただし animation 側が描画側の評価結果を受け取っているわけではありません —— animation フェーズは**自分の state で values 分割を自分で評価し直します**（[`evaluateLowered()` の呼び出し](../../src/core/ecs/predefined/animationsystem.cpp#L376)）。2つの state が「同じ入力で1フレームに1回ずつ進む」ので、姿勢側と描画側は互いのクロックを進めないまま同じ数値を読みます（[コメントの規範](../../src/core/ecs/predefined/animationsystem.cpp#L363)）。
 
 描画側の評価結果は、描いたその場で [`publishGraphValues()`](../../src/core/loader/scenegraphruntime.cpp#L144) がスナップショットとして置いていきます。読み手が自分でもう一度評価すると**クロックが進みイベントが消費される**ので、値を持ち出せるのはこの1点だけです。詳細は[第3章 §3.5](03_project_and_loading.md)。
 
 ### `freeze_actions` とImGuiゲートの後始末
 
-`freeze_actions` でImGuiへ入力をルーティングする前に、[`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L80) がゲートの開閉を判定します。ゲートの実体は [`isImGuiRuntimeEnabled(config)`](../../src/core/imgui/imguiruntime.cpp#L9) で、`EngineLaunchConfig` の `headless` / `rpc` / `input_replay` / `golden_mode` / `xr_active` を読むだけの述語です（この関数自身は何も書き換えません）。ここでの「開いている」はこの述語が真で、そのフレームの `FrameStateModules.imgui_system` に [`GET_MODULE(ImGuiSystem)` が入る](../../src/core/appflow/framephase.cpp#L98)状態、「閉じている」は偽で `imgui_system` が nullptr のまま（= `freeze_actions` の [`routeInputAndBeginFrame()`](../../src/core/appflow/framephase.cpp#L203) が呼ばれず、そのフレームで ImGui フレームが始まらない）状態を指します。開閉が変わるのは、読んでいる側のlaunch configが変わったときです（例: XRのVulkan bootstrapが失敗してflatへ落ちる [`core.cpp` 内](../../src/core/vkcore/core.cpp#L626)）。ImGuiゲートが閉じたフレームでは、開始済みのImGuiフレームを [`ImGuiSystem::endFrameIfStarted()`](../../src/core/imgui/imguisystem.hpp#L31) で畳みます（[`framephase.cpp` 内](../../src/core/appflow/framephase.cpp#L83)）。守っている対応関係は「`freeze_actions` の `routeInputAndBeginFrame()` が立てた `frame_started` は、そのフレームの `ImGuiSystem::render()` が必ず倒す」で、ImGuiパスを持たないグラフへ持ち越すと `render()` が呼ばれず、立ったままのフレームへ次の `NewFrame()` が重なります。
+`freeze_actions` でImGuiへ入力をルーティングする前に、[`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L80) がゲートの開閉を判定します。ゲートの実体は [`isImGuiRuntimeEnabled(config)`](../../src/core/imgui/imguiruntime.cpp#L9) で、`EngineLaunchConfig` の `headless` / `rpc` / `input_replay` / `golden_mode` / `xr_active` を読むだけの述語です（この関数自身は何も書き換えません）。
+
+ここでの「開いている」はこの述語が真で、そのフレームの `FrameStateModules.imgui_system` に [`GET_MODULE(ImGuiSystem)` が入る](../../src/core/appflow/framephase.cpp#L98)状態、「閉じている」は偽で `imgui_system` が nullptr のまま（= `freeze_actions` の [`routeInputAndBeginFrame()`](../../src/core/appflow/framephase.cpp#L203) が呼ばれず、そのフレームで ImGui フレームが始まらない）状態を指します。開閉が変わるのは、読んでいる側のlaunch configが変わったときです（例: XRのVulkan bootstrapが失敗してflatへ落ちる [`core.cpp` 内](../../src/core/vkcore/core.cpp#L626)）。
+
+ImGuiゲートが閉じたフレームでは、開始済みのImGuiフレームを [`ImGuiSystem::endFrameIfStarted()`](../../src/core/imgui/imguisystem.hpp#L31) で畳みます（[`framephase.cpp` 内](../../src/core/appflow/framephase.cpp#L83)）。守っている対応関係は「`freeze_actions` の `routeInputAndBeginFrame()` が立てた `frame_started` は、そのフレームの `ImGuiSystem::render()` が必ず倒す」で、ImGuiパスを持たないグラフへ持ち越すと `render()` が呼ばれず、立ったままのフレームへ次の `NewFrame()` が重なります。
 
 > **設計決定:** ゲートは論理フレーム境界で閉じ得るため、「開始済みのImGuiフレームを、ImGui passを持たないグラフへ持ち越さない」ことを明示的に保証しています。ソース中のコメントがそのまま契約です。
 
@@ -565,9 +592,17 @@ ECSCore::update()
 
 `advance()`後に`current_time += delta_time`、`frame_index++`です。最初の更新フレームはindex 1になります。
 
-**評価の番号と play state(✅PM-1a)。**[`advance()`](../../src/core/appflow/enginetime.cpp#L36) は描画のフレームごとに必ず `evaluation_index` を 1 進めます(戻すのは `setup()` だけ)。animation の書き込み・graph・phase の revision、VMA の frame index、GPU timing、TAA、shader の `frame_index`、graph の publish、picking、RenderDoc、XR の mirror、RPC の `frame`、そして `GameContext::frameIndex()` が読むのはこちらで、[`evaluationIndex()`](../../src/core/appflow/enginetime.hpp#L93) で取ります。上の `current_time` / `delta_time` / `frame_index` は game の時計と game のフレームで、`PlayState::playing` の間は毎フレーム、`paused` の間は [`requestSteps()`](../../src/core/appflow/enginetime.cpp#L134) で頼まれた歩を 1 フレームに 1 つ取るときだけ進みます(そのときの `dt` は固定の `1/fps`)。それ以外の `paused` のフレームは `delta_time = 0` で、止まった時刻のまま評価し直されます。そのフレーム自身の差分(realtime の測定値か fixed_step の固定値)は `editor_delta_time` に別に取り、[`editorDt()`](../../src/core/appflow/enginetime.hpp#L94) で editor の system が読みます。[`setPlayState()`](../../src/core/appflow/enginetime.cpp#L90) は `paused` から出るときに取っていない歩を捨て、`last_tick` を今に合わせ直すので、再開の最初のフレームの `dt` に一時停止の時間は入りません。一時停止しない実行では、評価の番号と game のフレームは同じ値で進みます。RPCの`set_time`は時刻だけを直接変更し、deltaを0へ戻します。この不連続は [`timeSetRevision()`](../../src/core/appflow/enginetime.cpp#L78) で観測でき、rendererはこれとcamera不連続をまとめて検知してtemporal history（前フレームのview/projection行列やcamera位置をview単位で覚えておく履歴。前フレームの描画結果を今フレームへ再投影して混ぜる処理が使うので、時刻やcameraが飛ぶと対応関係が崩れて捨てる必要があります）をリセットします（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1599)）。
+**評価の番号と play state(✅PM-1a)。**[`advance()`](../../src/core/appflow/enginetime.cpp#L36) は描画のフレームごとに必ず `evaluation_index` を 1 進めます(戻すのは `setup()` だけ)。animation の書き込み・graph・phase の revision、VMA の frame index、GPU timing、TAA、shader の `frame_index`、graph の publish、picking、RenderDoc、XR の mirror、RPC の `frame`、そして `GameContext::frameIndex()` が読むのはこちらで、[`evaluationIndex()`](../../src/core/appflow/enginetime.hpp#L93) で取ります。
 
-**edit とセッション(✅PM-1b)。**`PlayState` に 3 つ目の `edit` が入りました。時計の進み方は `paused` と同じ(`dt = 0`、評価の番号だけ進む)で、`requestSteps()` は `paused` 以外で投げるので `edit` では歩を取りません。`setPlayState()` は `paused` か `edit` から出るときに歩を捨て `last_tick` を合わせ直します。`edit` と他の 2 つの間には「セッション」があり、[`beginGameSession()`](../../src/core/appflow/enginetime.cpp#L104) は今の時刻を覚えて game の時計と game のフレームを 0 に、[`endGameSession()`](../../src/core/appflow/enginetime.cpp#L112) は覚えた時刻(セッションが無ければ 0)に時計を戻します。**game のフレームは終わるときに戻しません**(`edit` では進まないので、前のセッションの最後の値が次のセッションの始めまで残ります)。状態の移りが途中で失敗したときのために、`gameClock()` / `restoreGameClock()` で時刻・フレーム・セッションの有無をまとめて取って戻せます。
+上の `current_time` / `delta_time` / `frame_index` は game の時計と game のフレームで、`PlayState::playing` の間は毎フレーム、`paused` の間は [`requestSteps()`](../../src/core/appflow/enginetime.cpp#L134) で頼まれた歩を 1 フレームに 1 つ取るときだけ進みます(そのときの `dt` は固定の `1/fps`)。それ以外の `paused` のフレームは `delta_time = 0` で、止まった時刻のまま評価し直されます。
+
+そのフレーム自身の差分(realtime の測定値か fixed_step の固定値)は `editor_delta_time` に別に取り、[`editorDt()`](../../src/core/appflow/enginetime.hpp#L94) で editor の system が読みます。[`setPlayState()`](../../src/core/appflow/enginetime.cpp#L90) は `paused` から出るときに取っていない歩を捨て、`last_tick` を今に合わせ直すので、再開の最初のフレームの `dt` に一時停止の時間は入りません。一時停止しない実行では、評価の番号と game のフレームは同じ値で進みます。RPCの`set_time`は時刻だけを直接変更し、deltaを0へ戻します。
+
+この不連続は [`timeSetRevision()`](../../src/core/appflow/enginetime.cpp#L78) で観測でき、rendererはこれとcamera不連続をまとめて検知してtemporal history（前フレームのview/projection行列やcamera位置をview単位で覚えておく履歴。前フレームの描画結果を今フレームへ再投影して混ぜる処理が使うので、時刻やcameraが飛ぶと対応関係が崩れて捨てる必要があります）をリセットします（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1599)）。
+
+**edit とセッション(✅PM-1b)。**`PlayState` に 3 つ目の `edit` が入りました。時計の進み方は `paused` と同じ(`dt = 0`、評価の番号だけ進む)で、`requestSteps()` は `paused` 以外で投げるので `edit` では歩を取りません。`setPlayState()` は `paused` か `edit` から出るときに歩を捨て `last_tick` を合わせ直します。`edit` と他の 2 つの間には「セッション」があり、[`beginGameSession()`](../../src/core/appflow/enginetime.cpp#L104) は今の時刻を覚えて game の時計と game のフレームを 0 に、[`endGameSession()`](../../src/core/appflow/enginetime.cpp#L112) は覚えた時刻(セッションが無ければ 0)に時計を戻します。
+
+**game のフレームは終わるときに戻しません**(`edit` では進まないので、前のセッションの最後の値が次のセッションの始めまで残ります)。状態の移りが途中で失敗したときのために、`gameClock()` / `restoreGameClock()` で時刻・フレーム・セッションの有無をまとめて取って戻せます。
 
 ## 2.7 ゲームSystemと内部ECS Systemは別の更新列
 
@@ -757,11 +792,15 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 実行中の DLL は Windows では上書きできない(シャドウコピー)の使用箇所 {#background-usage-09}
 
-**このリポジトリでは**: `src/core/gamelogic/gamelogicreload.cpp` の `makeShadowCopy()` が、`initialize()` で決めた process 固有の `shadow_directory`(= `source_path.parent_path() / ".pelican-hot-reload" / <pid>`)へ `copy_file(..., overwrite_existing)` で成果物を写し、`.pdb` も追随させます。`loadCopy()` の `LoadLibraryW` は常にこのコピー側にだけ効かせます。自動 poll は原本 `source_path` の `(last_write_time, file_size)` が 2 回続けて一致するまで待ち、さらに write share を許さない read lease を取ってから shadow copy を作るため、リンカが truncate/refill 中の部分 DLL を raw import 診断へ渡しません。writer がまだ開いていれば次フレームで再試行しますが、3 回連続で busy なら `game_logic_source_busy@1` を pending status として公開し、writer が閉じれば次の poll で通常どおり再試行します。起動時には死んだ pid の shadow directory を sweep し、正常 shutdown では自分の pid directory を削除します。狙いは「ビルドツールが書く原本」と「エンジンがマップするファイル」の分離で、process 間でも shadow copy 名が衝突しません。これをしないとゲームを動かしたままリビルドしたときにロック済みの原本へリンカが書けず失敗します。
+**このリポジトリでは**: `src/core/gamelogic/gamelogicreload.cpp` の `makeShadowCopy()` が、`initialize()` で決めた process 固有の `shadow_directory`(= `source_path.parent_path() / ".pelican-hot-reload" / <pid>`)へ `copy_file(..., overwrite_existing)` で成果物を写し、`.pdb` も追随させます。`loadCopy()` の `LoadLibraryW` は常にこのコピー側にだけ効かせます。自動 poll は原本 `source_path` の `(last_write_time, file_size)` が 2 回続けて一致するまで待ち、さらに write share を許さない read lease を取ってから shadow copy を作るため、リンカが truncate/refill 中の部分 DLL を raw import 診断へ渡しません。
+
+writer がまだ開いていれば次フレームで再試行しますが、3 回連続で busy なら `game_logic_source_busy@1` を pending status として公開し、writer が閉じれば次の poll で通常どおり再試行します。起動時には死んだ pid の shadow directory を sweep し、正常 shutdown では自分の pid directory を削除します。狙いは「ビルドツールが書く原本」と「エンジンがマップするファイル」の分離で、process 間でも shadow copy 名が衝突しません。これをしないとゲームを動かしたままリビルドしたときにロック済みの原本へリンカが書けず失敗します。
 
 ### PE の import directory / delay-import directory を、イメージをマップせずに読むの使用箇所 {#background-usage-10}
 
-**このリポジトリでは**: `src/core/gamelogic/gamelogicimports.cpp` が `LoadLibraryW` の前に走る診断用の最小 reader を持ちます。`importDirectoryIndex = 1` / `delayImportDirectoryIndex = 13`(19〜20 行)で 2 つの directory だけを取り、`fileOffset()`(212 行)が section テーブル経由で RVA をファイルオフセットへ翻訳します。`appendThunkImports()`(306 行)が PE32 / PE32+ の幅と ordinal フラグ(`0x80000000` / `0x8000000000000000`)を分け、`GameLogicPeImportKind` の 4 種へ分類します。delay 側の `delayFieldRva()`(293 行)が「絶対アドレス版」を `image_base` の減算で RVA へ直します。ファイルは 256 MiB、記述子は 4096 件、thunk は 65536 件で打ち切りますが、コメントが明記しているとおり **これは PE 形式の制限ではなく parser の作業量制限**で、壊れた入力が無制限の走査や確保にならないようにするためのものです。`directoryDescriptorOffset()`(248 行)が「directory と記述子が同じ section にあること」まで見るのも同じ理由(section 境界を越えた記述子を正当に見せないため)です。この reader が読むのは top-level の import だけで、`GetProcAddress` や依存 DLL 経由の解決は範囲外です。
+**このリポジトリでは**: `src/core/gamelogic/gamelogicimports.cpp` が `LoadLibraryW` の前に走る診断用の最小 reader を持ちます。`importDirectoryIndex = 1` / `delayImportDirectoryIndex = 13`(19〜20 行)で 2 つの directory だけを取り、`fileOffset()`(212 行)が section テーブル経由で RVA をファイルオフセットへ翻訳します。`appendThunkImports()`(306 行)が PE32 / PE32+ の幅と ordinal フラグ(`0x80000000` / `0x8000000000000000`)を分け、`GameLogicPeImportKind` の 4 種へ分類します。
+
+delay 側の `delayFieldRva()`(293 行)が「絶対アドレス版」を `image_base` の減算で RVA へ直します。ファイルは 256 MiB、記述子は 4096 件、thunk は 65536 件で打ち切りますが、コメントが明記しているとおり **これは PE 形式の制限ではなく parser の作業量制限**で、壊れた入力が無制限の走査や確保にならないようにするためのものです。`directoryDescriptorOffset()`(248 行)が「directory と記述子が同じ section にあること」まで見るのも同じ理由(section 境界を越えた記述子を正当に見せないため)です。この reader が読むのは top-level の import だけで、`GetProcAddress` や依存 DLL 経由の解決は範囲外です。
 
 <a id="startup-transaction-recovery"></a>
 

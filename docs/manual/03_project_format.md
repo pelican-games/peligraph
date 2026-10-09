@@ -395,7 +395,9 @@ Blank / Standard の雛形は `asset_stores` と `hot_reload` を宣言しませ
 > ```
 > 形式に機能を足すときは「解釈レイヤにパーサ+バインダに変換」を対で追加し、エンジン内部へ波及させない。パーサ登録は静的な表で行い、プラグイン機構は作らない(過剰抽象化の防止)。
 
-[src/project/](../../src/project) が解釈レイヤの実体で(CMake ターゲット `pelican_project`、WP44/WP248)です。現在の住人は `projectformat`(pelican.project封筒)/ `projectpathresolver`(path・asset store)/ `sceneformat`(pelican.scene)/ `importmanifest`(pelican.import)/ `materialformat` + `surfaceformat` + `materiallowering`(マテリアル)/ `featurecompose`(feature 合成)/ `jsonrpc`(JSON-RPC エンベロープ)/ `assetsmanifest`(pelican.assets)/ `importrules`(pelican.import_rules)などです。vulkan・quill・モジュール機構・リソース埋め込みへの依存は禁止されています。`project_library_boundary`テストは、製品ライブラリとして`pelican_project`だけをリンクした実行ファイルがexampleのproject.jsonを開き、scene一覧とasset一覧を取得できることを固定します。
+[src/project/](../../src/project) が解釈レイヤの実体で(CMake ターゲット `pelican_project`、WP44/WP248)です。現在の住人は `projectformat`(pelican.project封筒)/ `projectpathresolver`(path・asset store)/ `sceneformat`(pelican.scene)/ `importmanifest`(pelican.import)/ `materialformat` + `surfaceformat` + `materiallowering`(マテリアル)/ `featurecompose`(feature 合成)/ `jsonrpc`(JSON-RPC エンベロープ)/ `assetsmanifest`(pelican.assets)/ `importrules`(pelican.import_rules)などです。
+
+vulkan・quill・モジュール機構・リソース埋め込みへの依存は禁止されています。`project_library_boundary`テストは、製品ライブラリとして`pelican_project`だけをリンクした実行ファイルがexampleのproject.jsonを開き、scene一覧とasset一覧を取得できることを固定します。
 
 ## 3.6 バージョン管理(VCS)の方針
 
@@ -409,7 +411,9 @@ Blank / Standard の雛形は `asset_stores` と `hot_reload` を宣言しませ
 
 この原則の詳細と web ビューアでの開き方は [第9章](09_web.md) を参照してください。
 
-「エンジン先行」の現在地(2026-09-04 にコードを読んで確認):**§3.10 の `Flags` / `List` 行封筒も、レイトレの `pelican_ray_instance`([第6章](06_rendering.md) §6.15)も、web 側パーサはまだ知りません。** web の scene パーサが closed schema を持つのは組み込み 7 コンポーネント(`transform` / `light` / `camera` / `simplemodelview` / `collider` / `animation` / `sprite_view`)だけで、codec を持たない名前のコンポーネントは検証せず `opaque` として素通しします(`my_webpage/packages/pelican-webgpu/src/pelican2/componentCodec.ts` の codec 集合と `sceneFormat.ts` の `bindPelicanScene()`。2026-09-25 に web リポジトリの作業 branch `agent/ww10a` で関数と `opaque` の分岐があることを再確認。web の `main` にはこのファイル自体がまだ merge されていません)。したがって `pelican_ray_instance` や `List` フィールドを持つコンポーネントを書いた scene は、**native では scene load 時に検証・拒否されるのに web では黙って通る**状態で、「明示拒否まで実装済み」ではありません。サブセット原則の向きとしては web が緩い側なので、web 側の追随待ちの項目です(web リポジトリは pelican2 の外にあるため、この 1 段落だけは pelican2 のコードでは検証できません)。
+「エンジン先行」の現在地(2026-09-04 にコードを読んで確認):**§3.10 の `Flags` / `List` 行封筒も、レイトレの `pelican_ray_instance`([第6章](06_rendering.md) §6.15)も、web 側パーサはまだ知りません。** web の scene パーサが closed schema を持つのは組み込み 7 コンポーネント(`transform` / `light` / `camera` / `simplemodelview` / `collider` / `animation` / `sprite_view`)だけで、codec を持たない名前のコンポーネントは検証せず `opaque` として素通しします(`my_webpage/packages/pelican-webgpu/src/pelican2/componentCodec.ts` の codec 集合と `sceneFormat.ts` の `bindPelicanScene()`。2026-09-25 に web リポジトリの作業 branch `agent/ww10a` で関数と `opaque` の分岐があることを再確認。web の `main` にはこのファイル自体がまだ merge されていません)。
+
+したがって `pelican_ray_instance` や `List` フィールドを持つコンポーネントを書いた scene は、**native では scene load 時に検証・拒否されるのに web では黙って通る**状態で、「明示拒否まで実装済み」ではありません。サブセット原則の向きとしては web が緩い側なので、web 側の追随待ちの項目です(web リポジトリは pelican2 の外にあるため、この 1 段落だけは pelican2 のコードでは検証できません)。
 
 ## 3.8 既知の食い違い(設計文書 vs 実装)
 
@@ -742,7 +746,9 @@ user://components/glow_bloom/
 
 ### 取り込む(import)
 
-RPC [`import_render_feature{base_source_digest, source_dir, destination_reference}`](../../src/core/communication/renderconfigeditor.cpp#L1793) が、component ディレクトリを読んで **`destination_reference`(`project://…` の新規ファイル)に feature 文書を作り、`rendering.features` に足す**ところまでを **1 つのトランザクション**で行います(`base_source_digest` は CAS。[第13章](13_editor.md))。`source_dir` は**絶対パス**でなければならず、`destination_reference` は `project://` で始まる**新規**ファイル(`#` フラグメント不可)です。**この 3 つは別々の code で断られます** —— `project://` でない / `#` を含むは `invalid_feature_destination`([renderconfigeditor.cpp:974](../../src/core/communication/renderconfigeditor.cpp#L1805))、`source_dir` が絶対でないのは `render_component_invalid`([:980](../../src/core/communication/renderconfigeditor.cpp#L1811))、宛先が既にあるのは `feature_destination_exists`([:1026](../../src/core/communication/renderconfigeditor.cpp#L1857))です。
+RPC [`import_render_feature{base_source_digest, source_dir, destination_reference}`](../../src/core/communication/renderconfigeditor.cpp#L1793) が、component ディレクトリを読んで **`destination_reference`(`project://…` の新規ファイル)に feature 文書を作り、`rendering.features` に足す**ところまでを **1 つのトランザクション**で行います(`base_source_digest` は CAS。[第13章](13_editor.md))。`source_dir` は**絶対パス**でなければならず、`destination_reference` は `project://` で始まる**新規**ファイル(`#` フラグメント不可)です。
+
+**この 3 つは別々の code で断られます** —— `project://` でない / `#` を含むは `invalid_feature_destination`([renderconfigeditor.cpp:974](../../src/core/communication/renderconfigeditor.cpp#L1805))、`source_dir` が絶対でないのは `render_component_invalid`([:980](../../src/core/communication/renderconfigeditor.cpp#L1811))、宛先が既にあるのは `feature_destination_exists`([:1026](../../src/core/communication/renderconfigeditor.cpp#L1857))です。
 
 **複製であって参照ではありません** —— 取り込んだ後は component ディレクトリを消してもプロジェクトは描けます。
 

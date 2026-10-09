@@ -85,7 +85,9 @@
 
 ### シェーダ基盤（JSON からパイプラインを生成するまで）
 
-読み順: [shadercompiler.cpp](../../src/core/shader/shadercompiler.cpp)(shaderc で GLSL→SPIR-V。**シェーダのコンパイル成否を結果オブジェクトで返す**)→ [shaderreflection.cpp](../../src/core/shader/shaderreflection.cpp)(spirv-reflect で descriptor layout を自動生成)→ [shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp)(stem 解決・リロードの世代 swap)→ [pipelinefactory.cpp](../../src/core/shader/pipelinefactory.cpp)(レイアウトハッシュ共有・`pipeline_cache.bin` 永続化)。マテリアル系は [surfacecompiler.cpp](../../src/core/shader/surfacecompiler.cpp)(`.surface` → テンプレート逆 include 合成)と [spvlink.cpp](../../src/core/shader/spvlink.cpp)(experimental SPIR-V リンカ)。SPIR-V(Vulkan がシェーダとして受け取るバイナリ中間表現。GLSL / WGSL はこれへコンパイルされる)のディスクキャッシュ(WP82)は `<project>/.pelican/shader_cache/`。
+読み順: [shadercompiler.cpp](../../src/core/shader/shadercompiler.cpp)(shaderc で GLSL→SPIR-V。**シェーダのコンパイル成否を結果オブジェクトで返す**)→ [shaderreflection.cpp](../../src/core/shader/shaderreflection.cpp)(spirv-reflect で descriptor layout を自動生成)→ [shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp)(stem 解決・リロードの世代 swap)→ [pipelinefactory.cpp](../../src/core/shader/pipelinefactory.cpp)(レイアウトハッシュ共有・`pipeline_cache.bin` 永続化)。
+
+マテリアル系は [surfacecompiler.cpp](../../src/core/shader/surfacecompiler.cpp)(`.surface` → テンプレート逆 include 合成)と [spvlink.cpp](../../src/core/shader/spvlink.cpp)(experimental SPIR-V リンカ)。SPIR-V(Vulkan がシェーダとして受け取るバイナリ中間表現。GLSL / WGSL はこれへコンパイルされる)のディスクキャッシュ(WP82)は `<project>/.pelican/shader_cache/`。
 
 ホットリロードのトランザクション(WP96/108 以降)は shaderlibrary 単独ではなく [src/core/watch/](../../src/core/watch)(FileWatcher / ContentDigest / ReloadService / ReloadGate)経由の単一経路です — シェーダに限らずテクスチャ・マテリアル値・モデルコンテナも同じ基盤で、失敗時は全体破棄・旧世代維持。
 
@@ -122,7 +124,9 @@ WP150 の flat な `StructFieldSchema` に加えて、WP382a で
 [`SchemaNode`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L155)(`Struct` / `Leaf` /
 [`Flags`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L194) /
 [`List`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L222)、**深さ 2 まで**。
-list の list は compile 時に拒否)が入りました。wire 側の `$list` エンベロープ(`v` / `next_id` / 行 id)の
+list の list は compile 時に拒否)が入りました。
+
+wire 側の `$list` エンベロープ(`v` / `next_id` / 行 id)の
 decode / encode は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L597) です。
 `List` / `Flags` を含む宣言だけが v3 の登録入口を通り、v2 の record は `static_assert` で凍結されています。
 **engine 同梱の component はまだ 1 つも `List` を宣言していません**(使っているのは
@@ -134,6 +138,7 @@ decode / encode は [`structfieldjson.hpp`](../../src/core/userpublic/details/sc
 `readGameLogicImports()` / `diagnoseGameLogicImports()` は、**PE の top-level import /
 delay-import directory だけを読みます**(image を map せず、`LoadLibrary` も呼ばず、
 imported module も辿りません)。したがって古い DLL の static initializer は 1 行も走りません。
+
 エラーコードは同ヘッダの
 [`gameLogicSourceBusyErrorCode`](../../src/core/gamelogic/gamelogicimports.hpp#L54) 付近に並んでいます。
 owner の払い出しと builtin 登録は game DLL のヘッダから外れ、
@@ -149,7 +154,23 @@ owner の払い出しと builtin 登録は game DLL のヘッダから外れ、
 
 ### ツール(devcli)
 
-[devcli/main.cpp](../../src/devcli/main.cpp) が **7 系統**のサブコマンド分岐(`assets` / `bake-camera` / `import` / `dist-config` / `project` / `dump-lowered-material` / `vrm`)、実装は [projectinit.cpp](../../src/devcli/projectinit.cpp)(`--template standard|blank` を読むだけ。雛形の中身は F-2 で `pelican_project` の [project/projecttemplate.cpp](../../src/project/projecttemplate.cpp) へ移り、正は [同ファイル](../../src/project/projecttemplate.cpp#L350) の `templateFiles()`。standard / blank とも **16 エントリ**(blank は VI-2 から `shaders/present.frag` を書かない)。Studio の File > New Project... も同じ関数を呼ぶ)・[importcommand.cpp](../../src/devcli/importcommand.cpp)(sha256 照合 → asset_data.json 追記・冪等)・[distconfig.cpp](../../src/devcli/distconfig.cpp)(プロジェクト内容から PELICAN_WITH_* を導出。GLB の JSON チャンクを直接パースして VAT 有無を判定する箇所が読みどころ)。外部ツールの子プロセス起動は [processrunner.cpp](../../src/devcli/processrunner.cpp) に集約されています(`import --rules` と `bake-camera` が利用)。
+[devcli/main.cpp](../../src/devcli/main.cpp) が **7 系統**のサブコマンド分岐:
+
+- `assets`
+- `bake-camera`
+- `import`
+- `dist-config`
+- `project`
+- `dump-lowered-material`
+- `vrm`
+
+実装は:
+
+- [projectinit.cpp](../../src/devcli/projectinit.cpp)(`--template standard|blank` を読むだけ。雛形の中身は F-2 で `pelican_project` の [project/projecttemplate.cpp](../../src/project/projecttemplate.cpp) へ移り、正は [同ファイル](../../src/project/projecttemplate.cpp#L350) の `templateFiles()`。standard / blank とも **16 エントリ**(blank は VI-2 から `shaders/present.frag` を書かない)。Studio の File > New Project... も同じ関数を呼ぶ)
+- [importcommand.cpp](../../src/devcli/importcommand.cpp)(sha256 照合 → asset_data.json 追記・冪等)
+- [distconfig.cpp](../../src/devcli/distconfig.cpp)(プロジェクト内容から PELICAN_WITH_* を導出。GLB の JSON チャンクを直接パースして VAT 有無を判定する箇所が読みどころ)。
+
+外部ツールの子プロセス起動は [processrunner.cpp](../../src/devcli/processrunner.cpp) に集約されています(`import --rules` と `bake-camera` が利用)。
 
 ## 12.7 横断的な実装パターン(読むときの目印)
 
