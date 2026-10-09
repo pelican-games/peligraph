@@ -865,37 +865,21 @@ GraphCanvasAudioImport importProjectAudio(const std::filesystem::path &project_r
         result.error = "No project is open.";
         return result;
     }
-    const auto folder = project_root / "assets" / "audio";
-    std::error_code error;
-    std::filesystem::create_directories(folder, error);
-    if (error) {
-        result.error = "Could not make " + folder.generic_string() + ": " + error.message();
-        return result;
-    }
     for (const auto &file : files) {
         auto extension = file.extension().string();
         std::ranges::transform(extension, extension.begin(),
                                [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         if (extension != ".wav" && extension != ".ogg") {
-            result.error = file.filename().string() + " is not a .wav or .ogg file.";
+            const auto shown = file.filename().u8string();
+            result.error = std::string{shown.begin(), shown.end()} + " is not a .wav or .ogg file.";
             continue;
         }
-        const auto stem = file.stem().string();
-        const auto original = file.extension().string();
-        auto name = stem + original;
-        for (int suffix = 2; std::filesystem::exists(folder / name) && suffix < 10000; ++suffix)
-            name = stem + "_" + std::to_string(suffix) + original;
-        if (std::filesystem::exists(folder / name)) {
-            result.error = "No free name for " + file.filename().string() + ".";
+        const auto copied = copyIntoProjectAssets(project_root, "audio", file);
+        if (!copied.error.empty()) {
+            result.error = copied.error;
             continue;
         }
-        std::filesystem::copy_file(file, folder / name, std::filesystem::copy_options::none, error);
-        if (error) {
-            result.error = "Could not copy " + file.filename().string() + ": " + error.message();
-            error.clear();
-            continue;
-        }
-        result.references.push_back("project://assets/audio/" + name);
+        result.references.push_back("project://" + copied.reference);
     }
     return result;
 }
@@ -912,11 +896,16 @@ std::string lowerExtension(const std::filesystem::path &file) {
 }
 
 // The first free `<stem>[_N]<extension>` in `folder`.
-std::optional<std::string> freeName(const std::filesystem::path &folder, const std::string &stem,
-                                    const std::string &extension) {
-    auto name = stem + extension;
-    for (int suffix = 2; std::filesystem::exists(folder / name) && suffix < 10000; ++suffix)
-        name = stem + "_" + std::to_string(suffix) + extension;
+std::optional<std::filesystem::path> freeName(const std::filesystem::path &folder,
+                                              const std::filesystem::path &stem,
+                                              const std::filesystem::path &extension) {
+    auto name = stem;
+    name += extension;
+    for (int suffix = 2; std::filesystem::exists(folder / name) && suffix < 10000; ++suffix) {
+        name = stem;
+        name += "_" + std::to_string(suffix);
+        name += extension;
+    }
     if (std::filesystem::exists(folder / name)) return std::nullopt;
     return name;
 }
@@ -1008,36 +997,27 @@ GraphCanvasImageImport importProjectImage(const std::filesystem::path &project_r
         result.error = file.filename().string() + " is not a .ktx2, .png or .hdr file.";
         return result;
     }
-    const auto folder = project_root / "assets" / "images";
-    std::error_code error;
-    std::filesystem::create_directories(folder, error);
-    if (error) {
-        result.error = "Could not make " + folder.generic_string() + ": " + error.message();
-        return result;
-    }
-    const auto stem = file.stem().string();
-    const auto name = freeName(folder, stem, file.extension().string());
-    if (!name) {
-        result.error = "No free name for " + file.filename().string() + ".";
-        return result;
-    }
-    std::filesystem::copy_file(file, folder / *name, std::filesystem::copy_options::none, error);
-    if (error) {
-        result.error = "Could not copy " + file.filename().string() + ": " + error.message();
+    const auto copied = copyIntoProjectAssets(project_root, "images", file);
+    if (!copied.error.empty()) {
+        result.error = copied.error;
         return result;
     }
     if (extension != ".hdr") {
-        result.reference = "assets/images/" + *name;
+        result.reference = copied.reference;
         return result;
     }
     // The engine reads no .hdr: it is baked into an RGBA32F .ktx2 beside it.
-    const auto baked = freeName(folder, std::filesystem::path{*name}.stem().string(), ".ktx2");
+    const auto folder = copied.copy.parent_path();
+    const auto baked = freeName(folder, copied.copy.stem(), ".ktx2");
     if (!baked) {
-        result.error = "No free name for the .ktx2 of " + file.filename().string() + ".";
+        const auto shown = file.filename().u8string();
+        result.error = "No free name for the .ktx2 of " + std::string{shown.begin(), shown.end()} + ".";
         return result;
     }
-    result.reference = "assets/images/" + *baked;
-    result.convert = GraphCanvasImageImport::Conversion{folder / *name, folder / *baked};
+    const auto target = folder / *baked;
+    const auto relative = target.lexically_relative(project_root).generic_u8string();
+    result.reference = std::string{relative.begin(), relative.end()};
+    result.convert = GraphCanvasImageImport::Conversion{copied.copy, target};
     return result;
 }
 

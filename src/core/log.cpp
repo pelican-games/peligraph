@@ -9,6 +9,8 @@
 #include <quill/sinks/ConsoleSink.h>
 #include <quill/sinks/FileSink.h>
 
+#include "../project/windowsutf8.hpp"
+
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -106,6 +108,13 @@ void setupLogger(bool reserve_stdout_for_protocol) {
         }
     });
 
+    static const bool checked_code_page = [] {
+        if (!processUsesUtf8CodePage()) {
+            LOG_WARNING(logger, "{}", nonUtf8CodePageWarning);
+        }
+        return true;
+    }();
+    (void)checked_code_page;
     LOG_INFO(logger, "pelican log start");
 }
 

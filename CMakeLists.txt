@@ -563,3 +563,7 @@ if(TARGET pelican_test_game_logic_abi_test)
     PELICAN_WP381_GAME_DLL_INVENTORY="${pelican_game_dll_inventory_path}"
     PELICAN_WP381_INVENTORY_GENERATED=1)
 endif()
+
+# Apply after all runtime and test executables have been declared.
+include(cmake/pelican_windows_manifest.cmake)
+pelican_apply_windows_manifest("${CMAKE_SOURCE_DIR}")

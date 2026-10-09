@@ -1143,3 +1143,20 @@ TEST_CASE("Abnormal engine process owner exit leaves no child process",
 #endif
 
 } // namespace PelicanStudio
+
+TEST_CASE("JP-1 engineprocess forwards Japanese UTF-8 stdout and stderr", "[jp1][engineprocess]") {
+    using namespace PelicanStudio;
+    EngineProcess process;
+    QString output, errors;
+    QObject::connect(&process, &EngineProcess::outputReceived,
+                     [&](const QString &text) { output += text; });
+    QObject::connect(&process, &EngineProcess::standardErrorReceived,
+                     [&](const QString &text) { errors += text; });
+    QString error;
+    REQUIRE(process.start({fixtureExecutable(), {QStringLiteral("emit"),
+                           QStringLiteral("日本語 ソ表/木箱.glb")}, {}}, &error));
+    REQUIRE(process.waitForStarted(5000));
+    REQUIRE(process.waitForFinished(5000));
+    CHECK(output.contains(QStringLiteral("stdout-capture:日本語 ソ表/木箱.glb")));
+    CHECK(errors.contains(QStringLiteral("stderr-capture:日本語 ソ表/木箱.glb")));
+}

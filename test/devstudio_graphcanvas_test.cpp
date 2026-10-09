@@ -5085,3 +5085,30 @@ TEST_CASE("UD-4 Graph Undo keeps its serial and inverse after refusal and a Rend
     CHECK(h.document == added);
     CHECK(order.undoRecords() == records);
 }
+
+TEST_CASE("JP-1 graphcanvas Japanese audio and image imports keep UTF-8 references", "[jp1][graphcanvas]") {
+    namespace fs = std::filesystem;
+    const auto root = fs::temp_directory_path() / "pelican_jp1_import";
+    fs::remove_all(root);
+    struct Cleanup { fs::path path; ~Cleanup() { std::error_code ec; fs::remove_all(path, ec); } } cleanup{root};
+    const auto outside = root / "outside";
+    const auto project = root / fs::path{u8"日本語 プロジェクト"};
+    fs::create_directories(outside);
+    for (const auto &name : {u8"音声ソ表.wav", u8"画像ソ表.png", u8"空ソ表.hdr"}) {
+        std::ofstream{outside / fs::path{name}, std::ios::binary} << "fixture";
+    }
+    const auto sound = outside / fs::path{u8"音声ソ表.wav"};
+    CHECK(PelicanStudio::importProjectAudio(project, {sound}).references ==
+          std::vector<std::string>{"project://assets/audio/音声ソ表.wav"});
+    CHECK(PelicanStudio::importProjectAudio(project, {sound}).references ==
+          std::vector<std::string>{"project://assets/audio/音声ソ表_2.wav"});
+    const auto image = outside / fs::path{u8"画像ソ表.png"};
+    CHECK(PelicanStudio::importProjectImage(project, image).reference == "assets/images/画像ソ表.png");
+    CHECK(PelicanStudio::importProjectImage(project, image).reference == "assets/images/画像ソ表_2.png");
+    const auto sky = PelicanStudio::importProjectImage(project, outside / fs::path{u8"空ソ表.hdr"});
+    CHECK(sky.reference == "assets/images/空ソ表.ktx2");
+    REQUIRE(sky.convert.has_value());
+    CHECK(fs::exists(project / fs::path{u8"assets/images/空ソ表.hdr"}));
+    CHECK(fs::exists(project / fs::path{u8"assets/audio/音声ソ表_2.wav"}));
+    CHECK(fs::exists(project / fs::path{u8"assets/images/画像ソ表_2.png"}));
+}

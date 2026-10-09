@@ -422,7 +422,10 @@ TEST_CASE("Win32 watcher covers real filesystem changes overflow rename Unicode 
         REQUIRE(waitUntil([&] { return watcher.pendingCount() >= 1; }));
         const auto requests = applyAll(watcher);
         REQUIRE(requests.size() == 1);
-        REQUIRE(requests.front().key.path.find("asset.txt") != std::string::npos);
+        const auto expected = file.lexically_relative(box.root).generic_u8string();
+        REQUIRE(requests.front().key.path == std::string{expected.begin(), expected.end()});
+        REQUIRE(requests.front().key == makeAssetKey(
+            "project://" + std::string{expected.begin(), expected.end()}));
     }
 
     SECTION("both overflow signals force deterministic and stress rescans") {

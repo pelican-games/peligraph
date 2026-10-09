@@ -461,7 +461,7 @@ void EngineProcess::drainStandardOutput(bool flush_partial_line) {
         }
         if (!routeRpcResponse(rpc_line)) {
             const GuiTraceSpan log{"engine_log_delivery", double(output_line.size())};
-            emit outputReceived(QString::fromLocal8Bit(output_line));
+            emit outputReceived(QString::fromUtf8(output_line));
         }
     }
 
@@ -470,7 +470,7 @@ void EngineProcess::drainStandardOutput(bool flush_partial_line) {
         standard_output_buffer_.clear();
         if (!routeRpcResponse(output_line)) {
             const GuiTraceSpan log{"engine_log_delivery", double(output_line.size())};
-            emit outputReceived(QString::fromLocal8Bit(output_line));
+            emit outputReceived(QString::fromUtf8(output_line));
         }
     }
 }
@@ -479,7 +479,7 @@ void EngineProcess::drainStandardError() {
     const GuiTraceSpan trace{"engine_stderr"};
     const QByteArray bytes = process_.readAllStandardError();
     if (!bytes.isEmpty()) {
-        const QString output = QString::fromLocal8Bit(bytes);
+        const QString output = QString::fromUtf8(bytes);
         emit standardErrorReceived(output);
         emit outputReceived(output);
     }

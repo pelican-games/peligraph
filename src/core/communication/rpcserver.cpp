@@ -1210,7 +1210,7 @@ std::string RpcServer::handleLine(std::string_view line) const {
             response["jsonrpc"] = "2.0";
             response["id"] = request.id;
             response["error"] = std::move(error_object);
-            return response.dump();
+            return response.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
         }
         if (error.data()) {
             return serializeJsonRpcError(

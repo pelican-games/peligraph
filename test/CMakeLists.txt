@@ -46,7 +46,16 @@ function(pelican_gpu_test_properties test_name intrinsic_timeout)
   endif()
 endfunction()
 
-set(PELICAN_CATCH_ADD_TESTS_SCRIPT "${_CATCH_DISCOVER_TESTS_SCRIPT}")
+# Catch emits UTF-8, independently of CMake's process ACP. Explicit decoding
+# also covers CMake 3.15-3.30, whose execute_process default is AUTO.
+file(READ "${_CATCH_DISCOVER_TESTS_SCRIPT}" PELICAN_CATCH_ADD_TESTS_UTF8)
+string(REPLACE "execute_process(" "execute_process(ENCODING UTF-8"
+  PELICAN_CATCH_ADD_TESTS_UTF8 "${PELICAN_CATCH_ADD_TESTS_UTF8}")
+set(PELICAN_CATCH_ADD_TESTS_SCRIPT
+  "${CMAKE_CURRENT_BINARY_DIR}/CatchAddTestsUtf8.cmake")
+configure_file(${CMAKE_CURRENT_SOURCE_DIR}/catch_discovery_utf8.cmake.in
+  ${PELICAN_CATCH_ADD_TESTS_SCRIPT} @ONLY)
+set(_CATCH_DISCOVER_TESTS_SCRIPT "${PELICAN_CATCH_ADD_TESTS_SCRIPT}")
 set(PELICAN_CATCH_DISCOVERY_ALLOW_EMPTY_SCRIPT
   "${CMAKE_CURRENT_BINARY_DIR}/run_catch_discovery_allow_empty.cmake")
 configure_file(
@@ -4293,6 +4302,25 @@ if(MSVC)
   endif()
 endif()
 
+# JP-1: use the same executable manifest as production for the UTF-8 contract.
+if(PELICAN_WITH_RPC)
+pelican_define_test(jp1_utf8_test pelican_core)
+if(PELICAN_PYTHON_TESTS_AVAILABLE)
+  pelican_define_gpu_python_test(jp1_headless_utf8
+    ${CMAKE_CURRENT_SOURCE_DIR}/jp1_headless_utf8.py
+    --player $<TARGET_FILE:pelican_player>
+    --cli $<TARGET_FILE:pelican_cli>
+    --model ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_material_pass_authoring/checker_box.glb)
+endif()
+endif()
+if(PELICAN_PYTHON_TESTS_AVAILABLE)
+  pelican_define_python_test(jp1_cli_assetsmanifest
+    ${CMAKE_CURRENT_SOURCE_DIR}/jp1_headless_utf8.py
+    --player $<TARGET_FILE:pelican_player> --cli $<TARGET_FILE:pelican_cli>
+    --model ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_material_pass_authoring/checker_box.glb
+    --cli-only)
+endif()
+
 # WP385 decision 12: one generated timeout policy.  The CTest TIMEOUT of every
 # gpu-labelled test is lease_timeout_max + intrinsic + grace, and the inventory
 # gate reads these same three numbers instead of repeating them.
@@ -4326,6 +4354,7 @@ if(WIN32)
     TIMEOUT 240
     SKIP_REGULAR_EXPRESSION "CRT_PROBE_SKIPPED")
 endif()
+
 
 # Keep this last: it links the CRT routing into every executable defined above.
 include(${CMAKE_CURRENT_SOURCE_DIR}/crt_report_to_stderr.cmake)

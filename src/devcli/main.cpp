@@ -1,3 +1,4 @@
+#include "../project/windowsutf8.hpp"
 #include "assetscommand.hpp"
 #include "audiocommand.hpp"
 #include "bakecameracommand.hpp"
@@ -14,6 +15,9 @@
 #include <string_view>
 
 int main(int argc, char *argv[]) {
+    if (!Pelican::processUsesUtf8CodePage()) {
+        std::cerr << "WARNING: " << Pelican::nonUtf8CodePageWarning << '\n';
+    }
     if (argc > 1 && std::string_view{argv[1]} == "assets") {
         return Pelican::DevCli::runAssetsCommand(argc - 1, argv + 1);
     }
