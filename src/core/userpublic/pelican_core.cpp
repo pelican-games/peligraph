@@ -104,7 +104,7 @@ bool PelicanCore::run() {
     bool succeeded = true;
     const auto report_fatal = [](const char *message) {
         const auto &config = GET_MODULE(EngineLaunchConfig);
-        reportPlayerFatalError(message, config.rpc, config.embedded);
+        reportPlayerFatalError(message, config.rpc, config.embedded, config.headless);
     };
     try {
         GET_MODULE(StartupMetrics).begin();

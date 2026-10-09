@@ -2952,6 +2952,7 @@ pelican_define_test(shader_library_test GROUP shader_tools RUNTIME_SHADER pelica
 target_compile_definitions(pelican_test_shader_library_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    PELICAN_TEST_BUILT_RESOURCES="${CMAKE_BINARY_DIR}/src/core/resources"
 )
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_shader_library_test PRIVATE pelican_shaderc)
@@ -4378,6 +4379,14 @@ endif()
 # DS-1 distribution startup contracts do not initialize a GPU.
 if(WIN32)
     pelican_define_test(player_diagnostics_test GROUP ds1)
+    add_test(NAME player_arguments_ds1f_startup
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+            -File ${CMAKE_CURRENT_SOURCE_DIR}/run_ds1f_player_startup.ps1
+            -Player $<TARGET_FILE:pelican_player>
+            -Cli $<TARGET_FILE:pelican_cli>
+            -OutDir ${CMAKE_BINARY_DIR}/test_artifacts/ds1f_startup
+            -ExpectedGui $<BOOL:${PELICAN_PLAYER_GUI_SUBSYSTEM}>)
+    set_tests_properties(player_arguments_ds1f_startup PROPERTIES TIMEOUT 45)
 endif()
 add_test(NAME build_units_ds1_git_identity COMMAND ${CMAKE_COMMAND}
     -DSOURCE_DIR=${CMAKE_SOURCE_DIR}

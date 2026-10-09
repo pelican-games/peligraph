@@ -929,6 +929,7 @@ std::string renderDistConfigPreset(const DistConfigResult &result) {
     out << "# PELICAN_WITH_SPIRV_LINK: OFF - experimental linker is a developer-only build unit\n";
     out << "# BUILD_TESTING: OFF - distribution builds exclude developer tests and test tooling\n\n";
 
+    out << "set(PELICAN_PLAYER_GUI_SUBSYSTEM ON CACHE BOOL \"\" FORCE)\n";
     out << "set(SKIP_DEVSTUDIO " << boolString(!result.with_studio) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_VAT " << boolString(result.with_vat) << " CACHE BOOL \"\" FORCE)\n";
     out << "set(PELICAN_WITH_EXR " << boolString(result.with_exr) << " CACHE BOOL \"\" FORCE)\n";

@@ -732,16 +732,17 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
 
 int main(int argc, char *argv[]) {
     Pelican::preparePlayerConsole(argc, argv);
-    bool rpc = false, embedded = false;
+    bool rpc = false, embedded = false, headless = false;
     for (int i = 1; i < argc; ++i) {
         rpc |= std::string_view(argv[i]) == "--rpc";
         embedded |= std::string_view(argv[i]) == "--embedded";
+        headless |= std::string_view(argv[i]) == "--headless";
     }
     ParsedLaunchConfig parsed_launch_config;
     try {
         parsed_launch_config = parseLaunchConfig(argc, argv);
     } catch (const std::exception &error) {
-        Pelican::reportPlayerFatalError(error.what(), rpc, embedded);
+        Pelican::reportPlayerFatalError(error.what(), rpc, embedded, headless);
         return -1;
     }
 
@@ -771,7 +772,7 @@ int main(int argc, char *argv[]) {
             parsed_launch_config.project_json =
                 readTextFile(parsed_launch_config.project_file);
         } catch (const Pelican::ProjectMigrationError &error) {
-            Pelican::reportPlayerFatalError(error.what(), rpc, embedded);
+            Pelican::reportPlayerFatalError(error.what(), rpc, embedded, headless);
             if (error.code() != Pelican::projectMigrationRequiredCode) {
                 return 1;
             }
@@ -789,7 +790,7 @@ int main(int argc, char *argv[]) {
                       << std::endl;
             return 1;
         } catch (const std::exception &error) {
-            Pelican::reportPlayerFatalError(error.what(), rpc, embedded);
+            Pelican::reportPlayerFatalError(error.what(), rpc, embedded, headless);
             return 1;
         }
 
@@ -803,7 +804,7 @@ int main(int argc, char *argv[]) {
                 {.ignore_engine_version =
                      parsed_launch_config.ignore_engine_version});
         } catch (const std::exception &error) {
-            Pelican::reportPlayerFatalError(error.what(), rpc, embedded);
+            Pelican::reportPlayerFatalError(error.what(), rpc, embedded, headless);
             return 1;
         }
         path_resolver.setup(parsed_launch_config.project_root, launch_config.allow_absolute_paths,
@@ -837,7 +838,7 @@ int main(int argc, char *argv[]) {
 
     return pl.run() ? 0 : 1;
     } catch (const std::exception &error) {
-        Pelican::reportPlayerFatalError(error.what(), rpc, embedded);
+        Pelican::reportPlayerFatalError(error.what(), rpc, embedded, headless);
         return 1;
     }
 }

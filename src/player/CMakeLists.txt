@@ -1,8 +1,13 @@
+option(PELICAN_PLAYER_GUI_SUBSYSTEM "Build the player without a console window" OFF)
+
 function(pelican_configure_player_target target_name)
-    add_executable(${target_name} WIN32
+    add_executable(${target_name}
         "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/main.cpp"
         "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../platform/gpupreference.cpp")
-    if(MSVC)
+    if(WIN32 AND PELICAN_PLAYER_GUI_SUBSYSTEM)
+        set_target_properties(${target_name} PROPERTIES WIN32_EXECUTABLE TRUE)
+    endif()
+    if(MSVC AND PELICAN_PLAYER_GUI_SUBSYSTEM)
         target_link_options(${target_name} PRIVATE /ENTRY:mainCRTStartup)
     endif()
     set_target_properties(${target_name} PROPERTIES
