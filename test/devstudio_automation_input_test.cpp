@@ -9,6 +9,8 @@
 
 #include "automationcommands.hpp"
 #include "graphcanvaswidget.hpp"
+#include "frameplanedit.hpp"
+#include <cmath>
 #include <QGraphicsItem>
 #include "../src/devstudio/view/nodegraphics.hpp"
 #include <QFile>
@@ -24,6 +26,8 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QLineEdit>
+#include <QLineF>
 #include <QGraphicsScene>
 #include <QGraphicsView>
 #include <QJsonArray>
@@ -1588,6 +1592,143 @@ TEST_CASE("UD-5 fix2 named click reveals an off-viewport loop and updates Layers
 }
 
 
+TEST_CASE("FX-8 a named click finds the loop heading under an overlapping body node",
+          "[devstudio][automation][fx8][fx8-fix3]") {
+    (void)application();
+    using namespace PelicanStudio;
+    using Json = nlohmann::json;
+    GraphCanvasWidget widget{GraphCanvasReadCapability{}};
+    widget.resize(1100, 800);
+    widget.show();
+    auto &model = widget.model();
+    model.setConnected(true);
+    for (const auto &call : model.takeRpcRequests()) {
+        if (call.method != "get_graph_instances") continue;
+        const Json document{
+            {"source_reference", "project://passes/main.json"},
+            {"source_digest", {{"hex", "loop-selection"}}},
+            {"root_schema", "pelican.graph"},
+            {"nodes", Json::array({
+                {{"id", "render_fullscreen_4"}, {"op", "render.fullscreen"}},
+                {{"id", "loop"}, {"op", "graph.loop"},
+                 {"parameters", {{"over", {{"range", {{"count", 2}}}}},
+                                  {"branches", Json::array({{{"body", "body"}}})}}}}})},
+            {"definitions", {{"body", {{"nodes", Json::array({{{"id", "render_fullscreen_4"}, {"op", "render.fullscreen"}}})}, {"outputs", Json::object()}}}}},
+            {"layout", {{"nodes", {{"loop", {{"x", 4000}, {"y", -1500}}},
+                                     {"render_fullscreen_4", {{"x", 0}, {"y", 0}}}}}}}};
+        model.receiveRpcResult(call.request_id, document.dump());
+    }
+    widget.scene().repopulate();
+    widget.scene().selectNode("render_fullscreen_4");
+    auto *view = widget.findChild<QGraphicsView *>("pelican.graphCanvasView");
+    auto *layers = widget.findChild<QPushButton *>("pelican.graphCanvasLayersToggle");
+    REQUIRE(view);
+    REQUIRE(layers);
+    QApplication::processEvents();
+    view->centerOn(0, 0);
+    QGraphicsItem *body = nullptr;
+    QGraphicsItem *loop = nullptr;
+    for (auto *item : widget.scene().items()) {
+        if (item->data(NodeGraphItemKindRole).toString() == "graph_node" &&
+            item->data(GraphCanvasZoneScopeRole).toString() == "body") body = item;
+        if (item->data(NodeGraphItemKindRole).toString() == "graph_node" &&
+            item->data(NodeGraphNameRole).toString() == "loop") loop = item;
+    }
+    REQUIRE(loop);
+    REQUIRE(body);
+    REQUIRE(loop->isAncestorOf(body));
+    const auto spot = loop->data(NodeGraphHotspotRole).toPointF();
+    // Move the real body node over the heading without asking the automatic
+    // zone sizing callback to relocate that heading away from the overlap.
+    const QPointF offset = body->mapFromScene(loop->mapToScene(spot)) -
+                           body->boundingRect().center();
+    body->setTransform(QTransform::fromTranslate(offset.x(), offset.y()));
+    view->centerOn(loop->mapToScene(spot));
+    const QPoint original = view->mapFromScene(loop->mapToScene(spot));
+    auto *hit = view->itemAt(original);
+    REQUIRE(hit);
+    REQUIRE((hit == body || body->isAncestorOf(hit)));
+    // Reproduce what an ordinary user click on the hidden heading does.
+    QTest::mouseClick(view->viewport(), Qt::LeftButton, Qt::NoModifier, original);
+    REQUIRE(widget.scene().selectedNode() == std::optional<std::string>{"render_fullscreen_4"});
+    REQUIRE(widget.scene().selectedScope() == "body");
+    QTest::qWait(10);
+    REQUIRE(layers->text().contains("Layers: render_fullscreen_4"));
+    const auto transform = view->transform();
+    AutomationHost host;
+    host.window = &widget;
+    const auto clicked = runAutomationCommand(host, request("click", {
+        {"name", "pelican.graphCanvasView::graph_node#loop"}}));
+    INFO(describe(clicked).toStdString());
+    REQUIRE(clicked.ok);
+    CHECK(clicked.result.toObject().value("point_reselected").toBool());
+    // Selection is immediate; the detail pane deliberately waits until the
+    // press/release gesture has finished before rebuilding its editors.
+    QElapsedTimer settled;
+    settled.start();
+    while (!layers->text().contains("Layers: loop") && settled.elapsed() < 1000)
+        QTest::qWait(5);
+    const auto point = clicked.result.toObject().value("point").toArray();
+    CHECK(view->viewport()->rect().contains(QPoint{point[0].toInt(), point[1].toInt()}));
+    CHECK(widget.scene().selectedNode() == std::optional<std::string>{"loop"});
+    CHECK(widget.scene().selectedScope().empty());
+    CHECK(layers->text().contains("Layers: loop"));
+    CHECK(view->transform() == transform);
+    CHECK_FALSE(widget.scene().dragging());
+}
+
+TEST_CASE("FX-8 named click and double click reject full coverage before delivery",
+          "[devstudio][automation][fx8][fx8-fix3]") {
+    Fixture fixture;
+    auto *target = fixture.canvas->scene()->addRect(0, 0, 120, 80);
+    target->setData(PelicanStudio::NodeGraphItemKindRole, "graph_node");
+    target->setData(PelicanStudio::NodeGraphNameRole, "target");
+    target->setFlag(QGraphicsItem::ItemIsSelectable);
+    auto *cover = fixture.canvas->scene()->addRect(30, -5, 100, 90);
+    cover->setData(PelicanStudio::NodeGraphItemKindRole, "graph_node");
+    cover->setData(PelicanStudio::NodeGraphNameRole, "cover");
+    cover->setZValue(2);
+    fixture.canvas->centerOn(60, 40);
+    const QString name = fixture.canvas->objectName() + "::graph_node#target";
+    for (const QString command : {QStringLiteral("click"), QStringLiteral("double_click")}) {
+        INFO(command.toStdString());
+        cover->setRect(30, -5, 100, 90);
+        fixture.canvas->mouse.clear();
+        const auto partial = fixture.run(command, {{"name", name}});
+        INFO(describe(partial).toStdString());
+        REQUIRE(partial.ok);
+        CHECK(partial.result.toObject().value("point_reselected").toBool());
+        const auto xy = partial.result.toObject().value("point").toArray();
+        CHECK(fixture.canvas->itemAt(QPoint{xy[0].toInt(), xy[1].toInt()}) == target);
+        // The same search order returns the same point on each call.
+        const auto again = fixture.run(command, {{"name", name}});
+        REQUIRE(again.ok);
+        CHECK(again.result.toObject().value("point") == partial.result.toObject().value("point"));
+        cover->setRect(-5, -5, 140, 100);
+        fixture.canvas->mouse.clear();
+        const auto covered = fixture.run(command, {{"name", name}});
+        REQUIRE_FALSE(covered.ok);
+        CHECK(covered.message.contains(name));
+        CHECK(covered.message.contains("is covered by"));
+        CHECK(covered.message.contains("graph_node#cover"));
+        CHECK(fixture.canvas->mouse.empty());
+        // Explicit coordinates retain their meaning, even over another item.
+        REQUIRE(fixture.run(command, {{"name", name}, {"scene", QJsonArray{60, 40}}}).ok);
+        cover->setVisible(false);
+        // A passive overlay must not hide the target's selectable surface.
+        auto *decoration = fixture.canvas->scene()->addRect(0, 0, 120, 80);
+        decoration->setAcceptedMouseButtons(Qt::NoButton);
+        decoration->setZValue(3);
+        const auto plain = fixture.run(command, {{"name", name}});
+        REQUIRE(plain.ok);
+        CHECK_FALSE(plain.result.toObject().value("point_reselected").toBool());
+        delete decoration;
+        cover->setVisible(true);
+    }
+}
+
+
+
 TEST_CASE("FX-5 history distinguishes Graph items with identical Undo labels",
           "[devstudio][automation][fx5]") {
     (void)application();
@@ -1652,4 +1793,380 @@ TEST_CASE("FX-5 history distinguishes Graph items with identical Undo labels",
     model.forgetHistory();
     CHECK(control("undo").value("graph_serial").toString() == QStringLiteral("0"));
     CHECK(control("redo").value("graph_serial").toString() == QStringLiteral("0"));
+}
+
+
+TEST_CASE("FX-8 disabled drag and named typing refuse before any input is delivered",
+          "[devstudio][automation][fx8]") {
+    Fixture fixture;
+    fixture.canvas->setEnabled(false);
+    const auto drag_request = QJsonObject{
+        {"from", QJsonObject{{"name", "pelican.testCanvas"}, {"point", QJsonArray{30, 30}}}},
+        {"to", QJsonObject{{"name", "pelican.testCanvas"}, {"point", QJsonArray{130, 90}}}}};
+    const auto refused = fixture.run(QStringLiteral("drag"), drag_request);
+    CHECK_FALSE(refused.ok);
+    CHECK(refused.message == QStringLiteral("the widget named \"pelican.testCanvas\" is disabled"));
+    CHECK(fixture.canvas->mouse.isEmpty());
+    fixture.canvas->setEnabled(true);
+    REQUIRE(fixture.run(QStringLiteral("drag"), drag_request).ok);
+    CHECK(fixture.canvas->mouse.size() == 10);
+
+    QLineEdit editor{&fixture.window};
+    editor.setObjectName(QStringLiteral("pelican.testEditor"));
+    editor.setText(QStringLiteral("1"));
+    editor.setEnabled(false);
+    int commits = 0;
+    QObject::connect(&editor, &QLineEdit::returnPressed, [&] { ++commits; });
+    const auto typed = fixture.run(QStringLiteral("type"), {{"name", editor.objectName()}, {"text", "4"}});
+    CHECK_FALSE(typed.ok);
+    CHECK(typed.message.contains(QStringLiteral("pelican.testEditor")));
+    const auto keyed = fixture.run(QStringLiteral("key"), {{"name", editor.objectName()}, {"sequence", "Return"}});
+    CHECK_FALSE(keyed.ok);
+    CHECK(keyed.message.contains(QStringLiteral("disabled")));
+    CHECK(editor.text() == QStringLiteral("1"));
+    CHECK(commits == 0);
+    editor.setEnabled(true);
+    REQUIRE(fixture.run(QStringLiteral("type"), {{"name", editor.objectName()}, {"text", "4"}}).ok);
+    REQUIRE(fixture.run(QStringLiteral("key"), {{"name", editor.objectName()}, {"sequence", "Return"}}).ok);
+    CHECK(editor.text() == QStringLiteral("4"));
+    CHECK(commits == 1);
+}
+
+
+TEST_CASE("FX-8 named socket drags frame both endpoints before delivering input",
+          "[devstudio][automation][fx8]") {
+    Fixture fixture;
+    QGraphicsScene scene;
+    fixture.canvas->setScene(&scene);
+    scene.setSceneRect(-1000, -1000, 4000, 4000);
+    for (auto [name, position] : {std::pair{QStringLiteral("from"), QPointF{-700, -700}},
+                                  std::pair{QStringLiteral("to"), QPointF{2000, 2000}}}) {
+        auto *item = scene.addRect(-5, -5, 10, 10);
+        item->setPos(position);
+        item->setData(PelicanStudio::NodeGraphItemKindRole, QStringLiteral("fx8_socket"));
+        item->setData(PelicanStudio::NodeGraphNameRole, name);
+    }
+    const auto reply = fixture.run(QStringLiteral("drag"),
+        {{"from", "pelican.testCanvas::fx8_socket#from"},
+         {"to", "pelican.testCanvas::fx8_socket#to"}});
+    INFO(describe(reply).toStdString());
+    REQUIRE(reply.ok);
+    CHECK(reply.result.toObject().value("path").toString() == "framed");
+    CHECK(reply.result.toObject().value("scale").toDouble() == fixture.canvas->transform().m11());
+    for (const auto *key : {"from", "to"}) {
+        const auto point = reply.result.toObject().value(QLatin1String{key}).toArray();
+        CHECK(fixture.canvas->viewport()->rect().contains(QPoint{point[0].toInt(), point[1].toInt()}));
+    }
+    CHECK(fixture.canvas->mouse.size() == 10);
+}
+
+namespace {
+using Json = nlohmann::json;
+using PelicanStudio::GraphCanvasModel;
+using PelicanStudio::GraphCanvasScene;
+Json fx8Pass(const std::string &name, std::size_t order, const std::string &source,
+              const Json &reads, const Json &writes) {
+    return {{"name", name},     {"kind", "render"}, {"order", order},   {"level", order},
+            {"source", source}, {"reads", reads},   {"writes", writes}, {"reads_history", Json::array()},
+            {"declaration_index", order}};
+}
+
+Json fx8Read() {
+    Json document{
+        {"nodes",
+         Json::array({{{"id", "shade__color"}, {"op", "render.image"},
+                       {"parameters", {{"format", "R8G8B8A8_UNORM"}}},
+                       {"outputs", Json::array({"resource"})}},
+                      {{"id", "shade"}, {"op", "render.fullscreen"},
+                       {"parameters", Json::object()},
+                       {"inputs", {{"color", {{"node", "shade__color"}, {"port", "resource"}}}}},
+                       {"outputs", Json::array({"color"})}}})},
+        {"definitions", Json::object()},
+        {"layout", Json::object()}};
+    auto read = document;
+    read["instances"] = Json::array();
+    read["source_digest"]["hex"] = "fx8-root";
+    read["root_schema"] = "pelican.graph";
+    read["source_reference"] = "fixture";
+    return read;
+}
+
+// engine://passthrough as get_frame_plan publishes it: eight variadic inputs.
+Json fx8Passthrough() {
+    auto declarations = Json::array();
+    for (std::size_t slot = 0; slot < 8; ++slot)
+        declarations.push_back({{"binding", slot},
+                                {"type", "sampled_image"},
+                                {"name", "pelican_variadic_input_" + std::to_string(slot)},
+                                {"variadic", true}});
+    return {{"state", "declared"},
+            {"fragment", "engine://passthrough"},
+            {"declarations", std::move(declarations)},
+            {"variadic_range", {{"first", 0}, {"max", 8}}},
+            {"pass_texture_inputs", 0},
+            {"pass_buffer_inputs", 0},
+            {"buffer_binding_base", 8}};
+}
+
+// The graph's pass first (RS-3 puts it before the pass that reads it), then
+// the rendering section's present reading what its `input` names.
+Json fx8Plan(const std::vector<std::string> &inputs) {
+    auto present = fx8Pass("present", 1, "project", Json(inputs), Json::array({"display"}));
+    present["pass_inputs"] = fx8Passthrough();
+    return {{"schema", "pelican.frame_plan"},
+            {"version", 1},
+            {"graph", "main_render"},
+            {"loops", Json::array()},
+            {"resources", Json::array({{{"name", "shade__color"}, {"kind", "image"}},
+                                       {{"name", "old_image"}, {"kind", "image"}},
+                                       {{"name", "display"}, {"kind", "image"}}})},
+            {"nodes", Json::array({fx8Pass("shade", 0, "project", Json::array(),
+                                            Json::array({"shade__color"})),
+                                   present})}};
+}
+
+Json fx8Present(const std::vector<std::string> &inputs) {
+    return {{"type", "fullscreen"},
+            {"input", inputs},
+            {"output", {{"color", "display"}}},
+            {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}};
+}
+
+// get_render_authoring_context of a Blank project: present is the root's own.
+Json fx8Authoring(const std::vector<std::string> &inputs) {
+    const auto present = fx8Present(inputs);
+    return {{"source_digest", {{"hex", "fx8-root"}}},
+            {"config_kind", "direct"},
+            {"source_reference", "project://passes/main_rendering_config.json"},
+            {"graphs",
+             Json::array({{{"name", "main_render"},
+                           {"passes", Json::array({{{"name", "present"},
+                                                    {"declaration_index", 0},
+                                                    {"editable_root_pass", true},
+                                                    {"declaration", present},
+                                                    {"root_declaration", present}}})}}})}};
+}
+
+// The document, its plan and the context, answered in the order the model
+// asks for them.
+void openGl1e(GraphCanvasModel &model, GraphCanvasScene &scene,
+              const std::vector<std::string> &inputs) {
+    model.setConnected(true);
+    for (const auto &request : model.takeRpcRequests())
+        if (request.method == "get_graph_instances")
+            model.receiveRpcResult(request.request_id, fx8Read().dump());
+    bool planned = false;
+    for (const auto &request : model.takeRpcRequests())
+        if (request.method == "get_frame_plan") {
+            model.receiveRpcResult(request.request_id, fx8Plan(inputs).dump());
+            planned = true;
+        }
+    REQUIRE(planned);
+    // Decision 1: a plan with a pass of the rendering section asks for the
+    // authoring context, which says what the pass's `input` is.
+    bool authored = false;
+    for (const auto &request : model.takeRpcRequests())
+        if (request.method == "get_render_authoring_context") {
+            model.receiveRpcResult(request.request_id, fx8Authoring(inputs).dump());
+            authored = true;
+        }
+    REQUIRE(authored);
+    scene.setModel(&model);
+}
+
+
+}
+TEST_CASE("FX-8 a named drag replaces present input at a subpixel zoom",
+          "[devstudio][automation][fx8]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    QMainWindow window;
+    auto *view = new PelicanStudio::NodeCanvasView(&scene, &window);
+    view->setObjectName(QStringLiteral("pelican.graphCanvasView"));
+    view->setScene(&scene);
+    window.setCentralWidget(view);
+    window.resize(900, 450);
+    window.show();
+    openGl1e(model, scene, {"old_image"});
+    std::vector<PelicanStudio::FramePlanEditRequest> sent;
+    scene.passInputEditRequested = [&](const PelicanStudio::FramePlanEditRequest &edit,
+                                       std::function<PelicanStudio::FramePlanEditRequest()>) {
+        sent.push_back(edit);
+    };
+    QApplication::processEvents();
+    QGraphicsItem *from = nullptr;
+    for (auto *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() == "graph_socket" &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == "shade" &&
+            item->data(PelicanStudio::GraphCanvasSocketDirectionRole).toString() == "output")
+            from = item;
+    REQUIRE(from != nullptr);
+    view->setTransform(QTransform::fromScale(0.02, 0.02));
+    view->centerOn(from->sceneBoundingRect().center());
+    // Both endpoints are on screen, but rounding the tiny socket's centre
+    // to an integer viewport pixel can miss its entire shape.
+    const auto screen = view->viewportTransform().map(from->sceneBoundingRect().center());
+    from->moveBy((std::floor(screen.x()) + 0.45 - screen.x()) / 0.02,
+                 (std::floor(screen.y()) + 0.45 - screen.y()) / 0.02);
+    const auto point = view->mapFromScene(from->sceneBoundingRect().center());
+    REQUIRE(view->viewport()->rect().contains(point));
+    REQUIRE_FALSE(from->contains(from->mapFromScene(view->mapToScene(point))));
+    AutomationHost host;
+    host.window = &window;
+    const auto reply = runAutomationCommand(host, request("drag", {
+        {"from", "pelican.graphCanvasView::graph_socket#shade/out:color"},
+        {"to", "pelican.graphCanvasView::graph_derived_socket#present/old_image"}}));
+    INFO(describe(reply).toStdString());
+    REQUIRE(reply.ok);
+    CHECK(reply.result.toObject().value("path").toString() == "framed");
+    CHECK(reply.result.toObject().value("scale").toDouble() == view->transform().m11());
+    REQUIRE(sent.size() == 1);
+    CHECK(sent.front().method == "edit_preset_pass");
+    CHECK(sent.front().params.at("pass_name") == "present");
+    CHECK(sent.front().params.at("input") == Json::array({"shade__color"}));
+    CHECK_FALSE(scene.dragging());
+}
+
+TEST_CASE("FX-8 a named drag pans between distant sockets at a usable zoom",
+          "[devstudio][automation][fx8]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    QMainWindow window;
+    auto *view = new PelicanStudio::NodeCanvasView(&scene, &window);
+    view->setObjectName(QStringLiteral("pelican.graphCanvasView"));
+    view->setScene(&scene);
+    window.setCentralWidget(view);
+    window.resize(900, 450);
+    window.show();
+    openGl1e(model, scene, {"old_image"});
+    std::vector<PelicanStudio::FramePlanEditRequest> sent;
+    scene.passInputEditRequested = [&](const PelicanStudio::FramePlanEditRequest &edit,
+                                       std::function<PelicanStudio::FramePlanEditRequest()>) {
+        sent.push_back(edit);
+    };
+    QApplication::processEvents();
+    QGraphicsItem *from = nullptr;
+    for (auto *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() == "graph_socket" &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == "shade" &&
+            item->data(PelicanStudio::GraphCanvasSocketDirectionRole).toString() == "output")
+            from = item;
+    REQUIRE(from != nullptr);
+    QGraphicsItem *to = nullptr;
+    for (auto *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() == "graph_derived_socket" &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == "present" &&
+            item->data(PelicanStudio::GraphCanvasPortRole).toString() == "old_image")
+            to = item;
+    REQUIRE(to != nullptr);
+    from->moveBy(-100000, -80000);
+    to->moveBy(100000, 80000);
+    const QPointF scene_from = from->sceneBoundingRect().center();
+    const QPointF scene_to = to->sceneBoundingRect().center();
+    scene.setSceneRect(QRectF{scene_from, scene_to}.normalized().adjusted(-2000, -2000, 2000, 2000));
+    view->setSceneRect(scene.sceneRect());
+    view->fitInView(scene.itemsBoundingRect(), Qt::KeepAspectRatio);
+    const auto hits = [&](QGraphicsItem *item) {
+        const auto point = view->mapFromScene(item->sceneBoundingRect().center());
+        return view->viewport()->rect().contains(point) &&
+               item->contains(item->mapFromScene(view->mapToScene(point)));
+    };
+    // Even framing only the endpoints leaves a socket below one pixel.
+    view->fitInView(QRectF{scene_from, scene_to}.normalized().adjusted(-40, -40, 40, 40),
+                    Qt::KeepAspectRatio);
+    REQUIRE_FALSE((hits(from) && hits(to)));
+    qreal expected_scale = 1;
+    SECTION("after fitting the whole graph") {
+        REQUIRE(view->transform().m11() < 0.01);
+    }
+    SECTION("preserves a larger starting zoom") {
+        expected_scale = 2;
+        view->setTransform(QTransform::fromScale(2, 2));
+        view->centerOn(from);
+        REQUIRE(hits(from));
+        REQUIRE_FALSE(hits(to));
+    }
+    // Observe actual delivered events, without replacing the canvas handlers:
+    // every held move must stay on screen as the connection crosses the scene.
+    struct PathProbe final : QObject {
+        PelicanStudio::NodeCanvasView *view = nullptr;
+        GraphCanvasScene *scene = nullptr;
+        std::vector<QPointF> positions;
+        std::vector<QPointF> centres;
+        int presses = 0;
+        int releases = 0;
+        bool all_visible = true;
+        bool connection_held = true;
+        bool eventFilter(QObject *, QEvent *event) override {
+            if (event->type() == QEvent::MouseButtonPress) ++presses;
+            if (event->type() == QEvent::MouseButtonRelease) ++releases;
+            if (event->type() == QEvent::MouseMove) {
+                const auto *mouse = static_cast<QMouseEvent *>(event);
+                const QPoint point = mouse->position().toPoint();
+                all_visible &= view->viewport()->rect().contains(point);
+                connection_held &= scene->dragging() && (mouse->buttons() & Qt::LeftButton);
+                positions.push_back(view->mapToScene(point));
+                centres.push_back(view->mapToScene(view->viewport()->rect().center()));
+            }
+            return false;
+        }
+    } probe;
+    probe.view = view;
+    probe.scene = &scene;
+    view->viewport()->installEventFilter(&probe);
+    AutomationHost host;
+    host.window = &window;
+    constexpr int steps = 8;
+    const auto reply = runAutomationCommand(host, request("drag", {
+        {"from", "pelican.graphCanvasView::graph_socket#shade/out:color"},
+        {"to", "pelican.graphCanvasView::graph_derived_socket#present/old_image"},
+        {"steps", steps}}));
+    INFO(describe(reply).toStdString());
+    REQUIRE(reply.ok);
+    CHECK(reply.result.toObject().value("path").toString() == "panned");
+    CHECK(reply.result.toObject().value("scale").toDouble() == expected_scale);
+    CHECK(view->transform().m11() == expected_scale);
+    REQUIRE(sent.size() == 1);
+    CHECK(sent.front().method == "edit_preset_pass");
+    CHECK(sent.front().params.at("pass_name") == "present");
+    CHECK(sent.front().params.at("input") == Json::array({"shade__color"}));
+    CHECK_FALSE(scene.dragging());
+    CHECK(probe.presses == 1);
+    CHECK(probe.releases == 1);
+    CHECK(probe.all_visible);
+    CHECK(probe.connection_held);
+    REQUIRE(probe.positions.size() == steps + 1);
+    for (int step = 1; step <= steps; ++step) {
+        const QPointF expected = scene_from + (scene_to - scene_from) * (qreal(step) / steps);
+        CHECK(QLineF{probe.positions[step - 1], expected}.length() < 2);
+        CHECK(QLineF{probe.centres[step - 1], expected}.length() < 2);
+    }
+    CHECK(QLineF{probe.positions.back(), scene_to}.length() < 2);
+}
+
+TEST_CASE("FX-8 an unpressable named endpoint refuses before a panned drag",
+          "[devstudio][automation][fx8]") {
+    Fixture fixture;
+    QGraphicsScene scene;
+    fixture.canvas->setScene(&scene);
+    scene.setSceneRect(-200000, -200000, 400000, 400000);
+    for (auto [name, position] : {std::pair{QStringLiteral("from"), QPointF{-100000, -80000}},
+                                  std::pair{QStringLiteral("to"), QPointF{100000, 80000}}}) {
+        auto *item = scene.addRect(-5, -5, 10, 10);
+        item->setPos(position);
+        item->setData(PelicanStudio::NodeGraphItemKindRole, QStringLiteral("fx8_socket"));
+        item->setData(PelicanStudio::NodeGraphNameRole, name);
+        if (name == "to")
+            item->setData(PelicanStudio::NodeGraphHotspotRole, QPointF{30, 30});
+    }
+    const auto reply = fixture.run(QStringLiteral("drag"),
+        {{"from", "pelican.testCanvas::fx8_socket#from"},
+         {"to", "pelican.testCanvas::fx8_socket#to"}});
+    REQUIRE_FALSE(reply.ok);
+    CHECK(reply.message.contains("cannot target named drag endpoints"));
+    CHECK(reply.message.contains("pelican.testCanvas::fx8_socket#from"));
+    CHECK(reply.message.contains("pelican.testCanvas::fx8_socket#to"));
+    CHECK(fixture.canvas->mouse.isEmpty());
 }

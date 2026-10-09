@@ -60,7 +60,7 @@ DEFAULT_VIEWPORT = (720, 450)
 # FX-7: only refusals made before an operation can be safely retried.
 ENABLED_WAIT_TIMEOUT_S = 15.0
 ENABLED_WAIT_POLL_S = 0.1
-_ENABLED_WAIT_COMMANDS = frozenset({"click", "double_click", "action", "select", "history"})
+_ENABLED_WAIT_COMMANDS = frozenset({"click", "double_click", "action", "select", "history", "drag", "key", "type"})
 
 
 class AutomationError(RuntimeError):
@@ -778,6 +778,8 @@ def _disabled_operation(request: dict[str, Any], reply: dict[str, Any]) -> bool:
     if request.get("cmd") not in _ENABLED_WAIT_COMMANDS or reply.get("ok"):
         return False
     if request.get("cmd") == "history" and request.get("step") not in {"undo", "redo"}:
+        return False
+    if request.get("cmd") in {"key", "type"} and not request.get("name"):
         return False
     error = reply.get("error") or {}
     if error.get("code") != "automation.bad_request@1":

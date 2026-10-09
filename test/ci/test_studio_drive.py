@@ -67,6 +67,9 @@ class StudioDriveEnabledWaitTest(unittest.TestCase):
             ({"cmd": "click", "point": [2, 3]}, 'the window under the point is disabled'),
             ({"cmd": "double_click", "name": "x"}, 'the widget named "x" is disabled'),
             ({"cmd": "action", "text": "Add loop"}, 'the action "Add loop" is disabled'),
+            ({"cmd": "drag", "from": "x", "to": "y"}, 'the widget named "x" is disabled'),
+            ({"cmd": "type", "name": "x", "text": "4"}, 'the widget named "x" is disabled'),
+            ({"cmd": "key", "name": "x", "sequence": "Return"}, 'the widget named "x" is disabled'),
             ({"cmd": "select", "name": "x", "text": "row"}, 'the widget named "x" is disabled'),
             ({"cmd": "history", "kind": "graph", "step": "undo"}, 'the widget named "x" is disabled'),
             ({"cmd": "history", "kind": "graph", "step": "redo"}, 'the action named "x" is disabled'),
@@ -176,10 +179,20 @@ class StudioDriveEnabledWaitTest(unittest.TestCase):
         self.assertIs(run.failures[0]["response"], last_reply)
 
     def test_commands_without_pre_operation_disabled_refusals_never_retry(self) -> None:
-        for cmd in ("key", "type", "text", "drag", "drag_paced", "wheel", "move", "press", "release", "rpc"):
+        for cmd in ("text", "drag_paced", "wheel", "move", "press", "release", "rpc"):
             with self.subTest(cmd=cmd):
                 succeeded, run, sleeper = self.drive(
                     {"cmd": cmd, "name": "x"}, [self.refused('the widget named "x" is disabled')],
+                )
+                self.assertFalse(succeeded)
+                self.assertEqual(run.channel.send.call_count, 1)
+                sleeper.assert_not_called()
+
+    def test_unnamed_typing_never_retries_against_a_changed_focus(self) -> None:
+        for cmd in ("key", "type"):
+            with self.subTest(cmd=cmd):
+                succeeded, run, sleeper = self.drive(
+                    {"cmd": cmd}, [self.refused('the widget named "x" is disabled')],
                 )
                 self.assertFalse(succeeded)
                 self.assertEqual(run.channel.send.call_count, 1)

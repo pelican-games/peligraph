@@ -529,7 +529,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     // takes the thing out from under the hand holding it -- and the drag then
     // moves nothing at all. The owner waits, the same way it waits for an
     // in-place editor to close.
-    [[nodiscard]] bool dragging() const { return handling_press_ || mouseGrabberItem() != nullptr; }
+    [[nodiscard]] bool dragging() const {
+        return handling_press_ || pending_connection_.has_value() || mouseGrabberItem() != nullptr;
+    }
     // What the open editor currently holds, and a way to set it without a
     // keyboard: the same text the user would have typed.
     [[nodiscard]] QString inlineEditText() const;

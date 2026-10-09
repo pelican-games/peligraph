@@ -13090,3 +13090,81 @@ TEST_CASE("FX-5 Render Undo and Redo notices survive a late frame plan reply",
 }
 
 } // namespace PelicanStudio
+
+
+namespace PelicanStudio {
+TEST_CASE("FX-8 a plan read between picking a backend and Pin preserves the candidate",
+          "[devstudio][frame-plan][fx8]") {
+    application();
+    EditingFixture fixture;
+    qint64 plan_request = 9000;
+    fixture.widget.setPlanRequest([&](QString *) { return ++plan_request; });
+    fixture.open();
+    std::string candidate;
+    for (const auto &entry : fixture.wire.at("physical_target_plan").at("backend_selection").at("candidates"))
+        if (entry.value("feasible", false)) { candidate = entry.at("candidate"); break; }
+    REQUIRE_FALSE(candidate.empty());
+    auto *tree = fixture.widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanBackends"));
+    REQUIRE(tree != nullptr);
+    const auto rows = tree->findItems(QString::fromStdString(candidate), Qt::MatchExactly, 0);
+    REQUIRE(rows.size() == 1);
+    tree->setCurrentItem(rows.front());
+    auto *tabs = tree->parentWidget();
+    while (tabs != nullptr && qobject_cast<QTabWidget *>(tabs) == nullptr)
+        tabs = tabs->parentWidget();
+    REQUIRE(tabs != nullptr);
+    qobject_cast<QTabWidget *>(tabs)->setCurrentWidget(tree);
+    QApplication::processEvents();
+    QTest::mouseClick(tree->viewport(), Qt::LeftButton, Qt::NoModifier,
+                      tree->visualItemRect(tree->currentItem()).center());
+    // The Refresh answer arrives after the pick, before its menu action.
+    fixture.widget.receiveResult(QByteArray::fromStdString(fixture.wire.dump()));
+    QApplication::processEvents();
+    REQUIRE(tree->currentItem() != nullptr);
+    CHECK(tree->currentItem()->text(0) == QString::fromStdString(candidate));
+    auto *pin = fixture.widget.findChild<QAction *>(QStringLiteral("pelican.framePlan.backend.pin"));
+    REQUIRE(pin != nullptr);
+    pin->trigger();
+    QApplication::processEvents();
+    REQUIRE(fixture.recorder.submits == 1);
+    CHECK(sentParams(fixture.recorder).at("pin").at("pins").at("backend_candidate") == candidate);
+    commitSubmitted(fixture);
+    CHECK(statusText(fixture.widget) == QString::fromStdString("Pinned " + candidate + "."));
+    // The visible Backends tab receives the plan produced by the commit.
+    Json pinned = fixture.wire;
+    pinned["physical_target_plan"]["applied_pin_package"] =
+        sentParams(fixture.recorder).at("pin");
+    for (int refresh = 0; refresh < 3; ++refresh) {
+        Q_EMIT fixture.viewport.inspectorRpcSucceeded(
+            plan_request, QByteArray::fromStdString(pinned.dump()));
+        QApplication::processEvents();
+        QTest::qWait(30);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        INFO("refresh=" << refresh << " status=" << statusText(fixture.widget).toStdString()
+             << " rows=" << tree->topLevelItemCount());
+        REQUIRE(tree->currentItem() != nullptr);
+        CHECK(tree->currentItem()->text(0) == QString::fromStdString(candidate));
+        CHECK(bandText(fixture.widget, "pelican.framePlan.backend.state") ==
+              QString::fromStdString("Pinned: " + candidate));
+        if (refresh < 2) fixture.widget.refresh();
+    }
+    const auto buttons = fixture.widget.findChildren<QPushButton *>(
+        QStringLiteral("pelican.framePlan.backend.unpinButton"));
+    REQUIRE(buttons.size() == 1);
+    QPointer<QPushButton> old_unpin = buttons.front();
+    buttons.front()->click();
+    REQUIRE(fixture.recorder.submits == 2);
+    CHECK(sentParams(fixture.recorder).at("pin").is_null());
+    commitSubmitted(fixture);
+    Q_EMIT fixture.viewport.inspectorRpcSucceeded(
+        plan_request, QByteArray::fromStdString(fixture.wire.dump()));
+    QApplication::processEvents();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    CHECK(old_unpin.isNull());
+    CHECK(bandText(fixture.widget, "pelican.framePlan.backend.state").startsWith(
+        QStringLiteral("Not pinned")));
+    REQUIRE(tree->currentItem() != nullptr);
+    CHECK(tree->currentItem()->text(0) == QString::fromStdString(candidate));
+}
+
+} // namespace PelicanStudio

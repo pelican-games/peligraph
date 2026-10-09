@@ -15213,10 +15213,12 @@ TEST_CASE("DL-1 an arriving context still permits saving while the mouse stays h
     view->centerOn(node);
     QCoreApplication::processEvents();
     const QPoint from = view->mapFromScene(node->mapToScene(QPointF{60, 15}));
-    tab.widget->refresh();
-    const auto revision = tab.widget->model().contentRevision();
+    // FX-8: a new gesture waits for a read; an already held gesture survives it.
+    REQUIRE(view->isEnabled());
     dl1Mouse(*view, QEvent::MouseButtonPress, from, Qt::LeftButton, Qt::LeftButton);
     REQUIRE(scene.dragging());
+    tab.widget->refresh();
+    const auto revision = tab.widget->model().contentRevision();
     document["nodes"][0]["parameters"]["size"] = 64;
     tab.read(document, "dl1-context-after");
     // UNMET D3/context deferral: retaining this reply until release would
@@ -15471,10 +15473,11 @@ TEST_CASE("DL-1 two paced drags return to the starting placement with two keyboa
         const auto from = view->mapFromScene(node->mapToScene(QPointF{60, 15}));
         // A live document reply during the gesture must defer the heavy UI
         // synchronization without losing either this move or committed history.
-        tab.widget->refresh();
+        REQUIRE(view->isEnabled());
         bool replied_while_held = false;
         QTimer::singleShot(40, tab.widget.get(), [&] {
             replied_while_held = scene.dragging();
+            tab.widget->refresh();
             tab.read(document, digest);
         });
         const auto delivery = view->dragPaced(from, QPoint{70, 30}, 160, 8);
@@ -15621,4 +15624,215 @@ TEST_CASE("UD-5 an observed external digest cuts Graph history even with unchang
     const auto edits = tab.transport.countOf(QStringLiteral("edit_graph_document"));
     tab.widget->scene().undoEdit();
     CHECK(tab.transport.countOf(QStringLiteral("edit_graph_document")) == edits);
+}
+
+
+namespace {
+Json fx8LoopDocument() {
+    return {{"definitions", {{"body", {{"nodes", Json::array()}, {"outputs", Json::object()}}}}},
+            {"nodes", Json::array({{{"id", "loop"}, {"op", "graph.loop"},
+                {"parameters", {{"over", {{"range", {{"count", 1}}}}},
+                                {"branches", Json::array({{{"body", "body"}}})}}}}})}};
+}
+}
+
+TEST_CASE("FX-8 Graph blocks the next gesture through commit readback and uses the new base",
+          "[devstudio][graph-canvas][scene][fx8]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = fx8LoopDocument();
+    tab.read(document, "fx8-before");
+    tab.widget->scene().selectNode("loop");
+    auto *count = tab.field<QSpinBox>("pelican.graphCanvasLoop.count");
+    auto *canvas = tab.field<QGraphicsView>("pelican.graphCanvasView");
+    REQUIRE(canvas->isEnabled());
+    count->setValue(4);
+    Q_EMIT count->editingFinished();
+    REQUIRE(tab.reads("edit_graph_document") == 1);
+    CHECK_FALSE(canvas->isEnabled());
+    CHECK_FALSE(count->isEnabled());
+    document["nodes"][0]["parameters"] = tab.sent(1).at("parameters");
+    tab.answer("edit_graph_document", {{"status", "accepted"}, {"ticket", "fx8"}});
+    CHECK_FALSE(canvas->isEnabled());
+    tab.answer("get_edit_result", {{"status", "committed"}, {"committed", true},
+                                   {"source_digest", {{"hex", "fx8-first"}}}});
+    CHECK_FALSE(canvas->isEnabled());
+    CHECK_FALSE(count->isEnabled());
+    tab.read(document, "fx8-first");
+    REQUIRE(canvas->isEnabled());
+    REQUIRE(count->isEnabled());
+    REQUIRE(tab.widget->model().loop("loop")->count == 4);
+    // The next edit keeps the count, and is based on its confirmed document.
+    auto *order = tab.field<QComboBox>("pelican.graphCanvasLoop.order");
+    order->setCurrentIndex(1);
+    REQUIRE(tab.reads("edit_graph_document") == 2);
+    const auto &call = tab.transport.calls[static_cast<std::size_t>(
+        tab.transport.idOf(QStringLiteral("edit_graph_document")) - 1)];
+    CHECK(call.base_digest == QStringLiteral("fx8-first"));
+    const auto second = tab.sent(2);
+    CHECK(second.at("parameters").at("over").at("range").at("count") == 4);
+    document["nodes"][0]["parameters"] = second.at("parameters");
+    tab.commit(document, "fx8-second");
+    CHECK(tab.widget->model().loop("loop")->count == 4);
+    CHECK(tab.widget->model().loop("loop")->descending);
+    CHECK(canvas->isEnabled());
+}
+
+TEST_CASE("FX-8 a late loop report preserves the Count draft until Return",
+          "[devstudio][graph-canvas][scene][fx8]") {
+    (void)application();
+    Ux2Tab tab{false, true};
+    auto document = fx8LoopDocument();
+    tab.read(document, "fx8-draft");
+    tab.widget->scene().selectNode("loop");
+    tab.widget->activateWindow();
+    auto *count = tab.field<QSpinBox>("pelican.graphCanvasLoop.count");
+    auto *expression = tab.field<QLineEdit>("pelican.graphCanvasLoop.countExpression");
+    const bool as_expression = GENERATE(false, true);
+    QWidget *editor = count;
+    if (as_expression) {
+        auto *toggle = tab.field<QToolButton>("pelican.graphCanvasLoop.countExpressionToggle");
+        toggle->click();
+        editor = expression;
+        expression->setFocus();
+        expression->selectAll();
+    } else {
+        count->setFocus();
+        count->selectAll();
+    }
+    QCoreApplication::processEvents();
+    REQUIRE(editor->hasFocus());
+    QKeyEvent typed{QEvent::KeyPress, Qt::Key_4, Qt::NoModifier, QStringLiteral("4")};
+    QCoreApplication::sendEvent(editor, &typed);
+    REQUIRE(tab.reads("edit_graph_document") == 0);
+    tab.answer("get_frame_plan", {{"loops", Json::array({{{"node", "loop"},
+                  {"tier", "expand"}, {"count", 1}}})}});
+    CHECK((as_expression ? expression->text() : count->cleanText()) == QStringLiteral("4"));
+    sendKey(editor, Qt::Key_Return);
+    REQUIRE(tab.reads("edit_graph_document") == 1);
+    const auto parameters = tab.sent(1).at("parameters");
+    CHECK(parameters.at("over").at("range").at("count") == 4);
+    document["nodes"][0]["parameters"] = parameters;
+    tab.commit(document, "fx8-draft-saved");
+    CHECK(tab.widget->model().loop("loop")->count == 4);
+}
+
+TEST_CASE("FX-8 a plan reply during a socket drag keeps the connection until release",
+          "[devstudio][graph-canvas][scene][fx8]") {
+    (void)application();
+    Ux2Tab tab{false, true};
+    auto document = connectedDocument();
+    tab.read(document, "fx8-drag");
+    tab.answer("get_graph_catalog", visualCatalog());
+    auto &scene = tab.widget->scene();
+    REQUIRE(tab.widget->model().enterInstance("left"));
+    scene.repopulate();
+    auto *from = socketItem(scene, QStringLiteral("gain"), QStringLiteral("value"), QStringLiteral("output"));
+    auto *to = socketItem(scene, QStringLiteral("sum"), QStringLiteral("a"), QStringLiteral("input"));
+    REQUIRE(from != nullptr);
+    REQUIRE(to != nullptr);
+    const auto start = from->sceneBoundingRect().center();
+    const auto end = to->sceneBoundingRect().center();
+    QGraphicsSceneMouseEvent press{QEvent::GraphicsSceneMousePress};
+    press.setScenePos(start);
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &press);
+    CHECK(scene.dragging());
+    tab.answer("get_frame_plan", {{"loops", Json::array()}});
+    CHECK(scene.dragging());
+    QGraphicsSceneMouseEvent move{QEvent::GraphicsSceneMouseMove};
+    move.setScenePos(end);
+    move.setButtons(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &move);
+    QGraphicsSceneMouseEvent release{QEvent::GraphicsSceneMouseRelease};
+    release.setScenePos(end);
+    release.setButton(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &release);
+    QCoreApplication::processEvents();
+    REQUIRE(tab.reads("edit_graph_document") == 1);
+    const auto ops = Json::parse(tab.transport.calls[static_cast<std::size_t>(
+        tab.transport.idOf(QStringLiteral("edit_graph_document")) - 1)].body.toStdString());
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0] == Json{{"op", "set_input"}, {"scope", "gain_curve"}, {"node", "sum"},
+                         {"port", "a"}, {"source", {{"node", "gain"}, {"port", "value"}}}});
+    CHECK_FALSE(scene.dragging());
+}
+
+
+TEST_CASE("FX-8 deferred selection cannot send a fast edit to the previous node",
+          "[devstudio][graph-canvas][scene][fx8]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = fx8LoopDocument();
+    auto other = document["nodes"][0];
+    other["id"] = "other";
+    other["parameters"]["over"]["range"]["count"] = 8;
+    document["nodes"].push_back(other);
+    tab.read(document, "fx8-selection");
+    auto &scene = tab.widget->scene();
+    scene.selectNode("loop");
+    auto *count = tab.field<QSpinBox>("pelican.graphCanvasLoop.count");
+    REQUIRE(count->isEnabled());
+    REQUIRE(count->value() == 1);
+    auto *item = nodeItem(scene, QStringLiteral("other"));
+    REQUIRE(item != nullptr);
+    const auto hotspot = item->data(PelicanStudio::NodeGraphHotspotRole);
+    const auto local = hotspot.isValid() ? hotspot.toPointF()
+        : QPointF{item->boundingRect().center().x(), item->boundingRect().top() + 6.0};
+    REQUIRE(item->contains(local));
+    const auto at = item->mapToScene(local);
+    QGraphicsSceneMouseEvent press{QEvent::GraphicsSceneMousePress};
+    press.setScenePos(at);
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &press);
+    REQUIRE(scene.selectedNode() == std::optional<std::string>{"other"});
+    CHECK_FALSE(count->isEnabled());
+    QGraphicsSceneMouseEvent release{QEvent::GraphicsSceneMouseRelease};
+    release.setScenePos(at);
+    release.setButton(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &release);
+    // No event-loop turn between selecting and attempting the next edit.
+    // If the field is offered, it must already belong to the new selection.
+    if (count->isEnabled()) {
+        count->setValue(9);
+        Q_EMIT count->editingFinished();
+        REQUIRE(tab.sent(1).at("node") == "other");
+    } else {
+        REQUIRE(ux12aWait([&] { return count->isEnabled(); }));
+        REQUIRE(count->value() == 8);
+        count->setValue(9);
+        Q_EMIT count->editingFinished();
+    }
+    REQUIRE(tab.sent(1).at("node") == "other");
+    document["nodes"][1]["parameters"] = tab.sent(1).at("parameters");
+    tab.commit(document, "fx8-selection-saved");
+    CHECK(tab.widget->model().loop("loop")->count == 1);
+    CHECK(tab.widget->model().loop("other")->count == 9);
+}
+
+TEST_CASE("FX-8 a loop draft refused by an intervening read names the unsent change",
+          "[devstudio][graph-canvas][scene][fx8]") {
+    (void)application();
+    Ux2Tab tab{false};
+    const auto document = fx8LoopDocument();
+    tab.read(document, "fx8-refused");
+    tab.widget->scene().selectNode("loop");
+    auto *count = tab.field<QSpinBox>("pelican.graphCanvasLoop.count");
+    count->setValue(4);
+    // A document move arrives before the draft's editingFinished signal.
+    tab.widget->refresh();
+    Q_EMIT count->editingFinished();
+    CHECK(tab.reads("edit_graph_document") == 0);
+    auto *notice = tab.field<QLabel>("pelican.graphCanvasNotice");
+    CHECK(notice->toolTip().contains(QStringLiteral("loop")));
+    CHECK(notice->toolTip().contains(QStringLiteral("was not sent")));
+    tab.read(document, "fx8-refused-read");
+    CHECK(tab.widget->model().loop("loop")->count == 1);
+    CHECK(notice->toolTip().contains(QStringLiteral("was not sent")));
+    REQUIRE(count->isEnabled());
+    count->setValue(4);
+    Q_EMIT count->editingFinished();
+    CHECK(tab.sent(1).at("parameters").at("over").at("range").at("count") == 4);
 }

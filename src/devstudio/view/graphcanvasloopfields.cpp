@@ -482,6 +482,15 @@ GraphCanvasLoopFields::GraphCanvasLoopFields(
 }
 
 void GraphCanvasLoopFields::after(bool submitted) {
+    // FX-8: focus loss can finish a draft just as another panel starts a
+    // document read. Do not leave the previous saved notice over a refusal.
+    if (!submitted && !model_.canEdit() && !loop_.empty()) {
+        model_.setEditNotice({InspectorNoticeKind::Error,
+                             "Change to loop \"" + loop_ +
+                                 "\" was not sent: the graph is not ready. Try again when the fields are enabled."});
+        if (refused) refused();
+        return;
+    }
     if (submitted && submitted_) submitted_();
 }
 
@@ -501,11 +510,18 @@ void GraphCanvasLoopFields::showLoop(const std::string &id) {
     const auto shown = (signature(model_, *loop, choices, model_.canEdit()) + QChar{0x1d} +
                         viewSignature(model_))
                            .toStdString();
+    // FX-8: plan/authoring replies can arrive between typing and Return.
+    // They may rebuild the summary, but do not own this loop's unfinished count.
+    const bool preserve_count = loop_ == id &&
+        ((count_->hasFocus() && count_->cleanText() != QString::number(count_->value())) ||
+         (count_expression_->hasFocus() && count_expression_->isModified()) ||
+         ((count_expression_->hasFocus() || count_expression_toggle_->hasFocus()) &&
+          count_expression_toggle_->isChecked() != loop->count_expression));
     loop_ = id;
     current_ = loop;
     if (shown != shown_) {
         shown_ = shown;
-        rebuild(*loop);
+        rebuild(*loop, preserve_count);
     }
     syncBodyOnce();
     followEditable();
@@ -549,7 +565,7 @@ void GraphCanvasLoopFields::clearRows() {
     static_cast<QVBoxLayout *>(fields_->layout())->addWidget(rows_);
 }
 
-void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
+void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop, bool preserve_count) {
     const bool editable = model_.canEdit();
     // The summary: what the report says the loop became.
     QString summary = tr("loop %1").arg(qtext(loop.id));
@@ -561,7 +577,7 @@ void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
     summary_->setText(summary);
     open_->setEnabled(model_.canEnterInstance(loop.id));
 
-    {
+    if (!preserve_count) {
         const QSignalBlocker block_count{count_};
         const QSignalBlocker block_toggle{count_expression_toggle_};
         count_->setValue(static_cast<int>(std::clamp<std::int64_t>(loop.count, 0, 4096)));
@@ -683,8 +699,8 @@ void GraphCanvasLoopFields::rebuild(const GraphCanvasLoop &loop) {
     form_->setRowVisible(tags_row_, draw);
     // A row shown again shows every widget in it: the one of each pair the
     // loop does not use goes again.
-    count_->setVisible(!draw && !view && !loop.count_expression);
-    count_expression_->setVisible(!draw && !view && loop.count_expression);
+    count_->setVisible(!draw && !view && !count_expression_toggle_->isChecked());
+    count_expression_->setVisible(!draw && !view && count_expression_toggle_->isChecked());
     const bool checks = !where_boxes_.empty();
     where_values_->setVisible(!draw && !checks);
     where_checks_->setVisible(!draw && checks);

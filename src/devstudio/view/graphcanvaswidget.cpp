@@ -3506,6 +3506,7 @@ void GraphCanvasScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
     if (pending_connection_) {
         event->accept();
         finishConnection(event->scenePos());
+        if (gestureEnded) gestureEnded();
         return;
     }
     QGraphicsScene::mouseReleaseEvent(event);
@@ -5177,6 +5178,7 @@ struct GraphCanvasWidget::Impl {
     std::string pending_palette_op;
     bool reveal_palette_placement = false;
     QTreeWidget *details = nullptr;
+    QWidget *details_side = nullptr;
     // UX-2, decision 5: the parameter row of the details whose value is
     // being typed as JSON, and the node it belongs to. A redraw waits for it,
     // as it waits for the canvas's own editor.
@@ -5972,6 +5974,7 @@ struct GraphCanvasWidget::Impl {
         side_scroll->setFrameShape(QFrame::NoFrame);
         side_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
         auto *side = new QWidget(side_scroll);
+        details_side = side;
         auto *side_layout = new QVBoxLayout(side);
         side_layout->setContentsMargins(0, 0, 0, 0);
         folded_summary = new QLabel(side);
@@ -6235,6 +6238,7 @@ struct GraphCanvasWidget::Impl {
                     Qt::QueuedConnection);
             },
             side);
+        loop_fields->refused = [this] { showNoticeLabel(); };
         side_layout->addWidget(loop_fields);
         draw_fields = new GraphCanvasDrawFields(model, [this] { dispatch(); }, side);
         side_layout->addWidget(draw_fields);
@@ -9648,10 +9652,15 @@ struct GraphCanvasWidget::Impl {
         // Highlight and move the node immediately. Building its editors must
         // not block the press that starts a drag or replace fields mid-gesture.
         if (scene->dragging()) {
+            // FX-8: these editors still belong to the previous selection.
+            // Keep the deferred rebuild, but do not let a fast next input
+            // edit that old node while the canvas highlights the new one.
+            details_side->setEnabled(false);
             details_timer->start();
             return;
         }
         details_timer->stop();
+        details_side->setEnabled(true);
         // GL-3a: a picked fold group's Decisions.
         if (folds) folds->syncFields();
         syncFoldedSummary();
@@ -9913,6 +9922,10 @@ struct GraphCanvasWidget::Impl {
             return;
         }
         synchronize_after_drag = false;
+        // FX-8: a saved ticket still needs its document read back. Socket
+        // gestures must wait just like the fields, rather than reach a busy
+        // model that cannot submit them and leave the previous saved notice.
+        canvas->setEnabled(!model.busy());
         const NodeDragTraceSpan heavy_trace{scene, "synchronize_heavy"};
         // GL-3a: the fold groups follow the document the tab holds.
         if (folds) folds->follow();

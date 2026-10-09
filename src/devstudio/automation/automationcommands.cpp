@@ -612,18 +612,20 @@ QJsonArray rectJson(const QRect &rect) {
     return QJsonArray{rect.x(), rect.y(), rect.width(), rect.height()};
 }
 
+QPointF sceneHotspot(const Target &target) {
+    const QVariant spot = target.item->data(NodeGraphHotspotRole);
+    if (spot.canConvert<QPointF>() && spot.isValid())
+        return target.item->mapToScene(spot.toPointF());
+    return target.item->sceneBoundingRect().center();
+}
+
 // Where inside `target.widget` a synthetic press lands.
 QPoint hotspot(const Target &target) {
     if (target.row) return target.row->center();
     if (target.isSceneItem()) {
         // LP-4d1: an item whose middle is something else (a zone's frame
         // holds its body) names where a press meant for it lands.
-        const QVariant spot = target.item->data(NodeGraphHotspotRole);
-        if (spot.canConvert<QPointF>() && spot.isValid())
-            return target.view->mapFromScene(
-                target.item->mapToScene(spot.toPointF()));
-        const QPointF centre = target.item->sceneBoundingRect().center();
-        return target.view->mapFromScene(centre);
+        return target.view->mapFromScene(sceneHotspot(target));
     }
     return target.widget->rect().center();
 }
@@ -1013,6 +1015,66 @@ AutomationReply commandList(const AutomationHost &host,
     });
 }
 
+// Ignore passive decoration, but respect the first mouse/selection surface in
+// Qt's stacking order. A body's selectable node is an independent target even
+// though the loop frame is its graphics ancestor.
+bool clickBelongsTo(const QGraphicsItem *hit, const QGraphicsItem *target) {
+    for (auto *item = hit; item != nullptr; item = item->parentItem()) {
+        if (item == target) return true;
+        if (item->flags().testFlag(QGraphicsItem::ItemIsSelectable)) return false;
+    }
+    return false;
+}
+
+QGraphicsItem *clickSurface(const Target &target, const QPoint &point,
+                            Qt::MouseButton button) {
+    for (auto *item : target.view->items(point)) {
+        if (item->isEnabled() &&
+            (item->acceptedMouseButtons().testFlag(button) ||
+             item->flags().testFlag(QGraphicsItem::ItemIsSelectable)))
+            return item;
+    }
+    return nullptr;
+}
+
+bool findClickPoint(const Target &target, Qt::MouseButton button, QPoint *point,
+                    QString *covered_by) {
+    const auto usable = [&](const QPoint &candidate) {
+        if (!target.widget->rect().contains(candidate) ||
+            !target.item->contains(target.item->mapFromScene(
+                target.view->mapToScene(candidate)))) return false;
+        auto *hit = clickSurface(target, candidate, button);
+        if (clickBelongsTo(hit, target.item)) return true;
+        if (hit != nullptr && covered_by->isEmpty()) {
+            // Prefer the owning named node over an anonymous decoration.
+            auto *owner = hit;
+            while (owner->parentItem() &&
+                   !owner->flags().testFlag(QGraphicsItem::ItemIsSelectable))
+                owner = owner->parentItem();
+            *covered_by = sceneItemName(*target.view, *owner, 0);
+            if (covered_by->isEmpty())
+                *covered_by = QStringLiteral("unnamed scene item (type %1)").arg(hit->type());
+        }
+        return false;
+    };
+    if (usable(*point)) return true;
+    const QRect bounds = target.view->mapFromScene(target.item->sceneBoundingRect())
+                             .boundingRect().intersected(target.widget->rect());
+    // Keep the heading's row first, then try every visible integer pixel in
+    // top-to-bottom, left-to-right order. Test the rounded event coordinate,
+    // not merely a floating-point point within the bounding box.
+    for (int x = bounds.left(); x <= bounds.right(); ++x) {
+        const QPoint candidate{x, point->y()};
+        if (usable(candidate)) { *point = candidate; return true; }
+    }
+    for (int y = bounds.top(); y <= bounds.bottom(); ++y)
+        for (int x = bounds.left(); x <= bounds.right(); ++x) {
+            const QPoint candidate{x, y};
+            if (usable(candidate)) { *point = candidate; return true; }
+        }
+    return false;
+}
+
 AutomationReply commandClick(const AutomationHost &host,
                              const QJsonObject &request, bool double_click) {
     // A named action is done, not pressed: the menu it lives in need not be
@@ -1068,6 +1130,19 @@ AutomationReply commandClick(const AutomationHost &host,
         target.view->centerOn(target.view->mapToScene(point));
         point = hotspot(target);
     }
+    bool point_reselected = false;
+    if (target.isSceneItem() && !request.contains(QStringLiteral("point")) &&
+        !request.contains(QStringLiteral("scene"))) {
+        const QPoint original = point;
+        QString covered_by;
+        if (!findClickPoint(target, button, &point, &covered_by))
+            return AutomationReply::failure(
+                BadRequest, covered_by.isEmpty()
+                    ? QStringLiteral("the item named \"%1\" has no clickable viewport point").arg(named)
+                    : QStringLiteral("the item named \"%1\" is covered by \"%2\"")
+                          .arg(named, covered_by));
+        point_reselected = point != original;
+    }
     const QRect where = globalRect(target);
     QWidget *receiver = pointerReceiver(target, &point);
     if (double_click)
@@ -1076,6 +1151,7 @@ AutomationReply commandClick(const AutomationHost &host,
         QTest::mouseClick(receiver, button, modifiers, point);
     return AutomationReply::success(QJsonObject{
         {QStringLiteral("point"), QJsonArray{point.x(), point.y()}},
+        {QStringLiteral("point_reselected"), point_reselected},
         {QStringLiteral("geometry"), rectJson(where)},
         {QStringLiteral("visible"), targetVisible(target)},
     });
@@ -1209,6 +1285,14 @@ AutomationReply commandDrag(const AutomationHost &host,
             return false;
         }
         if (!gestureTarget(host, spec, target, rejected)) return false;
+        // FX-8: refuse before either endpoint receives a press. Only this
+        // no-side-effect refusal can safely be retried by the driver.
+        if (!targetEnabled(*target)) {
+            *rejected = AutomationReply::failure(
+                BadRequest, QStringLiteral("the widget named \"%1\" is disabled")
+                                .arg(spec.value(QStringLiteral("name")).toString()));
+            return false;
+        }
         return pointFor(spec, *target, point, rejected);
     };
     Target from_target;
@@ -1237,25 +1321,101 @@ AutomationReply commandDrag(const AutomationHost &host,
             BadRequest, QStringLiteral("unknown keyboard modifier"));
     const int steps =
         std::clamp(request.value(QStringLiteral("steps")).toInt(8), 1, 200);
+    const auto namedItem = [&](const char *key, const Target &target) {
+        const auto value = request.value(QLatin1String{key});
+        const auto spec = value.toObject();
+        return target.isSceneItem() &&
+               (value.isString() || (!spec.contains(QStringLiteral("point")) &&
+                                     !spec.contains(QStringLiteral("scene"))));
+    };
+    QGraphicsView *pan_view = nullptr;
+    QPointF scene_from;
+    QPointF scene_to;
+    QJsonObject framing;
+    if (namedItem("from", from_target) && namedItem("to", to_target) &&
+        from_target.view == to_target.view) {
+        auto *view = from_target.view;
+        const auto original_transform = view->transform();
+        scene_from = sceneHotspot(from_target);
+        scene_to = sceneHotspot(to_target);
+        const auto endpointName = [&request](const char *key) {
+            const auto value = request.value(QLatin1String{key});
+            return value.isString() ? value.toString()
+                                    : value.toObject().value(QStringLiteral("name")).toString();
+        };
+        const auto hits = [view](const Target &target, const QPoint &point) {
+            return view->viewport()->rect().contains(point) &&
+                   target.item->contains(target.item->mapFromScene(view->mapToScene(point)));
+        };
+        if (!hits(from_target, from) || !hits(to_target, to)) {
+            // FX-8: Fit may have run before the latest document was drawn.
+            // Even an on-screen socket can be smaller than a pixel after Fit:
+            // rounding its centre then misses the shape and sends no edit.
+            // Frame the named endpoints at a usable scale before the press.
+            // Explicit coordinates keep their requested meaning.
+            const auto bounds = QRectF{scene_from, scene_to}.normalized();
+            view->fitInView(bounds.adjusted(-40, -40, 40, 40), Qt::KeepAspectRatio);
+            from = hotspot(from_target);
+            to = hotspot(to_target);
+        }
+        if (!hits(from_target, from) || !hits(to_target, to)) {
+            // FX-8 fix2: distant sockets cannot always share a usable frame.
+            // Keep at least the original zoom (and at least unit scale),
+            // then validate both centred hotspots before delivering any input.
+            view->setTransform(original_transform);
+            const qreal scale = std::min(
+                std::hypot(original_transform.m11(), original_transform.m12()),
+                std::hypot(original_transform.m21(), original_transform.m22()));
+            if (scale > 0 && scale < 1) view->scale(1 / scale, 1 / scale);
+            view->centerOn(to_target.item);
+            to = hotspot(to_target);
+            const bool to_hits = hits(to_target, to);
+            view->centerOn(from_target.item);
+            from = hotspot(from_target);
+            if (!to_hits || !hits(from_target, from))
+                return AutomationReply::failure(
+                    BadRequest, QStringLiteral("cannot target named drag endpoints at this zoom: %1 -> %2")
+                                    .arg(endpointName("from"), endpointName("to")));
+            pan_view = view;
+        }
+        framing.insert(QStringLiteral("path"), pan_view ? QStringLiteral("panned")
+                                                       : QStringLiteral("framed"));
+        framing.insert(QStringLiteral("scale"), view->transform().m11());
+    }
     QWidget *widget = pointerReceiver(from_target, &from);
     pointerReceiver(to_target, &to);
     sendMouse(widget, QEvent::MouseButtonPress, from, button, modifiers);
     for (int step = 1; step <= steps; ++step) {
-        const QPoint interpolated{
-            from.x() + (to.x() - from.x()) * step / steps,
-            from.y() + (to.y() - from.y()) * step / steps};
+        QPoint interpolated;
+        if (pan_view) {
+            const QPointF scene_point = scene_from + (scene_to - scene_from) * (qreal(step) / steps);
+            pan_view->centerOn(scene_point);
+            interpolated = pan_view->mapFromScene(scene_point);
+        } else {
+            interpolated = QPoint{
+                from.x() + (to.x() - from.x()) * step / steps,
+                from.y() + (to.y() - from.y()) * step / steps};
+        }
         sendMouse(widget, QEvent::MouseMove, interpolated, Qt::NoButton,
                   modifiers);
     }
+    if (pan_view) {
+        pan_view->centerOn(to_target.item);
+        to = hotspot(to_target);
+        sendMouse(widget, QEvent::MouseMove, to, Qt::NoButton, modifiers);
+    }
     sendMouse(widget, QEvent::MouseButtonRelease, to, button, modifiers);
-    return AutomationReply::success(QJsonObject{
+    QJsonObject result{
         {QStringLiteral("from"), QJsonArray{from.x(), from.y()}},
         {QStringLiteral("to"), QJsonArray{to.x(), to.y()}},
         {QStringLiteral("button"),
          request.value(QStringLiteral("button")).toString(
              QStringLiteral("left"))},
         {QStringLiteral("steps"), steps},
-    });
+    };
+    for (auto it = framing.begin(); it != framing.end(); ++it)
+        result.insert(it.key(), it.value());
+    return AutomationReply::success(result);
 }
 
 // `wheel`, `move`, `press` and `release`: the gestures a canvas is driven with.
@@ -1568,6 +1728,9 @@ AutomationReply commandKey(const AutomationHost &host,
                 WidgetMissing,
                 QStringLiteral("no widget or drawn item is named \"%1\"")
                     .arg(name));
+        if (!targetEnabled(target))
+            return AutomationReply::failure(
+                BadRequest, QStringLiteral("the widget named \"%1\" is disabled").arg(name));
         QWidget *embedded = embeddedWidget(target);
         widget = embedded != nullptr ? embedded : target.widget;
     } else {
@@ -1637,6 +1800,9 @@ AutomationReply commandType(const AutomationHost &host,
                 WidgetMissing,
                 QStringLiteral("no widget or drawn item is named \"%1\"")
                     .arg(name));
+        if (!targetEnabled(target))
+            return AutomationReply::failure(
+                BadRequest, QStringLiteral("the widget named \"%1\" is disabled").arg(name));
         QWidget *embedded = embeddedWidget(target);
         widget = embedded != nullptr ? embedded : target.widget;
         // A view is a conduit, not a destination: its scene already decided

@@ -599,9 +599,27 @@ struct FramePlanWidget::Impl {
     // The bands on screen. A tree lets go of a row's widget only later
     // (deleteLater), so a band is deleted here before its tree is filled
     // again, and its name never answers for two widgets at once.
-    std::vector<QPointer<QWidget>> bands;
+    // The tree is asked to let go of the widget first: deleting an index widget
+    // the view still lists leaves it in the view's editors, and the next layout
+    // (a clear() that changes the selection) reads the freed widget.
+    struct Band {
+        QPointer<QTreeWidget> tree;
+        QPointer<QWidget> widget;
+    };
+    std::vector<Band> bands;
     void dropBands() {
-        for (auto &band : std::exchange(bands, {})) delete band.data();
+        for (auto &band : std::exchange(bands, {})) {
+            if (!band.widget) continue;
+            if (band.tree)
+                for (int row = 0; row < band.tree->topLevelItemCount(); ++row) {
+                    auto *item = band.tree->topLevelItem(row);
+                    if (band.tree->itemWidget(item, 0) == band.widget) {
+                        band.tree->removeItemWidget(item, 0);
+                        break;
+                    }
+                }
+            delete band.widget.data();
+        }
     }
     qint64 pending_task_request = 0;
     qint64 pending_edit_request = 0;
@@ -3440,7 +3458,7 @@ struct FramePlanWidget::Impl {
         }
         row->addStretch(1);
         tree->setItemWidget(item, 0, band);
-        bands.emplace_back(band);
+        bands.push_back(Band{tree, band});
         return label;
     }
     void requestPlanning() {
@@ -4094,6 +4112,9 @@ struct FramePlanWidget::Impl {
     }
 
     void populate() {
+        // FX-8: a refresh can land between selecting a row and pressing Pin.
+        // Carry the candidate identity, never a pointer into the rebuilt tree.
+        const auto picked_backend = candidateOf(backends->currentItem());
         const TreeFillGuard filling{passes,    resources, physical,
                                     decisions, backends,  barriers,
                                     materials, logical_details};
@@ -4137,6 +4158,14 @@ struct FramePlanWidget::Impl {
         populatePhysicalPlan();
         populateDecisions();
         populateBackends();
+        if (!picked_backend.empty())
+            for (int row = 0; row < backends->topLevelItemCount(); ++row) {
+                auto *item = backends->topLevelItem(row);
+                if (candidateOf(item) == picked_backend) {
+                    backends->setCurrentItem(item);
+                    break;
+                }
+            }
         addBackendBand();
         populateBarriers();
         populateMaterials();

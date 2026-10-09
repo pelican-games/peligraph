@@ -1067,6 +1067,13 @@
       "visible": true
     },
     {
+      "label": "the new body output's inside socket is drawn after the document is read back",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone_socket#loop/out:color",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
       "label": "carry: the body output back onto the boundary input",
       "cmd": "drag",
       "from": {

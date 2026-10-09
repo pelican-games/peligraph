@@ -59,6 +59,8 @@ class GraphCanvasLoopFields final : public QWidget {
     // between would be refused by the model and lost without a word -- and
     // switched on again once. Called by the owner whenever the model moved.
     void followEditable();
+    // A refused draft changes the notice without rebuilding its live fields.
+    std::function<void()> refused;
 
     // "1, 4" / "1 4" -> {1, 4}. Nothing when a piece is not an integer.
     static std::optional<std::vector<std::int64_t>> parseIntegers(const QString &text);
@@ -75,7 +77,7 @@ class GraphCanvasLoopFields final : public QWidget {
     static QString elementText(const GraphCanvasLoop &loop, std::int64_t element);
 
   private:
-    void rebuild(const GraphCanvasLoop &loop);
+    void rebuild(const GraphCanvasLoop &loop, bool preserve_count);
     void clearRows();
     void after(bool submitted);
     void commitCount();
