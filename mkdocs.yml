@@ -40,6 +40,8 @@ markdown_extensions:
       slugify: !!python/name:pymdownx.slugs.uslugify
 extra_css:
   - site/styles.css
+extra_javascript:
+  - site/sections.js
 nav:
   - はじめに: index.md
   - 利用マニュアル:

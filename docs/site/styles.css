@@ -4,3 +4,26 @@
 .md-typeset table:not([class]) { font-size: .76rem; }
 .md-typeset pre { line-height: 1.5; }
 .md-typeset .mermaid { overflow-x: auto; }
+.pg-fold-bar { display: flex; gap: .5rem; margin: -.4rem 0 1.2rem; }
+.md-typeset .pg-fold-bar .md-button { padding: .2em .9em; font-size: .7rem; }
+.pg-fold-heading { cursor: pointer; }
+.pg-fold-toggle { width: 1.1em; margin-right: .15em; padding: 0; border: 0; background: none; color: var(--md-default-fg-color--light); cursor: pointer; vertical-align: .05em; }
+.pg-fold-toggle::before { content: ""; display: inline-block; border: .3em solid transparent; border-top: .42em solid currentColor; border-bottom: 0; transition: transform .15s; }
+.pg-fold-closed .pg-fold-toggle::before { transform: rotate(-90deg); }
+.pg-fold-toggle:hover, .pg-fold-toggle:focus-visible { color: var(--md-accent-fg-color); }
+@media print {
+  .pg-fold-bar, .pg-fold-toggle { display: none; }
+  .pg-fold-body[hidden] { display: block !important; content-visibility: visible !important; }
+}
+/* A guide line runs down from each section's triangle, so a nested h3 triangle sits
+   inside its h2's line. Material sets h2 to 1.5625em and h3 to 1.25em; the triangle is
+   centred in a 1.1em button, at .55em of the heading's size. */
+.pg-fold-body { border-left: 1px solid var(--md-default-fg-color--lightest); }
+.pg-fold-h2 { margin-left: calc(.55em * 1.5625 - .5px); padding-left: .9em; }
+.pg-fold-h3 { margin-left: calc(.55em * 1.25 - .5px); padding-left: .8em; }
+@media screen and (max-width: 44.984375em) {
+  .pg-fold-h2, .pg-fold-h3 { padding-left: .5em; }
+}
+@media print {
+  .pg-fold-body { border-left: 0; margin-left: 0; padding-left: 0; }
+}

@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = {"site/styles.css"}
+ASSETS = {"site/styles.css", "site/sections.js"}
 LINK = re.compile(r'(!?\[(?:[^\[\]]|\[[^\]]*\])*\]\()([^\s)]+)(\))')
 PAGES = set()
 REVISION = ""
