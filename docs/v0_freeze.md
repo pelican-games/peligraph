@@ -473,7 +473,9 @@ tag は利用者が v0 を閉じる判断をした時点で付ける。
 最終 revision は `7f4ad61de`。その後の 2 commit はエンジン・Studio のコードを変えない:
 `3d636d23b`(license。CMake の変更は Runtime install の対象に `LICENSE` と `LICENSE-EXCEPTION` を並べただけ)と
 `607a1986f`(`THIRD_PARTY_NOTICES.md` と `third_party/licenses/` の本文、それを読む `tools/third_party_notices.py`)。
-この 2 commit を含めた install と配布確認は流していない。
+この 2 commit と docs を含む `4a9d27db7` で build・Runtime install・配布確認をやり直し、
+install の最上位に `LICENSE`・`LICENSE-EXCEPTION`・`THIRD_PARTY_NOTICES.md` が並ぶこと、
+`run_distribution_check.py` が 8 / 8 であることを確かめた(`distribution/run-20261009-151755-46052/report.json`)。
 
 | 確認範囲 | 結果と制約 |
 |---|---|
