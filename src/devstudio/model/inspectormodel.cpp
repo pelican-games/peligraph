@@ -2466,6 +2466,7 @@ std::vector<std::string> assetIdsOfKind(const Json &list_assets_result, std::str
 struct InspectorModel::Impl {
     enum class RequestPurpose : std::uint8_t {
         OpenSession,
+        HistoryLabels,
         SceneTree,
         Components,
         ComponentAddCandidates,
@@ -2632,6 +2633,44 @@ struct InspectorModel::Impl {
     // (takeCommittedEdits), and the transaction the notice now reports.
     std::vector<CommittedEdit> committed_edits;
     std::string notice_transaction;
+    // Labels follow committed transactions only; refusals leave both tops alone.
+    std::vector<std::string> undo_labels;
+    std::vector<std::string> redo_labels;
+    std::map<std::string, std::string> transaction_labels;
+
+    void refreshHistoryLabels() {
+        undo_labels.clear();
+        redo_labels.clear();
+        if (connected && actor_id)
+            queue("query_journal", Json::object(), {.purpose = RequestPurpose::HistoryLabels});
+    }
+
+    void readHistoryLabels(const Json &result) {
+        // A newer local commit must not be replaced by an older journal read.
+        const auto revision = unsignedInteger(result.at("scene_revision"), "query_journal scene_revision");
+        if (revision < current_scene_revision.value_or(0)) {
+            refreshHistoryLabels();
+            return;
+        }
+        observeSceneRevision(revision);
+        std::vector<std::string> undo, redo;
+        for (const auto &record : result.at("records")) {
+            if (!actor_id || record.at("actor_id") != *actor_id) continue;
+            const auto operation = record.value("operation_kind", std::string{});
+            if (operation == "undo") {
+                if (!undo.empty()) { redo.push_back(undo.back()); undo.pop_back(); }
+            } else if (operation == "redo") {
+                if (!redo.empty()) { undo.push_back(redo.back()); redo.pop_back(); }
+            } else {
+                const auto label = transaction_labels.find(record.at("transaction_id").get<std::string>());
+                undo.push_back(label != transaction_labels.end() ? label->second :
+                               operation == "play_keep" ? "Keep game changes" : "Scene edit");
+                redo.clear();
+            }
+        }
+        undo_labels = std::move(undo);
+        redo_labels = std::move(redo);
+    }
 
     void noteCommitted(const Json &result, const std::string &description, bool keep) {
         const auto transaction = result.find("transaction_id");
@@ -2645,6 +2684,22 @@ struct InspectorModel::Impl {
         if (const auto source = result.find("source_transaction_id");
             source != result.end() && source->is_string())
             edit.source_transaction_id = source->get<std::string>();
+        if (edit.kind == CommittedEditKind::undo) {
+            if (!undo_labels.empty()) {
+                redo_labels.push_back(undo_labels.back());
+                undo_labels.pop_back();
+            }
+        } else if (edit.kind == CommittedEditKind::redo) {
+            if (!redo_labels.empty()) {
+                undo_labels.push_back(redo_labels.back());
+                redo_labels.pop_back();
+            }
+        } else {
+            undo_labels.push_back(description);
+            redo_labels.clear();
+        }
+        if (edit.kind == CommittedEditKind::edit)
+            transaction_labels[edit.transaction_id] = description;
         notice_transaction = edit.transaction_id;
         committed_edits.push_back(std::move(edit));
     }
@@ -3033,7 +3088,7 @@ struct InspectorModel::Impl {
     }
 
     void enqueueUndoRedo(bool redo) {
-        if (!connected || !actor_id || !snapshot || editPending() || preview ||
+        if (!connected || !actor_id || !current_scene_revision || editPending() || preview ||
             !editing_widgets.empty()) {
             setNotice(InspectorNoticeKind::Error,
                       "Undo and redo require an idle inspector session.");
@@ -3042,7 +3097,7 @@ struct InspectorModel::Impl {
         const std::string description = redo ? "Redo" : "Undo";
         queue(redo ? "redo" : "undo",
               Json{{"actor_id", *actor_id},
-                   {"base_revision", snapshot->scene_revision}},
+                   {"base_revision", *current_scene_revision}},
               {.purpose = RequestPurpose::EditSubmit,
                .selection_generation = selection_generation,
                .description = description,
@@ -3697,6 +3752,7 @@ struct InspectorModel::Impl {
             state.purpose != RequestPurpose::EditSubmit &&
             state.purpose != RequestPurpose::EditPoll &&
             state.purpose != RequestPurpose::ModelAssets &&
+            state.purpose != RequestPurpose::HistoryLabels &&
             state.selection_generation != selection_generation) {
             return;
         }
@@ -3709,6 +3765,9 @@ struct InspectorModel::Impl {
                       selection ? "Loading inspector properties..."
                                 : "Engine editor session is ready.");
             requestRefresh(true);
+            break;
+        case RequestPurpose::HistoryLabels:
+            readHistoryLabels(result);
             break;
         case RequestPurpose::SceneTree:
             handleSceneTree(state, result);
@@ -3851,6 +3910,7 @@ struct InspectorModel::Impl {
             state.purpose != RequestPurpose::EditSubmit &&
             state.purpose != RequestPurpose::EditPoll &&
             state.purpose != RequestPurpose::ModelAssets &&
+            state.purpose != RequestPurpose::HistoryLabels &&
             state.selection_generation != selection_generation) {
             return;
         }
@@ -3910,6 +3970,8 @@ struct InspectorModel::Impl {
         case RequestPurpose::ComponentAddCandidates:
             component_add_candidates.reset();
             break;
+        case RequestPurpose::HistoryLabels:
+            return;
         case RequestPurpose::ModelAssets:
             // The primitives are listed without it; nothing to report.
             return;
@@ -3931,6 +3993,9 @@ InspectorModel::~InspectorModel() = default;
 
 void InspectorModel::startSession() {
     impl_->abandonSessionOperations();
+    impl_->undo_labels.clear();
+    impl_->redo_labels.clear();
+    impl_->transaction_labels.clear();
     impl_->first_session_revision = true;
     impl_->connected = true;
     impl_->scene_outline_unknown = false;
@@ -3965,6 +4030,9 @@ void InspectorModel::startSession() {
 
 void InspectorModel::stopSession(std::string message) {
     impl_->abandonSessionOperations();
+    impl_->undo_labels.clear();
+    impl_->redo_labels.clear();
+    impl_->transaction_labels.clear();
     impl_->connected = false;
     impl_->actor_id.reset();
     impl_->requests.clear();
@@ -4675,7 +4743,18 @@ bool InspectorModel::canEdit() const noexcept {
 }
 
 bool InspectorModel::canUndoRedo() const noexcept {
-    return canEdit() && !busy() && !impl_->refresh_in_flight;
+    return impl_->connected && impl_->actor_id && impl_->current_scene_revision &&
+           !busy() && !impl_->refresh_in_flight;
+}
+
+void InspectorModel::refreshHistoryLabels() { impl_->refreshHistoryLabels(); }
+
+std::string InspectorModel::undoLabel() const {
+    return impl_->undo_labels.empty() ? std::string{} : impl_->undo_labels.back();
+}
+
+std::string InspectorModel::redoLabel() const {
+    return impl_->redo_labels.empty() ? std::string{} : impl_->redo_labels.back();
 }
 
 bool InspectorModel::canSave() const noexcept {

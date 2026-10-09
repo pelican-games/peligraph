@@ -2839,3 +2839,82 @@ TEST_CASE("AN-2 animation model refusal shows the removal-first hint in the Insp
     CHECK(harness.model.notice().message.find("without a glTF skin") != std::string::npos);
     CHECK(harness.model.notice().message.find("Remove animation first") != std::string::npos);
 }
+
+TEST_CASE("KB-1 Inspector scene history remains available without object selection", "[devstudio][inspector][shortcut][kb1]") {
+    InspectorHarness harness;
+    harness.open();
+    REQUIRE(harness.model.submitSceneEdit(PelicanStudio::SceneEditKind::Destroy, 41,
+                {{"op", "destroy"}, {"object_id", 41}}, "Delete Cube") == SpawnOutcome::Sent);
+    harness.reply(harness.take("edit"), {{"status", "committed"}, {"committed_revision", 2},
+                                         {"transaction_id", "delete-1"}, {"operation", "edit"}});
+    CHECK(harness.model.undoLabel() == "Delete Cube");
+    harness.model.takeRpcRequests();
+    harness.model.selectObject(std::nullopt);
+    REQUIRE_FALSE(harness.model.snapshot());
+    REQUIRE(harness.model.canUndoRedo());
+    harness.model.undo();
+    auto undo = harness.take("undo");
+    CHECK(undo.params == Json{{"actor_id", 9}, {"base_revision", 2}});
+    harness.reply(undo, {{"status", "committed"}, {"committed_revision", 3},
+                         {"transaction_id", "undo-1"}, {"operation", "undo"}});
+    CHECK(harness.model.undoLabel().empty());
+    CHECK(harness.model.redoLabel() == "Delete Cube");
+    harness.model.redo();
+    harness.reply(harness.take("redo"), {{"status", "rejected"},
+                  {"error", {{"code", "undo_conflict"}, {"message", "conflict"}}}});
+    CHECK(harness.model.redoLabel() == "Delete Cube");
+    harness.model.takeRpcRequests();
+    harness.model.redo();
+    harness.reply(harness.take("redo"), {{"status", "committed"}, {"committed_revision", 4},
+                  {"transaction_id", "redo-1"}, {"operation", "redo"}});
+    CHECK(harness.model.undoLabel() == "Delete Cube");
+    CHECK(harness.model.redoLabel().empty());
+    harness.model.stopSession();
+    CHECK(harness.model.undoLabel().empty());
+    CHECK_FALSE(harness.model.canUndoRedo());
+}
+
+TEST_CASE("KB-1 scene history labels follow the journal restored by Stop", "[devstudio][inspector][shortcut][kb1]") {
+    InspectorHarness harness;
+    harness.open();
+    REQUIRE(harness.model.submitSceneEdit(PelicanStudio::SceneEditKind::Reparent, 41,
+                {{"op", "set_component_value"}, {"object_id", 41}, {"component_slot", "transform"},
+                 {"field_path", "/pos"}, {"value", Json::array({7.0, 2.0, 3.0})}}, "Move Cube") == SpawnOutcome::Sent);
+    harness.reply(harness.take("edit"), {{"status", "committed"}, {"committed_revision", 2},
+                  {"transaction_id", "before-play"}, {"operation", "edit"}});
+    harness.completeRefresh(7.0, 2);
+    REQUIRE(harness.model.submitSceneEdit(PelicanStudio::SceneEditKind::Reparent, 41,
+                {{"op", "set_component_value"}, {"object_id", 41}, {"component_slot", "transform"},
+                 {"field_path", "/pos"}, {"value", Json::array({7.0, 2.0, 3.0})}}, "Move during Play") == SpawnOutcome::Sent);
+    harness.reply(harness.take("edit"), {{"status", "committed"}, {"committed_revision", 3},
+                  {"transaction_id", "during-play"}, {"operation", "edit"}});
+    harness.completeRefresh(9.0, 3);
+    REQUIRE(harness.model.undoLabel() == "Move during Play");
+    harness.model.refreshHistoryLabels();
+    CHECK(harness.model.undoLabel().empty());
+    auto journal = harness.take("query_journal");
+    auto records = Json::array({{{"actor_id", 9}, {"transaction_id", "before-play"}, {"operation_kind", "edit"}}});
+    harness.reply(journal, {{"scene_revision", 4}, {"records", records}});
+    CHECK(harness.model.undoLabel() == "Move Cube");
+    CHECK(harness.model.redoLabel().empty());
+    // Kept changes become one history item; another actor's item is not ours.
+    records.push_back({{"actor_id", 77}, {"transaction_id", "other"}, {"operation_kind", "edit"}});
+    records.push_back({{"actor_id", 9}, {"transaction_id", "kept"}, {"operation_kind", "play_keep"}});
+    harness.model.refreshHistoryLabels();
+    harness.reply(harness.take("query_journal"), {{"scene_revision", 5}, {"records", records}});
+    CHECK(harness.model.undoLabel() == "Keep game changes");
+    records.push_back({{"actor_id", 9}, {"transaction_id", "undo-kept"}, {"operation_kind", "undo"}});
+    harness.model.refreshHistoryLabels();
+    harness.reply(harness.take("query_journal"), {{"scene_revision", 6}, {"records", records}});
+    CHECK(harness.model.undoLabel() == "Move Cube");
+    CHECK(harness.model.redoLabel() == "Keep game changes");
+    // A slow read cannot roll the label back over a newer observed revision.
+    harness.model.refreshHistoryLabels();
+    journal = harness.take("query_journal");
+    harness.model.observeSceneRevision(7);
+    harness.reply(journal, {{"scene_revision", 6}, {"records", records}});
+    records.push_back({{"actor_id", 9}, {"transaction_id", "redo-kept"}, {"operation_kind", "redo"}});
+    harness.reply(harness.take("query_journal"), {{"scene_revision", 7}, {"records", records}});
+    CHECK(harness.model.undoLabel() == "Keep game changes");
+    CHECK(harness.model.redoLabel().empty());
+}

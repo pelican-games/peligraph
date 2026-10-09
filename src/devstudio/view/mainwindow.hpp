@@ -284,6 +284,9 @@ class MainWindow : public QMainWindow {
     void openPlanPassOnGraph(const QString &pass);
     void showProblems();
     void createMenus();
+    bool sceneFocusGroup() const;
+    void updateSceneShortcuts();
+    void showKeyboardShortcuts();
     void createPlayControls(QToolBar *band);
     void updatePlayPresentation();
     // PM-3b: a banner saying render edits stay after Stop, above `panel`.
@@ -403,6 +406,9 @@ class MainWindow : public QMainWindow {
     void saveLastToolLayout();
     QString restoreLastToolLayout();
     void applyDefaultLayout();
+    // Last member: disconnect focus/native callbacks and cancel queued updates
+    // before QWidget tears down children (which can itself emit focusChanged).
+    QObject scene_shortcut_context_;
 };
 
 } // namespace PelicanStudio

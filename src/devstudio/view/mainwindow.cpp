@@ -28,6 +28,10 @@
 #include "studiotheme.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
+#include <QApplication>
+#include <QDialogButtonBox>
+#include <QHeaderView>
+#include <QTableWidget>
 #include <QAbstractButton>
 #include <QAction>
 #include <QActionGroup>
@@ -62,6 +66,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScopeGuard>
+#include <QShortcut>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSet>
@@ -243,6 +248,40 @@ MainWindow::MainWindow(const QString &application_config_directory)
     createWorkspace();
     createMenus();
     restoreLastPanelLayout();
+    connect(qApp, &QApplication::focusChanged, &scene_shortcut_context_,
+            [this] {
+        updateSceneShortcuts();
+        // During modal dismissal Qt restores focus before clearing activeModalWidget.
+        // Re-evaluate after that transition so the restored surface gets its actions back.
+        QTimer::singleShot(0, &scene_shortcut_context_, [this] { updateSceneShortcuts(); });
+    });
+    connect(viewport_, &EmbeddedViewport::engineInputActiveChanged, &scene_shortcut_context_,
+            [this] { updateSceneShortcuts(); });
+    connect(viewport_, &EmbeddedViewport::studioShortcutPressed, &scene_shortcut_context_,
+            [this](int key, Qt::KeyboardModifiers modifiers) {
+        if (!viewport_->engineInputActive() || QApplication::activeModalWidget() ||
+            QApplication::activePopupWidget()) return;
+        const QKeySequence sequence{QKeyCombination{modifiers, static_cast<Qt::Key>(key)}};
+        updateSceneShortcuts();
+        for (QAction *action : {inspector_->undoAction(), inspector_->redoAction(),
+                               outliner_->deleteAction(), outliner_->duplicateAction(),
+                               save_scene_action_, findChild<QAction *>(QStringLiteral("pelican.file.newProject")),
+                               findChild<QAction *>(QStringLiteral("pelican.file.openProject"))}) {
+            if (action && action->isEnabled() && action->shortcuts().contains(sequence)) {
+                action->trigger();
+                return;
+            }
+        }
+        // Keep Play's own enabled checks and command handlers.
+        for (QShortcut *shortcut : findChildren<QShortcut *>()) {
+            if (shortcut->objectName().startsWith(QStringLiteral("pelican.play.")) &&
+                shortcut->isEnabled() && shortcut->key() == sequence) {
+                emit shortcut->activated();
+                return;
+            }
+        }
+    });
+    updateSceneShortcuts();
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {
@@ -1224,7 +1263,7 @@ void MainWindow::createWorkspace() {
                 gizmo_model_.stopSession();
                 dispatchGizmoModel();
             });
-    connect(viewport_, &EmbeddedViewport::engineInputActiveChanged, this,
+    connect(viewport_, &EmbeddedViewport::engineInputActiveChanged, &scene_shortcut_context_,
             [this](bool) { updateModalTransformPolling(); });
     connect(viewport_, &EmbeddedViewport::inspectorRpcSucceeded, this,
             [this, post_commit_errors](
@@ -1818,11 +1857,15 @@ void MainWindow::createMenus() {
     QAction *new_project_action = file_menu->addAction(tr("&New Project..."));
     new_project_action->setObjectName(
         QStringLiteral("pelican.file.newProject"));
+    new_project_action->setShortcut(QKeySequence::New);
+    new_project_action->setShortcutContext(Qt::WindowShortcut);
     connect(new_project_action, &QAction::triggered, this,
             [this]() { chooseNewProject(); });
     QAction *open_project_action = file_menu->addAction(tr("&Open Project..."));
     open_project_action->setObjectName(
         QStringLiteral("pelican.file.openProject"));
+    open_project_action->setShortcut(QKeySequence::Open);
+    open_project_action->setShortcutContext(Qt::WindowShortcut);
     connect(open_project_action, &QAction::triggered, this,
             [this]() { chooseProject(); });
     QAction *save_scene_action = file_menu->addAction(tr("&Save Scene"));
@@ -1863,6 +1906,20 @@ void MainWindow::createMenus() {
     // their own).
     QMenu *edit_menu = menuBar()->addMenu(tr("&Edit"));
     edit_menu->setObjectName(QStringLiteral("pelican.editMenu"));
+    for (QAction *action : {inspector_->undoAction(), inspector_->redoAction()}) {
+        action->setShortcutContext(Qt::WindowShortcut);
+        addAction(action);
+        // A detached dock is its own top-level window.
+        for (QDockWidget *dock : docks_) dock->addAction(action);
+        edit_menu->addAction(action);
+    }
+    edit_menu->addSeparator();
+    for (QAction *action : {outliner_->deleteAction(), outliner_->duplicateAction()}) {
+        action->setShortcutContext(Qt::WindowShortcut);
+        addAction(action);
+        // A detached dock is its own top-level window.
+        for (QDockWidget *dock : docks_) dock->addAction(action);
+    }
     edit_menu->addAction(render_undo_action_);
     edit_menu->addAction(render_redo_action_);
 
@@ -2024,6 +2081,83 @@ void MainWindow::createMenus() {
     createPlayControls(gizmo_toolbar);
 
     createAddObjectMenu();
+    auto *help_menu = menuBar()->addMenu(tr("&Help"));
+    help_menu->setObjectName(QStringLiteral("pelican.helpMenu"));
+    auto *shortcuts = help_menu->addAction(tr("Keyboard Shortcuts…"));
+    shortcuts->setObjectName(QStringLiteral("pelican.help.shortcuts"));
+    connect(shortcuts, &QAction::triggered, this, &MainWindow::showKeyboardShortcuts);
+}
+
+bool MainWindow::sceneFocusGroup() const {
+    // Popups keep the surface that opened them. Text editors (including inline
+    // tree editors and spin-box line edits) retain their own editing keys.
+    if (QApplication::activeModalWidget()) return false;
+    if (viewport_->engineInputActive()) return true;
+    if (textEntryHasFocus()) return false;
+    const QWidget *focus = QApplication::focusWidget();
+    // After a modal closes, Qt can temporarily have no application focus even
+    // though this window remembers the surface to restore. WindowShortcut still
+    // restricts dispatch to the active window.
+    if (!focus) focus = focusWidget();
+    if (!focus) return false;
+    for (const QWidget *surface : {static_cast<QWidget *>(viewport_),
+                                  static_cast<QWidget *>(docks_[OutlinerDock]),
+                                  static_cast<QWidget *>(docks_[InspectorDock]),
+                                  static_cast<QWidget *>(docks_[ProblemsPanelDock]),
+                                  static_cast<QWidget *>(gizmo_toolbar_)}) {
+        if (surface && (surface == focus || surface->isAncestorOf(focus))) return true;
+    }
+    return false;
+}
+
+void MainWindow::updateSceneShortcuts() {
+    inspector_->setSceneHistoryFocus(sceneFocusGroup());
+    updateOutlinerActions();
+}
+
+void MainWindow::showKeyboardShortcuts() {
+    auto *dialog = new QDialog(this);
+    dialog->setObjectName(QStringLiteral("pelican.help.shortcutsDialog"));
+    dialog->setWindowTitle(tr("Keyboard Shortcuts"));
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    auto *layout = new QVBoxLayout(dialog);
+    auto *table = new QTableWidget(dialog);
+    table->setObjectName(QStringLiteral("pelican.help.shortcutsTable"));
+    table->setColumnCount(3);
+    table->setHorizontalHeaderLabels({tr("Surface"), tr("Shortcut"), tr("Command")});
+    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    table->verticalHeader()->hide();
+    const QStringList rows[] = {
+        {"Scene: Viewport, Outliner, Inspector, Problems, Play bar", "Ctrl+Z", "Undo scene edit"},
+        {"Scene", "Ctrl+Y / Ctrl+Shift+Z", "Redo scene edit"},
+        {"Scene (selected object)", "Delete / Ctrl+D", "Delete / Duplicate object"},
+        {"Text fields / inline editors", "Ctrl+Z / Delete", "Undo text / Delete text"},
+        {"Rendering: Frame Plan, Pass Editor, Features, Settings", "Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z", "Undo / Redo rendering edit"},
+        {"Graph tab", "Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z", "Undo / Redo graph edit"},
+        {"Materials / Assets", "Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z", "Undo / Redo dock edit"},
+        {"Window", "Ctrl+N / Ctrl+O", "New Project / Open Project"},
+        {"Window", "Ctrl+S", "Save Scene (stop Play first)"},
+        {"Window (outside text fields)", "Ctrl+P", "Play / Stop"},
+        {"Window (outside text fields)", "Ctrl+Shift+P / Ctrl+Alt+P", "Pause / Step"},
+        {"Graph / Frame Plan", "Delete / Backspace", "Delete selected nodes or connections"},
+        {"Graph / Frame Plan", "F", "Fit view"},
+        {"Graph / Frame Plan / active edit", "Escape", "Leave nested view / Cancel edit"},
+    };
+    for (const auto &row : rows) {
+        const int index = table->rowCount();
+        table->insertRow(index);
+        for (int column = 0; column < row.size(); ++column)
+            table->setItem(index, column, new QTableWidgetItem(row[column]));
+    }
+    table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    table->horizontalHeader()->setStretchLastSection(true);
+    table->resizeRowsToContents();
+    layout->addWidget(table);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
+    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    dialog->resize(1020, 560);
+    dialog->open();
 }
 
 void MainWindow::createPlayControls(QToolBar *band) {
@@ -2279,7 +2413,10 @@ void MainWindow::updatePlayPresentation() {
         // rather than on the next watch (Q-16 would find it too).
         setOutlinerRefreshInterval(OutlinerRefreshMinimumIntervalMs);
         requestOutlinerRefresh();
-        if (inspector_ != nullptr) inspector_->refreshFromEngine();
+        if (inspector_ != nullptr) {
+            inspector_->refreshFromEngine();
+            inspector_->refreshHistoryLabels();
+        }
     }
     shown_play_session_ = session;
     if (after_play_stop_ && !model.busy()) {
@@ -2960,8 +3097,9 @@ void MainWindow::updateOutlinerActions() {
     const auto &selected = selection_model_.selected();
     const bool has_object = project_model_ && selected &&
                             project_model_->findObject(*selected) != nullptr;
-    outliner_->duplicateAction()->setEnabled(has_object);
-    outliner_->deleteAction()->setEnabled(has_object);
+    const bool enabled = has_object && sceneFocusGroup();
+    outliner_->duplicateAction()->setEnabled(enabled);
+    outliner_->deleteAction()->setEnabled(enabled);
     // PM-3c: a runtime row is selected, and they are off because of it.
     const bool runtime = runtime_outliner_ != nullptr && !has_object &&
                          runtime_outliner_->model().selectedObject() != nullptr;

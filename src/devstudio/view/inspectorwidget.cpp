@@ -185,6 +185,9 @@ struct InspectorWidget::Impl {
     std::uint64_t adding_object = 0;
     QPushButton *undo_button = nullptr;
     QPushButton *redo_button = nullptr;
+    QAction *undo_action = nullptr;
+    QAction *redo_action = nullptr;
+    bool scene_history_focus = true;
     QPushButton *cancel_preview_button = nullptr;
     QTimer *pending_timer = nullptr;
     QTimer *watch_timer = nullptr;
@@ -456,6 +459,7 @@ struct InspectorWidget::Impl {
                                              QKeySequence{Qt::CTRL | Qt::SHIFT | Qt::Key_Z}}}}) {
             auto *action = new QAction(button->text(), &owner);
             action->setObjectName(QString::fromLatin1(name));
+            (button == undo_button ? undo_action : redo_action) = action;
             action->setShortcuts(keys);
             action->setShortcutContext(Qt::WidgetWithChildrenShortcut);
             owner.addAction(action);
@@ -1621,6 +1625,14 @@ struct InspectorWidget::Impl {
         }
         undo_button->setEnabled(model.canUndoRedo());
         redo_button->setEnabled(model.canUndoRedo());
+        const auto undo_label = QString::fromStdString(model.undoLabel());
+        const auto redo_label = QString::fromStdString(model.redoLabel());
+        undo_action->setText(undo_label.isEmpty() ? owner.tr("Undo") : owner.tr("Undo %1").arg(undo_label));
+        redo_action->setText(redo_label.isEmpty() ? owner.tr("Redo") : owner.tr("Redo %1").arg(redo_label));
+        undo_button->setToolTip(undo_action->text());
+        redo_button->setToolTip(redo_action->text());
+        undo_action->setEnabled(model.canUndoRedo() && scene_history_focus);
+        redo_action->setEnabled(model.canUndoRedo() && scene_history_focus);
         cancel_preview_button->setEnabled(model.busy() &&
                                           model.refreshBlocked());
 
@@ -2798,6 +2810,15 @@ void InspectorWidget::finishGizmoEdit(std::string_view field_key,
     impl_->finishGizmoEdit(field_key, commit);
 }
 
+QAction *InspectorWidget::undoAction() const noexcept { return impl_->undo_action; }
+QAction *InspectorWidget::redoAction() const noexcept { return impl_->redo_action; }
+
+void InspectorWidget::setSceneHistoryFocus(bool enabled) {
+    impl_->scene_history_focus = enabled;
+    impl_->undo_action->setEnabled(enabled && impl_->model.canUndoRedo());
+    impl_->redo_action->setEnabled(enabled && impl_->model.canUndoRedo());
+}
+
 bool InspectorWidget::saveScene() { return impl_->saveScene(); }
 
 SpawnOutcome InspectorWidget::spawnObject(const std::string &scene_id,
@@ -2851,6 +2872,11 @@ void InspectorWidget::setPlaySessionHooks(PlaySessionHooks hooks) {
 void InspectorWidget::playSessionChanged() { impl_->synchronize(); }
 void InspectorWidget::adoptRestoredRevisionAsSaved() {
     impl_->model.adoptRestoredRevisionAsSaved();
+}
+void InspectorWidget::refreshHistoryLabels() {
+    impl_->model.refreshHistoryLabels();
+    impl_->synchronize();
+    impl_->dispatchRequests();
 }
 void InspectorWidget::refreshFromEngine() {
     impl_->model.requestRefresh();

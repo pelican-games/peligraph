@@ -11,6 +11,7 @@
 #include <functional>
 #include <optional>
 
+class QAction;
 class QEvent;
 class QObject;
 class QString;
@@ -41,6 +42,10 @@ class InspectorWidget final : public QWidget {
                           nlohmann::json value);
     void finishGizmoEdit(std::string_view field_key, bool commit);
     bool saveScene();
+    QAction *undoAction() const noexcept;
+    QAction *redoAction() const noexcept;
+    // MainWindow shares these actions with the scene focus group and menu.
+    void setSceneHistoryFocus(bool enabled);
     // G-2: Add object. One `spawn` through the Inspector's editor session, so
     // it shares its actor, its revision and its undo stack. Q-7: asked while
     // an edit is in flight, it waits for that edit (Queued). On refusal the
@@ -78,6 +83,7 @@ class InspectorWidget final : public QWidget {
     void playSessionChanged();
     // Reads the selected object again (after Stop put the scene back).
     void refreshFromEngine();
+    void refreshHistoryLabels();
     // See InspectorModel::adoptRestoredRevisionAsSaved.
     void adoptRestoredRevisionAsSaved();
     void setRayGroupAction(std::function<void(const QString &)> action);

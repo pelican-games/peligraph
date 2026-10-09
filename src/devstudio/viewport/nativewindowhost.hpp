@@ -6,6 +6,7 @@
 #include <QtTypes>
 
 #include <optional>
+#include <array>
 
 namespace PelicanStudio {
 
@@ -24,7 +25,14 @@ struct NativeViewportDiagnostics {
     int child_dpi_awareness = -1;
 };
 
+// Studio shortcuts must also cross the separately hosted engine window.
+inline constexpr std::array<int, 8> StudioShortcutKeys{
+    Qt::Key_Z, Qt::Key_Y, Qt::Key_D, Qt::Key_Delete,
+    Qt::Key_N, Qt::Key_O, Qt::Key_S, Qt::Key_P};
+
 struct NativePrimaryPointerState {
+    quint32 shortcut_keys_down = 0;
+    Qt::KeyboardModifiers shortcut_modifiers = Qt::NoModifier;
     bool button_down = false;
     bool over_child = false;
     // The engine window (or a child of it) holds the keyboard focus, so a key

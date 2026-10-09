@@ -19,7 +19,9 @@
 #include <QTemporaryDir>
 #include <QScopeGuard>
 #include "automationserver.hpp"
+#define private public
 #include "../src/devstudio/viewport/embeddedviewport.hpp"
+#undef private
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -56,6 +58,24 @@
 
 #include <string>
 #include <vector>
+
+#include "inspectorwidget.hpp"
+#include "outlinertree.hpp"
+#include "frameplanwidget.hpp"
+#include "../src/devstudio/layoutpreset.hpp"
+#include "../src/devstudio/view/renderdocumentwatcher.hpp"
+#include "../src/devstudio/toollayoutpreset.hpp"
+#include "../src/devstudio/model/renderedithistory.hpp"
+#include "../src/devstudio/model/renderdocumentreload.hpp"
+#include "../src/devstudio/model/modelimport.hpp"
+#include <QDialog>
+#include <QFileDialog>
+#include <QTableWidget>
+#include <QToolBar>
+#include <deque>
+#define private public
+#include "mainwindow.hpp"
+#undef private
 
 namespace {
 
@@ -2169,4 +2189,321 @@ TEST_CASE("FX-8 an unpressable named endpoint refuses before a panned drag",
     CHECK(reply.message.contains("pelican.testCanvas::fx8_socket#from"));
     CHECK(reply.message.contains("pelican.testCanvas::fx8_socket#to"));
     CHECK(fixture.canvas->mouse.isEmpty());
+}
+
+namespace {
+
+// Production MainWindow, InspectorModel and RPC transport. The small engine
+// keeps an object document and undo/redo snapshots; no GPU or project launch.
+struct FixtureChildExit {
+    PelicanStudio::EngineProcess &process;
+    void finish() {
+        if (!process.isRunning()) return;
+        process.process_.closeWriteChannel();
+        process.waitForFinished(5000);
+    }
+    ~FixtureChildExit() { finish(); }
+};
+
+struct SceneShortcutRig {
+    using Json = nlohmann::json;
+    QApplication &app = application();
+    QTemporaryDir config;
+    PelicanStudio::MainWindow window{config.path()};
+    PelicanStudio::EmbeddedViewport &viewport = *window.engineViewport();
+    Json objects = Json::array({{{"name", "Cube"}, {"id", 41}, {"x", 1.0}}});
+    std::vector<Json> undo, redo;
+    std::deque<Json> requests;
+    QString buffer;
+    std::uint64_t revision = 1;
+    int undo_calls = 0, redo_calls = 0;
+    // Also closes stdin if a REQUIRE aborts construction.
+    FixtureChildExit exit_child{viewport.process_};
+
+    SceneShortcutRig() {
+        window.resize(1280, 800);
+        window.show();
+        window.activateWindow();
+        REQUIRE(QTest::qWaitForWindowActive(&window));
+        window.project_model_.emplace();
+        window.project_model_->updateSceneOutline(outline());
+        window.selection_model_.bindProject(&*window.project_model_);
+        QObject::connect(&viewport, &PelicanStudio::EmbeddedViewport::engineStandardErrorReceived,
+                         &window, [this](const QString &text) {
+            buffer += text;
+            while (buffer.contains('\n')) {
+                auto end = buffer.indexOf('\n');
+                auto line = buffer.left(end).trimmed();
+                buffer.remove(0, end + 1);
+                const QString prefix = QStringLiteral("rpc-hold-request:");
+                if (line.startsWith(prefix)) requests.push_back(Json::parse(line.mid(prefix.size()).toStdString()));
+            }
+        });
+        QString error;
+        REQUIRE(viewport.process_.start({QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH),
+                                         {QStringLiteral("rpc-hold")}, {}}, &error));
+        REQUIRE(viewport.process_.waitForStarted(5000));
+        viewport.rpc_ready_ = true;
+        emit viewport.engineRpcBecameAvailable();
+        window.selection_model_.selectFromOutliner(PelicanStudio::OutlinerObjectKey{"main", 0, 41});
+        window.inspector_->setSelection(PelicanStudio::OutlinerObjectKey{"main", 0, 41}, "Cube");
+        focus("pelican.outliner");
+        focus("pelican.viewportHost");
+        await([this] { return window.inspector_->undoAction()->isEnabled(); });
+    }
+    ~SceneShortcutRig() {
+        // EOF ends this fixture normally; no process termination is needed.
+        exit_child.finish();
+        window.project_model_.reset();
+    }
+    Json outline() const {
+        Json rows = Json::array();
+        for (const auto &object : objects)
+            rows.push_back({{"name", object.at("name")}, {"authoring_object_id", object.at("id")},
+                            {"declaration_index", rows.size()}, {"parent_authoring_object_id", nullptr}});
+        return {{"scene_id", "main"}, {"scene_revision", revision}, {"objects", rows}};
+    }
+    Json answer(const std::string &method, const Json &params) {
+        if (method == "open_editor_session") return {{"actor_id", 9}};
+        if (method == "scene_outline" || method == "scene_tree") return outline();
+        if (method == "get_scene_revision") return {{"scene_revision", revision}, {"preview_epoch", 0}};
+        if (method == "get_components") {
+            const auto id = params.value("authoring_object_id", 41);
+            for (const auto &object : objects) if (object.at("id") == id)
+                return {{"scene_revision", revision}, {"authoring_object_id", id}, {"declaration_index", 0},
+                        {"name", object.at("name")}, {"components", Json::array({{
+                            {"name", "transform"}, {"component_index", 0},
+                            {"authored_json", {{"pos", Json::array({object.at("x"), 2.0, 3.0})}}},
+                            {"editable", true}, {"pending", false},
+                            {"codec", {{"state", "registered"}}},
+                            {"schema", {{"state", "available"}, {"fields", Json::array({{{"name", "pos"}, {"type", "vec3"}}})}}}
+                        }})}};
+            return Json{};
+        }
+        if (method == "edit" || method == "undo" || method == "redo") {
+            CHECK(params.at("actor_id") == 9);
+            CHECK(params.at("base_revision") == revision);
+            if (method == "undo") {
+                ++undo_calls;
+                REQUIRE_FALSE(undo.empty());
+                redo.push_back(objects); objects = undo.back(); undo.pop_back();
+            } else if (method == "redo") {
+                ++redo_calls;
+                REQUIRE_FALSE(redo.empty());
+                undo.push_back(objects); objects = redo.back(); redo.pop_back();
+            } else {
+                undo.push_back(objects); redo.clear();
+                for (const auto &op : params.at("operations")) {
+                    if (op.at("op") == "destroy") objects.clear();
+                    else if (op.at("op") == "duplicate") {
+                        auto copy = objects.front(); copy["id"] = 42; copy["name"] = "Cube_copy"; objects.push_back(copy);
+                    } else if (op.at("op") == "set_component_value") {
+                        CHECK(op.at("object_id") == 41);
+                        CHECK(op.at("component_slot") == "transform");
+                        CHECK(op.at("field_path") == "/pos");
+                        objects.front()["x"] = op.at("value").at(0);
+                    }
+                    else FAIL("unexpected scene operation: " << op.dump());
+                }
+            }
+            return {{"status", "committed"}, {"operation", method}, {"committed_revision", ++revision},
+                    {"transaction_id", "txn-" + std::to_string(revision)}};
+        }
+        return Json{};
+    }
+    void pump() {
+        QApplication::processEvents();
+        while (!requests.empty()) {
+            const auto request = std::move(requests.front()); requests.pop_front();
+            const auto result = answer(request.at("method"), request.value("params", Json::object()));
+            const auto id = request.at("id").get<qint64>();
+            if (result.is_null()) emit viewport.inspectorRpcFailed(id, QStringLiteral("unsupported fixture method"));
+            else emit viewport.inspectorRpcSucceeded(id, QByteArray::fromStdString(result.dump()));
+        }
+        QTest::qWait(5);
+    }
+    void await(const std::function<bool()> &condition) {
+        QElapsedTimer timer; timer.start();
+        while (!condition() && timer.elapsed() < 5000) pump();
+        REQUIRE(condition());
+    }
+    QWidget *focus(const char *name) {
+        auto *widget = window.findChild<QWidget *>(QString::fromLatin1(name));
+        REQUIRE(widget);
+        for (auto *parent = widget->parentWidget(); parent; parent = parent->parentWidget())
+            if (auto *dock = qobject_cast<QDockWidget *>(parent)) { dock->show(); dock->raise(); }
+        widget->setFocusPolicy(Qt::StrongFocus);
+        widget->setFocus();
+        QApplication::processEvents();
+        REQUIRE(widget->hasFocus());
+        return widget;
+    }
+    AutomationReply command(const QString &name, const QJsonObject &fields = {}) {
+        AutomationHost host; host.window = &window;
+        return runAutomationCommand(host, request(name, fields));
+    }
+    void key(const char *name, const char *sequence) {
+        focus(name);
+        const auto reply = command("key", {{"name", name}, {"sequence", sequence}, {"route", "window"}});
+        INFO(describe(reply).toStdString()); REQUIRE(reply.ok);
+    }
+    void move() {
+        QString error;
+        REQUIRE(window.inspector_->submitSceneEdit(PelicanStudio::SceneEditKind::Reparent, 41,
+            {{"op", "set_component_value"}, {"object_id", 41},
+             {"component_slot", "transform"}, {"field_path", "/pos"}, {"value", Json::array({7.0, 2.0, 3.0})}},
+            "Move Cube", &error) == PelicanStudio::SpawnOutcome::Sent);
+        await([this] { return objects.front().at("x") == 7.0 && !window.inspector_->sceneEditPending(); });
+        focus("pelican.viewportHost");
+        await([this] { return window.inspector_->undoAction()->isEnabled(); });
+    }
+};
+
+} // namespace
+
+TEST_CASE("KB-1 T1 T2 scene shortcut routes by focus and labels the Edit menu", "[devstudio][automation_input][shortcut][kb1]") {
+    SceneShortcutRig rig;
+    for (const char *surface : {"pelican.viewportHost", "pelican.outliner", "pelican.problems.list", "pelican.inspectorUndo"}) {
+        INFO(surface);
+        rig.focus(surface);
+        rig.move();
+        auto *action = rig.window.inspector_->undoAction();
+        REQUIRE(action->text() == "Undo Move Cube");
+        auto *menu = rig.window.findChild<QMenu *>("pelican.editMenu");
+        REQUIRE(menu);
+        REQUIRE(menu->actions().front() == action);
+        menu->popup(rig.window.mapToGlobal(QPoint{20, 40}));
+        QApplication::processEvents();
+        CHECK(action->isEnabled());
+        menu->hide();
+        QApplication::processEvents();
+        const int before = rig.undo_calls;
+        rig.key(surface, "Ctrl+Z");
+        rig.await([&] { return rig.undo_calls == before + 1 && !rig.window.inspector_->sceneEditPending(); });
+        CHECK(rig.objects.front().at("x") == 1.0);
+        CHECK(rig.window.inspector_->redoAction()->text() == "Redo Move Cube");
+        rig.await([&] { return rig.window.inspector_->redoAction()->isEnabled(); });
+        rig.key(surface, std::string{surface} == "pelican.viewportHost" ? "Ctrl+Y" : "Ctrl+Shift+Z");
+        rig.await([&] { return rig.objects.front().at("x") == 7.0 && !rig.window.inspector_->sceneEditPending(); });
+        rig.await([&] { return rig.window.inspector_->undoAction()->isEnabled(); });
+        rig.key(surface, "Ctrl+Z");
+        rig.await([&] { return rig.objects.front().at("x") == 1.0 && !rig.window.inspector_->sceneEditPending(); });
+        rig.await([&] { return rig.window.inspector_->undoAction()->isEnabled(); });
+    }
+    for (const char *tab : {"frame_plan", "graph"}) {
+        INFO(tab);
+        REQUIRE(rig.window.showRenderToolsTab(QString::fromLatin1(tab)));
+        rig.window.render_tabs_->currentWidget()->setFocusPolicy(Qt::StrongFocus);
+        rig.window.render_tabs_->currentWidget()->setFocus();
+        QApplication::processEvents();
+        CHECK_FALSE(rig.window.inspector_->undoAction()->isEnabled());
+        CHECK_FALSE(rig.window.inspector_->redoAction()->isEnabled());
+        CHECK_FALSE(rig.window.outliner_->deleteAction()->isEnabled());
+    }
+}
+
+TEST_CASE("KB-1 T3 viewport and Problems share object edits while text keeps Delete", "[devstudio][automation_input][shortcut][kb1]") {
+    SceneShortcutRig rig;
+    rig.key("pelican.viewportHost", "Delete");
+    rig.await([&] { return rig.objects.empty() && !rig.window.inspector_->sceneEditPending(); });
+    rig.await([&] { return rig.window.inspector_->undoAction()->isEnabled(); });
+    rig.key("pelican.viewportHost", "Ctrl+Z");
+    rig.await([&] { return rig.objects.size() == 1 && !rig.window.inspector_->sceneEditPending(); });
+    // As after the Outliner's refresh, select the restored identity.
+    rig.window.project_model_->updateSceneOutline(rig.outline());
+    rig.window.selection_model_.selectFromOutliner(PelicanStudio::OutlinerObjectKey{"main", 0, 41});
+    rig.window.inspector_->setSelection(PelicanStudio::OutlinerObjectKey{"main", 0, 41}, "Cube");
+    // The fixture selected directly; enter the surface as a real tree selection does.
+    rig.focus("pelican.outliner");
+    rig.await([&] { return rig.window.inspector_->undoAction()->isEnabled(); });
+    REQUIRE(rig.window.outliner_->duplicateAction()->isEnabled());
+    rig.key("pelican.viewportHost", "Ctrl+D");
+    rig.await([&] { return rig.objects.size() == 2 && !rig.window.inspector_->sceneEditPending(); });
+    rig.await([&] { return rig.window.inspector_->undoAction()->isEnabled(); });
+    rig.key("pelican.viewportHost", "Ctrl+Z");
+    rig.await([&] { return rig.objects.size() == 1 && !rig.window.inspector_->sceneEditPending(); });
+    rig.await([&] { return rig.window.inspector_->undoAction()->isEnabled(); });
+    rig.key("pelican.problems.list", "Ctrl+D");
+    rig.await([&] { return rig.objects.size() == 2 && !rig.window.inspector_->sceneEditPending(); });
+    auto *line = new QLineEdit(rig.window.inspector_);
+    line->setObjectName("kb1.text"); line->setText("abc"); line->show(); line->setCursorPosition(0);
+    rig.key("kb1.text", "Delete");
+    CHECK(line->text() == "bc");
+    CHECK(rig.objects.size() == 2);
+    line->selectAll(); QTest::keyClicks(line, "replacement");
+    rig.key("kb1.text", "Ctrl+Z");
+    CHECK(line->text() == "bc");
+    CHECK(rig.undo_calls == 2);
+}
+
+TEST_CASE("KB-1 T4 New and Open project window shortcuts open dismissible dialogs", "[devstudio][automation_input][shortcut][kb1]") {
+    application();
+    QTemporaryDir config;
+    PelicanStudio::MainWindow window{config.path()};
+    window.show(); window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    AutomationHost host; host.window = &window;
+    auto key = [&](const char *sequence) {
+        const auto reply = runAutomationCommand(host, request("key", {{"name", "pelican.viewportHost"}, {"sequence", sequence}, {"route", "window"}}));
+        REQUIRE(reply.ok);
+    };
+    key("Ctrl+N"); QApplication::processEvents();
+    auto *dialog = window.findChild<QDialog *>("pelican.newProjectDialog");
+    REQUIRE(dialog); REQUIRE(dialog->isVisible());
+    auto reply = runAutomationCommand(host, request("key", {{"name", "pelican.newProjectDialog"}, {"sequence", "Escape"}}));
+    REQUIRE(reply.ok);
+    QApplication::processEvents(); window.activateWindow();
+    bool opened = false;
+    // QFileDialog's exec loop is closed by automation on its next event turn.
+    QTimer::singleShot(100, &window, [&] {
+        auto *file = qobject_cast<QFileDialog *>(QApplication::activeModalWidget());
+        opened = file != nullptr;
+        if (file) { file->setObjectName("kb1.openDialog");
+            auto closed = runAutomationCommand(host, request("key", {{"name", "kb1.openDialog"}, {"sequence", "Escape"}}));
+            CHECK(closed.ok);
+        }
+    });
+    key("Ctrl+O");
+    CHECK(opened);
+}
+
+TEST_CASE("KB-1 T5 Help opens a read-only table of keyboard shortcuts", "[devstudio][automation_input][shortcut][kb1]") {
+    application();
+    QTemporaryDir config;
+    PelicanStudio::MainWindow window{config.path()};
+    window.show(); window.activateWindow();
+    AutomationHost host; host.window = &window;
+    const auto reply = runAutomationCommand(host, request("action", {{"name", "pelican.help.shortcuts"}}));
+    REQUIRE(reply.ok);
+    auto *dialog = window.findChild<QDialog *>("pelican.help.shortcutsDialog");
+    REQUIRE(dialog); REQUIRE(dialog->isVisible());
+    auto *table = dialog->findChild<QTableWidget *>("pelican.help.shortcutsTable");
+    REQUIRE(table); CHECK(table->editTriggers() == QAbstractItemView::NoEditTriggers);
+    for (const auto *key : {"Ctrl+Z", "Ctrl+S", "Ctrl+P", "Delete", "Ctrl+D", "F", "Escape"}) {
+        bool found = false;
+        for (int row = 0; row < table->rowCount(); ++row) found |= table->item(row, 1)->text().contains(key);
+        INFO(key); CHECK(found);
+    }
+    dialog->reject();
+}
+
+TEST_CASE("KB-1 native viewport keys use the scene actions and respect modal dialogs", "[devstudio][automation_input][shortcut][kb1]") {
+    SceneShortcutRig rig;
+    rig.move();
+    emit rig.viewport.studioShortcutPressed(Qt::Key_Z, Qt::ControlModifier);
+    CHECK(rig.undo_calls == 0);
+    rig.viewport.engine_input_active_ = true;
+    emit rig.viewport.engineInputActiveChanged(true);
+    emit rig.viewport.studioShortcutPressed(Qt::Key_Z, Qt::ControlModifier);
+    rig.await([&] { return rig.undo_calls == 1 && !rig.window.inspector_->sceneEditPending(); });
+    CHECK(rig.objects.front().at("x") == 1.0);
+    rig.await([&] { return rig.window.inspector_->redoAction()->isEnabled(); });
+    QDialog dialog(&rig.window); dialog.open(); QApplication::processEvents();
+    emit rig.viewport.studioShortcutPressed(Qt::Key_Y, Qt::ControlModifier);
+    CHECK(rig.redo_calls == 0);
+    dialog.reject(); QApplication::processEvents();
+    emit rig.viewport.studioShortcutPressed(Qt::Key_Y, Qt::ControlModifier);
+    rig.await([&] { return rig.redo_calls == 1; });
+    CHECK(rig.objects.front().at("x") == 7.0);
+    rig.viewport.engine_input_active_ = false;
 }

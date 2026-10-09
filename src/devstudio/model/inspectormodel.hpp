@@ -681,6 +681,10 @@ class InspectorModel {
     bool busy() const noexcept;
     bool canEdit() const noexcept;
     bool canUndoRedo() const noexcept;
+    std::string undoLabel() const;
+    std::string redoLabel() const;
+    // Stop can restore an earlier journal and group the kept edits.
+    void refreshHistoryLabels();
     bool canSave() const noexcept;
 };
 

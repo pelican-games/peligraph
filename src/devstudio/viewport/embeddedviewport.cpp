@@ -988,6 +988,13 @@ void EmbeddedViewport::pollPointerFocus() {
     // Reported as a change, not as a reading: the 5 ms poll must not turn into
     // 200 signals a second.
     setEngineInputActive(child_window_ != 0 && primary_pointer.has_focus);
+    const quint32 pressed = primary_pointer.shortcut_keys_down & ~studio_shortcut_keys_down_;
+    studio_shortcut_keys_down_ = primary_pointer.shortcut_keys_down;
+    if (engine_input_active_) {
+        for (std::size_t index = 0; index < StudioShortcutKeys.size(); ++index)
+            if (pressed & (quint32{1} << index))
+                emit studioShortcutPressed(StudioShortcutKeys[index], primary_pointer.shortcut_modifiers);
+    }
 }
 
 void EmbeddedViewport::setEngineInputActive(bool active) {

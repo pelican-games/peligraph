@@ -729,6 +729,10 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
       Qt6::Test
       Qt6::Widgets
     )
+    target_include_directories(pelican_test_devstudio_automation_input_test PRIVATE ${CMAKE_SOURCE_DIR}/src/devstudio)
+    target_compile_definitions(pelican_test_devstudio_automation_input_test PRIVATE
+      PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>")
+    add_dependencies(pelican_test_devstudio_automation_input_test pelican_test_process_fixture_child)
   endif()
 
   pelican_define_test(devstudio_fullscreen_pass_test QT QT_OFFSCREEN

@@ -156,11 +156,13 @@ class EmbeddedViewport final : public QWidget {
     // parsing it again on the GUI thread stopped the window.
     void engineStatusParsed(qint64 request_id, const nlohmann::json &status);
     void engineInputActiveChanged(bool active);
+    void studioShortcutPressed(int key, Qt::KeyboardModifiers modifiers);
     // MG-1. `refusal` is the line the player wrote:
     // "project.migration_required@1: {documents:[...]}".
     void projectMigrationRequired(const QString &refusal);
 
   private:
+    quint32 studio_shortcut_keys_down_ = 0;
     EngineProcess process_;
     EngineFailureModel engine_failure_model_;
     QWidget *native_host_ = nullptr;
