@@ -343,6 +343,8 @@ struct ComponentCodec {
         const nlohmann::json &authored,
         ComponentDecodeSurface surface = ComponentDecodeSurface::runtime) const;
     nlohmann::ordered_json encodeCanonical(const ComponentCodecValue &value) const;
+    nlohmann::ordered_json encodeAuthored(const ComponentCodecValue &value,
+                                           const nlohmann::json &authored) const;
     const SchemaNode &schemaNode() const;
     std::vector<StructFieldSchema> fieldSchema() const;
     void applyRuntime(const ComponentCodecValue &value, void *target) const;

@@ -936,7 +936,8 @@ TEST_CASE("WP361 resolver expands authored then generated and preserves camera-e
     REQUIRE(object.components[4].origin.generated()->component_key == "logic_hp");
     REQUIRE(object.components[5].origin.generated()->component_key == "logic_target");
     REQUIRE(generatedByKey(object, "sprite").effective_json.at("texture") == "white");
-    REQUIRE(generatedByKey(object, "hit").effective_json.at("radius") == 0.4F);
+    REQUIRE(generatedByKey(object, "hit").effective_json.at("radius").get<float>() == 0.4F);
+    REQUIRE(generatedByKey(object, "hit").effective_json.at("radius").dump() == "0.4");
     REQUIRE(object.prefab_instance->closure_generation == 12);
     REQUIRE(object.prefab_instance->provider_generation == 7);
     REQUIRE(object.prefab_instance->parameters[0].name == "hp");

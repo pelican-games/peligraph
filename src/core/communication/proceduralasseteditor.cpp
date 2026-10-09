@@ -1,3 +1,4 @@
+#include "../../project/jsondocument.hpp"
 #include "proceduralasseteditor.hpp"
 #include "../../project/assetdataformat.hpp"
 #include <algorithm>
@@ -92,7 +93,7 @@ ProceduralAssetEditorService::Result ProceduralAssetEditorService::edit(const Js
     }
     (void)parseAssetDataFormatJson(Json(candidate));
     const auto ticket = "procedural-asset-edit-" + std::to_string(next_ticket_++);
-    pending_.push_back({ticket, digest, candidate.dump(2) + "\n", gate_epoch});
+    pending_.push_back({ticket, digest, renderJsonDocument(candidate, dependencies_.source_bytes), gate_epoch});
     results_[ticket] = {{"ticket", ticket}, {"status", "pending"}, {"committed", false}};
     return {{"status", "accepted"}, {"ticket", ticket}};
 }

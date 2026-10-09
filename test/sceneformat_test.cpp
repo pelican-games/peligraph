@@ -15,6 +15,7 @@
 #include "graph_composition_fixture.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers.hpp>
 #include <quill/Frontend.h>
 #include <quill/Logger.h>
@@ -1272,3 +1273,82 @@ TEST_CASE("an unmatched graph instance owner is named once per graph generation"
 }
 
 } // namespace Pelican
+
+namespace Pelican {
+
+
+TEST_CASE("sceneformat SV1 preserves scene bytes while editing one component", "[scene-format][sv1]") {
+    using Json = nlohmann::ordered_json;
+    Json source = {{"version", 2}, {"schema", "pelican.scene"},
+        {"scenes", {{"main", {{"objects", Json::array({
+            {{"name", "first"}, {"authoring_object_id", 1}, {"components", Json::array({
+                {{"name", "transform"}, {"pos", {0.1, 0.2, 0.3}}},
+                {{"name", "opaque"}, {"payload", 0.001}}})}},
+            {{"name", "second"}, {"authoring_object_id", 2}, {"components", Json::array({
+                {{"name", "transform"}, {"pos", {0.1, 0.2, 0.3}}}})}}})}}}}},
+        {"next_authoring_object_id", 3}};
+    auto pretty = source.dump(2);
+    const auto opaque_begin = pretty.find("{\n", pretty.find("0.3"));
+    const auto opaque_end = pretty.find('}', opaque_begin) + 1;
+    const std::string untouched = R"({ "name" : "opaque", "payload": 1e-03 })";
+    pretty.replace(opaque_begin, opaque_end - opaque_begin, untouched);
+    std::string bytes = "\xef\xbb\xbf";
+    for (char ch : pretty) { if (ch == '\n') bytes += '\r'; bytes += ch; }
+    const bool trailing = GENERATE(false, true);
+    if (trailing) bytes += "\r\n";
+    const auto document = AuthoringSceneDocument::load(bytes, SceneRevision{1});
+    REQUIRE(AuthoringSceneAuthority::encodePersistent(document) == bytes);
+    auto raw = test_support::authoring(document).rawJson();
+    auto component = raw["scenes"]["main"]["objects"][0]["components"][0];
+    SECTION("T1 position has an exact byte diff") {
+        component["pos"][0] = 0.4;
+        auto command = makeSetComponentValueCommand("main", "first", "transform", component);
+        command.apply(raw);
+        const auto edited = test_support::authoring(document).stage(raw, SceneRevision{2});
+        auto expected = bytes;
+        expected.replace(expected.find("0.1"), 3, "0.4");
+        CHECK(AuthoringSceneAuthority::encodePersistent(edited) == expected);
+    }
+    SECTION("T2 rotation retains position and omits absent defaults") {
+        component["rotation"] = {0.0, 0.0, 0.0, 1.0};
+        makeSetComponentValueCommand("main", "first", "transform", component).apply(raw);
+        CHECK_FALSE(raw["scenes"]["main"]["objects"][0]["components"][0].contains("scale"));
+        const auto saved = AuthoringSceneAuthority::encodePersistent(
+            test_support::authoring(document).stage(raw, SceneRevision{2}));
+        CHECK(saved.find("0.100000001") == std::string::npos);
+        CHECK(saved.find(untouched) != std::string::npos);
+        CHECK(saved.find("\"rotation\"") > saved.find("0.3"));
+        CHECK(saved.starts_with("\xef\xbb\xbf"));
+        CHECK(saved.ends_with("\r\n") == trailing);
+        CHECK(saved.find('\n') == saved.find("\r\n") + 1);
+    }
+    SECTION("T4 new components append and existing components retain their bytes") {
+        raw["scenes"]["main"]["objects"][0]["components"].push_back({{"name", "new_component"}});
+        const auto saved = AuthoringSceneAuthority::encodePersistent(
+            test_support::authoring(document).stage(raw, SceneRevision{2}));
+        CHECK(saved.find(untouched) != std::string::npos);
+        CHECK(saved.find("new_component") > saved.find(untouched));
+        const auto parsed = Json::parse(saved);
+        CHECK(parsed.begin().key() == "version");
+        CHECK(parsed["scenes"]["main"]["objects"][0]["components"][2]["name"] == "new_component");
+    }
+
+    SECTION("T4 successive unsaved edits append new keys in edit order") {
+        raw["z_added"] = 1;
+        const auto first = test_support::authoring(document).stage(raw, SceneRevision{2});
+        raw["a_added"] = 2;
+        const auto saved = AuthoringSceneAuthority::encodePersistent(
+            test_support::authoring(first).stage(raw, SceneRevision{3}));
+        CHECK(saved.find("z_added") < saved.find("a_added"));
+        CHECK(saved.find(untouched) != std::string::npos);
+    }
+    SECTION("structural reorder carries untouched component bytes with its identity") {
+        auto stage = AuthoringSceneAuthority::structuralStage(document);
+        stage.reorderObject(AuthoringObjectId{1}, 1);
+        const auto saved = AuthoringSceneAuthority::encodePersistent(std::move(stage).finish(SceneRevision{2}));
+        CHECK(saved.find("second") < saved.find("first"));
+        CHECK(saved.find(untouched) != std::string::npos);
+    }
+}
+
+}

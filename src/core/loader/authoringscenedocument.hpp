@@ -106,6 +106,7 @@ class AuthoringSceneDocument {
     int format_version_ = 2;
     bool uses_prefabs_ = false;
     nlohmann::json raw_document_;
+    std::string original_bytes_;
     std::vector<std::string> warnings_;
     std::vector<SceneMetadata> scene_metadata_;
     std::uint64_t next_authoring_object_id_value_ = 1;

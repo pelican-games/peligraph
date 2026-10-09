@@ -1,3 +1,4 @@
+#include "../userpublic/details/schema/jsonnumber.hpp"
 #include "componentcodec.hpp"
 #include "../renderer/proceduralgeometrycomponent.hpp"
 
@@ -459,10 +460,10 @@ template <class T> const T &codecValue(const ComponentCodecValue &value, std::st
     return *typed;
 }
 
-OrderedJson encodeVec(vec2 value) { return OrderedJson::array({value.x, value.y}); }
-OrderedJson encodeVec(vec3 value) { return OrderedJson::array({value.x, value.y, value.z}); }
-OrderedJson encodeVec(vec4 value) { return OrderedJson::array({value.x, value.y, value.z, value.w}); }
-OrderedJson encodeVec(quat value) { return OrderedJson::array({value.x, value.y, value.z, value.w}); }
+OrderedJson encodeVec(vec2 value) { return OrderedJson::array({internal::authoredJsonNumber(value.x), internal::authoredJsonNumber(value.y)}); }
+OrderedJson encodeVec(vec3 value) { return OrderedJson::array({internal::authoredJsonNumber(value.x), internal::authoredJsonNumber(value.y), internal::authoredJsonNumber(value.z)}); }
+OrderedJson encodeVec(vec4 value) { return OrderedJson::array({internal::authoredJsonNumber(value.x), internal::authoredJsonNumber(value.y), internal::authoredJsonNumber(value.z), internal::authoredJsonNumber(value.w)}); }
+OrderedJson encodeVec(quat value) { return OrderedJson::array({internal::authoredJsonNumber(value.x), internal::authoredJsonNumber(value.y), internal::authoredJsonNumber(value.z), internal::authoredJsonNumber(value.w)}); }
 
 // The declared schema is the single source of the field names, defaults and
 // ranges a codec accepts. "name" is erased instead of being declared as a
@@ -1077,19 +1078,19 @@ OrderedJson encodeController(const CameraControllerCodecData &data) {
     result["type"] = data.type == CameraControllerCodecType::Orbit
                          ? "orbit"
                          : (data.type == CameraControllerCodecType::Follow ? "follow" : "fly");
-    result["damping"] = data.damping;
+    result["damping"] = internal::authoredJsonNumber(data.damping);
     if (data.type == CameraControllerCodecType::Orbit) {
         if (!data.target.empty()) result["target"] = data.target;
-        result["distance"] = data.distance;
-        result["yaw"] = data.yaw;
-        result["pitch"] = data.pitch;
-        result["sensitivity"] = data.sensitivity;
+        result["distance"] = internal::authoredJsonNumber(data.distance);
+        result["yaw"] = internal::authoredJsonNumber(data.yaw);
+        result["pitch"] = internal::authoredJsonNumber(data.pitch);
+        result["sensitivity"] = internal::authoredJsonNumber(data.sensitivity);
     } else if (data.type == CameraControllerCodecType::Follow) {
         result["target"] = data.target;
         result["offset"] = encodeVec(data.offset);
     } else {
-        result["speed"] = data.speed;
-        result["sensitivity"] = data.sensitivity;
+        result["speed"] = internal::authoredJsonNumber(data.speed);
+        result["sensitivity"] = internal::authoredJsonNumber(data.sensitivity);
     }
     return result;
 }
@@ -1100,15 +1101,15 @@ OrderedJson encodeCamera(const ComponentCodecValue &value) {
     if (data.projection_specified) {
         result["type"] = cameraTypeName(data.projection_kind);
         if (data.projection_kind == CameraProjectionKind::Perspective) {
-            if (data.yfov) result["yfov"] = *data.yfov;
-            if (data.znear) result["znear"] = *data.znear;
-            if (data.zfar) result["zfar"] = *data.zfar;
-            if (data.aspect) result["aspect"] = *data.aspect;
+            if (data.yfov) result["yfov"] = internal::authoredJsonNumber(*data.yfov);
+            if (data.znear) result["znear"] = internal::authoredJsonNumber(*data.znear);
+            if (data.zfar) result["zfar"] = internal::authoredJsonNumber(*data.zfar);
+            if (data.aspect) result["aspect"] = internal::authoredJsonNumber(*data.aspect);
         } else {
-            if (data.xmag) result["xmag"] = *data.xmag;
-            if (data.ymag) result["ymag"] = *data.ymag;
-            if (data.znear) result["znear"] = *data.znear;
-            if (data.zfar) result["zfar"] = *data.zfar;
+            if (data.xmag) result["xmag"] = internal::authoredJsonNumber(*data.xmag);
+            if (data.ymag) result["ymag"] = internal::authoredJsonNumber(*data.ymag);
+            if (data.znear) result["znear"] = internal::authoredJsonNumber(*data.znear);
+            if (data.zfar) result["zfar"] = internal::authoredJsonNumber(*data.zfar);
         }
     }
     if (data.sprite_specified) {
@@ -1499,11 +1500,11 @@ OrderedJson encodeCollider(const ComponentCodecValue &value) {
     data.validate();
     OrderedJson result{{"name", "collider"}, {"shape", data.shape}, {"pos", encodeVec(data.pos)},
                        {"rotation", encodeVec(data.rotation)}};
-    if (data.shape == "sphere") result["radius"] = data.radius;
+    if (data.shape == "sphere") result["radius"] = internal::authoredJsonNumber(data.radius);
     else if (data.shape == "box") result["half_extents"] = encodeVec(data.half_extents);
     else if (data.shape == "capsule") {
-        result["radius"] = data.radius;
-        result["half_height"] = data.half_height;
+        result["radius"] = internal::authoredJsonNumber(data.radius);
+        result["half_height"] = internal::authoredJsonNumber(data.half_height);
     }
     result["layer"] = data.layer;
     result["mask"] = data.mask;
@@ -2181,6 +2182,27 @@ ResolutionResult<ComponentCodecValue> ComponentCodec::decodeAuthored(
     } catch (const StructFieldValidationError &error) {
         legacyReject(std::string{name} + ".schema_validation", error.what());
     }
+}
+
+namespace {
+OrderedJson retainAuthoredFields(const OrderedJson &canonical, const Json &authored) {
+    if (canonical.is_array() && authored.is_array() && canonical.size() == authored.size()) {
+        auto result = OrderedJson::array();
+        for (std::size_t i = 0; i < authored.size(); ++i)
+            result.push_back(retainAuthoredFields(canonical.at(i), authored.at(i)));
+        return result;
+    }
+    if (!canonical.is_object() || !authored.is_object()) return canonical;
+    auto result = OrderedJson::object();
+    for (const auto &[key, item] : authored.items())
+        result[key] = canonical.contains(key) ? retainAuthoredFields(canonical.at(key), item) : OrderedJson(item);
+    return result;
+}
+}
+
+nlohmann::ordered_json ComponentCodec::encodeAuthored(
+    const ComponentCodecValue &value, const Json &authored) const {
+    return retainAuthoredFields(encodeCanonical(value), authored);
 }
 
 nlohmann::ordered_json ComponentCodec::encodeCanonical(const ComponentCodecValue &value) const {

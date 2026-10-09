@@ -1,3 +1,4 @@
+#include "../src/project/jsondocument.hpp"
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/communication/engineauthoringlists.hpp"
 #include "render_graph_root_test_support.hpp"
@@ -2530,7 +2531,10 @@ TEST_CASE("authored render root value edits preserve unrelated lexical bytes",
         const auto edited = document.withRootValue("scene_acceleration_structures", value);
         auto expected = original;
         const std::string old_value = "[ {\"name\":\"old\"} ]";
-        expected.replace(expected.find(old_value), old_value.size(), value);
+        expected.replace(expected.find(old_value), old_value.size(),
+            "[\r\n    {\r\n      \"name\": \"actors\",\r\n      \"instance_mask\": 1,\r\n"
+            "      \"nested\": {\r\n        \"list\": [\r\n          null,\r\n          true,\r\n"
+            "          \"}\"\r\n        ]\r\n      }\r\n    }\r\n  ]");
         CHECK(edited.bytes() == expected);
         CHECK(edited.featureReferences() == document.featureReferences());
         CHECK(edited.sourceDigest() != document.sourceDigest());
@@ -2593,7 +2597,7 @@ TEST_CASE("P-2a-4a section value edits address the graph root's rendering member
         auto expected = original;
         const std::string old_value = "{ \"main_render\": [\"a\"] }";
         expected.replace(expected.find(old_value), old_value.size(),
-                         "{\"main_render\":[\"b\"]}");
+                         "{ \"main_render\": [\"b\"] }");
         CHECK(edited.bytes() == expected);
         CHECK(Json::parse(edited.bytes()).contains("rendering"));
         CHECK_FALSE(Json::parse(edited.bytes()).contains("frame_node_order"));
@@ -2679,7 +2683,7 @@ TEST_CASE("P-2a-4a section value edits address the graph root's rendering member
         // `edit_graph_document` keeps working on a document that has no
         // rendering config yet.
         CHECK(inspected.withRootValue("nodes", "[1]").bytes() ==
-              "{\"schema\": \"pelican.graph\", \"nodes\": [1]}");
+              "{\"schema\": \"pelican.graph\", \"nodes\": [\n    1\n  ]}");
     }
 }
 
@@ -13704,3 +13708,68 @@ TEST_CASE("EL-1 material authoring context groups vertex modes under one public 
 }
 
 } // namespace Pelican
+
+
+namespace Pelican {
+TEST_CASE("renderconfigdocument SV1 common writer preserves order BOM and line endings", "[renderconfig][sv1]") {
+    const std::string original = "\xef\xbb\xbf{\r\n  \"z\": 0.1,\r\n  \"a\": {\"keep\":1e-3}\r\n}\r\n";
+    auto value = nlohmann::ordered_json::parse(original);
+    value["new"] = 0.12345678901234567;
+    const auto saved = renderJsonDocument(value, original);
+    CHECK(saved.starts_with("\xef\xbb\xbf"));
+    CHECK(saved.ends_with("\r\n"));
+    CHECK(saved.find("\"z\"") < saved.find("\"a\""));
+    CHECK(saved.find("\"a\"") < saved.find("\"new\""));
+    CHECK(saved.find("{\"keep\":1e-3}") != std::string::npos);
+    CHECK(nlohmann::json::parse(saved).at("new").get<double>() == 0.12345678901234567);
+    for (std::size_t i = 0; i < saved.size(); ++i) if (saved[i] == '\n') REQUIRE((i && saved[i-1] == '\r'));
+    const auto graph = AuthoredRenderConfigDocument::inspect(
+        "\xef\xbb\xbf{\r\n  \"schema\": \"pelican.graph\",\r\n  \"version\":1,\r\n"
+        "  \"rendering\": {\"features\": [], \"z\": 1}\r\n}");
+    for (bool replace : {false, true}) {
+        const auto base = replace ? graph.withSectionValue("added", "0") : graph;
+        const auto edited = base.withSectionValue("added", "{\n  \"z\": 2,\n  \"a\": [1,2]\n}");
+        CHECK(edited.bytes().starts_with("\xef\xbb\xbf"));
+        CHECK_FALSE(edited.bytes().ends_with('\n'));
+        for (std::size_t i = 0; i < edited.bytes().size(); ++i)
+            if (edited.bytes()[i] == '\n') REQUIRE((i && edited.bytes()[i-1] == '\r'));
+        const auto parsed = nlohmann::ordered_json::parse(edited.bytes());
+        CHECK(parsed.at("rendering").at("added").begin().key() == "z");
+        CHECK(edited.bytes().find("\"z\": 1") < edited.bytes().find("\"added\""));
+    }
+}
+
+TEST_CASE("proceduralasset SV1 edits preserve source format and member order", "[render-config-editor][sv1]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    const auto path = project.root / "sv1_assets.json";
+    const std::string original = "\xef\xbb\xbf{\r\n  \"version\":2,\r\n  \"schema\":\"pelican.asset_data\",\r\n"
+        "  \"models\":[],\r\n  \"procedural_geometry\":[{\"name\":\"sphere\",\"kind\":\"aabb_v1\","
+        "\"aabb\":{\"min\":[-1,-1,-1],\"max\":[1,1,1]},\"record\":{\"radius\":1}}]\r\n}\r\n";
+    writeBytes(path, original);
+    ProceduralAssetEditorService service({
+        .reference = "project://sv1_assets.json", .normalized_reference = resolver.normalizedReference("project://sv1_assets.json"),
+        .path = path, .project_root = project.root, .source_bytes = original,
+        .gate = [] { return RenderConfigEditorGateObservation{}; },
+        .apply = [](std::string_view, const std::function<void()> &commit) { commit(); }});
+    const auto accepted = service.edit({{"base_source_digest", service.get(Json::object()).at("source_digest").at("hex")},
+        {"asset_name", "sphere"}, {"record", {{"radius", 2}}}});
+    REQUIRE(accepted.at("status") == "accepted");
+    service.commitPending();
+    REQUIRE(service.result({{"ticket", accepted.at("ticket")}}).at("committed") == true);
+    auto expected = original;
+    expected.replace(expected.find("\"radius\":1"), 10, "\"radius\":2");
+    CHECK(readBytes(path) == expected);
+}
+}
+
+namespace Pelican {
+TEST_CASE("renderconfigdocument SV1 repeated component names keep distinct source spans", "[renderconfig][sv1]") {
+    const std::string bytes = "[{\"name\":\"behavior\",\"params\":1}, { \"name\" : \"behavior\", \"params\":2e0 }]";
+    auto value = nlohmann::ordered_json::parse(bytes);
+    value[0]["params"] = 3;
+    CHECK(renderJsonDocument(value, bytes) ==
+        "[{\"name\":\"behavior\",\"params\":3}, { \"name\" : \"behavior\", \"params\":2e0 }]");
+}
+}

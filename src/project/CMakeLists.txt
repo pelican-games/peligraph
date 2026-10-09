@@ -22,6 +22,7 @@ add_library(pelican_project
     importmanifest.cpp
     importrules.cpp
     inputactionoverlay.cpp
+    jsondocument.cpp
     jsonrpc.cpp
     lightingdata.cpp
     logicalrendergraph.cpp

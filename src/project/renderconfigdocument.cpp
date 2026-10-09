@@ -1,3 +1,4 @@
+#include "jsondocument.hpp"
 #include "renderconfigdocument.hpp"
 
 #include "graphcomposition.hpp"
@@ -714,12 +715,12 @@ AuthoredRenderConfigDocument AuthoredRenderConfigDocument::withRootValue(
     std::string_view key, std::string_view json_value) const {
     if (!nlohmann::json::accept(json_value))
         throw std::invalid_argument("render config root replacement must be one valid JSON value");
-    JsonCursor value_cursor{json_value};
-    value_cursor.skipWhitespace();
-    const auto value_begin = value_cursor.position();
-    value_cursor.skipValue();
-    const auto value = json_value.substr(value_begin, value_cursor.position() - value_begin);
     const auto location = locateRootMembers(bytes_, key);
+    const auto previous = location.selected_found
+        ? std::string_view{bytes_}.substr(location.selected_begin, location.selected_end - location.selected_begin)
+        : std::string_view{};
+    const auto value = renderJsonDocumentValue(
+        nlohmann::ordered_json::parse(json_value), previous, bytes_, 1);
     auto edited = bytes_;
     if (location.selected_found) {
         edited.replace(location.selected_begin, location.selected_end - location.selected_begin, value);
@@ -756,12 +757,12 @@ AuthoredRenderConfigDocument AuthoredRenderConfigDocument::withSectionValue(
     if (isGraphRootKey(key)) return withRootValue(key, json_value);
     if (!nlohmann::json::accept(json_value))
         throw std::invalid_argument("render config section replacement must be one valid JSON value");
-    JsonCursor value_cursor{json_value};
-    value_cursor.skipWhitespace();
-    const auto value_begin = value_cursor.position();
-    value_cursor.skipValue();
-    const auto value = json_value.substr(value_begin, value_cursor.position() - value_begin);
     const auto location = locateSectionMembers(bytes_, key);
+    const auto previous = location.selected_found
+        ? std::string_view{bytes_}.substr(location.selected_begin, location.selected_end - location.selected_begin)
+        : std::string_view{};
+    const auto value = renderJsonDocumentValue(
+        nlohmann::ordered_json::parse(json_value), previous, bytes_, 2);
     auto edited = bytes_;
     if (location.selected_found) {
         edited.replace(location.selected_begin, location.selected_end - location.selected_begin, value);

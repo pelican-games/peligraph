@@ -1,3 +1,4 @@
+#include "../../project/jsondocument.hpp"
 #include "materialdocumentrpc.hpp"
 
 #include "rpcserver.hpp"
@@ -105,22 +106,6 @@ std::string readFileBytes(const std::filesystem::path &path) {
     std::ifstream input{path, std::ios::binary};
     if (!input) throw std::runtime_error("cannot read " + path.generic_string());
     return std::string{std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
-}
-
-// A document as the engine writes it: the keys in the order they had (a new
-// key last), two spaces, and the file's own line ending and final newline. A
-// new file is LF with a final newline.
-std::string renderJsonDocument(const OrderedJson &document, std::string_view previous) {
-    auto text = document.dump(2);
-    if (previous.empty() || previous.ends_with('\n')) text += '\n';
-    if (previous.find("\r\n") == std::string_view::npos) return text;
-    std::string crlf;
-    crlf.reserve(text.size() + text.size() / 16);
-    for (const char ch : text) {
-        if (ch == '\n') crlf += '\r';
-        crlf += ch;
-    }
-    return crlf;
 }
 
 Json toJson(const OrderedJson &value) { return Json::parse(value.dump()); }

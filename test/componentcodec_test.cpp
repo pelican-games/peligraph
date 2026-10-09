@@ -1,3 +1,8 @@
+#include "../src/core/userpublic/details/schema/structfieldjson.hpp"
+#include "../src/project/jsondocument.hpp"
+#include "../src/core/userpublic/details/schema/jsonnumber.hpp"
+#include <bit>
+#include <limits>
 #include "../src/core/ecs/predefined/transform.hpp"
 #include "../src/core/loader/componentcodec.hpp"
 #include "../src/core/renderer/proceduralgeometrycomponent.hpp"
@@ -686,3 +691,80 @@ TEST_CASE("SC-1 camera controller schema states each type and the fields it read
 }
 
 } // namespace Pelican
+
+
+namespace Pelican {
+TEST_CASE("componentcodec SV1 uses float decimals and retains authored omissions", "[componentcodec][sv1]") {
+    const auto &codec = requireComponentCodec("transform");
+    const nlohmann::json authored{{"name", "transform"}, {"pos", {0.1, 0.2, 0.3}}};
+    auto decoded = codec.decodeAuthored(authored);
+    REQUIRE(decoded);
+    const auto encoded = codec.encodeAuthored(decoded.value(), authored);
+    CHECK(encoded.at("pos").dump() == "[0.1,0.2,0.3]");
+    CHECK_FALSE(encoded.contains("rotation"));
+    CHECK_FALSE(encoded.contains("scale"));
+    auto explicit_defaults = authored;
+    explicit_defaults["scale"] = {1, 1, 1};
+    CHECK(codec.encodeAuthored(decoded.value(), explicit_defaults).contains("scale"));
+    const auto &camera = requireComponentCodec("camera");
+    const nlohmann::json input{{"name", "camera"}, {"type", "perspective"}, {"znear", 0.1},
+        {"controller", {{"type", "fly"}, {"speed", 0.3}, {"sensitivity", 0.1}}}};
+    const auto camera_value = camera.decodeAuthored(input);
+    REQUIRE(camera_value);
+    const auto camera_json = camera.encodeAuthored(camera_value.value(), input);
+    CHECK(camera_json.at("znear").dump() == "0.1");
+    CHECK(camera_json.at("controller").at("speed").dump() == "0.3");
+    CHECK_FALSE(camera_json.at("controller").contains("damping"));
+}
+}
+
+namespace Pelican {
+TEST_CASE("componentcodec SV1 numeric writer roundtrips float extremes and double precision", "[componentcodec][sv1]") {
+    for (const float value : {0.1f, -0.0f, 3e10f, std::numeric_limits<float>::max(),
+                              std::numeric_limits<float>::min(), std::numeric_limits<float>::denorm_min()}) {
+        const auto text = renderJsonDocument(internal::authoredJsonNumber(value), {});
+        CAPTURE(text);
+        const auto reopened = nlohmann::json::parse(text).get<float>();
+        CHECK(std::bit_cast<std::uint32_t>(reopened) == std::bit_cast<std::uint32_t>(value));
+    }
+    CHECK(renderJsonDocument(internal::authoredJsonNumber(3e10f), {}) == "3e+10\n");
+    const double precise = 0.12345678901234567;
+    CHECK(nlohmann::json::parse(renderJsonDocument(internal::authoredJsonNumber(precise), {})).get<double>() == precise);
+}
+}
+
+namespace Pelican {
+namespace {
+struct Sv1BoundedFloats {
+    float scalar = 36.8f;
+    vec2 vector{-36.8f, 36.8f};
+    static constexpr auto schema = structFields(componentPolicy("sv1_bounded"),
+        required(field<&Sv1BoundedFloats::scalar>("scalar", frange(-double(36.8f), double(36.8f)))),
+        required(field<&Sv1BoundedFloats::vector>("vector", frange(-double(36.8f), double(36.8f)))));
+};
+}
+TEST_CASE("componentcodec SV1 numeric boundaries remain accepted by the unchanged reader", "[componentcodec][sv1]") {
+    SECTION("exact F32 limit") {
+        const auto &codec = requireComponentCodec("transform");
+        const double limit = std::numeric_limits<float>::max();
+        const nlohmann::json source{{"name", "transform"}, {"pos", {limit, -limit, 0.1}}};
+        auto decoded = codec.decodeAuthored(source);
+        REQUIRE(decoded);
+        const auto encoded = codec.encodeAuthored(decoded.value(), source);
+        const auto reloaded = codec.decodeAuthored(nlohmann::json::parse(renderJsonDocument(encoded, {})));
+        REQUIRE(reloaded);
+        CHECK(encoded["pos"][0].get<double>() == limit);
+        CHECK(encoded["pos"][1].get<double>() == -limit);
+    }
+    SECTION("declared scalar and vector bounds") {
+        const Sv1BoundedFloats original;
+        const auto bounded = internal::encodeStructObject(original, Sv1BoundedFloats::schema, "sv1");
+        Sv1BoundedFloats reopened;
+        internal::decodeStructObject(nlohmann::json(bounded), reopened, Sv1BoundedFloats::schema, "sv1");
+        CHECK(reopened.scalar == original.scalar);
+        CHECK(reopened.vector.x == original.vector.x);
+        CHECK(reopened.vector.y == original.vector.y);
+        CHECK(bounded["scalar"].get<double>() == double(36.8f));
+    }
+}
+}
