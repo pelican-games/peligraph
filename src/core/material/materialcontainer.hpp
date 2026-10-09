@@ -312,6 +312,9 @@ DECLARE_MODULE(MaterialContainer) {
     RetiredTextureResources
     commitTextureRebind(GlobalTextureId texture, InternalTextureResource replacement,
                         std::vector<StagedMaterialDescriptor> descriptors);
+    void updateRayAlphaCutoff(InternalMaterialInfo &material,
+                              const Std140Layout &layout,
+                              std::span<const std::byte> values);
     bool materialValuesLayoutMatches(GlobalMaterialId material,
                                      const Std140Layout &layout) const;
     const InternalMaterialInfo::ScreenInputDescriptor *ensureScreenInputDescriptor(

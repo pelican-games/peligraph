@@ -1547,6 +1547,20 @@ bool sameValuesLayout(const Std140Layout &left, const Std140Layout &right) {
 
 } // namespace
 
+void MaterialContainer::updateRayAlphaCutoff(
+    InternalMaterialInfo &material, const Std140Layout &layout,
+    std::span<const std::byte> values) {
+    const auto cutoff = rayAlphaCutoff(layout, values);
+    if (material.alpha_cutoff == cutoff) return;
+    if (next_ray_material_generation ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::runtime_error("ray material generation identity exhausted");
+    }
+    material.alpha_cutoff = cutoff;
+    material.ray_generation = next_ray_material_generation++;
+    // The registration and its resources still have the same lifetime lease.
+}
+
 bool MaterialContainer::materialValuesLayoutMatches(GlobalMaterialId material,
                                                      const Std140Layout &layout) const {
     return sameValuesLayout(materials.get(material).custom_values_layout, layout);
@@ -1572,6 +1586,7 @@ void MaterialContainer::updateMaterialValues(GlobalMaterialId material,
                         offsetof(MaterialGpuData, custom_values);
     GET_MODULE(VulkanManageCore).writeBuf(material_buffer, packed.data(), offset,
                                           sizeof(packed));
+    updateRayAlphaCutoff(info, layout, values);
     info.custom_values.assign(values.begin(), values.end());
 }
 

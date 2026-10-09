@@ -734,6 +734,8 @@ std::function<void()> MaterialValuesReloadHandler::prepareSurfaceReload(
         }
         for (auto &update : candidate->material_updates) {
             auto &live = materials_.materials.get(update.payload->material);
+            materials_.updateRayAlphaCutoff(
+                live, update.payload->layout, update.payload->values);
             live.custom_values_layout = update.payload->layout;
             live.custom_values = update.payload->values;
             update.tracked->live_payload = update.payload;

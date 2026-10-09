@@ -31,6 +31,10 @@ inline constexpr bool isValidMaterialId(GlobalMaterialId material_id) {
     return material_id.value >= 0;
 }
 
+// Project ray alpha uses the same std140 value bytes as the raster shader.
+// Missing or truncated alpha_cutoff retains the registration default.
+float rayAlphaCutoff(const Std140Layout &layout, std::span<const std::byte> values);
+
 struct MaterialInfo {
     ShaderBundleId vert_shader, frag_shader;
     std::vector<std::string> tags;

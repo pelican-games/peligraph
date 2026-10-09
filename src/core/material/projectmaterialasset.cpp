@@ -127,23 +127,6 @@ GlobalTextureId resolveOptionalTexture(
                : fallback;
 }
 
-float rayAlphaCutoff(const LoweredMaterial &lowered) {
-    const auto found = std::find_if(
-        lowered.values_layout.members.begin(),
-        lowered.values_layout.members.end(),
-        [](const auto &member) { return member.name == "alpha_cutoff"; });
-    if (found == lowered.values_layout.members.end() ||
-        found->size < sizeof(float) ||
-        found->offset > lowered.values.size() ||
-        sizeof(float) > lowered.values.size() - found->offset) {
-        return 0.5F;
-    }
-    float result = 0.5F;
-    std::memcpy(&result, lowered.values.data() + found->offset,
-                sizeof(result));
-    return result;
-}
-
 MaterialInfo makeMaterialInfo(
     const MaterialBase &base,
     const LoweredMaterial &lowered,
@@ -198,7 +181,7 @@ MaterialInfo makeMaterialInfo(
         .alpha_mode = lowered.routing
                           ? lowered.routing->alpha_mode
                           : MaterialAlphaMode::opaque,
-        .alpha_cutoff = rayAlphaCutoff(lowered),
+        .alpha_cutoff = rayAlphaCutoff(lowered.values_layout, lowered.values),
         .base_color_factor =
             glm::vec4{
                 static_cast<float>(

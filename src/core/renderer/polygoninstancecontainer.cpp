@@ -1719,6 +1719,15 @@ PolygonInstanceContainer::rayQueryGeometryInstances(
                     values.uv_rotation;
             }
         }
+        // Value edits keep the registration lease but advance its RT contents.
+        // Retain a stale item's identity if the slot was released/reused, so
+        // rayMaterialTableSource still rejects that snapshot.
+        const auto &materials = GET_MODULE(MaterialContainer);
+        const auto material = item.pipeline_material_key.material;
+        const auto material_generation =
+            materials.rayMaterialLease(material) == item.ray_material_lease
+                ? materials.rayMaterialGeneration(material)
+                : item.ray_material_generation;
         const auto authoring_object = table.ray_authoring_object_ids.at(instance);
         const auto declaration = declarations.find(authoring_object);
         result.push_back(
@@ -1744,8 +1753,7 @@ PolygonInstanceContainer::rayQueryGeometryInstances(
                 .material_name = item.material_name,
                 .resolved_material_handle =
                     item.pipeline_material_key.material.value,
-                .resolved_material_generation =
-                    item.ray_material_generation,
+                .resolved_material_generation = material_generation,
                 .resolved_material_lease =
                     item.ray_material_lease,
                 .source_material_index =

@@ -4,6 +4,7 @@
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/material/materialcontainer.hpp"
 #include "materialcontainer_testaccess.hpp"
+#include "polygoninstancecontainer_testaccess.hpp"
 #include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -858,6 +859,163 @@ TEST_CASE("HR1-M watcher gate and 1000 reloads keep resources bounded",
                 Catch::Approx(8.0f));
         watcher.stop();
         GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+} // namespace Pelican
+
+namespace Pelican {
+
+TEST_CASE("AC1 materialvaluesreload updates ray alpha cutoff and generation",
+          "[ac1][material-values-reload][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    Sandbox box;
+    FastModuleContainer modules;
+    configureIndexedProjectGpu(box);
+    writeMaterialAssetIndex(box, {"live.material.json"});
+    std::filesystem::create_directories(box.root / "shaders");
+    const auto surface_path = box.root / "shaders" / "live.surface";
+    const auto material_path = box.root / "live.material.json";
+    const std::string surface_source =
+        "//! pelican.surface v1\n"
+        "//! language: glsl\n"
+        "//! params:\n"
+        "//!   - { name: unrelated, type: vec4, default: [1, 1, 1, 1] }\n"
+        "//!   - { name: alpha_cutoff, type: float, default: 0.5, min: 0, max: 1 }\n"
+        "vec3 pelican_lighting_v1(in PelicanSurfaceV1 s, "
+        "in PelicanSurfaceInputV1 i) { return vec3(1.0); }\n";
+    writeText(surface_path, surface_source);
+    const auto write_cutoff = [&](nlohmann::json cutoff) {
+        writeText(material_path, nlohmann::json{
+            {"schema", "pelican.material"}, {"version", 1},
+            {"materials", nlohmann::json::array({{
+                {"name", "live"}, {"surface", "project://shaders/live.surface"},
+                {"routing", {{"alpha_mode", "mask"}, {"double_sided", false}}},
+                {"values", {{"alpha_cutoff", cutoff}}}
+            }})}}
+            .dump(2));
+    };
+    write_cutoff(0.5);
+    GET_MODULE(PathResolver).setup(box.root, false);
+    TestSupport::requireVulkanDevice("Vulkan AC1 material reload unavailable");
+    (void)GET_MODULE(VulkanManageCore);
+    const auto &registry = GET_MODULE(ProjectMaterialAssetContainer);
+    const auto material = registry.materialByName("live");
+    auto &materials = GET_MODULE(MaterialContainer);
+    REQUIRE(materials.supportsVertexMode(material, VertexMode::skinned));
+    const auto standard = materials.materialPipeline(material, VertexMode::standard);
+    const auto skinned = materials.materialPipeline(material, VertexMode::skinned);
+    const auto descriptor = MaterialContainerTestAccess::materialDescriptorRevision(materials, material);
+    const auto initial_generation = materials.rayMaterialGeneration(material);
+    const auto lease = materials.rayMaterialLease(material);
+    const auto canonical = "document:" + materials.materialDocumentReference(material) + "#live";
+
+    // A persistent draw item must observe value generations without losing
+    // the registration lease that protects against material-slot reuse.
+    ModelTemplate model;
+    model.asset_id = ModelAssetId{1};
+    ModelTemplate::PrimitiveRefInfo primitive;
+    primitive.index_count = 3;
+    primitive.vertex_count = 3;
+    primitive.bounds_source = std::make_shared<ModelPrimitiveBoundsSource>();
+    model.material_primitives = {{.material = material, .primitives = {primitive}}};
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const auto instance = instances.placeModelInstance(model);
+    REQUIRE(instances.isModelInstanceAlive(instance));
+
+    const auto check_cutoff = [&](float expected) {
+        const auto generation = materials.rayMaterialGeneration(material);
+        const auto row = materials.rayMaterialTableSource(material, canonical, generation, lease);
+        CHECK(row.alpha_cutoff == Catch::Approx(expected));
+        CHECK(row.alpha_mode == static_cast<std::uint32_t>(MaterialAlphaMode::mask));
+        const auto inventory = instances.rayQueryGeometryInstances();
+        REQUIRE(inventory.size() == 1);
+        CHECK(inventory.front().resolved_material_generation == generation);
+        const auto from_draw = materials.rayMaterialTableSource(
+            material, canonical, inventory.front().resolved_material_generation,
+            inventory.front().resolved_material_lease);
+        CHECK(from_draw.alpha_cutoff == Catch::Approx(expected));
+        CHECK(materials.materialPipeline(material, VertexMode::standard) == standard);
+        CHECK(materials.materialPipeline(material, VertexMode::skinned) == skinned);
+        CHECK(MaterialContainerTestAccess::materialDescriptorRevision(materials, material) == descriptor);
+        CHECK(materials.rayMaterialLease(material) == lease);
+        CHECK(PolygonInstanceTestAccess::drawItems(instances).front().ray_material_generation ==
+              initial_generation);
+    };
+    check_cutoff(0.5F);
+    const auto surface = parseSurfaceFormat(surface_source, "project://shaders/live.surface");
+    const MaterialSurfaceCatalog catalog{{"project://shaders/live.surface", surface}};
+    const auto lowered = loadLowered(material_path, catalog);
+    const auto member = std::find_if(lowered.values_layout.members.begin(),
+        lowered.values_layout.members.end(), [](const auto &entry) { return entry.name == "alpha_cutoff"; });
+    REQUIRE(member != lowered.values_layout.members.end());
+    REQUIRE(member->offset != 0);
+
+    SECTION("T1 both value update overloads") {
+        auto values = lowered.values;
+        const float cutoff = 0.9F;
+        std::memcpy(values.data() + member->offset, &cutoff, sizeof(cutoff));
+        materials.updateMaterialValues(material, lowered.values_layout, values);
+        const auto updated = materials.rayMaterialGeneration(material);
+        CHECK(updated > initial_generation);
+        check_cutoff(cutoff);
+        CHECK_THROWS_WITH(materials.rayMaterialTableSource(material, canonical, initial_generation, lease),
+                          Catch::Matchers::ContainsSubstring("ray_material_snapshot_stale"));
+        materials.updateMaterialValues(material, lowered.values_layout, values);
+        CHECK(materials.rayMaterialGeneration(material) == updated);
+        materials.updateMaterialValues(material, values);
+        CHECK(materials.rayMaterialGeneration(material) == updated);
+        const float unrelated = 0.25F;
+        std::memcpy(values.data(), &unrelated, sizeof(unrelated));
+        materials.updateMaterialValues(material, values);
+        CHECK(materials.rayMaterialGeneration(material) == updated);
+        check_cutoff(cutoff);
+        materials.updateMaterialValues(material, lowered.values);
+        CHECK(materials.rayMaterialGeneration(material) > updated);
+        check_cutoff(0.5F);
+    }
+    SECTION("T2 material document reload") {
+        auto &reload = GET_MODULE(watch::ReloadService);
+        const auto key = watch::makeAssetKey("live.material.json");
+        write_cutoff(0.9);
+        REQUIRE(reload.applyRequestForTesting({key, watch::ReloadKind::modified, {}, 1}));
+        const auto updated = materials.rayMaterialGeneration(material);
+        CHECK(updated > initial_generation);
+        check_cutoff(0.9F);
+        write_cutoff(0.9);
+        REQUIRE(reload.applyRequestForTesting({key, watch::ReloadKind::modified, {}, 2}));
+        CHECK(materials.rayMaterialGeneration(material) == updated);
+        check_cutoff(0.9F);
+        write_cutoff("invalid");
+        CHECK_FALSE(reload.applyRequestForTesting({key, watch::ReloadKind::modified, {}, 3}));
+        CHECK(materials.rayMaterialGeneration(material) == updated);
+        check_cutoff(0.9F);
+    }
+    SECTION("T2 surface transaction live write") {
+        auto &reload = GET_MODULE(watch::ReloadService);
+        const auto key = watch::makeAssetKey("shaders/live.surface");
+        const auto material_key = watch::makeAssetKey("live.material.json");
+        write_cutoff(0.9);
+        auto expanded_surface = surface_source;
+        expanded_surface.insert(expanded_surface.find("//!   - { name: alpha_cutoff"),
+            "//!   - { name: added, type: vec4, default: [0, 0, 0, 0] }\n");
+        writeText(surface_path, expanded_surface);
+        const std::array requests{
+            watch::ReloadRequest{key, watch::ReloadKind::modified, {}, 1},
+            watch::ReloadRequest{material_key, watch::ReloadKind::modified, {}, 1}};
+        REQUIRE(reload.applyRequestsForTesting(requests) == std::vector<bool>{true, true});
+        const auto updated = materials.rayMaterialGeneration(material);
+        CHECK(updated > initial_generation);
+        check_cutoff(0.9F);
+        writeText(surface_path, expanded_surface + "\n// same cutoff\n");
+        REQUIRE(reload.applyRequestForTesting({key, watch::ReloadKind::modified, {}, 2}));
+        CHECK(materials.rayMaterialGeneration(material) == updated);
+        check_cutoff(0.9F);
+    }
+    GET_MODULE(VulkanManageCore).waitIdle();
+#else
+    SKIP("AC1 needs the runtime shader compiler");
+#endif
 }
 
 } // namespace Pelican
