@@ -109,6 +109,7 @@ struct DrawIndexedArguments {
 // or pipeline container to recover these inputs.
 struct DrawPipelineMaterialKey {
     GlobalMaterialId material;
+    // Raster push and RT absolute-override lookup only; not AS row identity.
     std::uint32_t source_material_index = noSourceMaterialIndex;
     bool skinned = false;
 
@@ -143,6 +144,9 @@ struct DrawItemSnapshot {
     DrawPipelineMaterialKey pipeline_material_key{};
     std::string material_asset_reference;
     std::string material_document_reference;
+    // Registered material identity, retained with the same generation/lease.
+    // It survives even when this model cannot apply VRM absolute overrides.
+    std::optional<std::uint32_t> ray_source_material_index;
     std::string material_name;
     std::uint64_t ray_material_generation = 0;
     std::shared_ptr<const void> ray_material_lease;

@@ -1,3 +1,5 @@
+#include "vrm_xr_demo_fixture.hpp"
+#include "../src/core/animation/vrmapplication.hpp"
 #include "skeletal_fixture.hpp"
 #include "vat_fixture.hpp"
 #include "polygoninstancecontainer_testaccess.hpp"
@@ -6,6 +8,7 @@
 #include "../src/core/communication/rpcserver.hpp"
 #include "../src/core/renderer/materialrender.hpp"
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/packing.hpp>
 #include <sstream>
 #include "../src/core/appflow/enginetime.hpp"
 #include "render_graph_root_test_support.hpp"
@@ -80,6 +83,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <chrono>
 #include <cstring>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -98,6 +102,16 @@
 namespace Pelican {
 
 namespace {
+
+// Synthetic RT geometry still needs the registered material identity that
+// production AS rows and ray material tables share.
+GlobalMaterialId registerRayFixtureMaterial(std::string asset, std::uint32_t source_index) {
+    auto &standard = GET_MODULE(StandardMaterialResource);
+    auto info = standard.builtinMaterialInfo("ray_fixture", standard.transparentTexture());
+    info.source_asset = std::move(asset);
+    info.source_material_index = source_index;
+    return GET_MODULE(MaterialContainer).registerMaterial(std::move(info));
+}
 
 std::filesystem::path makeTempProjectDir() {
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -11700,15 +11714,12 @@ TEST_CASE(
         const auto primitive =
             GET_MODULE(VertBufContainer).addPrimitiveEntry(
                 std::move(geometry));
-        const auto material =
-            GET_MODULE(StandardMaterialResource)
-                .standardTransparentMaterial();
         ModelTemplate model_a;
         model_a.asset_id = ModelAssetId{3660};
         model_a.authored_asset_reference = "models/tree.glb";
         model_a.material_primitives = {
             ModelTemplate::MaterialPrimitives{
-                .material = material,
+                .material = registerRayFixtureMaterial("models/tree.glb", 2),
                 .primitives = {primitive},
                 .source_material_index = 2,
             }};
@@ -11717,7 +11728,7 @@ TEST_CASE(
         model_b.authored_asset_reference = "models/tree.glb";
         model_b.material_primitives = {
             ModelTemplate::MaterialPrimitives{
-                .material = material,
+                .material = registerRayFixtureMaterial("models/tree.glb", 3),
                 .primitives = {primitive},
                 .source_material_index = 3,
             }};
@@ -13947,9 +13958,6 @@ TEST_CASE(
         const auto primitive =
             GET_MODULE(VertBufContainer).addPrimitiveEntry(
                 std::move(geometry));
-        const auto material =
-            GET_MODULE(StandardMaterialResource)
-                .standardTransparentMaterial();
         auto &instances = GET_MODULE(PolygonInstanceContainer);
         const auto place = [&](std::uint64_t asset_id,
                                std::string authored_reference,
@@ -13960,7 +13968,7 @@ TEST_CASE(
                 std::move(authored_reference);
             model.material_primitives = {
                 ModelTemplate::MaterialPrimitives{
-                    .material = material,
+                    .material = registerRayFixtureMaterial(model.authored_asset_reference, 0),
                     .primitives = {primitive},
                     .source_material_index = 0,
                 }};
@@ -14538,8 +14546,7 @@ ModelTemplate wp374aModel(
     model.authored_asset_reference = std::move(authored_reference);
     model.material_primitives = {
         ModelTemplate::MaterialPrimitives{
-            .material = GET_MODULE(StandardMaterialResource)
-                            .standardTransparentMaterial(),
+            .material = registerRayFixtureMaterial(model.authored_asset_reference, source_material_index),
             .primitives = {primitive},
             .source_material_index = source_material_index,
         }};
@@ -16032,6 +16039,231 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
         CHECK(primitive.at("drawn") == "Paint");
     }
     check_slot_items(paint);
+#else
+    SKIP("runtime shader compiler unavailable");
+#endif
+}
+} // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("VR1 vrm effective material controls raster and RT absolute overrides",
+          "[headless][gpu][vrm][materialinstanceoverride][raytracing_rt3][mt2]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    const auto root = makeTempProjectDir();
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::error_code ec; std::filesystem::remove_all(path, ec); }
+    } cleanup{root};
+    FastModuleContainer modules;
+    RuntimeTeardownGuard teardown{RuntimeTeardownMode::terminal_shutdown};
+    // Extend the deterministic VRM fixture with material B and a second primitive.
+    const auto glb = TestVrmXrDemoFixture::makeGlb();
+    std::uint32_t json_size = 0;
+    std::memcpy(&json_size, glb.data() + 12, sizeof(json_size));
+    auto document = nlohmann::json::parse(glb.begin() + 20, glb.begin() + 20 + json_size);
+    const auto binary_start = 20 + json_size + 8;
+    std::ofstream binary{root / "character.bin", std::ios::binary};
+    binary.write(reinterpret_cast<const char *>(glb.data() + binary_start),
+                 static_cast<std::streamsize>(glb.size() - binary_start));
+    binary.close();
+    document["buffers"][0]["uri"] = "character.bin";
+    document["materials"].push_back(document["materials"][0]);
+    document["materials"][1]["name"] = "MaterialB";
+    document["materials"][1]["pbrMetallicRoughness"]["baseColorFactor"] = {0.2, 0.8, 0.3, 1.0};
+    document["meshes"][0]["primitives"].push_back(document["meshes"][0]["primitives"][0]);
+    document["meshes"][0]["primitives"][1]["material"] = 1;
+    auto &happy = document["extensions"]["VRMC_vrm"]["expressions"]["preset"]["happy"];
+    happy["materialColorBinds"][0]["targetValue"] = {1.0, 0.22, 0.32, 0.4};
+    happy["textureTransformBinds"] = nlohmann::json::array({
+        {{"material", 0}, {"scale", {2.0, 3.0}}, {"offset", {0.25, 0.5}}}});
+    writeTextFile(root / "character.gltf", document.dump());
+    writeTextFile(root / "foreign.gltf", document.dump());
+    // White vertex colors and an untextured base factor make every covered
+    // fragment constant, while retaining the production source-factor lookup.
+    writeTextFile(root / "paint.surface", R"(//! pelican.surface v1
+//! language: glsl
+//! render_state: { blend: opaque, cull: none, depth: read_write }
+void pelican_surface_v1(in PelicanSurfaceInputV1 input_data, inout PelicanSurfaceV1 surface) {
+    surface.base_color = input_data.vertex_color;
+}
+vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 input_data) {
+    return surface.base_color.rgb;
+}
+)");
+    writeTextFile(root / "paint.material.json", R"({"schema":"pelican.material","version":1,"materials":[{"name":"Paint","surface":"project://paint.surface","base":{"baseColorFactor":[0.2,0.6,0.8,1.0]},"routing":{"alpha_mode":"opaque","double_sided":true}}]})");
+    writeTextFile(root / "scene.json", R"({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})");
+    writeTextFile(root / "assets.json", R"({"schema":"pelican.asset_data","version":2,"models":[{"name":"character","path":"character.gltf"},{"name":"foreign","path":"foreign.gltf"}],"materials":[{"path":"paint.material.json"}]})");
+    auto config = nlohmann::json::parse(R"({
+      "render_targets":[
+        {"name":"gbuffer_albedo","extent_scale":1.0,"format":"B8G8R8A8_UNORM","format_class":"scene","usage":["COLOR_ATTACHMENT","SAMPLED","TRANSFER_SRC"]},
+        {"name":"gbuffer_normal","extent_scale":1.0,"format":"R16G16B16A16_SFLOAT","format_class":"data","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"gbuffer_material","extent_scale":1.0,"format":"R8G8B8A8_UNORM","format_class":"data","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"gbuffer_worldpos","extent_scale":1.0,"format":"R16G16B16A16_SFLOAT","format_class":"data","usage":["COLOR_ATTACHMENT","SAMPLED"]},
+        {"name":"g_emissive","extent_scale":1.0,"format":"B8G8R8A8_UNORM","format_class":"scene","usage":["COLOR_ATTACHMENT","SAMPLED","TRANSFER_SRC"]},
+        {"name":"scene_depth","extent_scale":1.0,"format":"D32_SFLOAT","format_class":"data","usage":["DEPTH_STENCIL_ATTACHMENT","TRANSFER_SRC"]}],
+      "rendering_passes":[{"name":"main_render","passes":[
+        {"name":"deferred_geometry","type":"material","material_contract":"deferred_geometry_v1","output":{"color":["gbuffer_albedo","gbuffer_normal","gbuffer_material","gbuffer_worldpos","g_emissive"],"depth":"scene_depth"},"depth_store_op":"store"},
+        {"name":"present","type":"fullscreen","output":{"color":"swapchain","depth":null},"shader":{"vertex":"engine://fullscreen","fragment":"engine://shader_lab_hello"}}]}]})");
+    config["render_targets"].push_back({{"name", "lit_color"}, {"extent_scale", 1.0},
+        {"format", "R16G16B16A16_SFLOAT"}, {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+        {"usage", {"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"}}});
+    auto &passes = config["rendering_passes"][0]["passes"];
+    passes.insert(passes.begin()+1, nlohmann::json{{"name", "forward_opaque"}, {"type", "material"},
+        {"material_contract", "forward_opaque_v1"}, {"after", {"deferred_geometry"}},
+        {"output", {{"color", {"lit_color"}}, {"depth", "scene_depth"}}},
+        {"depth_load_op", "load"}, {"depth_store_op", "store"}});
+    writeTextFile(root / "hybrid.json", TestSupport::renderGraphRootWithTaskFeature(config, root).dump());
+    configureRayQueryTestRuntime(root);
+    GET_MODULE(EngineLaunchConfig).headless_extent = vk::Extent2D{128, 128};
+    TestSupport::requireVulkanDevice("VR1 requires Vulkan");
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    auto &materials = GET_MODULE(MaterialContainer);
+    auto &project = GET_MODULE(ProjectMaterialAssetContainer);
+    const auto original = GET_MODULE(ModelAssetContainer).getModelTemplateByName("character");
+    const auto foreign = GET_MODULE(ModelAssetContainer).getModelTemplateByName("foreign");
+    // The canonical occurrence name ("character") differs from the authored
+    // path; override matching must compare authored paths on both sides.
+    REQUIRE(original.authored_asset_reference == "character.gltf");
+    REQUIRE(original.vrm_semantic != nullptr);
+    REQUIRE(original.material_primitives.size() == 2);
+    REQUIRE(original.material_primitives[0].source_material_index == 0);
+    REQUIRE(original.material_primitives[1].source_material_index == 1);
+    const auto material_a = original.material_primitives[0].material;
+    const auto paint = project.materialByName("Paint");
+    REQUIRE(materials.supportsVertexMode(paint, VertexMode::skinned));
+    auto &camera = GET_MODULE(Camera);
+    camera.setPos({0.0F, 1.0F, 4.0F});
+    camera.setDir({0.0F, 0.0F, -1.0F});
+    camera.setUp({0.0F, 1.0F, 0.0F});
+    const auto bind = [&](ModelTemplate model, const std::string &name) {
+        auto bindings = parsePrimitiveMaterialBindingJson(nlohmann::json::parse(R"({"schema":"pelican.material_bindings","version":1,"model":"character.gltf","bindings":[{"usd_path":"/Body","mesh":0,"primitive":0,"material":"Paint","routing":{"alpha_mode":"opaque","double_sided":true}}]})"));
+        bindings.bindings[0].primitive_index = model.material_primitives[0].primitives[0].primitive_index;
+        bindings.bindings[0].material = name;
+        applyPrimitiveMaterialBindings(model, bindings, "character", std::nullopt, project.namedMaterials());
+        return model;
+    };
+    auto only_a = original;
+    only_a.material_primitives.erase(only_a.material_primitives.begin() + 1);
+    auto only_b = original;
+    only_b.material_primitives.erase(only_b.material_primitives.begin());
+    const auto publish = [&](ModelInstanceId id, float weight) {
+        Vrm::ExpressionInputSnapshot input;
+        input.instance = instances.animationInstance(id);
+        input.input_revision = 1;
+        input.frame_revision = 1;
+        input.expression_weights = {{"happy", weight}};
+        Vrm::ResolvedExpressionFrame resolved;
+        REQUIRE(Vrm::resolveExpressionFrame(*original.vrm_semantic, original.morph_targets.get(),
+            original.material_initial_values.get(), input, resolved) == Animation::Status::ok);
+        REQUIRE(resolved.material_overrides.size() == 1);
+        for (const auto &source : resolved.material_overrides) {
+            PublishMaterialInstanceAbsoluteOverrideDescV2 output;
+            output.instance = input.instance;
+            output.frame_revision = input.frame_revision;
+            output.source_material_index = source.source_material_index;
+            output.values.mask = source.mask;
+            output.values.base_color_factor = source.base_color_factor;
+            output.values.uv_offset = source.uv_offset;
+            output.values.uv_scale = source.uv_scale;
+            output.values.uv_rotation = source.uv_rotation;
+            REQUIRE(instances.publishMaterialInstanceAbsoluteOverride(id, output) == Animation::Status::ok);
+        }
+    };
+    const auto check = [&](const ModelTemplate &model, std::uint32_t expected_source,
+                           std::optional<std::array<int, 3>> pixel, float weight = 1.0F,
+                           std::shared_ptr<const InstanceMaterialOverrides> overrides = nullptr) {
+        INFO("expected source=" << expected_source << " weight=" << weight);
+        const auto id = instances.placeModelInstance(model, overrides);
+        const std::array palette{glm::mat4{1.0F}, glm::mat4{1.0F}};
+        instances.setSkinningPalette(id, palette);
+        publish(id, weight);
+        const auto items = PolygonInstanceTestAccess::drawItems(instances);
+        REQUIRE(items.size() == model.material_primitives[0].primitives.size());
+        REQUIRE_FALSE(items.empty());
+        for (const auto &item : items) {
+            CHECK(item.pipeline_material_key.source_material_index == expected_source);
+            CHECK(item.pipeline_material_key.skinned);
+        }
+        const auto rays = instances.rayQueryGeometryInstances();
+        REQUIRE(rays.size() == items.size());
+        for (const auto &ray : rays) {
+            const auto identity = materials.rayBindingIdentity(
+                GlobalMaterialId{ray.resolved_material_handle});
+            CHECK(ray.source_material_index == identity.source_material_index);
+            CHECK(ray.material_asset_reference == identity.asset);
+            CHECK(ray.material_document_reference == identity.document);
+            if (expected_source == 0) {
+                CHECK(ray.alpha_override_mask == (rayAlphaOverrideBaseFactor | rayAlphaOverrideUvTransform));
+                const float expected_alpha = weight == 1.0F ? 0.4F : 1.0F;
+                CHECK(std::abs(ray.alpha_override_base_color_factor[3] - expected_alpha) < 0.001F);
+                CHECK(ray.alpha_override_uv_offset_scale == (weight == 1.0F
+                    ? std::array<float, 4>{0.25F, 0.5F, 2.0F, 3.0F}
+                    : std::array<float, 4>{0.0F, 0.0F, 1.0F, 1.0F}));
+            } else {
+                CHECK(ray.alpha_override_mask == 0);
+            }
+        }
+        if (pixel) {
+            renderer.render();
+            core.waitIdle();
+            const auto image = RendererTestAccess::readRenderTarget(renderer,
+                expected_source == noSourceMaterialIndex ? "lit_color" : "gbuffer_albedo", {});
+            INFO("readback format=" << vk::to_string(image.format));
+            const bool bgra = image.format == vk::Format::eB8G8R8A8Unorm ||
+                              image.format == vk::Format::eB8G8R8A8Srgb;
+            const bool srgb = image.format == vk::Format::eR8G8B8A8Srgb ||
+                              image.format == vk::Format::eB8G8R8A8Srgb;
+            const bool hdr = image.format == vk::Format::eR16G16B16A16Sfloat;
+            REQUIRE((bgra || srgb || hdr || image.format == vk::Format::eR8G8B8A8Unorm));
+            // A central 5x5 patch lies inside the body, away from primitive edges.
+            for (int y = 62; y <= 66; ++y) for (int x = 62; x <= 66; ++x) {
+                const auto offset = (y * image.extent.width + x) * (hdr ? 8 : 4);
+                for (int channel = 0; channel < 3; ++channel) {
+                    int value = 0;
+                    if (hdr) {
+                        std::uint16_t bits = 0;
+                        std::memcpy(&bits, image.bytes.data() + offset + channel * 2, sizeof(bits));
+                        value = static_cast<int>(std::lround(glm::unpackHalf1x16(bits) * 255.0F));
+                    } else {
+                        const auto encoded = image.bytes[offset + (bgra ? 2 - channel : channel)];
+                        float linear = static_cast<float>(encoded) / 255.0F;
+                        if (srgb) linear = linear <= 0.04045F ? linear / 12.92F
+                            : std::pow((linear + 0.055F) / 1.055F, 2.4F);
+                        value = static_cast<int>(std::lround(linear * 255.0F));
+                    }
+                    CHECK(std::abs(value - (*pixel)[channel]) <= 2);
+                }
+            }
+        }
+        REQUIRE(instances.removeModelInstance(id));
+    };
+    // T1: both model bindings and scene overrides keep the project's color,
+    // including weight zero, when VRM still publishes an absolute record.
+    const auto painted = bind(only_a, "Paint");
+    check(painted, noSourceMaterialIndex, std::array{51, 153, 204});
+    check(painted, noSourceMaterialIndex, std::array{51, 153, 204}, 0.0F);
+    auto override = std::make_shared<InstanceMaterialOverrides>();
+    override->push_back({std::nullopt, "Paint"});
+    check(only_a, noSourceMaterialIndex, std::array{51, 153, 204}, 1.0F, override);
+    // T2: the original material still receives A's expression color.
+    check(only_a, 0, std::array{255, 56, 82});
+    // T3: B bound to A follows A's index, even though the group retains B's.
+    check(bind(only_b, materials.materialName(material_a)), 0, std::nullopt);
+    check(only_b, 1, std::nullopt);
+    // T4: a foreign asset with the same numeric material index is excluded.
+    auto foreign_material = only_a;
+    foreign_material.material_primitives[0].material = foreign.material_primitives[0].material;
+    REQUIRE(materials.rayBindingIdentity(foreign_material.material_primitives[0].material).source_material_index == 0);
+    check(foreign_material, noSourceMaterialIndex, std::nullopt);
+    // Missing provenance must not let two empty asset strings match.
+    auto no_provenance = GET_MODULE(GltfLoader).loadGltf((root / "character.gltf").string());
+    no_provenance.material_primitives.erase(no_provenance.material_primitives.begin() + 1);
+    REQUIRE(no_provenance.authored_asset_reference.empty());
+    REQUIRE(materials.rayBindingIdentity(no_provenance.material_primitives[0].material).asset.empty());
+    check(no_provenance, noSourceMaterialIndex, std::nullopt);
 #else
     SKIP("runtime shader compiler unavailable");
 #endif

@@ -365,15 +365,13 @@ size_t primitiveCount(const ModelTemplate &model) {
 }
 
 // `effective` is the material the primitive draws with: the group's, or the
-// scene object's override of it (MT-2). The source material index stays the
-// group's, as a material binding keeps it.
+// scene object's override of it (MT-2). Absolute VRM overrides follow that
+// material only when its provenance belongs to this model.
 DrawItemSnapshot makeDrawItemSnapshot(
     ModelInstanceId instance,
-    const ModelTemplate::MaterialPrimitives &material,
     const ModelTemplate::PrimitiveRefInfo &primitive,
     GlobalMaterialId effective,
-    std::string_view material_asset_reference,
-    std::string_view material_document_reference,
+    std::string_view model_asset_reference,
     MaterialRouteClass route,
     std::uint64_t declaration_ordinal = 0) {
     if (!primitive.bounds_source) {
@@ -386,6 +384,13 @@ DrawItemSnapshot makeDrawItemSnapshot(
             "' has no skinned vertex pipeline for mesh " + std::to_string(primitive.mesh_index) +
             " primitive " + std::to_string(primitive.primitive_index));
     }
+    const auto identity = materials.rayBindingIdentity(effective);
+    // Both references are the project resolver's authored asset key; the
+    // occurrence CanonicalModelAssetKey is a different, logical model name.
+    const auto override_source_index =
+        !identity.asset.empty() && identity.asset == model_asset_reference
+            ? identity.source_material_index.value_or(noSourceMaterialIndex)
+            : noSourceMaterialIndex;
     const auto material_generation =
         materials.rayMaterialGeneration(effective);
     const auto material_lease =
@@ -411,14 +416,12 @@ DrawItemSnapshot makeDrawItemSnapshot(
         .pipeline_material_key =
             DrawPipelineMaterialKey{
                 .material = effective,
-                .source_material_index = material.source_material_index.value_or(
-                    noSourceMaterialIndex),
+                .source_material_index = override_source_index,
                 .skinned = primitive.skinned,
             },
-        .material_asset_reference =
-            std::string{material_asset_reference},
-        .material_document_reference =
-            std::string{material_document_reference},
+        .material_asset_reference = identity.asset,
+        .material_document_reference = identity.document,
+        .ray_source_material_index = identity.source_material_index,
         .material_name = materials.materialName(effective),
         .ray_material_generation = material_generation,
         .ray_material_lease = material_lease,
@@ -517,8 +520,7 @@ void appendModelDrawItems(std::vector<DrawItemSnapshot> &items,
         for (const auto &primitive : group.primitives) {
             const auto material = resolved.effective(primitive, group.material);
             items.push_back(makeDrawItemSnapshot(
-                id, group, primitive, material, model.authored_asset_reference,
-                materials.materialDocumentReference(material),
+                id, primitive, material, model.authored_asset_reference,
                 materials.routeForMaterial(material),
                 next_ordinal != nullptr ? (*next_ordinal)++ : 0));
         }
@@ -1756,12 +1758,7 @@ PolygonInstanceContainer::rayQueryGeometryInstances(
                 .resolved_material_generation = material_generation,
                 .resolved_material_lease =
                     item.ray_material_lease,
-                .source_material_index =
-                    item.pipeline_material_key.source_material_index ==
-                            noSourceMaterialIndex
-                        ? std::optional<std::uint32_t>{}
-                        : std::optional<std::uint32_t>{
-                              item.pipeline_material_key.source_material_index},
+                .source_material_index = item.ray_source_material_index,
                 .alpha_override_mask = alpha_override_mask,
                 .alpha_override_base_color_factor =
                     alpha_override_base_color_factor,
