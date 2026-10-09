@@ -86,8 +86,9 @@ A step is either a **command**, sent to Studio as-is:
 optionally with `"expect_error": "automation.widget_missing@1"`, which turns the
 step green only when the command is refused with exactly that code.
 
-For `click`, `double_click`, `action`, `select`, and `history` with an `undo` or
-`redo` step, the driver waits when Studio refuses the operation with
+For `click`, `double_click`, `action`, `select`, `history` with an `undo` or
+`redo` step, `drag`, and `type` and `key` with a `name` (FX-8), the driver
+waits when Studio refuses the operation with
 `automation.bad_request@1` saying the target is disabled. It resends the same
 command every 100 ms for up to 15 seconds, stopping as soon as it succeeds.
 Only these pre-operation refusals are retried; an accepted operation is sent
@@ -512,6 +513,31 @@ action: Qt drops such a press without a word, so the step that pressed is the
 one that fails, not a step later that looks for what the press would have done.
 To show that a button is off, `wait` or `list` for `"enabled": false`; never
 click it to see nothing happen.
+
+FX-8: `drag` (an endpoint given by name), `type` and `key` with a `name` refuse a
+switched-off target the same way, before any input is delivered, so the driver
+can wait for them as it waits for `click`.
+
+A named `click` on a drawn item checks what the press would really reach: the
+topmost item at the point that takes the button or is selectable. The click is
+the target's when that item is the target or a part of it with no selectable
+item in between, or when it is an ancestor of the target with no selectable
+item in between (a node's heading or socket takes no press; its node does, so
+a named click on a heading goes through the node). Otherwise Studio looks for
+another pixel of the target that is not covered, the heading's row first; the
+reply's `point_reselected` is `true` when it moved the point. When there is
+none the step fails with `the item named "…" is covered by "…"` (or `… has no
+clickable viewport point`). A click given by `point` or `scene` is not checked.
+
+A named `drag` between two drawn items of the same view makes sure both
+endpoints' press points land on their items before it presses. When they do
+not (after Fit a socket can be smaller than a pixel), it frames the two at a
+scale where both are hit; when they cannot share one view, it keeps the view's
+zoom (at least 1:1), centres each endpoint in turn and pans between them while
+it moves. The reply carries `path` (`framed` or `panned`) and `scale`. When even
+that misses an endpoint, nothing is pressed and the step fails with
+`cannot target named drag endpoints at this zoom: <from> -> <to>`. Endpoints
+given by `point` or `scene` keep their meaning.
 
 Error codes: `automation.widget_missing@1`, `automation.bad_request@1`,
 `automation.unknown_command@1`, `automation.engine_not_ready@1`,

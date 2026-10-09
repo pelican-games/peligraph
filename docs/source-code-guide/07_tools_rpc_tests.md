@@ -366,7 +366,7 @@ Assets のドックの Remove from project… の 3 つの入口が、`MainWindo
 - Graph の側は `graphcanvascomputefields.{hpp,cpp}` の `GraphCanvasRayTracingFields`(layout のある project の RT の task の節)で、layout は `GraphCanvasModel::rayLayoutRead()`(同じ `parseRayLayoutRead()`)から読みます。Frame Plan の Hit groups (SBT) は `frameplanwidget.cpp` が object ごとに `get_ray_occurrences` を問うて作ります。
 - 配線は `MainWindow` の 3 か所のまとまり(Ray layout の節を作る所、Inspector の `setAssignHitGroupAction` / `setEnableHitGroupsAction`、Graph の `setOpenRayLayout` / `setOpenCallableRecords`)です。見え方は [第13章](../manual/13_editor.md) §13.5 の「Studio で RT を組む(✅RTL-2s)」です。
 
-**Graph が Frame Plan の関数を呼ぶ口(✅GL-5d〜GL-5f)。**Graph タブは Frame Plan の編集の入口を自分で作り直さず、`FramePlanWidget` の公開の関数を `MainWindow` 経由で呼びます。GL-5d の `orderNodes()` / `fixSockets()` / `makeSocketsVariadic()` に、✅GL-5e が `removePass()` / `runShaderContract()` / `runReloadRefusal()` / `pinBackendCandidate()` / `unpinBackend()` / `freezePhysicalPlan()` / `removeFrozenPhysicalPlan()`(どれも Impl の既存の関数を呼ぶだけ)を足し、Graph の側は [`GraphCanvasWidget::setFramePlanEdits()`](../../src/devstudio/view/graphcanvaswidget.cpp#L10248) の struct `FramePlanEdits` で受けます。Frame Plan が隠れていても、[`FramePlanWidget::whenRead()`](../../src/devstudio/view/frameplanwidget.hpp#L222) が plan と authoring context(✅GL-5f から、引数 `tasks` が真なら compute task の catalog も)を読み直してから走らせます。
+**Graph が Frame Plan の関数を呼ぶ口(✅GL-5d〜GL-5f)。**Graph タブは Frame Plan の編集の入口を自分で作り直さず、`FramePlanWidget` の公開の関数を `MainWindow` 経由で呼びます。GL-5d の `orderNodes()` / `fixSockets()` / `makeSocketsVariadic()` に、✅GL-5e が `removePass()` / `runShaderContract()` / `runReloadRefusal()` / `pinBackendCandidate()` / `unpinBackend()` / `freezePhysicalPlan()` / `removeFrozenPhysicalPlan()`(どれも Impl の既存の関数を呼ぶだけ)を足し、Graph の側は [`GraphCanvasWidget::setFramePlanEdits()`](../../src/devstudio/view/graphcanvaswidget.cpp#L10261) の struct `FramePlanEdits` で受けます。Frame Plan が隠れていても、[`FramePlanWidget::whenRead()`](../../src/devstudio/view/frameplanwidget.hpp#L222) が plan と authoring context(✅GL-5f から、引数 `tasks` が真なら compute task の catalog も)を読み直してから走らせます。
 
 **Frame Plan dock の中身は 3 枚の tab を持つ `QTabWidget`** です(object name `pelican.renderTools`)。
 `FramePlanWidget` / `RenderFeaturesWidget` / `GraphCanvasWidget` がこの順で入ります
@@ -469,10 +469,10 @@ save の文言が **Save preset**(feature 由来なら **Save feature**)に変�
 
 [`FramePlanWidget`](../../src/devstudio/view/frameplanwidget.hpp#L28) はその model を **9 枚の tool tab** に投影します ——
 Logical graph / Passes / Resources / Physical plan / Decisions / Backends / Barriers / Materials / Raw JSON
-([登録](../../src/devstudio/view/frameplanwidget.cpp#L1357))。tab は掴んで並べ替えられ、その順序は保存されます。
+([登録](../../src/devstudio/view/frameplanwidget.cpp#L1383))。tab は掴んで並べ替えられ、その順序は保存されます。
 **読み取り専用でもありません**: toolbar に **Order nodes...** / **Edit task...** / **Edit pass...** があり、
 `Shift-drag: connect resources` のラベルどおり **Shift + 左ドラッグ**で出力元から task / preset pass へ線を引くと、
-その編集画面が開きます([toolbar](../../src/devstudio/view/frameplanwidget.cpp#L757))。保存自体は
+その編集画面が開きます([toolbar](../../src/devstudio/view/frameplanwidget.cpp#L779))。保存自体は
 `RenderFeaturesWidget` と `FullscreenPassWidget` が持つ編集 RPC を通ります。
 初期状態は順序、名前、種別、入力、出力の pass 行だけで、
 attachment ops、resource use、material filter、前後 barrier は折りたたみ配下です。filter も全 tree の
@@ -549,14 +549,14 @@ heading_text, dim_text, pill_bg}, domain_tint, source_tint}` で、描画側は�
 C++ は要りません。切り替えの通知は Qt signal ではなく**素の関数リスト**
 ([理由はヘッダのコメント](../../src/devstudio/view/studiotheme.hpp#L110)) —— scene test が view の `.cpp` を
 moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L1609)、
-Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphics.cpp#L2301) で追随します
+Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphics.cpp#L2302) で追随します
 (item は作られた時の色を抱えるので、描き直す以外に追随する道がありません)。**ソケットの型別の fill だけは
 テーマから引きません** —— 型の識別色は `graph_socket_styles.json` のままで、テーマが決めるのは縁と
 「どの型とも言えない」場合の fill です([分岐](../../src/devstudio/view/nodegraphics.cpp#L125))。
 
 [`GraphCanvasWidget`](../../src/devstudio/view/graphcanvaswidget.hpp) と `GraphCanvasScene` が view です。
 上段は `Scope:` の combo とパンくず、`Values from:` の combo、`Refresh`
-([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L5474))、本体は左がキャンバス、右が
+([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L5476))、本体は左がキャンバス、右が
 `Field` / `Value` の詳細表です。node は見出し帯 + 出力欄 + 入力欄の 3 段で、見出しの三角はソケット欄を
 折り畳みます(折り畳むと辺は見出し帯の左右中央 1 点へ集まります)。編集はすべて**即時**で Apply ボタンがなく、
 ソケット間ドラッグ = `set_input`、辺の `Delete` = `set_input{null}`、値の帯のその場編集 =
@@ -566,7 +566,7 @@ node の `Delete` = `remove_node` です。位置と折り畳みは `(scope, nod
 engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L37) が
 名前で持つ 5 つ(`get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` /
 `get_edit_result`)だけで、それ以外は `The graph canvas cannot issue %1.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L7754))。規範は struct の宣言そのもの
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L7758))。規範は struct の宣言そのもの
 ([メンバ 5 本](../../src/devstudio/view/graphcanvasreadcapability.hpp#L46))で、その上の宣言コメントは
 **読みを 3 つと数えたまま**です —— メンバは `requestGraphInstances` / `requestGraphCatalog` /
 `requestGraphValues` / `requestEditResult` の 4 読み + `requestEditGraphDocument` の 1 編集なので、
@@ -575,6 +575,13 @@ engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view
 > ... deliberately cannot express a generic RPC method, so nothing else can leave through
 > this seam. The edit is edit_graph_document alone: the canvas cannot attach an instance,
 > fork a preset or touch a pass from here.
+
+**ドラッグ中の作り直しと、往復の間の canvas(FX-8 / FX-9)。**2 つの canvas は、応答が来るたびに item を全部作り直します。手で掴んでいる item を消すと gesture が空振りするので、どちらの scene も `dragging()` で「今 gesture の最中か」を答え、owner はその間の作り直しを gesture の終わりへ延ばします。
+
+- Graph タブ: [`GraphCanvasScene::dragging()`](../../src/devstudio/view/graphcanvaswidget.hpp#L532) は press の処理中・接続の途中(`pending_connection_`)・mouse grabber のどれかで真です。接続の線は mouse grabber を持たないので、`pending_connection_` を数えないと plan の応答が線を消します。`synchronize()` は真の間 `synchronize_after_drag` を立てて戻り、scene の `gestureEnded`(release で呼ぶ)が次の event loop で作り直します([延ばす所](../../src/devstudio/view/graphcanvaswidget.cpp#L9915))。作り直すときに `canvas->setEnabled(!model.busy())` で、`GraphCanvasModel::busy()`(要求の slot か ticket が埋まっている間。文書の読み直しも要求の slot を使う)の間は canvas を止めます。詳細の欄は、選択が変わって欄の作り直しを延ばしている間、側の widget ごと止めます([`showDetails()`](../../src/devstudio/view/graphcanvaswidget.cpp#L9651))。
+- Frame Plan: [`FramePlanGraphicsScene::dragging()`](../../src/devstudio/view/frameplangraphics.hpp#L248) は mouse event の処理中(`handling_mouse_`)・接続の gesture・mouse grabber で真です。`renderCurrentGraph()` は真なら `render_after_drag_` を立てて戻り、`FramePlanWidget` の `populate()` も `populate_after_drag` で同じく延ばします。release は qScopeGuard から queued で `gestureEnded` と延ばした作り直しを呼ぶので、落とし先の判定(と、それが送る編集)は作り直しより先に済みます([release の所](../../src/devstudio/view/frameplangraphics.cpp#L4748))。canvas を押せるかは [`updateCanvasEnabled()`](../../src/devstudio/view/frameplanwidget.cpp#L1900) が、編集・ticket・再試行・authoring・task・plan の要求がどれも出ていないことで決め、要求を出す関数と受ける関数の出口(qScopeGuard)で毎回呼び直します。commit の後に読みが既に出ていれば、その読みは commit より古いかもしれないので、`authoring_reread` / `task_reread` でもう 1 回読ませます。
+
+利用者から見た規則は manual 第15章 §15.6 の「Graph の即時編集とソケット接続」と §15.8 の「Frame Plan のノード編集とソケット」です。
 
 [`RenderFeaturesWidget`](../../src/devstudio/view/renderfeatureswidget.hpp#L24) は render-tools の 2 枚目で、
 `EmbeddedViewport *` を直接受け取る(capability struct を通さない)側です。扱うのは feature の追加・削除、
@@ -707,7 +714,7 @@ link せず、link の輪ができません。
 
 protocol は**改行区切り JSON 1 行 = 1 命令**で、`{id, cmd, ...}` に `{id, ok, result}` か
 `{id, ok:false, error:{code, message}}` を返します([組み立て](../../src/devstudio/automation/automationserver.cpp#L19))。
-命令は 23 個(✅PX-2 の `viewport_size` を含む。長く 20 個と書いていましたが、`select` と `layout_stats` も一覧にあります。[一覧](../../src/devstudio/automation/automationcommands.cpp#L2698))、拒否は 10 種の名前付きコード
+命令は 23 個(✅PX-2 の `viewport_size` を含む。長く 20 個と書いていましたが、`select` と `layout_stats` も一覧にあります。[一覧](../../src/devstudio/automation/automationcommands.cpp#L2872))、拒否は 10 種の名前付きコード
 ([定数](../../src/devstudio/automation/automationcommands.cpp#L243))。`quit` は**答えてから**イベントループを畳み
 ([順序](../../src/devstudio/automation/automationserver.cpp#L112))、`rpc` と `wait` 系は入れ子のイベントループを
 回すので、実行中に届いた次の行は `automation.busy@1` で断ります
@@ -719,14 +726,14 @@ protocol は**改行区切り JSON 1 行 = 1 命令**で、`{id, cmd, ...}` に 
 `text` は描かれた字ではなく item が data role に入れた値を優先します
 ([優先](../../src/devstudio/automation/automationcommands.cpp#L558))。
 
-driver は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1597)(stdlib のみ)。シナリオ JSON の step を順に送り、
+driver は [`tools/studio_drive.py`](../../tools/studio_drive.py#L1599)(stdlib のみ)。シナリオ JSON の step を順に送り、
 `rpc_equals` / `text_equals` / `visible` / `list_count` / `screenshot` の期待を検査し、`verdict` / `summary` /
-`failures` / `steps` / `studio_log` を持つ `report.json` を書きます([組み立て](../../tools/studio_drive.py#L1798))。
+`failures` / `steps` / `studio_log` を持つ `report.json` を書きます([組み立て](../../tools/studio_drive.py#L1800))。
 最後の `shutdown` step で終了コード 0 と強制終了されていないことを検査します。異常終了や終了待ちのタイムアウトは
 失敗になり、`studio_exit_code` / `studio_shutdown_forced` と `failures` に結果を記録します。
-✅PX-2(`28bc5ef9`)から、driver はつないだ直後・最初の step の前に [`fix_viewport()`](../../tools/studio_drive.py#L1488) で `viewport_size` を送り、
+✅PX-2(`28bc5ef9`)から、driver はつないだ直後・最初の step の前に [`fix_viewport()`](../../tools/studio_drive.py#L1490) で `viewport_size` を送り、
 engine の viewport を [`DEFAULT_VIEWPORT`](../../tools/studio_drive.py#L59)(720x450、画の画素)に固定します。命令の実体は
-[`commandViewportSize()`](../../src/devstudio/automation/automationcommands.cpp#L2173) で、`pelican.viewportHost` に `setFixedSize` をかけて窓を差の分だけ伸縮し、
+[`commandViewportSize()`](../../src/devstudio/automation/automationcommands.cpp#L2347) で、`pelican.viewportHost` に `setFixedSize` をかけて窓を差の分だけ伸縮し、
 ドックはそのままにします(後でドックを開閉しても viewport は変わらない)。シナリオの最上位の `"viewport": [w, h] | null` で大きさを変えるか固定を外し、
 答えが 1 画素を超えてずれたら run は step を送らずに赤です。画素を読む 33 本の点はこの大きさで選んであるので、既定を変えると全部の点を測り直すことになります
 (manual 第13章 §13.5 の「viewport の大きさを決める(✅PX-2)」)。
@@ -740,9 +747,17 @@ engine の viewport を [`DEFAULT_VIEWPORT`](../../tools/studio_drive.py#L59)(72
 shortcut map を通る `window` だけが `QAction` を shortcut で発火できます。`list` の各項目は `shortcut` を持ち、
 `QAction` 自体は widget ではないので `menu_list`(一覧)と `action`(発火)が別命令です —— どちらも popup の
 modal ループに入りません。メニュー・dock・gizmo の action は `pelican.file.*` / `pelican.view.panels.*` /
-`pelican.gizmo.*` の objectName で指します。✅SK-1 から、[`commandList()`](../../src/devstudio/automation/automationcommands.cpp#L941) は
+`pelican.gizmo.*` の objectName で指します。✅SK-1 から、[`commandList()`](../../src/devstudio/automation/automationcommands.cpp#L943) は
 check できる `QAbstractButton`(`QCheckBox` など)の項目にだけ `checked` を足します(check box の `text` は caption なので、
 印はこちらで読む)。`QAction` の項目は前から `checked` を持っています。
+
+**名前で指した入力が、名前の物に届くこと(FX-8)。**Release の速さでは、名前で指した click・drag が別の item に落ちたり、押せない widget に黙って捨てられたりしていました。
+
+- **入力の前に断る**: `drag`(名前で指した端点)・`type`・`key` も、`click` と同じく [`targetEnabled()`](../../src/devstudio/automation/automationcommands.cpp#L589) が偽なら入力を 1 つも送らずに `the widget named "…" is disabled` で断ります。driver はこの断りだけを「副作用の無い断り」として待って送り直します([待つ命令の一覧](../../tools/studio_drive.py#L63))。
+- **click の当たり先**: 名前で指した scene item の click は、押す点で一番上にある「押しを受ける item」(その button を受けるか、選択できる item)を [`clickSurface()`](../../src/devstudio/automation/automationcommands.cpp#L1037) で引き、[`clickBelongsTo()`](../../src/devstudio/automation/automationcommands.cpp#L1024) で対象の物かを判定します。当たった item から親へ辿って対象に着けば対象の物です(途中に選択できる item があれば打ち切る)。逆に、当たった item が対象の祖先で、その間に独立して選択できる item が無ければ、それも対象への click です —— node の見出しや socket は押しを受けず、node が受けるためです。違えば [`findClickPoint()`](../../src/devstudio/automation/automationcommands.cpp#L1048) が対象の外接の中を画素ごとに探し(見出しの行を先に)、見つかれば答えの `point_reselected` が真、無ければ覆っている item の名前で断ります。ループの見出しの上に重なった選択できる node は、今も覆いとして扱います。
+- **drag の枠取り**: 両端が名前で指した同じ view の scene item なら、[`commandDrag()`](../../src/devstudio/automation/automationcommands.cpp#L1278) は押す前に両端の hotspot が本当に item の形に当たるかを確かめます。当たらなければ両端を余白付きで view に収め、それでも当たらなければ元の倍率(1 未満なら 1)に戻して、各端を中央に寄せて当たりを確かめ、動きの間は scene の点を補間しながら view を送ります。答えの `path` が `framed` / `panned`、`scale` が倍率です。その倍率でも片方の端が当たらなければ、入力を送らずに `cannot target named drag endpoints at this zoom` で断ります。座標(`point` / `scene`)で指した端点はこの処理をしません。
+
+書式の側(命令の引数・答えの鍵)は [`test/studio_scenarios/README.md`](../../test/studio_scenarios/README.md#L1) の「Writing a scenario」と「Gestures a canvas is driven with」です。
 
 ### Studio のテストは何を見ているか
 
@@ -777,8 +792,8 @@ Studio の target を必要としません)。
 | `devstudio_graphcanvas_test`(139 assertion) | `GraphCanvasModel`。**対照**は「reply から `definitions` を落とす」「catalog を返さない」「値の overlay を撤去する」の 3 変異。✅MC-1s で `[mc1s]` の 1 本([所](../../test/devstudio_graphcanvas_test.cpp#L1971)。hdr なしと `["bloom","hdr"]` の authoring context で palette の `render.material_pass` を 3 つの contract で置き、各ソケットの image の format と usage が form と同じ `materialPassSlots(contract, hdr)` と値そのものに一致、context が何も言わなければ HDR)。✅GL-5d で GL-1 の model の test(畳んだ node の case)に `foldedNodeExpand()` の確認を足した(root から見て、feature が作っていない material pass は decompose、雛形のある feature は replace、graph の node と畳んだ形の中では空)。assertion の数は着地時の記録のまま(数え直していない)。✅GL-5f で `[gl5f]` の 1 本(loop の body の image に copy ごとの Layers の行と loop origin。[GL-5f a loop body's image](../../test/devstudio_graphcanvas_test.cpp#L4924)) |
 | `devstudio_graphcanvas_scene_test`(62 assertion、`QT_OFFSCREEN`) | `GraphCanvasScene`。**対照**は「column を固定にする」「位置保持を撤去」「消えた node の位置を prune しない」「double-click を撤去」。N-2 で 8 case が加わり、その対照は「`canConnect` を常に true」「折り畳みを無効化」「parameters の全 key を送る」。✅CT-6s で `[ct6s]` の 4 本(`ray_tracing` を汎用の欄で stage ごとの shader の候補・Max recursion の spin・List にした miss が元の shader を残す・shader で走る task には出ない、`dispatch` の union と `rays_from` の port の combo と `indirect.buffer`、New… が RT の雛形を空いている名前で書いて task が trace し既にあるファイルを上書きしない、RT の拒否の 1 文)。✅GL-5b で `[gl5b]` の 2 本(palette の New render target… が Frame Plan の form を提案した名前で開き、`edit_render_targets` 1 回の後に target が context に載ってから reference を置く。詳細欄の color 出力を宣言済みの target から選び直す・New target… で宣言してから付け替える、どちらも `edit_preset_pass` 1 回)。✅GL-5c で `[gl5c]` の 1 本(`placeFromPalette("render.material_pass")` で palette の絞り込みが op になり、OK で root の `nodes` への `add_node` が 1 回で `edit_preset_pass` / `edit_render_targets` は 0 回、文書が node を持った時点で選ばれて詳細欄の Contract が出る。`editsPlanPass()` の真偽。選んだ forward の pass の横の palette の New render target… が Explicit format で開く)。palette の補助を `whilePaletteOpenAfter()` に一般化した。✅GL-5d で `[gl5d]` の 1 本(rendering 節の `present` の詳細欄と右クリックに Order… / Fix sockets、graph の node には Order… が無く Fix sockets が `graph_fragment` 付きで Frame Plan の関数を呼び口が `set_node_parameters` 1 回を送る、固定した shader の Make sockets variadic、`present` への線の右クリックに Fix sockets と Delete、`render.target_ref` の Edit target… の OK が Frame Plan の replace と同じ params、Delete target の 2 つの道 —— 読まれている target はそのまま remove を送って拒否が 1 文、誰も使わない target は `remove_node` の commit の後に remove)。右クリックの menu の action 名を読む補助 `canvasMenuOver()` を足し、`Gl5bTab` に `present` の input・shader の宣言・追加の node を渡す口を足した。変異の対照は取っていない(仕様書の指示)。assertion の数は着地時の記録のまま(数え直していない)。✅RTL-2s b で `[rtl2s]` の 3 本: layout のある project の RT の task の節(raygen・ray type ごとの check・miss の行・hit shader の格子、変更ごとに layout の形の edit 1 回、layout の無い project の汎用の欄の map の鍵が layout の名前の combo)([RTL-2s b decision 1](../../test/devstudio_graphcanvas_scene_test.cpp#L13605))、New… が layout の形の雛形を書く([RTL-2s b decision 2](../../test/devstudio_graphcanvas_scene_test.cpp#L13865))、RT の拒否の 1 文と節の該当する場所の赤、Problems の行が task の node へ([RTL-2s b decision 3](../../test/devstudio_graphcanvas_scene_test.cpp#L13768))。✅GL-5e で `[gl5e]` の 1 本(View の欄、passthrough の ○ のクリック、managed fragment の Delete pass、契約と reload の拒否のボタン、畳んだ node への線、Layers の右クリックが Frame Plan の関数に届く。[GL-5e](../../test/devstudio_graphcanvas_scene_test.cpp#L13934))。✅GL-5f で `[gl5f]` の 2 本(authored な compute task の Delete task と Edit task…、engine の feature の task と feature の fold には出ない。[GL-5f Delete task](../../test/devstudio_graphcanvas_scene_test.cpp#L14203)。行の無い Layers の見出しの右クリックに Unpin / Freeze / Eject again / Remove。[GL-5f Layers の見出し](../../test/devstudio_graphcanvas_scene_test.cpp#L14307))。✅GL-5g の 2 本: rendering 節の raster pass の詳細欄で shader・defines・raster_state・draw の変更がそれぞれ変わった鍵だけの `edit_preset_pass`([GL-5g raster pass](../../test/devstudio_graphcanvas_scene_test.cpp#L14451))、graph の node の pass の詳細欄の Serial / Isolate / No alias が Frame Plan と同じ `edit_target_planning`([GL-5g Serial / Isolate / No alias](../../test/devstudio_graphcanvas_scene_test.cpp#L14527))。✅RTL-3s で既存の `RTL-2s b decision 1` の traced の check の期待を新しい挙動に合わせた |
 | `devstudio_raylayout_test`(`QT_OFFSCREEN`。✅RTL-2s) | `raylayoutmodel` / `raylayouttemplate` の Qt 非依存の関数を、一時 project の shader のファイルと作った答えで見る。a の 5 本(`get_ray_layout` の読み、Enable hit groups が layout と全部の task を 1 つの `edit_batch` で書き前のファイルを残す、hit group・ray type・miss・record の欄が全部の task と割り当てと shader に届く、割り当ての行、`procedural_records` の編集の戻し。[decision 1](../../test/devstudio_raylayout_test.cpp#L124))と c の 1 本(task の layout の形の規則 1 つ、雛形の ray type と record の区画、raygen の切り替え、traced の check の notice の 1 文。[RTL-2s-c one rule](../../test/devstudio_raylayout_test.cpp#L383))。改名の shader が render の編集の履歴に載ることは `devstudio_render_history_test` の [「RTL-2s-c a rename's shaders ride on its history entry …」](../../test/devstudio_render_history_test.cpp#L933)、Order… の拒否の 1 文と赤い 2 行は `devstudio_task_editor_digest_test` の [「FO-1s decision 1」](../../test/devstudio_task_editor_digest_test.cpp#L672)(✅FO-1s)です。✅RTL-3s の 4 本: traced の check が自分の payload の行を雛形で埋め、外すと行も消える([RTL-3s decision 5](../../test/devstudio_raylayout_test.cpp#L460))、同じ名前の割り当ての行を `used_by` / `model` で見分ける([RTL-3s decision 2](../../test/devstudio_raylayout_test.cpp#L531))、`devstudio_render_history_test` の procedural の record の Undo が digest の restore([RTL-3s decision 3](../../test/devstudio_render_history_test.cpp#L982))と raygen の check のファイルだけの項目([RTL-3s decision 4](../../test/devstudio_render_history_test.cpp#L1062))。既存の `RTL-2s-c one rule …` の期待を EB-3 の後に合わせた |
-| `devstudio_automation_input_test`(`QT_OFFSCREEN`。Q-1b) | 自動化面の命令を、socket も engine も無しに pipe と同じ呼び方で呼び、受け取った widget に何が届いたかを聞く([automation の入力の test の登録](../../test/CMakeLists.txt#L715))。`TEST_CASE` は 19 本(Q-1b 11 本・SK-1・N-4・AG-3b 3 本・Q-16・Q-17・PX-2。case の名前から数えた。PX-2 の前は 18 本)。✅SK-1 で 1 本: [「SK-1: list says whether a check box is ticked」](../../test/devstudio_automation_input_test.cpp#L635)(`QCheckBox` の false → true が `list` の `checked` に出て、`QPushButton` の項目には `checked` が無い)。✅PX-2 で 1 本: [「PX-2: viewport_size holds the viewport while panels come and go」](../../test/devstudio_automation_input_test.cpp#L1134)(左にドックのある `QMainWindow` で 300x200 に固定し、横のドックの幅が変わらない、下にドックを足しても窓を変えても閉じても 300x200 のまま、width / height の無い要求は `automation.bad_request@1`・無い名前は `automation.widget_missing@1`、対照として `free` の後は窓に従って大きさが変わり最小が戻る) |
-| `studio_drive_shutdown_unit`(Python。[`test/ci/test_studio_drive.py`](../../test/ci/test_studio_drive.py)。`pelican_define_python_test()` で登録、Python の test が有効なときだけ) | シナリオの driver `tools/studio_drive.py` を、Studio も engine も起こさずに mock の channel で見る。16 本: 時計(1)、✅PX-2 の [`StudioDriveViewportTest`](../../test/ci/test_studio_drive.py#L219) の 3 本(既定の `DEFAULT_VIEWPORT` を `viewport_size` で送る / シナリオが `"viewport": [w, h]` で自分の大きさを、`null` で送らないことを書ける / 答えが 1 画素を超えて足りない・`[720]` のような形の違い・`automation.wait_timeout@1` の拒否で `fix_viewport()` が偽を返し `viewport` の失敗を残す)、shutdown(4。PX-2 で mock の答えを `viewport_size` に大きさで答える形にした)、無音の backend(3)、`result` の `retry_ms`(3)、`file` step の範囲(1)、`excludes`(1)(class と method の名前から数えた) |
+| `devstudio_automation_input_test`(`QT_OFFSCREEN`。Q-1b) | 自動化面の命令を、socket も engine も無しに pipe と同じ呼び方で呼び、受け取った widget に何が届いたかを聞く([automation の入力の test の登録](../../test/CMakeLists.txt#L715))。`TEST_CASE` は 19 本(Q-1b 11 本・SK-1・N-4・AG-3b 3 本・Q-16・Q-17・PX-2。case の名前から数えた。PX-2 の前は 18 本)。✅SK-1 で 1 本: [「SK-1: list says whether a check box is ticked」](../../test/devstudio_automation_input_test.cpp#L639)(`QCheckBox` の false → true が `list` の `checked` に出て、`QPushButton` の項目には `checked` が無い)。✅PX-2 で 1 本: [「PX-2: viewport_size holds the viewport while panels come and go」](../../test/devstudio_automation_input_test.cpp#L1138)(左にドックのある `QMainWindow` で 300x200 に固定し、横のドックの幅が変わらない、下にドックを足しても窓を変えても閉じても 300x200 のまま、width / height の無い要求は `automation.bad_request@1`・無い名前は `automation.widget_missing@1`、対照として `free` の後は窓に従って大きさが変わり最小が戻る) |
+| `studio_drive_shutdown_unit`(Python。[`test/ci/test_studio_drive.py`](../../test/ci/test_studio_drive.py)。`pelican_define_python_test()` で登録、Python の test が有効なときだけ) | シナリオの driver `tools/studio_drive.py` を、Studio も engine も起こさずに mock の channel で見る。16 本: 時計(1)、✅PX-2 の [`StudioDriveViewportTest`](../../test/ci/test_studio_drive.py#L232) の 3 本(既定の `DEFAULT_VIEWPORT` を `viewport_size` で送る / シナリオが `"viewport": [w, h]` で自分の大きさを、`null` で送らないことを書ける / 答えが 1 画素を超えて足りない・`[720]` のような形の違い・`automation.wait_timeout@1` の拒否で `fix_viewport()` が偽を返し `viewport` の失敗を残す)、shutdown(4。PX-2 で mock の答えを `viewport_size` に大きさで答える形にした)、無音の backend(3)、`result` の `retry_ms`(3)、`file` step の範囲(1)、`excludes`(1)(class と method の名前から数えた) |
 | `devstudio_engine_failure_test`(`GPU` + `GOLDEN` フラグ。ctest の label は `gpu` **だけ**で、`GOLDEN` が足すのは [`RESOURCE_LOCK pelican_gpu`](../../test/CMakeLists.txt#L177) です) | **失敗経路で実 `pelican_player` を起動する Studio テスト**。sandbox に複製した `projects/example` を壊して起動し、fatal 行が Studio に届くこと・RPC の stdout が枠を保つことを見ます。**実 player を起こす唯一のテストではありません** —— Q-1 のシナリオ群のほか、`if(NOT SKIP_DEVSTUDIO)` の中で Studio の引数 probe と実 player を回す [`vulkan_validation_runtime_player`](../../test/CMakeLists.txt#L3691) が Q-1 以前からいます。✅BS-1s から Studio は engine を `--render-fallback` で起こすので、UX-9 の「構成の拒否で止まる」case は「止まらずに fallback になり、Frame Plan の status 行が 1 文を言う」case に書き換わった([BS-1s decision 4 (UX-9 decision 5)](../../test/devstudio_engine_failure_test.cpp#L700))。WP298 の fatal の行の case(`material_route_unserved@1` はフラグを付けても致命)はそのまま。→ engine の ✅PB-1 で起動の間の `material_route_unserved@1` も fallback になったので、✅PB-1s で WP298 の case は「engine が止まらず、帯の文が route の hint と `(material_route_unserved@1)` と ` See Problems.` を含み、Problems の 1 行が source `startup`・`root_rendering`・Rendering settings」の期待に書き換わった。engine が先へ進んで `glTF morph vertex metadata exceeds renderer capacity of 262144 static vertices` で止まるので、**赤のまま**(engine に回した。PB-1s の実装者の報告)。→ ✅MV-1(`f84a7d14`)で engine の morph の頂点の上限が無くなり、この case は 2 本に分かれた。[「Studio receives the running engine's fatal text while RPC stdout stays framed」](../../test/devstudio_engine_failure_test.cpp#L387) は example ではなく `test/fixtures/studio_automation_graph` の写しで、`basic_config.camera` の `type` を `"fisheye"` にして起動する。project を読む段の `Pelican fatal error : basic_config.camera type must be 'perspective' or 'orthographic'` は rendering の文書より前なので `--render-fallback` でも致命で、Studio の `fatal_error_line` と stderr の最後の致命の行がそれを含むこと、Studio が forward した出力が stderr と同じ(stdout の RPC の答えは 0 byte)こと、`player.log` にその行があること、Frame Plan の status 行が起動前の文から変わることを見る。対照は camera を戻した同じ project の 600 frame の run。上の PB-1s の期待は [「The example with Alicia starts on its placeholder for a route no pass serves, and the band and the Problems row say why」](../../test/devstudio_engine_failure_test.cpp#L534)(`[mv1]`)に移り、example に Alicia を足した起動が止まらないことも見る |
 | `devstudio_d0_boundary_negative` | link boundary(下記) |
 | `studio_scenario_*`(`gpu`、Q-1 / Q-1b / N-5。**10 本**: `graph_read` / `graph_edit_roundtrip` / `canvas_zoom_pan` / `menu_actions` / `graph_canvas_zoom_pan` / `theme_switch` / `graph_auto_layout` / `graph_reroute_tie` / `graph_observe_roundtrip` / `frameplan_edit_roundtrip`) | **実物の窓 + 実物の engine の e2e**。`--automation` 無しで socket が無いこと、`list` が objectName を返すこと、無い名前が `automation.widget_missing@1` になること、キャンバスが描いたものと `get_graph_instances` の一致、値の帯の click → type → Enter が engine に届き、**ディスク経由で再読込しても残る**こと。**対照**は「期待するノード数を 1 ずらす」と「`setNodeParameter` を止める」(後者は `wait_timeout`)。Q-1b の 3 本は gesture(wheel / 押したままの move / 中ボタン drag)を `view_state` の数値の**向き**で、メニューを `menu_list` / `action` で確かめます。N-5 の `theme_switch` は View ▸ Theme で light / dark を切り替えて両方を撮ります |
@@ -1561,7 +1576,7 @@ skip が緑を汚さない以上、`ctest` の exit code だけでは検出で�
 
 ## 7.9 テストの実行方法
 
-repository の基本手順は [`README.md`](../../README.md#L19) にあります。
+repository の基本手順は [`README.md`](../../README.md#L35) にあります。
 
 ```powershell
 cmake . -B build -DCMAKE_PREFIX_PATH=<Qtの場所>

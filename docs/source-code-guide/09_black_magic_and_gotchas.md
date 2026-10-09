@@ -1363,6 +1363,16 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **読む場所**: [`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2707) → [`GraphAttachmentWidget::~GraphAttachmentWidget()`](../../src/devstudio/view/graphattachmentwidget.cpp#L392)。
 
+### 難所 — `setItemWidget` で行に置いた widget を `delete` で直接消すと、view の editor に残る(FX-8)
+
+**素朴に読むと**: `QTreeWidget::setItemWidget()` で行に置いた widget は普通の子 widget なので、`delete` すれば view からも外れる、と読めます。
+
+**実際は**: `setItemWidget` は view の index widget(view が editor として持つ一覧)に登録します。widget を `delete` しても、その一覧の項目は残ります。次に木を `clear()` すると選択が変わって view が layout をやり直し、一覧に残った解放済みの widget を読みます。Frame Plan では、Backends と Physical plan の木の先頭に置く帯(band)がこれに当たり、Pin の後に plan を読み直すと Studio が 0xC0000005 で落ちていました。今は帯ごとに置いた木を覚えておき([帯を覚える所](../../src/devstudio/view/frameplanwidget.cpp#L3537))、消す前に `removeItemWidget()` で木に手放させてから `delete` します([`dropBands()`](../../src/devstudio/view/frameplanwidget.cpp#L614))。木を作り直す前に帯を消す順([`populate()` の中で呼ぶ所](../../src/devstudio/view/frameplanwidget.cpp#L4205))は今までどおりです。
+
+**不変条件**: `setItemWidget` で置いた widget は、`removeItemWidget()` で view に外させてから消すこと。木を `clear()` するより前に外しておくこと。
+
+**読む場所**: [`dropBands()`](../../src/devstudio/view/frameplanwidget.cpp#L614) → [帯を覚える所](../../src/devstudio/view/frameplanwidget.cpp#L3537)。利用者から見た Frame Plan の帯は manual 第15章 §15.6 の「backend の pin と物理計画・再起動」。
+
 ---
 
 Pelican の複雑さは、ECS と Vulkan そのものよりも「compile-time 型情報を runtime table へ落とす境界」と「CPU 上の寿命を frame/GPU 上の寿命へ写す境界」に集まっています。その2か所では、便利な macro や RAII の表面だけでなく、登録時刻、pointer の有効期間、barrier、破棄順まで追うのが安全です。
