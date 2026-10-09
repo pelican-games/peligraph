@@ -281,10 +281,10 @@ import manifest の受理拡張: outputs の schema に `pelican.material`(v1)�
 
 1 ファイル(コンテナ)内のサブアセットを指す構文が [PF] v6.3 で凍結され、✅WP77(K1)で**実際の部分ロード**が入りました:
 
-```
-assets/models/city.glb#mesh/LampPost      … 短い一意名(糖衣)
-assets/models/city.glb#node/Root/Arm/Cube … フルパス(正準形)
-```
+| 参照 | 意味 |
+|---|---|
+| `assets/models/city.glb#mesh/LampPost` | 短い一意名(糖衣) |
+| `assets/models/city.glb#node/Root/Arm/Cube` | フルパス(正準形) |
 
 - 構文規則: `#` は 1 個・種別は英数字とアンダースコア(`[A-Za-z0-9_]`)・**全数字の index 参照は構文レベルで拒否**(DCC の並び替えで壊れるため)。短い一意名が曖昧な場合は候補全列挙のエラー。
 - 対応種別は **`mesh` / `node` / `material` / `animation` の 4 種**(.glb/.gltf のみ)。未対応 kind は対応一覧付きの名指しエラー。依存するリソースだけを GPU 化する真の部分ロードです。

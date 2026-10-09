@@ -274,10 +274,8 @@ idempotentです。Overlap event は full `EntityId {index,generation}` を
 
 eventは`pending_events`へ入り、フレーム先頭で`deliver_now_events`へswapし、emit順に配送されます（自由関数 [`freezePendingEventsForFrame()`](../../src/core/userpublic/details/event/registerer.cpp#L495)、メンバは [L405](../../src/core/userpublic/details/event/registerer.cpp#L495)）。System側はorder/name順です。従って配送順は次です。
 
-```text
-event emit順
-  × 各eventについてSystem order/name順
-```
+1. event を emit 順に配送する。
+2. 各 event について、System を order/name 順に呼ぶ。
 
 payload が `shared_ptr<const void>` である理由(`make_shared<Event>` が作った control block は `~Event` を呼ぶ手続きを内部に焼き付けたまま `shared_ptr<const void>` へ暗黙変換されるので、静的型が `const void` になっても破棄だけは元の型のデストラクタで行われる — だから game DLL 側で定義された型でも安全に捨てられます)と、teardown で payload を drain してから DLL をアンロードしなければならない順序は、[この節の event 名、payload と DLL の寿命](#event-payload-lifetime)で扱います。
 
@@ -307,14 +305,16 @@ C++ の `GameContext::emit(event)` は copy した値をそのまま queue に�
 >
 > **骨子**:
 > ```text
-> emit<E>(e)  payload = make_shared<E>(e) → shared_ptr<const void>(deleter は ~E のまま)
+> emit<E>(e)  payload = make_shared<E>(e)
 >             type    = type_index(typeid(E))
 > frame 先頭  deliver_now_events.swap(pending_events)
 > dispatch    for system in (order,name)順 / for handler in system.event_handlers:
->               if handler.event_type == event.type:      ← 唯一の型検査
->                  handler.dispatch(payload.get(), ctx)   ← 検査なしの static_cast
-> teardown    drainForTeardown() で owner 生存中に payload を全破棄 → その後 DLL アンロード
+>               if handler.event_type == event.type:
+>                  handler.dispatch(payload.get(), ctx)
+> teardown    drainForTeardown() で owner 生存中に payload を全破棄し、その後 DLL アンロード
 > ```
+>
+> - **payload**: `make_shared<E>(e)` から `shared_ptr<const void>` へ変換しても deleter は `~E` のままで、`handler.event_type == event.type` が唯一の型検査となり、`handler.dispatch(payload.get(), ctx)` 内の `static_cast` には検査がない。
 >
 > **手がかり**: [`QueuedEvent::owner`](../../src/core/userpublic/details/event/registerer.hpp#L41) は DLL reload 時に「消えた owner の queued event」を捨てるためにあります(`unregisterEvents` の `std::erase_if`)。一緒に読むテストは [`Event bus freeze is separate from delivery`](../../test/eventlayer_test.cpp#L69)「Event bus freeze is separate from delivery」と、[`run_behavior_dll_reload.ps1`](../../test/run_behavior_dll_reload.ps1) の `queued_event_purge` ケースです。
 >
@@ -325,9 +325,9 @@ C++ の `GameContext::emit(event)` は copy した値をそのまま queue に�
 ```mermaid
 flowchart LR
     OS["GLFW / RPC入力"]
-    Events["InputEvent\n順序付きevent列"]
-    Snapshot["InputSnapshot\n1フレーム不変"]
-    Actions["InputActionFrame\naction set評価"]
+    Events["InputEvent<br/>順序付きevent列"]
+    Snapshot["InputSnapshot<br/>1フレーム不変"]
+    Actions["InputActionFrame<br/>action set評価"]
     Game["GameContext / UserInput"]
 
     OS --> Events --> Snapshot --> Actions --> Game
@@ -358,9 +358,12 @@ eventはbutton、cursor move、axis deltaの三種です（[`InputEvent`](../../
 > ```text
 > 最初の非空フレームだけ:
 >   offset = next > events.front().event_seq ? next - events.front().event_seq : 0
-> 各 event: event_seq > unassigned_sequence - 1 - offset → throw  ← 足す前に検査
->           event_seq += offset                                   ← 間隔はそのまま
+> 各 event:
+>   if event_seq > unassigned_sequence - 1 - offset: throw
+>   event_seq += offset
 > ```
+>
+> - **event_seq**: 足す前に検査し、加算後も間隔はそのまま。
 >
 > **手がかり**: `startReplay()` / `stopReplay()` がどちらも `replay_sequence_offset.reset()` するので、offset は 1 回の replay に閉じています(`std::optional` の空が「まだ決めていない」印)。空フレームでは `queueEvents()` ごと飛ばすため、先頭が空だと offset の決定は最初に event が現れたフレームまで遅れます。テストは [`replay reconstructs held and released snapshots through InputState`](../../test/inputsequence_test.cpp#L55) の "replay reconstructs held and released snapshots through InputState" と、単調性違反を弾く側の [`input_seq rejects non-monotonic event_seq and missing frame markers`](../../test/inputsequence_test.cpp#L41)。
 >
@@ -396,15 +399,17 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 >
 > **骨子**:
 > ```text
-> stack を rbegin→rend(最後に push した set が最初 = 高優先)
+> stack を rbegin から rend へ(最後に push した set が最初 = 高優先)
 >   set ごと  : consumed_by_set = {}
 >     action ごと: consumed_by_action = {}
->       binding ごと: readBinding(..., consumed, ...)  ← 見るのは常に consumed だけ
+>       binding ごと: readBinding(..., consumed, ...)
 >                     consumed_by_action へ記録
 >     released = any_release && !held
->     consumed_by_set.merge(consumed_by_action)   ← action を抜けてから
->   consumed.merge(consumed_by_set)               ← set を抜けてから
+>     consumed_by_set.merge(consumed_by_action)
+>   consumed.merge(consumed_by_set)
 > ```
+>
+> - **消費の参照と合流**: `readBinding` が見るのは常に `consumed` だけで、`consumed_by_set.merge(consumed_by_action)` は action を抜けてから、`consumed.merge(consumed_by_set)` は set を抜けてから行う。
 >
 > **手がかり**: fixture では `jump`(gameplay)と `confirm`(menu)が両方 `kbd:space` です([gameplay_menu.json](../../test/fixtures/input_actions/valid/gameplay_menu.json) / [keyboard.json](../../test/fixtures/input_actions/valid/keyboard.json))。stack が `{"gameplay","menu"}` のとき menu が先に評価されて Space を消費するので、`confirm.held` が真・`jump.held` が偽になります([`inputactions_test.cpp` 内](../../test/inputactions_test.cpp#L165))。`pose` 型 action はループ先頭で `continue` するため一切消費しません(pose は別経路の `frame_input.pose_samples` から入ります)。`ConsumedControls::merge()` は全フィールドの論理和なので、記録は増える一方で消えません。
 >
@@ -471,12 +476,14 @@ controller の鍵を読むのは camera codec の `decodeController()` で、ど
 > **骨子**:
 > ```text
 >   dir        = normalizeOr(pose.dir, -Z)
->   up_hint    = worldUpFor(dir)                         ← +Y、ほぼ鉛直なら +Z
+>   up_hint    = worldUpFor(dir)
 >   right_hint = normalizeOr(cross(dir, up_hint), +X)
 >   right      = normalizeOr(cross(dir, pose.up), right_hint)
->   up         = normalizeOr(cross(right, dir), up_hint)  ← 与えられた up を直交化
-> cameraRotation(dir, up)  = quat_cast(mat3{right, up, -dir})   ← 第 3 列は「後ろ」
+>   up         = normalizeOr(cross(right, dir), up_hint)
+> cameraRotation(dir, up) = quat_cast(mat3{right, up, -dir})
 > ```
+>
+> - **基底**: `up_hint` は +Y、ほぼ鉛直なら +Z とし、`up` は与えられた up を直交化し、`cameraRotation` の第 3 列は「後ろ」を表す。
 >
 > **手がかり**: `worldUpFor()` は +Y と dir がほぼ平行(内積の絶対値が 0.98 超)なら、+Y と最も平行でない canonical 軸(+Z)へ退避します。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L117) 経由で orbit / follow が共有し、fly も直接使います。回転を組むのは `cameraRotation()` の 1 か所で、camera bake([`CameraBakeRecorder::recordFrame()`](../../src/core/playback/camerabake.cpp#L95))と起動時の camera の上書き([`applyLaunchCameraOverride()`](../../src/core/playback/launchcameraoverride.cpp#L13))も同じ関数を通ります。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L486) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
 >
@@ -503,21 +510,34 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 > **素朴に読むと**: `raw.collider_index` は「元の collider 列への添字」に見えますが、実際は **filter 通過後の圧縮列への添字**です。この一点を取り違えると以降の読みが全部ずれます。filter は `selectColliders()` で先に効いているので provider はフィルタを一切知りません(= フィルタ意味論を provider 実装に依存させない設計)。検証側は「バグった / 敵対的な provider でもホストを壊せない」ことを目標にしていて、`std::vector<bool> seen` による **1 collider 1 hit** の強制、`reserved != 0` の拒否(shapeCast ではさらに未知 flag ビットの拒否 = 前方互換ビットのゼロ強制)、範囲・有限性チェックが並びます。1 つでも違反したら**部分結果を返さず `out_hits.clear()` して `provider_error`** という all-or-nothing も意図的です。raycast と shapeCast の非対称は読んで初めて分かります — raycast は provider が返した距離から `origin + unit_direction * distance` で**位置をホスト側が再計算**します(ABI の raycast hit に position フィールドが無いのはこのため。位置と距離が食い違う結果を原理的に作れません)。shapeCast は接触点を導出できないので position を受け取り、代わりに `initial_overlap ⇒ toi≈0 かつ depth>ε` / `!initial_overlap ⇒ depth<=ε` の相互整合を検査して、後者では depth を 0 に**上書き**します。
 >
 > **骨子**:
-> ```text
-> 元の colliders[]   : [0]A  [1]B  [2]C  [3]D   ← filter で B と D が落ちたとする
-> selected[]/shapes[]: [0]A  [1]C               ← provider が見るのはこの 2 本だけ
-> provider が返す collider_index = 1 は C(元配列の [1]B ではない)
 >
-> selectColliders : filter を通った collider だけを selected[] / shapes[] へ(添字は共有)
->                   逆写像用の対応表は作らない。selected[i] が collider ポインタと
->                   ColliderIdentity を並べて持つので、復元は selected[raw.collider_index] の 1 回引き
-> invokeProvider  : out_hits を selected.size() に先に resize(確保を provider にさせない)
-> 検証ループ      : reserved==0 / index 範囲内 / seen[index] 未使用 / 数値が有限で範囲内
->                   raycast   は position を origin+dir*distance で作り直す(ABI に position が無い)
->                   shapeCast は未知 flag を拒否し、flags と depth の相互整合を見て depth を正規化
-> 違反時          : out_hits.clear() → provider_error(部分結果は返さない)
-> 最後            : phys::internal::orderXxxHits() で正準順へ
+> | 元の colliders[] | filter 後の selected[] / shapes[] | provider からの参照 |
+> |---|---|---|
+> | `[0]A` | `[0]A` | `collider_index = 0` |
+> | `[1]B` | 除外 | filter で落ちる |
+> | `[2]C` | `[1]C` | `collider_index = 1` は C。元配列の `[1]B` ではない |
+> | `[3]D` | 除外 | filter で落ちる |
+>
+> ```mermaid
+> flowchart TB
+>     Select["selectColliders<br/>filter を通った collider だけを selected[] / shapes[] へ"]
+>     Invoke["invokeProvider<br/>out_hits を selected.size() に先に resize"]
+>     Loop{"検証ループ<br/>未検証の hit がある?"}
+>     Validate{"検証に成功?"}
+>     Error["out_hits.clear()<br/>provider_error<br/>部分結果は返さない"]
+>     Order["最後: phys::internal::orderXxxHits()<br/>正準順へ"]
+>     Select --> Invoke --> Loop
+>     Loop -->|"ある"| Validate
+>     Validate -->|"成功"| Loop
+>     Validate -->|"違反"| Error
+>     Loop -->|"全件完了"| Order
 > ```
+>
+> - **selectColliders**: filter で B と D が落ちた例で、provider が見るのは A と C の 2 本だけ。`selected[]` / `shapes[]` は添字を共有する。逆写像用の対応表は作らず、`selected[i]` が collider ポインタと `ColliderIdentity` を並べて持つので、復元は `selected[raw.collider_index]` の 1 回引き。
+> - **invokeProvider**: 確保を provider にさせない。
+> - **検証ループ**: `reserved==0` / index 範囲内 / `seen[index]` 未使用 / 数値が有限で範囲内。
+> - **raycast**: position を `origin+dir*distance` で作り直す(ABI に position が無い)。
+> - **shapeCast**: 未知 flag を拒否し、flags と depth の相互整合を見て depth を正規化。
 >
 > **手がかり**: builtin 実装([`builtinphysicsprovider.cpp` 内](../../src/core/phys/builtinphysicsprovider.cpp#L74))は渡された配列の添字をそのまま `collider_index` に返すだけなので、「圧縮後の添字」の意味が一目で分かります。同ファイル冒頭の `static_assert` が `phys::shapeCastContactEpsilon == Physics::shapeCastContactEpsilonV2` を固定していて、純粋層と ABI 層の ε は同一でなければなりません。敵対的な返値の再現は [`test/fixtures/physics_provider_dll/provider.cpp`](../../test/fixtures/physics_provider_dll/provider.cpp) です。
 >
@@ -536,15 +556,17 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 > **素朴に読むと**: `std::sort` を 2 回している冗長なコードに見えますが、1 回目とクラスタ内の 2 回目は**別の順序**を課しています。まず誤解を潰しておくと、**1 回目の `(距離, identity)` 比較そのものは何も壊れていません** — float の `<` は全順序で、identity も一意なので、これは正真正銘の strict weak ordering です。ε が絡んだ途端に壊れるのは、ε を comparator の**内側**へ持ち込んだ場合だけです。素直に書きたくなるのは「距離が ε 以内なら identity で、そうでなければ距離で比較」という 1 個の comparator ですが、**これは strict weak ordering ではありません**(狭義弱順序 — `std::sort` が comparator に要求する性質。「a < a は偽」「a<b かつ b<c なら a<c」に加えて、「どちらの向きも < が偽」という同値関係まで推移的でなければならない、という規則です。ε 近接は推移的でない: a≈b, b≈c でも a≉c がありえます)。それを `std::sort` へ渡すのは UB で、実装によってはクラッシュや順序破壊になります。さらにクラスタを「隣接差が ε 以内なら連結」と鎖状に伸ばすと、ε/2 間隔で並んだ hit 列が 1 個の巨大クラスタへ潰れ、**遠くの collider を 1 個足しただけで近い 2 件の順序が入れ替わります**。この関数はクラスタを常に「その時点で最も手前の生の値」に**アンカー**することで、クラスタ幅を ε 以下に固定しています(コード内コメントがまさにこれです)。
 >
 > **骨子**:
-> ```text
-> 1. std::sort(全体, key = (distance, colliderIdentityLess))  ← identity は一意なので全順序
-> 2. anchor = hits[cluster_begin] の生の値                     ← 連鎖させず必ずアンカー
->    cluster_end = anchor + queryTieEpsilon を超えない最後まで
-> 3. [cluster_begin, cluster_end) を identity のみで再ソート
 >
-> raw TOI: 0.100000  0.100008 | 0.100015   0.30
->          ^anchor (+1e-5 まで) ^新 anchor    0.100008 を anchor にして連鎖させない
-> ```
+> 1. `std::sort(全体, key = (distance, colliderIdentityLess))`。identity は一意なので全順序。
+> 2. `anchor = hits[cluster_begin]` の生の値とし、`cluster_end` は `anchor + queryTieEpsilon` を超えない最後まで。連鎖させず必ずアンカーする。
+> 3. `[cluster_begin, cluster_end)` を identity のみで再ソートする。
+>
+> | raw TOI の順 | 値 | anchor との関係 |
+> |---|---|---|
+> | 1 | `0.100000` | 最初の anchor。`+1e-5` まで |
+> | 2 | `0.100008` | 同じクラスタ。この値を anchor にして連鎖させない |
+> | 3 | `0.100015` | 新 anchor |
+> | 4 | `0.30` | 後続の値 |
 >
 > **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([`physqueryinternal.hpp` 内](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest()`](../../src/core/phys/physworld.cpp#L623) が同距離クラスタから 1 件を選ぶときの決着は**この順序ではなく**文字列 id(`hit.id`)の比較です。無フィルタ専用だった単引数版が消えて `raycastClosest(ray, filter)` 1 本になったので、この規則は**どの filter でも同じ**ように働きます(変数名は [`better_legacy_tie`](../../src/core/phys/physworld.cpp#L636) のまま残っていますが、新旧 2 経路が並存しているわけではありません。「フィルタ無し」相当が要るときは [`phys::every_collider_filter`](../../src/core/phys/physquery.hpp#L92) を渡します)。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [微小形状の長距離精度](../../test/physquery_test.cpp#L134)。
 >
@@ -560,11 +582,13 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 > ```text
 > closestForSubset(vertices, mask):
 >   p(w) = v0 + Σ_{i≥1} w_i (v_i - v0) の |p(w)|^2 を最小化
->   → 正規方程式を solveLinear(部分ピボット付き Gauss–Jordan、|pivot| <= 1e-12 で失敗)
->   w_0 = 1 - Σ w_i、いずれかの w < -1e-7 ならこの部分集合は答えでない → nullopt
+>   正規方程式を solveLinear(部分ピボット付き Gauss–Jordan、|pivot| <= 1e-12 で失敗)
+>   w_0 = 1 - Σ w_i、いずれかの w < -1e-7 ならこの部分集合は答えでないため nullopt
 > closestToOrigin:
->   全 mask を回して distance^2 最小、同点(1e-12 以内)なら popcount が大きい方 ← richer_tie
+>   全 mask を回して distance^2 最小、同点(1e-12 以内)なら popcount が大きい方
 > ```
+>
+> - **richer_tie**: 同点なら popcount が大きい方を選ぶ。
 >
 > **手がかり**: `SupportVertex` は差ベクトルだけでなく両形状上の元の点も持ち回るので、最近点の重心座標をそのまま接触点(witness)の補間へ流用できます。`mask` は `vertices` のインデックスに対するビットで、`weights` も部分集合内の順序ではなく**頂点インデックス**で引きます。[`reduceSimplex()`](../../src/core/phys/physquerysweep.cpp#L401) が weight > 1e-7 の頂点だけ残すのが Johnson の「不要頂点の破棄」に当たります。
 >
@@ -582,14 +606,16 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 > ```text
 > time = 0、40 回まで:
 >   d = convexDistance(moving を delta*time だけ平行移動したもの, collider)
->   overlaps(moved, collider) → [last_separated_time, time] を二分して TOI を境界へ戻す
->   d.distance <= kDistanceTolerance → TOI = time で hit
->   closing = -dot(delta, d.normal)         ← normal は cast 形状を外へ出す向き
->   closing <= 1e-6 → なし                  ← 近づいていない / NaN 回避
->   time += max((d.distance - tol) / closing, 1e-6)   ← 進行保証つき保守的前進
->   time > 1 + tol → なし
+>   if overlaps(moved, collider): [last_separated_time, time] を二分して TOI を境界へ戻す
+>   if d.distance <= kDistanceTolerance: TOI = time で hit
+>   closing = -dot(delta, d.normal)
+>   if closing <= 1e-6: なし
+>   time += max((d.distance - tol) / closing, 1e-6)
+>   if time > 1 + tol: なし
 > 40 回使い切ったら nullopt(偽陽性より偽陰性を選ぶ)
 > ```
+>
+> - **保守的前進**: normal は cast 形状を外へ出す向きで、`closing <= 1e-6` は近づいていない場合と NaN 回避のために除外し、time の更新は進行保証つき保守的前進となる。
 >
 > **手がかり**: ループの**前**に 3 つの早期経路があります — sphere-sphere の解析的初期接触、`overlaps()` が真なら EPA へ、`delta≈0` なら nullopt。つまりこのループは「最初は離れている」場合専用で、`last_separated_time = 0` から安全に始められます。`normal` の向きの規約は [法線の契約](../../src/core/phys/physquery.hpp#L156) のコメントが正。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp) の "shapeCast prevents thin-collider tunneling for every standard shape pair" と退化形状 corpus。
 >
@@ -604,12 +630,14 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 > **骨子**:
 > ```text
 > 1. enclosingTetrahedron: simplex + 26 方向 support から「最小重心座標が最大」の四面体
-> 2. 4 面を makeFace。dot(n, v_a) < 0 なら b,c を入れ替えて反転 → 全面外向き、distance >= 0
-> 3. 256 回まで: f = closestCanonicalFace(faces, preferred)   ← 決定的な最近面
+> 2. 4 面を makeFace。dot(n, v_a) < 0 なら b,c を入れ替えて反転し、全面外向き、distance >= 0
+> 3. 256 回まで: f = closestCanonicalFace(faces, preferred)
 >      v = support(f.normal)、収束したら facePenetration(f)
 >      v から見える面を剥がし、辺の相殺でシルエットを取り、v と張り直す
 > 4. depth = f.distance、normal = -f.normal、position = collider 側 witness
 > ```
+>
+> - **closestCanonicalFace**: 決定的な最近面を選ぶ。
 >
 > **手がかり**: `addBoundaryEdge` の「逆向き辺があれば消す、なければ積む」は可視面群の**シルエット抽出**の定石で、ここを理解しないと穴の張り直しが読めません。`facePenetration()` は 3 頂点で `closestToOrigin()` を再利用して接触点を出します(直前の難所と繋がります)。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L301) の "shapeCast reports deterministic initial-overlap minimum translation"。
 >
@@ -659,12 +687,15 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 > **素朴に読むと**: 「集合差分」と言われれば `unordered_set` を 2 つ持って引き算したくなりますが、それでは **emit 順が hash 順**になり決定性が消えます。ここでは (1) ペアを `(min(entity), max(entity))` へ canonical 化し、(2) sort + unique し、(3) **2 本のソート済み列を 1 回のマージで走査**して、Enter と Exit を**同一のペア全順序の中に交互に**出します。素朴に「Exit を全部出してから Enter を全部出す」にすると、同一フレームで A→B の Exit と B→C の Enter が起きたときの相対順序が「フェーズ順」になり、ペア順ではなくなります。canonical 化と unique が無ければ、同じ物理ペアが**両方の trigger から 2 回**、1 entity に複数 collider があれば collider 数だけ重複して出ます。`Status::unavailable` での早期 `return` も重要で、そこで `active_trigger_pairs` を更新しないことが「provider が使えないことは分離した証拠ではない」という不変条件そのものです。逆に [`PhysWorld::clear()`](../../src/core/phys/physworld.cpp#L400) は scene domain reset として **Exit を出さずに**捨てます。この非対称は意図的です。
 >
 > **骨子**:
-> ```text
-> prev: (1,4) (2,3)       (5,9)
-> cur:        (2,3) (3,7) (5,9)
-> 出力: Exit(1,4) → Enter(3,7)      ← ペアの全順序の中で交互に出る
->       等しいペアは両方進めるだけ(Stay は出さない)
-> ```
+>
+> | ペアの全順序 | prev | cur | 出力 / 操作 |
+> |---|---|---|---|
+> | `(1,4)` | あり | なし | `Exit(1,4)` |
+> | `(2,3)` | あり | あり | 両方進めるだけ。Stay は出さない |
+> | `(3,7)` | なし | あり | `Enter(3,7)` |
+> | `(5,9)` | あり | あり | 両方進めるだけ。Stay は出さない |
+>
+> - **出力順**: ペアの全順序の中で Exit と Enter が交互に出る。
 >
 > **手がかり**: ペアの型は `GameObjectId = EntityId{index, generation}` で、`operator<=>` が defaulted です([`entity.hpp` 内](../../src/core/userpublic/details/ecs/entity.hpp#L16))。**generation 込みの全順序**なので id 再利用が混線しません。テストは [`physworld_test.cpp`](../../test/physworld_test.cpp#L524) の "PhysWorld guarantees Exit for destroy and collider removal but not scene reset" ほか [`PhysWorld trigger replay emits only symmetric Enter and Exit deltas`](../../test/physworld_test.cpp#L486) / [`PhysWorld trigger changes use canonical EntityId pair order`](../../test/physworld_test.cpp#L495)。
 >
@@ -683,12 +714,13 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 > **素朴に読むと**: 数字の入れ替えが 3 か所あり、どれを間違えても静かに壊れます。(1) 前進は `travel = max(0, |remaining| * toi - skin_width)` なのに、残りは `remainder = remaining * (1 - toi)` で **skin_width を引きません**。ここを `remaining - travel` にすると skin 分が残りへ戻り、次の反復で面を突き抜けるか面際で前後に振動します。skin は「面から浮かせる距離」であって「使った移動量」ではありません。(2) `max(0, ...)` が効くのは接触が skin より近いときで、そのとき**前進はゼロだが滑りは行われます**。負のまま使うと壁にめり込む方向へ後退します。(3) `initial_overlap` 枝は TOI を一切消費せず、`normal * (penetration_depth + skin_width)` だけ押し出して `continue` します。押し出しの後で `slideRemainder()` を通さないと、同じ collider に対して押し出し→再進入を繰り返します。`slideRemainder()` の分岐も理由が深く、上向き(`normal.y > 0`)でも walkable でない接触は「壁」として扱い、法線を水平成分だけへ潰してから射影します。斜面の接線へそのまま射影すると**上向き速度が生成され、`max_slope_degrees` を超える崖を登ってしまう**からです。
 >
 > **骨子**:
-> ```text
->         |--------- remaining ---------|
->  start  |--- travel ---|-skin-|X 接触面
->                        ^ contact = |remaining| * clamp(toi, 0, 1)
->  次の remaining = slideRemainder(remaining * (1 - toi), 接触)   ← skin は引かない
-> ```
+>
+> | 要素 | 式 / 配置 | 意味 |
+> |---|---|---|
+> | remaining | `start` からの移動全体 | 元の移動距離 |
+> | travel / skin | `start`、travel、skin、`X`(接触面)の順 | 接触面の手前に skin を残す |
+> | contact | <code>contact = &#124;remaining&#124; * clamp(toi, 0, 1)</code> | 接触位置までの距離 |
+> | 次の remaining | `slideRemainder(remaining * (1 - toi), 接触)` | skin は引かない |
 >
 > **手がかり**: [`selectBlockingHit()`](../../src/core/userpublic/platformer/charactercontroller2d.cpp#L206) は **hits の先頭から最初に条件を満たすものを採ります**。これは `shapeCastAll` がこの節の ε クラスタ正準順で返すことに依存した設計で、`ShapeCastAll2DQuery` を自作するときの暗黙の契約です(ヘッダのコメントが規範)。[`planarNormal()`](../../src/core/userpublic/platformer/charactercontroller2d.cpp#L160) は z を落として再正規化し、**z を落とした後の xy 成分の長さ**が epsilon 以下(= 法線がほぼ ±z を向く面外の法線)なら `nullopt` = その hit を**ブロッカーとして無視**します。理由は幾何です — この controller の移動は XY 平面に閉じている(`delta.z` は 0 が必須、各反復の末尾でも `remaining_delta.z = 0`)ので、法線が画面の手前 / 奥を向いている面は移動を止められません。仮にブロッカーとして採用しても、滑りの射影 `removeInwardComponent()` は `dot(残り移動, 法線)` が負のときだけ成分を削るので、残り移動の z が 0 で法線がほぼ ±z なら内積はほぼ 0、つまり何も削れずに反復だけ 1 回無駄になります。3D 的には「体の手前側 / 奥側にある壁」で、横スクロールの体はそこへは動けないので接触として意味を持たない、ということです。z がほぼ 0 の法線は逆に、完全な平面法線としてそのまま採用されます。`applied_translation` は overlap recovery を含むので `requested_delta` より大きくなりえます。テストは [`platformer_controller_test.cpp`](../../test/platformer_controller_test.cpp#L177) の薄い床 / 壁滑り / walkable と steep / 初期貫通回復 / 固定ステップ replay の byte 一致。
 >
@@ -701,15 +733,20 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 > **素朴に読むと**: 最後の 3 行が「1 行の奇妙な式」の典型です。`projectedRadius()` は法線方向の **support 関数の半径**(box なら Σ|n·axis_i|·half_i、capsule なら |n·axis|·half_h + r)なので、`dot(center,n) - projectedRadius` は形状全体の `dot(p,n)` の**最小値** = 足元側の支持平面になります。それを足場の平面 `dot(hit.position, n)` と比べ、「今回のスイープ開始時点ですでに足場より上にいたか」を判定しています。素朴に「速度が下向きならブロック」だけにすると、ジャンプで足場を貫通している最中に頭が平面を越えた瞬間に条件が成立し、**上昇中の体が足場の上へ吸着**します。逆に中心座標だけで比較すると、体の半分が埋まった状態から上へ弾き出されます。`one_way_tolerance`(既定 2e-4)は skin_width で浮かせた分と float 誤差の吸収で、足場にちょうど乗っている体が次フレームに落ちないための余裕でもあります。
 >
 > **骨子**:
-> ```text
->       ↑ normal
->  ┌────────┐   starting_support = dot(center,n) - projectedRadius(shape,n)
->  │  body  │
->  └────────┘ ← starting_support
-> ━━━━━━━━━━━ ← surface_plane = dot(hit.position, n)
->  ┌────────┐   上から: support + tolerance >= plane → ブロック
->  └────────┘   下から: support < plane              → 素通り
+> ```mermaid
+> flowchart TB
+>     Body["body の開始姿勢<br/>足元側: starting_support<br/>足場の平面: surface_plane"]
+>     Side{"足場への進入側"}
+>     Block["ブロック"]
+>     Pass["素通り"]
+>     Body --> Side
+>     Side -->|"上から: support + tolerance >= plane"| Block
+>     Side -->|"下から: support < plane"| Pass
 > ```
+>
+> - **normal**: 図の元の配置では上向き。
+> - **starting_support**: `dot(center,n) - projectedRadius(shape,n)`。body の足元側。
+> - **surface_plane**: `dot(hit.position, n)`。足場の平面。
 >
 > **手がかり**: 渡される `shape` は `moveAndSlide()` の**その反復の開始姿勢**(`result.shape`)であって元の入力形状ではないので、滑った後の再接触は滑り後の姿勢で判定されます。`hit.position` が「静止 collider 側の点」であることは [接触位置の契約](../../src/core/phys/physquery.hpp#L155)に依存しています。粗いフィルタ `filter.include_one_way` は**クエリから丸ごと除外**する経路で、細かい方向判定はこの関数側にあります(二層になっているのを見落としやすい)。テストは [`platformer_controller_test.cpp`](../../test/platformer_controller_test.cpp#L247) の "one-way floors pass from below, catch from above, and can be disabled"。
 >
@@ -803,12 +840,12 @@ test: `ab1_audio_analysis_test`(3 本。`PELICAN_WITH_AUDIO` の build だけで
 
 `playSound()` 自身が4本の小さなAPIの合成になっています（ヘッダのコメントが規範 — 「decodeとエンジン側の容量はcommit前に全部用意し、backend呼び出しだけを失敗しうるflushに残す」、[`audio.hpp` 内](../../src/core/audio/audio.hpp#L141)）。
 
-```text
-prepareSound(path)     # PathResolver + 形式判定 + decode(streaming なら header だけ)。shared_ptr を作るのはここ
-reserveSoundHandle()   # next_handle を 1 つ消費。0 と max は overflow_error
-prepareVoiceSlot(h)    # voices への emplace(= ノード確保)まで。backend_id は 0
-commitPreparedPlay(h)  # backend->play() の後、既存ノードへ scalar を代入するだけ
-```
+| 順 | 操作 | その後の状態 / 制約 |
+|---|---|---|
+| 1 | `prepareSound(path)` | PathResolver + 形式判定 + decode(streaming なら header だけ)。shared_ptr を作るのはここ |
+| 2 | `reserveSoundHandle()` | next_handle を 1 つ消費。0 と max は overflow_error |
+| 3 | `prepareVoiceSlot(h)` | voices への emplace(= ノード確保)まで。backend_id は 0 |
+| 4 | `commitPreparedPlay(h)` | backend->play() の後、既存ノードへ scalar を代入するだけ |
 
 この分割が効くのは §3.5 の effect transaction 経由のときです。`playSound()` が返す `SoundHandle` は **transaction中はまだ鳴っていない予約**で、実際の `backend->play()` は flush で走ります。`commitPreparedPlay()` が最後にやるのは `slot->second.backend_id = backend_id` の1代入だけなので、確保に伴う失敗が commit 後に起きません（[そのコメント](../../src/core/audio/audio.cpp#L640)）。predicate側もoutboxを見ます — transaction中の `isPlaying()` は、outboxに play があれば `true`、stop があれば `false`、どちらも無ければ実 backend へ問い合わせます（[`PreparedEffectTransaction::isPlaying()`](../../src/core/loader/effecttransaction.cpp#L274)）。
 
@@ -884,8 +921,8 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 > ```text
 > reference := 最初の「有限かつ > 0」の重みを持つ q     // 1 つも無ければ identity
 > acc += w_i * (dot(q_i, reference) < 0 ? -1 : +1) * q_i  // double で累算
-> |acc| <= 1e-12 / 非有限 → identity、それ以外は acc /= |acc|
-> (w<0) or (w==0 and z<0) or …  → acc := -acc          // 正準半球
+> if |acc| <= 1e-12 / 非有限: identity、それ以外は acc /= |acc|
+> if (w<0) or (w==0 and z<0) or …: acc := -acc          // 正準半球
 > 各成分が == 0.0 なら +0.0 を代入                       // -0.0 掃除
 > ```
 >
@@ -900,10 +937,11 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 > **素朴に読むと**: `appendNode()` は「再帰で親を先に足すだけ」に見えますが、`state` が 0/1/2 の三値である理由がコードからは読めません。0 = 未訪問、1 = 訪問中(再帰スタック上)、2 = 完了で、`state == 1` へ再入したら glTF が親子の輪を持っているということです(そこで throw)。二値(訪問済み / 未訪問)だと循環を検出できず、そのまま無限再帰でスタックを壊します。そしてこの並べ替えが生む「`parents[i] < i` が常に成り立つ」不変条件こそが、`localToModel()` を**単一の前方 1 パス**(`matrices[node] = matrices[parent] * local`)にしている根拠です。`parent >= (int)node` の検査は防御ではなく、この不変条件が破れたら計算が無意味になるという宣言です。layout 順を「元の node 順」や「名前順」へ変えると、`localToModel()` は静かに未計算の親行列を掛けてポーズが崩れます(クラッシュしないのが厄介です)。
 >
 > **骨子**:
-> ```text
-> glTF node 順:  [2:child] [0:root] [1:mid]    parents = [2, -1, 1]  ← 親が後ろにいる
-> layout 順:     [root]    [mid]    [child]    parents = [-1, 0, 1]  ← 常に親 < 子
-> ```
+>
+> | 並び | 1 番目 | 2 番目 | 3 番目 | parents | 親子の順序 |
+> |---|---|---|---|---|---|
+> | glTF node 順 | `[2:child]` | `[0:root]` | `[1:mid]` | `[2, -1, 1]` | 親が後ろにいる |
+> | layout 順 | `[root]` | `[mid]` | `[child]` | `[-1, 0, 1]` | 常に親 < 子 |
 >
 > **手がかり**: `invalidNode = uint32 max` は `original_to_layout` の「layout に載らない node」印です。`buildAsset()` の `same_layout` 判定は parents / node_names / 両方向マップの一致で決まり、一致すれば reload 後も **layout identity を据え置き**ます — ここが「モデルを差し替えても pose handle が生き残るか」の分岐点です。テストは [`animation_jobs_test.cpp`](../../test/animation_jobs_test.cpp#L139) の fixture 1(joint でない祖先も layout に載る = layout は skin の joint 集合ではない)と [`WP99 fixture 2 rejects equal-count poses from a different rig layout`](../../test/animation_jobs_test.cpp#L169) の fixture 2(同じ joint 数でも layout が違えば拒否)。
 >
@@ -916,15 +954,31 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 > **素朴に読むと**: `publishFromSource()` は名前に反して、フェーズ実行中は **publish しません**。ここを読み飛ばすと「publish したのに画面に出ない」の原因が追えません。さらに深いのは `commitStagedFrame()` の `if (staged.pose_accessed)` です。anim graph は自分で local→model→palette(matrix palette — skinning 用に、joint ごとの「model 行列 × inverse bind 行列」を並べた行列配列。頂点シェーダはこれを joint index で引いて頂点を変形します)まで済ませた palette を渡してきますが、その後の `world_post_process` フェーズで VRM の視線適用([`lookAtForPhase()`](../../src/core/animation/vrmapplication.cpp#L951))が staged local pose の回転を**直接上書き**します。上書き後の palette は graph が計算したものと食い違うので、「誰かが staged pose を acquire したら」model matrix と palette を local pose から作り直し、graph の palette を捨てます。素朴に「publish された palette をそのまま使う」と、目だけ動かないモデルができます(頭は動くので気付きにくい)。逆に「常に作り直す」と、pose を誰も触らないフレームでも `localToModel` + `buildSkinPalette` を二度払います。もう 1 つの罠は palette の所有権で、staging 時に呼び出し側の palette を `staged.palette` へ**深いコピー**したうえで、**staged 側に控えた descriptor** の `staged.frame.palette` を `nullptr` にします(呼び出し側のバッファを書き換えるわけではありません。staged 側に生ポインタを一切残さないための処置です)。呼び出し側のバッファは `evaluate()` を抜けた時点で消えるので、ポインタを保持すると commit 時にダングリングになります。
 >
 > **骨子**:
-> ```text
-> publish_from_source(frame):
->   フェーズ実行中でない → 即 publish
->   フェーズ実行中       → revision と phase を検査、staged が既にあれば duplicate_revision
->                          palette を deep copy し staged.frame.palette = nullptr にして staging
-> acquire_staged_pose() → stage.pose_accessed := true     // 読むだけでも立つ
-> commit_staged_frame():
->   pose_accessed なら local_pose から localToModel → buildSkinPalette で作り直し
->   frame.palette を自前バッファへ差し替えて publish
+> ```mermaid
+> flowchart TB
+>     Source["publish_from_source(frame)"]
+>     Phase{"フェーズ実行中?"}
+>     Immediate["即 publish"]
+>     Existing{"revision と phase を検査<br/>staged が既にある?"}
+>     Duplicate["duplicate_revision"]
+>     Stage["palette を deep copy<br/>staged.frame.palette = nullptr<br/>staging"]
+>     Acquire{"acquire_staged_pose() を呼ぶ?"}
+>     Accessed["stage.pose_accessed := true<br/>読むだけでも立つ"]
+>     Commit["commit_staged_frame()"]
+>     Touched{"pose_accessed?"}
+>     Rebuild["local_pose から localToModel<br/>続けて buildSkinPalette で作り直し"]
+>     Publish["frame.palette を自前バッファへ差し替えて publish"]
+>     Source --> Phase
+>     Phase -->|"実行中でない"| Immediate
+>     Phase -->|"実行中"| Existing
+>     Existing -->|"ある"| Duplicate
+>     Existing -->|"ない"| Stage
+>     Stage --> Acquire
+>     Acquire -->|"呼ぶ"| Accessed --> Commit
+>     Acquire -->|"呼ばない"| Commit
+>     Commit --> Touched
+>     Touched -->|"真"| Rebuild --> Publish
+>     Touched -->|"偽"| Publish
 > ```
 >
 > **手がかり**: `pose_accessed` は「書いた」ではなく「acquire した」で立ちます(保守的ですが決定的)。フェーズ順は `(phase, priority, registration_identity, source_ordinal)` の 4 段安定ソートで、VRM 側の priority は [`vrm_application_v1.hpp` 内](../../src/core/userpublic/animation/vrm_application_v1.hpp#L31)(snapshot 0 / lookAt 100 / resolve 200 / commit 200)。`registration_identity` が `source_ordinal` より**先**に効くのがタイブレークの肝です。コールバックが `ok` 以外を返すと `blocked_commits` に `(instance, revision)` が積まれ、同じ revision の後続 publish が `callback_failed` で弾かれます — 半端なフレームを出さないための門です。フェーズを実行する位置は [第2章 §2.5](02_runtime_lifecycle.md) の `update_game` 順を参照してください。
@@ -940,12 +994,12 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 > **骨子**:
 > ```text
 > 1. いまの出力を作る(遷移中なら source と target を alpha でブレンド)
->      alpha == 0 かつ source がスナップショット → ブレンドせず memcpy で復元
+>      alpha == 0 かつ source がスナップショットならブレンドせず memcpy で復元
 > 2. 遷移判定: from は「遷移中なら transition->target、でなければ current」
 >      forced は sequence 最小が最優先、それ以外は (priority 降順, declaration_index 昇順)
 >      mayInterrupt(): 遷移中でない / duration==0 / always / higher_priority かつ priority が上
-> 3. duration == 0 → 即 state 切替、phase を 0 にして再サンプル
->    duration > 0  → 遷移中からの割り込みなら output を capture してスナップショット化
+> 3. if duration == 0: 即 state 切替、phase を 0 にして再サンプル
+>    if duration > 0: 遷移中からの割り込みなら output を capture してスナップショット化
 > 4. 遷移を新規開始していなければ elapsed += dt
 > ```
 >
@@ -1127,11 +1181,11 @@ DTOはauthored `source_params` とscene / object / authored component indexのpr
 >   defaults = Params{}; decodeBehaviorParams({}, defaults, schema)  // 全部デフォルト
 >   encoded  = encodeBehaviorParams(defaults, schema)                // 永続化形式へ
 >   declarations(tuple) ごとに {name,type,range,unit,presence,default(,enum_values)}
->   → array.dump()
+>   array.dump()
 > validateBehaviorReload:
->   型が消えた                        → behavior_type_removed
->   version 同じ かつ fingerprint 違う → schema_changed_without_version_bump
->   version 違う                      → 全 authoring scene の params を試し decode
+>   型が消えた場合: behavior_type_removed
+>   version 同じ かつ fingerprint 違う場合: schema_changed_without_version_bump
+>   version 違う場合: 全 authoring scene の params を試し decode
 > ```
 >
 > **手がかり**: `PolicyFieldTraits<PolicyField>::presence` / `::has_enum_values` が required/defaulted と enum 有無の分岐点です。指紋は**文字列比較しかしません**。フィールドの順序を入れ替えただけでも別物になりますが、これは仕様です。対応する回帰ケースは上の 9 ケースのうち `schema_drift` / `version_bump_success` / `version_bump_failure`。
@@ -1145,15 +1199,29 @@ DTOはauthored `source_params` とscene / object / authored component indexのpr
 > **素朴に読むと**: `catch` 節が `reload_error = error.what();` の 1 行だけで、後始末が全部 catch の**外**に置かれているのが不自然に見えます。理由は例外オブジェクトの所有者です — 例外は投げた側(= game DLL)のコードで構築され、デストラクタと unwind メタデータ(巻き戻し情報 — 例外が飛んだときにスタックを遡ってデストラクタを呼ぶために必要な表。DLL ごとに持ちます)もその DLL に属します。`catch` ブロックの中では例外がまだ生きているので、そこで `FreeLibrary` / `dlclose` すると、ハンドラを抜ける瞬間に消えたコードへ飛びます。症状は「reload 失敗時だけ不定のクラッシュ」で、後から原因を追うのはほぼ不可能です。だからメッセージだけ `std::string` へ写して脱出し、DLL の解放は例外が完全に消えてから行います(ソースのコメント "Copy the message and leave the handler before unloading a DLL that may own the active exception's destructor/unwind metadata." が根拠です)。ロールバックが `previous_unloaded` で 2 経路に分かれるのも同系統の注意で、teardown が旧 DLL を落とす**前**に失敗したなら旧ハンドルはまだ生きているので、そのハンドルと owner をそのまま再利用します。2 個目のコピーを load すると static 登録の owner が定まらなくなるからで、こちらもソースのコメントが規範です。
 >
 > **骨子**:
-> ```text
-> try { teardown(); unload(previous) → previous_unloaded=true; load(candidate); rebuild(); }
-> catch (...) { reload_error = what() だけを写す }   ← ここでは何も unload しない
-> ── 以降、例外はもう生存していない ──
-> active が残っていれば teardown + unload、candidate のコピーを removeFileNoThrow
-> ロールバック: previous_unloaded  → previous->path を新しい owner で load し直す
->               そうでなければ      → previous のハンドル / owner をそのまま再利用
->               rebuild() が失敗したら teardown + unload して active を捨てる
+> ```mermaid
+> flowchart TB
+>     Try["try: reload transaction<br/>下記の 1〜5"]
+>     Catch["catch (...)<br/>reload_error = what() だけを写す<br/>ここでは何も unload しない"]
+>     Cleanup["例外はもう生存していない<br/>active が残っていれば teardown + unload<br/>candidate のコピーを removeFileNoThrow"]
+>     Previous{"ロールバック<br/>previous_unloaded?"}
+>     Reload["previous->path を新しい owner で load し直す"]
+>     Reuse["previous のハンドル / owner をそのまま再利用"]
+>     Rebuild["rebuild()"]
+>     Discard["teardown + unload<br/>active を捨てる"]
+>     Try -->|"例外"| Catch --> Cleanup --> Previous
+>     Previous -->|"true"| Reload --> Rebuild
+>     Previous -->|"false"| Reuse --> Rebuild
+>     Rebuild -->|"失敗"| Discard
 > ```
+>
+> try の操作順:
+>
+> 1. `teardown()`
+> 2. `unload(previous)`
+> 3. `previous_unloaded=true`
+> 4. `load(candidate)`
+> 5. `rebuild()`
 >
 > **手がかり**: [`unload()`](../../src/core/gamelogic/gamelogicreload.cpp#L454) は `noexcept` で、`FreeLibrary` / `dlclose` の前に `releaseGameLogicRegistrations(owner)` を呼びます — owner 単位の登録解除(§5.2)が先、コード解放が後です。候補の後始末が [`removeFileNoThrow()`](../../src/core/gamelogic/gamelogicreload.cpp#L298) なのは `noexcept` 文脈から例外を漏らさないためで、`.pdb` も一緒に消します。`ReloadStateGuard` は transaction 中だけ `reload_in_progress` を立てる RAII です。候補の検証は load 前ではなく [`validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L466) が**一度ロードして即 unload する**形で行うので、teardown に入る時点で候補は既に 1 回開かれています。回帰は [`test/run_game_logic_reload.ps1`](../../test/run_game_logic_reload.ps1)(壊れた DLL / ABI 不一致の後も旧挙動が続くこと、participant の `applied` / `failed` カウンタ、`systems=1` で登録が漏れないこと)。
 >
@@ -1222,11 +1290,11 @@ policyは可変長パラメータの**手前にある通常の引数**なので�
 > **骨子**:
 > ```text
 > field<&T::x>("x", frange(0,1), "m")   // consteval
->   is_member_object_pointer → owner_type / member_type → StructFieldType
+>   is_member_object_pointer から owner_type / member_type、続けて StructFieldType
 >   range の種別と型の整合が合わなければ throw(= compile error)
 > structFields(policy, fields...)        // consteval
 >   policy が 3 種か / 全要素が required|defaulted か / owner_type が一致するか
->   policy 固有制約 → enum 名を descriptor へコピー → 名前の重複を二重ループで検出(throw)
+>   policy 固有制約を検査し、enum 名を descriptor へコピーして、名前の重複を二重ループで検出(throw)
 > ```
 >
 > **手がかり**: `StructSchemaDescriptor` は同じ情報を 2 形で持ちます — `declarations`(型情報つき tuple。メンバポインタとデフォルト値が生きている)と `fields` / `presence`(型を落とした配列)。JSON 変換は前者を、inspector や codec は後者を使うので、どちらを読んでいるかで意味が変わります。`(copy_enum_values(enum_index++, policy_fields), ...)` はカンマ畳み込みで、カンマ演算子が左右を順序付けるため `enum_index++` の副作用順が規定どおりになります(`+` などの畳み込みへ書き換えると評価順が不定になります)。`always_false_v<Policy>` は、テンプレートが実体化されないときに `static_assert(false)` が即発火するのを避ける定石です。
@@ -1245,14 +1313,16 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 >
 > **骨子**:
 > ```text
-> 1. payload がオブジェクトか            → 違えば PayloadMustBeObject
-> 2. payload の全キーが schema にあるか   → 無ければ UnknownField(この順序が固定)
+> 1. payload がオブジェクトか。違えば PayloadMustBeObject
+> 2. payload の全キーが schema にあるか。無ければ UnknownField(この順序が固定)
 > 3. Params temporary{}
 >    pass A: 全 defaulted フィールドへデフォルト値を書く
 >    pass B: payload に存在するフィールドだけ decode + 型/範囲/enum 検査
->    pass C: temporary 全体を encode し直して検査 ← デフォルト値の検証はここだけ
-> 4. swap(destination, temporary)        ← ここまで destination は無傷
+>    pass C: temporary 全体を encode し直して検査
+> 4. swap(destination, temporary)
 > ```
+>
+> - **検証と反映**: デフォルト値の検証は pass C だけで行い、`swap(destination, temporary)` まで destination は無傷。
 >
 > **手がかり**: `setStructDefault` / `decodeStructPolicyField` / `encodeStructPolicyField` はどれも `Declaration::member`(メンバポインタが非型テンプレート引数として型へ埋まっている)経由で `temporary.*member` に触るので、実行時のオフセット表は存在しません。テストは [`structfieldschema_test.cpp`](../../test/structfieldschema_test.cpp#L131) の "…scalar keys atomically" と [`BehaviorParams` 検証テスト](../../test/structfieldschema_test.cpp#L161) の "…without partial publication"。
 >
@@ -1266,11 +1336,11 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 つまり次の3つはすべて別の状態です。
 
-```text
-{}                          → nullopt          「宣言していない」
-{"custom_index": 0}         → optional{0}      「0 を宣言した」
-{"instance_flags": []}      → optional{空集合}  「フラグ無しを宣言した」
-```
+| 宣言 | 読み取り結果 | 意味 |
+|---|---|---|
+| `{}` | `nullopt` | 宣言していない |
+| `{"custom_index": 0}` | `optional{0}` | 0 を宣言した |
+| `{"instance_flags": []}` | `optional{空集合}` | フラグ無しを宣言した |
 
 `optional<T>` を `value_or(0)` や `.value_or(T{})` で読み出した瞬間、この区別は消えます。`pelican_ray_instance` が field ごとに optional なのはまさにこのためで([第6章 §6.20](06_rendering_vulkan_shader.md))、ヘッダのコメントが「authored の空の `instance_flags` 配列は本物の override」と明記しています。同じ理由で AS row の [`source_material_index`](../../src/core/shader/raygrouplayout.hpp#L293) も optional のまま運ばれ、コメントが「**欠損した index が黙って 0 になってはいけない**」と規範を書いています。0 に丸めると、たまたま 0 番 material を指す asset selector が誤って一致します。
 
@@ -1408,11 +1478,11 @@ opの契約はprojectの層に置かれます（[`registerPoseGraphModule()`](..
 
 各 [`PoseGraphNode`](../../src/core/animation/posegraph.hpp#L26) は `owner`（sink の連鎖上の全ノードが共有する宛先）、`rig` / `clip` / `profile`、再生3パラメータ、root motion の2つ、そして2種類の入力を持ちます。
 
-```text
-scalar_inputs : port -> values 分割が publish する出力名（$pose/<node>/<port>）
-pose_inputs   : port -> nodes() の添字        ← 姿勢はポートをバイト列として流れない
-resolved_rig  : 連鎖をさかのぼって求めた「この姿勢がどのrig用か」
-```
+| 要素 | 対応 / 意味 |
+|---|---|
+| `scalar_inputs` | port に対応する、values 分割が publish する出力名(`$pose/<node>/<port>`) |
+| `pose_inputs` | port に対応する `nodes()` の添字。姿勢はポートをバイト列として流れない |
+| `resolved_rig` | 連鎖をさかのぼって求めた「この姿勢がどの rig 用か」 |
 
 `resolved_rig` を連鎖で解決しておくのは、違うrig用の姿勢どうしをblendできないようにするためです（[`raiseLayoutMismatch()`](../../src/core/animation/posegraph.hpp#L86)）。root motion に関する断り方も全部ここに名前付きで並びます —— blendや状態機械の先へ渡すなど「1つの変位を1つのオブジェクトへ渡せない」形は `pose.root_motion_unsupported@1`、消費者が2人なら `pose.root_motion_shared@1`、sinkの書くオブジェクトが local transform を取れないなら `pose.root_motion_no_transform@1` です。clipに関わるもの以外は、フレームが1枚も走る前に判定できます。
 
@@ -1438,8 +1508,10 @@ resolved_rig  : 連鎖をさかのぼって求めた「この姿勢がどのrig�
 > loops   = loop ? floor((u − begin) / (end − begin)) : 0
 > current = 根(canonical(u)) + loops · root_span
 > delta  += current − previous        （previous が無い最初のフレームは加算しない）
-> pin     : pose.translations[root] = root_start     ← メッシュは個体の中で滑らない
+> pin     : pose.translations[root] = root_start
 > ```
+>
+> - **pin**: メッシュは個体の中で滑らない。
 >
 > **手がかり**: 状態が捨てられる経路は2つあります。rebindしたとき（[`unbind()` 内](../../src/core/animation/posegraphruntime.cpp#L238)。レイアウト添字・clipの根サンプル・オブジェクトtokenを取り直すので、パラメータ編集と同じ再出発になります）と、`set_time` を観測したとき（`drop_root_previous`。**時刻の飛びは移動ではない**ので、2つの時刻の間の距離をオブジェクトに請求しません）。pinするのはtranslationだけで、回転の抽出はv0にありません。`SinkTrace::root_delta` に出るのは**clip自身の空間での量**なので、回転した個体では実際に進んだ距離と一致しません。
 >
@@ -1458,15 +1530,20 @@ OFFビルドではこの3ファイルがビルドに入らず、`pelican.pose` m
 > **素朴に読むと**: `isValid()` が `identity != 0 && generation != 0 && reserved == 0` で判定するので、**generation 0 は「無効ハンドル」の予約値**です。予約値とは、値域の中の 1 つを通常の意味から外し、「特別な状態」を表すためだけに取っておくことを指します。0 が選ばれている効果ははっきりしていて、`memset` やゼロ初期化で作った struct が**そのまま無効**として読まれます(この ABI は [§9.2](03_project_and_loading.md#typed-handle-boundaries) の `struct_size` 交渉のとおり、呼び出し側にゼロ初期化を要求します)。1 を予約値にするとゼロ初期化した handle が有効に見えてしまいます。**この選択の理由を書いた設計文書は見つかっていません(未確認)** — ここに書いたのは実装から読み取れる帰結です。`uint32` の世代が一周して 0 に戻ると、生きているリソースのハンドルが突然「無効」になる — `if (++x == 0) ++x;` はその 1 値だけを飛ばすイディオムですが、1 行に畳まれているので「なぜ 2 回インクリメントするのか」がコードからは読めません。もう 1 段深いのが `ResourceGenerationLedger` で、リソースが消えたあとも **identity を消さずに世代だけ覚え続けます**([`tombstone()`](../../src/core/animation/animationserviceabi.cpp#L36) は世代を 1 進めて `remember()` する)。これが無いと消えたリソースのハンドルは「そんな identity は知らない」= `invalid_handle` に落ちますが、`invalid_handle` は「そのハンドルは初めからおかしい」、`stale_generation` は「正しかったが古い」で、**呼び出し側の回復経路が違います**。tombstone を外すと、モデルの hot reload のたびに [`EvaluatorV1::rebind()`](../../src/core/userpublic/animation/animgraph.cpp#L1148) での再解決ができなくなり、anim graph がパラメータもクロックも遷移も失います。
 >
 > **骨子**:
-> ```text
-> generation の値域: 0 = 無効の予約値、1..UINT32_MAX = 有効
->                    ++g; if (g == 0) ++g;      // 一周しても 0 を踏まない
-> ledger.validate(identity, gen):
->   未知       → invalid_handle
->   世代不一致 → stale_generation     ← tombstone がこの行き先を守る
->   一致       → ok
-> rig の解決 = ledger.validate() ∧ sameHandle() ∧ アセット側 atomic == handle.generation
+> ```mermaid
+> flowchart TB
+>     Validate{"ledger.validate(identity, gen)"}
+>     Invalid["invalid_handle"]
+>     Stale["stale_generation"]
+>     Valid["ok"]
+>     Validate -->|"未知"| Invalid
+>     Validate -->|"世代不一致"| Stale
+>     Validate -->|"一致"| Valid
 > ```
+>
+> - **generation**: 値域は 0 = 無効の予約値、`1..UINT32_MAX` = 有効。`++g; if (g == 0) ++g;` により、一周しても 0 を踏まない。
+> - **tombstone**: 世代不一致の行き先 `stale_generation` を守る。
+> - **rig の解決**: `ledger.validate() ∧ sameHandle() ∧ アセット側 atomic == handle.generation`。
 >
 > **手がかり**: [`resolveRigResource()`](../../src/core/animation/animationservice.cpp#L176) は世代を **2 系統**で照合します — ledger の記録と、アセット側の `generation_state->current.load()` です。前者は「サービスが知っている世代」、後者は「アセットが実際に進めた世代」で、reload の途中では一時的に食い違い得ます(片方だけ見ると差し替え途中のアセットを掴みます)。pose だけは arena 所有でリソース台帳に載らないため、[`stale_poses`](../../src/core/animation/animationposearena.hpp#L64) という別表へ退避されます(arena も別表も、`animationservice.cpp` から切り出された [`PoseArena`](../../src/core/animation/animationposearena.hpp#L23) の持ち物です)。テストは [`animgraph_test.cpp` 内](../../test/animgraph_test.cpp#L467)(reload 後に各 API が `stale_generation` を返し、`rebind()` が graph 状態を保つ)、[`animation_jobs_test.cpp` 内](../../test/animation_jobs_test.cpp#L330)。
 >
@@ -1481,15 +1558,19 @@ OFFビルドではこの3ファイルがビルドに入らず、`pelican.pose` m
 > **素朴に読むと**: `validateDescriptor(*desc)` がほぼ全 API の頭に並ぶので「サイズは常に交渉されている」と読んでしまいますが、実際には **3 種類の異なるルールが混ざっています**。交渉の入口 3 本([`getApiV1`](../../src/core/animation/animationservice.cpp#L1830) / [`Impl::getService`](../../src/core/animation/animationservice.cpp#L1678) / [`getPoseStagingServiceV1`](../../src/core/animation/animationservice.cpp#L1855))は `sizeof(DescriptorHeaderV1)` = 16 バイトしか要求せず、加算的テールを持つ [`getClipMetadata`](../../src/core/animation/animationservice.cpp#L1513) は凍結プレフィクスの長さを手書きし、**それ以外は既定の `sizeof(T)`(= エンジン側の現在サイズ)を下限**として要求します(検査は [`struct_size < minimum`](../../src/core/animation/animationserviceabi.hpp#L17) の下限比較だけなので、大きすぎる `struct_size` は弾かれません。[`ProbeRuntime` 側の同名関数](../../src/core/animation/animationprobe.cpp#L38)は既定が `headerSize` である点も別物です)。つまり既存 descriptor の末尾にフィールドを足すと、古い DLL は即 `invalid_argument` です — 「加算的だから安全」という一般則はこのコードベースでは成り立ちません。書き戻しは `memcpy(out, &produced, min(caller_size, sizeof(produced)))` で **エンジンは呼び出し側のテールをゼロ埋めしません**から、呼び出し側は descriptor を必ずゼロ初期化してから使う必要があります(テストの `descriptor<T>()`、[`descriptor()`](../../test/animation_abi_dll_test.cpp#L44))。成功後の `out->struct_size` は**エンジンの `sizeof`** に上書きされるので、自分が確保したバッファ長として再利用しないでください。
 >
 > **骨子**:
-> ```text
-> [ header 16B ][ frozen v1 prefix ][ additive tail ]
->  ^struct_size  ^古い DLL はここまで  ^新しいエンジンだけが書ける
 >
-> エンジン側: struct_size >= 16 / version 一致 / reserved==0 / client_abi 範囲内
->            caller_size = out->struct_size        ← 先に退避
->            produced{} を完全に埋める(struct_size = 自分の sizeof)
->            memcpy(out, &produced, min(caller_size, sizeof(produced)))
-> ```
+> | 順 | 領域 | 意味 |
+> |---|---|---|
+> | 1 | header 16B | `struct_size` を持つ |
+> | 2 | frozen v1 prefix | 古い DLL はここまで |
+> | 3 | additive tail | 新しいエンジンだけが書ける |
+>
+> エンジン側の操作順:
+>
+> 1. `struct_size >= 16` / version 一致 / `reserved==0` / client_abi 範囲内を検査する。
+> 2. `caller_size = out->struct_size` を先に退避する。
+> 3. `produced{}` を完全に埋める(`struct_size = 自分の sizeof`)。
+> 4. `memcpy(out, &produced, min(caller_size, sizeof(produced)))`。
 >
 > **手がかり**: 版数の軸が 3 本あります — `version`(descriptor のレイアウト版)、`engine_abi_version` / `service_version`(関数表の意味論の版)、`capability_bits`(機能単位)。`reserved0/1 != 0` を `reserved_not_zero` で弾くのは、新しい ABI の呼び出し側が古いエンジンに当たったことを検出するためです。[`getApiV1()`](../../src/core/userpublic/animation/abi_v1.hpp#L653) の `static_assert` は 2 つのサイズと 4 か所のオフセットだけを固定しており、**それ以外のフィールド順はコンパイラが何も守ってくれません**。テストは [`old and new animation header DLLs preserve the frozen prefix`](../../test/animation_abi_dll_test.cpp#L124)(凍結プレフィクス)/ [`old-client new-engine and new-client old-engine negotiate additively`](../../test/animation_abi_dll_test.cpp#L154)(old-client と new-engine の双方向)で、`storage[caller_size]` の番兵によって越境書き込みが無いことを検査しています。
 >

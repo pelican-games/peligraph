@@ -21,19 +21,13 @@
 
 pelican2 の描画パイプラインは、`project.json` の `basic_config.rendering_config_json` が指す **rendering config JSON** で完全に宣言されます。**C++ を書く必要はありません**。
 
-```
-project.json ──rendering_config_json──▶ rendering config JSON
-                                            │  features 合成 + canonical anchor 実体化
-                                            │  + 終端 output_transform 付加(§6.5)
-                                            ▼
-                              レンダーターゲット登録 + パス列パース
-                                            │
-                                            ▼
-                              フレームグラフのプラン作成・検証(§6.6)
-                                            │
-                                            ▼
-              毎フレーム: プラン順に layout 遷移 → dynamic rendering でパス実行
-```
+1. `project.json` の `rendering_config_json` から rendering config JSON を読む。
+2. `features` 合成 + canonical anchor 実体化。
+3. 終端 `output_transform` 付加(§6.5)。
+4. レンダーターゲット登録 + パス列パース。
+5. フレームグラフのプラン作成・検証(§6.6)。
+6. 毎フレーム、プラン順に layout 遷移。
+7. dynamic rendering でパス実行。
 
 ここで **swapchain(スワップチェーン)** は「画面に出す番が来たら OS/ドライバへ渡す画像」の並びのことで、**display** はエンジンが用意する canonical(標準)なレンダーターゲット名です — 終端の `output_transform` が書き込む先で、最終的に swapchain の画像になります([用語集](14_glossary.md#swapchainスワップチェーン))。
 
@@ -989,9 +983,16 @@ feature が作った RT を、**material 側の公開アクセサとして配る
 
 feature 合成は次の 8 アンカーを `__anchor_<name>` ノードとして常時実体化します:
 
-```
-sprite → post_main → tonemap → post_ldr → pelican_ui → debug_draw → debug_text → imgui
-```
+| 順 | canonical anchor |
+|---|---|
+| 1 | `sprite` |
+| 2 | `post_main` |
+| 3 | `tonemap` |
+| 4 | `post_ldr` |
+| 5 | `pelican_ui` |
+| 6 | `debug_draw` |
+| 7 | `debug_text` |
+| 8 | `imgui` |
 
 アンカーの全順序はエンジンの契約で、並べ替えはできません(挿すのは自由)。かつての「同梱 hdr が `before:present` を参照していて example で起動エラーになる」問題は、この標準化で解消済みです。
 
@@ -1890,19 +1891,19 @@ render / compute / transfer / output / marker のノード本体は provider の
 論理グラフから複数の物理候補を作り、device が実行できる候補を比較します。図の分岐は各候補内の image の表現であり、資源ごとに独立して最安候補を選ぶという意味ではありません。
 
 ```mermaid
-flowchart TD
-    A[論理グラフ: 資源・read/write・依存] --> B[device facts・profile・制約から 3 候補を構築]
-    B --> C{各候補で image を分類}
-    C -->|tile 候補かつ same_pixel 読み書き・単一 sample・local 条件を満たす| T[tile_local_attachment]
-    C -->|transient 有効候補かつ write-only・virtual・単一 sample・store 不要| U[transient_attachment]
-    C -->|上の条件に合わない| M[materialized_image]
-    T --> S[scope 構築・融合可否・locality 検査]
+flowchart TB
+    A["論理グラフ: 資源・read/write・依存"] --> B["device facts・profile・制約から 3 候補を構築"]
+    B --> C{"各候補で image を分類"}
+    C -->|"tile 候補かつ same_pixel 読み書き・単一 sample・local 条件を満たす"| T["tile_local_attachment"]
+    C -->|"transient 有効候補かつ write-only・virtual・単一 sample・store 不要"| U["transient_attachment"]
+    C -->|"上の条件に合わない"| M["materialized_image"]
+    T --> S["scope 構築・融合可否・locality 検査"]
     U --> S
     M --> S
-    S --> D{feature・format/usage・attachment budget 等の probe に通るか}
-    D -->|いいえ| X[その候補を不採用]
-    D -->|はい| E[実行可能候補: pin があれば照合 / なければ cost 順]
-    E --> F[選択した物理 plan: representation・scope・alias]
+    S --> D{"feature・format/usage・attachment budget 等の probe に通るか"}
+    D -->|"いいえ"| X["その候補を不採用"]
+    D -->|"はい"| E["実行可能候補: pin があれば照合 / なければ cost 順"]
+    E --> F["選択した物理 plan: representation・scope・alias"]
 ```
 根拠: [targetrenderplanning.cpp:2636](../../src/project/targetrenderplanning.cpp#L2636)、[targetrenderplanning.cpp:2897](../../src/project/targetrenderplanning.cpp#L2897)、[targetrenderplanning.cpp:3602](../../src/project/targetrenderplanning.cpp#L3602)、[targetplanning.cpp:91](../../src/project/targetplanning.cpp#L91)。
 
@@ -3063,11 +3064,11 @@ hard error で終了します。
 
 コマンドラベルは**フレームプランの順序どおり**に、次の正規形で入れ子になります:
 
-```
-frame/<logical_frame>/graph/<variant>/view/<view_index>/node/<ordinal>:<kind>:<name>
-  ├─ barriers
-  └─ body
-```
+| 階層 | ラベル |
+|---|---|
+| 親 | `frame/<logical_frame>/graph/<variant>/view/<view_index>/node/<ordinal>:<kind>:<name>` |
+| 子 1 | `barriers` |
+| 子 2 | `body` |
 
 `<kind>` は §6.6 のノード種別(`render` / `compute` / `anchor` / `snapshot_copy` / `output_transform`)に、XR ミラー経路の `mirror` を加えたものです。オブジェクト名は RT が `rt/<名前>/surface/<n>/image`(と `/view`)、ほかに `swapchain/...` / `offscreen/...` / `xr/view/<view>/swapchain/image/<n>/...` / `frame/in_flight/<frame>/view/<view>/ubo`(と `/descriptor_set`)が付きます。
 
@@ -3888,18 +3889,17 @@ ANIMATION と AUDIO が ON の build では 5 module / 37 op(AB-1 の `value.sam
 ループはまず形を検査し、preset・feature 等の合成後に target と回数を解決します。以下は利用者から見た集合操作の順序で、保存されるのは元の文書だけです。
 
 ```mermaid
-flowchart TD
-    A[graph.loop の形・body・式・tier を検査] --> B{over と body}
-    B -->|range / view_axis + render・value| C[合成後に over の要素を確定]
-    C --> D[where で絞る] --> E[order で並べる] --> F[limit で先頭 N 個]
-    F --> G[branches: 最初に合う when / 最後は else]
-    G --> H[expand: body を要素ごとに複写]
-    H --> I[carry・出力・依存・挿入先を解決 → frame graph]
-    B -->|draw_items + draw のみ| J[pass の material を over・where で選ぶ]
-    J --> K[order: phase_default の queue 順を維持]
-    K --> L[branches: material 属性で最初の一致]
-    L --> M[draw_loop: 1 material pass 内で draw 列を実行]
-    B -->|混在・入れ子・未対応集合| X[名前付き拒否]
+flowchart TB
+    A["graph.loop の形・body・式・tier を検査"] --> B{"over と body"}
+    B -->|"range / view_axis + render・value"| C["合成後に over の要素を確定<br/>where で絞る<br/>order で並べる → limit で先頭 N 個"]
+    C --> G["branches: 最初に合う when / 最後は else"]
+    G --> H["expand: body を要素ごとに複写"]
+    H --> I["carry・出力・依存・挿入先を解決 → frame graph"]
+    B -->|"draw_items + draw のみ"| J["pass の material を over・where で選ぶ"]
+    J --> K["order: phase_default の queue 順を維持"]
+    K --> L["branches: material 属性で最初の一致"]
+    L --> M["draw_loop: 1 material pass 内で draw 列を実行"]
+    B -->|"混在・入れ子・未対応集合"| X["名前付き拒否"]
 ```
 根拠: [graphcomposition.cpp:409](../../src/project/graphcomposition.cpp#L409)、[graphcomposition.cpp:469](../../src/project/graphcomposition.cpp#L469)、[rendergraphcomposition.cpp:2192](../../src/project/rendergraphcomposition.cpp#L2192)、[materialdrawloop.cpp:141](../../src/project/materialdrawloop.cpp#L141)。
 

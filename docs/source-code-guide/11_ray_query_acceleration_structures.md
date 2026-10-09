@@ -42,33 +42,21 @@ TLAS の行がどこから来るかは、3つの型を順に読むと追えま�
 
 identity が層ごとに姿を変えるのがこの経路の読みどころです。同じ 1 行を指す identity が、snapshot では**構造化された field 群**、`RaySceneRowInput` では**3 本の文字列**、material 側では**1 つの typed union** になります。名前が似ていて役割が違うので、まず全体をこの形で掴んでから各節へ入ってください。3 本に分かれているのは、`scene_identity` と `geometry_identity` が **canonical sort の第1/第2キー**であるのに対し、3 本目の `geometry_match_identity` は sort キーではなく**曖昧性 guard の等価域**だからで、ヘッダのコメントがその理由を書いています — 「authored 側の asset / mesh / node の別名が、同じ位置にある同じ geometry を別物に見せてはいけない」([`RaySceneRowInput` の `geometry_match_identity` の上](../../src/core/shader/raygrouplayout.hpp#L285))。詳細は §「`RaySceneRowInput` の identity 3 種」。
 
-```text
-draw inventory
-  ↓ renderer が記録開始前に凍結
-RayQueryGeometryInstanceSnapshot        生の identity と range(model 型・draw inventory 型に依存しない)
-    identity : asset_identity, authoring_object_id, instance_index + instance_generation,
-               scene_epoch
-    material : material_asset_reference, material_document_reference, material_name,
-               source_material_index(std::optional)
-    geometry : geometry_allocation_id, index_offset / index_count,
-               vertex_offset / vertex_count
-  ↓ identity 文字列 3 本 + material 4 field へ整形
-RaySceneRowInput
-    scene_identity          = asset@<canonical transform>
-                              … 永続的な同一性。canonical sort の第1キー(publish 順を含まない)
-    geometry_identity       = asset#allocation:index_offset:vertex_offset:mesh:primitive:node
-                              … 同一 object 内で primitive を区別する第2キー
-    geometry_match_identity = allocation:index_offset:index_count:vertex_offset:vertex_count
-                              @<transform>
-                              … sort キーではなく曖昧性 guard の等価域(物理 GPU 範囲 + 変換のみ)
-  ↓ material 4 field を materialRowIdentity() で 1 つへ正準化
-MaterialRowIdentity   = MaterialRowDocumentIdentity{document, material_name?}
-                      | MaterialRowAssetIdentity{asset, source_material_index}
-                      | MaterialRowIdentityUnavailable
-                      … AS rule の gate も material 表の lookup も、この 1 個だけを見る
-  ↓ canonical sort → 添字 q を付与
-RaySceneRow                             q / group / record / 解決済み AS 値
-```
+| 順 | 型・要素 | 変換と意味 |
+|---|---|---|
+| 1 | draw inventory | renderer が記録開始前に凍結 |
+| 2 | `RayQueryGeometryInstanceSnapshot` | 生の identity と range(model 型・draw inventory 型に依存しない)。identity 文字列 3 本 + material 4 field へ整形 |
+| 3 | `RaySceneRowInput` | 下記の identity 3 種を持つ。material 4 field を `materialRowIdentity()` で 1 つへ正準化 |
+| 4 | `MaterialRowIdentity` | AS rule の gate も material 表の lookup も、この 1 個だけを見る。その後 canonical sort し、添字 q を付与 |
+| 5 | `RaySceneRow` | q / group / record / 解決済み AS 値 |
+
+- **RayQueryGeometryInstanceSnapshot.identity**: `asset_identity, authoring_object_id, instance_index + instance_generation, scene_epoch`。
+- **RayQueryGeometryInstanceSnapshot.material**: `material_asset_reference, material_document_reference, material_name, source_material_index(std::optional)`。
+- **RayQueryGeometryInstanceSnapshot.geometry**: `geometry_allocation_id, index_offset / index_count, vertex_offset / vertex_count`。
+- **scene_identity**: `asset@<canonical transform>`。永続的な同一性。canonical sort の第1キー(publish 順を含まない)。
+- **geometry_identity**: `asset#allocation:index_offset:vertex_offset:mesh:primitive:node`。同一 object 内で primitive を区別する第2キー。
+- **geometry_match_identity**: `allocation:index_offset:index_count:vertex_offset:vertex_count@<transform>`。sort キーではなく曖昧性 guard の等価域(物理 GPU 範囲 + 変換のみ)。
+- **MaterialRowIdentity**: `MaterialRowDocumentIdentity{document, material_name?}` / `MaterialRowAssetIdentity{asset, source_material_index}` / `MaterialRowIdentityUnavailable` のいずれか。
 
 ### `RayQueryGeometryInstanceSnapshot`
 

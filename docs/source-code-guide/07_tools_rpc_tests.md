@@ -35,20 +35,19 @@ flowchart LR
 [`src/devcli/main.cpp`](../../src/devcli/main.cpp#L17) は第1引数を見て11系統へそのまま dispatch します。dispatch の順が
 [usage 行](../../src/devcli/main.cpp#L51)の順です。
 
-```text
-pelican_cli
-├─ assets <manifest|verify|status>
-├─ audio analyze --asset <file> --out <file.ktx2> [...]   # AB-1: 音の解析の表を焼く
-├─ bake-camera ...                       # replayからcameraパスをbake
-├─ image ktx2 --out <file> --format <VK名> (--raw <file> --width W --height H | --hdr <file>)   # IA-1: 非圧縮のKTX2を書く
-├─ import <delivery_dir> --project <dir|project.json>   # --rulesサブモード付き
-├─ dist-config <project> [--with rpc,seqplayer] [--out file]
-├─ package <install|list|inspect>        # X-1: packageのvendoringと検査(§7.5b)
-├─ project init <directory>
-├─ dump-lowered-material ...             # material lowering結果のダンプ
-├─ vrm ...                               # VRM semanticのダンプ/検査
-└─ graph-catalog                         # 登録済みgraph moduleのcatalogをJSONで(§7.5c)
-```
+| 順 | pelican_cli のサブコマンドと引数 | 意味・注記 |
+|---|---|---|
+| 1 | <code>assets &lt;manifest&#124;verify&#124;status&gt;</code> | — |
+| 2 | `audio analyze --asset <file> --out <file.ktx2> [...]` | AB-1: 音の解析の表を焼く |
+| 3 | `bake-camera ...` | replayからcameraパスをbake |
+| 4 | <code>image ktx2 --out &lt;file&gt; --format &lt;VK名&gt; (--raw &lt;file&gt; --width W --height H &#124; --hdr &lt;file&gt;)</code> | IA-1: 非圧縮のKTX2を書く |
+| 5 | <code>import &lt;delivery_dir&gt; --project &lt;dir&#124;project.json&gt;</code> | --rulesサブモード付き |
+| 6 | `dist-config <project> [--with rpc,seqplayer] [--out file]` | — |
+| 7 | <code>package &lt;install&#124;list&#124;inspect&gt;</code> | X-1: packageのvendoringと検査(§7.5b) |
+| 8 | `project init <directory>` | — |
+| 9 | `dump-lowered-material ...` | material lowering結果のダンプ |
+| 10 | `vrm ...` | VRM semanticのダンプ/検査 |
+| 11 | `graph-catalog` | 登録済みgraph moduleのcatalogをJSONで(§7.5c) |
 
 執筆時点から7系統増えました。
 
@@ -167,16 +166,14 @@ hash と path の純粋ロジックは [`src/project/assetsmanifest.cpp`](../../
 
 [`importDelivery()`](../../src/devcli/importcommand.cpp#L337) は、project 内に置かれた delivery directory の `manifest.json` を読みます。大まかな transaction は次です。
 
-```text
-project / delivery pathをcanonicalize
-  -> deliveryがproject root内か確認
-  -> manifest schemaをparse
-  -> output pathがdelivery外へescapeしないか確認
-  -> 全outputのSHA-256を確認
-  -> gltf schemaかつ.glbだけを抽出
-  -> asset_data.modelsへ未登録分を追加
-  -> asset_data JSONを書き戻す
-```
+1. project / delivery pathをcanonicalize。
+2. deliveryがproject root内か確認。
+3. manifest schemaをparse。
+4. output pathがdelivery外へescapeしないか確認。
+5. 全outputのSHA-256を確認。
+6. gltf schemaかつ.glbだけを抽出。
+7. asset_data.modelsへ未登録分を追加。
+8. asset_data JSONを書き戻す。
 
 安全性の要点は3つあります。
 
@@ -299,45 +296,65 @@ authoring が Studio から通ります。engine 内部への裏口はどれも�
 
 ```mermaid
 flowchart LR
-    Main["devstudio main"] --> UI["uimain / QApplication"]
-    UI --> Window["MainWindow / QMainWindow"]
-    UI --> Automation["AutomationServer / --automation only (Q-1)"]
+    Main["devstudio main → uimain / QApplication"]
+    Window["MainWindow / QMainWindow"]
+    Automation["AutomationServer / --automation only (Q-1)"]
+    Driver["tools/studio_drive.py / scenario + report.json"]
+    Workspace["central workspace"]
+    Viewport["EmbeddedViewport / native host"]
+    Process["EngineProcess / QProcess"]
+    Player["pelican_player / foreign child HWND"]
+    Rpc["pick / query / edit / watch / frame-plan JSON-RPC"]
+    Selection["SelectionModel / public identity"]
+    Docks["QDockWidget panels (7)"]
+    Inspector["InspectorWidget"]
+    InspectorModel["InspectorModel / schema + edit state"]
+    LogBuffer["EngineLogBuffer / bounded history"]
+    LogDock["Engine Log dock"]
+    Attach["GraphAttachmentWidget / Attached graphs"]
+    AttachModel["GraphAttachmentModel / mode + stored + live, op lists"]
+    Layout["LayoutPresetManager"]
+    Files["versioned named presets"]
+    Main --> Window
+    Main --> Automation
     Automation --> Window
     Automation --> Viewport
-    Automation --> Driver["tools/studio_drive.py / scenario + report.json"]
-    Window --> Workspace["central workspace"]
-    Workspace --> Viewport["EmbeddedViewport / native host"]
-    Viewport --> Process["EngineProcess / QProcess"]
-    Process --> Player["pelican_player / foreign child HWND"]
-    Viewport --> Rpc["pick / query / edit / watch / frame-plan JSON-RPC"]
-    Rpc --> Selection["SelectionModel / public identity"]
-    Docks --> Selection
-    Selection --> Inspector["InspectorWidget"]
-    Inspector --> InspectorModel["InspectorModel / schema + edit state"]
-    InspectorModel --> Rpc
-    Process --> LogBuffer["EngineLogBuffer / bounded history"]
-    LogBuffer --> LogDock["Engine Log dock"]
-    Inspector --> Attach["GraphAttachmentWidget / Attached graphs"]
-    Attach --> AttachModel["GraphAttachmentModel / mode + stored + live, op lists"]
-    AttachModel --> Rpc
-    Window --> Tabs["pelican.renderTools / QTabWidget (3 tabs)"]
-    Tabs --> PlanWidget["FramePlanWidget / 9 tool tabs"]
-    Tabs --> Features["RenderFeaturesWidget / features, params, materialize"]
-    Tabs --> Canvas["GraphCanvasWidget + GraphCanvasScene"]
-    PlanWidget --> PlanModel["FramePlanModel / compact projection"]
-    PlanModel --> PlanDock["Frame Plan dock"]
-    Features --> Rpc
-    Canvas --> CanvasModel["GraphCanvasModel / Qt-free, 4 reads + 1 edit"]
-    CanvasModel --> CanvasCap["GraphCanvasReadCapability"]
-    CanvasCap --> Rpc
-    Window --> PassForm["FullscreenPassWidget / fullscreen, material, raster"]
-    PassForm --> PlanCap["FramePlanReadCapability / get_frame_plan + context"]
-    PassForm --> PassCap["RenderPassAuthoringCapability / context, add, remove, edit_preset_pass, edit_result"]
-    PlanCap --> Rpc
-    PassCap --> Rpc
-    Window --> Docks["QDockWidget panels (7)"]
-    Window --> Layout["LayoutPresetManager"]
-    Layout --> Files["versioned named presets"]
+    Automation --> Driver
+    Window --> Workspace --> Viewport
+    Viewport --> Process --> Player
+    Viewport --> Rpc --> Selection
+    Window --> Docks --> Selection
+    Selection --> Inspector --> InspectorModel --> Rpc
+    Process --> LogBuffer --> LogDock
+    Inspector --> Attach --> AttachModel --> Rpc
+    Window --> Layout --> Files
+```
+
+- **devstudio main**: uimain / QApplication を経由して MainWindow と AutomationServer へ進む。
+- **MainWindow / QMainWindow**: renderTools と FullscreenPassWidget の枝は次の図。
+
+```mermaid
+flowchart LR
+    Window["MainWindow / QMainWindow"]
+    Tabs["pelican.renderTools / QTabWidget (3 tabs)"]
+    PlanWidget["FramePlanWidget / 9 tool tabs"]
+    Features["RenderFeaturesWidget / features, params, materialize"]
+    Canvas["GraphCanvasWidget + GraphCanvasScene"]
+    PlanModel["FramePlanModel / compact projection"]
+    PlanDock["Frame Plan dock"]
+    CanvasModel["GraphCanvasModel / Qt-free, 4 reads + 1 edit"]
+    CanvasCap["GraphCanvasReadCapability"]
+    PassForm["FullscreenPassWidget / fullscreen, material, raster"]
+    PlanCap["FramePlanReadCapability / get_frame_plan + context"]
+    PassCap["RenderPassAuthoringCapability<br/>context, add, remove, edit_preset_pass, edit_result"]
+    Rpc["pick / query / edit / watch / frame-plan JSON-RPC"]
+    Window --> Tabs
+    Tabs --> PlanWidget --> PlanModel --> PlanDock
+    Tabs --> Features --> Rpc
+    Tabs --> Canvas --> CanvasModel --> CanvasCap --> Rpc
+    Window --> PassForm
+    PassForm --> PlanCap --> Rpc
+    PassForm --> PassCap --> Rpc
 ```
 
 図の右下の 3 つが **capability struct** です。`EmbeddedViewport` の「任意のメソッドを送れる」面を、
@@ -428,11 +445,10 @@ process 終了時も pending request を失敗にするため、入力 pipe や 
 読む前に、応答の階層だけ掴んでおきます。`get_frame_plan` の 1 応答の中に、名前の層と物理の層が入れ子で
 入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L4498))。
 
-```text
-get_frame_plan 応答 = pelican.frame_plan v1
-  ├ nodes / levels / barriers / resources : FramePlan — planner が決めた名前と実行順(第6章 §6.3)
-  └ physical_target_plan                  : その名前を実画像へ落とした物理側(attachments / resources / alias / native scope)
-```
+| get_frame_plan 応答 = pelican.frame_plan v1 | 意味 |
+|---|---|
+| `nodes` / `levels` / `barriers` / `resources` | FramePlan — planner が決めた名前と実行順(第6章 §6.3) |
+| `physical_target_plan` | その名前を実画像へ落とした物理側(attachments / resources / alias / native scope) |
 
 plan の公開フィールドと2層を辿る規則は[第13章の frame plan](../manual/13_editor.md#get_frame_plan-に足されたもの)を参照してください。
 
@@ -449,13 +465,12 @@ Studio は同じ応答を Frame Plan と Graph で取得し、名前から文書
 Graph タブが読む応答も同じ読み方をします。1 応答に「今の版」と「文書の 2 つの層」が入っています
 ([組み立ては `getGraphInstances()`](../../src/core/communication/renderconfigeditor.cpp#L3764))。
 
-```text
-get_graph_instances 応答
-  ├ source_reference / source_digest : 編集の CAS に添える版(文書全体の sha256)
-  ├ instances                        : root の nodes のうち op == "graph.instance" のものだけ
-  ├ nodes                            : root の nodes 配列そのもの(producer を探し、id の重複を避けるため)
-  └ definitions                      : definition 本体(scope を降りて描くのに要る)
-```
+| get_graph_instances 応答 | 意味 |
+|---|---|
+| `source_reference` / `source_digest` | 編集の CAS に添える版(文書全体の sha256) |
+| `instances` | root の nodes のうち `op == "graph.instance"` のものだけ |
+| `nodes` | root の nodes 配列そのもの(producer を探し、id の重複を避けるため) |
+| `definitions` | definition 本体(scope を降りて描くのに要る) |
 
 `instances` が `nodes` の部分集合として**別に**返るのは、Inspector の装着一覧が root の全ノードを
 知らなくても済むようにするためで、キャンバスの側は `nodes` と `definitions` を使います。
@@ -945,41 +960,50 @@ RPC は build option `PELICAN_WITH_RPC` で切り替わります。無効時は 
 <a id="rpc-threads-preview"></a>
 
 ```mermaid
-flowchart TD
+flowchart TB
     subgraph ST["Studio process"]
         UI["Qt UI / RpcClient"]
     end
     subgraph RD["player process：reader thread"]
         IN["stdin の行を読む"] --> Q["mutex で保護した要求 queue"]
-        IN -->|容量超過| BUSY["busy を即答"]
+        IN -->|"容量超過"| BUSY["busy を即答"]
     end
     subgraph EN["player process：engine thread"]
         DISP["updateFrameState 後に queue を交換して dispatch"]
         DISP --> ACCEPT["service：検査・ticket 受付"]
         ACCEPT --> PEND["pending / accepted 結果"]
-        PEND -->|次の commit hook| HOOK["preview 処理 → scene 編集 → extension の描画・asset 編集"]
+        PEND -->|"次の commit hook"| HOOK["preview 処理 → scene 編集 → extension の描画・asset 編集"]
         HOOK --> RESULT["結果を保持"]
-        DISP -->|get_edit_result / get_preview_result| RESULT
+        DISP -->|"get_edit_result / get_preview_result"| RESULT
     end
-    UI -->|JSON-RPC / stdio| IN
+    UI -->|"JSON-RPC / stdio"| IN
     Q --> DISP
     BUSY --> UI
-    PEND -->|accepted| UI
-    RESULT -->|stdout / request id| UI
+    PEND -->|"accepted"| UI
+    RESULT -->|"stdout / request id"| UI
+```
+
+- **service：検査・ticket 受付**: `open_preview` は次の図の reservation へ進む。
+- **commit hook**: preview 処理、scene 編集、extension の描画・asset 編集の順で、次の図の予約と要求を処理する。
+
+```mermaid
+flowchart TB
+    ACCEPT["service：検査・ticket 受付"]
+    HOOK["preview 処理 → scene 編集 → extension の描画・asset 編集"]
     subgraph LE["同じ engine thread：live preview lease の状態"]
-        NONE["lease なし"] -->|open 受付| RES["reservation：領域を先に確保"]
-        RES -->|境界で成功| OPEN["open：runtime の仮表示"]
-        RES -->|失敗・gate 変化| NONE
-        OPEN -->|update：owner と write_set が一致| OPEN
-        OPEN -->|commit：base revision 一致・確定成功| DONE["終了：tombstone を保持"]
-        OPEN -->|abort：復元成功| DONE
-        OPEN -->|gate 閉鎖・scene 変化・revision stale| ABORT["forceAbort を試みる"]
-        ABORT -->|復元成功| DONE
-        ABORT -->|復元失敗：診断、lease を保持| OPEN
-        DONE -->|次の open が可能| NONE
+        NONE["lease なし"] -->|"open 受付"| RES["reservation：領域を先に確保"]
+        RES -->|"境界で成功"| OPEN["open：runtime の仮表示"]
+        RES -->|"失敗・gate 変化"| NONE
+        OPEN -->|"update：owner と write_set が一致"| OPEN
+        OPEN -->|"commit：base revision 一致・確定成功"| DONE["終了：tombstone を保持"]
+        OPEN -->|"abort：復元成功"| DONE
+        OPEN -->|"gate 閉鎖・scene 変化・revision stale"| ABORT["forceAbort を試みる"]
+        ABORT -->|"復元成功"| DONE
+        ABORT -->|"復元失敗：診断、lease を保持"| OPEN
+        DONE -->|"次の open が可能"| NONE
     end
-    ACCEPT -->|open_preview| RES
-    HOOK -->|予約と要求を処理| LE
+    ACCEPT -->|"open_preview"| RES
+    HOOK -->|"予約と要求を処理"| LE
 ```
 根拠: [`windowedrpchost.cpp:53`](../../src/core/communication/windowedrpchost.cpp#L53) / [`windowedrpchost.cpp:119`](../../src/core/communication/windowedrpchost.cpp#L119)、[`editorcommandservice.cpp:604`](../../src/core/communication/editorcommandservice.cpp#L604)、[`editorjournal.cpp:3781`](../../src/core/communication/editorjournal.cpp#L3781) / [`editorjournal.cpp:3826`](../../src/core/communication/editorjournal.cpp#L3826) / [`editorjournal.cpp:4091`](../../src/core/communication/editorjournal.cpp#L4091) / [`editorjournal.cpp:4774`](../../src/core/communication/editorjournal.cpp#L4774)、[`loop.cpp:712`](../../src/core/appflow/loop.cpp#L712)。
 
@@ -1671,12 +1695,28 @@ TEST_CASE("...") {
 > さらに 1 段ややこしいのは、**engine の throw が `REQUIRE(...)` の式の中で起きた場合は捕まらない**ことです。`REQUIRE` の展開は式評価を自前の `try { ... } catch(...) { handleUnexpectedInflightException(); }` で囲んでおり、そこで失敗として記録したうえで `TestFailureException` を投げ直します。つまり **同じ例外でも、素の文として投げられれば skip、`REQUIRE` の中から投げられれば失敗**になります。上の 4 件が skip になったのは前者だったからで、テストの書き手が意図して分けた区別ではありません(この分岐は `CATCH_CONFIG_FAST_COMPILE` を定義すると消え、その場合は `REQUIRE` 内の例外も外側の `catch` へ届きます。このリポジトリでは未定義です)。
 >
 > **骨子**:
-> ```text
-> engine の throw(素の文)      → std::runtime_error → 外側の catch が拾う → SKIP  ← 隠れる
-> engine の throw(REQUIRE 内)  → Catch2 が記録 → TestFailureException  → 素通り → 失敗
-> REQUIRE(a == b) の不一致      → TestFailureException                 → 素通り → 失敗
-> SKIP(...)                     → TestSkipException                    → 素通り → skip
+> ```mermaid
+> flowchart LR
+>     Bare["engine の throw(素の文)"]
+>     Runtime["std::runtime_error"]
+>     Catch["外側の catch が拾う"]
+>     Hidden["SKIP"]
+>     Require["engine の throw(REQUIRE 内)"]
+>     Record["Catch2 が記録"]
+>     Mismatch["REQUIRE(a == b) の不一致"]
+>     Failure["TestFailureException"]
+>     Failed["素通り → 失敗"]
+>     Skip["SKIP(...)"]
+>     SkipException["TestSkipException"]
+>     Skipped["素通り → skip"]
+>     Bare --> Runtime --> Catch --> Hidden
+>     Require --> Record --> Failure
+>     Mismatch --> Failure
+>     Failure --> Failed
+>     Skip --> SkipException --> Skipped
 > ```
+>
+> - **engine の throw(素の文)**: SKIP で隠れる。
 >
 > **手がかり**: 「capability が無い」と「実行して失敗した」を分ける方法は2つです。(1) **明示的な能力問い合わせ** — [XR segmented draw の multiview capability 検査](../../test/golden_harness.cpp#L12796) / [`.dynamic_rendering_local_read`](../../test/headless_render_test.cpp#L4966) を見て skip し、本体は囲まない。(2) **device 初期化エラーを厳密に絞って再送出** — [`requireVulkanDevice()`](../../test/vulkan_test_support.hpp) は `No suitable Vulkan physical device found` のときだけ skip し、それ以外は `throw;` します。後始末の catch も同じ判定を使い、非該当なら再送出します。**(1) が本来の形**で、(2) は既存テストを最小限の変更で救う形です。
 >
@@ -1821,26 +1861,12 @@ GPU 不在による skip ではありません。**同じ実行で他の 118 件
 
 最小単位だけで終わらせず、変更が越えた境界まで一段ずつ広げます。
 
-```text
-pure parser変更
-  -> 対応fixture test
-  -> config/runtime binding test
-  -> 必要ならheadless/golden
-
-ECS lifecycle変更
-  -> ecs_lifecycle
-  -> sceneformat / gamesystem
-  -> headless player integration
-
-frame graph / shader変更
-  -> frameplanner / shader tests
-  -> golden_image
-  -> compute/RPC headless subprocess
-
-CLI変更
-  -> project libraryのpure test
-  -> 対応run_devcli_*.cmake
-```
+| 変更対象 | 1 | 2 | 3 |
+|---|---|---|---|
+| pure parser変更 | 対応fixture test | config/runtime binding test | 必要ならheadless/golden |
+| ECS lifecycle変更 | ecs_lifecycle | sceneformat / gamesystem | headless player integration |
+| frame graph / shader変更 | frameplanner / shader tests | golden_image | compute/RPC headless subprocess |
+| CLI変更 | project libraryのpure test | 対応run_devcli_*.cmake | — |
 
 Pelican の test suite は単なる関数単体確認ではありません。pure data format と runtime binding を分け、最後に headless executable を実際に動かす構造が、production code の層分けそのものを映しています。
 

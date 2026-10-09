@@ -16,7 +16,7 @@ sequenceDiagram
     participant Core as PelicanCore
     participant Modules as FastModuleContainer
     participant Scene as SceneLoader
-    participant Loop as Loop
+    participant Frame as Loop
 
     Main->>Main: CLIをParsedLaunchConfigへ変換
     Main->>Core: PelicanCoreを生成（logger初期化）
@@ -24,8 +24,8 @@ sequenceDiagram
     Main->>Core: run()
     Core->>Modules: settings・保存設定・ECSを初期化
     Core->>Scene: default sceneをload
-    Core->>Loop: run()
-    Loop-->>Core: window終了 / headless完了 / RPC EOF
+    Core->>Frame: run()
+    Frame-->>Core: window終了 / headless完了 / RPC EOF
     Core->>Modules: GPU待機、runtime teardown
     Modules-->>Modules: 生成逆順でmodule破棄
 ```
@@ -133,19 +133,29 @@ sequenceDiagram
 
 例として [`Renderer` のconstructor](../../src/core/vkcore/renderer.cpp#L3236) は [`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L590) を呼ぶだけに見えますが、その内部で次のmoduleが連鎖的に生成されます。ただし現在は、[`Renderer::prepareRuntimeModules()`](../../src/core/vkcore/renderer.hpp#L371) と [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L259) により「render前に依存を全解決してから、以後の新規module生成を禁止する（module graphを凍結する）」方式へ変わっています。
 
-```text
-Renderer
-└─ RenderingPassContainer
-└─ ProjectBasicConfig
-   └─ ProjectSource
-   └─ PathResolver
-└─ RenderTarget
-   └─ OffscreenFrameTarget または SwapchainFrameTarget
-      └─ VulkanManageCore
-└─ RenderTargetContainer
-└─ ShaderLibrary
-└─ FullscreenPassContainer
-└─ ComputeTaskContainer / FrameGraphResourceContainer / ...
+```mermaid
+flowchart TB
+    Renderer["Renderer"]
+    Pass["RenderingPassContainer"]
+    Config["ProjectBasicConfig"]
+    Source["ProjectSource"]
+    Path["PathResolver"]
+    Target["RenderTarget"]
+    Frame["OffscreenFrameTarget または SwapchainFrameTarget"]
+    Core["VulkanManageCore"]
+    Targets["RenderTargetContainer"]
+    Shader["ShaderLibrary"]
+    Fullscreen["FullscreenPassContainer"]
+    Compute["ComputeTaskContainer / FrameGraphResourceContainer / ..."]
+    Renderer --> Pass
+    Renderer --> Config
+    Config --> Source
+    Config --> Path
+    Renderer --> Target --> Frame --> Core
+    Renderer --> Targets
+    Renderer --> Shader
+    Renderer --> Fullscreen
+    Renderer --> Compute
 ```
 
 ### 破棄順
@@ -167,17 +177,31 @@ Renderer
 > **素朴に読むと**: 「積んだ順の逆に pop するから安全」で終わりに見えます。しかし成立の根拠はもう一段細かい所にあります — [`cleaners.push_back()`](../../src/core/container.hpp#L181) は `obj_ref.emplace()` の**後**、つまり T の constructor が**終わってから**実行されます。constructor 内の `GET_MODULE(Dep)` は再帰的に先へ進むので、`cleaners` には必ず `Dep` が先、`T` が後で載ります。逆順 pop はしたがって「依存される側より、依存する側を先に壊す」になります。逆に言えば、**constructor の外で初めて `GET_MODULE` した依存は逆順保証の外**です。T の生成後に T のメソッドが初めて `Dep` を掴むと `cleaners` は `[T, Dep]` の順になり、破棄では `Dep` が先に消えて T の destructor が壊れた module を触ります。この穴は §2.4 の二つで塞ぎます — [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L259) が loop へ入る前に全依存を実体化し、その後で [`freezeCreation()`](../../src/core/container.hpp#L199) が以後の初回生成を禁止します（実体化するのは前者、禁止するのは後者です）。
 >
 > **骨子**:
-> ```text
-> get<T>():
->   __ready() が true       -> ロック無しで参照を返す(fast path)
->   構築中スタックに T あり  -> Module construction cycle
->   creation_frozen / shutting_down / 別スレッド -> logic_error
->   obj_ref.emplace()          # ここで走る ctor が Dep を先に cleaners へ積む
->   cleaners.push_back(T)      # ← ctor の「後」。ここが逆順保証の根拠
->   __ready() = true           # ← 最後。ここまで T は公開されない
->
-> cleaners: [ Dep, T ]  --pop_back-->  T を破棄 -> Dep を破棄
+> ```mermaid
+> flowchart TB
+>     Get["get<T>()"]
+>     Ready{"__ready() が true?"}
+>     Return["ロック無しで参照を返す<br/>fast path"]
+>     Cycle{"構築中スタックに T あり?"}
+>     CycleError["Module construction cycle"]
+>     Denied{"creation_frozen / shutting_down / 別スレッド?"}
+>     Error["logic_error"]
+>     Construct["obj_ref.emplace()"]
+>     Register["cleaners.push_back(T)"]
+>     Publish["__ready() = true"]
+>     Get --> Ready
+>     Ready -->|"はい"| Return
+>     Ready -->|"いいえ"| Cycle
+>     Cycle -->|"はい"| CycleError
+>     Cycle -->|"いいえ"| Denied
+>     Denied -->|"はい"| Error
+>     Denied -->|"いいえ"| Construct --> Register --> Publish
 > ```
+>
+> - **obj_ref.emplace()**: ここで走る ctor が Dep を先に cleaners へ積む。
+> - **cleaners.push_back(T)**: ctor の「後」。ここが逆順保証の根拠。
+> - **__ready() = true**: 最後。ここまで T は公開されない。
+> - **cleaners**: `[ Dep, T ]` を `pop_back` し、T を破棄してから Dep を破棄する。
 >
 > **手がかり**: `__ready()` を最後に立てるので、constructor が throw すると `cleaners` にも `__ready()` にも T は現れません(部分構築moduleが公開されない)。`obj_ref.emplace()` が throw した場合 `std::optional` は値を持たないままなので、**T には破棄すべき実体がそもそも存在しません** — `cleaners` に T が載らないことはリークではなく、後始末が不要な状態です。ただし**失敗した constructor が途中まで作った Dep は生き残ります** — 既に `cleaners` に載っているからで、これは意図的です。`cleaners.push_back` 自身の失敗を拾う catch（[巻き戻し](../../src/core/container.hpp#L187)）が `obj_ref.reset()` するのも同じ対称性です。`construction_stack` だけが `thread_local`（[`construction_stack` の宣言](../../src/core/container.hpp#L69)）で `cleaners` / `dependency_edges` は static なので、循環検出と依存辺の記録はスレッドごとです — 実際には [`requireCreationAllowedLocked()`](../../src/core/container.hpp#L98) が生成を owner thread へ固定するため、差が出るのはテストだけです。テストは [`module_container_test.cpp` 内](../../test/module_container_test.cpp#L114)(依存が後に壊れる)と [`module construction failures and cycles never publish partial modules`](../../test/module_container_test.cpp#L132)(失敗と循環で部分公開しない)。
 >
@@ -198,16 +222,33 @@ Renderer
 > 5. **宣言位置と検査順そのものが意味を持つ** — `ConstructionScope`([`ConstructionScope`](../../src/core/container.hpp#L174))を `construction_stack.push_back` の直後・`emplace()` の直前に置くのは、コンストラクタが throw しても必ず pop させるためです。依存辺の記録を自分を積む前に行うのは `construction_stack.back()` を「親」にするため、循環検出を `requireCreationAllowedLocked()`([`requireCreationAllowedLocked()`](../../src/core/container.hpp#L98))より先に置くのは freeze 済みでも「循環」という正しい診断を出すためです。
 >
 > **骨子**:
-> ```text
-> [fast] ready.load(acquire) なら 依存辺を記録して返す    ← 読み取りは lock なし(辺を記録する時だけ lock)
-> [slow] scoped_lock(recursive_mutex) → ready を再確認
->        依存辺を記録 → construction_stack に自分がいれば循環エラー
->        shutdown中 / freeze済み / owner スレッド違い → エラー
->        stack.push(id) + ConstructionScope(RAII pop)
->        obj_ref.emplace()                          ← ここで再入しうる
->        try { cleaners.push(id, destroyModule<T>) } catch { pop; reset(); rethrow }
->        ready.store(true, release)                 ← 公開はここ 1 点
+> ```mermaid
+> flowchart TB
+>     Fast{"[fast] ready.load(acquire)?"}
+>     Return["依存辺を記録して返す"]
+>     Slow["[slow] scoped_lock(recursive_mutex)<br/>ready を再確認"]
+>     Dependency["依存辺を記録"]
+>     Cycle{"construction_stack に自分がいる?"}
+>     CycleError["循環エラー"]
+>     Denied{"shutdown中 / freeze済み / owner スレッド違い?"}
+>     Error["エラー"]
+>     Construct["stack.push(id) + ConstructionScope(RAII pop)<br/>obj_ref.emplace()"]
+>     Cleaner{"try: cleaners.push(id, destroyModule<T>)"}
+>     Rollback["catch: pop; reset(); rethrow"]
+>     Publish["ready.store(true, release)"]
+>     Fast -->|"はい"| Return
+>     Fast -->|"いいえ"| Slow --> Dependency --> Cycle
+>     Cycle -->|"はい"| CycleError
+>     Cycle -->|"いいえ"| Denied
+>     Denied -->|"はい"| Error
+>     Denied -->|"いいえ"| Construct --> Cleaner
+>     Cleaner -->|"成功"| Publish
+>     Cleaner -->|"失敗"| Rollback
 > ```
+>
+> - **fast**: 読み取りは lock なし。辺を記録する時だけ lock。
+> - **obj_ref.emplace()**: ここで再入しうる。
+> - **ready.store(true, release)**: 公開はここ 1 点。
 >
 > **手がかり**: 失敗ロールバック([catch 節](../../src/core/container.hpp#L187))は `cleaners.back().id == id` を確認してから pop し `obj_ref.reset()` します。`ready` はまだ false なので、外からは一度も見えていません。[`destroyModule<T>`](../../src/core/container.hpp#L116) は `ready=false` → `reset()` の順で、逆にすると `tryGet` が破棄済み optional へのポインタを配ります。テストは [`module_container_test.cpp` 内](../../test/module_container_test.cpp#L114)(依存記録と逆順破棄)/ [`module construction failures and cycles never publish partial modules`](../../test/module_container_test.cpp#L132)(失敗と循環で部分公開しない)/ [`module creation is owner-thread-only while initialized access remains available`](../../test/module_container_test.cpp#L147)(生成は owner スレッド限定、読み取りは自由)。
 >
@@ -250,23 +291,48 @@ terminal shutdownはこの前に`FastModuleContainer::beginShutdown()`で新規m
 > **素朴に読むと**: 「shutdown と reload は別処理」と読みたくなりますが、差分は実質2箇所です。(1) [`beginShutdown()`](../../src/core/container.hpp#L213) を呼ぶかどうか — `run()` の中で `mode == terminal_shutdown` のときだけ、8段階へ入る**直前**に呼びます(container の destructor ではありません)。(2) 最後の deletion queue の扱い — [`RuntimeTeardownStep::deletion_queue`](../../src/core/appflow/teardown.cpp#L94) が `FastModuleContainer::phase()` の値で分岐し、`shutting_down` なら `drainForTeardown()`（空にしたうえで以後の登録を拒否）、そうでなければ `flushAll()`（空にするだけで受付は継続）です。つまり mode フラグを8段階へ引き回すのではなく、入口で phase を動かしておき、後段は**そのときの phase を読んで**振る舞いを決めます。もう一つの要点は `runProductionStep()` が全段階で `tryGet<T>()` しか使わないことです。teardown 中は [`requireCreationAllowedLocked()`](../../src/core/container.hpp#L98) が生成を拒否するので、`GET_MODULE` を1つでも混ぜると「片付けようとして例外」になります。
 >
 > **骨子**:
-> ```text
-> RuntimeTeardownGuard::run():
->   completed なら即 return                   # 明示呼びと destructor の二重実行を吸収
->   completed = true
->   mode == terminal_shutdown -> FastModuleContainer::beginShutdown()
->   for step in runtime_teardown_order:       # 8段固定
->       cleanupStep(step) { try { ... } catch { ログのみ } }
+> ```mermaid
+> flowchart TB
+>     Run["RuntimeTeardownGuard::run()"]
+>     Completed{"completed?"}
+>     Return["即 return"]
+>     Mark["completed = true"]
+>     Mode{"mode == terminal_shutdown?"}
+>     Shutdown["FastModuleContainer::beginShutdown()"]
+>     Steps["for step in runtime_teardown_order<br/>8段固定、最後の段を下に展開"]
+>     Phase{"deletion_queue: phase()==shutting_down?"}
+>     Drain["drainForTeardown()"]
+>     Flush["flushAll()"]
+>     Run --> Completed
+>     Completed -->|"はい"| Return
+>     Completed -->|"いいえ"| Mark --> Mode
+>     Mode -->|"はい"| Shutdown --> Steps
+>     Mode -->|"いいえ"| Steps
+>     Steps --> Phase
+>     Phase -->|"はい"| Drain
+>     Phase -->|"いいえ"| Flush
+> ```
 >
-> deletion_queue: phase()==shutting_down ? drainForTeardown() : flushAll()
+> - **completed**: 明示呼びと destructor の二重実行を吸収する。
+> - **runtime_teardown_order**: 8段固定。各段は `cleanupStep(step) { try { ... } catch { ログのみ } }`。図の deletion_queue はその最後の段。
 >
 > phase を動かすのはこの3箇所だけ:
->   booting --freezeCreation() (loop.cpp#L374、loop直前に1回)--> running
->   running --beginShutdown() (teardown.cpp#L115、terminal_shutdown のみ)--> shutting_down
->   ~FastModuleContainer(): 入口で shutting_down にして全破棄、最後に booting へ戻す
->   runtime_reset は phase に触れないので running のまま(戻す処理も要らない)
->   ※ enterRunningPhase() も phase を動かせるが production では未使用(test が loop.cpp に無いことを検査)
+>
+> ```mermaid
+> flowchart LR
+>     Booting["booting"]
+>     Running["running"]
+>     Shutdown["shutting_down"]
+>     Booting -->|"freezeCreation()"| Running
+>     Running -->|"beginShutdown()"| Shutdown
+>     Running -->|"runtime_reset: phase に触れない"| Running
 > ```
+>
+> - **freezeCreation()**: loop.cpp、loop直前に1回。
+> - **beginShutdown()**: teardown.cpp、terminal_shutdown のみ。
+> - **~FastModuleContainer()**: 入口で shutting_down にして全破棄、最後に booting へ戻す。
+> - **runtime_reset**: running のままなので、戻す処理も要らない。
+> - **enterRunningPhase()**: ※ phase を動かせるが production では未使用(test が loop.cpp に無いことを検査)。
 >
 > **手がかり**: [`cleanupStep()`](../../src/core/appflow/teardown.cpp#L22) が段階ごとに例外を飲むので、**途中の失敗が後続段階を飛ばしません** — 「wait_idle が落ちたので event が残った」という連鎖を作らないための構造です。`RuntimeTeardownActions` を取る overload は各段を `std::function` で差し替えるテスト用の面で、空の `std::function` は「起動が失敗してその module がまだ無い」を表します(ヘッダのコメント [該当箇所](../../src/core/appflow/teardown.hpp#L49) が規範)。`completed` フラグがあるため、§2.1 の12番(明示 `teardown.run()`)と destructor 経由が重なっても8段階は1回しか走りません。テストは [`lifetime_teardown_test.cpp` 内](../../test/lifetime_teardown_test.cpp#L196)(規範順序)/ [同ファイルの reset 側](../../test/lifetime_teardown_test.cpp#L235)(runtime reset が terminal shutdown へ入らない)/ [同ファイルの起動失敗側](../../test/lifetime_teardown_test.cpp#L312)(起動途中失敗)。
 >
@@ -300,19 +366,23 @@ windowed + RPC は他のwindowed経路と排他ではなく、同じwhileルー�
 
 ### windowed
 
-```text
-Window::process
-→ window eventをInputStateへqueue
-→ EngineTime::advance(realtime)
-→ VulkanManageCore::setCurrentFrameIndex(frameIndex)
-→ update_interactive_state:
-     updateFrameState
-     → WindowedRpcHost::processFrameBoundary（--rpc 時のみ）
-     → F5 game logic reload要求
-     → F11 RenderDoc capture arm
-→ renderFlatFrameWithOptionalCapture（実体は Renderer::render）
-→ FramerateAdjust::wait
+```mermaid
+flowchart TB
+    Start["Window::process<br/>window eventをInputStateへqueue"]
+    Time["EngineTime::advance(realtime)<br/>VulkanManageCore::setCurrentFrameIndex(frameIndex)"]
+    Update["update_interactive_state:<br/>updateFrameState"]
+    Rpc{"--rpc?"}
+    Boundary["WindowedRpcHost::processFrameBoundary"]
+    Keys["F5 game logic reload要求<br/>F11 RenderDoc capture arm"]
+    Render["renderFlatFrameWithOptionalCapture<br/>実体は Renderer::render"]
+    Wait["FramerateAdjust::wait"]
+    Start --> Time --> Update --> Rpc
+    Rpc -->|"はい"| Boundary --> Keys
+    Rpc -->|"いいえ"| Keys
+    Keys --> Render --> Wait
 ```
+
+- **update_interactive_state**: updateFrameState、--rpc 時のみの WindowedRpcHost::processFrameBoundary、F5 game logic reload要求、F11 RenderDoc capture arm の順。
 
 GLFW callbackは [`Window`](../../src/core/os/window.hpp#L17) の`input_events`へイベントを積み、loopが`drainInputEvents()`して`InputState`へ渡します。ゲームロジックは直接GLFW状態を問い合わせません。windowedではF5キーでgame logic reloadを要求できます（[loop.cpp](../../src/core/appflow/loop.cpp#L713)）。`FramerateAdjust`はwindowedのみです。
 
@@ -340,15 +410,21 @@ reader・queue・dispatch の分業と終了時の注意は[第7章の RPC 図�
 
 `launch_config.xr_active` かつXRセッションがrunningの間は、同じwhileループ内で専用経路を通ります（[`runXrFrame()`](../../src/core/appflow/loop.cpp#L548)、`#if PELICAN_WITH_OPENXR`）。
 
-```text
-pollEvents → waitFrame → EngineTime::advance
-→ VulkanManageCore::setCurrentFrameIndex(frameIndex)
-→ beginFrame → locateViews
-→ syncActions（action backendとpose samplesをInputStateへ注入）
-→ update_interactive_state(xr_frame = true)
-→ selectGraphVariant(xr) → XrCompositionTarget.prepareFrame
-→ renderLogicalFrame(2 views) → XrMirrorSink.tryPresent → recordMirrorStatistics
-```
+| 順 | 操作 | 意味・注記 |
+|---|---|---|
+| 1 | `pollEvents` | — |
+| 2 | `waitFrame` | — |
+| 3 | `EngineTime::advance` | — |
+| 4 | `VulkanManageCore::setCurrentFrameIndex(frameIndex)` | — |
+| 5 | `beginFrame` | — |
+| 6 | `locateViews` | — |
+| 7 | `syncActions` | action backendとpose samplesをInputStateへ注入 |
+| 8 | `update_interactive_state(xr_frame = true)` | — |
+| 9 | `selectGraphVariant(xr)` | — |
+| 10 | `XrCompositionTarget.prepareFrame` | — |
+| 11 | `renderLogicalFrame(2 views)` | — |
+| 12 | `XrMirrorSink.tryPresent` | — |
+| 13 | `recordMirrorStatistics` | — |
 
 このフレームで実際に描画するかは、`shouldRender()` だけでは決まりません（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L577)）。
 
@@ -369,13 +445,21 @@ mirror表示の結果はsessionへ戻され、`xr_session->recordMirrorStatistic
 
 ### headless固定フレーム
 
-```text
-InputState::clear（replay中はスキップ）
-→ EngineTime::advance(fixed_step)
-→ VulkanManageCore::setCurrentFrameIndex(frameIndex)
-→ updateFrameState
-→ Renderer::render
-→ 必要ならPNG capture
+```mermaid
+flowchart TB
+    Replay{"replay中?"}
+    Clear["InputState::clear"]
+    Time["EngineTime::advance(fixed_step)<br/>VulkanManageCore::setCurrentFrameIndex(frameIndex)"]
+    Update["updateFrameState"]
+    Render["Renderer::render"]
+    Needed{"PNG captureが必要?"}
+    Capture["PNG capture"]
+    Done["captureなし"]
+    Replay -->|"はい: clearをスキップ"| Time
+    Replay -->|"いいえ"| Clear --> Time
+    Time --> Update --> Render --> Needed
+    Needed -->|"はい"| Capture
+    Needed -->|"いいえ"| Done
 ```
 
 #### `--start-time` の replay prologue（O-1）
@@ -383,9 +467,18 @@ InputState::clear（replay中はスキップ）
 `--start-time` が指定されると、上のループの**前**にもう1本のループが走ります（[replay prologue の本体](../../src/core/appflow/loop.cpp#L672)）。`start_frames - 1` 枚を、captureだけ外して同じ3呼び出し（`advance` → `updateFrameState` → `render`）で回してから、本番のフレームへ入ります。
 
 ```text
-offline: start_time=<秒> start_frame=<番号> replay=<枚数> frames=<枚数>   ← stderr へ1行
-（replay 枚数だけ headlessFrame(capture=false)）
-→ 通常の headless ループ（--frames 枚、capture あり）
+offline: start_time=<秒> start_frame=<番号> replay=<枚数> frames=<枚数>
+```
+
+- **offline**: stderr へ1行。
+
+```mermaid
+flowchart TB
+    Replay["headlessFrame(capture=false)<br/>replay 枚数だけ"]
+    Normal["通常の headless ループ<br/>--frames 枚、capture あり"]
+    Replay -->|"replay の反復"| Replay
+    Replay --> Normal
+    Normal -->|"通常ループの反復"| Normal
 ```
 
 **時刻を飛ばさないのは手抜きではなく、飛ばせないからです。** 1フレームの見た目を決める状態は時計から再構成できません —— 共通グラフのクロックは `render()` の中でしか進まず、プロジェクトのゲームSystemは自分で `dt` を積分し、animation componentの評価器に至っては「時刻tのポーズをくれ」と聞ける相手ではありません（[その理由を書いたコメント](../../src/core/appflow/loop.cpp#L663)）。したがって時刻tに居る唯一の正直な方法は、その手前の全ステップを通ってくることです。stderr の1行に `replay=` を出すのは、「何枚ぶん先に回したか」が出力の再現条件そのものだからです。
@@ -466,14 +559,21 @@ void updateFrameState() {
 
 `update_game`内部の正確な順序は次です（[`framephase.cpp` 内](../../src/core/appflow/framephase.cpp#L226)）。
 
-```text
-ECSCore::update()
-→ updateRegisteredGameSystems(GameContext&, all | editor_only | game_only)
-→ Vrm::applicationServiceRuntime().ensureStandardPhasesRegistered()
-→ Animation::animationServiceRuntime().runAllPhases(evaluation_index, all | engine_only)
-→ SeqPlayer::update(current_time)
-→ SceneLoader::applyPendingLoad()      # game の 1 歩のときだけ
+```mermaid
+flowchart TB
+    Update["ECSCore::update()<br/>updateRegisteredGameSystems の呼び出し"]
+    Vrm["Vrm::applicationServiceRuntime().ensureStandardPhasesRegistered()"]
+    Animation["Animation::animationServiceRuntime().runAllPhases(evaluation_index, all | engine_only)"]
+    Seq["SeqPlayer::update(current_time)"]
+    Game{"game の 1 歩?"}
+    Load["SceneLoader::applyPendingLoad()"]
+    Skip["applyPendingLoad()なし"]
+    Update --> Vrm --> Animation --> Seq --> Game
+    Game -->|"はい"| Load
+    Game -->|"いいえ"| Skip
 ```
+
+- **updateRegisteredGameSystems**: `ECSCore::update()` の次に `updateRegisteredGameSystems(GameContext&, all | editor_only | game_only)` を呼ぶ。
 
 **一時停止の分岐(✅PM-1a)。**`updateFrameState()` は reload 公開と commit hook の後で [`EngineTime::gameStepping()`](../../src/core/appflow/enginetime.cpp#L84) を 1 回読み、そのフレームが game の 1 歩か(`playing` か、`paused` で `advance_frames` の歩を取るフレームか)を [`game_step`](../../src/core/appflow/framephase.cpp#L174) に取ります。
 
@@ -557,13 +657,15 @@ ImGuiゲートが閉じたフレームでは、開始済みのImGuiフレーム�
 > route(events):                      # そのフレームの列を先頭から順に
 >   event_seq が狭義単調増加でなければ throw     # 状態機械がフレーム内順序に依存する
 >   physical = (Cancel なら null) else hitTest(px)
->   capture の owner が arena に無い -> capture.reset()   # ← effect を出さない唯一の出口
+>   capture の owner が arena に無い -> capture.reset()
 >   Move: hover != physical -> HoverExit / HoverEnter     # hover だけは物理判定
 >         capture あり -> target = capture.owner; |dx|+|dy| >= 4 で DragStart(ラッチ) -> 以後 Drag
 >         capture なし -> target = physical
 >   Down: capture 済みなら throw / physical があれば capture を作り Capture
 >   Up  : capture あり -> ReleaseCapture; !drag_started かつ physical == owner なら Click
 > ```
+>
+> - **capture.reset()**: effect を出さない唯一の出口。
 >
 > **手がかり**: `drag_started` はラッチ(一度立つと Up まで倒れないフラグ)なので、閾値を越えた後に押した位置へ指を戻しても Click にはなりません — Up 側の `!state.capture->drag_started && physical_target == state.capture->owner`([Click 発行の条件](../../src/core/ui/inputrouter.cpp#L94))がその裏返しです。閾値 `dx + dy >= 4`([DragStart の閾値](../../src/core/ui/inputrouter.cpp#L74))は**UI単位**のマンハッタン距離(各軸の差の絶対値の和。斜め移動は直線距離より早く閾値へ届きます)で、[`windowToUi()`](../../src/core/ui/types.cpp#L96) が framebuffer 座標を `ui_scale` で割った後の値です — 物理ピクセルではないので、`ui_scale` が大きいほど実際の移動量は長く必要になります。capture が黙って消えた後の Up は `else routed.target = physical_target`([capture 無しの Up](../../src/core/ui/inputrouter.cpp#L97))へ落ちるため、ボタン不一致の検査([その throw](../../src/core/ui/inputrouter.cpp#L91))も素通りします。`routed.target` か capture があれば `consumed_pointer` が立ち、`UiModule` が `consumePointerForActions()` を呼ぶ([`module.cpp` 内](../../src/core/ui/module.cpp#L288))ので、capture 中はAction層からポインタが隠れます。テストは [`Ordered router keeps per-pointer captures independent`](../../test/ui_foundation_test.cpp#L246)(pointer_idごとにcaptureが独立)と [同ファイルの U2 ボタン検証](../../test/ui_foundation_test.cpp#L305)(Upが `ReleaseCapture` → `Click` の順)。
 >

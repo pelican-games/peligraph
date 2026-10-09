@@ -33,20 +33,34 @@ Pelican2 は **C++20 / Vulkan(vulkan.hpp)/ Windows(MSVC)** のゲームエンジ
 
 ## 1.2 データフロー(起動から画面まで)
 
-```
-project.json ──┬─ scene_data_json ──▶ pelican.scene v2 ─▶ ECS(オブジェクト)
-(マニフェスト) │                                        ├▶ LightContainer(light)
-               │                                        ├▶ PhysWorld(collider)
-               │                                        └▶ BehaviorAttachmentArena(behavior)
-               ├─ asset_data_json ──▶ モデル一括ロード(glb/VRM)
-               ├─ rendering_config_json ─▶ feature 合成 ─▶ フレームグラフ ─▶ 描画
-               ├─ input_actions_json ──▶ アクション層(入力)
-               └─ ui_config_json ──▶ UI オーバーレイ
-                                     ▲
-        code/*.cpp(ゲームシステム)──┘ GameContext 経由で毎フレーム操作
+```mermaid
+flowchart LR
+    Project["project.json<br/>(マニフェスト)"]
+    Scene["pelican.scene v2"]
+    ECS["ECS(オブジェクト)"]
+    Light["LightContainer(light)"]
+    Phys["PhysWorld(collider)"]
+    Behavior["BehaviorAttachmentArena(behavior)"]
+    Assets["モデル一括ロード(glb/VRM)"]
+    Features["feature 合成"]
+    Graph["フレームグラフ"]
+    Render["描画"]
+    Input["アクション層(入力)"]
+    UI["UI オーバーレイ"]
+    Code["code/*.cpp(ゲームシステム)"]
+    Project -->|"scene_data_json"| Scene
+    Scene --> ECS
+    Scene --> Light
+    Scene --> Phys
+    Scene --> Behavior
+    Project -->|"asset_data_json"| Assets
+    Project -->|"rendering_config_json"| Features --> Graph --> Render
+    Project -->|"input_actions_json"| Input
+    Project -->|"ui_config_json"| UI
+    Code -->|"GameContext 経由で毎フレーム操作"| UI
 ```
 
-図の読み方: `──▶` は「左のものが右を作る/右へ渡す」向き、`├▶` `└▶` は 1 つの入力から複数の行き先へ分かれる枝、`▲` と `┘` は下から上への合流(ゲームコード `code/*.cpp` が `GameContext` 経由でその上の実体を毎フレーム操作する)を表します。左端の `project.json` から入って、右端の ECS・描画に着地します。`GameContext` は**ゲームコードに公開される唯一の API 面**(facade)で、時刻・入力・オブジェクト操作はすべてここを通ります([gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp)・[第8章](08_gameplay.md))。
+図の読み方: 矢印は「元のものが先のものを作る/先へ渡す」向き、枝は 1 つの入力から複数の行き先への分岐を表します。ゲームコード `code/*.cpp` からの合流は、`GameContext` 経由で UI オーバーレイを毎フレーム操作することを表します。左端の `project.json` から入って、右端の ECS・描画に着地します。`GameContext` は**ゲームコードに公開される唯一の API 面**(facade)で、時刻・入力・オブジェクト操作はすべてここを通ります([gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp)・[第8章](08_gameplay.md))。
 
 <a id="frame-order"></a>
 
@@ -55,22 +69,24 @@ project.json ──┬─ scene_data_json ──▶ pelican.scene v2 ─▶ ECS(
 時刻を進めてから状態を更新し、描画します。次の図が各章で参照するフレーム順です。
 
 ```mermaid
-flowchart TD
-    A[時刻 advance] --> B[reload 公開・編集 commit hook・spawn 境界]
-    B --> C[freeze_events: イベント凍結]
-    C --> D[freeze_input: 入力スナップショット確定]
-    D --> E[freeze_actions: ImGui → UI → Actions]
-    E --> F[deliver_events: 凍結したイベントを配送]
-    F --> G
-    subgraph G[update_game]
-        G1[ECS] --> G2[ゲームシステム: order・名前順]
-        G2 --> G3[Animation: graph 更新・登録 phase]
-        G3 --> G4[SeqPlayer] --> G5[applyPendingLoad]
-    end
-    G --> H[UI 書込確定 → Scene Graph runtime 更新]
-    H --> I[窓あり RPC: processFrameBoundary]
-    I --> J[render]
+flowchart TB
+    A["時刻 advance"]
+    B["reload 公開・編集 commit hook・spawn 境界"]
+    C["freeze_events: イベント凍結<br/>freeze_input: 入力スナップショット確定<br/>freeze_actions: ImGui → UI → Actions"]
+    D["deliver_events: 凍結したイベントを配送"]
+    G["update_game<br/>下記の 1〜5"]
+    H["UI 書込確定 → Scene Graph runtime 更新<br/>窓あり RPC: processFrameBoundary<br/>render"]
+    A --> B --> C --> D --> G --> H
 ```
+
+update_game の順序:
+
+1. ECS。
+2. ゲームシステム: order・名前順。
+3. Animation: graph 更新・登録 phase。
+4. SeqPlayer。
+5. applyPendingLoad。
+
 根拠: [framephase.hpp:17](../../src/core/appflow/framephase.hpp#L17)、[framephase.cpp:152](../../src/core/appflow/framephase.cpp#L152)、[loop.cpp:710](../../src/core/appflow/loop.cpp#L710)、[loop.cpp:756](../../src/core/appflow/loop.cpp#L756)。
 
 注: `updateFrameState` は時刻 advance と render を含みません。headless の固定フレームと RPC `step_frame` も同じ状態更新順ですが、図の窓あり RPC pump は通りません。edit / paused ではイベント凍結・配送と通常のゲーム処理・pending scene load を飛ばし、入力・editor 用システム・停止時刻の Animation / seq / Graph・描画は続きます(paused の明示的な step はゲーム処理を進めます)。Animation は有効な build のみ、UI 書込確定後の camera bake 記録は該当機能がある場合のみです。
@@ -97,7 +113,7 @@ pelican2/
 │   │   ├── ecs/          #   ECS コア(コンポーネント登録・predefined)
 │   │   ├── loader/       #   バインダ(PathResolver、basicconfig、scene、画像)
 │   │   ├── model/        #   glTF ロード、VAT
-│   │   ├── asset/        #   asset_data.json → モデル登録
+│   │   ├── asset/
 │   │   ├── os/           #   ウィンドウ(GLFW)、入力スナップショット、アクション層
 │   │   ├── phys/         #   物理クエリ(raycast/overlap/shapeCast、provider 境界)
 │   │   ├── playback/     #   SeqPlayer(transform_seq)、VatPlayer、カメラ焼き出し
@@ -128,6 +144,8 @@ pelican2/
 └── test/                 # Catch2 単体 + fixture + golden + 結合スクリプト(run_*)。件数は第12章
 ```
 
+- **asset/**: `asset_data.json` からモデル登録。
+
 ※ `src/core/` は主要ディレクトリのみを載せています(このほかに `fullscreenpass/` / `geomhelper/` があります)。
 
 ## 1.4 レイヤ構造とレイヤ規則
@@ -138,12 +156,15 @@ pelican2/
 
 > **設計決定(解釈レイヤの分離):** JSON のパース・検証・計画(sceneformat / featurecompose / importmanifest / jsonrpc / materialformat など)は、GPU・Vulkan・モジュール機構に依存しない**純ロジック**として書く。その中核は `src/project/`(静的ライブラリ `pelican_project`、依存は nlohmann_json + ハッシュ用 picosha2 のみ)に分離済みで、`pelican_cli` や将来のエディタはエンジンをリンクせずにプロジェクトを読める。※`frameplanner` も同じ純ロジック方針ですが、実体は分離されておらず `src/core/renderingpass/`(pelican_core 側)にあります。
 
-```
-ゲームコード(プロジェクトの code/)
-    ↓ userpublic(GameContext / GameObjects / PELICAN_REGISTER_SYSTEM)
-エンジン上位層(renderer / renderingpass / loader = バインダ)
-    ↓                     ↖ 解釈レイヤ pelican_project(純ロジック)
-vkcore(Vulkan 低層)
+```mermaid
+flowchart TB
+    Game["ゲームコード(プロジェクトの code/)"]
+    Upper["エンジン上位層<br/>renderer / renderingpass / loader = バインダ"]
+    Project["解釈レイヤ pelican_project(純ロジック)"]
+    Vulkan["vkcore(Vulkan 低層)"]
+    Game -->|"userpublic(GameContext / GameObjects / PELICAN_REGISTER_SYSTEM)"| Upper
+    Project --> Upper
+    Upper --> Vulkan
 ```
 
 ## 1.5 横断的な設計原則

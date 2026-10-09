@@ -6,13 +6,13 @@
 
 この章は、設定ファイルに書かれた「この順で、この画像へ描く」が、最終的に Vulkan のコマンドへ変換されるまでを追います。Pelican の描画層は、単純な `Renderer` 1 クラスではありません。まず地図として、次の 5 層を頭に置いてください。
 
-```text
-(1) コンパイラ program … rendering JSON を GPU に触らずに型付き定義へ落とす
-(2) 計画             … その定義から論理グラフ / 物理ターゲットプラン / FramePlan を作る
-(3) GPU 登録と世代   … 画像・shader・pipeline・descriptor を作り、1 回の publish で差し替える
-(4) pass dispatch    … pass 種別ごとの renderer(Material / Fullscreen / UI …)へ振り分ける
-(5) Vulkan backend   … device、frame target、image layout、コマンド記録を扱う
-```
+| 順 | 層 | 役割 |
+|---|---|---|
+| 1 | コンパイラ program | rendering JSON を GPU に触らずに型付き定義へ落とす |
+| 2 | 計画 | その定義から論理グラフ / 物理ターゲットプラン / FramePlan を作る |
+| 3 | GPU 登録と世代 | 画像・shader・pipeline・descriptor を作り、1 回の publish で差し替える |
+| 4 | pass dispatch | pass 種別ごとの renderer(Material / Fullscreen / UI …)へ振り分ける |
+| 5 | Vulkan backend | device、frame target、image layout、コマンド記録を扱う |
 
 **先に 1 文だけ定義しておく語。** 以下は第6章の本文が説明なしに使い始める語です。深い扱いは各節にあります。
 
@@ -38,38 +38,45 @@
 
 **ただし、この 5 層は一本道ではありません。**「JSON → 論理グラフ → 変換 → 物理プラン → Vulkan」という直線で読むと必ず外します。実際は [`FrameGraphDefinition`](../../src/core/renderingpass/frameplanner.hpp#L128) が **ハブ** で、そこから 3 本が **並行に** 枝分かれします。
 
-```text
- rendering JSON (ProjectBasicConfig)
-   │  registerRenderingPassConfigVariantsData()   renderingpassconfigregistration.cpp:648
-   │    flat / #xr / preview を 1 つの program へまとめて渡す
-   v
- ┌ RenderCompilerProgram ── GPU に一切触らない CPU 相 ─────────────────────────┐
- │ (1) authoring 解決  resolveRenderPipeline() → compileRenderPipeline()      │
- │       ⇒ CompiledRenderPipeline(feature / route / sample / target policy)   │
- │ (2) 変換 registry   render strategy / graph transform / subgraph replace   │
- │       いずれも config JSON → config JSON(論理グラフは書き換えない)        │
- │ (3) 型付き定義へ parse  ⇒ ★ FrameGraphDefinition ★  frameplanner.hpp:116  │
- │              ┌───────────────────┼───────────────────┐                     │
- │          (4a)│               (4b)│               (4c)│                     │
- │   compileRenderingTargetPlans-  framePlansByName()  frameExecutionPlans-   │
- │     ForVulkanDevice()             = planFrameGraph()  ByName()             │
- │              v                     v                   v                   │
- │   CompiledLogicalRenderGraph     FramePlan           FrameExecutionPlan    │
- │     (SSA 値・型・read footprint)   nodes/levels/       endpoints/nodes/    │
- │              │                     barriers            dependencies 🚧     │
- │              v                  ★実行順の権威★                            │
- │   VulkanTargetPlan(scope / format / sample 数 / view execution / alias)    │
- └────────────────────────────────────────────────────────────────────────────┘
-   │  physical_package->validate(frame_graph_names) を GPU 変更前に必ず通す
-   v
- GPU 登録トランザクション(gpuRegistrationMutex で直列化)
-   │  prepareGeneration → validate → before_publish → publish(単一 CAS)
-   v
- RendererRuntimeGeneration(不変な publication root)  framegraphruntime.hpp:89
-   │
-   v
- Renderer::renderLogicalFrame()   view family 解決 → scope schedule 構築 → node 記録
+```mermaid
+flowchart TB
+    Input["rendering JSON (ProjectBasicConfig)"]
+    Register["registerRenderingPassConfigVariantsData()<br/>flat / #xr / preview を 1 つの program へまとめて渡す"]
+    subgraph CPU["RenderCompilerProgram — GPU に一切触らない CPU 相"]
+        Resolve["(1) resolveRenderPipeline() → compileRenderPipeline()<br/>(2) 変換 registry"]
+        Definition["(3) 型付き定義へ parse<br/>★ FrameGraphDefinition ★"]
+        Targets["(4a) compileRenderingTargetPlansForVulkanDevice()"]
+        Logical["CompiledLogicalRenderGraph<br/>SSA 値・型・read footprint"]
+        Physical["VulkanTargetPlan<br/>scope / format / sample 数 / view execution / alias"]
+        Planner["(4b) framePlansByName()<br/>= planFrameGraph()"]
+        Plan["FramePlan<br/>nodes / levels / barriers<br/>★実行順の権威★"]
+        ExecutionPlanner["(4c) frameExecutionPlansByName()"]
+        Execution["FrameExecutionPlan<br/>endpoints / nodes / dependencies 🚧"]
+        Resolve --> Definition
+        Definition --> Targets --> Logical --> Physical
+        Definition --> Planner --> Plan
+        Definition --> ExecutionPlanner --> Execution
+    end
+    Validate["physical_package->validate(frame_graph_names)<br/>GPU 変更前に必ず通す"]
+    GPU["GPU 登録トランザクション<br/>gpuRegistrationMutex で直列化<br/>下記の 1〜5"]
+    Render["Renderer::renderLogicalFrame()<br/>view family 解決 → scope schedule 構築 → node 記録"]
+    Input --> Register --> Resolve
+    CPU --> Validate --> GPU --> Render
 ```
+
+- **authoring 解決**: `resolveRenderPipeline()` の後に `compileRenderPipeline()` が `CompiledRenderPipeline` を作る。
+
+GPU 登録トランザクションから publication root までの順序:
+
+1. `prepareGeneration`
+2. `validate`
+3. `before_publish`
+4. `publish(単一 CAS)`
+5. `RendererRuntimeGeneration` — 不変な publication root。
+
+- **CompiledRenderPipeline**: feature / route / sample / target policy。
+- **変換 registry**: render strategy / graph transform / subgraph replace。いずれも config JSON → config JSON で、論理グラフは書き換えない。
+- **参照ファイル**: renderingpassconfigregistration.cpp、frameplanner.hpp、framegraphruntime.hpp。
 
 3 本の関係で、先に知っておくべきことが 4 つあります。
 
@@ -122,10 +129,11 @@ feature decision、swapchain→request-local capture の変換、設定検証は
 > ```text
 > unsafePreviewName              = {taa, velocity, motion_vector, projection_jitter, ui, imgui, mirror, present}
 > unsafePreviewDirectPassSurface = {taa, velocity, motion_vector, projection_jitter, ui, imgui, mirror}
->                                                                                  └ present が無い
 > retained_terminal = 出力が preview_capture|display && 名前が "present" で終わる
 >                     && "mirror" も "ui" も含まない
 > ```
+>
+> - **unsafePreviewDirectPassSurface**: `present` が無い。
 >
 > **手がかり**: [`resolveRenderPipeline()`](../../src/project/renderpipeline.cpp) の compose → `transformGraphVariantConfig()` → `validateGraphVariantConfig()` は順序が仕様です。先に `swapchain` を `preview_capture` へ書き換えるからこそ `retained_terminal` が成立しえます。`precompilePreviewGraph()` の `generationOf()` が **FNV-1a**(Fowler–Noll–Vo ハッシュの 1a 版 — 1 バイトごとに「XOR してから固定の素数を掛ける」を繰り返すだけの非暗号学的ハッシュ。依存ライブラリなしで数行で書けるので、設定が変わったかどうかの判定に使われます)を **53 bit にマスクし、0 なら 1 に繰り上げる**のは、JSON の number(double)で正確に表せる上限と「program 無し」の予約値のためで、飾りではありません。テストは [`editorpreview_test.cpp`](../../test/editorpreview_test.cpp)。
 >
@@ -167,14 +175,27 @@ hybrid の描画経路では deferred と forward が同じ target へ重ねて�
 > 4. **scene 終端はもう一段ややこしい**: HDR では [`prepareHdrSceneOutput()`](../../src/project/featurecompose.cpp#L346) が `canonicalizePasses()` より**前に**その出力を `swapchain` → `scene_ldr_in` へ書き換えるため、`passWritesSwapchain()` がもう当たらず、bucket 3 ではなく **scene 区画にそのまま残ります**(swapchain へ書く役目は、後から `after:tonemap` で挿し込まれる feature 側の `hdr_tonemap` が引き継ぎます)。「HDR にすると終端 pass が bucket 3 から bucket 1 へ移る」ではない、というのがここの読みどころです。
 >
 > **骨子**:
-> ```text
-> 最終配列 = [scene passes...]
->            __anchor_sprite [b0]  __anchor_post_main  [b1]   ← HDR 時の swapchain writer(anchor 無し)
->            __anchor_tonemap [b2] __anchor_post_ldr   [b3]   ← 非 HDR 時の終端
->            __anchor_pelican_ui [b4] __anchor_debug_draw [b5]
->            __anchor_debug_text [b6] __anchor_imgui [b7]
->            output_transform      ← display を読み swapchain へ書く
-> ```
+>
+> | 順 | 最終配列の要素 | 意味・注記 |
+> |---|---|---|
+> | 1 | `scene passes...` | scene passes |
+> | 2 | `__anchor_sprite` | — |
+> | 3 | `b0` | — |
+> | 4 | `__anchor_post_main` | — |
+> | 5 | `b1` | HDR 時の swapchain writer(anchor 無し) |
+> | 6 | `__anchor_tonemap` | — |
+> | 7 | `b2` | — |
+> | 8 | `__anchor_post_ldr` | — |
+> | 9 | `b3` | 非 HDR 時の終端 |
+> | 10 | `__anchor_pelican_ui` | — |
+> | 11 | `b4` | — |
+> | 12 | `__anchor_debug_draw` | — |
+> | 13 | `b5` | — |
+> | 14 | `__anchor_debug_text` | — |
+> | 15 | `b6` | — |
+> | 16 | `__anchor_imgui` | — |
+> | 17 | `b7` | — |
+> | 18 | `output_transform` | display を読み swapchain へ書く |
 >
 > **手がかり**: bucket に掛かるのは **base 設定の pass だけ**です。feature の pass はこの後で `insertPassByAnchor()` が置くので bucket を通りません(「なぜ `hdr_tonemap` が bucket に出てこないのか」で詰まる所)。[`retargetSwapchainAliases()`](../../src/project/featurecompose.cpp#L525) は `output_transform` **以外**の pass の `swapchain` を `display` に置換するので、合成後に `swapchain` を書くのは終端だけになります。テストは [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp) の "canonical color pipeline is composed even without features"。
 >
@@ -198,21 +219,16 @@ hybrid の描画経路では deferred と forward が同じ target へ重ねて�
 >
 > **具体例**: 同梱 feature の [`velocity.json`](../../src/core/resources/features/velocity.json)(`"insert": "before:post_main"`)と [`taa.json`](../../src/core/resources/features/taa.json)(`taa_resolve` が `"after:post_main"`、`taa_composite` が `"after:taa_resolve"`)を、この順で合成すると配列はこう動きます。
 >
-> ```text
-> canonical 化直後   … __anchor_sprite, __anchor_post_main, __anchor_tonemap, …
+> | 段 | 挿入したもの・指定 | その後の配列(抜粋) |
+> |---|---|---|
+> | 0: canonical 化直後 | — | `… __anchor_sprite, __anchor_post_main, __anchor_tonemap, …` |
+> | 1 | `velocity_pass` / `before:post_main` | `… __anchor_sprite, velocity_pass, __anchor_post_main, __anchor_tonemap, …` |
+> | 2 | `taa_resolve` / `after:post_main` | `… __anchor_post_main, taa_resolve, __anchor_tonemap, …` |
+> | 3 | `taa_composite` / `after:taa_resolve` | `… __anchor_post_main, taa_resolve, taa_composite, __anchor_tonemap, …` |
 >
-> velocity_pass  "before:post_main"   前進しない → anchor の直前へ
->   … __anchor_sprite, velocity_pass, __anchor_post_main, __anchor_tonemap, …
->   velocity_pass["before"] += "__anchor_post_main"
->
-> taa_resolve    "after:post_main"    canonical anchor なので次の anchor の手前まで前進
->   … __anchor_post_main, taa_resolve, __anchor_tonemap, …
->   taa_resolve["after"] += "__anchor_post_main"
->
-> taa_composite  "after:taa_resolve"  canonical anchor に無い名前 → 第 2 段(pass 名)で一致
->   … __anchor_post_main, taa_resolve, taa_composite, __anchor_tonemap, …
->   taa_composite["after"] += "taa_resolve"
-> ```
+> - **velocity_pass**: 前進せず anchor の直前へ。`velocity_pass["before"] += "__anchor_post_main"`。
+> - **taa_resolve**: canonical anchor なので次の anchor の手前まで前進。`taa_resolve["after"] += "__anchor_post_main"`。
+> - **taa_composite**: canonical anchor に無い名前なので第 2 段(pass 名)で一致。`taa_composite["after"] += "taa_resolve"`。
 >
 > 依存名に入るのは**一致した node の `name` フィールド**です(canonical anchor なら `__anchor_post_main`、pass 名一致なら `taa_resolve`)。もし `after:` を素朴に「anchor の位置 + 1」で挿していたら、`after:post_main` を持つ feature が 2 つある構成で後から合成した側が前に入り、宣言順と逆になります。
 >
@@ -240,11 +256,19 @@ hybrid の描画経路では deferred と forward が同じ target へ重ねて�
 > 3. **使われない引数**: この関数は `frame_target_format` を引数に取りながら**本体で一度も参照していません**。呼び出し側は `getSwapchainFormat()` を渡していますが `display` は常に `B8G8R8A8_SRGB` 固定で、swapchain 側が UNORM に落ちた差は終端の shader fallback が吸収します。「引数が使われていないのはバグでは?」で止まらないでください。
 >
 > **骨子**:
-> ```text
-> scene pass ──linear──> [display: B8G8R8A8_SRGB]  ← HW が OETF + 8bit 量子化
->                             │ sample = HW が EOTF(→ linear)
->                             v  output_transform.frag
->                     swapchain が SRGB → そのまま / UNORM → shader が linearToSrgb()
+> ```mermaid
+> flowchart TB
+>     Scene["scene pass"]
+>     Display["display: B8G8R8A8_SRGB<br/>HW が OETF + 8bit 量子化"]
+>     Output["output_transform.frag"]
+>     Swapchain{"swapchain の形式"}
+>     Srgb["SRGB: そのまま"]
+>     Unorm["UNORM: shader が linearToSrgb()"]
+>     Scene -->|"linear"| Display
+>     Display -->|"sample = HW が EOTF(→ linear)"| Output
+>     Output --> Swapchain
+>     Swapchain --> Srgb
+>     Swapchain --> Unorm
 > ```
 >
 > **手がかり**: つまり **linear → 8bit sRGB → linear → 8bit sRGB** の往復が 1 回入ります(骨子の **OETF / EOTF** は opto-electronic / electro-optical transfer function の略で、前者は linear 値を sRGB のガンマ曲線へ載せる符号化、後者は符号化された値を linear へ戻す復号です。sRGB フォーマットの image へ書く / から読むと、どちらもハードウェアが自動で掛けます)。[`color_pipeline_test.cpp`](../../test/color_pipeline_test.cpp) が hardware 経路と shader fallback 経路の差を **±1 LSB**(least significant bit — 最下位ビット 1 つぶん、つまり 8 bit なら 256 階調で 1 段の差)で許容しているのはこのためで、「無駄だから `display` を UNORM に」と最適化すると中間段の量子化が linear 空間になり暗部が壊れます。`format_class` 省略時の推論 [`inferFormatClass()`](../../src/project/featurecompose.cpp#L248) は **名前の部分一致**(`normal` / `depth` / `shadow` / `ssao` / `worldpos` / `material` を含めば `data`)という素朴な規則なので、target 名を変えると色空間が変わりえます。
@@ -354,15 +378,27 @@ feature は `parameters.scalars[]` で数値パラメータを宣言できます
 > > fields above rather than reading keys from this representation.
 >
 > **骨子**:
-> ```text
-> resolveRenderPipeline(authored)  → ResolvedRenderPipeline{ normalized_config(JSON)
->                                                          + 一部は型、一部は JSON }
-> compileRenderPipeline(resolved)  → CompiledRenderPipeline(全部型)   ← 初期 config の provenance もここで同期
-> preview(data_only) はここで早期 return                              (#L400-L414)
-> compose_runtime_config → graph transform → subgraph replacement      ← JSON だけ変わる
-> 選択結果を CompiledRenderPipeline へ後追いで刻む
-> runtime は namespaceComputeTasks で最終 config 順へ再同期し、XR なら改名後の compute 名を使う
+> ```mermaid
+> flowchart TB
+>     Resolve["resolveRenderPipeline(authored)<br/>ResolvedRenderPipeline<br/>normalized_config(JSON) + 一部は型、一部は JSON"]
+>     Compile["compileRenderPipeline(resolved)<br/>CompiledRenderPipeline(全部型)<br/>初期 config の provenance もここで同期"]
+>     Preview{"preview(data_only)?"}
+>     Return["早期 return"]
+>     Transform["runtime の JSON 変換<br/>下記の 1〜3"]
+>     Record["選択結果を CompiledRenderPipeline へ後追いで刻む"]
+>     Sync["runtime: namespaceComputeTasks で最終 config 順へ再同期<br/>XR なら改名後の compute 名を使う"]
+>     Resolve --> Compile --> Preview
+>     Preview -->|"はい"| Return
+>     Preview -->|"いいえ"| Transform --> Record --> Sync
 > ```
+>
+> runtime の JSON 変換の順序:
+>
+> 1. `compose_runtime_config`
+> 2. `graph transform`
+> 3. `subgraph replacement`
+>
+> - **compose_runtime_config / graph transform / subgraph replacement**: JSON だけが変わる。
 >
 > **手がかり**: preview variant が「合成と検証だけを終えた設定データ」で止まるのは、この関数の `data_only` 早期 return がその位置にあるからです(コメントが規範: 「resolve feature and strategy policy here, but do not apply runtime host additions or enter transform/subgraph/device planning that assumes concrete target storage」)。`normalize_config` フックが差さるのも `runtime_package` のときだけで([フックを差す分岐](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L699))、`format_class` の解決(§6.1)が preview に掛からない理由がここにあります。
 >
@@ -375,13 +411,13 @@ feature は `parameters.scalars[]` で数値パラメータを宣言できます
 > **素朴に読むと**: planner(名前ベース)と物理計画(値ベース)の間に **二重の名前空間**が挟まっていることに気づかないと、「同じ RT なのになぜ別ライフタイムと判定できるのか」が読めません。version は write のたびに `current_versions` を ++ して進み([write ポートの版付け](../../src/core/renderingpass/logicalframegraphadapter.cpp#L464))、`load` 付き attachment の read+write は **`input_output` ポート 1 本に融合**されて 1 回のインクリメントになります([read+write の融合判定](../../src/core/renderingpass/logicalframegraphadapter.cpp#L351))。import は 4 分類([`LogicalValueImportKind`](../../src/project/logicalrendergraph.hpp#L80))で、`previous_epoch` が `@history`(§6.3 の難所「`@history` は edge を作らない」と同じ事実を論理層から見たもの)、`external` が swapchain、`legacy_implicit` は「旧 JSON が版を書いていない」ことの記録です。そして **read footprint は最適化ヒントではなく物理表現の決定入力**です。宣言があればそれを、`load` 付き attachment なら `same_pixel`、無ければ保守的に `arbitrary` を採り([footprint の既定選択](../../src/core/renderingpass/logicalframegraphadapter.cpp#L379))、`arbitrary` が 1 つでも出ると `legacy_read_footprint_conservative` decision が付きます。`same_pixel` でなければ tile-local にも scope 融合にも落ちません([第10章](10_background_knowledge.md) §10.1「LAZILY_ALLOCATED メモリと TRANSIENT_ATTACHMENT」)。
 >
 > **骨子**:
-> ```text
-> FrameGraphDefinition(名前)          CompiledLogicalRenderGraph(値)
->   writes: scene_color            →  出力値 {scene_color, v1}
->   reads:  scene_color            →  入力値 {scene_color, v1}   ← 版が一致した組だけ edge
->   reads:  scene_color@history    →  import{{scene_color, v0}, previous_epoch}
->   load 付き attachment の read+write → inout ポート 1 本(v1 → v2)
-> ```
+>
+> | FrameGraphDefinition(名前) | CompiledLogicalRenderGraph(値) |
+> |---|---|
+> | `writes: scene_color` | 出力値 `{scene_color, v1}` |
+> | `reads: scene_color` | 入力値 `{scene_color, v1}`。版が一致した組だけ edge |
+> | `reads: scene_color@history` | `import{{scene_color, v0}, previous_epoch}` |
+> | load 付き attachment の read+write | inout ポート 1 本(`v1 → v2`) |
 >
 > **手がかり**: グラフ末尾に必ず積まれる decision `"shadow_graph_only"` / `"logical graph is diagnostic-only and does not own runtime execution"`([その decision の生成](../../src/core/renderingpass/logicalframegraphadapter.cpp#L483))を **そのまま信じないでください**。この論理グラフは現在 [`compileVulkanTargetPlan()`](../../src/project/targetrenderplanning.hpp#L522) の唯一の入力で([`renderingsamplecount.cpp` 内](../../src/core/renderingpass/renderingsamplecount.cpp#L1915))、そこで決まった format / representation / sample 数 / scope が実際の画像割り当てに反映されます。文字列のほうが実態に追いついていない箇所です。
 >
@@ -398,14 +434,19 @@ feature は `parameters.scalars[]` で数値パラメータを宣言できます
 > > environment freshness, and NativeScope boundaries have all closed.
 >
 > **骨子**:
-> ```text
-> 論理グラフ + topology snapshot + 自動 VulkanTargetPlan + 候補 package
->   → verify(..., format_capabilities, enabled_device_extensions)
->                 ─┬→ 例外(境界が閉じない)
->                  └→ VerifiedPackage(marker + fingerprint + diagnostics)
->   → apply(automatic, verified) → 実行される VulkanTargetPlan
->   → GPU 登録の直前に validateVulkanTargetPlanMatchesCompletePhysicalPackage() で drift 再検査
->   → verified がある graph だけ prepareVulkanNativeScopeExecutors() が走る
+> ```mermaid
+> flowchart TB
+>     Inputs["論理グラフ + topology snapshot<br/>+ 自動 VulkanTargetPlan + 候補 package"]
+>     Verify["verify(..., format_capabilities, enabled_device_extensions)"]
+>     Failure["例外(境界が閉じない)"]
+>     Verified["VerifiedPackage<br/>marker + fingerprint + diagnostics"]
+>     Apply["apply(automatic, verified)"]
+>     Plan["実行される VulkanTargetPlan"]
+>     Validate["validateVulkanTargetPlanMatchesCompletePhysicalPackage()<br/>GPU 登録の直前に drift 再検査"]
+>     Prepare["prepareVulkanNativeScopeExecutors()<br/>verified がある graph だけ走る"]
+>     Inputs --> Verify
+>     Verify --> Failure
+>     Verify --> Verified --> Apply --> Plan --> Validate --> Prepare
 > ```
 >
 > **手がかり**: `verify()` は論理グラフ・topology・自動プラン・format capability・**その device で実際に有効化された extension 名**という「private な device facts」を全部要求します。外部 compiler にそれを再構成させないため、WP238e で [`RenderingTargetPlanVerificationContext`](../../src/core/renderingpass/renderingsamplecount.hpp#L117) が導入されました。[`compileRenderingTargetPlans()`](../../src/core/renderingpass/renderingsamplecount.cpp#L1748) が plan を作るのと同じループで、その plan を作った**正確な入力**を `RenderingTargetPlanCompilation::verification_contexts` に並べて残します([`renderingsamplecount.cpp` 内](../../src/core/renderingpass/renderingsamplecount.cpp#L2152))。`enabled_device_extensions` だけは target planner ではなく Vulkan compiler 層が後から埋め([`compileDefaultVulkanVariant()`](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L796) の [verification context を埋めるループ](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L997))、その値は [`getEnabledDeviceExtensions()`](../../src/core/vkcore/core.hpp#L120) が返す実際の enable 済み配列です。差し替える側は [`requireVulkanTargetPlanVerificationContext()`](../../src/core/renderingpass/vulkanrendercompilerpackage.hpp#L107) で graph 名から引き、[`installVerifiedVulkanCompletePhysicalPlanPackage()`](../../src/core/renderingpass/vulkanrendercompilerpackage.hpp#L114) に候補 package を渡すだけで、verify → apply → index 更新が 1 回の package 変更として行われます。
@@ -432,11 +473,13 @@ feature は `parameters.scalars[]` で数値パラメータを宣言できます
 > ```text
 > plan_value = compileVulkanTargetPlan(...)      # fragment_package は渡さない(nullopt)
 > if fragment あり:
->   automatic_plan = copy(plan_value)            # ← 指紋の土台。verify() の入力はこちら
+>   automatic_plan = copy(plan_value)
 >   plan_value     = linkVulkanPhysicalFragment(logical, topology, plan_value, fragment)
-> compiled_plan = shared_ptr(plan_value)         # ← target_plans に載る実行プラン
+> compiled_plan = shared_ptr(plan_value)
 > automatic_plan が未設定なら automatic_plan = compiled_plan
 > ```
+>
+> - **automatic_plan / compiled_plan**: `automatic_plan = copy(plan_value)` は指紋の土台で、verify() の入力はこちら。`compiled_plan` は target_plans に載る実行プラン。
 >
 > **手がかり**: 修正の前段として、9 個の述語を 1 つの `if` に OR で並べて同じ 1 文を投げていた検証が、**条件ごとの別メッセージへ分割**されました([`validateVulkanPhysicalPackage()`](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L1162))。「どの不変条件が破れたか名指しする」ためのもので、短くまとめ直さないでください。分割後は、`logical_graph_fingerprint` と `automatic_plan_fingerprint` を `automatic_plan` 側で、「indexed な target plan と一致するか」を `compiled_plan` 側で検査します。CPU 回帰は [`renderingsamplecount_test.cpp`](../../test/renderingsamplecount_test.cpp) の "rendering target bridge links attachment operations into the physical plan" が担当し、`automatic_plan != compiled_plan`・`automatic_plan` が `applied_fragment_package` を持たないこと・両者の `automatic_plan_fingerprint` が一致することを固定しています。
 >
@@ -458,16 +501,18 @@ feature は `parameters.scalars[]` で数値パラメータを宣言できます
 >
 > **骨子**:
 > ```text
-> for scope in target_plan.scopes:              # ← 最外は scope
+> for scope in target_plan.scopes:
 >   family = scope の全 node が属する唯一の view family(混在は例外)
->   main か?      → execution_count = (sequential ? view_count : 1) / plan 値と一致検査
->   secondary か? → plan は single_view テンプレート必須
+>   main か?      : execution_count = (sequential ? view_count : 1) / plan 値と一致検査
+>   secondary か? : plan は single_view テンプレート必須
 >                   runtime cardinality > 1 なら sequential へ展開
 >   for execution_index in 0..execution_count:
->     for node in scope.nodes:                  # ← scope 内 node は schedule 上で連続
+>     for node in scope.nodes:
 >       emit LogicalFrameNodeInvocation{node, scope, scope_node_index, execution, view, family}
 > どの scope にも属さない node が残っていれば例外
 > ```
+>
+> - **scope のループ**: 最外は scope。scope 内 node は schedule 上で連続。
 >
 > **手がかり**: per-view target(flat / 従来の swapchain)は `selectLogicalFrameSequentialViewSchedule()` が 1 view 分を抜き出しますが、**multiview scope が混ざっていたら即例外**です(`"per-view target cannot execute a multiview scope"`、[その throw](../../src/core/renderingpass/viewexecutionscheduler.hpp#L533))。view family 自体は「論理関係であって Vulkan の実行モードではない」と型側が明言しており([`logicalrendergraph.hpp` 内](../../src/project/logicalrendergraph.hpp#L173))、sequential / multiview / shared のどれになるかは物理 lowering が決めます。実行側の消費は §6.4 です。
 >
@@ -533,11 +578,15 @@ frame graph node は `render` または `compute` で、名前、宣言順、`re
 
 [`buildEdges()`](../../src/core/renderingpass/frameplanner.cpp#L1454) は宣言順に node を走査し、resource ごとの `last_writer` を覚えます。reader が現れたら、その時点の直前 writer から reader へ RAW edge を張ります。
 
-```text
-A writes color
-B reads  color   => A -> B が自動追加
-C writes color   => 自動では B -> C や A -> C を追加しない
+```mermaid
+flowchart LR
+    A["A writes color"]
+    B["B reads color"]
+    C["C writes color"]
+    A -->|"自動追加"| B
 ```
+
+- **C writes color**: 自動では B → C や A → C を追加しない。
 
 `after` と `before` は別途、明示 edge として追加されます。その後 [`addBarriersForOrderedResourceEdges()`](../../src/core/renderingpass/frameplanner.cpp#L1441) が「順序 edge があり、from が書き、to が同じ resource を読む」組を barrier 情報へ変換します。
 
@@ -555,11 +604,13 @@ C writes color   => 自動では B -> C や A -> C を追加しない
 >
 > **骨子**:
 > ```text
-> for k in nodes:           # ← 最外が k。ここが命
+> for k in nodes:
 >   for i, j: reach[i][j] |= reach[i][k] && reach[k][j]
 > for 各 resource の writer ペア (a,b):
 >   if !reach(a,b) && !reach(b,a): throw "Ambiguous writes-writes dependency"
 > ```
+>
+> - **k のループ**: 最外が k。ここが命。
 >
 > **手がかり**: 閉路があると両方向とも到達可能になり、この検査は**通ってしまいます**。閉路は後段の `topologicalOrder()` が "Cycle detected in frame graph" で捕まえるので、エラー文言の優先順位はこの呼び出し順で決まります。テストは [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp) の invalid fixture 一覧。
 >
@@ -575,11 +626,13 @@ C writes color   => 自動では B -> C や A -> C を追加しない
 > ```text
 > buildEdges:
 >   for node in 宣言順:
->     reads:  last_writer[r] があれば addDataEdge(last_writer[r] → node, r)
+>     reads:  last_writer[r] があれば addDataEdge(last_writer[r], node, r)
 >     writes: last_writer[w] = node
 >   after / before を addEdge で明示 edge に
 >   addBarriersForOrderedResourceEdges:   # after/before 由来の edge もここで barrier 化
 > ```
+>
+> - **addDataEdge**: last_writer[r] から node へ resource r の edge を追加。
 >
 > **手がかり**: `last_writer` は **宣言順**の直前 writer であって、topological sort 後の直前 writer ではありません。JSON を並べ替えると自動 edge の張られ方が変わります。テストは [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp) の "frame planner emits barriers for explicit compute to render resource edges"。
 >
@@ -598,8 +651,8 @@ C writes color   => 自動では B -> C や A -> C を追加しない
 > **骨子**:
 > ```text
 > ready = {(declaration_index, i) | indegree[i] == 0}   # 決定的な優先度付きキュー
-> while ready: 最小を取り出し order へ → 後続の indegree を減らし 0 なら ready へ
-> order.size() != count → "Cycle detected in frame graph"
+> while ready: 最小を取り出し order へ追加し、後続の indegree を減らし 0 なら ready へ
+> if order.size() != count: "Cycle detected in frame graph"
 > ```
 >
 > **手がかり**: `const auto [unused_index, node_index] = *ready.begin(); (void)unused_index;` は、構造化束縛の**個々の名前**には属性を付けられない(宣言全体への `[[maybe_unused]]` は C++17 から可能ですが、名前ごとの属性は C++26 の P0609R3 から)ため、片方だけを未使用と印付けできないことへの回避で、それ以上の意味はありません。
@@ -628,9 +681,11 @@ C writes color   => 自動では B -> C や A -> C を追加しない
 >
 > **骨子**:
 > ```text
-> for node in order:                    # ← index 順ではなく order でなければならない
+> for node in order:
 >   for edge where edge.to == node: levels[node] = max(levels[node], levels[edge.from] + 1)
 > ```
+>
+> - **order のループ**: index 順ではなく order でなければならない。
 >
 > **手がかり**: `plan.levels` は `plan.nodes` の順、すなわち実行順で詰められるので、同 level 内の並びも決定的です。実行側は level を見ずに一本の loop で回します。
 >
@@ -649,11 +704,14 @@ planner は名前しか知りません。[`FrameGraphRuntimeContainer::registerE
 > **素朴に読むと**: 「読んでいるのに依存が無い」は planner だけを見ていると不整合にしか見えません。理由は物理層にあります。history 付き target は画像を 2 枚持ち、`surfaceIndex()` が `history_frame_index`(毎フレーム `^= 1`)で現在面と旧面を切り替えます。つまり `X@history` が読むのは、このフレームに書かれる `X` とは **別の VkImage** であり、フレーム内 hazard が存在しません。素朴に「`reads` へ混ぜる」修正をすると、宣言順で**先行する writer がいる**構成で偽の RAW edge が生え、実際には触っていない側の image を指す resource 名ベースの barrier まで付きます(fixture の TAA 構成には `temporal_accum` の先行 writer がいないので edge は 0 本 — 症状が出ないぶん見落としやすい所です)。なお **self dependency にはなりません**: `buildEdges()` は 1 node 分の `reads` を先に処理してから、その node の `writes` を `last_writer` へ記録します([`frameplanner.cpp` 内](../../src/core/renderingpass/frameplanner.cpp#L1462))。同じ resource を read かつ write しても `last_writer[X] == i` にならないからで、現にパス既定または添付上書きから解決した `load_op: "Load"` の添付は、自分の output を `reads` と `writes` の両方に持ったまま plan が通ります(実効 load_op を解決するのは [`colorAttachmentOperations()`](../../src/core/renderingpass/renderingpass.hpp#L579) / `depthAttachmentOperations()` で、「Load なら同一ピクセルの read でもある」という宣言は 4 か所の呼び出し元から [`appendAttachment()`](../../src/core/renderingpass/frameplanner.cpp#L504) 1 か所へ集約されました)。
 >
 > **骨子**:
-> ```text
-> frame N:                 images[0]      images[1]
->   write X          →  surfaceIndex(false) = h
->   read  X@history  →  surfaceIndex(true)  = h^1    ← 別イメージ。edge 不要
-> advanceHistoryFrame(): history_frame_index ^= 1    (logical frame の最後)
+> ```mermaid
+> flowchart TB
+>     subgraph Frame["frame N: images[0] / images[1]"]
+>         Write["write X"] --> Current["surfaceIndex(false) = h"]
+>         Read["read X@history"] --> Previous["surfaceIndex(true) = h^1<br/>別イメージ。edge 不要"]
+>     end
+>     Advance["advanceHistoryFrame()<br/>history_frame_index ^= 1<br/>logical frame の最後"]
+>     Frame --> Advance
 > ```
 >
 > **手がかり**: layout tracker のキーが `(rt_id.value << 1) | surface` で、**論理 target ではなく物理面ごとに layout を持つ**(§6.7)ため、現在面と旧面が別 layout でも矛盾しません。history 付き target の `initialLayout()` が `eShaderReadOnlyOptimal` なのは、初回フレームでも読めるよう作成時にクリア済みという前提です。テストは [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp) の "history reads are serialized without an intra-frame dependency"(barrier に `temporal_accum` が出ないことを明示的に要求)。
@@ -680,37 +738,60 @@ WP128 で描画の中心は **logical frame** になりました。フレーム�
 
 以前 1 つの関数スコープを共有していたラムダ群はこの recorder のメンバ関数（`collectPassPlan()` / `resolveViewFamilies()` / `recordAccelerationStructures()` / `recordExecutions()` / `submitFrame()` / `publishFrame()` ほか）になり、ラムダが捕まえていた値は「どの step 以降が有効か」をコメントで名指ししたフィールドになりました。
 
-```text
-Renderer::render()                    … flat 用アダプタ(#L6154)
-  -> selectGraphVariant(flat)
-  -> FlatLogicalFrameTarget(RenderTarget を包む)
-  -> Cameraから RenderViewFamily($main/$mono) を生成
-  -> renderLogicalFrame(target, view_family)
-
-Renderer::renderLogicalFrame(target, view_families)   (#L6127 の driver)
-  once: DeletionQueue::beginFrame
-  once: compiled nodeが要求するnamed familyを解決
-        (標準 $shadow/directional はLightContainer providerを補完)
-  once: family/view identity・実行順変化 / timeSetRevision /
-        camera discontinuityRevision の検知で temporal reset
-  once: FrameResources.beginLogicalFrame(main_view_count, all_family_view_count)
-  once: shader reload publication consume → fullscreen input rebind
-  once: updateFrameLights(light_container, resolved families)
-        … shadow drawとLightUBOへ同じfamily-selected行列を渡す
-  target.beginLogicalFrame(view_count)
-  once: family-level projection modifierを適用して全familyのsnapshot/UBO slotを構築
-  for each $main view:
-    target.beginView(view_index)     … FrameRenderContext(in_flight_frame_index 付き)
-    view 0 のみ: resize 処理 + instance_container.triggerUpdate()
-                 (object/skin/morph/material override の GPU 状態を凍結)
-    executeRenderingPasses(…)
-      … invocationの view_family + view_index でFrameUBO/matrixを選択
-      … secondary single-view scopeはmain view 0で一回だけ実行
-    XR variant の view 0 では mirror 中間コピーを記録
-    target.endView(view_index)
-  target.endLogicalFrame()
-  once: RT history flip、instance temporal history advance、family別snapshot commit
+```mermaid
+flowchart TB
+    Render["Renderer::render()<br/>flat 用アダプタ"]
+    Select["selectGraphVariant(flat)"]
+    Target["FlatLogicalFrameTarget<br/>RenderTarget を包む"]
+    Camera["Camera から RenderViewFamily($main/$mono) を生成"]
+    Logical["renderLogicalFrame(target, view_family)"]
+    Render --> Select --> Target --> Camera --> Logical
 ```
+
+`Renderer::renderLogicalFrame(target, view_families)` の driver は、次の順に処理します。
+
+```mermaid
+flowchart TB
+    Prepare["once の前処理<br/>下記の 1〜9"]
+    Views{"各 $main view が残っている?"}
+    Zero{"view 開始後、view 0?"}
+    Resize["resize 処理 + instance_container.triggerUpdate()"]
+    Execute["executeRenderingPasses(…)"]
+    XR{"XR variant の view 0?"}
+    Mirror["mirror 中間コピーを記録"]
+    EndView["target.endView(view_index)"]
+    EndFrame["target.endLogicalFrame()<br/>once の終了処理(下記)"]
+    Prepare --> Views
+    Views -->|"はい"| Zero
+    Zero -->|"はい"| Resize --> Execute
+    Zero -->|"いいえ"| Execute
+    Execute --> XR
+    XR -->|"はい"| Mirror --> EndView
+    XR -->|"いいえ"| EndView
+    EndView --> Views
+    Views -->|"いいえ"| EndFrame
+```
+
+- **view 開始**: `target.beginView(view_index)`、`FrameRenderContext(in_flight_frame_index 付き)` の順で、view 0 かを判定する前に行う。
+- **once の終了処理**: `target.endLogicalFrame()` の後、RT history flip → instance temporal history advance → family 別 snapshot commit の順。
+
+once の前処理の順序:
+
+1. `DeletionQueue::beginFrame`
+2. compiled node が要求する named family を解決。
+3. 変化の検知で temporal reset。
+4. `FrameResources.beginLogicalFrame(main_view_count, all_family_view_count)`
+5. shader reload publication consume。
+6. fullscreen input rebind。
+7. `updateFrameLights(light_container, resolved families)`
+8. `target.beginLogicalFrame(view_count)`
+9. family-level projection modifier を適用し、全 family の snapshot / UBO slot を構築。
+
+- **named family 解決**: 標準 `$shadow/directional` は LightContainer provider を補完。
+- **temporal reset**: family/view identity・実行順変化 / timeSetRevision / camera discontinuityRevision を検知。
+- **updateFrameLights**: shadow draw と LightUBO へ同じ family-selected 行列を渡す。
+- **view 0 の更新**: object/skin/morph/material override の GPU 状態を凍結。
+- **executeRenderingPasses**: invocation の view_family + view_index で FrameUBO/matrix を選択。secondary single-view scope は main view 0 で一回だけ実行。
 
 providerはtarget acquisitionより前にnon-jitteredな
 [`RenderViewFamilies`](../../src/core/renderer/viewfamily.hpp)を完成させます。最低限
@@ -760,10 +841,13 @@ logical frame には不変条件があり、破ると例外になります。**�
 > ```text
 > for previous = node_index-1 downto 0:
 >   render node でなければ skip
->   color 未確定 && output_color 非空       → color_id = output_color.front()  # swapchain 可
->   depth 未確定 && output_depth が concrete → depth_id = output_depth          # concrete 必須
+>   color 未確定 && output_color 非空       : color_id = output_color.front()  # swapchain 可
+>   depth 未確定 && output_depth が concrete : depth_id = output_depth          # concrete 必須
 >   両方確定で break
-> どちらか欠ける → throw / extent 一致検査 → layout 遷移 → SpriteRenderer::render
+> どちらか欠けるなら throw
+> extent 一致検査
+> layout 遷移
+> SpriteRenderer::render
 > ```
 >
 > **手がかり**: rendering scope は `SpriteRenderer::render()` 側が `beginRendering` / `endRendering` を持つので、ここでは開きません。sprite feature 自体は [`sprite.json`](../../src/core/resources/features/sprite.json) のとおり pass を 1 つも持たない名前だけの feature で、描画の実体はこの分岐にあります。[`plannedTimingNodes()`](../../src/core/vkcore/renderer.cpp#L1403) の `anchor_has_work` も `__anchor_sprite` だけ特別扱いで、「anchor は仕事をしない node」という前提の例外が 2 か所に散っています。
@@ -784,15 +868,13 @@ logical frame には不変条件があり、破ると例外になります。**�
 
 ✅PS-1(`9b3c9566`)の `schedule: "once"` の pass / task は、frame plan の node に `once` の印を持ち(`FrameGraphNodeDefinition::once` → `FramePlanNode::once` → `FrameGraphExecutionNode::once`)、**走る frame かどうかを renderer が frame ごとに決めます**。書き方と規則は [manual 第6章](../manual/06_rendering.md) §6.18「一度だけ走る pass と、frame をまたぐ image」です。
 
-```text
-renderLogicalFrame()
-  … publishFrameValueGraph / stagePoseAttributesAndLights   (host が buffer に書く。digest もここで)
-  planOnceNodes()            … once の node を planOnceRuns() に渡し、走らない node の index に印
-  planLogicalFrameSchedule() … 以下は今までどおり
-  recordExecutions()         … executePlannedFrameGraph() が印の付いた node を飛ばす
-  publishFrame()
-  retainOnceRuns()           … 走った node の記録を Renderer::once_runs に残す
-```
+1. `renderLogicalFrame()`
+2. `publishFrameValueGraph / stagePoseAttributesAndLights`: host が buffer に書く。digest もここで。
+3. `planOnceNodes()`: once の node を `planOnceRuns()` に渡し、走らない node の index に印を付ける。
+4. `planLogicalFrameSchedule()`: 以下は今までどおり。
+5. `recordExecutions()`: `executePlannedFrameGraph()` が印の付いた node を飛ばす。
+6. `publishFrame()`
+7. `retainOnceRuns()`: 走った node の記録を `Renderer::once_runs` に残す。
 
 - **決める所**: [`Renderer::LogicalFrameRecorder::planOnceNodes()`](../../src/core/vkcore/renderer.cpp#L6856) が、once の node のうち owner が活性なものを `OnceScheduleNode {name, reads, writes}`(plan の node の読み書き)にして、[`planOnceRuns()`](../../src/core/renderingpass/oncescheduler.cpp#L5) に渡します。`planOnceRuns()` は device を持たない純粋な関数で、理由(`generation` / `requested` / `upstream` / `output_recreated` / `input_changed`)を node ごとに返します([理由の表](../../src/core/renderingpass/oncescheduler.hpp#L15))。`upstream` は、同じ frame で plan の先に走ると決まった once の node の書くものを読む node です(plan の順に 1 回なめるので、連鎖は前から後ろへ伝わります)。
 - **比べる値**(`OnceResourceFacts`): `identity` は resource の名前から今の `VkImage`(concrete な render target)か `VkBuffer` の handle の値、`host_digest` は [`FrameGraphResourceContainer::hostWriteDigest()`](../../src/core/renderingpass/framegraphbuffercontainer.hpp#L101) です。digest は [`writeHostBuffer()`](../../src/core/renderingpass/framegraphbuffercontainer.cpp#L272) が書くたびに bytes と長さの FNV-1a 64 を取り([取る所](../../src/core/renderingpass/framegraphbuffercontainer.cpp#L303))、`copyBufferState()` が作り直しをまたいで写します。host が一度も書いていない buffer は値を持たず、比べません。
@@ -806,18 +888,16 @@ renderLogicalFrame()
 
 ✅IA-1(`c6690eba`)の `render.image` の `initial: {asset}` は、lowering → 世代を組む段 → frame の頭の copy の 3 か所を通ります。書き方と拒否は [manual 第6章](../manual/06_rendering.md) §6.18「persistent の image を画像資産から始める」です。
 
-```text
-lowerRenderGraphDocumentForComposition()   … checkRenderImageInitial()、usage に TRANSFER_DST、extent_scale の既定 1.0
-RegistrationStages::prepare()
-  resolveGraphImageInitialAssets()         … 文書を分割して initial のある render.image ごとに reader を呼ぶ
-    reader(node, asset)                    … resolveExistingFile → assetFileSha256(IA-2)→ loadImageFile → level 0 の texel と manifest の sha256
-    照合                                   … graph.image_initial_mismatch@1、width / height を省いた image に asset の大きさを書く
-  attachProgramGraphState()                … 活性な node の分を program.image_initial_assets へ
-renderLogicalFrame()
-  … buildDrawSortViews()
-  uploadImageInitialAssets()               … (VkImage, 世代, asset) が覚えたものと違う target にだけ copy
-  planOnceNodes()                          … once はこの後(copy の上に書ける)
-```
+| 段 | 処理順 |
+|---|---|
+| 1: lowering | `lowerRenderGraphDocumentForComposition()` |
+| 2: `RegistrationStages::prepare()` | 1. `resolveGraphImageInitialAssets()`<br/>2. `reader(node, asset)`<br/>3. `resolveExistingFile`<br/>4. `assetFileSha256(IA-2)`<br/>5. `loadImageFile`<br/>6. level 0 の texel と manifest の sha256<br/>7. 照合: `graph.image_initial_mismatch@1`<br/>8. `attachProgramGraphState()`: 活性な node の分を `program.image_initial_assets` へ |
+| 3: `renderLogicalFrame()` | 1. `buildDrawSortViews()`<br/>2. `uploadImageInitialAssets()`<br/>3. `planOnceNodes()`: once はこの後(copy の上に書ける) |
+
+- **lowerRenderGraphDocumentForComposition**: checkRenderImageInitial()、usage に TRANSFER_DST、extent_scale の既定 1.0。
+- **resolveGraphImageInitialAssets**: 文書を分割して initial のある render.image ごとに reader を呼ぶ。
+- **照合**: width / height を省いた image に asset の大きさを書く。
+- **uploadImageInitialAssets**: (VkImage, 世代, asset) が覚えたものと違う target にだけ copy。
 
 - **lowering**: [IA-1 の lowering の分岐](../../src/project/rendergraphcomposition.cpp#L801)が [`checkRenderImageInitial()`](../../src/project/graphpartition.cpp#L502) を呼び、`usage` に `TRANSFER_DST` を足し、`extent_scale` が無ければ 1.0 を入れます。`initial` は target の宣言に残り、compile は `initial` のある target を、buffer と同じく frame の頭から中身があるものとして pass の入力の検査に渡します([IA-1 の produced_before_passes](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L1012))。
 - **読む・照らし合わせる**: [`resolveGraphImageInitialAssets()`](../../src/project/graphpartition.cpp#L532) は、root と definition のどこにも `initial` が無ければ文書をそのまま返します。あれば `partitionGraphDocument()` の rendering の node を回り、ループの body の node(`origin.loop` が空でない)を断り、reader の答え([`GraphImageInitialAsset`](../../src/project/graphpartition.hpp#L50) の width / height / format / `color_space_declared`)と比べます。format は `SRGB` を `UNORM` に置き換えた形で比べ、形が同じで sRGB の別が違うのは `color_space_declared` のとき(KTX2)だけ `color_space` です。width / height を省いた image には、`graph.origins` で authored の node を引いて asset の大きさを書きます(同じ definition の node は 1 回)。reader は [`RegistrationStages::prepare()` の IA-1 の段](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1100)のラムダで、`loadImageFile()` の結果が 2D・1 層・depth 1・非圧縮でなければ `std::invalid_argument` を投げ、level 0 の bytes を [`RenderImageInitialAsset`](../../src/core/renderingpass/framegraphruntime.hpp#L45) に写します。`sha256` は file を持つ asset store の manifest を読んで引き([`assetManifestSha256()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L74))、読めなければ `nullopt` です(検証の報告はこの関数の仕事ではない、とコードの注記)。
@@ -985,11 +1065,13 @@ UI pass だけは [`RenderPassExecutor` の特別分岐](../../src/core/vkcore/r
 > **骨子**:
 > ```text
 > stable_sort(layer, decl_seq)                  # 塗り順。key は見ない
-> if (commands.size() > maxQuads) throw         # ← 必ず頂点構築より前
+> if (commands.size() > maxQuads) throw
 > for quad in quads:
 >   runs.back().key != quad.key なら run を追加  # 隣接のみ併合
 >   base = uint16(vertices.size())              # 最大 16383*4 = 65532
 > ```
+>
+> - **commands.size() の検査**: 必ず頂点構築より前。
 >
 > **手がかり**: 上限超過の例外が報告する widget 名は `commands.back().widget_id`、つまり**ソート後の末尾** = 最前面の widget であって、quad を増やした原因の widget とは限りません。スプライト側の [`maxQuadsPerChunk = 16384`](../../src/core/userpublic/sprite/spriteworld.hpp#L18) が同じ値で切り、超過を例外ではなく chunk 分割で処理するのも同じ 16 bit 索引の制約です([`buildQuadIndices()`](../../src/core/userpublic/sprite/spriteworld.cpp#L107)、[chunk 分割ループ](../../src/core/userpublic/sprite/spriteworld.cpp#L140))。テストは [`ui_foundation_test.cpp`](../../test/ui_foundation_test.cpp) の "Draw commands are stably sorted and only adjacent equal keys merge" と、A/B/A が 3 run に割れることを固定する U1 の正規テストです。
 >
@@ -1002,10 +1084,10 @@ UI pass だけは [`RenderPassExecutor` の特別分岐](../../src/core/vkcore/r
 ```mermaid
 flowchart LR
     GLTF["glTF / ModelTemplate"]
-    Vert["VertBufContainer\nshared vertex/index pools"]
-    Material["MaterialContainer\ntexture/pipeline/descriptor"]
-    Instance["PolygonInstanceContainer\ntransform/indirect commands"]
-    Draw["MaterialRenderer\ndrawIndexedIndirect"]
+    Vert["VertBufContainer<br/>shared vertex/index pools"]
+    Material["MaterialContainer<br/>texture/pipeline/descriptor"]
+    Instance["PolygonInstanceContainer<br/>transform/indirect commands"]
+    Draw["MaterialRenderer<br/>drawIndexedIndirect"]
 
     GLTF --> Vert
     GLTF --> Material
@@ -1070,12 +1152,19 @@ MV-1 から metadata は頂点 buffer と一緒に伸びて buffer ごと差し�
 > **素朴に読むと**: `instanceCount` は常に `1` で、`firstInstance` には `staged->id.index` が入ります([snapshot の組み立て](../../src/core/renderer/polygoninstancecontainer.cpp#L1697))。Vulkan の意味での firstInstance は「インスタンス番号の開始値」ですが、ここは 1 個しか描かないので開始値としては何の意味もありません。実際にはこのフィールドは、**GPU 側 SSBO**(shader storage buffer object — シェーダから添字で自由に読める大きなバッファ)**の行番号**を渡す唯一の無料チャネルとして使われています。頂点シェーダは `gl_BaseInstance` から model 行列([`default.vert` 内](../../src/core/resources/default.vert#L29))、material instance の行([`pelican_material_instance.glsl` 内](../../src/core/resources/shaders/include/pelican_material_instance.glsl#L63))、skin palette の基底(`gl_BaseInstance * PELICAN_MAX_SKIN_JOINTS`、[`pelican_skinning.glsl` 内](../../src/core/resources/shaders/include/pelican_skinning.glsl#L17))、morph weight の instance([`pelican_morph.glsl` 内](../../src/core/resources/shaders/include/pelican_morph.glsl#L64))を一斉に引きます。つまり `ModelInstanceId.index` は CPU 側のスロット番号であると同時に、これら複数バッファの行番号でもあります。この一致が不変条件で、instance を詰め直す(compaction する)なら全バッファを同じ順で並べ替えなければならず、片方だけ動かすとメッシュは正しいのに別インスタンスの姿勢で描かれます。
 >
 > **骨子**:
-> ```text
-> CPU: cmd.instanceCount = 1;  cmd.firstInstance = id.index
-> GPU: gl_BaseInstance = i → objects[i].model
->                        → material instance[i]
->                        → skinPalette[i * 128 + joint]
->                        → morphInstances[i]
+> ```mermaid
+> flowchart TB
+>     CPU["CPU: cmd.instanceCount = 1; cmd.firstInstance = id.index"]
+>     GPU["GPU: gl_BaseInstance = i"]
+>     Model["objects[i].model"]
+>     Material["material instance[i]"]
+>     Skin["skinPalette[i * 128 + joint]"]
+>     Morph["morphInstances[i]"]
+>     CPU --> GPU
+>     GPU --> Model
+>     GPU --> Material
+>     GPU --> Skin
+>     GPU --> Morph
 > ```
 >
 > **手がかり**: push constant は engine 用の先頭 64 byte と material index で埋まっており(§6.9)、instance ごとの値を載せる余地がありません。material グループごとに 1 回の [`drawIndexedIndirect`](../../src/core/renderer/materialrender.cpp) で回す以上、「今どのインスタンスか」を伝える経路が firstInstance しか残っていない、というのがこの使い方の理由です。CPU 側の live inventory は [`DrawItemSnapshot`](../../src/core/renderer/drawqueuebuilder.hpp) の stable `ModelInstanceId` で instance を同定し、同じ index を `DrawIndexedArguments::first_instance` に保存します。バッファ書き込みの行番号も同じ index です。
@@ -1093,14 +1182,16 @@ MV-1 から metadata は頂点 buffer と一緒に伸びて buffer ごと差し�
 > build(request, provider):
 >   selected = items のうち target_phase に合うもの
 >   provider.sort(input, keys)                          # 鍵だけ。順序ではない
->   sort(order, [primary, secondary, stableOrderKey])   # ← 決定性はこの 3 段目
->   materialize → indirect_records_
+>   sort(order, [primary, secondary, stableOrderKey])
+>   indirect_records_ = materialize
 >   build_ranges(view, filter):
 >     不可視 / フィルタ不一致 / material・source_material_index・skinned の変化で range を閉じる
->     → splitIndirectDrawRange(maxDrawIndirectCount) で device 上限へ分割
-> combine(variants): view-major → opaque/transparent の順に平坦化して offset を rebase
+>     splitIndirectDrawRange(maxDrawIndirectCount) で device 上限へ分割
+> combine(variants): view-major、opaque/transparent の順に平坦化して offset を rebase
 >                    + SceneDrawSegmentV1 を発行(GPU 書き込み draw 用)
 > ```
+>
+> - **sort の鍵**: 決定性は 3 段目の stableOrderKey。
 >
 > **手がかり**: 区間を切る state 条件は material / source_material_index / skinned の変化と、可視性・material filter です([range を閉じる走査](../../src/core/renderer/drawqueuebuilder.cpp#L613))。穴のある順序を許す policy を足すなら、不可視位置で range を閉じるぶん同じ material の draw call 数が増えることを受け入れることになります。secondary view family は `locally_sorted_families` に名前があれば per-view の queue を別に compile し、それ以外の family は main の canonical 順を保ったまま culling 落ちを **zero-instance draw** に変えます([`polygoninstancecontainer.hpp` 内](../../src/core/renderer/polygoninstancecontainer.hpp#L662))。CPU-only fixture は [`drawqueuebuilder_test.cpp`](../../test/drawqueuebuilder_test.cpp)、VRM 一人称の実例は [`morph_gltf_test.cpp`](../../test/morph_gltf_test.cpp) にあります。
 >
@@ -1185,26 +1276,24 @@ headless capture は [`RenderTarget::captureLastFrameToPng()`](../../src/core/vk
 > そのうえ [`surfaceLossRequiresDeviceRebuild(exact_present_retirement, has_unproven_present)`](../../src/core/vkcore/swapchainrecovery.hpp#L36) が示すとおり、surface 喪失時に device ごと作り直すかどうかまで「厳密な完了が取れるか」に依存します。「同じエラーなのに扱いが違う」の理由がここに全部あります。
 >
 > **骨子**:
-> ```text
-> classifyWsiResult(result) → {ready, refresh_advisory, not_ready, swapchain_unavailable,
->                              surface_unavailable, device_lost, retryable_failure, fatal}
-> decideWindowWsiRecovery(site, result) → action
->   site   ∈ {acquire, present, surface_create, surface_support_query,
->             swapchain_create, dependent_resources}
->   action ∈ {proceed, proceed_and_refresh, drop_frame, replace_swapchain,
->             replace_surface, rebuild_device, retry_later, fatal}
-> retire: 後継 epoch の image を再取得できた ⇒ それ以前の epoch を退役してよい
-> ```
+>
+> | 関数・項目 | 分類・値・条件 |
+> |---|---|
+> | `classifyWsiResult(result)` | `{ready, refresh_advisory, not_ready, swapchain_unavailable, surface_unavailable, device_lost, retryable_failure, fatal}` |
+> | `decideWindowWsiRecovery(site, result)` | `action` を返す |
+> | `site` | `{acquire, present, surface_create, surface_support_query, swapchain_create, dependent_resources}` |
+> | `action` | `{proceed, proceed_and_refresh, drop_frame, replace_swapchain, replace_surface, rebuild_device, retry_later, fatal}` |
+> | retire | 後継 epoch の image を再取得できたら、それ以前の epoch を退役してよい |
 >
 > **具体例**: 同じ `VkResult` が site でどう分かれるかを、実際の決定表([`decideWindowWsiRecovery()`](../../src/core/vkcore/swapchainrecovery.cpp#L87))から 4 行だけ抜くとこうなります。
 >
-> ```text
-> VkResult                 分類                    site=acquire        site=swapchain_create
-> eNotReady / eTimeout     not_ready               drop_frame          retry_later
-> eSuboptimalKHR           refresh_advisory        proceed_and_refresh retry_later
-> eErrorOutOfDateKHR       swapchain_unavailable   replace_swapchain   replace_swapchain
-> (表にない未知のエラー)   fatal                   fatal               retry_later
-> ```
+>
+> | VkResult | 分類 | site=acquire | site=swapchain_create |
+> |---|---|---|---|
+> | eNotReady / eTimeout | not_ready | drop_frame | retry_later |
+> | eSuboptimalKHR | refresh_advisory | proceed_and_refresh | retry_later |
+> | eErrorOutOfDateKHR | swapchain_unavailable | replace_swapchain | replace_swapchain |
+> | (表にない未知のエラー) | fatal | fatal | retry_later |
 >
 > つまり window をドラッグでリサイズしている最中の典型列は「present が `eSuboptimalKHR` → **そのフレームは表示したうえで**次の作り直しを予約」→「次の acquire が `eErrorOutOfDateKHR` → `replace_swapchain`」です。同じ `eErrorOutOfDateKHR` でも `surface_create` / `surface_support_query` で観測すれば `replace_surface` になり、swapchain ではなく surface から作り直します。最後の行が site で割れるのは「準備呼び出しは途中まで公開された object を持たないので retry に落とせる、acquire / present は隠せない」という理由で、[`swapchainrecovery.cpp` 内](../../src/core/vkcore/swapchainrecovery.cpp#L139) のコメントが規範です。
 >
@@ -1264,12 +1353,12 @@ frame target の color/depth と、frame graph 設定で宣言する offscreen t
 >
 > **具体例**: port が `view: "family_array"` を宣言した sampled resource は、producer 側の物理化がどれであっても shader からは 1 種類に見えます。
 >
-> ```text
-> 宣言(.surface の port)   producer の物理化    descriptor に載る次元    shader が書く型
-> family_array             shared_2d        →  family_2d_array       →  sampler2DArray
-> family_array             sequential_2d    →  family_2d_array       →  sampler2DArray
-> family_array             layered_2d_array →  そのまま              →  sampler2DArray
-> ```
+>
+> | 宣言(.surface の port) | producer の物理化 | descriptor に載る次元 | shader が書く型 |
+> |---|---|---|---|
+> | family_array | shared_2d | family_2d_array | sampler2DArray |
+> | family_array | sequential_2d | family_2d_array | sampler2DArray |
+> | family_array | layered_2d_array | そのまま | sampler2DArray |
 >
 > 2 行目が WP239c で足りていなかった行です。planar reflection の capture target は view を順次実行する `sequential_2d` として物理化されるので、正規化を通さないと descriptor が `e2D` になり、`sampler2DArray` を要求する shader と ABI mismatch で落ちていました。同じ transparent material が main family と planar reflection の secondary family の両方で使われる以上、shader ABI を物理化ごとに変えるわけにいかない、というのがこの正規化の理由です。
 >
@@ -1328,13 +1417,24 @@ compute の image resource は [`transitionResourcesForDispatch()`](../../src/co
 > **素朴に読むと**: 第一候補は `R8G8B8A8Srgb` ですが、`COLOR_ATTACHMENT` と `TRANSFER_SRC` を optimalTiling で両方満たさない実装があるため `R8G8B8A8Unorm` へ落ちます(UNORM でも満たさなければ throw して黙って進みません、[format 選択の分岐](../../src/core/vkcore/offscreenframetarget.cpp#L113))。読みにくいのは、その判定式に**テスト専用フラグが `||` で混ざっている**ことです([`force_unorm_color_path_for_testing`](../../src/core/launchconfig.hpp#L107) / [その判定式](../../src/core/vkcore/offscreenframetarget.cpp#L113))。この分岐は大抵の開発機では絶対に通らないので、放っておくとテストが一度も踏まない到達不能経路になります。フラグはそれを CI で踏むための唯一の入口で、[`rpc_color_contract_test.cpp` 内](../../test/rpc_color_contract_test.cpp#L161) が `GENERATE(false, true)` で両方を回します。そして肝心なのは、**フォールバックしても出力バイトの意味は変わらない**ことです。選んだ format は終端 pass のフォーマットになり、UNORM なら [`renderingpassruntimecompiler.cpp` 内](../../src/core/renderingpass/renderingpassruntimecompiler.cpp#L2320) が `PELICAN_OUTPUT_UNORM_FALLBACK` を define して [`output_transform.frag`](../../src/core/resources/output_transform.frag) が `linearToSrgb()` を自分で掛けるからです(§6.1 の「HW が OETF」の代替)。違うのは**手段と丸め誤差**だけで、同じテストが許容差を `fallback ? 1 : 0` に切り替えているのがその現れです。
 >
 > **骨子**:
-> ```text
-> Srgb が COLOR_ATTACHMENT|TRANSFER_SRC を満たす → Srgb 、 encoding_path = srgb_hardware
-> 満たさない or force_unorm_..._for_testing      → Unorm、encoding_path = srgb_shader_unorm
->                                                  → 終端 frag に PELICAN_OUTPUT_UNORM_FALLBACK
-> Unorm でも満たさない                            → throw
-> RPC 表示アダプタだけが srgb_hardware → "srgb" / srgb_shader_unorm → "unorm_fallback"
+> ```mermaid
+> flowchart TB
+>     Srgb{"Srgb の条件を満たす?"}
+>     Hardware["Srgb<br/>encoding_path = srgb_hardware"]
+>     Unorm{"Unorm の条件を満たす?"}
+>     Shader["Unorm<br/>encoding_path = srgb_shader_unorm"]
+>     Define["終端 frag に PELICAN_OUTPUT_UNORM_FALLBACK"]
+>     Throw["throw"]
+>     Srgb -->|"はい"| Hardware
+>     Srgb -->|"いいえ"| Unorm
+>     Unorm -->|"はい"| Shader --> Define
+>     Unorm -->|"いいえ"| Throw
 > ```
+>
+> - **Srgb の条件**: `COLOR_ATTACHMENT` と `TRANSFER_SRC` を満たし、かつ `force_unorm_..._for_testing` でない。満たさない、または `force_unorm_..._for_testing` なら Unorm を調べる。
+> - **Unorm の条件**: `COLOR_ATTACHMENT` と `TRANSFER_SRC` を満たす。
+>
+> - **RPC 表示アダプタ**: ここだけが `srgb_hardware` を `"srgb"`、`srgb_shader_unorm` を `"unorm_fallback"` と表示する。
 >
 > **手がかり**: つまり `encoding_path` は「絵が違う」の申告ではなく、**どちらの経路で sRGB になったか**の申告です。かつて `FrameTargetCaps::color_path` という文字列だったものは型になり、`"srgb"` / `"unorm_fallback"` という簡潔な綴りは [`outputEncodingPathRpcName()`](../../src/core/vkcore/outputcompilefacts.hpp#L65) という**表示アダプタ 1 箇所だけ**に閉じました。コメントが規範です(「The RPC color contract predates the typed compiler vocabulary. Keep its concise wire spelling in this display adapter only.」)。RPC の `get_status` は `color.path` として返し([`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1807))、`readback_encoding` は経路によらず常に `"srgb"` です。golden 比較はこの値を見て許容差(0 か ±1 LSB か)を選ぶ必要があります。同じ判定は windowed 側にもあり、[`outputFacts()`](../../src/core/vkcore/swapchainframetarget.cpp#L433) が surface format `R8G8B8A8_SRGB` / `B8G8R8A8_SRGB` のときだけ `srgb_hardware` を返します。
 >
@@ -1453,15 +1553,22 @@ runtime shader compiler が有効なら source を先に、次に SPIR-V を試�
 > **素朴に読むと**: 両方の生成コードに現れる `keep_alive` — `pelican_param_foo(); pelican_sample_bar(vec2(0.0)); pelican_light_count(); …` という**戻り値を捨てるだけの呼び出しの羅列**の意図が分からないと読めません。正体は DCE(dead code elimination)よけです。template 側はフック本体が空だと `pelican_param_*` / `pelican_sample_*` の定義ごと消され、**それにぶら下がる descriptor 宣言(material UBO・texture binding)まで消えます**。user 側は、**Export 対象(= 実際に書かれたフック)と全アクセサ**を `main()` から呼んでおかないとその関数が消えます。呼ぶのが「全フック」でないのが要点で、生成される `main()` は `if (surface.hooks.surface_v1)` のようにフックごとガードされています([`surfacecompiler.cpp` 内](../../src/core/shader/surfacecompiler.cpp#L293))— 書かれていないフックは定義自体が無く、呼べば compile error になるからです(アクセサ側の呼び出しは無条件、#L249-L259)。その `main()` は link 前に捨てられるので、**生成された `main` は最初から捨てるために書かれています**。
 >
 > **骨子**:
-> ```text
-> compileExperimentalStage(stage):
->   hooks 空(depth pass 等) → template を 1 本コンパイルして終わり(link しない)
->   A) template compile: user include の中身だけ stub へ差し替え
->                        (param/texture は常に、resource port は **その stage の分だけ** 空呼び出し)
->   B) user compile:     アクセサは 0 を返すダミー定義 + 本物のユーザーコードを #include
->                        main() から authored フック(hooks でガード)と全アクセサを呼ぶ(後で削除)
->   C) linkSpirvModules(A, B)
+> ```mermaid
+> flowchart TB
+>     Compile["compileExperimentalStage(stage)"]
+>     Hooks{"hooks が空(depth pass 等)?"}
+>     Only["template を 1 本コンパイルして終わり<br/>link しない"]
+>     Template["A) template compile<br/>user include の中身だけ stub へ差し替え"]
+>     User["B) user compile<br/>アクセサは 0 を返すダミー定義<br/>本物のユーザーコードを #include"]
+>     Link["C) linkSpirvModules(A, B)"]
+>     Compile --> Hooks
+>     Hooks -->|"はい"| Only
+>     Hooks -->|"いいえ"| Template --> User --> Link
+>     Template -->|"A の成果物"| Link
 > ```
+>
+> - **template compile**: param/texture は常に、resource port は **その stage の分だけ** 空呼び出し。
+> - **user compile**: main() から authored フック(hooks でガード)と全アクセサを呼ぶ。main() は後で削除。
 >
 > **手がかり**: `template_options.virtual_includes` を走査して**同じ名前の中身だけを差し替える** 3 行が「逆 include」の実体です。[`makeUserInclude()`](../../src/core/shader/surfacecompiler.cpp#L220) は生成ソースの先頭に `#line <code_line> "<元ファイル名>"` を置き、glslang のエラー行番号を `.surface` の実際の行へ翻訳します([`diagnosticSourceName()`](../../src/core/shader/surfacecompiler.cpp#L213) が `\` → `/`、`"` → `'` に置換するのは `#line` のファイル名がダブルクォート文字列だから)。この経路はbuild時の`PELICAN_WITH_SPIRV_LINK=ON`と実行時の`PELICAN_SPV_LINK=experimental`が揃ったときだけで、既定は従来の source composition です。**読み始める前にどちらの経路かを確定させてください**。テストは [`surfacecompiler_test.cpp`](../../test/surfacecompiler_test.cpp)。
 >
@@ -1474,13 +1581,14 @@ runtime shader compiler が有効なら source を先に、次に SPIR-V を試�
 > **素朴に読むと**: 「ユーザー関数を template に注入する」片方向だと思って読むと、2 つの関数がほぼ鏡像になっている理由が分かりません。実際は **2 方向**で、`user_exports`(`pelican_surface_v1` などのフック)は user 側で Export・template 側で Import、`template_exports`(`pelican_light` / `pelican_shadow` / `pelican_param_*` などエンジンが提供するアクセサ)は template 側で Export・user 側で Import です。片方向だけにすると、ユーザーコードが `pelican_light()` を呼んだ瞬間に「未定義シンボル」ではなく **user 側の 0 を返す stub がそのまま残る**ので、compile も link も validation も通り、**絵だけが黒くなります**。
 >
 > **骨子**:
-> ```text
-> prepareTemplate: user_exports     → Import + 本体を宣言だけに剥がす
->                  template_exports → Export
-> prepareUser:     user_exports     → Export
->                  template_exports → Import + 本体剥がし
->                  entry point "main" とその関数本体を削除(残すと entry point が 2 つ)
-> ```
+>
+> | 処理 | 対象 | 変更 |
+> |---|---|---|
+> | prepareTemplate | user_exports | Import + 本体を宣言だけに剥がす |
+> | prepareTemplate | template_exports | Export |
+> | prepareUser | user_exports | Export |
+> | prepareUser | template_exports | Import + 本体剥がし |
+> | prepareUser | entry point `"main"` とその関数本体 | 削除(残すと entry point が 2 つ) |
 >
 > **export 集合は stage ごとに違う**: `template_exports` を組む [`engineExports()`](../../src/core/shader/surfacecompiler.cpp#L1266) は、resource port 由来のアクセサ(`pelican_sample_*` / `pelican_size_*` / `pelican_load_*` / `pelican_count_*`)を **port が宣言した stage で絞ります**([`generatedAccessorNames()`](../../src/core/shader/surfacecompiler.cpp#L1119) の `resourceStages(resource.stage) & stage`)。絞りが無いと、たとえば vertex 専用 port のアクセサ名が fragment の export 集合に残ります。テンプレート側の stub が同じ stage 条件で `keep_alive` の呼び出しを省く以上、その関数は生き残らないので、[`findNamedId()`](../../src/core/shader/spvlink.cpp#L156) が `"SPIR-V symbol '…' was not found"` を投げてリンクが落ちます。**resource port については、[`makeTemplateHookStubs()`](../../src/core/shader/surfacecompiler.cpp#L991) が `keep_alive` を出す条件と `engineExports()` が名前を出す条件が同じ式でなければなりません**(片方だけ触ると壊れます)。なお `params` / `textures` / `screen_inputs` は `generatedAccessorNames()` 側では絞られず、user 側の [`makeUserLibrarySource()`](../../src/core/shader/surfacecompiler.cpp#L1151) も resource port のダミー定義と `main()` からの呼び出しを stage で絞りません — 絞っているのは template 側の 2 か所だけです。
 >
@@ -1559,13 +1667,19 @@ push constant は engine 64 bytes + shader 64 bytes、合計128 bytesを契約�
 > **素朴に読むと**: 非自明が 2 つ同居しています。第一に、[`merge()`](../../src/core/shader/shaderreflection.cpp#L335) は push constant を**検証も重複排除もせず単に連結するだけ**です(`merge()` 自身が投げるのは binding の type/count 不一致と compute local size 不一致のみで、push constant の契約検査はここではなく `makePushConstantRanges()` が行います)。したがって vert と frag が 1 本ずつ持ったまま到着し、そのまま Vulkan へ渡すと「同じ stage を 2 つの range に含めてはならない」に触れます。だから stage 単位で min(offset) と max(offset+size) を取り、**区間を 1 本に潰す**必要があります。第二に engine 領域の条件で、`offset < 64` なら `offset == 0 && end >= 64` でなければ弾く、という書き方です。意味は「先頭 64 byte の MVP に少しでも掛かるなら `[0,64)` を丸ごと覆え」。部分的な上書きを静かに通すと `engineMvp` の一部だけが shader の値で潰れます。
 >
 > **骨子**:
-> ```text
-> 1. 各 range を単体検証: size>0 / 4 byte 倍数 / offset+size <= 128 /
->    engine 領域に掛かるなら [0,64) を完全被覆
-> 2. stage_bit = 1,2,4,… と 32 ビットすべてを走査する(stage_bit != 0 が終了条件)
-> 3. その stage を含む range 全部から begin=min(offset), end=max(offset+size)
-> 4. grouped_ranges[{begin,end}] |= stage → map を走査して 1 本ずつ吐く
+> ```mermaid
+> flowchart TB
+>     Validate["1. 各 range を単体検証"]
+>     Scan["2. stage_bit = 1,2,4,… と 32 ビットすべてを走査<br/>stage_bit != 0 が終了条件"]
+>     Bounds["3. その stage を含む range 全部から<br/>begin=min(offset), end=max(offset+size)"]
+>     Group["4. grouped_ranges[{begin,end}] |= stage"]
+>     Emit["map を走査して 1 本ずつ吐く"]
+>     Validate --> Scan --> Bounds --> Group
+>     Group -->|"次の stage"| Scan
+>     Group -->|"走査後"| Emit
 > ```
+>
+> - **各 range の検証**: size>0 / 4 byte 倍数 / offset+size <= 128。engine 領域に掛かるなら [0,64) を完全被覆。
 >
 > **手がかり**: `begin` の初期値 `numeric_limits<uint32_t>::max()` は「この stage を使う range が 1 本も無かった」の番兵で、`begin != max` が存在判定です。キーが `pair<begin,end>` なので、たまたま同じ区間になった vertex と fragment は 1 本の range に stage フラグ 2 つで出ます。定数は [`pelican_sets.hpp`](../../src/core/shader/pelican_sets.hpp#L72)(engine 64 + shader 64 = 128)。検証だけしたいとき用の薄いラッパが [`validatePushConstantContract()`](../../src/core/shader/shaderreflection.cpp#L516) です。
 >
@@ -1591,20 +1705,34 @@ graphics pipeline 作成は次の順です。
 
 hot reload の流れは次です。
 
-```text
-FileWatcher / ContentDigest (frame start)
-  -> ReloadService::applyRequests()          // 同フレームの変更をbatch化
-  -> ShaderLibrary::prepareReload()
-      -> root/include/.surface reverse dependencyを解決
-      -> 影響する全variantをcompile/reflectするがlive bundleは未変更
-  -> PipelineFactory::rebuildPrepared()
-      -> 依存pipelineを全てcandidate構築
-      -> 必要なら.surface + .material.jsonのlayout/valuesもprepare
-      -> 全成功時だけbundle/pipeline/materialを一括publish
-      -> 失敗時はcandidateだけ破棄し旧世代を維持
-Renderer::render() (render start)
-  -> publish通知をconsumeしfullscreen input descriptorをrebind
+```mermaid
+flowchart TB
+    Watch["1. FileWatcher / ContentDigest<br/>2. ReloadService::applyRequests()"]
+    Prepare["ShaderLibrary::prepareReload()<br/>3. 依存解決 → 4. compile/reflect"]
+    subgraph Rebuild["PipelineFactory::rebuildPrepared()"]
+        Candidate["5. pipeline candidate 構築<br/>6. material の prepare"]
+        Success{"全成功?"}
+        Publish["bundle/pipeline/material を一括 publish"]
+        Discard["candidate だけ破棄し旧世代を維持"]
+        Candidate --> Success
+        Success -->|"はい"| Publish
+        Success -->|"いいえ"| Discard
+    end
+    Render["Renderer::render()<br/>7. consume → 8. rebind"]
+    Watch --> Prepare --> Candidate
+    Publish --> Render
 ```
+
+図中の番号に対応する処理:
+
+1. `FileWatcher / ContentDigest`: frame start。
+2. `ReloadService::applyRequests()`: 同フレームの変更を batch 化。
+3. `ShaderLibrary::prepareReload()`: root/include/.surface reverse dependency を解決。
+4. 影響する全 variant を compile/reflect。live bundle は未変更。
+5. `PipelineFactory::rebuildPrepared()`: 依存 pipeline を全て candidate 構築。
+6. 必要なら `.surface + .material.json` の layout/values も prepare。
+7. 成功して一括 publish した後、`Renderer::render()` の render start で publish 通知を consume。
+8. fullscreen input descriptor を rebind。
 
 shader candidate は [`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp#L1158)、group-wide な pipeline publish は [`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1911) が担当します。material peer の準備は [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L380) が担います。compile error、pipeline 作成失敗、material peer の検証失敗のいずれでも、最後に成功した世代を残します。cache hit/miss と追跡中の unit/bundle/dependency 数は `get_status.reload.runtime.pelican.shaders.details` から確認できます。
 
@@ -1615,15 +1743,23 @@ shader candidate は [`ShaderLibrary::prepareReload()`](../../src/core/shader/sh
 > **素朴に読むと**: `activatePrepared()` が **idempotent な「有効化」ではなく `std::swap` の反復適用(= 対合)**(idempotent は「何回呼んでも 1 回呼んだのと同じ」、対合(involution)は「2 回呼ぶと元に戻る」で、ここでは対照的な性質です)だと気づかないと、この関数は読めません。実装は `swap(bundles.get(candidate.id), candidate.replacement)` の 1 行だけで、呼ぶたびに live 側と candidate 側が入れ替わります。したがって意味は「呼んだ回数の偶奇」で決まり、成功経路では **3 回**呼ばれます([1 回目は候補構築の直前](../../src/core/shader/pipelinefactory.cpp#L1960) / [2 回目はその復帰コメントの直後](../../src/core/shader/pipelinefactory.cpp#L2070) / [3 回目は finalize の直前](../../src/core/shader/pipelinefactory.cpp#L2093))。1 回足したり消したりすると、旧 SPIR-V を指したまま publish する / 新世代を捨てたつもりが live に残る、という**例外も log も出ない静かな**破壊になります。
 >
 > **骨子**:
-> ```text
->        swap#1        swap#2            swap#3
-> live:  old --> new --> old ---------> new
->              ^候補構築  ^before_publish  ^publish(以降 throw しない)
-> 失敗経路が 2 系統ある:
->   (a) 候補構築が throw     → catch 内で swap して旧世代へ戻す + discard_new_layouts()
->   (b) before_publish が失敗 → swap#2 済みなので live はすでに旧世代。
->                              swap を呼ばずに discard_new_layouts() だけして return
+> ```mermaid
+> stateDiagram-v2
+>     state "live: old" as Old
+>     state "live: new<br/>swap#1 後: 候補構築" as Candidate
+>     state "live: old<br/>swap#2 後: before_publish" as Before
+>     state "live: new<br/>swap#3 後: publish(以降 throw しない)" as Published
+>     state "live: old<br/>(a) 候補構築が throw" as FailedCandidate
+>     state "live: old<br/>(b) before_publish が失敗" as FailedBefore
+>     Old --> Candidate
+>     Candidate --> Before
+>     Before --> Published
+>     Candidate --> FailedCandidate
+>     Before --> FailedBefore
 > ```
+>
+> - **(a) 候補構築の失敗**: catch 内で swap して旧世代へ戻し、discard_new_layouts()。
+> - **(b) before_publish の失敗**: swap#2 済みなので live はすでに旧世代。swap を呼ばないで、discard_new_layouts() だけして return。
 >
 > **手がかり**: 「Restore the live shader table while the cross-domain material candidate commits.」というコメント([該当行](../../src/core/shader/pipelinefactory.cpp#L2070))が swap#2 の理由そのものです。読み飛ばさないでください。上の (a) と (b) の**非対称**も同じくらい重要で、(b) の経路([`before_publish` の失敗処理](../../src/core/shader/pipelinefactory.cpp#L2075))は `activatePrepared()` を**呼びません** — 呼ぶと偶奇が狂って新世代が live に残ります。対になる非トランザクション版が `rebuildDirty()` で、こちらは pipeline ごとに try/catch していて「一部だけ更新される」— 両者の差を意識して読みます。現在は `graphics_overrides`([`GraphicsPipelineReloadOverride`](../../src/core/shader/pipelinefactory.hpp#L213))と `before_publish` コールバックが引数に加わり、graph 再コンパイルと shader reload が同じトランザクションに束ねられています。公開後の旧 pipeline/layout は即破棄せず [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L1384) が DeletionQueue へ回します(§6.11)。境界の全体像は [第9章](09_black_magic_and_gotchas.md)。
 >
@@ -1883,11 +2019,13 @@ resource historyをresetします。明示リセット用の公開APIは
 > **骨子**:
 > ```text
 > reset = reset_requested || !history.valid
-> if reset: previous_* ← current_*         # 差分ゼロ = velocity 0
->           previous_epoch ← history.epoch;  epoch ← history.epoch + 1
-> else:     previous_* ← history.*;         epoch = previous_epoch = history.epoch
-> commit:   history.* ← snapshot.*         → 次フレームは自動的に一致(valid)へ
+> if reset: previous_* = current_*         # 差分ゼロ = velocity 0
+>           previous_epoch = history.epoch;  epoch = history.epoch + 1
+> else:     previous_* = history.*;         epoch = previous_epoch = history.epoch
+> commit:   history.* = snapshot.*
 > ```
+>
+> - **commit**: 次フレームは自動的に一致(valid)へ。
 >
 > **手がかり**: reset フレームでも `previous_*` 行列に**現在値を入れる**ので velocity は 0 になり、履歴を読まなければ絵は正しくなります(フラグ方式で `previous_*` を前フレームのゴミのまま渡すと、reset フレームだけ巨大な velocity が出て TAA が飛びます)。shader 側は [`taa_resolve.frag`](../../src/core/resources/taa_resolve.frag) の `main()` 冒頭でこの一致から `valid` を始め、再投影 UV の範囲外判定・深度不連続判定と `&&` で畳んでいきます。真理値表テストが [`projectionjitter_test.cpp`](../../test/projectionjitter_test.cpp) の "temporal reset epoch truth table is invalid for one frame for every reset cause" で、名前が仕様そのものです。
 >
@@ -2074,10 +2212,23 @@ fixture は [`test/fixtures/gpu_timing_attribution.json`](../../test/fixtures/gp
 > **素朴に読むと**: `0x78 0x01` の 2 バイト、`LEN` とその 1 の補数 `NLEN`、テーブル無しのビット単位 CRC32、手書きの adler32 が並んでいて、「圧縮ライブラリを避けた」だけではなぜこれが PNG として正当なのかが分かりません。理屈はこうです。PNG の `IDAT` は生の deflate ではなく **zlib ストリーム**でなければなりませんが、deflate には**無圧縮ブロック(type 00)**があり、「最終ブロックフラグ 1 bit + LEN + NLEN + 生バイト」という並びだけで完全に合法です。だから「圧縮しないが正しい zlib」が数十行で書けます。`0x78 0x01` は CM=8 / CINFO=7 で、FCHECK 条件(2 バイトを big-endian で見て 31 の倍数、`0x7801 = 31 × 991`)を満たす既定ヘッダです。65535 で切りながらループするのは `LEN` が uint16 だからで、`IHDR` の `{8, 6, 0, 0, 0}` は 8 bit / truecolor+alpha / 非インタレースを意味します。
 >
 > **骨子**:
-> ```text
-> [78 01] { [BFINAL][LEN][~LEN][raw ≤65535] }*  [adler32(圧縮前バイト列)]
-> chunk = [len][type][data][crc32(type + data)]     ← len は CRC の対象外
-> ```
+>
+> | 順 | zlib ストリームの要素 | 意味・繰り返し |
+> |---|---|---|
+> | 1 | `78 01` | ヘッダ |
+> | 2 | `BFINAL`, `LEN`, `~LEN`, `raw ≤65535` | この順で無圧縮ブロックを構成し、`{ … }*` として繰り返す |
+> | 3 | `adler32(圧縮前バイト列)` | チェックサム |
+>
+> chunk の並びは次のとおりです。
+>
+> | 順 | chunk の要素 | CRC の対象 |
+> |---|---|---|
+> | 1 | `len` | 対象外 |
+> | 2 | `type` | 対象 |
+> | 3 | `data` | 対象 |
+> | 4 | `crc32(type + data)` | `type + data` の計算結果 |
+>
+> - **len**: CRC の対象外。
 >
 > **手がかり**: 2 つのチェックサムは**対象が違います**。adler32 は zlib ストリームの中身、つまり**圧縮前**のスキャンライン列に対して取り([adler32 の計算](../../src/core/vkcore/previewexecutor.cpp#L59))、CRC32 は各チャンクの `type + data` に対して取ります(長さフィールドは含めません、[CRC の対象範囲](../../src/core/vkcore/previewexecutor.cpp#L39))。取り違えると「多くのビューアは開けるのに一部が壊れていると言う」という追いにくい形で出ます。各スキャンラインの先頭に付く `0` は PNG の filter type(None)で、これも省けません([filter byte を積む行](../../src/core/vkcore/previewexecutor.cpp#L74))。`crc32()` の `0xedb88320u & (0u - (crc & 1u))` は分岐無しの条件付き XOR です。
 >
@@ -2161,14 +2312,16 @@ layout がある project では `gl_InstanceCustomIndexEXT` に出るのは**宣
 purge は「geometry が消えたら落とす」ではなく、**そのフレームで実際に参照された variant 集合との差分**です。手順は次の形です。
 
 ```text
-planned_instances = lowerRayTracingTlasInstancePlan(...)          ← 解決済み flags を含む
+planned_instances = lowerRayTracingTlasInstancePlan(...)
 groups = 互換な連続行をまとめ、geometry keyを列にする
 for group in groups:
     同じkeyをcandidateへ登録済みなら共有する
     再利用可 かつ active_state_ に有れば candidate へ持ち越す
     無ければ build して candidate へ入れる
-candidate->blas は参照されたgeometry列の集合と一致する             ← ここが purge
+candidate->blas は参照されたgeometry列の集合と一致する
 ```
+
+- **planned_instances / candidate->blas**: planned_instances は解決済み flags を含む。candidate->blas と参照された geometry 列の集合の一致が purge。
 
 持ち越しは [`active_state_->blas.find(key)`](../../src/core/renderer/accelerationstructure.cpp#L1430) の一致で決まり、参照されないkeyはcandidateに入りません。commitでcandidateがactiveを置き換えるため、規則のreloadで不要になったvariantはactive集合から除かれます。送信済みの資源はsubmission leaseが保持します。
 

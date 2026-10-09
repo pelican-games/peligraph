@@ -22,26 +22,26 @@ Pelican2のコードは、最初から個々のクラスを読むより、次の
 ## 1.2 CMakeターゲットの関係
 
 ```mermaid
-flowchart TD
-    SchemaLeaf["pelican_schema_leaf\nschema wire model（葉）"]
+flowchart TB
+    SchemaLeaf["pelican_schema_leaf<br/>schema wire model（葉）"]
     SchemaAdapter["pelican_schema_core_adapter"]
-    ProjectLib["pelican_project\n形式の純粋ロジック"]
-    CoreLib["pelican_core\nエンジン本体"]
-    OpenXRLib["pelican_openxr\nOpenXR unit (static)"]
+    ProjectLib["pelican_project<br/>形式の純粋ロジック"]
+    CoreLib["pelican_core<br/>エンジン本体"]
+    OpenXRLib["pelican_openxr<br/>OpenXR unit (static)"]
     Player["pelican_player"]
-    GameDLL["pelican_game_logic\nPELICAN_PROJECT/code/*.cpp (DLL)"]
+    GameDLL["pelican_game_logic<br/>PELICAN_PROJECT/code/*.cpp (DLL)"]
     CLI["pelican_cli"]
     SpvLink["spvlink"]
     Studio["pelican_studio"]
     Tests["pelican_test_*"]
 
-    SchemaLeaf -->|PUBLIC| ProjectLib
-    SchemaLeaf -->|PUBLIC| SchemaAdapter
-    SchemaAdapter -->|PRIVATE| CoreLib
+    SchemaLeaf -->|"PUBLIC"| ProjectLib
+    SchemaLeaf -->|"PUBLIC"| SchemaAdapter
+    SchemaAdapter -->|"PRIVATE"| CoreLib
     ProjectLib --> CoreLib
-    OpenXRLib -->|PRIVATE| CoreLib
+    OpenXRLib -->|"PRIVATE"| CoreLib
     CoreLib --> Player
-    GameDLL -.->|実行時ロード| Player
+    GameDLL -.->|"実行時ロード"| Player
     ProjectLib --> CLI
     CoreLib --> SpvLink
     CoreLib --> Studio
@@ -240,10 +240,15 @@ v0（共通グラフ・姿勢グラフ・package）で増えた入口は次の�
 
 理想化すると、依存は次の方向です。
 
-```text
-ゲームコード → userpublic → coreの各サービス → vkcore/外部ライブラリ
-                     ↘
-                      project（純粋パース・検証）
+```mermaid
+flowchart LR
+    Game["ゲームコード"]
+    Public["userpublic"]
+    Core["coreの各サービス"]
+    Backend["vkcore/外部ライブラリ"]
+    Project["project<br/>純粋パース・検証"]
+    Game --> Public --> Core --> Backend
+    Public --> Project
 ```
 
 実装上は、`GET_MODULE()` を使うサービスロケータが多いため、C++のコンストラクタ引数だけを見ても依存が全部は分かりません。サービスロケータとは、**必要な相手を引数で渡してもらう（DI）のではなく、共通の取得口から自分で引いてくる**方式のことです。Pelicanの取得口は `GET_MODULE(T)` ひとつで、鍵は文字列名ではなく型 `T`、実体は型ごとの `static std::optional<T>` を初回アクセス時に構築するだけの薄い機構です（[第9章 §9.1](09_black_magic_and_gotchas.md)）。DIコンテナのような登録表・スコープ・差し替え機構は持ちません。たとえば [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L3236) は一行ですが、そこから設定、Vulkan、render target、shader、pipelineなどが遅延生成されます。

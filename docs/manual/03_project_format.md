@@ -387,12 +387,14 @@ Blank / Standard の雛形は `asset_stores` と `hot_reload` を宣言しませ
 ## 3.5 解釈レイヤ — pelican_project とバインダの分離
 
 > **設計決定(3 層構造):** プロジェクト形式の解釈は次の 3 層に分かれる。
-> ```
-> プロジェクト形式(ファイル群)
->   ↓ 解釈レイヤ: pelican_project 静的ライブラリ(エンジン非依存の純ロジック。依存は nlohmann_json と picosha2 のみ)
->   ↓ バインダ: src/core/loader のエンジン側変換(GET_MODULE を呼べるのはここと起動配線のみ)
-> ゲームエンジン本体
-> ```
+>
+> | 順 | 要素 | 役割・制約 |
+> |---|---|---|
+> | 1 | プロジェクト形式 | ファイル群 |
+> | 2 | 解釈レイヤ: `pelican_project` 静的ライブラリ | エンジン非依存の純ロジック。依存は `nlohmann_json` と `picosha2` のみ |
+> | 3 | バインダ: `src/core/loader` のエンジン側変換 | `GET_MODULE` を呼べるのはここと起動配線のみ |
+> | 4 | ゲームエンジン本体 | — |
+>
 > 形式に機能を足すときは「解釈レイヤにパーサ+バインダに変換」を対で追加し、エンジン内部へ波及させない。パーサ登録は静的な表で行い、プラグイン機構は作らない(過剰抽象化の防止)。
 
 [src/project/](../../src/project) が解釈レイヤの実体で(CMake ターゲット `pelican_project`、WP44/WP248)です。現在の住人は `projectformat`(pelican.project封筒)/ `projectpathresolver`(path・asset store)/ `sceneformat`(pelican.scene)/ `importmanifest`(pelican.import)/ `materialformat` + `surfaceformat` + `materiallowering`(マテリアル)/ `featurecompose`(feature 合成)/ `jsonrpc`(JSON-RPC エンベロープ)/ `assetsmanifest`(pelican.assets)/ `importrules`(pelican.import_rules)などです。
@@ -632,9 +634,10 @@ pelican_cli package inspect <package dir>
 
 feature 名を比べる場所は catalog だけではありません。合成時の無音 dedupe・`integrations[].requires` の完全一致・`== "hdr"` の直値比較は、どれも**文書の `name` フィールド**を読みます([featurecompose.cpp](../../src/project/featurecompose.cpp))。そこで install は複製した feature 文書の `name` を書き換えます。
 
-```
-features/glow.json   "name": "glow"   →   packages/acme.glowkit/features/glow.json   "name": "acme.glowkit.glow"
-```
+| 段 | パス | `name` |
+|---|---|---|
+| 変換前 | `features/glow.json` | `"glow"` |
+| 変換後 | `packages/acme.glowkit/features/glow.json` | `"acme.glowkit.glow"` |
 
 shader define の前置詞も同じ名前から作られるので、`.` は `_` に写ります。
 
