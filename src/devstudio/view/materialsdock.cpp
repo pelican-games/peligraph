@@ -1051,7 +1051,10 @@ struct MaterialsDock::Impl {
             for (const auto &material : document.materials) {
                 auto *child = new QTreeWidgetItem(row);
                 child->setText(0, qtext(material.name));
-                child->setText(1, qtext(material.surface));
+                child->setText(1, qtext(material.unserved_reason.empty() ? material.surface
+                    : material.route + ": " + material.unserved_reason));
+                child->setToolTip(1, qtext(material.route +
+                    (material.unserved_reason.empty() ? std::string{} : "\n" + material.unserved_reason)));
                 child->setToolTip(0, material.registered
                                          ? qtext(material.id)
                                          : owner.tr("Not registered in this engine yet: it is read when the "

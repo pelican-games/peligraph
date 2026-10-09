@@ -36,6 +36,8 @@ struct MaterialListMaterial {
     std::vector<std::string> tags;
     std::string id;
     bool registered = false;
+    std::string route;
+    std::string unserved_reason;
     bool operator==(const MaterialListMaterial &) const = default;
 };
 struct MaterialListDocument {

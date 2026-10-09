@@ -386,7 +386,7 @@ void MaterialValuesReloadHandler::track(
             materials_.materials.get(material).custom_values;
         const auto &live_material =
             materials_.materials.get(material);
-        if (live_material.route !=
+        if ((live_material.unserved ? live_material.unserved->authored_route : live_material.route) !=
             source_binding.lowered.route) {
             throw std::runtime_error("material binding '" + binding_name +
                                      "' registered route does not match its source");

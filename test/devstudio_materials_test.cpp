@@ -2547,3 +2547,17 @@ TEST_CASE("Materials dock binding repairs share its visible Undo history", "[dev
     CHECK(dock.session().undoEntries().empty());
     CHECK_FALSE(dock.undoAction()->isEnabled());
 }
+
+TEST_CASE("MU-1 Materials preserves authored route and unserved reason from list_materials",
+          "[mu1][materials][problems]") {
+    const auto parsed = parseMaterialList(Json{{"documents", Json::array({{
+        {"path", Paint}, {"status", "loaded"}, {"materials", Json::array({{
+            {"name", "paint"}, {"registered", true}, {"route", "forward_transparent"},
+            {"unserved", {{"reason", "Add a transparent pass to restore normal rendering."}}}}})}}})}});
+    REQUIRE(parsed.documents.size() == 1);
+    REQUIRE(parsed.documents[0].materials.size() == 1);
+    const auto &material = parsed.documents[0].materials[0];
+    CHECK(material.registered);
+    CHECK(material.route == "forward_transparent");
+    CHECK(material.unserved_reason == "Add a transparent pass to restore normal rendering.");
+}

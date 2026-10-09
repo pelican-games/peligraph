@@ -755,6 +755,11 @@ MaterialGenerationPlanner::resolveLiveMaterialBindings(
         generation, material.route,
         material.shader_contract, material.exact_pass);
     if (!bindings.empty()) {
+        if (material.unserved) {
+            for (auto &binding : bindings)
+                for (auto &state : binding.output_states)
+                    if (state.blend) state.blend->enabled = false;
+        }
         return bindings;
     }
     // G-4: the same rule as registration. A graph with one material pass must
@@ -779,6 +784,14 @@ MaterialGenerationPlanner::CandidateRoute
 MaterialGenerationPlanner::candidateRoute(
     const MaterialContainer &container,
     const MaterialContainer::InternalMaterialInfo &material) {
+    // A local error material remains on its substitute while the authored
+    // default is unchanged. A G-4 default edit still validates the authored
+    // route (and requires the usual restart to lower it anew).
+    if (material.unserved &&
+        (!container.candidate_route_default || *container.candidate_route_default ==
+            projectMaterialLoweringCapabilities().route_default)) {
+        return {material.route, material.shader_contract, true};
+    }
     if (!material.default_routes) {
         return {material.route, material.shader_contract, true};
     }
@@ -817,7 +830,8 @@ void MaterialGenerationPlanner::requireEveryMaterialServed(
                 if (generationServesMaterial(
                         generation, candidate.route,
                         candidate.shader_contract,
-                        material.exact_pass)) {
+                        material.unserved && !candidate.live
+                            ? material.unserved->authored_exact_pass : material.exact_pass)) {
                     return;
                 }
             } else if (materialBindingsForGeneration(

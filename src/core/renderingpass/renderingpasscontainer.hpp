@@ -119,6 +119,13 @@ DECLARE_MODULE(RenderingPassContainer) {
     snapshot() const noexcept;
     std::uint64_t activeGeneration() const noexcept;
     bool hasMaterialPasses() const;
+    struct SubstituteMaterialPass {
+        std::string name;
+        MaterialRouteClass route;
+        MaterialShaderContract shader_contract;
+    };
+    std::optional<SubstituteMaterialPass> substituteMaterialPass(
+        MaterialShaderContract preferred) const;
     bool supportsMaterialPass(MaterialRouteClass route,
                               MaterialShaderContract shader_contract,
                               const std::optional<std::string> &exact_pass = std::nullopt) const;

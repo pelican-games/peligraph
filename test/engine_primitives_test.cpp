@@ -754,35 +754,27 @@ TEST_CASE("G-4 a forward-only direct root draws the basic cube once material_rou
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
-TEST_CASE("G-4 a forward-only direct root without the forward default stops loading by name",
+TEST_CASE("G-4 a forward-only direct root without the forward default registers error materials",
           "[g4][primitives][material-routing][gpu]") {
     setupLogger(true);
     const auto dir = makeTempDir("g4_auto");
     const auto root = makeBlankProject(dir.root);
     writeForwardOnlyProject(root, false);
 
-    std::string failure;
-    try {
-        FastModuleContainer modules;
-        configureHeadless(root);
-        Rpc rpc;
-        const auto loaded = rpc.call("load_scene", {{"name", "default_scene"}});
-        if (loaded.contains("error")) {
-            failure = loaded.dump();
-        } else {
-            // The composition root's boot step (appflow/loop.cpp) makes the
-            // engine's built-in materials before the first frame.
-            GET_MODULE(Renderer).prepareRuntimeModules();
-        }
-        if (auto *core = FastModuleContainer::tryGet<VulkanManageCore>()) core->waitIdle();
-    } catch (const std::exception &error) {
-        failure = error.what();
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    REQUIRE(rpc.call("load_scene", {{"name", "default_scene"}}).contains("result"));
+    GET_MODULE(Renderer).prepareRuntimeModules();
+    CHECK(rpc.result("get_status").at("render_pipeline").at("state") == "ready");
+    const auto problems = rpc.result("get_problems").at("problems");
+    REQUIRE_FALSE(problems.empty());
+    for (const auto &problem : problems) {
+        CHECK(problem.at("code") == "material.route_unserved@1");
+        CHECK(problem.at("fields").at("authored_route") == "deferred_geometry");
+        CHECK(problem.at("fields").at("substitute_route") == "forward_opaque");
     }
-    INFO(failure);
-    CHECK(failure.find("material_route_unserved@1") != std::string::npos);
-    CHECK(failure.find("'pelican.builtin.transparent' (engine built-in)") != std::string::npos);
-    CHECK(failure.find("route 'deferred_geometry'") != std::string::npos);
-    CHECK(failure.find("Hint: set material_route_default to ") != std::string::npos);
+    GET_MODULE(VulkanManageCore).waitIdle();
 }
 
 TEST_CASE("G-4 an edit that leaves the engine's materials without a pass is refused through the running renderer",

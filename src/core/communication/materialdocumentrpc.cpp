@@ -242,6 +242,12 @@ bool registeredFrom(std::string_view name, std::string_view reference) {
     return document && *document == reference;
 }
 
+Json registeredRouteStatus(std::string_view name, std::string_view reference) {
+    if (!registeredFrom(name, reference)) return Json::object();
+    return GET_MODULE(MaterialContainer).materialRouteStatus(
+        GET_MODULE(ProjectMaterialAssetContainer).materialByName(name));
+}
+
 // --- surfaces.
 
 class SurfaceCache {
@@ -681,6 +687,7 @@ Json listMaterials(const Json &params, PathResolver &paths) {
                 {"id", materialDrawSubjectKey(name, reference, reference, std::nullopt)},
                 {"registered", registeredFrom(name, reference)},
             });
+            entry["materials"].back().update(registeredRouteStatus(name, reference));
         }
         documents.push_back(std::move(entry));
     }
@@ -728,6 +735,7 @@ OrderedJson getMaterial(const Json &params, PathResolver &paths) {
     answer["names"] = materialNames(document.json);
     answer["registered"] = registeredFrom(material_name, *listed);
     answer["material"] = material;
+    answer.update(OrderedJson(registeredRouteStatus(material_name, *listed)));
     return answer;
 }
 

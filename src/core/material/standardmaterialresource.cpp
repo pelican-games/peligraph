@@ -10,7 +10,49 @@
 
 namespace Pelican {
 
+namespace {
+DECLARE_MODULE(MaterialErrorFragmentCache) {
+  public:
+    struct Entry {
+        MaterialRouteClass route;
+        bool compact_vertex;
+        std::optional<MaterialOutputSchema> schema;
+        ShaderBundleId fragment;
+    };
+    std::vector<Entry> entries;
+};
+}
+
+ShaderBundleId StandardMaterialResource::errorFragmentShader(
+    MaterialRouteClass route, const std::optional<MaterialOutputSchema> &schema, bool compact_vertex) {
+    auto &cache = GET_MODULE(MaterialErrorFragmentCache).entries;
+    for (const auto &entry : cache)
+        if (entry.route == route && entry.compact_vertex == compact_vertex && entry.schema == schema &&
+            GET_MODULE(ShaderLibrary).get(entry.fragment).material_output_schema == schema)
+            return entry.fragment;
+    constexpr std::string_view source = "generated://material_route_error.surface";
+    const auto surface = parseSurfaceFormat(R"surface(//! pelican.surface v1
+//! language: glsl
+void pelican_surface_v1(in PelicanSurfaceInputV1 input_data, inout PelicanSurfaceV1 surface) {
+    surface.base_color = vec4(1.0, 0.0, 1.0, 1.0);
+    surface.emissive = vec3(1.0, 0.0, 1.0);
+    surface.metallic = 0.0;
+    surface.roughness = 1.0;
+}
+vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 input_data) {
+    return vec3(1.0, 0.0, 1.0);
+}
+)surface", source);
+    const auto fragment = GET_MODULE(ShaderLibrary).loadFromSurface(
+        surface, source, surfacePassForMaterialRoute(route),
+        compact_vertex ? std::vector<std::string>{"PELICAN_COMPACT_STANDARD_VERTEX_ABI"}
+                       : std::vector<std::string>{}, schema).fragment;
+    cache.push_back({route, compact_vertex, schema, fragment});
+    return fragment;
+}
+
 StandardMaterialResource::StandardMaterialResource() {
+    (void)GET_MODULE(MaterialErrorFragmentCache);
     auto &mat_con = GET_MODULE(MaterialContainer);
     auto &shader_library = GET_MODULE(ShaderLibrary);
 

@@ -118,6 +118,14 @@ DECLARE_MODULE(MaterialContainer) {
         std::vector<vk::UniqueDescriptorSet> descriptors;
     };
 
+    struct UnservedMaterial {
+        MaterialRouteClass authored_route;
+        MaterialShaderContract authored_shader_contract;
+        std::optional<std::string> authored_exact_pass;
+        MaterialRouteClass substitute_route;
+        std::string substitute_pass;
+        std::string reason;
+    };
     struct InternalMaterialInfo {
         struct TextureBinding {
             GlobalTextureId texture;
@@ -155,6 +163,7 @@ DECLARE_MODULE(MaterialContainer) {
         std::vector<MaterialOutputAttachmentState>
             pipeline_output_states;
         std::vector<std::string> tags;
+        std::optional<UnservedMaterial> unserved;
         MaterialRouteClass route = MaterialRouteClass::deferred_geometry;
         MaterialShaderContract shader_contract = MaterialShaderContract::gbuffer_v1;
         std::optional<MaterialOutputSchema> output_schema;
@@ -322,6 +331,8 @@ DECLARE_MODULE(MaterialContainer) {
     GlobalTextureId registerReloadableTextureFile(const watch::AssetKey &key,
                                                   const std::filesystem::path &path);
     GlobalMaterialId registerMaterial(MaterialInfo info);
+    nlohmann::json materialRouteStatus(GlobalMaterialId material) const;
+    void publishUnservedProblems() const;
     struct RayDeformationMaterial {
         std::optional<MaterialInfo::VatPlaybackInfo> vat;
         std::array<vk::DescriptorImageInfo, 2> images;

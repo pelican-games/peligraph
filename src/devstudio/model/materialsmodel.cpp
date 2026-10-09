@@ -106,6 +106,9 @@ MaterialList parseMaterialList(const Json &result) {
                 row.tags = strings(material.value("tags", Json::array()));
                 row.id = text(material, "id");
                 row.registered = material.value("registered", false);
+                row.route = text(material, "route");
+                if (const auto unserved = material.find("unserved"); unserved != material.end())
+                    row.unserved_reason = text(*unserved, "reason");
                 if (!row.name.empty()) entry.materials.push_back(std::move(row));
             }
         list.documents.push_back(std::move(entry));

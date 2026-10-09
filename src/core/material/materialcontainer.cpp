@@ -20,6 +20,8 @@
 #include "materialgenerationplanner.hpp"
 #include "materiallimits.hpp"
 #include "standardmaterialresource.hpp"
+#include "../watch/problemlist.hpp"
+#include "../loader/basicconfig.hpp"
 #include "materialvaluesreloadhandler.hpp"
 #include "texturereloadhandler.hpp"
 #include <algorithm>
@@ -489,7 +491,7 @@ static ReflectedImageViewDimension reflectedTextureDimension(
 static void validateMaterialTextureReflection(
     const MaterialInfo &info,
     const ShaderReflection &reflection,
-    bool split_custom_samplers) {
+    bool split_custom_samplers, bool allow_unused = false) {
     for (std::size_t index = 0;
          index < info.custom_textures.size(); ++index) {
         const auto &texture = info.custom_textures[index];
@@ -513,6 +515,7 @@ static void validateMaterialTextureReflection(
                            image_binding;
             });
         if (image == reflection.bindings.end()) {
+            if (allow_unused) continue;
             throw std::runtime_error(
                 "material texture '" + texture.name +
                 "' is absent from shader reflection at binding " +
@@ -580,7 +583,7 @@ resolveReflectedMaterialPassInputs(
     std::span<const MaterialScreenInputContract>
         declared_screen_inputs,
     std::span<const ShaderResourceInterfaceBinding>
-        resource_interface) {
+        resource_interface, bool ignore_unused = false) {
     const auto &reflection =
         GET_MODULE(PipelineFactory)
             .reflection(pipeline);
@@ -589,6 +592,10 @@ resolveReflectedMaterialPassInputs(
     bindings.reserve(reflection.bindings.size());
     for (const auto &binding :
          reflection.bindings) {
+        // The authored vertex keeps declarations for fragment-only inputs.
+        // Its unused declarations need neither a substitute-pass resource nor
+        // a descriptor write; statically accessed vertex inputs still validate.
+        if (ignore_unused && !binding.accessed) continue;
         if (binding.set !=
             PELICAN_SET_PASS_INPUT) {
             continue;
@@ -823,6 +830,40 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     }
     info.tags = canonicalizeMaterialDrawTags(
         std::move(info.tags), "registered material");
+    std::optional<UnservedMaterial> unserved;
+    const auto &passes = GET_MODULE(RenderingPassContainer);
+    if (!passes.supportsMaterialPass(info.route, info.shader_contract, info.exact_pass)) {
+        if (const auto substitute = passes.substituteMaterialPass(info.shader_contract)) {
+            auto reason = materialRouteUnservedText(
+                {UnservedMaterialRoute{info.route, info.shader_contract,
+                    {describeUnservedMaterial(info.name, info.source_document, info.source_asset)}}},
+                GET_MODULE(ProjectBasicConfig).renderingConfigReference());
+            if (info.exact_pass) reason += " (the material selects exact pass '" + *info.exact_pass + "')";
+            reason += ". Add a pass for the authored route to restore normal rendering.";
+            unserved = UnservedMaterial{info.route, info.shader_contract, info.exact_pass,
+                substitute->route, substitute->name, std::move(reason)};
+            info.route = substitute->route;
+            info.shader_contract = substitute->shader_contract;
+            info.exact_pass = substitute->name;
+            info.output_schema = passes.materialOutputSchema(info.route, info.exact_pass);
+            const auto &shaders = GET_MODULE(ShaderLibrary);
+            const auto &vertex_defines = shaders.get(info.vert_shader).defines;
+            const bool compact_vertex = !shaders.surfaceFragmentForVertex(info.vert_shader) ||
+                std::find(vertex_defines.begin(), vertex_defines.end(), "PELICAN_COMPACT_STANDARD_VERTEX_ABI") != vertex_defines.end();
+            info.frag_shader = StandardMaterialResource::errorFragmentShader(info.route, info.output_schema, compact_vertex);
+            info.render_state.blend = SurfaceBlendMode::opaque;
+            info.render_state.depth_test = true;
+            info.render_state.depth_write = true;
+            info.alpha_mode = MaterialAlphaMode::opaque;
+            // Fragment-only inputs have no meaning in the error surface.
+            // Keep vertex resources and all material values/textures for its authored vertex.
+            info.screen_inputs.clear();
+            std::erase_if(info.resource_ports, [](const auto &port) {
+                return port.stage == SurfaceResourcePortStage::fragment;
+            });
+            for (auto &port : info.resource_ports) port.stage = SurfaceResourcePortStage::vertex;
+        }
+    }
     const auto &fragment_bundle =
         GET_MODULE(ShaderLibrary).get(info.frag_shader);
     if (info.output_schema &&
@@ -843,8 +884,11 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
             *info.output_schema,
             "registered material fragment shader");
     }
-    const auto rendering =
-        resolveMaterialPipelineRenderingContract(info);
+    auto rendering = resolveMaterialPipelineRenderingContract(info);
+    if (unserved) {
+        for (auto &state : rendering.output_states)
+            if (state.blend) state.blend->enabled = false;
+    }
     validateMaterialCapabilities(info, rendering);
     auto resource_interface =
         resolveMaterialResourceInterface(info);
@@ -900,14 +944,14 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
             .reflection(pipeline);
     validateMaterialTextureReflection(
         info, pipeline_reflection,
-        split_custom_samplers);
+        split_custom_samplers, unserved.has_value());
     validateShaderResourceInterfaceReflection(
         resource_interface, pipeline_reflection,
         PELICAN_SET_PASS_INPUT);
     auto reflected_pass_inputs =
         resolveReflectedMaterialPassInputs(
             pipeline, info.screen_inputs,
-            resource_interface);
+            resource_interface, unserved.has_value());
     std::vector<
         InternalMaterialInfo::PassInput>
         pass_inputs;
@@ -1068,6 +1112,11 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     std::vector<vk::WriteDescriptorSet> writes;
     writes.reserve(texture_binding_count + info.custom_textures.size() + 1);
     const auto addImageWrite = [&](uint32_t binding, vk::DescriptorType type) {
+        if (unserved && std::none_of(pipeline_reflection.bindings.begin(), pipeline_reflection.bindings.end(),
+                [&](const auto &reflected) { return reflected.set == imageDescriptorSetNumber && reflected.binding == binding; })) {
+            std::erase_if(texture_bindings, [&](const auto &texture) { return texture.binding == binding; });
+            return;
+        }
         vk::WriteDescriptorSet write;
         write.dstSet = descset.get();
         write.dstBinding = binding;
@@ -1128,6 +1177,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .pipeline_output_states =
             rendering.output_states,
         .tags = std::move(info.tags),
+        .unserved = std::move(unserved),
         .route = info.route,
         .shader_contract = info.shader_contract,
         .output_schema =
@@ -1215,6 +1265,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         MaterialDrawLoopTable::materialReleasedFromLiveTables(material_id);
         throw;
     }
+    if (!registering_variant_records) publishUnservedProblems();
     return material_id;
 }
 
@@ -1222,7 +1273,7 @@ void MaterialContainer::registerMaterialVariants(
     GlobalMaterialId base,
     std::vector<NamedMaterialVariantRegistration> registrations) {
     const auto &registered_base = materials.get(base);
-    const auto base_route = registered_base.route;
+    const auto base_route = registered_base.unserved ? registered_base.unserved->authored_route : registered_base.route;
     MaterialInfo inherited_appearance;
     inheritFromBase(inherited_appearance,
                     registered_base);
@@ -1334,6 +1385,7 @@ void MaterialContainer::registerMaterialVariants(
                                  releaseModelResources(std::move(resources), {}, false));
         throw;
     }
+    publishUnservedProblems();
 }
 
 GlobalMaterialId MaterialContainer::materialVariantResource(
@@ -1429,6 +1481,8 @@ ReleaseReport MaterialContainer::releaseModelResources(
                             static_cast<std::uint32_t>(material.value)});
             }
         }
+
+        publishUnservedProblems();
 
         for (const auto texture : texture_ids) {
             try {
@@ -1866,6 +1920,44 @@ MaterialContainer::materialGpuRecordForTesting(GlobalMaterialId material) const 
     return record;
 }
 
+
+nlohmann::json MaterialContainer::materialRouteStatus(GlobalMaterialId id) const {
+    const auto &material = materials.get(id);
+    nlohmann::json result{{"route", materialRouteClassName(material.unserved
+        ? material.unserved->authored_route : material.route)}, {"unserved", nullptr}};
+    if (material.unserved) {
+        const auto &unserved = *material.unserved;
+        result["unserved"] = {{"code", "material.route_unserved@1"},
+            {"reason", unserved.reason},
+            {"authored_route", materialRouteClassName(unserved.authored_route)},
+            {"substitute_route", materialRouteClassName(unserved.substitute_route)},
+            {"substitute_pass", unserved.substitute_pass}};
+        if (unserved.authored_exact_pass) result["unserved"]["exact_pass"] = *unserved.authored_exact_pass;
+    }
+    return result;
+}
+
+void MaterialContainer::publishUnservedProblems() const {
+    auto *list = FastModuleContainer::tryGet<ProblemList>();
+    if (!list) return;
+    std::vector<nlohmann::json> problems;
+    for (const auto id : drawLoopMaterials()) {
+        const auto &material = materials.get(id);
+        if (!material.unserved) continue;
+        auto fields = materialRouteStatus(id).at("unserved");
+        fields["material"] = material.name;
+        fields["material_id"] = materialDrawSubjectKey(material.name, material.source_document,
+            material.source_asset, material.source_material_index);
+        nlohmann::json problem{{"id", "material.route_unserved@1:" + fields.at("material_id").get<std::string>()},
+            {"code", "material.route_unserved@1"}, {"severity", "error"},
+            {"source", "startup"}, {"message", material.unserved->reason},
+            {"document_kind", "material"}, {"fields", std::move(fields)}};
+        if (!material.source_document.empty()) problem["document"] = material.source_document;
+        else if (!material.source_asset.empty()) problem["document"] = material.source_asset;
+        problems.push_back(std::move(problem));
+    }
+    list->replace("material_routes", std::move(problems));
+}
 
 bool MaterialContainer::isRenderRequired(const PassDefinition &pass,
                                          GlobalMaterialId material_id) const {

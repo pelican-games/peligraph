@@ -518,53 +518,26 @@ constexpr const char *present_shader =
 
 } // namespace
 
-TEST_CASE("PB-1 a start whose built-in materials find no pass for their route runs the fallback generation with "
-          "material_route_unserved@1 as a startup problem, and a reload of a fixed root brings the project back",
+TEST_CASE("PB-1 a start with unserved built-ins keeps the project generation and lists material problems",
           "[pb1][problems][render-fallback][rpc]") {
     TempProject project{"unserved"};
     writeFile(project.root / "shaders" / "present.frag", present_shader);
     writeFile(project.rootPath(), forwardOnlyRoot());
     PlayerRpc player{project.root, project.stderrLog("unserved"), headless_flags};
-
-    // 1. Up, on the fallback, refused by the route's name.
-    const auto status = player.result("get_status").at("render_pipeline");
-    INFO(status.dump(2));
-    REQUIRE(status.at("state") == "fallback");
-    const auto &refusal = status.at("refusal");
-    CHECK(refusal.at("code") == "material_route_unserved@1");
-    CHECK(refusal.at("rendering_config") == root_reference);
-    REQUIRE_FALSE(refusal.at("unserved").empty());
-    CHECK(refusal.at("unserved").at(0).at("route") == "deferred_geometry");
-    CHECK_THAT(refusal.at("message").get<std::string>(), Catch::Matchers::ContainsSubstring("Hint:"));
-    {
-        const auto before = player.result("get_status").at("frame").get<std::uint64_t>();
-        (void)player.result("step_frame");
-        (void)player.result("step_frame");
-        CHECK(player.result("get_status").at("frame").get<std::uint64_t>() > before);
-    }
-
-    // 2. Listed from the start, as the root's rendering section's problem.
-    const auto problem = onlyProblem(player);
-    INFO(problem.dump(2));
-    CHECK(problem.at("source") == "startup");
-    CHECK(problem.at("code") == "material_route_unserved@1");
-    CHECK(problem.at("document") == root_document);
-    CHECK(problem.at("document_kind") == "root_rendering");
-    CHECK(problem.at("fields").at("unserved") == refusal.at("unserved"));
-
-    // 3. The root fixed on disk (Blank's own, which draws no material) and
-    // reloaded: the project's frames, nothing listed.
-    writeFile(project.rootPath(), project.fixed_root);
-    {
-        const auto result = player.settle(player.result("reload_render_documents"));
-        INFO(result.dump(2));
-        REQUIRE(result.at("status") == "committed");
-    }
     CHECK(player.result("get_status").at("render_pipeline").at("state") == "ready");
-    requireNoProblems(player);
+    const auto problems = player.result("get_problems").at("problems");
+    REQUIRE_FALSE(problems.empty());
+    for (const auto &problem : problems) {
+        CHECK(problem.at("code") == "material.route_unserved@1");
+        CHECK(problem.at("fields").at("authored_route") == "deferred_geometry");
+        CHECK(problem.at("fields").at("substitute_route") == "forward_opaque");
+    }
+    (void)player.result("step_frame");
+    (void)player.result("step_frame");
     player.close();
     CHECK(player.exit_code == 0u);
 }
+
 #endif
 
 #ifdef _WIN32

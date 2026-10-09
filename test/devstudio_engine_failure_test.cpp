@@ -526,13 +526,10 @@ TEST_CASE("Studio receives the running engine's fatal text while RPC stdout stay
     REQUIRE(QString::fromStdString(broken_log) != control_log);
 }
 
-// PB-1s on the example (sponza, the other models and Alicia): a start whose
-// materials find no pass for their route (material_route_unserved@1) falls
-// back, keeps running on its placeholder, and the band, the Frame Plan's
-// status and the Problems row say why. MV-1: the example with Alicia starts
-// at all -- Alicia's morph targets are loaded after sponza's static vertices.
-TEST_CASE("The example with Alicia starts on its placeholder for a route no pass serves, and the band and "
-          "the Problems row say why",
+// MU-1 on the example (sponza, the other models and Alicia): an unserved
+// material draws through a substitute pass and gets its own Problems row.
+// MV-1 keeps Alicia morph targets after sponza static vertices.
+TEST_CASE("The example with Alicia keeps rendering for an unserved route and Materials Problems say why",
           "[devstudio][process][failure][rpc][wp298][pb1s][mv1]") {
     int argument_count = 1;
     char application_name[] = "pelican_engine_failure_example_test";
@@ -566,12 +563,7 @@ TEST_CASE("The example with Alicia starts on its placeholder for a route no pass
     EnvironmentVariableGuard player_path{
         "PELICAN_STUDIO_PLAYER", player.toLocal8Bit()};
 
-    // PB-1s (engines BS-1 and PB-1): Studio starts its engine with
-    // --render-fallback, and a start whose materials find no pass for their
-    // route (material_route_unserved@1) is a start that falls back now. The
-    // engine keeps running on its placeholder; the row above the viewport
-    // and the Frame Plan's status say why, and the engine's list holds it as
-    // one problem met at start -- the Problems dock's row.
+    // MU-1: Studio keeps the project rendering and lists material-local errors.
     ViewportObservation broken;
     QString not_started_status;
     QString broken_status;
@@ -628,13 +620,13 @@ TEST_CASE("The example with Alicia starts on its placeholder for a route no pass
         QTimer::singleShot(60000, &ready_loop, &QEventLoop::quit);
         if (!broken.rpc_available && !broken.stopped) ready_loop.exec();
         // The Problems row (get_problems, read once the revision is seen)
-        // and the Frame Plan's status (its plan of the placeholder).
+        // and the Frame Plan status of the project generation.
         QEventLoop listed_loop;
         QTimer poll;
         QObject::connect(&poll, &QTimer::timeout, &listed_loop, [&] {
             if (broken.stopped ||
                 (!problems.session().rows().empty() &&
-                 status->text().startsWith(QStringLiteral("Showing a placeholder"))))
+                 !broken_reading.is_null()))
                 listed_loop.quit();
         });
         poll.start(50);
@@ -658,32 +650,17 @@ TEST_CASE("The example with Alicia starts on its placeholder for a route no pass
     CHECK(running_after);
     CHECK(broken.fatal_error_line.isEmpty());
     CHECK(lastFatalLine(broken.standard_error).isEmpty());
-    // It draws its placeholder for the refusal the load names (G-4: the
-    // same code and route hint as an edit ticket's rejection).
     const auto reading = readRenderPipeline(broken_reading);
-    REQUIRE(reading.state == RenderPipelineReading::State::Fallback);
-    CHECK(reading.refusal.value("code", std::string{}) == "material_route_unserved@1");
-    CHECK_THAT(reading.refusal.dump(), Catch::Matchers::ContainsSubstring("forward_transparent"));
-    // The row above the viewport and the Frame Plan's status say which
-    // route no pass draws and what to add.
-    CHECK(notice_line.startsWith(QStringLiteral("Showing a placeholder: the rendering setup was refused")));
-    CHECK(notice_line.contains(QStringLiteral("add a forward_transparent_v1 material pass")));
-    CHECK(notice_line.contains(QStringLiteral("(material_route_unserved@1)")));
-    CHECK(notice_line.endsWith(QStringLiteral("See Problems.")));
-    CHECK(broken_status.startsWith(QStringLiteral("Showing a placeholder")));
-    CHECK(broken_status.contains(QStringLiteral("material_route_unserved@1")));
-    CHECK(broken_status != not_started_status);
-    // The engine's list: one problem, met at start, fixed in the rendering
-    // section of the root.
-    REQUIRE(problem_rows.size() == 1);
-    const auto &row = problem_rows.front();
-    CHECK(row.code == "material_route_unserved@1");
-    CHECK(row.source == "startup");
-    CHECK(row.error());
-    CHECK(row.document_kind == "root_rendering");
-    CHECK(row.document == "passes/main_rendering_config.json");
-    CHECK(row.place == ProblemRow::Place::RenderingSettings);
-    CHECK_THAT(row.sentence, Catch::Matchers::ContainsSubstring("add a forward_transparent_v1 material pass"));
+    REQUIRE(reading.state == RenderPipelineReading::State::Ready);
+    CHECK_FALSE(notice_line.startsWith(QStringLiteral("Showing a placeholder")));
+    CHECK_FALSE(broken_status.startsWith(QStringLiteral("Showing a placeholder")));
+    REQUIRE_FALSE(problem_rows.empty());
+    for (const auto &row : problem_rows) {
+        CHECK(row.code == "material.route_unserved@1");
+        CHECK(row.error());
+        CHECK(row.document_kind == "material");
+        CHECK_THAT(row.sentence, Catch::Matchers::ContainsSubstring("forward_transparent"));
+    }
     // The RPC replies were consumed by EngineProcess: stdout contributed no
     // byte to what Studio forwards.
     REQUIRE(broken.studio_output == broken.standard_error);

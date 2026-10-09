@@ -204,6 +204,32 @@ bool RenderingPassContainer::hasMaterialPasses() const {
     return false;
 }
 
+std::optional<RenderingPassContainer::SubstituteMaterialPass>
+RenderingPassContainer::substituteMaterialPass(MaterialShaderContract preferred) const {
+    std::optional<SubstituteMaterialPass> first, matching;
+    const auto collect = [&](const CompiledRenderingPass &rendering_pass) {
+        for (const auto &compiled : rendering_pass.passes) {
+            const auto &pass = compiled.definition;
+            if (!pass.isMaterial()) continue;
+            const auto contract = pass.materialInfo().contract;
+            const auto route = materialPassRoute(contract).value_or(MaterialRouteClass::deferred_geometry);
+            const auto shader = materialPassShaderContract(contract);
+            SubstituteMaterialPass candidate{pass.name, route, shader};
+            if (!first) first = candidate;
+            if (!matching && materialPassAcceptsMaterial(contract, pass.name, route, preferred, pass.name)) {
+                candidate.shader_contract = preferred;
+                matching = candidate;
+            }
+        }
+    };
+    if (const auto generation = preparationGeneration()) {
+        visitPublishedRenderingPasses(*generation, collect);
+    } else {
+        for (const auto id : registered_pass_ids) collect(rendering_passes.get(id));
+    }
+    return matching ? matching : first;
+}
+
 bool RenderingPassContainer::supportsMaterialPass(
     MaterialRouteClass route, MaterialShaderContract shader_contract,
     const std::optional<std::string> &exact_pass) const {

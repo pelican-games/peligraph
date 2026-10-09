@@ -7,6 +7,10 @@
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/material/projectmaterialasset.hpp"
+#include "../src/core/material/materialcontainer.hpp"
+#include "../src/core/material/standardmaterialresource.hpp"
+#include "../src/core/shader/shaderlibrary.hpp"
+#include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -1941,6 +1945,237 @@ TEST_CASE("EB-6 a scene object's own material no registered document holds is li
         CHECK(reddish(pixel));
     }
     GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+
+TEST_CASE("MU-1 materialdocumentrpc unserved materials stay live and draw magenta until served",
+          "[mu1][materialdocumentrpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("unserved");
+    const auto root = makeBlankBoxProject(dir.root);
+    auto custom_root = Json::parse(readFile(root / "passes/main_rendering_config.json"));
+    custom_root["rendering"]["rendering_passes"][0]["passes"][0]["material_outputs"] = {
+        {"schema", "pelican.material_outputs"}, {"version", 1}, {"name", "mu1.scene"},
+        {"outputs", Json::array({{{"name", "color"}, {"type", "vec4"}, {"source", "lighting.scene_color"}}})}};
+    writeFile(root / "passes/main_rendering_config.json", custom_root.dump(2));
+    const auto capture = dir.root / "capture.png";
+    const std::string path = "materials/paint.material.json";
+    constexpr std::string_view blend_surface = "engine://surfaces/openpbr/blend_single.surface";
+    const auto magenta = [](const Rgb &pixel) {
+        INFO("error pixel " << pixel);
+        CHECK(pixel.r >= 245);
+        CHECK(pixel.g <= 10);
+        CHECK(pixel.b >= 245);
+    };
+    const auto checkProblems = [](Rpc &rpc, std::size_t count) {
+        const auto problems = rpc.result("get_problems").at("problems");
+        INFO(problems.dump(2));
+        CHECK(problems.size() == count);
+        for (const auto &problem : problems) {
+            CHECK(problem.at("code") == "material.route_unserved@1");
+            CHECK(problem.at("fields").at("authored_route") == "forward_transparent");
+            CHECK(problem.at("fields").at("substitute_route") == "forward_opaque");
+            CHECK(problem.at("fields").at("substitute_pass") == "forward");
+        }
+        CHECK(rpc.result("get_status").at("render_pipeline").at("state") == "ready");
+    };
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        const auto actor = rpc.result("open_editor_session", {{"display_name", "MU-1"}}).at("actor_id").get<std::uint64_t>();
+        const auto spawned = rpc.edit(actor, spawnCube());
+        INFO(spawned.dump(2));
+        REQUIRE(spawned.at("status") == "committed");
+        REQUIRE(rpc.result("create_material", {{"path", path}, {"surface", openPbrOpaque},
+            {"values", {{"base_color", {0.0, 0.0, 0.0, 1.0}}, {"emission_color", {0.0, 0.0, 1.0, 1.0}},
+                        {"emission_luminance", 1.0}}}}).at("applied") == "live");
+        REQUIRE(rpc.result("bind_material", {{"model", cube}, {"material", "paint"}}).at("applied") == "live");
+        CHECK(bluish(rpc.centre(capture)));
+        checkProblems(rpc, 0);
+        const auto change = [&](bool blend) {
+            const auto digest = rpc.result("get_material", {{"path", path}}).at("material_digest");
+            const auto answer = rpc.result("edit_material", {{"path", path}, {"base_material_digest", digest},
+                {"surface", blend ? blend_surface : openPbrOpaque},
+                {"routing", {{"alpha_mode", blend ? "blend" : "opaque"}, {"double_sided", false}}}});
+            INFO(answer.dump(2));
+            CHECK(answer.at("committed") == true);
+            CHECK(answer.at("restart_required").is_null());
+            CHECK(answer.at("applied") == "rebuilt");
+        };
+        change(true);
+        auto &materials = GET_MODULE(MaterialContainer);
+        const auto id = GET_MODULE(ProjectMaterialAssetContainer).materialByName("paint");
+        CHECK(materials.routeForMaterial(id) == MaterialRouteClass::forward_opaque);
+        const auto &factory = GET_MODULE(PipelineFactory);
+        const auto &standard = factory.graphicsDesc(materials.materialPipeline(id, VertexMode::standard));
+        const auto &skinned = factory.graphicsDesc(materials.materialPipeline(id, VertexMode::skinned));
+        CHECK(standard.vert != skinned.vert);
+        CHECK(standard.frag == skinned.frag);
+        CHECK_FALSE(standard.blend);
+        CHECK(standard.depth_write);
+        CHECK(skinned.use_skinned_vertex_layout);
+        CHECK(GET_MODULE(ShaderLibrary).get(standard.vert).diagnostic_uri.find("blend_single.surface") != std::string::npos);
+        CHECK(GET_MODULE(ShaderLibrary).get(skinned.vert).diagnostic_uri.find("blend_single.surface") != std::string::npos);
+        magenta(rpc.centre(capture));
+        checkProblems(rpc, 1);
+        const auto material = rpc.result("get_material", {{"path", path}});
+        CHECK(material.at("registered") == true);
+        CHECK(material.at("route") == "forward_transparent");
+        REQUIRE(material.at("unserved").is_object());
+        CHECK(material.at("unserved").at("reason").get<std::string>().find("restore normal rendering") != std::string::npos);
+        const auto listed = rpc.result("list_materials").at("documents").at(0).at("materials").at(0);
+        CHECK(listed.at("route") == material.at("route"));
+        CHECK(listed.at("unserved") == material.at("unserved"));
+        REQUIRE(rpc.result("bind_material", {{"model", cube}, {"material", "paint"}}).at("applied") == "live");
+        change(false);
+        checkProblems(rpc, 0);
+        CHECK(bluish(rpc.centre(capture)));
+        CHECK(rpc.result("get_material", {{"path", path}}).at("unserved").is_null());
+        auto screen_source = readFile(std::filesystem::path{__FILE__}.parent_path().parent_path() /
+            "src/core/resources/surfaces/openpbr/opaque_single.surface");
+        screen_source.insert(screen_source.find("//! params:"), "//! screen_inputs: [opaque_color]\n");
+        writeFile(root / "shaders/screen.surface", screen_source);
+        CHECK(rpc.result("create_material", {{"path", "materials/screen.material.json"},
+            {"surface", "project://shaders/screen.surface"}}).at("applied") == "live");
+        checkProblems(rpc, 1);
+        CHECK(rpc.result("delete_material", {{"name", "screen"}}).at("committed") == true);
+        checkProblems(rpc, 0);
+        auto exact = GET_MODULE(StandardMaterialResource).builtinMaterialInfo("mu1.exact",
+            GET_MODULE(StandardMaterialResource).whiteTexture());
+        exact.exact_pass = "absent_pass";
+        const auto exact_id = materials.registerMaterial(std::move(exact));
+        const auto exact_status = materials.materialRouteStatus(exact_id);
+        CHECK(exact_status.at("route") == "forward_opaque");
+        CHECK(exact_status.at("unserved").at("exact_pass") == "absent_pass");
+        CHECK(exact_status.at("unserved").at("substitute_pass") == "forward");
+        (void)materials.releaseModelResources({exact_id}, {}, false);
+        checkProblems(rpc, 0);
+        change(true);
+        (void)rpc.result("save_scene");
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    // Reloading the authored blend material still uses a material-local error,
+    // including under Studio's --render-fallback launch policy.
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        GET_MODULE(EngineLaunchConfig).render_fallback = true;
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        magenta(rpc.centre(capture));
+        checkProblems(rpc, 1);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    // T4: add the receiving pass on disk, then start a new engine.
+    auto rendering = Json::parse(readFile(root / "passes/main_rendering_config.json"));
+    auto &passes = rendering.at("rendering").at("rendering_passes").at(0).at("passes");
+    passes.insert(passes.begin() + 1, Json{{"name", "transparent"}, {"type", "material"},
+        {"material_contract", "forward_transparent_v1"},
+        {"output", {{"color", {"scene_color"}}, {"depth", "scene_depth"}}},
+        {"color_load_op", "load"}, {"depth_load_op", "load"}, {"depth_store_op", "store"}});
+    writeFile(root / "passes/main_rendering_config.json", rendering.dump(2));
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        CHECK(bluish(rpc.centre(capture)));
+        checkProblems(rpc, 0);
+        CHECK(rpc.result("get_material", {{"path", path}}).at("unserved").is_null());
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    // No matching shader contract: built-ins authored for deferred draw via
+    // the first forward pass, including while StandardMaterialResource constructs.
+    const auto cross_root = makeBlankBoxProject(dir.root / "cross_contract");
+    auto cross_config = Json::parse(readFile(cross_root / "passes/main_rendering_config.json"));
+    cross_config["rendering"].erase("material_route_default");
+    writeFile(cross_root / "passes/main_rendering_config.json", cross_config.dump(2));
+    {
+        FastModuleContainer modules;
+        configureHeadless(cross_root);
+        GET_MODULE(EngineLaunchConfig).render_fallback = true;
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        const auto actor = rpc.result("open_editor_session", {{"display_name", "MU-1 cross contract"}}).at("actor_id").get<std::uint64_t>();
+        const auto spawned = rpc.edit(actor, spawnCube());
+        INFO(spawned.dump(2));
+        REQUIRE(spawned.at("status") == "committed");
+        magenta(rpc.centre(capture));
+        CHECK(rpc.result("get_status").at("render_pipeline").at("state") == "ready");
+        const auto problems = rpc.result("get_problems").at("problems");
+        REQUIRE_FALSE(problems.empty());
+        for (const auto &problem : problems) {
+            CHECK(problem.at("code") == "material.route_unserved@1");
+            CHECK(problem.at("fields").at("authored_route") == "deferred_geometry");
+            CHECK(problem.at("fields").at("substitute_route") == "forward_opaque");
+        }
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    // The existing zero-material-pass policy stays intact (UD-1): a valid
+    // fullscreen-only Blank starts normally; there is no substitute pass.
+    const auto empty_root = dir.root / "empty";
+    initializeProjectTemplate(empty_root, ProjectTemplate::Blank);
+    {
+        FastModuleContainer modules;
+        configureHeadless(empty_root);
+        GET_MODULE(EngineLaunchConfig).render_fallback = true;
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        CHECK_FALSE(GET_MODULE(RenderingPassContainer).hasMaterialPasses());
+        checkProblems(rpc, 0);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    // T3: the GLB's own BLEND material registers and draws live on Blank.
+    const auto glb_root = makeBlankBoxProject(dir.root / "gltf");
+    std::filesystem::create_directories(glb_root / "models");
+    auto bytes = TestGltfFragmentFixture::makeMaterialRoutingGlb();
+    std::uint32_t json_size = 0;
+    std::memcpy(&json_size, bytes.data() + 12, sizeof(json_size));
+    auto gltf = Json::parse(bytes.begin() + 20, bytes.begin() + 20 + json_size);
+    gltf["scenes"][0]["nodes"] = {2};
+    gltf["materials"][2]["emissiveFactor"] = {0.0, 0.0, 1.0};
+    auto text = gltf.dump();
+    while (text.size() % 4) text += ' ';
+    std::vector<std::uint8_t> blend_glb(bytes.begin(), bytes.begin() + 12);
+    TestGltfFragmentFixture::detail::appendU32(blend_glb, static_cast<std::uint32_t>(text.size()));
+    TestGltfFragmentFixture::detail::appendU32(blend_glb, 0x4e4f534a);
+    blend_glb.insert(blend_glb.end(), text.begin(), text.end());
+    blend_glb.insert(blend_glb.end(), bytes.begin() + 20 + json_size, bytes.end());
+    const auto total = static_cast<std::uint32_t>(blend_glb.size());
+    std::memcpy(blend_glb.data() + 8, &total, sizeof(total));
+    TestGltfFragmentFixture::detail::writeBytes(glb_root / "models/blend.glb", blend_glb);
+    {
+        FastModuleContainer modules;
+        configureHeadless(glb_root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        const auto registration = rpc.result("register_model", {{"path", "models/blend.glb"}, {"name", "Blend"}});
+        INFO(registration.dump(2));
+        CHECK(registration.at("committed") == true);
+        CHECK(registration.at("restart_required").is_null());
+        CHECK(registration.at("applied") == "live");
+        const auto actor = rpc.result("open_editor_session", {{"display_name", "MU-1 GLB"}}).at("actor_id").get<std::uint64_t>();
+        auto spawn = spawnCube();
+        spawn[0]["object"]["components"][1]["model"] = "Blend";
+        REQUIRE(rpc.edit(actor, spawn).at("status") == "committed");
+        magenta(rpc.centre(capture));
+        checkProblems(rpc, 1);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
 }
 
 } // namespace Pelican

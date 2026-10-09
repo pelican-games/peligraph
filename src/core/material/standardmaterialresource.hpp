@@ -37,6 +37,10 @@ DECLARE_MODULE(StandardMaterialResource) {
 
   public:
     StandardMaterialResource();
+    // Static so built-ins may use it while this module is still constructing.
+    // The cache has the module lifetime, including on a subsequent engine start.
+    static ShaderBundleId errorFragmentShader(
+        MaterialRouteClass route, const std::optional<MaterialOutputSchema> &schema, bool compact_vertex);
 
     ShaderBundleId standardVertShader() const { return std_vert; };
     ShaderBundleId skinnedVertShader() const { return skinned_vert; };
