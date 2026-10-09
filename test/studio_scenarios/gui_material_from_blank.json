@@ -766,6 +766,21 @@
       "timeout_ms": 30000
     },
     {
+      "label": "the engine has taken the red back: the material sets no values (the file is written once it has)",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_material",
+        "params": {
+          "path": "materials/material.material.json"
+        }
+      },
+      "path": "result.material",
+      "op": "lacks_key",
+      "value": "values",
+      "retry_ms": 30000
+    },
+    {
       "label": "the document no longer sets base_color",
       "file": "contains",
       "path": "{artifacts}/material_project/materials/material.material.json",
