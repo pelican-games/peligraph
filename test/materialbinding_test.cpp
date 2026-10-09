@@ -232,4 +232,20 @@ TEST_CASE("SK1 material bindings retain primitive skin mode and refuse unbaked V
         [](const auto &binding) { return binding.material == "baked-private"; });
     REQUIRE(model.material_primitives[0].material == GlobalMaterialId{10});
 }
+
+TEST_CASE("MO1 object_material coordinates are checked across material groups and vertex modes",
+          "[mo1][object_material]") {
+    auto model = twoPrimitiveModel();
+    model.material_primitives.push_back({GlobalMaterialId{20},
+        {ModelPrimitiveRefInfo{3, 6, 0, true, 1, 0}}});
+    CHECK(model.hasPrimitive(0, 0));
+    CHECK(model.hasPrimitive(0, 1));
+    CHECK(model.hasPrimitive(1, 0));
+    CHECK_FALSE(model.hasPrimitive(1, 1));
+    CHECK_FALSE(model.hasPrimitive(2, 0));
+    model.material_primitives.erase(model.material_primitives.begin() + 1);
+    CHECK_FALSE(model.hasPrimitive(1, 0));
+    model.material_primitives.clear();
+    CHECK_FALSE(model.hasPrimitive(0, 0));
+}
 } // namespace Pelican

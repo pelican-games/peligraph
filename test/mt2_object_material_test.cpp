@@ -11,6 +11,13 @@
 #include "../src/project/projecttemplate.hpp"
 #include "render_graph_root_test_support.hpp"
 #include "vulkan_test_support.hpp"
+#include "gltf_fragment_fixture.hpp"
+#include "../src/core/asset/model.hpp"
+#include "../src/core/watch/reloadservice.hpp"
+#include <quill/Frontend.h>
+#include <quill/sinks/Sink.h>
+#include <mutex>
+#include <cstring>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -439,6 +446,228 @@ TEST_CASE("MT-2 one of two Blank boxes takes its own material over RPC, drawn in
         CHECK(own.at("primitives").at(0).at("drawn") == "paint");
         GET_MODULE(VulkanManageCore).waitIdle();
     }
+}
+
+
+namespace {
+
+// Capture the actual warning, including its severity, rather than infer it
+// from Problems (which is a separate publication path).
+class Mo1LogSink final : public quill::Sink {
+  public:
+    void write_log(quill::MacroMetadata const *, std::uint64_t, std::string_view,
+                   std::string_view, std::string const &, std::string_view,
+                   quill::LogLevel level, std::string_view, std::string_view,
+                   std::vector<std::pair<std::string, std::string>> const *,
+                   std::string_view message, std::string_view) override {
+        const std::lock_guard guard{mutex};
+        if (level == quill::LogLevel::Warning) warnings.emplace_back(message);
+    }
+    void flush_sink() override {}
+    std::mutex mutex;
+    std::vector<std::string> warnings;
+};
+
+struct Mo1Log {
+    quill::Logger *previous = logger;
+    std::shared_ptr<Mo1LogSink> sink = std::static_pointer_cast<Mo1LogSink>(
+        quill::Frontend::create_or_get_sink<Mo1LogSink>("mo1_warnings"));
+    quill::Logger *capture = quill::Frontend::create_or_get_logger("mo1_warnings", sink);
+    Mo1Log() { logger = capture; }
+    ~Mo1Log() { capture->flush_log(); logger = previous; }
+    std::size_t count(std::uint64_t object, std::string_view model) {
+        capture->flush_log();
+        const std::lock_guard guard{sink->mutex};
+        std::size_t result = 0;
+        for (const auto &line : sink->warnings)
+            if (line.find("object " + std::to_string(object) + ":") != std::string::npos &&
+                line.find("mesh 1, primitive 0") != std::string::npos &&
+                line.find("material 'paint'") != std::string::npos &&
+                line.find("missing primitive in model '" + std::string{model} + "'") != std::string::npos)
+                ++result;
+        return result;
+    }
+};
+
+// Both GLBs have the same first triangle. A also has mesh 1; its removal
+// leaves the authored (1,0) override row in the scene unchanged.
+void writeMo1Model(const std::filesystem::path &path, bool two) {
+    auto bytes = TestGltfFragmentFixture::makeGlb(false, false, false, true);
+    std::uint32_t length = 0;
+    std::memcpy(&length, bytes.data() + 12, sizeof(length));
+    auto doc = Json::parse(bytes.begin() + 20, bytes.begin() + 20 + length);
+    if (!two) {
+        doc["scenes"][0]["nodes"] = {0};
+        doc["nodes"].erase(doc["nodes"].begin() + 2, doc["nodes"].end());
+        doc["meshes"].erase(doc["meshes"].begin() + 1);
+    }
+    auto text = doc.dump();
+    while (text.size() % 4) text += ' ';
+    std::vector<std::uint8_t> glb;
+    using TestGltfFragmentFixture::detail::appendU32;
+    appendU32(glb, 0x46546c67);
+    appendU32(glb, 2);
+    appendU32(glb, static_cast<std::uint32_t>(bytes.size() - length + text.size()));
+    appendU32(glb, static_cast<std::uint32_t>(text.size()));
+    appendU32(glb, 0x4e4f534a);
+    glb.insert(glb.end(), text.begin(), text.end());
+    glb.insert(glb.end(), bytes.begin() + 20 + length, bytes.end());
+    TestGltfFragmentFixture::detail::writeBytes(path, glb);
+}
+
+Json mo1Problems(Rpc &rpc) {
+    auto result = Json::array();
+    const auto listed = rpc.result("get_problems");
+    for (const auto &problem : listed.at("problems"))
+        if (problem.at("code") == "material.object_primitive_missing@1") result.push_back(problem);
+    return result;
+}
+
+} // namespace
+
+TEST_CASE("MO1 object_material rows follow model replacement reload and scene load",
+          "[mo1][mt2][object_material][gpu]") {
+    setupLogger(true);
+    Mo1Log log;
+    const auto dir = makeTempDir("mo1");
+    const auto root = makeBlankBoxProject(dir.root);
+    writeMo1Model(root / "A.glb", true);
+    writeMo1Model(root / "B.glb", false);
+    const auto project = Json::parse(readFile(root / "project.json"));
+    const auto assets_path = root / project.at("basic_config").at("asset_data_json").get<std::string>();
+    auto assets = Json::parse(readFile(assets_path));
+    assets["models"] = Json::array({{{"name", "A"}, {"path", "A.glb"}},
+                                   {{"name", "B"}, {"path", "B.glb"}}});
+    writeFile(assets_path, assets.dump(2));
+    FastModuleContainer modules;
+    configureHeadless(root);
+    (void)GET_MODULE(Renderer);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    const auto actor = rpc.result("open_editor_session", {{"display_name", "MO1"}})
+                           .at("actor_id").get<std::uint64_t>();
+    auto spawn = spawnBox("PartOwner", 0.0);
+    spawn["object"]["components"][1]["model"] = "A";
+    (void)rpc.edit(actor, Json::array({spawn}));
+    const auto object = objectId(rpc, "PartOwner");
+    const Json red{1.0, 0.0, 0.0, 1.0};
+    REQUIRE(rpc.result("create_material", {{"path", "materials/paint.material.json"},
+        {"surface", openPbrOpaque},
+        {"values", {{"base_color", red}, {"emission_color", red}, {"emission_luminance", 1.0}}}})
+        .at("applied") == "live");
+    const auto set_rows = [&](Json rows) {
+        (void)rpc.commit(rpc.result("set_object_material", {{"actor_id", actor}, {"object", object},
+            {"materials", std::move(rows)}}));
+        (void)rpc.result("step_frame");
+    };
+    const auto swap = [&](std::string_view model) {
+        (void)rpc.edit(actor, Json::array({{{"op", "set_component_value"}, {"object_id", object},
+            {"component_slot", "simplemodelview"}, {"field_path", "/model"}, {"value", model}}}));
+        (void)rpc.result("step_frame");
+    };
+    const auto check_problem = [&](std::string_view model) {
+        const auto problems = mo1Problems(rpc);
+        INFO(problems.dump(2));
+        CHECK(problems.size() == 1);
+        if (problems.size() != 1) return;
+        const auto &problem = problems[0];
+        CHECK(problem.at("severity") == "warning");
+        CHECK(problem.at("document_kind") == "scene");
+        CHECK(problem.at("document") == "project://scenes/main.scene.json");
+        CHECK(problem.at("fields").at("object") == object);
+        CHECK(problem.at("fields").at("model") == std::string{model});
+        CHECK(problem.at("fields").at("material") == "paint");
+        CHECK(problem.at("fields").at("primitive") == Json{{"mesh", 1}, {"primitive", 0}});
+        CHECK(problem.at("message").get<std::string>().find("mesh 1, primitive 0") != std::string::npos);
+        // Repeated frames must not accumulate duplicate Problems.
+        (void)rpc.result("step_frame");
+        CHECK(mo1Problems(rpc) == problems);
+    };
+    const auto check_draws = [&](std::size_t parts, bool first_painted, bool second_painted) {
+        const auto own = rpc.result("get_object_materials", {{"object", object}});
+        INFO(own.dump(2));
+        REQUIRE(own.at("primitives").size() == parts);
+        CHECK(own.at("primitives")[0].at("drawn") == (first_painted ? "paint" : "MatA"));
+        if (parts == 2) CHECK(own.at("primitives")[1].at("drawn") == (second_painted ? "paint" : "MatB"));
+        (void)rpc.result("render_frame");
+        const auto draws = forwardDraws(rpc);
+        INFO(Json(draws).dump());
+        const auto count = [&](const std::string &name) {
+            const auto found = draws.find(name);
+            return found == draws.end() ? 0ULL : found->second;
+        };
+        CHECK(count("paint") == static_cast<unsigned>(first_painted) + static_cast<unsigned>(second_painted));
+        CHECK(count("MatA") == (first_painted ? 0 : 1));
+    };
+    set_rows(Json::array({{{"material", "paint"}, {"primitive", {{"mesh", 1}, {"primitive", 0}}}}}));
+    check_draws(2, false, true);
+    CHECK(mo1Problems(rpc).empty());
+
+    // T1: the exact Inspector model-field edit; the invalid row is retained.
+    auto before = log.count(object, "B");
+    swap("B");
+    CHECK(log.count(object, "B") > before);
+    check_problem("B");
+    check_draws(1, false, false);
+    CHECK(rpc.result("get_object_materials", {{"object", object}}).at("materials").size() == 1);
+    swap("A");
+    CHECK(mo1Problems(rpc).empty());
+    check_draws(2, false, true);
+
+    // T2: hot reload changes only the template, not the scene or project names.
+    const auto reload = [&](bool two) {
+        writeMo1Model(root / "A.glb", two);
+        auto &models = GET_MODULE(ModelAssetContainer);
+        const auto revision = models.contentRevisionForTesting("A");
+        REQUIRE(GET_MODULE(watch::ReloadService).applyRequestForTesting(
+            {.key = models.reloadKey("A"), .kind = watch::ReloadKind::modified}));
+        (void)rpc.result("step_frame");
+        CHECK(models.contentRevisionForTesting("A") == revision + 1);
+    };
+    before = log.count(object, "A");
+    reload(false);
+    CHECK(log.count(object, "A") > before);
+    check_problem("A");
+    check_draws(1, false, false);
+    reload(true);
+    CHECK(mo1Problems(rpc).empty());
+    check_draws(2, false, true);
+
+    // T3: a surviving coordinate still overrides after both kinds of change.
+    set_rows(Json::array({{{"material", "paint"}, {"primitive", {{"mesh", 0}, {"primitive", 0}}}},
+                         {{"material", nullptr}, {"primitive", {{"mesh", 1}, {"primitive", 0}}}}}));
+    swap("B");
+    CHECK(mo1Problems(rpc).empty());
+    check_draws(1, true, false);
+    swap("A");
+    reload(false);
+    CHECK(mo1Problems(rpc).empty());
+    check_draws(1, true, false);
+    reload(true);
+
+    // A row without coordinates keeps its MT-2 all-primitives meaning.
+    set_rows(Json::array({{{"material", nullptr}, {"primitive", {{"mesh", 0}, {"primitive", 0}}}},
+                         {{"material", "paint"}}}));
+    swap("B");
+    CHECK(mo1Problems(rpc).empty());
+    check_draws(1, true, false);
+    swap("A");
+    check_draws(2, true, true);
+    set_rows(Json::array({{{"material", nullptr}},
+                         {{"material", "paint"}, {"primitive", {{"mesh", 1}, {"primitive", 0}}}}}));
+    swap("B");
+    (void)rpc.result("save_scene");
+    before = log.count(object, "B");
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("step_frame");
+    (void)rpc.result("step_frame");
+    CHECK(log.count(object, "B") > before);
+    check_problem("B");
+    check_draws(1, false, false);
+    swap("A");
+    CHECK(mo1Problems(rpc).empty());
+    GET_MODULE(VulkanManageCore).waitIdle();
 }
 
 } // namespace Pelican

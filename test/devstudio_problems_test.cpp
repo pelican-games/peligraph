@@ -584,3 +584,26 @@ TEST_CASE("AN-2 animation Problems open the affected object in the Inspector and
     rig.answer(2, Json::array());
     CHECK(rig.tree()->topLevelItemCount() == 0);
 }
+
+
+TEST_CASE("MO1 object_material missing primitive problem points to its scene object",
+          "[devstudio][problems][mo1]") {
+    const std::string message = "scene object PartOwner (#7) material override (mesh 1, primitive 0) "
+                                "refers to a missing primitive in model 'B'";
+    const auto row = readEngineProblem(Json{
+        {"id", "mo1-part"}, {"severity", "warning"}, {"source", "startup"},
+        {"code", "material.object_primitive_missing@1"}, {"message", message},
+        {"document", "project://scenes/main.scene.json"}, {"document_kind", "scene"},
+        {"fields", {{"object", 7}, {"name", "PartOwner"}, {"scene_id", "default_scene"},
+                    {"model", "B"}, {"material", "paint"},
+                    {"primitive", {{"mesh", 1}, {"primitive", 0}}}}}});
+    REQUIRE(row);
+    CHECK(row->severity == ProblemRow::Severity::Warning);
+    CHECK(row->sentence.find("mesh 1, primitive 0") != std::string::npos);
+    CHECK(row->sentence.find("model 'B'") != std::string::npos);
+    CHECK(row->place == ProblemRow::Place::SceneObject);
+    CHECK(row->object == 7);
+    CHECK(row->object_name == "PartOwner");
+    CHECK(row->scene_id == "default_scene");
+    CHECK(row->place_text == "Inspector: PartOwner");
+}

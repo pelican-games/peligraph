@@ -319,7 +319,7 @@ struct SceneObjectProjectionAdapter::Impl {
                         model_load->decoded);
                 auto &model = models->getModelTemplateByName(data.model);
                 staged_model.emplace(renderer->stageModelInstance(
-                    model, instanceMaterialOverrides(data.materials)));
+                    model, instanceMaterialOverrides(data.materials), prepared_target.value));
                 renderer->setStagedAuthoringObject(*staged_model, prepared_target.value);
                 staged_model_id = staged_model->id();
 
@@ -1258,7 +1258,8 @@ void RendererModelProjectionAdapter::prepare(
             continue;
         }
         auto staged = impl_->renderer.stagePreparedSceneModel(
-            *impl_->candidate, model, instanceMaterialOverrides(data.materials));
+            *impl_->candidate, model, instanceMaterialOverrides(data.materials),
+            binding.authoring_object_id.value);
         impl_->renderer.setStagedAuthoringObject(staged, binding.authoring_object_id.value);
         const auto next_id = staged.id();
         impl_->renderer.publishPreparedSceneModel(*impl_->candidate, std::move(staged));

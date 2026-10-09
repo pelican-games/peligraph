@@ -278,6 +278,7 @@ struct ProjectMaterialAssetContainer::Impl {
         std::string scene_id;
         std::string material;
         std::string model;
+        bool primitive_missing = false;
         std::optional<std::pair<std::uint32_t, std::uint32_t>> primitive;
         friend bool operator==(const UnresolvedObjectMaterial &, const UnresolvedObjectMaterial &) = default;
     };
@@ -285,6 +286,7 @@ struct ProjectMaterialAssetContainer::Impl {
     std::optional<std::string> scene_document;
     std::shared_ptr<const void> objects_scene;
     std::uint64_t objects_names_generation = 0;
+    std::map<std::string, std::pair<std::uint64_t, std::uint64_t>> objects_models;
     // EB-2: the registered document (or the refused one) the key names.
     std::optional<std::string> registeredReferenceOf(const watch::AssetKey &key) const;
     // The material problems as they are now, in the problem list.
@@ -504,6 +506,14 @@ void ProjectMaterialAssetContainer::Impl::publishProblems() const {
             {"document_kind", std::string{problemKindScene}},
             {"fields", std::move(fields)},
         };
+        if (object.primitive_missing) {
+            problem["code"] = "material.object_primitive_missing@1";
+            problem["message"] = "material.object_primitive_missing@1: scene object " + who +
+                " (#" + std::to_string(object.object) + ") material override (mesh " +
+                std::to_string(object.primitive->first) + ", primitive " +
+                std::to_string(object.primitive->second) + ") refers to a missing primitive in model '" +
+                object.model + "'";
+        }
         if (scene_document) problem["document"] = *scene_document;
         problems.push_back(std::move(problem));
     }
@@ -1181,9 +1191,18 @@ void ProjectMaterialAssetContainer::syncObjectMaterialProblems() {
         return;
     }
     auto identity = state->snapshotIdentity();
-    if (identity == impl_->objects_scene && impl_->objects_names_generation == impl_->names_generation) return;
-    impl_->objects_scene = std::move(identity);
-    impl_->objects_names_generation = impl_->names_generation;
+    // File reloads leave the scene and project material names unchanged.
+    // On unchanged frames inspect only the models used by override rows,
+    // rather than walking every scene object again.
+    const auto modelVersion = [&](const std::string &name) {
+        if (!models->hasModel(name)) return std::pair<std::uint64_t, std::uint64_t>{0, 0};
+        const auto &model = models->getModelTemplateByName(name);
+        return std::pair{model.asset_id.value, model.content_revision};
+    };
+    if (identity == impl_->objects_scene && impl_->objects_names_generation == impl_->names_generation &&
+        std::all_of(impl_->objects_models.begin(), impl_->objects_models.end(),
+                    [&](const auto &entry) { return modelVersion(entry.first) == entry.second; })) return;
+    decltype(impl_->objects_models) model_versions;
 
     const auto registered = [&](std::string_view name) {
         return std::any_of(impl_->named_materials.begin(), impl_->named_materials.end(),
@@ -1200,14 +1219,14 @@ void ProjectMaterialAssetContainer::syncObjectMaterialProblems() {
                     !list->at("rows").is_array())
                     continue;
                 const auto model = view.value("model", std::string{});
-                if (model.empty() || !models->hasModel(model)) continue;
-                const auto &glTF = models->getModelTemplateByName(model).named_materials;
+                if (model.empty()) continue;
+                model_versions.try_emplace(model, modelVersion(model));
+                if (!models->hasModel(model)) continue;
+                const auto &model_template = models->getModelTemplateByName(model);
+                const auto &glTF = model_template.named_materials;
                 for (const auto &row : list->at("rows")) {
                     if (!row.is_object() || !row.contains("material") || !row.at("material").is_string()) continue;
                     const auto material = row.at("material").get<std::string>();
-                    if (registered(material) ||
-                        std::any_of(glTF.begin(), glTF.end(), [&](const auto &named) { return named.name == material; }))
-                        continue;
                     Impl::UnresolvedObjectMaterial entry{
                         .object = object.authoring_object_id.value,
                         .name = object.name,
@@ -1219,12 +1238,20 @@ void ProjectMaterialAssetContainer::syncObjectMaterialProblems() {
                         row.at("primitive").is_number_unsigned())
                         entry.primitive = std::pair{row.at("mesh").get<std::uint32_t>(),
                                                     row.at("primitive").get<std::uint32_t>()};
+                    entry.primitive_missing = entry.primitive &&
+                        !model_template.hasPrimitive(entry.primitive->first, entry.primitive->second);
+                    if (!entry.primitive_missing && (registered(material) ||
+                        std::any_of(glTF.begin(), glTF.end(), [&](const auto &named) { return named.name == material; })))
+                        continue;
                     found.push_back(std::move(entry));
                 }
             }
         }
     }
     if (!found.empty() && !impl_->scene_document) impl_->scene_document = sceneDocumentReference();
+    impl_->objects_scene = std::move(identity);
+    impl_->objects_names_generation = impl_->names_generation;
+    impl_->objects_models = std::move(model_versions);
     if (found == impl_->unresolved_objects) return;
     impl_->unresolved_objects = std::move(found);
     impl_->publishProblems();

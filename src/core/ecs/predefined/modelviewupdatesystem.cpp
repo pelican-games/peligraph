@@ -56,7 +56,7 @@ void SimpleModelViewUpdateSystem::process(QueryComponents components, size_t cou
             const auto &model_name = m[i].model_name;
             auto &model_template = models->getModelTemplateByName(model_name);
             m[i].model_instance_id = instances->placeModelInstance(
-                model_template, instanceMaterialOverrides(m[i].materials));
+                model_template, instanceMaterialOverrides(m[i].materials), m[i].authoring_object_id);
             m[i].dirty = false;
         }
         if (m[i].model_instance_id) {

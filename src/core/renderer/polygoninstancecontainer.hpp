@@ -513,7 +513,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     // its primitives on the model's material, with a warning.
     StagedModelInstance stagePreparedSceneModel(
         PreparedSceneState &prepared, const ModelTemplate &model,
-        std::shared_ptr<const InstanceMaterialOverrides> material_overrides = nullptr);
+        std::shared_ptr<const InstanceMaterialOverrides> material_overrides = nullptr,
+        std::uint64_t authoring_object_id = 0);
     // MT-2: the live instance `id` of `model` takes `material_overrides` in
     // the candidate: its draw items are rebuilt with the materials they
     // resolve to, keeping the instance, its slot and its animation state.
@@ -533,13 +534,15 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void preflightModelInstance(const ModelTemplate &model) const;
     StagedModelInstance stageModelInstance(
         const ModelTemplate &model,
-        std::shared_ptr<const InstanceMaterialOverrides> material_overrides = nullptr);
+        std::shared_ptr<const InstanceMaterialOverrides> material_overrides = nullptr,
+        std::uint64_t authoring_object_id = 0);
     void setStagedModelMatrix(StagedModelInstance &staged,
                               const glm::mat4 &matrix) noexcept;
     void publishModelInstance(StagedModelInstance staged) noexcept;
     ModelInstanceId placeModelInstance(
         const ModelTemplate &model,
-        std::shared_ptr<const InstanceMaterialOverrides> material_overrides = nullptr);
+        std::shared_ptr<const InstanceMaterialOverrides> material_overrides = nullptr,
+        std::uint64_t authoring_object_id = 0);
     // MT-2: the material each primitive of a live instance draws with now,
     // ordered by mesh then primitive (one entry per GLB primitive).
     struct InstancePrimitiveMaterial {

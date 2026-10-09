@@ -170,6 +170,9 @@ struct ModelTemplate {
     // resolution and content reload. Ray material asset selectors use this
     // value rather than a transient path or numeric GPU identity.
     std::string authored_asset_reference;
+    // Logical project name, retained for scene override diagnostics.
+    std::string authored_model_name;
+    bool hasPrimitive(std::uint32_t mesh, std::uint32_t primitive) const noexcept;
     std::uint64_t content_revision = 1;
     std::uint64_t compatibility_revision = 0;
 };

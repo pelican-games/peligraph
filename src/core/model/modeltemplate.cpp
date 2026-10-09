@@ -5,6 +5,13 @@
 #include <unordered_set>
 
 namespace Pelican {
+
+bool ModelTemplate::hasPrimitive(std::uint32_t mesh, std::uint32_t primitive) const noexcept {
+    for (const auto &group : material_primitives)
+        for (const auto &part : group.primitives)
+            if (part.mesh_index == mesh && part.primitive_index == primitive) return true;
+    return false;
+}
 namespace {
 
 std::uint64_t primitiveKey(std::uint32_t mesh, std::uint32_t primitive) {

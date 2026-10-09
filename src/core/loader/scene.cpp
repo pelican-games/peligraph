@@ -1060,7 +1060,7 @@ struct RendererParticipant final : TransactionParticipant {
                         object.authoring_object_id, object.name), PhysWorldTransform{});
                 auto staged = renderer.stagePreparedSceneModel(
                     t.renderer_candidate, model,
-                    instanceMaterialOverrides(model_view.materials));
+                    instanceMaterialOverrides(model_view.materials), object.authoring_object_id.value);
                 object.prepared_model_instance = staged.id();
                 renderer.publishPreparedSceneModel(t.renderer_candidate,
                                                     std::move(staged));

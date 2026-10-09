@@ -473,10 +473,20 @@ std::optional<GlobalMaterialId> findNamedMaterial(const ModelTemplate &model,
 }
 
 ResolvedInstanceMaterials resolveInstanceMaterials(
-    const ModelTemplate &model, const InstanceMaterialOverrides *overrides) {
+    const ModelTemplate &model, const InstanceMaterialOverrides *overrides,
+    std::uint64_t authoring_object_id) {
     ResolvedInstanceMaterials result;
     if (overrides == nullptr) return result;
     for (const auto &entry : *overrides) {
+        if (entry.primitive && !model.hasPrimitive(entry.primitive->first, entry.primitive->second)) {
+            LOG_WARNING(logger,
+                        "object {}: material override (mesh {}, primitive {}) with material '{}' "
+                        "refers to a missing primitive in model '{}'; ignoring the row",
+                        authoring_object_id, entry.primitive->first, entry.primitive->second,
+                        entry.material, model.authored_model_name.empty()
+                            ? model.authored_asset_reference : model.authored_model_name);
+            continue;
+        }
         const auto material = findNamedMaterial(model, entry.material);
         if (!material) {
             LOG_WARNING(logger,
@@ -499,10 +509,10 @@ ResolvedInstanceMaterials resolveInstanceMaterials(
 void appendModelDrawItems(std::vector<DrawItemSnapshot> &items,
                           ModelInstanceId id, const ModelTemplate &model,
                           const InstanceMaterialOverrides *overrides,
+                          std::uint64_t authoring_object_id,
                           std::uint64_t *next_ordinal = nullptr) {
-    if (primitiveCount(model) == 0) return;
     const auto &materials = GET_MODULE(MaterialContainer);
-    const auto resolved = resolveInstanceMaterials(model, overrides);
+    const auto resolved = resolveInstanceMaterials(model, overrides, authoring_object_id);
     for (const auto &group : model.material_primitives) {
         for (const auto &primitive : group.primitives) {
             const auto material = resolved.effective(primitive, group.material);
@@ -757,7 +767,8 @@ void PolygonInstanceContainer::publishPreparedScene(
 
 StagedModelInstance PolygonInstanceContainer::stagePreparedSceneModel(
     PreparedSceneState &prepared, const ModelTemplate &model,
-    std::shared_ptr<const InstanceMaterialOverrides> material_overrides) {
+    std::shared_ptr<const InstanceMaterialOverrides> material_overrides,
+    std::uint64_t authoring_object_id) {
     const auto primitive_count = primitiveCount(model);
     if (prepared.slots.instance_slots.liveCount() >= maxActiveModelInstances ||
         (!prepared.slots.instance_slots.hasReusableSlot() &&
@@ -780,6 +791,7 @@ StagedModelInstance PolygonInstanceContainer::stagePreparedSceneModel(
     const auto index = staged->id.index;
     const auto reuse = index != prepared.slots.slotCount();
     staged->seed.asset_id = model.asset_id;
+    staged->seed.authoring_object_id = authoring_object_id;
     staged->seed.material_initial_values = model.material_initial_values;
     staged->seed.vrm_semantic = model.vrm_semantic;
     staged->seed.morph_layout = model.morph_targets;
@@ -807,7 +819,7 @@ StagedModelInstance PolygonInstanceContainer::stagePreparedSceneModel(
     };
     staged->draw_items.reserve(primitive_count);
     appendModelDrawItems(staged->draw_items, staged->id, model,
-                         material_overrides.get());
+                         material_overrides.get(), authoring_object_id);
     staged->seed.material_overrides = std::move(material_overrides);
 
     const auto capacity = prepared.slots.slotCount() + (reuse ? 0U : 1U);
@@ -924,7 +936,8 @@ void PolygonInstanceContainer::preflightModelInstance(const ModelTemplate &model
 
 StagedModelInstance PolygonInstanceContainer::stageModelInstance(
     const ModelTemplate &model,
-    std::shared_ptr<const InstanceMaterialOverrides> material_overrides) {
+    std::shared_ptr<const InstanceMaterialOverrides> material_overrides,
+    std::uint64_t authoring_object_id) {
     preflightModelInstance(model);
 
     auto staged = std::make_unique<StagedModelInstance::Impl>();
@@ -933,6 +946,7 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(
     const auto index = staged->id.index;
     const auto reuse = index != slots.slotCount();
     staged->seed.asset_id = model.asset_id;
+    staged->seed.authoring_object_id = authoring_object_id;
     staged->seed.material_initial_values = model.material_initial_values;
     staged->seed.vrm_semantic = model.vrm_semantic;
     staged->seed.morph_layout = model.morph_targets;
@@ -961,7 +975,7 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(
     const auto draw_item_count = primitiveCount(model);
     staged->draw_items.reserve(draw_item_count);
     appendModelDrawItems(staged->draw_items, staged->id, model,
-                         material_overrides.get());
+                         material_overrides.get(), authoring_object_id);
     staged->seed.material_overrides = std::move(material_overrides);
 
     // Reserve every live container before publication. Once this succeeds,
@@ -1008,8 +1022,9 @@ void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) 
 
 ModelInstanceId PolygonInstanceContainer::placeModelInstance(
     const ModelTemplate &model,
-    std::shared_ptr<const InstanceMaterialOverrides> material_overrides) {
-    auto staged = stageModelInstance(model, std::move(material_overrides));
+    std::shared_ptr<const InstanceMaterialOverrides> material_overrides,
+    std::uint64_t authoring_object_id) {
+    auto staged = stageModelInstance(model, std::move(material_overrides), authoring_object_id);
     const auto id = staged.id();
     publishModelInstance(std::move(staged));
     return id;
@@ -1032,7 +1047,8 @@ void PolygonInstanceContainer::setPreparedSceneModelMaterials(
             ordinals.push_back(item.declaration_ordinal);
     std::vector<DrawItemSnapshot> items;
     items.reserve(primitiveCount(model));
-    appendModelDrawItems(items, id, model, material_overrides.get());
+    appendModelDrawItems(items, id, model, material_overrides.get(),
+                         prepared.slots.ray_authoring_object_ids.at(index));
     if (items.size() != ordinals.size()) {
         throw std::logic_error(
             "setPreparedSceneModelMaterials: the instance's draw items do not match its model");
@@ -1477,6 +1493,7 @@ PolygonInstanceContainer::prepareModelInstanceRebuild(
         // MT-2: the object's overrides, resolved against the new template.
         appendModelDrawItems(rebuilt, instance_id, replacement,
                              next.material_override_specs[instance].get(),
+                             next.ray_authoring_object_ids[instance],
                              &next_declaration_ordinal);
 
         const auto asset = next.model_asset_ids[instance].value;

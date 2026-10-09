@@ -508,6 +508,7 @@ struct ModelAssetContainer::Impl {
             throw std::runtime_error("duplicate model asset name: " + declaration.name);
         model.asset_id = ModelAssetId{next_asset_identity++};
         model.authored_asset_reference = declaration.reference;
+        model.authored_model_name = declaration.name;
         model.content_revision = 1;
         model.compatibility_revision = 0;
         const auto name = declaration.name;
@@ -747,6 +748,7 @@ watch::ReloadTransactionGroup ModelAssetContainer::makeReloadGroup(
                 model.asset_id = record.model.asset_id;
                 model.authored_asset_reference =
                     record.declaration.reference;
+                model.authored_model_name = record.declaration.name;
                 model.content_revision = current->content_revision + 1;
                 model.compatibility_revision = current->compatibility_revision +
                                                (item.rig_changed ? 1u : 0u);

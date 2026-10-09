@@ -181,6 +181,7 @@ void placeOf(ProblemRow &row) {
     // EB-6s, decision 5 (engine EB-6): fixed on the object -- its Material
     // row in the Inspector -- or by registering the material it names.
     if ((row.code == "material.object_material_unresolved@1" ||
+         row.code == "material.object_primitive_missing@1" ||
          row.code == "animation.component_invalid@1") && numberOf(row.fields, "object") > 0) {
         row.object = static_cast<std::uint64_t>(numberOf(row.fields, "object"));
         row.object_name = stringOf(row.fields, "name");
