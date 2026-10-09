@@ -1018,9 +1018,17 @@ AutomationReply commandList(const AutomationHost &host,
 // Ignore passive decoration, but respect the first mouse/selection surface in
 // Qt's stacking order. A body's selectable node is an independent target even
 // though the loop frame is its graphics ancestor.
+// A target that takes no press itself (a node's heading) is clicked through
+// the item that owns it: the press lands on an ancestor with no independently
+// selectable item between them, and that is the click the target names.
 bool clickBelongsTo(const QGraphicsItem *hit, const QGraphicsItem *target) {
     for (auto *item = hit; item != nullptr; item = item->parentItem()) {
         if (item == target) return true;
+        if (item->flags().testFlag(QGraphicsItem::ItemIsSelectable)) break;
+    }
+    if (hit == nullptr) return false;
+    for (auto *item = target->parentItem(); item != nullptr; item = item->parentItem()) {
+        if (item == hit) return true;
         if (item->flags().testFlag(QGraphicsItem::ItemIsSelectable)) return false;
     }
     return false;
