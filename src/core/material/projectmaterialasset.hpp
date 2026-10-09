@@ -138,7 +138,9 @@ DECLARE_MODULE(ProjectMaterialAssetContainer) {
     // FO-1 / EB-2: `materials` empty takes the model's warning off (its
     // bindings resolve again).
     void noteUnresolvedBindings(const std::string &model,
-                                std::vector<std::string> materials);
+                                std::vector<std::string> materials,
+                                nlohmann::json rows = nlohmann::json::array(),
+                                std::string_view source = "startup");
     // EB-6: the materials the model's bindings name that it draws with its
     // own material instead (the warning above), empty when none.
     std::vector<std::string> unresolvedBindings(std::string_view model) const;

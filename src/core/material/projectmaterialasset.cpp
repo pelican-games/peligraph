@@ -264,6 +264,7 @@ struct ProjectMaterialAssetContainer::Impl {
     // whose bindings kept their own material for want of them.
     std::map<std::string, RefusedDocument, std::less<>> refused;
     std::map<std::string, std::vector<std::string>> unresolved_bindings;
+    std::map<std::string, nlohmann::json> binding_details;
     // EB-2: registered documents whose last values reload did not read, by
     // reference.
     std::map<std::string, RefusedDocument, std::less<>> reload_failures;
@@ -511,13 +512,13 @@ void ProjectMaterialAssetContainer::Impl::publishProblems() const {
         for (const auto &material : materials) names += (names.empty() ? "'" : ", '") + material + "'";
         problems.push_back({
             {"severity", std::string{problemSeverityWarning}},
-            {"source", std::string{problemSourceStartup}},
+            {"source", binding_details.at(model).at("source")},
             {"code", "material.binding_unresolved@1"},
             {"message", "material.binding_unresolved@1: model '" + model + "' binds " + names +
                             ", which no registered material document holds; its primitives draw with the "
                             "model's own material"},
             {"document_kind", std::string{problemKindMaterial}},
-            {"fields", {{"model", model}, {"materials", materials}}},
+            {"fields", {{"model", model}, {"materials", materials}, {"rows", binding_details.at(model).at("rows")}}},
         });
     }
     auto *list = FastModuleContainer::tryGet<ProblemList>();
@@ -959,16 +960,20 @@ bool ProjectMaterialAssetContainer::hasRefusedDocuments() const noexcept {
 }
 
 void ProjectMaterialAssetContainer::noteUnresolvedBindings(
-    const std::string &model, std::vector<std::string> materials) {
+    const std::string &model, std::vector<std::string> materials,
+    nlohmann::json rows, std::string_view source) {
     std::sort(materials.begin(), materials.end());
     materials.erase(std::unique(materials.begin(), materials.end()), materials.end());
     if (materials.empty()) {
         // EB-2: the model's bindings resolve again.
+        impl_->binding_details.erase(model);
         if (impl_->unresolved_bindings.erase(model) != 0) impl_->publishProblems();
         return;
     }
     auto &noted = impl_->unresolved_bindings[model];
-    if (noted == materials) return;
+    const nlohmann::json details{{"rows", std::move(rows)}, {"source", std::string{source}}};
+    if (noted == materials && impl_->binding_details[model] == details) return;
+    impl_->binding_details[model] = details;
     noted = std::move(materials);
     impl_->publishProblems();
 }
@@ -1068,6 +1073,7 @@ ProjectMaterialAssetContainer::recoverDocument(const std::string &reference) {
             // A rebuild that throws leaves the models as they were: their
             // warnings come back with them.
             const auto noted = impl_->unresolved_bindings;
+            const auto binding_details = impl_->binding_details;
             try {
                 std::vector<watch::AssetKey> keys;
                 for (const auto &model : models) {
@@ -1081,6 +1087,7 @@ ProjectMaterialAssetContainer::recoverDocument(const std::string &reference) {
                 // The previous registration stays: the models still draw it.
                 result.rebuilt_models.clear();
                 impl_->unresolved_bindings = noted;
+                impl_->binding_details = binding_details;
                 result.restart_reason = "the material document is registered, but the models binding its materials "
                                         "could not be rebuilt in place: " +
                                         std::string{error.what()};

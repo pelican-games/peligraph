@@ -101,19 +101,21 @@ void applyPrimitiveMaterialBindings(
         }
     }
 
+    std::vector<MaterialBindingIssue> issues;
     std::unordered_set<std::string> usd_paths;
     std::unordered_map<std::uint64_t, GlobalMaterialId> resolved;
-    for (const auto &binding : document.bindings) {
+    for (std::size_t row = 0; row < document.bindings.size(); ++row) {
+        const auto &binding = document.bindings[row];
         if (!usd_paths.insert(binding.usd_path).second) {
             throw std::runtime_error(context + " has duplicate USD path '" +
                                      binding.usd_path + "'");
         }
         const auto key = primitiveKey(binding.mesh_index, binding.primitive_index);
         if (!available.contains(key)) {
-            throw std::runtime_error(context + " USD path '" + binding.usd_path +
-                                     "' targets missing " +
-                                     primitiveText(binding.mesh_index,
-                                                   binding.primitive_index));
+            issues.push_back({row, binding.mesh_index, binding.primitive_index,
+                              binding.usd_path, {}, "targets missing " +
+                              primitiveText(binding.mesh_index, binding.primitive_index)});
+            continue;
         }
         if (resolved.contains(key)) {
             throw std::runtime_error(context + " has a collision at " +
@@ -140,14 +142,13 @@ void applyPrimitiveMaterialBindings(
             gltf_material != nullptr
                 ? gltf_material
                 : project_material;
-        if (material == nullptr && keep_own_material && keep_own_material(binding)) {
+        if (material == nullptr) {
+            if (keep_own_material) (void)keep_own_material(binding);
+            issues.push_back({row, binding.mesh_index, binding.primitive_index,
+                              binding.usd_path, binding.material,
+                              "references missing material '" + binding.material + "'"});
             resolved.emplace(key, own_material.at(key));
             continue;
-        }
-        if (material == nullptr) {
-            throw std::runtime_error(context + " USD path '" + binding.usd_path +
-                                     "' references missing material '" +
-                                     binding.material + "'");
         }
         if (available.at(key)->vat_deformed && !material->vat_playback) {
             throw std::runtime_error(context + " " +
@@ -175,9 +176,10 @@ void applyPrimitiveMaterialBindings(
 
     for (const auto &[key, primitive] : available) {
         if (!resolved.contains(key)) {
-            throw std::runtime_error(context + " is missing a binding for " +
-                                     primitiveText(primitive->mesh_index,
-                                                   primitive->primitive_index));
+            issues.push_back({std::nullopt, primitive->mesh_index, primitive->primitive_index,
+                              {}, {}, "is missing a binding for " +
+                              primitiveText(primitive->mesh_index, primitive->primitive_index)});
+            resolved.emplace(key, own_material.at(key));
         }
     }
 
@@ -203,6 +205,7 @@ void applyPrimitiveMaterialBindings(
         }
     }
     model.material_primitives = std::move(regrouped);
+    model.binding_issues = std::move(issues);
 }
 
 } // namespace Pelican

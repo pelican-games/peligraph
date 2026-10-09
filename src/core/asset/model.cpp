@@ -19,6 +19,7 @@
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../startup.hpp"
 #include "../watch/assetkey.hpp"
+#include "../watch/problemlist.hpp"
 #include "../watch/reloadqueue.hpp"
 #include "../watch/reloadtransaction.hpp"
 #include "../../project/materialformat.hpp"
@@ -218,29 +219,52 @@ void applyDeclarationBindings(ModelTemplate &model,
         declaration.name);
     if (!declaration.material_bindings) return;
     const auto fragment = fragmentText(declaration.fragment);
-    // FO-1: while a listed material document was refused at start, a binding
-    // to a material nothing registered keeps the primitive's own material
-    // (a warning in the problem list) instead of refusing the model.
-    std::vector<std::string> unresolved;
     applyPrimitiveMaterialBindings(
         model, *declaration.material_bindings, declaration.name,
         fragment.empty() ? std::nullopt
                          : std::optional<std::string_view>{fragment},
-        project_materials,
-        [&](const PrimitiveMaterialBinding &binding) {
-            if (!project.hasRefusedDocuments()) return false;
-            unresolved.push_back(binding.material);
-            return true;
-        });
-    if (!unresolved.empty()) {
-        LOG_WARNING(logger,
-                    "model '{}': its material bindings name material(s) no registered document holds; "
-                    "those primitives draw with the model's own material",
-                    declaration.name);
+        project_materials);
+}
+
+// Only a published generation may change Problems. Inspect/preflight and
+// failed reload candidates keep their diagnostics private.
+void publishBindingProblems(const ModelTemplate &model, const std::string &name,
+                            std::string_view source) {
+    std::vector<std::string> unresolved;
+    auto rows = nlohmann::json::array();
+    std::string reasons;
+    auto unresolved_rows = nlohmann::json::array();
+    for (const auto &issue : model.binding_issues) {
+        LOG_WARNING(logger, "model '{}': material bindings row {}: {}",
+                    name, issue.row ? std::to_string(*issue.row) : std::string{"<missing>"}, issue.reason);
+        if (!issue.material.empty()) {
+            unresolved.push_back(issue.material);
+            unresolved_rows.push_back({{"row", *issue.row}, {"mesh", issue.mesh},
+                                       {"primitive", issue.primitive}, {"usd_path", issue.usd_path},
+                                       {"material", issue.material}, {"reason", issue.reason}});
+            continue;
+        }
+        reasons += (reasons.empty() ? "" : "; ") +
+                   std::string{"row "} + (issue.row ? std::to_string(*issue.row) : "<missing>") +
+                   ": " + issue.reason;
+        rows.push_back({{"row", issue.row ? nlohmann::json(*issue.row) : nlohmann::json(nullptr)},
+                        {"mesh", issue.mesh}, {"primitive", issue.primitive},
+                        {"usd_path", issue.usd_path}, {"reason", issue.reason}});
     }
-    // EB-2: empty takes a warning noted before off (a document refused at
-    // start registered since, and the model rebuilt).
-    project.noteUnresolvedBindings(declaration.name, std::move(unresolved));
+    GET_MODULE(ProjectMaterialAssetContainer).noteUnresolvedBindings(
+        name, std::move(unresolved), std::move(unresolved_rows), source);
+    std::vector<nlohmann::json> problems;
+    if (!rows.empty()) {
+        problems.push_back({
+            {"severity", std::string{problemSeverityWarning}},
+            {"source", std::string{source}},
+            {"code", "model.bindings_stale@1"},
+            {"message", "model '" + name + "': material bindings no longer match its primitives; " +
+                        reasons},
+            {"document_kind", std::string{problemKindMaterial}},
+            {"fields", {{"model", name}, {"rows", std::move(rows)}}}});
+    }
+    GET_MODULE(ProblemList).replace("model_bindings/" + name, std::move(problems));
 }
 
 std::set<std::string> occurrenceIds(const ModelTemplate &model) {
@@ -492,6 +516,7 @@ struct ModelAssetContainer::Impl {
         if (!inserted) throw std::runtime_error("failed to register model asset: " + name);
         for (const auto &key : found->second.dependencies) by_source[key].insert(name);
         declare(found->second);
+        publishBindingProblems(found->second.model, name, problemSourceStartup);
     }
 
     void publishBatch(const std::shared_ptr<CommitBatch> &batch) noexcept {
@@ -841,6 +866,14 @@ watch::ReloadTransactionGroup ModelAssetContainer::makeReloadGroup(
     });
     group.setPublish([this, batch]() noexcept {
         impl_->publishBatch(batch);
+        // Publication itself is no-throw. A diagnostic allocation failure must
+        // never turn an already installed generation into a failed transaction.
+        try {
+            for (const auto &name : batch->names)
+                publishBindingProblems(impl_->records.at(name).model, name, problemSourceHotReload);
+        } catch (const std::exception &error) {
+            LOG_WARNING(logger, "could not publish model binding diagnostics: {}", error.what());
+        }
     });
     group.setRollback([batch]() noexcept {
         batch->renderer_candidate.reset();
@@ -1013,6 +1046,7 @@ std::optional<std::string> ModelAssetContainer::unregisterModel(const std::strin
     // read its resources.
     ReleaseErrorSink::record("unregistered model release", releaseModelGpuResources(record.model, true));
     impl_->records.erase(found);
+    publishBindingProblems(ModelTemplate{}, name, problemSourceEditRpc);
     return std::nullopt;
 }
 

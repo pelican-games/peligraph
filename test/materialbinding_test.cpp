@@ -66,23 +66,26 @@ TEST_CASE("model template consumes whole-model primitive material bindings",
     REQUIRE(model.material_primitives[1].primitives.front().primitive_index == 1);
 }
 
-TEST_CASE("model template binding errors name missing material mapping and fragment",
+TEST_CASE("MR1 model bindings recover missing materials and uncovered primitives but reject fragments",
           "[material-binding][model-template][error]") {
     auto missing_mapping = bindingDocument();
     missing_mapping.bindings.pop_back();
     auto model = twoPrimitiveModel();
-    REQUIRE_THROWS_WITH(applyPrimitiveMaterialBindings(model, missing_mapping, "two"),
-                        Catch::Matchers::ContainsSubstring("two") &&
-                            Catch::Matchers::ContainsSubstring("missing a binding") &&
-                            Catch::Matchers::ContainsSubstring("primitive 1"));
+    REQUIRE_NOTHROW(applyPrimitiveMaterialBindings(model, missing_mapping, "two"));
+    REQUIRE(model.binding_issues.size() == 1);
+    CHECK_FALSE(model.binding_issues[0].row);
+    CHECK(model.binding_issues[0].primitive == 1);
+    CHECK(model.material_primitives[1].material == GlobalMaterialId{10});
 
     auto missing_material = bindingDocument();
     missing_material.bindings.front().material = "absent";
     model = twoPrimitiveModel();
-    REQUIRE_THROWS_WITH(applyPrimitiveMaterialBindings(model, missing_material, "two"),
-                        Catch::Matchers::ContainsSubstring("/World/First") &&
-                            Catch::Matchers::ContainsSubstring("absent") &&
-                            Catch::Matchers::ContainsSubstring("missing material"));
+    REQUIRE_NOTHROW(applyPrimitiveMaterialBindings(model, missing_material, "two"));
+    REQUIRE(model.binding_issues.size() == 1);
+    CHECK(model.binding_issues[0].row == 0);
+    CHECK(model.binding_issues[0].usd_path == "/World/First");
+    CHECK(model.binding_issues[0].material == "absent");
+    CHECK(model.material_primitives[0].material == GlobalMaterialId{10});
 
     model = twoPrimitiveModel();
     REQUIRE_THROWS_WITH(
@@ -91,6 +94,21 @@ TEST_CASE("model template binding errors name missing material mapping and fragm
         Catch::Matchers::ContainsSubstring("two") &&
             Catch::Matchers::ContainsSubstring("mesh/Body") &&
             Catch::Matchers::ContainsSubstring("whole-model"));
+}
+
+TEST_CASE("MR1 stale binding rows preserve valid bindings and primitive modes", "[mr1][material-binding]") {
+    auto model = twoPrimitiveModel();
+    model.material_primitives[0].primitives.resize(1);
+    model.material_primitives[0].primitives[0].skinned = true;
+    REQUIRE_NOTHROW(applyPrimitiveMaterialBindings(model, bindingDocument(), "two"));
+    REQUIRE(model.binding_issues.size() == 1);
+    CHECK(model.binding_issues[0].row == 1);
+    CHECK(model.binding_issues[0].reason.find("targets missing") != std::string::npos);
+    CHECK(model.material_primitives[0].material == GlobalMaterialId{20});
+    CHECK(model.material_primitives[0].primitives[0].skinned);
+    model = twoPrimitiveModel();
+    applyPrimitiveMaterialBindings(model, bindingDocument(), "two");
+    CHECK(model.binding_issues.empty());
 }
 
 TEST_CASE("binding routing is consumed and project names extend the resolution domain",

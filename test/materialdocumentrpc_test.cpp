@@ -28,6 +28,7 @@
 #include <cmath>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -2178,4 +2179,177 @@ TEST_CASE("MU-1 materialdocumentrpc unserved materials stay live and draw magent
     }
 }
 
+} // namespace Pelican
+
+
+
+namespace Pelican {
+TEST_CASE("MR1 stale model bindings survive startup reload and repair over RPC", "[mr1][modelhotreload][materialdocumentrpc][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("mr1");
+    const auto root = makeBlankBoxProject(dir.root);
+    const auto glb = root / "models/two.glb";
+    std::filesystem::create_directories(glb.parent_path());
+    const auto full = TestGltfFragmentFixture::makeGlb(false, false, false, true);
+    const auto single = [&] {
+        std::uint32_t length = 0;
+        std::memcpy(&length, full.data() + 12, 4);
+        auto json = Json::parse(full.begin() + 20, full.begin() + 20 + length);
+        json["scenes"][0]["nodes"] = {0};
+        json["nodes"].erase(json["nodes"].begin() + 2, json["nodes"].end());
+        json["meshes"].erase(json["meshes"].begin() + 1);
+        auto bytes = json.dump();
+        while (bytes.size() % 4) bytes += ' ';
+        std::vector<std::uint8_t> result;
+        using TestGltfFragmentFixture::detail::appendU32;
+        appendU32(result, 0x46546c67);
+        appendU32(result, 2);
+        appendU32(result, static_cast<std::uint32_t>(20 + bytes.size() + full.size() - 20 - length));
+        appendU32(result, static_cast<std::uint32_t>(bytes.size()));
+        appendU32(result, 0x4e4f534a);
+        result.insert(result.end(), bytes.begin(), bytes.end());
+        result.insert(result.end(), full.begin() + 20 + length, full.end());
+        return result;
+    }();
+    const auto writeModel = [&](const auto &bytes) { TestGltfFragmentFixture::detail::writeBytes(glb, bytes); };
+    writeModel(full);
+    std::string reference;
+    std::string saved_bindings;
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        REQUIRE(rpc.result("register_model", {{"path", "models/two.glb"}, {"name", "two"}}).at("committed") == true);
+        REQUIRE(rpc.result("create_material", {{"path", "materials/paint.material.json"},
+                                               {"surface", openPbrOpaque}}).at("applied") == "live");
+        const auto bound = rpc.result("bind_material", {{"model", "two"}, {"material", "paint"}});
+        REQUIRE(bound.at("applied") == "live");
+        reference = bound.at("material_bindings").get<std::string>();
+        saved_bindings = readFile(root / reference);
+        REQUIRE(Json::parse(saved_bindings).at("bindings").size() == 2);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    const auto checkDrawn = [](ModelAssetContainer &models, bool paint, std::size_t count) {
+        const auto &model = models.getModelTemplateByName("two");
+        std::size_t found = 0;
+        const auto project_materials = GET_MODULE(ProjectMaterialAssetContainer).namedMaterials();
+        REQUIRE(project_materials.size() == 1);
+        for (const auto &group : model.material_primitives) {
+            CHECK((group.material == project_materials.front().material) == paint);
+            found += group.primitives.size();
+        }
+        CHECK(found == count);
+    };
+    writeModel(single);
+    {
+        // T1: a valid remaining row still applies (decision 1a).
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        auto &models = GET_MODULE(ModelAssetContainer);
+        Rpc rpc;
+        checkDrawn(models, true, 1);
+        const auto problems = rpc.result("get_problems").at("problems");
+        REQUIRE(problems.size() == 1);
+        CHECK(problems[0].at("code") == "model.bindings_stale@1");
+        CHECK(problems[0].at("fields").at("model") == "two");
+        CHECK(problems[0].at("fields").at("rows")[0].at("row") == 1);
+        CHECK(rpc.result("get_material_bindings", {{"model", "two"}}).at("primitives").size() == 1);
+        CHECK(readFile(root / reference) == saved_bindings);
+        // Restore the GLB without touching its bindings: Problems disappears.
+        writeModel(full);
+        auto &reload = GET_MODULE(watch::ReloadService);
+        const auto request = watch::ReloadRequest{.key = watch::makeAssetKey("models/two.glb"),
+                                                  .kind = watch::ReloadKind::modified};
+        REQUIRE(reload.applyRequestForTesting(request));
+        checkDrawn(models, true, 2);
+        CHECK(rpc.result("get_problems").at("problems").empty());
+        const auto revision = models.contentRevisionForTesting("two");
+        // T3: the live generation is replaced despite the obsolete second row.
+        writeModel(single);
+        // A candidate can be valid and still fail at prepare-publish. It must
+        // not leak its stale-binding warning into the live generation.
+        auto rejected = models.makeReloadGroup(std::span{&request, std::size_t{1}}, reload.transactions());
+        rejected.setPreparePublish([] { throw std::runtime_error("MR1 late candidate refusal"); });
+        REQUIRE_THROWS(reload.transactions().prepare(std::move(rejected)));
+        CHECK(models.contentRevisionForTesting("two") == revision);
+        CHECK(rpc.result("get_problems").at("problems").empty());
+        REQUIRE(reload.applyRequestForTesting(request));
+        CHECK(models.contentRevisionForTesting("two") == revision + 1);
+        checkDrawn(models, true, 1);
+        REQUIRE(rpc.result("get_problems").at("problems").size() == 1);
+        CHECK(rpc.result("get_problems").at("problems")[0].at("source") == "hot_reload");
+        const auto current_problems = rpc.result("get_problems");
+        // Unreadable model files remain hard errors; the old generation and diagnostics survive.
+        writeFile(glb, "broken glb");
+        CHECK_FALSE(reload.applyRequestForTesting(request));
+        CHECK(models.contentRevisionForTesting("two") == revision + 1);
+        CHECK(rpc.result("get_problems") == current_problems);
+        writeModel(single);
+        // Even rebinding to the already active material must remove the obsolete row.
+        REQUIRE(rpc.result("bind_material", {{"model", "two"}, {"material", "paint"}}).at("applied") == "live");
+        CHECK(Json::parse(readFile(root / reference)).at("bindings").size() == 1);
+        CHECK(rpc.result("get_problems").at("problems").empty());
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    writeModel(full);
+    auto missing = Json::parse(saved_bindings);
+    for (auto &row : missing["bindings"]) row["material"] = "absent";
+    writeFile(root / reference, missing.dump(2));
+    {
+        // T2: the material document is healthy; only the binding name is stale.
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        auto &models = GET_MODULE(ModelAssetContainer);
+        Rpc rpc;
+        CHECK_FALSE(GET_MODULE(ProjectMaterialAssetContainer).hasRefusedDocuments());
+        checkDrawn(models, false, 2);
+        const auto problems = rpc.result("get_problems").at("problems");
+        REQUIRE(problems.size() == 1);
+        CHECK(problems[0].at("code") == "material.binding_unresolved@1");
+        CHECK(problems[0].at("message").get<std::string>().find("model's own material") != std::string::npos);
+        REQUIRE(problems[0].at("fields").at("rows").size() == 2);
+        CHECK(problems[0].at("fields").at("rows")[0].at("row") == 0);
+        CHECK(problems[0].at("fields").at("rows")[0].at("reason").get<std::string>().find("absent") != std::string::npos);
+        // A targeted repair must also normalize the other unresolved row to its own material.
+        REQUIRE(rpc.result("bind_material", {{"model", "two"}, {"material", "paint"},
+            {"primitive", {{"mesh", 0}, {"primitive", 0}}}}).at("applied") == "live");
+        const auto repaired = Json::parse(readFile(root / reference));
+        CHECK(repaired.at("bindings")[0].at("material") == "paint");
+        CHECK(repaired.at("bindings")[1].at("material") == "MatB");
+        CHECK(rpc.result("get_problems").at("problems").empty());
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    // A newly added primitive that has no row keeps its own material, and bind repairs coverage.
+    auto partial = Json::parse(saved_bindings);
+    partial["bindings"].erase(partial["bindings"].begin() + 1);
+    writeFile(root / reference, partial.dump(2));
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        auto &models = GET_MODULE(ModelAssetContainer);
+        Rpc rpc;
+        REQUIRE(models.getModelTemplateByName("two").binding_issues.size() == 1);
+        const auto &partial_model = models.getModelTemplateByName("two");
+        const auto own = std::find_if(partial_model.named_materials.begin(), partial_model.named_materials.end(),
+                                     [](const auto &material) { return material.name == "MatB"; });
+        REQUIRE(own != partial_model.named_materials.end());
+        bool own_drawn = false;
+        for (const auto &group : partial_model.material_primitives)
+            for (const auto &primitive : group.primitives)
+                if (primitive.mesh_index == 1) own_drawn = group.material == own->material;
+        CHECK(own_drawn);
+        const auto problems = rpc.result("get_problems").at("problems");
+        REQUIRE(problems.size() == 1);
+        CHECK(problems[0].at("fields").at("rows")[0].at("row").is_null());
+        REQUIRE(rpc.result("bind_material", {{"model", "two"}, {"material", "paint"}}).at("applied") == "live");
+        CHECK(Json::parse(readFile(root / reference)).at("bindings").size() == 2);
+        checkDrawn(models, true, 2);
+        CHECK(rpc.result("get_problems").at("problems").empty());
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+}
 } // namespace Pelican

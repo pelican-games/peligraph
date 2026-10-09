@@ -5674,7 +5674,7 @@ TEST_CASE(
     TestMorphFixture::writeGlb(project.path / "models" / "morph.glb");
     writeWp374aText(
         project.path / "retry_bindings.json",
-        R"json({"schema":"pelican.material_bindings","version":1,"model":"models/morph.glb","bindings":[{"usd_path":"/Retry/Missing","mesh":999,"primitive":0,"material":"missing","routing":{"alpha_mode":"opaque","double_sided":false}}]})json");
+        R"json({"schema":"pelican.material_bindings","version":1,"model":"models/morph.glb","bindings":[{"usd_path":"/Retry/InvalidRouting","mesh":0,"primitive":0,"material":"MorphMaterial","routing":{"alpha_mode":"blend","double_sided":false}}]})json");
     writeWp374aText(
         project.path / "assets.json",
         Json{{"schema", "pelican.asset_data"},
@@ -5719,7 +5719,7 @@ TEST_CASE(
     const auto *failure = std::get_if<PreCommitFailure>(&result);
     REQUIRE(failure != nullptr);
     REQUIRE(failure->phase == SceneLoadPhase::prepare);
-    REQUIRE(failure->error.find("targets missing GLB mesh 999 primitive 0") !=
+    REQUIRE(failure->error.find("does not match binding routing") !=
             std::string::npos);
     REQUIRE(failure->release_errors ==
             std::vector<std::string>{"vertbuf.morph_delta"});

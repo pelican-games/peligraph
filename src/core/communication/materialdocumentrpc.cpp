@@ -1419,6 +1419,7 @@ struct ModelBindingState {
     OrderedJson bindings_json;
     std::vector<ModelMaterialSlot> slots;
     std::map<PrimitiveKey, BindingEntry> current;
+    bool stale = false;
 };
 
 ModelBindingState readBindingState(std::string_view method, const std::string &model,
@@ -1444,6 +1445,7 @@ ModelBindingState readBindingState(std::string_view method, const std::string &m
             (void)models->getModelTemplateByName(model);
         }
         state.slots = models->materialSlots(model);
+        state.stale = !models->getModelTemplateByName(model).binding_issues.empty();
     } catch (const std::exception &error) {
         refuse(method, "model '" + model + "': " + error.what(), modelUnknownCode,
                {{"model", model}, {"reason", error.what()}});
@@ -1459,9 +1461,13 @@ ModelBindingState readBindingState(std::string_view method, const std::string &m
             state.bindings_bytes = readFileBytes(state.bindings_path);
             state.bindings_json = OrderedJson::parse(state.bindings_bytes);
             const auto parsed = parsePrimitiveMaterialBindingJson(toJson(state.bindings_json));
-            for (const auto &binding : parsed.bindings)
+            for (const auto &binding : parsed.bindings) {
+                if (state.stale && std::none_of(state.slots.begin(), state.slots.end(), [&](const auto &slot) {
+                    return slot.mesh == binding.mesh_index && slot.primitive == binding.primitive_index;
+                })) continue;
                 state.current.insert_or_assign(PrimitiveKey{binding.mesh_index, binding.primitive_index},
                                                BindingEntry{binding.material, binding.usd_path, binding.routing});
+            }
         } catch (const std::exception &error) {
             refuse(method, "model '" + model + "' material bindings: " + error.what(), bindingInvalidCode,
                    {{"model", model}, {"reason", error.what()}});
@@ -1727,6 +1733,18 @@ Json bindMaterial(const Json &params, PathResolver &paths, watch::ReloadService 
         }
     }
 
+    if (state.stale) {
+        const auto &issues = GET_MODULE(ModelAssetContainer).getModelTemplateByName(model).binding_issues;
+        for (const auto &issue : issues) {
+            if (issue.material.empty()) continue;
+            const auto slot = std::find_if(state.slots.begin(), state.slots.end(), [&](const auto &candidate) {
+                return candidate.mesh == issue.mesh && candidate.primitive == issue.primitive;
+            });
+            if (slot != state.slots.end())
+                state.current.at({issue.mesh, issue.primitive}) = {slot->slot, std::nullopt, slot->routing};
+        }
+    }
+
     auto previous = Json::array();
     std::map<std::string, BindingMaterial> resolved;
     for (const auto &[key, material] : requested) {
@@ -1776,7 +1794,7 @@ Json bindMaterial(const Json &params, PathResolver &paths, watch::ReloadService 
         entry.usd_path = usd_path;
     }
     OrderedJson document;
-    if (state.bindings_reference) {
+    if (state.bindings_reference && !state.stale) {
         document = state.bindings_json;
         auto &bindings = document.at("bindings");
         for (auto &binding : bindings) {
