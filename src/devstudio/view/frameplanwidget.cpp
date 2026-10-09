@@ -48,6 +48,7 @@
 #include <QPushButton>
 #include <QShowEvent>
 #include <QSignalBlocker>
+#include <QScopeGuard>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QTabBar>
@@ -486,6 +487,9 @@ struct FramePlanWidget::Impl {
     // that shows it arrives, and keep saying it while it stands.
     bool announce_reload_refusal = false;
     QString shown_refusal_line;
+    QString canvas_edit_failure;
+    QString canvas_edit_failure_detail;
+    bool populate_after_drag = false;
     QPushButton *refusal_disconnect = nullptr;
     QPushButton *refusal_open_shader = nullptr;
     std::function<void(const QString &, const QString &)> preset_pass_edit_action;
@@ -952,6 +956,10 @@ struct FramePlanWidget::Impl {
         logical_splitter->setObjectName(
             QStringLiteral("pelican.framePlanLogicalSplitter"));
         logical_scene = new FramePlanGraphicsScene(&owner);
+        logical_scene->gestureEnded = [this] {
+            if (std::exchange(populate_after_drag, false) && model) populate();
+            updateCanvasEnabled();
+        };
         logical_scene->connectionFeedback = [this](const QString &message) { showStatus(oneLine(message), message); };
         logical_scene->connectionRequested = [this](const FramePlanNodeKey &from, const FramePlanNodeKey &to) {
             if (!model || (!task_connection_action && !pass_connection_action)) {
@@ -1581,6 +1589,9 @@ struct FramePlanWidget::Impl {
     }
 
     void clearTrees() {
+        populate_after_drag = false;
+        canvas_edit_failure.clear();
+        canvas_edit_failure_detail.clear();
         logical_scene->resetGraph();
         populateLogicalDetails();
         {
@@ -1884,6 +1895,30 @@ struct FramePlanWidget::Impl {
         return found->authored_name;
     }
 
+    // FX-9: the next gesture must use the context read after the commit.
+    // A read that starts during an existing drag must still let it release.
+    void updateCanvasEnabled() {
+        if (!logical || logical_scene->dragging()) return;
+        // Disabling a live editor sends FocusOut and would commit its draft
+        // merely because a read started. Let this existing input finish.
+        if (logical_scene->editingInline() && pending_edit_request == 0 &&
+            pending_ticket.isEmpty() && !retry_pending) return;
+        logical->setEnabled(pending_edit_request == 0 && pending_ticket.isEmpty() &&
+                            pending_ticket_request == 0 && !retry_pending &&
+                            pending_authoring_request == 0 && pending_task_request == 0 &&
+                            pending_request == 0);
+    }
+
+    QString namedCanvasFailure(const FramePlanEditRequest &request, const QString &reason) {
+        if (request.method != "edit_preset_pass" || !request.params.contains("input"))
+            return reason;
+        const auto pass = text(request.params.value("pass_name", std::string{}));
+        canvas_edit_failure = reason.contains(pass) ? reason
+            : owner.tr("%1: not saved: %2").arg(pass, reason);
+        canvas_edit_failure_detail = canvas_edit_failure;
+        return canvas_edit_failure;
+    }
+
     void connectEditSignals() {
         if (edit_signals_connected) return;
         edit_signals_connected = true;
@@ -1903,6 +1938,7 @@ struct FramePlanWidget::Impl {
     // traffic on the editor channel, or take work from the panel in front.
     // They are asked for again the moment this one is shown.
     void requestAuthoringContext(bool even_hidden = false) {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (!edit.requestAuthoringContext || pending_authoring_request != 0 ||
             (!owner.isVisible() && !even_hidden))
             return;
@@ -1913,6 +1949,7 @@ struct FramePlanWidget::Impl {
     }
 
     void requestTaskAuthoring(bool even_hidden = false) {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (!edit.requestTaskAuthoring || pending_task_request != 0 ||
             (!owner.isVisible() && !even_hidden))
             return;
@@ -2022,13 +2059,30 @@ struct FramePlanWidget::Impl {
 
     // One gesture, kept as the function that builds its request from the
     // context, so a refusal for a moved document can build it once more.
-    void submitBuilt(std::function<FramePlanEditRequest()> build) {
+    void submitBuilt(std::function<FramePlanEditRequest()> build,
+                     const std::string &canvas_node = {}) {
+        if (!canvas_node.empty()) {
+            // A failed context read can refuse before there is an RPC payload
+            // from which to recover the pass name. Keep the gesture's name in
+            // the builder too, including the existing external-change retry.
+            build = [build = std::move(build), canvas_node] {
+                auto request = build();
+                if (!request.sendable() &&
+                    request.line.find(canvas_node) == std::string::npos &&
+                    request.refusal.find(canvas_node) == std::string::npos) {
+                    request.line = canvas_node + ": not saved: " +
+                        (request.line.empty() ? request.refusal : request.line);
+                }
+                return request;
+            };
+        }
         if (!submit(build())) return;
         submitted_build = std::move(build);
         submitted_retried = false;
     }
 
     bool submit(const FramePlanEditRequest &request) {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (!request.sendable()) {
             const QString reason = text(request.refusal.empty()
                                             ? std::string{"Nothing to change."}
@@ -2048,10 +2102,13 @@ struct FramePlanWidget::Impl {
                 fix.inputs = *request.passthrough_inputs;
                 offerContractButtons(std::move(fix), true);
             }
+            canvas_edit_failure = status->text();
+            canvas_edit_failure_detail = status->toolTip();
             return false;
         }
         if (pending_edit_request != 0 || !pending_ticket.isEmpty()) {
-            showStatus(owner.tr("Wait for the current change to finish."));
+            showStatus(namedCanvasFailure(request,
+                owner.tr("Wait for the current change to finish.")));
             return false;
         }
         const auto method = text(request.method);
@@ -2072,7 +2129,8 @@ struct FramePlanWidget::Impl {
                 ? edit.putVulkanPhysicalFragment
                 : nullptr;
         if (!sender) {
-            showStatus(owner.tr("Canvas editing is unavailable: %1").arg(method));
+            showStatus(namedCanvasFailure(request,
+                owner.tr("Canvas editing is unavailable: %1").arg(method)));
             return false;
         }
         QJsonObject params;
@@ -2086,7 +2144,8 @@ struct FramePlanWidget::Impl {
         QString error;
         pending_edit_request = sender(params, &error);
         if (pending_edit_request == 0) {
-            showStatus(oneLine(error), error);
+            const auto message = namedCanvasFailure(request, error);
+            showStatus(oneLine(message), message);
             return false;
         }
         // Q-13: an edit sent without its builder is not rebuilt; submitBuilt
@@ -2099,6 +2158,8 @@ struct FramePlanWidget::Impl {
         refusal_open_shader->hide();
         eject_again->hide();
         shown_refusal_line.clear();
+        canvas_edit_failure.clear();
+        canvas_edit_failure_detail.clear();
         submitted_notice = text(request.notice);
         commit_notice.clear();
         picked_loop_line.clear();
@@ -2111,6 +2172,7 @@ struct FramePlanWidget::Impl {
     }
 
     void requestTicketResult() {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (!edit.requestEditResult || pending_ticket.isEmpty() ||
             pending_ticket_request != 0)
             return;
@@ -2118,11 +2180,13 @@ struct FramePlanWidget::Impl {
         pending_ticket_request = edit.requestEditResult(pending_ticket, &error);
         if (pending_ticket_request == 0) {
             pending_ticket.clear();
-            showStatus(oneLine(error), error);
+            const auto message = namedCanvasFailure(submitted_request, error);
+            showStatus(oneLine(message), message);
         }
     }
 
     bool receiveEditResult(qint64 request_id, const QByteArray &bytes) {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (receivePlanning(request_id, bytes)) return true;
         if (request_id != 0 && request_id == pending_authoring_request) {
             pending_authoring_request = 0;
@@ -2246,18 +2310,24 @@ struct FramePlanWidget::Impl {
     void refuse(const Json &response) {
         if (retryAfterExternalModification(response)) return;
         const bool moved = errorCode(response) == "external_modification";
-        const QString message = rejectionText(response) + materialFailureNote();
+        const QString message = namedCanvasFailure(
+            submitted_request, rejectionText(response) + materialFailureNote());
         submitted_build = {};
         if (moved) {
             offerReload(message);
             return;
         }
         status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
-        if (offerShaderContract(response, message)) return;
+        if (offerShaderContract(response, message)) {
+            canvas_edit_failure = status->text();
+            canvas_edit_failure_detail = status->toolTip();
+            return;
+        }
         // UX-5a: the line is the sentence; the tooltip (and Copy message)
         // has the engine's whole message as well.
         const QString whole = responseDetail(response);
         showStatus(oneLine(message), message.contains(whole) ? message : message + QLatin1Char('\n') + whole);
+        canvas_edit_failure_detail = status->toolTip();
         // UX-15b, decision 2: the frozen plan is older than the graph.
         if (framePlanPhysicalFragmentStale(refusalOf(response))) eject_again->show();
     }
@@ -2668,9 +2738,13 @@ struct FramePlanWidget::Impl {
             // on top of the answer the user is waiting for. The summary line
             // replaces this one when the new plan arrives, which is the right
             // order: "committed" is what happened, the summary is what is now.
-            requestAuthoringContext();
-            requestTaskAuthoring();
-            requestRefresh();
+            // A read already in flight can predate this commit. Keep the
+            // canvas blocked until a fresh reply follows that older one.
+            if (pending_authoring_request != 0) authoring_reread = true;
+            else requestAuthoringContext();
+            if (pending_task_request != 0) task_reread = true;
+            else requestTaskAuthoring();
+            readPlanAgain();
             status->setStyleSheet({});
             commit_notice = std::exchange(submitted_notice, {});
             showStatus(commit_notice.isEmpty()
@@ -2795,6 +2869,7 @@ struct FramePlanWidget::Impl {
     }
 
     bool receiveEditFailure(qint64 request_id, const QString &message) {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (request_id == 0) return false;
         if (request_id == pending_authoring_request) {
             pending_authoring_request = 0;
@@ -2819,7 +2894,8 @@ struct FramePlanWidget::Impl {
         pending_ticket_request = 0;
         pending_ticket.clear();
         status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
-        showStatus(oneLine(message), message);
+        const auto named = namedCanvasFailure(submitted_request, message);
+        showStatus(oneLine(named), named);
         return true;
     }
 
@@ -2850,7 +2926,7 @@ struct FramePlanWidget::Impl {
                                                       names, connect)
                        : framePlanTaskResourceRequest(task_authoring, task,
                                                       names, connect);
-        });
+        }, task.empty() ? consumer.name : std::string{});
     }
 
     // VI-3a: a drop on a pass whose sockets come from its shader.
@@ -2864,7 +2940,7 @@ struct FramePlanWidget::Impl {
                                                          graph, pass,
                                                          resource, drop)
                          : FramePlanEditRequest{};
-        });
+        }, consumer.name);
     }
 
     // VI-3a: one input of such a pass taken out -- a socket dragged away,
@@ -2877,7 +2953,7 @@ struct FramePlanWidget::Impl {
             return model ? framePlanSocketDisconnectRequest(
                                authoring, *model, graph, pass, input_index)
                          : FramePlanEditRequest{};
-        });
+        }, consumer.name);
     }
 
     // --- VI-3a rule 4. A reload the engine refused for a pass because the
@@ -3804,6 +3880,7 @@ struct FramePlanWidget::Impl {
     }
 
     void requestRefresh() {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (pending_request != 0) {
             return;
         }
@@ -3926,6 +4003,7 @@ struct FramePlanWidget::Impl {
     }
 
     void receiveRpcResult(qint64 request_id, const QByteArray &result_json) {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (reload_follower->receive(request_id, result_json)) return;
         if (receiveSbt(request_id, result_json)) return;
         if (request_id == pending_gpu_timing_request) {
@@ -4048,6 +4126,7 @@ struct FramePlanWidget::Impl {
     }
 
     void receiveFailure(qint64 request_id, const QString &message) {
+        const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (reload_follower->fail(request_id, message)) return;
         // RTL-2s b, decision 4: an object the engine could not answer for is
         // left out of the SBT table.
@@ -4112,6 +4191,11 @@ struct FramePlanWidget::Impl {
     }
 
     void populate() {
+        if (logical_scene->dragging()) {
+            populate_after_drag = true;
+            return;
+        }
+        populate_after_drag = false;
         // FX-8: a refresh can land between selecting a row and pressing Pin.
         // Carry the candidate identity, never a pointer into the rebuilt tree.
         const auto picked_backend = candidateOf(backends->currentItem());
@@ -4251,6 +4335,10 @@ struct FramePlanWidget::Impl {
         if (!commit_notice.isEmpty()) showStatus(commit_notice);
         showPickedLoopLine();
         updateReloadRefusal();
+        if (!canvas_edit_failure.isEmpty()) {
+            status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
+            showStatus(oneLine(canvas_edit_failure), canvas_edit_failure_detail);
+        }
     }
 
     // Q-4. The reply, laid out for reading, is built only while somebody is

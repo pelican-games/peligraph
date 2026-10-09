@@ -243,6 +243,12 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     [[nodiscard]] bool wholeFrame() const noexcept { return whole_frame_; }
     void resetGraph();
     bool cancelConnectionGesture();
+    // FX-9: socket gestures have no mouse grabber. Keep their items alive
+    // through release, including callbacks that submit an edit.
+    [[nodiscard]] bool dragging() const {
+        return handling_mouse_ || connection_gesture_ || mouseGrabberItem() != nullptr;
+    }
+    std::function<void()> gestureEnded;
     std::function<void(const FramePlanNodeKey &, const FramePlanNodeKey &)> connectionRequested;
     std::function<void(const QString &)> connectionFeedback;
     // The scene's context menu offers "Fit view"; only the view can perform
@@ -507,6 +513,8 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     std::optional<FramePlanNodeKey> connection_source_;
     QGraphicsLineItem *connection_line_ = nullptr;
     bool connection_gesture_ = false;
+    bool handling_mouse_ = false;
+    bool render_after_drag_ = false;
     // N-8. A plain drag that started on a socket. Shift-drag leaves this unset
     // and keeps its own path through the dialogs.
     struct SocketGesture {

@@ -8318,6 +8318,13 @@ TEST_CASE("A redraw under an open Frame Plan band editor re-opens it with "
 
     // The control: a draw that no longer offers that field has nothing to open
     // over, and the edit ends there rather than hanging on a band that is gone.
+    // FX-9: finish the previous request and its outstanding reads before
+    // starting this separate gesture.
+    CHECK_FALSE(logicalView(fixture.widget).isEnabled());
+    fixture.recorder.failure(fixture.recorder.submit_id,
+                              QStringLiteral("fixture shader edit refused"));
+    fixture.recorder.result(fixture.recorder.task_id,
+        QByteArray::fromStdString(fixture.catalog.dump()));
     REQUIRE(fixture.recorder.result);
     fixture.recorder.result(
         fixture.recorder.context_id,
@@ -8382,6 +8389,11 @@ TEST_CASE("N-8 add and delete reach the right form and the right RPC",
             QJsonDocument(fixture.recorder.params).toJson().toStdString());
         CHECK(sent.at("fragment_reference") == "project://passes/mixed.json");
         CHECK(sent.at("base_source_digest") == RootDigest);
+        // FX-9: a second canvas gesture waits for the first request to end.
+        CHECK_FALSE(view.isEnabled());
+        fixture.recorder.failure(fixture.recorder.submit_id,
+                                  QStringLiteral("fixture removal refused"));
+        REQUIRE(view.isEnabled());
 
         QGraphicsItem *preset = nodeItem(logical, "wp343_mixed_a");
         REQUIRE(preset != nullptr);
@@ -9436,6 +9448,8 @@ TEST_CASE("F-1 New render target sends one edit_render_targets from the form, "
             withRenderTargets(mixedAuthoringContext(fixture.graph),
                               "wp343_mixed_d_output")
                 .dump()));
+    fixture.recorder.result(fixture.recorder.task_id,
+        QByteArray::fromStdString(fixture.catalog.dump()));
     QApplication::processEvents();
 
     SECTION("the form's OK is one request with the typed name") {
@@ -11174,7 +11188,8 @@ TEST_CASE("UX-5a an engine refusal whose message carries JSON reads as its sente
             QStringLiteral("pelican.framePlanStatus"));
         REQUIRE(status != nullptr);
         CHECK(status->text() ==
-              oneLine(QString::fromStdString("render_pipeline_preflight_failed: " + reason)));
+              oneLine(QString::fromStdString(
+                  "wp343_mixed_a: not saved: render_pipeline_preflight_failed: " + reason)));
         CHECK_FALSE(status->text().contains(QStringLiteral("{")));
         CHECK(status->toolTip().contains(QString::fromStdString(message)));
     }
@@ -13167,4 +13182,309 @@ TEST_CASE("FX-8 a plan read between picking a backend and Pin preserves the cand
     CHECK(tree->currentItem()->text(0) == QString::fromStdString(candidate));
 }
 
+} // namespace PelicanStudio
+
+namespace PelicanStudio {
+namespace {
+struct Fx9CanvasFixture {
+    EmbeddedViewport viewport;
+    FramePlanEditRecorder recorder;
+    FramePlanWidget widget{&viewport};
+    qint64 plan_id = 9000;
+    Json wire;
+    Json context;
+
+    static Json pass(const std::string &name, int order,
+                     const Json &reads, const Json &writes) {
+        return {{"name", name}, {"kind", "render"}, {"order", order},
+                {"level", order}, {"source", "project"}, {"reads", reads},
+                {"writes", writes}, {"reads_history", Json::array()},
+                {"declaration_index", order},
+                {"shader_resolution", {{"state", "not_applicable"}}}};
+    }
+
+    Fx9CanvasFixture() {
+        auto present = pass("present", 2, Json::array(), Json::array({"display"}));
+        present["pass_inputs"] = vi3bPassthroughInputs();
+        wire = {{"schema", "pelican.frame_plan"}, {"version", 1},
+                {"profile", "runtime"}, {"barriers", Json::array()},
+                {"graph", "main_render"}, {"loops", Json::array()},
+                {"resources", Json::array({{{"name", "scene_color"}, {"kind", "render_target"}},
+                                           {{"name", "other_color"}, {"kind", "render_target"}},
+                                           {{"name", "display"}, {"kind", "render_target"}}})},
+                {"nodes", Json::array({pass("render_fullscreen", 0, Json::array(), Json::array({"scene_color"})),
+                                       pass("other", 1, Json::array(), Json::array({"other_color"})),
+                                       present})}};
+        const Json declaration{{"name", "present"}, {"type", "fullscreen"},
+                               {"input", Json::array()},
+                               {"output", {{"color", Json::array({"display"})}, {"depth", nullptr}}},
+                               {"shader", {{"vertex", "engine://fullscreen"},
+                                           {"fragment", "engine://passthrough"}}}};
+        context = {{"source_reference", "project://passes/main_rendering_config.json"},
+                   {"source_digest", {{"hex", RootDigest}}}, {"config_kind", "direct"},
+                   {"graphs", Json::array({{{"name", "main_render"},
+                       {"passes", Json::array({{{"name", "present"}, {"declaration_index", 0},
+                            {"editable_root_pass", true}, {"declaration", declaration},
+                            {"root_declaration", declaration}}})}}})}};
+    }
+
+    void publishExecution() {
+        Pelican::FrameGraphDefinition graph;
+        graph.name = "main_render";
+        for (const auto &value : wire["nodes"]) {
+            Pelican::FrameGraphNodeDefinition node;
+            node.name = value.at("name").get<std::string>();
+            node.declaration_index = value.at("declaration_index").get<std::size_t>();
+            node.reads = value.at("reads").get<std::vector<std::string>>();
+            node.writes = value.at("writes").get<std::vector<std::string>>();
+            graph.nodes.push_back(std::move(node));
+        }
+        wire["execution_plan"] = Pelican::frameExecutionPlanToJson(
+            Pelican::compileFrameExecutionPlan(graph, Pelican::planFrameGraph(graph),
+                Pelican::ExecutionEndpoint{.id = "device:0",
+                    .endpoint_class = Pelican::ExecutionEndpointClass::device,
+                    .backend = "vulkan"}));
+        REQUIRE(buildFramePlanModel(wire.dump()).execution_plan.available());
+    }
+    void contextReply() {
+        recorder.result(recorder.context_id, QByteArray::fromStdString(context.dump()));
+    }
+    void taskReply() {
+        recorder.result(recorder.task_id, QByteArray::fromStdString(authoredTaskCatalog().dump()));
+    }
+    void planReply() {
+        publishExecution();
+        Q_EMIT viewport.inspectorRpcSucceeded(plan_id, QByteArray::fromStdString(wire.dump()));
+    }
+    void open() {
+        publishExecution();
+        widget.resize(1400, 900);
+        widget.show();
+        widget.setEditCapability(recorder.capability());
+        widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+        contextReply();
+        taskReply();
+        widget.setPlanRequest([this](QString *) { return ++plan_id; });
+        QApplication::processEvents();
+        INFO(statusText(widget).toStdString());
+        REQUIRE(logicalView(widget).isEnabled());
+    }
+    FramePlanGraphicsScene &logical() {
+        return dynamic_cast<FramePlanGraphicsScene &>(scene(widget));
+    }
+    std::pair<QPoint, QPoint> endpoints(const QString &producer = QStringLiteral("render_fullscreen"),
+                                        const QString &resource = QStringLiteral("scene_color")) {
+        auto &view = logicalView(widget);
+        auto *from = socketItem(logical(), producer, resource, QStringLiteral("output"));
+        auto *to = declaredSocket(logical(), QStringLiteral("present"), QStringLiteral("in:variadic"));
+        REQUIRE(from != nullptr);
+        REQUIRE(to != nullptr);
+        view.fitInView(from->sceneBoundingRect().united(to->sceneBoundingRect()).adjusted(-80, -80, 80, 80),
+                       Qt::KeepAspectRatio);
+        QApplication::processEvents();
+        const auto start = view.mapFromScene(from->sceneBoundingRect().center());
+        const auto end = view.mapFromScene(to->sceneBoundingRect().center());
+        REQUIRE(view.viewport()->rect().contains(start));
+        REQUIRE(view.viewport()->rect().contains(end));
+        return {start, end};
+    }
+    void drag(const QString &producer = QStringLiteral("render_fullscreen"),
+              const QString &resource = QStringLiteral("scene_color")) {
+        auto [start, end] = endpoints(producer, resource);
+        auto *vp = logicalView(widget).viewport();
+        QTest::mousePress(vp, Qt::LeftButton, Qt::NoModifier, start);
+        QTest::mouseMove(vp, (start + end) / 2, 1);
+        QTest::mouseRelease(vp, Qt::LeftButton, Qt::NoModifier, end);
+        QApplication::processEvents();
+    }
+    void accepted() {
+        recorder.result(recorder.submit_id, R"({"status":"accepted","ticket":"fx9-edit"})");
+        QApplication::processEvents();
+        REQUIRE(recorder.ticket_id != 0);
+    }
+};
+} // namespace
+
+TEST_CASE("FX-9 a plan reply during a socket drag sends present input exactly once on release",
+          "[devstudio][frame-plan][fx9]") {
+    application();
+    Fx9CanvasFixture f;
+    f.open();
+    auto &view = logicalView(f.widget);
+    const auto [start, end] = f.endpoints();
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, start);
+    QTest::mouseMove(view.viewport(), (start + end) / 2, 1);
+    CHECK(f.recorder.submits == 0);
+    // No QGraphicsItem grabs a socket connection; that cannot be the only
+    // test for a live gesture.
+    CHECK(f.logical().mouseGrabberItem() == nullptr);
+    SECTION("plan RPC lands while the button is held") {
+        f.widget.refresh();
+        f.wire["nodes"].push_back(Fx9CanvasFixture::pass("late_plan", 3, Json::array(), Json::array()));
+        f.planReply();
+    }
+    SECTION("authoring context changes the visible input bands") {
+        f.widget.refreshAuthoringContext();
+        f.context["graphs"][0]["passes"][0]["declaration"]["shader"]["vertex"] = "project://shaders/late";
+        f.context["graphs"][0]["passes"][0]["root_declaration"]["shader"]["vertex"] = "project://shaders/late";
+        f.contextReply();
+        f.taskReply();
+        CHECK(f.recorder.submits == 0);
+    }
+    SECTION("scene-level population also preserves the gesture") {
+        f.wire["nodes"].push_back(Fx9CanvasFixture::pass("late_plan", 3, Json::array(), Json::array()));
+        f.publishExecution();
+        f.logical().populateWholeFrame(buildFramePlanModel(f.wire.dump()));
+    }
+    QApplication::processEvents();
+    CHECK(view.isEnabled());
+    CHECK(f.recorder.submits == 0);
+    CHECK(nodeItem(f.logical(), "late_plan") == nullptr);
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, end);
+    QApplication::processEvents();
+    REQUIRE(f.recorder.submits == 1);
+    CHECK(f.recorder.method == QStringLiteral("edit_preset_pass"));
+    const auto sent = sentParams(f.recorder);
+    CHECK(sent.at("graph") == "main_render");
+    CHECK(sent.at("pass_name") == "present");
+    CHECK(sent.at("input") == Json::array({"scene_color"}));
+    CHECK(sent.at("base_source_digest") == RootDigest);
+    CHECK_FALSE(sent.contains("base_preset_digest"));
+    CHECK(sent.at("output") == f.context["graphs"][0]["passes"][0]["declaration"]["output"]);
+    CHECK(sent.at("shader") == f.context["graphs"][0]["passes"][0]["declaration"]["shader"]);
+    if (f.wire["nodes"].size() == 4) CHECK(nodeItem(f.logical(), "late_plan") != nullptr);
+    CHECK_FALSE(view.isEnabled());
+}
+
+TEST_CASE("FX-9 canvas waits through submit ticket and fresh commit readback before the next input",
+          "[devstudio][frame-plan][fx9]") {
+    application();
+    Fx9CanvasFixture f;
+    f.open();
+    auto &view = logicalView(f.widget);
+    const auto [start, end] = f.endpoints();
+    f.drag();
+    REQUIRE(f.recorder.submits == 1);
+    const auto blocked = [&] {
+        CHECK_FALSE(view.isEnabled());
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, start);
+        QTest::mouseMove(view.viewport(), (start + end) / 2, 1);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, end);
+        QApplication::processEvents();
+        CHECK(f.recorder.submits == 1);
+    };
+    blocked();
+    f.accepted();
+    blocked();
+    f.recorder.result(f.recorder.ticket_id, R"({"status":"pending"})");
+    QTest::qWait(30);
+    blocked();
+    // All three reads predate the commit. Their replies must cause a fresh
+    // read, and must not open the canvas on the previous source digest.
+    f.widget.refresh();
+    f.widget.refreshAuthoringContext();
+    const auto old_plan = f.plan_id;
+    const auto old_context = f.recorder.context_id;
+    const auto old_tasks = f.recorder.task_id;
+    f.recorder.result(f.recorder.ticket_id, R"({"status":"committed","committed":true})");
+    blocked();
+    f.contextReply();
+    REQUIRE(f.recorder.context_id != old_context);
+    blocked();
+    f.taskReply();
+    REQUIRE(f.recorder.task_id != old_tasks);
+    blocked();
+    f.planReply();
+    REQUIRE(f.plan_id != old_plan);
+    blocked();
+    auto &pass = f.context["graphs"][0]["passes"][0];
+    pass["declaration"]["input"] = Json::array({"scene_color"});
+    pass["root_declaration"]["input"] = Json::array({"scene_color"});
+    f.context["source_digest"]["hex"] = PresetDigest;
+    f.wire["nodes"][2]["reads"] = Json::array({"scene_color"});
+    f.contextReply();
+    f.taskReply();
+    blocked();
+    f.planReply();
+    // Receiving a plan asks for authoring again; finish those reads too.
+    f.contextReply();
+    f.taskReply();
+    QApplication::processEvents();
+    REQUIRE(view.isEnabled());
+    f.drag(QStringLiteral("other"), QStringLiteral("other_color"));
+    REQUIRE(f.recorder.submits == 2);
+    const auto sent = sentParams(f.recorder);
+    CHECK(sent.at("pass_name") == "present");
+    CHECK(sent.at("input") == Json::array({"scene_color", "other_color"}));
+    CHECK(sent.at("base_source_digest") == PresetDigest);
+}
+
+TEST_CASE("FX-9 a refused input names present and survives a late plan reply",
+          "[devstudio][frame-plan][fx9]") {
+    application();
+    Fx9CanvasFixture f;
+    f.open();
+    SECTION("the authoring read failed before the gesture") {
+        f.widget.refreshAuthoringContext();
+        f.recorder.failure(f.recorder.context_id, QStringLiteral("test context unavailable"));
+        f.taskReply();
+        f.drag();
+        CHECK(f.recorder.submits == 0);
+    }
+    SECTION("the transport cannot send the edit") {
+        auto capability = f.recorder.capability();
+        capability.editPresetPass = [](const QJsonObject &, QString *error) {
+            *error = QStringLiteral("test transport unavailable");
+            return qint64{0};
+        };
+        f.widget.setEditCapability(std::move(capability));
+        f.contextReply();
+        f.taskReply();
+        f.drag();
+        CHECK(f.recorder.submits == 0);
+    }
+    SECTION("engine refuses the submission") {
+        f.drag();
+        REQUIRE(f.recorder.submits == 1);
+        f.recorder.result(f.recorder.submit_id,
+            R"({"status":"rejected","error":{"code":"test_refusal","message":"input refused"}})");
+    }
+    SECTION("ticket transport fails") {
+        f.drag();
+        f.accepted();
+        f.recorder.failure(f.recorder.ticket_id, QStringLiteral("test ticket unavailable"));
+    }
+    const auto failure = statusText(f.widget);
+    CHECK(failure.contains(QStringLiteral("present")));
+    CHECK(failure.contains(QStringLiteral("not saved")));
+    f.widget.refresh();
+    f.planReply();
+    f.contextReply();
+    f.taskReply();
+    QApplication::processEvents();
+    CHECK(statusText(f.widget) == failure);
+    CHECK(logicalView(f.widget).isEnabled());
+}
+
+TEST_CASE("FX-9 Escape during a deferred socket drag cancels without sending",
+          "[devstudio][frame-plan][fx9]") {
+    application();
+    Fx9CanvasFixture f;
+    f.open();
+    auto &view = logicalView(f.widget);
+    const auto [start, end] = f.endpoints();
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::NoModifier, start);
+    QTest::mouseMove(view.viewport(), (start + end) / 2, 1);
+    f.widget.refresh();
+    f.wire["nodes"].push_back(Fx9CanvasFixture::pass("late_plan", 3, Json::array(), Json::array()));
+    f.planReply();
+    QTest::keyClick(view.viewport(), Qt::Key_Escape);
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::NoModifier, end);
+    f.contextReply();
+    f.taskReply();
+    QApplication::processEvents();
+    CHECK(f.recorder.submits == 0);
+    CHECK(nodeItem(f.logical(), "late_plan") != nullptr);
+    CHECK(view.isEnabled());
+}
 } // namespace PelicanStudio

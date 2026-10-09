@@ -29,6 +29,7 @@
 #include <QPen>
 #include <QPolygonF>
 #include <QStringList>
+#include <QScopeGuard>
 #include <QVariant>
 
 #include <algorithm>
@@ -2317,6 +2318,7 @@ FramePlanGraphicsScene::~FramePlanGraphicsScene() {
 }
 
 void FramePlanGraphicsScene::resetGraph() {
+    render_after_drag_ = false;
     clearConnectionGesture();
     closeInlineEditor();
     selected_edge_.reset();
@@ -2548,6 +2550,11 @@ void FramePlanGraphicsScene::pruneGroupState() {
 }
 
 void FramePlanGraphicsScene::renderCurrentGraph() {
+    if (dragging()) {
+        render_after_drag_ = true;
+        return;
+    }
+    render_after_drag_ = false;
     clearConnectionGesture();
     // Q-4. The editor is a widget in the scene; a redraw deletes every item,
     // so it has to go first or its proxy is deleted twice. What it was and
@@ -4497,6 +4504,9 @@ void FramePlanGraphicsScene::closeInlineEditor() {
     }
     removeItem(editor->proxy);
     editor->proxy->deleteLater();
+    QMetaObject::invokeMethod(this, [this] {
+        if (!editingInline() && !dragging() && gestureEnded) gestureEnded();
+    }, Qt::QueuedConnection);
 }
 
 void FramePlanGraphicsScene::cancelInlineEdit() { closeInlineEditor(); }
@@ -4614,6 +4624,8 @@ bool FramePlanGraphicsScene::cancelConnectionGesture() {
 }
 
 void FramePlanGraphicsScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
+    handling_mouse_ = true;
+    const auto pressed = qScopeGuard([this] { handling_mouse_ = false; });
     if (event->button() != Qt::LeftButton || !(event->modifiers() & Qt::ShiftModifier)) {
         // N-8. A plain press is still a press: it drags nodes, it rubber-bands,
         // it selects. What is new is that a press that lands on a socket, on a
@@ -4734,6 +4746,17 @@ void FramePlanGraphicsScene::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
 }
 
 void FramePlanGraphicsScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
+    handling_mouse_ = true;
+    const auto released = qScopeGuard([this] {
+        handling_mouse_ = false;
+        // Let the view finish dispatching release before replacing its items
+        // or disabling it for the edit just sent by the gesture.
+        QMetaObject::invokeMethod(this, [this] {
+            if (dragging()) return;
+            if (gestureEnded) gestureEnded();
+            if (render_after_drag_) renderCurrentGraph();
+        }, Qt::QueuedConnection);
+    });
     if (!connection_gesture_) { QGraphicsScene::mouseReleaseEvent(event); return; }
     // Remove the preview before hit-testing the destination underneath it.
     delete connection_line_;
