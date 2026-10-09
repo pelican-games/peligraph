@@ -1,0 +1,41 @@
+Pelican Game Exception
+======================
+
+The Pelican engine is licensed under the Mozilla Public License, v. 2.0
+(see LICENSE). The copyright holders grant the following additional
+permission. It only adds permissions; it takes nothing away from the
+MPL-2.0.
+
+Additional permission
+---------------------
+
+You may distribute the Covered Software, modified or unmodified, in
+Executable Form as part of a Game without making the Source Code Form of
+the Covered Software available under section 3.2 of the MPL-2.0, provided
+that the Game does not make the Covered Software, or any part of it,
+available to its recipients as a game engine, editor, software development
+kit, library or development tool for making other software.
+
+A "Game" is an interactive application, together with its content, whose
+primary purpose is to be played or experienced rather than to make other
+software.
+
+Any other distribution of the Covered Software, including distribution as,
+or as part of, a game engine, editor, software development kit, library or
+development tool, remains subject to the MPL-2.0 without this additional
+permission.
+
+"Covered Software", "Executable Form" and "Source Code Form" have the
+meanings given in the MPL-2.0.
+
+What this means in practice (not part of the license)
+-----------------------------------------------------
+
+- You may sell a game made with Pelican, and keep the game's code, assets
+  and your own changes to the engine closed, as long as the game is shipped
+  as a game.
+- You may sell features, packages and other add-ons you write in your own
+  files, under any license you choose (MPL-2.0 section 3.3).
+- If you distribute the engine itself, or an engine, editor or tool built
+  from it, the MPL-2.0 applies in full: the Source Code Form of the Covered
+  Software, including your changes to it, must be available to recipients.

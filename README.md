@@ -2,6 +2,22 @@
 
 game engine
 
+## License
+
+The engine is licensed under the [Mozilla Public License 2.0](LICENSE) with
+the [Pelican Game Exception](LICENSE-EXCEPTION):
+
+- Games made with Pelican may be sold, and their code, assets and changes to
+  the engine kept closed, as long as they are shipped as games.
+- Features, packages and other add-ons written in your own files may be
+  sold under any license you choose.
+- Distributing the engine itself, or an engine, editor or tool built from
+  it, requires its source, including your changes, to be available under
+  the MPL-2.0.
+
+Third-party components keep their own licenses; see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ## Documentation / 日本語資料
 
 - [利用マニュアル](docs/manual/00_index.md)
