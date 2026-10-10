@@ -2,6 +2,8 @@
 
 game engine
 
+Documentation (manual and source-code guide): https://pelican-games.github.io/peligraph/
+
 ## License
 
 The engine is licensed under the [Mozilla Public License 2.0](LICENSE) with
