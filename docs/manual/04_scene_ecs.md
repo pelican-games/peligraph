@@ -104,11 +104,11 @@
 
 | 事項 | 中身 |
 |---|---|
-| 形 | `{scene: <シーン ID の文字列>, object: <正の整数>}` の **2 キーちょうど**。欠けても増えても `graph owner requires scene and positive authoring object id`([graphcomposition.cpp:97](../../src/project/graphcomposition.cpp#L776)) |
+| 形 | `{scene: <シーン ID の文字列>, object: <正の整数>}` の **2 キーちょうど**。欠けても増えても `graph owner requires scene and positive authoring object id`([graphcomposition.cpp:97](../../src/project/graphcomposition.cpp#L784)) |
 | `object` の正体 | **authoring object id**。保存時に各 object の `authoring_object_id` として記録され、削除・並べ替え・保存・再読込を跨いでも同じ対象を指します。ID のない旧文書は従来どおり文書全体の宣言順で採番され、最初の保存で永続化されます。ID は `scene_tree` で確認してください([authoringscenedocument.cpp](../../src/core/loader/authoringscenedocument.cpp)) |
-| 解決 | ロード後の束縛表を線形に走査し、その id を持つ生きたオブジェクトを探します([SceneLoader::graphOwnerObject()](../../src/core/loader/scenegraphruntime.cpp#L40)) |
-| 見つからないとき | **エラーではなく inactive**。その instance の scope は評価されず、`LOG_WARNING` が出ます(`graph instance owner does not match any object in this scene: <scope>, <scope>, …`)。**1 行にまとまります** —— そのとき初めて報告する scope を `", "` で連ねて 1 回だけ出し、同じ scope は二度言いません([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L66))。「言った」という記憶は**シーンのロードで消えます**([scene.cpp:730](../../src/core/loader/scene.cpp#L744))ので、次のシーンでは同じ scope がまた 1 回報告されます。姿勢では「rest pose のまま動かない」に見えます |
-| 別のオブジェクトを指したとき | id が**実在する別のオブジェクト**だった場合は黙って**そちらに適用**されます。姿勢の sink のように適用できない相手(カメラなど)なら、オブジェクト名入りで失敗します(`pose graph sink resolution for Camera failed with animation status …` — [posegraphruntime.cpp:181](../../src/core/animation/posegraphruntime.cpp#L187)) |
+| 解決 | ロード後の束縛表を線形に走査し、その id を持つ生きたオブジェクトを探します([SceneLoader::graphOwnerObject()](../../src/core/loader/scenegraphruntime.cpp#L41)) |
+| 見つからないとき | **エラーではなく inactive**。その instance の scope は評価されず、`LOG_WARNING` が出ます(`graph instance owner does not match any object in this scene: <scope>, <scope>, …`)。**1 行にまとまります** —— そのとき初めて報告する scope を `", "` で連ねて 1 回だけ出し、同じ scope は二度言いません([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L67))。「言った」という記憶は**シーンのロードで消えます**([scene.cpp:730](../../src/core/loader/scene.cpp#L746))ので、次のシーンでは同じ scope がまた 1 回報告されます。姿勢では「rest pose のまま動かない」に見えます |
+| 別のオブジェクトを指したとき | id が**実在する別のオブジェクト**だった場合は黙って**そちらに適用**されます。姿勢の sink のように適用できない相手(カメラなど)なら、オブジェクト名入りで失敗します(`pose graph sink resolution failed for Camera with animation status …` — [posegraphruntime.cpp:190](../../src/core/animation/posegraphruntime.cpp#L190)) |
 
 `authoring_object_id` と文書直下の `next_authoring_object_id` は、保存・読込用の予約フィールドです。ID は正の整数で、同じ文書の別シーンも含めて重複できません。`next_authoring_object_id` は使用済み ID より大きい次の採番値を保持するため、最大番号の object を削除してもその番号を再利用しません。ID のない object を保存済み文書へ追加すると、この採番値以降が割り当てられます。外部エディタで object を移動するときは ID を一緒に移動し、複製して新しい object にするときは複製側の ID を外してください。重複・不正な型・採番値との矛盾はロード時に拒否されます。
 
@@ -157,13 +157,13 @@ codec の表には 8 個目として `pelican_ray_instance` が並んでいま�
 ```
 
 - 行の `mesh` と `primitive` は GLB の mesh と primitive の番号で、その 1 つを覆います。両方とも省いた行は全 primitive を覆います([行の型 `ModelMaterialOverride`](../../src/core/userpublic/components/modelview.hpp#L17))。
-- 効く順は「その primitive の行」>「全 primitive の行」> model の既定です([効く順を決める所 MT-2](../../src/core/renderer/polygoninstancecontainer.cpp#L438))。
+- 効く順は「その primitive の行」>「全 primitive の行」> model の既定です([効く順を決める所 MT-2](../../src/core/renderer/polygoninstancecontainer.cpp#L446))。
 - `material` は、その model の glTF の material の名前か、登録済みの project material の名前です。
-- codec が断る行(`simplemodelview.materials` の範囲エラー。[行の検査 MT-2](../../src/core/loader/componentcodec.cpp#L730)):
+- codec が断る行(`simplemodelview.materials` の範囲エラー。[行の検査 MT-2](../../src/core/loader/componentcodec.cpp#L731)):
   - `material` が空の行。
   - `mesh` と `primitive` の片方だけの行。
   - 同じ対象(同じ primitive、または全 primitive)を覆う行が 2 つあるとき。
-- scene を読むときに名前が解けない行は断りません。警告をログに出し、その行が無いものとして描きます(全 primitive の行が解けていればそれ、無ければ model の既定。[名前が解けないときの警告](../../src/core/renderer/polygoninstancecontainer.cpp#L471))。`get_object_materials` ではその行が `resolved: false` です。
+- scene を読むときに名前が解けない行は断りません。警告をログに出し、その行が無いものとして描きます(全 primitive の行が解けていればそれ、無ければ model の既定。[名前が解けないときの警告](../../src/core/renderer/polygoninstancecontainer.cpp#L458))。`get_object_materials` ではその行が `resolved: false` です。
 - エディタからは `set_object_material` で書きます([第13章](13_editor.md) §13.5 の「material 文書を読み書きする」)。Studio では Inspector の Material の行(範囲 This object)がこれを送ります(§13.1 の「Studio の Materials のドック」。Inspector は `materials` を汎用の list の欄にしません)。`get_component_add_candidates` の simplemodelview の `schema_fields` は `[model, materials]` の2つです。
 
 ### localtransform(✅)
@@ -206,7 +206,7 @@ CameraComponent 自体は**マーカー**です。マーカーコンポーネン
 - glTF の camera を `pelican_cli import gltf --extract-scene` で取り込むと、node の回転がそのまま `transform` に入り([TRS を書く所](../../src/devcli/gltfsceneextract.cpp#L159))、CC-1 からは変換なしで glTF と同じ向きになります(取り込みの経路で絵を比べる test は無く、未確認)。
 - `controller` の種類: `orbit`(`distance` 必須)/ `follow`(`target`・`offset` 必須)/ `fly`(`speed`・`sensitivity` 必須)。controller 付きカメラのオブジェクトは **name 必須**です。`type` は必須で、ほかの値は `value '<値>' is not supported` で拒まれます。
 
-**controller の field(codec の読み。✅SC-1 で component の schema に載りました)。**`controller` は閉じた object で、読む鍵は `type` によって違います([`decodeController()`](../../src/core/loader/componentcodec.cpp#L882))。
+**controller の field(codec の読み。✅SC-1 で component の schema に載りました)。**`controller` は閉じた object で、読む鍵は `type` によって違います([`decodeController()`](../../src/core/loader/componentcodec.cpp#L883))。
 
 | field | 型・範囲 | 読む `type`(`applies_to`) | 無いと拒む `type`(`required_for`) | 書かないときの値 |
 |---|---|---|---|---|
@@ -221,11 +221,11 @@ CameraComponent 自体は**マーカー**です。マーカーコンポーネン
 
 - 範囲は codec の検査です。schema の `range` はどれも `[0, 1e12]` で、0 を含むかどうかは載りません。
 - `yaw_degrees` / `pitch_degrees` も受けます(orbit で度として読み、ラジアンに直す)。`yaw` と `yaw_degrees` を両方書くと `UnknownField` の error(`duplicates its radian field`)で拒まれます。schema には別の field として載せていません(SC-1 の codec の注記。`yaw` / `pitch` の別名の扱い)。
-- `up` の鍵は受け付けません。書くと閉じた object の未知の鍵として `UnknownField`(path `camera.controller.up`、`is unknown`)で拒まれます([鍵の一覧](../../src/core/loader/componentcodec.cpp#L885))。controller の world の上は常に +Y です。
-- orbit の `yaw` / `pitch` は、target から camera へ向かう方向です。`yaw = pitch = 0` は +Z(camera は target の +Z 側から −Z を向いて target を見る)、`yaw` が増えると −X 側へ回り、`pitch` が増えると上(+Y)へ上がります([yaw / pitch の基底](../../src/core/userpublic/cameracontrollersystem.cpp#L104))。CC-1 より前の値は、変換の script が同じ方向を指す値に書き換えます([第3章 §3.13](03_project_format.md))。
-- fly の `move` の x は画面の右へ(`kbd:wasd` なら D が右)、y は視線の前へ動きます。`look` の x は視線を画面の右へ、y は画面の下へ向けます([fly の更新](../../src/core/userpublic/cameracontrollersystem.cpp#L332))。
+- `up` の鍵は受け付けません。書くと閉じた object の未知の鍵として `UnknownField`(path `camera.controller.up`、`is unknown`)で拒まれます([鍵の一覧](../../src/core/loader/componentcodec.cpp#L886))。controller の world の上は常に +Y です。
+- orbit の `yaw` / `pitch` は、target から camera へ向かう方向です。`yaw = pitch = 0` は +Z(camera は target の +Z 側から −Z を向いて target を見る)、`yaw` が増えると −X 側へ回り、`pitch` が増えると上(+Y)へ上がります([yaw / pitch の基底](../../src/core/userpublic/cameracontrollersystem.cpp#L106))。CC-1 より前の値は、変換の script が同じ方向を指す値に書き換えます([第3章 §3.13](03_project_format.md))。
+- fly の `move` の x は画面の右へ(`kbd:wasd` なら D が右)、y は視線の前へ動きます。`look` の x は視線を画面の右へ、y は画面の下へ向けます([fly の更新](../../src/core/userpublic/cameracontrollersystem.cpp#L331))。
 - `damping` は codec がどの `type` でも読みますが、動かすときに使うのは orbit と follow だけなので、`applies_to` は orbit / follow です(コードの注記。`cameracontrollersystem.cpp`)。
-- Studio の Inspector が欄を作るときに読む schema(`get_components` の `schema.fields[]`)には、この表が `discriminant: "controller.type"`・`applies_to`・`required_for`・`default` の鍵で載ります([条件の表](../../src/core/loader/componentcodec.cpp#L2345))。鍵の意味は [第13章](13_editor.md) §13.5 の「ほかの field の値で読まれ方が変わる field」。test: `componentcodec_test` の [「SC-1 camera controller schema states each type and the fields it reads」](../../test/componentcodec_test.cpp#L593)(各 `type` の最小の controller から、`required_for` の field を抜くと拒まれ、`applies_to` だけの field は書かなければ `default` で読まれ、書けば読まれることを codec で確かめる)。
+- Studio の Inspector が欄を作るときに読む schema(`get_components` の `schema.fields[]`)には、この表が `discriminant: "controller.type"`・`applies_to`・`required_for`・`default` の鍵で載ります([条件の表](../../src/core/loader/componentcodec.cpp#L2367))。鍵の意味は [第13章](13_editor.md) §13.5 の「ほかの field の値で読まれ方が変わる field」。test: `componentcodec_test` の [「SC-1 camera controller schema states each type and the fields it reads」](../../test/componentcodec_test.cpp#L598)(各 `type` の最小の controller から、`required_for` の field を抜くと拒まれ、`applies_to` だけの field は書かなければ `default` で読まれ、書けば読まれることを codec で確かめる)。
 
 ### light(✅)— ECS を経由しない
 
@@ -273,7 +273,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 { "name": "animation", "clip": "character.glb#animation/Turn", "speed": 1.0, "loop": true, "start_time": 0.0 }
 ```
 
-同じコンポーネントで、**クリップ 1 本の再生**か、**ステートマシン文書(`pelican.anim_graph`)の再生**かのどちらかを宣言します。受理するキーは `name` を除いて 6 つで、**`clip` と `graph` はちょうど一方**でなければなりません(両方書いても、どちらも書かなくても `field 'animation' requires exactly one of clip or graph` — [componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1528))。メッセージの `field '<path>' ` という前置きは検査側が付けるもので([structfieldjson.hpp:56](../../src/core/userpublic/details/schema/structfieldjson.hpp#L150))、ロード時にはさらに `animation.schema_validation` の legacy 拒否として包み直されます([componentcodec.cpp:1537](../../src/core/loader/componentcodec.cpp#L2182))。以下で引用するのは**その中の一節**です。
+同じコンポーネントで、**クリップ 1 本の再生**か、**ステートマシン文書(`pelican.anim_graph`)の再生**かのどちらかを宣言します。受理するキーは `name` を除いて 6 つで、**`clip` と `graph` はちょうど一方**でなければなりません(両方書いても、どちらも書かなくても `field 'animation' requires exactly one of clip or graph` — [componentcodec.cpp:990](../../src/core/loader/componentcodec.cpp#L1529))。メッセージの `field '<path>' ` という前置きは検査側が付けるもので([structfieldjson.hpp:56](../../src/core/userpublic/details/schema/structfieldjson.hpp#L151))、ロード時にはさらに `animation.schema_validation` の legacy 拒否として包み直されます([componentcodec.cpp:1537](../../src/core/loader/componentcodec.cpp#L2183))。以下で引用するのは**その中の一節**です。
 
 (`graph` 装着の形。[skeletal_gltf_test.cpp:1074](../../test/skeletal_gltf_test.cpp#L1078) の実物から):
 
@@ -292,7 +292,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 | `loop` | 任意 | true | 非 bool は名指しエラー。**`clip` のときだけ** |
 | `start_time` | 任意 | 0.0 | 開始オフセット秒。**`clip` のときだけ** |
 
-`graph` と一緒に `speed` / `loop` / `start_time` を書くと拒否されます —— メッセージは**書いた鍵を名指し**するので、`field 'animation.speed' is clip-only; graph states define their playback clocks` のほか `field 'animation.loop' …` / `field 'animation.start_time' …` の形も出ます([componentcodec.cpp:1009](../../src/core/loader/componentcodec.cpp#L1547))—— ステートマシンでは再生時計を各ステートが決めるからで、黙って無視はされません。実行時にパラメータを動かす API は [第8章 §8.13](08_gameplay.md)(`animation().setParameter` / `animation().forceState`)です。
+`graph` と一緒に `speed` / `loop` / `start_time` を書くと拒否されます —— メッセージは**書いた鍵を名指し**するので、`field 'animation.speed' is clip-only; graph states define their playback clocks` のほか `field 'animation.loop' …` / `field 'animation.start_time' …` の形も出ます([componentcodec.cpp:1009](../../src/core/loader/componentcodec.cpp#L1548))—— ステートマシンでは再生時計を各ステートが決めるからで、黙って無視はされません。実行時にパラメータを動かす API は [第8章 §8.13](08_gameplay.md)(`animation().setParameter` / `animation().forceState`)です。
 
 **出荷プロジェクトの scene.json には、今日 `animation` コンポーネント自体がありません**(2026-09-17 実測)。`animgraph_demo` は同じ形のステートマシンを**ゲームコードから**駆動しており(`code/` の `EvaluatorV1`)、`animgraph_demo` / `vrm_xr_demo` の `movement.anim_graph.json` はどちらの scene からも参照されていません。姿勢をデータだけで装着する実物は `posegraph_demo`(様式 (2)、下記)です。
 
@@ -381,7 +381,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 | `overrides` | **現状は必ず拒否**(下記) |
 
 - 3 つとも省略可ですが、**1 つも書かないとエラー**(`pelican.ray_instance_empty@1`)です。closed schema で、上記以外のキーは `pelican.ray_instance_unknown_field@1`、範囲外の値は `pelican.ray_instance_field_range@1` になります。
-- `instance_flags` は配列でないと `pelican.ray_instance_field_type@1`、重複も同じコード、未知の名前は `pelican.ray_as_unknown_flag@1`、`force_opaque` と `force_no_opaque` の併記は `pelican.ray_as_conflicting_instance_flags@1` です([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1784))。この codec の名前付き拒否は `pelican.` 接頭辞 + `@1` が付きますが、**`overrides` の拒否だけは接頭辞が付きません**(下記)。
+- `instance_flags` は配列でないと `pelican.ray_instance_field_type@1`、重複も同じコード、未知の名前は `pelican.ray_as_unknown_flag@1`、`force_opaque` と `force_no_opaque` の併記は `pelican.ray_as_conflicting_instance_flags@1` です([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1785))。この codec の名前付き拒否は `pelican.` 接頭辞 + `@1` が付きますが、**`overrides` の拒否だけは接頭辞が付きません**(下記)。
 - `overrides`はWP382dで有効化されました。occurrence IDを指定した行でmask/flags/custom indexを上書きできます。対象が失われても行を消さず、`OccurrenceAbsent`として診断へ残します。previewでは`ray_instance_overrides_unsupported@1`を返します。
 
 ### コンポーネント名の名前空間と所有者(✅WP379/379a)
@@ -395,7 +395,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 - grandfathered の 7 名は `eid` / `transform` / `localtransform` / `simplemodelview` / `camera` / `animation` / `sprite_view` です。**これ以降エンジンが足すビルトインは必ず `pelican_` で始まります**(`pelican_ray_instance` が最初の適用例)。
 - エンジン所有として登録する registrar([EngineComponentRegisterer](../../src/core/ecs/enginecomponentregistrar.hpp#L15))は **host 専用**で、ゲーム DLL からは include しても**リンク以前にコンパイルが通りません**(`registerEngineComponent` を呼ぶ game DLL は専用のコンパイル失敗テストで守られています)。
-- シーン JSON に**未登録の名前**を書くと `component_unknown@1{"name":"X"}`([componentinfo.hpp](../../src/core/ecs/componentinfo.hpp#L27))。**登録済みだが codec が無い**名前は、ロードはできてもエディタからは編集できず `not_editable`([editorjournal.cpp](../../src/core/communication/editorjournal.cpp#L214))になります。ゲーム DLL が登録した独自コンポーネントは(codec を持たないため)この状態です。
+- シーン JSON に**未登録の名前**を書くと `component_unknown@1{"name":"X"}`([componentinfo.hpp](../../src/core/ecs/componentinfo.hpp#L27))。**登録済みだが codec が無い**名前は、ロードはできてもエディタからは編集できず `not_editable`([editorjournal.cpp](../../src/core/communication/editorjournal.cpp#L225))になります。ゲーム DLL が登録した独自コンポーネントは(codec を持たないため)この状態です。
 
 ## 4.3 シーンロードの流れ
 
@@ -421,7 +421,7 @@ flowchart TD
     I -->|なし| J[SceneLoadCommitted]
     I -->|あり| K[CommittedWithEffectFailure / 新シーンは維持]
 ```
-根拠: [scene.cpp:1650](../../src/core/loader/scene.cpp#L1650)、[scene.cpp:1706](../../src/core/loader/scene.cpp#L1706)、[scene.cpp:1740](../../src/core/loader/scene.cpp#L1740)、[sceneloadparticipant.hpp:75](../../src/core/loader/sceneloadparticipant.hpp#L75)。
+根拠: [scene.cpp:1650](../../src/core/loader/scene.cpp#L1652)、[scene.cpp:1706](../../src/core/loader/scene.cpp#L1708)、[scene.cpp:1743](../../src/core/loader/scene.cpp#L1743)、[sceneloadparticipant.hpp:75](../../src/core/loader/sceneloadparticipant.hpp#L75)。
 
 注: 8 段は `prepare` から `finish` までです。prepare で `light` / `collider` / `behavior` をそれぞれの所有者へ、それ以外を ECS へ振り分けます。light だけの object には ECS entity を作らず、behavior だけなら作ります。未知 component は拒否し、未登録 behavior は DLL がある場合に拒否、DLL 不在なら pending 扱いです。モデル資産はシーンに属さないキャッシュなので、失敗しても読み込み済み資産は残ります。
 
@@ -431,7 +431,7 @@ flowchart TD
 
 同時に置ける model instance は1,024で、超えると `Model instance capacity exceeded` です。scene 切替中の候補と旧 scene の slot の保持は[読解ガイド](../source-code-guide/03_project_and_loading.md#scene-instance-slots)を参照してください。
 
-- 置き換えの準備の時に、前に retire した世代が回収されずに残っていれば(frame を挟まずに `load_scene` を続けた場合)、GPU の完了を待って(`waitIdle`)から回収します。公開中の世代は置き換えが commit するまで回収しません([連続した load で古い世代を回収する所](../../src/core/renderer/polygoninstancecontainer.cpp#L689))。
+- 置き換えの準備の時に、前に retire した世代が回収されずに残っていれば(frame を挟まずに `load_scene` を続けた場合)、GPU の完了を待って(`waitIdle`)から回収します。公開中の世代は置き換えが commit するまで回収しません([連続した load で古い世代を回収する所](../../src/core/renderer/polygoninstancecontainer.cpp#L714))。
 - 代わりに払うもの: device の buffer が 18.2 MiB 増えます(うち skin palette の 2 本で 16 MiB。commit の説明の値)。連続した load では必要に応じて GPU を待ちます。frame ごとの新しい待ちは足していません(codex の報告)。
 - codex の報告では、998 個の cube と Anchor・Camera の 1,000 object のシーンで、前は 3 回とも最初の再読込が失敗し、今は 3 回とも 6 回の再読込が通りました。test: `modelinstance_slotmap_test` の [「Full-capacity scene replacement keeps rollback slots and reclaims older generations」](../../test/modelinstance_slotmap_test.cpp#L390)(1,024 個のモデルで候補の作成・公開後の rollback・frame を挟まない 3 回の置き換え。報告では GPU の test)。
 
@@ -458,11 +458,11 @@ flowchart TD
 retire 中の `onDestroy` は「自分の最終状態」を読めます。entity はもう unpublish されていますが、`ctx.localTransform(self)` / `ctx.spriteView(self)` は**破棄トークンが持つスナップショット**を返します([retiredComponent](../../src/core/loader/effecttransaction.cpp#L464))。書き込み側(`setLocalTransform` / `setSpriteView` / `setSpriteTexture`)は throw せず **false** を返し、`SceneRetiredObjectMutationRejected` として `effect_errors` に積まれます([rejectRetiredMutation](../../src/core/loader/effecttransaction.cpp#L475))。
 
 - `onDestroy` は `noexcept` なので、この段の fallible API(`playSound` / `saveData` など)は**例外を投げずに `effect_errors` へ**回されます。呼び出し側のゲームコードは戻り値だけ見ればよく、握りつぶしではなく記録されます。
-- retire 中の `loadScene(name)` は、**commit 済みのシーン集合**に対して解決されます([requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1855))。旧シーンにしか無い名前を書くと `scene not found in committed projection: X` になり、`scene_retire_load_rejected@1` として記録されます。
+- retire 中の `loadScene(name)` は、**commit 済みのシーン集合**に対して解決されます([requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1857))。旧シーンにしか無い名前を書くと `scene not found in committed projection: X` になり、`scene_retire_load_rejected@1` として記録されます。
 
 ### commit したのに作用が失敗したとき
 
-flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L2048))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
+flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L174) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L2051))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
 
 - 「シーンは切り替わらなかった」= commit 前の失敗は従来どおり**例外**です。両者を混同しないでください。
 - staging できる作用は 256 件までです。257 件目からは**控えに積まれず、実行もされません**(`playSound` は無効なハンドルを返します)。捨てた件数だけが `effect_outbox_full@1{dropped: N}` という 1 件のエラーにまとめて記録されます([reserveEntry](../../src/core/loader/effecttransaction.cpp#L119))。

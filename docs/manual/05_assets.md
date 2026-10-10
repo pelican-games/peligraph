@@ -1,6 +1,6 @@
 # 第5章 アセットパイプライン
 
-最終確認: 2026-10-07
+最終確認: 2026-10-10
 
 ## この章で学ぶこと
 
@@ -78,14 +78,14 @@ engine が登録を書いたもののその場で使えなかったとき(`resta
 - `schema: "pelican.asset_data"` と `version: 2` は必須です。`2` 以外は `pelican.asset_data.version_unsupported@1` で拒否します(✅MG-2b。[assetdataformat.cpp](../../src/project/assetdataformat.cpp#L110))。MG-2b より前にあった version `1` は「`procedural_geometry` を受けない」ことだけが違う版で、今は読めません。手元に `1` のファイルがあれば `version` を `2` に書き換えるだけで読めます。旧い未版形式も受理しません。
 - `models` 配列は必須、各要素は `name` と `path`(プロジェクトルート基準)の両方が必須です。`path` には `#` フラグメント(§5.6)も書けます: `{"name":"selected","path":"assets/models/city.glb#mesh/LampPost"}`。任意キー `material_bindings`(`pelican.material_bindings` v1 への参照 — プリミティブ → マテリアルの whole-model 契約。✅WP116、fragment モデルには不可)も書けます。
 - **起動時に全件ロード**されます(✅WP82 で CPU 側は並列化・GPU 登録は宣言順直列 = 決定的)。ここでいう**宣言順**は上の `models` 配列に書いた順のことです。パース(CPU)は複数スレッドで走りますが、結果は添字順の配列に置かれ、GPU への登録は全ジョブの合流後にこの順で 1 件ずつ行われます([parallel_prepare.hpp](../../src/core/parallel_prepare.hpp#L20))。スレッドの完了順が実行ごとに揺れても GPU に載る順序は変わらない、というのが「決定的」の中身です([用語集](14_glossary.md#決定的--決定性deterministic))。ファイルが無ければ解決後の絶対パス入りで fail-fast。
-- **rendering config が壊れているとモデルは 1 件も upload されません(✅WP380a-fix)**: 起動時、レンダーグラフの検証と publish は scene の prepare より**前**に走ります([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp#L161))。マテリアル経路の誤りのような config の失敗が常に最初の起動エラーになり、頂点プールを消費しません。
-- **失敗した load は GPU 資源を返します**: ロード途中で例外が出ると、その候補モデル(と登録済みモデル)の index / vertex / skinned vertex / morph delta / material / texture が解放されます([model.cpp](../../src/core/asset/model.cpp#L579))。**失敗した候補を warm cache として残さない**ので、同じプロセスで再試行しても頂点プールの使用量は増えません。解放そのものに失敗した分は固定容量 8 の報告([modelresourcerelease.hpp](../../src/core/model/modelresourcerelease.hpp#L36))へ畳まれ、scene load 失敗の結果に `release_errors`(stage 名の列。溢れた分は `overflow:N`)として現れます([sceneload.hpp](../../src/core/loader/sceneload.hpp#L142))。呼び元へ返せないデストラクタ経路の分は `ReleaseErrorSink` の累積カウンタに積まれます。
+- **rendering config が壊れているとモデルは 1 件も upload されません(✅WP380a-fix)**: 起動時、レンダーグラフの検証と publish は scene の prepare より**前**に走ります([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp#L168))。マテリアル経路の誤りのような config の失敗が常に最初の起動エラーになり、頂点プールを消費しません。
+- **失敗した load は GPU 資源を返します**: ロード途中で例外が出ると、その候補モデル(と登録済みモデル)の index / vertex / skinned vertex / morph delta / material / texture が解放されます([model.cpp](../../src/core/asset/model.cpp#L615))。**失敗した候補を warm cache として残さない**ので、同じプロセスで再試行しても頂点プールの使用量は増えません。解放そのものに失敗した分は固定容量 8 の報告([modelresourcerelease.hpp](../../src/core/model/modelresourcerelease.hpp#L36))へ畳まれ、scene load 失敗の結果に `release_errors`(stage 名の列。溢れた分は `overflow:N`)として現れます([sceneload.hpp](../../src/core/loader/sceneload.hpp#L142))。呼び元へ返せないデストラクタ経路の分は `ReleaseErrorSink` の累積カウンタに積まれます。
 - 静的メッシュはノード階層の変換が**頂点に焼き込まれて平坦化**されます。glTF は「親ノードの行列 × 子ノードの行列 × …」の木で頂点位置を決めますが、ロード時にその積を頂点座標そのものへ掛けてしまい、ランタイムには親子関係のない 1 枚の頂点列だけが残る、という意味です(親を動かして子が付いてくる、という表現はできません。動かしたい単位はシーン側のオブジェクトに分けます)。マテリアルは 5 テクスチャ(baseColor / metallicRoughness / normal / emissive / occlusion)として登録されます。occlusion は metallicRoughness の R から推測せず、glTF の独立した `occlusionTexture` を使います(色テクスチャは SRGB view、metallicRoughness / normal / occlusion は UNORM view — [第6章](06_rendering.md) §6.3)。
 - **スケルタルアニメーションは ✅WP38 で実装済み**: glTF の `skins` + `animations` を読み、シーンの `animation` コンポーネント([第4章](04_scene_ecs.md))で再生します。skinned プリミティブはスケルトンを保持します(焼き込まない)。制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128、クリップはモデルと同一 glb のみ。※この 3 つの制限は **glb 内蔵クリップ + `animation` コンポーネントの経路に限った話**です。`.vrma` は別経路で、CUBICSPLINE も受理します(後述)。
 - **モーフターゲットは ✅WP121 で描画対応**: `primitive.targets` の POSITION/NORMAL/TANGENT delta をデコードし、初期 weight(node > mesh > 0)で material / shadow / velocity の全経路に適用します(変形順は morph → skinning → model)。制限: sparse morph accessor 非対応(名指しエラー。glTF の **sparse accessor** は「既定値からの差分だけを (添字, 値) の対で持つ」省サイズ表現で、通常の accessor が全要素を並べるのと形式が違います — [ソースコード読解ガイド §10.2](../source-code-guide/10_background_knowledge.md#sparse-accessor))、target 64/primitive・weight 256/instance、同一 primitive の **morph + VAT 併用は拒否**。**アニメクリップの `weights` チャネルは今もロードエラー**で、実行時に weight を動かす公開経路は VRM expression service([第8章](08_gameplay.md) §8.13)だけです。
   - morph delta の上限は全 model 共有で524,288 records(primitive ごとの頂点数 × target 数)、target は64 / primitive、weight は256 / instanceです。上限を超えると起動を止め、問題の一覧には載りません。頂点 metadata の拡張は[読解ガイド](../source-code-guide/03_project_and_loading.md)を参照してください。
 - モデルファイル(.glb/.gltf/.vrm)は実行中のホットリロード対象です(✅WP110 — [第10章](10_tools.md) §10.5)。
-- **リロードの世代はアセット単位です(✅WP147)**: スケルタルモデルを差し替えると、**そのモデルのアセットだけ**世代が 1 進みます。**animation registry** はスケルタルモデル 1 件ごとに rig・skin binding・クリップのハンドルを保持するプロセス内の表です([`AnimationAssetRegistry`](../../src/core/animation/animationjobs.hpp#L56))。以前は 1 件でもスケルタルモデルが含まれるとこの表を全体ごと破棄していましたが、現在は**無関係なモデルに付いた評価器は止まりません**。差し替えられた側の rig / レイアウト / クリップ / カーソル / ポーズの旧ハンドルは `stale_generation` になります。宣言的な `animation` コンポーネント([第4章](04_scene_ecs.md))は独自レジストリを持つため自動で復帰しますが、`pelican.anim_graph` の評価器は `EvaluatorV1::rebind()` の明示呼び出しが必要です([第8章](08_gameplay.md) §8.13)。
+- **リロードの世代はアセット単位です(✅WP147)**: スケルタルモデルを差し替えると、**そのモデルのアセットだけ**世代が 1 進みます。**animation registry** はスケルタルモデル 1 件ごとに rig・skin binding・クリップのハンドルを保持するプロセス内の表です([`AnimationAssetRegistry`](../../src/core/animation/animationjobs.hpp#L59))。以前は 1 件でもスケルタルモデルが含まれるとこの表を全体ごと破棄していましたが、現在は**無関係なモデルに付いた評価器は止まりません**。差し替えられた側の rig / レイアウト / クリップ / カーソル / ポーズの旧ハンドルは `stale_generation` になります。宣言的な `animation` コンポーネント([第4章](04_scene_ecs.md))は独自レジストリを持つため自動で復帰しますが、`pelican.anim_graph` の評価器は `EvaluatorV1::rebind()` の明示呼び出しが必要です([第8章](08_gameplay.md) §8.13)。
 
 ### テクスチャ・画像と atlas(`textures` セクション ✅WP103)
 
@@ -148,15 +148,56 @@ engine が登録を書いたもののその場で使えなかったとき(`resta
 - 起動時に `.surface` を解決し、`parseSurfaceFormat` → material lowering → shader compile →
   GPU material 登録まで実行します。`engine://textures/{white,black,flat_normal,flat_gray}` と
   `project://*` の texture 参照は常設 resolver が解決します。
-- `pelican.material_bindings` v1 の `binding.material` は glTF 内 named material と
-  project material の両方を探索します。同名が両域にある場合、または project 文書間で
-  material 名が重複した場合は、曖昧な優先順位を設けず名指しで失敗します。
+- `pelican.material_bindings` v1 の `binding.material` は下の「material の割り当て」の参照の形で、
+  project material か、その model の glTF の material を指します。project 文書間で material 名が重複した場合は名指しで失敗します。
 - **engine の基本形**(GP-5): `engine://primitives/{cube,plane,sphere}` は asset_data に登録しなくても model の参照として使えます(`simplemodelview.model` にそのまま書く)。形は engine がコードで生成し(cube は一辺 1、plane は XZ の 1×1 で +Y 向き、sphere は半径 0.5・32×16 分割)、既定の material は灰色の OpenPBR(`pelican.primitive.default`)です。material を差し替えるときは asset_data に `{"name": …, "path": "engine://primitives/cube", "material_bindings": …}` と宣言し、上の `pelican.material_bindings` の `model` に同じ参照を書きます。未知の名前は `model.primitive_unknown@1`。Studio では、この宣言を手で書かずに、Inspector の **Material** の combo が engine の `bind_material`(下の「RPC で書かせる」)で書きます([第13章](13_editor.md) §13.1 の「Studio の Materials のドック」)。
 - `binding.routing` は実行時にも照合されます。OpenPBR の
   `{opaque,mask,blend}_{single,double}` と一致しない binding は拒否されます。
 - material values と参照 texture は既存のファイル監視経路へ登録され、実行中の
   hot reload 対象です。ファイル監視による変更範囲と描画上の意味は[第6章の material](06_rendering.md#67-マテリアルm1m35--wp586870767883)を参照してください。
 - **RPC で書かせる**: material を作る・直す・割り当てるときは、Studio の Materials と Inspector の Material 行を使います。引数・戻り値・拒否・保存ファイルは[第13章の material RPC](13_editor.md#material-文書を読み書きする)を参照してください。
+
+#### material の割り当て —— 道・参照の形・skin 付き部品・VAT・model の差し替え
+
+**3 つの道**: model の部品(mesh / primitive)の material は次のどれかで替えます。
+
+| 道 | 書く場所 | 効く範囲 |
+|---|---|---|
+| bindings | asset_data の model の `material_bindings` が指す `pelican.material_bindings` v1 | その model を描く全 object。文書は model の全部品を覆います(fragment の model には書けません) |
+| scene の上書き | scene の `simplemodelview.materials`([第4章](04_scene_ecs.md)) | その object だけ。部品を指す行と、全部品の行があります |
+| RPC | `bind_material`(bindings を書く)/ `set_object_material`(object の行を書く) | 上の 2 つのどちらか。Studio の Materials と Inspector の Material 行がこれを送ります([第15章](15_studio.md) §15.4) |
+
+**参照の形(✅NM-1)**: bindings と scene の上書きの `material` は、文字列の形で出どころが決まります([`resolveModelMaterial()`](../../src/core/model/modeltemplate.cpp#L73))。
+
+| 形 | 指すもの |
+|---|---|
+| `#material/` を含まない(例 `paint`) | project material の名前。project を先に引き、project に無い名前だけ下の「名前だけの古い行の救済」で glTF の material を探します |
+| `<model の path>#material/<名前>@<index>`(例 `assets/models/hero.glb#material/Material.001@2`) | その model の glTF の material。`<index>` は glTF の `materials` 配列の添字で、これが鍵です。名前は照合用です |
+
+- **参照の形になるのは、file から読んだ model の glTF の material だけです**。engine の基本形(`engine://primitives/{cube,plane,sphere}`)の material `pelican.primitive.default` と、engine の組込の material(`pelican.builtin.*`。material を持たない glTF の部品などに使う)は、bindings でも scene の上書きでも RPC の答えでも裸の名前のままです([判定する所](../../src/core/model/modeltemplate.cpp#L54))。誤って参照の形(`engine://primitives/cube#material/pelican.primitive.default@0`)で書かれた行も、裸の名前に直して読みます。
+- path は asset_data の `path` と同じ project 相対の綴りです。model の `path` が fragment 付き(`city.glb#mesh/LampPost`)なら、`#` より前の file に `#material/…` を付けます。その model 自身の file 以外を指すと `material reference must name the model's own asset file` で断られます。
+- **名前と index が食い違う**(glb を書き出し直して material の名前が変わった)ときは index の material を使い、log に `stale material reference '<参照>': current name is '<今の名前>' (index wins)`、Problems に `material.reference_stale@1`(warning。`fields` は `model` と、行ごとの `row`・`written_name`・`current_name` など)が出ます([`publishBindingProblems()`](../../src/core/asset/model.cpp#L230))。
+- **同じ名前の project material と glTF の material があっても読み込みは止まりません**(NM-1 の前は名前の衝突として断っていました)。`#material/` の無い名前は project の方を指します。
+- **bindings の `material` は空でなければどんな文字列でも構いません**(✅MB-1。`Material.001`・`Body (skin)`・日本語の名前)。識別子に限られるのは project material の名前(自分の `.material.json` の側)だけです。
+- **名前だけの古い行の救済**: project に無い名前で、その model の glTF に同じ名前の material が **1 つだけ**あれば、それを使います(log は INFO の `legacy material '<名前>' resolved as '<参照>'`)。**2 つ以上**あれば `Ambiguous GLB material fragment '<名前>'; use @<index> to select it (candidates: 0, 2)` の文で、bindings ではその部品は model 自身の material で描き、Problems の `material.binding_unresolved@1` にこの文が入ります。scene の上書きの行は warning を出して model の material で描きます。
+- **書き手は 3 つ組で書きます**: `bind_material` / `set_object_material`(と Model default への戻し)は file から読んだ model の glTF の material をいつも `…#material/<名前>@<index>` の形で書き(engine の基本形と組込の material は上のとおり裸の名前)、触らない部品の行(名前だけの古い行を含む)もこの形に直します。`get_material_bindings` / `get_object_materials` もこの形で返します。Studio は名前で見せ、同じ名前が複数あるときだけ `名前 (index)` と見せます([第15章](15_studio.md) §15.4)。
+- `@<index>` は `#mesh/` `#node/` `#animation/` の fragment 参照でも使えます(§5.6)。
+
+**skin 付きの部品(✅SK-1)**: skin を持つかどうかは material ではなく**部品の性質**です。project material(自作の `.surface` を含む)を skin 付きの部品に当てられ、3 つの道のどれでも同じに描けます。
+
+- project material は登録のとき、同じ surface を `PELICAN_SKINNED` 付きでもう 1 回 compile し、skin 付きの部品を描くときの頂点 program にします([2 回目の compile](../../src/core/material/projectmaterialasset.cpp#L145))。glTF の PBR material と engine の組込 material は engine の `skinned.vert` を持ちます。どの部品を skin の頂点で描くかは、描くときに部品の印で決まります。
+- `PELICAN_SKINNED` は engine が付ける define なので、material の `defines` に書くと `material defines cannot override the compiler-owned physical shader ABI` で断られます([compiler が持つ define](../../src/core/shader/shaderlibrary.cpp#L167))。
+- 1 つの glTF の material を skin 付きと skin なしの部品が使っていても、material の登録は 1 つです(前は skin 付きの部品のために material の「双子」を作り、material の無い skin 付きの部品には組込の `pelican.builtin.skinned_fallback` を使っていました。どちらも無くなりました)。
+- 逆向き、VAT の material を skin 付きの部品に当てると、VAT の material は skin 用の頂点 program を持たないので、draw item を作る段で `material '<名前>' has no skinned vertex pipeline for mesh <m> primitive <p>` で止まります([`makeDrawItemSnapshot()`](../../src/core/renderer/polygoninstancecontainer.cpp#L370))。
+- 描き方の差は[第6章](06_rendering.md) §6.7 の「pipeline は頂点の mode ごと」です。
+
+**VAT で焼いた部品に VAT でない material は当てられません(✅SK-1)**: VAT の部品は texture と bounds を自分の material に焼いているので、VAT を持たない material は当てられません。bindings で当てるとその model の読み込みが `material bindings for model '<model>' mesh <m> primitive <p> material '<名前>': VAT primitives keep their baked material` で断られ([bindings の拒否](../../src/core/model/modeltemplate.cpp#L160))、scene の上書きの行は warning を出して元の material のまま描き([scene の行](../../src/core/renderer/polygoninstancecontainer.cpp#L456))、`bind_material` は VAT の部品を含む指定を、当てる material が VAT のものかどうかに関係なく `material.binding_invalid@1`(reason `VAT primitives keep their baked material`)で断ります(部品を指定しない model 全体への指定も、VAT の部品が 1 つでもあれば断られます。[RPC の拒否](../../src/core/communication/materialdocumentrpc.cpp#L1754))。部品ごとに VAT を持たせる形は v1 の予定です。
+
+**model を差し替えた後の行(✅MR-1 / MO-1)**: glb を差し替えて(ファイルの hot reload など)部品が減ったり変わったりしても、起動と reload は止まりません。
+
+- **bindings**: 無くなった部品を指す行は無視し、残っている有効な行はそのまま当てます。bindings に行の無い部品と、名前が解けない material を指す部品は model 自身の material で描きます。log に行ごとの理由(`model '<model>': material bindings row <n>: …`)が出て、部品の集合が合わない model ごとに Problems の `model.bindings_stale@1`(warning。`fields.rows` に 0 始まりの行・mesh・primitive・理由)が 1 件、名前が解けない分は `material.binding_unresolved@1` に行の理由が入ります([`publishBindingProblems()`](../../src/core/asset/model.cpp#L230))。元の glb に戻すか bindings を直すと消えます。
+  - この model に `bind_material` を送ると、engine は消えた行を捨て、行の無い部品を足し、解けない行を model の material に戻して文書を書き直します(同じ material を選び直しても書き直します)。
+- **scene の上書きの行**: 無くなった部品を指す行は、material の名前を見る前に無視し、log に `object <id>: material override (mesh <m>, primitive <p>) with material '<名前>' refers to a missing primitive in model '<model>'; ignoring the row` が出ます([行を無視する所](../../src/core/renderer/polygoninstancecontainer.cpp#L484))。Problems には `material.object_primitive_missing@1`(warning。`fields` は object・name・scene_id・model・material・primitive)が 1 件出ます([Problems の行](../../src/core/material/projectmaterialasset.cpp#L493))。行は文書から消さないので、model を戻すとまた当たり、Problems も消えます。Studio ではこの行を押すとその object の Inspector に飛びます。
 
 ### モデル材質の identity — レイトレの AS 規則が見る値(✅WP383)
 
@@ -171,8 +212,8 @@ identity は下の 3 種のうち**ちょうど 1 つ**の形を取ります(「
 | `Unavailable` | どちらも成立しない | material 無しの glTF プリミティブなど |
 
 - **document の存在が勝ちます。** 単一 material の `.mat.json` のように `material_name` が無い document でも `Document` になり、`asset` 側へは落ちません。
-- `asset` に入るのは `asset_data.json` の `name`(`"sponza"` 等)ではなく `path` 由来の参照です。マシン依存の絶対パスにならないよう、解決前の authored 参照を保ったまま運びます([model.cpp](../../src/core/asset/model.cpp#L331))。
-- **`source_material_index` は optional のまま運ばれ、欠損は 0 に潰されません**([modeltemplate.hpp](../../src/core/model/modeltemplate.hpp#L138) → [accelerationstructure.hpp](../../src/core/vkcore/accelerationstructure.hpp#L50))。内部の「無し」番兵(`0xffffffff`)が identity まで届いた場合は `pelican.ray_material_index_out_of_range@1` で失敗します。
+- `asset` に入るのは `asset_data.json` の `name`(`"sponza"` 等)ではなく `path` 由来の参照です。マシン依存の絶対パスにならないよう、解決前の authored 参照を保ったまま運びます([model.cpp](../../src/core/asset/model.cpp#L364))。
+- **`source_material_index` は optional のまま運ばれ、欠損は 0 に潰されません**([modeltemplate.hpp](../../src/core/model/modeltemplate.hpp#L151) → [accelerationstructure.hpp](../../src/core/vkcore/accelerationstructure.hpp#L50))。内部の「無し」番兵(`0xffffffff`)が identity まで届いた場合は `pelican.ray_material_index_out_of_range@1` で失敗します。
 - material の付いていないモデルはレイトレの規則で選べません(`Unavailable`)。AS 規則を 1 つでも書いた v2 プロジェクトにそういう行が混ざると `pelican.ray_as_row_material_identity_unavailable@1` になります。規則を書かなければ identity は要求されません。
 
 ### `.vrma`(VRM Animation)— 実行時に読み込めるがプロジェクトから参照できない形式(🚧WP176/177/178)
@@ -249,6 +290,7 @@ pelican_player --headless --project <dir> --frames 3 --size 160x90 --fps 30 \
 - 再生はシェーダ(埋め込みシェーダ `vat.vert.spv` の vertex shader)が `texelFetch` で前後 2 フレームを読んで**手動 lerp**(2 値を自分で線形補間)します。VAT のテクスチャは「横 = 頂点番号・縦 = フレーム番号」の並びなので、GPU の線形フィルタを有効にすると時間方向だけでなく**隣の頂点の値まで混ざります**(頂点方向に滲む)。したがってフィルタは nearest 相当の `texelFetch` に固定し、時間方向の混ぜ合わせだけをシェーダ側で書きます。
 - VAT 付き glb は `--play-vat <path.glb>` でプレビューできるほか、**通常のモデルとして asset_data.json に登録しても動きます**(ローダーが primitive 単位で検出)。
 - `PELICAN_WITH_VAT=OFF` ビルドでは VAT 付き glb 自体が名指しのエラーで拒否されます。
+- VAT で焼いた部品の material は、VAT を持たない material には替えられません(bindings は断り、scene の上書きは元のまま描きます。`bind_material` は VAT の部品への指定をすべて断ります。§5.2 の「material の割り当て」)。
 
 ## 5.5 DCC 納品物の取り込み — pelican.import と `pelican_cli import`(✅WP21)
 
@@ -286,7 +328,8 @@ import manifest の受理拡張: outputs の schema に `pelican.material`(v1)�
 | `assets/models/city.glb#mesh/LampPost` | 短い一意名(糖衣) |
 | `assets/models/city.glb#node/Root/Arm/Cube` | フルパス(正準形) |
 
-- 構文規則: `#` は 1 個・種別は英数字とアンダースコア(`[A-Za-z0-9_]`)・**全数字の index 参照は構文レベルで拒否**(DCC の並び替えで壊れるため)。短い一意名が曖昧な場合は候補全列挙のエラー。
+- 構文規則: `#` は 1 個・種別は英数字とアンダースコア(`[A-Za-z0-9_]`)・**全数字の index だけの参照は構文レベルで拒否**(DCC の並び替えで壊れるため)。短い一意名が曖昧な場合は候補全列挙のエラー。
+- **名前に `@<index>` を足せます(✅NM-1)**: `city.glb#mesh/LampPost@3` のように、最後の `@` の後ろが 0 以上の整数なら、それがその種別の配列の添字で、選ぶ鍵になります(名前は照合用。違えば index の方を使い、警告します)。`@` の後ろが整数でなければ名前の一部です(`a@b` は名前)。同じ名前が複数あるのに `@` 無しで指すと `Ambiguous GLB <種別> fragment '<名前>'; use @<index> to select it (candidates: 0, 2)` で断られます([`resolveAssetFragment()`](../../src/project/projectpathresolver.cpp#L333))。glTF の material を bindings と scene で指す形 `<path>#material/<名前>@<index>` もこの文法です(§5.2)。
 - 対応種別は **`mesh` / `node` / `material` / `animation` の 4 種**(.glb/.gltf のみ)。未対応 kind は対応一覧付きの名指しエラー。依存するリソースだけを GPU 化する真の部分ロードです。
   - `#mesh/...` / `#node/...` → asset_data.json の `models[].path` に書いてモデル参照
   - `#animation/<クリップ名>` → シーンの `animation` コンポーネントの `clip`([第4章](04_scene_ecs.md))

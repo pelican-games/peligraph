@@ -154,6 +154,19 @@ AG / P / O / X / R / N / Q の着地 SHA は [v0 凍結一覧 §5](v0_freeze.md#
 Graph Canvas の基本 Undo は `0d41aeba` で実装済み。render config 全体や scene journal と跨る複合 Undo は別の未完了項目である。
 scene owner ID の永続化も `efb30dad` で実装済みのため、新規開発候補には戻さない。
 
+#### v0 を閉じるときに v1 へ送ったもの(2026-10-10)
+
+公開前のバグ探し(発端は SK-1。WP の行は [台帳](implementation_plan.md) の V0-ADD の WP 索引の GA-1〜CB-1)の中で、v0 では直さないと決めたもの。
+
+| 項目 | v0 での扱い | v1 で行うこと |
+|---|---|---|
+| VAT を部品単位へ | VAT の texture と再生の情報は glTF の読み込みで material に焼かれる(`registerVatMaterial`、`src/core/model/gltf.cpp`)。SK-1(`e265e5658`)で、VAT の部品に別の material を当てる 3 経路(`material_bindings`、scene の `simplemodelview.materials`、RPC `bind_material`)を拒否した | VAT の texture と bounds を部品の側へ移し、VAT の部品にも project material を当てられるようにする(統合側の記録では SK-2 の名) |
+| scene journal を起こし直しの先へ | 起こし直し(`restart_required`)で engine の中の scene の editor journal が消え、scene の Undo が効かなくなる(scene の中身は残る)。2026-10-08 の利用者の決定「v0 では直さない」。QD-1 の Undo の検査に印が残る(`test/studio_scenarios/QD1_FINDINGS.md` の Bundle B) | journal の持ち主は engine のまま、起こし直しの前に古い engine から取り出し、Save の後の scene の digest が一致するときだけ新しい engine に渡す(統合側の案。起こし直しで意味が変わる値の洗い出しが先)。上の表の「scene と graph/render config を束ねる複合 Undo」とは別の項目 |
+| 依存の同梱(DS-1c) | 依存は configure のときに FetchContent が git で取る | `third_party/` に同梱し(`cmake/pelican_third_party.cmake`)、git もネットワークも無しで configure する(opt-in の Jolt は FetchContent のまま。`agent/ds1c` の `cmake/pelican_third_party.cmake` の注記)。`PELICAN_FETCH_DEPENDENCIES`(既定 OFF)で git から取る道も残す。branch `agent/ds1c` にあり、公開の後に着地させる |
+| VD-1(補助 pass の頂点の hook) | surface の `vertex_displace_v1` hook は material の頂点 shader にだけ効き、shadow / velocity / picking の engine 固定の頂点 shader(`src/core/resources/shadow_depth.vert`・`velocity.vert`・`picking.vert`)には無い。hook で頂点を動かすと、影・速度・picking は元の形のまま。CB-1(着地待ち、`agent/cb1`)の組 08 で確認した(known_red。`test/CB1_FINDINGS.md`) | hook のある material は、補助 pass でも material ごとの頂点 shader を使う |
+| USD の import | engine は USD を読まない。USD は外部の import の道具のレシピで運ぶ([manual 5 章](manual/05_assets.md) の USD レーン)。外の model を Studio に持ち込む道(MI-1 / MI-1s、`.glb` / `.vrm`)は v0 に入れ、USD の import は v1 とした(2026-10-04 の利用者の決定。統合側の記録) | 範囲は v1 で決める(既存の U-USD1 系との関係は未確認) |
+| WEB-1 | web の parser を v0 形式(scene 2 / asset_data 2 / `pelican.graph` root)へ合わせる WP(別 repo。[設計](design_v0_production_gaps.md) §2、台帳の V0-ADD の WP 索引)。v0 では行わない(2026-10-04 の利用者の決定。統合側の記録) | v0 の後に別 repo で行う。web が読まない形は名前付きで断る |
+
 #### 部品の 3 操作(Houdini HDA を参照)
 
 - **内部を見る**: 参照関係を保ったまま、構成・値・コードを確認する。開いただけで materialize しない。

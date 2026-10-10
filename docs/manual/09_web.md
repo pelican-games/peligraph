@@ -138,7 +138,7 @@ engine は `pelican.scene` / `pelican.asset_data` の version 2 だけを読み�
 6. **コンポーネントの受理仕様が component codec に一本化され、closed schema になった(✅WP151)** — `transform` / `simplemodelview` / `camera` / `light` / `collider` / `animation` / `sprite_view` の 7 コンポーネントは [src/core/loader/componentcodec.cpp](../../src/core/loader/componentcodec.cpp) の codec テーブルが受理仕様の正です。いずれも**未知キーを名指しで拒否する closed schema**で、フィールドの必須/任意と既定値は codec ごとに決まります(例: `transform` の `pos` / `rotation` / `scale` はすべて任意で既定値あり)。web が scene を読むときは、コンポーネント側の `ref()` 実装ではなくこの codec テーブルを鏡像の元にしてください。
 7. **可変長の宣言と procedural geometry の追随**
    - `List` / `Flags`と`$list`のwire形はengineに実装済みです。WP382dでは`pelican_ray_instance.overrides`が`List`を使用します。
-   - engine runtimeは`overrides`を受理します。native previewは共通decode入口の[componentDecodeSurfaceViolation](../../src/core/loader/componentcodec.cpp#L2160)で`ray_instance_overrides_unsupported@1`、`surface=preview`を返します。
+   - engine runtimeは`overrides`を受理します。native previewは共通decode入口の[componentDecodeSurfaceViolation](../../src/core/loader/componentcodec.cpp#L2161)で`ray_instance_overrides_unsupported@1`、`surface=preview`を返します。
    - `procedural_geometry`はWP386aでasset種別として実装済みです。Webへの機能実装を意味するものではありません。
    - Web の `pelican_ray_instance` の受理・拒否と専用コードの対応状況は未再確認です。確認経緯は[調査履歴](../history/manual_landing_notes_2026.md)を参照してください。
 

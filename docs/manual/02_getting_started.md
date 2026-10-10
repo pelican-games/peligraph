@@ -1,6 +1,6 @@
 # 第2章 ビルドと起動
 
-最終確認: 2026-10-07
+最終確認: 2026-10-10
 
 ## この章で学ぶこと
 
@@ -14,10 +14,14 @@
 
 | 要件 | 内容 |
 |---|---|
-| OS | Windows(開発の主環境)。ビルドは MSVC + C++20 |
-| Vulkan SDK | **1.4.x**(1.4.350 で検証済み。vma-hpp v3.3.0 以降、1.3.x は非対応) |
+| OS | Windows(開発の主環境)。日本語を含む path の project も開けます(下の「日本語の path」) |
+| コンパイラ | MSVC、C++20。CI と下の例は Qt の kit `msvc2022_64`(Visual Studio 2022 向け)を使います。CMake は compiler の版を検査せず、動く最低の版は未確認です |
+| CMake | **3.20 以上**([`cmake_minimum_required(VERSION 3.20)`](../../CMakeLists.txt#L1))。ルートの [CMakeLists.txt](../../CMakeLists.txt) が全体を構成 |
+| Vulkan SDK | **1.4.309 以上**。configure が SDK の `vulkan_core.h` の版を読み、古ければ `Vulkan SDK 1.4.309 or newer is required (found <版>)` で止まります([版の検査](../../CMakeLists.txt#L293))。1.4.350 で検証済み。vma-hpp v3.3.0 以降、1.3.x は非対応 |
+| GPU | **Vulkan 1.3** と、機能 `multiDrawIndirect` / `drawIndirectFirstInstance` / `shaderDrawParameters` / `dynamicRendering`、窓を出すときは拡張 `VK_KHR_swapchain`(下の「GPU の選び方」)。レイトレーシングの機能は任意です |
 | Qt6 | Pelican Studio(エディタ)用。6.10 以上。**player だけなら不要** |
-| CMake | ルートの [CMakeLists.txt](../../CMakeLists.txt) が全体を構成 |
+| Python | **build にも実行にも要りません**(下の「Git と Python」)。要るのは `PELICAN_WITH_SPIRV_LINK=ON`(既定 OFF)と Python 製テスト(`PELICAN_PYTHON_TESTS`、既定 OFF)だけです |
+| Git | source tree が Git の checkout である必要はありません(ZIP で落としても configure できます)。ただし依存の取得に `git` コマンドとネットワークが要ります(下の「Git と Python」) |
 
 この表とこの下に出る外部名を 1 行ずつ: **GLSL**(OpenGL Shading Language)は本リポジトリでシェーダを書くソース言語、**SPIR-V** は Vulkan が実際に読むシェーダの中間バイナリ形式([用語集](14_glossary.md#spir-v--spir-v-reflection))、**shaderc** はその GLSL を SPIR-V へ変換するコンパイラライブラリ([shadercompiler.cpp](../../src/core/shader/shadercompiler.cpp#L25))、**vma-hpp** は GPU メモリ確保ライブラリ VulkanMemoryAllocator の C++ バインディング([VulkanMemoryAllocator-Hpp](../../src/core/CMakeLists.txt#L75))です。
 
@@ -26,11 +30,20 @@ vma-hpp が v3.3.0 以降でなければならないのは、SDK 1.4 系で vulk
 vulkan.hpp 側へ委譲して改名の影響を受けなくなったためです([src/core/CMakeLists.txt](../../src/core/CMakeLists.txt#L69) のコメントが理由の正)。
 
 quill / glm / nlohmann_json / argparse / tinyexr / miniaudio などは CMake の
-FetchContent で自動取得されます。shaderc は例外で、Vulkan SDK 同梱版を使います。
+FetchContent で自動取得されます(各依存は `GIT_REPOSITORY` と `GIT_TAG` で宣言され、ほとんどは commit の hash で固定しています。例 [quill](../../CMakeLists.txt#L75)。JoltPhysics だけは tag `v5.5.0` の指定です([Jolt の宣言](../../CMakeLists.txt#L429)))。shaderc は例外で、Vulkan SDK 同梱版を使います。
 `PELICAN_RUNTIME_SHADER_COMPILER` は「**実行時に GLSL を SPIR-V へコンパイルする shaderc を組み込むか**」の
 CMake フラグです。`ON` の PC 開発ビルドには完全な Vulkan SDK が必要です(無いと configure が名指しで止まります)。
 ホスト PC で事前生成した SPIR-V を消費するモバイル等のターゲットは
 `-DPELICAN_RUNTIME_SHADER_COMPILER=OFF` で shaderc をリンクしません。
+
+**GPU の選び方(✅DS-1)。**player は Vulkan の物理デバイスを列挙し、API が 1.3 未満のものと、上の表の機能・拡張・queue が揃わないものを外し、残りから discrete GPU(+1000)と graphics / present が同じ queue のもの(+100)を優先して選びます([`selectVulkanPhysicalDevice()`](../../src/core/vkcore/devicefeaturepolicy.cpp#L11)、必須の機能を集める所は [core.cpp](../../src/core/vkcore/core.cpp#L412))。`pelican_player --gpu <index|name>` で列挙の 0 始まりの番号か、デバイス名の完全一致を指定できます([引数](../../src/player/main.cpp#L405))。指定しても必須の検査は飛ばしません。どれも選べなければ `No suitable Vulkan 1.3 GPU. Devices: [0] <名前> (Vulkan 1.x) ...`(`--gpu` を付けたときは `No suitable Vulkan 1.3 GPU for --gpu '<指定>'. Devices: ...`)で止まり、候補の名前と API の版が並びます。player と Studio の exe は NVIDIA / AMD の切り替え用の export(`NvOptimusEnablement` / `AmdPowerXpressRequestHighPerformance`)を持ちます([gpupreference.cpp](../../src/platform/gpupreference.cpp))。OpenXR を使うときは runtime が選んだ GPU に従います。
+
+**Git と Python(✅DS-1)。**
+- Python は build に要りません。OpenXR は `KhronosGroup/OpenXR-SDK` の release-1.1.61 を commit で pin しており、この SDK は生成済みの loader と header を含みます([OpenXR の宣言](../../CMakeLists.txt#L271))。Python が要るのは experimental SPIR-V linker(`PELICAN_WITH_SPIRV_LINK=ON`。pinned SPIRV-Tools のコード生成)と Python 製テストだけです。
+- source tree に `.git` が無くても configure は通ります。Studio の crash symbol の保存が source の commit を読めないときは `Cannot identify source commit for crash symbols: Git or .git is unavailable; using unknown` の WARNING を出し、commit を `unknown` として続けます([判定](../../cmake/pelican_crash_symbols.cmake#L14))。
+- 依存は FetchContent が Git の repository から取得するので、初回の configure には `git` コマンドとネットワークが要ります。依存を source tree に同梱して Git もネットワークも要らない configure にする作業(DS-1c、`PELICAN_FETCH_DEPENDENCIES` で取得に切り替える形)は公開後に入る予定で、この版にはまだありません。
+
+**日本語の path(✅JP-1)。**Windows / MSVC で build する Pelican の全 exe(`src/` と `test/` の target)に、`activeCodePage` を UTF-8、`longPathAware` を true にする manifest が付きます([manifest](../../cmake/pelican_windows.manifest#L5)、[付ける関数](../../cmake/pelican_windows_manifest.cmake#L3))。これで `C:/作業/日本語 プロジェクト` のような path の project を開け、日本語名の model を登録できます。UTF-8 の code page を受けるのは Windows 10 version 1903 以降で、process の code page が UTF-8 でないときは起動時に 1 回 `Process code page is not UTF-8; 日本語の path で失敗することがある (Windows 10 1903 or later is required).` が出ます([文](../../src/project/windowsutf8.hpp#L23))。
 
 ## 2.2 ビルド
 
@@ -61,9 +74,9 @@ cmake . -B build -DSKIP_DEVSTUDIO=ON
 Studioの実窓シナリオもこの設定を使います。完全なGPU/release gateではStudioを有効にし、
 `PELICAN_PYTHON_TESTS=ON`を指定します。
 
-この設定は依存ライブラリの生成処理とは独立です。OpenXR-SDK-Sourceのdispatch header生成と
-experimental SPIR-V linkerはPythonを必要とする場合があります。Pythonなしでconfigureする場合は
-`-DPELICAN_WITH_OPENXR=OFF -DPELICAN_WITH_SPIRV_LINK=OFF`も指定してください。
+この設定は依存ライブラリの生成処理とは独立です。✅DS-1 から OpenXR は生成済みの source を含む
+`KhronosGroup/OpenXR-SDK` を使うので、Python の無い環境でも既定のまま(`PELICAN_WITH_OPENXR` は ON のまま)configure できます。
+Python が要る依存は experimental SPIR-V linker(`PELICAN_WITH_SPIRV_LINK=ON`)だけで、既定は OFF です(§2.1 の「Git と Python」)。
 
 ### ビルド成果物の場所
 
@@ -90,6 +103,26 @@ Qt の配布処理は絶対パスを要求するため、上のように `$PWD` 
 結果は `build-release/package/bin/` です。プロジェクトとそのアセットは別途用意し、
 `--project` で指定します。ソース shader を使う v0 プロジェクトは runtime shader compiler を
 ON のまま配布します。OFF は必要な shader variant を全て事前生成したプロジェクト用です。
+
+**ゲームを出荷する(✅DS-1 / DS-1f)。**上の手順に `pelican_cli dist-config` の preset と `PELICAN_PROJECT` を足します。
+
+```sh
+pelican_cli dist-config projects/mygame --out build-dist/preset.cmake
+cmake -S . -B build-dist -C build-dist/preset.cmake -DPELICAN_PROJECT=projects/mygame
+cmake --build build-dist --config Release --target pelican_runtime
+cmake --install build-dist --config Release --component Runtime --prefix "$PWD/build-dist/package"
+```
+
+| 段 | 何が決まるか |
+|---|---|
+| `dist-config` | project を走査して `PELICAN_WITH_*` を決めた preset を書きます。既定で `SKIP_DEVSTUDIO=ON`(Studio を build しない)・`PELICAN_WITH_RPC=OFF`、`--with-studio` を付けると Studio と RPC を残します。player は常に `PELICAN_PLAYER_GUI_SUBSYSTEM=ON`(console の窓を出さない Windows GUI の exe)になります([preset を書く所](../../src/devcli/distconfig.cpp#L932))。preset の全項目と asset の照合は [第10章](10_tools.md) の `dist-config` |
+| `PELICAN_PROJECT` | project の `code/` を `pelican_game_logic.dll` として build し、`Runtime` component として player と同じ `bin/` に install します |
+| install の後 | `package/bin/` に player・game DLL・MSVC の再頒布 runtime が入ります。project 本体(`project.json` と、それが指すファイル)は自分でコピーします |
+
+- **player は自分の場所を基準にします。**game DLL は exe の隣を探し([DLL の場所](../../src/player/main.cpp#L714))、`--project` を省くと exe の隣の `project.json` を開きます(§2.3 の「暗黙プロジェクト」。WARN の 1 行が出ます)。exe の場所は `GetModuleFileNameW` から取るので、PATH から名前だけで起動しても、別の作業ディレクトリから起動しても同じです([`executableDirectory()`](../../src/core/executabledirectory.hpp#L13))。相対の `--project` は作業ディレクトリ基準です(§2.3)。
+- **起動に失敗したときの見え方。**エラーの文は常に stderr に出ます。console も標準出力の接続も無い手起動(エクスプローラからの double-click など)のときだけ、同じ文を `Pelican` の題の message box でも出します。`--headless` / `--rpc` / `--embedded`、環境変数 `PELICAN_NO_MESSAGEBOX=1`、console や pipe・ファイルへの出力があるときは出しません([判定](../../src/core/playerdiagnostics.hpp#L16))。GUI の exe でも `--console` で親の console に繋げます。
+- `PELICAN_PLAYER_GUI_SUBSYSTEM` の既定は OFF(開発と test の build は console の exe)です([option](../../src/player/CMakeLists.txt#L1))。
+- 出荷物を install した場所・別の作業ディレクトリ・日本語の path で通しで起動する確認は、v0 の全数 gate の配布の項目で行う予定で、この文書の時点では未確認です。
 
 ### 機能ユニット(PELICAN_WITH_*)
 
@@ -367,8 +400,8 @@ pelican_player --headless --project mygame --frames 10 --render-out out/%04d.png
 pelican_player --headless --project mygame --start-time 2.0 --frames 2 --fps 60 --render-out out/%04d.png
 ```
 
-- 秒はコマンドラインで **1 回だけ frame 番号に量子化**されます(`llround(秒 × fps)`。エンジンには「フレームの間の時刻」が渡りません — [parseStartFrame()](../../src/player/main.cpp#L332))。秒は **3600(1 時間)まで**で、この上限は `--fps` によりません([上限の定数](../../src/player/main.cpp#L330))。
-- **飛ばすのではなく、そこまで回します。** `start_frame − 1` 枚を capture 無しで実行(warm-up)し、**最初に capture される frame が t の frame** です([loop.cpp:441](../../src/core/appflow/loop.cpp#L672))。グラフの時計・ゲームシステムの積分・アニメーションの評価器は時刻から逆算できないので、「その時刻に居た」と言える唯一の方法が全ステップを通ることだからです。`--start-time 0` は通常の run と同一です。
+- 秒はコマンドラインで **1 回だけ frame 番号に量子化**されます(`llround(秒 × fps)`。エンジンには「フレームの間の時刻」が渡りません — [parseStartFrame()](../../src/player/main.cpp#L330))。秒は **3600(1 時間)まで**で、この上限は `--fps` によりません([上限の定数](../../src/player/main.cpp#L328))。
+- **飛ばすのではなく、そこまで回します。** `start_frame − 1` 枚を capture 無しで実行(warm-up)し、**最初に capture される frame が t の frame** です([loop.cpp:441](../../src/core/appflow/loop.cpp#L674))。グラフの時計・ゲームシステムの積分・アニメーションの評価器は時刻から逆算できないので、「その時刻に居た」と言える唯一の方法が全ステップを通ることだからです。`--start-time 0` は通常の run と同一です。
 - 実行時に stderr へ 1 行出ます: `offline: start_time=2 start_frame=120 replay=119 frames=2`。
 - **`--frames` とは併用できます**(枚数の指定)。**併用できないのは** `--rpc` / `--replay` / `--record-input` / `--bake-camera-output` の 4 つで、これらは「どの frame を出すか」を自分で決める経路だからです。
 - 名前付きの拒否は 3 つ: `offline.time_invalid@1`(負・非有限・数でない・3600 秒を超える・丸めた frame 番号やその時刻が有限でない)/ `offline.headless_required@1`(`--headless` 無し)/ `offline.mode_conflict@1`(上の 4 フラグとの併用)。いずれも**コマンドライン解析の時点**で決まり、GPU まで届きません。
@@ -431,6 +464,10 @@ cmake --build ./build --config Debug --target run_studio
 | `project.engine_too_old@1`(`engine_min_version` のエラー) | プロジェクトが要求するエンジン版(現行 `0.1.0`)より新しい。`--ignore-engine-version` で WARN に降格可能 |
 | `project.migration_required@1` | 前の版のエンジンで作った文書がある。`pelican_cli project migrate --project <dir>` で移してから開き直す([第3章 §3.13](03_project_format.md))。v0 のエンジンは移行の手順を持たないので、v0 では出ません |
 | Qt が見つからず configure 失敗 | `-DCMAKE_PREFIX_PATH` に Qt のインストールパスを渡すか、`-DSKIP_DEVSTUDIO=ON` |
+| `Vulkan SDK 1.4.309 or newer is required (found ...)` | Vulkan SDK が古い。1.4.309 以上を入れて `VULKAN_SDK` を設定し、build ディレクトリを作り直す(§2.1) |
+| `No suitable Vulkan 1.3 GPU. Devices: ...` / `No suitable Vulkan 1.3 GPU for --gpu '...'. Devices: ...` | Vulkan 1.3 と必須の機能を持つ GPU が無い、または `--gpu` の指定がそれ以外を指した。並んだ候補の番号か名前を `--gpu` に渡す(§2.1 の「GPU の選び方」) |
+| `Process code page is not UTF-8; ...` | Windows 10 1903 より前で、UTF-8 の manifest が効いていない。日本語の path で失敗することがある(§2.1 の「日本語の path」) |
+| 初回の configure が FetchContent の取得で失敗 | 依存の取得に `git` とネットワークが要る(§2.1 の「Git と Python」) |
 | GPU テストが全部 SKIP | Vulkan デバイスが列挙できない環境(リモートデスクトップ等)。仕様どおりの挙動 |
 | rpc モードでログが出ない | rpc モードでは **stdout はプロトコル専用** —— JSON-RPC の応答行以外は何も流れません(ヘッドレスの blocking rpc / ウィンドウのフレーム境界 rpc のどちらも同じ)。ログは cwd の `pelican.log` に出ます(Release ビルドも同様)。`--log-file <path>` で起動ごとのファイルに分けられ、Studio が起動した player は `<project>/.pelican/logs/player.log` に出します |
 | `windowed rpc request queue is busy`(`data.reason = "busy"` / `queue_capacity`) | ウィンドウモードの `--rpc` はフレーム境界でのみ処理する**有界キュー**(既定 64)。詰め込みすぎると即エラーで返るので、応答を待ってから次のリクエストを送る([第10章](10_tools.md)) |

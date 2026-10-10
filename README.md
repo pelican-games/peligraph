@@ -29,8 +29,32 @@ Local documentation preview: `uv run tools/docs_site.py serve`
 
 ## Requisites
 
-- Vulkan SDK 1.4.x (verified with 1.4.350; 1.3.x is no longer supported since vma-hpp v3.3.0)
-- Qt 6.10 or newer (Studio only)
+- Windows with MSVC and C++20. CI and the examples below use the Qt kit
+  `msvc2022_64` (built for Visual Studio 2022). CMake does not check the
+  compiler version, and the minimum working MSVC version has not been verified.
+- CMake 3.20 or newer.
+- Vulkan SDK 1.4.309 or newer. Configure stops with
+  `Vulkan SDK 1.4.309 or newer is required` on an older SDK. Verified with 1.4.350;
+  1.3.x is no longer supported since vma-hpp v3.3.0.
+- Qt 6.10 or newer (Studio only).
+- A GPU with Vulkan 1.3 and the features `multiDrawIndirect`,
+  `drawIndirectFirstInstance`, `shaderDrawParameters` and `dynamicRendering`
+  (plus `VK_KHR_swapchain` for a window). A discrete GPU is preferred;
+  `pelican_player --gpu <index|name>` picks another one, but never one that lacks
+  these features. Ray tracing features are optional.
+- Python is not needed to build or run the engine. The OpenXR SDK is pinned to
+  `KhronosGroup/OpenXR-SDK` release-1.1.61, which ships its generated sources.
+  Python is needed only for `PELICAN_WITH_SPIRV_LINK=ON` (default OFF) and for
+  Python-backed tests (`PELICAN_PYTHON_TESTS`, default OFF).
+- Git: the source tree itself does not have to be a Git checkout (a ZIP download
+  configures; crash-symbol archives then record the commit as `unknown`).
+  The third-party dependencies are still fetched by CMake `FetchContent` from Git
+  repositories, so configure needs the `git` command and network access.
+  Bundling the dependencies in the source tree is planned after the first public
+  release.
+- Paths with Japanese (non-ASCII) characters: every Pelican executable carries a
+  UTF-8 `activeCodePage` manifest (Windows 10 version 1903 or later). On an older
+  Windows a warning says the process code page is not UTF-8.
 
 Development builds use the `shaderc` libraries shipped with the Vulkan SDK.
 Pelican does not download and build shaderc as an implicit fallback. A target
@@ -77,6 +101,30 @@ enabled. Debug CRTs are not distributed. Projects and their assets are supplied 
 the runtime shader compiler enabled for source-driven projects; disabling
 it requires complete precompiled shader variants for that project.
 
+### Shipping a game
+
+`pelican_cli dist-config` derives the build options from the project and writes
+a CMake cache preset. By default the preset turns Studio off
+(`SKIP_DEVSTUDIO=ON`), RPC off, and builds the player without a console window
+(`PELICAN_PLAYER_GUI_SUBSYSTEM=ON`); `--with-studio` keeps Studio and RPC.
+
+```sh
+pelican_cli dist-config projects/mygame --out build-dist/preset.cmake
+cmake -S . -B build-dist -C build-dist/preset.cmake -DPELICAN_PROJECT=projects/mygame
+cmake --build build-dist --config Release --target pelican_runtime
+cmake --install build-dist --config Release --component Runtime --prefix "$PWD/build-dist/package"
+```
+
+`PELICAN_PROJECT` builds the project's `code/` into `pelican_game_logic.dll`,
+which is installed beside `pelican_player.exe`. The player looks for the DLL
+(and writes `pipeline_cache.bin`) beside its own executable, not in the working
+directory; engine resources are embedded in the binaries.
+Copy the project (its `project.json` and the files it names) into the package,
+then start the player with `--project <dir>`, or put `project.json` beside the
+executable (the player then opens it and logs `implicit project root = ...`).
+When the player is started by hand without a console and fails to start, it
+shows the error in a message box as well as on stderr.
+
 ## Debug
 
 run Pelican Studio:
@@ -96,10 +144,9 @@ for GPU-free tests; CI gate commands and exact skip policies are in
 
 `PELICAN_PYTHON_TESTS=OFF` (the default) omits Python-backed policy, RPC, and Studio E2E tests.
 Use `AUTO` to add them when Python 3.11 or newer is available; complete CI and release gates use `ON`.
-The OpenXR SDK source build can still require Python to generate dispatch
-headers, independently of this test option. A configuration without Python
-uses `-DPELICAN_WITH_OPENXR=OFF -DPELICAN_WITH_SPIRV_LINK=OFF` and keeps
-Python-backed tests disabled. Python is not an engine runtime dependency.
+A configuration without Python keeps the defaults (`PELICAN_WITH_SPIRV_LINK=OFF`,
+`PELICAN_PYTHON_TESTS=OFF`); OpenXR stays enabled because the pinned OpenXR SDK
+ships generated sources. Python is not an engine runtime dependency.
 
 The experimental SPIR-V linker and its `pelican-spv-link` CLI are a separate
 build unit and default to OFF. Enable them with

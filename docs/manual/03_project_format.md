@@ -1,6 +1,6 @@
 # 第3章 プロジェクト形式
 
-最終確認: 2026-10-07
+最終確認: 2026-10-10
 
 ## この章で学ぶこと
 
@@ -48,9 +48,9 @@
 
 **旧形式の transaction ディレクトリ(`render_config.legacy_transaction_dir@1`)** ✅MG-2a
 
-v0 より前のエンジンは、commit の決定を別ファイル `committed` ではなく `manifest.json` の `"status": "committed"` に書いていました。この形で残ったディレクトリは**もう読みません**。起動時の復旧と、この transaction を使う commit(rendering config の編集と `project migrate` の apply)のどれも `render_config.legacy_transaction_dir@1` で止まり、ディレクトリには手を付けません([判定](../../src/project/projectdocumenttransaction.cpp#L403))。
+v0 より前のエンジンは、commit の決定を別ファイル `committed` ではなく `manifest.json` の `"status": "committed"` に書いていました。この形で残ったディレクトリは**もう読みません**。起動時の復旧と、この transaction を使う commit(rendering config の編集と `project migrate` の apply)のどれも `render_config.legacy_transaction_dir@1` で止まり、ディレクトリには手を付けません([判定](../../src/project/projectdocumenttransaction.cpp#L405))。
 
-- 起動時(`pelican_player` が project.json を持つ project を開くとき): MG-1 から、parser より前の入口(§3.13)が同じ復旧を先に走らせます。stderr に `render_config.legacy_transaction_dir@1: {"message":"…","path":"…"}` が 1 行出て、player は exit 1 で終わります([入口の catch](../../src/player/main.cpp#L781))。この経路はコードを読んで確かめたもので、実行では未確認です。
+- 起動時(`pelican_player` が project.json を持つ project を開くとき): MG-1 から、parser より前の入口(§3.13)が同じ復旧を先に走らせます。stderr に `render_config.legacy_transaction_dir@1: {"message":"…","path":"…"}` が 1 行出て、player は exit 1 で終わります([入口の catch](../../src/player/main.cpp#L792))。この経路はコードを読んで確かめたもので、実行では未確認です。
 - 起動時(入口を通らずに `PelicanCore::run()` の復旧に届いたとき): ログに `Pelican fatal error : render_config.legacy_transaction_dir@1: {"message":"…","path":"…"}` が出て、起動はそこで終わります。
 - `project migrate` の apply: 先頭で同じ復旧を走らせるので、同じ名前で止まります(CLI は stderr に出して -1)。`--dry-run`(plan)は復旧を走らせません。
 - 編集の commit 時: ticket の結果は `committed: false` で、`error.code` がこの名前、`error.path` がディレクトリのパスです。文書は書き換わりません。
@@ -373,7 +373,7 @@ Blank / Standard の雛形は `asset_stores` と `hot_reload` を宣言しませ
 - **受ける変更**は次の 2 つだけです。
   - store を足す。足した store の root は、mount が名指す project のフォルダでなければなりません。そうであれば、mount の下の参照は store を足す前と同じファイルに解けます。`.pelican/local.json` で別の場所に向けた store は断ります。
   - 起動時から manifest の無い store に manifest を宣言する。manifest のファイルがまだ無ければ engine が今のディスクから書き(`update_assets_manifest` と同じ書き方)、照合を走らせ直します([第10章](10_tools.md) §10.3)。
-- **断る変更**(`project.settings_change_unsupported@1 {key, store?, reason}`。project.json は変わりません)は、engine が開いたときからある宣言を動かすものです: mount の移動、`.pelican/local.json` による store の root の移動、起動時からある store の削除、起動時からある manifest の削除と差し替え。どれも、参照の解ける先か照合の基準が変わるためです。理由の文言はどれも `restart the engine` で終わります([断る判定](../../src/project/projectpathresolver.cpp#L544))。
+- **断る変更**(`project.settings_change_unsupported@1 {key, store?, reason}`。project.json は変わりません)は、engine が開いたときからある宣言を動かすものです: mount の移動、`.pelican/local.json` による store の root の移動、起動時からある store の削除、起動時からある manifest の削除と差し替え。どれも、参照の解ける先か照合の基準が変わるためです。理由の文言はどれも `restart the engine` で終わります([断る判定](../../src/project/projectpathresolver.cpp#L586))。
 - **戻す**: 返り値の `previous` をそのまま渡せば戻ります。外せるのは、この engine の実行中にこの RPC で足した store と manifest だけです(store と一緒に足した manifest は store ごと外れます)。
 - 照合が終わったことの通知はありません。`get_status.assets_verification.state` が `running` でなくなるのを待ちます。
 
@@ -463,7 +463,13 @@ vulkan・quill・モジュール機構・リソース埋め込みへの依存は
 
 ### 保存で変わること・変わらないこと
 
-- **キー順は辞書順に正規化されます**(オブジェクトのキー順は保存されません)。**配列の宣言順と JSON のスカラ型はそのまま保存されます**。手書きの JSON をエディタで一度保存すると、キーの並びだけが変わります。
+- **触った行だけが変わります(✅SV-1 / SV-1f)。**保存は共通の writer [`renderJsonDocument()`](../../src/project/jsondocument.cpp#L183) で書きます。元の bytes を読み直して字句の範囲を覚え、変わっていない部分木は元の bytes をそのまま使います([scene の保存が writer を呼ぶ所](../../src/core/loader/authoringscenedocument.cpp#L137))。
+  - 既にあるキーは元の順のまま、新しいキー(足した component など)は末尾に入ります。BOM の有無・改行コード(CRLF / LF)・末尾改行の有無・未変更の部分の空白と数の書き方(`1e-03` など)も保たれます。変わった部分と新しい部分は 2 空白の字下げで書きます。新しく作る文書は LF と末尾改行です。
+  - 変更の無い component は decode も encode もせず、元の字句のまま残ります。編集した component も、元の文書に無かった既定値の欄は書き足しません(元にあった欄は、値が既定値でも残します。[`ComponentCodec::encodeAuthored()`](../../src/core/loader/componentcodec.cpp#L2203))。
+  - **float は float の最短の往復表記で書きます**(`0.1` は `0.1` のまま。`0.10000000149011612` にはなりません)。整数の値は `0`、小数は `0.5` の形で、snapshot / RPC の値と保存した文書で数の型(整数か小数か)が揃います([`authoredJsonNumber()`](../../src/core/userpublic/details/schema/jsonnumber.hpp#L13))。例外は 2 つで、負のゼロは `-0.0`、最短表記が読み手の F32 の上限や宣言した範囲の端を越えてしまう値は元の float の正確な double の値で書きます(読み手は変えていないため)。
+  - **配列の宣言順と JSON のスカラ型はそのまま保存されます**。
+  - 永続 ID を持たない scene の最初の保存では、`next_authoring_object_id` と各 object の `authoring_object_id` が書き足されます([書き足す所](../../src/core/loader/authoringscenedocument.cpp#L131)。その分の差分は出ます)。
+  - 同じ writer を、material / bindings / asset_data の RPC の書き込み、procedural asset の編集、`pelican_cli import` の asset_data、rendering config の編集 RPC が rendering 文書の節や root の値を差し替える所([`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L755))も使います。同じ rendering config の編集 RPC でも、ray の layout の文書と asset_data の ray の record を書く所([その書き手](../../src/core/communication/renderconfigeditor.cpp#L459))と、project.json の設定 RPC(§3.4 の「project.json への書き込み」)は、それぞれの書き手(キーの並びは元のまま、2 空白で全体を書き直す)のままです。
 - codec が登録されていないコンポーネントも、raw JSON がそのまま保持されます(ドキュメント全体をエンコードするため構造的にデータ欠落が起きません)。
 
 ### スナップショットの取り込み
@@ -480,7 +486,7 @@ transform 編集の検査結果を再利用する内部経路は[読解ガイド
 
 ## 3.10 コンポーネント宣言スキーマ v3 — `Flags` と `List` の wire(✅WP382a)
 
-§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。ここでの **v3 はスキーマ宣言機構の版番号**で、シーン JSON の `version`(pelican.scene v2)とは別物です([用語集](14_glossary.md#宣言-schemav2--v3))。従来の登録経路が運べたのは平坦なフィールド列だけで、`Flags` / `List` のように**入れ子の語彙を持つ型**を運べるようにしたのが v3 です。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L2050))はこの節の対象外です(平坦なフィールド列のまま)。
+§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。ここでの **v3 はスキーマ宣言機構の版番号**で、シーン JSON の `version`(pelican.scene v2)とは別物です([用語集](14_glossary.md#宣言-schemav2--v3))。従来の登録経路が運べたのは平坦なフィールド列だけで、`Flags` / `List` のように**入れ子の語彙を持つ型**を運べるようにしたのが v3 です。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L2051))はこの節の対象外です(平坦なフィールド列のまま)。
 
 登録側の `schema` に `Flags<E>` か `List<Row>` が 1 つでも含まれると、登録は自動的に **v3 の入口**へ切り替わります([registerer.hpp](../../src/core/userpublic/details/component/registerer.hpp#L188))。判定は `schemaRequiresV3()` のコンパイル時定数なので、含まないコンポーネントの wire は 1 バイトも変わりません。scene JSON からの入口は従来と同じ「コンポーネント JSON をそのまま渡す」経路です([`ComponentInfoManager::loadByJson()`](../../src/core/ecs/componentinfo.cpp#L189))。
 
@@ -510,7 +516,7 @@ struct CarrierParams {
 {"name": "my_component", "instance_flags": ["cull_disable", "flip_facing"]}
 ```
 
-空配列 `[]` も「明示的に空」という値で、キーごと省略するのとは別物です。重複する名前・宣言されていない名前はどちらも `InvalidEnum` で拒否されます([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L423))。
+空配列 `[]` も「明示的に空」という値で、キーごと省略するのとは別物です。重複する名前・宣言されていない名前はどちらも `InvalidEnum` で拒否されます([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L436))。
 
 ### `List` — object コンテナ + 行封筒
 
@@ -533,7 +539,7 @@ struct CarrierParams {
 
 > **設計決定(行の同一性は id であって添字ではない):** 行の identity は配列添字ではなく `$row.id` が持つ。`$list.next_id` は「次に採番する id」で、**現存するどの行 id よりも大きい**ことが検証される。添字を identity にすると、行の挿入や並べ替えが外部からの参照を静かに壊すため。
 
-失敗は名前付きです([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L589)):
+失敗は名前付きです([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L591)):
 
 | コード | 起きる条件 |
 |---|---|
@@ -547,9 +553,9 @@ struct CarrierParams {
 
 ### `$` で始まるフィールド名はエンジン予約
 
-スキーマ宣言側で `$` 始まりの名前を使うとコンパイル時に弾かれ([structfieldschema.hpp](../../src/core/userpublic/details/schema/structfieldschema.hpp#L494))、JSON 側に未知の `$` キーがあると `UnknownField` ではなく `ReservedFieldName` で拒否されます([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L774))。将来増える封筒キーを、利用者のフィールド名と衝突させないためです。
+スキーマ宣言側で `$` 始まりの名前を使うとコンパイル時に弾かれ([structfieldschema.hpp](../../src/core/userpublic/details/schema/structfieldschema.hpp#L494))、JSON 側に未知の `$` キーがあると `UnknownField` ではなく `ReservedFieldName` で拒否されます([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L776))。将来増える封筒キーを、利用者のフィールド名と衝突させないためです。
 
-保存でこの形は往復します。エンコードは `$list` → `rows` の順、各行は `$row` → authored フィールドの順に書き出します([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L589))。
+保存でこの形は往復します。エンコードは `$list` → `rows` の順、各行は `$row` → authored フィールドの順に書き出します([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L591))。
 
 > WP382dで`pelican_ray_instance.overrides`が`List`の利用者になりました。geometryごとの上書きを行ID付きで保存し、行を削除するとobject/layoutの値へ戻ります([第6章](06_rendering.md) §6.15)。
 
@@ -667,7 +673,7 @@ engine 同梱 shader は `PELICAN_FEATURE_BLOOM_THRESHOLD` のように**自分�
 
 ### code を持つ package
 
-`code/CMakeLists.txt` は `pelican_package_sources(...)` を呼びます。ホスト project 側の `code/CMakeLists.txt` は `pelican_packages()` を 1 行呼ぶだけです(`pelican_cli project init` の雛形はこの 2 行を最初から書きます)。この 3 つの関数は `cmake/` ではなく **[src/player/CMakeLists.txt](../../src/player/CMakeLists.txt#L107)** にあります(`pelican_game_sources` :106 / [`pelican_package_sources`](../../src/player/CMakeLists.txt#L205) :203 / [`pelican_packages`](../../src/player/CMakeLists.txt#L262) :260)。
+`code/CMakeLists.txt` は `pelican_package_sources(...)` を呼びます。ホスト project 側の `code/CMakeLists.txt` は `pelican_packages()` を 1 行呼ぶだけです(`pelican_cli project init` の雛形はこの 2 行を最初から書きます)。この 3 つの関数は `cmake/` ではなく **[src/player/CMakeLists.txt](../../src/player/CMakeLists.txt#L121)** にあります(`pelican_game_sources` :106 / [`pelican_package_sources`](../../src/player/CMakeLists.txt#L219) :203 / [`pelican_packages`](../../src/player/CMakeLists.txt#L276) :260)。
 
 ```cmake
 # <project>/code/CMakeLists.txt
@@ -701,7 +707,7 @@ RPC `uninstall_package{namespace}` は `packages/<ns>/` を消し、`project.jso
 - pass 名・render target 名には namespace が付きません。同じ pass 名を持つ package が 2 つ入ると合成で衝突します。
 - `sha256` は `package list` が再計算して照合します。エンジン起動時には照合しません。
 - `provides.components` は複製されるだけで、engine 側の消費者はまだありません。この `components` は **`pelican.render_component`**(§3.12)のディレクトリを指す語で、**ECS のコンポーネント([第4章](04_scene_ecs.md))とも、`project.json` の他の語とも無関係**です。今日それを読むのは `import_render_feature` だけで、package 経由では読まれません。
-- **install が途中で死ぬと `packages/<namespace>.tmp-<pid>` が残ります**。install 自体は失敗時に自分の staging を消しますが、プロセスごと消えた場合の残骸を**誰も掃除しません**(export 側の `user://components/*.tmp-*` は次の export が掃除します — §3.12。install 側にその機構はありません)。残骸は `pelican_packages()` が飛ばすのでビルドは壊れませんが、手で消す必要があります —— **glob(`packages/*/package.json`)自体は残骸も拾い**、拾ってから `if(package_name MATCHES "\\.tmp-") continue()` で落とす形です([src/player/CMakeLists.txt:277](../../src/player/CMakeLists.txt#L279))。
+- **install が途中で死ぬと `packages/<namespace>.tmp-<pid>` が残ります**。install 自体は失敗時に自分の staging を消しますが、プロセスごと消えた場合の残骸を**誰も掃除しません**(export 側の `user://components/*.tmp-*` は次の export が掃除します — §3.12。install 側にその機構はありません)。残骸は `pelican_packages()` が飛ばすのでビルドは壊れませんが、手で消す必要があります —— **glob(`packages/*/package.json`)自体は残骸も拾い**、拾ってから `if(package_name MATCHES "\\.tmp-") continue()` で落とす形です([src/player/CMakeLists.txt:277](../../src/player/CMakeLists.txt#L293))。
 - `uninstall_package` が「まだ使われているか」を見るのは **rendering config の root 文書と、その preset だけ**です([renderconfigeditor.cpp:1119](../../src/core/communication/renderconfigeditor.cpp#L1950))。他の feature 文書の中から `project://packages/<ns>/` を参照していても検出されません。
 - shader を持ち込む package は未対応です(feature が `engine://` shader だけを参照できる範囲)。
 
@@ -798,7 +804,7 @@ RPC [`import_render_feature{base_source_digest, source_dir, destination_referenc
    | `project.migration_step_cycle@1` | `to_version <= from_version` |
    | `project.migration_step_gap@1` | `to_version > from_version + 1`(1 版ずつしか上げられない) |
 
-2. **検出(開く前の入口)**: `pelican_player` は project.json を持つ project を開くとき、**parser が文書を読む前に 1 か所だけ**入口を通ります([`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563)、呼ぶのは [main.cpp](../../src/player/main.cpp#L756) の `parseProjectEnvelopeText` の手前)。Studio が起動する player(`--rpc`)も同じ入口を通ります。入口はまず、落ちたプロセスが残した transaction を復旧し(§3.1 の `.pelican/render-authoring.transaction/`)、次に project root の下の `*.json` を全部歩いて、**最上位の `schema`(文字列)と `version`(整数)だけ**を SAX で生のまま読みます。`.` で始まるディレクトリ(`.pelican` / `.git` など)と symlink のディレクトリには入りません。オブジェクトでない JSON や、`schema` / `version` を持たない JSON は文書として数えません。登録された手順の `from` に当たる文書が 1 本でもあれば、parser に渡さず次の名前で止めます:
+2. **検出(開く前の入口)**: `pelican_player` は project.json を持つ project を開くとき、**parser が文書を読む前に 1 か所だけ**入口を通ります([`requireProjectMigrationNotRequired()`](../../src/project/projectmigration.cpp#L563)、呼ぶのは [main.cpp](../../src/player/main.cpp#L767) の `parseProjectEnvelopeText` の手前)。Studio が起動する player(`--rpc`)も同じ入口を通ります。入口はまず、落ちたプロセスが残した transaction を復旧し(§3.1 の `.pelican/render-authoring.transaction/`)、次に project root の下の `*.json` を全部歩いて、**最上位の `schema`(文字列)と `version`(整数)だけ**を SAX で生のまま読みます。`.` で始まるディレクトリ(`.pelican` / `.git` など)と symlink のディレクトリには入りません。オブジェクトでない JSON や、`schema` / `version` を持たない JSON は文書として数えません。登録された手順の `from` に当たる文書が 1 本でもあれば、parser に渡さず次の名前で止めます:
 
    ```
    project.migration_required@1: {"documents":[{"path":"scenes/main.scene.json","schema":"pelican.scene","from":2,"to":3}]}

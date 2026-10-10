@@ -24,7 +24,7 @@ Pelican2 は **C++20 / Vulkan(vulkan.hpp)/ Windows(MSVC)** のゲームエンジ
 | 実行物 | 役割 |
 |---|---|
 | `pelican_player` | ゲームランタイム。ウィンドウ / ヘッドレス / JSON-RPC 駆動([第2章](02_getting_started.md)・[第10章](10_tools.md))。JSON-RPC はヘッドレス(blocking)とウィンドウ(フレーム境界処理)の両方で使えます ✅WP156 |
-| `pelican_cli` | 開発 CLI。11 サブコマンド系統(`assets` / `audio` / `bake-camera` / `image` / `import` / `dist-config` / `package` / `project` / `dump-lowered-material` / `vrm` / `graph-catalog` — [main.cpp](../../src/devcli/main.cpp#L51))。エンジン本体にリンクしない |
+| `pelican_cli` | 開発 CLI。11 サブコマンド系統(`assets` / `audio` / `bake-camera` / `image` / `import` / `dist-config` / `package` / `project` / `dump-lowered-material` / `vrm` / `graph-catalog` — [main.cpp](../../src/devcli/main.cpp#L55))。エンジン本体にリンクしない |
 | `pelican_studio` | Qt6 製エディタ 🚧。別 process の player を埋め込み、**その JSON-RPC を実際に呼びます** —— Outliner 選択、Inspector、gizmo、保存、Frame Plan(= フレームグラフを解決した実行計画。[用語集](14_glossary.md#frameplan))、そして `features[]` の編集と再起動なしの反映([第2章](02_getting_started.md) §2.7・[第10章](10_tools.md) §10.7・[第13章](13_editor.md)) |
 | `pelican-spv-link` | `PELICAN_WITH_SPIRV_LINK=ON`時だけ作るexperimental SPIR-V リンカ CLI([spvlink/main.cpp](../../src/spvlink/main.cpp)・[第10章](10_tools.md)) 🚧 |
 | web ビューア | 別リポジトリ `my_webpage` の WebGPU「Shader Dock」。**同じプロジェクトファイルをブラウザで開く**([第9章](09_web.md)) |
@@ -87,13 +87,13 @@ update_game の順序:
 4. SeqPlayer。
 5. applyPendingLoad。
 
-根拠: [framephase.hpp:17](../../src/core/appflow/framephase.hpp#L17)、[framephase.cpp:152](../../src/core/appflow/framephase.cpp#L152)、[loop.cpp:710](../../src/core/appflow/loop.cpp#L710)、[loop.cpp:756](../../src/core/appflow/loop.cpp#L756)。
+根拠: [framephase.hpp:17](../../src/core/appflow/framephase.hpp#L17)、[framephase.cpp:152](../../src/core/appflow/framephase.cpp#L154)、[loop.cpp:710](../../src/core/appflow/loop.cpp#L712)、[loop.cpp:756](../../src/core/appflow/loop.cpp#L758)。
 
 注: `updateFrameState` は時刻 advance と render を含みません。headless の固定フレームと RPC `step_frame` も同じ状態更新順ですが、図の窓あり RPC pump は通りません。edit / paused ではイベント凍結・配送と通常のゲーム処理・pending scene load を飛ばし、入力・editor 用システム・停止時刻の Animation / seq / Graph・描画は続きます(paused の明示的な step はゲーム処理を進めます)。Animation は有効な build のみ、UI 書込確定後の camera bake 記録は該当機能がある場合のみです。
 
 `behavior` はシーンのオブジェクトに直接ぶら下がる毎フレーム処理です。シーンロード時に `behavior` コンポーネントだけが ECS の振り分けから外れて BehaviorAttachmentArena(**arena** = エンジン側が behavior の実体をまとめて所有する置き場)に渡り([scene.cpp](../../src/core/loader/scene.cpp) → [behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp))、実行はゲームシステムと同じ総順序に `order=50` / 名前 `"BehaviorSystem"` で参加します([behavior.hpp](../../src/core/userpublic/behavior.hpp))。
 
-ここでいう**総順序**は、登録された全ゲームシステムを `order`(登録時に書く整数)の昇順、同じ `order` なら登録名の辞書順に並べた、1 つに定まる実行順のことです([sortGameSystemRegistrations()](../../src/core/userpublic/details/system/registerer.cpp#L35))。書き方は [第8章](08_gameplay.md)、JSON 側の語彙は [第4章](04_scene_ecs.md) を参照してください。
+ここでいう**総順序**は、登録された全ゲームシステムを `order`(登録時に書く整数)の昇順、同じ `order` なら登録名の辞書順に並べた、1 つに定まる実行順のことです([sortGameSystemRegistrations()](../../src/core/userpublic/details/system/registerer.cpp#L36))。書き方は [第8章](08_gameplay.md)、JSON 側の語彙は [第4章](04_scene_ecs.md) を参照してください。
 
 描画の「世代」は同時に使う runtime と資源の snapshot で、公開・確定・寿命は[第6章の所有節](06_rendering.md#render-generation)を参照してください。
 
@@ -195,7 +195,7 @@ flowchart TB
 
 > **設計決定 12(module 登録契約 — 共通グラフの op も「同梱の標準ライブラリ」・✅AG-0/AG-1a):** 共通グラフのノードの語彙は、コードに埋め込まれた表ではなく **module の manifest**([GraphModuleManifest](../../src/project/graphmodule.hpp#L35): 名前空間・版・提供する型・op の契約・sink)で決まります。`registerModule` が登録し、`resolveOperation` が文書のノードを契約へ引き当てます([graphmodule.hpp:51](../../src/project/graphmodule.hpp#L51))。エンジン同梱の 5 module(`pelican.value` / `pelican.audio` / `pelican.render` / `pelican.pose` / `pelican.ui`)も**この入口を通るだけ**で、特権はありません([makeBuiltinGraphModuleRegistry()](../../src/project/graphmodule.cpp#L739))—— 設計決定 11 と同じ形が、feature 層だけでなくノード語彙にも適用されています。
 >
-> 帰結は 2 つです。**(a) 登録されていない op は名指しで拒否される** —— `graph.operation_unregistered@1{node, op}`([graphmodule.cpp:257](../../src/project/graphmodule.cpp#L494))。`PELICAN_WITH_ANIMATION=OFF` の build は `pelican.pose` module を登録しないので、`pose.*` を書いた文書はこの名前で止まります(黙って無視されません)。**(b) 契約はあるが実行 backend が無い op も別の名前で拒否される** —— `graph.operation_unexecutable@1{node, op, backend}`([valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L555))。「語彙に載っている」と「動く」は別の事実として扱われます。manifest の二重登録も同様に名前付き(`graph.module_duplicate@1` / `graph.operation_duplicate@1` / `graph.type_duplicate@1` / `graph.sink_unregistered@1` — [graphmodule.hpp:51](../../src/project/graphmodule.hpp#L51))で、**拒否された manifest は何も登録しないので、登録順で意味が変わることはありません**。登録済みの語彙は `pelican_cli graph-catalog` で一覧でき([第10章](10_tools.md))、その出力は [../v0_freeze.md](../v0_freeze.md) §1.3 の表と test で照合されています。
+> 帰結は 2 つです。**(a) 登録されていない op は名指しで拒否される** —— `graph.operation_unregistered@1{node, op}`([graphmodule.cpp:257](../../src/project/graphmodule.cpp#L494))。`PELICAN_WITH_ANIMATION=OFF` の build は `pelican.pose` module を登録しないので、`pose.*` を書いた文書はこの名前で止まります(黙って無視されません)。**(b) 契約はあるが実行 backend が無い op も別の名前で拒否される** —— `graph.operation_unexecutable@1{node, op, backend}`([valuegraph.cpp:289](../../src/core/userpublic/valuegraph.cpp#L564))。「語彙に載っている」と「動く」は別の事実として扱われます。manifest の二重登録も同様に名前付き(`graph.module_duplicate@1` / `graph.operation_duplicate@1` / `graph.type_duplicate@1` / `graph.sink_unregistered@1` — [graphmodule.hpp:51](../../src/project/graphmodule.hpp#L51))で、**拒否された manifest は何も登録しないので、登録順で意味が変わることはありません**。登録済みの語彙は `pelican_cli graph-catalog` で一覧でき([第10章](10_tools.md))、その出力は [../v0_freeze.md](../v0_freeze.md) §1.3 の表と test で照合されています。
 
 ## 1.6 開発体制と文書の読み方
 

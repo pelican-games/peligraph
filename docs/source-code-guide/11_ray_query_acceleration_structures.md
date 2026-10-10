@@ -26,7 +26,7 @@ frame planの`blas_build_count`と`blas_update_count`で、作り直しとrefit�
 
 `scene_acceleration_structures`を宣言すると、同じBLAS群からinstance mask別の名前付きTLASも構築します。RT taskの`ray_tracing.acceleration_structure`で選択し、省略時は全sceneです。qとSBTは共通のまま、TLAS別のdescriptor bundleをbindします。全TLAS・descriptorを同じpublicationで所有し、task間で使用中descriptorを変更しません。`named_tlas_instance_counts`に各集合の件数が出ます。
 
-✅RTL-1b(`8034d096`)から、`named_tlas_blas` に TLAS ごとの BLAS の並び(`resident_blas_keys` と同じ形の要素、`active_blas_inputs` の順)も出ます([TLAS ごとの BLAS を記録する所](../../src/core/renderer/accelerationstructure.cpp#L1033))。診断を返すのは [`Renderer::rayQueryAccelerationStructureDiagnostics()`](../../src/core/vkcore/renderer.cpp#L5325) で、本番の [`get_frame_plan` の投影](../../src/core/vkcore/renderer.cpp#L4765) でも使います。
+✅RTL-1b(`8034d096`)から、`named_tlas_blas` に TLAS ごとの BLAS の並び(`resident_blas_keys` と同じ形の要素、`active_blas_inputs` の順)も出ます([TLAS ごとの BLAS を記録する所](../../src/core/renderer/accelerationstructure.cpp#L1033))。診断を返すのは [`Renderer::rayQueryAccelerationStructureDiagnostics()`](../../src/core/vkcore/renderer.cpp#L5345) で、本番の [`get_frame_plan` の投影](../../src/core/vkcore/renderer.cpp#L4785) でも使います。
 
 加速構造 scope は、物理計画が `pelican.vulkan.ray_query@1` を要求するか、登録したシェーダの reflection が frame set の TLAS binding を検出した場合に `RenderPipelineGpuResourceScope` へ登録されます。後者により、独自パスが feature manifest の能力宣言を経由しなくても TLAS layout だけを作って実行時に欠けることはありません。同じ reflection 判定が拡張 frame-set layout、実デバイスの能力確認、owner scope 登録を決めます。どちらも要求しないプロジェクトでは scope 自体が無く、BLAS / TLAS の構築回数は 0 のままです。scope の差し替えは既存 GPU owner scope の purge に従います。
 
@@ -148,7 +148,7 @@ SBT の byte layout は [`shaderbindingtable.cpp`](../../src/core/shader/shaderb
 
 ## AS 宣言を編集する RPC は「節 locator」を通る
 
-`scene_acceleration_structures` を読み書きする 2 本の RPC — [`getSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L2609) と [`editSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L2637) — は、rendering config の root を直接触りません。読みは [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49)、書きは [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L754) を通します。
+`scene_acceleration_structures` を読み書きする 2 本の RPC — [`getSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L2609) と [`editSceneAccelerationStructures()`](../../src/core/communication/renderconfigeditor.cpp#L2637) — は、rendering config の root を直接触りません。読みは [`renderingSectionOrEmpty()`](../../src/project/renderconfigsection.hpp#L49)、書きは [`withSectionValue()`](../../src/project/renderconfigdocument.cpp#L755) を通します。
 
 したがって扱うのは **`pelican.graph` root の `rendering.scene_acceleration_structures`** です。P-2a-4b から MG-2b までは legacy root の最上位の `scene_acceleration_structures` も同じ RPC で扱えましたが、MG-2b で legacy root 自体が `render_config.legacy_root@1` で拒否されるようになりました([第6章 §6.1](06_rendering_vulkan_shader.md) の「rendering config の root は `pelican.graph` だけ」)。
 
@@ -184,4 +184,4 @@ layout と bindings の文書そのものを読み書きするのは `get_ray_la
 
 文書の版は [`ray_layout.json`](../../projects/raytracing_demo/ray_layout.json) が `pelican.ray_group_layout` v3、[`ray_bindings.json`](../../projects/raytracing_demo/ray_bindings.json) が `pelican.ray_bindings` v2 で、MG-2a からエンジンが読むのはこの版だけです。同じ 2 文書を持つ出荷 project はもう 1 本あり、[`projects/pathtrace_demo`](../../projects/pathtrace_demo)([`ray_layout.json`](../../projects/pathtrace_demo/ray_layout.json) v3 / [`ray_bindings.json`](../../projects/pathtrace_demo/ray_bindings.json) v2)です(版の一覧は [`docs/v0_freeze.md`](../v0_freeze.md) §1.1)。
 
-**以前の既知の穴(解消済み)**: Studio で開くと、埋め込み engine が起動直後に [`Renderer logical frame requires a compiled render pipeline`](../../src/core/vkcore/renderer.cpp#L5637) で落ちることがありました。shader cache が効いて起動が速いと、窓の出力より先に最初の frame が来て、出力待ちで飛ばした frame が staged な起動 generation を巻き戻していたのが原因です。`7cb39996` / `e5995d88` で直り、[v0 凍結一覧 §4.1](../v0_freeze.md) が Studio での起動・capture・開き直し(10 / 10)を確認しています。
+**以前の既知の穴(解消済み)**: Studio で開くと、埋め込み engine が起動直後に [`Renderer logical frame requires a compiled render pipeline`](../../src/core/vkcore/renderer.cpp#L5657) で落ちることがありました。shader cache が効いて起動が速いと、窓の出力より先に最初の frame が来て、出力待ちで飛ばした frame が staged な起動 generation を巻き戻していたのが原因です。`7cb39996` / `e5995d88` で直り、[v0 凍結一覧 §4.1](../v0_freeze.md) が Studio での起動・capture・開き直し(10 / 10)を確認しています。
