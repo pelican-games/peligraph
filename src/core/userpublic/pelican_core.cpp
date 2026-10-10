@@ -1,3 +1,5 @@
+#include "../watch/userdataguard.hpp"
+#include "../watch/problemlist.hpp"
 #include "pelican_core.hpp"
 #include "../playerdiagnostics.hpp"
 #include "../appflow/loop.hpp"
@@ -177,7 +179,17 @@ bool PelicanCore::run() {
                 SceneLoadRoot::startup);
             const auto result =
                 GET_MODULE(SceneLoader).load(std::move(request));
-            (void)requireSceneLoadCommitted(result);
+            try { (void)requireSceneLoadCommitted(result); }
+            catch (const UserDataError &) {
+                if (!userCodeStopRequested()) throw;
+                // onInit already recorded the named behavior failure and the
+                // scene transaction rolled back. Reload the authored scene
+                // dormant, leaving a usable editor instead of ending startup.
+                finishUserCodeStop();
+                auto dormant = SceneLoadRequest::borrowed(
+                    config.defaultSceneId(), config.sceneProjectionState(), SceneLoadRoot::startup);
+                (void)requireSceneLoadCommitted(GET_MODULE(SceneLoader).load(std::move(dormant)));
+            }
             if (const auto *failure =
                     std::get_if<CommittedWithEffectFailure>(&result)) {
                 LOG_ERROR(logger,
@@ -216,6 +228,10 @@ bool PelicanCore::run() {
         report_fatal("Pelican fatal error: non-standard exception");
         succeeded = false;
     }
+    if (!succeeded)
+        if (const auto *problems = FastModuleContainer::tryGet<ProblemList>(); problems &&
+            !problems->problemsJson().at("problems").empty())
+            LOG_ERROR(logger, "Pelican last Problems : {}", problems->problemsJson().dump());
     internal::runTerminalShutdown(teardown);
     return succeeded;
 }

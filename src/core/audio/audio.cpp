@@ -1,3 +1,4 @@
+#include "../userpublic/userdataerror.hpp"
 #include "audio.hpp"
 
 #include "../launchconfig.hpp"
@@ -549,14 +550,20 @@ Audio::PreparedSound Audio::prepareSound(std::string_view path, AudioBus bus) co
         if (found != decoded_sounds.end() && (!look || found->second.stamp == stamp))
             return PreparedSound{found->second.decoded, std::string{path}, bus};
     }
-    auto bytes = resolver.loadBytes(path);
+    auto bytes = [&] {
+        try { return resolver.loadBytes(path); }
+        catch (const std::runtime_error &error) { throw UserDataError(error.what()); }
+    }();
     const std::span<const std::byte> view{bytes.data(), bytes.size()};
     const auto format = detectSoundFormat(path, view);
     // AU-2 decision 3. The header says how long the sound is; a long one is
     // not decoded here -- not for the rendering config's check, not for a
     // voice -- and keeps only its encoded bytes, which each voice's decoder
     // reads as it plays.
-    auto header = readSoundHeader(format, view);
+    auto header = [&] {
+        try { return readSoundHeader(format, view); }
+        catch (const std::runtime_error &error) { throw UserDataError(error.what()); }
+    }();
     const bool streamed = static_cast<double>(header.streamed_frames) >
                           streaming_threshold_seconds * static_cast<double>(header.sample_rate);
     std::shared_ptr<const DecodedSound> decoded;
@@ -564,7 +571,9 @@ Audio::PreparedSound Audio::prepareSound(std::string_view path, AudioBus bus) co
         header.encoded = std::make_shared<const std::vector<std::byte>>(std::move(bytes));
         decoded = std::make_shared<const DecodedSound>(std::move(header));
     } else {
-        decoded = std::make_shared<const DecodedSound>(format == SoundFormat::ogg ? decodeOgg(view, std::move(header)) : decodeWav(view));
+        try {
+            decoded = std::make_shared<const DecodedSound>(format == SoundFormat::ogg ? decodeOgg(view, std::move(header)) : decodeWav(view));
+        } catch (const std::runtime_error &error) { throw UserDataError(error.what()); }
     }
     const auto size = decoded->residentBytes();
     std::lock_guard lock{decode_mutex};

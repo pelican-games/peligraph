@@ -7,9 +7,11 @@
 
 namespace Pelican {
 
-UIContainer::UIContainer() {
-    const auto &source_pages = GET_MODULE(ui::UiModule).pages();
+UIContainer::UIContainer() { syncPages(GET_MODULE(ui::UiModule).pages()); }
+
+void UIContainer::syncPages(const std::vector<ui::UiTexturePage> &source_pages) {
     auto &atlas = GET_MODULE(AtlasAssetResource);
+    shared_pages.clear();
     shared_pages.reserve(source_pages.size() + 1);
     shared_pages.push_back(0); // shared white page
     for (const auto &source : source_pages) {

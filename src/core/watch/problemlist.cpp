@@ -1,3 +1,7 @@
+#include "../appflow/playmode.hpp"
+#include "../loader/basicconfig.hpp"
+#include "../loader/scene.hpp"
+#include "userdataguard.hpp"
 #include "problemlist.hpp"
 
 #include "assetkey.hpp"
@@ -433,3 +437,103 @@ void syncShaderProblems(std::string_view source,
 }
 
 } // namespace Pelican
+
+namespace Pelican {
+UserDataScope userDataScope(std::string system, std::string component,
+                            EntityId entity, std::string version) {
+    UserDataScope scope{system + "/" + component + "/" + toString(entity), version,
+        {{"system", system}, {"component", component}}};
+    const auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>();
+    if (auto *scene = FastModuleContainer::tryGet<SceneLoader>(); scene && config) {
+        scope.version += ":" + std::to_string(config->runtimeSceneEpoch());
+        scope.fields["scene_id"] = config->currentSceneId();
+        if (entity != invalidGameObjectId) {
+            scope.fields["entity"] = toString(entity);
+            const auto describe = [scene, entity] {
+                nlohmann::json fields{{"name", scene->objectName(entity).value_or(toString(entity))}};
+                for (const auto &binding : scene->runtimeObjectBindings())
+                    if (binding.object_id == entity) {
+                        fields["object"] = binding.authoring_object_id.value;
+                        break;
+                    }
+                return fields;
+            };
+            if (system == "behavior") scope.fields.update(describe());
+            else scope.entity_fields = describe;
+        }
+    }
+    if (entity == invalidGameObjectId && scope.fields.contains("scene_id") &&
+        !scope.fields.at("scene_id").get<std::string>().empty())
+        if (auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>())
+            scope.version += ":" + std::to_string(config->sceneDocument().revision().value);
+    if (system == "renderer" && config) {
+        scope.fields["document"] = graphDocumentReference(config->renderingConfigReference());
+        scope.fields["document_kind"] = "root_graph";
+    }
+    if (system == "behavior") {
+        scope.version = std::move(version);
+        if (scope.fields.contains("object"))
+            scope.key = system + "/" + component + "/" + scope.fields.at("object").dump();
+    }
+    return scope;
+}
+std::string userDataFileVersion(std::string_view reference) {
+    const auto *paths = FastModuleContainer::tryGet<PathResolver>();
+    if (!paths) return std::string{reference};
+    try {
+        const auto path = paths->resolveExistingFile(reference.substr(0, reference.find('#')));
+        std::error_code error;
+        const auto modified = std::filesystem::last_write_time(path, error);
+        return std::string{reference} + ":" + (error ? "missing" : std::to_string(modified.time_since_epoch().count()));
+    } catch (const std::runtime_error &) { return std::string{reference} + ":missing"; }
+}
+bool beginUserData(const UserDataScope &scope) {
+    auto &list = GET_MODULE(ProblemList);
+    std::lock_guard lock{list.user_data_mutex};
+    const auto found = list.user_data_failures.find(scope.key);
+    if (found == list.user_data_failures.end()) return true;
+    if (found->second == scope.version) return false;
+    list.user_data_failures.erase(found);
+    list.clear("runtime.user_data/" + scope.key);
+    return true;
+}
+void failUserData(const UserDataScope &scope, const char *message) {
+    auto fields = scope.fields;
+    if (scope.entity_fields) fields.update(scope.entity_fields());
+    auto &list = GET_MODULE(ProblemList);
+    std::lock_guard lock{list.user_data_mutex};
+    list.user_data_failures[scope.key] = scope.version;
+    list.replace("runtime.user_data/" + scope.key, {{{"severity", "error"},
+        {"source", "runtime"}, {"code", scope.code},
+        {"scope", scope.key}, {"message", message}, {"document_kind", scope.fields.value("document_kind", "scene")},
+        {"fields", std::move(fields)}}});
+}
+void retainUserDataScopes(std::string_view prefix, const std::set<std::string> &live) {
+    auto &list = GET_MODULE(ProblemList);
+    std::lock_guard lock{list.user_data_mutex};
+    for (auto it = list.user_data_failures.begin(); it != list.user_data_failures.end();) {
+        if (it->first.starts_with(prefix) && !live.contains(it->first)) {
+            list.clear("runtime.user_data/" + it->first);
+            it = list.user_data_failures.erase(it);
+        } else ++it;
+    }
+}
+void requestUserCodeStop() {
+    if (const auto *time = FastModuleContainer::tryGet<EngineTime>();
+        time && time->playState() != EngineTime::PlayState::edit)
+        GET_MODULE(ProblemList).user_code_stop = true;
+}
+bool userCodeStopRequested() {
+    const auto *list = FastModuleContainer::tryGet<ProblemList>();
+    return list && list->user_code_stop;
+}
+void finishUserCodeStop() {
+    auto &list = GET_MODULE(ProblemList);
+    if (!list.user_code_stop) return;
+    list.user_code_stop = false;
+    if (list.user_code_stop_handler) { list.user_code_stop_handler(); return; }
+    if (auto *time = FastModuleContainer::tryGet<EngineTime>(); time &&
+        time->playState() != EngineTime::PlayState::edit)
+        internal::changePlayState(EngineTime::PlayState::edit, {});
+}
+}

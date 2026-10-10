@@ -150,6 +150,12 @@ DECLARE_MODULE(ProblemList) {
     mutable std::mutex mutex_;
     std::map<std::string, std::vector<nlohmann::json>, std::less<>> domains_;
     std::uint64_t revision_ = 0;
+  public:
+    // RX-1: failed scopes are retried only after their input version changes.
+    std::map<std::string, std::string, std::less<>> user_data_failures;
+    std::mutex user_data_mutex;
+    bool user_code_stop = false;
+    std::function<void()> user_code_stop_handler;
 };
 
 // get_status.problems / get_problems of a host without the module (or before

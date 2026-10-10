@@ -1,3 +1,5 @@
+#include "../watch/userdataguard.hpp"
+#include "../userpublic/userdataerror.hpp"
 #include "scene.hpp"
 #include "../appflow/enginetime.hpp"
 #include <cmath>
@@ -835,7 +837,7 @@ struct SceneDocumentParticipant final : TransactionParticipant {
         }
         t.scene = scene_document.findScene(t.request.scene_id);
         if (t.scene == nullptr) {
-            throw std::runtime_error("scene not found: " + t.request.scene_id);
+            throw UserDataError("scene not found: " + t.request.scene_id);
         }
         internal::validateResolvedSceneFeatureBindings(*t.scene);
     }
@@ -1840,14 +1842,14 @@ void SceneLoader::requestLoad(SceneId scene_id) {
         active_pending_scene_transaction->loader == this) {
         if (active_pending_scene_transaction->projection->resolved().findScene(
                 scene_id) == nullptr) {
-            throw std::runtime_error("scene not found: " + scene_id);
+            throw UserDataError("scene not found: " + scene_id);
         }
         *active_pending_scene_transaction->candidate = std::move(scene_id);
         return;
     }
     auto &config = GET_MODULE(ProjectBasicConfig);
     if (config.resolvedScene().findScene(scene_id) == nullptr) {
-        throw std::runtime_error("scene not found: " + scene_id);
+        throw UserDataError("scene not found: " + scene_id);
     }
     pending_scene_id = std::move(scene_id);
 }
@@ -1855,7 +1857,7 @@ void SceneLoader::requestLoad(SceneId scene_id) {
 void SceneLoader::requestLoadDuringRetire(SceneId scene_id) {
     auto &config = GET_MODULE(ProjectBasicConfig);
     if (config.resolvedScene().findScene(scene_id) == nullptr) {
-        throw std::runtime_error("scene not found in committed projection: " +
+        throw UserDataError("scene not found in committed projection: " +
                                  scene_id);
     }
     if (active_pending_scene_transaction != nullptr &&
@@ -1871,6 +1873,8 @@ bool SceneLoader::applyPendingLoad() {
     if (!pending_scene_id) {
         return false;
     }
+    const auto scope = userDataScope("SceneLoader", "load_scene", invalidGameObjectId, *pending_scene_id);
+    return guardUserData(scope, [&] {
     auto request = SceneLoadRequest::borrowed(
         *pending_scene_id,
         GET_MODULE(ProjectBasicConfig).sceneProjectionState(),
@@ -1884,7 +1888,7 @@ bool SceneLoader::applyPendingLoad() {
                   "pending scene committed with effect failure: error_code='committed_with_effect_failure@1' diagnostics={}",
                   sceneLoadDiagnosticsJson(failure->diagnostics).dump());
     }
-    return true;
+    });
 }
 
 nlohmann::ordered_json SceneLoader::diagnosticsStatusJson() const {

@@ -1,3 +1,5 @@
+#include "../watch/userdataguard.hpp"
+#include "../userpublic/userdataerror.hpp"
 #include "graphdeformedattribute.hpp"
 #include "framegraphruntime.hpp"
 #include "computetask.hpp"
@@ -23,14 +25,14 @@ std::optional<std::size_t> resolveAttribute(const GraphDeformedAttribute &attrib
         if (match) throw std::runtime_error("ambiguous deformed attribute occurrence: " + attribute.resource);
         match = i;
     }
-    if (!match) throw std::runtime_error("deformed attribute occurrence is unavailable: " + attribute.resource);
+    if (!match) throw UserDataError("deformed attribute occurrence is unavailable: " + attribute.resource);
     if (geometry[*match].vertex_offset < 0 || geometry[*match].vertex_count == 0)
         throw std::runtime_error("deformed attribute has an invalid vertex range: " + attribute.resource);
     // A coordinated model reload publishes its model after render preparation.
     // Until recording can use that candidate model, topology changes must be
     // rejected here instead of publishing a buffer incompatible with live data.
     if (geometry[*match].vertex_count != attribute.expected_count)
-        throw std::runtime_error("deformed attribute vertex count differs from the live model; "
+        throw UserDataError("deformed attribute vertex count differs from the live model; "
             "detach the affected graph before changing model topology: " + attribute.resource);
     return match;
 }
@@ -56,7 +58,10 @@ void recordGraphDeformedAttributes(vk::CommandBuffer command,
     std::set<std::size_t> selected;
     // Resolve and validate every destination before recording any writes.
     for (const auto &attribute : graph.deformed_attributes) {
-        const auto match = resolveAttribute(attribute, geometry);
+        std::optional<std::size_t> match;
+        auto scope = userDataScope("renderer", "deformed/" + attribute.resource,
+            invalidGameObjectId, std::to_string(reinterpret_cast<std::uintptr_t>(&graph)));
+        if (!guardUserData(scope, [&] { match = resolveAttribute(attribute, geometry); })) continue;
         if (!match) continue;
         const auto destination = graph.buffer_bindings.at(attribute.resource);
         if (resources.bufferSize(destination) != vk::DeviceSize{geometry[*match].vertex_count} * 16)

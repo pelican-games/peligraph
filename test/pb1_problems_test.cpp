@@ -760,3 +760,137 @@ TEST_CASE("AN-2 animation component RPC admission and invalid scene Problems rec
     CHECK(player.exit_code == 0u);
 }
 #endif
+
+#ifdef _WIN32
+TEST_CASE("RX-1 authored runtime failures recover through RPC while frames and editor survive",
+          "[rx1][sprite][camera][behavior][problems][gpu]") {
+    TempProject project{"rx1"};
+    const auto scene_path = project.root / "scenes/main.scene.json";
+    auto scene = Json::parse(readFile(scene_path));
+    auto &objects = scene["scenes"]["default_scene"]["objects"];
+    const auto object = [](const char *name, Json component) {
+        return Json{{"name", name}, {"components", Json::array({{{"name", "transform"}}, component})}};
+    };
+    bool sprite = false, camera = false, on_init = false;
+    std::wstring extra;
+    SECTION("T1 sprite admission startup isolation repair and removal") {
+        sprite = true;
+        REQUIRE(objects.is_array());
+        auto root = Json::parse(project.fixed_root);
+        root["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+                             {"features", Json::array({"engine://features/sprite.json"})}};
+        writeFile(project.rootPath(), root.dump(2));
+        // A one-pixel BMP, with a complete file and DIB header.
+        std::string bmp(58, '\0');
+        const auto word = [&](int offset, unsigned value, int size) {
+            for (int byte = 0; byte < size; ++byte) bmp[offset + byte] = char(value >> (byte * 8));
+        };
+        bmp[0] = 'B'; bmp[1] = 'M'; word(2, 58, 4); word(10, 54, 4);
+        word(14, 40, 4); word(18, 1, 4); word(22, 1, 4); word(26, 1, 2); word(28, 24, 2);
+        bmp[54] = bmp[55] = bmp[56] = char(255);
+        writeFile(project.root / "assets/white.bmp", bmp);
+        writeFile(project.root / "assets/asset_data.json",
+            R"({"schema":"pelican.asset_data","version":2,"models":[],"textures":[{"name":"white","path":"assets/white.bmp"}]})");
+        objects.push_back(object("Broken", {{"name", "sprite_view"}, {"texture", "missing"}}));
+        objects.push_back(object("Healthy", {{"name", "sprite_view"}, {"texture", "white"}}));
+    }
+    SECTION("T2 deleting a camera controller target keeps Play running") {
+        camera = true;
+        REQUIRE(objects.is_array());
+        objects.push_back(Json{{"name", "Target"}, {"components", Json::array({{{"name", "transform"}}})}});
+        objects.push_back(object("Camera", {{"name", "camera"},
+            {"controller", {{"type", "follow"}, {"target", "Target"}, {"offset", {0, 0, 5}}}}}));
+    }
+    SECTION("T3 a throwing behavior DLL stops Play and leaves editing available") {
+        objects.push_back(object("Thrower", {{"name", "behavior"}, {"type", "rx1_throw"},
+            {"params", {{"message", "RX-1 callback first line\nsecond line"}}}}));
+        REQUIRE(std::filesystem::is_regular_file(PELICAN_RX1_FIXTURE));
+        extra = L" --game-logic \"" + std::filesystem::path{PELICAN_RX1_FIXTURE}.wstring() + L"\"";
+    }
+    SECTION("T3 an onInit failure rolls back and returns to edit") {
+        on_init = true;
+        objects.push_back(object("Thrower", {{"name", "behavior"}, {"type", "rx1_throw"},
+            {"params", {{"message", "RX-1 callback first line\nsecond line"}, {"on_init", true}}}}));
+        REQUIRE(std::filesystem::is_regular_file(PELICAN_RX1_FIXTURE));
+        extra = L" --game-logic \"" + std::filesystem::path{PELICAN_RX1_FIXTURE}.wstring() + L"\"";
+    }
+    writeFile(scene_path, scene.dump(2));
+    if (sprite || on_init) {
+        const auto log = project.stderrLog("finite");
+        PlayerRpc finite{project.root, log, L"--headless --frames 3" + extra};
+        finite.close();
+        INFO(readFile(log));
+        REQUIRE(finite.exit_code == 0u);
+    }
+    PlayerRpc player{project.root, project.stderrLog("rpc"), headless_flags + L" --start-state edit" + extra};
+    auto step = player.result("step_frame");
+    const auto actor = player.result("open_editor_session", {{"display_name", "RX-1"}}).at("actor_id");
+    const auto id = [&](const char *name) -> std::uint64_t {
+        const auto tree = player.result("scene_tree");
+        for (const auto &entry : tree.at("objects"))
+            if (entry.value("name", std::string{}) == name) return entry.at("authoring_object_id").get<std::uint64_t>();
+        FAIL("missing object " << name); return 0;
+    };
+    const auto edit = [&](Json op) {
+        return player.settle(player.result("edit", {{"actor_id", actor},
+            {"base_revision", player.result("get_scene_revision").at("scene_revision")},
+            {"operations", Json::array({op})}}));
+    };
+    if (sprite) {
+        REQUIRE(step.at("problems").size() == 1);
+        CHECK(onlyProblem(player).at("code") == "runtime.user_data@1");
+        CHECK(onlyProblem(player).at("fields").at("object") == id("Broken"));
+        CHECK(player.result("get_status").at("sprite").at("logical_count") == 1);
+        const auto revision = revisionOf(player);
+        (void)player.result("step_frame"); (void)player.result("step_frame");
+        CHECK(revisionOf(player) == revision);
+        const auto before = player.result("get_scene_revision");
+        auto refused = edit({{"op", "set_component_value"}, {"object_id", id("Healthy")},
+            {"component_slot", "sprite_view"}, {"field_path", "/texture"}, {"value", "absent"}});
+        INFO(refused.dump());
+        REQUIRE(refused.at("status") == "rejected");
+        CHECK(refused.at("error").at("code") == "runtime.user_data@1");
+        CHECK(player.result("get_scene_revision") == before);
+        auto fixed = edit({{"op", "set_component_value"}, {"object_id", id("Broken")},
+            {"component_slot", "sprite_view"}, {"field_path", "/texture"}, {"value", "white"}});
+        INFO(fixed.dump()); REQUIRE(fixed.at("status") == "committed");
+        (void)player.result("step_frame");
+        requireNoProblems(player);
+        CHECK(player.result("get_status").at("sprite").at("logical_count") == 2);
+    } else if (camera) {
+        const auto revision_before = player.result("get_scene_revision");
+        const auto refused = edit({{"op", "set_component_value"}, {"object_id", id("Camera")},
+            {"component_slot", "camera"}, {"field_path", "/controller/target"}, {"value", "Absent"}});
+        INFO(refused.dump());
+        REQUIRE(refused.at("status") == "rejected");
+        CHECK(refused.at("error").at("code") == "runtime.user_data@1");
+        CHECK(player.result("get_scene_revision") == revision_before);
+        auto deleted = edit({{"op", "destroy"}, {"object_id", id("Target")}});
+        INFO(deleted.dump(2));
+        REQUIRE(deleted.at("status") == "committed");
+        (void)player.result("set_play_state", {{"state", "playing"}});
+        (void)player.result("set_camera", {{"name", "Camera"}});
+        step = player.result("step_frame");
+        REQUIRE(step.at("problems").size() == 1);
+        CHECK_THAT(onlyProblem(player).at("message").get<std::string>(), Catch::Matchers::ContainsSubstring("Target"));
+        CHECK(player.result("get_status").at("play").at("state") == "playing");
+        const auto revision = revisionOf(player);
+        (void)player.result("step_frame");
+        CHECK(revisionOf(player) == revision);
+    } else {
+        (void)player.result("set_play_state", {{"state", "playing"}});
+        step = player.result("step_frame");
+        INFO(step.dump(2));
+        CHECK(player.result("get_status").at("play").at("state") == "edit");
+        const auto problem = onlyProblem(player);
+        CHECK_THAT(problem.at("message").get<std::string>(), Catch::Matchers::ContainsSubstring("behavior rx1_throw"));
+        CHECK_THAT(problem.at("message").get<std::string>(), Catch::Matchers::ContainsSubstring("first line\nsecond line"));
+        (void)player.result("set_play_state", {{"state", "edit"}});
+        (void)player.result("step_frame");
+        REQUIRE(edit({{"op", "destroy"}, {"object_id", id("Thrower")}}).at("status") == "committed");
+        (void)player.result("step_frame");
+        requireNoProblems(player);
+    }
+    player.close(); CHECK(player.exit_code == 0u);
+}
+#endif

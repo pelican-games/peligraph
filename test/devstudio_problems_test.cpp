@@ -1,3 +1,4 @@
+#include "../src/devstudio/viewport/enginefailuremodel.hpp"
 // PB-1s: the Problems dock -- what is wrong with the project now, from the
 // engine's list (engine PB-1's get_problems) and the Assets dock's contents
 // check -- on the real widget, with the test answering for the engine
@@ -585,6 +586,19 @@ TEST_CASE("AN-2 animation Problems open the affected object in the Inspector and
     CHECK(rig.tree()->topLevelItemCount() == 0);
 }
 
+TEST_CASE("RX-1 Studio preserves multiline fatal text and last Problems", "[rx1][devstudio][failure]") {
+    PelicanStudio::EngineFailureModel model{2};
+    model.beginRun();
+    model.appendStandardError(QStringLiteral("Pelican fatal error : first line\nsecond"));
+    model.appendStandardError(QStringLiteral(" line\nPelican last Problems : sprite missing\n"));
+    const auto failure = model.finishRun(1);
+    REQUIRE(failure);
+    CHECK(failure->fatal_error_line == QStringLiteral(
+        "Pelican fatal error : first line\nsecond line\nPelican last Problems : sprite missing"));
+    model.beginRun();
+    model.appendStandardError(QStringLiteral("Pelican fatal error : new run\n"));
+    CHECK(model.finishRun(1)->fatal_error_line == QStringLiteral("Pelican fatal error : new run"));
+}
 
 TEST_CASE("MO1 object_material missing primitive problem points to its scene object",
           "[devstudio][problems][mo1]") {

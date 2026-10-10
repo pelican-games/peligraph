@@ -1,3 +1,4 @@
+#include "../../watch/userdataguard.hpp"
 #include "animationsystem.hpp"
 
 #include "../../animation/animationjobs.hpp"
@@ -94,7 +95,7 @@ void AnimationSystem::prepareEcsWorkerDependencies(DependencyQuery chunks) {
         state->candidates.insert(state->candidates.end(), entities, entities + chunk.count);
     }
     state->clips.clear();
-    std::vector<nlohmann::json> problems;
+    std::set<std::string> live_scopes;
     if (!chunks.empty()) {
         engine_time = &GET_MODULE(EngineTime);
         instances = &GET_MODULE(PolygonInstanceContainer);
@@ -106,30 +107,21 @@ void AnimationSystem::prepareEcsWorkerDependencies(DependencyQuery chunks) {
             const auto views = std::get<SimpleModelViewComponent *>(chunk.components);
             for (size_t i = 0; i < chunk.count; ++i) {
                 if (!animations[i].graph.empty() || !views[i].model_instance_id) continue;
-                try {
+                auto scope = userDataScope("AnimationSystem", "animation", entities[i],
+                    views[i].model_name + userDataFileVersion(animations[i].clip));
+                scope.code = "animation.component_invalid@1";
+                scope.fields["object"] = views[i].authoring_object_id;
+                scope.fields["clip"] = animations[i].clip;
+                live_scopes.insert(scope.key);
+                guardUserData(scope, [&] {
                     const auto &model = models->getModelTemplateByName(views[i].model_name);
                     state->clips.emplace(entities[i], &requireAnimationComponentClip(
                         model.skeletal.get(), animations[i].clip, *path_resolver));
-                } catch (const std::exception &error) {
-                    auto &scene = GET_MODULE(SceneLoader);
-                    const auto entity = toString(entities[i]);
-                    nlohmann::json problem{
-                        {"id", problemId({{"code", "animation.component_invalid@1"},
-                                          {"scope", scene.runtimeSceneEpoch()}, {"node", entity}})},
-                        {"severity", problemSeverityError}, {"source", "ecs"},
-                        {"code", "animation.component_invalid@1"}, {"message", error.what()},
-                        {"document_kind", problemKindScene},
-                        {"fields", {{"entity", entity},
-                                    {"object", views[i].authoring_object_id},
-                                    {"name", scene.objectName(entities[i]).value_or(entity)},
-                                    {"scene_id", scene.currentScene()},
-                                    {"component", "animation"}, {"clip", animations[i].clip}}}};
-                    problems.push_back(std::move(problem));
-                }
+                });
             }
         }
     }
-    GET_MODULE(ProblemList).replace("animation_components", std::move(problems));
+    retainUserDataScopes("AnimationSystem/animation/", live_scopes);
 }
 
 void AnimationSystem::process(QueryComponents components, size_t count) {
@@ -211,13 +203,21 @@ void AnimationSystem::updateGraphs() {
     auto &service = Animation::animationServiceRuntime();
     internal::ScopedRegistrationOwner owner{internal::engineRegistrationOwner};
     std::unordered_set<EntityId> live;
+    std::set<std::string> live_scopes;
     for (const auto entity : state->candidates) {
         const auto *animation = ecs.tryComponent<AnimationComponent>(entity);
         const auto *view = ecs.tryComponent<SimpleModelViewComponent>(entity);
         if (!animation || animation->graph.empty() || !view || !view->model_instance_id) continue;
         live.insert(entity);
+        auto scope = userDataScope("AnimationSystem", "animation_graph", entity,
+            userDataFileVersion(animation->graph) + view->model_name);
+        if (animation->parameters)
+            for (const auto &row : animation->parameters->rows)
+                scope.version += ":" + row.value.parameter + "=" + nlohmann::json(row.value.value).dump();
+        live_scopes.insert(scope.key);
+        if (!guardUserData(scope, [&] {
         auto &model = GET_MODULE(ModelAssetContainer).getModelTemplateByName(view->model_name);
-        if (!model.skeletal) throw std::runtime_error("animation graph requires a skinned model");
+        if (!model.skeletal) throw UserDataError("animation graph requires a skinned model");
         auto &resolver = GET_MODULE(PathResolver);
         auto found = state->graphs.find(entity);
         // EB-7: a hot reload build looks at the graph file every frame and
@@ -227,7 +227,10 @@ void AnimationSystem::updateGraphs() {
             found != state->graphs.end() && found->second->reference == animation->graph;
         const auto modified =
             watch::looksAgainAtReadFile(PELICAN_WITH_HOT_RELOAD != 0, read_before)
-                ? std::filesystem::last_write_time(resolver.resolveExistingFile(animation->graph))
+                ? [&] {
+                    try { return std::filesystem::last_write_time(resolver.resolveExistingFile(animation->graph)); }
+                    catch (const std::runtime_error &error) { throw UserDataError(error.what()); }
+                }()
                 : found->second->modified;
         const auto epoch = scene.runtimeSceneEpoch();
         const auto named = scene.objectName(entity);
@@ -248,7 +251,7 @@ void AnimationSystem::updateGraphs() {
         if (replace) {
             // Parse before releasing the previous writer. A malformed edited
             // asset must not silently discard the existing graph state.
-            auto document = AnimationGraph::parseDocumentV1(resolver.loadText(animation->graph));
+            auto document = requireAnimationComponentGraph(model.skeletal.get(), *animation, resolver);
             state->graphs.erase(entity);
             auto binding = std::make_unique<AnimationSystemState::GraphBinding>();
             binding->reference = animation->graph;
@@ -267,21 +270,23 @@ void AnimationSystem::updateGraphs() {
             if (binding->parameters)
                 for (const auto &row : binding->parameters->rows)
                     if (binding->evaluator->setParameter(row.value.parameter, row.value.value) != Animation::Status::ok)
-                        throw std::runtime_error("animation graph parameter override failed: " + row.value.parameter);
+                        throw UserDataError("animation graph parameter override failed: " + row.value.parameter);
             if (binding->evaluator->bind() != Animation::Status::ok)
-                throw std::runtime_error("animation graph bind failed: " + binding->evaluator->lastError());
+                throw UserDataError("animation graph bind failed: " + binding->evaluator->lastError());
             found = state->graphs.emplace(entity, std::move(binding)).first;
         }
         auto &binding = *found->second;
         if (binding.time_set_revision != time.timeSetRevision()) {
             const auto status = binding.evaluator->notify(Animation::AnimationNotificationKind::set_time, time.now());
-            if (status != Animation::Status::ok) throw std::runtime_error("animation graph clock reset failed");
+            if (status != Animation::Status::ok) throw UserDataError("animation graph clock reset failed");
             binding.time_set_revision = time.timeSetRevision();
         }
         if (binding.evaluator->prepareTick(time.now(), time.dt(), time.evaluationIndex()) != Animation::Status::ok)
-            throw std::runtime_error("animation graph tick preparation failed");
+            throw UserDataError("animation graph tick preparation failed");
+        })) state->graphs.erase(entity);
     }
     std::erase_if(state->graphs, [&](const auto &entry) { return !live.contains(entry.first); });
+    retainUserDataScopes("AnimationSystem/animation_graph/", live_scopes);
     updatePoseGraphs();
 }
 
@@ -323,7 +328,7 @@ void AnimationSystem::updatePoseGraphs() {
             // A pose sink writes a named scene sink. An unnamed object has no
             // stable identity to hand a writer to; say so instead of inventing one.
             if (!named)
-                throw std::runtime_error("pose sink requires a named scene object");
+                throw UserDataError("pose sink requires a named scene object");
             return named;
         };
         frame.verify_rig = [&](const GraphInstanceOwner &instance, const std::string &rig,

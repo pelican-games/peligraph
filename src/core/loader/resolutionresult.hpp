@@ -1,3 +1,4 @@
+#include "../userpublic/userdataerror.hpp"
 #pragma once
 
 #include <charconv>
@@ -173,17 +174,17 @@ inline std::string resolutionFailureMessage(
 // The transport thrown by runtime binders. It retains the typed alternative
 // even when a binder adds the historical object context to what(). Deriving
 // from runtime_error also preserves the pre-E-0a consumer catch contract.
-class ResolutionFailureException final : public std::runtime_error {
+class ResolutionFailureException final : public UserDataError {
     StoredResolutionFailure failure_;
 
   public:
     explicit ResolutionFailureException(StoredResolutionFailure failure)
-        : std::runtime_error{resolutionFailureMessage(failure)},
+        : UserDataError{resolutionFailureMessage(failure)},
           failure_{std::move(failure)} {}
 
     ResolutionFailureException(StoredResolutionFailure failure,
                                std::string contextual_message)
-        : std::runtime_error{std::move(contextual_message)},
+        : UserDataError{std::move(contextual_message)},
           failure_{std::move(failure)} {}
 
     const StoredResolutionFailure &failure() const noexcept {

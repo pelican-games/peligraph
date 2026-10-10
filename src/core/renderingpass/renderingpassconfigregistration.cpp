@@ -1,3 +1,5 @@
+#include "../renderer/camera.hpp"
+#include "../renderer/shadowvalidation.hpp"
 #include "renderingpassconfigregistration.hpp"
 #include "graphinputs.hpp"
 #include "../userpublic/valuegraph.hpp"
@@ -1168,6 +1170,10 @@ void RegistrationStages::prepare() {
             effectiveRenderCompilerProgram(
                 dependencies.front().options),
             compiler_input);
+    if (const auto *camera = FastModuleContainer::tryGet<Camera>())
+        for (const auto &variant : compiler_output.variants)
+            if (variant.compiled_pipeline)
+                requireCameraShadowDistance(camera->getProjectionSpec().znear, *variant.compiled_pipeline);
     source_documents = std::make_shared<const RenderGraphDocumentSnapshot>(std::move(loaded_documents));
 #if PELICAN_WITH_AUDIO
     // A build without audio never gets here with a voice: pelican.audio is not
@@ -1176,6 +1182,8 @@ void RegistrationStages::prepare() {
     // The check that every voice's asset decodes is also its one decode
     // (AU-1 decision 7): Audio keeps the buffer, and the voices share it.
     if (value_graph) {
+        if (value_graph->requiresSoundBindings())
+            throw UserDataError("scene audio.volume/audio.pitch requires a connected voice instead of target");
         for (const auto &[node, asset] : value_graph->audioSources())
             (void)GET_MODULE(Audio).prepareSound(asset);
     }

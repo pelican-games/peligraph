@@ -1,3 +1,4 @@
+#include "../userpublic/userdataerror.hpp"
 #include "scene.hpp"
 #include "../../project/graphcomposition.hpp"
 #include "../appflow/enginetime.hpp"
@@ -185,7 +186,10 @@ bool SceneLoader::applyGraphVoice(const std::shared_ptr<const ValueGraph::Graph>
     const bool restart = existing == runtime.sounds.end() || epoch == runtime.sound_epochs.end() ||
                          epoch->second != directive.epoch;
     std::optional<Audio::PreparedSound> prepared;
-    if (restart) prepared = audio.prepareSound(source->second, audioVoiceBusFromName(directive.bus));
+    if (restart) {
+        try { prepared = audio.prepareSound(source->second, audioVoiceBusFromName(directive.bus)); }
+        catch (const GraphRegistryError &error) { throw UserDataError(error.what()); }
+    }
     const auto length = prepared ? Audio::lengthSeconds(*prepared) : audio.voiceLengthSeconds(existing->second);
     // The follow tolerance of decision 3: one frame, and 10 ms for the jitter
     // between the frame clock and the mixer.
@@ -204,7 +208,7 @@ bool SceneLoader::applyGraphVoice(const std::shared_ptr<const ValueGraph::Graph>
         if (directive.end_from_source) settings.source_end = length;
         settings.duration = settings.source_end - settings.source_begin;
         if (!(settings.duration > 0.0))
-            throw std::invalid_argument("audio playback range is empty: " + std::string{node});
+            throw UserDataError("audio playback range is empty: " + std::string{node});
         const auto time = Animation::mapCurveTime(settings, directive.elapsed);
         const bool waiting = directive.elapsed < settings.delay;
         drive.rate = static_cast<float>(std::abs(settings.speed));

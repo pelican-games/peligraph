@@ -1,3 +1,5 @@
+#include "../watch/userdataguard.hpp"
+#include "../userpublic/userdataerror.hpp"
 #include "posegraphruntime.hpp"
 
 #include "../userpublic/animation/abi_v1.hpp"
@@ -113,6 +115,7 @@ struct PoseGraphRuntime::Impl {
         // for the owner thread instead of collapsing into a bool that loses
         // which port was mis-wired.
         std::exception_ptr failure;
+        UserDataScope data_scope;
         // One evaluation per frame revision: the phase refuses a revision it
         // was not prepared for instead of running twice.
         bool tick_pending = false;
@@ -184,7 +187,8 @@ struct PoseGraphRuntime::Impl {
         sink_request.object_name_size = static_cast<std::uint32_t>(object.size());
         sink_request.sink_kind = kind;
         if (const auto status = service.resolve_sink(service.context, &sink_request); status != Status::ok)
-            statusFailure("sink resolution for " + object, status);
+            throw UserDataError("pose graph sink resolution failed for " + object +
+                " with animation status " + std::to_string(static_cast<std::uint32_t>(status)));
         sink = sink_request.sink;
         auto instance_request = descriptor<ResolveAnimationInstanceDescV1>();
         instance_request.sink = sink;
@@ -275,8 +279,10 @@ struct PoseGraphRuntime::Impl {
         const auto named = "pose graph evaluation failed for " + attachment.object_name;
         try {
             std::rethrow_exception(failure);
-        } catch (const std::exception &error) {
-            throw std::runtime_error(named + ": " + error.what());
+        } catch (const UserDataError &error) {
+            throw UserDataError(named + ": " + error.what());
+        } catch (const GraphRegistryError &error) {
+            throw UserDataError(named + ": " + error.what());
         }
     }
 
@@ -444,7 +450,7 @@ void PoseGraphRuntime::Impl::bind(Attachment &attachment, const PoseGraphFrame &
         auto &binding = attachment.bindings[node];
         const auto object = frame.object_name(compiled.owner);
         if (!object)
-            throw std::runtime_error("pose operation owner is not live: " + compiled.id);
+            throw UserDataError("pose operation owner is not live: " + compiled.id);
         if (frame.verify_rig) frame.verify_rig(compiled.owner, compiled.rig, compiled.id);
         SkinBindingHandle unused_binding{};
         std::uint32_t unused_palette = 0;
@@ -467,14 +473,14 @@ void PoseGraphRuntime::Impl::bind(Attachment &attachment, const PoseGraphFrame &
                 binding.evaluator = std::move(donor->evaluator);
                 donors.erase(donor);
                 if (const auto status = binding.evaluator->rebind(); status != Status::ok)
-                    throw std::runtime_error("pose.state_machine rebind failed for " + compiled.id +
+                    throw UserDataError("pose.state_machine rebind failed for " + compiled.id +
                                              ": " + binding.evaluator->lastError());
             } else {
                 if (donor != donors.end()) donors.erase(donor);
                 binding.evaluator = std::make_unique<AnimationGraph::EvaluatorV1>(
                     AnimationGraph::parseDocumentV1(compiled.state_machine.dump()), *object);
                 if (const auto status = binding.evaluator->bind(); status != Status::ok)
-                    throw std::runtime_error("pose.state_machine bind failed for " + compiled.id + ": " +
+                    throw UserDataError("pose.state_machine bind failed for " + compiled.id + ": " +
                                              binding.evaluator->lastError());
             }
             attachment.evaluator_writes = true;
@@ -486,7 +492,7 @@ void PoseGraphRuntime::Impl::bind(Attachment &attachment, const PoseGraphFrame &
         resolve.clip_name_size = static_cast<std::uint32_t>(compiled.clip.size());
         if (const auto status = attachment.service.resolve_clip(attachment.service.context, &resolve);
             status != Status::ok)
-            statusFailure("clip resolution for " + compiled.clip, status);
+            throw UserDataError("pose graph clip resolution failed: " + compiled.clip);
         binding.clip = resolve.clip;
         binding.metadata = descriptor<ClipMetadataV1>();
         binding.metadata.clip = binding.clip;
@@ -534,7 +540,7 @@ void PoseGraphRuntime::Impl::bind(Attachment &attachment, const PoseGraphFrame &
             attachment.root_motion = true;
         }
         if (!(binding.metadata.end_seconds > binding.metadata.start_seconds))
-            throw std::runtime_error("pose.clip_sample needs a nonzero duration: " + compiled.id);
+            throw UserDataError("pose.clip_sample needs a nonzero duration: " + compiled.id);
     }
     if (attachment.root_motion) {
         // The displacement lands on the object this sink writes -- compile
@@ -617,7 +623,7 @@ const PoseGraphRuntime::Impl::Produced &
 PoseGraphRuntime::Impl::Evaluation::poseInput(const PoseGraphNode &node, const char *port) const {
     const auto found = node.pose_inputs.find(port);
     if (found == node.pose_inputs.end())
-        throw std::runtime_error(std::string{"pose port is unconnected: "} + node.id + "." + port);
+        throw UserDataError(std::string{"pose port is unconnected: "} + node.id + "." + port);
     return poses.at(found->second);
 }
 
@@ -906,6 +912,17 @@ void PoseGraphRuntime::rethrowPendingFailure() {
     }
 }
 
+bool PoseGraphRuntime::recoverPendingUserDataFailures() {
+    bool recovered = false;
+    for (auto &[graph, list] : impl_->attachments)
+        for (auto &attachment : list)
+            if (attachment->failure) {
+                guardUserData(attachment->data_scope, [&] { impl_->raiseFailure(*attachment); });
+                recovered = true;
+            }
+    return recovered;
+}
+
 void PoseGraphRuntime::retainOnly(const std::set<const PoseGraph *> &live) noexcept {
     // Anything the previous pass set aside and nobody adopted belongs to a
     // generation that is gone for good. Releasing it here, before this pass
@@ -933,6 +950,14 @@ void PoseGraphRuntime::retainOnly(const std::set<const PoseGraph *> &live) noexc
         impl_->published.erase(entry->first);
         entry = impl_->attachments.erase(entry);
     }
+    if (FastModuleContainer::tryGet<ProblemList>()) {
+        std::set<std::string> live_scopes;
+        for (const auto &[graph, list] : impl_->attachments)
+            for (const auto &attachment : list)
+                if (!attachment->data_scope.key.empty()) live_scopes.insert(attachment->data_scope.key);
+        retainUserDataScopes("pose_graph/", live_scopes);
+    }
+
 }
 
 void PoseGraphRuntime::synchronize(const std::shared_ptr<const PoseGraph> &graph,
@@ -951,11 +976,17 @@ void PoseGraphRuntime::synchronize(const std::shared_ptr<const PoseGraph> &graph
             list.push_back(std::move(attachment));
         }
     for (auto &attachment : list) {
+        attachment->data_scope = userDataScope("pose_graph", graph->nodes()[attachment->sink].id,
+            invalidGameObjectId, std::to_string(reinterpret_cast<std::uintptr_t>(graph.get())));
+        attachment->data_scope.fields["object"] = attachment->owner.object;
+        attachment->data_scope.fields["scene_id"] = attachment->owner.scene;
+        if (!guardUserData(attachment->data_scope, [&] {
+        try {
         const auto object = frame.object_name(attachment->owner);
         if (!object) {
             if (attachment->bound) impl_->unbind(*attachment);
             attachment->object_name.clear();
-            continue;
+            return;
         }
         // The animation component's clip path already published this object's
         // frame this revision. That is the same conflict as a second sink: two
@@ -992,15 +1023,17 @@ void PoseGraphRuntime::synchronize(const std::shared_ptr<const PoseGraph> &graph
                 if (value == frame.scalars.end()) continue;
                 if (const auto status = binding.evaluator->setParameter(parameter, value->second);
                     status != Status::ok)
-                    throw std::runtime_error("pose.state_machine parameter rejected: " + parameter);
+                    throw UserDataError("pose.state_machine parameter rejected: " + parameter);
             }
             if (time_was_set)
                 (void)binding.evaluator->notify(AnimationNotificationKind::set_time, frame.time);
             if (const auto status = binding.evaluator->prepareTick(frame.time, frame.delta_seconds,
                                                                    frame.frame_revision);
                 status != Status::ok)
-                throw std::runtime_error("pose.state_machine tick rejected: " + compiled.id);
+                throw UserDataError("pose.state_machine tick rejected: " + compiled.id);
         }
+        } catch (const GraphRegistryError &error) { throw UserDataError(error.what()); }
+        })) impl_->unbind(*attachment);
     }
 }
 

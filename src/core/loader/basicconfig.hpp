@@ -202,6 +202,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     MaterialRouteDefault materialRouteDefault() const;
     std::string defaultRenderingPass() const;
     std::string uiConfigJson() const;
+    const std::string &uiConfigReference() const noexcept { return ui_config_json_ref; }
     std::optional<std::string> inputActionsJson() const;
     std::unordered_map<std::string, std::string> inputProfileJsons() const;
     std::optional<std::string> defaultInputProfile() const;

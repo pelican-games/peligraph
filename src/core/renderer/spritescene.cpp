@@ -1,3 +1,5 @@
+#include "../asset/spritevalidation.hpp"
+#include "../watch/userdataguard.hpp"
 #include "spritescene.hpp"
 
 #include "atlasassetresource.hpp"
@@ -92,6 +94,8 @@ struct SpriteScene::State {
     AtlasAssetResource &atlas;
     Camera &camera;
     asset::SpriteAssetCatalog catalog;
+    std::string catalog_bytes;
+    std::uint64_t catalog_revision = 0;
     std::map<std::string, ResolvedTexture, std::less<>> textures;
     std::map<EntityId, std::uint64_t> declaration_sequences;
     sprite::DeclarationSequenceAllocator declaration_allocator;
@@ -99,6 +103,7 @@ struct SpriteScene::State {
     sprite::SortPolicy sort_policy = sprite::SortPolicy::z;
     sprite::PixelContract pixel_contract;
     std::map<sprite::PixelSnapReason, std::size_t> pixel_reason_counts;
+    std::set<EntityId> invalid_entities;
     std::set<std::string, std::less<>> warned_linear_assets;
     std::set<std::string, std::less<>> warned_contract_failures;
 
@@ -107,7 +112,8 @@ struct SpriteScene::State {
           path_resolver{GET_MODULE(PathResolver)},
           atlas{GET_MODULE(AtlasAssetResource)},
           camera{GET_MODULE(Camera)},
-          catalog{nlohmann::json::parse(project_config.assetDataJson())} {}
+          catalog{nlohmann::json::parse(project_config.assetDataJson())},
+          catalog_bytes{project_config.assetDataJson()} {}
 
     ResolvedTexture resolve(std::string_view reference) {
         if (const auto found = textures.find(reference); found != textures.end()) return found->second;
@@ -154,7 +160,32 @@ SpriteScene::SpriteScene() : state{std::make_unique<State>()} {}
 SpriteScene::~SpriteScene() = default;
 
 void SpriteScene::prepareAssets(std::span<const SpriteSceneItem> items) {
-    for (const auto &item : items) (void)state->resolve(item.view->texture);
+    const auto catalog_bytes = state->project_config.assetDataJson();
+    if (catalog_bytes != state->catalog_bytes) {
+        state->catalog = asset::SpriteAssetCatalog{nlohmann::json::parse(catalog_bytes)};
+        state->catalog_bytes = catalog_bytes;
+        ++state->catalog_revision;
+        state->textures.clear();
+    }
+    state->invalid_entities.clear();
+    std::set<std::string> live;
+    for (const auto &item : items) {
+        auto version = item.view->texture + ":" + std::to_string(state->catalog_revision);
+        if (!state->textures.contains(item.view->texture)) {
+            try {
+                const auto reference = asset::parseSpriteAssetReference(item.view->texture);
+                version += userDataFileVersion(state->catalog.declaration(reference.asset_id).path);
+            } catch (const std::runtime_error &) { version += ":missing"; }
+        }
+        const auto scope = userDataScope("SpriteViewRenderSystem", "sprite_view", item.entity, version);
+        live.insert(scope.key);
+        if (!guardUserData(scope, [&] {
+            if (!state->textures.contains(item.view->texture))
+                (void)requireSpriteTexture(state->catalog, item.view->texture, state->path_resolver);
+            (void)state->resolve(item.view->texture);
+        })) state->invalid_entities.insert(item.entity);
+    }
+    retainUserDataScopes("SpriteViewRenderSystem/", live);
 }
 
 void SpriteScene::rebuild(std::span<const SpriteSceneItem> items) {
@@ -165,6 +196,7 @@ void SpriteScene::rebuild(std::span<const SpriteSceneItem> items) {
     state->sort_policy = spriteSortPolicy(camera_policy.sort);
     const auto ppu = state->project_config.spritePixelsPerUnit();
     for (const auto &item : items) {
+        if (state->invalid_entities.contains(item.entity)) continue;
         const auto texture = state->prepared(item.view->texture);
         const float width = item.view->has_explicit_size ? item.view->size.x
                                                          : float(texture.rect.right - texture.rect.left) / ppu;

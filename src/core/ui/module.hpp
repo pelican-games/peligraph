@@ -1,3 +1,4 @@
+#include "../watch/userdataguard.hpp"
 #pragma once
 
 #include "atlas.hpp"
@@ -77,6 +78,10 @@ DECLARE_MODULE(UiModule) {
     // PM-1a: while the game is paused the UI routes input but emits no event.
     bool events_suppressed = false;
     std::size_t parser_invocations = 0;
+    std::uint64_t data_revision = 0;
+    std::string source_reference;
+    std::string source_version;
+    bool document_ready = true;
 
     void loadVisuals(const DocumentNode &node);
     void createRuntimeWidgets(const DocumentNode &node);
@@ -93,6 +98,8 @@ DECLARE_MODULE(UiModule) {
   public:
     UiModule();
     explicit UiModule(const nlohmann::json &document_json);
+    void reloadAuthoredDocument();
+    UserDataScope evaluationScope() const;
 
     // GP-3. Whether (document_key, path) names a node that has `property`. An
     // empty document_key is the project's UI document (v0 has one); any other

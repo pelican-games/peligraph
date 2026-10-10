@@ -1,3 +1,4 @@
+#include "../watch/userdataguard.hpp"
 #include "renderer.hpp"
 #include "../userpublic/valuegraph.hpp"
 #include "../renderingpass/graphinputs.hpp"
@@ -531,7 +532,7 @@ RenderFrameModules resolveRenderFrameModules() {
         GET_MODULE(FullscreenPassContainer),
         ui_enabled ? &GET_MODULE(UiRenderer) : nullptr,
         ui_enabled ? &GET_MODULE(UIContainer) : nullptr,
-        ui_enabled ? &GET_MODULE(ui::UiModule) : nullptr,
+        ui_enabled ? FastModuleContainer::tryGet<ui::UiModule>() : nullptr,
         debug_draw,
         gizmo,
         debug_text,
@@ -3258,7 +3259,7 @@ Renderer::Renderer() {
             loaded.emplace(
                 loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays());
         } catch (const std::exception &error) {
-            if (!fallback_allowed) throw;
+            if (!fallback_allowed && dynamic_cast<const UserDataError *>(&error) == nullptr) throw;
             // The root itself may be what could not be read.
             std::string root_json;
             try {
@@ -6308,6 +6309,12 @@ void Renderer::LogicalFrameRecorder::observeHistoryInvalidations() {
 }
 
 void Renderer::LogicalFrameRecorder::publishFrameValueGraph() {
+    std::set<std::string> deformed_scopes;
+    for (const auto &attribute : frame_graph.deformed_attributes)
+        deformed_scopes.insert(userDataScope("renderer", "deformed/" + attribute.resource).key);
+    retainUserDataScopes("renderer/deformed/", deformed_scopes);
+    guardUserData(userDataScope("renderer", "value_graph", invalidGameObjectId,
+        std::to_string(runtime_generation->generation)), [&] {
     if (staged_runtime_generation != 0) {
         auto &scene = GET_MODULE(SceneLoader);
         const auto previous = GET_MODULE(RenderingPassContainer).snapshot();
@@ -6362,10 +6369,12 @@ void Renderer::LogicalFrameRecorder::publishFrameValueGraph() {
                                   .graph = frame_graph.value_graph,
                                   .node_values = std::move(published.node_values)});
     }
+    });
 }
 
 void Renderer::LogicalFrameRecorder::stagePoseAttributesAndLights() {
-    stageGraphPoseAttributes(frame_graph);
+    guardUserData(userDataScope("renderer", "graph_owner", invalidGameObjectId,
+        std::to_string(runtime_generation->generation)), [&] { stageGraphPoseAttributes(frame_graph); });
     modules.frame_graph_resources.uploadRuntimeValues();
     updateFrameLights(
         modules.light_container,
@@ -7056,7 +7065,14 @@ void Renderer::renderLogicalFrame(
     try {
     recorder.requireUnchangedWindowOutput();
     recorder.collectPassPlan();
-    recorder.resolveViewFamilies(view_families);
+    // View-family validation precedes command recording and frame allocation.
+    // A rejected camera/shadow document keeps the last presented frame.
+    const auto camera_spec = GET_MODULE(Camera).getProjectionSpec();
+    const auto generation = GET_MODULE(RenderingPassContainer).snapshot();
+    if (!guardUserData(userDataScope("renderer", "view_families", invalidGameObjectId,
+        std::to_string(generation ? generation->generation : 0) + ":" +
+        std::to_string(camera_spec.znear) + ":" + std::to_string(camera_spec.zfar)),
+        [&] { recorder.resolveViewFamilies(view_families); })) return;
     recorder.configureGpuTimingRanges();
     recorder.synchronizeTemporalHistories();
     recorder.beginFrameResources();

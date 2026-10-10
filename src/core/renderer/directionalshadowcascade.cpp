@@ -1,3 +1,5 @@
+#include "shadowvalidation.hpp"
+#include "../userpublic/userdataerror.hpp"
 #include "directionalshadowcascade.hpp"
 #include "clipspace.hpp"
 
@@ -404,12 +406,7 @@ buildDirectionalShadowCascadeFamily(
         std::min(
             far_distance,
             settings.max_distance);
-    if (far_distance <=
-        near_distance + 1.0e-4f) {
-        throw std::runtime_error(
-            "directional shadow max_distance does not reach beyond the "
-            "main-view near plane");
-    }
+    requireShadowDistance(near_distance, far_distance);
 
     const auto splits =
         cascadeSplits(

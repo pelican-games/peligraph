@@ -1,3 +1,5 @@
+#include "../loader/controllervalidation.hpp"
+#include "../watch/userdataguard.hpp"
 #include "gamesystem.hpp"
 
 #include "../launchconfig.hpp"
@@ -229,10 +231,7 @@ OrbitInput readRuntimeFreeCameraInput(GameContext &ctx) {
 
 SceneObjectTransform requireTargetTransform(std::string_view camera_name, const ControllerSpec &controller) {
     auto &scene = GET_MODULE(SceneLoader);
-    if (!scene.hasObjectTransform(controller.target)) {
-        throw std::runtime_error("camera '" + std::string{camera_name} + "' controller target '" +
-                                 controller.target + "' has no transform");
-    }
+    requireControllerTarget(camera_name, controller.target, scene.hasObjectTransform(controller.target));
     return scene.objectTransform(controller.target);
 }
 
@@ -377,10 +376,16 @@ bool launchedInEditState() {
 
 void updateControlledCameras(GameContext &ctx, ControlledCameras which) {
     auto &states = controllerStates();
+    std::set<std::string> live;
     {
         auto &camera = GET_MODULE(Camera);
         const auto &controlled_cameras = camera.controlledSceneCameraNames();
         const auto active_camera = camera.activeCameraName();
+        for (const auto &name : controlled_cameras) {
+            auto &scene = GET_MODULE(SceneLoader);
+            live.insert(userDataScope("CameraController", "camera",
+                scene.objectId(name).value_or(invalidGameObjectId)).key);
+        }
         const auto &editor_camera = camera.editorCameraName();
 
         for (const auto &camera_name : controlled_cameras) {
@@ -398,6 +403,16 @@ void updateControlledCameras(GameContext &ctx, ControlledCameras which) {
                 continue;
             }
 
+            auto &scene = GET_MODULE(SceneLoader);
+            auto scope = userDataScope("CameraController", "camera",
+                scene.objectId(camera_name).value_or(invalidGameObjectId),
+                camera_name + controllerSignature(*controller) +
+                (scene.hasObjectTransform(controller->target) ? ":target" : ":missing"));
+            live.insert(scope.key);
+            guardUserData(scope, [&] {
+            if (!is_editor_camera)
+                requireControllerActions(internal::inputActionMap(),
+                    controller->type == ControllerType::Orbit, controller->type == ControllerType::Fly);
             auto &state = states[camera_name];
             resetIfNeeded(ctx, state, *controller);
 
@@ -414,12 +429,14 @@ void updateControlledCameras(GameContext &ctx, ControlledCameras which) {
                 break;
             }
             applyPoseToSceneCamera(camera_name, pose);
+            });
 
             if (active_camera.empty()) {
                 break;
             }
         }
     }
+    retainUserDataScopes("CameraController/", live);
 }
 
 // The editor half: an editor system (it runs while the game is stopped, on the

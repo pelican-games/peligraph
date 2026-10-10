@@ -1,3 +1,4 @@
+#include "../watch/userdataguard.hpp"
 #include "framephase.hpp"
 
 #if PELICAN_WITH_AUDIO
@@ -79,6 +80,7 @@ PointerTransform livePointerTransform() {
 
 FrameStateModules resolveFrameStateModules() {
     auto *ui_module = FastModuleContainer::tryGet<ui::UiModule>();
+    if (ui_module) ui_module->reloadAuthoredDocument();
     auto *render_target = FastModuleContainer::tryGet<RenderTarget>();
     if (ui_module == nullptr || render_target == nullptr) {
         ui_module = nullptr;
@@ -172,6 +174,7 @@ void updateFrameState() {
     // graph at the stopped game time and draws; what it leaves out is game
     // code and what only game code causes (docs/design_play_mode.md 4.1).
     const bool game_step = modules.engine_time.gameStepping();
+    if (!game_step) refreshBehaviorUserDataFailures();
     // PM-1b: an engine launched with --start-state edit gives the game the
     // whole frame while it plays: the editor systems do nothing then.
     const auto system_scope =
@@ -215,8 +218,10 @@ void updateFrameState() {
                     mask.consumesControl(KeyCode::MouseRight) ||
                     mask.consumesControl(KeyCode::MouseMiddle);
                 if (!tool_owns_pointer)
-                    modules.ui_module->routeFrameInput(modules.input_state,
-                                                       modules.render_target->getExtent());
+                    guardUserData(modules.ui_module->evaluationScope(), [&] {
+                        modules.ui_module->routeFrameInput(modules.input_state,
+                                                          modules.render_target->getExtent());
+                    });
             }
             internal::freezeInputActionsFrame();
             break;
@@ -225,7 +230,8 @@ void updateFrameState() {
             break;
         case FramePhase::update_game:
             modules.ecs.update();
-            internal::updateRegisteredGameSystems(game_context, system_scope);
+            if (!userCodeStopRequested())
+                internal::updateRegisteredGameSystems(game_context, system_scope);
 #if PELICAN_WITH_ANIMATION
             // Retire animation sinks whose scene entity or renderer instance
             // was replaced before invoking any registered pose callbacks.
@@ -248,8 +254,8 @@ void updateFrameState() {
                 // exception it caught, so ask for it before falling back to a
                 // message that says only that some phase failed: what reaches
                 // the author has to name the port, not the frame.
-                Animation::poseGraphRuntime().rethrowPendingFailure();
-                throw std::runtime_error("animation phase evaluation failed");
+                if (!Animation::poseGraphRuntime().recoverPendingUserDataFailures())
+                    throw std::runtime_error("animation phase evaluation failed");
             }
 #endif
             modules.seq_player.update(modules.engine_time.now());
@@ -267,6 +273,7 @@ void updateFrameState() {
     // which drops it when there is no render target to route input against.
     if (auto *ui_module = FastModuleContainer::tryGet<ui::UiModule>())
         ui_module->commitFrameWrites();
+    finishUserCodeStop();
     modules.scene_loader.updateGraphRuntime();
     if (auto *camera_bake = FastModuleContainer::tryGet<CameraBakeRecorder>())
         camera_bake->recordFrame();

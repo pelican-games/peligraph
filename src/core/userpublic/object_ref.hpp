@@ -1,3 +1,4 @@
+#include "userdataerror.hpp"
 #pragma once
 
 #include <details/ecs/entity.hpp>
@@ -110,12 +111,12 @@ class TransientObjectRef {
 //                                 what an attachment identifier can hold
 //   object.spawn_invalid@1        a component of the expanded prefab does not
 //                                 decode
-class SpawnError final : public std::runtime_error {
+class SpawnError final : public UserDataError {
     std::string code_;
 
   public:
     SpawnError(std::string code, const std::string &detail)
-        : std::runtime_error(code + ": " + detail), code_{std::move(code)} {}
+        : UserDataError(code + ": " + detail), code_{std::move(code)} {}
 
     const std::string &code() const noexcept { return code_; }
 };

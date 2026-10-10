@@ -1324,6 +1324,17 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
     HOST_TARGET pelican_test_game_logic_abi_test
     ROLE v2-constructor-control NO_INVENTORY)
 
+  # Exercise the WP162 reload callbacks on the CPU test host as well.
+  foreach(rx1_variant IN ITEMS 1 7)
+    set(rx1_fixture pelican_rx1_reload_fixture_${rx1_variant})
+    add_library(${rx1_fixture} SHARED fixtures/behavior_reload_dll/behavior.cpp)
+    target_compile_definitions(${rx1_fixture} PRIVATE WP162_VARIANT=${rx1_variant})
+    pelican_configure_game_logic_target(${rx1_fixture}
+      HOST_TARGET pelican_test_game_logic_abi_test ROLE reload-rollback NO_INVENTORY)
+    target_compile_definitions(pelican_test_game_logic_abi_test PRIVATE
+      PELICAN_RX1_RELOAD_FIXTURE_${rx1_variant}="$<TARGET_FILE:${rx1_fixture}>")
+  endforeach()
+
   function(pelican_add_wp381_registration_fixture target_name order role)
     add_library(${target_name} SHARED
       fixtures/game_logic_abi/registration_order.cpp)
@@ -1547,6 +1558,9 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
     pelican_wp381_epoch_v999_import_stub)
   target_link_libraries(pelican_wp90_fixture_bad_abi PRIVATE
     "${wp381_epoch_v999_import_library}")
+
+  add_library(pelican_rx1_throw_fixture SHARED fixtures/rx1_throw/behavior.cpp)
+  pelican_configure_game_logic_target(pelican_rx1_throw_fixture)
 
   add_library(pelican_wp155_behavior_fixture SHARED
     fixtures/behavior_game_dll/behavior.cpp
@@ -1866,6 +1880,7 @@ pelican_define_test(scene_transaction_contract_test GROUP core_foundation pelica
 target_sources(pelican_test_scene_transaction_contract_test PRIVATE
     sceneloadfault_testing.cpp)
 pelican_define_test(enginetime_test GROUP core_foundation pelican_core)
+pelican_define_test(rx1_userdata_test GROUP core_foundation pelican_core glm)
 pelican_define_test(skeletalanimation_test GROUP core_foundation pelican_core glm)
 pelican_define_test(vrmsemantic_test GROUP core_foundation pelican_core tinygltf)
 target_compile_definitions(pelican_test_vrmsemantic_test PRIVATE
@@ -3984,8 +3999,9 @@ if(PELICAN_WITH_RPC AND WIN32)
     # through a headless --rpc --render-fallback player.
     pelican_define_test(pb1_problems_test GPU pelican_project glm)
     target_compile_definitions(pelican_test_pb1_problems_test PRIVATE
-        PELICAN_PB1_PLAYER="$<TARGET_FILE:pelican_player>")
-    add_dependencies(pelican_test_pb1_problems_test pelican_player)
+        PELICAN_PB1_PLAYER="$<TARGET_FILE:pelican_player>"
+        PELICAN_RX1_FIXTURE="$<TARGET_FILE:pelican_rx1_throw_fixture>")
+    add_dependencies(pelican_test_pb1_problems_test pelican_player pelican_rx1_throw_fixture)
     # RTL-1b: a reload that adds a ray group layout (restart_required after
     # every other check) and a layout project refused at start (the fallback),
     # through a headless --rpc --render-fallback player.

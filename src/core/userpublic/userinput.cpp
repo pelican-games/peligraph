@@ -1,3 +1,4 @@
+#include "userdataerror.hpp"
 #include "userinput.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
@@ -89,7 +90,7 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
         }
         const auto *action = action_map->findAction(action_name);
         if (action == nullptr) {
-            throw std::runtime_error("unknown input action: " + std::string{action_name});
+            throw UserDataError("unknown input action: " + std::string{action_name});
         }
         return action;
     }
@@ -97,7 +98,7 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
     const InputActionDefinition *requireNonPoseAction(std::string_view action_name) const {
         const auto *action = requireAction(action_name);
         if (action != nullptr && action->type == InputActionType::pose) {
-            throw std::runtime_error("input action is a pose action and has no button/axis state: " +
+            throw UserDataError("input action is a pose action and has no button/axis state: " +
                                      std::string{action_name});
         }
         return action;
@@ -107,7 +108,7 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
                                                     std::string_view value_name) const {
         const auto *action = requireAction(action_name);
         if (action != nullptr && action->type != expected) {
-            throw std::runtime_error("input action '" + std::string{action_name} + "' is not an " +
+            throw UserDataError("input action '" + std::string{action_name} + "' is not an " +
                                      std::string{value_name} + " action");
         }
         return action;

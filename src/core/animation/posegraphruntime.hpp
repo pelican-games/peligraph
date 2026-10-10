@@ -94,6 +94,7 @@ class PoseGraphRuntime {
     // normally when no attachment failed. The next `synchronize` raises
     // anything still pending, so a caller that ignores it loses nothing.
     void rethrowPendingFailure();
+    bool recoverPendingUserDataFailures();
 
     // What kind of chain produced this sink's pose. It decides where the
     // cursors below come from: a wrapped state machine keeps its own, a

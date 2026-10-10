@@ -1,3 +1,4 @@
+#include "../watch/userdataguard.hpp"
 #define GLM_ENABLE_EXPERIMENTAL
 #include "rpcserver.hpp"
 #include "editorcommandservice.hpp"
@@ -374,6 +375,7 @@ struct EngineRpcModules {
     // AV-1: the player's startup verification; absent in a host that never
     // ran it.
     AssetsVerification *assets_verification;
+    ProblemList &problems;
 };
 
 EngineRpcModules resolveEngineRpcModules() {
@@ -409,6 +411,7 @@ EngineRpcModules resolveEngineRpcModules() {
         GET_MODULE(PipelineFactory),
         GET_MODULE(RuntimeSpawner),
         FastModuleContainer::tryGet<AssetsVerification>(),
+        GET_MODULE(ProblemList),
     };
 }
 
@@ -2106,6 +2109,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         updateFrameState();
         modules.renderer.render();
         auto result = frameResult(modules.engine_time);
+        result["problems"] = problemListJson(FastModuleContainer::tryGet<ProblemList>()).at("problems");
         result["edit_results"] = editor_rpc.takeCompletedEditResults();
         return result;
     });
@@ -2126,7 +2130,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     // are applied again on top as one history entry. Without a session (an
     // engine launched playing) the edit runtime is made from the current
     // authoring and nothing is put back.
-    server.setHandler("set_play_state", [&pending_transforms, &modules, &editor_rpc,
+    auto change_play_state = [&pending_transforms, &modules, &editor_rpc,
                                          &editor_service, &play_session](
                                             const nlohmann::json &params) {
         constexpr auto method = "set_play_state";
@@ -2316,7 +2320,21 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             response["not_kept"] = std::move(not_kept);
         }
         return response;
+    };
+    server.setHandler("set_play_state", [change_play_state, &modules](const nlohmann::json &params) {
+        try { return change_play_state(params); }
+        catch (const UserDataError &) {
+            // A failed onInit rolled the play transition back to edit. Keep
+            // the behavior's recorded failure and complete its Stop request.
+            if (!userCodeStopRequested()) throw;
+            finishUserCodeStop();
+            return nlohmann::json{{"state", "edit"}, {"previous", "edit"},
+                {"problems", modules.problems.problemsJson().at("problems")}};
+        }
     });
+    modules.problems.user_code_stop_handler = [change_play_state] {
+        (void)change_play_state(nlohmann::json{{"state", "edit"}});
+    };
 
     // PM-1b. The camera the frame is drawn from, in edit or paused: the
     // editor camera, or the game's camera as the scene and game code chose
@@ -2413,6 +2431,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         auto result = frameResult(time);
         result["scheduled"] = count;
         result["until_game_frame"] = time.frameIndex();
+        result["problems"] = problemListJson(FastModuleContainer::tryGet<ProblemList>()).at("problems");
         result["edit_results"] = editor_rpc.takeCompletedEditResults();
         return result;
     });
@@ -2835,6 +2854,7 @@ struct EngineRpcEndpoint::Impl {
     // EL-4c: the worker leaves after the shader it is reflecting; EL-5:
     // get_shader_interface's after the stage it is reflecting.
     ~Impl() {
+        if (auto *problems = FastModuleContainer::tryGet<ProblemList>()) problems->user_code_stop_handler = {};
         stopEngineShadersReflection();
         stopShaderInterfaceReflection();
     }

@@ -1,3 +1,4 @@
+#include "../watch/userdataguard.hpp"
 #include "loop.hpp"
 
 #include "../launchconfig.hpp"
@@ -163,7 +164,8 @@ LoopModules resolveLoopModules() {
     // UI input routing precedes rendering, so create the purgeable CPU runtime
     // during loop setup when (and only when) the UI feature is enabled. Lazy
     // creation from the first render would drop first-frame pointer events.
-    if (rendering_passes.isFeatureEnabled("ui")) (void)GET_MODULE(ui::UiModule);
+    if (rendering_passes.isFeatureEnabled("ui"))
+        guardUserData(userDataScope("renderer", "ui_startup"), [&] { (void)GET_MODULE(ui::UiModule); });
 
     auto &engine_time = GET_MODULE(EngineTime);
     // `--camera` used to be applied by SeqPlayer's constructor (always) and

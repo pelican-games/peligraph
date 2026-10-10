@@ -1,3 +1,4 @@
+#include "userdataerror.hpp"
 #include "valuegraph.hpp"
 #include "gamecontext.hpp"
 #include "../../project/graphmodule.hpp"
@@ -249,6 +250,14 @@ Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
             if (op == "render.scalar") keys(parameters, {"target", "value", "offset"});
             else keys(parameters, {"target"});
             const auto id = name(node.at("id"));
+            if (op != "render.scalar" && inputs.contains("value")) {
+                const auto source_node = expanded_nodes.find(name(inputs.at("value").at("node")));
+                if (source_node != expanded_nodes.end() && source_node->second->at("op") == "value.constant") {
+                    const auto value = number(source_node->second->at("parameters").at("value"));
+                    if ((op == "audio.volume" && value < 0) || (op == "audio.pitch" && value <= 0))
+                        throw UserDataError("invalid audio graph output: $binding/" + id);
+                }
+            }
             const bool voice = inputs.contains("voice");
             if (voice && parameters.contains("target"))
                 throw std::invalid_argument("audio binding cannot specify both voice and target");
@@ -943,6 +952,12 @@ std::set<std::string> Graph::inputNames() const {
     return result;
 }
 
+bool Graph::requiresSoundBindings() const noexcept {
+    return std::any_of(bindings_.begin(), bindings_.end(), [](const auto &binding) {
+        return !binding.voice && (binding.type == Target::sound_volume || binding.type == Target::sound_pitch);
+    });
+}
+
 PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
                              const SoundBindings &sounds, const RenderValueWriter &render_writer,
                              const ParameterValues &parameters, const InactiveScopes &inactive, EvaluationState *state,
@@ -960,12 +975,12 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
         if (output == outputs.end()) continue;
         for (const auto value : output->second) {
             if (std::abs(value) > (std::numeric_limits<float>::max)())
-                throw std::out_of_range("graph output exceeds float32 range: " + binding.output);
+                throw UserDataError("graph output exceeds float32 range: " + binding.output);
             values.push_back(static_cast<float>(value));
         }
         if ((binding.type == Target::sound_volume && values[0] < 0) ||
             (binding.type == Target::sound_pitch && values[0] <= 0))
-            throw std::invalid_argument("invalid audio graph output: " + binding.output);
+            throw UserDataError("invalid audio graph output: " + binding.output);
     }
     // Keep the drawn generation's instance input values before any service is
     // touched. An inactive instance publishes no output, so its ports are
