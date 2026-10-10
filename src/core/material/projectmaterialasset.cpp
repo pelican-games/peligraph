@@ -700,11 +700,6 @@ ProjectMaterialAssetContainer::Impl::registerDocuments(
             info.name = entry.definition.name;
             info.source_asset = source_document.reference;
             info.source_document = source_document.reference;
-            const auto material =
-                materials.registerMaterial(
-                    std::move(info));
-            fresh_ids.push_back(material);
-
             std::vector<MaterialContainer::
                             NamedMaterialVariantRegistration>
                 variants;
@@ -734,8 +729,9 @@ ProjectMaterialAssetContainer::Impl::registerDocuments(
                     .material = std::move(variant_info),
                 });
             }
-            materials.registerMaterialVariants(
-                material, std::move(variants));
+            const auto material = materials.registerMaterial(
+                std::move(info), std::move(variants));
+            fresh_ids.push_back(material);
 
             fresh.push_back({
                 .name = entry.definition.name,

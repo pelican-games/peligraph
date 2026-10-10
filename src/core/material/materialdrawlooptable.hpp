@@ -32,6 +32,33 @@ struct ResolvedMaterialDrawStep {
     bool operator==(const ResolvedMaterialDrawStep &) const = default;
 };
 
+// Resolve one mode's steps against the base material's shared variant map.
+// Pipeline allocation is needed only for an explicit override step.
+template <typename VariantResource, typename OverridePipeline>
+std::vector<ResolvedMaterialDrawStep> resolveMaterialDrawSteps(
+    GlobalMaterialId material, const MaterialDrawSubject &subject,
+    const MaterialDrawStepList &steps, std::string_view node,
+    bool runtime_compiler_available, VariantResource variant_resource,
+    OverridePipeline override_pipeline) {
+    std::vector<ResolvedMaterialDrawStep> resolved;
+    resolved.reserve(steps.size());
+    for (const auto &step : steps) {
+        validateMaterialDrawStep(step, subject, node, runtime_compiler_available);
+        switch (step.kind) {
+        case MaterialDrawStepKind::material:
+            resolved.push_back({material, std::nullopt});
+            break;
+        case MaterialDrawStepKind::variant:
+            resolved.push_back({variant_resource(step.variant), std::nullopt});
+            break;
+        case MaterialDrawStepKind::override_pipeline:
+            resolved.push_back({material, override_pipeline(step)});
+            break;
+        }
+    }
+    return resolved;
+}
+
 // LP-2: the draw-step table of one renderer runtime generation, keyed by
 // (material pass name, base material). It owns the override pipelines (and,
 // for defines, the shader bundles) it built: they are never shared with the

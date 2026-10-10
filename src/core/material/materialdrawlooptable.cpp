@@ -229,30 +229,16 @@ void MaterialDrawLoopTable::evaluateInto(
             if (!pass_rule.rule) continue;
             const auto steps = pass_rule.rule(subject);
             if (!steps) continue;
-            std::vector<ResolvedMaterialDrawStep> resolved;
-            resolved.reserve(steps->size());
-            for (const auto &step : *steps) {
-                validateMaterialDrawStep(
-                    step, subject, pass_rule.node,
-                    ShaderLibrary::runtimeCompilerAvailable());
-                switch (step.kind) {
-                case MaterialDrawStepKind::material:
-                    resolved.push_back({material, std::nullopt});
-                    break;
-                case MaterialDrawStepKind::variant:
-                    resolved.push_back(
-                        {materials.materialVariantResource(material,
-                                                           step.variant),
-                         std::nullopt});
-                    break;
-                case MaterialDrawStepKind::override_pipeline:
-                    resolved.push_back(
-                        {material, ensureOverride(material, subject, step,
-                                                  pass_rule.node,
-                                                  additions)});
-                    break;
-                }
-            }
+            auto resolved = resolveMaterialDrawSteps(
+                material, subject, *steps, pass_rule.node,
+                ShaderLibrary::runtimeCompilerAvailable(),
+                [&](std::string_view name) {
+                    return materials.materialVariantResource(material, name);
+                },
+                [&](const MaterialDrawStep &step) {
+                    return ensureOverride(material, subject, step,
+                                          pass_rule.node, additions);
+                });
             passes[pass][{material.value, mode}] = std::move(resolved);
         }
     }

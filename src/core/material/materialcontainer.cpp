@@ -17,6 +17,7 @@
 #include "../vkcore/util.hpp"
 #include "../watch/reloadservice.hpp"
 #include "materialdrawlooptable.hpp"
+#include "materialregistration.hpp"
 #include "materialgenerationplanner.hpp"
 #include "materiallimits.hpp"
 #include "standardmaterialresource.hpp"
@@ -1251,7 +1252,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         if (texture_reload_handler) texture_reload_handler->materialRegistered(material_id);
         // LP-2: a material registered while generations are alive is
         // judged by their draw-loop rules now, not at the next publication.
-        if (!registering_variant_records) {
+        if (!defer_material_publication) {
             MaterialDrawLoopTable::materialRegisteredInLiveTables(
                 material_id);
         }
@@ -1265,8 +1266,28 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         MaterialDrawLoopTable::materialReleasedFromLiveTables(material_id);
         throw;
     }
-    if (!registering_variant_records) publishUnservedProblems();
+    if (!defer_material_publication) publishUnservedProblems();
     return material_id;
+}
+
+GlobalMaterialId MaterialContainer::registerMaterial(
+    MaterialInfo info,
+    std::vector<NamedMaterialVariantRegistration> variants) {
+    const auto material = registerMaterialFamily(
+        defer_material_publication,
+        [&] { return registerMaterial(std::move(info)); },
+        [&](GlobalMaterialId base) {
+            registerMaterialVariants(base, std::move(variants));
+        },
+        [](GlobalMaterialId base) {
+            MaterialDrawLoopTable::materialRegisteredInLiveTables(base);
+        },
+        [&](GlobalMaterialId base) {
+            ReleaseErrorSink::record("material family rollback release",
+                                    releaseModelResources({base}, {}, false));
+        });
+    if (!defer_material_publication) publishUnservedProblems();
+    return material;
 }
 
 void MaterialContainer::registerMaterialVariants(
@@ -1313,11 +1334,7 @@ void MaterialContainer::registerMaterialVariants(
 
     try {
         {
-            registering_variant_records = true;
-            struct ResetFlag {
-                bool &flag;
-                ~ResetFlag() { flag = false; }
-            } reset_flag{registering_variant_records};
+            ScopedMaterialPublicationDeferral defer{defer_material_publication};
             for (auto &registration : registrations) {
                 inheritFromBase(registration.material,
                                 inherited_appearance);
@@ -1333,7 +1350,9 @@ void MaterialContainer::registerMaterialVariants(
         attached = true;
         // LP-2: the base now has these variants; its draw-loop steps may
         // name them.
-        MaterialDrawLoopTable::materialRegisteredInLiveTables(base);
+        if (!defer_material_publication) {
+            MaterialDrawLoopTable::materialRegisteredInLiveTables(base);
+        }
 
         const auto prewarm =
             [&](const CompiledRenderingPass &rendering_pass) {
@@ -1371,7 +1390,9 @@ void MaterialContainer::registerMaterialVariants(
             // LP-2: tables that already took the new variants judge the
             // base again as it was.
             try {
-                MaterialDrawLoopTable::materialRegisteredInLiveTables(base);
+                if (!defer_material_publication) {
+                    MaterialDrawLoopTable::materialRegisteredInLiveTables(base);
+                }
             } catch (...) {
             }
         }
@@ -1385,7 +1406,7 @@ void MaterialContainer::registerMaterialVariants(
                                  releaseModelResources(std::move(resources), {}, false));
         throw;
     }
-    publishUnservedProblems();
+    if (!defer_material_publication) publishUnservedProblems();
 }
 
 GlobalMaterialId MaterialContainer::materialVariantResource(

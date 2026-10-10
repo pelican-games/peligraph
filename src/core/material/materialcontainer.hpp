@@ -263,9 +263,8 @@ DECLARE_MODULE(MaterialContainer) {
     std::unique_ptr<MaterialValuesReloadHandler> material_values_reload_handler;
     mutable std::uint64_t next_screen_input_binding_revision = 1;
     std::uint64_t next_ray_material_generation = 1;
-    // LP-2: set while registerMaterialVariants registers the variant
-    // records, which are no draw-loop subjects of their own.
-    bool registering_variant_records = false;
+    // A family publishes only after its base and hidden variants are ready.
+    bool defer_material_publication = false;
     bool fail_material_release_for_testing = false;
     bool fail_texture_release_for_testing = false;
     // Declared last and explicitly closed at destructor entry. Deferred slot
@@ -346,6 +345,10 @@ DECLARE_MODULE(MaterialContainer) {
         std::string name;
         MaterialInfo material;
     };
+    // Registers the base and its variants before live draw-loop validation.
+    GlobalMaterialId registerMaterial(
+        MaterialInfo info,
+        std::vector<NamedMaterialVariantRegistration> variants);
     // Registers a complete set atomically from the caller's perspective.
     // Variant resources are implementation details retired with their base.
     void registerMaterialVariants(

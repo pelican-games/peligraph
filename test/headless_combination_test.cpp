@@ -377,18 +377,8 @@ void runCombination(int row) {
     setupLogger();
     CombinationFixture fixture{row};
     std::filesystem::remove(fixture.root / "known_red.json");
-    try { runCombination(fixture); }
-    catch (const std::runtime_error &error) {
-        // Material registration can run outside Renderer initialization.
-        const std::string message = error.what();
-        const std::string prefix = "graph.loop_variant_missing@1: ";
-        if (row != 2 || !message.starts_with(prefix)) throw;
-        const auto fields = Json::parse(message.substr(prefix.size()));
-        const Json expected{{"material", "paint.material.json#Paint"},
-            {"material_variant", "outline"}, {"node", "cb_skinned_outline"}};
-        if (fields != expected) throw;
-        cbKnownRed(fixture, "CB-1/02 graph.loop_variant_missing for a skinned subject", fields);
-    }
+    runCombination(fixture);
+
 }
 #endif
 } // namespace

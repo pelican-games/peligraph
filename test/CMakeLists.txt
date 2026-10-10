@@ -3449,6 +3449,8 @@ target_compile_definitions(pelican_test_materiallowering_test PRIVATE
 )
 
 pelican_define_test(materialbinding_test GROUP render_planning_core pelican_core)
+pelican_define_test(materialdrawlooptable_test GROUP render_planning_core pelican_core
+    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 
 add_test(
     NAME devcli_dump_lowered_material

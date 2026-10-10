@@ -6,28 +6,23 @@ reproduction; only the specific observed failure below is marked `KNOWN_RED`.
 Other exceptions, empty captures and failed controls remain failures. When the
 invariant starts passing, the same test runs its normal assertions without a skip.
 
-## CB-1/02 graph.loop_variant_missing for a skinned subject
+## CB-1/02 graph.loop_variant_missing for a skinned subject — 解決(SK-3)
 
 - Reproduce: run CTest with `-R '^CB1 02 ' -j1`. The fixture declares Paint's
   `outline` variant, with a front-cull surface, then installs a draw loop matching
   `when.skinned` and `when.material = paint.material.json#Paint` before renderer
   initialization. The glTF control has no variant and is excluded from this branch.
-- Observed: `graph.loop_variant_missing@1` with exactly
-  `{"material":"paint.material.json#Paint","material_variant":"outline","node":"cb_skinned_outline"}`.
-  No image is produced because initialization fails. The exact refusal is saved
-  in `2/known_red.json` below the artifact directory.
-- Cause candidate: `src/core/material/projectmaterialasset.cpp:705` registers the
-  base before attaching variants at line 738. `materialcontainer.cpp:1204` notifies
-  live draw-loop tables during base registration. `materialdrawlooptable.cpp:227`
-  constructs the material-by-vertex-mode subject and line 235 validates the named
-  step before `materialcontainer.cpp:1281` publishes the variant map. The current
-  `drawLoopSubject` copies the map at `materialcontainer.cpp:2476`; it does not
-  intentionally drop the skinned subject's variants. This points to registration
-  timing, rather than a missing fixture declaration.
-- Proposed WP: SK-1 fix round 3 / LP-2 atomic base-plus-variants publication. Also
-  review the Studio aggregation at `src/core/communication/renderconfigeditor.cpp:3579`
-  (the first material row supplies the variant list). Do not work around the
-  product bug by delaying the fixture's loop installation or requiring has_variant.
+- Cause: project material registration notified live draw-loop tables after the
+  base allocation but before attaching its variants. The empty variant map was
+  validated too early; both vertex modes already copied the same map correctly.
+- SK-3: register the base and its variants as one family, defer live-table
+  publication until the full map and pass descriptors are ready, and roll back
+  the family if registration or publication fails. Public material IDs and
+  `vertex_modes` are unchanged.
+- Row 02 now uses normal assertions and exception handling, with no known-red
+  skip. It still checks the outline material draw, skinned layout, front culling
+  and nonempty red pixels. GPU execution requires the shared GPU lease; a lease
+  failure is not a passing rendering result.
 
 ## CB-1/08 vertex_displace_v1 absent from auxiliary passes (VD-1)
 
