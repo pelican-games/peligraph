@@ -2793,7 +2793,7 @@ client が読むもの(要点):
 
 Inspector の `Add component...` / `Ray geometry...` の下、**properties の scroll 領域より上**に
 **Attached graphs** グループがあります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L311)。
-properties は [:219](../../src/devstudio/view/inspectorwidget.cpp#L425) の `pelican.inspectorProperties` です)。
+properties は [:219](../../src/devstudio/view/inspectorwidget.cpp#L423) の `pelican.inspectorProperties` です)。
 選択中のオブジェクトを owner とする `graph.instance` の一覧と、**Attach...** / **Detach** / **Refresh** です。
 
 **装着する**: **Attach...** で `Attach graph` ダイアログが開きます。`Definition` で definition を選ぶと、

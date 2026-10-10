@@ -463,12 +463,12 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 2026-10-05 の全数(develop `31c390c7`、primary の Debug build、Studio ON。非 GPU 2,663 / 2,667、GPU 397 / 399、Studio scenario 80 / 82)は途中の基準であり、最終の gate ではない。赤 8 件と直した commit は [CI 運用](ci.md) の「全数の記録」に残し、直した後の全数は回していない。
 tag は利用者が v0 を閉じる判断をした時点で付ける。
 
-### 6.1 2026-10-10 の公開前の全数 gate(1 回目は赤 14 件、2 回目は実施中)
+### 6.1 2026-10-10 の公開前の全数 gate(1 回目は赤 14 件、2 回目は赤 1 件 = AH-1 で対応)
 
-状態: **1 回目は実施済みで、GPU gate に赤 14 件(gate は通っていない)。赤を直した後の 2 回目(対象 `ba0bbfc1f`)は実施中**。2026-10-09 の gate(§6.2)の後に、公開前のバグ探しの WP を develop に入れた。
+状態: **1 回目は実施済みで GPU gate に赤 14 件。赤を直した 5 本(RV-1b / RX-1b / SK-3b / LC-1b / RR-1b)の後の 2 回目(対象 `ba0bbfc1f`)は CPU / Studio / 配布 / DS-3 が緑、GPU は赤 1 件(間欠の競合、AH-1 で対応)**。
 発端は利用者が project 制作で見つけた skin 付き部品の material の崩れ(SK-1)で、行は [台帳](implementation_plan.md) の V0-ADD の WP 索引の GA-1〜CB-1 にある。
 2026-10-10 の時点で develop に着地したのは `734500efd`(GA-1)〜`c8aa21e14`(SK-3)の 26 本(NM-1 `bed1d4eb3`、SK-3 `c8aa21e14` を含む)。
-全部の着地の後に、§6.2 と同じ構成と手順に DS-3 を足して全数をやり直した。2 回目が通るまでは、通った gate の最新は §6.2 である。
+全部の着地の後に、§6.2 と同じ構成と手順に DS-3 を足して全数をやり直した。2 回目の結果は下の節に記す。
 依存の同梱(DS-1c)は公開の後に着地させるので、この gate の対象に入れない。
 
 #### 1 回目(`b58f71dd8`)
@@ -499,7 +499,18 @@ fix round の実装者の検査で緑を取れていないもの(2 回目で見�
 
 #### 2 回目(`ba0bbfc1f`)
 
-状態: **実施中**。結果は統合側が記入する。
+状態: **実施済み**(log: `<作業ディレクトリ>/int_release_1010/`、HEAD `ba0bbfc1f`)。
+
+| 段 | 結果 |
+|---|---|
+| Release build | 緑 |
+| CPU gate | 2923 / 2923 |
+| Studio gate(allowlist 空) | 935 / 935 |
+| GPU gate | 525 件中 PASS 522、赤 1(`studio_scenario_gui_rt_hit_groups_from_blank` step 115)、skip 2(allowlist: CB-1 組 08、`wsi_fault_window_player`)。exact SKIP policy は PASS |
+| 配布 8 項目 | 8 / 8 |
+| DS-3 | 緑 |
+
+赤 1 件は Inspector の `Assign hit group...` が Material 行の読み戻し前に押せる競合(単独再走でも赤、1 回目は緑 = 間欠)。公開前に AH-1(`699746756`、Studio: 行の読み戻し後にだけ有効化、Mixed の行は ray layout に渡さない)で直し、gate の Release build で Studio を rebuild して再走: inspector / materialassign の CPU 12 / 12、`gui_rt_hit_groups_from_blank` / `gui_rt_full_from_blank` / `gui_rt_checks` / `gui_material_ray_query_from_blank` の 4 / 4 が緑(`<作業ディレクトリ>/int_release_1010/ah1_gpu.log`)。公開対象は `699746756`。
 
 
 既知の間欠と既知の赤(この gate で赤になったときの扱い。どれも統合側の記録で、2026-10-10 の時点で直していない):

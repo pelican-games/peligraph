@@ -138,12 +138,12 @@ combo の右に **Import…**があり、ファイルを選んで登録した mo
 Add component... の asset 一覧も同じ読み方で、基本形は `Cube (built-in)` の名前で先頭に並び、区切りの下に project の asset が `id [status]` で並びます。
 
 
-**回転は角度で入れます。**`transform.rotation` は X / Y / Z の 3 欄(度、小数 2 桁)で見せて編集します([回転の欄を作る所](../../src/devstudio/view/inspectorwidget.cpp#L2316))。
+**回転は角度で入れます。**`transform.rotation` は X / Y / Z の 3 欄(度、小数 2 桁)で見せて編集します([回転の欄を作る所](../../src/devstudio/view/inspectorwidget.cpp#L2319))。
 回転は X、Y、Z の順に固定軸の回りにかかります(Rz·Ry·Rx)。保存されるのは今までどおり quaternion `[x, y, z, w]` で、 変換は Studio がします([角度と quaternion の変換](../../src/devstudio/model/inspectormodel.cpp#L530))。読むときは X と Z が (-180, 180]、Y が [-90, 90] で、Y が ±90 のときは X を 0 にして残りを Z に寄せます。欄の右の **Quaternion** の toggle を開くと、 quaternion の 4 欄が出て、そちらでも編集できます。開閉は欄を 作り直しても保たれます。viewport の gizmo の回転は今までどおりです。
 
-**表示の桁で同じなら、変えていません。**数値欄は、保存された値を欄の桁で丸めたものと表示が同じなら「値は変わって いない」と数えます([表示の桁で比べる所](../../src/devstudio/view/inspectorwidget.cpp#L841))。角度の欄も、同じ回転を表していれば送りません。
+**表示の桁で同じなら、変えていません。**数値欄は、保存された値を欄の桁で丸めたものと表示が同じなら「値は変わって いない」と数えます([表示の桁で比べる所](../../src/devstudio/view/inspectorwidget.cpp#L844))。角度の欄も、同じ回転を表していれば送りません。
 
-**光の向きは方位角と仰角で、camera の yaw と同じ基準です。**component の vec3 の `direction`(`light.direction`)は、 方位角((-180, 180] で回り込む)と仰角(`.elevation`。[-90, 90])の 2 欄(度、小数 2 桁)で 見せ、**Raw**を押すと保存されている x / y / z の欄が出ます ([方位角と仰角の欄を作る所](../../src/devstudio/view/inspectorwidget.cpp#L2379))。仰角は水平から上が正(負は下向き)、真上・真下の方位角は 0、 角度から作るベクトルは長さ 1 で、保存されるのは今までどおりベクトルです。camera の `controller.yaw` / `controller.pitch` は保存はラジアン、欄は度です。
+**光の向きは方位角と仰角で、camera の yaw と同じ基準です。**component の vec3 の `direction`(`light.direction`)は、 方位角((-180, 180] で回り込む)と仰角(`.elevation`。[-90, 90])の 2 欄(度、小数 2 桁)で 見せ、**Raw**を押すと保存されている x / y / z の欄が出ます ([方位角と仰角の欄を作る所](../../src/devstudio/view/inspectorwidget.cpp#L2382))。仰角は水平から上が正(負は下向き)、真上・真下の方位角は 0、 角度から作るベクトルは長さ 1 で、保存されるのは今までどおりベクトルです。camera の `controller.yaw` / `controller.pitch` は保存はラジアン、欄は度です。
 
 - **基準**: 方位角は +Y の回りに、+Z を 0 として −X の側へ増えます([方位角を読む `directionAnglesDegrees`](../../src/devstudio/model/inspectormodel.cpp#L644))。
   engine の CC-1 の camera.controller の `yaw` / `pitch` と同じ式で、同じ角度は同じベクトルになります(UX-14 の test が engine の式と突き合わせます)。
@@ -158,17 +158,17 @@ Add component... の asset 一覧も同じ読み方で、基本形は `Cube (bui
 **Inspector の欄の編集と commit**
 
 - **focus だけでは編集になりません。**編集は、値を打つ(値が変わる)か欄の上で mouse の button を押したときに始まります
-  ([focus で編集を始めなくなった所](../../src/devstudio/view/inspectorwidget.cpp#L2659))。欄に focus を置いたままでも
+  ([focus で編集を始めなくなった所](../../src/devstudio/view/inspectorwidget.cpp#L2662))。欄に focus を置いたままでも
   **Refresh** は押せ、他の欄も止まりません。vector の中で列を移るあいだは 1 つの編集のままです。
 - **busy の間に打った値は、手が空いてから送られます。**別の編集の commit の途中(Inspector が busy)は他の欄が止まりますが、
-  focus のある欄は止まりません([busy でも focus のある欄は止めない所](../../src/devstudio/view/inspectorwidget.cpp#L1644))。
+  focus のある欄は止まりません([busy でも focus のある欄は止めない所](../../src/devstudio/view/inspectorwidget.cpp#L1647))。
   そこへ打った値は欄に残り、欄を離れるか Return を押すと、Inspector の手が空いてから 1 回の編集として送られます
-  ([手が空いてから値を送る所](../../src/devstudio/view/inspectorwidget.cpp#L792))。その間に欄が消えた(別の object を選んだなど)か、
+  ([手が空いてから値を送る所](../../src/devstudio/view/inspectorwidget.cpp#L795))。その間に欄が消えた(別の object を選んだなど)か、
   値が既に同じなら何も送りません。
-- **commit の往復で欄は作り直さず、値だけ差し替えます**([値だけを差し替える所](../../src/devstudio/view/inspectorwidget.cpp#L980))。
+- **commit の往復で欄は作り直さず、値だけ差し替えます**([値だけを差し替える所](../../src/devstudio/view/inspectorwidget.cpp#L983))。
   編集中の欄・送り待ちの値を持つ欄・打ちかけの欄(`1.` のように、表示がまだ値と一致しない欄)は上書きしません。作り直すのは
   描くものが変わったとき(別の object、component の追加・削除、欄の種類や範囲が変わるなど)だけです
-  ([作り直すかどうかを決める所](../../src/devstudio/view/inspectorwidget.cpp#L922))。
+  ([作り直すかどうかを決める所](../../src/devstudio/view/inspectorwidget.cpp#L925))。
   ⚠ list を持つ component(`pelican_ray_instance` など)は、list の key に scene revision が入っているので、今も commit のたびに
   作り直されます(打ちかけの値はそこでは消えます)。
 
@@ -256,7 +256,7 @@ Studio がファイルを project の中に置き(外のファイルはコピー
   断られたら、**この操作でコピーしたファイルだけ**を消し、もともと project にあったファイルは残します([`ModelRegistrationSession::refuse`](../../src/devstudio/model/modelimport.cpp#L171))。
   答えが返らずに失敗したとき(登録されたか分からないとき)はコピーを残します。
 
-**Inspector の Import…**(決定 2): `simplemodelview` の model 欄の combo の右のボタンです([Import… を置く所](../../src/devstudio/view/inspectorwidget.cpp#L2195))。sprite の texture の欄には付けていません。流れは Model from file… と同じで、
+**Inspector の Import…**(決定 2): `simplemodelview` の model 欄の combo の右のボタンです([Import… を置く所](../../src/devstudio/view/inspectorwidget.cpp#L2198))。sprite の texture の欄には付けていません。流れは Model from file… と同じで、
 その場で(live で)登録できたら、object を足す代わりにその欄の値を登録した名前にして 1 回 commit します(combo で選んだときと同じ
 `set_component_value` の 1 回の編集。test が見ています)。
 `restart_required` のときは commit せず、上と同じ案内を Outliner の下に出します。
@@ -460,23 +460,23 @@ material を選ぶと、`get_material` で文書のままの material を、続�
   model の無い object と、再生中に spawn された object では出ません。
 - **範囲の切り替え**(MT-2s の決定 1): グループの一番上の comboで、選ぶ material が何に効くかを   決めます。項目は **This object**(既定)と **Every <model>**(例 `Every Cube`。名前は `(built-in)` を外した model の名前。
   [`modelShortName`](../../src/devstudio/model/materialsmodel.cpp#L591))です。
-- **This object**: material を選ぶと、選んだ object の全 primitive の行を `set_object_material` 1 回で書きます。その object が primitive ごとの   行を持っていれば、同じ 1 回でそれも外します(残すと primitive の行が勝ち、選んだ material にならないため)   ([`MaterialAssignSession::choose`](../../src/devstudio/model/materialsmodel.cpp#L1742))。今と同じ material なら送りません。
+- **This object**: material を選ぶと、選んだ object の全 primitive の行を `set_object_material` 1 回で書きます。その object が primitive ごとの   行を持っていれば、同じ 1 回でそれも外します(残すと primitive の行が勝ち、選んだ material にならないため)   ([`MaterialAssignSession::choose`](../../src/devstudio/model/materialsmodel.cpp#L1746))。今と同じ material なら送りません。
   - **送り方**(決定 5): Material の行は自分で送らず、Inspector の scene の編集の session(`InspectorModel`)に渡します。session が、     scene の編集で使っている `actor_id` と、最後に見た scene の revision を `base_scene_revision` に足し、自分の編集の 1 つとして送ります     ([`InspectorModel::submitObjectMaterial`](../../src/devstudio/model/inspectormodel.cpp#L4603)、     [Material の行から渡す所](../../src/devstudio/view/inspectorwidget.cpp#L343))。そのため **scene の Undo**(Inspector の Undo のボタン。Ctrl+Z も RU-1 から     同じ Undo です)で戻ります(下の「Undo」)。別の編集が進んでいる間は送らず、行に `Finish the edit in progress first, then choose the material again.` が出ます。
     答えが `changed: false` なら編集にせず、Inspector の notice は `<何を>: nothing to change.` です。
   - **今の状態**(決定 2): Material の行は選んだ object の `get_object_materials` を読み、combo の先頭(選べない項目)にその object が     描いている material を出します。object 自身の行から来ていれば `<名前> (this object)`、model の既定なら `(model default: <名前>)` です     (例 `material_2 (this object)`、Blank の Cube は `(model default: pelican.primitive.default)`。名前は `drawn`、instance が無ければ     `material`。[`objectMaterialLabel`](../../src/devstudio/model/materialsmodel.cpp#L645))。primitive ごとに違うときは     `(differs per primitive)` です。続いて `list_materials` の名前が並びます。答えを待つ間は選んだ名前を示したまま combo を止め、     Inspector の編集が終わってから読み直します。
-  - **Use model default**(This object のときだけ見え、object が自分の行を持つときだけ押せる):     object の行を全部 `material: null` で外す `set_object_material` を 1 回送ります([`MaterialAssignSession::useModelDefault`](../../src/devstudio/model/materialsmodel.cpp#L1819))。
+  - **Use model default**(This object のときだけ見え、object が自分の行を持つときだけ押せる):     object の行を全部 `material: null` で外す `set_object_material` を 1 回送ります([`MaterialAssignSession::useModelDefault`](../../src/devstudio/model/materialsmodel.cpp#L1823))。
     combo の項目ではなくボタンにしたのは、combo の先頭が今の状態の表示で選べないためです。
   - 下の 1 行は `Applies to <object の名前> only.`、tooltip は `Every other <model> keeps the model's material` です     ([`objectScopeLine`](../../src/devstudio/model/materialsmodel.cpp#L609))。
   - **読み直し**: Inspector が持つ object の scene の revision が動くたび(自分の編集・Undo・ほかの client)に、`get_object_materials` と     `get_material_bindings` を読み直します。Inspector の session に編集が進んでいる間は行が待ち、終わったら読み直します     ([`MaterialAssignSession::setSubject`](../../src/devstudio/model/materialsmodel.cpp#L1585)、     [`MaterialAssignSession::setSceneBusy`](../../src/devstudio/model/materialsmodel.cpp#L1618))。
-  - `get_object_materials` を知らない engine(`-32601`)では、行が `This engine cannot give an object its own material (no get_object_materials); choose Every <model>.`     と言います([その文](../../src/devstudio/model/materialsmodel.cpp#L1918))。
+  - `get_object_materials` を知らない engine(`-32601`)では、行が `This engine cannot give an object its own material (no get_object_materials); choose Every <model>.`     と言います([その文](../../src/devstudio/model/materialsmodel.cpp#L1922))。
 - **Every <model>**(MT-1s の割り当て): combo は **Model default**、区切り、`list_materials` の material の名前の順です。material を選ぶと   `bind_material {model, material}`(model の全 primitive)を 1 回送ります。Model default は、割り当てを変えた primitive をそれぞれ model 自身の   material(`get_material_bindings` の `slot`)に戻す `bindings` を送ります。primitive ごとに違う material を持つときは、combo は選べない項目   `(differs per primitive)` を示します。engine の engine はこのとき割り当ての宣言を外し、答えの   `material_bindings` は `null` です。
-  Studio は bind の答えの `material_bindings` を読まず、bind の後に `get_material_bindings` を読み直して、全 primitive の material が `slot` と   同じなら combo を Model default にします([その判定](../../src/devstudio/model/materialsmodel.cpp#L1681))。全 primitive が既に `slot` のままなら   Model default は何も送りません。送った後に別の client が外していて engine が `changed: false` を返したときは、Undo の項目を積まずに読み直すだけで、   行はまた選べます([changed と以前の割り当てを確認する条件](../../src/devstudio/model/materialsmodel.cpp#L1884)。MT-2s-b の決定 3。GUI からは起こせないので test だけ)。
+  Studio は bind の答えの `material_bindings` を読まず、bind の後に `get_material_bindings` を読み直して、全 primitive の material が `slot` と   同じなら combo を Model default にします([その判定](../../src/devstudio/model/materialsmodel.cpp#L1685))。全 primitive が既に `slot` のままなら   Model default は何も送りません。送った後に別の client が外していて engine が `changed: false` を返したときは、Undo の項目を積まずに読み直すだけで、   行はまた選べます([changed と以前の割り当てを確認する条件](../../src/devstudio/model/materialsmodel.cpp#L1888)。MT-2s-b の決定 3。GUI からは起こせないので test だけ)。
   - 下の 1 行は `Applies to every <model> in this project (N objects, M with their own material).` です(例     `Applies to every Cube in this project (2 objects, 1 with their own material).`。[`modelScopeLine`](../../src/devstudio/model/materialsmodel.cpp#L599))。
     tooltip は `A material is bound to the model (<model>); an object with its own keeps it` です。
   - **N と M**(決定 4): N は `get_material_bindings` の `objects`(その model を描く scene の object の数。engine は全 scene と prefab から     生成された object も数えます)、M は `object_overrides`(そのうち自分の行を持つ数)です([`parseModelObjectCounts`](../../src/devstudio/model/materialsmodel.cpp#L577))。
     答えに無ければその数を省きます。
     MT-1s の `export_scene_snapshot` で数える道は消しました。数え方の違い(snapshot は今の scene の prefab の外だけ)は     Blank では差が出ません。
-- **primitive が複数ある model**(決定 3): その下に `Mesh <n> · primitive <m>` の行ごとの comboが   出ます。数は This object なら `get_object_materials` の、Every <model> なら `get_material_bindings` の `primitives` です。行も範囲に従います   ([`MaterialAssignSession::choosePrimitive`](../../src/devstudio/model/materialsmodel.cpp#L1776)):
+- **primitive が複数ある model**(決定 3): その下に `Mesh <n> · primitive <m>` の行ごとの comboが   出ます。数は This object なら `get_object_materials` の、Every <model> なら `get_material_bindings` の `primitives` です。行も範囲に従います   ([`MaterialAssignSession::choosePrimitive`](../../src/devstudio/model/materialsmodel.cpp#L1780)):
   - This object: 選ぶと `primitive: {mesh, primitive}` 付きの `set_object_material` です。その primitive が object の行から描いているときだけ、     combo に `Model default (<model の割り当て>)` が出ます。選ぶと、その primitive の行を外します。その primitive の行が無く全 primitive の行が     効いているときは、外すだけでは model に戻らないので、その primitive の行に model の割り当てを名指して書きます。
   - Every <model>: 選ぶとその primitive だけの `bindings` の `bind_material` です(MT-1s のまま)。
   - Blank の Cube は primitive が 1 つなので、この行は
@@ -496,7 +496,7 @@ material を選ぶと、`get_material` で文書のままの material を、続�
 - **This object の割り当て(`set_object_material`)は scene の Undo で戻ります**(MT-2s の決定 5)。Material の行は revision が動いたのを   見て読み直します。
 - Inspector の Material の行の **Undo**は、Every <model> の `bind_material` だけを `previous.bindings` で   戻します。履歴に項目があるときだけ見えます。ドックとは別の履歴で、Edit メニューの Undo Render Edit や Inspector の scene の Undo とも別です。
   project を開くと、この行の履歴と未完了の応答を破棄します。同じ project 内の engine 再起動では履歴を保ちます。
-  項目は送った先の model を覚え、押した時点で別の object を選んでいても、その model に送り返します   ([`MaterialAssignSession::undo`](../../src/devstudio/model/materialsmodel.cpp#L1830))。MT-1s では押した時点の model に送っていました   (下の「残した穴」の MT-1s の項)。
+  項目は送った先の model を覚え、押した時点で別の object を選んでいても、その model に送り返します   ([`MaterialAssignSession::undo`](../../src/devstudio/model/materialsmodel.cpp#L1834))。MT-1s では押した時点の model に送っていました   (下の「残した穴」の MT-1s の項)。
 - `create_material` は戻せません(上)。
 
 **拒否**(決定 7)
@@ -3215,7 +3215,7 @@ stateDiagram-v2
 
 - **Inspector の行**: セッションの間に commit された編集は、Inspector の編集の行の後ろに
   ` — reverts on Stop` が付き、右に **Keep** のリンクが出ます。押すと Play changes でその編集に
-  check が付き、行の後ろは ` — kept after Stop` になってリンクが消えます([行を組む所](../../src/devstudio/view/inspectorwidget.cpp#L1595))。
+  check が付き、行の後ろは ` — kept after Stop` になってリンクが消えます([行を組む所](../../src/devstudio/view/inspectorwidget.cpp#L1598))。
 - **Play changes**(記録が 1 件以上あれば `Play changes (N)`)を押すと、小さな窓
   が開きます。modal ではないので、開いている間も game は進み、新しい編集も行に加わります
   ([窓を作る所](../../src/devstudio/view/playcontrols.cpp#L188))。
@@ -3308,7 +3308,7 @@ stateDiagram-v2
 - 行を選ぶと、Inspector は欄・Add component・ray の一覧・グラフの装着の欄を隠し、枠 `Transform (runtime, read-only)`
   に `Position` / `Rotation (x, y, z, w)` / `Scale`(`local_trs`)と `World position`(`world_trs.pos`)を
   数だけで出します。選択の行は `<name> (runtime)` と `spawned from <prefab> while the game runs` の 2 行です。Take from game は
-  出ません。次の読みで値が変わっていれば、数も追います([読むだけの表示](../../src/devstudio/view/inspectorwidget.cpp#L631))。
+  出ません。次の読みで値が変わっていれば、数も追います([読むだけの表示](../../src/devstudio/view/inspectorwidget.cpp#L634))。
 - **編集はできません**: runtime の行を選んでいる間は Outliner の Duplicate / Delete が押せず、tooltip が
   `Objects spawned while the game runs cannot be edited.` になります([`OutlinerTree::setEditRefusal`](../../src/devstudio/view/outlinertree.cpp#L83))。
   runtime の行は掴んで動かせません。その上に object を落とすと断られ、同じ文が status bar(8 秒)と Outliner の下の 1 行に

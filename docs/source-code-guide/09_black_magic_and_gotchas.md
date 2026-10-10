@@ -1381,13 +1381,13 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **素朴に読むと**: 子の widget の signal から親の lambda への接続は、QObject が破棄のときに自動で外すので、destructor は `= default` でよい、と読めます。
 
-**実際は**: `std::unique_ptr<Impl>` のメンバは、派生クラスの destructor の本体が終わった直後、`QWidget::~QWidget()` より先に消えます。その後の `QWidget::~QWidget()` が窓を閉じて焦点を外すので、焦点を持っていた欄(`QLineEdit` など)が `editingFinished` を出し、消えた Impl や binding を捕まえた lambda が走ります。QObject の自動の切断はその後なので間に合いません。Inspector では、数値・文字の欄の binding(`NumericBinding` / `TextBinding`)を Impl が持っています。対策は destructor の最初で、子から自分への接続を全部外すことです([`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2719)。event filter も外す)。
+**実際は**: `std::unique_ptr<Impl>` のメンバは、派生クラスの destructor の本体が終わった直後、`QWidget::~QWidget()` より先に消えます。その後の `QWidget::~QWidget()` が窓を閉じて焦点を外すので、焦点を持っていた欄(`QLineEdit` など)が `editingFinished` を出し、消えた Impl や binding を捕まえた lambda が走ります。QObject の自動の切断はその後なので間に合いません。Inspector では、数値・文字の欄の binding(`NumericBinding` / `TextBinding`)を Impl が持っています。対策は destructor の最初で、子から自分への接続を全部外すことです([`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2722)。event filter も外す)。
 
-[`GraphAttachmentWidget::~GraphAttachmentWidget()`](../../src/devstudio/view/graphattachmentwidget.cpp#L392)(入力 port の欄)と [`MaterialAssignWidget::~MaterialAssignWidget()`](../../src/devstudio/view/materialassignwidget.cpp#L340) も同じ形です。test は `test/devstudio_inspector_widget_test.cpp` にあり、焦点のある欄・書きかけの欄・書きかけの入力 port を持つ widget を壊して、遅れた編集が送られないことを見ます。
+[`GraphAttachmentWidget::~GraphAttachmentWidget()`](../../src/devstudio/view/graphattachmentwidget.cpp#L392)(入力 port の欄)と [`MaterialAssignWidget::~MaterialAssignWidget()`](../../src/devstudio/view/materialassignwidget.cpp#L356) も同じ形です。test は `test/devstudio_inspector_widget_test.cpp` にあり、焦点のある欄・書きかけの欄・書きかけの入力 port を持つ widget を壊して、遅れた編集が送られないことを見ます。
 
 **不変条件**: 子の欄の signal を、Impl やその中の binding を捕まえた lambda に繋ぐ widget は、destructor を `= default` にしないこと。destructor の最初で `findChildren<QObject *>()` の各子から `this` への接続を外します。
 
-**読む場所**: [`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2719) → [`GraphAttachmentWidget::~GraphAttachmentWidget()`](../../src/devstudio/view/graphattachmentwidget.cpp#L392)。
+**読む場所**: [`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2722) → [`GraphAttachmentWidget::~GraphAttachmentWidget()`](../../src/devstudio/view/graphattachmentwidget.cpp#L392)。
 
 ### 難所 — `setItemWidget` で行に置いた widget を `delete` で直接消すと、view の editor に残る(FX-8)
 
