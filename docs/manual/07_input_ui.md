@@ -281,7 +281,7 @@ if (auto r = ui.setText("root/hud/score", "SCORE 120"); !r)
 | 3 | `ui.property_mismatch@1` | node の型がその性質を持たない(例: gauge への `setText`)、または `setValue` の値が有限でない |
 | 4 | `ui.sink_conflict@1` | 公開中の rendering config の `ui.*` sink が同じ (path, 性質) を書いている(下記) |
 
-- **書き込みは呼んだ時点で検査され、フレーム境界で適用されます。** 受け付けた書き込みは列に積まれ、そのフレームのゲームコードがすべて走ったあと、描画の前に一度にまとめて入ります([commitFrameWrites() の呼び出し](../../src/core/appflow/framephase.cpp#L275))。断られた書き込みは何も積みません。
+- **書き込みは呼んだ時点で検査され、フレーム境界で適用されます。** 受け付けた書き込みは列に積まれ、そのフレームのゲームコードがすべて走ったあと、描画の前に一度にまとめて入ります([commitFrameWrites() の呼び出し](../../src/core/appflow/framephase.cpp#L277))。断られた書き込みは何も積みません。
 - `setText` で文字列を変えると、`label` / `button` の大きさ(`content` 軸の固有サイズ)を測り直します。測り直すのは固有サイズが文字列から測られた node だけで、`intrinsic_size` を文書に書いた node はそのままです([syncDocumentFromArena()](../../src/core/ui/module.cpp#L407))。
 - **scene load 中に書いても、load の transaction には入りません。** 公開 API の分類は `nonparticipant.ui-document` で([manifest の行](../../src/core/loader/sceneparticipantmanifest.cpp#L228))、UI 文書は scene の参加者ではないので、load が失敗しても書き込みは次のフレーム境界で入ります。
 

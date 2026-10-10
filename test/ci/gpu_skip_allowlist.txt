@@ -15,3 +15,8 @@ wsi_fault_window_player
 # hid. The 2026-08-01 GPU gate ran 125 tests with zero observed skips. A test may
 # still skip after an explicit device/extension capability check, but such a name
 # belongs here only when the GPU gate is intentionally allowed to lack it.
+#
+# CB-1 (2026-10-10): combination 08 is a product limitation recorded as KNOWN_RED in
+# test/CB1_FINDINGS.md (VD-1: vertex_displace_v1 has no hook in the fixed shadow /
+# velocity / picking vertex shaders, v1). The test skips with its ticket until VD-1 lands.
+CB1 08 vertex displacement main shadow velocity picking

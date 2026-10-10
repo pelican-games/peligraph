@@ -1465,6 +1465,7 @@
     "docs/manual/13_editor.md|../../test/rtl1b_ray_layout_restart_test.cpp|「RTL-1b a reload that adds a ray group layout is checked first, then committed with restart_required; …」": "TEST_CASE(\"RTL-1b a reload that adds a ray group layout is checked first, then committed with restart_required; \"",
     "docs/manual/13_editor.md|../../test/rtl1b_ray_layout_restart_test.cpp|「RTL-1c a Blank graph node's ray tracing task takes a ray group layout in one edit_batch, binds a material after the restart, …」": "TEST_CASE(\"RTL-1c a Blank graph node's ray tracing task takes a ray group layout in one edit_batch, binds a \"",
     "docs/manual/13_editor.md|../../test/vi1_variadic_inputs_test.cpp|test": "CHECK(node.at(\"pass_inputs\") == Json{{\"state\", \"declared\"},",
+    "docs/manual/15_studio.md|../../src/core/animation/posegraphruntime.cpp|`PoseGraphContractFailure`": "class PoseGraphContractFailure final : public GraphRegistryError {",
     "docs/manual/15_studio.md|../../src/core/appflow/playmode.cpp|playmode.cpp:63": "PlayStateChange changePlayState(PlayState target,",
     "docs/manual/15_studio.md|../../src/core/communication/editorjournal.cpp|editorjournal.cpp:5036": "EditorJournalReplayOutcome EditorEditCoordinator::replayJournalRecords(",
     "docs/manual/15_studio.md|../../src/core/communication/editorjournal.hpp|editorjournal.hpp:247": "// PM-2 (docs/design_play_mode.md 6.3 and 7). The editor's history as a play",

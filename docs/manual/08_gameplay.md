@@ -1250,7 +1250,7 @@ VRM expression service 経由のみ(通常クリップの weights channel は非
 | `pose.state_machine` | `parameters`: `rig`(必須)/ `graph`(`pelican.anim_graph` v1 文書を**そのまま埋め込む**)。**文書の `parameters` の名前がそのまま入力ポートになります**(`time` は予約済みで、同名のパラメータは拒否)→ 出力 `pose` |
 | `pose.retarget` | `parameters`: `profile`(必須)。入力 `pose` → 出力 `pose`(同じ姿勢をそのまま渡すので root motion の経路に挟めます) |
 | `pose.skeletal` | **sink**。入力 `pose`。owner 個体の姿勢としてコミットする |
-| `pose.transform` | **sink**。catalog には載りますが **v0 では装着時に必ず拒否されます**(`pose.transform has no root writer yet`。[posegraphruntime.cpp:374](../../src/core/animation/posegraphruntime.cpp#L439)) |
+| `pose.transform` | **sink**。catalog には載りますが **v0 では装着時に必ず拒否されます**(`pose.transform has no root writer yet`。[posegraphruntime.cpp:374](../../src/core/animation/posegraphruntime.cpp#L449)) |
 
 規則:
 
@@ -1263,14 +1263,14 @@ VRM expression service 経由のみ(通常クリップの weights channel は非
 
 1. **`loop: false` は clamp** です。クリップの外へ出た時刻は先頭/末尾に貼り付き、wrap しません([posegraphruntime.cpp:38](../../src/core/animation/posegraphruntime.cpp#L42))。
 2. **キーが 0 秒から始まらないクリップの位相ずれ**は animation service 側で揃えており、`time_seconds` は **絶対クリップ時刻**として報告されます(この 1 本は実装を読んだ範囲での理解で、装着様式をまたいだ数値比較までは未確認です)。
-3. **instance のパラメータを変えても、ステートマシンの現在ステートとクリップのカーソルは保たれます。** 退役するプログラムの評価器を donor として取っておき、**owner + ノード id + 埋め込んだ `anim_graph` 文書が一致すれば `rebind()` で引き継ぐ**からです([posegraphruntime.cpp:404](../../src/core/animation/posegraphruntime.cpp#L469))。
+3. **instance のパラメータを変えても、ステートマシンの現在ステートとクリップのカーソルは保たれます。** 退役するプログラムの評価器を donor として取っておき、**owner + ノード id + 埋め込んだ `anim_graph` 文書が一致すれば `rebind()` で引き継ぐ**からです([posegraphruntime.cpp:404](../../src/core/animation/posegraphruntime.cpp#L479))。
 4. 逆に **`graph` の文書そのものを変えて再公開したときは引き継ぎません** —— 一致条件に文書が入っているので、新しい評価器が `initial_state` から始まります。シーンの読み直しでも初期化されます。
 
 ### root motion(✅AG-2)
 
 `pose.clip_sample` に `root_motion: "extract"` と `root_node`(glTF のノード index)を書くと、**クリップが根のノードに書いている移動が、姿勢の中ではなく owner 個体の transform へ出て行きます**。
 
-- **差分は「折り返す前の時刻」で取ります。** ノードの時刻写像を u = (`time` − `start_time`)·`speed` + クリップ開始 とし、R(u) = loops(u)·(root(末尾) − root(先頭)) + root(canonical(u))、移動量 = R(今フレーム) − R(前フレーム)。この 1 本の式で **`speed < 0` も、1 フレームに 1 周以上進む場合も、境界ちょうども**同じように扱えます([posegraphruntime.cpp:312](../../src/core/animation/posegraphruntime.cpp#L375))。
+- **差分は「折り返す前の時刻」で取ります。** ノードの時刻写像を u = (`time` − `start_time`)·`speed` + クリップ開始 とし、R(u) = loops(u)·(root(末尾) − root(先頭)) + root(canonical(u))、移動量 = R(今フレーム) − R(前フレーム)。この 1 本の式で **`speed < 0` も、1 フレームに 1 周以上進む場合も、境界ちょうども**同じように扱えます([posegraphruntime.cpp:312](../../src/core/animation/posegraphruntime.cpp#L385))。
 - **`set_time`(シーク)は移動ではありません。** 時刻が外から差し替えられたフレームは前回値を捨て、その 1 フレームの移動量は 0 になります。一方、**`value.curve` のキーで `time` が跳んだ場合は「移動」として扱われます** —— この経路には「不連続だ」と知らせる信号が無いためです。カットを作りたいなら `set_time` を使ってください。
 - **適用先は owner の `localtransform`** です。`local.pos += local.rotation * delta` で足し込みます(**スケールは掛けません** —— 掛けると拡大した個体が同じクリップで違う距離を進んでしまうため)。姿勢の側では根ノードの translation が **クリップ先頭の値に固定(pin)**されるので、メッシュが個体の中で滑ることはありません。**回転量の抽出は v0 の射程外**です。
 - **名前付きの拒否は 4 種類**です。

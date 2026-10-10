@@ -3705,7 +3705,7 @@ op は **module** が登録します。登録済み module はエンジンに最
 | | `pose.state_machine` | `pelican.anim_graph` v1 文書を包む(`replay`)。パラメータ名がそのまま入力ポートになる |
 | | `pose.retarget` | 姿勢を別のリグ向けに写す |
 | | `pose.skeletal` | **sink**。owner 個体の姿勢としてコミットする |
-| | `pose.transform` | **sink**。catalog には載りますが、**v0 では装着時に必ず拒否されます**(`pose.transform has no root writer yet`。[posegraphruntime.cpp:374](../../src/core/animation/posegraphruntime.cpp#L439))。root motion は `pose.clip_sample` の parameter として運ばれます |
+| | `pose.transform` | **sink**。catalog には載りますが、**v0 では装着時に必ず拒否されます**(`pose.transform has no root writer yet`。[posegraphruntime.cpp:374](../../src/core/animation/posegraphruntime.cpp#L449))。root motion は `pose.clip_sample` の parameter として運ばれます |
 
 登録されている **semantic 型は 12 個**です:
 

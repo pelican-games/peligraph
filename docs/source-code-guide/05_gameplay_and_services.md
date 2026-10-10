@@ -1457,7 +1457,7 @@ outboxのentryは呼び出しごとに1件ではありません。
 | animation component | オブジェクトの `AnimationComponent` に `clip` **か** `graph`（`pelican.anim_graph` 文書）のどちらか。APIは `setGraphParameter` / `forceGraphState` | animgraph_demo / vrm_xr_demo |
 | `graph.instance` | 共通グラフの `pose.*` opを組み、`pose.skeletal` / `pose.transform` sink へ繋ぐ。owner は文書の `{scene, object}` | posegraph_demo |
 
-v0が約束するのは「2つの経路の**parity**」（loop / speed / start_time、位相、状態の移送が一致すること）と、owner単位の排他です。1本化はv0からは撤回されています。二重に書こうとした場合は黙って上書きせず、名前付きで落ちます —— サービス側の奪い合いは `Status::authority_conflict`、共通グラフ側は `pose.sink_conflict@1` です（同一文書に2つのsinkがある場合と、[animation component が既にそのフレームを publish 済みの場合](../../src/core/animation/posegraphruntime.cpp#L994)の両方で同じ名前）。
+v0が約束するのは「2つの経路の**parity**」（loop / speed / start_time、位相、状態の移送が一致すること）と、owner単位の排他です。1本化はv0からは撤回されています。二重に書こうとした場合は黙って上書きせず、名前付きで落ちます —— サービス側の奪い合いは `Status::authority_conflict`、共通グラフ側は `pose.sink_conflict@1` です（同一文書に2つのsinkがある場合と、[animation component が既にそのフレームを publish 済みの場合](../../src/core/animation/posegraphruntime.cpp#L1009)の両方で同じ名前）。
 
 以降は後者（共通グラフ側）の3ファイルを、**契約 → コンパイル → 評価**の順で読みます。
 
@@ -1493,9 +1493,9 @@ opの契約はprojectの層に置かれます（[`registerPoseGraphModule()`](..
 - [`synchronize(graph, frame)`](../../src/core/animation/posegraphruntime.hpp#L69) —— フェーズより前、オーナースレッドで走ります。生きたものをbindし、そうでないものをreleaseし、グラフ1本につき1枚のスナップショットを取ります。フレーム側が渡す [`PoseGraphFrame`](../../src/core/animation/posegraphruntime.hpp#L23) は「グラフが知らない今フレームの事実」の束です（オブジェクトが生きているか・名前・animation componentが既に書いていないか・values分割が出したスカラ）。
 - [`retainOnly(live)`](../../src/core/animation/posegraphruntime.hpp#L84) —— 公開されていない世代のattachmentを外します。**ここが状態機械の世代またぎの場所**でもあり、退役するattachmentの `EvaluatorV1` は破棄せず脇に置かれ、同じownerと同じノードidと同じ `anim_graph` 文書をbindする次のattachmentが `rebind()` で引き取ります。現在の状態・clipカーソル・遷移の進み具合がそのまま続き、文書の初期状態へ戻りません。誰も引き取らなければ次回で解放されます。
 
-評価結果は [`trace()`](../../src/core/animation/posegraphruntime.hpp#L148) から sink 順で読めます。1件が [`SinkTrace`](../../src/core/animation/posegraphruntime.hpp#L113) で、pose を作ったノード、レイアウトのidentityと世代、`owner`、状態機械の現在状態、遷移の有無と進み具合、そして clip ごとの [`CursorTrace`](../../src/core/animation/posegraphruntime.hpp#L108)（clip名・秒・**正規化位相**）が入ります。正規化位相は clip 自身の `[start, end]` の中の位置なので、キーが0秒から始まらないclipでも最初のキーで0・最後のキーで1になります。この trace が `get_status.animation` の材料です（[第7章](07_tools_rpc_tests.md)）。
+評価結果は [`trace()`](../../src/core/animation/posegraphruntime.hpp#L152) から sink 順で読めます。1件が [`SinkTrace`](../../src/core/animation/posegraphruntime.hpp#L117) で、pose を作ったノード、レイアウトのidentityと世代、`owner`、状態機械の現在状態、遷移の有無と進み具合、そして clip ごとの [`CursorTrace`](../../src/core/animation/posegraphruntime.hpp#L112)（clip名・秒・**正規化位相**）が入ります。正規化位相は clip 自身の `[start, end]` の中の位置なので、キーが0秒から始まらないclipでも最初のキーで0・最後のキーで1になります。この trace が `get_status.animation` の材料です（[第7章](07_tools_rpc_tests.md)）。
 
-> 🧩 **難所 — 巻き戻らない時刻で根の差分を取る**（[`extractRootMotion()`](../../src/core/animation/posegraphruntime.cpp#L328)）
+> 🧩 **難所 — 巻き戻らない時刻で根の差分を取る**（[`extractRootMotion()`](../../src/core/animation/posegraphruntime.cpp#L338)）
 >
 > **何をする所か**: `root_motion: "extract"` の `pose.clip_sample` が、clipの根の移動を「オブジェクトの変位」に変換し、姿勢側の根を固定します。
 >
@@ -1513,7 +1513,7 @@ opの契約はprojectの層に置かれます（[`registerPoseGraphModule()`](..
 >
 > - **pin**: メッシュは個体の中で滑らない。
 >
-> **手がかり**: 状態が捨てられる経路は2つあります。rebindしたとき（[`unbind()` 内](../../src/core/animation/posegraphruntime.cpp#L242)。レイアウト添字・clipの根サンプル・オブジェクトtokenを取り直すので、パラメータ編集と同じ再出発になります）と、`set_time` を観測したとき（`drop_root_previous`。**時刻の飛びは移動ではない**ので、2つの時刻の間の距離をオブジェクトに請求しません）。pinするのはtranslationだけで、回転の抽出はv0にありません。`SinkTrace::root_delta` に出るのは**clip自身の空間での量**なので、回転した個体では実際に進んだ距離と一致しません。
+> **手がかり**: 状態が捨てられる経路は2つあります。rebindしたとき（[`unbind()` 内](../../src/core/animation/posegraphruntime.cpp#L252)。レイアウト添字・clipの根サンプル・オブジェクトtokenを取り直すので、パラメータ編集と同じ再出発になります）と、`set_time` を観測したとき（`drop_root_previous`。**時刻の飛びは移動ではない**ので、2つの時刻の間の距離をオブジェクトに請求しません）。pinするのはtranslationだけで、回転の抽出はv0にありません。`SinkTrace::root_delta` に出るのは**clip自身の空間での量**なので、回転した個体では実際に進んだ距離と一致しません。
 >
 > **不変条件**: 差分は折り返し前の時刻で取る（canonical時刻の差を取らない）。適用は個体の回転のみを通し、スケールは通さない。`set_time` の直後のフレームは変位を出さない。
 

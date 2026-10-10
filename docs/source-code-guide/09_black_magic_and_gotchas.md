@@ -105,7 +105,7 @@ GPU 資源の寿命は frame 数ではなく実 submission の lease が決め�
 | preview graph(第3 variant) | 🚧実装済みだが CPU 模式ラスタ(WP172)。隔離契約が本体で、見た目の忠実度は保証しない | [`previewgraph.hpp`](../../src/core/renderingpass/previewgraph.hpp#L16) |
 | RenderDoc capture | 🚧受動のみ(WP140)。**エンジンは RenderDoc をロードしない** | [`renderdoccapture.hpp`](../../src/core/renderdoc/renderdoccapture.hpp#L66) |
 | VRMA decode / retarget / AnimationSource | ✅実装済み(WP176 / 177 / 178) | [`vrmadecoder.hpp`](../../src/core/loader/vrmadecoder.hpp) / [`vrmaretarget.hpp`](../../src/core/animation/vrmaretarget.hpp) |
-| `.vrma` の root motion 抽出(容器側) | 📐設計スロットのみ。`VrmaRootMotionPolicy` は `preserve_hips_translation` の 1 値だけ。**ただし root motion 自体は v0 で出荷済み**で、容器ではなく共通グラフ側の `pose.clip_sample{root_motion: "extract"}` が担います(AG-2)。抽出・pin・オブジェクトへの加算は §9.24 の難所「unwrapped time から作る root delta」 | [`VrmaRootMotionPolicy`](../../src/core/animation/vrmaretarget.hpp#L21) / [`poseClipSampleExtractsRootMotion()`](../../src/project/posegraphmodule.hpp#L45) / [`extractRootMotion()`](../../src/core/animation/posegraphruntime.cpp#L328) |
+| `.vrma` の root motion 抽出(容器側) | 📐設計スロットのみ。`VrmaRootMotionPolicy` は `preserve_hips_translation` の 1 値だけ。**ただし root motion 自体は v0 で出荷済み**で、容器ではなく共通グラフ側の `pose.clip_sample{root_motion: "extract"}` が担います(AG-2)。抽出・pin・オブジェクトへの加算は §9.24 の難所「unwrapped time から作る root delta」 | [`VrmaRootMotionPolicy`](../../src/core/animation/vrmaretarget.hpp#L21) / [`poseClipSampleExtractsRootMotion()`](../../src/project/posegraphmodule.hpp#L45) / [`extractRootMotion()`](../../src/core/animation/posegraphruntime.cpp#L338) |
 | authoring 側のオブジェクト宣言 identity | ✅実装済み(WP360)。raw viewとstageは [`AuthoringSceneAuthority`](../../src/core/loader/authoringsceneauthority.hpp#L35) に隔離し、runtime読者はidentityを保存した単一の [`ResolvedScene`](../../src/core/loader/resolvedscene.hpp#L268) を読む | [`SceneProjectionState`](../../src/core/loader/resolvedscene.hpp#L326) |
 
 optional build feature には stub 実装もあります。たとえば SeqPlayer/VAT/RPC/audio/physics/renderdoc は build option により実装または disabled behavior が選ばれます。header が同じでも build artifact の能力は [`build_features.hpp`](../../src/core/build_features.hpp#L1) と各 `*_stub.cpp` を確認してください。
@@ -1236,13 +1236,13 @@ marker は自分が属する manifest に digest で縛られます。[`transact
 
 **素朴に読むと**: root motion は「今フレームの root 位置 − 前フレームの root 位置」で足りるように見えます。
 
-**実際は**: clip の時刻は境界で折り返されるので、そのままの差分はループのたびにクリップ先頭へ飛び戻ります。[`extractRootMotion()`](../../src/core/animation/posegraphruntime.cpp#L328) は**折り返す前の時刻**(`unwrapped`)を受け取り、`R(u) = loops(u)·(root(end) − root(start)) + root(canonical(u))` を作ります([式のコメント](../../src/core/animation/posegraphruntime.cpp#L369))。`loops` は[非ループ clip では 0](../../src/core/animation/posegraphruntime.cpp#L375) で、この項があるおかげで「負の速度」も「1 フレームで複数ループ」も同じ算術に収まります。clip 定数(`root_start` と 1 ループ分の移動量)は binding ごとに 1 回だけサンプルし、**そのフレームの姿勢を一時的に使って測ってから元に戻します**([サンプル部](../../src/core/animation/posegraphruntime.cpp#L345))。
+**実際は**: clip の時刻は境界で折り返されるので、そのままの差分はループのたびにクリップ先頭へ飛び戻ります。[`extractRootMotion()`](../../src/core/animation/posegraphruntime.cpp#L338) は**折り返す前の時刻**(`unwrapped`)を受け取り、`R(u) = loops(u)·(root(end) − root(start)) + root(canonical(u))` を作ります([式のコメント](../../src/core/animation/posegraphruntime.cpp#L379))。`loops` は[非ループ clip では 0](../../src/core/animation/posegraphruntime.cpp#L385) で、この項があるおかげで「負の速度」も「1 フレームで複数ループ」も同じ算術に収まります。clip 定数(`root_start` と 1 ループ分の移動量)は binding ごとに 1 回だけサンプルし、**そのフレームの姿勢を一時的に使って測ってから元に戻します**([サンプル部](../../src/core/animation/posegraphruntime.cpp#L355))。
 
-フレーム差分は `R(u) − R(u_prev)` で、`set_time` を観測したフレームは [`drop_root_previous`](../../src/core/animation/posegraphruntime.cpp#L382) によって前回値を捨てます — 時刻のカットは移動ではないからです。再バインドでも同じく状態を捨てます([rebind 時の reset](../../src/core/animation/posegraphruntime.cpp#L246))。最後に **pin**: 公開する姿勢の root translation を `root_start` へ戻し([pin](../../src/core/animation/posegraphruntime.cpp#L392))、移動はオブジェクトの transform 側からだけ出ていくようにします。回転の抽出は v0 にありません。
+フレーム差分は `R(u) − R(u_prev)` で、`set_time` を観測したフレームは [`drop_root_previous`](../../src/core/animation/posegraphruntime.cpp#L392) によって前回値を捨てます — 時刻のカットは移動ではないからです。再バインドでも同じく状態を捨てます([rebind 時の reset](../../src/core/animation/posegraphruntime.cpp#L256))。最後に **pin**: 公開する姿勢の root translation を `root_start` へ戻し([pin](../../src/core/animation/posegraphruntime.cpp#L402))、移動はオブジェクトの transform 側からだけ出ていくようにします。回転の抽出は v0 にありません。
 
 **不変条件**: `canonical` 済みの時刻から delta を作らないこと(ループごとに逆向きの跳ねが出ます)。pin を外したまま変位も足さないこと(二重に動きます)。`set_time` / 再バインドで前回値を残さないこと。
 
-**読む場所**: [`canonicalTime()`](../../src/core/animation/posegraphruntime.cpp#L39) → [`extractRootMotion()`](../../src/core/animation/posegraphruntime.cpp#L328) → [変位をオブジェクトへ渡す所](../../src/core/animation/posegraphruntime.cpp#L813)。適用側は[第4章 §4.13](04_ecs_deep_dive.md)。
+**読む場所**: [`canonicalTime()`](../../src/core/animation/posegraphruntime.cpp#L39) → [`extractRootMotion()`](../../src/core/animation/posegraphruntime.cpp#L338) → [変位をオブジェクトへ渡す所](../../src/core/animation/posegraphruntime.cpp#L823)。適用側は[第4章 §4.13](04_ecs_deep_dive.md)。
 
 ### 難所 — per-node の評価分類は `max()` でしか動かない
 
@@ -1326,13 +1326,13 @@ seek が無い代わりに置かれているのが **replay prologue** です。
 
 **素朴に読むと**: port を流れる型なのだから、姿勢のバイト列(joint の TRS 配列)が流れている、と読めます。
 
-**実際は**: 流れるのは **staged pose のハンドルと、それが作られた `PoseLayout` の世代・フレーム revision** です([型の説明](../../src/project/posegraphmodule.hpp#L11))。バイトでないからこそ、別の layout 世代で作られた 2 つの姿勢を `memcpy` で混ぜる代わりに、名前で `pose.layout_mismatch@1` として弾けます([宣言](../../src/core/animation/posegraph.hpp#L86))。判定の材料はトレースにも出ており、sink ごとに `layout_identity` / `layout_generation` が記録されます([`SinkTrace`](../../src/core/animation/posegraphruntime.hpp#L113))。`pelican.rig@1` は、op が clip と出力 layout を解決するための rig 同一性です。
+**実際は**: 流れるのは **staged pose のハンドルと、それが作られた `PoseLayout` の世代・フレーム revision** です([型の説明](../../src/project/posegraphmodule.hpp#L11))。バイトでないからこそ、別の layout 世代で作られた 2 つの姿勢を `memcpy` で混ぜる代わりに、名前で `pose.layout_mismatch@1` として弾けます([宣言](../../src/core/animation/posegraph.hpp#L86))。判定の材料はトレースにも出ており、sink ごとに `layout_identity` / `layout_generation` が記録されます([`SinkTrace`](../../src/core/animation/posegraphruntime.hpp#L117))。`pelican.rig@1` は、op が clip と出力 layout を解決するための rig 同一性です。
 
 契約(型と op)が `src/project` 側にあるのも同じ理由です — カタログ、エディタ、そして**アニメーションバックエンドを外した build** の 3 者が同じ宣言を見るためで、評価だけが `src/core/animation` の仕事です。
 
 **不変条件**: `pelican.pose@1` に bytes の意味を与えないこと。layout 世代の比較を「等しいはず」として省かないこと。契約を評価側へ移さないこと(OFF build とカタログが食い違います)。
 
-**読む場所**: [`posegraphmodule.hpp`](../../src/project/posegraphmodule.hpp#L7) → [`PoseGraph::raiseLayoutMismatch()`](../../src/core/animation/posegraph.hpp#L86) → [`SinkTrace`](../../src/core/animation/posegraphruntime.hpp#L113)。
+**読む場所**: [`posegraphmodule.hpp`](../../src/project/posegraphmodule.hpp#L7) → [`PoseGraph::raiseLayoutMismatch()`](../../src/core/animation/posegraph.hpp#L86) → [`SinkTrace`](../../src/core/animation/posegraphruntime.hpp#L117)。
 
 ### 難所 — 再生パラメータの既定値を本当に持つのは 2 関数だけ
 
@@ -1406,7 +1406,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 **実際は**: 受けるのは印の付いた例外だけで、`onInit` には 2 つの扱いがあります。
 
 - **印**: 利用者のデータの不正だけを [`UserDataError`](../../src/core/userpublic/userdataerror.hpp#L6)(`std::runtime_error` の派生)で投げ、[`guardUserData()`](../../src/core/watch/userdataguard.hpp#L31) はこの型だけを受けます。engine の内部の不変条件や GPU の失敗は元の型のまま guard を抜け、今までどおり致命の境界に届きます(`std::exception` まで広げると、壊れた engine を動かし続けることになる)。受けた scope は [`failUserData()`](../../src/core/watch/problemlist.cpp#L500) が Problems の `runtime.user_data@1` を 1 行にし、[`beginUserData()`](../../src/core/watch/problemlist.cpp#L490) が同じデータの版の間はその scope を飛ばし、版が変われば行を消してもう一度試します。
-- **ゲームの DLL の callback**: DLL の中の例外は印を持てないので、[`guardUserCode()`](../../src/core/watch/userdataguard.hpp#L43) は callback の境界でだけ `std::exception` を利用者のコードの不正と見なし、behavior 名を付けた `UserDataError` に変え、[`requestUserCodeStop()`](../../src/core/watch/problemlist.cpp#L521)(Play 中だけ印を立てる)を呼びます。[`invokeUpdate()`](../../src/core/gamelogic/behaviorarena.cpp#L901)・event・登録 system がこれを通ります。止めるのは frame の境目で、[`finishUserCodeStop()`](../../src/core/watch/problemlist.cpp#L530)([`updateFrameState()` の中、game code を走らせる phase の後で呼ぶ所](../../src/core/appflow/framephase.cpp#L276))が、RPC のある engine では `set_play_state` と同じ Stop の処理(`rpcserver.cpp` が `user_code_stop_handler` に入れる)を、RPC の無い engine では `edit` への切り替え(`internal::changePlayState`)を走らせます。behavior の Problems は Stop の後も残り、直すか外すと消えます。
+- **ゲームの DLL の callback**: DLL の中の例外は印を持てないので、[`guardUserCode()`](../../src/core/watch/userdataguard.hpp#L43) は callback の境界でだけ `std::exception` を利用者のコードの不正と見なし、behavior 名を付けた `UserDataError` に変え、[`requestUserCodeStop()`](../../src/core/watch/problemlist.cpp#L521)(Play 中だけ印を立てる)を呼びます。[`invokeUpdate()`](../../src/core/gamelogic/behaviorarena.cpp#L901)・event・登録 system がこれを通ります。止めるのは frame の境目で、[`finishUserCodeStop()`](../../src/core/watch/problemlist.cpp#L530)([`updateFrameState()` の中、game code を走らせる phase の後で呼ぶ所](../../src/core/appflow/framephase.cpp#L278))が、RPC のある engine では `set_play_state` と同じ Stop の処理(`rpcserver.cpp` が `user_code_stop_handler` に入れる)を、RPC の無い engine では `edit` への切り替え(`internal::changePlayState`)を走らせます。behavior の Problems は Stop の後も残り、直すか外すと消えます。
 - **`onInit`(Play の開始)**: [`invokeInit()`](../../src/core/gamelogic/behaviorarena.cpp#L873) は Problems に記録して Stop を頼んでから、`UserDataError` を投げ直します。activation の transaction の逆順の破棄と遅延した変更の rollback をそのまま使うためです。`set_play_state` は rollback された遷移を受けて `edit` を返し([RPC の catch](../../src/core/communication/rpcserver.cpp#L2326))、起動時の失敗は scene を dormant で読み直して editor を使える状態で残します([起動の catch](../../src/core/userpublic/pelican_core.cpp#L184))。
 - **`onInit`(DLL の reload の中)**: [`isGameLogicReloadInProgress()`](../../src/core/gamelogic/gamelogicreload.cpp#L887) が真なら、`invokeInit()` は [guard を通さずに元の例外を投げます](../../src/core/gamelogic/behaviorarena.cpp#L881)。候補の activation と rollback は reload の transaction の持ち物で(WP162 の契約)、reload は失敗し、旧い DLL の runtime が動き続けます。ここで Problems の行や Stop の要求を残すと、戻った runtime を止めてしまいます(RX-1 の fix の commit の注記)。
 

@@ -108,7 +108,7 @@
 | `object` の正体 | **authoring object id**。保存時に各 object の `authoring_object_id` として記録され、削除・並べ替え・保存・再読込を跨いでも同じ対象を指します。ID のない旧文書は従来どおり文書全体の宣言順で採番され、最初の保存で永続化されます。ID は `scene_tree` で確認してください([authoringscenedocument.cpp](../../src/core/loader/authoringscenedocument.cpp)) |
 | 解決 | ロード後の束縛表を線形に走査し、その id を持つ生きたオブジェクトを探します([SceneLoader::graphOwnerObject()](../../src/core/loader/scenegraphruntime.cpp#L41)) |
 | 見つからないとき | **エラーではなく inactive**。その instance の scope は評価されず、`LOG_WARNING` が出ます(`graph instance owner does not match any object in this scene: <scope>, <scope>, …`)。**1 行にまとまります** —— そのとき初めて報告する scope を `", "` で連ねて 1 回だけ出し、同じ scope は二度言いません([scenegraphruntime.cpp:61](../../src/core/loader/scenegraphruntime.cpp#L67))。「言った」という記憶は**シーンのロードで消えます**([scene.cpp:730](../../src/core/loader/scene.cpp#L746))ので、次のシーンでは同じ scope がまた 1 回報告されます。姿勢では「rest pose のまま動かない」に見えます |
-| 別のオブジェクトを指したとき | id が**実在する別のオブジェクト**だった場合は黙って**そちらに適用**されます。姿勢の sink のように適用できない相手(カメラなど)なら、オブジェクト名入りで失敗します(`pose graph sink resolution failed for Camera with animation status …` — [posegraphruntime.cpp:190](../../src/core/animation/posegraphruntime.cpp#L190)) |
+| 別のオブジェクトを指したとき | id が**実在する別のオブジェクト**だった場合は黙って**そちらに適用**されます。姿勢の sink のように適用できない相手(カメラなど)なら、オブジェクト名入りで失敗します(`pose graph sink resolution failed for Camera with animation status …` — [posegraphruntime.cpp:190](../../src/core/animation/posegraphruntime.cpp#L200)) |
 
 `authoring_object_id` と文書直下の `next_authoring_object_id` は、保存・読込用の予約フィールドです。ID は正の整数で、同じ文書の別シーンも含めて重複できません。`next_authoring_object_id` は使用済み ID より大きい次の採番値を保持するため、最大番号の object を削除してもその番号を再利用しません。ID のない object を保存済み文書へ追加すると、この採番値以降が割り当てられます。外部エディタで object を移動するときは ID を一緒に移動し、複製して新しい object にするときは複製側の ID を外してください。重複・不正な型・採番値との矛盾はロード時に拒否されます。
 
