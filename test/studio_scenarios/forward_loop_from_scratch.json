@@ -701,6 +701,19 @@
       "path": "step5_window.png"
     },
     {
+      "label": "RV-1b File > Save Scene: keep the forward loop and present input for reopening",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "RV-1b explicit Save establishes the document baseline",
+      "expect": "rpc_equals",
+      "method": "get_document_journal",
+      "path": "dirty",
+      "value": false,
+      "retry_ms": 30000
+    },
+    {
       "label": "step 6: open another project (the untouched fixture copy), so the next open is a real one",
       "cmd": "open_project",
       "dir": "{other_project}"

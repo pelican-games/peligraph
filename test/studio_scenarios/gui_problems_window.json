@@ -469,6 +469,19 @@
       "timeout_ms": 30000
     },
     {
+      "label": "RV-1b File > Save Scene: keep the repaired root before testing another outside edit",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "RV-1b explicit Save establishes the document baseline",
+      "expect": "rpc_equals",
+      "method": "get_document_journal",
+      "path": "dirty",
+      "value": false,
+      "retry_ms": 30000
+    },
+    {
       "label": "the node saved into the root outside Studio again, for the start below",
       "file": "replace",
       "path": "{artifacts}/problems_project/passes/main_rendering_config.json",

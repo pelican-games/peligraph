@@ -174,6 +174,19 @@
       "name": "pelican.view.renderTools.frame_plan"
     },
     {
+      "label": "RV-1b File > Save Scene: keep the frame plan edits and placement for reopening",
+      "cmd": "action",
+      "name": "pelican.file.saveScene"
+    },
+    {
+      "label": "RV-1b explicit Save establishes the document baseline",
+      "expect": "rpc_equals",
+      "method": "get_document_journal",
+      "path": "dirty",
+      "value": false,
+      "retry_ms": 30000
+    },
+    {
       "label": "open a second, untouched copy of the same fixture",
       "cmd": "open_project",
       "dir": "{other_project}"

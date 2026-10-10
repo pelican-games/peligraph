@@ -179,6 +179,18 @@
       "timeout_ms": 10000
     },
     {
+      "label": "RV-1b leaving the edited fixture asks about its rendering documents",
+      "cmd": "wait",
+      "name": "pelican.unsavedScenePrompt",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "RV-1b Discard: the next checks use a new Blank project, not the fixture edits",
+      "cmd": "click",
+      "name": "pelican.unsavedScenePrompt.discard"
+    },
+    {
       "label": "the new project's frame plan has its one pass",
       "cmd": "wait",
       "name": "pelican.framePlanLogicalView::node#present",
