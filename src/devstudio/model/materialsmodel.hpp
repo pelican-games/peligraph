@@ -245,9 +245,9 @@ struct SurfaceChoice {
 // for a file that is no image.
 [[nodiscard]] std::string textureFileDimension(const std::filesystem::path &file);
 // The project's images of one dimension, as `project://<logical path>`,
-// sorted.
+// sorted. Color slots only offer formats that support an sRGB view.
 [[nodiscard]] std::vector<std::string> textureChoices(const std::vector<AssetEntry> &entries,
-                                                      std::string_view dimension);
+                                                      std::string_view dimension, std::string_view role);
 
 // --- assignment (decision 5)
 

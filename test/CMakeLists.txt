@@ -2382,7 +2382,7 @@ if(COMMAND pelican_copy_shaderc_runtime)
 endif()
 # MT-1: material documents read and written over RPC; a Blank box recoloured
 # live (create_material -> bind_material -> edit_material).
-pelican_define_test(materialdocumentrpc_test GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
+pelican_define_test(materialdocumentrpc_test MIXED_GPU RUNTIME_SHADER pelican_core pelican_project VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
 target_include_directories(pelican_test_materialdocumentrpc_test PRIVATE ${stb_SOURCE_DIR})
 target_link_libraries(pelican_test_materialdocumentrpc_test PRIVATE pelican_shaderc)
 if(COMMAND pelican_copy_shaderc_runtime)

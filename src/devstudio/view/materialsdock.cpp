@@ -1448,8 +1448,9 @@ struct MaterialsDock::Impl {
         row.label = new QLabel(qtext(texture.name), &parent);
         row.label->setObjectName(QStringLiteral("pelican.materials.texture.") + qtext(texture.name) +
                                  QStringLiteral(".label"));
-        const QString tip = owner.tr("color space %1 \xC2\xB7 %2 \xC2\xB7 %3")
+        QString tip = owner.tr("color space %1 \xC2\xB7 %2 \xC2\xB7 %3")
                                 .arg(qtext(texture.color_space), qtext(texture.role), qtext(texture.dimension));
+        if (texture.role == "color") tip += owner.tr("\nColor slots only accept images that can be read as sRGB");
         row.label->setToolTip(tip);
         row.choice = new QComboBox(&parent);
         row.choice->setObjectName(QStringLiteral("pelican.materials.texture.") + qtext(texture.name));
@@ -1531,13 +1532,19 @@ struct MaterialsDock::Impl {
         const QSignalBlocker block{row.choice};
         row.choice->clear();
         row.choice->addItem(owner.tr("None (%1)").arg(qtext(row.texture.default_reference)), NoTexture);
-        auto choices = textureChoices(images, row.texture.dimension);
-        if (!current.empty() && std::ranges::find(choices, current) == choices.end()) choices.push_back(current);
+        auto choices = textureChoices(images, row.texture.dimension, row.texture.role);
+        const bool unavailable = !current.empty() && std::ranges::find(choices, current) == choices.end();
+        if (unavailable) choices.push_back(current);
         for (const auto &choice : choices) {
             QString shown = qtext(choice);
             if (shown.startsWith(QStringLiteral("project://assets/"))) shown.remove(0, 17);
             row.choice->addItem(shown, qtext(choice));
             row.choice->setItemData(row.choice->count() - 1, qtext(choice), Qt::ToolTipRole);
+        }
+        if (unavailable && row.texture.role == "color") {
+            if (auto *model = qobject_cast<QStandardItemModel *>(row.choice->model()))
+                if (auto *item = model->item(row.choice->count() - 1))
+                    item->setFlags(item->flags() & ~Qt::ItemIsEnabled);
         }
         row.choice->setCurrentIndex(std::max(0, row.choice->findData(qtext(current))));
     }

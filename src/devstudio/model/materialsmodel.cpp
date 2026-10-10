@@ -1,4 +1,5 @@
 #include "materialsmodel.hpp"
+#include "../../project/texturefileinfo.hpp"
 
 #include "appliedstate.hpp"
 #include "inspectormodel.hpp"
@@ -525,35 +526,19 @@ std::string suggestMaterialName(const MaterialList &list, const std::filesystem:
 // --- texture slots
 
 std::string textureFileDimension(const std::filesystem::path &file) {
-    const auto extension = lower(file.extension().string());
-    static const std::set<std::string> flat{".png", ".jpg", ".jpeg", ".tga", ".bmp", ".hdr", ".exr"};
-    if (flat.contains(extension)) return "2d";
-    if (extension != ".ktx2") return {};
-    std::ifstream input{file, std::ios::binary};
-    unsigned char header[40]{};
-    if (!input.read(reinterpret_cast<char *>(header), sizeof header)) return {};
-    static constexpr unsigned char identifier[12] = {0xAB, 'K', 'T', 'X', ' ', '2', '0', 0xBB, '\r', '\n', 0x1A, '\n'};
-    if (!std::equal(std::begin(identifier), std::end(identifier), header)) return {};
-    const auto word = [&](std::size_t offset) {
-        return static_cast<std::uint32_t>(header[offset]) | (static_cast<std::uint32_t>(header[offset + 1]) << 8) |
-               (static_cast<std::uint32_t>(header[offset + 2]) << 16) |
-               (static_cast<std::uint32_t>(header[offset + 3]) << 24);
-    };
-    const auto depth = word(28);
-    const auto layers = word(32);
-    const auto faces = word(36);
-    if (depth > 0) return "3d";
-    if (faces == 6) return layers > 0 ? "cube_array" : "cube";
-    if (layers > 0) return "2d_array";
-    return "2d";
+    return std::string{Pelican::textureFileInfo(file).dimension};
 }
 
-std::vector<std::string> textureChoices(const std::vector<AssetEntry> &entries, std::string_view dimension) {
+std::vector<std::string> textureChoices(const std::vector<AssetEntry> &entries, std::string_view dimension,
+                                      std::string_view role) {
     std::vector<const AssetEntry *> files;
     flattenFiles(entries, files);
     std::vector<std::string> choices;
-    for (const auto *file : files)
-        if (textureFileDimension(file->physical) == dimension) choices.push_back("project://" + file->logical);
+    for (const auto *file : files) {
+        const auto info = Pelican::textureFileInfo(file->physical);
+        if (info.dimension == dimension && (role != "color" || info.supports_srgb))
+            choices.push_back("project://" + file->logical);
+    }
     std::ranges::sort(choices);
     return choices;
 }

@@ -149,6 +149,7 @@ class ReloadService;
 // Refusals (application errors, data {error_code, error_fields}; nothing is
 // written): external_modification {path, expected, actual},
 // material.value_invalid@1 {path, param, reason},
+// material.texture_role_mismatch@1 {path, material, param, reference, role},
 // material.param_unknown@1 {path, param, kind: "value" | "texture"},
 // material.document_unknown@1 {path, reason}, material.document_invalid@1
 // {path, reason}, material.name_unknown@1 {name, reason},

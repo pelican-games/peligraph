@@ -2,6 +2,8 @@
 #include "../src/core/asset/model.hpp"
 #include "gltf_fragment_fixture.hpp"
 #include "../src/core/communication/rpcserver.hpp"
+#include "../src/core/communication/materialdocumentrpc.hpp"
+#include "../src/core/loader/basicconfig.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/launchconfig.hpp"
@@ -1945,6 +1947,135 @@ TEST_CASE("EB-6 a scene object's own material no registered document holds is li
         INFO("taken in " << pixel);
         CHECK(reddish(pixel));
     }
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+
+TEST_CASE("TX-1 materialdocumentrpc refuses color texture formats before writing and commits data HDR",
+          "[material][rpc][tx1]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("tx1_preflight");
+    const auto root = makeBlankBoxProject(dir.root);
+    const std::string path = "materials/paint.material.json";
+    FastModuleContainer modules;
+    auto &paths = GET_MODULE(PathResolver);
+    paths.setup(root, false);
+    GET_MODULE(ProjectSource).setProjectData(readFile(root / "project.json"));
+    (void)GET_MODULE(ProjectBasicConfig);
+    std::istringstream input;
+    std::ostringstream output;
+    RpcServer server{input, output};
+    configureMaterialDocumentRpcHandlers(server, paths, nullptr);
+    const auto call = [&](const std::string &method, const Json &params) {
+        return Json::parse(server.processLine(Json{{"jsonrpc", "2.0"}, {"id", 1},
+                                                   {"method", method}, {"params", params}}.dump()));
+    };
+    const auto created = call("create_material", {{"path", path}, {"surface", openPbrOpaque}});
+    INFO(created.dump(2));
+    REQUIRE(created.contains("result"));
+    const auto before = readFile(root / path);
+    const auto assets_before = readFile(root / "assets/asset_data.json");
+    const auto digest = created.at("result").at("material_digest");
+    const auto edit = [&](const Json &fields) {
+        Json params{{"path", path}, {"base_material_digest", digest}};
+        params.update(fields);
+        return call("edit_material", params);
+    };
+    const auto refused = [&](const Json &fields, const std::string &reference) {
+        const auto response = edit(fields);
+        INFO(response.dump(2));
+        CHECK(readFile(root / path) == before);
+        CHECK(readFile(root / "assets/asset_data.json") == assets_before);
+        REQUIRE(response.contains("error"));
+        CHECK(response.at("error").at("data").at("error_code") == "material.texture_role_mismatch@1");
+        CHECK(response.at("error").at("message").get<std::string>().find(
+                  "Color texture does not provide an SRGB view") != std::string::npos);
+        CHECK(response.at("error").at("data").at("error_fields").at("reference") == reference);
+    };
+    SECTION("HDR color is refused and data commits") {
+        const std::string reference = "project://textures/float.hdr";
+        // Deliberately only a header: preflight must never decode pixels.
+        writeFile(root / "textures/float.hdr", "#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n-Y 1 +X 1\n");
+        refused({{"textures", {{"base_color_map", reference}}}}, reference);
+        const auto response = edit({{"textures", {{"specular_roughness_map", reference}}}});
+        INFO(response.dump(2));
+        REQUIRE(response.contains("result"));
+        CHECK(response.at("result").at("committed") == true);
+        CHECK(Json::parse(readFile(root / path)).at("materials").at(0).at("textures").at("specular_roughness_map") == reference);
+    }
+    SECTION("EXR color is refused") {
+        const std::string reference = "project://textures/float.exr";
+        writeFile(root / "textures/float.exr", "exr");
+        refused({{"textures", {{"base_color_map", reference}}}}, reference);
+    }
+    SECTION("KTX2 format is read from its header without decoding pixels") {
+        for (const auto format : {131u, 141u, 109u, 0u, 37u, 43u, 145u, 146u}) {
+            CAPTURE(format);
+            std::string bytes{"\xABKTX 20\xBB\r\n\x1A\n", 12};
+            for (const auto word : {format, 1u, 4u, 4u, 0u, 0u, 1u})
+                for (int shift = 0; shift < 32; shift += 8) bytes.push_back(static_cast<char>((word >> shift) & 255));
+            const auto name = "textures/format_" + std::to_string(format) + ".ktx2";
+            const auto reference = "project://" + name;
+            writeFile(root / name, bytes);
+            const Json fields{{"textures", {{"base_color_map", reference}}}};
+            if (format == 37 || format == 43 || format == 145 || format == 146) {
+                const auto response = edit(fields);
+                INFO(response.dump(2));
+                REQUIRE(response.contains("result"));
+                CHECK(response.at("result").at("committed") == true);
+                writeFile(root / path, before);
+            } else refused(fields, reference);
+        }
+    }
+    SECTION("surface defaults are checked before a surface edit commits") {
+        const std::string reference = "project://textures/default.hdr";
+        writeFile(root / "textures/default.hdr", "#?RADIANCE\n");
+        auto surface = paths.loadText(openPbrOpaque);
+        const auto start = surface.find("name: base_color_map");
+        REQUIRE(start != std::string::npos);
+        const auto white = surface.find("engine://textures/white", start);
+        REQUIRE(white != std::string::npos);
+        surface.replace(white, std::string_view{"engine://textures/white"}.size(), reference);
+        writeFile(root / "shaders/default.surface", surface);
+        refused({{"surface", "project://shaders/default.surface"}}, reference);
+    }
+    SECTION("variant color textures are checked too") {
+        const std::string reference = "project://textures/variant.hdr";
+        writeFile(root / "textures/variant.hdr", "#?RADIANCE\n");
+        refused({{"variants", {{"alternate", {{"surface", openPbrOpaque},
+                                               {"textures", {{"base_color_map", reference}}}}}}}}, reference);
+    }
+}
+
+TEST_CASE("TX-1 materialdocumentrpc live HDR color refusal preserves the document and data HDR rebuilds",
+          "[material][rpc][tx1][gpu]") {
+    setupLogger(true);
+    const auto dir = makeTempDir("tx1_live");
+    const auto root = makeBlankBoxProject(dir.root);
+    const std::string path = "materials/paint.material.json";
+    std::filesystem::create_directories(root / "textures");
+    const std::array<float, 3> pixel{0.5f, 0.5f, 0.5f};
+    REQUIRE(stbi_write_hdr((root / "textures/float.hdr").string().c_str(), 1, 1, 3, pixel.data()) != 0);
+    FastModuleContainer modules;
+    configureHeadless(root);
+    (void)GET_MODULE(Renderer);
+    Rpc rpc;
+    const auto created = rpc.result("create_material", {{"path", path}, {"surface", openPbrOpaque}});
+    REQUIRE(created.at("applied") == "live");
+    const auto before = readFile(root / path);
+    const auto digest = created.at("material_digest");
+    const std::string reference = "project://textures/float.hdr";
+    const auto response = rpc.call("edit_material", {{"path", path}, {"base_material_digest", digest},
+                                                        {"textures", {{"base_color_map", reference}}}});
+    INFO(response.dump(2));
+    CHECK(readFile(root / path) == before);
+    REQUIRE(response.contains("error"));
+    CHECK(response.at("error").at("data").at("error_code") == "material.texture_role_mismatch@1");
+    const auto data = rpc.result("edit_material", {{"path", path}, {"base_material_digest", digest},
+                                                    {"textures", {{"specular_roughness_map", reference}}}});
+    CHECK(data.at("committed") == true);
+    CHECK(data.at("applied") == "rebuilt");
+    CHECK(data.at("restart_required").is_null());
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

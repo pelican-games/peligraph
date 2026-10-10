@@ -80,9 +80,9 @@ void write(const std::filesystem::path &path, const std::string &bytes) {
 
 // A KTX2 header: identifier, then vkFormat, typeSize, width, height, depth,
 // layerCount, faceCount.
-std::string ktx2(std::uint32_t faces) {
+std::string ktx2(std::uint32_t faces, std::uint32_t format = 109u) {
     std::string bytes{"\xABKTX 20\xBB\r\n\x1A\n", 12};
-    for (const std::uint32_t word : {109u, 1u, 4u, 4u, 0u, 0u, faces, 1u})
+    for (const std::uint32_t word : {format, 1u, 4u, 4u, 0u, 0u, faces, 1u})
         for (int shift = 0; shift < 32; shift += 8) bytes.push_back(static_cast<char>((word >> shift) & 0xFF));
     return bytes;
 }
@@ -350,7 +350,8 @@ void readyCube(MaterialAssignWidget &rows, FakeEngine &engine, const Json &objec
 
 // The dock on a project, the engine up, the list read and paint selected,
 // its material and its surface's schema read.
-void readyWithPaint(MaterialsDock &dock, FakeEngine &engine, const std::filesystem::path &root) {
+void readyWithPaint(MaterialsDock &dock, FakeEngine &engine, const std::filesystem::path &root,
+                    const Json &surface_schema = schema()) {
     dock.open(root);
     dock.engineAvailable();
     answer(dock, engine, "list_materials", listResult());
@@ -360,7 +361,7 @@ void readyWithPaint(MaterialsDock &dock, FakeEngine &engine, const std::filesyst
     dock.list()->setCurrentItem(paint);
     const auto read = answer(dock, engine, "get_material", paintMaterial());
     CHECK(read.params == Json{{"path", Paint}, {"name", "paint"}});
-    const auto surface = answer(dock, engine, "get_surface_schema", schema());
+    const auto surface = answer(dock, engine, "get_surface_schema", surface_schema);
     CHECK(surface.params == Json{{"surface", OpenPbr}});
 }
 
@@ -2546,6 +2547,91 @@ TEST_CASE("Materials dock binding repairs share its visible Undo history", "[dev
     dock.open(project(temporary));
     CHECK(dock.session().undoEntries().empty());
     CHECK_FALSE(dock.undoAction()->isEnabled());
+}
+
+TEST_CASE("TX-1 devstudio_materials texture choices filter color by format and preserve data and dimensions",
+          "[devstudio][materials][tx1]") {
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const std::filesystem::path root{temporary.path().toStdWString()};
+    write(root / "a.hdr", "#?RADIANCE\n");
+    write(root / "b.png", "png");
+    write(root / "c.ktx2", ktx2(1, 37));
+    write(root / "d.ktx2", ktx2(1, 131)); // BC1, no color view in the engine.
+    const auto entries = scanAssetRoots({{"assets", root}});
+    CHECK(textureChoices(entries, "2d", "color") ==
+          std::vector<std::string>{"project://assets/b.png", "project://assets/c.ktx2"});
+    CHECK(textureChoices(entries, "2d", "data") ==
+          std::vector<std::string>{"project://assets/a.hdr", "project://assets/b.png",
+                                   "project://assets/c.ktx2", "project://assets/d.ktx2"});
+
+    // Header-only files: neither the picker nor preflight needs pixel data.
+    for (const auto format : {37u, 43u, 145u, 146u, 131u, 141u, 109u, 0u}) {
+        CAPTURE(format);
+        write(root / "probe.ktx2", ktx2(1, format));
+        const std::vector<AssetEntry> probe{{"probe.ktx2", "probe.ktx2", root / "probe.ktx2"}};
+        CHECK(textureChoices(probe, "2d", "color").size() ==
+              ((format == 37 || format == 43 || format == 145 || format == 146) ? 1 : 0));
+        CHECK(textureChoices(probe, "2d", "data").size() == 1);
+    }
+    for (const auto *extension : {".png", ".jpg", ".jpeg", ".tga", ".bmp", ".PNG", ".hdr", ".exr"}) {
+        CAPTURE(extension);
+        const auto file = root / (std::string{"probe"} + extension);
+        write(file, "header");
+        const std::vector<AssetEntry> probe{{"probe", "probe", file}};
+        CHECK(textureChoices(probe, "2d", "color").size() ==
+              ((std::string_view{extension} == ".hdr" || std::string_view{extension} == ".exr") ? 0 : 1));
+        CHECK(textureChoices(probe, "2d", "data").size() == 1);
+    }
+    write(root / "cube.ktx2", ktx2(6, 145));
+    const std::vector<AssetEntry> cube{{"cube.ktx2", "cube.ktx2", root / "cube.ktx2"}};
+    CHECK(textureChoices(cube, "2d", "color").empty());
+    CHECK(textureChoices(cube, "cube", "color").size() == 1);
+    CHECK(textureFileDimension(root / "cube.ktx2") == "cube");
+    write(root / "cube.ktx2", ktx2(6, 145).substr(0, 39));
+    CHECK(textureChoices(cube, "cube", "color").empty());
+    CHECK(textureChoices(cube, "cube", "data").empty());
+}
+
+TEST_CASE("TX-1 devstudio_materials dock passes the texture role and explains the color restriction",
+          "[devstudio][materials][tx1]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = project(temporary);
+    write(root / "assets/textures/float.hdr", "#?RADIANCE\n");
+    write(root / "assets/textures/rgba.ktx2", ktx2(1, 37));
+    write(root / "assets/textures/bc1.ktx2", ktx2(1, 131));
+    auto surface = schema();
+    surface["textures"].push_back({{"name", "data_map"}, {"default", "engine://textures/white"},
+                                    {"color_space", "linear"}, {"role", "data"}, {"dimension", "2d"}});
+    FakeEngine engine;
+    MaterialsDock dock{engine.dockHooks()};
+    readyWithPaint(dock, engine, root, surface);
+    auto *color = named<QComboBox>(dock, QStringLiteral("pelican.materials.texture.base_color_map"));
+    auto *data = named<QComboBox>(dock, QStringLiteral("pelican.materials.texture.data_map"));
+    CHECK(color->count() == 3); // None, PNG, RGBA8 KTX2.
+    CHECK(data->count() == 5); // None and every 2D image.
+    CHECK(color->findData(QStringLiteral("project://assets/textures/float.hdr")) == -1);
+    CHECK(color->findData(QStringLiteral("project://assets/textures/bc1.ktx2")) == -1);
+    CHECK(color->toolTip().contains(QStringLiteral("Color slots only accept images that can be read as sRGB")));
+    CHECK(data->findData(QStringLiteral("project://assets/textures/float.hdr")) >= 0);
+    CHECK(data->findData(QStringLiteral("project://assets/textures/bc1.ktx2")) >= 0);
+
+    // An older document may still hold an incompatible reference. Show the
+    // current value honestly, but do not offer it as an enabled choice.
+    dock.session().poll();
+    answer(dock, engine, "list_materials", listResult("d2"));
+    auto material = paintMaterial("d2");
+    material["material"]["textures"] = {{"base_color_map", "project://assets/textures/float.hdr"}};
+    answer(dock, engine, "get_material", material);
+    const auto current = color->findData(QStringLiteral("project://assets/textures/float.hdr"));
+    REQUIRE(current >= 0);
+    CHECK(color->currentIndex() == current);
+    auto *model = qobject_cast<QStandardItemModel *>(color->model());
+    REQUIRE(model != nullptr);
+    CHECK_FALSE(model->item(current)->flags().testFlag(Qt::ItemIsEnabled));
+    CHECK_FALSE(engine.asked("edit_material"));
 }
 
 TEST_CASE("MU-1 Materials preserves authored route and unserved reason from list_materials",

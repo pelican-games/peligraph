@@ -24,6 +24,7 @@
 #include "../../project/materiallowering.hpp"
 #include "../../project/projectdocumenttransaction.hpp"
 #include "../../project/surfaceformat.hpp"
+#include "../../project/texturefileinfo.hpp"
 
 #include <algorithm>
 #include <array>
@@ -66,6 +67,7 @@ constexpr std::string_view surfaceUnknownCode = "material.surface_unknown@1";
 constexpr std::string_view modelUnknownCode = "material.model_unknown@1";
 constexpr std::string_view bindingInvalidCode = "material.binding_invalid@1";
 constexpr std::string_view transactionBusyCode = "material.transaction_busy@1";
+constexpr std::string_view textureRoleMismatchCode = "material.texture_role_mismatch@1";
 constexpr std::string_view routingConflictCode = "material.routing_conflict@1";
 
 [[noreturn]] void refuse(std::string_view method, const std::string &message, std::string_view code,
@@ -451,7 +453,7 @@ void mergeSurfaceInputs(std::string_view method, const std::string &path, const 
 // The candidate document as the engine reads it at start: parsed with its
 // surfaces, and every material lowered (MaterialFormat + lowering).
 void checkCandidateDocument(std::string_view method, const std::string &path, const OrderedJson &document,
-                            SurfaceCache &surfaces) {
+                            SurfaceCache &surfaces, const PathResolver &paths) {
     try {
         auto catalog = surfaces.catalogFor(document);
         const auto parsed = parseMaterialFormatJson(toJson(document), catalog);
@@ -459,8 +461,20 @@ void checkCandidateDocument(std::string_view method, const std::string &path, co
             if (!definition.surface) throw std::runtime_error("material '" + definition.name + "' requires a surface");
             const auto surface = catalog.find(*definition.surface);
             if (surface == catalog.end()) (void)surfaces.load(*definition.surface);
-            (void)lowerMaterial(definition, catalog.at(*definition.surface), projectMaterialLoweringCapabilities());
-            (void)lowerMaterialVariants(definition, catalog, projectMaterialLoweringCapabilities());
+            const auto checkTextures = [&](const LoweredMaterial &lowered) {
+                for (const auto &texture : lowered.textures) {
+                    if (texture.role != SurfaceTextureRole::color ||
+                        texture.reference.starts_with("engine://textures/")) continue;
+                    const auto file = paths.resolveExistingFile(texture.reference);
+                    if (!textureFileInfo(file).supports_srgb)
+                        refuse(method, "Color texture does not provide an SRGB view", textureRoleMismatchCode,
+                               {{"path", path}, {"material", definition.name}, {"param", texture.name},
+                                {"reference", texture.reference}, {"role", "color"}});
+                }
+            };
+            checkTextures(lowerMaterial(definition, catalog.at(*definition.surface), projectMaterialLoweringCapabilities()));
+            for (const auto &variant : lowerMaterialVariants(definition, catalog, projectMaterialLoweringCapabilities()))
+                checkTextures(variant.material);
         }
     } catch (const JsonRpcHandlerError &) {
         throw;
@@ -1176,7 +1190,7 @@ Json editMaterial(const Json &sent, PathResolver &paths, watch::ReloadService *r
                routingConflictCode,
                {{"path", *listed}, {"material", material_name}, {"routing", nullptr}, {"bound_by", std::move(bound_by)}});
     }
-    checkCandidateDocument(method, *listed, candidate, surfaces);
+    checkCandidateDocument(method, *listed, candidate, surfaces, paths);
     if (!rebound.empty()) {
         const auto routing = routingFromJson(material.at("routing"));
         if (!routing)
@@ -1365,7 +1379,7 @@ Json createMaterial(const Json &params, PathResolver &paths) {
     document["schema"] = std::string{materialSchema};
     document["version"] = 1;
     document["materials"] = OrderedJson::array({material});
-    checkCandidateDocument(method, relative, document, surfaces);
+    checkCandidateDocument(method, relative, document, surfaces, paths);
 
     auto asset_json = asset_data.json;
     if (!asset_json.contains("materials") || !asset_json.at("materials").is_array())
@@ -2449,7 +2463,7 @@ Json recoverMaterial(const std::string &reference, const AssetDataFile &asset_da
                        {{"name", name}, {"model", *holder}});
     }
     SurfaceCache surfaces{paths};
-    checkCandidateDocument(method, reference, document.json, surfaces);
+    checkCandidateDocument(method, reference, document.json, surfaces, paths);
 
     Json answer{{"committed", true},
                 {"recovered", true},
@@ -2502,7 +2516,7 @@ Json reloadMaterial(const std::string &reference, const AssetDataFile &asset_dat
                        {{"name", name}, {"model", *holder}});
     }
     SurfaceCache surfaces{paths};
-    checkCandidateDocument(method, reference, document.json, surfaces);
+    checkCandidateDocument(method, reference, document.json, surfaces, paths);
     Json answer{{"committed", true},
                 {"reloaded", true},
                 {"path", reference},
@@ -2551,7 +2565,7 @@ Json registerMaterial(const Json &params, PathResolver &paths, watch::ReloadServ
                        {{"name", name}, {"model", *holder}});
     }
     SurfaceCache surfaces{paths};
-    checkCandidateDocument(method, relative, document.json, surfaces);
+    checkCandidateDocument(method, relative, document.json, surfaces, paths);
 
     auto asset_json = asset_data.json;
     if (!asset_json.contains("materials") || !asset_json.at("materials").is_array())
@@ -2635,7 +2649,7 @@ Json renameMaterial(const Json &params, PathResolver &paths, watch::ReloadServic
     auto candidate = held.document.json;
     candidate.at("materials").at(held.index)["name"] = new_name;
     SurfaceCache surfaces{paths};
-    checkCandidateDocument(method, path, candidate, surfaces);
+    checkCandidateDocument(method, path, candidate, surfaces, paths);
     auto rebound = bindingsNaming(asset_data, paths, name);
     for (auto &bindings : rebound) {
         for (const auto entry : bindings.entries) bindings.json.at("bindings").at(entry)["material"] = new_name;
