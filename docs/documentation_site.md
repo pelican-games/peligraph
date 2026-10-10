@@ -46,11 +46,11 @@ GitHub Pages は静的 HTML の公開機能です。独自のサーバーを運�
 
 公開する場合の設定は次の順です。
 
-1. 修正した資料と生成設定を `develop` に反映します。
+1. 修正した資料と生成設定を `main` に反映します(公開版の資料だけを出す)。
 2. リポジトリの **Settings → Pages → Build and deployment → Source** で **GitHub Actions** を選びます。
 3. **Settings → Secrets and variables → Actions → Variables** に、リポジトリ変数 `PUBLISH_DOCS` を値 `true` で作成します。
-4. **Actions → Documentation site → Run workflow** を `develop` で実行します。
-5. `deploy` ジョブの URL を開きます。その後は `develop` の資料更新に合わせて再公開します。
+4. **Actions → Documentation site → Run workflow** を `main` で実行します。
+5. `deploy` ジョブの URL を開きます。その後は `main` の更新(release)に合わせて再公開します。
 
 `PUBLISH_DOCS` を設定するまでは HTML のビルドと成果物の保存だけを行います。
 プルリクエストでもビルドを確認しますが、公開処理は実行しません。
