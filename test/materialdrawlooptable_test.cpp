@@ -136,4 +136,45 @@ TEST_CASE("SK3 material family failed attachment does not publish and restores d
     CHECK(fixture.variants.at("outline") == fixture.outline);
 }
 
+TEST_CASE("SK3b draw_loop bind state shares descriptors across override pipelines",
+          "[material][draw_loop][sk3b]") {
+    // Opaque handles only: exercise the production decision without a device.
+    const vk::DescriptorSet material_set{reinterpret_cast<VkDescriptorSet>(1)};
+    const vk::DescriptorSet other_set{reinterpret_cast<VkDescriptorSet>(2)};
+    const PipelineHandle override_pipeline{10};
+    const PipelineHandle own_pipeline{11};
+    const PipelineHandle skinned_pipeline{12};
+    MaterialContainer::MaterialDrawBindState bound;
+    const auto draw = [&](PipelineHandle pipeline, vk::DescriptorSet descriptor,
+                          VertexMode mode) {
+        return bound.update(MaterialContainer::MaterialDrawBinding{
+            .pipeline = pipeline, .descriptor_set = descriptor}, mode);
+    };
+    for (const auto mode : vertexModes) {
+        DYNAMIC_SECTION("override then own pipeline in mode " << static_cast<int>(mode)) {
+            const auto first = draw(override_pipeline, material_set, mode);
+            CHECK(first.pipeline_bound);
+            CHECK(first.descriptor_set_bound);
+            const auto repeated = draw(override_pipeline, material_set, mode);
+            CHECK_FALSE(repeated.pipeline_bound);
+            CHECK_FALSE(repeated.descriptor_set_bound);
+            const auto own = draw(own_pipeline, material_set, mode);
+            CHECK(own.pipeline_bound);
+            CHECK_FALSE(own.descriptor_set_bound);
+            const auto other = draw(own_pipeline, other_set, mode);
+            CHECK_FALSE(other.pipeline_bound);
+            CHECK(other.descriptor_set_bound);
+        }
+    }
+    SECTION("mode changes rebind the shared set in both directions") {
+        draw(own_pipeline, material_set, VertexMode::standard);
+        const auto skinned = draw(skinned_pipeline, material_set, VertexMode::skinned);
+        CHECK(skinned.pipeline_bound);
+        CHECK(skinned.descriptor_set_bound);
+        const auto standard = draw(own_pipeline, material_set, VertexMode::standard);
+        CHECK(standard.pipeline_bound);
+        CHECK(standard.descriptor_set_bound);
+    }
+}
+
 } // namespace Pelican

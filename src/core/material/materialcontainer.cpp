@@ -2505,6 +2505,21 @@ void MaterialContainer::bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
 }
 
 MaterialContainer::MaterialDrawBinding
+MaterialContainer::MaterialDrawBindState::update(
+    MaterialDrawBinding next, VertexMode next_mode) {
+    next.pipeline_bound = !pipeline || *pipeline != next.pipeline;
+    // Overrides keep the base layout compatible within one mode.
+    // Keep SK-1's conservative rebind when the vertex mode changes;
+    // only same-mode overrides guarantee the full layout is unchanged.
+    next.descriptor_set_bound = !pipeline || mode != next_mode ||
+                                descriptor_set != next.descriptor_set;
+    pipeline = next.pipeline;
+    descriptor_set = next.descriptor_set;
+    mode = next_mode;
+    return next;
+}
+
+MaterialContainer::MaterialDrawBinding
 MaterialContainer::bindMaterialDraw(
     vk::CommandBuffer cmd_buf, const PassDefinition &pass,
     GlobalMaterialId material_id,
@@ -2515,25 +2530,20 @@ MaterialContainer::bindMaterialDraw(
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     const auto pipeline =
         pipeline_override.value_or(material.pipelineFor(mode));
-    MaterialDrawBinding binding{
+    const auto binding = bound.update(MaterialDrawBinding{
         .layout = pipeline_factory.layout(pipeline),
         .pipeline = pipeline,
         .descriptor_set = material.descset.get(),
-    };
-    if (!bound.pipeline || *bound.pipeline != pipeline) {
+    }, mode);
+    if (binding.pipeline_bound) {
         cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics,
                              pipeline_factory.pipeline(pipeline));
-        binding.pipeline_bound = true;
     }
-    if (!bound.pipeline || *bound.pipeline != pipeline ||
-        bound.descriptor_set != binding.descriptor_set) {
+    if (binding.descriptor_set_bound) {
         cmd_buf.bindDescriptorSets(
             vk::PipelineBindPoint::eGraphics, binding.layout,
             imageDescriptorSetNumber, {binding.descriptor_set}, {});
-        binding.descriptor_set_bound = true;
     }
-    bound.pipeline = pipeline;
-    bound.descriptor_set = binding.descriptor_set;
 
     if (const auto *screen_inputs =
             ensureScreenInputDescriptor(material_id, pass)) {

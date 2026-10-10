@@ -495,16 +495,19 @@ DECLARE_MODULE(MaterialContainer) {
     // LP-2: what a material pass last bound, by the effective pipeline and
     // descriptor set rather than by the material that asked for them. Two
     // steps of one range can share a material and still differ in pipeline.
-    struct MaterialDrawBindState {
-        std::optional<PipelineHandle> pipeline;
-        vk::DescriptorSet descriptor_set;
-    };
     struct MaterialDrawBinding {
         vk::PipelineLayout layout;
         PipelineHandle pipeline;
         vk::DescriptorSet descriptor_set;
         bool pipeline_bound = false;
         bool descriptor_set_bound = false;
+    };
+    struct MaterialDrawBindState {
+        std::optional<PipelineHandle> pipeline;
+        vk::DescriptorSet descriptor_set;
+        VertexMode mode = VertexMode::standard;
+
+        MaterialDrawBinding update(MaterialDrawBinding next, VertexMode next_mode);
     };
     // Binds `material`'s descriptor set and screen inputs with `pipeline`
     // (nullopt: the material's own), skipping what `bound` already holds.
