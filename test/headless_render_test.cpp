@@ -11671,16 +11671,20 @@ TEST_CASE(
         CHECK(material_assets.materialByName("ProjectLeaf") ==
               project_material);
 
-        TestGltfFragmentFixture::writeGlb(
-            model_path, false, false, true);
+        TestGltfFragmentFixture::writeUnreadableGlb(model_path);
         const auto stable_model_revision =
             model_assets.contentRevisionForTesting("tree");
+        const auto stable_model_resources =
+            model_assets.getModelTemplateByName("tree").gpu_resources.get();
         CHECK_FALSE(reload_service.applyRequestForTesting(
             watch::ReloadRequest{
                 watch::makeAssetKey("models/tree.glb"),
                 watch::ReloadKind::modified, {}, 4}));
         CHECK(model_assets.contentRevisionForTesting("tree") ==
               stable_model_revision);
+        CHECK(embedded_materials() == reused_embedded);
+        CHECK(model_assets.getModelTemplateByName("tree").gpu_resources.get() ==
+              stable_model_resources);
         TestGltfFragmentFixture::writeGlb(model_path);
         REQUIRE(reload_service.applyRequestForTesting(
             watch::ReloadRequest{

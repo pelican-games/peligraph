@@ -650,6 +650,12 @@ inline void writeGlb(const std::filesystem::path &path, bool duplicate_root_name
                       project_name_collision, ray_traceable_geometry));
 }
 
+// A truncated GLB header, shared by reload rejection tests. A project/glTF
+// material name collision is valid under NM-1 and must not stand in for this.
+inline void writeUnreadableGlb(const std::filesystem::path &path) {
+    detail::writeBytes(path, {'g', 'l', 'T', 'F'});
+}
+
 inline void writeNormalizedPositionGlb(
     const std::filesystem::path &path) {
     detail::writeBytes(path, makeNormalizedPositionGlb());

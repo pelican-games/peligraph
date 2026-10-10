@@ -2602,7 +2602,7 @@ TEST_CASE("MR1 stale model bindings survive startup reload and repair over RPC",
             {"primitive", {{"mesh", 0}, {"primitive", 0}}}}).at("applied") == "live");
         const auto repaired = Json::parse(readFile(root / reference));
         CHECK(repaired.at("bindings")[0].at("material") == "paint");
-        CHECK(repaired.at("bindings")[1].at("material") == "MatB");
+        CHECK(repaired.at("bindings")[1].at("material") == "models/two.glb#material/MatB@1");
         CHECK(rpc.result("get_problems").at("problems").empty());
         GET_MODULE(VulkanManageCore).waitIdle();
     }

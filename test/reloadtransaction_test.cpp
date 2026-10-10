@@ -10,6 +10,8 @@
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/model/gltf.hpp"
+#include "gltf_fragment_fixture.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
@@ -49,6 +51,62 @@ ReloadActor replace(LogicalResourceRef target, int value,
 }
 
 } // namespace
+
+// Exercise the production GLB parser and transaction publication without a
+// GPU. ModelAssetContainer and live draw-resource retention are covered by the
+// WP366 renderer case using the same unreadable fixture.
+TEST_CASE("RR1b WP366 unreadable GLB reload preserves published payload and revision",
+          "[rr1b][wp366][reload][cpu]") {
+    setupLogger();
+    FastModuleContainer modules;
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_rr1b_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() { std::filesystem::remove_all(root); }
+    } cleanup{root};
+    const auto path = root / "tree.glb";
+    auto &loader = GET_MODULE(GltfLoader);
+    TestGltfFragmentFixture::writeGlb(path);
+    ReloadCoordinator coordinator;
+    const auto resource = coordinator.registry().declareResource(
+        "models", makeAssetKey("models/tree.glb"),
+        std::make_shared<const PreparedGltf>(loader.prepareGltfBinary(path.string())));
+    const auto before = coordinator.registry().snapshot();
+    const auto reload = [&] {
+        auto candidate = std::make_shared<PreparedGltf>();
+        ReloadTransactionGroup group{"GLB parse"};
+        group.add(ReloadActor{
+            .name = "tree",
+            .target = resource,
+            .parse = [&loader, &path, candidate] {
+                *candidate = loader.prepareGltfBinary(path.string());
+            },
+            .stage = [candidate] { return StagedResourceData{candidate}; },
+        });
+        coordinator.enqueue(std::move(group));
+        REQUIRE(coordinator.applyFrame() == 1);
+    };
+    TestGltfFragmentFixture::writeUnreadableGlb(path);
+    reload();
+    CHECK(coordinator.status().failed == 1);
+    CHECK(coordinator.status().applied == 0);
+    const auto refused = coordinator.registry().snapshot();
+    CHECK(refused.find(resource)->content_revision == before.find(resource)->content_revision);
+    CHECK(refused.find(resource)->payload == before.find(resource)->payload);
+
+    // The former WP366 failure input only renamed a material to ProjectLeaf.
+    // It is a readable GLB, so recovery must accept it and publish once.
+    TestGltfFragmentFixture::writeGlb(path, false, false, true);
+    reload();
+    CHECK(coordinator.status().failed == 1);
+    CHECK(coordinator.status().applied == 1);
+    const auto recovered = coordinator.registry().snapshot();
+    CHECK(recovered.find(resource)->content_revision == before.find(resource)->content_revision + 1);
+    CHECK(recovered.find(resource)->payload != before.find(resource)->payload);
+}
 
 TEST_CASE("AssetKey is canonical project identity plus fragment", "[wp98][assetkey]") {
     const auto explicit_ref = makeAssetKey("project://assets/models/character.glb#mesh/Cube");
