@@ -505,10 +505,11 @@
       "name": "pelican.graphCanvas.fitView"
     },
     {
-      "label": "the boundary input's value socket is drawn again after the save",
+      "label": "the new boundary output socket is drawn and ready after the save",
       "cmd": "wait",
-      "name": "pelican.graphCanvasView::graph_socket#loop_body/color/value",
+      "name": "pelican.graphCanvasView::graph_zone_socket#loop/out:color",
       "visible": true,
+      "enabled": true,
       "timeout_ms": 60000
     },
     {

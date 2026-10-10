@@ -5030,6 +5030,11 @@ InspectorNotice GraphCanvasModel::notice() const {
     // they are waiting to hear about.
     if (edit_notice_.kind == InspectorNoticeKind::Error) return edit_notice_;
     if (failure_.kind != InspectorNoticeKind::None) return failure_;
+    // A topology commit still needs its document read back before the
+    // canvas has the new sockets. Placement-only commits already have their
+    // geometry on screen and keep their immediate saved notice.
+    if (plan_after_commit_ && edit_notice_.kind == InspectorNoticeKind::Success)
+        return {InspectorNoticeKind::Information, "Loading the saved graph..."};
     if (edit_notice_.kind != InspectorNoticeKind::None) return edit_notice_;
     if (context_received_ && !catalog_received_)
         return {InspectorNoticeKind::Information,

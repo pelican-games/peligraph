@@ -2549,3 +2549,52 @@ TEST_CASE("DO-1 set_outputs refuses a malformed outputs map",
     CHECK_THROWS_AS(Pelican::editGraphDocument(document, Json::array({Json{{"op", "set_outputs"},
         {"scope", "paint"}}})), std::invalid_argument);
 }
+
+TEST_CASE("LC-1b graphcomposition preserves loop boundary names through save and reload",
+          "[curve][graph-composition][graphloop][lc1b]") {
+    using Json = nlohmann::json;
+    auto body = lp1aEditBody("render_fullscreen");
+    body["outputs"] = Json::object();
+    body["nodes"].push_back({{"id", "color"}, {"op", "graph.input"}});
+    auto &pass = body["nodes"][1];
+    pass["inputs"]["source"] = {{"node", "color"}, {"port", "value"}};
+    pass["parameters"]["ports"]["source"] =
+        {{"kind", "image"}, {"type", lp1aEditColorType()}, {"access", "read"},
+         {"binding", "input"}, {"input_index", 0}};
+    Json loop{{"id", "loop"}, {"op", "graph.loop"},
+              {"parameters", {{"over", {{"range", {{"count", 4}}}}},
+                              {"branches", Json::array({{{"body", "loop_body"}}})}}},
+              {"inputs", {{"color", {{"node", "lit"}, {"port", "resource"}}}}},
+              {"outputs", Json::array()}};
+    Json document{{"schema", "pelican.graph"}, {"version", 1},
+                  {"definitions", {{"loop_body", body}}},
+                  {"nodes", Json::array({lp1aEditDocument().at("nodes")[0], loop})},
+                  {"outputs", Json::object()}};
+    // The same two operations as a body output dropped on the zone slot.
+    loop["outputs"] = Json::array({"color"});
+    const Json endpoint{{"node", "render_fullscreen"}, {"port", "color"}};
+    document = Pelican::editGraphDocument(document, Json::array({
+        Json{{"op", "set_outputs"}, {"scope", "loop_body"}, {"outputs", {{"color", endpoint}}}},
+        Json{{"op", "replace_node"}, {"scope", "root"}, {"node", loop}}}));
+    const auto saved = document.dump(2);
+    const auto reopened = Json::parse(saved);
+    CHECK(reopened.at("nodes")[1].at("id") == "loop");
+    CHECK(reopened.at("nodes")[1].at("outputs") == Json::array({"color"}));
+    CHECK(reopened.at("definitions").at("loop_body").at("outputs") ==
+          Json{{"color", endpoint}});
+    CHECK(saved.find("loop/$") == std::string::npos);
+    REQUIRE_NOTHROW(Pelican::partitionGraphDocument(reopened));
+    const auto expanded = Pelican::expandGraphDocument(reopened);
+    REQUIRE(expanded.loops.at("loop").branches.at(0).has_value());
+    CHECK(expanded.loops.at("loop").branches.at(0)->outputs.at("color") ==
+          Json{{"node", "loop/$0/render_fullscreen"}, {"port", "color"}});
+    // The reloaded names still accept the next GUI gesture: color -> color carry.
+    auto parameters = loop.at("parameters");
+    parameters["carry"] = Json::array({{{"from", "color"}, {"to", "color"}}});
+    const auto carried = Pelican::editGraphDocument(reopened, Json::array({
+        Json{{"op", "set_node_parameters"}, {"scope", "root"},
+             {"node", "loop"}, {"parameters", parameters}}}));
+    REQUIRE_NOTHROW(Pelican::partitionGraphDocument(Json::parse(carried.dump(2))));
+    CHECK(carried.at("definitions").at("loop_body").at("outputs") ==
+          reopened.at("definitions").at("loop_body").at("outputs"));
+}

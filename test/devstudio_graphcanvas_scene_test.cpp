@@ -15981,3 +15981,70 @@ TEST_CASE("GA-1 graphcanvas selection highlights only the matching port arrowhea
     }
     CHECK(count == 2);
 }
+
+TEST_CASE("LC-1b graphcanvas saved notice waits for the loop boundary socket readback",
+          "[devstudio][graph-canvas][scene][lc1b]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = q19ZoneDocument();
+    auto &loop = document["nodes"][1];
+    loop["id"] = "loop";
+    loop["parameters"].erase("carry");
+    loop["outputs"] = Json::array();
+    document["definitions"]["body"]["outputs"] = Json::object();
+    tab.read(document, "lc1b-before");
+    tab.answer("get_graph_catalog", ux2Catalog());
+    auto &scene = tab.widget->scene();
+    auto *notice = tab.field<QLabel>("pelican.graphCanvasNotice");
+    auto *canvas = tab.field<QGraphicsView>("pelican.graphCanvasView");
+    const auto output = [&] {
+        return scopedItem(scene, PelicanStudio::GraphCanvasZoneSocketItem, QString{},
+                          QStringLiteral("loop"), QStringLiteral("out:color"));
+    };
+    auto *from = socketOf(scene, QStringLiteral("body"), "pass", "color", "output");
+    auto *slot = scopedItem(scene, PelicanStudio::GraphCanvasZoneSocketItem, QString{},
+                            QStringLiteral("loop"), QStringLiteral("out:+"));
+    REQUIRE(from != nullptr);
+    REQUIRE(slot != nullptr);
+    REQUIRE(output() == nullptr);
+    drag(scene, centreOf(from), centreOf(slot));
+    REQUIRE(tab.reads("edit_graph_document") == 1);
+    const auto edit = tab.transport.idOf(QStringLiteral("edit_graph_document"));
+    const auto ops = Json::parse(tab.transport.calls[static_cast<std::size_t>(edit - 1)]
+                                    .body.toStdString());
+    document = Pelican::editGraphDocument(document, ops);
+    tab.answer("edit_graph_document", {{"status", "accepted"}, {"ticket", "lc1b"}});
+    tab.answer("get_edit_result", {{"status", "committed"}, {"committed", true},
+                                   {"source_digest", {{"hex", "lc1b-after"}}}});
+
+    // Delay the document reply. The old input is already drawn, so waiting
+    // for that item (gui_build_C step 78) cannot establish output readiness.
+    CHECK(socketOf(scene, QStringLiteral("body"), "target", "value", "output") != nullptr);
+    CHECK_FALSE(canvas->isEnabled());
+    CHECK(output() == nullptr);
+    CHECK(notice->text() != QStringLiteral("Graph change saved."));
+    CHECK(tab.widget->model().notice().kind != PelicanStudio::InspectorNoticeKind::Success);
+
+    SECTION("the saved document arrives before the next gesture") {
+        tab.read(Json::parse(document.dump(2)), "lc1b-after");
+        REQUIRE(canvas->isEnabled());
+        REQUIRE(output() != nullptr);
+        CHECK(notice->text() == QStringLiteral("Graph change saved."));
+        auto *target = socketOf(scene, QStringLiteral("body"), "target", "value", "output");
+        REQUIRE(target != nullptr);
+        drag(scene, centreOf(output()), centreOf(target));
+        REQUIRE(tab.reads("edit_graph_document") == 2);
+        const auto carry = tab.sent(2);
+        CHECK(carry.at("parameters").at("carry") ==
+              Json::array({{{"from", "color"}, {"to", "target"}}}));
+    }
+    SECTION("a failed read is reported and a later refresh recovers the socket") {
+        tab.answer("get_graph_instances", {{"error", {{"message", "readback unavailable"}}}});
+        CHECK(tab.widget->model().notice().kind == PelicanStudio::InspectorNoticeKind::Error);
+        CHECK(notice->text() != QStringLiteral("Graph change saved."));
+        tab.widget->refresh();
+        tab.read(document, "lc1b-after");
+        REQUIRE(output() != nullptr);
+        CHECK(notice->text() == QStringLiteral("Graph change saved."));
+    }
+}
