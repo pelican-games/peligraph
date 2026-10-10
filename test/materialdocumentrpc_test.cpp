@@ -1,3 +1,5 @@
+#include "../src/core/model/gltf.hpp"
+#include "../src/project/jsondocument.hpp"
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/asset/model.hpp"
 #include "gltf_fragment_fixture.hpp"
@@ -232,8 +234,49 @@ Json spawnCube() {
 
 } // namespace
 
-TEST_CASE("MB-1 materialdocumentrpc preserves embedded glTF names across partial binding and restart",
-          "[mb1][material][rpc][gpu]") {
+// Exercise the shared canonicalization used by materialSlots, RPC responses
+// and binding/scene writers with the indexed material of an engine primitive.
+TEST_CASE("NM1 materialdocumentrpc engine primitive materials keep bare names", "[nm1][material][rpc]") {
+    setupLogger(true);
+    for (const auto *shape : {"cube", "plane", "sphere"}) {
+        const std::string reference = std::string{"engine://primitives/"} + shape;
+        INFO(reference);
+        ModelTemplate model;
+        model.authored_asset_reference = reference;
+        model.named_materials = {{"pelican.primitive.default", GlobalMaterialId{10},
+            MaterialVariantRouting{MaterialAlphaMode::opaque, false}, false, 0}};
+        REQUIRE(model.named_materials.size() == 1);
+        const auto &material = model.named_materials.front();
+        REQUIRE(material.index == 0); // An index alone does not imply a file asset.
+        CHECK(material.name == "pelican.primitive.default");
+        CHECK(modelMaterialReference(model, material) == "pelican.primitive.default");
+        CHECK(modelMaterialDisplayName(model, material) == "pelican.primitive.default");
+        CHECK(resolveModelMaterial(model, "pelican.primitive.default").reference == "pelican.primitive.default");
+        // Normalize documents written by the regressed version as well.
+        CHECK(resolveModelMaterial(model, reference + "#material/pelican.primitive.default@0").reference ==
+              "pelican.primitive.default");
+        const std::array project{ModelTemplate::NamedMaterial{"paint", GlobalMaterialId{99}, material.routing}};
+        CHECK(resolveModelMaterial(model, "paint", project).reference == "paint");
+    }
+
+    ModelTemplate file_model;
+    file_model.named_materials = {{"paint", GlobalMaterialId{10}, std::nullopt, false, 0}};
+    for (const auto *reference : {"models/box.glb#mesh/Body", "project://models/avatar.vrm"}) {
+        file_model.authored_asset_reference = reference;
+        const auto expected = std::string{reference}.substr(0, std::string{reference}.find('#')) + "#material/paint@0";
+        CHECK(modelMaterialReference(file_model, file_model.named_materials.front()) == expected);
+        CHECK(resolveModelMaterial(file_model, "paint").reference == expected);
+    }
+    // Built-in fallback materials have no source material array entry, even
+    // when used by a file-backed model. Project materials keep their names too.
+    const ModelTemplate::NamedMaterial builtin{"pelican.builtin.transparent", GlobalMaterialId{11}};
+    CHECK(modelMaterialReference(file_model, builtin) == "pelican.builtin.transparent");
+    const std::array project{ModelTemplate::NamedMaterial{"paint", GlobalMaterialId{99}}};
+    CHECK(resolveModelMaterial(file_model, "paint", project).reference == "paint");
+}
+
+TEST_CASE("NM1 materialdocumentrpc indexed materials survive partial binding scene edits and restart",
+          "[nm1][material][rpc][gpu]") {
     setupLogger(true);
     const auto dir = makeTempDir("mb1");
     const auto root = makeBlankBoxProject(dir.root);
@@ -248,12 +291,16 @@ TEST_CASE("MB-1 materialdocumentrpc preserves embedded glTF names across partial
                            (static_cast<std::uint32_t>(bytes[15]) << 24);
     auto gltf = Json::parse(bytes.begin() + 20, bytes.begin() + 20 + json_size);
     gltf["materials"][0]["name"] = "Material.001";
-    gltf["materials"][1]["name"] = "Body (skin)";
+    gltf["materials"].push_back(gltf["materials"][0]);
+    gltf["materials"][1]["name"] = "material";
+    gltf["materials"].push_back(gltf["materials"][0]);
+    gltf["materials"][3]["name"] = "Body (skin)";
+    gltf["meshes"][1]["primitives"][0]["material"] = 2;
     gltf["meshes"][0]["primitives"].push_back(gltf["meshes"][1]["primitives"][0]);
     gltf["meshes"].erase(1);
     gltf["nodes"] = Json::array({{{"mesh", 0}}});
     gltf["scenes"][0]["nodes"] = Json::array({0});
-    gltf.erase("animations");
+
     auto json_bytes = gltf.dump();
     while (json_bytes.size() % 4 != 0) json_bytes.push_back(' ');
     std::vector<std::uint8_t> fixture;
@@ -268,22 +315,24 @@ TEST_CASE("MB-1 materialdocumentrpc preserves embedded glTF names across partial
     std::filesystem::create_directories((root / path).parent_path());
     TestGltfFragmentFixture::detail::writeBytes(root / path, fixture);
 
+    std::string bindings_file;
     const auto checkBindings = [&](Rpc &rpc) {
         const auto result = rpc.result("get_material_bindings", {{"model", model}});
         const auto &primitives = result.at("primitives");
         REQUIRE(primitives.size() == 2);
-        CHECK(primitives.at(0).at("slot") == "Material.001");
+        CHECK(primitives.at(0).at("slot") == path + "#material/Material.001@0");
         CHECK(primitives.at(0).at("material") == "paint");
         CHECK(primitives.at(1).at("mesh") == 0);
         CHECK(primitives.at(1).at("primitive") == 1);
-        CHECK(primitives.at(1).at("slot") == "Body (skin)");
-        CHECK(primitives.at(1).at("material") == "Body (skin)");
+        CHECK(primitives.at(1).at("slot") == path + "#material/Material.001@2");
+        CHECK(primitives.at(1).at("material") == path + "#material/Material.001@2");
         CHECK_FALSE(primitives.at(0).contains("unresolved"));
         CHECK_FALSE(primitives.at(1).contains("unresolved"));
-        const auto saved = Json::parse(readFile(root / result.at("material_bindings").get<std::string>()));
+        bindings_file = result.at("material_bindings").get<std::string>();
+        const auto saved = Json::parse(readFile(root / bindings_file));
         CHECK(saved.at("bindings").at(0).at("usd_path") == "/mesh_0/primitive_0");
         CHECK(saved.at("bindings").at(1).at("usd_path") == "/mesh_0/primitive_1");
-        CHECK(saved.at("bindings").at(1).at("material") == "Body (skin)");
+        CHECK(saved.at("bindings").at(1).at("material") == path + "#material/Material.001@2");
     };
     {
         FastModuleContainer modules;
@@ -293,17 +342,68 @@ TEST_CASE("MB-1 materialdocumentrpc preserves embedded glTF names across partial
         REQUIRE(rpc.result("register_model", {{"path", path}, {"name", model}}).at("committed") == true);
         REQUIRE(rpc.result("create_material", {{"path", "materials/paint.material.json"},
                                                {"surface", openPbrOpaque}}).at("committed") == true);
+        REQUIRE(rpc.result("create_material", {{"path", "materials/material.material.json"},
+                                               {"surface", openPbrOpaque}}).at("committed") == true);
+        const auto &loaded = GET_MODULE(ModelAssetContainer).getModelTemplateByName(model);
+        CHECK(resolveModelMaterial(loaded, "material", GET_MODULE(ProjectMaterialAssetContainer).namedMaterials()).material->material ==
+            GET_MODULE(ProjectMaterialAssetContainer).materialByName("material"));
+        CHECK(resolveModelMaterial(loaded, path + "#material/material@1").material->index == 1);
         const auto bound = rpc.result("bind_material", {{"model", model},
             {"primitive", {{"mesh", 0}, {"primitive", 0}}}, {"material", "paint"}});
         REQUIRE(bound.at("committed") == true);
         checkBindings(rpc);
         // A non-identifier glTF name also passes through bind_material's input unchanged.
         REQUIRE(rpc.result("bind_material", {{"model", model},
-            {"primitive", {{"mesh", 0}, {"primitive", 1}}}, {"material", "Material.001"}}).at("committed") == true);
+            {"primitive", {{"mesh", 0}, {"primitive", 1}}}, {"material", path + "#material/Material.001@0"}}).at("committed") == true);
         CHECK(rpc.result("get_material_bindings", {{"model", model}})
-                  .at("primitives").at(1).at("material") == "Material.001");
+                  .at("primitives").at(1).at("material") == path + "#material/Material.001@0");
         REQUIRE(rpc.result("bind_material", {{"model", model},
-            {"primitive", {{"mesh", 0}, {"primitive", 1}}}, {"material", "Body (skin)"}}).at("committed") == true);
+            {"primitive", {{"mesh", 0}, {"primitive", 1}}}, {"material", path + "#material/Material.001@2"}}).at("committed") == true);
+        auto &loader = GET_MODULE(GltfLoader);
+        const auto indexed = loader.inspect(loader.prepareGltfBinary((root / path).string(),
+            parsePathReference(path + "#mesh/old@0").fragment));
+        CHECK(indexed.fragment_name_mismatch);
+        REQUIRE(indexed.material_primitives.size() == 2);
+        const auto selected_material = loader.inspect(loader.prepareGltfBinary((root / path).string(),
+            parsePathReference(path + "#material/Material.001@2").fragment));
+        REQUIRE(selected_material.named_materials.size() == 1);
+        CHECK(selected_material.named_materials[0].index == 2);
+        CHECK_FALSE(selected_material.fragment_name_mismatch);
+        const auto node = loader.inspect(loader.prepareGltfBinary((root / path).string(),
+            parsePathReference(path + "#node/old@0").fragment));
+        CHECK(node.fragment_name_mismatch);
+        REQUIRE(node.material_primitives.size() == 2);
+        const auto animation = loader.inspect(loader.prepareGltfBinary((root / path).string(),
+            parsePathReference(path + "#animation/old@0").fragment));
+        CHECK(animation.fragment_name_mismatch);
+        REQUIRE(animation.skeletal);
+        REQUIRE(animation.skeletal->clips.size() == 1);
+        CHECK(animation.skeletal->clips[0].name == "Walk");
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        const auto actor = rpc.result("open_editor_session", {{"display_name", "NM1"}})["actor_id"].get<std::uint64_t>();
+        auto spawn = spawnCube();
+        spawn[0]["object"]["components"][1]["model"] = model;
+        REQUIRE(rpc.edit(actor, spawn)["status"] == "committed");
+        std::uint64_t object = 0;
+        const auto tree = rpc.result("scene_tree");
+        for (const auto &entry : tree["objects"])
+            if (entry.value("name", std::string{}) == "Box") object = entry["authoring_object_id"].get<std::uint64_t>();
+        REQUIRE(object != 0);
+        const auto set = [&](const std::string &material) {
+            const auto accepted = rpc.result("set_object_material", {{"actor_id", actor}, {"object", object}, {"material", material}});
+            REQUIRE(accepted["status"] == "accepted");
+            (void)rpc.result("step_frame");
+            REQUIRE(rpc.result("get_edit_result", {{"ticket", accepted["ticket"]}})["status"] == "committed");
+            const auto current = rpc.result("get_object_materials", {{"object", object}});
+            CHECK(current["materials"][0]["material"] == material);
+            CHECK(current["primitives"][0]["drawn"] == material);
+        };
+        set("material");
+        set(path + "#material/material@1");
+        set(path + "#material/Material.001@2");
+        CHECK(rpc.refusal("set_object_material", {{"actor_id", actor}, {"object", object},
+            {"material", "other.glb#material/Material.001@2"}})["error_code"] == "material.name_unknown@1");
+        (void)rpc.result("save_scene");
         GET_MODULE(VulkanManageCore).waitIdle();
     }
     {
@@ -315,7 +415,60 @@ TEST_CASE("MB-1 materialdocumentrpc preserves embedded glTF names across partial
         REQUIRE_NOTHROW(models.getModelTemplateByName(model));
         Rpc rpc;
         checkBindings(rpc);
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        const auto tree = rpc.result("scene_tree");
+        for (const auto &object : tree["objects"]) {
+            if (object.value("name", std::string{}) != "Box") continue;
+            const auto current = rpc.result("get_object_materials", {{"object", object["authoring_object_id"]}});
+            CHECK(current["primitives"][0]["drawn"] == path + "#material/Material.001@2");
+        }
         CHECK(rpc.result("get_problems").at("problems").empty());
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    auto document = Json::parse(readFile(root / bindings_file));
+    document["bindings"][1]["material"] = path + "#material/old@2";
+    writeFile(root / bindings_file, renderJsonDocument(nlohmann::ordered_json::parse(document.dump()), readFile(root / bindings_file)));
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        const auto problems = rpc.result("get_problems").at("problems");
+        INFO(problems.dump(2));
+        REQUIRE(problems.size() == 1);
+        CHECK(problems[0]["code"] == "material.reference_stale@1");
+        CHECK(problems[0]["fields"]["rows"][0]["written_name"] == "old");
+        CHECK(problems[0]["fields"]["rows"][0]["current_name"] == "Material.001");
+        CHECK(rpc.result("get_material_bindings", {{"model", model}})["primitives"][1]["material"] == path + "#material/Material.001@2");
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    document["bindings"][1]["material"] = "Material.001";
+    writeFile(root / bindings_file, renderJsonDocument(nlohmann::ordered_json::parse(document.dump()), readFile(root / bindings_file)));
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        const auto problems = rpc.result("get_problems").at("problems");
+        INFO(problems.dump(2));
+        REQUIRE(problems.size() == 1);
+        CHECK(problems[0]["code"] == "material.binding_unresolved@1");
+        CHECK(problems[0]["fields"]["rows"][0]["reason"].get<std::string>().find("@<index>") != std::string::npos);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+    document["bindings"][1]["material"] = "Body (skin)";
+    writeFile(root / bindings_file, renderJsonDocument(nlohmann::ordered_json::parse(document.dump()), readFile(root / bindings_file)));
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        CHECK(rpc.result("get_problems")["problems"].empty());
+        CHECK(rpc.result("get_material_bindings", {{"model", model}})["primitives"][1]["material"] == path + "#material/Body (skin)@3");
+        REQUIRE(rpc.result("bind_material", {{"model", model}, {"primitive", {{"mesh", 0}, {"primitive", 0}}},
+            {"material", "material"}})["committed"] == true);
+        CHECK(Json::parse(readFile(root / bindings_file))["bindings"][1]["material"] == path + "#material/Body (skin)@3");
         GET_MODULE(VulkanManageCore).waitIdle();
     }
 }

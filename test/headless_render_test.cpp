@@ -15953,7 +15953,7 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
     REQUIRE(slots.size() == 2);
     for (const auto &slot : slots) {
         CAPTURE(slot.mesh, slot.primitive);
-        CHECK(slot.slot == "Body");
+        CHECK(slot.slot == "slots.gltf#material/Body@0");
         REQUIRE(slot.routing.has_value());
         CHECK(slot.routing == slot_model.named_materials[0].routing);
     }
@@ -15961,8 +15961,8 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
     REQUIRE(slot_bindings.contains("result"));
     REQUIRE(slot_bindings["result"]["primitives"].size() == 2);
     for (const auto &primitive : slot_bindings["result"]["primitives"]) {
-        CHECK(primitive["slot"] == "Body");
-        CHECK(primitive["material"] == "Body");
+        CHECK(primitive["slot"] == "slots.gltf#material/Body@0");
+        CHECK(primitive["material"] == "slots.gltf#material/Body@0");
     }
     const auto check_slot_items = [&](GlobalMaterialId expected) {
         std::size_t skinned = 0, standard = 0;
@@ -15974,7 +15974,7 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
         REQUIRE(skinned == 1);
         REQUIRE(standard == 1);
     };
-    const auto slot_bound = call("bind_material", {{"model", "slots"}, {"slot", "Body"}, {"material", "Paint"}});
+    const auto slot_bound = call("bind_material", {{"model", "slots"}, {"slot", "slots.gltf#material/Body@0"}, {"material", "Paint"}});
     REQUIRE(slot_bound.contains("result"));
     CHECK(slot_bound["result"]["committed"] == true);
     CHECK(slot_bound["result"]["applied"] == "live");
@@ -15983,7 +15983,7 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
     REQUIRE(instances.removeModelInstance(slot_instance));
 
     // Reset the model first so object-slot coverage cannot pass on model bindings alone.
-    const auto slot_reset = call("bind_material", {{"model", "slots"}, {"slot", "Body"}, {"material", "Body"}});
+    const auto slot_reset = call("bind_material", {{"model", "slots"}, {"slot", "slots.gltf#material/Body@0"}, {"material", "Body"}});
     REQUIRE(slot_reset.contains("result"));
     CHECK(slot_reset["result"]["committed"] == true);
     REQUIRE(slot_reset["result"]["material_bindings"].is_null());
@@ -16019,14 +16019,14 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
     const auto object = tree.at("objects")[0].at("authoring_object_id");
     check_slot_items(models.getModelTemplateByName("slots").named_materials[0].material);
     commit_edit(engine_result("set_object_material", {{"actor_id", actor}, {"object", object},
-        {"slot", "Body"}, {"material", "Paint"}}));
+        {"slot", "slots.gltf#material/Body@0"}, {"material", "Paint"}}));
     const auto object_materials = engine_result("get_object_materials", {{"object", object}});
     REQUIRE(object_materials.at("materials").size() == 2);
     REQUIRE(object_materials.at("primitives").size() == 2);
     for (const auto &primitive : object_materials.at("primitives")) {
-        CHECK(primitive.at("slot") == "Body");
+        CHECK(primitive.at("slot") == "slots.gltf#material/Body@0");
         CHECK(primitive.at("source") == "object");
-        CHECK(primitive.at("model_material") == "Body");
+        CHECK(primitive.at("model_material") == "slots.gltf#material/Body@0");
         CHECK(primitive.at("drawn") == "Paint");
     }
     check_slot_items(paint);

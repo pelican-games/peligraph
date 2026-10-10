@@ -27,6 +27,7 @@ struct AssetFragmentRef {
     std::string kind;
     std::string path;
     AssetFragmentAddressKind address_kind = AssetFragmentAddressKind::name;
+    std::optional<int> index;
 };
 
 struct ParsedPathRef {
@@ -107,6 +108,21 @@ struct AssetStoresChange {
                declared_manifests.empty() && removed_manifests.empty();
     }
 };
+
+// Shared selection rules for glTF loads and material references.
+struct AssetFragmentCandidate {
+    int index;
+    std::string name;
+    std::string full_path;
+    std::vector<std::string> aliases;
+};
+struct AssetFragmentSelection {
+    std::size_t candidate;
+    bool name_mismatch = false;
+};
+AssetFragmentSelection resolveAssetFragment(const AssetFragmentRef &requested,
+    const std::vector<AssetFragmentCandidate> &candidates);
+std::string assetFragmentText(const AssetFragmentRef &fragment);
 
 ParsedPathRef parsePathReference(std::string_view ref);
 std::string normalizedResolvedReferenceKey(const ResolvedRef &reference);

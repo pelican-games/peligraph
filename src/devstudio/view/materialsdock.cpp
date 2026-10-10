@@ -770,10 +770,12 @@ struct MaterialsDock::Impl {
             model_choice->clear();
             model_choice->addItem(owner.tr("Model default"), QString{});
             for (const auto &name : model_session.materials()) model_choice->addItem(qtext(name), qtext(name));
+            for (const auto &[reference, label] : model_session.embeddedMaterials())
+                model_choice->addItem(qtext(label), qtext(reference));
             const auto shown = model_session.shownMaterial();
             int index = shown ? model_choice->findData(qtext(*shown)) : -1;
             if (shown && index < 0) {
-                model_choice->addItem(qtext(*shown), qtext(*shown));
+                model_choice->addItem(qtext(model_session.materialLabel(*shown)), qtext(*shown));
                 index = model_choice->count() - 1;
             }
             if (shown && !unresolved.empty() && index > 0) {

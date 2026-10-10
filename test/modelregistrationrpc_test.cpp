@@ -532,11 +532,11 @@ TEST_CASE("RR1 modelregistration re-registering retained and static models reset
         REQUIRE(rpc.edit(actor, spawn("Returned", "character")).at("status") == "committed");
         const auto bindings = rpc.result("get_material_bindings", {{"model", "character"}});
         REQUIRE(bindings.at("primitives").size() == 1);
-        CHECK(bindings.at("primitives").at(0).at("material") == "Skin");
+        CHECK(bindings.at("primitives").at(0).at("material") == "assets/models/character.glb#material/Skin@0");
         const auto own = rpc.result("get_object_materials", {{"object", objectId(rpc, "Returned")}});
         REQUIRE(own.at("primitives").size() == 1);
         CHECK(own.at("primitives").at(0).at("model_material") == bindings.at("primitives").at(0).at("material"));
-        CHECK(own.at("primitives").at(0).at("drawn") == "Skin");
+        CHECK(own.at("primitives").at(0).at("drawn") == "assets/models/character.glb#material/Skin@0");
         (void)rpc.result("render_frame");
         std::uint64_t own_draws = 0;
         const auto plan = rpc.result("get_frame_plan");

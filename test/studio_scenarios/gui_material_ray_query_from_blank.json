@@ -869,14 +869,14 @@
       "timeout_ms": 30000
     },
     {
-      "label": "the bound name draws now: the cube's bindings name nothing unresolved (mesh, primitive, slot, material, usd_path)",
+      "label": "the bound name draws now: the cube's bindings name nothing unresolved (mesh, primitive, slot, slot_display_name, material, usd_path)",
       "expect": "rpc_equals",
       "method": "get_material_bindings",
       "params": {
         "model": "engine://primitives/cube"
       },
       "path": "primitives[0].$len",
-      "value": 5,
+      "value": 6,
       "retry_ms": 30000
     },
     {

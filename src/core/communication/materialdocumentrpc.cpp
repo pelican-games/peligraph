@@ -1356,10 +1356,6 @@ Json createMaterial(const Json &params, PathResolver &paths) {
         fields.update(*holder);
         refuse(method, "material '" + name + "' exists already", nameConflictCode, std::move(fields));
     }
-    if (const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>())
-        if (const auto holder = models->modelDeclaringMaterial(name))
-            refuse(method, "model '" + *holder + "' has a glTF material named '" + name + "'", nameConflictCode,
-                   {{"name", name}, {"model", *holder}});
 
     SurfaceCache surfaces{paths};
     const auto &surface = requireSurface(method, surfaces, surface_reference);
@@ -1434,6 +1430,7 @@ struct ModelBindingState {
     std::vector<ModelMaterialSlot> slots;
     std::map<PrimitiveKey, BindingEntry> current;
     bool stale = false;
+    const ModelTemplate *loaded = nullptr;
 };
 
 ModelBindingState readBindingState(std::string_view method, const std::string &model,
@@ -1458,6 +1455,7 @@ ModelBindingState readBindingState(std::string_view method, const std::string &m
             if (!primitive) throw std::runtime_error("the model is not loaded by this engine");
             (void)models->getModelTemplateByName(model);
         }
+        state.loaded = &models->getModelTemplateByName(model);
         state.slots = models->materialSlots(model);
         state.stale = !models->getModelTemplateByName(model).binding_issues.empty();
     } catch (const std::exception &error) {
@@ -1491,6 +1489,14 @@ ModelBindingState readBindingState(std::string_view method, const std::string &m
     for (const auto &slot : state.slots)
         state.current.try_emplace(PrimitiveKey{slot.mesh, slot.primitive},
                                   BindingEntry{slot.slot, std::nullopt, slot.routing});
+    const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
+    for (auto &[key, entry] : state.current) {
+        try {
+            const auto resolved = resolveModelMaterial(*state.loaded, entry.material,
+                project ? project->namedMaterials() : std::span<const ModelTemplate::NamedMaterial>{});
+            if (resolved.material) entry.material = resolved.reference;
+        } catch (const std::exception &) { /* Unresolved rows retain their diagnostic spelling. */ }
+    }
     return state;
 }
 
@@ -1540,6 +1546,7 @@ Json getMaterialBindings(const Json &params, PathResolver &paths) {
         Json primitive{{"mesh", slot.mesh},
                        {"primitive", slot.primitive},
                        {"slot", slot.slot},
+                       {"slot_display_name", slot.display_name},
                        {"material", entry.material},
                        {"usd_path", entry.usd_path ? Json(*entry.usd_path) : Json(nullptr)}};
         if (entry.material != slot.slot &&
@@ -1555,7 +1562,11 @@ Json getMaterialBindings(const Json &params, PathResolver &paths) {
         }
         primitives.push_back(std::move(primitive));
     }
-    return {{"model", model},
+    auto choices = Json::array();
+    for (const auto &material : state.loaded->named_materials)
+        choices.push_back({{"reference", modelMaterialReference(*state.loaded, material)},
+                           {"display_name", modelMaterialDisplayName(*state.loaded, material)}});
+    return {{"model", model}, {"material_choices", std::move(choices)},
             {"material_bindings", state.bindings_reference ? Json(*state.bindings_reference) : Json(nullptr)},
             {"bindings_digest", state.bindings_reference ? Json(state.bindings_digest) : Json(nullptr)},
             {"primitives", std::move(primitives)},
@@ -1601,12 +1612,14 @@ BindingMaterial resolveBindingMaterial(std::string_view method, const std::strin
             }
         }
     }
-    if (slot && project)
-        refuse(method, "'" + name + "' is both a glTF material of the model and a project material",
-               bindingInvalidCode,
-               {{"model", state.model}, {"reason", "material name '" + name + "' is ambiguous"}});
+    if (project && name.find("#material/") == std::string::npos) return *project;
+    try {
+        const auto selected = resolveModelMaterial(*state.loaded, name);
+        if (selected.material && selected.material->routing) return {*selected.material->routing, true};
+    } catch (const std::exception &error) {
+        refuse(method, error.what(), bindingInvalidCode, {{"model", state.model}, {"reason", error.what()}});
+    }
     if (slot) return *slot;
-    if (project) return *project;
     refuse(method, "no material '" + name + "' to bind", nameUnknownCode,
            {{"name", name}, {"reason", "neither a project material nor a glTF material of model '" + state.model + "'"}});
 }
@@ -1750,7 +1763,7 @@ Json bindMaterial(const Json &params, PathResolver &paths, watch::ReloadService 
     if (state.stale) {
         const auto &issues = GET_MODULE(ModelAssetContainer).getModelTemplateByName(model).binding_issues;
         for (const auto &issue : issues) {
-            if (issue.material.empty()) continue;
+            if (issue.material.empty() || issue.name_mismatch) continue;
             const auto slot = std::find_if(state.slots.begin(), state.slots.end(), [&](const auto &candidate) {
                 return candidate.mesh == issue.mesh && candidate.primitive == issue.primitive;
             });
@@ -1776,6 +1789,10 @@ Json bindMaterial(const Json &params, PathResolver &paths, watch::ReloadService 
         if (entry.material == material && entry.routing == found->second.routing) continue;
         previous.push_back({{"mesh", key.first}, {"primitive", key.second}, {"material", entry.material}});
         entry.material = material;
+        if (material.find("#material/") != std::string::npos || !nameHolder(material, asset_data, paths)) {
+            const auto selected = resolveModelMaterial(*state.loaded, material);
+            if (selected.material) entry.material = selected.reference;
+        }
         entry.routing = found->second.routing;
     }
 
@@ -2457,10 +2474,6 @@ Json recoverMaterial(const std::string &reference, const AssetDataFile &asset_da
         if (const auto holder = project.documentOf(name); holder && *holder != reference)
             refuse(method, "material '" + name + "' exists already", nameConflictCode,
                    {{"name", name}, {"path", *holder}});
-        if (const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>())
-            if (const auto holder = models->modelDeclaringMaterial(name))
-                refuse(method, "model '" + *holder + "' has a glTF material named '" + name + "'", nameConflictCode,
-                       {{"name", name}, {"model", *holder}});
     }
     SurfaceCache surfaces{paths};
     checkCandidateDocument(method, reference, document.json, surfaces, paths);
@@ -2510,10 +2523,6 @@ Json reloadMaterial(const std::string &reference, const AssetDataFile &asset_dat
         if (const auto holder = project ? project->documentOf(name) : std::nullopt; holder && *holder != reference)
             refuse(method, "material '" + name + "' exists already", nameConflictCode,
                    {{"name", name}, {"path", *holder}});
-        if (const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>())
-            if (const auto holder = models->modelDeclaringMaterial(name))
-                refuse(method, "model '" + *holder + "' has a glTF material named '" + name + "'", nameConflictCode,
-                       {{"name", name}, {"model", *holder}});
     }
     SurfaceCache surfaces{paths};
     checkCandidateDocument(method, reference, document.json, surfaces, paths);
@@ -2559,10 +2568,6 @@ Json registerMaterial(const Json &params, PathResolver &paths, watch::ReloadServ
             fields.update(*holder);
             refuse(method, "material '" + name + "' exists already", nameConflictCode, std::move(fields));
         }
-        if (const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>())
-            if (const auto holder = models->modelDeclaringMaterial(name))
-                refuse(method, "model '" + *holder + "' has a glTF material named '" + name + "'", nameConflictCode,
-                       {{"name", name}, {"model", *holder}});
     }
     SurfaceCache surfaces{paths};
     checkCandidateDocument(method, relative, document.json, surfaces, paths);
@@ -2625,10 +2630,6 @@ Json renameMaterial(const Json &params, PathResolver &paths, watch::ReloadServic
         fields.update(*holder);
         refuse(method, "material '" + new_name + "' exists already", nameConflictCode, std::move(fields));
     }
-    if (const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>())
-        if (const auto holder = models->modelDeclaringMaterial(new_name))
-            refuse(method, "model '" + *holder + "' has a glTF material named '" + new_name + "'", nameConflictCode,
-                   {{"name", new_name}, {"model", *holder}});
 
     auto [count, objects] = objectsOverridingWith(name);
     auto render_documents = renderDocumentsNaming(paths, path, name, false);

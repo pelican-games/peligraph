@@ -137,6 +137,9 @@ struct MaterialBindingIssue {
     std::string usd_path;
     std::string material; // non-empty only for an unresolved material name
     std::string reason;
+    bool name_mismatch = false;
+    std::string written_name;
+    std::string current_name;
 };
 
 struct ModelTemplate {
@@ -154,8 +157,10 @@ struct ModelTemplate {
         std::optional<MaterialVariantRouting> routing;
         // Retained for CPU-only binding validation as well as live loads.
         bool vat_playback = false;
+        std::optional<int> index;
     };
 
+    bool fragment_name_mismatch = false;
     std::vector<MaterialPrimitives> material_primitives;
     std::vector<MaterialBindingIssue> binding_issues;
     std::shared_ptr<const std::vector<ModelCollisionMesh>> collision_meshes;
@@ -177,18 +182,20 @@ struct ModelTemplate {
     std::uint64_t compatibility_revision = 0;
 };
 
-// Project-authored names are an additive resolution domain. Validate it
-// separately so an ambiguity fails even when a binding document does not
-// happen to reference the colliding name.
-void validateNamedMaterialResolutionDomains(
-    const ModelTemplate &model,
-    std::span<const ModelTemplate::NamedMaterial>
-        project_materials,
-    std::string_view model_name);
+struct ModelMaterialResolution {
+    const ModelTemplate::NamedMaterial *material = nullptr;
+    std::string reference;
+    bool name_mismatch = false;
+    std::string written_name;
+};
+std::string modelMaterialReference(const ModelTemplate &model, const ModelTemplate::NamedMaterial &material);
+std::string modelMaterialDisplayName(const ModelTemplate &model, const ModelTemplate::NamedMaterial &material);
+ModelMaterialResolution resolveModelMaterial(const ModelTemplate &model, std::string_view reference,
+    std::span<const ModelTemplate::NamedMaterial> project_materials = {});
 
 // Bindings address whole-model mesh/primitive coordinates. Stale targets,
 // uncovered primitives and missing material names recover with diagnostics;
-// structural errors, ambiguous names, routing and VAT violations still fail.
+// structural errors, routing and VAT violations still fail.
 // keep_own_material is a legacy notification for unresolved material names.
 void applyPrimitiveMaterialBindings(
     ModelTemplate &model, const PrimitiveMaterialBindingDocument &document,

@@ -1,5 +1,6 @@
 #include "../src/core/material/material.hpp"
 #include "../src/core/model/modeltemplate.hpp"
+#include "../src/project/projectpathresolver.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -146,22 +147,68 @@ TEST_CASE("binding routing is consumed and project names extend the resolution d
             GlobalMaterialId{10});
 }
 
-TEST_CASE("glTF and project material name collision is a named hard error",
-          "[material-binding][model-template][wp240c][error]") {
-    const auto model = twoPrimitiveModel();
-    const std::array project_materials{
-        ModelTemplate::NamedMaterial{
-            "first", GlobalMaterialId{99},
-            MaterialVariantRouting{
-                MaterialAlphaMode::blend, true}},
-    };
-    REQUIRE_THROWS_WITH(
-        validateNamedMaterialResolutionDomains(
-            model, project_materials, "two"),
-        Catch::Matchers::ContainsSubstring("two") &&
-            Catch::Matchers::ContainsSubstring("first") &&
-            Catch::Matchers::ContainsSubstring("glTF") &&
-            Catch::Matchers::ContainsSubstring("project"));
+TEST_CASE("NM1 material domains legacy ambiguity and stale references", "[material-binding][nm1]") {
+    auto model = twoPrimitiveModel();
+    model.authored_asset_reference = "models/two.glb#mesh/Body";
+    model.named_materials[0].name = "material";
+    model.named_materials[0].index = 0;
+    model.named_materials[1].index = 2;
+    const std::array project{ModelTemplate::NamedMaterial{"material", GlobalMaterialId{99},
+        MaterialVariantRouting{MaterialAlphaMode::blend, true}}};
+    CHECK(resolveModelMaterial(model, "material", project).material->material == GlobalMaterialId{99});
+    CHECK(resolveModelMaterial(model, "models/two.glb#material/material@0", project).material->material == GlobalMaterialId{10});
+    CHECK(resolveModelMaterial(model, "material").reference == "models/two.glb#material/material@0");
+    CHECK(resolveModelMaterial(model, "models/two.glb#material/material").material->material == GlobalMaterialId{10});
+    CHECK_THROWS_WITH(resolveModelMaterial(model, "other.glb#material/material@0"),
+        Catch::Matchers::ContainsSubstring("own asset"));
+    auto doc = bindingDocument();
+    doc.bindings[1].material = "models/two.glb#material/old@0";
+    applyPrimitiveMaterialBindings(model, doc, "two", std::nullopt, project);
+    REQUIRE(model.binding_issues.size() == 1);
+    CHECK(model.binding_issues[0].name_mismatch);
+    CHECK(model.binding_issues[0].written_name == "old");
+    CHECK(model.binding_issues[0].current_name == "material");
+    CHECK(model.material_primitives[1].material == GlobalMaterialId{10});
+    model.named_materials[1].name = "material";
+    CHECK_THROWS_WITH(resolveModelMaterial(model, "material"),
+        Catch::Matchers::ContainsSubstring("@<index>") && Catch::Matchers::ContainsSubstring("0, 2"));
+    doc.bindings[0].material = "material";
+    doc.bindings[1].material = "models/two.glb#material/material@0";
+    applyPrimitiveMaterialBindings(model, doc, "two");
+    REQUIRE(model.binding_issues.size() == 1);
+    CHECK_FALSE(model.binding_issues[0].name_mismatch);
+    CHECK(model.binding_issues[0].reason.find("@<index>") != std::string::npos);
+    CHECK(modelMaterialDisplayName(model, model.named_materials[0]) == "material (0)");
+    CHECK(modelMaterialDisplayName(model, model.named_materials[1]) == "material (2)");
+}
+
+TEST_CASE("NM1 gltf_fragment index grammar and shared resolution", "[nm1][pathresolver]") {
+    const std::vector<AssetFragmentCandidate> objects{
+        {0, "LampPost", "Root/LampPost", {"LampPost"}},
+        {2, "LampPost", "Other/LampPost", {"LampPost"}},
+        {3, "NewLamp", "NewLamp", {"NewLamp"}},
+        {4, "a@b", "a@b", {"a@b"}}};
+    for (const auto &kind : {"mesh", "node", "material", "animation"}) {
+        const auto parsed = parsePathReference(std::string{"a.glb#"} + kind + "/LampPost@3");
+        REQUIRE(parsed.fragment->index == 3);
+        CHECK(parsed.fragment->path == "LampPost");
+        const auto selection = resolveAssetFragment(*parsed.fragment, objects);
+        CHECK(objects[selection.candidate].index == 3);
+        CHECK(selection.name_mismatch);
+        CHECK(assetFragmentText(*parsed.fragment) == std::string{kind} + "/LampPost@3");
+    }
+    const auto legacy = parsePathReference("a.glb#mesh/a@b");
+    CHECK_FALSE(legacy.fragment->index);
+    CHECK_FALSE(resolveAssetFragment(*legacy.fragment, objects).name_mismatch);
+    CHECK(parsePathReference("a.glb#mesh/a@b@4").fragment->path == "a@b");
+    CHECK(parsePathReference("a.glb#mesh/name@-1").fragment->path == "name@-1");
+    CHECK(parsePathReference("a.glb#mesh/name@").fragment->path == "name@");
+    CHECK_THROWS(parsePathReference("a.glb#mesh/name@99999999999999999999"));
+    CHECK_THROWS(resolveAssetFragment(*parsePathReference("a.glb#mesh/name@99").fragment, objects));
+    CHECK_THROWS_WITH(resolveAssetFragment(*parsePathReference("a.glb#mesh/LampPost").fragment, objects),
+        Catch::Matchers::ContainsSubstring("@<index>") && Catch::Matchers::ContainsSubstring("0, 2"));
+    CHECK(resolveAssetFragment(*parsePathReference("a.glb#mesh/Root/LampPost").fragment, objects).candidate == 0);
+    CHECK(normalizedResolvedReferenceKey(ResolvedPathFragment{"a.glb", *parsePathReference("a.glb#mesh/NewLamp@3").fragment}).ends_with("#mesh/NewLamp@3"));
 }
 
 TEST_CASE("lowered material binder resolves overridden texture references by declared role",
@@ -249,3 +296,15 @@ TEST_CASE("MO1 object_material coordinates are checked across material groups an
     CHECK_FALSE(model.hasPrimitive(0, 0));
 }
 } // namespace Pelican
+
+namespace Pelican {
+TEST_CASE("NM1 animation component retains source indices for a selected clip", "[nm1][gltf]") {
+    SkeletalModelData model;
+    model.clips = {SkeletalAnimationClip{.name = "Walk", .source_index = 3}};
+    CHECK(&findAnimationClip(model, *parsePathReference("a.glb#animation/old@3").fragment) == &model.clips[0]);
+    CHECK_THROWS(findAnimationClip(model, *parsePathReference("a.glb#animation/Walk@0").fragment));
+    model.clips.push_back(SkeletalAnimationClip{.name = "Walk", .source_index = 7});
+    CHECK_THROWS_WITH(findAnimationClip(model, std::string{"Walk"}),
+        Catch::Matchers::ContainsSubstring("@<index>") && Catch::Matchers::ContainsSubstring("3, 7"));
+}
+}

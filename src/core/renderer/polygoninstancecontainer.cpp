@@ -466,12 +466,14 @@ struct ResolvedInstanceMaterials {
 
 std::optional<GlobalMaterialId> findNamedMaterial(const ModelTemplate &model,
                                                   std::string_view name) {
-    for (const auto &named : model.named_materials)
-        if (named.name == name) return named.material;
-    if (const auto *project =
-            FastModuleContainer::tryGet<ProjectMaterialAssetContainer>())
-        for (const auto &named : project->namedMaterials())
-            if (named.name == name) return named.material;
+    try {
+        const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
+        const auto selected = resolveModelMaterial(model, name,
+            project ? project->namedMaterials() : std::span<const ModelTemplate::NamedMaterial>{});
+        if (selected.material) return selected.material->material;
+    } catch (const std::exception &error) {
+        LOG_WARNING(logger, "model '{}': {}", model.authored_asset_reference, error.what());
+    }
     return std::nullopt;
 }
 

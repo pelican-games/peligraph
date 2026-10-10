@@ -2647,3 +2647,51 @@ TEST_CASE("MU-1 Materials preserves authored route and unserved reason from list
     CHECK(material.route == "forward_transparent");
     CHECK(material.unserved_reason == "Add a transparent pass to restore normal rendering.");
 }
+
+TEST_CASE("NM1 devstudio_materials uses display labels and indexed choice values", "[devstudio][materials][nm1]") {
+    application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    FakeEngine engine;
+    MaterialsDock dock{engine.dockHooks()};
+    dock.show();
+    readyWithPaint(dock, engine, project(temporary));
+    const std::string first = "models/a.glb#material/Material.001@0";
+    const std::string second = "models/a.glb#material/Material.001@2";
+    const std::string unique = "models/a.glb#material/Body (skin)@1";
+    const auto choices = Json::array({{{"reference", first}, {"display_name", "Material.001 (0)"}},
+        {{"reference", second}, {"display_name", "Material.001 (2)"}},
+        {{"reference", unique}, {"display_name", "Body (skin)"}}});
+    auto bindings = cubeBindings();
+    bindings["material_choices"] = choices;
+    bindings["primitives"][0]["slot"] = second;
+    bindings["primitives"][0]["material"] = first;
+    dock.revealModel(Cube, {});
+    answer(dock, engine, "list_materials", listResult());
+    answer(dock, engine, "get_material_bindings", bindings);
+    auto *choice = named<QComboBox>(dock, QStringLiteral("pelican.materials.model.choice"));
+    CHECK(choice->currentText() == QStringLiteral("Material.001 (0)"));
+    CHECK(choice->currentData().toString().toStdString() == first);
+    REQUIRE(choice->findData(QString::fromStdString(second)) >= 0);
+    CHECK(choice->itemText(choice->findData(QString::fromStdString(second))) == QStringLiteral("Material.001 (2)"));
+    CHECK(choice->itemText(choice->findData(QString::fromStdString(unique))) == QStringLiteral("Body (skin)"));
+    choice->setCurrentIndex(0);
+    const auto request = engine.take("bind_material");
+    REQUIRE(request);
+    CHECK(request->params["bindings"][0]["material"] == second);
+
+    FakeEngine inspector_engine;
+    MaterialAssignWidget inspector{inspector_engine.assignHooks()};
+    auto object = cubeObject();
+    object["material_choices"] = choices;
+    object["primitives"][0]["slot"] = second;
+    object["primitives"][0]["material"] = first;
+    object["primitives"][0]["model_material"] = second;
+    object["primitives"][0]["drawn"] = first;
+    readyCube(inspector, inspector_engine, object, bindings);
+    auto *object_choice = named<QComboBox>(inspector, QStringLiteral("pelican.inspectorMaterialChoice"));
+    CHECK(object_choice->currentText().contains(QStringLiteral("Material.001 (0)")));
+    CHECK_FALSE(object_choice->currentText().contains(QStringLiteral("#material/")));
+    CHECK(object_choice->itemText(object_choice->findData(QString::fromStdString(second))) == QStringLiteral("Material.001 (2)"));
+    CHECK(object_choice->itemText(object_choice->findData(QString::fromStdString(unique))) == QStringLiteral("Body (skin)"));
+}

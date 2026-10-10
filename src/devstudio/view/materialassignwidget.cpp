@@ -167,6 +167,7 @@ struct MaterialAssignWidget::Impl {
     void addMaterials(QComboBox &combo) {
         if (!session.materials().empty()) combo.insertSeparator(combo.count());
         for (const auto &name : session.materials()) combo.addItem(qtext(name), qtext(name));
+        for (const auto &[reference, label] : session.embeddedMaterials()) combo.addItem(qtext(label), qtext(reference));
     }
 
     // Every <model>: Model default, then the project's materials; a name the
@@ -176,7 +177,7 @@ struct MaterialAssignWidget::Impl {
         combo.clear();
         combo.addItem(owner.tr("Model default"), ModelDefault);
         combo.setItemData(0, slot_hint.empty() ? owner.tr("The model's own material")
-                                               : owner.tr("The model's own material (%1)").arg(qtext(slot_hint)),
+                                               : owner.tr("The model's own material (%1)").arg(qtext(session.materialLabel(slot_hint))),
                           Qt::ToolTipRole);
         addMaterials(combo);
         if (!current) {
@@ -187,7 +188,7 @@ struct MaterialAssignWidget::Impl {
         }
         int index = combo.findData(qtext(*current));
         if (index < 0) {
-            combo.addItem(qtext(*current), qtext(*current));
+            combo.addItem(qtext(session.materialLabel(*current)), qtext(*current));
             index = combo.count() - 1;
         }
         combo.setCurrentIndex(index);
@@ -202,10 +203,10 @@ struct MaterialAssignWidget::Impl {
                     const std::optional<std::string> &chosen = std::nullopt) {
         const QSignalBlocker block{&combo};
         combo.clear();
-        combo.addItem(current ? qtext(*current) : owner.tr("(differs per primitive)"), current ? Current : Mixed);
+        combo.addItem(current ? qtext(session.materialLabel(*current)) : owner.tr("(differs per primitive)"), current ? Current : Mixed);
         disableItem(combo, 0);
         if (model_material)
-            combo.addItem(owner.tr("Model default (%1)").arg(qtext(*model_material)), ModelDefault);
+            combo.addItem(owner.tr("Model default (%1)").arg(qtext(session.materialLabel(*model_material))), ModelDefault);
         addMaterials(combo);
         const int held = chosen ? combo.findData(qtext(*chosen)) : -1;
         combo.setCurrentIndex(held > 0 ? held : 0);
@@ -250,7 +251,9 @@ struct MaterialAssignWidget::Impl {
                 const auto &primitive = session.objectMaterials().primitives[index];
                 mesh = primitive.mesh;
                 primitive_index = primitive.primitive;
-                fillObject(*primitive_choices[index], objectMaterialLabel(primitive),
+                fillObject(*primitive_choices[index], objectMaterialLabel([&] { auto shown = primitive;
+                    shown.material = session.materialLabel(shown.material);
+                    shown.drawn = session.materialLabel(shown.drawn); return shown; }()),
                            primitive.source == "object" ? std::optional{primitive.model_material} : std::nullopt);
             } else {
                 const auto &primitive = session.primitives()[index];

@@ -695,6 +695,8 @@ class MaterialAssignSession {
     [[nodiscard]] const std::string &model() const noexcept { return subject_.model; }
     [[nodiscard]] const Subject &subject() const noexcept { return subject_; }
     [[nodiscard]] const std::vector<std::string> &materials() const noexcept { return materials_; }
+    [[nodiscard]] const std::vector<std::pair<std::string, std::string>> &embeddedMaterials() const { return embedded_materials_; }
+    [[nodiscard]] std::string materialLabel(const std::string &reference) const;
     [[nodiscard]] const std::vector<MaterialPrimitive> &primitives() const noexcept { return primitives_; }
     [[nodiscard]] bool bindingsRead() const noexcept { return bindings_read_; }
     [[nodiscard]] const ModelObjectCounts &counts() const noexcept { return counts_; }
@@ -742,6 +744,7 @@ class MaterialAssignSession {
     bool scene_busy_ = false;
     std::vector<std::string> materials_;
     std::vector<MaterialPrimitive> primitives_;
+    std::vector<std::pair<std::string, std::string>> embedded_materials_;
     bool bindings_read_ = false;
     ModelObjectCounts counts_;
     ObjectMaterials object_materials_;

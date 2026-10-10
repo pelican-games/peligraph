@@ -157,13 +157,19 @@ ModelState requireModel(std::string_view method, const std::string &model, std::
 
 // A material an override can name: one of the model's glTF materials or a
 // project material this engine registered.
+ModelMaterialResolution objectMaterial(const ModelTemplate &model, std::string_view name) {
+    const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>();
+    return resolveModelMaterial(model, name,
+        project ? project->namedMaterials() : std::span<const ModelTemplate::NamedMaterial>{});
+}
 bool knownMaterial(const ModelTemplate &model, std::string_view name) {
-    for (const auto &named : model.named_materials)
-        if (named.name == name) return true;
-    if (const auto *project = FastModuleContainer::tryGet<ProjectMaterialAssetContainer>())
-        for (const auto &named : project->namedMaterials())
-            if (named.name == name) return true;
-    return false;
+    try { return objectMaterial(model, name).material != nullptr; }
+    catch (const std::exception &) { return false; }
+}
+std::string canonicalMaterial(const ModelTemplate &model, const std::string &name) {
+    try { const auto result = objectMaterial(model, name); if (result.material) return result.reference; }
+    catch (const std::exception &) {}
+    return name;
 }
 
 struct Row {
@@ -296,7 +302,7 @@ OrderedJson EditorCommandService::setObjectMaterial(const Json &params) {
             add(std::nullopt, material);
         }
     }
-    for (const auto &[target, material] : requested) {
+    for (auto &[target, material] : requested) {
         (void)target;
         if (material && !knownMaterial(*model.model, *material))
             refuse(method, "no material '" + *material + "' to put on object " + std::to_string(object_id),
@@ -304,6 +310,7 @@ OrderedJson EditorCommandService::setObjectMaterial(const Json &params) {
                    {{"name", *material},
                     {"reason", "neither a registered project material nor a glTF material of model '" +
                                    object.model + "'"}});
+        if (material) *material = canonicalMaterial(*model.model, *material);
     }
 
     // One journal operation per target that changes: a row's material set
@@ -315,7 +322,7 @@ OrderedJson EditorCommandService::setObjectMaterial(const Json &params) {
         const auto row = rows.find(target);
         const std::optional<std::string> before =
             row != rows.end() ? std::optional<std::string>{row->second.material} : std::nullopt;
-        Json entry{{"material", before ? Json(*before) : Json(nullptr)}};
+        Json entry{{"material", before ? Json(canonicalMaterial(*model.model, *before)) : Json(nullptr)}};
         if (target) entry["primitive"] = targetJson(target);
         previous.push_back(std::move(entry));
         if (before == material) continue;
@@ -338,6 +345,12 @@ OrderedJson EditorCommandService::setObjectMaterial(const Json &params) {
         }
     }
 
+    for (const auto &[target, row] : rows) {
+        if (std::any_of(requested.begin(), requested.end(), [&](const auto &item) { return item.first == target; })) continue;
+        const auto canonical = canonicalMaterial(*model.model, row.material);
+        if (canonical != row.material)
+            operations.push_back({{"op", "set_component_value"}, {"address", rowAddress(object, row.id, "/material")}, {"value", canonical}});
+    }
     OrderedJson answer;
     if (operations.empty()) {
         answer = OrderedJson{{"changed", false}};
@@ -367,20 +380,25 @@ OrderedJson EditorCommandService::getObjectMaterials(const Json &params) const {
     }
     const auto object = requireObjectModel(method, document(), object_id, scene_id);
     const auto model = requireModel(method, object.model, object_id);
-    const auto rows = currentRows(object.component);
+    auto rows = currentRows(object.component);
+    for (auto &[target, row] : rows) row.material = canonicalMaterial(*model.model, row.material);
 
     // The model's material per primitive: its material bindings, else the
     // glTF material.
     std::map<PrimitiveKey, std::string> bound;
     if (const auto bindings = GET_MODULE(ModelAssetContainer).declaredMaterialBindings(object.model))
         for (const auto &binding : bindings->bindings)
-            bound.insert_or_assign(PrimitiveKey{binding.mesh_index, binding.primitive_index}, binding.material);
+            bound.insert_or_assign(PrimitiveKey{binding.mesh_index, binding.primitive_index}, canonicalMaterial(*model.model, binding.material));
 
     std::map<PrimitiveKey, std::string> drawn;
     if (const auto instance = liveInstance(object.object.object_id)) {
         if (const auto *instances = FastModuleContainer::tryGet<PolygonInstanceContainer>())
-            for (const auto &entry : instances->instancePrimitiveMaterials(*instance))
-                drawn.insert_or_assign(PrimitiveKey{entry.mesh, entry.primitive}, entry.name);
+            for (const auto &entry : instances->instancePrimitiveMaterials(*instance)) {
+                const auto found = std::find_if(model.model->named_materials.begin(), model.model->named_materials.end(),
+                    [&](const auto &named) { return named.material == entry.material; });
+                drawn.insert_or_assign(PrimitiveKey{entry.mesh, entry.primitive}, found == model.model->named_materials.end()
+                    ? entry.name : modelMaterialReference(*model.model, *found));
+            }
     }
 
     auto materials = Json::array();
@@ -405,12 +423,17 @@ OrderedJson EditorCommandService::getObjectMaterials(const Json &params) const {
         primitives.push_back({{"mesh", slot.mesh},
                               {"primitive", slot.primitive},
                               {"slot", slot.slot},
+                              {"slot_display_name", slot.display_name},
                               {"material", own != nullptr ? own->material : model_material},
                               {"source", own != nullptr ? "object" : "model"},
                               {"model_material", model_material},
                               {"drawn", live != drawn.end() ? Json(live->second) : Json(nullptr)}});
     }
-    return OrderedJson{{"object", object_id},
+    auto choices = OrderedJson::array();
+    for (const auto &material : model.model->named_materials)
+        choices.push_back({{"reference", modelMaterialReference(*model.model, material)},
+                           {"display_name", modelMaterialDisplayName(*model.model, material)}});
+    return OrderedJson{{"material_choices", std::move(choices)}, {"object", object_id},
                        {"scene_id", object.object.scene_id},
                        {"model", object.model},
                        {"materials", OrderedJson::parse(materials.dump())},

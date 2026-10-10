@@ -483,7 +483,7 @@ std::vector<AnimationComponentTrace> AnimationSystem::componentTrace() {
                     const auto resolved = path_resolver->resolveExistingFileReference(animation->clip);
                     const auto *reference = std::get_if<ResolvedPathFragment>(&resolved);
                     if (reference == nullptr || reference->fragment.kind != "animation") continue;
-                    const auto &clip = findAnimationClip(*model.skeletal, reference->fragment.path);
+                    const auto &clip = findAnimationClip(*model.skeletal, reference->fragment);
                     bounds = state->clip_bounds.insert_or_assign(key,
                         AnimationSystemState::ClipBounds{model.skeletal, clip.start, clip.end}).first;
                 }

@@ -297,7 +297,7 @@ std::shared_ptr<PreparedGltf::Impl> prepareGltfImpl(std::string path,
     if (fragment && extension != required_extension) {
         throw std::runtime_error(std::string{binary ? "GLB" : "glTF"} +
                                  " fragment reference requires a " + required_extension + " file: " +
-                                 path + "#" + fragment->kind + "/" + fragment->path);
+                                 path + "#" + assetFragmentText(*fragment));
     }
 
     auto prepared = std::make_shared<PreparedGltf::Impl>();
@@ -1544,6 +1544,7 @@ struct InternalGltfLoader {
                                         : animation.name;
         SkeletalAnimationClip result;
         result.name = animation.name;
+        result.source_index = animation_index;
         bool has_keys = false;
         for (const auto &channel : animation.channels) {
             if (channel.sampler < 0 || channel.sampler >= static_cast<int>(animation.samplers.size())) {
@@ -1655,7 +1656,7 @@ struct InternalGltfLoader {
         if (!fragment) {
             return source_path;
         }
-        return source_path + "#" + fragment->kind + "/" + fragment->path;
+        return source_path + "#" + assetFragmentText(*fragment);
     }
 
     void collectNodeOccurrence(int node_index, const glm::mat4 &parent_transform,
@@ -1789,77 +1790,39 @@ struct InternalGltfLoader {
         return candidates;
     }
 
-    [[noreturn]] void throwDuplicateFullPath(const std::string &kind,
-                                             const std::string &full_path,
-                                             const std::vector<const FragmentCandidate *> &matches) const {
-        std::ostringstream message;
-        message << "Duplicate GLB " << kind << " full path '" << full_path << "' in '"
-                << fragmentReference() << "' (indices: ";
-        for (size_t i = 0; i < matches.size(); ++i) {
-            if (i != 0) {
-                message << ", ";
-            }
-            message << matches[i]->object_index;
-        }
-        message << ")";
-        throw std::runtime_error(message.str());
-    }
-
+    bool fragment_name_mismatch = false;
     FragmentCandidate resolveFragmentCandidate(const AssetFragmentRef &requested) {
-        if (requested.kind != "mesh" && requested.kind != "material" &&
-            requested.kind != "node" && requested.kind != "animation") {
-            throw std::runtime_error("Unknown GLB fragment kind '" + requested.kind +
-                                     "' in '" + fragmentReference() +
-                                     "' (supported: mesh, material, node, animation)");
-        }
-
+        if (requested.kind != "mesh" && requested.kind != "node" &&
+            requested.kind != "material" && requested.kind != "animation")
+            throw std::runtime_error("Unknown GLB fragment kind '" + requested.kind + "'");
         auto candidates = candidatesForKind(requested.kind);
-        std::unordered_map<std::string, std::vector<const FragmentCandidate *>> by_full_path;
-        for (const auto &candidate : candidates) {
-            by_full_path[candidate.full_path].push_back(&candidate);
+        // Index addresses the source array even when an object has no name or occurrence.
+        const auto appendMissing = [&](const auto &objects) {
+            for (int i = 0; i < static_cast<int>(objects.size()); ++i)
+                if (std::none_of(candidates.begin(), candidates.end(), [&](const auto &c) { return c.object_index == i; }))
+                    candidates.push_back({i, requested.kind == "node" ? i : -1, objects[i].name,
+                                          {objects[i].name}, {objects[i].name}, {}, glm::mat4{1.0f}});
+        };
+        if (requested.index) {
+            if (requested.kind == "mesh") appendMissing(model.meshes);
+            else if (requested.kind == "node") appendMissing(model.nodes);
+            else if (requested.kind == "material") appendMissing(model.materials);
+            else appendMissing(model.animations);
         }
-        std::unordered_set<std::string> checked_paths;
-        for (const auto &candidate : candidates) {
-            if (!checked_paths.insert(candidate.full_path).second) {
-                continue;
-            }
-            const auto &matches = by_full_path.at(candidate.full_path);
-            if (matches.size() > 1) {
-                throwDuplicateFullPath(requested.kind, candidate.full_path, matches);
-            }
+        std::vector<AssetFragmentCandidate> addresses;
+        for (const auto &c : candidates) {
+            const auto &name = requested.kind == "mesh" ? model.meshes[c.object_index].name
+                : requested.kind == "node" ? model.nodes[c.object_index].name
+                : requested.kind == "material" ? model.materials[c.object_index].name
+                : model.animations[c.object_index].name;
+            addresses.push_back({c.object_index, name, c.full_path, c.aliases});
         }
-
-        std::vector<const FragmentCandidate *> matches;
-        if (requested.address_kind == AssetFragmentAddressKind::full_path) {
-            if (const auto found = by_full_path.find(requested.path); found != by_full_path.end()) {
-                matches = found->second;
-            }
-        } else {
-            for (const auto &candidate : candidates) {
-                if (std::find(candidate.aliases.begin(), candidate.aliases.end(), requested.path) !=
-                    candidate.aliases.end()) {
-                    matches.push_back(&candidate);
-                }
-            }
-        }
-
-        if (matches.empty()) {
-            throw std::runtime_error("Unknown GLB " + requested.kind + " fragment '" +
-                                     requested.path + "' in '" + fragmentReference() + "'");
-        }
-        if (matches.size() > 1) {
-            std::ostringstream message;
-            message << "Ambiguous GLB " << requested.kind << " fragment name '" << requested.path
-                    << "' in '" << fragmentReference() << "'; matches: ";
-            for (size_t i = 0; i < matches.size(); ++i) {
-                if (i != 0) {
-                    message << ", ";
-                }
-                message << matches[i]->full_path;
-            }
-            throw std::runtime_error(message.str());
-        }
-        return *matches.front();
+        const auto result = resolveAssetFragment(requested, addresses);
+        fragment_name_mismatch = result.name_mismatch;
+        if (result.name_mismatch && logger)
+            LOG_WARNING(logger, "stale fragment reference '{}': current name is '{}' (index wins)",
+                        fragmentReference(), addresses[result.candidate].name);
+        return candidates[result.candidate];
     }
 
     LoadSelection selectLoad() {
@@ -2473,6 +2436,7 @@ struct InternalGltfLoader {
         }
 
         ModelTemplate m;
+        m.fragment_name_mismatch = fragment_name_mismatch;
         if (!collision_meshes.empty())
             m.collision_meshes = std::make_shared<const std::vector<ModelCollisionMesh>>(std::move(collision_meshes));
         for (const auto &[local_material_id, primitive] : tmp_material_primitives) {
@@ -2499,6 +2463,7 @@ struct InternalGltfLoader {
                 .routing =
                     material_routings[material_index],
                 .vat_playback = material_infos[material_index].vat.has_value(),
+                .index = static_cast<int>(material_index),
             });
         }
         if (selection.material_only) {

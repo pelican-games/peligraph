@@ -45,6 +45,7 @@ struct ModelMaterialSlot {
     std::string slot;
     std::optional<MaterialVariantRouting> routing;
     bool vat_deformed = false;
+    std::string display_name;
 };
 
 // Logical owner of project model templates. Physical glTF files and fragment
@@ -94,8 +95,8 @@ DECLARE_MODULE(ModelAssetContainer) {
     // The source a reload of this model is requested by.
     watch::AssetKey reloadKey(const std::string &name) const;
     // MT-1 (create_material): a model held now whose file declares a glTF
-    // material named `material` (a project material of that name would make
-    // the model's bindings ambiguous and stop it loading), or nullopt.
+    // material named `material`, or nullopt. Used to explain why an embedded
+    // material cannot be deleted or renamed as a project document.
     std::optional<std::string> modelDeclaringMaterial(std::string_view material) const;
     // MT-3 (edit_material): the models held now that draw with one of
     // `materials` -- their template's primitives (bindings included), or a
@@ -104,8 +105,8 @@ DECLARE_MODULE(ModelAssetContainer) {
 
     // MI-1 (register_model): whether the project file `reference` loads as a
     // model named `name` the way a models[] entry loads at start -- resolved,
-    // read, inspected (no GPU allocation) and its glTF materials checked
-    // against the project's. Registers nothing; throws with the reason.
+    // read and inspected (no GPU allocation). Registers nothing; throws
+    // with the reason.
     static void preflightModel(const std::string &name, const std::string &reference);
     // MI-1: registers the models[] entry `name` of the asset_data the engine
     // has published (ProjectBasicConfig::assetDataJson), as the constructor

@@ -561,7 +561,9 @@ TEST_CASE("MO1 object_material rows follow model replacement reload and scene lo
             {"materials", std::move(rows)}}));
         (void)rpc.result("step_frame");
     };
+    std::string current_model = "A";
     const auto swap = [&](std::string_view model) {
+        current_model = std::string{model};
         (void)rpc.edit(actor, Json::array({{{"op", "set_component_value"}, {"object_id", object},
             {"component_slot", "simplemodelview"}, {"field_path", "/model"}, {"value", model}}}));
         (void)rpc.result("step_frame");
@@ -588,8 +590,8 @@ TEST_CASE("MO1 object_material rows follow model replacement reload and scene lo
         const auto own = rpc.result("get_object_materials", {{"object", object}});
         INFO(own.dump(2));
         REQUIRE(own.at("primitives").size() == parts);
-        CHECK(own.at("primitives")[0].at("drawn") == (first_painted ? "paint" : "MatA"));
-        if (parts == 2) CHECK(own.at("primitives")[1].at("drawn") == (second_painted ? "paint" : "MatB"));
+        CHECK(own.at("primitives")[0].at("drawn") == (first_painted ? std::string{"paint"} : current_model + ".glb#material/MatA@0"));
+        if (parts == 2) CHECK(own.at("primitives")[1].at("drawn") == (second_painted ? std::string{"paint"} : current_model + ".glb#material/MatB@1"));
         (void)rpc.result("render_frame");
         const auto draws = forwardDraws(rpc);
         INFO(Json(draws).dump());

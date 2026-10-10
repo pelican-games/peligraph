@@ -1547,6 +1547,7 @@ void MaterialAssignSession::open() {
     scene_busy_ = false;
     materials_.clear();
     primitives_.clear();
+    embedded_materials_.clear();
     bindings_read_ = false;
     counts_ = {};
     object_materials_ = {};
@@ -1590,6 +1591,7 @@ void MaterialAssignSession::setSubject(const Subject &subject) {
     subject_ = subject;
     if (other_model) {
         primitives_.clear();
+        embedded_materials_.clear();
         bindings_read_ = false;
         counts_ = {};
         bindings_request_ = 0;
@@ -1689,11 +1691,16 @@ std::optional<std::string> MaterialAssignSession::shownMaterial() const {
 }
 
 std::optional<std::string> MaterialAssignSession::shownObjectLabel() const {
-    if (object_edit_pending_ && object_requested_) return *object_requested_ + " (this object)";
+    if (object_edit_pending_ && object_requested_) return materialLabel(*object_requested_) + " (this object)";
     const auto &primitives = object_materials_.primitives;
     if (primitives.empty()) return std::nullopt;
-    const auto first = objectMaterialLabel(primitives.front());
-    if (std::ranges::all_of(primitives, [&](const auto &p) { return objectMaterialLabel(p) == first; }))
+    const auto label = [&](auto primitive) {
+        primitive.material = materialLabel(primitive.material);
+        primitive.drawn = materialLabel(primitive.drawn);
+        return objectMaterialLabel(primitive);
+    };
+    const auto first = label(primitives.front());
+    if (std::ranges::all_of(primitives, [&](const auto &p) { return label(p) == first; }))
         return first;
     return std::nullopt;
 }
@@ -1842,8 +1849,20 @@ bool MaterialAssignSession::owns(std::int64_t id) const noexcept {
            (id == bindings_request_ || id == materials_request_ || id == object_request_ || id == bind_request_);
 }
 
+std::string MaterialAssignSession::materialLabel(const std::string &reference) const {
+    for (const auto &[value, label] : embedded_materials_) if (value == reference) return label;
+    return reference;
+}
+
 bool MaterialAssignSession::receiveResult(std::int64_t id, const Json &result) {
     if (!owns(id)) return false;
+    if (id == bindings_request_ || id == object_request_) {
+        if (const auto choices = result.find("material_choices"); choices != result.end() && choices->is_array()) {
+            embedded_materials_.clear();
+            for (const auto &choice : *choices)
+                embedded_materials_.emplace_back(text(choice, "reference"), text(choice, "display_name"));
+        }
+    }
     if (id == bindings_request_) {
         bindings_request_ = 0;
         primitives_ = parseMaterialBindings(result);

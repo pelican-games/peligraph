@@ -1,6 +1,7 @@
 #include "projectpathresolver.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -298,9 +299,19 @@ ParsedPathRef parsePathReference(std::string_view ref) {
         throw std::runtime_error("Invalid asset fragment kind in reference: " + refForMessage(ref));
     }
 
-    const auto path = fragment_text.substr(separator + 1);
-    if (path.find('\\') != std::string_view::npos || path.find("//") != std::string_view::npos ||
-        path.starts_with('/') || path.ends_with('/') || isAllAsciiDigits(path)) {
+    auto path = fragment_text.substr(separator + 1);
+    std::optional<int> index;
+    const auto at = path.rfind('@');
+    if (at != std::string_view::npos && isAllAsciiDigits(path.substr(at + 1))) {
+        int parsed = 0;
+        const auto digits = path.substr(at + 1);
+        const auto result = std::from_chars(digits.data(), digits.data() + digits.size(), parsed);
+        if (result.ec != std::errc{}) throw std::runtime_error("Asset fragment index is out of range");
+        index = parsed;
+        path = path.substr(0, at);
+    }
+    if (!index && (path.find('\\') != std::string_view::npos || path.find("//") != std::string_view::npos ||
+        path.starts_with('/') || path.ends_with('/') || isAllAsciiDigits(path))) {
         throw std::runtime_error("Invalid asset fragment path in reference: " + refForMessage(ref));
     }
 
@@ -310,7 +321,40 @@ ParsedPathRef parsePathReference(std::string_view ref) {
         .address_kind = path.find('/') == std::string_view::npos ? AssetFragmentAddressKind::name
                                                                   : AssetFragmentAddressKind::full_path,
     };
+    fragment.index = index;
     return ParsedPathRef{std::string{ref.substr(0, marker)}, std::move(fragment)};
+}
+
+std::string assetFragmentText(const AssetFragmentRef &fragment) {
+    return fragment.kind + "/" + fragment.path +
+        (fragment.index ? "@" + std::to_string(*fragment.index) : std::string{});
+}
+
+AssetFragmentSelection resolveAssetFragment(const AssetFragmentRef &requested,
+    const std::vector<AssetFragmentCandidate> &candidates) {
+    if (requested.index) {
+        for (std::size_t i = 0; i < candidates.size(); ++i)
+            if (candidates[i].index == *requested.index)
+                return {i, candidates[i].name != requested.path};
+        throw std::runtime_error("Unknown GLB " + requested.kind + " fragment index " +
+                                 std::to_string(*requested.index));
+    }
+    std::vector<std::size_t> matches;
+    for (std::size_t i = 0; i < candidates.size(); ++i) {
+        const auto &candidate = candidates[i];
+        if (requested.address_kind == AssetFragmentAddressKind::full_path
+                ? candidate.full_path == requested.path
+                : std::find(candidate.aliases.begin(), candidate.aliases.end(), requested.path) != candidate.aliases.end())
+            matches.push_back(i);
+    }
+    if (matches.empty()) throw std::runtime_error("Unknown GLB " + requested.kind + " fragment '" + requested.path + "'");
+    if (matches.size() > 1) {
+        std::string indices;
+        for (auto i : matches) indices += (indices.empty() ? "" : ", ") + std::to_string(candidates[i].index);
+        throw std::runtime_error("Ambiguous GLB " + requested.kind + " fragment '" + requested.path +
+            "'; use @<index> to select it (candidates: " + indices + ")");
+    }
+    return {matches.front(), false};
 }
 
 std::string normalizedResolvedReferenceKey(const ResolvedRef &reference) {
@@ -329,12 +373,10 @@ std::string normalizedResolvedReferenceKey(const ResolvedRef &reference) {
                 return "engine://" + resolved.id;
             } else if constexpr (std::is_same_v<T, ResolvedPathFragment>) {
                 return path_key(resolved.path) + "#" +
-                       resolved.fragment.kind + "/" +
-                       resolved.fragment.path;
+                       assetFragmentText(resolved.fragment);
             } else {
                 return "engine://" + resolved.resource.id + "#" +
-                       resolved.fragment.kind + "/" +
-                       resolved.fragment.path;
+                       assetFragmentText(resolved.fragment);
             }
         },
         reference);

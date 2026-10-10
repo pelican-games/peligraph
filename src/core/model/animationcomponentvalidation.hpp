@@ -39,7 +39,7 @@ inline const SkeletalAnimationClip &requireAnimationComponentClip(
     if (source_error || clip_error || model_source != clip_source) {
         throw UserDataError("animation component clip source does not match the skinned model: " + clip);
     }
-    try { return findAnimationClip(*model, reference->fragment.path); }
+    try { return findAnimationClip(*model, reference->fragment); }
     catch (const std::runtime_error &error) { throw UserDataError(error.what()); }
 }
 

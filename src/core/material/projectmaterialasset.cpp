@@ -503,13 +503,18 @@ void ProjectMaterialAssetContainer::Impl::publishProblems() const {
     for (const auto &[model, materials] : unresolved_bindings) {
         std::string names;
         for (const auto &material : materials) names += (names.empty() ? "'" : ", '") + material + "'";
+        std::string detail;
+        for (const auto &row : binding_details.at(model).at("rows")) {
+            const auto reason = row.value("reason", std::string{});
+            if (reason.find("@<index>") != std::string::npos) detail += "; " + reason;
+        }
         problems.push_back({
             {"severity", std::string{problemSeverityWarning}},
             {"source", binding_details.at(model).at("source")},
             {"code", "material.binding_unresolved@1"},
             {"message", "material.binding_unresolved@1: model '" + model + "' binds " + names +
                             ", which no registered material document holds; its primitives draw with the "
-                            "model's own material"},
+                            "model's own material" + detail},
             {"document_kind", std::string{problemKindMaterial}},
             {"fields", {{"model", model}, {"materials", materials}, {"rows", binding_details.at(model).at("rows")}}},
         });
@@ -1174,7 +1179,8 @@ void ProjectMaterialAssetContainer::syncObjectMaterialProblems() {
         return;
     }
     auto identity = state->snapshotIdentity();
-    // File reloads leave the scene and project material names unchanged.
+    // File reloads leave the scene and project material names unchanged, but
+    // can drop a part (MO-1) or rename an indexed material (NM-1).
     // On unchanged frames inspect only the models used by override rows,
     // rather than walking every scene object again.
     const auto modelVersion = [&](const std::string &name) {
@@ -1187,10 +1193,7 @@ void ProjectMaterialAssetContainer::syncObjectMaterialProblems() {
                     [&](const auto &entry) { return modelVersion(entry.first) == entry.second; })) return;
     decltype(impl_->objects_models) model_versions;
 
-    const auto registered = [&](std::string_view name) {
-        return std::any_of(impl_->named_materials.begin(), impl_->named_materials.end(),
-                           [&](const auto &named) { return named.name == name; });
-    };
+    std::vector<nlohmann::json> stale_references;
     std::vector<Impl::UnresolvedObjectMaterial> found;
     for (const auto &scene : state->resolved().scenes()) {
         for (const auto &object : scene.objects) {
@@ -1206,7 +1209,6 @@ void ProjectMaterialAssetContainer::syncObjectMaterialProblems() {
                 model_versions.try_emplace(model, modelVersion(model));
                 if (!models->hasModel(model)) continue;
                 const auto &model_template = models->getModelTemplateByName(model);
-                const auto &glTF = model_template.named_materials;
                 for (const auto &row : list->at("rows")) {
                     if (!row.is_object() || !row.contains("material") || !row.at("material").is_string()) continue;
                     const auto material = row.at("material").get<std::string>();
@@ -1221,16 +1223,38 @@ void ProjectMaterialAssetContainer::syncObjectMaterialProblems() {
                         row.at("primitive").is_number_unsigned())
                         entry.primitive = std::pair{row.at("mesh").get<std::uint32_t>(),
                                                     row.at("primitive").get<std::uint32_t>()};
+                    // MO-1: a row naming a part the model no longer has is
+                    // ignored when drawn, so it is listed as that (one entry
+                    // per row) before its material is looked at.
                     entry.primitive_missing = entry.primitive &&
                         !model_template.hasPrimitive(entry.primitive->first, entry.primitive->second);
-                    if (!entry.primitive_missing && (registered(material) ||
-                        std::any_of(glTF.begin(), glTF.end(), [&](const auto &named) { return named.name == material; })))
-                        continue;
+                    if (!entry.primitive_missing) {
+                        // NM-1: project first, then the model's own indexed
+                        // glTF reference; a name the index no longer carries
+                        // is a stale reference (the index wins).
+                        try {
+                            const auto selected = resolveModelMaterial(model_template, material, impl_->named_materials);
+                            if (selected.name_mismatch && selected.material)
+                                stale_references.push_back({{"severity", std::string{problemSeverityWarning}},
+                                    {"source", std::string{problemSourceStartup}}, {"code", "material.reference_stale@1"},
+                                    {"message", "model '" + model + "': stale object material reference; index wins"},
+                                    {"document_kind", std::string{problemKindMaterial}},
+                                    {"fields", {{"model", model}, {"object", object.authoring_object_id.value},
+                                        {"scope", scene.scene_id}, {"node", std::to_string(object.authoring_object_id.value)},
+                                        {"field", "/materials/rows/" + std::to_string(row.value("$row", nlohmann::json::object()).value("id", std::uint64_t{0}))},
+                                        {"row", row.value("$row", nlohmann::json::object()).value("id", std::uint64_t{0})},
+                                        {"written_name", selected.written_name}, {"current_name", selected.material->name}}}});
+                            if (selected.material) continue;
+                        } catch (const std::exception &error) {
+                            LOG_WARNING(logger, "model '{}': object material '{}': {}", model, material, error.what());
+                        }
+                    }
                     found.push_back(std::move(entry));
                 }
             }
         }
     }
+    GET_MODULE(ProblemList).replace("object_material_references", std::move(stale_references));
     if (!found.empty() && !impl_->scene_document) impl_->scene_document = sceneDocumentReference();
     impl_->objects_scene = std::move(identity);
     impl_->objects_names_generation = impl_->names_generation;

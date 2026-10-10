@@ -1,4 +1,6 @@
 #include "skeletalanimation.hpp"
+#include "../../project/projectpathresolver.hpp"
+#include "../log.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -124,17 +126,24 @@ std::vector<glm::mat4> evaluateSkinPalette(const SkeletalModelData &model,
 }
 
 const SkeletalAnimationClip &findAnimationClip(const SkeletalModelData &model,
+                                               const AssetFragmentRef &reference) {
+    std::vector<AssetFragmentCandidate> candidates;
+    for (std::size_t i = 0; i < model.clips.size(); ++i) {
+        const auto &clip = model.clips[i];
+        candidates.push_back({clip.source_index >= 0 ? clip.source_index : static_cast<int>(i),
+                              clip.name, clip.name, {clip.name}});
+    }
+    const auto selected = resolveAssetFragment(reference, candidates);
+    const auto &clip = model.clips[selected.candidate];
+    if (selected.name_mismatch && logger)
+        LOG_WARNING(logger, "stale animation reference '{}': current name is '{}' (index wins)",
+                    assetFragmentText(reference), clip.name);
+    return clip;
+}
+
+const SkeletalAnimationClip &findAnimationClip(const SkeletalModelData &model,
                                                const std::string &name) {
-    const SkeletalAnimationClip *found = nullptr;
-    for (const auto &clip : model.clips) {
-        if (clip.name != name) continue;
-        if (found != nullptr) throw std::runtime_error("Ambiguous GLB animation fragment name '" + name + "'");
-        found = &clip;
-    }
-    if (found == nullptr) {
-        throw std::runtime_error("Unknown GLB animation fragment '" + name + "'");
-    }
-    return *found;
+    return findAnimationClip(model, AssetFragmentRef{.kind = "animation", .path = name});
 }
 
 } // namespace Pelican

@@ -106,7 +106,7 @@ std::string lowerExtension(const std::filesystem::path &path) {
 }
 
 std::string fragmentText(const std::optional<AssetFragmentRef> &fragment) {
-    return fragment ? fragment->kind + "/" + fragment->path : std::string{};
+    return fragment ? assetFragmentText(*fragment) : std::string{};
 }
 
 watch::AssetKey logicalModelSource(std::string_view name) {
@@ -215,9 +215,7 @@ void applyDeclarationBindings(ModelTemplate &model,
                               const ModelDeclaration &declaration) {
     auto &project = GET_MODULE(ProjectMaterialAssetContainer);
     const auto project_materials = project.namedMaterials();
-    validateNamedMaterialResolutionDomains(
-        model, project_materials,
-        declaration.name);
+    model.authored_asset_reference = declaration.reference;
     if (!declaration.material_bindings) return;
     const auto fragment = fragmentText(declaration.fragment);
     applyPrimitiveMaterialBindings(
@@ -235,9 +233,15 @@ void publishBindingProblems(const ModelTemplate &model, const std::string &name,
     auto rows = nlohmann::json::array();
     std::string reasons;
     auto unresolved_rows = nlohmann::json::array();
+    auto stale_rows = nlohmann::json::array();
     for (const auto &issue : model.binding_issues) {
         LOG_WARNING(logger, "model '{}': material bindings row {}: {}",
                     name, issue.row ? std::to_string(*issue.row) : std::string{"<missing>"}, issue.reason);
+        if (issue.name_mismatch) {
+            stale_rows.push_back({{"row", *issue.row}, {"mesh", issue.mesh}, {"primitive", issue.primitive},
+                {"material", issue.material}, {"written_name", issue.written_name}, {"current_name", issue.current_name}});
+            continue;
+        }
         if (!issue.material.empty()) {
             unresolved.push_back(issue.material);
             unresolved_rows.push_back({{"row", *issue.row}, {"mesh", issue.mesh},
@@ -255,6 +259,10 @@ void publishBindingProblems(const ModelTemplate &model, const std::string &name,
     GET_MODULE(ProjectMaterialAssetContainer).noteUnresolvedBindings(
         name, std::move(unresolved), std::move(unresolved_rows), source);
     std::vector<nlohmann::json> problems;
+    if (!stale_rows.empty())
+        problems.push_back({{"severity", std::string{problemSeverityWarning}}, {"source", std::string{source}},
+            {"code", "material.reference_stale@1"}, {"message", "model '" + name + "': stale material reference; index wins"},
+            {"document_kind", std::string{problemKindMaterial}}, {"fields", {{"model", name}, {"rows", std::move(stale_rows)}}}});
     if (!rows.empty()) {
         problems.push_back({
             {"severity", std::string{problemSeverityWarning}},
@@ -355,8 +363,7 @@ ModelDeclaration resolveDeclaration(std::string name, std::string reference,
     // project-relative key.
     auto authored_reference = container_key.path;
     if (fragment) {
-        authored_reference += "#" + fragment->kind + "/" +
-                              fragment->path;
+        authored_reference += "#" + assetFragmentText(*fragment);
     }
     auto declaration = ModelDeclaration{
         .name = std::move(name),
@@ -919,7 +926,8 @@ bool ModelAssetContainer::hasModel(const std::string &name) const {
 
 std::vector<ModelMaterialSlot> ModelAssetContainer::materialSlots(const std::string &name) const {
     const auto &declaration = impl_->records.at(name).declaration;
-    const auto preview = GET_MODULE(GltfLoader).inspect(prepareDeclaration(declaration));
+    auto preview = GET_MODULE(GltfLoader).inspect(prepareDeclaration(declaration));
+    preview.authored_asset_reference = declaration.reference;
     std::map<std::pair<std::uint32_t, std::uint32_t>, ModelMaterialSlot> slots;
     for (const auto &group : preview.material_primitives) {
         const auto named = std::find_if(preview.named_materials.begin(), preview.named_materials.end(),
@@ -929,11 +937,12 @@ std::vector<ModelMaterialSlot> ModelAssetContainer::materialSlots(const std::str
                               ModelMaterialSlot{
                                   .mesh = primitive.mesh_index,
                                   .primitive = primitive.primitive_index,
-                                  .slot = named != preview.named_materials.end() ? named->name : std::string{},
+                                  .slot = named != preview.named_materials.end() ? modelMaterialReference(preview, *named) : std::string{},
                                   .routing = named != preview.named_materials.end()
                                                  ? named->routing
                                                  : std::optional<MaterialVariantRouting>{},
                                   .vat_deformed = primitive.vat_deformed,
+                                  .display_name = named != preview.named_materials.end() ? modelMaterialDisplayName(preview, *named) : std::string{},
                               });
         }
     }
