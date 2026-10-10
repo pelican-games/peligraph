@@ -1,6 +1,7 @@
 #include "vrm_xr_demo_fixture.hpp"
 #include "../src/core/animation/vrmapplication.hpp"
 #include "skeletal_fixture.hpp"
+#include "render_coverage_test_support.hpp"
 #include "vat_fixture.hpp"
 #include "polygoninstancecontainer_testaccess.hpp"
 #include "../src/core/material/materialdrawlooptable.hpp"
@@ -15835,27 +15836,17 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
         return depth;
     };
     const auto baseline = capture(original, gltf_material);
-    const auto bbox = [](const std::vector<float> &depth) {
-        std::array<int, 4> box{128,128,-1,-1};
-        for (int y=0; y<128; ++y) for (int x=0; x<128; ++x) {
-            if (!(depth[y*128+x] < 1.0F)) continue;
-            box[0]=std::min(box[0],x); box[1]=std::min(box[1],y);
-            box[2]=std::max(box[2],x); box[3]=std::max(box[3],y);
-        }
-        return box;
-    };
-    const auto base_box = bbox(baseline);
+    const auto base_coverage = TestSupport::depthCoverage(baseline, 128, 128);
+    const auto base_box = base_coverage.bbox();
     REQUIRE(base_box[2] - base_box[0] > 5);
     REQUIRE(base_box[3] - base_box[1] > 10);
     const auto equivalent = [&](const std::vector<float> &depth) {
-        REQUIRE(depth.size() == baseline.size());
-        std::size_t difference = 0;
-        for (std::size_t i=0; i<depth.size(); ++i) difference += (depth[i]<1.0F) != (baseline[i]<1.0F);
-        CHECK(difference * 1000 <= depth.size());
-        const auto box = bbox(depth);
-        CHECK(box == base_box);
-        CHECK(box[0] >= base_box[0]-1); CHECK(box[1] >= base_box[1]-1);
-        CHECK(box[2] <= base_box[2]+1); CHECK(box[3] <= base_box[3]+1);
+        const auto comparison = TestSupport::compareCoverage(
+            base_coverage, TestSupport::depthCoverage(depth, 128, 128));
+        CHECK(comparison.nonempty);
+        CHECK(comparison.within_tolerance);
+        CHECK(comparison.equal_bbox);
+        CHECK(comparison.within_one_pixel);
     };
     const auto bind = [&](ModelTemplate model, std::string name) {
         auto document = parsePrimitiveMaterialBindingJson(nlohmann::json::parse(R"({"schema":"pelican.material_bindings","version":1,"model":"character.glb","bindings":[{"usd_path":"/Body","mesh":0,"primitive":0,"material":"Paint","routing":{"alpha_mode":"opaque","double_sided":false}}]})"));

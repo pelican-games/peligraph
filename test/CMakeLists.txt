@@ -2291,6 +2291,11 @@ pelican_define_test(gltf_scene_extract_test GPU pelican_core VulkanMemoryAllocat
 target_sources(pelican_test_gltf_scene_extract_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devcli/gltfsceneextract.cpp
 )
+pelican_define_test(render_coverage_test)
+pelican_define_test(combination_fixture_test pelican_project glm)
+target_compile_definitions(pelican_test_combination_fixture_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 pelican_define_test(headless_render_test GROUP headless_gpu GPU pelican_core
                     pelican_test_raytracing_oracle
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
@@ -2309,6 +2314,7 @@ endif()
 target_sources(pelican_test_headless_render_test PRIVATE
     cp1_compute_descriptor_gpu.cpp
     headless_native_scope_test.cpp
+    headless_combination_test.cpp
     headless_material_draw_loop_test.cpp
 )
 if(PELICAN_RUNTIME_SHADER_COMPILER)
