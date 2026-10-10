@@ -21,6 +21,7 @@
 #include "../watch/assetkey.hpp"
 #include "../watch/problemlist.hpp"
 #include "../watch/reloadqueue.hpp"
+#include "../watch/reloadservice.hpp"
 #include "../watch/reloadtransaction.hpp"
 #include "../../project/materialformat.hpp"
 
@@ -431,6 +432,7 @@ struct ModelAssetContainer::Impl {
         std::shared_ptr<const void> live_payload;
         bool declared = false;
         std::vector<watch::AssetKey> dependencies;
+        bool registration_restart_required = false;
     };
     struct CommitBatch {
         struct Installation {
@@ -547,6 +549,7 @@ struct ModelAssetContainer::Impl {
             install.payload->owns_candidate = false;
             install.record->live_payload = std::move(install.registry_payload);
             install.record->dependencies = std::move(install.payload->dependencies);
+            install.record->registration_restart_required = false;
         }
         by_source.swap(batch->source_index);
         // The animation rig generation advances inside the same commit that
@@ -1009,10 +1012,19 @@ void ModelAssetContainer::registerModel(const std::string &name) {
         throw std::runtime_error("the engine's asset_data declares no model '" + name + "'");
     auto declaration = declarationFromAssetEntry(*entry);
     if (const auto held = impl_->records.find(name); held != impl_->records.end()) {
-        // Kept by an unregister that could not release it: the same file is
-        // the same model.
-        if (held->second.declaration.container_key == declaration.container_key) return;
-        throw std::runtime_error("duplicate model asset name: " + name);
+        if (held->second.declaration.container_key != declaration.container_key)
+            throw std::runtime_error("duplicate model asset name: " + name);
+        // The document may have removed the old bindings while an animation
+        // rig kept this record alive. Adopt the published declaration even if
+        // rebuilding fails: readers must describe what the next start loads.
+        auto &record = held->second;
+        record.declaration = std::move(declaration);
+        record.registration_restart_required = true;
+        auto *reload = FastModuleContainer::tryGet<watch::ReloadService>();
+        if (!reload) throw std::runtime_error("this host has no model reload service");
+        const auto key = record.declaration.container_key;
+        reload->reloadModelsNow(std::span{&key, std::size_t{1}});
+        return;
     }
     // As the constructor installs each entry at start.
     auto prepared = prepareDeclaration(declaration);
@@ -1025,6 +1037,10 @@ void ModelAssetContainer::registerModel(const std::string &name) {
         ReleaseErrorSink::record("failed model registration release", releaseModelGpuResources(model, false));
         throw;
     }
+}
+
+bool ModelAssetContainer::registrationRestartRequired(const std::string &name) const {
+    return impl_->records.at(name).registration_restart_required;
 }
 
 std::optional<std::string> ModelAssetContainer::unregisterModel(const std::string &name) {

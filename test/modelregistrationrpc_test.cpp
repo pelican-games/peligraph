@@ -1,4 +1,9 @@
 #include "../src/core/appflow/enginetime.hpp"
+#include "../src/core/asset/model.hpp"
+#include "../src/core/loader/basicconfig.hpp"
+#include "../src/core/material/projectmaterialasset.hpp"
+#include "../src/core/watch/reloadservice.hpp"
+#include "skeletal_fixture.hpp"
 #include "../src/core/communication/rpcserver.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/predefined.hpp"
@@ -423,6 +428,133 @@ TEST_CASE("MI-1 a glb put in a Blank project is registered over RPC, drawn live 
         CHECK(rpc.drawnPixels(capture) > 20);
         GET_MODULE(VulkanManageCore).waitIdle();
     }
+}
+
+
+TEST_CASE("RR1 modelregistration re-registering retained and static models resets material bindings",
+          "[rr1][modelregistration][materialdocumentrpc][gpu]") {
+    setupLogger(true);
+    const auto run = [&](bool skinned, bool fail_reload) {
+        INFO("skinned=" << skinned << ", fail_reload=" << fail_reload);
+        const auto dir = makeTempDir("rr1");
+        const auto root = makeBlankProject(dir.root);
+        const std::string path = "assets/models/character.glb";
+        auto bytes = TestSkeletalFixture::makeGlb();
+        if (!skinned) {
+            // The identical primitive/material without its skin exercises the
+            // immediate-release path, with no change to material expectations.
+            std::uint32_t length = 0;
+            std::memcpy(&length, bytes.data() + 12, 4);
+            auto gltf = Json::parse(bytes.begin() + 20, bytes.begin() + 20 + length);
+            gltf.erase("skins");
+            gltf.erase("animations");
+            gltf["nodes"] = Json::array({{{"name", "Character"}, {"mesh", 0}}});
+            auto &attributes = gltf["meshes"][0]["primitives"][0]["attributes"];
+            attributes.erase("JOINTS_0");
+            attributes.erase("WEIGHTS_0");
+            auto json = gltf.dump();
+            while (json.size() % 4) json += ' ';
+            std::vector<std::uint8_t> replaced;
+            for (const auto value : {0x46546c67u, 2u,
+                 static_cast<std::uint32_t>(bytes.size() - length + json.size()),
+                 static_cast<std::uint32_t>(json.size()), 0x4e4f534au})
+                TestSkeletalFixture::detail::u32(replaced, value);
+            replaced.insert(replaced.end(), json.begin(), json.end());
+            replaced.insert(replaced.end(), bytes.begin() + 20 + length, bytes.end());
+            bytes = std::move(replaced);
+        }
+        std::filesystem::create_directories((root / path).parent_path());
+        TestSkeletalFixture::detail::write(root / path, bytes);
+        FastModuleContainer modules;
+        configureHeadless(root);
+        (void)GET_MODULE(Renderer);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("step_frame");
+        const auto actor = rpc.result("open_editor_session", {{"display_name", "RR-1"}})
+                               .at("actor_id").get<std::uint64_t>();
+        REQUIRE(rpc.result("register_model", {{"path", path}}).at("applied") == "live");
+        REQUIRE(rpc.result("create_material", {{"path", "materials/paint.material.json"},
+            {"surface", "engine://surfaces/openpbr/opaque_single.surface"}}).at("applied") == "live");
+        const auto bound = rpc.result("bind_material", {{"model", "character"}, {"material", "paint"}});
+        REQUIRE(bound.at("applied") == "live");
+        const auto binding_path = root / bound.at("material_bindings").get<std::string>();
+        const auto binding_bytes = readFile(binding_path);
+        auto &models = GET_MODULE(ModelAssetContainer);
+        REQUIRE(static_cast<bool>(models.getModelTemplateByName("character").skeletal) == skinned);
+        REQUIRE(models.declaredMaterialBindings("character").has_value());
+        const auto paint = GET_MODULE(ProjectMaterialAssetContainer).namedMaterials().front().material;
+        REQUIRE(models.getModelTemplateByName("character").material_primitives.front().material == paint);
+        const auto asset = models.assetIdForTesting("character");
+        const auto revision = models.contentRevisionForTesting("character");
+        const auto compatibility = models.compatibilityRevisionForTesting("character");
+        const auto removed = rpc.result("unregister_model", {{"name", "character"}});
+        CHECK(removed.at("applied") == (skinned ? "restart_required" : "live"));
+        CHECK(removed.at("removed").contains("material_bindings"));
+        CHECK(models.hasModel("character") == skinned);
+        CHECK(Json::parse(readFile(root / "assets/asset_data.json")).at("models").empty());
+        CHECK(readFile(binding_path) == binding_bytes);
+        if (fail_reload) {
+            // Exercise the container's failed reload after document publication.
+            // The RPC's normal catch maps this exception to restart_required.
+            auto document = Json::parse(readFile(root / "assets/asset_data.json"));
+            document["models"].push_back({{"name", "character"}, {"path", path}});
+            auto &config = GET_MODULE(ProjectBasicConfig);
+            config.publishAssetDataJson(config.prepareAssetDataJson(document.dump(), GET_MODULE(PathResolver)));
+            writeFile(root / path, "broken GLB after preflight");
+            CHECK_THROWS(models.registerModel("character"));
+            CHECK(models.registrationRestartRequired("character"));
+            CHECK_FALSE(models.declaredMaterialBindings("character").has_value());
+            CHECK(models.contentRevisionForTesting("character") == revision);
+            CHECK(models.getModelTemplateByName("character").material_primitives.front().material == paint);
+            TestSkeletalFixture::detail::write(root / path, bytes);
+        }
+        const auto registered = rpc.result("register_model", {{"path", path}});
+        INFO(registered.dump(2));
+        CHECK(registered.at("applied") == "live");
+        CHECK(registered.at("restart_required").is_null());
+        CHECK_FALSE(models.registrationRestartRequired("character"));
+        CHECK_FALSE(models.declaredMaterialBindings("character").has_value());
+        const auto entry = Json::parse(readFile(root / "assets/asset_data.json")).at("models").at(0);
+        CHECK(entry == Json{{"name", "character"}, {"path", path}});
+        if (skinned) {
+            CHECK(models.assetIdForTesting("character") == asset);
+            CHECK(models.contentRevisionForTesting("character") == revision + 1);
+            CHECK(models.compatibilityRevisionForTesting("character") == compatibility);
+        } else {
+            CHECK(models.assetIdForTesting("character") != asset);
+        }
+        const auto &model = models.getModelTemplateByName("character");
+        REQUIRE(model.material_primitives.size() == 1);
+        REQUIRE(model.named_materials.size() == 1);
+        CHECK(model.material_primitives.front().material == model.named_materials.front().material);
+        CHECK(model.material_primitives.front().material != paint);
+        REQUIRE(rpc.edit(actor, spawn("Returned", "character")).at("status") == "committed");
+        const auto bindings = rpc.result("get_material_bindings", {{"model", "character"}});
+        REQUIRE(bindings.at("primitives").size() == 1);
+        CHECK(bindings.at("primitives").at(0).at("material") == "Skin");
+        const auto own = rpc.result("get_object_materials", {{"object", objectId(rpc, "Returned")}});
+        REQUIRE(own.at("primitives").size() == 1);
+        CHECK(own.at("primitives").at(0).at("model_material") == bindings.at("primitives").at(0).at("material"));
+        CHECK(own.at("primitives").at(0).at("drawn") == "Skin");
+        (void)rpc.result("render_frame");
+        std::uint64_t own_draws = 0;
+        const auto plan = rpc.result("get_frame_plan");
+        for (const auto &node : plan.at("nodes")) {
+            if (node.value("name", std::string{}) != "forward" || !node.contains("drawn_materials")) continue;
+            for (const auto &draw : node.at("drawn_materials")) {
+                CHECK(draw.at("material") != "paint");
+                if (draw.at("material") == "Skin") own_draws += draw.at("draws").get<std::uint64_t>();
+            }
+        }
+        CHECK(own_draws > 0);
+        CHECK(rpc.result("get_problems").at("problems").empty());
+        CHECK(readFile(binding_path) == binding_bytes);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    };
+    SECTION("T1 retained skin") { run(true, false); }
+    SECTION("T2 released static") { run(false, false); }
+    SECTION("failed retained reload keeps new declaration until retry") { run(true, true); }
 }
 
 } // namespace Pelican

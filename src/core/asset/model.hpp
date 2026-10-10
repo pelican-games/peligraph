@@ -110,10 +110,15 @@ DECLARE_MODULE(ModelAssetContainer) {
     // MI-1: registers the models[] entry `name` of the asset_data the engine
     // has published (ProjectBasicConfig::assetDataJson), as the constructor
     // registers each entry at start: the same declaration, reload sources and
-    // logical resource. A template of that name held already from the same
-    // file is kept as it is. Throws (nothing registered) when the entry is
-    // not published, the name is held by another file, or it does not load.
+    // logical resource. For a record retained from the same file, adopts the
+    // new declaration and rebuilds through the model reload transaction.
+    // Throws if the entry is absent, the name belongs to another file, or
+    // loading fails. A retained record keeps the new declaration on failure
+    // and is marked for replacement at restart; its live template is kept.
     void registerModel(const std::string &name);
+    // A retained registration whose declaration has not reached the live
+    // template. Cleared by successful model reload publication.
+    bool registrationRestartRequired(const std::string &name) const;
     // MI-1 (unregister_model): releases the template `name` and its reload
     // declaration. nullopt: released, or not held. Otherwise the reason it is
     // kept until the engine starts again (a live instance still draws it, or
