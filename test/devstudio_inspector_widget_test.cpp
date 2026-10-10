@@ -10,6 +10,7 @@
 // failed only some of the time.
 
 #include "inspectorwidget.hpp"
+#include "materialassignwidget.hpp"
 #include "graphattachmentwidget.hpp"
 
 // EmbeddedViewport is final and has no test seam. As in the frame-plan test,
@@ -85,6 +86,8 @@ class FakeEngine {
     // The operations of the last `edit`.
     Json last_operations = Json::array();
     int transactions = 0;
+    bool hold_material_reads = false;
+    std::map<std::string, qint64> material_reads;
 
     // Answer everything the panel has asked so far.
     void pump() {
@@ -97,6 +100,11 @@ class FakeEngine {
             // fixture project has none to give.
             // MI-1s: and the Material rows beside a model ask for materials.
             const auto method = request.at("method").get<std::string>();
+            if (hold_material_reads && (method == "list_materials" ||
+                                        method == "get_material_bindings" || method == "get_object_materials")) {
+                material_reads[method] = id;
+                continue;
+            }
             if (method.starts_with("get_graph_") || method == "list_materials" ||
                 method == "get_material_bindings" || method == "get_object_materials") {
                 emit viewport_.inspectorRpcFailed(id, QStringLiteral("no graphs here"));
@@ -258,8 +266,10 @@ struct Rig {
     // MI-1s: `model` puts a simplemodelview on the object, and `prepare`
     // runs on the Inspector before the object is selected.
     explicit Rig(std::optional<Json> model = std::nullopt,
-                 const std::function<void(InspectorWidget &)> &prepare = {}) {
+                 const std::function<void(InspectorWidget &)> &prepare = {},
+                 bool hold_material_reads = false) {
         engine.model_view = std::move(model);
+        engine.hold_material_reads = hold_material_reads;
         QString error;
         REQUIRE(viewport.process_.start(
             {QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH), {QStringLiteral("rpc-hold")}, {}},
@@ -309,6 +319,98 @@ struct Rig {
 };
 
 } // namespace
+
+TEST_CASE("AH-1 inspector hit-group assignment waits for materialassign readback",
+          "[devstudio][inspector][materialassign][ah1]") {
+    QStringList assigned;
+    const auto action = [&](const QString &material) { assigned.push_back(material); };
+    Rig rig{Json{{"model", "engine://primitives/sphere"}},
+            [&](InspectorWidget &inspector) { inspector.setAssignHitGroupAction(action); }, true};
+    auto *button = rig.inspector->findChild<QPushButton *>(QStringLiteral("pelican.inspectorAssignHitGroup"));
+    auto *rows = rig.inspector->findChild<MaterialAssignWidget *>();
+    REQUIRE(button != nullptr);
+    REQUIRE(rows != nullptr);
+    auto *choice = rows->choice();
+    REQUIRE(choice != nullptr);
+    const auto answer = [&](const std::string &method, const Json &result) {
+        REQUIRE(rig.engine.material_reads.contains(method));
+        const auto id = rig.engine.material_reads.at(method);
+        rig.engine.material_reads.erase(method);
+        emit rig.viewport.inspectorRpcSucceeded(id, QByteArray::fromStdString(result.dump()));
+    };
+    const Json primitive{{"mesh", 0}, {"primitive", 0}, {"slot", "material_2"},
+                         {"material", "material_2"}, {"source", "model"},
+                         {"model_material", "material_2"}, {"drawn", "material_2"}};
+    const Json object{{"object", 41}, {"scene_id", "main"}, {"materials", Json::array()},
+                      {"primitives", Json::array({primitive})}};
+    const Json bindings{{"primitives", Json::array({primitive})}};
+    CHECK_FALSE(button->isEnabled());
+    // Setting the action after the selection must obey the same readiness gate.
+    rig.inspector->setAssignHitGroupAction(action);
+    CHECK_FALSE(button->isEnabled());
+    answer("get_object_materials", object);
+    CHECK_FALSE(button->isEnabled());
+    answer("list_materials", Json::object());
+    CHECK_FALSE(button->isEnabled());
+    answer("get_material_bindings", bindings);
+    REQUIRE(button->isEnabled());
+    CHECK(choice->currentData().toString() == QStringLiteral("material_2"));
+    button->click();
+    REQUIRE(assigned == QStringList{QStringLiteral("material_2")});
+
+    // Even a stale enabled button must never pass placeholder text to the action.
+    for (const auto &marker : {QStringLiteral("\x01mixed"), QStringLiteral("\x01current")}) {
+        choice->setItemData(choice->currentIndex(), marker);
+        button->setEnabled(true);
+        button->click();
+        CHECK(assigned.size() == 1);
+    }
+
+    // Refresh starts synchronously; a previous real material cannot enable it while reading.
+    choice->setItemData(choice->currentIndex(), QStringLiteral("material_2"));
+    rows->bindingsChanged();
+    CHECK_FALSE(button->isEnabled());
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.material_reads.contains("get_object_materials"); }));
+    Json mixed = object;
+    auto other = primitive;
+    other["primitive"] = 1;
+    other["material"] = other["drawn"] = "material_3";
+    mixed["primitives"].push_back(other);
+    answer("get_material_bindings", bindings);
+    answer("get_object_materials", mixed);
+    CHECK(choice->currentText() == QStringLiteral("(differs per primitive)"));
+    CHECK_FALSE(button->isEnabled());
+
+    // A later uniform read re-enables it and passes the reference, without the display suffix.
+    rows->bindingsChanged();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.material_reads.contains("get_object_materials"); }));
+    Json own = object;
+    own["primitives"][0]["source"] = "object";
+    answer("get_material_bindings", bindings);
+    answer("get_object_materials", own);
+    REQUIRE(button->isEnabled());
+    CHECK(choice->currentText() == QStringLiteral("material_2 (this object)"));
+    button->click();
+    CHECK(assigned == QStringList{QStringLiteral("material_2"), QStringLiteral("material_2")});
+
+    rig.inspector->setAssignHitGroupAction({});
+    CHECK_FALSE(button->isEnabled());
+    rig.inspector->setAssignHitGroupAction(action);
+    REQUIRE(button->isEnabled());
+    rig.inspector->setSelection(std::nullopt, {});
+    CHECK_FALSE(button->isEnabled());
+    rig.inspector->setSelection(OutlinerObjectKey{.scene_id = "main", .declaration_index = 2},
+                                QStringLiteral("Sphere"));
+    CHECK_FALSE(button->isEnabled());
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.material_reads.contains("get_object_materials"); }));
+    CHECK_FALSE(button->isEnabled());
+    answer("list_materials", Json::object());
+    answer("get_material_bindings", bindings);
+    answer("get_object_materials", object);
+    CHECK(button->isEnabled());
+    rows->engineUnavailable();
+    CHECK_FALSE(button->isEnabled());
+}
 
 TEST_CASE("Q-7 a committed field gives the Inspector back",
           "[devstudio][inspector][q7][busy][negative-contrast]") {

@@ -29,6 +29,7 @@ namespace PelicanStudio {
 // sent to). This object shows what get_object_materials says is drawn and
 // where it comes from, and Use model default takes the object's own away.
 class MaterialAssignWidget final : public QGroupBox {
+    Q_OBJECT
   public:
     struct Hooks {
         std::function<qint64(const QString &method, const QJsonObject &params, QString *error)> send;
@@ -59,6 +60,11 @@ class MaterialAssignWidget final : public QGroupBox {
 
     [[nodiscard]] MaterialAssignSession &session() noexcept;
     [[nodiscard]] QComboBox *choice() const noexcept;
+    // Empty until the current rows are read and the combo carries a material reference.
+    [[nodiscard]] QString assignableMaterial() const;
+
+  signals:
+    void rowsPresented();
 
   private:
     struct Impl;

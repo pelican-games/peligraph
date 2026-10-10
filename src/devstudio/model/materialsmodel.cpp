@@ -1629,11 +1629,15 @@ void MaterialAssignSession::setSceneBusy(bool busy) {
     notify();
 }
 
-void MaterialAssignSession::materialsChanged() { readMaterials(); }
+void MaterialAssignSession::materialsChanged() {
+    readMaterials();
+    notify();
+}
 
 void MaterialAssignSession::bindingsChanged() {
     readBindings();
     readObject();
+    notify();
 }
 
 void MaterialAssignSession::setScope(Scope scope) {

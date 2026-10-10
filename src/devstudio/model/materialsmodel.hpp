@@ -702,6 +702,9 @@ class MaterialAssignSession {
     [[nodiscard]] const ModelObjectCounts &counts() const noexcept { return counts_; }
     [[nodiscard]] const ObjectMaterials &objectMaterials() const noexcept { return object_materials_; }
     [[nodiscard]] bool objectRead() const noexcept { return object_read_; }
+    [[nodiscard]] bool readPending() const noexcept {
+        return materials_request_ != 0 || bindings_request_ != 0 || object_request_ != 0;
+    }
     // The rows can take a choice now (read, nothing of theirs in flight).
     [[nodiscard]] bool choosable() const noexcept;
     // Every <model>: one material all primitives carry, "" when each

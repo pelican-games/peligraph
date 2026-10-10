@@ -12,6 +12,7 @@
 #include <QToolButton>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -80,7 +81,10 @@ struct MaterialAssignWidget::Impl {
                   return sent;
               },
           }} {
-        session.changed = [this] { present(); };
+        session.changed = [this] {
+            present();
+            emit owner.rowsPresented();
+        };
         session.restartRequested = [this](const std::string &reason) {
             if (hooks.restart) hooks.restart(qtext(reason));
         };
@@ -113,7 +117,8 @@ struct MaterialAssignWidget::Impl {
         choice = new QComboBox(&owner);
         choice->setObjectName(QStringLiteral("pelican.inspectorMaterialChoice"));
         QObject::connect(choice, &QComboBox::currentIndexChanged, &owner, [this](int index) {
-            if (index < 0) return;
+            // The first object entry describes the readback, even when it carries a real reference.
+            if (index < 0 || (index == 0 && session.scope() == Scope::Object)) return;
             const auto value = choice->itemData(index).toString();
             if (value == Mixed || value == Current) return;
             if (session.scope() == Scope::Model) {
@@ -303,6 +308,17 @@ struct MaterialAssignWidget::Impl {
         }
         if (object_scope) {
             fillObject(*choice, session.shownObjectLabel(), std::nullopt, session.objectRequested());
+            // Keep the display label (including its source) separate from the material reference.
+            // Mixed and unread rows retain their sentinel and cannot open a hit-group assignment.
+            if (choice->itemData(0).toString() == Current && session.objectRead() &&
+                !session.objectEditPending() && !session.objectMaterials().primitives.empty()) {
+                const auto &primitive = session.objectMaterials().primitives.front();
+                const auto &material = primitive.drawn.empty() ? primitive.material : primitive.drawn;
+                const bool shared = std::ranges::all_of(session.objectMaterials().primitives, [&](const auto &p) {
+                    return (p.drawn.empty() ? p.material : p.drawn) == material;
+                });
+                if (shared && !material.empty()) choice->setItemData(0, qtext(material));
+            }
             choice->setToolTip(owner.tr("The material this object draws with; a choice gives this object its own "
                                         "(set_object_material)"));
             setPanelNotice(scope, qtext(objectScopeLine(session.subject().name)),
@@ -385,5 +401,11 @@ bool MaterialAssignWidget::receiveFailure(qint64 request_id, const QString &mess
 
 MaterialAssignSession &MaterialAssignWidget::session() noexcept { return impl_->session; }
 QComboBox *MaterialAssignWidget::choice() const noexcept { return impl_->choice; }
+
+QString MaterialAssignWidget::assignableMaterial() const {
+    if (!impl_->session.choosable() || impl_->session.readPending()) return {};
+    const auto value = impl_->choice->currentData().toString();
+    return value == Mixed || value == Current ? QString{} : value;
+}
 
 } // namespace PelicanStudio

@@ -362,14 +362,12 @@ struct InspectorWidget::Impl {
                                               "(Rendering settings > Ray layout)"));
         assign_hit_group->setEnabled(false);
         if (material_assign->layout() != nullptr) material_assign->layout()->addWidget(assign_hit_group);
+        QObject::connect(material_assign, &MaterialAssignWidget::rowsPresented, &owner,
+                         [this] { synchronizeAssignHitGroup(); });
         QObject::connect(assign_hit_group, &QPushButton::clicked, &owner, [this] {
             if (!assign_hit_group_action) return;
-            auto material = material_assign->choice() != nullptr ? material_assign->choice()->currentText()
-                                                                  : QString{};
-            // "(model default: <name>)" names the model's own material.
-            const QString prefix = QStringLiteral("(model default: ");
-            if (material.startsWith(prefix) && material.endsWith(QLatin1Char(')')))
-                material = material.mid(prefix.size(), material.size() - prefix.size() - 1);
+            const auto material = material_assign->assignableMaterial();
+            if (material.isEmpty()) return;
             assign_hit_group_action(material);
         });
 
@@ -604,6 +602,11 @@ struct InspectorWidget::Impl {
             model.startSession();
             dispatchRequests();
         }
+    }
+
+    void synchronizeAssignHitGroup() {
+        assign_hit_group->setEnabled(static_cast<bool>(assign_hit_group_action) &&
+                                     !material_assign->assignableMaterial().isEmpty());
     }
 
     void setSelection(std::optional<OutlinerObjectKey> selection,
@@ -2776,7 +2779,7 @@ void InspectorWidget::setEnableHitGroupsAction(std::function<void()> action) {
 
 void InspectorWidget::setAssignHitGroupAction(std::function<void(const QString &material)> action) {
     impl_->assign_hit_group_action = std::move(action);
-    impl_->assign_hit_group->setEnabled(static_cast<bool>(impl_->assign_hit_group_action));
+    impl_->synchronizeAssignHitGroup();
 }
 
 void InspectorWidget::setSelection(
