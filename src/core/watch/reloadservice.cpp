@@ -1430,6 +1430,10 @@ bool ReloadService::applyRequestForTesting(const ReloadRequest &request) {
     return applyRequest(request);
 }
 
+std::vector<bool> ReloadService::reloadDocuments(std::span<const ReloadRequest> requests) {
+    return applyRequests(requests);
+}
+
 std::vector<bool> ReloadService::applyRequestsForTesting(
     std::span<const ReloadRequest> requests) {
     return applyRequests(requests);

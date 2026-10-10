@@ -229,6 +229,13 @@ struct ProjectDocumentAtomicReplaceRoutes {
 };
 ProjectDocumentAtomicReplaceRoutes projectDocumentAtomicReplaceRoutesForTesting();
 
+// RV-1: enabled only by an RPC host. The durable baseline is updated in the
+// same transaction as the project bytes. A fresh process reloads it from disk.
+void enableProjectDocumentJournal(const std::filesystem::path &project_root);
+void markProjectDocumentBaseline(const std::filesystem::path &project_root);
+nlohmann::json getProjectDocumentJournal(const std::filesystem::path &project_root);
+nlohmann::json revertProjectDocumentsToBaseline(const std::filesystem::path &project_root);
+
 // The transaction's replace primitive on its own, so a test can put a
 // contending opener against it without driving a whole editor commit.
 void projectDocumentAtomicReplaceForTesting(

@@ -238,6 +238,9 @@ DECLARE_MODULE(ReloadService) {
     ReloadTransitionFacts transitionFacts() const;
     FileWatcher *watcherForTesting() noexcept { return watcher_.get(); }
     ReloadCoordinator &transactions() noexcept { return transactions_; }
+    // Explicit document restoration uses the same participants as the watcher,
+    // including the render pipeline even when an RPC driver owns the watch.
+    std::vector<bool> reloadDocuments(std::span<const ReloadRequest> requests);
     bool applyRequestForTesting(const ReloadRequest &request);
     std::vector<bool> applyRequestsForTesting(std::span<const ReloadRequest> requests);
     void registerParticipant(ReloadParticipant participant);

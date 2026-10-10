@@ -72,6 +72,8 @@
     {"label": "read its blue", "expect": "result", "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/red_box.png", "pixels": [[0.5, 0.5]]}, "path": "rgb[0][2]", "remember": "blue_red"},
     {"label": "the box's front is red: red well above green", "expect": "result", "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/red_box.png", "pixels": [[0.5, 0.5]]}, "path": "rgb[0][0]", "op": "gt", "value_of": "green_red", "plus": 40, "retry_ms": 120000},
     {"label": "and well above blue", "expect": "result", "command": {"cmd": "screenshot", "name": "pelican.viewportHost", "mode": "screen", "path": "{artifacts}/red_box.png", "pixels": [[0.5, 0.5]]}, "path": "rgb[0][0]", "op": "gt", "value_of": "blue_red", "plus": 40},
+    {"label": "RV-1 keep the authored material setup before testing an outside edit", "cmd": "action", "name": "pelican.file.saveScene"},
+    {"label": "RV-1 explicit Save establishes the document baseline", "expect": "rpc_equals", "method": "get_document_journal", "path": "dirty", "value": false, "retry_ms": 30000},
     {"label": "the document as the engine wrote it ends with its last }", "file": "contains", "path": "{artifacts}/material_repair/materials/material.material.json", "text": "  ]\n}\n", "value": true},
     {"label": "the document saved outside Studio without its last }", "file": "replace", "path": "{artifacts}/material_repair/materials/material.material.json", "old": "  ]\n}\n", "new": "  ]\n"},
     {"label": "open another project, so the next open is a real one", "cmd": "open_project", "dir": "{other_project}"},

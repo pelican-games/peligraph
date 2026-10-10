@@ -25,6 +25,7 @@
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <QAction>
 #include <QApplication>
@@ -2506,4 +2507,30 @@ TEST_CASE("KB-1 native viewport keys use the scene actions and respect modal dia
     rig.await([&] { return rig.redo_calls == 1; });
     CHECK(rig.objects.front().at("x") == 7.0);
     rig.viewport.engine_input_active_ = false;
+}
+
+TEST_CASE("RV-1 open_project returns promptly while Discard is waiting and for a no-op",
+          "[RV-1][automation][open_project]") {
+    application();
+    QTemporaryDir directory;
+    REQUIRE(directory.isValid());
+    PelicanStudio::EmbeddedViewport viewport;
+    viewport.rpc_ready_ = true;
+    AutomationHost host;
+    host.viewport = &viewport;
+    bool requested = false;
+    const bool pending = GENERATE(true, false);
+    host.open_project = [&](const QString &) {
+        requested = true;
+        viewport.setRestartPending(pending);
+    };
+    QElapsedTimer elapsed;
+    elapsed.start();
+    const auto reply = runAutomationCommand(host, request(QStringLiteral("open_project"),
+        {{QStringLiteral("dir"), directory.path()}, {QStringLiteral("timeout_ms"), 1500}}));
+    REQUIRE(reply.ok);
+    CHECK(requested);
+    CHECK(elapsed.elapsed() < 1000);
+    CHECK(reply.result.toObject().value(QStringLiteral("engine_restarting")).toBool() == pending);
+    CHECK(viewport.currentEngineReady() == !pending);
 }

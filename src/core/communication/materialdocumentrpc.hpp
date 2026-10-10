@@ -246,6 +246,14 @@ class ReloadService;
 //   material.name_invalid@1 {reason: "engine_material"}, a model's glTF
 //   material {reason: "model_material", model}, and a name no listed
 //   document holds material.name_unknown@1.
+// RV-1 lifecycle RPC (also enables the transaction journal for this project):
+// mark_document_baseline {} -> {dirty:false}; get_document_journal {} ->
+// {dirty, documents:[{path,state:created|replaced|deleted,digest:string|null}]}.
+// revert_documents_to_baseline {closing?:bool} -> {dirty:false,restored,conflicts}.
+// Running restores go through the file reload participants; paths that need a
+// fresh loader are returned as reload_pending_restart. Closing skips reload.
+// The durable journal lives in .pelican/document_journal/manifest.json; a
+// baseline reset or revert removes it, while an engine restart preserves it.
 void configureMaterialDocumentRpcHandlers(RpcServer &server,
                                           PathResolver &path_resolver,
                                           watch::ReloadService *reload_service);

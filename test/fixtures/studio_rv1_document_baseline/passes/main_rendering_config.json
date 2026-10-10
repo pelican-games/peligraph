@@ -1,0 +1,92 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {
+    "gain_curve": {
+      "nodes": [
+        {
+          "id": "gain",
+          "op": "graph.input",
+          "default": 2
+        },
+        {
+          "id": "bias",
+          "op": "graph.input"
+        },
+        {
+          "id": "sum",
+          "op": "value.add",
+          "inputs": {
+            "a": {
+              "node": "gain",
+              "port": "value"
+            },
+            "b": {
+              "node": "bias",
+              "port": "value"
+            }
+          },
+          "outputs": [
+            "value"
+          ]
+        }
+      ],
+      "outputs": {
+        "value": {
+          "node": "sum",
+          "port": "value"
+        }
+      }
+    }
+  },
+  "nodes": [
+    {
+      "id": "clock",
+      "op": "value.input",
+      "parameters": {
+        "name": "scene_time"
+      },
+      "outputs": [
+        "value"
+      ]
+    },
+    {
+      "id": "left",
+      "op": "graph.instance",
+      "definition": "gain_curve",
+      "owner": {
+        "scene": "default_scene",
+        "object": 1
+      },
+      "parameters": {
+        "gain": 2.5,
+        "bias": 5
+      }
+    }
+  ],
+  "outputs": {},
+  "rendering": {
+    "rendering_passes": [
+      {
+        "name": "main_render",
+        "passes": [
+          {
+            "name": "present",
+            "type": "fullscreen",
+            "input": [],
+            "output": {
+              "color": [
+                "display"
+              ],
+              "depth": null
+            },
+            "shader": {
+              "vertex": "engine://fullscreen",
+              "fragment": "engine://passthrough"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

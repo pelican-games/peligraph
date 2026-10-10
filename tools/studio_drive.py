@@ -636,6 +636,8 @@ class Run:
         self.failures: list[dict[str, Any]] = []
         self.screenshots: list[str] = []
         self.channel: Channel | None = None
+        self.studio: Studio | None = None
+        self.closed = False
         # What a `result` step wrote down for a later step to compare against.
         # A zoom is "bigger than it was", not "1.35": the number a view lands on
         # is the view's business, and a scenario that hard-codes it is testing
@@ -969,6 +971,13 @@ def run_file_step(
                     "this run saw it hold it (a misspelt text passes too; was: true says it did)"
                 )
             detail = f"{path.name} {'holds' if found else 'does not hold'} the text"
+        elif action == "equals":
+            source = Path(str(step["other"])).resolve()
+            if not any(source == root or root in source.parents for root in owned):
+                raise ValueError(f"{source} is outside this run")
+            if path.read_bytes() != source.read_bytes():
+                raise ValueError(f"{path.name} differs from {source.name}")
+            detail = f"{path.name} equals {source.name} byte for byte"
         elif action == "copy":
             source = Path(str(step["from"])).resolve()
             if not any(source == root or root in source.parents for root in owned):
@@ -1026,6 +1035,14 @@ def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
     started = time.perf_counter()
     kind = str(step["expect"])
     try:
+        if kind == "studio_closed":
+            if run.studio is None:
+                raise ValueError("Studio was not launched")
+            code = run.studio.wait_for_exit(float(step.get("timeout_ms", 30000)) / 1000)
+            run.closed = code == 0
+            run.record("expect", label, ok=run.closed, request=step,
+                       detail=f"Studio exit code: {code}", started=started)
+            return run.closed
         if kind == "rpc_equals":
             request = {
                 "cmd": "rpc",
@@ -1682,6 +1699,7 @@ def main() -> int:
 
     try:
         studio = Studio(command, artifacts / "studio.log", env)
+        run.studio = studio
         watchdog.on_trip = studio.stop
         if scenario.get("watch_engine_windows"):
             if sys.platform != "win32":
@@ -1750,7 +1768,7 @@ def main() -> int:
                 steps_ok = False
                 break
         # A scenario of no steps (a launch check) has nothing to undo or keep.
-        if steps_ok and scenario.get("steps"):
+        if steps_ok and scenario.get("steps") and not run.closed:
             invariant_outcomes = studio_invariants.run_invariants(run, epilogue)
     except AutomationError as error:
         launch_error = str(error)
@@ -1762,7 +1780,7 @@ def main() -> int:
     forced_shutdown = False
     if studio is not None:
         shutdown_started = time.perf_counter()
-        if run.channel is not None:
+        if run.channel is not None and not run.closed:
             try:
                 run.channel.send({"cmd": "quit"}, timeout=30.0)
             except AutomationError:

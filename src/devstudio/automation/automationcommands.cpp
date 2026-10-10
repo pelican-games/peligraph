@@ -2447,28 +2447,14 @@ AutomationReply commandOpenProject(const AutomationHost &host,
             ProjectFailed,
             QStringLiteral("this window cannot open a project"));
     host.open_project(directory);
-    // Switching projects stops the engine and starts another, and the stop is
-    // asynchronous: for a moment the viewport still answers RPC, and it is the
-    // old engine answering. Return only once it has let go, so a `wait_engine`
-    // after this waits for the new one rather than agreeing with the old one.
-    // A project that was already open restarts nothing, and says so.
-    const int settle = timeoutOf(request, 20000);
-    bool restarted = false;
-    if (host.viewport != nullptr && host.viewport->rpcReady()) {
-        QElapsedTimer elapsed;
-        elapsed.start();
-        while (elapsed.elapsed() < settle) {
-            if (!host.viewport->rpcReady()) {
-                restarted = true;
-                break;
-            }
-            QTest::qWait(25);
-        }
-    }
+    // MainWindow closes currentEngineReady() synchronously when navigation
+    // is requested. Return so the caller can answer Save/Discard/Cancel;
+    // wait_engine owns the asynchronous wait for the replacement process.
+    const bool restarted = host.viewport != nullptr &&
+        (host.viewport->restartPending() || !host.viewport->rpcReady());
     return AutomationReply::success(QJsonObject{
         {QStringLiteral("dir"), QDir(directory).absolutePath()},
-        // False when the viewport kept the engine it had: opening the project
-        // that is already open is a no-op, by EmbeddedViewport's own rule.
+        // Includes navigation waiting for an unsaved-changes answer.
         {QStringLiteral("engine_restarting"), restarted},
     });
 }

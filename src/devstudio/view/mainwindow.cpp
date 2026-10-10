@@ -293,6 +293,7 @@ void MainWindow::closeEvent(QCloseEvent *event) {
         return;
     }
     close_authorized_ = false;
+    invalidateDocumentOperations(true);
     saveLastToolLayout();
     saveLastPanelLayout();
     QMainWindow::closeEvent(event);
@@ -1202,8 +1203,13 @@ void MainWindow::createWorkspace() {
                 (void)migration_panel_->acceptRpcRejection(
                     request_id, error_code, message);
             });
+    connect(viewport_, &EmbeddedViewport::engineSessionEnding, this,
+            [this] { invalidateDocumentOperations(); });
     connect(viewport_, &EmbeddedViewport::engineRpcBecameAvailable, this,
             [this] {
+                if (!document_session_ready_ && !document_request_ && !document_prompt_ &&
+                    project_model_ && QDir(displayPath(project_model_->projectRoot())).absolutePath() == viewport_->projectRoot())
+                    requestDocumentOperation(DocumentOperation::Open);
                 migration_panel_->engineOpenedWithoutMigrating();
                 pending_outliner_request_ = 0;
                 // UX-13c: whether this engine knows scene_outline is found
@@ -1231,6 +1237,7 @@ void MainWindow::createWorkspace() {
     const auto post_commit_errors = std::make_shared<RenderEditPostCommitErrors>();
     connect(viewport_, &EmbeddedViewport::engineRpcBecameUnavailable, this,
             [this, post_commit_errors](const QString &) {
+                invalidateDocumentOperations();
                 post_commit_errors->engineGone();
                 // RU-1: what the history had in flight went with the engine;
                 // the history stays (its documents are on disk).
@@ -1268,6 +1275,7 @@ void MainWindow::createWorkspace() {
     connect(viewport_, &EmbeddedViewport::inspectorRpcSucceeded, this,
             [this, post_commit_errors](
                 qint64 request_id, const QByteArray &result_json) {
+                if (receiveDocumentResult(request_id, result_json)) return;
                 if (migration_panel_->acceptRpcResult(request_id, result_json))
                     return;
                 // BS-1s, decision 8: Show the document's reads and restore. A
@@ -1363,7 +1371,8 @@ void MainWindow::createWorkspace() {
                             throw std::runtime_error("invalid scene revision");
                         }
                         inspector_->observeSceneRevision(revision.get<std::uint64_t>());
-                        continueNavigation();
+                        if (pending_navigation_ == Navigation::Restart) continueNavigation();
+                        else requestDocumentOperation(DocumentOperation::Navigation);
                     } catch (const std::exception &) {
                         cancelNavigation(tr("Could not check unsaved changes. The project remains open."));
                     }
@@ -1374,6 +1383,7 @@ void MainWindow::createWorkspace() {
             });
     connect(viewport_, &EmbeddedViewport::inspectorRpcFailed, this,
             [this](qint64 request_id, const QString &message) {
+                if (receiveDocumentFailure(request_id, message)) return;
                 if (migration_panel_->acceptRpcFailure(request_id, message))
                     return;
                 if (render_fallback_->receiveFailure(request_id, message)) return;
@@ -1881,7 +1891,13 @@ void MainWindow::createMenus() {
                 5000);
             return;
         }
+        if (document_request_ != 0 || !document_session_ready_) {
+            statusBar()->showMessage(tr("Wait for the document baseline check to finish."), 5000);
+            return;
+        }
+        document_save_completion_ = inspector_->sceneSaveCompletion();
         if (inspector_->saveScene()) {
+            document_save_pending_ = true;
             statusBar()->showMessage(tr("Saving scene..."), 3000);
         } else {
             statusBar()->showMessage(
@@ -2516,8 +2532,125 @@ void MainWindow::requestEngineRestart(const QString &reason) {
 void MainWindow::requestNavigation(Navigation destination, const QString &path) {
     if (pending_navigation_ != Navigation::None) return;
     pending_navigation_ = destination;
+    if (destination == Navigation::Project) viewport_->setRestartPending(true);
     pending_project_path_ = path;
+    // A Save/open baseline operation must finish before asking whether this
+    // project is dirty. Keep the navigation request instead of dropping it.
+    if (document_request_ != 0 || document_save_pending_ || document_prompt_) return;
     checkNavigationRevision();
+}
+
+
+void MainWindow::invalidateDocumentOperations(bool new_project) {
+    // RPC ids belong to an engine, and dialog continuations to this generation.
+    // Invalidate before closing a dialog: reject() emits finished synchronously.
+    ++document_generation_;
+    document_request_ = 0;
+    document_operation_ = DocumentOperation::None;
+    document_save_pending_ = false;
+    navigation_revision_request_ = 0;
+    navigation_waiting_for_save_ = false;
+    if (document_prompt_) {
+        auto *prompt = document_prompt_.data();
+        document_prompt_ = nullptr;
+        prompt->reject();
+    }
+    if (new_project) {
+        document_session_ready_ = false;
+        document_dirty_ = false;
+    }
+}
+
+void MainWindow::requestDocumentOperation(DocumentOperation operation) {
+    if (document_request_ != 0) {
+        cancelNavigation(tr("A document baseline operation is still running. Please retry."));
+        return;
+    }
+    const auto method = operation == DocumentOperation::Open || operation == DocumentOperation::Navigation
+        ? QStringLiteral("get_document_journal")
+        : operation == DocumentOperation::RevertClose || operation == DocumentOperation::RevertRecovery
+            ? QStringLiteral("revert_documents_to_baseline") : QStringLiteral("mark_document_baseline");
+    QString error;
+    document_operation_ = operation;
+    document_request_generation_ = document_generation_;
+    document_request_ = viewport_->requestRpc(method,
+        operation == DocumentOperation::RevertClose ? QJsonObject{{QStringLiteral("closing"), true}} : QJsonObject{}, &error);
+    if (!document_request_) {
+        document_operation_ = DocumentOperation::None;
+        cancelNavigation(tr("Could not update the document baseline: %1").arg(error));
+    }
+}
+
+bool MainWindow::receiveDocumentFailure(qint64 request, const QString &message) {
+    if (!request || request != document_request_ || document_request_generation_ != document_generation_) return false;
+    document_request_ = 0;
+    document_operation_ = DocumentOperation::None;
+    navigation_waiting_for_save_ = false;
+    cancelNavigation(tr("Could not update the document baseline: %1").arg(message));
+    return true;
+}
+
+bool MainWindow::receiveDocumentResult(qint64 request, const QByteArray &bytes) {
+    if (!request || request != document_request_ || document_request_generation_ != document_generation_) return false;
+    const auto result = nlohmann::json::parse(bytes.constData(), bytes.constData() + bytes.size(), nullptr, false);
+    if (!result.is_object() || !result.contains("dirty") || !result.at("dirty").is_boolean())
+        return receiveDocumentFailure(request, tr("Invalid document journal response."));
+    const auto operation = std::exchange(document_operation_, DocumentOperation::None);
+    document_request_ = 0;
+    document_dirty_ = result.at("dirty").get<bool>();
+    if (operation == DocumentOperation::Navigation) {
+        continueNavigation();
+    } else if (operation == DocumentOperation::Open) {
+        if (!document_dirty_) {
+            requestDocumentOperation(DocumentOperation::MarkOpen);
+        } else {
+            auto *prompt = new QMessageBox(QMessageBox::Warning, tr("Previous document changes"),
+                tr("Restore the previous session's rendering document changes?"),
+                QMessageBox::Discard | QMessageBox::Save, this);
+            prompt->setObjectName(QStringLiteral("pelican.documentRecoveryPrompt"));
+            prompt->button(QMessageBox::Discard)->setText(tr("Discard changes"));
+            prompt->button(QMessageBox::Discard)->setObjectName(QStringLiteral("pelican.documentRecoveryPrompt.discard"));
+            prompt->button(QMessageBox::Save)->setText(tr("Keep changes"));
+            prompt->button(QMessageBox::Save)->setObjectName(QStringLiteral("pelican.documentRecoveryPrompt.keep"));
+            prompt->setDefaultButton(QMessageBox::Save);
+            prompt->setAttribute(Qt::WA_DeleteOnClose);
+            document_prompt_ = prompt;
+            connect(prompt, &QMessageBox::finished, this, [this, generation = document_generation_](int answer) {
+                if (generation != document_generation_) return;
+                document_prompt_ = nullptr;
+                requestDocumentOperation(answer == QMessageBox::Discard ? DocumentOperation::RevertRecovery
+                                                                        : DocumentOperation::KeepRecovery);
+            });
+            prompt->open();
+        }
+    } else {
+        document_session_ready_ = true;
+        auto finish = [this, operation, generation = document_generation_] {
+            if (generation != document_generation_) return;
+            document_prompt_ = nullptr;
+            if (operation == DocumentOperation::RevertClose) completeNavigation();
+            else if (operation == DocumentOperation::RevertRecovery) {
+                if (render_history_) render_history_->clear();
+                viewport_->restartEngine(tr("Reading the restored documents..."));
+            } else if (pending_navigation_ != Navigation::None) {
+                if (operation == DocumentOperation::MarkSave) navigation_waiting_for_save_ = false;
+                checkNavigationRevision();
+            }
+        };
+        if (result.contains("conflicts") && !result.at("conflicts").empty()) {
+            QStringList paths;
+            for (const auto &path : result.at("conflicts")) paths << QString::fromStdString(path.get<std::string>());
+            auto *prompt = new QMessageBox(QMessageBox::Warning, tr("Documents changed outside Studio"),
+                tr("These documents were kept because they changed outside Studio:\n%1").arg(paths.join('\n')),
+                QMessageBox::Ok, this);
+            prompt->setObjectName(QStringLiteral("pelican.documentRevertConflicts"));
+            prompt->setAttribute(Qt::WA_DeleteOnClose);
+            document_prompt_ = prompt;
+            connect(prompt, &QMessageBox::finished, this, [finish](int) { finish(); });
+            prompt->open();
+        } else finish();
+    }
+    return true;
 }
 
 void MainWindow::checkNavigationRevision() {
@@ -2553,7 +2686,8 @@ void MainWindow::continueNavigation() {
             [this] { cancelNavigation(); });
         return;
     }
-    if (!inspector_->hasUnsavedSceneChanges() && !inspector_->sceneEditPending()) {
+    if (!inspector_->hasUnsavedSceneChanges() && !inspector_->sceneEditPending() &&
+        (pending_navigation_ == Navigation::Restart || !document_dirty_)) {
         completeNavigation();
         return;
     }
@@ -2561,7 +2695,10 @@ void MainWindow::continueNavigation() {
     const bool restarting = pending_navigation_ == Navigation::Restart;
     auto *prompt = new QMessageBox(QMessageBox::Warning, tr("Unsaved Scene Changes"),
         restarting ? tr("Save your scene changes before the engine restarts?")
-                   : tr("Save your scene changes before leaving this project?"),
+                   : inspector_->hasUnsavedSceneChanges() && document_dirty_
+                         ? tr("The scene and rendering documents have unsaved changes. Save before leaving?")
+                     : document_dirty_ ? tr("Rendering documents have unsaved changes. Save before leaving?")
+                                       : tr("The scene has unsaved changes. Save before leaving?"),
         QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
     if (restarting) {
         prompt->setInformativeText(tr("The engine restarts to apply a setting it reads only at start, and the scene it holds is read again from disk. Cancel keeps this engine running; the setting is saved and applies the next time the engine starts."));
@@ -2588,11 +2725,15 @@ void MainWindow::answerNavigationPrompt(int answer) {
     // A later button click cannot resurrect that request.
     if (pending_navigation_ == Navigation::None) return;
     if (answer == QMessageBox::Discard) {
-        completeNavigation();
+        if (pending_navigation_ == Navigation::Restart || !project_model_) completeNavigation();
+        else requestDocumentOperation(DocumentOperation::RevertClose);
     } else if (answer == QMessageBox::Save) {
         navigation_save_completion_ = inspector_->sceneSaveCompletion();
         navigation_waiting_for_save_ = true;
+        document_save_completion_ = navigation_save_completion_;
+        document_save_pending_ = true;
         if (!inspector_->sceneSaveInFlight() && !inspector_->saveScene()) {
+            document_save_pending_ = false;
             cancelNavigation(tr("Scene save is unavailable. Finish any active edit and retry. The project remains open."));
         } else {
             statusBar()->showMessage(pending_navigation_ == Navigation::Restart
@@ -2609,6 +2750,17 @@ void MainWindow::sceneStateChanged() {
     if (play_controls_ != nullptr &&
         (!play_controls_->model().supported() || play_controls_->model().editing()))
         clean_in_edit_ = !inspector_->hasUnsavedSceneChanges();
+    if (document_save_pending_ && inspector_->sceneSaveCompletion() != document_save_completion_) {
+        document_save_pending_ = false;
+        if (inspector_->lastSceneSaveSucceeded()) {
+            requestDocumentOperation(DocumentOperation::MarkSave);
+            return;
+        }
+        if (pending_navigation_ != Navigation::None) {
+            cancelNavigation(tr("The scene could not be saved. The project remains open."));
+            return;
+        }
+    }
     if (!navigation_waiting_for_save_ ||
         inspector_->sceneSaveCompletion() == navigation_save_completion_) return;
     navigation_waiting_for_save_ = false;
@@ -2642,7 +2794,7 @@ void MainWindow::cancelNavigation(const QString &message) {
 void MainWindow::resetNavigation() {
     // Q-9. Declined, or about to go ahead -- completeNavigation restarts the
     // engine right after this, and restartEngine closes the gate itself.
-    if (pending_navigation_ == Navigation::Restart) {
+    if (pending_navigation_ == Navigation::Restart || pending_navigation_ == Navigation::Project) {
         viewport_->setRestartPending(false);
     }
     pending_navigation_ = Navigation::None;
@@ -2686,6 +2838,7 @@ void MainWindow::openProjectNow(const QString &path) {
         saveLastToolLayout();
         outliner_refresh_timer_->stop();
         pending_outliner_request_ = 0;
+        invalidateDocumentOperations(true);
         inspector_->resetSceneSaveState();
         inspector_->resetMaterialState();
         pending_spawn_name_.reset();
@@ -2773,6 +2926,7 @@ void MainWindow::endProjectMigration() {
 
 void MainWindow::leaveCurrentProject(
     const std::filesystem::path &next_project_root) {
+    invalidateDocumentOperations(true);
     saveLastToolLayout();
     outliner_refresh_timer_->stop();
     pending_outliner_request_ = 0;

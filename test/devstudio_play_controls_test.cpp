@@ -28,6 +28,7 @@
 #include "graphcanvaswidget.hpp"
 #include "outlinertree.hpp"
 #include "playcontrols.hpp"
+#include "inspectorwidget.hpp"
 #include "studiotheme.hpp"
 
 #include <QAction>
@@ -56,6 +57,7 @@
 #include <QWidget>
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -113,6 +115,13 @@ class FakeEngine {
     Json not_kept = Json::array();
     int reloads = 0;
     int saves = 0;
+    int baseline_marks = 0;
+    int document_reverts = 0;
+    bool document_dirty = false;
+    bool refuse_revert = false;
+    bool document_conflict = false;
+    std::string document_value = "opened";
+    std::string document_baseline = "opened";
     std::string state = "playing";
     std::uint64_t evaluation = 5000;
     std::uint64_t game_frame = 100;
@@ -237,6 +246,29 @@ class FakeEngine {
             result(id, {{"generation", reloads}, {"systems", 1}});
             return;
         }
+        if (method == "get_document_journal") {
+            result(id, {{"dirty", document_dirty}, {"documents", Json::array()}});
+            return;
+        }
+        if (method == "mark_document_baseline") {
+            ++baseline_marks;
+            document_baseline = document_value;
+            document_dirty = false;
+            result(id, {{"dirty", false}});
+            return;
+        }
+        if (method == "revert_documents_to_baseline") {
+            ++document_reverts;
+            if (refuse_revert) {
+                error(id, -32000, "revert failed", Json::object());
+                return;
+            }
+            if (!document_conflict) document_value = document_baseline;
+            document_dirty = false;
+            result(id, {{"dirty", false}, {"restored", Json::array()},
+                        {"conflicts", document_conflict ? Json::array({"passes/main.json"}) : Json::array()}});
+            return;
+        }
         if (method == "save_scene") {
             ++saves;
             result(id, {{"status", "saved"}, {"scene_revision", 1}});
@@ -340,6 +372,7 @@ struct Rig {
             {QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH), {QStringLiteral("rpc-hold")}, {}},
             &error));
         REQUIRE(viewport.process_.waitForStarted(5000));
+        viewport.project_root_ = QString::fromStdWString(sandbox.root.generic_wstring());
         window.project_model_ = ProjectOutlinerModel::open(sandbox.root);
         window.selection_model_.bindProject(&*window.project_model_);
         window.resize(1200, 800);
@@ -1096,6 +1129,216 @@ TEST_CASE("PM-3b with no run, leaving asks nothing about the game",
     REQUIRE(rig.pumpUntil([&] { return !rig.window.isVisible(); }));
     CHECK(rig.window.findChild<QMessageBox *>(QStringLiteral("pelican.playSessionPrompt")) == nullptr);
     CHECK(rig.sent() == 0);
+}
+
+
+TEST_CASE("RV-1 Studio unsaved rendering documents prompt on close without scene edits",
+          "[RV-1][devstudio][unsaved][close]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.pumpUntil([&] { return rig.window.document_session_ready_; }));
+    REQUIRE_FALSE(rig.window.inspector_->hasUnsavedSceneChanges());
+    const auto marks = rig.engine.baseline_marks;
+    rig.engine.document_dirty = true;
+    rig.engine.document_value = "edited";
+    rig.window.close();
+    QMessageBox *prompt = nullptr;
+    REQUIRE(rig.pumpUntil([&] {
+        prompt = rig.window.findChild<QMessageBox *>(QStringLiteral("pelican.unsavedScenePrompt"));
+        return prompt && prompt->isVisible();
+    }));
+    REQUIRE(prompt->text().contains(QStringLiteral("Rendering documents")));
+    SECTION("Cancel changes nothing") {
+        prompt->button(QMessageBox::Cancel)->click();
+        rig.pumpFor(100);
+        CHECK(rig.window.isVisible());
+        CHECK(rig.engine.document_dirty);
+        CHECK(rig.engine.document_value == "edited");
+        CHECK(rig.engine.document_reverts == 0);
+        CHECK(rig.engine.baseline_marks == marks);
+    }
+    SECTION("Discard restores documents before closing") {
+        prompt->button(QMessageBox::Discard)->click();
+        REQUIRE(rig.pumpUntil([&] { return !rig.window.isVisible(); }));
+        CHECK(rig.engine.document_value == "opened");
+        CHECK(rig.engine.document_reverts == 1);
+        CHECK(rig.engine.saves == 0);
+    }
+    SECTION("Save saves scene and marks documents before closing") {
+        prompt->button(QMessageBox::Save)->click();
+        REQUIRE(rig.pumpUntil([&] { return !rig.window.isVisible(); }));
+        CHECK(rig.engine.document_baseline == "edited");
+        CHECK(rig.engine.baseline_marks == marks + 1);
+        CHECK(rig.engine.saves == 1);
+        CHECK(rig.engine.document_reverts == 0);
+    }
+    SECTION("A failed revert keeps the project open") {
+        rig.engine.refuse_revert = true;
+        prompt->button(QMessageBox::Discard)->click();
+        REQUIRE(rig.pumpUntil([&] { return rig.window.pending_navigation_ == MainWindow::Navigation::None; }));
+        CHECK(rig.window.isVisible());
+        CHECK(rig.engine.document_dirty);
+        CHECK(rig.engine.document_value == "edited");
+    }
+    SECTION("External conflicts are listed once before closing") {
+        rig.engine.document_conflict = true;
+        prompt->button(QMessageBox::Discard)->click();
+        QMessageBox *conflicts = nullptr;
+        REQUIRE(rig.pumpUntil([&] {
+            conflicts = rig.window.findChild<QMessageBox *>(QStringLiteral("pelican.documentRevertConflicts"));
+            return conflicts && conflicts->isVisible();
+        }));
+        REQUIRE(rig.window.isVisible());
+        REQUIRE(conflicts->text().contains(QStringLiteral("passes/main.json")));
+        CHECK(rig.engine.document_value == "edited");
+        conflicts->button(QMessageBox::Ok)->click();
+        REQUIRE(rig.pumpUntil([&] { return !rig.window.isVisible(); }));
+    }
+}
+
+TEST_CASE("RV-1 Studio Ctrl S advances the document baseline used by Discard",
+          "[RV-1][devstudio][save][close]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.pumpUntil([&] { return rig.window.document_session_ready_; }));
+    const auto marks = rig.engine.baseline_marks;
+    rig.engine.document_dirty = true;
+    rig.engine.document_value = "saved";
+    QTest::keyClick(&rig.window, Qt::Key_S, Qt::ControlModifier);
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.baseline_marks == marks + 1; }));
+    REQUIRE(rig.engine.document_baseline == "saved");
+    rig.engine.document_dirty = true;
+    rig.engine.document_value = "later";
+    rig.window.close();
+    QMessageBox *prompt = nullptr;
+    REQUIRE(rig.pumpUntil([&] {
+        prompt = rig.window.findChild<QMessageBox *>(QStringLiteral("pelican.unsavedScenePrompt"));
+        return prompt && prompt->isVisible();
+    }));
+    prompt->button(QMessageBox::Discard)->click();
+    REQUIRE(rig.pumpUntil([&] { return !rig.window.isVisible(); }));
+    REQUIRE(rig.engine.document_value == "saved");
+}
+
+TEST_CASE("RV-1 Studio close immediately after Save waits for its baseline",
+          "[RV-1][devstudio][save][close]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.pumpUntil([&] { return rig.window.document_session_ready_; }));
+    rig.engine.document_dirty = true;
+    rig.engine.document_value = "saved";
+    rig.window.findChild<QAction *>(QStringLiteral("pelican.file.saveScene"))->trigger();
+    rig.window.close();
+    REQUIRE(rig.pumpUntil([&] { return !rig.window.isVisible(); }));
+    CHECK(rig.engine.document_baseline == "saved");
+    CHECK(rig.engine.document_reverts == 0);
+}
+
+TEST_CASE("RV-1 Studio engine reconnect retains the document baseline for Discard",
+          "[RV-1][devstudio][unsaved][close]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.pumpUntil([&] { return rig.window.document_session_ready_; }));
+    const auto marks = rig.engine.baseline_marks;
+    rig.engine.document_dirty = true;
+    rig.engine.document_value = "restart_required";
+    emit rig.viewport.engineRpcBecameUnavailable(QStringLiteral("restarting"));
+    emit rig.viewport.engineRpcBecameAvailable();
+    rig.pumpFor(100);
+    CHECK(rig.engine.baseline_marks == marks);
+    CHECK(rig.engine.document_dirty);
+    CHECK(rig.window.findChild<QMessageBox *>(QStringLiteral("pelican.documentRecoveryPrompt")) == nullptr);
+    rig.window.close();
+    QMessageBox *prompt = nullptr;
+    REQUIRE(rig.pumpUntil([&] {
+        prompt = rig.window.findChild<QMessageBox *>(QStringLiteral("pelican.unsavedScenePrompt"));
+        return prompt && prompt->isVisible();
+    }));
+    prompt->button(QMessageBox::Discard)->click();
+    REQUIRE(rig.pumpUntil([&] { return !rig.window.isVisible(); }));
+    CHECK(rig.engine.document_value == "opened");
+}
+
+TEST_CASE("RV-1 Studio offers Keep or Discard for a previous session journal",
+          "[RV-1][devstudio][unsaved][recovery]") {
+    Rig rig{true, [](FakeEngine &engine) {
+        editEngine(engine);
+        engine.document_dirty = true;
+        engine.document_value = "previous session";
+    }};
+    QMessageBox *prompt = nullptr;
+    REQUIRE(rig.pumpUntil([&] {
+        prompt = rig.window.findChild<QMessageBox *>(QStringLiteral("pelican.documentRecoveryPrompt"));
+        return prompt && prompt->isVisible();
+    }));
+    CHECK(rig.engine.baseline_marks == 0);
+    SECTION("Keep makes the previous bytes the new baseline") {
+        prompt->button(QMessageBox::Save)->click();
+        REQUIRE(rig.pumpUntil([&] { return rig.window.document_session_ready_; }));
+        CHECK(rig.engine.document_baseline == "previous session");
+        CHECK(rig.engine.document_reverts == 0);
+    }
+    SECTION("Discard restores the prior baseline") {
+        prompt->button(QMessageBox::Discard)->click();
+        REQUIRE(rig.pumpUntil([&] { return rig.engine.document_reverts == 1; }));
+        CHECK(rig.engine.document_value == "opened");
+        CHECK_FALSE(rig.engine.document_dirty);
+    }
+}
+
+
+TEST_CASE("RV-1 Studio stale document RPC responses cannot cross an engine generation",
+          "[RV-1][devstudio][document-journal]") {
+    Rig rig{true, editEngine};
+    REQUIRE(rig.window.document_session_ready_);
+    using Operation = MainWindow::DocumentOperation;
+    const auto operation = GENERATE(Operation::Open, Operation::MarkSave,
+                                    Operation::RevertClose, Operation::RevertRecovery);
+    const qint64 old_request = 900000;
+    rig.window.document_operation_ = operation;
+    rig.window.document_request_ = old_request;
+    rig.window.document_request_generation_ = rig.window.document_generation_;
+    emit rig.viewport.engineSessionEnding();
+    rig.window.document_session_ready_ = false;
+    rig.window.document_dirty_ = false;
+    rig.engine.document_dirty = false;
+    emit rig.viewport.engineRpcBecameAvailable();
+    const auto new_request = rig.window.document_request_;
+    REQUIRE(new_request != 0);
+    REQUIRE(new_request != old_request);
+    emit rig.viewport.inspectorRpcSucceeded(old_request, R"({"dirty":true})");
+    emit rig.viewport.inspectorRpcFailed(old_request, QStringLiteral("late failure"));
+    CHECK(rig.window.document_request_ == new_request);
+    CHECK_FALSE(rig.window.document_dirty_);
+    emit rig.viewport.inspectorRpcSucceeded(new_request, R"({"dirty":false})");
+    CHECK(rig.window.document_operation_ == Operation::MarkOpen);
+    CHECK(rig.window.document_prompt_ == nullptr);
+}
+
+TEST_CASE("RV-1 Studio stale recovery and conflict dialogs cannot resume navigation",
+          "[RV-1][devstudio][unsaved][recovery]") {
+    Rig rig{true, editEngine};
+    using Operation = MainWindow::DocumentOperation;
+    const auto operation = GENERATE(Operation::Open, Operation::RevertRecovery, Operation::RevertClose);
+    const QByteArray response = operation == Operation::Open ? R"({"dirty":true})"
+        : R"({"dirty":false,"conflicts":["materials/broken.json"]})";
+    rig.window.document_operation_ = operation;
+    rig.window.document_request_ = 900000;
+    rig.window.document_request_generation_ = rig.window.document_generation_;
+    emit rig.viewport.inspectorRpcSucceeded(rig.window.document_request_, response);
+    QPointer<QMessageBox> prompt = rig.window.document_prompt_;
+    REQUIRE(prompt);
+    const auto generation = rig.window.document_generation_;
+    emit rig.viewport.engineSessionEnding();
+    REQUIRE(rig.window.document_generation_ != generation);
+    CHECK_FALSE(prompt->isVisible());
+    // Deliver an already queued finished signal after the new session starts.
+    rig.window.document_session_ready_ = false;
+    rig.window.document_dirty_ = false;
+    rig.window.pending_navigation_ = MainWindow::Navigation::Close;
+    emit prompt->finished(QMessageBox::Discard);
+    CHECK(rig.window.pending_navigation_ == MainWindow::Navigation::Close);
+    CHECK(rig.window.isVisible());
+    CHECK(rig.window.document_request_ == 0);
+    CHECK_FALSE(rig.window.document_session_ready_);
+    CHECK_FALSE(rig.viewport.restart_after_stop_);
+    rig.window.pending_navigation_ = MainWindow::Navigation::None;
 }
 
 } // namespace PelicanStudio

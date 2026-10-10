@@ -1,6 +1,8 @@
 #include "projectdocumenttransaction.hpp"
 
 #include "filereplace.hpp"
+#include "jsondocument.hpp"
+#include <set>
 
 #include <picosha2.h>
 
@@ -953,14 +955,161 @@ void removeEmptyLockDirectory(const std::filesystem::path &directory) noexcept {
 
 } // namespace
 
+
+namespace {
+std::mutex journal_mutex;
+std::set<std::filesystem::path> journal_roots;
+constexpr auto journalReference = ".pelican/document_journal/manifest.json";
+
+std::filesystem::path journalPath(const std::filesystem::path &root) {
+    return root / journalReference;
+}
+std::optional<std::string> journalBytes(const std::filesystem::path &path) {
+    if (!std::filesystem::exists(path)) return std::nullopt;
+    return readBytes(path);
+}
+Json parseJournal(const std::optional<std::string> &bytes) {
+    if (!bytes) return {{"schema", "pelican.document_journal"}, {"version", 1}, {"documents", Json::object()}};
+    auto value = Json::parse(*bytes);
+    if (value.at("schema") != "pelican.document_journal" || value.at("version") != 1 ||
+        !value.at("documents").is_object()) throw std::runtime_error("invalid document journal");
+    return value;
+}
+std::string encodeBytes(std::string_view bytes) {
+    constexpr char digits[] = "0123456789abcdef";
+    std::string result;
+    result.reserve(bytes.size() * 2);
+    for (unsigned char c : bytes) { result += digits[c >> 4]; result += digits[c & 15]; }
+    return result;
+}
+std::string decodeBytes(const std::string &hex) {
+    if (hex.size() % 2) throw std::runtime_error("invalid document journal bytes");
+    auto digit = [](char c) -> unsigned {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        throw std::runtime_error("invalid document journal bytes");
+    };
+    std::string result;
+    for (std::size_t i = 0; i < hex.size(); i += 2)
+        result += static_cast<char>((digit(hex[i]) << 4) | digit(hex[i + 1]));
+    return result;
+}
+ProjectCandidateDocument journalCandidate(const std::filesystem::path &root, const Json *value,
+                                           const std::optional<std::string> &before) {
+    return {.reference = journalReference, .normalized_reference = journalReference,
+            .path = journalPath(root),
+            .operation = !value ? ProjectDocumentOperation::erase : before ? ProjectDocumentOperation::replace : ProjectDocumentOperation::create,
+            .expected = {before ? ProjectDocumentExistence::present : ProjectDocumentExistence::missing,
+                         before ? projectDocumentDigest(*before) : std::string{}},
+            .bytes = value ? renderJsonDocument(*value, before.value_or("")) : std::string{}};
+}
+std::vector<ProjectCandidateDocument> withDocumentJournal(
+    const std::filesystem::path &root, std::span<const ProjectCandidateDocument> documents) {
+    std::vector<ProjectCandidateDocument> result(documents.begin(), documents.end());
+    // Baseline/revert owns an explicit journal candidate and is not an edit.
+    if (std::ranges::any_of(documents, [&](const auto &d) { return d.path == journalPath(root); })) return result;
+    {
+        std::lock_guard guard(journal_mutex);
+        if (!journal_roots.contains(root)) return result;
+    }
+    const auto journal_before = journalBytes(journalPath(root));
+    auto journal = parseJournal(journal_before);
+    bool changed = false;
+    for (const auto &document : documents) {
+        const auto destination = weaklyCanonical(document.path, "invalid journal destination");
+        if (!isWithin(root, destination)) throw std::runtime_error("journal destination outside project");
+        const auto relative = relativeString(root, destination);
+        if (relative.starts_with(".pelican/")) continue;
+        requireExpectedState(document);
+        const auto before = journalBytes(destination);
+        const ProjectDocumentExpectedState captured{
+            before ? ProjectDocumentExistence::present : ProjectDocumentExistence::missing,
+            before ? projectDocumentDigest(*before) : std::string{}};
+        if (captured != document.expected)
+            throw ProjectDocumentExternalModification("document changed while capturing its baseline: " + relative);
+        if (document.operation == ProjectDocumentOperation::replace && before && *before == document.bytes) continue;
+        auto &entries = journal["documents"];
+        if (!entries.contains(relative)) {
+            entries[relative] = {{"before", before ? Json(encodeBytes(*before)) : Json(nullptr)}};
+        }
+        entries[relative]["digest"] = document.operation == ProjectDocumentOperation::erase
+                                          ? Json(nullptr) : Json(projectDocumentDigest(document.bytes));
+        changed = true;
+    }
+    if (changed) result.push_back(journalCandidate(root, &journal, journal_before));
+    return result;
+}
+void removeEmptyJournalDirectory(const std::filesystem::path &root) {
+    std::error_code ignored;
+    std::filesystem::remove(journalPath(root).parent_path(), ignored);
+}
+} // namespace
+
+void enableProjectDocumentJournal(const std::filesystem::path &project_root) {
+    std::lock_guard guard(journal_mutex);
+    journal_roots.insert(weaklyCanonical(project_root, "invalid journal root"));
+}
+void markProjectDocumentBaseline(const std::filesystem::path &project_root) {
+    auto lock = ProjectDocumentTransactionLock::acquire(project_root);
+    const auto root = lock.projectRoot();
+    if (std::filesystem::exists(journalPath(root))) {
+        const auto candidate = journalCandidate(root, nullptr, journalBytes(journalPath(root)));
+        // An explicit metadata candidate suppresses journaling this operation.
+        (void)commitProjectDocuments(lock, std::span{&candidate, std::size_t{1}});
+    }
+    removeEmptyJournalDirectory(root);
+}
+nlohmann::json getProjectDocumentJournal(const std::filesystem::path &project_root) {
+    const auto root = weaklyCanonical(project_root, "invalid journal root");
+    const auto journal = parseJournal(journalBytes(journalPath(root)));
+    auto entries = nlohmann::json::array();
+    for (const auto &[path, value] : journal.at("documents").items()) {
+        entries.push_back({{"path", path}, {"state", value.at("digest").is_null() ? "deleted" :
+            value.at("before").is_null() ? "created" : "replaced"}, {"digest", value.at("digest")}});
+    }
+    return {{"documents", entries}, {"dirty", !entries.empty()}};
+}
+nlohmann::json revertProjectDocumentsToBaseline(const std::filesystem::path &project_root) {
+    const auto root = weaklyCanonical(project_root, "invalid journal root");
+    auto lock = ProjectDocumentTransactionLock::acquire(root);
+    const auto journal_before = journalBytes(journalPath(root));
+    const auto journal = parseJournal(journal_before);
+    auto conflicts = nlohmann::json::array();
+    auto restored = nlohmann::json::array();
+    std::vector<ProjectCandidateDocument> candidates;
+    for (const auto &[relative, entry] : journal.at("documents").items()) {
+        const auto path = weaklyCanonical(root / pathFromUtf8(relative), "invalid journal path");
+        if (!isWithin(root, path) || relativeString(root, path).starts_with(".pelican/"))
+            throw std::runtime_error("document journal path outside authored project files");
+        const auto now = journalBytes(path);
+        const auto digest = now ? Json(projectDocumentDigest(*now)) : Json(nullptr);
+        if (digest != entry.at("digest")) { conflicts.push_back(relative); continue; }
+        const auto &before = entry.at("before");
+        if (now || !before.is_null()) {
+            candidates.push_back({.reference = relative, .normalized_reference = relative, .path = path,
+                .operation = before.is_null() ? ProjectDocumentOperation::erase : now ? ProjectDocumentOperation::replace : ProjectDocumentOperation::create,
+                .expected = {now ? ProjectDocumentExistence::present : ProjectDocumentExistence::missing,
+                             now ? projectDocumentDigest(*now) : std::string{}},
+                .bytes = before.is_null() ? std::string{} : decodeBytes(before.get<std::string>())});
+        }
+        restored.push_back(relative);
+    }
+    if (std::filesystem::exists(journalPath(root))) candidates.push_back(journalCandidate(root, nullptr, journal_before));
+    // The restored documents are the new baseline, not another edit.
+    if (!candidates.empty()) {
+        (void)commitProjectDocuments(lock, candidates);
+    }
+    removeEmptyJournalDirectory(root);
+    return {{"restored", restored}, {"conflicts", conflicts}, {"dirty", false}};
+}
+
 ProjectDocumentCommitReceipt commitProjectDocuments(
     const std::filesystem::path &project_root,
     std::span<const ProjectCandidateDocument> documents,
     const ProjectDocumentCommitFault &fault) {
-    return commitDocuments(
-        weaklyCanonical(project_root,
-                        "could not normalize render authoring project root"),
-        documents, fault, {});
+    const auto root = weaklyCanonical(project_root, "could not normalize render authoring project root");
+    const auto augmented = withDocumentJournal(root, documents);
+    return commitDocuments(root, augmented, fault, {});
 }
 
 ProjectDocumentCommitReceipt commitProjectDocuments(
@@ -972,7 +1121,8 @@ ProjectDocumentCommitReceipt commitProjectDocuments(
             "commitProjectDocuments was given a transaction lock that no longer "
             "holds its directory");
     }
-    return commitDocuments(lock.project_root_, documents, fault,
+    const auto augmented = withDocumentJournal(lock.project_root_, documents);
+    return commitDocuments(lock.project_root_, augmented, fault,
                            [&lock] { lock.held_ = false; });
 }
 

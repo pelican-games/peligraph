@@ -1,0 +1,57 @@
+{
+  "schema": "pelican.scene",
+  "version": 2,
+  "scenes": {
+    "default_scene": {
+      "objects": [
+        {
+          "name": "MainCamera",
+          "components": [
+            {
+              "name": "transform",
+              "pos": [
+                0.0,
+                0.0,
+                3.0
+              ],
+              "rotation": [
+                0.0,
+                0.0,
+                0.0,
+                1.0
+              ],
+              "scale": [
+                1.0,
+                1.0,
+                1.0
+              ]
+            },
+            {
+              "name": "camera"
+            }
+          ]
+        },
+        {
+          "name": "KeyLight",
+          "components": [
+            {
+              "name": "light",
+              "type": "directional",
+              "direction": [
+                -0.5,
+                -1.0,
+                -0.25
+              ],
+              "intensity": 1.0,
+              "color": [
+                1.0,
+                0.95,
+                0.85
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -2696,6 +2696,40 @@ Json renameMaterial(const Json &params, PathResolver &paths, watch::ReloadServic
 
 void configureMaterialDocumentRpcHandlers(RpcServer &server, PathResolver &path_resolver,
                                           watch::ReloadService *reload_service) {
+    enableProjectDocumentJournal(path_resolver.projectRoot());
+    server.setHandler("mark_document_baseline", [&path_resolver](const Json &params) {
+        requireOnly("mark_document_baseline", params, {});
+        markProjectDocumentBaseline(path_resolver.projectRoot());
+        return Json{{"dirty", false}};
+    });
+    server.setHandler("get_document_journal", [&path_resolver](const Json &params) {
+        requireOnly("get_document_journal", params, {});
+        return getProjectDocumentJournal(path_resolver.projectRoot());
+    });
+    server.setHandler("revert_documents_to_baseline", [&path_resolver, reload_service](const Json &params) {
+        requireOnly("revert_documents_to_baseline", params, {"closing"});
+        if (params.contains("closing") && !params.at("closing").is_boolean())
+            invalidParams("revert_documents_to_baseline", "closing must be a boolean");
+        auto answer = revertProjectDocumentsToBaseline(path_resolver.projectRoot());
+        if (params.value("closing", false) || answer.at("restored").empty()) return answer;
+        answer["reload_pending_restart"] = Json::array();
+        std::vector<watch::ReloadRequest> requests;
+        for (const auto &restored : answer.at("restored")) {
+            const auto path = restored.get<std::string>();
+            const auto full = path_resolver.projectRoot() / std::filesystem::u8path(path);
+            requests.push_back({.key = watch::makeAssetKey("project://" + path),
+                .kind = std::filesystem::exists(full) ? watch::ReloadKind::modified : watch::ReloadKind::removed});
+        }
+        try {
+            const auto results = reload_service ? reload_service->reloadDocuments(requests) : std::vector<bool>{};
+            for (std::size_t i = 0; i < requests.size(); ++i)
+                if (i >= results.size() || !results[i]) answer["reload_pending_restart"].push_back(answer.at("restored")[i]);
+        } catch (const std::exception &error) {
+            answer["reload_pending_restart"] = answer.at("restored");
+            answer["reload_error"] = error.what();
+        }
+        return answer;
+    });
     server.setHandler("list_materials", [&path_resolver](const Json &params) {
         return listMaterials(params, path_resolver);
     });

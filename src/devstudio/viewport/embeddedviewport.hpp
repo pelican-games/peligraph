@@ -130,6 +130,8 @@ class EmbeddedViewport final : public QWidget {
     void pickObjectSucceeded(qint64 request_id,
                              const QByteArray &result_json);
     void pickObjectFailed(qint64 request_id, const QString &message);
+    // Synchronous boundary, before stop/restart can drain old RPC replies.
+    void engineSessionEnding();
     void engineRpcBecameAvailable();
     void engineRpcBecameUnavailable(const QString &message);
     void engineProcessExitedWithFailure(const QString &fatal_error_line);

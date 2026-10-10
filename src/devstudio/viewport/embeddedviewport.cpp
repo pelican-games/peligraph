@@ -529,6 +529,7 @@ void EmbeddedViewport::openProject(const QString &project_root) {
         return;
     }
 
+    emit engineSessionEnding();
     project_root_ = normalized_root;
     setPickingNotice({});
     if (process_.isRunning()) {
@@ -545,6 +546,7 @@ void EmbeddedViewport::restartEngine(const QString &reason) {
     if (project_root_.isEmpty()) {
         return;
     }
+    emit engineSessionEnding();
     if (!process_.isRunning()) {
         restart_after_stop_ = false;
         startEngine();
@@ -655,6 +657,7 @@ qint64 EmbeddedViewport::requestMigrationRpc(const QString &method,
 }
 
 void EmbeddedViewport::closeProject(const QString &reason) {
+    emit engineSessionEnding();
     project_root_.clear();
     restart_after_stop_ = false;
     setPickingNotice({});
@@ -725,6 +728,9 @@ void EmbeddedViewport::startEngine() {
 }
 
 void EmbeddedViewport::stopEngine() {
+    rpc_ready_ = false;
+    readiness_request_ = 0;
+    emit engineSessionEnding();
     if (!process_.isRunning()) {
         return;
     }
