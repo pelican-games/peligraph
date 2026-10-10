@@ -1,5 +1,8 @@
 #include "../src/core/watch/reloadservice.hpp"
 #include "../src/core/watch/problemlist.hpp"
+#include "../src/core/vkcore/renderer_config.hpp"
+#include "../src/core/shader/raytracingrefusal.hpp"
+#include "../src/project/graphcomposition.hpp"
 #include "../src/core/renderingpass/computedescriptorbudget.hpp"
 #include "../src/core/watch/reloadtransaction.hpp"
 #include "../src/core/watch/reloadgate.hpp"
@@ -19,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <new>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -1019,6 +1023,74 @@ TEST_CASE("CP1 compute apply problems replace one row and clear after repair", "
     CHECK(rows[0].at("fields").at("reason").at("sets") == 320);
     clearRenderPipelineProblems();
     CHECK(problems.problemsOf(renderPipelineProblemDomain).empty());
+}
+
+TEST_CASE("CP1 RPC edit refusals do not add or replace Problems", "[compute][problems][cp1][cpu]") {
+    FastModuleContainer modules;
+    auto &problems = GET_MODULE(ProblemList);
+    const auto validation = GENERATE(0, 1, 2);
+    const auto refusal = [&]() -> std::exception_ptr {
+        if (validation == 0)
+            return std::make_exception_ptr(GraphRegistryError(
+                "frame_node_order.conflicts_dependency@1",
+                {{"graph", "main_render"}, {"first", "present"}, {"second", "left"},
+                 {"reason", "reads"}, {"resource", "left_color"}}));
+        if (validation == 1)
+            return std::make_exception_ptr(RayTracingRefusal(
+                "pelican.ray_tracing.shader_record_abi_mismatch@1",
+                {{"shader", "shaders/wrong_record.rchit"}, {"stage", "closesthit"}},
+                "shader record does not match the ray group layout"));
+        // Not every validator has a named code. An unnamed refusal is
+        // still an RPC answer, not evidence of a device-application failure.
+        return std::make_exception_ptr(std::runtime_error("invalid rendering configuration"));
+    }();
+    const auto reject = [&](const std::exception_ptr &failure) {
+        try {
+            std::rethrow_exception(failure);
+        } catch (const std::exception &error) {
+            // The actual renderer recording boundary, with no Vulkan device.
+            recordRenderPipelineAuthoringFailure(error, "pipeline.json");
+        }
+    };
+    reject(refusal);
+    CHECK(problems.statusJson().at("count") == 0);
+    CHECK(problems.revision() == 0);
+
+    // The same validation failure met from disk or at startup remains a
+    // problem. A subsequent rejected edit must neither clear nor replace it.
+    for (const auto source : {problemSourceStartup, problemSourceHotReload, problemSourceReloadRpc}) {
+        try {
+            std::rethrow_exception(refusal);
+        } catch (const std::exception &error) {
+            recordRenderPipelineProblem(source,
+                renderPipelineRefusalJson(error, {}, "pipeline.json"), "pipeline.json");
+        }
+        const auto before = problems.problemsJson();
+        REQUIRE(before.at("problems").size() == 1);
+        reject(refusal);
+        CHECK(problems.problemsJson() == before);
+    }
+
+    // Preserve CP-1's synchronous application failures as well as its
+    // existing reload replace/repair test immediately above this one.
+    for (const auto &failure : {
+             std::make_exception_ptr(std::runtime_error(
+                 "compute.descriptor_pool_exhausted@1: {\"task\":\"probe\",\"sets\":320}")),
+             std::make_exception_ptr(std::runtime_error(
+                 "compute.descriptor_budget@1: {\"task\":\"probe\",\"count\":4,\"limit\":3}")),
+             std::make_exception_ptr(vk::OutOfDeviceMemoryError("descriptor pool creation")),
+             std::make_exception_ptr(std::bad_alloc{})}) {
+        clearRenderPipelineProblems();
+        reject(failure);
+        reject(failure);
+        const auto before = problems.problemsJson();
+        REQUIRE(before.at("problems").size() == 1);
+        CHECK(before.at("problems").at(0).at("source") == std::string{problemSourceEditRpc});
+        reject(refusal);
+        CHECK(problems.problemsJson() == before);
+        clearRenderPipelineProblems();
+        CHECK(problems.statusJson().at("count") == 0);
+    }
 }
 
 TEST_CASE("CP1 render apply status exposes and clears the current generation error", "[compute][cp1][reload]") {

@@ -89,6 +89,7 @@
 #include <glm/gtc/matrix_inverse.hpp>
 #include <limits>
 #include <map>
+#include <new>
 #include <set>
 #include <stdexcept>
 #include <string_view>
@@ -3923,6 +3924,26 @@ Renderer::reloadRenderPipelineFromDisk(
     return result;
 }
 
+void recordRenderPipelineAuthoringFailure(
+    const std::exception &error, std::string_view source_reference) noexcept {
+    try {
+        const auto refusal = renderPipelineRefusalJson(error, {}, source_reference);
+        // Validation also runs during GPU preparation (e.g. shader-record
+        // ABI checks). Such RPC refusals belong only to the answer, even
+        // when private resources have already been prepared. Resource
+        // allocation/device failures are CP-1 apply failures; staged rollback
+        // is recorded separately by the publication transaction.
+        const bool apply_failed =
+            dynamic_cast<const vk::SystemError *>(&error) != nullptr ||
+            dynamic_cast<const std::bad_alloc *>(&error) != nullptr ||
+            refusal.value("code", std::string{}).starts_with("compute.descriptor_");
+        if (apply_failed) {
+            recordRenderPipelineProblem(problemSourceEditRpc, refusal, source_reference);
+        }
+    } catch (...) {
+    }
+}
+
 RenderPipelineAuthoringApplyResult
 Renderer::applyRenderPipelineAuthoringCandidate(
     RenderConfigCandidateDocumentSet candidate_documents,
@@ -4067,12 +4088,7 @@ Renderer::applyRenderPipelineAuthoringCandidate(
     } catch (const std::exception &caught) {
         result.error = caught.what();
         result.exception = std::current_exception();
-        try {
-            recordRenderPipelineProblem(problemSourceEditRpc,
-                renderPipelineRefusalJson(caught, {}, state.source_reference),
-                state.source_reference);
-        } catch (...) {
-        }
+        recordRenderPipelineAuthoringFailure(caught, state.source_reference);
     } catch (...) {
         result.error =
             "unknown render pipeline authoring apply failure";

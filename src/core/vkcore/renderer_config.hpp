@@ -158,6 +158,12 @@ nlohmann::json renderPipelineRefusalJson(
     const std::exception &error, std::string_view root_json,
     std::string_view root_reference);
 
+// Synchronous edit failures: validation refusals stay in the RPC answer;
+// resource allocation/device failures also enter Problems. Startup/reload
+// and staged rollback record directly, regardless of the refusal's type.
+void recordRenderPipelineAuthoringFailure(
+    const std::exception &error, std::string_view source_reference) noexcept;
+
 RenderGraphVariantConfig
 loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays();
 RenderGraphVariantConfig
