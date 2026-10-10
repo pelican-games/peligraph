@@ -2150,7 +2150,8 @@ std::int64_t loopSetLength(const GraphLoopShape &shape, const GraphLoopConstants
 // before the first scene pass that reads an image of the run no pass before
 // it writes (graphPassRunReaderPosition), unless the run waits on that pass.
 void insertAmongScenePasses(const Json &composed, Json &list, std::vector<Json> run, const std::string &loop,
-                            const std::function<bool(const Json &)> &depends) {
+                            const std::function<bool(const Json &)> &depends,
+                            std::optional<std::size_t> preferred = std::nullopt) {
     std::set<std::string> names{loop};
     std::set<std::string> waited;
     for (const auto &pass : run) {
@@ -2170,12 +2171,16 @@ void insertAmongScenePasses(const Json &composed, Json &list, std::vector<Json> 
             floor = i + 1;
         if (dependent == list.size() && depends(pass)) dependent = i;
     }
-    auto position = std::min(dependent, std::max(scene_end, floor));
+    // A run with a graph neighbour stays in that graph's block. The
+    // composer's moveSceneWritersBeforeReaders moves the whole block when
+    // a scene pass reads it; moving just this loop would split the block.
+    auto position = preferred ? std::max(*preferred, floor)
+                              : std::min(dependent, std::max(scene_end, floor));
     std::vector<const Json *> members;
     for (const auto &pass : run) members.push_back(&pass);
     if (const auto reader = graphPassRunReaderPosition(composed, list, members, names,
             [](const Json &) { return true; }, scene_end);
-        reader && *reader < position && *reader >= floor)
+        !preferred && reader && *reader < position && *reader >= floor)
         position = *reader;
     for (std::size_t i = 0; i < run.size(); ++i)
         list.insert(list.begin() + static_cast<Json::difference_type>(position + i), std::move(run[i]));
@@ -2442,9 +2447,11 @@ RenderGraphLoopResolution expandRenderGraphLoops(Json &composed, const LoweredRe
                     return pass.value("name", std::string{}) == position->second.pass;
                 });
                 if (neighbour != list.end()) {
-                    auto index = static_cast<std::size_t>(neighbour - list.begin()) + (position->second.after ? 1 : 0);
-                    for (auto &pass : passes)
-                        list.insert(list.begin() + static_cast<Json::difference_type>(index++), std::move(pass));
+                    const auto index = static_cast<std::size_t>(neighbour - list.begin()) + (position->second.after ? 1 : 0);
+                    // The neighbour is a placement hint. Earlier loop runs may
+                    // now stand between it and this run; respect their writers
+                    // before canonical declaration order adds its own edges.
+                    insertAmongScenePasses(composed, list, std::move(passes), id, depends, index);
                     continue;
                 }
             }

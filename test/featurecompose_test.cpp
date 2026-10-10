@@ -10303,4 +10303,55 @@ TEST_CASE("FR-2 a feature inserted after a pass the pipeline lacks is refused wi
     CHECK(passByName(composed.config, "sky_background").at("input") == Json::array({"scene_depth"}));
 }
 
+TEST_CASE("LC-1 serial graph loops compose and plan with shared or distinct bodies and carry", "[graphloop][lc1]") {
+    using Json = nlohmann::json;
+    for (const bool shared : {false, true}) {
+        for (const bool carry : {false, true}) {
+            DYNAMIC_SECTION("shared=" << shared << " carry=" << carry) {
+                auto document = lp1eBlankRenderingConfig();
+                document["definitions"] = {{"body_a", lp1bChainBody()}, {"body_b", lp1bChainBody()}};
+                auto a = lp1aRange(2, "body_a");
+                auto b = lp1aRange(2, shared ? "body_a" : "body_b");
+                if (carry) {
+                    a["carry"] = b["carry"] = Json::array({{{"from", "out"}, {"to", "source"}}});
+                }
+                auto nodes = lp1bSeed();
+                nodes.push_back(lp1aLoop("a", a, {{"source", {{"node", "seed"}, {"port", "color"}}}}, {"out"}));
+                nodes.push_back(lp1aLoop("b", b, {{"source", {{"node", "a"}, {"port", "out"}}}}, {"out"}));
+                document["nodes"] = nodes;
+                document["rendering"]["rendering_passes"][0]["passes"][0]["input"] = {"b.out"};
+                const auto composed = lp0aCompose(document);
+                const auto declared = lp0bDeclared(composed.config);
+                INFO("declared order: " << Json(declared).dump());
+                REQUIRE_NOTHROW(compileComposition(composed));
+                const auto order = lp0bPlanOrder(composed);
+                CHECK(lp0bIndex(order, "a/0/step") < lp0bIndex(order, "a/1/step"));
+                CHECK(lp0bIndex(order, "a/1/step") < lp0bIndex(order, "b/0/step"));
+                CHECK(lp0bIndex(order, "b/0/step") < lp0bIndex(order, "b/1/step"));
+                CHECK(lp1bSource(composed.config, "b/0/step") == "a/1/image");
+                CHECK(lp1bSource(composed.config, "b/1/step") == (carry ? "b/0/image" : "a/1/image"));
+                for (const auto *name : {"a/0/image", "a/1/image", "b/0/image", "b/1/image"})
+                    CHECK(lp1bTarget(composed.config, name).at("name") == name);
+                CHECK(lp0bIndex(order, "b/1/step") < lp0bIndex(order, "present"));
+                CHECK(passByName(composed.config, "present").at("input") == Json::array({"b/1/image"}));
+            }
+        }
+    }
+}
+
+TEST_CASE("LC-1 serial loop cycles identify the closed node path", "[graphloop][lc1]") {
+    using Json = nlohmann::json;
+    auto document = lp1eBlankRenderingConfig();
+    document["definitions"] = {{"body", lp1bChainBody()}};
+    document["nodes"] = Json::array({
+        lp1aLoop("a", lp1aRange(2, "body"), {{"source", {{"node", "b"}, {"port", "out"}}}}, {"out"}),
+        lp1aLoop("b", lp1aRange(2, "body"), {{"source", {{"node", "a"}, {"port", "out"}}}}, {"out"})});
+    try {
+        (void)lp0aCompose(document);
+        FAIL("a real loop cycle must be refused");
+    } catch (const std::invalid_argument &error) {
+        CHECK(std::string{error.what()} == "cyclic subgraph connection: a -> b -> a");
+    }
+}
+
 } // namespace Pelican

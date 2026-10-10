@@ -16037,6 +16037,132 @@ vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 i
 } // namespace Pelican
 
 namespace Pelican {
+TEST_CASE("LC-1 serial loops render through both runs into the final image",
+          "[headless][gpu][lc1][graph-loop]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    std::filesystem::path temp_dir;
+    try {
+        FastModuleContainer modules;
+        temp_dir = makeTempProjectDir();
+        writeTextFile(temp_dir / "scene.json",
+            R"json({"schema":"pelican.scene","version":2,"scenes":{"default_scene":{"objects":[]}}})json");
+        writeTextFile(temp_dir / "assets.json",
+            R"json({"schema":"pelican.asset_data","version":2,"models":[]})json");
+        using Json = nlohmann::json;
+        const Json type{{"semantic", "pelican.render.color_signal@1"},
+            {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+        const Json color{{"kind", "image"}, {"type", type}, {"access", "write"},
+                         {"attachment", "color"}, {"location", 0}};
+        const Json source{{"kind", "image"}, {"type", type}, {"access", "read"},
+                          {"sampling", {{"filter", "nearest"}, {"address", "clamp_to_edge"}}}};
+        const auto image = [&](const std::string &id, const Json &extent_scale) {
+            return Json{{"id", id}, {"op", "render.image"},
+                        {"parameters", {{"type", type}, {"format", "R8G8B8A8_UNORM"}, {"extent_scale", extent_scale},
+                                        {"usage", {"COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"}}}},
+                        {"outputs", {"resource"}}};
+        };
+        const Json step_body{{"nodes", Json::array({
+            {{"id", "source"}, {"op", "graph.input"}},
+            image("image", {{"$expr", "1 / pow2(element + 1)"}}),
+            {{"id", "step"}, {"op", "render.fullscreen"},
+             {"parameters", {{"pass_set", "main_render"},
+                             {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "shaders/lp1b_add"},
+                                         {"defines", Json::array({{{"$format", "STEP={element + 1}"}}})}}},
+                             {"ports", {{"source", source}, {"color", color}}}}},
+             {"inputs", {{"source", {{"node", "source"}, {"port", "value"}}},
+                         {"color", {{"node", "image"}, {"port", "resource"}}}}},
+             {"outputs", {"color"}}}})},
+            {"outputs", {{"out", {{"node", "step"}, {"port", "color"}}}}}};
+        Json document{{"schema", "pelican.graph"}, {"version", 1},
+            {"definitions", {{"step_body", step_body}}},
+            {"nodes", Json::array({
+                image("seed_image", 1.0),
+                {{"id", "seed"}, {"op", "render.fullscreen"},
+                 {"parameters", {{"pass_set", "main_render"},
+                                 {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "shaders/lp1b_zero"}}},
+                                 {"ports", {{"color", color}}}}},
+                 {"inputs", {{"color", {{"node", "seed_image"}, {"port", "resource"}}}}},
+                 {"outputs", {"color"}}},
+                {{"id", "chain"}, {"op", "graph.loop"},
+                 {"parameters", {{"over", {{"range", {{"count", 4}}}}},
+                                 {"branches", Json::array({{{"body", "step_body"}}})},
+                                 {"carry", Json::array({{{"from", "out"}, {"to", "source"}}})}}},
+                 {"inputs", {{"source", {{"node", "seed"}, {"port", "color"}}}}},
+                 {"outputs", Json::array({"out"})}}})},
+            {"outputs", Json::object()},
+            {"rendering", {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}}}};
+        auto &a = document["nodes"][2];
+        a["id"] = "a";
+        a["parameters"]["over"]["range"]["count"] = 2;
+        auto b = a;
+        b["id"] = "b";
+        b["inputs"]["source"] = {{"node", "a"}, {"port", "out"}};
+        document["nodes"].push_back(b);
+        // The Blank pipeline's present consumes the second loop's output.
+        document["rendering"] = {{"rendering_passes", Json::array({
+            {{"name", "main_render"}, {"passes", Json::array({
+                {{"name", "present"}, {"type", "fullscreen"}, {"input", {"b.out"}},
+                 {"output", {{"color", {"display"}}, {"depth", nullptr}}},
+                 {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://passthrough"}}}}})}}})}};
+        writeTextFile(temp_dir / "hybrid.json", document.dump(2));
+        std::filesystem::create_directories(temp_dir / "shaders");
+        writeTextFile(temp_dir / "shaders" / "lp1b_add.frag", R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() {
+    vec4 below = pelican_sample_source(inUV);
+    outColor = vec4(below.r + float(STEP) * 16.0 / 255.0, 0.0, 0.0, 1.0);
+}
+)glsl");
+        writeTextFile(temp_dir / "shaders" / "lp1b_zero.frag",
+            "#version 450\nlayout(location = 0) in vec2 inUV;\nlayout(location = 0) out vec4 outColor;\n"
+            "void main() {\n    outColor = vec4(0.0, 0.0, 0.0, 1.0);\n}\n");
+        configureRayQueryTestRuntime(temp_dir);
+
+        auto &renderer = GET_MODULE(Renderer);
+        renderer.render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+
+        const auto plan = renderer.currentFramePlanJson();
+        REQUIRE(plan.at("loops").size() == 2);
+        std::vector<std::string> order;
+        bool presented = false;
+        for (const auto &node : plan.at("nodes")) {
+            const auto name = node.at("name").get<std::string>();
+            if (name.starts_with("a/") || name.starts_with("b/")) order.push_back(name);
+            if (name == "present") {
+                CHECK(node.at("reads") == Json::array({"b/1/image"}));
+                presented = true;
+            }
+        }
+        CHECK(presented);
+        CHECK(order == std::vector<std::string>{"a/0/step", "a/1/step", "b/0/step", "b/1/step"});
+        // Each run adds 16 then 32. A disconnection, wrong last element,
+        // skipped run or resource collision changes this pixel oracle.
+        const auto read = RendererTestAccess::readRenderTarget(renderer, "b/1/image", ImageSubresourceRange{});
+        REQUIRE(read.format == vk::Format::eR8G8B8A8Unorm);
+        REQUIRE_FALSE(read.bytes.empty());
+        for (std::size_t offset = 0; offset + 4 <= read.bytes.size(); offset += 4) {
+            CHECK(static_cast<int>(read.bytes.at(offset)) == 96);
+            CHECK(read.bytes.at(offset + 1) == 0);
+            CHECK(read.bytes.at(offset + 2) == 0);
+        }
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        if (!temp_dir.empty()) std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(error, "Vulkan LC-1 serial loop fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED("LC-1 GPU acceptance is compiler-ON only");
+#endif
+}
+
+
 TEST_CASE("VR1 vrm effective material controls raster and RT absolute overrides",
           "[headless][gpu][vrm][materialinstanceoverride][raytracing_rt3][mt2]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER

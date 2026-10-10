@@ -1,0 +1,657 @@
+{
+  "invariants": {},
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "lc1_serial_loops",
+  "description": "LC-1: two loops added in Graph from Blank; drag A zone output to B zone input, sample it in B and carry both runs. Saved edits, producer trace and empty Problems; no pixel screenshots.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "File > New Project..., fired by name",
+      "cmd": "action",
+      "name": "pelican.file.newProject"
+    },
+    {
+      "label": "the dialog is on screen",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the folder: this run's own artifacts",
+      "cmd": "type",
+      "name": "pelican.newProject.location",
+      "text": "{artifacts}"
+    },
+    {
+      "label": "the name",
+      "cmd": "type",
+      "name": "pelican.newProject.name",
+      "text": "read_project"
+    },
+    {
+      "label": "the Blank pipeline template",
+      "cmd": "select",
+      "name": "pelican.newProject.template",
+      "text": "Blank pipeline"
+    },
+    {
+      "label": "Create",
+      "cmd": "click",
+      "name": "pelican.newProject.create"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.newProjectDialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the blank project's present is on the Frame Plan canvas",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the new engine answers and has presented frames",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the blank project's graph has no node yet",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 0
+    },
+    {
+      "label": "the canvas has read the new document and can edit it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "enabled": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "Add fullscreen pass in the root: its image is the node outside the loop",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addFullscreenPass"
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the canvas can edit again: the document the edit left is read (Undo is on)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvas.undoButton",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Add loop: a loop over a new, empty body",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addLoop"
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the loop is drawn as a zone",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#loop",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Auto layout",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.autoLayout"
+    },
+    {
+      "label": "the placement is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the whole drawing in view",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick the zone by its heading",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#loop"
+    },
+    {
+      "label": "the Loop fields are shown for it",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.count",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the canvas can edit again: the document the edit left is read (Undo is on)",
+      "cmd": "wait",
+      "name": "pelican.graphCanvas.undoButton",
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Add fullscreen pass, with the zone picked: into its body",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addFullscreenPass"
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the body holds its own image and pass",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.nodes.$len",
+      "value": 2
+    },
+    {
+      "label": "the whole drawing in view",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "pick the zone again",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#loop"
+    },
+    {
+      "label": "the count field is there",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.count",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "type a count of 2",
+      "cmd": "type",
+      "name": "pelican.graphCanvasLoop.count",
+      "text": "2"
+    },
+    {
+      "label": "Enter sends it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasLoop.count",
+      "sequence": "Return"
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the engine expands the loop twice",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops[0].count",
+      "value": 2,
+      "retry_ms": 60000
+    },
+    {
+      "label": "the whole drawing in view",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "the root pass's output onto the zone's left slot: the loop input color, which waits on the root pass",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#render_fullscreen/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_zone_socket#loop/in:+"
+      },
+      "steps": 8
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the loop is fed the root pass",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].inputs.color.node",
+      "value": "render_fullscreen",
+      "retry_ms": 10000
+    },
+    {
+      "label": "the zone draws the boundary input inside",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_socket#loop_body/color/value",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the body pass's output onto the zone's right slot",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#loop_body/render_fullscreen/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_zone_socket#loop/out:+"
+      },
+      "steps": 8
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the loop hands the body's color on",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].outputs[0]",
+      "value": "color",
+      "retry_ms": 10000
+    },
+    {
+      "label": "the body output's inside end back onto the boundary input: the carry",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_zone_socket#loop/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#loop_body/color/value"
+      },
+      "steps": 8
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the loop carries its output color into its input color",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].parameters.carry[0].to",
+      "value": "color",
+      "retry_ms": 10000
+    },
+    {
+      "label": "the carry is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone_carry#loop/color/color",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "decision 1: the body pass's inputs are its shader's -- the passthrough's variadic band, empty",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_socket#loop_body/render_fullscreen/in:variadic",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the copies, as the plan lists them: the second copy is the third node",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[2].name",
+      "value": "loop/1/render_fullscreen",
+      "retry_ms": 60000
+    },
+    {
+      "label": "before the line, the second copy does not read what the first drew",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[2].reads",
+      "op": "excludes",
+      "value": "loop/0/render_fullscreen__color"
+    },
+    {
+      "label": "the body's nodes before the read line, remembered",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_graph_instances",
+        "params": {}
+      },
+      "path": "result.definitions",
+      "remember": "definitions_before"
+    },
+    {
+      "label": "decision 2 and 3: the boundary input onto the band's end, inside the zone",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#loop_body/color/value"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#loop_body/render_fullscreen/in:variadic"
+      },
+      "steps": 8
+    },
+    {
+      "label": "the edit is saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the pass has a port that reads input 0, named after the boundary input (its own color is taken)",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.nodes[1].parameters.ports.color_2.input_index",
+      "value": 0,
+      "retry_ms": 10000
+    },
+    {
+      "label": "bound as the pass's numbered input",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.nodes[1].parameters.ports.color_2.binding",
+      "value": "input"
+    },
+    {
+      "label": "and fed by the boundary input",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body.nodes[1].inputs.color_2.node",
+      "value": "color"
+    },
+    {
+      "label": "the band's member at binding 0 is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_socket#loop_body/render_fullscreen/in@0",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the copies now wait on the root pass they read: the second copy is the fourth node",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[3].name",
+      "value": "loop/1/render_fullscreen",
+      "retry_ms": 60000
+    },
+    {
+      "label": "the second copy reads what the first copy drew",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_frame_plan",
+        "params": {}
+      },
+      "path": "result.nodes[3].reads",
+      "op": "contains",
+      "value": "loop/0/render_fullscreen__color",
+      "retry_ms": 60000
+    },
+    {
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addLoop"
+    },
+    {
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_zone#loop_2",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "cmd": "action",
+      "name": "pelican.graphCanvas.autoLayout"
+    },
+    {
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#loop_2"
+    },
+    {
+      "cmd": "action",
+      "name": "pelican.graphCanvas.addFullscreenPass"
+    },
+    {
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#loop_2"
+    },
+    {
+      "cmd": "wait",
+      "name": "pelican.graphCanvasLoop.count",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "cmd": "type",
+      "name": "pelican.graphCanvasLoop.count",
+      "text": "2"
+    },
+    {
+      "cmd": "key",
+      "name": "pelican.graphCanvasLoop.count",
+      "sequence": "Return"
+    },
+    {
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#loop_body_2/render_fullscreen/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_zone_socket#loop_2/out:+"
+      },
+      "steps": 8
+    },
+    {
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#loop/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_zone_socket#loop_2/in:+"
+      },
+      "steps": 8
+    },
+    {
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[3].inputs.color.node",
+      "value": "loop",
+      "retry_ms": 60000
+    },
+    {
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_socket#loop_body_2/color/value",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_socket#loop_body_2/color/value"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#loop_body_2/render_fullscreen/in:variadic"
+      },
+      "steps": 8
+    },
+    {
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_zone_socket#loop_2/out:color"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_socket#loop_body_2/color/value"
+      },
+      "steps": 8
+    },
+    {
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.loop_body_2.nodes[1].inputs.color_2.node",
+      "value": "color",
+      "retry_ms": 60000
+    },
+    {
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "loops.$len",
+      "value": 2,
+      "retry_ms": 60000
+    },
+    {
+      "label": "the next expanded pass is loop_2/0/render_fullscreen",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[4].name",
+      "value": "loop_2/0/render_fullscreen",
+      "retry_ms": 60000
+    },
+    {
+      "label": "loop_2/0/render_fullscreen reads only loop/1/render_fullscreen__color",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[4].reads",
+      "value": [
+        "loop/1/render_fullscreen__color"
+      ],
+      "retry_ms": 60000
+    },
+    {
+      "label": "the next expanded pass is loop_2/1/render_fullscreen",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[5].name",
+      "value": "loop_2/1/render_fullscreen",
+      "retry_ms": 60000
+    },
+    {
+      "label": "loop_2/1/render_fullscreen reads only loop_2/0/render_fullscreen__color",
+      "expect": "rpc_equals",
+      "method": "get_frame_plan",
+      "params": {},
+      "path": "nodes[5].reads",
+      "value": [
+        "loop_2/0/render_fullscreen__color"
+      ],
+      "retry_ms": 60000
+    },
+    {
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems.$len",
+      "value": 0,
+      "retry_ms": 60000
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 #include "logicalrendergraph.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <map>
 #include <numeric>
 #include <set>
@@ -507,8 +508,31 @@ void validateCompiledLogicalRenderGraph(
         }
     }
     if (visited != nodes.size()) {
+        // Find an actual closed path, excluding nodes merely downstream
+        // of a cycle. Ordered maps make the diagnostic deterministic.
+        std::map<std::string, int, std::less<>> state;
+        std::vector<std::string> path;
+        std::string cycle;
+        const std::function<bool(const std::string &)> visit = [&](const std::string &name) {
+            state[name] = 1;
+            path.push_back(name);
+            for (const auto &next : edges.at(name)) {
+                if (state[next] == 1) {
+                    for (auto it = std::find(path.begin(), path.end(), next); it != path.end(); ++it)
+                        cycle += *it + " -> ";
+                    cycle += next;
+                    return true;
+                }
+                if (state[next] == 0 && visit(next)) return true;
+            }
+            path.pop_back();
+            state[name] = 2;
+            return false;
+        };
+        for (const auto &[name, degree] : indegree)
+            if (degree != 0 && state[name] == 0 && visit(name)) break;
         throw std::runtime_error("logical graph contains a dependency cycle: " +
-                                 graph.name);
+                                 graph.name + " (" + cycle + ")");
     }
 
     if (graph.render_strategy) {

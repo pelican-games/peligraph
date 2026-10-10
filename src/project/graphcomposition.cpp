@@ -723,6 +723,13 @@ class Expander {
         }
         std::map<std::string, Json> instances;
         std::set<std::string> active_instances;
+        std::vector<std::string> subgraph_path;
+        const auto connectionCycle = [&](const std::string &id) {
+            std::string message = "cyclic subgraph connection: ";
+            const auto first = std::find(subgraph_path.begin(), subgraph_path.end(), id);
+            for (auto it = first; it != subgraph_path.end(); ++it) message += path + *it + " -> ";
+            return std::invalid_argument(message + path + id);
+        };
         // `each`: the edge names an element, so it reads a loop's `p[]`.
         std::function<Json(const Json &, bool each)> resolveAny;
         const auto resolve = [&](const Json &endpoint) { return resolveAny(endpoint, false); };
@@ -759,7 +766,8 @@ class Expander {
         std::function<const Json &(const std::string &)> instantiate;
         instantiate = [&](const std::string &id) -> const Json & {
             if (instances.contains(id)) return instances.at(id);
-            if (!active_instances.insert(id).second) throw std::invalid_argument("cyclic subgraph connection: " + id);
+            if (!active_instances.insert(id).second) throw connectionCycle(id);
+            subgraph_path.push_back(id);
             const auto &node = *local.at(id);
             const auto ref = identifier(member(node, "definition", "graph.instance " + id));
             if (!definitions.contains(ref)) throw std::invalid_argument("unknown graph definition: " + ref);
@@ -790,6 +798,7 @@ class Expander {
                                  node.value("parameters", Json::object()));
             active_definitions.erase(ref);
             active_instances.erase(id);
+            subgraph_path.pop_back();
             return instances.emplace(id, std::move(outputs)).first->second;
         };
         // LP-1a: a graph.loop. Its form is checked here, on every edit and
@@ -801,7 +810,8 @@ class Expander {
         std::function<const Json &(const std::string &)> expandLoop;
         expandLoop = [&](const std::string &id) -> const Json & {
             if (loop_outputs.contains(id)) return loop_outputs.at(id);
-            if (!active_loops.insert(id).second) throw std::invalid_argument("cyclic subgraph connection: " + id);
+            if (!active_loops.insert(id).second) throw connectionCycle(id);
+            subgraph_path.push_back(id);
             const auto &node = *local.at(id);
             auto shape = parseGraphLoopShape(node, pointers.at(id).to_string());
             // Every input reaches every element with the same value, but for
@@ -903,6 +913,7 @@ class Expander {
             }
             result.loops.insert_or_assign(id, std::move(expansion));
             active_loops.erase(id);
+            subgraph_path.pop_back();
             return loop_outputs.emplace(id, std::move(exposed)).first->second;
         };
         resolveAny = [&](const Json &endpoint, bool each) -> Json {
