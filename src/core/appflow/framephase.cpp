@@ -253,7 +253,9 @@ void updateFrameState() {
                 // cannot cross the C boundary. The pose graph kept the
                 // exception it caught, so ask for it before falling back to a
                 // message that says only that some phase failed: what reaches
-                // the author has to name the port, not the frame.
+                // the author has to name the port, not the frame. Only marked
+                // UserDataError is recovered; coded contract refusals propagate
+                // to the caller with their code/detail intact.
                 if (!Animation::poseGraphRuntime().recoverPendingUserDataFailures())
                     throw std::runtime_error("animation phase evaluation failed");
             }

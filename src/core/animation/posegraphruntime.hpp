@@ -94,6 +94,10 @@ class PoseGraphRuntime {
     // normally when no attachment failed. The next `synchronize` raises
     // anything still pending, so a caller that ignores it loses nothing.
     void rethrowPendingFailure();
+    // Recover only UserDataError into Problems and skip that attachment.
+    // Coded contract refusals (including GraphRegistryError) and unmarked
+    // engine exceptions propagate to the caller with their diagnostic fields.
+    // Returns true only when at least one pending UserDataError was recovered.
     bool recoverPendingUserDataFailures();
 
     // What kind of chain produced this sink's pose. It decides where the

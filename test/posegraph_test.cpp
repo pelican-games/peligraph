@@ -1,9 +1,15 @@
 #include "../src/core/animation/posegraph.hpp"
+#include "../src/core/animation/animationservice.hpp"
+#include "../src/core/animation/posegraphruntime.hpp"
+#include "../src/core/model/skeletalanimation.hpp"
+#include "../src/core/watch/userdataguard.hpp"
+#include "../src/project/graphtemplate.hpp"
 #include "../src/core/userpublic/valuegraph.hpp"
 #include "../src/project/graphpartition.hpp"
 #include "../src/project/posegraphmodule.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <set>
 #include <string>
@@ -452,4 +458,122 @@ TEST_CASE("root motion reaches exactly one skeletal sink",
     // The same document without root motion compiles, so every rejection above
     // is about the extraction and not about the shape.
     REQUIRE_NOTHROW(Animation::PoseGraph{poseInstanceDocument(clipSampleChain())});
+}
+
+TEST_CASE("RX-1b pose graph recovers only marked user data failures",
+          "[rx1][posegraph][animation][problems]") {
+    using namespace Pelican;
+    using namespace Pelican::Animation;
+    enum class Failure { conflict, unsupported, contract, direct_contract, other_contract, data, engine };
+    const auto failure = GENERATE(Failure::conflict, Failure::unsupported, Failure::contract,
+        Failure::direct_contract, Failure::other_contract, Failure::data, Failure::engine);
+    CAPTURE(failure);
+
+    FastModuleContainer lifetime;
+    auto &service = animationServiceRuntime();
+    service.reset();
+    struct ResetService {
+        AnimationServiceRuntime &service;
+        ~ResetService() { service.reset(); }
+    } reset{service};
+    SkeletalModelData model;
+    model.nodes = {{.parent = -1, .name = "Root"}};
+    model.joint_nodes = {0};
+    model.inverse_bind_matrices = {glm::mat4{1.0f}};
+    model.skin_bindings = {{"Body", 0, 1}};
+    SkeletalAnimationClip clip;
+    clip.name = "Walk";
+    clip.start = 0.0f;
+    clip.end = failure == Failure::unsupported ? 0.0f : 1.0f;
+    clip.channels.push_back({.node = 0, .path = AnimationPath::translation,
+        .times = {0.0f, 1.0f}, .values = {{0, 0, 0, 0}, {1, 0, 0, 0}}});
+    model.clips.push_back(std::move(clip));
+    service.registerObject("Hero", model);
+    PoseGraphRuntime runtime;
+    auto nodes = clipSampleChain();
+    nodes[1]["parameters"]["root_motion"] = "extract";
+    nodes[1]["parameters"]["root_node"] = 0;
+    const auto graph = std::make_shared<const PoseGraph>(poseInstanceDocument(nodes));
+    PoseGraphFrame frame;
+    frame.frame_revision = 1;
+    frame.object_name = [](const GraphInstanceOwner &) { return std::optional<std::string>{"Hero"}; };
+    frame.component_writer = [&](const GraphInstanceOwner &) { return failure == Failure::conflict; };
+    frame.root_transform_object = [](const GraphInstanceOwner &) { return std::optional<std::uint64_t>{7}; };
+    frame.apply_root_translation = [](std::uint64_t, const double *) { return false; };
+    for (const auto &scalar : graph->scalarOutputs()) frame.scalars[scalar] = 0.0;
+
+    const auto problems = [&] { return GET_MODULE(ProblemList).problemsJson(); };
+    const auto require_contract = [&](auto &&operation, const std::string &code, const Json &detail) {
+        try {
+            operation();
+            FAIL("a coded pose contract rejection was swallowed");
+        } catch (const GraphRegistryError &error) {
+            CHECK(error.code() == code);
+            CHECK(error.detail() == detail);
+            if (failure == Failure::contract || failure == Failure::direct_contract)
+                CHECK(std::string{error.what()}.find("pose graph evaluation failed for Hero") != std::string::npos);
+        }
+        CHECK(problems().at("problems").empty());
+    };
+    if (failure == Failure::conflict || failure == Failure::unsupported) {
+        const auto code = failure == Failure::conflict ? "pose.sink_conflict@1" : "pose.root_motion_unsupported@1";
+        const auto detail = failure == Failure::conflict
+            ? Json{{"owner", {{"scene", "scenes/main"}, {"object", 7}}},
+                   {"first", "animation component"}, {"second", "hero/out"}}
+            : Json{{"node", "hero/walk"}, {"reason", "root motion needs a clip with a duration"},
+                   {"detail", {{"clip", "Walk"}}}};
+        // A contract refusal must not poison the scope and disappear on retry.
+        for (int attempt = 0; attempt < 2; ++attempt)
+            require_contract([&] { runtime.synchronize(graph, frame); }, code, detail);
+        return;
+    }
+    if (failure == Failure::data)
+        frame.apply_root_translation = [](std::uint64_t, const double *) -> bool {
+            throw UserDataError("authored pose evaluation failed");
+        };
+    if (failure == Failure::engine)
+        frame.apply_root_translation = [](std::uint64_t, const double *) -> bool {
+            throw std::logic_error("pose engine invariant");
+        };
+    if (failure == Failure::other_contract)
+        frame.apply_root_translation = [](std::uint64_t, const double *) -> bool {
+            throw GraphTemplateError("graph_template_invalid", {{"reason", "contract probe"}}, "coded refusal");
+        };
+    REQUIRE_NOTHROW(runtime.synchronize(graph, frame));
+    REQUIRE(service.runAllPhases(frame.frame_revision) == Status::callback_failed);
+    if (failure == Failure::data) {
+        CHECK(runtime.recoverPendingUserDataFailures());
+        const auto recorded = problems();
+        REQUIRE(recorded.at("problems").size() == 1);
+        CHECK(recorded.at("problems")[0].at("code") == "runtime.user_data@1");
+        CHECK(recorded.at("problems")[0].at("message") ==
+              "pose graph evaluation failed for Hero: authored pose evaluation failed");
+        ++frame.frame_revision;
+        REQUIRE_NOTHROW(runtime.synchronize(graph, frame));
+        CHECK(service.runAllPhases(frame.frame_revision) == Status::ok);
+        CHECK(problems() == recorded);
+        runtime.retainOnly({});
+        CHECK(problems().at("problems").empty());
+    } else if (failure == Failure::engine) {
+        CHECK_THROWS_AS(runtime.recoverPendingUserDataFailures(), std::logic_error);
+        CHECK(problems().at("problems").empty());
+    } else if (failure == Failure::other_contract) {
+        try {
+            (void)runtime.recoverPendingUserDataFailures();
+            FAIL("another coded contract rejection was swallowed");
+        } catch (const GraphTemplateError &error) {
+            CHECK(error.code() == "graph_template_invalid");
+            CHECK(error.fields() == nlohmann::ordered_json{{"reason", "contract probe"}});
+            CHECK(std::string{error.what()} == "coded refusal");
+        }
+        CHECK(problems().at("problems").empty());
+    } else {
+        require_contract([&] {
+            if (failure == Failure::direct_contract) runtime.rethrowPendingFailure();
+            else (void)runtime.recoverPendingUserDataFailures();
+        }, "pose.root_motion_no_transform@1",
+           {{"owner", {{"scene", "scenes/main"}, {"object", 7}}}, {"node", "hero/out"}, {"object", "Hero"}});
+    }
+    CHECK_FALSE(runtime.recoverPendingUserDataFailures());
+    CHECK(runtime.trace().empty());
 }

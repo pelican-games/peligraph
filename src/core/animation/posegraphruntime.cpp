@@ -45,6 +45,16 @@ double canonicalTime(double time, double start, double end, bool loop) {
     return start + offset;
 }
 
+// Keep the registration contract's code/detail while retaining the object
+// context used by frame and RPC diagnostics. This is never a UserDataError.
+class PoseGraphContractFailure final : public GraphRegistryError {
+    std::string message_;
+  public:
+    PoseGraphContractFailure(const GraphRegistryError &error, const std::string &context)
+        : GraphRegistryError(error), message_(context + ": " + error.what()) {}
+    const char *what() const noexcept override { return message_.c_str(); }
+};
+
 // The pose graph's own source slot. Higher than the animation component's 100,
 // so a handoff between them is ordered rather than accidental.
 constexpr std::uint32_t poseGraphSourceOrdinal = 120;
@@ -282,7 +292,7 @@ struct PoseGraphRuntime::Impl {
         } catch (const UserDataError &error) {
             throw UserDataError(named + ": " + error.what());
         } catch (const GraphRegistryError &error) {
-            throw UserDataError(named + ": " + error.what());
+            throw PoseGraphContractFailure(error, named);
         }
     }
 
@@ -917,8 +927,14 @@ bool PoseGraphRuntime::recoverPendingUserDataFailures() {
     for (auto &[graph, list] : impl_->attachments)
         for (auto &attachment : list)
             if (attachment->failure) {
-                guardUserData(attachment->data_scope, [&] { impl_->raiseFailure(*attachment); });
-                recovered = true;
+                // Inspect the saved exception before any failed-scope skip.
+                // Contract refusals and unmarked engine failures must escape.
+                try {
+                    impl_->raiseFailure(*attachment);
+                } catch (const UserDataError &error) {
+                    failUserData(attachment->data_scope, error.what());
+                    recovered = true;
+                }
             }
     return recovered;
 }
@@ -981,7 +997,6 @@ void PoseGraphRuntime::synchronize(const std::shared_ptr<const PoseGraph> &graph
         attachment->data_scope.fields["object"] = attachment->owner.object;
         attachment->data_scope.fields["scene_id"] = attachment->owner.scene;
         if (!guardUserData(attachment->data_scope, [&] {
-        try {
         const auto object = frame.object_name(attachment->owner);
         if (!object) {
             if (attachment->bound) impl_->unbind(*attachment);
@@ -1032,7 +1047,6 @@ void PoseGraphRuntime::synchronize(const std::shared_ptr<const PoseGraph> &graph
                 status != Status::ok)
                 throw UserDataError("pose.state_machine tick rejected: " + compiled.id);
         }
-        } catch (const GraphRegistryError &error) { throw UserDataError(error.what()); }
         })) impl_->unbind(*attachment);
     }
 }
