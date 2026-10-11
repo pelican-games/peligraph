@@ -41,6 +41,7 @@ class EmbeddedViewport final : public QWidget {
     ~EmbeddedViewport() override;
 
     void openProject(const QString &project_root);
+    void finishEmbeddedWindowResize();
     // G-4. Stops the running engine and starts it again on the same project,
     // for a committed setting the engine reads only at start. The editor gate
     // closes at once (engineRpcBecameUnavailable carries `reason`) and opens

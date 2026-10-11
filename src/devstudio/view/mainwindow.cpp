@@ -99,6 +99,10 @@
 
 #include <nlohmann/json.hpp>
 
+#ifdef Q_OS_WIN
+#include <qt_windows.h>
+#endif
+
 namespace PelicanStudio {
 namespace {
 
@@ -282,6 +286,17 @@ MainWindow::MainWindow(const QString &application_config_directory)
         }
     });
     updateSceneShortcuts();
+}
+
+bool MainWindow::nativeEvent(const QByteArray &event_type, void *message, qintptr *result) {
+#ifdef Q_OS_WIN
+    const auto *native_message = static_cast<const MSG *>(message);
+    if (native_message != nullptr && native_message->message == WM_EXITSIZEMOVE &&
+        viewport_ != nullptr) {
+        viewport_->finishEmbeddedWindowResize();
+    }
+#endif
+    return QMainWindow::nativeEvent(event_type, message, result);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {

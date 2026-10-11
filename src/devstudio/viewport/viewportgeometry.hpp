@@ -10,13 +10,15 @@ namespace PelicanStudio {
 // be sized in the physical pixels used by its Vulkan framebuffer.
 QSize embeddedViewportPixelExtent(const QSize &logical_extent, qreal device_pixel_ratio) noexcept;
 
-// SetWindowPos wakes the player's framebuffer/swapchain path. Keep the native
-// child frozen until panel dimensions have stayed unchanged for this long.
-inline constexpr int EmbeddedViewportResizeDebounceMs = 50;
+// Keep intermediate native resizes sparse, then deliver the final dimensions
+// after a quiet interval (also used for dock drags without a native release).
+inline constexpr int EmbeddedViewportResizeIntervalMs = 150;
+inline constexpr int EmbeddedViewportResizeQuietMs = 100;
 
 enum class ViewportExtentChangeKind {
     resize,
     device_pixel_ratio,
+    interaction_finished,
 };
 
 struct ViewportResizeDecision {
@@ -24,13 +26,10 @@ struct ViewportResizeDecision {
     std::optional<int> next_wakeup_ms;
 };
 
-// Deterministic trailing-edge debounce policy. The caller supplies a monotonic
+// Deterministic throttle with a trailing flush. The caller supplies a monotonic
 // timestamp and owns the timer and native resize side effects.
 class ViewportResizeCoalescer {
   public:
-    explicit ViewportResizeCoalescer(
-        int debounce_ms = EmbeddedViewportResizeDebounceMs) noexcept;
-
     ViewportResizeDecision request(const QSize &extent, qint64 now_ms,
                                    ViewportExtentChangeKind kind) noexcept;
     ViewportResizeDecision timerExpired(qint64 now_ms) noexcept;
@@ -38,13 +37,13 @@ class ViewportResizeCoalescer {
     void reset(const QSize &applied_extent) noexcept;
 
   private:
-    int debounce_ms_;
     std::optional<QSize> pending_extent_;
     std::optional<QSize> last_released_extent_;
     qint64 last_request_ms_ = 0;
+    std::optional<qint64> next_interval_ms_;
 
-    ViewportResizeDecision releasePendingIfSettled(qint64 now_ms) noexcept;
-    ViewportResizeDecision release(const QSize &extent) noexcept;
+    ViewportResizeDecision releasePendingIfDue(qint64 now_ms) noexcept;
+    ViewportResizeDecision release(const QSize &extent, qint64 now_ms) noexcept;
 };
 
 } // namespace PelicanStudio

@@ -1,4 +1,5 @@
 #include "../src/core/vkcore/swapchainrecovery.hpp"
+#include "../src/core/os/framebufferstability.hpp"
 #include "../src/core/vkcore/windowsurface.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -749,4 +750,66 @@ TEST_CASE(
             true, false) ==
         SwapchainRecoveryAnchorKind::
             replacement);
+}
+
+TEST_CASE("WR-1 swapchain resize requests one preparation after one hundred milliseconds quiet",
+          "[wr1][wsi][swapchain][resize]") {
+    using Clock = FramebufferExtentStability::Clock;
+    const auto at = [](int milliseconds) {
+        return Clock::time_point{} + std::chrono::milliseconds{milliseconds};
+    };
+    FramebufferExtentStability stability;
+    FramebufferExtentSnapshot framebuffer{.extent = {1280, 720}, .revision = 1};
+    WindowOutputRecoveryStateMachine state{7, key(1)};
+    REQUIRE(stability.settled(framebuffer, at(0))); // no bootstrap delay
+    int requests = 0;
+    int preparations = 0;
+    for (int now = 1; now <= 400; ++now) {
+        if (now <= 200 && now % 10 == 0) {
+            ++framebuffer.extent.width;
+            ++framebuffer.revision;
+        }
+        const bool settled = stability.settled(framebuffer, at(now));
+        if (now >= 10 && now < 300) REQUIRE_FALSE(settled);
+        if (settled && framebuffer.revision != 1) {
+            requests += state.requestRefresh(7, key(framebuffer.revision, framebuffer.extent),
+                                              WindowOutputRecoveryReason::framebuffer_changed, now);
+            if (const auto request = state.takePreparationRequest()) {
+                ++preparations;
+                CHECK(now == 300);
+                CHECK(request->old_epoch == 7);
+                CHECK(request->key.framebuffer_revision == 21);
+                CHECK(request->key.framebuffer_extent == vk::Extent2D{1300, 720});
+                CHECK(request->preparation_kind == WindowOutputPreparationKind::swapchain);
+            }
+        }
+        if (now < 300) {
+            REQUIRE(requests == 0);
+            REQUIRE(preparations == 0);
+        }
+    }
+    CHECK(requests == 1);
+    CHECK(preparations == 1);
+}
+
+TEST_CASE("WR-1 swapchain resize stability observes revision round trips and zero extent",
+          "[wr1][wsi][swapchain][resize]") {
+    using Clock = FramebufferExtentStability::Clock;
+    const auto at = [](int milliseconds) {
+        return Clock::time_point{} + std::chrono::milliseconds{milliseconds};
+    };
+    FramebufferExtentStability stability;
+    FramebufferExtentSnapshot framebuffer{.extent = {1280, 720}, .revision = 1};
+    REQUIRE(stability.settled(framebuffer, at(0)));
+    framebuffer.revision = 3; // A -> B -> A between owner-thread observations
+    CHECK_FALSE(stability.settled(framebuffer, at(10)));
+    CHECK_FALSE(stability.settled(framebuffer, at(109)));
+    CHECK(stability.settled(framebuffer, at(110)));
+    CHECK(stability.settled(framebuffer, at(1000)));
+    framebuffer = {.extent = {0, 0}, .revision = 4};
+    CHECK_FALSE(stability.settled(framebuffer, at(1010)));
+    framebuffer = {.extent = {1280, 720}, .revision = 5};
+    CHECK_FALSE(stability.settled(framebuffer, at(1020)));
+    CHECK_FALSE(stability.settled(framebuffer, at(1119)));
+    CHECK(stability.settled(framebuffer, at(1120)));
 }

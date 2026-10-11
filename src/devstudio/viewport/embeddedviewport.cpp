@@ -894,6 +894,10 @@ void EmbeddedViewport::layoutEngineLoadingNotice() {
     loading_notice_->setGeometry(native_host_->rect());
 }
 
+void EmbeddedViewport::finishEmbeddedWindowResize() {
+    requestEmbeddedWindowResize(ViewportExtentChangeKind::interaction_finished);
+}
+
 void EmbeddedViewport::requestEmbeddedWindowResize(ViewportExtentChangeKind kind) {
     if (child_window_ == 0 || !NativeWindowHost::isWindow(child_window_)) {
         if (resize_timer_ != nullptr) {

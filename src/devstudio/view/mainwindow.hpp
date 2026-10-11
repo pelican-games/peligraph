@@ -107,6 +107,7 @@ class MainWindow : public QMainWindow {
 
   protected:
     void closeEvent(QCloseEvent *event) override;
+    bool nativeEvent(const QByteArray &event_type, void *message, qintptr *result) override;
 
   private:
     enum DockIndex {

@@ -301,45 +301,92 @@ TEST_CASE("EW-2: the engine window is found by its mark, not by being visible",
 }
 #endif
 
-TEST_CASE("Continuous embedded viewport resizes stay frozen and apply only the trailing extent",
-          "[devstudio][viewport][resize]") {
+TEST_CASE("WR-1 viewport resize throttles twenty changes and flushes the final extent",
+          "[devstudio][viewport][resize][wr1]") {
     ViewportResizeCoalescer coalescer;
     coalescer.reset(QSize{640, 360});
-    constexpr int InputEventCount = 200;
-    int applied_count = 0;
-    QSize applied_extent;
-
-    for (int event_index = 0; event_index < InputEventCount; ++event_index) {
-        const qint64 now_ms = event_index;
-        const QSize extent{641 + event_index, 360};
-        const ViewportResizeDecision decision =
-            coalescer.request(extent, now_ms, ViewportExtentChangeKind::resize);
+    std::vector<qint64> sent_at;
+    std::vector<QSize> sent_extents;
+    const auto record = [&](const ViewportResizeDecision &decision, qint64 now) {
         if (decision.extent_to_apply) {
-            ++applied_count;
-            applied_extent = *decision.extent_to_apply;
+            sent_at.push_back(now);
+            sent_extents.push_back(*decision.extent_to_apply);
         }
-        REQUIRE(decision.next_wakeup_ms == EmbeddedViewportResizeDebounceMs);
+    };
+    // Drive both events and timer ticks: timer delivery must not turn a
+    // throttle into an unbounded stream or starve the trailing flush.
+    for (qint64 now = 0; now <= 290; ++now) {
+        if (now <= 190 && now % 10 == 0) {
+            record(coalescer.request(QSize{641 + static_cast<int>(now / 10), 360}, now,
+                                     ViewportExtentChangeKind::resize), now);
+        }
+        record(coalescer.timerExpired(now), now);
+        if (now == 190) {
+            REQUIRE(sent_at.size() <= 2);
+            REQUIRE(sent_at.size() == 1);
+            CHECK(sent_at.front() == 150);
+        }
+        if (now == 289) REQUIRE(sent_at.size() == 1);
     }
+    REQUIRE(sent_at.size() == 2);
+    CHECK(sent_at.back() == 290);
+    CHECK(sent_extents.back() == QSize{660, 360});
+    CHECK_FALSE(coalescer.timerExpired(1000).extent_to_apply);
+}
 
-    REQUIRE(applied_count == 0);
-    const qint64 last_event_time_ms = InputEventCount - 1;
-    const ViewportResizeDecision early =
-        coalescer.timerExpired(last_event_time_ms + EmbeddedViewportResizeDebounceMs - 1);
-    REQUIRE_FALSE(early.extent_to_apply);
-    REQUIRE(early.next_wakeup_ms == 1);
+TEST_CASE("WR-1 viewport resize release flushes immediately and only once",
+          "[devstudio][viewport][resize][wr1]") {
+    ViewportResizeCoalescer coalescer;
+    coalescer.reset(QSize{640, 360});
+    for (int i = 0; i < 20; ++i) {
+        (void)coalescer.request(QSize{641 + i, 360}, i * 10,
+                                ViewportExtentChangeKind::resize);
+    }
+    const auto released = coalescer.request(QSize{660, 360}, 195,
+                                            ViewportExtentChangeKind::interaction_finished);
+    CHECK(released.extent_to_apply == QSize{660, 360});
+    CHECK_FALSE(released.next_wakeup_ms);
+    CHECK_FALSE(coalescer.request(QSize{660, 360}, 196,
+                                 ViewportExtentChangeKind::interaction_finished).extent_to_apply);
+    CHECK_FALSE(coalescer.timerExpired(290).extent_to_apply);
 
-    const qint64 trailing_time_ms =
-        last_event_time_ms + EmbeddedViewportResizeDebounceMs;
-    const ViewportResizeDecision trailing = coalescer.timerExpired(trailing_time_ms);
-    REQUIRE(trailing.extent_to_apply);
-    ++applied_count;
-    applied_extent = *trailing.extent_to_apply;
-    REQUIRE_FALSE(trailing.next_wakeup_ms);
+    // The native release samples the host even if Qt's final resize event
+    // has not arrived yet.
+    CHECK(coalescer.request(QSize{670, 360}, 200,
+                            ViewportExtentChangeKind::interaction_finished).extent_to_apply ==
+          QSize{670, 360});
+}
 
-    REQUIRE(applied_count == 1);
-    REQUIRE(applied_extent == QSize{640 + InputEventCount, 360});
-    REQUIRE_FALSE(coalescer.timerExpired(trailing_time_ms + EmbeddedViewportResizeDebounceMs)
-                      .extent_to_apply);
+TEST_CASE("WR-1 viewport resize quiet gaps duplicates and reset keep the latest size",
+          "[devstudio][viewport][resize][wr1]") {
+    ViewportResizeCoalescer coalescer;
+    coalescer.reset(QSize{640, 360});
+    REQUIRE_FALSE(coalescer.request(QSize{650, 360}, 0,
+                                   ViewportExtentChangeKind::resize).extent_to_apply);
+    CHECK_FALSE(coalescer.timerExpired(50).extent_to_apply);
+    REQUIRE_FALSE(coalescer.request(QSize{660, 360}, 60,
+                                   ViewportExtentChangeKind::resize).extent_to_apply);
+    CHECK_FALSE(coalescer.timerExpired(110).extent_to_apply);
+    REQUIRE_FALSE(coalescer.request(QSize{670, 360}, 120,
+                                   ViewportExtentChangeKind::resize).extent_to_apply);
+    CHECK(coalescer.timerExpired(150).extent_to_apply == QSize{670, 360});
+    CHECK_FALSE(coalescer.timerExpired(220).extent_to_apply);
+
+    // A new gesture after quiet gets its own interval. Repeated identical
+    // notifications do not keep delaying an actual size change.
+    (void)coalescer.request(QSize{680, 360}, 1000, ViewportExtentChangeKind::resize);
+    (void)coalescer.request(QSize{680, 360}, 1090, ViewportExtentChangeKind::resize);
+    CHECK(coalescer.timerExpired(1100).extent_to_apply == QSize{680, 360});
+    (void)coalescer.request(QSize{690, 360}, 1110, ViewportExtentChangeKind::resize);
+    CHECK_FALSE(coalescer.request(QSize{680, 360}, 1120,
+                                 ViewportExtentChangeKind::resize).next_wakeup_ms);
+    CHECK_FALSE(coalescer.timerExpired(1400).extent_to_apply);
+    (void)coalescer.request(QSize{700, 360}, 1500, ViewportExtentChangeKind::resize);
+    coalescer.reset();
+    CHECK_FALSE(coalescer.timerExpired(1800).extent_to_apply);
+    coalescer.reset(QSize{800, 600});
+    CHECK_FALSE(coalescer.request(QSize{800, 600}, 2000,
+                                 ViewportExtentChangeKind::interaction_finished).extent_to_apply);
 }
 
 TEST_CASE("Device-pixel-ratio changes bypass viewport resize coalescing",
@@ -350,7 +397,7 @@ TEST_CASE("Device-pixel-ratio changes bypass viewport resize coalescing",
     const ViewportResizeDecision deferred =
         coalescer.request(QSize{650, 360}, 10, ViewportExtentChangeKind::resize);
     REQUIRE_FALSE(deferred.extent_to_apply);
-    REQUIRE(deferred.next_wakeup_ms == EmbeddedViewportResizeDebounceMs);
+    REQUIRE(deferred.next_wakeup_ms == EmbeddedViewportResizeQuietMs);
 
     const ViewportResizeDecision dpr_change = coalescer.request(
         QSize{1300, 720}, 11, ViewportExtentChangeKind::device_pixel_ratio);
