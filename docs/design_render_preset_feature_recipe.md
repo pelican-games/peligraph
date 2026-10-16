@@ -93,6 +93,8 @@ feature 間の名前結合(`after:deferred_lighting`)は、名前が新版で消
    gbuffer → lighting → forward は「scene passes(anchor より前、宣言順)」扱い。base を feature に分けると
    feature 間の順序をパス名への結合で書くことになる。`geometry` / `lighting` / `forward` のような scene 段 anchor を
    足すと疎結合になる(anchor の全順序は凍結面なので、追加は版の扱いを決めてから)。
+   → 2026-10-16 の議論で、anchor 自体を「段タグ + Studio の `Show:` フィルターの階層」へ移す案に発展した。
+   [design_render_stage_as_canvas_filter.md](design_render_stage_as_canvas_filter.md) を参照(scene 段は anchor ではなく `stage` の値として足す)。
 2. **pipeline 全体の方針の置き場。** `material_routing` / `draw_sort` / `shader_defines` / `target_planning` /
    `xr` は feature が持てない。薄い preset に残す(小さい)か、「policy feature」種別を作るか。
 3. **render target の所有。** gbuffer 5 枚は `deferred_base` が宣言し、lighting / bloom / forward は
@@ -131,6 +133,7 @@ feature 間の名前結合(`after:deferred_lighting`)は、名前が新版で消
 ## 6. 未決
 
 - scene 段 anchor の名前と全順序(凍結面への影響と版の扱い)。
+  anchor を `stage` タグに変える案([design_render_stage_as_canvas_filter.md](design_render_stage_as_canvas_filter.md))を採るなら、全順序の凍結面そのものを外す話になる。
 - `material_routing` の置き場(薄い preset か policy feature か)。
 - `pelican.render_pipeline` の版(v1 のまま「構造を持たない preset」を許すか、v2 にするか)。
 - 分解した base feature の粒度(deferred と ssao を分けるか、lighting と sky を分けるか)。
