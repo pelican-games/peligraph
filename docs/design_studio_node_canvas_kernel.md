@@ -92,8 +92,14 @@ Studio scenario(`graph_reroute_tie` / `frameplan_edit_roundtrip`)。各段で挙
 - `graphcanvaswidget.cpp` は 10k 行超で、`graphcanvas*fields.cpp`(render / parameter / loop / compute / value / material /
   folded pass)に detail 列が分かれている。カーネル抽出は scene のイベント・選択・制御点に限り、fields 系は触らない。
 
-## 6. 未決
+## 6. 未決(2026-10-17 更新)
 
-- カーネルの置き場と名前(`nodecanvasscene.{hpp,cpp}` を `nodegraphics` / `nodelayout` / `nodecanvasview` の並びに置く案)。
-- node の複数選択を段 1 に含めるか(Graph の `selected_node_` を複数化すると detail 列・Inspector 連携に波及する)。
-- adapter の形(純粋仮想の interface か、`std::function` の束か)。既存の外出しコールバックとの整合を優先する。
+議論の対象外だったので動いていない。順位だけ付ける:
+
+- **置き場と名前** → `src/devstudio/view/nodecanvasscene.{hpp,cpp}`(`nodelayout` / `nodegraphics` の並び)でよい。決めるだけ。
+- **node の複数選択を段 1 に含めるか** → 含めない。今回の不具合は reroute / tie だけで直る。node の複数選択は
+  [段メモ](design_render_stage_as_canvas_filter.md)の二段フィルター(段を隠す・段ごとに動かす)が入るときに一緒にやり、detail 列と Inspector への波及を 1 回で済ませる。
+- **adapter の形** → `std::function` の束。既存の `selectionChanged` / `gestureEnded` / `nodeMenuEntries` がそうなので揃える。
+
+前提の追加: `develop` → `develop_v1` のマージが先、は変わらない。mac 実証([design_macos_moltenvk_proof.md](design_macos_moltenvk_proof.md) 段 5)で
+Studio を Qt の mac 版で動かすなら、その前にカーネル抽出を始めない(2 つの差分を同時に追わない)。

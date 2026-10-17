@@ -107,9 +107,20 @@ renderer(executePlannedFrameGraph)
 
 0 と 1 は純ロジック中心。2 は GPU gate 必須(Windows)。
 
-## 6. 未決
+## 6. 未決(2026-10-17 更新)
 
-- `required` を付けている論理型の既定(`color_signal@1` / depth 型)が末尾までの生存を本当に要求しているか。
-- ヒープの単位(1 つにまとめるか、format の memoryTypeBits ごとに分けるか)と、resize 時の再構築コスト。
-- `alias_reuse` barrier を既存の `FramePlanBarrier{kind, resource, from, to}` に載せるか(resource が 2 つ要る)、別の表にするか。
-- 計測の表示場所(Frame Plan dock の列か、`get_status` の VRAM 区分か)。`memorydiagnostics` には alias / transient の区分が無い。
+議論で決まった・動いたもの:
+
+- **計測の表示場所** → arena の `declared_bytes`([棚卸しメモ](design_plan_layer_inventory.md) 2-4)。今 0 固定の field を埋めれば
+  Frame Plan の bytes 列がそのまま表示になる。`get_status` の VRAM 区分は後。
+- **優先度** → 上がった。mac(統合メモリ)と Blender の教訓(OpenGL ドライバは GPU メモリを RAM に退避できるが Vulkan はできない。
+  Blender 5.0 が Vulkan を既定にしなかった理由)で、同時最大の VRAM がそのまま体験に効く。
+- **Apple GPU での効き方** → MoltenVK では transient 候補が memoryless texture に落ちるので、A の寿命短縮は alias だけでなく
+  transient 判定にも効く。段 1 の価値が増す。
+
+残るもの:
+
+- `required` を付けている論理型の既定が末尾までの生存を要求しているか(調べる。変わらず)。
+- **ヒープの単位** → MoltenVK は 1.3.0 から MTLHeap が既定なので heap 1 つで素直に動く見込み。Windows は memoryTypeBits ごとに分ける。
+  device facts で切り替える形にする。
+- **`alias_reuse` barrier の表現** → 別の表を推す(`FramePlanBarrier` は resource 1 つ。2 つ目の resource のために既存の形を歪めない)。

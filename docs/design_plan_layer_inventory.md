@@ -154,9 +154,17 @@
 
 1 は Windows 無しでも planner 単体で進む。2〜4 は `get_frame_plan` を読む Studio と web が動く環境(Windows の `studio_cpu`)で確認する。
 
-## 6. 未決
+## 6. 未決(2026-10-17 更新)
 
-- 2-1 を消したあと、Studio の帯の L3(backend の名前)と barrier 行の access 注記を何で置き換えるか(FramePlan の barrier だけで足りるか)。
-- 2-2 の `level` を Studio の自動配置(`nodelayout`)が使っていないことの確認(読み手は見つからなかったが、層計算を自前で持つか要確認)。
-- 2-3 の形: 直下が complete を内包するか、complete が直下の表を参照するか。web 鏡像の読み方に合わせる。
-- 3-2 / 3-3 を「隠す」とき、`hazard_stress` と Studio の **Unpin / Freeze** が読む情報が欠けないか。
+解けたもの:
+
+- **2-1 を消したあとの帯の L3(backend の名前)** → 第 2 backend を作らないので L3 は消す。barrier 行の access 注記は FramePlan の barrier(kind と resource)で足りる。
+  access mask が要るなら runtime の `makeTransitionInfo`([`render_target_layout_tracker.cpp:9`](../src/core/vkcore/render_target_layout_tracker.cpp#L9))から出す。
+- **2-2 の `level`** → Studio の自動配置([`nodelayout.cpp`](../src/devstudio/view/nodelayout.cpp))は自前で列を計算していて plan の `level` を読まない。契約から外して問題ない。
+- **2-3 の形** → web 鏡像は plan を読まない(鏡像は engine resource の方)。直下が complete を 1 部内包し、周りに説明(`backend_selection` / `decisions` / `planning_opportunities` …)を置く形にする。fragment は別のまま。
+- **3-2 / 3-3 を隠す** → Freeze は fragment、Unpin は pin package、`hazard_stress` は planner の profile で、どれも「選ばれなかった候補の resource 全文」を読まない。候補名と理由(`backend_selection`)は残す。
+
+残るもの:
+
+- **削除の順番**。2-1 の削除は Studio の Frame Plan と scenario に触るので、`develop` → `develop_v1` のマージ後に置くのは確定。
+  カーネル抽出([canvas メモ](design_studio_node_canvas_kernel.md))より前か後かは、どちらも `frameplangraphics.cpp` に触るので同じ人が続けてやる前提で前に置く案。

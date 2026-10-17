@@ -70,7 +70,16 @@ LX-1(Linux ビルドの修正。`claude/gallant-bohr-1mm9f3`)。
 - **validation layer**: MoltenVK は layer を自分では読まない。SDK の loader 経由で入れる。
 - **性能**: SPIRV-Cross の MSL 変換は pipeline 作成時。shader の数が多いと初回が重い。pipeline cache を効かせる。
 
-## 5. 未決
+## 5. 未決(2026-10-17 更新)
 
-- mac を**対応対象**(CI に gate を持つ)にするか、**動くことがある**止まりにするか。CI に mac runner を持つなら GPU gate は Apple silicon の self-hosted になる。
-- RT 無しの mac で example をどう見せるか(RT 系 feature を preset から外した mac 用 preset を持つか、落ちた feature を Studio の Problems に出すだけにするか)。
+推す案:
+
+- **対応対象か「動くことがある」か** → まず「動くことがある」(best effort)で段 3 まで通す。通ったら Apple silicon の self-hosted runner で GPU gate を持ち、対応対象に上げる。
+  Vulkan SDK(MoltenVK 同梱)の版は Windows と同じく pin する。
+- **RT 無しの mac の example** → mac 用 preset は作らない(preset レシピ化の方向に反する)。feature が要求する device 機能(`ray_query`)を宣言し、
+  無い device では compose がその feature を名前付きで落として Problems に出す。既存の「ray tracing refusals carry their fields」の経路に乗せる。
+
+残るもの:
+
+- 実証を誰がどの機種で行うか(Apple silicon の世代、macOS の版)。段 0 の結果を見てから決める。
+- §2 に、LX-1 の修正を `develop` 先頭に載せ直した branch(`claude/gallant-bohr-1mm9f3`)の Linux ビルド結果を追記する(clang で確認中)。

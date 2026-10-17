@@ -130,10 +130,17 @@ feature 間の名前結合(`after:deferred_lighting`)は、名前が新版で消
   feature 単位の分岐より重い。
 - 本提案は A を含み、B / C を不要にする。
 
-## 6. 未決
+## 6. 未決(2026-10-17 更新)
 
-- scene 段 anchor の名前と全順序(凍結面への影響と版の扱い)。
-  anchor を `stage` タグに変える案([design_render_stage_as_canvas_filter.md](design_render_stage_as_canvas_filter.md))を採るなら、全順序の凍結面そのものを外す話になる。
-- `material_routing` の置き場(薄い preset か policy feature か)。
-- `pelican.render_pipeline` の版(v1 のまま「構造を持たない preset」を許すか、v2 にするか)。
-- 分解した base feature の粒度(deferred と ssao を分けるか、lighting と sky を分けるか)。
+議論で決まったもの:
+
+- **scene 段 anchor の名前と全順序** → anchor は `stage` タグへ([段メモ](design_render_stage_as_canvas_filter.md))。全順序の凍結面は v1 で外す。
+  scene 段の数は段メモ §7 の通り 3 段(`geometry` / `lighting` / `forward`)を推す。
+- **`material_routing` の置き場** → preset の「pipeline 全体の方針」側。[棚卸しメモ](design_plan_layer_inventory.md) 2-6 で段階 2 を
+  「typed 論理 graph + policy」に育てると決めたので、policy は feature ではなく段階 2 の入力として preset が運ぶ。
+- **分解した base feature の粒度** → scene 段に揃える(`deferred_geometry` / `deferred_lighting` / `forward_base`)。ssao と sky は既に feature なので分けたまま。
+
+残るもの:
+
+- **`pelican.render_pipeline` の版**。構造を持たない preset と `stage` は `@1` の読み手を壊すので `@2` にし、`@1` は読み替えで受ける案を推す。
+  v1 ブランチの凍結面の方針(アンカーの全順序を外すこと)と一緒に決める。

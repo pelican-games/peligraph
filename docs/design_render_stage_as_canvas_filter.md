@@ -135,11 +135,19 @@ stage の値(フレーム順。今のアンカー名 + scene 段)
 | アンカーを完全に廃止(タグも無し) | 順序は依存だけ | feature を「どこに入れるか」を書く語彙が消え、`insert: after:<pass名>` の結合に戻る。探す・隠す単位も失う |
 | **本案: タグ化して canvas のフィルター階層へ** | 段 = 見せ方 + 既定の置き場。順序と境界は依存・明示順・型へ | 役割 1 の語彙と探す単位を残しつつ 2〜5 を外せる。preset レシピ化(feature 単位の追随)と相性がよい |
 
-## 7. 未決
+## 7. 未決(2026-10-17 更新)
 
-- scene 段を何段にするか(`geometry` / `lighting` / `forward` の 3 つか、`scene` 1 つで `insert: after:<pass>` に任せるか)。
-  3 つに分けると「feature が scene 段のどこに入るか」を名前で言えるが、deferred / forward の preset で段の意味が変わる。
-- `unstaged` の pass を既定でどこに置くか(Render の末尾か、依存先の段か)。
-- `after:<stage名>` を残すか、`stage` の指定で置き換えて `insert:` は pass 名だけにするか(語彙を 1 つにする方が説明しやすい)。
-- 段の順を Studio の並び順の既定にするとき、`frame_node_order` の Order… UI でどう見せるか(段を跨ぐ指定の警告は出すか)。
-- `__anchor_sprite` を pass にしたとき、sprite scene が無いフレームの扱い(今は `anchor_has_work = false` で時間表から外している)。
+推す案を付けたもの:
+
+- **scene 段の数** → 3 段(`geometry` / `lighting` / `forward`)。フィルターでは `Render ▸ Scene ▸ geometry / lighting / forward` の
+  3 階層にし、forward だけの preset では空の段を出さない。base feature の粒度([preset レシピ化メモ](design_render_preset_feature_recipe.md) §6)と揃う。
+- **`unstaged` の置き場** → 依存先(最も近い producer)の段に置く。producer が無ければ Render の末尾。フィルターには「Unstaged」として出す。
+- **`after:<stage名>` を残すか** → `stage` に一本化する。`insert:` は pass 名だけ。`after:<stage名>` は 1 版だけ別名として読み、書き戻しは `stage`。
+  同梱 feature は同じ WP で書き換える。
+- **Order… UI** → 段の順は並び順の既定でしかないので、段を跨ぐ指定に警告は出さない。「段は見せ方、順序は依存と明示順」の分担を UI でも崩さない。
+- **`__anchor_sprite` を pass にしたときの sprite 無しフレーム** → 既存の node 非活性(`deactivated_graph_nodes`、`value_graph->nodeActive` のスキップ)に乗せる。
+  `anchor_has_work` 相当は「pass が描くものを持たない」として時間表から外す。
+
+残るもの:
+
+- `stage` の既定を feature 全体に 1 つ持たせるか、pass ごとに必須にするか(書きやすさと曖昧さの釣り合い)。
