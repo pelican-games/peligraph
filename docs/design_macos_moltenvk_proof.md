@@ -32,8 +32,8 @@ LX-1(Linux ビルドの修正。`claude/gallant-bohr-1mm9f3`)。
 | timestamp query(GPU 時間) | 任意 | render_timing | 対応。精度は Metal の counter sample に依る |
 | シェーダの拡張 | | `GL_EXT_multiview`、ray tracing 系、include だけ。geometry / tessellation 無し | SPIRV-Cross → MSL で問題になる機能を使っていない |
 | 禁止事項(portability subset) | | VkEvent、triangle fan、logicOp、wide line、3 ch の RT、D24S8 の RT は使っていない。depth は D32 | |
-| `eMutableFormat` + format list | 要確認 | [`core.cpp:1422`](../src/core/vkcore/core.cpp#L1422) | sRGB ↔ UNORM の再解釈なら対応。それ以外の組は `imageViewFormatReinterpretation` の制約に当たる |
-| blend の constant alpha | 要確認 | pipelinefactory | portability subset で `constantAlphaColorBlendFactors` が無いことがある |
+| `eMutableFormat` + format list | 確認済み | [`core.cpp:1422`](../src/core/vkcore/core.cpp#L1422) | `compatible_view_formats` を渡す呼び出しが無く、今は使われていない。使うなら sRGB ↔ UNORM の組に限る |
+| blend の constant alpha / sample-rate shading / point polygon | 確認済み | pipelinefactory、shader | 使っていない(portability subset の穴に当たらない) |
 | RT の alias(`eAlias` + VMA の aliasing image) | | [`rendertargetcontainer.cpp:307`](../src/core/renderingpass/rendertargetcontainer.cpp#L307) | 1.3.0 から MTLHeap が既定で有効(AMD 除く)なので実メモリも共有。Intel Mac の AMD GPU では正しく動くが節約されない |
 | `eLazilyAllocated` / `eTransientAttachment`(transient 候補)、tile_local 候補 | | [`rendertargetcontainer.cpp:297`](../src/core/renderingpass/rendertargetcontainer.cpp#L297)、`targetrenderplanning` | Apple GPU は tile ベース。memoryless texture に落ち、**desktop で選ばれなかった候補がここで初めて選ばれる**。tile_local は local_read(1.4.0)前提 |
 
@@ -43,7 +43,7 @@ LX-1(Linux ビルドの修正。`claude/gallant-bohr-1mm9f3`)。
 |---|---|---|
 | `CMakeLists.txt:27` `if(WIN32)` → `PLATFORM_DESKTOP` | LX-1 で Linux を追加済み | `OR APPLE` を足す(`claude/gallant-bohr-1mm9f3` に積んだ) |
 | MSVC 依存(`template` キーワード、`OrderedJson` の暗黙変換、inline namespace、`std::array` の CTAD、`<csignal>` / `<cstddef>` など 18 ファイル) | LX-1 で修正済み(GCC)。clang も同じ系統 | `develop` 先頭に cherry-pick 済み。mac では clang で再確認 |
-| Windows 専用コード(`_WIN32` 47 ファイル) | Linux でリンクできたので非 Windows 経路はある | file watcher(polling?)、`processrunner`、OpenXR、RenderDoc は mac で動作確認 |
+| Windows 専用コード(`_WIN32` 47 ファイル) | 非 Windows 経路あり: file watcher は polling fallback([`filewatcher.cpp:328`](../src/core/watch/filewatcher.cpp#L328))、`processrunner` は `fork`([`:289`](../src/devcli/processrunner.cpp#L289)) | mac で hot reload(polling の遅延)と import(子プロセス)を動作確認。OpenXR、RenderDoc は対象外 |
 | Vulkan SDK | `find_package(Vulkan)`、1.4.309 以上 | Vulkan SDK for macOS(MoltenVK 同梱)。`VULKAN_SDK` を通す |
 | GLFW | FetchContent | mac では `VK_EXT_metal_surface` を要求してくれる。追加作業なし |
 | shaderc(`PELICAN_RUNTIME_SHADER_COMPILER`) | SDK 依存 | SDK の shaderc を使う。無ければ OFF で事前コンパイル |
@@ -74,4 +74,3 @@ LX-1(Linux ビルドの修正。`claude/gallant-bohr-1mm9f3`)。
 
 - mac を**対応対象**(CI に gate を持つ)にするか、**動くことがある**止まりにするか。CI に mac runner を持つなら GPU gate は Apple silicon の self-hosted になる。
 - RT 無しの mac で example をどう見せるか(RT 系 feature を preset から外した mac 用 preset を持つか、落ちた feature を Studio の Problems に出すだけにするか)。
-- `eMutableFormat` の format list が sRGB ↔ UNORM 以外の組を持つか(確認してから)。
