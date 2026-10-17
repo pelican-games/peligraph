@@ -42,7 +42,7 @@ LX-1(Linux ビルドの修正。`claude/gallant-bohr-1mm9f3`)。
 | 項目 | 状態 | やること |
 |---|---|---|
 | `CMakeLists.txt:27` `if(WIN32)` → `PLATFORM_DESKTOP` | LX-1 で Linux を追加済み | `OR APPLE` を足す(`claude/gallant-bohr-1mm9f3` に積んだ) |
-| MSVC 依存(`template` キーワード、`OrderedJson` の暗黙変換、inline namespace、`std::array` の CTAD、`<csignal>` / `<cstddef>` など 18 ファイル) | LX-1 で修正済み(GCC)。clang も同じ系統 | `develop` 先頭に cherry-pick 済み。mac では clang で再確認 |
+| MSVC 依存(`template` キーワード、`OrderedJson` の暗黙変換、inline namespace、`std::array` の CTAD、`<csignal>` / `<cstddef>` など 18 ファイル) | LX-1 で修正済み(GCC)。**`develop` 先頭(acd9579c)に cherry-pick し、clang 18 で `pelican_core` / `pelican_player` のコンパイルとリンクを確認済み**(2026-10-17、Linux)。追加で要ったのは 2 点だけ: `renderconfigeditor.cpp` の `std::optional::emplace()`(clang が拒む。代入に変更)と、Ubuntu の `libshaderc_combined.a` が glslang / SPIRV-Tools を含まないための明示リンク(CMake、非 MSVC のみ。SDK の本物の combined には影響なし) | mac では同じ branch(`claude/gallant-bohr-1mm9f3`)を Apple clang で configure する。Studio は `-DSKIP_DEVSTUDIO=ON` で外せる |
 | Windows 専用コード(`_WIN32` 47 ファイル) | 非 Windows 経路あり: file watcher は polling fallback([`filewatcher.cpp:328`](../src/core/watch/filewatcher.cpp#L328))、`processrunner` は `fork`([`:289`](../src/devcli/processrunner.cpp#L289)) | mac で hot reload(polling の遅延)と import(子プロセス)を動作確認。OpenXR、RenderDoc は対象外 |
 | Vulkan SDK | `find_package(Vulkan)`、1.4.309 以上 | Vulkan SDK for macOS(MoltenVK 同梱)。`VULKAN_SDK` を通す |
 | GLFW | FetchContent | mac では `VK_EXT_metal_surface` を要求してくれる。追加作業なし |
@@ -82,4 +82,3 @@ LX-1(Linux ビルドの修正。`claude/gallant-bohr-1mm9f3`)。
 残るもの:
 
 - 実証を誰がどの機種で行うか(Apple silicon の世代、macOS の版)。段 0 の結果を見てから決める。
-- §2 に、LX-1 の修正を `develop` 先頭に載せ直した branch(`claude/gallant-bohr-1mm9f3`)の Linux ビルド結果を追記する(clang で確認中)。
