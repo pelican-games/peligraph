@@ -42,7 +42,7 @@
 | 2-3 | 物理計画のダンプ 3 部 | 無し(「概念が分かれるか」の問いのみ) | 3 概念は残し、complete と直下の重複する表を 1 回にする。鍵が変わるので 2-1 の削除と同じ v1 WP に同梱 | やるか、放置か(効果は往復 27 KB と読みやすさ) |
 | 2-4 | `declared_bytes` = 0 | 無し(「arena とは」の問いのみ) | 埋める(RT メモ段 0 と同じ WP、v0 可) | 埋めるか、列ごと消すか |
 | 2-5 | anchor と順序の二重化 | **段タグ + canvas のフィルター階層へ**(段メモ) | 同じ | 段メモ §7 の残り 1 件 |
-| 2-6 | 段階 2 の typed policy | 無し(「他に役立つか」の問いのみ) | 消さず、typed 論理 graph に育てる。Metal の理由は落ちたので、残る理由は純ロジック test(GPU 無しの CI)、incremental、Studio の typed 表示の 3 つ。単独では起こさず、preset レシピ化が段階 2 に触るときに一緒に | 育てるか、現状維持か |
+| 2-6 | 段階 2 の typed policy | **強化する。core の JSON 二重 parse を解く**([design_stage2_typed_pipeline.md](design_stage2_typed_pipeline.md)) | 同じ | 段メモ側の未決 3 件(同メモ §6) |
 | 2-7 | 文書のずれ | **メモに残す** | 文書修正だけ | なし |
 
 
@@ -116,7 +116,7 @@
 
 ### 2-5 anchor ノードと順序の二重化 — [段メモ](design_render_stage_as_canvas_filter.md) §3.2〜3.3 の通り
 
-### 2-6 段階 2(`CompiledRenderPipeline` の typed policy) — 消すのではなく backend 境界として育てる
+### 2-6 段階 2(`CompiledRenderPipeline` の typed policy) — 強化する(決定。計画は [design_stage2_typed_pipeline.md](design_stage2_typed_pipeline.md))
 
 - 今: resolve と core の間で運ぶのは draw sorting / material routing / feature instances の 3 つ。render node の typed 化は
   core 側の [`parseRenderNodeFromJson`](../src/core/renderingpass/frameplanner.cpp#L669) がやり直している(段階 3)。
