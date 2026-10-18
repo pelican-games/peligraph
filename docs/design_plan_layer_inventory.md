@@ -38,7 +38,7 @@
 | # | 層 | 明言された決定 | 推奨 | 残っている判断 |
 |---|---|---|---|---|
 | 2-1 | `execution_plan` | **削除**(第 2 backend は書かない。mac は MoltenVK) | 同じ | なし(順番は §6) |
-| 2-2 | `levels` | 無し(「並列化で使えないか」の問いのみ) | 契約から外す。複数 queue の計画器は ASAP だけでは足りず、自分で層を作る | 完全に消すか、`diagnostics` に表示専用で残すか |
+| 2-2 | `levels` | **完全に消す**(2026-10-18) | 同じ | なし |
 | 2-3 | 物理計画のダンプ 3 部 | 無し(「概念が分かれるか」の問いのみ) | 3 概念は残し、complete と直下の重複する表を 1 回にする。鍵が変わるので 2-1 の削除と同じ v1 WP に同梱 | やるか、放置か(効果は往復 27 KB と読みやすさ) |
 | 2-4 | `declared_bytes` = 0 | 無し(「arena とは」の問いのみ) | 埋める(RT メモ段 0 と同じ WP、v0 可) | 埋めるか、列ごと消すか |
 | 2-5 | anchor と順序の二重化 | **段タグ + canvas のフィルター階層へ**(段メモ) | 同じ | 段メモ §7 の残り 1 件 |
@@ -72,7 +72,7 @@
 - `view_execution_plan`(`targetrenderplanning.hpp:508`、multi-view の実行回数)は別物。触らない。
 - `get_frame_plan` の鍵が減るので v1。Studio の scenario(`pelicanExecutionPlanState` を読むもの)も同じ WP で直す。
 
-### 2-2 `levels` — (2) 掃除(契約から外す。計算は要るときに書き直す)
+### 2-2 `levels` — (2) 削除(決定 2026-10-18。`diagnostics` にも残さない)
 
 - 何か: [`computeLevels()`](../src/core/renderingpass/frameplanner.cpp#L1598) が依存辺から node の深さ(ASAP)を出し、
   [`:1899`](../src/core/renderingpass/frameplanner.cpp#L1899) で層にまとめて [`:2125`](../src/core/renderingpass/frameplanner.cpp#L2125) で JSON へ。
@@ -81,7 +81,10 @@
   queue の capability、同期点(timeline semaphore、queue ownership transfer)のコストが要る。設計 §4.2 では
   「domain 内外の happens-before と並行可能性」は `TargetExecutionCompiler` の担当で、そこが自分の入力を作る。
   `computeLevels` は 10 行で、その時に書き直す方が安い。
-- 判定: ダンプの `levels` と node の `level` を契約から外す。残すなら `diagnostics` 配下で表示専用。マニュアルの説明を直す。
+- 判定: `computeLevels`、node の `level`、ダンプの `levels` を消す。`diagnostics` にも残さない(消費者の無い診断は誤読の供給源になる。マニュアルの「機械最適化が層を作る」がその実例)。
+- 置き換え: `frameplanner_test` の 1589 / 2419 行と `golden_bloom_upsample_harness` の 1742 行は `levels` を「plan が変わった / 変わらない」の代理に使っているので、`order` と `barriers` の比較にする。
+  第6章の三層の説明から「層別」を外し「順序付けとバリア導出」にする。
+- 条件: 2-1 と同じ v1 WP に同梱。複数 queue の WP は「依存辺から ASAP / ALAP を計算し、割り当ての根拠をダンプに出す」ことを自分の受け入れ条件に持つ(値は消費者と一緒に生まれる)。
 
 ### 2-3 物理計画のダンプ — 概念は 3 つとも本物。重複する表だけ一本化(2)
 
