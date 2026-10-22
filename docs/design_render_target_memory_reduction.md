@@ -124,3 +124,4 @@ renderer(executePlannedFrameGraph)
 - **ヒープの単位** → MoltenVK は 1.3.0 から MTLHeap が既定なので heap 1 つで素直に動く見込み。Windows は memoryTypeBits ごとに分ける。
   device facts で切り替える形にする。
 - **`alias_reuse` barrier の表現** → 別の表を推す(`FramePlanBarrier` は resource 1 つ。2 つ目の resource のために既存の形を歪めない)。
+- **同じ WP に入るもの** → 物理計画の固定ルートを `target_planning` の policy に一本化する件([棚卸しメモ](design_plan_layer_inventory.md) 2-3、方針決定 2026-10-22)。`no_alias` は既にあり、`alias_group` / `materialize` などを足す語彙は区間詰めの入力と同じ場所。
