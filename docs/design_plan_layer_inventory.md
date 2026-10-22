@@ -40,7 +40,7 @@
 | 2-1 | `execution_plan` | **削除**(第 2 backend は書かない。mac は MoltenVK) | 同じ | なし(順番は §6) |
 | 2-2 | `levels` | **完全に消す**(2026-10-18) | 同じ | なし |
 | 2-3 | 物理計画の固定ルート(pin / freeze / complete) | **方針決定(2026-10-22): 固定のルートを `target_planning` の policy に一本化する**。細部は後で詰める | 同じ | 語彙、`require` / `prefer`、優先順位(§2-3) |
-| 2-4 | `declared_bytes` = 0 | 無し(「arena とは」の問いのみ) | 埋める(RT メモ段 0 と同じ WP、v0 可) | 埋めるか、列ごと消すか |
+| 2-4 | `declared_bytes` = 0 | **埋める**(2026-10-22) | 同じ(RT メモ段 0 と同じ WP、v0 可) | なし |
 | 2-5 | anchor と順序の二重化 | **段タグ + canvas のフィルター階層へ**(段メモ) | 同じ | 段メモ §7 の残り 1 件 |
 | 2-6 | 段階 2 の typed policy | **強化する。core の JSON 二重 parse を解く**([design_stage2_typed_pipeline.md](design_stage2_typed_pipeline.md)) | 同じ | 段メモ側の未決 3 件(同メモ §6) |
 | 2-7 | 文書のずれ | **メモに残す** | 文書修正だけ | なし |
@@ -128,7 +128,7 @@
 5. 版をまたいだ byte 一致は policy では約束しない、を文書に明記。
 6. 置き場: v1 の物理計画 WP(RT メモの区間詰め alias と同じ場所)。順序は 語彙 → 強度と優先順位 → Pin / Freeze を policy 書き出しに置換 → package と RPC の削除。
 
-### 2-4 `declared_bytes` = 0 — 埋める(器は正しい)
+### 2-4 `declared_bytes` = 0 — 埋める(決定 2026-10-22)
 
 - arena とは: [`RenderPipelineGpuArena`](../src/core/renderingpass/renderpipelinegpuarena.hpp)。**公開中の runtime 世代が所有する
   GPU 側オブジェクトの台帳**。owner scope(`render_pipeline/flat` = 本体、`render_pipeline/variants` = variant)ごとに、
@@ -140,7 +140,10 @@
 - 今: [`renderpipelinegpuarena.cpp:198`](../src/core/renderingpass/renderpipelinegpuarena.cpp#L198) で `declared_bytes = 0` 固定。
   Studio の Frame Plan がその 0 を bytes 列に出す([`frameplanwidget.cpp:5183`](../src/devstudio/view/frameplanwidget.cpp#L5183))。
   つまり arena は「所有の台帳」としては動いていて、「VRAM の台帳」としては空。
-- 判定: RT メモ段 0 の計測(format × extent × layers × mips、buffer の size)で埋める。埋めるまで列は出さない。
+- 判定: RT メモ段 0 の計測で埋める。render target は format × extent × layers × mips(MSAA と history の枚数込み)、frame graph buffer は size、
+  shader bundle / pipeline / pass 系は 0 のまま(VRAM を占めない)。埋めるまで列は出さない。
+- 置き場: 計算は project の planner 側(物理計画の resource から bytes を出す純ロジック)、arena は登録時にその値を写す。`get_frame_plan` の
+  `memory_summary {total_bytes, peak_live_bytes, peak_node}` と同じ WP(RT メモ段 0)。v0 で可(鍵は増えず値が変わるだけ)。
 
 ### 2-5 anchor ノードと順序の二重化 — [段メモ](design_render_stage_as_canvas_filter.md) §3.2〜3.3 の通り
 
