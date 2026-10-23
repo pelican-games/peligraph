@@ -81,6 +81,9 @@ portableな`RasterPassContract`で、custom raster techniqueごとにengine中�
 data-only `NativeScope`宣言を、WP238dはそのsource-level executor provider runtimeを、
 WP238eは実commandを記録するVulkan fixtureと正確なverification contextからのinstall APIを
 追加した。公開game-DLL callback ABIはまだ凍結していない。
+2026-10-23 追記: WP238a の `FrameExecutionPlan` は RC-2(`e15e31bb5`)で削除した(第 2 backend は書かず、mac は
+MoltenVK で動かす決定による。[`design_plan_layer_inventory.md`](design_plan_layer_inventory.md) §2-1)。
+上の v2.8 の WP238a の記述と §12 の RPE14a の行は履歴として残す。WP238b の `type: "raster"` と `RasterPassContract` は残る。
 
 関連文書:
 

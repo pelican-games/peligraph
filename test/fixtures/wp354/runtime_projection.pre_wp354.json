@@ -2,274 +2,6 @@
   "barriers": [],
   "deactivated_graph_nodes": [],
   "diagnostics": [],
-  "execution_plan": {
-    "bridges": [],
-    "dependencies": [],
-    "endpoints": [
-      {
-        "backend": "vulkan",
-        "capabilities": [
-          "pelican.execution.compute@1",
-          "pelican.execution.frame_output@1",
-          "pelican.execution.graphics@1",
-          "pelican.execution.transfer@1"
-        ],
-        "class": "device",
-        "id": "device:0"
-      }
-    ],
-    "fingerprint": "fnv1a64:b7107863983b761d",
-    "graph": "wp354_family_contract",
-    "nodes": [
-      {
-        "bridge_ids": [],
-        "declaration_index": 0,
-        "effects": [],
-        "level": 0,
-        "name": "material",
-        "order": 0,
-        "required_capabilities": [
-          "pelican.execution.graphics@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.frame_render@1",
-        "semantic_dialect": "pelican.logical.render@1",
-        "view_family": "$main"
-      },
-      {
-        "bridge_ids": [],
-        "declaration_index": 1,
-        "effects": [],
-        "level": 1,
-        "name": "fullscreen",
-        "order": 1,
-        "required_capabilities": [
-          "pelican.execution.graphics@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.frame_render@1",
-        "semantic_dialect": "pelican.logical.render@1",
-        "view_family": "$main"
-      },
-      {
-        "bridge_ids": [],
-        "declaration_index": 2,
-        "effects": [],
-        "level": 2,
-        "name": "raster",
-        "order": 2,
-        "required_capabilities": [
-          "pelican.execution.graphics@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.frame_render@1",
-        "semantic_dialect": "pelican.logical.render@1",
-        "view_family": "$main"
-      },
-      {
-        "bridge_ids": [],
-        "declaration_index": 3,
-        "effects": [
-          {
-            "id": "pelican.effect.frame_output@1"
-          }
-        ],
-        "level": 3,
-        "name": "output_transform",
-        "order": 3,
-        "required_capabilities": [
-          "pelican.execution.frame_output@1",
-          "pelican.execution.graphics@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.output_transform@1",
-        "semantic_dialect": "pelican.logical.render@1",
-        "view_family": "$main"
-      },
-      {
-        "bridge_ids": [],
-        "declaration_index": 4,
-        "effects": [],
-        "level": 4,
-        "name": "debug_draw",
-        "order": 4,
-        "required_capabilities": [
-          "pelican.execution.graphics@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.frame_render@1",
-        "semantic_dialect": "pelican.logical.render@1",
-        "view_family": "$main"
-      },
-      {
-        "bridge_ids": [],
-        "declaration_index": 5,
-        "effects": [],
-        "level": 5,
-        "name": "gizmo",
-        "order": 5,
-        "required_capabilities": [
-          "pelican.execution.graphics@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.frame_render@1",
-        "semantic_dialect": "pelican.logical.render@1",
-        "view_family": "$main"
-      },
-      {
-        "bridge_ids": [],
-        "declaration_index": 6,
-        "effects": [],
-        "level": 6,
-        "name": "debug_text",
-        "order": 6,
-        "required_capabilities": [
-          "pelican.execution.graphics@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.frame_render@1",
-        "semantic_dialect": "pelican.logical.render@1",
-        "view_family": "$main"
-      },
-      {
-        "bridge_ids": [],
-        "declaration_index": 7,
-        "effects": [],
-        "level": 7,
-        "name": "shadow_depth",
-        "order": 7,
-        "required_capabilities": [
-          "pelican.execution.graphics@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.frame_render@1",
-        "semantic_dialect": "pelican.logical.render@1",
-        "view_family": "$main"
-      },
-      {
-        "bridge_ids": [],
-        "declaration_index": 8,
-        "effects": [],
-        "level": 8,
-        "name": "velocity",
-        "order": 8,
-        "required_capabilities": [
-          "pelican.execution.graphics@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.frame_render@1",
-        "semantic_dialect": "pelican.logical.render@1",
-        "view_family": "$main"
-      },
-      {
-        "bridge_ids": [],
-        "declaration_index": 9,
-        "effects": [],
-        "level": 9,
-        "name": "picking",
-        "order": 9,
-        "required_capabilities": [
-          "pelican.execution.graphics@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.frame_render@1",
-        "semantic_dialect": "pelican.logical.render@1",
-        "view_family": "$main"
-      },
-      {
-        "bridge_ids": [],
-        "declaration_index": 10,
-        "effects": [],
-        "level": 10,
-        "name": "ui",
-        "order": 10,
-        "required_capabilities": [
-          "pelican.execution.graphics@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.frame_render@1",
-        "semantic_dialect": "pelican.logical.render@1",
-        "view_family": "$main"
-      },
-      {
-        "bridge_ids": [],
-        "declaration_index": 11,
-        "effects": [],
-        "level": 11,
-        "name": "canonical_anchor",
-        "order": 11,
-        "required_capabilities": [
-          "pelican.execution.graphics@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.frame_anchor@1",
-        "semantic_dialect": "pelican.logical.render@1",
-        "view_family": "$main"
-      },
-      {
-        "bridge_ids": [],
-        "declaration_index": 12,
-        "effects": [],
-        "level": 12,
-        "name": "snapshot_copy",
-        "order": 12,
-        "required_capabilities": [
-          "pelican.execution.transfer@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.snapshot_copy@1",
-        "semantic_dialect": "pelican.logical.transfer@1",
-        "view_family": "$main"
-      },
-      {
-        "bridge_ids": [],
-        "declaration_index": 13,
-        "effects": [],
-        "level": 13,
-        "name": "compute_task",
-        "order": 13,
-        "required_capabilities": [
-          "pelican.execution.compute@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.frame_compute@1",
-        "semantic_dialect": "pelican.logical.compute@1",
-        "view_family": "$main"
-      },
-      {
-        "bridge_ids": [],
-        "declaration_index": 14,
-        "effects": [],
-        "level": 14,
-        "name": "ray_task",
-        "order": 14,
-        "required_capabilities": [
-          "pelican.execution.compute@1"
-        ],
-        "resource_uses": [],
-        "selected_endpoint": "device:0",
-        "selected_implementation": "pelican.execution.frame_compute@1",
-        "semantic_dialect": "pelican.logical.compute@1",
-        "view_family": "$main"
-      }
-    ],
-    "schema": "pelican.frame_execution_plan",
-    "schema_version": 1
-  },
   "gpu_owner_scope": "",
   "gpu_resource_arena": {
     "resource_count": 0,
@@ -277,58 +9,10 @@
     "scopes": []
   },
   "graph": "wp354_family_contract",
-  "levels": [
-    [
-      "material"
-    ],
-    [
-      "fullscreen"
-    ],
-    [
-      "raster"
-    ],
-    [
-      "output_transform"
-    ],
-    [
-      "debug_draw"
-    ],
-    [
-      "gizmo"
-    ],
-    [
-      "debug_text"
-    ],
-    [
-      "shadow_depth"
-    ],
-    [
-      "velocity"
-    ],
-    [
-      "picking"
-    ],
-    [
-      "ui"
-    ],
-    [
-      "canonical_anchor"
-    ],
-    [
-      "snapshot_copy"
-    ],
-    [
-      "compute_task"
-    ],
-    [
-      "ray_task"
-    ]
-  ],
   "nodes": [
     {
       "declaration_index": 0,
       "kind": "render",
-      "level": 0,
       "name": "material",
       "order": 0,
       "reads": [],
@@ -339,7 +23,6 @@
     {
       "declaration_index": 1,
       "kind": "render",
-      "level": 1,
       "name": "fullscreen",
       "order": 1,
       "reads": [],
@@ -350,7 +33,6 @@
     {
       "declaration_index": 2,
       "kind": "render",
-      "level": 2,
       "name": "raster",
       "order": 2,
       "reads": [],
@@ -361,7 +43,6 @@
     {
       "declaration_index": 3,
       "kind": "output_transform",
-      "level": 3,
       "name": "output_transform",
       "order": 3,
       "reads": [],
@@ -371,7 +52,6 @@
     {
       "declaration_index": 4,
       "kind": "render",
-      "level": 4,
       "name": "debug_draw",
       "order": 4,
       "reads": [],
@@ -382,7 +62,6 @@
     {
       "declaration_index": 5,
       "kind": "render",
-      "level": 5,
       "name": "gizmo",
       "order": 5,
       "reads": [],
@@ -393,7 +72,6 @@
     {
       "declaration_index": 6,
       "kind": "render",
-      "level": 6,
       "name": "debug_text",
       "order": 6,
       "reads": [],
@@ -404,7 +82,6 @@
     {
       "declaration_index": 7,
       "kind": "render",
-      "level": 7,
       "name": "shadow_depth",
       "order": 7,
       "reads": [],
@@ -415,7 +92,6 @@
     {
       "declaration_index": 8,
       "kind": "render",
-      "level": 8,
       "name": "velocity",
       "order": 8,
       "reads": [],
@@ -426,7 +102,6 @@
     {
       "declaration_index": 9,
       "kind": "render",
-      "level": 9,
       "name": "picking",
       "order": 9,
       "reads": [],
@@ -437,7 +112,6 @@
     {
       "declaration_index": 10,
       "kind": "render",
-      "level": 10,
       "name": "ui",
       "order": 10,
       "reads": [],
@@ -448,7 +122,6 @@
     {
       "declaration_index": 11,
       "kind": "anchor",
-      "level": 11,
       "name": "canonical_anchor",
       "order": 11,
       "reads": [],
@@ -459,7 +132,6 @@
       "byte_size": 0,
       "declaration_index": 12,
       "kind": "snapshot_copy",
-      "level": 12,
       "name": "snapshot_copy",
       "order": 12,
       "reads": [],
@@ -473,7 +145,6 @@
     {
       "declaration_index": 13,
       "kind": "compute",
-      "level": 13,
       "name": "compute_task",
       "order": 13,
       "reads": [],
@@ -484,7 +155,6 @@
     {
       "declaration_index": 14,
       "kind": "compute",
-      "level": 14,
       "name": "ray_task",
       "order": 14,
       "reads": [],

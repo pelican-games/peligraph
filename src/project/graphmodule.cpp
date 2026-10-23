@@ -878,11 +878,14 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
     // without them the owner's first frame starts the voice, so a node placed
     // with only its `time` plays. Which asset and bus the voice plays, and how
     // it wraps, are fixed when the voice starts, so changing them rebuilds.
+    // AT-1 decision 4: so is whether the voice is the master the game clock
+    // follows.
     auto playback = value({{"time", required}, {"events", optional_events}, {"position", optional},
             {"source_begin", optional}, {"source_end", optional}, {"speed", optional},
             {"delay", optional}}, {{"voice", voice}}, GraphOperationEvaluation::replay);
     playback.contract.parameter_changes = {{"asset", GraphParameterChange::rebuild},
-        {"bus", GraphParameterChange::rebuild}, {"wrap", GraphParameterChange::rebuild}};
+        {"bus", GraphParameterChange::rebuild}, {"wrap", GraphParameterChange::rebuild},
+        {"master", GraphParameterChange::rebuild}};
     registry.registerModule(GraphModuleManifest{
         "pelican.audio", 1,
         "Sound playback voices and the value sinks that drive them.",
@@ -1000,6 +1003,9 @@ const std::vector<GraphFrameInputName> &graphFrameInputNames() {
         {"time", "pelican.value.scalar@1", "The game clock, in seconds."},
         {"delta_time", "pelican.value.scalar@1", "This frame's length, in seconds."},
         {"scene_time", "pelican.value.scalar@1", "Seconds since the current scene started."},
+        // AT-1 decision 3: evaluated as `time` is, every frame.
+        {"audio_time", "pelican.value.scalar@1",
+         "The audio clock: the second of the sound being heard now."},
     };
     return names;
 }

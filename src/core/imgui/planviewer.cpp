@@ -651,7 +651,6 @@ PlanViewerModel buildPlanViewerModel(
         node.name = node_json.at("name").get<std::string>();
         node.kind = node_json.at("kind").get<std::string>();
         node.order = node_json.at("order").get<std::size_t>();
-        node.level = node_json.at("level").get<std::size_t>();
         node.reads = stringArray(node_json, "reads");
         node.writes = stringArray(node_json, "writes");
         node.snapshot_after = node_json.value("snapshot_after", std::string{});
@@ -706,6 +705,18 @@ PlanViewerModel buildPlanViewerModel(
             throw std::runtime_error("plan viewer barrier references an unknown node");
         }
         model.edges.push_back(std::move(edge));
+    }
+    // Nodes are in plan order and a barrier runs forward in it, so one pass
+    // places every node after the nodes it waits on.
+    std::unordered_map<std::string, std::size_t> columns;
+    for (auto &node : model.nodes) {
+        for (const auto &edge : model.edges) {
+            if (edge.to != node.name) continue;
+            if (const auto from = columns.find(edge.from); from != columns.end()) {
+                node.column = std::max(node.column, from->second + 1);
+            }
+        }
+        columns.emplace(node.name, node.column);
     }
 
     if (const auto physical = plan_json.find("physical_target_plan");
@@ -899,14 +910,14 @@ struct PlanViewer::Impl {
         }
 
         constexpr ImVec2 node_size{184.0f, 76.0f};
-        constexpr float level_gap = 228.0f;
+        constexpr float column_gap = 228.0f;
         constexpr float row_gap = 104.0f;
         std::unordered_map<std::size_t, std::size_t> rows;
         std::vector<ImVec2> graph_positions(model.nodes.size());
         std::unordered_map<std::string, std::size_t> node_indices;
         for (std::size_t i = 0; i < model.nodes.size(); ++i) {
-            const auto row = rows[model.nodes[i].level]++;
-            graph_positions[i] = {model.nodes[i].level * level_gap, row * row_gap};
+            const auto row = rows[model.nodes[i].column]++;
+            graph_positions[i] = {model.nodes[i].column * column_gap, row * row_gap};
             node_indices.emplace(model.nodes[i].name, i);
         }
         const auto toScreen = [&](ImVec2 point) {
@@ -966,7 +977,7 @@ struct PlanViewer::Impl {
                 const auto font_size = std::clamp(15.0f * zoom, 10.0f, 22.0f);
                 draw->AddText(ImGui::GetFont(), font_size, add(min, {9.0f * zoom, 8.0f * zoom}),
                               IM_COL32_WHITE, node.name.c_str());
-                const auto subtitle = node.kind + "  L" + std::to_string(node.level);
+                const auto subtitle = node.kind + "  #" + std::to_string(node.order);
                 draw->AddText(ImGui::GetFont(), std::max(9.0f, 12.0f * zoom),
                               add(min, {9.0f * zoom, 31.0f * zoom}), IM_COL32(224, 232, 239, 220),
                               subtitle.c_str());
@@ -1022,7 +1033,7 @@ struct PlanViewer::Impl {
         const auto &node = model.nodes[static_cast<std::size_t>(selected_node)];
         ImGui::TextWrapped("%s", node.name.c_str());
         ImGui::Text("kind: %s", node.kind.c_str());
-        ImGui::Text("order / level: %zu / %zu", node.order, node.level);
+        ImGui::Text("order: %zu", node.order);
         ImGui::Text("origin: %s", node.source.c_str());
         if (!node.feature.empty()) ImGui::Text("feature: %s", node.feature.c_str());
         if (!node.provider_reference.empty()) {

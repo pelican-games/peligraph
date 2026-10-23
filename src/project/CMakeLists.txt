@@ -3,8 +3,6 @@ add_library(pelican_project
     audioanalysisformat.cpp
     assetsmanifest.cpp
     authoringlowering.cpp
-    executionplan.cpp
-    executionplanwire.cpp
     featurecompose.cpp
     featurejitter.cpp
     filereplace.cpp
@@ -37,6 +35,7 @@ add_library(pelican_project
     openpbrmapping.cpp
     packagemanifest.cpp
     passfieldownership.cpp
+    passfusion.cpp
     passshapepolicy.cpp
     physicaltargetplanwire.cpp
     prefab.cpp

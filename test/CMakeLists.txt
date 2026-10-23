@@ -3539,10 +3539,14 @@ pelican_define_test(frameplanner_test GROUP render_planning_core pelican_core)
 target_compile_definitions(pelican_test_frameplanner_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
-pelican_define_test(frameexecutionplan_test GROUP render_planning_core pelican_core)
 
 pelican_define_test(renderpipelinetransaction_test GROUP render_planning_core pelican_core)
 pelican_define_test(logicalrendergraph_test GROUP render_planning_core pelican_core)
+# PF-1: the pass-fusion planner over the core's logical shadow graphs.
+pelican_define_test(passfusion_test GROUP render_planning_core pelican_core)
+target_compile_definitions(pelican_test_passfusion_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 pelican_define_test(targetplanning_test GROUP project_planning pelican_project)
 pelican_define_test(targetrenderplanning_test GROUP project_planning pelican_project)
 pelican_define_test(samplecountplanning_test GROUP project_planning pelican_project)

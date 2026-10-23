@@ -15,6 +15,12 @@ WP221ではrendererのflat/preview/XR compileを一つの内部`RenderCompilerPr
 共通plannerを使わないbackend-native programもopenなVulkan physical packageへ
 収束できる実行境界を追加した。previewは同じinvocationのdata-only artifactである。
 
+2026-10-23 追記: 兄弟 backend(Metal)は当面作らない(2026-10-17 の決定。mac は MoltenVK で動かす。
+[`design_macos_moltenvk_proof.md`](design_macos_moltenvk_proof.md))。本書の `ExecutionPlan` / `ExecutionLinker` /
+`BackendProbe` の節は履歴として残す。frame 版の `FrameExecutionPlan`(WP238a)は RC-2(`e15e31bb5`)で削除した
+(型・生成・FramePlan との一致検証・`get_frame_plan` の `execution_plan`。経緯と範囲は
+[`design_plan_layer_inventory.md`](design_plan_layer_inventory.md) §2-1)。
+
 本書は、renderer 固有の [`design_render_graph_compiler.md`](design_render_graph_compiler.md)
 と、現行 render / GPU compute 依存グラフの
 [`design_compute_task_graph.md`](design_compute_task_graph.md) の一段外側を定義する。

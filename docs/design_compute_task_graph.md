@@ -348,3 +348,7 @@ F0 のプラン比較 fixture は次の形を正とする。
    であり、host / device endpoint や graphics / compute queue assignment を表さない。
    CPU / external task 統合時は schema version を上げ、namespaced semantic dialect と
    selected endpoint を別 field で表現する。
+
+2026-10-23 追記: `levels` と node の `level` は RC-2(`e15e31bb5`)で plan から削除した(実行にも判断にも使われていなかった。
+[`design_plan_layer_inventory.md`](design_plan_layer_inventory.md) §2-2)。上の JSON と規則 2 は F0 の確定時の形として残す。
+今の plan は実行順を node の `order`、資源の依存を `barriers` で表す。

@@ -4,6 +4,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 
 namespace Pelican {
 
@@ -28,8 +29,29 @@ namespace Pelican {
 // While playing, the evaluation index and the game frame are the same number,
 // and the game dt is the editor dt: a run that never pauses is the run it was
 // before the two were separated.
+//
+// AT-1 decision 5. The one exception: in the realtime mode, while a master
+// voice plays, a game step's dt is how far the audio clock moved between
+// this step's tick and the one before, not the steady clock's -- so the
+// scene time, the animation and the physics all run on the sound's sample
+// clock. The editor dt stays the steady clock's. The step is bounded as a
+// steady one is; what the bound holds back after a hitch is carried into the
+// next steps (each bounded again) until the game clock has caught up with
+// the sound, and dropped on a frame no master plays in or on a set time. The
+// first frame a master plays in is still measured on the steady clock (the
+// audio clock is read at every tick, so the step after it has two readings
+// to take apart), and the fixed-step mode never follows: there the audio
+// follows the game clock.
 DECLARE_MODULE(EngineTime) {
   public:
+    // What the Audio module answers at a tick: the audio clock there, and
+    // whether a master voice plays.
+    struct AudioClockSample {
+        double audio_time = 0.0;
+        bool master_playing = false;
+    };
+    using AudioClockHook = std::optional<AudioClockSample> (*)(void *context,
+                                                               std::chrono::steady_clock::time_point tick);
     enum class Mode {
         realtime,
         fixed_step,
@@ -71,6 +93,15 @@ DECLARE_MODULE(EngineTime) {
     bool session_started = false;
     double time_before_session = 0.0;
     Clock::time_point last_tick;
+    // AT-1 decision 5: the clock a realtime step may follow, and what it said
+    // at the last tick.
+    void *audio_clock_context = nullptr;
+    AudioClockHook audio_clock_hook = nullptr;
+    std::optional<double> last_audio_time;
+    bool following_audio_clock = false;
+    // What the bound held back of the audio clock's moves, owed to the next
+    // steps while the master plays.
+    double audio_carry = 0.0;
 
   public:
     EngineTime();
@@ -81,6 +112,14 @@ DECLARE_MODULE(EngineTime) {
     // One drawn frame: the evaluation index goes up by one; the game frame and
     // the game clock move when this frame is a game step.
     void advance();
+    // The same frame at a tick the caller read from the steady clock (a test
+    // hands its own). advance() is advanceAt(steady_clock::now()).
+    void advanceAt(Clock::time_point tick);
+    // AT-1 decision 5. One clock at a time; false when another is installed.
+    bool installAudioClock(void *context, AudioClockHook hook) noexcept;
+    void removeAudioClock(void *context) noexcept;
+    // Whether the last step's dt was the audio clock's.
+    bool followingAudioClock() const noexcept { return following_audio_clock; }
     void setTime(double t);
     double now() const;
     // The game clock's delta for this frame: 0 on a frame that is not a game

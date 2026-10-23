@@ -1,4 +1,3 @@
-#include "../src/core/renderingpass/frameexecutionadapter.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/vulkannativescopeexecutor.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
@@ -112,9 +111,6 @@ RenderPipelineProgramPreparation markerProgram(
         .rendering_pass =
             std::move(rendering_pass),
         .frame_plan = frame_plan,
-        .execution_plan =
-            makeCompatibilityFrameExecutionPlan(
-                frame_plan),
         .render_pipeline = std::move(pipeline),
         .target_plan = std::move(target),
         .native_scopes =

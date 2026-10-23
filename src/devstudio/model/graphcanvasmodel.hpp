@@ -692,8 +692,6 @@ struct GraphCanvasPlanPass {
     // predates GL-2a).
     std::optional<GraphCanvasPlanOrigin> origin;
     std::vector<GraphCanvasPlanReplace> replaces;
-    // The endpoint the execution plan selected for it, when it says.
-    std::string backend;
     // GL-5e, decision 6: the document that brought it (get_frame_plan's
     // provider_ref: a feature's or the preset's reference), when the plan says.
     std::string provider_reference;
@@ -1377,16 +1375,11 @@ class GraphCanvasModel {
     std::vector<PlanScope> plan_scopes_;
     std::vector<PlanDecision> plan_decisions_;
     std::vector<PlanCandidate> plan_candidates_;
-    // execution_plan.nodes[].resource_uses: node -> resource -> access.
-    std::map<std::string, std::map<std::string, std::string, std::less<>>, std::less<>>
-        plan_access_;
     std::vector<GraphCanvasPlanDiagnostic> plan_diagnostics_;
     std::vector<GraphCanvasDeactivatedNode> deactivated_nodes_;
     // GL-3a: the plan's fold_decisions (absent while no group is verified).
     std::vector<GraphCanvasFoldDecision> plan_fold_decisions_;
     void readPlanLayers(const nlohmann::json &plan);
-    // The endpoint most of the plan's passes run on.
-    [[nodiscard]] std::string graphBackend() const;
     // get_graph_templates, asked once a plan names a feature: feature
     // reference -> the template's document (nodes, definitions, outputs).
     bool templates_requested_ = false;
@@ -2684,8 +2677,8 @@ class GraphCanvasModel {
     // Decision 2: bands and the Layers section are shown on the real root,
     // while the domain filter shows one domain only (3.3).
     [[nodiscard]] bool layersShown() const;
-    // The band under a root node: `×3 copies · 2 barriers · aliased`, the
-    // backend when it is not the graph's, `deactivated: <reason> (<feature>)`.
+    // The band under a root node: `×3 copies · 2 barriers · aliased`,
+    // `deactivated: <reason> (<feature>)`.
     // Only what differs from the default; empty for nothing to say.
     [[nodiscard]] std::string layerBand(std::string_view canvas_node) const;
     // A root graph node the composition switched off, or null.

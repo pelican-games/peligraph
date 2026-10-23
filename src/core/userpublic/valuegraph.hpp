@@ -63,7 +63,18 @@ struct AudioVoiceDirective {
     // Whether the position (or the clock) moved since the last frame. A voice
     // whose position stands still is held.
     bool advancing = true;
+    // AT-1 decision 4: the voice the game clock follows. Not sought for a gap
+    // between its cursor and the position, only when the position jumps.
+    bool master = false;
 };
+// AT-1 decision 4: more master voices than one could play at once:
+// {nodes: [their expanded ids]}.
+inline constexpr std::string_view audioMasterConflictCode = "audio.master_conflict@1";
+// AT-1: a master that would not run on its own clock -- the integrated form
+// on its own loop point (wrap once / repeat, a literal map, speed > 0, no
+// position): {node, reason: "position" | "driven_mapping" | "ping_pong" |
+// "negative_speed"}.
+inline constexpr std::string_view audioMasterRequiresNativeCode = "audio.master_requires_native@1";
 using AudioVoiceWriter = std::function<bool(std::string_view node, const AudioVoiceDirective &)>;
 // GP-3: the pelican.ui sinks. ui.value writes a gauge's value, ui.visible a
 // node's visibility (non-zero shows it). The target is the node's path in the
@@ -170,6 +181,8 @@ class PELICAN_API Graph {
     const GraphInstanceOwners &instanceOwners() const noexcept { return instance_owners_; }
     const ScopeDependencies &scopeDependencies() const noexcept { return node_scopes_; }
     const std::map<std::string, std::string> &audioSources() const noexcept { return audio_sources_; }
+    // AT-1 decision 4: the audio.playback nodes whose voice is a master.
+    bool audioMaster(std::string_view node) const noexcept { return audio_masters_.contains(node); }
     struct MorphWeightSource {
         GraphInstanceOwner owner;
         std::uint32_t node;
@@ -284,6 +297,7 @@ class PELICAN_API Graph {
     std::set<std::string, std::less<>> shadowed_parameters_;
     enum class Op { input, parameter, constant, add, multiply, curve, playback, trigger_clock, event_input, event_clock, audio_playback, sample_table };
     std::map<std::string, std::string> audio_sources_;
+    std::set<std::string, std::less<>> audio_masters_;
     std::map<std::string, MorphWeightSource> morph_sources_;
     std::vector<std::size_t> audio_nodes_;
     std::map<std::string, std::vector<std::size_t>, std::less<>> event_consumers_;
@@ -314,6 +328,7 @@ class PELICAN_API Graph {
         bool audio_position{};
         bool audio_end_from_source = true;
         bool audio_native{};
+        bool audio_master{};
     };
     std::string document_;
     std::vector<Node> nodes_;

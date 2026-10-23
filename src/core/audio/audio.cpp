@@ -1,6 +1,7 @@
 #include "../userpublic/userdataerror.hpp"
 #include "audio.hpp"
 
+#include "../appflow/enginetime.hpp"
 #include "../launchconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
@@ -20,8 +21,12 @@
 // The formats, the WAV rules and the decoders (AB-1 moved them out so the CLI
 // decodes an asset the same way).
 #include "sounddecode.hpp"
+// AT-1: the device clock's ring and line.
+#include "audioclock.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cctype>
 #include <cstddef>
@@ -63,6 +68,37 @@ std::uint64_t secondsToFrames(double seconds, std::uint32_t sample_rate, std::ui
     if (!std::isfinite(seconds) || seconds <= 0.0) return 0;
     const auto frames = std::llround(seconds * static_cast<double>(sample_rate));
     return (std::min)(static_cast<std::uint64_t>((std::max)(frames, 0LL)), length);
+}
+
+using SteadyClock = std::chrono::steady_clock;
+
+// The steady clock in the seconds the device clock fits its line in.
+double steadySeconds(std::int64_t steady_ns) {
+    return static_cast<double>(steady_ns) * 1e-9;
+}
+double steadySeconds(SteadyClock::time_point tick) {
+    return steadySeconds(std::chrono::duration_cast<std::chrono::nanoseconds>(tick.time_since_epoch()).count());
+}
+
+// AT-1 decision 2. The game clock's own rounding -- a sum of 1/60 steps
+// lands a hair under 2.0 after 120 of them -- puts now * rate a hair under
+// the frame it means; within a thousandth of a frame it counts as reached.
+constexpr double offlineFrameEpsilon = 1e-3;
+
+// AT-1 decision 5: EngineTime::advance asks the Audio module at its tick.
+std::optional<EngineTime::AudioClockSample> followedAudioClock(void *context, SteadyClock::time_point tick) {
+    const auto followed = static_cast<Audio *>(context)->followedClockAt(tick);
+    if (!followed) return std::nullopt;
+    return EngineTime::AudioClockSample{followed->audio_time, followed->master_playing};
+}
+
+// `value` taken modulo `period` into (-period / 2, period / 2].
+double wrappedOffset(double value, double period) {
+    if (!(period > 0.0)) return value;
+    auto result = std::fmod(value, period);
+    if (result > period / 2.0) result -= period;
+    else if (result <= -period / 2.0) result += period;
+    return result;
 }
 
 } // namespace
@@ -129,6 +165,21 @@ class Audio::Backend {
     virtual void setAllPaused(bool paused) { (void)paused; }
     // PM-2: every voice stopped and let go at once.
     virtual void stopAll() = 0;
+    // AT-1 decision 1: the device's own clock at `tick`, and what its output
+    // latency estimate was read from. A backend without a device has neither.
+    virtual std::optional<Audio::ClockReading> clockAt(SteadyClock::time_point tick) {
+        (void)tick;
+        return std::nullopt;
+    }
+    virtual std::optional<Audio::DeviceLatency> latency() const { return std::nullopt; }
+    // The source frames a voice read ahead of what it mixed (the rest of the
+    // block it last read): its cursor stands that far past what was mixed.
+    // Read only where the game thread mixes (the device-less engine); 0
+    // elsewhere.
+    virtual std::uint64_t readAheadFrames(std::uint64_t voice_id) const {
+        (void)voice_id;
+        return 0;
+    }
 };
 
 class NullAudioBackend final : public Audio::Backend {
@@ -233,14 +284,70 @@ class MiniaudioBackend final : public Audio::Backend {
     };
 
     AudioBackendKind kind_;
+    // AT-1 decision 1. Written by the audio thread from onProcess, so both
+    // are in place before the engine (and its device) starts below.
+    AudioClockRing clock_ring_;
+    std::atomic<std::uint64_t> processed_frames_{0};
     ma_engine engine{};
     bool engine_initialized = false;
     std::uint64_t next_voice = 1;
     std::unordered_map<std::uint64_t, std::unique_ptr<MiniaudioVoice>> voices;
     bool all_paused_ = false;
+    // The device's clock and its latency estimate; none offline.
+    std::optional<Audio::DeviceLatency> latency_;
+    std::optional<AudioDeviceClock> clock_;
 
     MiniaudioVoice &voice(std::uint64_t voice_id) const {
         return *voices.at(voice_id);
+    }
+
+    // AT-1 decision 1, on the audio thread for every chunk the device takes:
+    // the engine mixes it, as miniaudio's own device callback does
+    // (ma_engine_data_callback_internal, which adds nothing on a desktop),
+    // then the chunk is stamped -- the steady clock and the device's frames
+    // so far -- into the ring. The device's count, not the engine's: with no
+    // sound attached the engine reads no frames and its onProcess reports
+    // none, yet the device plays the chunk, silence, all the same. The
+    // engine carries this backend in pProcessUserData (its onProcess is not
+    // set). No lock, no allocation.
+    static void mixDeviceChunk(ma_device *device, void *frames_out, const void *frames_in, ma_uint32 frame_count) {
+        (void)frames_in;
+        auto *engine = static_cast<ma_engine *>(device->pUserData);
+        ma_engine_read_pcm_frames(engine, frames_out, frame_count, nullptr);
+        auto &self = *static_cast<MiniaudioBackend *>(engine->pProcessUserData);
+        const auto frames = self.processed_frames_.load(std::memory_order_relaxed) + frame_count;
+        self.processed_frames_.store(frames, std::memory_order_relaxed);
+        self.clock_ring_.push(AudioClockStamp{
+            std::chrono::duration_cast<std::chrono::nanoseconds>(SteadyClock::now().time_since_epoch()).count(),
+            frames});
+    }
+
+    // AT-1 decision 1: what the device holds before a frame is heard,
+    // estimated as its buffer -- the periods it was opened with, or what
+    // WASAPI's low-latency shared mode reports as its buffer.
+    static Audio::DeviceLatency estimateLatency(const ma_device &device) {
+        Audio::DeviceLatency latency;
+        latency.period_frames = device.playback.internalPeriodSizeInFrames;
+        latency.periods = device.playback.internalPeriods;
+        latency.device_rate = device.playback.internalSampleRate != 0 ? device.playback.internalSampleRate
+                                                                      : device.sampleRate;
+        auto frames = static_cast<double>(latency.period_frames) * latency.periods;
+#ifdef MA_SUPPORT_WASAPI
+        if (device.pContext != nullptr && device.pContext->backend == ma_backend_wasapi) {
+            latency.buffer_frames = device.wasapi.actualBufferSizeInFramesPlayback;
+            if (latency.buffer_frames != 0) {
+                frames = latency.buffer_frames;
+                latency.from_buffer = true;
+            }
+        }
+#endif
+        latency.seconds = latency.device_rate != 0 ? frames / latency.device_rate : 0.0;
+        return latency;
+    }
+
+    void drainClock() {
+        if (!clock_) return;
+        clock_ring_.drain([&](const AudioClockStamp &stamp) { clock_->add(steadySeconds(stamp.steady_ns), stamp.frames); });
     }
 
   public:
@@ -250,12 +357,20 @@ class MiniaudioBackend final : public Audio::Backend {
             config.noDevice = MA_TRUE;
             config.channels = offlineChannels;
             config.sampleRate = offlineSampleRate;
+        } else {
+            config.dataCallback = &MiniaudioBackend::mixDeviceChunk;
+            config.pProcessUserData = this;
         }
         const auto result = ma_engine_init(&config, &engine);
         if (result != MA_SUCCESS) {
             throw std::runtime_error(maErrorMessage("ma_engine_init", result));
         }
         engine_initialized = true;
+        if (kind != AudioBackendKind::offline) {
+            if (const auto *device = ma_engine_get_device(&engine)) latency_ = estimateLatency(*device);
+            const double rate = ma_engine_get_sample_rate(&engine);
+            clock_.emplace(rate, latency_ ? latency_->seconds * rate : 0.0);
+        }
     }
 
     ~MiniaudioBackend() override {
@@ -434,10 +549,39 @@ class MiniaudioBackend final : public Audio::Backend {
         // Offline, the mix itself is the clock: mix() answers silence and
         // reads nothing while held. On a device the device is stopped.
         if (kind_ == AudioBackendKind::offline) return;
+        // AT-1: the clock stands while the device does, and the stamps from
+        // before the stop stay on the line they belong to.
+        drainClock();
+        if (paused && clock_) clock_->hold(true);
         const auto result = paused ? ma_engine_stop(&engine) : ma_engine_start(&engine);
         if (result != MA_SUCCESS)
             LOG_WARNING(logger, "audio: {}",
                         maErrorMessage(paused ? "ma_engine_stop" : "ma_engine_start", result));
+        if (!paused && clock_) clock_->hold(false);
+    }
+
+    std::optional<Audio::ClockReading> clockAt(SteadyClock::time_point tick) override {
+        if (!clock_) return std::nullopt;
+        drainClock();
+        const auto reading = clock_->at(steadySeconds(tick));
+        Audio::ClockReading result;
+        result.source = Audio::ClockSource::device;
+        result.sample_rate = ma_engine_get_sample_rate(&engine);
+        result.audio_time = reading.audio_time;
+        result.played_frames = static_cast<std::uint64_t>(std::floor(reading.audio_time * result.sample_rate));
+        result.output_latency_seconds = latency_ ? latency_->seconds : 0.0;
+        result.latency_estimated = true;
+        result.drift_seconds = reading.drift_seconds;
+        return result;
+    }
+
+    std::optional<Audio::DeviceLatency> latency() const override { return latency_; }
+
+    // A sound reads its source a block at a time (512 frames where the
+    // engine sets no processing size) and mixes from what it read.
+    std::uint64_t readAheadFrames(std::uint64_t voice_id) const override {
+        if (kind_ != AudioBackendKind::offline) return 0;
+        return voice(voice_id).sound.processingCacheFramesRemaining;
     }
 
     std::vector<float> mix(std::uint64_t frames) override {
@@ -476,9 +620,15 @@ Audio::Audio() : streaming_threshold_seconds{defaultStreamingThresholdSeconds} {
         fallback_reason = std::string{audioBackendKindName(preferred)} + ": " + error.what();
         backend = std::make_unique<NullAudioBackend>();
     }
+    // AT-1 decision 5: a realtime step follows this clock while a master
+    // voice plays. Only a device has a clock of its own to follow.
+    if (backend->kind() == AudioBackendKind::device)
+        (void)GET_MODULE(EngineTime).installAudioClock(this, &followedAudioClock);
 }
 
-Audio::~Audio() = default;
+Audio::~Audio() {
+    if (auto *time = FastModuleContainer::tryGet<EngineTime>()) time->removeAudioClock(this);
+}
 
 float Audio::effectiveVolume(AudioBus bus) const {
     const auto master = bus_volumes[busIndex(AudioBus::Master)];
@@ -795,8 +945,10 @@ SoundHandle Audio::playVoice(const PreparedSound &sound, const VoiceStart &start
     voice.graph = true;
     voice.length_frames = length;
     voice.loop_frames = setup.loop ? setup.loop_end - setup.loop_begin : 0;
+    voice.loop_begin_frames = setup.loop ? setup.loop_begin : 0;
     voice.source_rate = rate;
     voice.held = start.paused;
+    voice.master = start.master;
     if (decoded->streamed()) ++streamed_voice_count;
     return handle;
 }
@@ -831,7 +983,10 @@ void Audio::driveVoice(SoundHandle handle, const VoiceDrive &drive) {
             else if (difference < -period / 2.0) difference += period;
             const bool ended = backend->isFinished(id);
             const bool resume = ended && drive.restart_ended;
-            const bool apart = std::abs(difference) > drive.tolerance * voice.source_rate;
+            // AT-1 decision 4: a master voice playing on from the frame
+            // before is the clock, not a follower: no gap brings it back.
+            const bool apart = (drive.correct_drift || voice.held) &&
+                               std::abs(difference) > drive.tolerance * voice.source_rate;
             if (resume || apart) {
                 backend->seek(id, (std::min)(static_cast<std::uint64_t>(target), voice.length_frames - 1));
                 ++voice.seeks;
@@ -879,7 +1034,113 @@ void Audio::stopAll() {
 }
 
 std::vector<float> Audio::mixOffline(std::uint64_t frames) {
-    return backend->mix(frames);
+    auto samples = backend->mix(frames);
+    // AT-1 decision 1: the device-less engine's clock is what it mixed.
+    // Held, it mixed silence and moved nothing, so its clock stood too.
+    if (!all_paused) offline_mixed_frames += frames;
+    return samples;
+}
+
+void Audio::followGameClock(const FrameClock &frame) {
+    // A jump of the game clock (set_time, a play session starting at 0),
+    // the first step, or the first after a held stretch: the mix carries on
+    // from what it mixed, and counts this step's frames from the time the
+    // step began.
+    if (!offline_base || offline_base->time_set_revision != frame.time_set_revision ||
+        frame.now < offline_base->time)
+        offline_base = OfflineBase{frame.time_set_revision, frame.now - frame.dt, offline_mixed_frames};
+    const auto rate = static_cast<double>(offlineSampleRate);
+    const auto elapsed = std::floor((frame.now - offline_base->time) * rate + offlineFrameEpsilon);
+    if (!(elapsed > 0.0)) return;
+    const auto target = offline_base->frames + static_cast<std::uint64_t>(elapsed);
+    // The PCM goes nowhere: writing it out is AT-5's.
+    if (target > offline_mixed_frames) (void)mixOffline(target - offline_mixed_frames);
+}
+
+void Audio::beginFrame(const FrameClock &frame) {
+    switch (backend->kind()) {
+    case AudioBackendKind::offline:
+        // AT-1 decision 2. Held (PM-1a), nothing is mixed and no voice moves,
+        // as before; the steps the held stretch took are not mixed later.
+        if (all_paused) offline_base.reset();
+        else if (frame.game_step) followGameClock(frame);
+        break;
+    case AudioBackendKind::device:
+        if (!device_read_this_frame)
+            if (auto reading = backend->clockAt(SteadyClock::now())) device_reading = *reading;
+        break;
+    case AudioBackendKind::null:
+        break;
+    }
+    device_read_this_frame = false;
+}
+
+Audio::ClockReading Audio::clock(double game_time) const {
+    ClockReading reading;
+    switch (backend->kind()) {
+    case AudioBackendKind::device:
+        if (device_reading) return *device_reading;
+        reading.source = ClockSource::device;
+        reading.sample_rate = backend->sampleRate();
+        if (const auto latency = backend->latency()) reading.output_latency_seconds = latency->seconds;
+        reading.latency_estimated = true;
+        return reading;
+    case AudioBackendKind::offline:
+        reading.source = ClockSource::offline;
+        reading.sample_rate = offlineSampleRate;
+        reading.audio_time = static_cast<double>(offline_mixed_frames) / offlineSampleRate;
+        reading.played_frames = offline_mixed_frames;
+        return reading;
+    case AudioBackendKind::null:
+        break;
+    }
+    // No clock of its own: the game clock is the perfect device.
+    reading.source = ClockSource::game_clock;
+    reading.audio_time = game_time;
+    return reading;
+}
+
+std::optional<Audio::FollowedClock> Audio::followedClockAt(SteadyClock::time_point tick) {
+    auto reading = backend->clockAt(tick);
+    if (!reading) return std::nullopt;
+    device_reading = *reading;
+    device_read_this_frame = true;
+    return FollowedClock{reading->audio_time, masterPlaying()};
+}
+
+bool Audio::masterPlaying() const {
+    if (all_paused) return false;
+    for (const auto &[handle, voice] : voices) {
+        (void)handle;
+        if (voice.master && voice.backend_id != 0 && !voice.held && backend->isPlaying(voice.backend_id)) return true;
+    }
+    return false;
+}
+
+std::optional<Audio::HeardPosition> Audio::heardPosition(SoundHandle handle, double position_seconds) const {
+    const auto found = voices.find(handle);
+    if (found == voices.end() || found->second.backend_id == 0 || found->second.source_rate == 0) return std::nullopt;
+    const auto &voice = found->second;
+    const auto cursor = backend->cursor(voice.backend_id);
+    if (!cursor) return std::nullopt;
+    const auto source_rate = static_cast<double>(voice.source_rate);
+    // What the voice read ahead of its mix is behind the cursor; the cursor
+    // runs at the voice's rate through the source, and what the device still
+    // holds is that many source seconds behind what was mixed.
+    const auto speed = static_cast<double>(voice.pitch) * voice.rate;
+    const auto mixed = static_cast<double>(*cursor) - static_cast<double>(backend->readAheadFrames(voice.backend_id));
+    auto heard = mixed / source_rate - clock(0.0).output_latency_seconds * speed;
+    if (voice.loop_frames != 0) {
+        const auto begin = static_cast<double>(voice.loop_begin_frames) / source_rate;
+        const auto loop = static_cast<double>(voice.loop_frames) / source_rate;
+        if (heard < begin) heard += loop * std::ceil((begin - heard) / loop);
+    }
+    const auto period = static_cast<double>(voice.loop_frames != 0 ? voice.loop_frames : voice.length_frames) / source_rate;
+    return HeardPosition{heard, wrappedOffset(position_seconds - heard, period)};
+}
+
+std::optional<Audio::DeviceLatency> Audio::deviceLatency() const {
+    return backend->latency();
 }
 
 std::uint32_t Audio::outputSampleRate() const noexcept {
