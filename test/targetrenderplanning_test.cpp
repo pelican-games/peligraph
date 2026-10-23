@@ -1,7 +1,9 @@
 #include "../src/project/targetrenderplanning.hpp"
+#include "../src/project/targetrendermemory.hpp"
 #include "../src/project/vulkancompletephysicalplan.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <functional>
@@ -3776,6 +3778,160 @@ TEST_CASE("explicit sample target selects its attachment component and blocks in
     REQUIRE(physicalResource(plan, "scene_color")
                 .rasterization_samples == 1);
     REQUIRE_FALSE(oneScopeContains(plan, "GBuffer", "Lighting"));
+}
+
+TEST_CASE("RC-1 image bytes count every mip, layer and history surface and the multisampled image",
+          "[target-render-planning][rc1][memory]") {
+    // The plan's spelling of a format, not the authored one.
+    CHECK(imageFormatTexelBytes("R8Unorm") == 1);
+    CHECK(imageFormatTexelBytes("R16Sfloat") == 2);
+    CHECK(imageFormatTexelBytes("B8G8R8A8Srgb") == 4);
+    CHECK(imageFormatTexelBytes("D32Sfloat") == 4);
+    CHECK(imageFormatTexelBytes("R16G16B16A16Sfloat") == 8);
+    CHECK(imageFormatTexelBytes("D32SfloatS8Uint") == 8);
+    CHECK(imageFormatTexelBytes("R32G32B32A32Sfloat") == 16);
+    CHECK(imageFormatTexelBytes("R16G16B16A16_SFLOAT") == 0);
+    CHECK(imageFormatTexelBytes("Bc7SrgbBlock") == 0);
+
+    CHECK(imageResourceBytes({.format = "R8G8B8A8Unorm",
+                              .extent = {1920, 1080}}) == 8'294'400);
+    // 8x4, 4x2, 2x1, 1x1: 43 texels.
+    CHECK(imageResourceBytes({.format = "R8Unorm",
+                              .extent = {8, 4},
+                              .mip_levels = 4}) == 43);
+    CHECK(imageResourceBytes({.format = "R8Unorm",
+                              .extent = {8, 4},
+                              .mip_levels = 4,
+                              .array_layers = 6}) == 6 * 43);
+    CHECK(imageResourceBytes({.format = "R16G16B16A16Sfloat",
+                              .extent = {4, 4},
+                              .surfaces = 2}) == 2 * 8 * 16);
+    // The sampled image with its two mips (8x4 + 4x2 texels) and the 4x
+    // image the passes render into (8x4 texels, four samples each), for
+    // each of the two history surfaces.
+    CHECK(imageResourceBytes({.format = "R8G8B8A8Unorm",
+                              .extent = {8, 4},
+                              .mip_levels = 2,
+                              .samples = 4,
+                              .surfaces = 2}) ==
+          2 * (4 * (32 + 8) + 4 * 32 * 4));
+    CHECK(imageResourceBytes({.format = "Bc7SrgbBlock",
+                              .extent = {8, 8}}) == 0);
+    CHECK(imageResourceBytes({.format = "R8Unorm",
+                              .extent = {0, 8}}) == 0);
+
+    VulkanPhysicalResourcePlan bloom{
+        .logical_resource = "bloom",
+        .format = "B8G8R8A8Srgb",
+        .mip_levels = {ImageMipLevelMode::full_chain, 1},
+    };
+    // A full chain at 16x8: 128 + 32 + 8 + 2 + 1 texels.
+    CHECK(vulkanPhysicalResourceBytes(bloom, {{16, 8}, 1}) == 4 * 171);
+    bloom.array_layers = 2;
+    bloom.rasterization_samples = 2;
+    CHECK(vulkanPhysicalResourceBytes(bloom, {{16, 8}, 1}) ==
+          2 * 4 * 171 + 2 * 2 * 4 * 128);
+    VulkanPhysicalResourcePlan swapchain{
+        .logical_resource = "swapchain",
+        .format = "B8G8R8A8Srgb",
+        .representation = VulkanResourceRepresentation::external,
+    };
+    CHECK_FALSE(vulkanPhysicalResourceIsPlannedImage(swapchain));
+    CHECK(vulkanPhysicalResourceBytes(swapchain, {{16, 8}, 1}) == 0);
+}
+
+TEST_CASE("RC-1 memory summary counts an alias group once and finds the node most bytes are alive at",
+          "[target-render-planning][rc1][memory]") {
+    const auto node = [](std::string name) {
+        return TargetLoweringNode{
+            .logical = LogicalGraphNode{.name = std::move(name)}};
+    };
+    const auto image = [](std::string name, std::string format,
+                          std::size_t first, std::size_t last) {
+        return VulkanPhysicalResourcePlan{
+            .logical_resource = std::move(name),
+            .format = std::move(format),
+            .lifetime = {true, first, last},
+        };
+    };
+    VulkanTargetPlan plan;
+    plan.lowering_graph.nodes = {node("geometry"), node("blur"),
+                                 node("composite"), node("present")};
+    plan.resources = {
+        image("depth", "D32Sfloat", 0, 3),
+        image("first", "R8G8B8A8Unorm", 0, 1),
+        image("second", "R8G8B8A8Unorm", 2, 3),
+        image("small", "R8Unorm", 1, 2),
+        image("swapchain", "B8G8R8A8Srgb", 3, 3),
+        image("unknown", "R8G8B8A8Unorm", 0, 3),
+    };
+    plan.resources[4].representation =
+        VulkanResourceRepresentation::external;
+    plan.alias_groups = {{"alias:0", {"first", "second"}}};
+
+    std::vector<std::string> asked;
+    const auto summary = summarizeVulkanTargetPlanMemory(
+        plan,
+        [&](const VulkanPhysicalResourcePlan &resource)
+            -> std::optional<std::uint64_t> {
+            asked.push_back(resource.logical_resource);
+            // The caller cannot say for this one.
+            if (resource.logical_resource == "unknown") return std::nullopt;
+            return vulkanPhysicalResourceBytes(resource, {{10, 10}, 1});
+        });
+    // Never asked for the swapchain: the plan does not allocate it.
+    CHECK(asked == std::vector<std::string>{"depth", "first", "second",
+                                            "small", "unknown"});
+    REQUIRE(summary.resource_bytes.size() == 6);
+    CHECK(summary.resource_bytes[0] == 400);
+    CHECK(summary.resource_bytes[1] == 400);
+    CHECK(summary.resource_bytes[2] == 400);
+    CHECK(summary.resource_bytes[3] == 100);
+    CHECK_FALSE(summary.resource_bytes[4].has_value());
+    CHECK_FALSE(summary.resource_bytes[5].has_value());
+    // depth + one allocation for first/second + small.
+    CHECK(summary.total_bytes == 400 + 400 + 100);
+    // geometry 800, blur 900, composite 900, present 800: the first 900.
+    CHECK(summary.peak_live_bytes == 900);
+    CHECK(summary.peak_order == 1);
+    CHECK(summary.peak_node == "blur");
+
+    nlohmann::json frame_plan{
+        {"physical_target_plan",
+         {{"resources",
+           nlohmann::json::array({
+               {{"logical_resource", "depth"}},
+               {{"logical_resource", "first"}},
+               {{"logical_resource", "second"}},
+               {{"logical_resource", "small"}},
+               {{"logical_resource", "swapchain"}},
+               {{"logical_resource", "unknown"}},
+           })}}},
+    };
+    appendVulkanTargetPlanMemoryJson(frame_plan, plan, summary);
+    CHECK(frame_plan.at("memory_summary") ==
+          nlohmann::json{{"total_bytes", 900},
+                         {"peak_live_bytes", 900},
+                         {"peak_node", "blur"}});
+    const auto &resources =
+        frame_plan.at("physical_target_plan").at("resources");
+    CHECK(resources[0].at("bytes") == 400);
+    CHECK(resources[2].at("bytes") == 400);
+    CHECK(resources[3].at("bytes") == 100);
+    CHECK_FALSE(resources[4].contains("bytes"));
+    CHECK_FALSE(resources[5].contains("bytes"));
+
+    // Nothing counted: no peak, and no node named.
+    const auto empty = summarizeVulkanTargetPlanMemory(
+        plan, [](const VulkanPhysicalResourcePlan &) {
+            return std::optional<std::uint64_t>{};
+        });
+    CHECK(empty.total_bytes == 0);
+    CHECK(empty.peak_live_bytes == 0);
+    CHECK_FALSE(empty.peak_order.has_value());
+    nlohmann::json empty_plan = nlohmann::json::object();
+    appendVulkanTargetPlanMemoryJson(empty_plan, plan, empty);
+    CHECK(empty_plan.at("memory_summary").at("peak_node").is_null());
 }
 
 } // namespace Pelican

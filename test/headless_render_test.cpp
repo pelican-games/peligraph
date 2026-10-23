@@ -74,6 +74,7 @@
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/util.hpp"
 #include "../src/core/watch/reloadservice.hpp"
+#include "../src/project/targetrendermemory.hpp"
 #include "../src/project/vulkanviewplanning.hpp"
 #include "vulkan_test_support.hpp"
 
@@ -7243,6 +7244,64 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
                 return group.selected_samples == lit_metadata.samples &&
                        group.selected_samples > 1;
             }));
+        // RC-1: get_frame_plan says what each physical image takes and the
+        // memory summary, and the arena declares the same bytes for the
+        // target registration made. The multisampled lit_color is its
+        // resolved image and the samples-times image it renders into.
+        const auto lit_bytes = renderTargetBytes(lit_metadata);
+        REQUIRE(lit_bytes >=
+                std::uint64_t{imageFormatTexelBytes(
+                    vk::to_string(lit_metadata.format))} *
+                    lit_metadata.extent.width *
+                    lit_metadata.extent.height *
+                    (1u + lit_metadata.samples));
+        REQUIRE(frame_plan_json.contains("memory_summary"));
+        const auto &memory_summary =
+            frame_plan_json.at("memory_summary");
+        REQUIRE(memory_summary.at("total_bytes").get<std::uint64_t>() >=
+                lit_bytes);
+        REQUIRE(memory_summary.at("peak_live_bytes")
+                    .get<std::uint64_t>() >= lit_bytes);
+        REQUIRE(memory_summary.at("peak_node").is_string());
+        bool lit_published = false;
+        for (const auto &resource :
+             frame_plan_json.at("physical_target_plan")
+                 .at("resources")) {
+            const auto representation =
+                resource.at("representation").get<std::string>();
+            if (representation == "external" ||
+                representation == "materialized_buffer") {
+                REQUIRE_FALSE(resource.contains("bytes"));
+                continue;
+            }
+            REQUIRE(resource.at("bytes").get<std::uint64_t>() > 0);
+            if (resource.at("logical_resource") == "lit_color") {
+                REQUIRE(resource.at("bytes").get<std::uint64_t>() ==
+                        lit_bytes);
+                lit_published = true;
+            }
+        }
+        REQUIRE(lit_published);
+        bool lit_declared = false;
+        for (const auto &scope :
+             frame_plan_json.at("gpu_resource_arena").at("scopes")) {
+            for (const auto &resource : scope.at("resources")) {
+                const auto kind = resource.at("kind").get<std::string>();
+                const auto declared =
+                    resource.at("declared_bytes").get<std::uint64_t>();
+                if (kind == "render_target") {
+                    REQUIRE(declared > 0);
+                    if (resource.at("name") == "lit_color") {
+                        REQUIRE(declared == lit_bytes);
+                        lit_declared = true;
+                    }
+                } else if (kind == "shader_bundle" ||
+                           kind == "pipeline") {
+                    REQUIRE(declared == 0);
+                }
+            }
+        }
+        REQUIRE(lit_declared);
         auto &standard = GET_MODULE(StandardMaterialResource);
         const auto surface_reference =
             std::string{"engine://surfaces/openpbr/opaque_single.surface"};

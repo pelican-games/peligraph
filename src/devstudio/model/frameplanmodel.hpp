@@ -479,6 +479,11 @@ struct FramePlanResource {
     std::vector<std::string> from_nodes;
     // IA-1s, decision 3: the asset it starts from; nullopt for none.
     std::optional<FramePlanInitialAsset> initial_asset;
+    // RC-1: physical_target_plan.resources[].bytes, what its images occupy
+    // (every surface, mip and layer, and the multisampled image it renders
+    // into). nullopt for an external image or a buffer, and in a plan from
+    // before RC-1.
+    std::optional<std::uint64_t> bytes;
 
     bool operator==(const FramePlanResource &) const = default;
 };
@@ -788,6 +793,18 @@ struct FramePlanRayQueryStructures {
     bool operator==(const FramePlanRayQueryStructures &) const = default;
 };
 
+// RC-1: get_frame_plan's memory_summary -- the physical plan's images
+// together (an alias group, one allocation, once) and the most of them
+// alive at one node.
+struct FramePlanMemorySummary {
+    std::uint64_t total_bytes = 0;
+    std::uint64_t peak_live_bytes = 0;
+    // Empty when no image is alive at any node (peak_node null).
+    std::string peak_node;
+
+    bool operator==(const FramePlanMemorySummary &) const = default;
+};
+
 struct FramePlanModel {
     std::string profile;
     std::string graph;
@@ -810,6 +827,8 @@ struct FramePlanModel {
     std::optional<FramePlanGpuResourceArena> gpu_resource_arena;
     // UX-15b, decision 4: absent from a plan that predates the member.
     std::optional<FramePlanRayQueryStructures> ray_query;
+    // RC-1: absent from a plan that predates it or has no physical plan.
+    std::optional<FramePlanMemorySummary> memory_summary;
 
     bool operator==(const FramePlanModel &) const = default;
 };

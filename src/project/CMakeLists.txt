@@ -60,6 +60,7 @@ add_library(pelican_project
     surfaceformat.cpp
     targetplanning.cpp
     targetrenderplanning.cpp
+    targetrendermemory.cpp
     vulkancompletephysicalplan.cpp
     vulkanphysicalfragment.cpp
     vulkanviewplanning.cpp

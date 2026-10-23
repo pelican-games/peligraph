@@ -8,16 +8,21 @@
 #include "../src/project/renderconfigsection.hpp"
 #include "../src/core/renderingpass/renderingpassconfigjsonparser.hpp"
 #include "../src/core/renderingpass/renderingpassjsonhelpers.hpp"
+#include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
+#include "../src/project/targetrendermemory.hpp"
+#include "../src/core/renderingpass/rendertargetmetadata.hpp"
 #include "../src/core/renderingpass/rendertargetmetadataresolver.hpp"
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
@@ -2664,6 +2669,196 @@ TEST_CASE("PS-1 a once node runs on a new generation, a request, a recreated out
     CHECK(step(2) == Ran{{"h0", "generation"}, {"twiddle", "generation"}, {"apart", "generation"}});
     CHECK(step(2).empty());
     CHECK(last.at("apart").generation == 2);
+}
+
+namespace {
+
+// RC-1: the shipping example's physical plan as the engine makes it for a
+// B8G8R8A8_SRGB output of `width` x `height`, with the definitions it was
+// planned from. The format classes are resolved as the runtime package
+// resolves them (vulkanrendercompilerprogram's normalize_config): a scene
+// target takes the output's colour format (HDR off) and the display target
+// the output's extent; every other target follows its extent_scale.
+struct Rc1ExamplePlan {
+    std::shared_ptr<const VulkanTargetPlan> plan;
+    std::vector<RenderTargetDefinition> targets;
+};
+
+Rc1ExamplePlan rc1ExamplePlan(std::uint32_t width, std::uint32_t height) {
+    auto resolved = resolveRenderPipeline(
+        RenderPipelineRequest{
+            .authored_config = readJson(sourceRoot() / "projects" / "example" /
+                                        "passes" / "main_rendering_config.json"),
+            .source_name = "projects/example/passes/main_rendering_config.json",
+        },
+        // Planning compiles no shader; the engine the example ships for has
+        // the runtime compiler its features ask for.
+        RenderEnvironmentCapabilities{
+            .runtime_shader_compiler_enabled = true,
+            .graph_variant = RenderPipelineGraphVariant::flat,
+        },
+        RenderPipelineResolveDependencies{
+            .load_feature_json = loadEngineJsonForWp352,
+            .load_pipeline_json = loadEngineJsonForWp352,
+            .normalize_config =
+                [width, height](const nlohmann::json &config,
+                                const std::vector<std::string> &features) {
+                    return resolveRenderTargetFormatClassesV2(
+                        config, vk::Format::eB8G8R8A8Srgb,
+                        vk::Extent2D{width, height},
+                        std::find(features.begin(), features.end(), "hdr") !=
+                            features.end());
+                },
+        });
+    const auto compiled = compileRenderPipeline(resolved);
+    const auto graphs =
+        parseFrameGraphDefinitionsFromConfigJson(resolved.normalized_config);
+    REQUIRE(graphs.size() == 1);
+    auto targets =
+        parseRenderTargetDefinitionsFromJson(resolved.normalized_config);
+    const auto compilation = compileRenderingTargetPlans(
+        graphs, targets, compiled.sample_count_policy,
+        vk::Format::eB8G8R8A8Srgb,
+        RenderingTargetPlanDeviceFacts{
+            .multiview = true,
+            .max_multiview_view_count = 8,
+            .query_attachment_samples =
+                [](const RenderTargetDefinition &) {
+                    return std::vector<std::uint32_t>{1};
+                },
+            .query_image_format_capability =
+                [](const RenderTargetDefinition &) {
+                    return RenderingImageFormatCapability{
+                        .image_usage_supported = true,
+                        .supported_samples = {1},
+                        .max_mip_levels = 16,
+                        .max_array_layers = 8,
+                        .transient_attachment_supported = true,
+                        .local_read_attachment_supported = true,
+                    };
+                },
+            .transient_attachments = true,
+            .dynamic_rendering_local_read = true,
+        },
+        std::nullopt, std::nullopt, compiled.target_planning,
+        compiled.vulkan_plan_pins, compiled.vulkan_physical_fragments);
+    REQUIRE(compilation.plans.size() == 1);
+    return {compilation.plans.front(), std::move(targets)};
+}
+
+} // namespace
+
+TEST_CASE("RC-1 every format a render target can be authored with has a texel size",
+          "[frameplanner][rc1][memory]") {
+    for (const auto &[name, format] : imageFormats()) {
+        INFO(name);
+        CHECK(imageFormatTexelBytes(vk::to_string(format)) > 0);
+    }
+    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eR8Unorm)) == 1);
+    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eD24UnormS8Uint)) == 4);
+    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eB10G11R11UfloatPack32)) == 4);
+    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eR16G16B16A16Sfloat)) == 8);
+    CHECK(imageFormatTexelBytes(vk::to_string(vk::Format::eR32G32B32A32Uint)) == 16);
+}
+
+TEST_CASE("RC-1 a registered target declares the bytes of the images registration made",
+          "[frameplanner][rc1][memory]") {
+    // What the GPU arena declares for a render target. A 4x MSAA history
+    // target at 32x32: per surface, the resolved R16G16B16A16 image
+    // (8 x 1024 bytes) and the 4x image it renders into (4 x 8 x 1024).
+    CHECK(renderTargetBytes(RenderTargetMetadata{
+              .name = "lit_color",
+              .format = vk::Format::eR16G16B16A16Sfloat,
+              .extent = {32, 32},
+              .history = true,
+              .samples = 4,
+          }) == 2 * (8 * 1024 + 4 * 8 * 1024));
+    // A cube with its full chain at 16x16: six faces of 256 + 64 + 16 + 4 + 1
+    // texels.
+    CHECK(renderTargetBytes(RenderTargetMetadata{
+              .format = vk::Format::eR8G8B8A8Unorm,
+              .extent = {16, 16},
+              .mip_levels = 5,
+              .array_layers = 6,
+          }) == 4 * 6 * (256 + 64 + 16 + 4 + 1));
+}
+
+TEST_CASE("RC-1 the example's render targets at 1920x1080 take 125,776,320 bytes, "
+          "85,017,600 of them alive at lighting_pass",
+          "[frameplanner][rc1][memory]") {
+    const auto example = rc1ExamplePlan(1920, 1080);
+    const auto &plan = *example.plan;
+    const auto surfaces = [&](std::string_view name) {
+        const auto target = std::find_if(
+            example.targets.begin(), example.targets.end(),
+            [&](const RenderTargetDefinition &definition) {
+                return definition.name == name;
+            });
+        REQUIRE(target != example.targets.end());
+        return target->history ? 2u : 1u;
+    };
+    const auto summary = summarizeVulkanTargetPlanMemory(
+        plan, [&](const VulkanPhysicalResourcePlan &resource)
+                  -> std::optional<std::uint64_t> {
+            REQUIRE(resource.extent.has_value());
+            return vulkanPhysicalResourceBytes(
+                resource,
+                {resolveResourceExtent(*resource.extent, {1920, 1080}),
+                 surfaces(resource.logical_resource)});
+        });
+
+    // Counted by hand: texel bytes x extent, one mip, one layer, one sample,
+    // no history. The bloom chain halves 1920x1080 down to 120x67 (the
+    // extent rule truncates 67.5).
+    constexpr std::uint64_t full = 1920 * 1080;
+    const std::map<std::string, std::uint64_t, std::less<>> expected{
+        {"gbuffer_albedo", 4 * full},
+        {"g_emissive", 4 * full},
+        {"gbuffer_material", 4 * full},
+        {"gbuffer_normal", 8 * full},
+        {"gbuffer_worldpos", 8 * full},
+        {"offscreen_depth", 4 * full},
+        {"ssao_output", 1 * full},
+        {"ssao_blur", 1 * full},
+        {"lit_color", 8 * full},
+        {"opaque_color", 8 * full},
+        {"opaque_depth", 4 * full},
+        {"Bloom_Threshold_RT", 4 * full},
+        {"Bloom_Downsample_H_0_RT", 4 * 960 * 540},
+        {"Bloom_Upsample_V_0_RT", 4 * 960 * 540},
+        {"Bloom_Downsample_H_1_RT", 4 * 480 * 270},
+        {"Bloom_Upsample_V_1_RT", 4 * 480 * 270},
+        {"Bloom_Downsample_H_2_RT", 4 * 240 * 135},
+        {"Bloom_Upsample_V_2_RT", 4 * 240 * 135},
+        {"Bloom_Downsample_H_3_RT", 4 * 120 * 67},
+        {"Bloom_Upsample_V_3_RT", 4 * 120 * 67},
+        {"display", 4 * full},
+    };
+    std::size_t counted = 0;
+    for (std::size_t index = 0; index < plan.resources.size(); ++index) {
+        const auto &name = plan.resources[index].logical_resource;
+        INFO(name);
+        if (name == "swapchain") {
+            CHECK_FALSE(summary.resource_bytes[index].has_value());
+            continue;
+        }
+        REQUIRE(expected.contains(name));
+        CHECK(summary.resource_bytes[index] == expected.at(name));
+        ++counted;
+    }
+    CHECK(counted == expected.size());
+
+    // The one alias group shares g_emissive's allocation with the bloom
+    // threshold, so the 21 images take 20 allocations.
+    REQUIRE(plan.alias_groups.size() == 1);
+    CHECK(plan.alias_groups.front().resources ==
+          std::vector<std::string>{"Bloom_Threshold_RT", "g_emissive"});
+    CHECK(summary.total_bytes == 125'776'320); // 119.95 MiB
+    // lighting_pass (order 3) reads the five G-buffer targets, the depth and
+    // the blurred SSAO while it writes lit_color.
+    CHECK(summary.peak_live_bytes == 85'017'600); // 81.08 MiB
+    CHECK(summary.peak_order == 3);
+    CHECK(summary.peak_node == "lighting_pass");
 }
 
 } // namespace Pelican

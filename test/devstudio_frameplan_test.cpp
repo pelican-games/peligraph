@@ -1438,3 +1438,52 @@ TEST_CASE("IA-1s decision 3: a physical resource names the asset it starts from 
                        {"g_emissive",
                         "initial: assets/images/ramp.png \xC2\xB7 not in the manifest"}});
 }
+
+TEST_CASE("RC-1 the memory summary and a physical image's bytes are read, and a plan "
+          "without them still is",
+          "[devstudio][frame-plan][rc1][memory]") {
+    // A plan from before RC-1 has neither.
+    Json input = Json::parse(capturedResponse());
+    input.erase("memory_summary");
+    for (auto &resource : input["physical_target_plan"]["resources"]) {
+        resource.erase("bytes");
+    }
+    const FramePlanModel before = buildFramePlanModel(input.dump());
+    REQUIRE(before.physical_plan.available());
+    CHECK_FALSE(before.memory_summary.has_value());
+    CHECK(std::none_of(before.resources.begin(), before.resources.end(),
+                       [](const FramePlanResource &resource) {
+                           return resource.bytes.has_value();
+                       }));
+
+    for (auto &resource : input["physical_target_plan"]["resources"]) {
+        if (resource["logical_resource"] == "lit_color") resource["bytes"] = 115200;
+        if (resource["logical_resource"] == "g_emissive") resource["bytes"] = nullptr;
+    }
+    input["memory_summary"] = {{"total_bytes", 873200},
+                               {"peak_live_bytes", 590400},
+                               {"peak_node", "lighting_pass"}};
+    const FramePlanModel model = buildFramePlanModel(input.dump());
+    REQUIRE(model.memory_summary.has_value());
+    CHECK(*model.memory_summary == FramePlanMemorySummary{.total_bytes = 873200,
+                                                          .peak_live_bytes = 590400,
+                                                          .peak_node = "lighting_pass"});
+    CHECK(findResource(model, "lit_color")->bytes == 115200);
+    CHECK_FALSE(findResource(model, "g_emissive")->bytes.has_value());
+    CHECK_FALSE(findResource(model, "swapchain")->bytes.has_value());
+
+    // No image alive anywhere: no node named.
+    input["memory_summary"]["peak_node"] = nullptr;
+    CHECK(buildFramePlanModel(input.dump()).memory_summary->peak_node.empty());
+    input["memory_summary"] = nullptr;
+    CHECK_FALSE(buildFramePlanModel(input.dump()).memory_summary.has_value());
+
+    input["memory_summary"] = {{"total_bytes", -1}, {"peak_live_bytes", 0}};
+    REQUIRE_THROWS_WITH(buildFramePlanModel(input.dump()),
+                        ContainsSubstring("memory_summary.total_bytes must be a "
+                                          "non-negative integer"));
+    input["memory_summary"] = {{"peak_live_bytes", 0}};
+    REQUIRE_THROWS_WITH(buildFramePlanModel(input.dump()),
+                        ContainsSubstring("memory_summary requires integer field "
+                                          "'total_bytes'"));
+}

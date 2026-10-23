@@ -1944,6 +1944,11 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                     asset.sha256 = sha->get<std::string>();
                 resource.initial_asset = std::move(asset);
             }
+            // RC-1: absent for an external image or a buffer, and in a plan
+            // from before RC-1.
+            if (const auto bytes = value.find("bytes");
+                bytes != value.end() && !bytes->is_null())
+                resource.bytes = unsignedInteger(*bytes, context + ".bytes");
             if (const auto extent = value.find("extent");
                 extent != value.end() && !extent->is_null()) {
                 resource.extent = parseExtent(*extent, context + ".extent");
@@ -2156,6 +2161,36 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
                 "match the published scope resources");
         }
         model.gpu_resource_arena = std::move(parsed_arena);
+    }
+
+    // RC-1: absent from a plan from before RC-1 and from one without a
+    // physical plan.
+    if (const auto memory = root.find("memory_summary");
+        memory != root.end() && !memory->is_null()) {
+        if (!memory->is_object()) {
+            throw invalid("memory_summary must be an object");
+        }
+        const auto bytesField = [&](std::string_view field) {
+            const auto found = memory->find(std::string{field});
+            if (found == memory->end()) {
+                throw invalid("memory_summary requires integer field '" +
+                              std::string{field} + "'");
+            }
+            return unsignedInteger(*found,
+                                   "memory_summary." + std::string{field});
+        };
+        FramePlanMemorySummary summary{
+            .total_bytes = bytesField("total_bytes"),
+            .peak_live_bytes = bytesField("peak_live_bytes"),
+        };
+        if (const auto node = memory->find("peak_node");
+            node != memory->end() && !node->is_null()) {
+            if (!node->is_string()) {
+                throw invalid("memory_summary.peak_node must be a string or null");
+            }
+            summary.peak_node = node->get<std::string>();
+        }
+        model.memory_summary = std::move(summary);
     }
 
     if (const auto contracts = root.find("surface_resource_contracts");

@@ -1,6 +1,7 @@
 #include "rendertargetcontainer.hpp"
 #include "renderingsamplecount.hpp"
 #include "../../project/targetrenderplanning.hpp"
+#include "../../project/targetrendermemory.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/util.hpp"
@@ -1683,6 +1684,18 @@ void RenderTargetContainer::rebuildAliasGroupOwners() {
                 *target.alias_group_token, id);
         }
     }
+}
+
+std::uint64_t renderTargetBytes(const RenderTargetMetadata &metadata) {
+    const auto format = vk::to_string(metadata.format);
+    return imageResourceBytes(ImageResourceByteShape{
+        .format = format,
+        .extent = {metadata.extent.width, metadata.extent.height},
+        .mip_levels = metadata.mip_levels,
+        .array_layers = metadata.array_layers,
+        .samples = metadata.samples,
+        .surfaces = metadata.history ? 2u : 1u,
+    });
 }
 
 } // namespace Pelican

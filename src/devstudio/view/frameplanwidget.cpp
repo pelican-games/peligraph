@@ -4302,6 +4302,22 @@ struct FramePlanWidget::Impl {
                 : owner.tr("no target");
         const QString barrier_summary =
             logical_scene->property("pelicanBarrierCoverage").toString();
+        // RC-1: the physical plan's images together and the most of them
+        // alive at one node, on the same line when the engine counted them.
+        QString memory_summary;
+        if (model->memory_summary) {
+            const auto &memory = *model->memory_summary;
+            memory_summary =
+                QStringLiteral(" \u00b7 ") +
+                (memory.peak_node.empty()
+                     ? owner.tr("RT %1 / peak %2")
+                           .arg(byteCount(static_cast<std::size_t>(memory.total_bytes)),
+                                byteCount(static_cast<std::size_t>(memory.peak_live_bytes)))
+                     : owner.tr("RT %1 / peak %2 at %3")
+                           .arg(byteCount(static_cast<std::size_t>(memory.total_bytes)),
+                                byteCount(static_cast<std::size_t>(memory.peak_live_bytes)),
+                                text(memory.peak_node)));
+        }
         // N-7 rule 2: the line names what was loaded and what is on screen.
         // Generation, physical and execution planning, the response size and
         // the refresh time are facts a reader asks for, not facts that have
@@ -4313,7 +4329,7 @@ struct FramePlanWidget::Impl {
                 .arg(static_cast<qulonglong>(model->nodes.size()))
                 .arg(static_cast<qulonglong>(compute_count))
                 .arg(static_cast<qulonglong>(model->resources.size()))
-                .arg(barrier_summary),
+                .arg(barrier_summary) + memory_summary,
             owner.tr("%1 | %2 | %3%4 passes/tasks (%5 compute), %6, "
                      "%7 resources | %8 | %9 | %10 response | "
                      "refreshed %11. Snapshot updates "
@@ -4931,6 +4947,11 @@ struct FramePlanWidget::Impl {
             if (!resource.representation.empty()) {
                 addFact(facts, owner.tr("Lifetime"),
                         lifetimeLabel(resource.lifetime));
+            }
+            // RC-1: what its images occupy.
+            if (resource.bytes) {
+                addFact(facts, owner.tr("Bytes"),
+                        byteCount(static_cast<std::size_t>(*resource.bytes)));
             }
             addFact(facts, owner.tr("Reason"), text(resource.reason));
             // IA-1s, decision 3: the asset it starts from, and its manifest

@@ -63,6 +63,7 @@
 #include "../appflow/enginetime.hpp"
 #include "../../project/audioanalysisformat.hpp"
 #include "../../project/frameresolutionwire.hpp"
+#include "../../project/targetrendermemory.hpp"
 #include "../../project/vulkanviewplanning.hpp"
 #include "deletionqueue.hpp"
 #include "core.hpp"
@@ -1112,61 +1113,10 @@ nlohmann::json anchorNodeTrace(const std::string &name, size_t order) {
     return nlohmann::json{{"name", name}, {"kind", "anchor"}, {"order", order}};
 }
 
+// RC-1: the planner's texel table is the engine's one table (the physical
+// plan names formats as vk::to_string does).
 std::size_t formatTexelBytes(vk::Format format) {
-    switch (format) {
-    case vk::Format::eR8Unorm:
-    case vk::Format::eR8Snorm:
-    case vk::Format::eR8Uint:
-    case vk::Format::eR8Sint:
-        return 1;
-    case vk::Format::eR8G8Unorm:
-    case vk::Format::eR8G8Snorm:
-    case vk::Format::eR8G8Uint:
-    case vk::Format::eR8G8Sint:
-    case vk::Format::eR16Sfloat:
-    case vk::Format::eR16Unorm:
-    case vk::Format::eR16Snorm:
-    case vk::Format::eR16Uint:
-    case vk::Format::eR16Sint:
-    case vk::Format::eD16Unorm:
-        return 2;
-    case vk::Format::eR8G8B8A8Unorm:
-    case vk::Format::eR8G8B8A8Snorm:
-    case vk::Format::eR8G8B8A8Uint:
-    case vk::Format::eR8G8B8A8Sint:
-    case vk::Format::eR8G8B8A8Srgb:
-    case vk::Format::eB8G8R8A8Unorm:
-    case vk::Format::eB8G8R8A8Srgb:
-    case vk::Format::eA2B10G10R10UnormPack32:
-    case vk::Format::eA2R10G10B10UnormPack32:
-    case vk::Format::eB10G11R11UfloatPack32:
-    case vk::Format::eR16G16Unorm:
-    case vk::Format::eR16G16Snorm:
-    case vk::Format::eR16G16Uint:
-    case vk::Format::eR16G16Sint:
-    case vk::Format::eR16G16Sfloat:
-    case vk::Format::eR32Uint:
-    case vk::Format::eR32Sint:
-    case vk::Format::eR32Sfloat:
-    case vk::Format::eD24UnormS8Uint:
-    case vk::Format::eD32Sfloat:
-        return 4;
-    case vk::Format::eR16G16B16A16Unorm:
-    case vk::Format::eR16G16B16A16Snorm:
-    case vk::Format::eR16G16B16A16Uint:
-    case vk::Format::eR16G16B16A16Sint:
-    case vk::Format::eR16G16B16A16Sfloat:
-    case vk::Format::eR32G32Uint:
-    case vk::Format::eR32G32Sint:
-    case vk::Format::eR32G32Sfloat:
-    case vk::Format::eD32SfloatS8Uint:
-        return 8;
-    case vk::Format::eR32G32B32A32Uint:
-    case vk::Format::eR32G32B32A32Sint:
-    case vk::Format::eR32G32B32A32Sfloat:
-        return 16;
-    default: return 0;
-    }
+    return imageFormatTexelBytes(vk::to_string(format));
 }
 
 vk::ImageAspectFlags snapshotAspect(vk::Format format) {
@@ -4825,6 +4775,31 @@ nlohmann::json Renderer::currentFramePlanJson() const {
                             .height = extent.height,
                         };
                     }));
+    }
+    // RC-1: the bytes each physical image occupies now -- the image
+    // registration made, at its current extent -- and the most of them
+    // alive at one node (memory_summary).
+    if (frame_graph->target_plan != nullptr) {
+        if (const auto *render_targets =
+                FastModuleContainer::tryGet<RenderTargetContainer>()) {
+            const auto summary = summarizeVulkanTargetPlanMemory(
+                *frame_graph->target_plan,
+                [&](const VulkanPhysicalResourcePlan &resource)
+                    -> std::optional<std::uint64_t> {
+                    const auto binding =
+                        frame_graph->render_target_bindings.find(
+                            resource.logical_resource);
+                    if (binding ==
+                            frame_graph->render_target_bindings.end() ||
+                        !isConcreteRenderTarget(binding->second)) {
+                        return std::nullopt;
+                    }
+                    return renderTargetBytes(
+                        render_targets->getMetadata(binding->second));
+                });
+            appendVulkanTargetPlanMemoryJson(
+                result, *frame_graph->target_plan, summary);
+        }
     }
     if (frame_graph->render_pipeline != nullptr &&
         frame_graph->render_pipeline
