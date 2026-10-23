@@ -1303,13 +1303,13 @@ root だけの編集が definition のバイト列を動かさないようにす
 
 RS-9 では render の op の契約を作る `renderPorts()` の頭で呼んでいましたが、✅RS-15 から [`GraphModuleRegistry::resolveOperation()`](../../src/project/graphmodule.cpp#L740) が factory を呼ぶ前の 1 か所で呼び([呼ぶ所](../../src/project/graphmodule.cpp#L749))、宣言だけの契約の op(`render.scalar`、`value.*`、`audio.*`、`ui.*`)にも同じに効きます。`parameters` が無い・`null` の node は空の object として通し、op が要るものが無ければここで断ります。✅RS-15 から、表の名前は node の `inputs` に同名の edge があっても満たされます。
 
-✅CT-1 から、同じ表を [`operationJson()`](../../src/project/graphmodule.cpp#L614) が catalog の `required_parameters` に写し(表は 1 つ)、`value.input` の `input_names` は [`graphFrameInputNames()`](../../src/project/graphmodule.cpp#L997) の表を、catalog と frame の検査 [`validateGraphInputs()`](../../src/core/renderingpass/graphinputs.cpp#L14) の両方が読みます。
+✅CT-1 から、同じ表を [`operationJson()`](../../src/project/graphmodule.cpp#L614) が catalog の `required_parameters` に写し(表は 1 つ)、`value.input` の `input_names` は [`graphFrameInputNames()`](../../src/project/graphmodule.cpp#L1000) の表を、catalog と frame の検査 [`validateGraphInputs()`](../../src/core/renderingpass/graphinputs.cpp#L30) の両方が読みます。
 
 render の pass の port の欠けは [`checkRenderPortDeclaration()`](../../src/project/graphmodule.cpp#L319) が `graph.port_field_missing@1` `{node, port, field}` で、resource の型の中の欠け(`element`、`type.semantic` など)は呼び手が渡す `MissingField` で port なら同じ code、node の parameters なら `graph.render_node_parameters_missing@1` で断ります。graph の展開器の欠けた鍵は [`member()`](../../src/project/graphcomposition.cpp#L32) が場所を名指す `std::invalid_argument` にします。
 
 ✅CT-3 から、`renderNodeRequiredParameters()` の表は [`graphparameterschema.cpp` の CT-3 の parameter の表](../../src/project/graphparameterschema.cpp#L397) に置き換わり、RS-9 の必須はその `required` の entry から作ります(新しく必須になったのは `pose.clip_sample` の `rig` / `clip`、`pose.state_machine` の `rig` / `graph`、`pose.retarget` の `profile`、`draw.variant` の `variant`)。
 
-同じ表が値の kind・enum・範囲も持ち、`resolveOperation()` が RS-9 の検査の直後に [`checkGraphNodeParameterTypes()`](../../src/project/graphparameterschema.cpp#L877) を呼んで、合わない値を `graph.render_node_parameter_invalid@1` `{node, op, parameter, expected, reason: type | enum | range, allowed? | min? / max?}` で断ります。`GraphRegistryError` なので、編集の ticket では CT-2 の `rejection()` が `document` を足して rejected にします(test: `renderconfigeditor_test` の「CT-3 an edit with a parameter of the wrong kind, enum or range is refused by name」)。表の形と検査の規則は第3章 §3.15「op の parameter の表」です。
+同じ表が値の kind・enum・範囲も持ち、`resolveOperation()` が RS-9 の検査の直後に [`checkGraphNodeParameterTypes()`](../../src/project/graphparameterschema.cpp#L880) を呼んで、合わない値を `graph.render_node_parameter_invalid@1` `{node, op, parameter, expected, reason: type | enum | range, allowed? | min? / max?}` で断ります。`GraphRegistryError` なので、編集の ticket では CT-2 の `rejection()` が `document` を足して rejected にします(test: `renderconfigeditor_test` の「CT-3 an edit with a parameter of the wrong kind, enum or range is refused by name」)。表の形と検査の規則は第3章 §3.15「op の parameter の表」です。
 
 利用者向けの手順と GUI の対応は [manual 第13章](../manual/13_editor.md) §13.5 が正です。
 
@@ -1432,7 +1432,7 @@ live preview の予約・開通・終了と例外処理は[スレッドと lease
 | 鍵 | 組み立てる所 |
 |---|---|
 | `gpu_timing` | `nodes` は最後の 1 論理フレームの sample([`projectGpuTimingStatus()`](../../src/core/vkcore/rendertiming.cpp#L297))、`node_averages` は `get_gpu_timing` の `nodes` と同じ [`averageGpuTimingHistoryNodes()`](../../src/core/vkcore/rendertiming.cpp#L138) から作る |
-| `audio` | [`internal::audioStatusJson()`](../../src/core/communication/audiostatus.cpp#L37)。`voices` は [`SceneLoader::graphVoiceStatus()`](../../src/core/loader/scenegraphruntime.cpp#L325) が、frame が最後に各 voice に求めたこと(`GraphRuntime::voice_status`)から作り、mixer は読まない。play の状態での読み替えは [読み替える所](../../src/core/communication/audiostatus.cpp#L16) |
+| `audio` | [`internal::audioStatusJson()`](../../src/core/communication/audiostatus.cpp#L79)。`voices` は [`SceneLoader::graphVoiceStatus()`](../../src/core/loader/scenegraphruntime.cpp#L351) が、frame が最後に各 voice に求めたこと(`GraphRuntime::voice_status`)から作り、mixer は読まない。play の状態での読み替えは [読み替える所](../../src/core/communication/audiostatus.cpp#L22) |
 | `reload` | [status を組む所](../../src/core/watch/reloadservice.cpp#L1540)。`PELICAN_WITH_HOT_RELOAD=OFF` の build では watcher が無い |
 | `assets_verification` | [`internal::assetsVerificationStatusJson()`](../../src/core/communication/rpcserver.cpp#L1778) → [`AssetsVerification::statusJson()`](../../src/core/loader/assetsverification.cpp#L204)。全件は `get_assets_verification` |
 | `problems` | [`ProblemList::statusJson()`](../../src/core/watch/problemlist.cpp#L340)。`revision` は一覧が変わったときだけ進む |

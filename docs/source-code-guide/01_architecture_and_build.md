@@ -163,7 +163,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | ディレクトリ | 責務 | 中心となる型/関数 |
 |---|---|---|
 | [`animation/`](../../src/core/animation) | アニメーション評価フェーズ、VRM application service、**共通グラフの `pose.*` backend**。`PELICAN_WITH_ANIMATION=OFF` ではこのディレクトリの実装が丸ごと外れ、交渉入口だけを残す [`animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L1) に差し替わります（[`src/core/animation/CMakeLists.txt`](../../src/core/animation/CMakeLists.txt#L1)） | [`AnimationService`](../../src/core/animation/animationservice.hpp)、[`vrmapplication.hpp`](../../src/core/animation/vrmapplication.hpp)、[`PoseGraph`](../../src/core/animation/posegraph.hpp#L61)、[`PoseGraphRuntime`](../../src/core/animation/posegraphruntime.hpp#L62) |
-| [`appflow/`](../../src/core/appflow) | 時刻、フレームフェーズ、loop、終了処理 | [`Loop`](../../src/core/appflow/loop.hpp#L7)、[`EngineTime`](../../src/core/appflow/enginetime.hpp#L31) |
+| [`appflow/`](../../src/core/appflow) | 時刻、フレームフェーズ、loop、終了処理 | [`Loop`](../../src/core/appflow/loop.hpp#L7)、[`EngineTime`](../../src/core/appflow/enginetime.hpp#L45) |
 | [`gamelogic/`](../../src/core/gamelogic) | game DLLのロード・ホットリロード | [`gamelogicreload.hpp`](../../src/core/gamelogic/gamelogicreload.hpp) |
 | [`geomhelper/`](../../src/core/geomhelper) | 幾何ヘルパ（header only） | [`geomhelper.hpp`](../../src/core/geomhelper/geomhelper.hpp) |
 | [`imgui/`](../../src/core/imgui) | 開発者UI（ImGui runtime、frame plan viewer） | [`ImGuiSystem`](../../src/core/imgui/imguisystem.hpp#L22)、[`planviewer.hpp`](../../src/core/imgui/planviewer.hpp) |
@@ -185,7 +185,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | [`fullscreenpass/`](../../src/core/fullscreenpass) | fullscreen pipelineと入力descriptor | [`FullscreenPassContainer`](../../src/core/fullscreenpass/fullscreenpasscontainer.hpp#L95) |
 | [`light/`](../../src/core/light) | scene lightとlight UBO | [`LightContainer`](../../src/core/light/lightcontainer.hpp#L29) |
 | [`phys/`](../../src/core/phys) | CPU幾何クエリとscene binding | [`PhysWorld`](../../src/core/phys/physworld.hpp#L43)、[`phys::Shape`](../../src/core/phys/physquery.hpp#L43) |
-| [`audio/`](../../src/core/audio) | WAV / Ogg Vorbis の decode と streaming、miniaudio backend、voice/bus | [`Audio`](../../src/core/audio/audio.hpp#L38) |
+| [`audio/`](../../src/core/audio) | WAV / Ogg Vorbis の decode と streaming、miniaudio backend、voice/bus | [`Audio`](../../src/core/audio/audio.hpp#L39) |
 | [`persistence/`](../../src/core/persistence) | settings/save slot、原子的書き換え | [`Persistence`](../../src/core/persistence/persistence.hpp#L39) |
 | [`playback/`](../../src/core/playback) | transform sequenceとVAT再生 | [`SeqPlayer`](../../src/core/playback/seqplayer.hpp#L51)、[`VatPlayer`](../../src/core/playback/vatplayer.hpp#L12) |
 | [`communication/`](../../src/core/communication) | stdio JSON-RPCと編集RPC一式（コマンド、journal、preview、asset query、windowed host） | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L56)、[`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp)、[`EditorJournal`](../../src/core/communication/editorjournal.hpp) |
@@ -231,7 +231,7 @@ v0（共通グラフ・姿勢グラフ・package）で増えた入口は次の�
 | [`core/animation/posegraph.hpp`](../../src/core/animation/posegraph.hpp#L61) / [`posegraphruntime.hpp`](../../src/core/animation/posegraphruntime.hpp#L62) | `pose.*` のコンパイルと評価。`PELICAN_WITH_ANIMATION=ON` のときだけビルドされます |
 | [`core/animation/animation_disabled.cpp`](../../src/core/animation/animation_disabled.cpp#L1) | OFFビルドの顔。交渉入口だけ残し、out 引数が null なら `invalid_argument`、それ以外は `unsupported_version` を返します |
 | [`core/loader/scenegraphruntime.cpp`](../../src/core/loader/scenegraphruntime.cpp#L60) | `graph.instance` の owner 解決、評価stateの世代移送、publish snapshot（[第3章 §3.5](03_project_and_loading.md)） |
-| [`core/userpublic/valuegraph.hpp`](../../src/core/userpublic/valuegraph.hpp#L159) | lowered IR とその評価器（[第3章 §3.15](03_project_and_loading.md)） |
+| [`core/userpublic/valuegraph.hpp`](../../src/core/userpublic/valuegraph.hpp#L170) | lowered IR とその評価器（[第3章 §3.15](03_project_and_loading.md)） |
 | [`core/communication/animationstatus.hpp`](../../src/core/communication/animationstatus.hpp#L18) | `get_status.animation` のJSON化（AG-3a） |
 | [`devcli/packagecommand.hpp`](../../src/devcli/packagecommand.hpp#L16) / [`graphcatalogcommand.hpp`](../../src/devcli/graphcatalogcommand.hpp#L8) | `pelican_cli package` と `pelican_cli graph-catalog` |
 | [`player/package_sdk_header.hpp.in`](../../src/player/package_sdk_header.hpp.in) | package 用転送ヘッダの雛形（§1.2） |
