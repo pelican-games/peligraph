@@ -719,3 +719,232 @@ TEST_CASE("CV-3a: + Filter offers Gaussian Blur, Drop Shadow and Outer Glow with
     CHECK(graphCanvasRefusalSentence("graph refused (canvas.filter_size_exceeded@1)").starts_with("A blur"));
     CHECK(graphCanvasRefusalSentence("graph refused (canvas.range_unbounded@1)").starts_with("An effect's reach"));
 }
+
+// --- NB-2a: the model under the layer stack node (docs/design_node_bodies.md 2.3).
+
+namespace {
+
+// `document()` with a blend on the card and a mask on its stroke, so a move
+// has every member of an element to carry.
+std::vector<GraphCanvasNode> blendedDocument() {
+    auto nodes = document();
+    auto &hud = *std::ranges::find(nodes, std::string{"hud"}, &GraphCanvasNode::id);
+    hud.parameters["layers"][0]["blend"] = "screen";
+    hud.parameters["layers"][1]["mask"] = "card_mask";
+    const auto lines = hud.inputs;
+    hud.inputs = graphCanvasStackPorts(hud.parameters);
+    for (auto &port : hud.inputs)
+        for (const auto &line : lines)
+            if (line.port == port.port) port = line;
+    return nodes;
+}
+
+Json layersAfter(const Json &ops) {
+    REQUIRE(ops.size() == 1);
+    CHECK(ops[0]["op"] == "set_node_parameters");
+    CHECK(ops[0]["node"] == "hud");
+    return ops[0]["parameters"]["layers"];
+}
+
+} // namespace
+
+TEST_CASE("NB-2a: a dragged row moves its whole layer to any place in one edit; Up and Down are its one-step "
+          "case",
+          "[studio][canvas][nb2]") {
+    auto nodes = blendedDocument();
+    const auto &hud = *std::ranges::find(nodes, std::string{"hud"}, &GraphCanvasNode::id);
+    const auto before = hud.parameters["layers"];
+    REQUIRE(before.size() == 4);
+
+    // The bottom one to the top: the others keep their order under it.
+    const auto top = graphCanvasMoveLayerToOps(nodes, "", "hud", 0, 3);
+    CHECK(layersAfter(top) == Json::array({before[1], before[2], before[3], before[0]}));
+    // The stack's other parameters as they were.
+    CHECK(top[0]["parameters"]["size"] == hud.parameters["size"]);
+    // The second from the top (index 2 of 4) to the bottom.
+    const auto bottom = graphCanvasMoveLayerToOps(nodes, "", "hud", 2, 0);
+    CHECK(layersAfter(bottom) == Json::array({before[2], before[0], before[1], before[3]}));
+    // Each element went with its members: blend, mask, eye, opacity, name.
+    CHECK(bottom[0]["parameters"]["layers"][0] ==
+          Json{{"input", "ellipse_1"}, {"visible", false}, {"opacity", 0.5}});
+    CHECK(top[0]["parameters"]["layers"][3] == Json{{"input", "rect_1"}, {"name", "Card"}, {"blend", "screen"}});
+    CHECK(top[0]["parameters"]["layers"][0]["mask"] == "card_mask");
+
+    // The lines stay on their ports: after the move the rows read the same.
+    auto moved = nodes;
+    applyOps(moved, bottom);
+    const auto rows = graphCanvasLayerRows(moved, "hud");
+    REQUIRE(rows.size() == 4);
+    CHECK(rows[3].input == "ellipse_1");
+    CHECK(rows[3].index == 0);
+    CHECK(rows[3].source == "ellipse_1_fill");
+    CHECK(rows[3].opacity_driven);
+    CHECK(rows[2].blend == "screen");
+    CHECK(rows[1].mask == "card_mask");
+
+    // Nowhere to go: the same place, or past the end.
+    CHECK(graphCanvasMoveLayerToOps(nodes, "", "hud", 1, 1).empty());
+    CHECK(graphCanvasMoveLayerToOps(nodes, "", "hud", 4, 0).empty());
+    CHECK(graphCanvasMoveLayerToOps(nodes, "", "hud", 0, 4).empty());
+    CHECK(graphCanvasMoveLayerToOps(nodes, "", "missing", 0, 1).empty());
+
+    // Up and Down are the same op as a move to the next place.
+    for (std::size_t index = 0; index < 4; ++index) {
+        CHECK(graphCanvasMoveLayerOps(nodes, "", "hud", index, 1) ==
+              graphCanvasMoveLayerToOps(nodes, "", "hud", index, index + 1));
+        if (index > 0)
+            CHECK(graphCanvasMoveLayerOps(nodes, "", "hud", index, -1) ==
+                  graphCanvasMoveLayerToOps(nodes, "", "hud", index, index - 1));
+    }
+    CHECK(graphCanvasMoveLayerOps(nodes, "", "hud", 0, -1).empty());
+    CHECK(graphCanvasMoveLayerOps(nodes, "", "hud", 3, 1).empty());
+    CHECK(graphCanvasMoveLayerOps(nodes, "", "hud", 1, 2).empty());
+}
+
+TEST_CASE("NB-2a: a line dropped between two rows is a layer at that place and its line; + layer is the drop "
+          "on top",
+          "[studio][canvas][nb2]") {
+    const auto nodes = blendedDocument();
+    const auto before = std::ranges::find(nodes, std::string{"hud"}, &GraphCanvasNode::id)->parameters["layers"];
+
+    // Between the card (0) and its stroke (1) of four.
+    const auto between = graphCanvasInsertLayerOps(nodes, "", "hud", 1, "ellipse_1_fill", "layer");
+    REQUIRE(between.size() == 2);
+    CHECK(between[0]["op"] == "set_node_parameters");
+    CHECK(between[0]["parameters"]["layers"] ==
+          Json::array({before[0], Json{{"input", "ellipse_1_fill"}, {"name", "ellipse_1_fill"}}, before[1],
+                       before[2], before[3]}));
+    CHECK(between[1] == Json{{"op", "set_input"}, {"scope", "root"}, {"node", "hud"}, {"port", "ellipse_1_fill"},
+                             {"source", {{"node", "ellipse_1_fill"}, {"port", "layer"}}}});
+    auto inserted = nodes;
+    applyOps(inserted, between);
+    const auto rows = graphCanvasLayerRows(inserted, "hud");
+    REQUIRE(rows.size() == 5);
+    CHECK(rows[3].index == 1);
+    CHECK(rows[3].source == "ellipse_1_fill");
+    CHECK(rows[3].kind == "ellipse");
+
+    // At the bottom.
+    const auto under = graphCanvasInsertLayerOps(nodes, "", "hud", 0, "rect_1_fill", "layer");
+    REQUIRE(under.size() == 2);
+    CHECK(under[0]["parameters"]["layers"][0] == Json{{"input", "rect_1_fill"}, {"name", "rect_1_fill"}});
+    CHECK(under[0]["parameters"]["layers"][1] == before[0]);
+
+    // On top (the size, or past it) is + layer's op.
+    const auto connected = graphCanvasConnectLayerOps(nodes, "", "hud", "ellipse_1_fill", "layer");
+    REQUIRE(connected.size() == 2);
+    CHECK(graphCanvasInsertLayerOps(nodes, "", "hud", 4, "ellipse_1_fill", "layer") == connected);
+    CHECK(graphCanvasInsertLayerOps(nodes, "", "hud", 99, "ellipse_1_fill", "layer") == connected);
+    CHECK(connected[0]["parameters"]["layers"][4] == Json{{"input", "ellipse_1_fill"}, {"name", "ellipse_1_fill"}});
+
+    // A taken input name is numbered, as + layer's is: rect_1 is a port already.
+    const auto again = graphCanvasInsertLayerOps(nodes, "", "hud", 2, "rect_1", "geometry");
+    REQUIRE(again.size() == 2);
+    CHECK(again[0]["parameters"]["layers"][2]["input"] == "rect_1_2");
+    CHECK(again[1]["source"] == Json{{"node", "rect_1"}, {"port", "geometry"}});
+
+    // Nothing to read, or the stack itself.
+    CHECK(graphCanvasInsertLayerOps(nodes, "", "hud", 1, "missing", "layer").empty());
+    CHECK(graphCanvasInsertLayerOps(nodes, "", "hud", 1, "hud", "layer").empty());
+    CHECK(graphCanvasInsertLayerOps(nodes, "", "missing", 1, "rect_1_fill", "layer").empty());
+}
+
+TEST_CASE("NB-2a: + Rect, + Ellipse, + Group, + Image and + Text go just above the picked row, on top "
+          "without one",
+          "[studio][canvas][nb2]") {
+    const auto nodes = blendedDocument();
+    const auto layerAt = [](const Json &ops, std::size_t at) {
+        for (const auto &op : ops)
+            if (op["op"] == "set_node_parameters") return op["parameters"]["layers"][at];
+        return Json{};
+    };
+    const auto count = [](const Json &ops) {
+        for (const auto &op : ops)
+            if (op["op"] == "set_node_parameters") return op["parameters"]["layers"].size();
+        return std::size_t{0};
+    };
+
+    // Above the card (0): at 1.
+    const auto rect = graphCanvasAddShapeLayerOps(nodes, "", "hud", "rect", 0);
+    CHECK(layerAt(rect, 1) == Json{{"input", "rect_2"}, {"name", "Rect 2"}});
+    CHECK(layerAt(rect, 2)["input"] == "rect_1_stroke");
+    CHECK(count(rect) == 5);
+    // The rest of the list is as on top: only the place differs.
+    auto on_top = graphCanvasAddShapeLayerOps(nodes, "", "hud", "rect");
+    CHECK(layerAt(on_top, 4) == Json{{"input", "rect_2"}, {"name", "Rect 2"}});
+    CHECK(rect[0] == on_top[0]);
+    CHECK(rect[1] == on_top[1]);
+    CHECK(rect[3] == on_top[3]);
+
+    const auto ellipse = graphCanvasAddShapeLayerOps(nodes, "", "hud", "ellipse", 2);
+    CHECK(layerAt(ellipse, 3) == Json{{"input", "ellipse_2"}, {"name", "Ellipse 2"}});
+
+    const auto group = graphCanvasAddGroupLayerOps(nodes, "", "hud", 1);
+    CHECK(layerAt(group, 2) == Json{{"input", "group_2"}, {"name", "Group 2"}});
+    CHECK(layerAt(graphCanvasAddGroupLayerOps(nodes, "", "hud"), 4)["input"] == "group_2");
+
+    const auto image =
+        graphCanvasAddImageLayerOps(nodes, "", "hud", "project://assets/canvas/logo.png", {200.0, 100.0}, "logo", 2);
+    CHECK(layerAt(image, 3) == Json{{"input", "image_1"}, {"name", "logo"}});
+
+    const auto text = graphCanvasAddTextLayerOps(nodes, "", "hud", "Hi", "project://assets/fonts/arial.ttf", 48.0, 0);
+    CHECK(layerAt(text, 1) == Json{{"input", "text_1"}, {"name", "Hi"}});
+
+    // Above the top row, or a row past the top: on top.
+    CHECK(layerAt(graphCanvasAddShapeLayerOps(nodes, "", "hud", "rect", 3), 4)["input"] == "rect_2");
+    CHECK(layerAt(graphCanvasAddShapeLayerOps(nodes, "", "hud", "rect", 99), 4)["input"] == "rect_2");
+    // + Adjustment's `above` is the same place.
+    CHECK(layerAt(graphCanvasAddAdjustmentLayerOps(nodes, "", "hud", 2, "filter.invert"), 3)["input"] == "invert_1");
+}
+
+TEST_CASE("NB-2a: a row says its opacity port, where its > goes, and whether that stack is read only",
+          "[studio][canvas][nb2]") {
+    auto nodes = blendedDocument();
+    CHECK(graphCanvasLayerOpacityPort("ellipse_1") == "ellipse_1.opacity");
+
+    // An imported PSD as the top layer of hud.
+    auto psd = node("logo_psd_1", "graph.instance");
+    psd.definition = "logo_psd";
+    nodes.push_back(std::move(psd));
+    auto &hud = *std::ranges::find(nodes, std::string{"hud"}, &GraphCanvasNode::id);
+    hud.parameters["layers"].push_back(Json{{"input", "logo_psd_1"}, {"name", "PSD: logo"}});
+    const auto lines = hud.inputs;
+    hud.inputs = graphCanvasStackPorts(hud.parameters);
+    for (auto &port : hud.inputs) {
+        for (const auto &line : lines)
+            if (line.port == port.port) port = line;
+        if (port.port == "logo_psd_1") {
+            port.connected = true;
+            port.source_node = "logo_psd_1";
+            port.source_port = "layer";
+        }
+    }
+    const auto rows = graphCanvasLayerRows(nodes, "hud");
+    REQUIRE(rows.size() == 5);
+    REQUIRE(rows[0].kind == "import");
+    REQUIRE(rows[1].kind == "group");
+
+    // A group: its own stack, in the same scope, as read only as hud.
+    CHECK(graphCanvasRowEntry(rows[1], "", false) == GraphCanvasRowEntry{"", "group_1", false});
+    CHECK(graphCanvasRowEntry(rows[1], "logo_psd", true) == GraphCanvasRowEntry{"logo_psd", "group_1", true});
+    // An import: its definition, read only, at the stack no node of it reads.
+    std::vector<GraphCanvasNode> inside;
+    inside.push_back(node("layer_group", "canvas.stack", Json{{"size", {64, 64}}, {"layers", Json::array()}}));
+    inside.push_back(node("psd_root", "canvas.stack", Json{{"size", {64, 64}}, {"layers", Json::array()}}));
+    connect(inside.back(), "layer_group", "layer_group", "layer", std::string{graphCanvasLayerType});
+    CHECK(graphCanvasRootStack(inside) == "psd_root");
+    CHECK(graphCanvasRowEntry(rows[0], "", false, inside) == GraphCanvasRowEntry{"logo_psd", "psd_root", true});
+    CHECK(graphCanvasRowEntry(rows[0], "", false) == GraphCanvasRowEntry{"logo_psd", "", true});
+    // A shape goes nowhere.
+    CHECK_FALSE(graphCanvasRowEntry(rows[2], "", false));
+
+    // The definition a layer reads as an import is read only; another is not.
+    CHECK(graphCanvasImportedDefinition(nodes, "logo_psd"));
+    CHECK_FALSE(graphCanvasImportedDefinition(nodes, "other"));
+    CHECK_FALSE(graphCanvasImportedDefinition(nodes, ""));
+    CHECK_FALSE(graphCanvasImportedDefinition(document(), "logo_psd"));
+
+    // The mask's port and its line, as the row already says.
+    CHECK(rows[3].mask == "card_mask");
+    CHECK(rows[3].mask_source.empty());
+}

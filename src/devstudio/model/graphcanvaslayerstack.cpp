@@ -147,6 +147,13 @@ Json addLayerOps(std::string_view scope, const GraphCanvasNode &stack, std::size
                         setInput(scope, stack.id, input, edge(source, source_port))});
 }
 
+// NB-2a: where a + puts its layer -- just above the picked row `above`, on
+// top without one (or with one past the top).
+std::size_t aboveAt(const GraphCanvasNode &stack, std::optional<std::size_t> above) {
+    const auto count = layersOf(stack).size();
+    return above && *above < count ? *above + 1 : count;
+}
+
 void append(Json &ops, Json more) {
     for (auto &op : more) ops.push_back(std::move(op));
 }
@@ -288,6 +295,41 @@ std::string graphCanvasLayerKindText(const GraphCanvasStackRow &row) {
     return text;
 }
 
+std::string graphCanvasLayerOpacityPort(std::string_view input) { return opacityPort(input); }
+
+std::optional<GraphCanvasRowEntry> graphCanvasRowEntry(const GraphCanvasStackRow &row, std::string_view scope,
+                                                       bool read_only,
+                                                       const std::vector<GraphCanvasNode> &definition_nodes) {
+    if (row.kind == "group" && !row.source.empty())
+        return GraphCanvasRowEntry{std::string{scope}, row.source, read_only};
+    if (row.kind == "import" && !row.definition.empty())
+        return GraphCanvasRowEntry{row.definition, graphCanvasRootStack(definition_nodes), true};
+    return std::nullopt;
+}
+
+std::string graphCanvasRootStack(const std::vector<GraphCanvasNode> &nodes) {
+    for (const auto &node : nodes) {
+        if (node.op != "canvas.stack") continue;
+        const bool read = std::ranges::any_of(nodes, [&](const GraphCanvasNode &reader) {
+            return std::ranges::any_of(reader.inputs, [&](const GraphCanvasPort &port) {
+                return port.connected && port.source_node == node.id;
+            });
+        });
+        if (!read) return node.id;
+    }
+    return {};
+}
+
+bool graphCanvasImportedDefinition(const std::vector<GraphCanvasNode> &nodes, std::string_view definition) {
+    if (definition.empty()) return false;
+    for (const auto &each : nodes) {
+        if (each.op != "canvas.stack") continue;
+        for (const auto &row : graphCanvasLayerRows(nodes, each.id))
+            if (row.kind == "import" && row.definition == definition) return true;
+    }
+    return false;
+}
+
 std::string graphCanvasStackFor(const std::vector<GraphCanvasNode> &nodes, std::string_view node) {
     const auto *found = findNode(nodes, node);
     if (found == nullptr) return {};
@@ -397,7 +439,8 @@ Json graphCanvasPaletteOps(const std::vector<GraphCanvasNode> &nodes, std::strin
 }
 
 Json graphCanvasAddShapeLayerOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
-                                 std::string_view stack, std::string_view shape) {
+                                 std::string_view stack, std::string_view shape,
+                                 std::optional<std::size_t> above) {
     const auto *target = stackNode(nodes, stack);
     if (target == nullptr || (shape != "rect" && shape != "ellipse")) return Json::array();
     const auto numbered = numberedId(nodes, target, std::string{shape}, {"_fill"});
@@ -412,13 +455,13 @@ Json graphCanvasAddShapeLayerOps(const std::vector<GraphCanvasNode> &nodes, std:
                                       {"parameters", Json{{"color", colorJson(color)}}},
                                       {"inputs", Json{{"geometry", edge(numbered.id, "geometry")}}},
                                       {"outputs", Json::array({"layer"})}}));
-    append(ops, addLayerOps(scope, *target, layersOf(*target).size(), numbered.id,
+    append(ops, addLayerOps(scope, *target, aboveAt(*target, above), numbered.id,
                             capitalized(shape) + " " + std::to_string(numbered.number), fill, "layer"));
     return ops;
 }
 
 Json graphCanvasAddGroupLayerOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
-                                 std::string_view stack) {
+                                 std::string_view stack, std::optional<std::size_t> above) {
     const auto *target = stackNode(nodes, stack);
     if (target == nullptr) return Json::array();
     const auto numbered = numberedId(nodes, target, "group");
@@ -429,7 +472,7 @@ Json graphCanvasAddGroupLayerOps(const std::vector<GraphCanvasNode> &nodes, std:
                                       {"parameters", Json{{"size", Json::array({size[0], size[1]})},
                                                           {"layers", Json::array()}}},
                                       {"outputs", Json::array({"layer"})}}));
-    append(ops, addLayerOps(scope, *target, layersOf(*target).size(), numbered.id,
+    append(ops, addLayerOps(scope, *target, aboveAt(*target, above), numbered.id,
                             "Group " + std::to_string(numbered.number), numbered.id, "layer"));
     return ops;
 }
@@ -524,14 +567,21 @@ Json graphCanvasDeleteLayerOps(const std::vector<GraphCanvasNode> &nodes, std::s
 
 Json graphCanvasMoveLayerOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
                              std::string_view stack, std::size_t index, int delta) {
-    const auto *target = stackNode(nodes, stack);
-    if (target == nullptr || (delta != 1 && delta != -1)) return Json::array();
-    auto layers = layersOf(*target);
-    if (index >= layers.size()) return Json::array();
+    if (delta != 1 && delta != -1) return Json::array();
     if (delta < 0 && index == 0) return Json::array();
-    const auto other = delta > 0 ? index + 1 : index - 1;
-    if (other >= layers.size()) return Json::array();
-    std::swap(layers.at(index), layers.at(other));
+    return graphCanvasMoveLayerToOps(nodes, scope, stack, index, delta > 0 ? index + 1 : index - 1);
+}
+
+Json graphCanvasMoveLayerToOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
+                               std::string_view stack, std::size_t from, std::size_t to) {
+    const auto *target = stackNode(nodes, stack);
+    if (target == nullptr) return Json::array();
+    auto layers = layersOf(*target);
+    if (from >= layers.size() || to >= layers.size() || from == to) return Json::array();
+    // The element itself travels: its input, name, opacity, blend, mask...
+    auto moved = std::move(layers.at(from));
+    layers.erase(layers.begin() + static_cast<std::ptrdiff_t>(from));
+    layers.insert(layers.begin() + static_cast<std::ptrdiff_t>(to), std::move(moved));
     auto parameters = target->parameters;
     parameters["layers"] = std::move(layers);
     return Json::array({setParameters(scope, target->id, std::move(parameters))});
@@ -569,14 +619,21 @@ Json graphCanvasConnectLayerOps(const std::vector<GraphCanvasNode> &nodes, std::
                                 std::string_view stack, const std::string &source_node,
                                 const std::string &source_port) {
     const auto *target = stackNode(nodes, stack);
+    if (target == nullptr) return Json::array();
+    return graphCanvasInsertLayerOps(nodes, scope, stack, layersOf(*target).size(), source_node, source_port);
+}
+
+Json graphCanvasInsertLayerOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
+                               std::string_view stack, std::size_t at, const std::string &source_node,
+                               const std::string &source_port) {
+    const auto *target = stackNode(nodes, stack);
     const auto *source = findNode(nodes, source_node);
     if (target == nullptr || source == nullptr || source_node == target->id) return Json::array();
     // The input is named after what it reads (no dot: the engine refuses one).
     auto base = source_node;
     std::ranges::replace(base, '.', '_');
     const auto input = freeId({}, target, base);
-    return addLayerOps(scope, *target, layersOf(*target).size(), input, source->heading(),
-                       source_node, source_port);
+    return addLayerOps(scope, *target, at, input, source->heading(), source_node, source_port);
 }
 
 Json graphCanvasDisconnectLayerOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
@@ -641,7 +698,8 @@ std::string graphCanvasDefinitionStack(const Json &definition) {
 
 Json graphCanvasAddImageLayerOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
                                  std::string_view stack, const std::string &asset,
-                                 const std::array<double, 2> &size, const std::string &name) {
+                                 const std::array<double, 2> &size, const std::string &name,
+                                 std::optional<std::size_t> above) {
     const auto *target = stackNode(nodes, stack);
     if (target == nullptr || asset.empty() || size[0] <= 0.0 || size[1] <= 0.0) return Json::array();
     const auto numbered = numberedId(nodes, target, "image");
@@ -654,7 +712,7 @@ Json graphCanvasAddImageLayerOps(const std::vector<GraphCanvasNode> &nodes, std:
                                                                                   (canvas[1] - size[1]) / 2.0})},
                                                           {"size", Json::array({size[0], size[1]})}}},
                                       {"outputs", Json::array({"layer"})}}));
-    append(ops, addLayerOps(scope, *target, layersOf(*target).size(), numbered.id,
+    append(ops, addLayerOps(scope, *target, aboveAt(*target, above), numbered.id,
                             name.empty() ? "Image " + std::to_string(numbered.number) : name, numbered.id,
                             "layer"));
     return ops;
@@ -1062,7 +1120,7 @@ const GraphCanvasStackRow *rowAt(const std::vector<GraphCanvasStackRow> &rows, s
 
 Json graphCanvasAddTextLayerOps(const std::vector<GraphCanvasNode> &nodes, std::string_view scope,
                                 std::string_view stack, const std::string &text, const std::string &font,
-                                double size) {
+                                double size, std::optional<std::size_t> above) {
     const auto *target = stackNode(nodes, stack);
     if (target == nullptr || font.empty() || !(size > 0.0)) return Json::array();
     const auto numbered = numberedId(nodes, target, "text", {"_fill"});
@@ -1083,7 +1141,7 @@ Json graphCanvasAddTextLayerOps(const std::vector<GraphCanvasNode> &nodes, std::
                                       {"parameters", Json{{"color", colorJson(swatch("White").color)}}},
                                       {"inputs", Json{{"geometry", edge(numbered.id, "geometry")}}},
                                       {"outputs", Json::array({"layer"})}}));
-    append(ops, addLayerOps(scope, *target, layersOf(*target).size(), numbered.id, name, fill, "layer"));
+    append(ops, addLayerOps(scope, *target, aboveAt(*target, above), numbered.id, name, fill, "layer"));
     return ops;
 }
 
@@ -1196,8 +1254,7 @@ Json graphCanvasAddAdjustmentLayerOps(const std::vector<GraphCanvasNode> &nodes,
     const auto numbered = numberedId(nodes, target, filterBase(op), {"_backdrop"});
     if (numbered.number == 0) return Json::array();
     const auto backdrop = numbered.id + "_backdrop";
-    const auto count = layersOf(*target).size();
-    const auto at = above && *above < count ? *above + 1 : count;
+    const auto at = aboveAt(*target, above);
     Json ops = Json::array();
     ops.push_back(addNode(scope, Json{{"id", backdrop}, {"op", "canvas.backdrop"}, {"parameters", Json::object()},
                                       {"outputs", Json::array({"layer"})}}));
