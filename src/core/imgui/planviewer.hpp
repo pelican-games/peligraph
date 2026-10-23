@@ -44,7 +44,9 @@ struct PlanViewerNode {
     std::string name;
     std::string kind;
     std::size_t order = 0;
-    std::size_t level = 0;
+    // The canvas column: one right of the latest node it waits on through a
+    // barrier. The viewer's own layout; the plan publishes order and barriers.
+    std::size_t column = 0;
     std::vector<std::string> reads;
     std::vector<std::string> writes;
     std::string source;

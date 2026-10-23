@@ -54,8 +54,6 @@ inline constexpr int FramePlanRepresentationRole = Qt::UserRole + 3078;
 inline constexpr int FramePlanLifetimeUsedRole = Qt::UserRole + 3079;
 inline constexpr int FramePlanLifetimeFirstRole = Qt::UserRole + 3080;
 inline constexpr int FramePlanLifetimeLastRole = Qt::UserRole + 3081;
-inline constexpr int FramePlanLogicalStateRole = Qt::UserRole + 3083;
-inline constexpr int FramePlanReasonCodeRole = Qt::UserRole + 3084;
 inline constexpr int FramePlanBundleOrderRole = Qt::UserRole + 3085;
 inline constexpr int FramePlanCurveRole = Qt::UserRole + 3086;
 inline constexpr int FramePlanGroupIdRole = Qt::UserRole + 3088;
@@ -128,7 +126,6 @@ inline constexpr auto FramePlanPhysicalContextItem = "physical_context";
 inline constexpr auto FramePlanResourceLifetimeItem = "resource_lifetime";
 inline constexpr auto FramePlanAliasOverlayItem = "alias_overlay";
 inline constexpr auto FramePlanPhysicalSelectionItem = "physical_selection";
-inline constexpr auto FramePlanLogicalUnavailableItem = "logical_unavailable";
 // The heading band, one socket, and one resource-row name. They carry the node
 // they belong to in FramePlanNameRole, exactly as the node label does.
 inline constexpr auto FramePlanNodeHeaderItem = "node_header";

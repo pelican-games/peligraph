@@ -19,7 +19,6 @@
 #include "../src/core/loader/ktx2.hpp"
 #include "../src/core/renderer/viewfamilyproviderregistry.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
-#include "../src/core/renderingpass/frameexecutionadapter.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
@@ -3163,8 +3162,10 @@ TEST_CASE("startup feature overlay is explicit, additive, and purgeable",
             std::vector<std::string>{"bloom", "ui", "gizmo", "picking",
                                      "gpu_timing"});
 
+    // The plan's nodes, its order and its barriers.
     struct FramePlanTopology {
         std::set<std::tuple<std::string, std::string>> nodes;
+        std::vector<std::string> order;
         std::set<std::tuple<std::string, std::string, std::string,
                             std::string>> edges;
     };
@@ -3176,21 +3177,15 @@ TEST_CASE("startup feature overlay is explicit, additive, and purgeable",
             parseFrameGraphDefinitionsFromConfigJson(composition.config);
         REQUIRE(graphs.size() == 1);
         const auto plan = planFrameGraph(graphs.front());
-        const auto execution = compileFrameExecutionPlan(
-            graphs.front(), plan,
-            ExecutionEndpoint{
-                .id = "device:0",
-                .endpoint_class = ExecutionEndpointClass::device,
-                .backend = "vulkan",
-            });
         FramePlanTopology result;
         for (const auto &node : plan.nodes) {
             result.nodes.emplace(node.name,
                                  framePlanNodeKindName(node.kind));
+            result.order.push_back(node.name);
         }
-        for (const auto &edge : execution.dependencies) {
-            result.edges.emplace(edge.from, edge.to, edge.reason,
-                                 edge.resource);
+        for (const auto &barrier : plan.barriers) {
+            result.edges.emplace(barrier.from, barrier.to, barrier.kind,
+                                 barrier.resource);
         }
         return result;
     };
@@ -3204,6 +3199,8 @@ TEST_CASE("startup feature overlay is explicit, additive, and purgeable",
     REQUIRE(authored_topology.edges != before_gpu_timing_topology.edges);
     REQUIRE(with_gpu_timing_topology.nodes ==
             before_gpu_timing_topology.nodes);
+    REQUIRE(with_gpu_timing_topology.order ==
+            before_gpu_timing_topology.order);
     REQUIRE(with_gpu_timing_topology.edges ==
             before_gpu_timing_topology.edges);
 
@@ -3267,8 +3264,10 @@ TEST_CASE("P-2a-4a a pelican.graph root composes like its legacy twin and takes 
             Pelican::TestSupport::renderGraphRoot(renderingSectionOf(shipping)));
     const auto legacy = renderingSectionOf(shipping);
 
+    // The plan's nodes, its order and its barriers.
     struct Topology {
         std::set<std::tuple<std::string, std::string>> nodes;
+        std::vector<std::string> order;
         std::set<std::tuple<std::string, std::string, std::string,
                             std::string>> edges;
     };
@@ -3282,18 +3281,13 @@ TEST_CASE("P-2a-4a a pelican.graph root composes like its legacy twin and takes 
             parseFrameGraphDefinitionsFromConfigJson(composition.config);
         REQUIRE(graphs.size() == 1);
         const auto plan = planFrameGraph(graphs.front());
-        const auto execution = compileFrameExecutionPlan(
-            graphs.front(), plan,
-            ExecutionEndpoint{
-                .id = "device:0",
-                .endpoint_class = ExecutionEndpointClass::device,
-                .backend = "vulkan",
-            });
         Topology result;
-        for (const auto &node : plan.nodes)
+        for (const auto &node : plan.nodes) {
             result.nodes.emplace(node.name, framePlanNodeKindName(node.kind));
-        for (const auto &edge : execution.dependencies)
-            result.edges.emplace(edge.from, edge.to, edge.reason, edge.resource);
+            result.order.push_back(node.name);
+        }
+        for (const auto &barrier : plan.barriers)
+            result.edges.emplace(barrier.from, barrier.to, barrier.kind, barrier.resource);
         return result;
     };
 
@@ -3331,6 +3325,7 @@ TEST_CASE("P-2a-4a a pelican.graph root composes like its legacy twin and takes 
     REQUIRE(graph_config == legacy_config);
     const auto legacy_topology = topology(legacy_composition);
     REQUIRE(topology(graph_composition).nodes == legacy_topology.nodes);
+    REQUIRE(topology(graph_composition).order == legacy_topology.order);
     REQUIRE(topology(graph_composition).edges == legacy_topology.edges);
 
     // A preset under a graph root resolves the same way (no test existed, and
@@ -7283,19 +7278,21 @@ nlohmann::json lp0eComparablePlan(const nlohmann::json &plan, const std::string 
     const auto rename = [&](Json &value) {
         if (value.is_string() && value.get<std::string>() == from) value = to;
     };
-    Json result{{"nodes", plan.at("nodes")}, {"barriers", plan.at("barriers")}, {"levels", plan.at("levels")}};
+    Json result{{"nodes", plan.at("nodes")}, {"barriers", plan.at("barriers")}, {"order", Json::array()}};
+    std::vector<std::pair<std::size_t, std::string>> order;
     for (auto &node : result["nodes"]) {
         for (const auto *key : {"source", "provider_feature", "provider_ref", "authored_name", "origin", "replaces"})
             node.erase(key);
         rename(node["name"]);
         if (node.contains("snapshot_after")) rename(node["snapshot_after"]);
+        order.emplace_back(node.at("order").get<std::size_t>(), node.at("name").get<std::string>());
     }
     for (auto &barrier : result["barriers"]) {
         rename(barrier["from"]);
         rename(barrier["to"]);
     }
-    for (auto &level : result["levels"])
-        for (auto &name : level) rename(name);
+    std::sort(order.begin(), order.end());
+    for (const auto &[position, name] : order) result["order"].push_back(name);
     return result;
 }
 } // namespace
@@ -7689,14 +7686,14 @@ void lp1cRequireSamePlan(const RenderFeatureComposeResult &one_piece, const Rend
         INFO(one_nodes.at(i).dump() << "\n" << graph_nodes.at(i).dump());
         CHECK(one_nodes.at(i) == graph_nodes.at(i));
     }
-    CHECK(one_piece_plan.at("levels") == decomposed_plan.at("levels"));
+    CHECK(one_piece_plan.at("order") == decomposed_plan.at("order"));
     CHECK(one_piece_plan.at("barriers") == decomposed_plan.at("barriers"));
 }
 } // namespace
 
 // LP-1c acceptance 3, bloom: engine://graphs/bloom_loop.json taken into a
 // project in place of engine://features/bloom.json composes the same main
-// frame plan -- the same passes in the same order and levels, reading and
+// frame plan -- the same passes in the same order, reading and
 // writing the same resources, with the same barriers -- once each name of the
 // feature is spelled as the graph spells it (lp1cBloomNames). Its targets have
 // the feature's formats and sizes, and its passes bind the same images in the
@@ -10200,7 +10197,7 @@ TEST_CASE("FR-1 a snapshot after a name the pipeline lacks is refused with the n
           std::vector<std::string>{"post_ldr", "present"});
 
     // Each candidate composes, and the copy follows a frame node that the
-    // execution plan knows (the anchor's, not its bare name).
+    // plan knows (the anchor's, not its bare name).
     for (const auto &candidate : fields.at("candidates")) {
         INFO(candidate.dump());
         auto fixed = document;
@@ -10216,13 +10213,13 @@ TEST_CASE("FR-1 a snapshot after a name the pipeline lacks is refused with the n
         const auto graphs = parseFrameGraphDefinitionsFromConfigJson(composed.config);
         REQUIRE(graphs.size() == 1);
         const auto plan = planFrameGraph(graphs.front());
-        const auto execution = compileFrameExecutionPlan(
-            graphs.front(), plan,
-            ExecutionEndpoint{.id = "device:0", .endpoint_class = ExecutionEndpointClass::device, .backend = "vulkan"});
-        CHECK(std::any_of(execution.dependencies.begin(), execution.dependencies.end(), [](const auto &edge) {
-            return edge.from == "__anchor_post_ldr" && edge.to == "__snapshot_opaque_snapshot" &&
-                   edge.reason == "pelican.dependency.snapshot_after@1";
-        }));
+        const auto anchor = std::ranges::find(plan.nodes, std::string{"__anchor_post_ldr"}, &FramePlanNode::name);
+        const auto snapshot =
+            std::ranges::find(plan.nodes, std::string{"__snapshot_opaque_snapshot"}, &FramePlanNode::name);
+        REQUIRE(anchor != plan.nodes.end());
+        REQUIRE(snapshot != plan.nodes.end());
+        CHECK(snapshot->snapshot_after == "__anchor_post_ldr");
+        CHECK(anchor->order < snapshot->order);
     }
 }
 

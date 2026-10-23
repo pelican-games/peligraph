@@ -98,9 +98,9 @@ Fixture graphDocument(const std::string &name, const std::string &path,
     return fixture;
 }
 
-// The frame plan, whose nodes are passes and whose relation is the execution
-// plan's dependencies. The scene draws one line per pair however many
-// resources it carries, so the pairs are collapsed here the same way.
+// The frame plan, whose nodes are passes and whose relation is the plan's
+// barriers. The scene draws one line per pair however many resources it
+// carries, so the pairs are collapsed here the same way.
 Fixture framePlan(const std::string &name, const std::string &path) {
     const Json document = readJson(path);
     Fixture fixture;
@@ -115,15 +115,34 @@ Fixture framePlan(const std::string &name, const std::string &path) {
             LayoutNode{id, NodeMinimumWidth, bodyHeight(rows)});
     }
     std::set<std::pair<std::string, std::string>> seen;
-    for (const auto &dependency :
-         document.at("execution_plan").at("dependencies")) {
-        const auto from = dependency.at("from").get<std::string>();
-        const auto to = dependency.at("to").get<std::string>();
+    for (const auto &barrier : document.at("barriers")) {
+        const auto from = barrier.at("from").get<std::string>();
+        const auto to = barrier.at("to").get<std::string>();
         if (!present.contains(from) || !present.contains(to) || from == to)
             continue;
         if (!seen.emplace(from, to).second) continue;
         fixture.edges.push_back(LayoutEdge{from, to});
     }
+    return fixture;
+}
+
+// The same passes over the relation the Frame Plan drew when N-4 measured this
+// file: the barriers and the explicit after / before / snapshot_after order
+// (execution_plan.dependencies, gone from get_frame_plan since RC-2), frozen
+// as a layout input beside the plan. On the barriers alone the example comes
+// out untangled with the sweeps off too; this graph is the one they untangle.
+Fixture frozenFramePlan(const std::string &name, const std::string &path) {
+    Fixture fixture = framePlan(name, path);
+    fixture.edges.clear();
+    const std::string edges_path =
+        path.substr(0, path.find_last_of("/\\") + 1) +
+        "nodelayout_n4_frame_plan_edges.json";
+    // Held by name: a range-for over a member of readJson's temporary would
+    // read the document after it was destroyed.
+    const Json frozen = readJson(edges_path);
+    for (const auto &pair : frozen.at("edges"))
+        fixture.edges.push_back(LayoutEdge{pair.at(0).get<std::string>(),
+                                           pair.at(1).get<std::string>()});
     return fixture;
 }
 
@@ -176,11 +195,16 @@ Fixture nodeVisuals() {
 Fixture examplePlan() {
     return framePlan("example frame plan", PELICAN_TEST_FRAME_PLAN_FIXTURE);
 }
+Fixture n4ExamplePlan() {
+    return frozenFramePlan("example frame plan, N-4 relation",
+                           PELICAN_TEST_FRAME_PLAN_FIXTURE);
+}
 
-// What each fixture measured on the day N-4 landed. `legacy` is what the old
-// rule produced on the same numbers; `chosen` is what the placement under test
-// produced. Both are asserted: the first is the promise the spec made, the
-// second is what makes a quiet regression loud.
+// What each fixture measured on the day N-4 landed (the example plan's
+// barriers: on the day RC-2 took the order-only relation out of the plan).
+// `legacy` is what the old rule produced on the same numbers; `chosen` is what
+// the placement under test produced. Both are asserted: the first is the
+// promise the spec made, the second is what makes a quiet regression loud.
 struct Expectation {
     Fixture (*build)();
     std::size_t legacy_crossings;
@@ -192,7 +216,8 @@ const Expectation Expectations[] = {
     {&posegraphRoot, 0, 0, 0},
     {&posegraphWalkRun, 0, 0, 1},
     {&nodeVisuals, 0, 0, 0},
-    {&examplePlan, 133, 44, 41},
+    {&examplePlan, 21, 0, 7},
+    {&n4ExamplePlan, 133, 44, 41},
 };
 
 } // namespace
@@ -284,8 +309,9 @@ TEST_CASE("The barycenter sweeps are what untangle the drawing",
     // The control, standing: with the sweeps switched off, the same fixture
     // comes out of the same code far more tangled. This is the measurement
     // that says the sweeps are doing the work the number above credits them
-    // with -- not the layering, and not the coordinates.
-    const Fixture fixture = examplePlan();
+    // with -- not the layering, and not the coordinates. The example plan's own
+    // barriers come out untangled either way, so this is its N-4 relation.
+    const Fixture fixture = n4ExamplePlan();
     LayoutOptions none;
     none.ordering_sweeps = 0;
     const NodeGraphLayout unswept =

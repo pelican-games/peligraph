@@ -1,7 +1,5 @@
 #include "rendercompilerprogram.hpp"
 
-#include "frameexecutionadapter.hpp"
-
 #include <algorithm>
 #include <set>
 #include <stdexcept>
@@ -106,8 +104,7 @@ void validateVariantOutput(
         }
         if (variant.compiled_pipeline != nullptr ||
             variant.physical_package != nullptr ||
-            !variant.frame_plans.empty() ||
-            !variant.execution_plans.empty()) {
+            !variant.frame_plans.empty()) {
             throw std::runtime_error(
                 "Render compiler unavailable data-only artifact "
                 "returned compiled output");
@@ -170,26 +167,6 @@ void validateVariantOutput(
     if (request.artifact ==
         RenderCompilerProgramArtifact::
             runtime_package) {
-        if (variant.execution_plans.size() !=
-            variant.frame_plans.size()) {
-            throw std::runtime_error(
-                "Render compiler runtime artifact execution-plan "
-                "coverage does not match its frame plans");
-        }
-        for (const auto &[name, frame_plan] :
-             variant.frame_plans) {
-            const auto execution =
-                variant.execution_plans.find(name);
-            if (execution ==
-                variant.execution_plans.end()) {
-                throw std::runtime_error(
-                    "Render compiler runtime artifact lacks an "
-                    "execution plan for graph: " +
-                    name);
-            }
-            validateFrameExecutionPlanCompatibility(
-                execution->second, frame_plan);
-        }
         if (variant.physical_package == nullptr) {
             throw std::runtime_error(
                 "Render compiler runtime artifact "
@@ -214,11 +191,10 @@ void validateVariantOutput(
                 "Render compiler data-only artifact "
                 "returned a physical package");
         }
-        if (!variant.frame_plans.empty() ||
-            !variant.execution_plans.empty()) {
+        if (!variant.frame_plans.empty()) {
             throw std::runtime_error(
                 "Render compiler data-only artifact returned "
-                "runtime execution plans");
+                "runtime frame plans");
         }
     }
 

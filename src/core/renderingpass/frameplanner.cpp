@@ -784,12 +784,6 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
         node.ray_query_acceleration_structure = query.value_or("scene");
     }
     if (type == RenderPassType::ui || type == RenderPassType::imgui) node.ray_query = false;
-    if (type == RenderPassType::raster) {
-        node.semantic_dialect =
-            "pelican.logical.raster@1";
-        node.execution_implementation =
-            "pelican.execution.generic_raster_direct@1";
-    }
     node.raster_geometry =
         type == RenderPassType::material ||
         type == RenderPassType::shadow_depth ||
@@ -1212,12 +1206,6 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
         pass.view_family;
     node.view_select = pass.view_select;
     node.once = pass.once;
-    if (pass.isGenericRaster()) {
-        node.semantic_dialect =
-            "pelican.logical.raster@1";
-        node.execution_implementation =
-            "pelican.execution.generic_raster_direct@1";
-    }
     node.region_tags = pass.region_tags;
     node.raster_geometry =
         pass.isMaterial() || pass.isShadowDepth() ||
@@ -1595,19 +1583,6 @@ std::vector<size_t> topologicalOrder(const FrameGraphDefinition &definition, con
     return order;
 }
 
-std::vector<size_t> computeLevels(size_t node_count, const PlannerEdges &planner_edges,
-                                  const std::vector<size_t> &order) {
-    std::vector<size_t> levels(node_count, 0);
-    for (const auto node_index : order) {
-        for (const auto &edge : planner_edges.edges) {
-            if (edge.to == node_index) {
-                levels[node_index] = std::max(levels[node_index], levels[edge.from] + 1);
-            }
-        }
-    }
-    return levels;
-}
-
 // LP-Va2: get_frame_plan's nodes[].view_axes. The table is the provider's
 // (renderViewFamilyAxes); this only writes it out.
 nlohmann::json viewAxesJson(
@@ -1864,25 +1839,20 @@ FramePlan planFrameGraph(const FrameGraphDefinition &definition) {
     validateWritesAreOrdered(definition, reachability);
     const auto order = topologicalOrder(definition, planner_edges);
     addWriteAfterWriteBarriers(planner_edges, definition, order);
-    const auto levels_by_node = computeLevels(definition.nodes.size(), planner_edges, order);
 
     FramePlan plan;
     plan.name = definition.name;
     plan.barriers = planner_edges.barriers;
     plan.nodes.reserve(order.size());
 
-    size_t max_level = 0;
     for (size_t order_index = 0; order_index < order.size(); ++order_index) {
         const auto node_index_value = order[order_index];
         const auto &node_def = definition.nodes[node_index_value];
-        const auto level = levels_by_node[node_index_value];
-        max_level = std::max(max_level, level);
         plan.nodes.push_back(FramePlanNode{
             node_def.name,
             node_def.kind,
             node_def.declaration_index,
             order_index,
-            level,
             node_def.reads,
             node_def.reads_history,
             node_def.writes,
@@ -1894,11 +1864,6 @@ FramePlan planFrameGraph(const FrameGraphDefinition &definition) {
             node_def.view_select,
             node_def.once,
         });
-    }
-
-    plan.levels.resize(max_level + 1);
-    for (const auto &node : plan.nodes) {
-        plan.levels[node.level].push_back(node.name);
     }
     return plan;
 }
@@ -1985,7 +1950,6 @@ nlohmann::json framePlanToJson(
         auto node_json = nlohmann::json{
             {"declaration_index", node.declaration_index},
             {"kind", framePlanNodeKindName(node.kind)},
-            {"level", node.level},
             {"name", node.name},
             {"order", node.order},
             {"reads", node.reads},
@@ -2122,7 +2086,6 @@ nlohmann::json framePlanToJson(
     auto result = nlohmann::json{
         {"barriers", barriers_json},
         {"graph", plan.name},
-        {"levels", plan.levels},
         {"nodes", nodes_json},
         {"schema", "pelican.frame_plan"},
         {"version", 1},

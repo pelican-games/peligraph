@@ -1,5 +1,4 @@
 #include "framegraphruntime.hpp"
-#include "frameexecutionadapter.hpp"
 #include "../material/materialdrawlooptable.hpp"
 #include "../../project/materialdrawloop.hpp"
 #include "../../project/viewselect.hpp"
@@ -86,7 +85,6 @@ std::vector<CompiledMaterialRouteBinding> bindMaterialRoutes(
 
 CompiledFrameGraphExecution compileExecution(
     const CompiledRenderingPass &compiled_pass, FramePlan plan,
-    FrameExecutionPlan execution_plan,
     std::shared_ptr<const CompiledRenderPipeline> render_pipeline,
     std::shared_ptr<const VulkanTargetPlan> target_plan,
     std::shared_ptr<const PreparedVulkanNativeScopeGraph>
@@ -99,13 +97,6 @@ CompiledFrameGraphExecution compileExecution(
         throw std::runtime_error(
             "Frame graph execution requires a compiled render pipeline");
     }
-    if (execution_plan.graph.empty()) {
-        execution_plan =
-            makeCompatibilityFrameExecutionPlan(
-                plan);
-    }
-    validateFrameExecutionPlanCompatibility(
-        execution_plan, plan);
     auto pass_indices = renderPassIndices(compiled_pass);
     auto task_indices = computeTaskIndices(compiled_pass);
     auto material_routes =
@@ -113,8 +104,6 @@ CompiledFrameGraphExecution compileExecution(
 
     CompiledFrameGraphExecution execution;
     execution.plan = std::move(plan);
-    execution.execution_plan =
-        std::move(execution_plan);
     execution.render_pipeline = std::move(render_pipeline);
     execution.target_plan = std::move(target_plan);
     execution.native_scopes =
@@ -536,7 +525,6 @@ FrameGraphRuntimeContainer::prepareGeneration(
         auto execution = compileExecution(
             program.rendering_pass,
             std::move(program.frame_plan),
-            std::move(program.execution_plan),
             std::move(program.render_pipeline),
             std::move(program.target_plan),
             std::move(program.native_scopes),

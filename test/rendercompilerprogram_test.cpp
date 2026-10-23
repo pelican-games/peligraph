@@ -1,6 +1,5 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/renderconfigcandidate.hpp"
-#include "../src/core/renderingpass/frameexecutionadapter.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/rendercompilerprogram.hpp"
@@ -417,7 +416,6 @@ enum class NativeProgramFault {
     none,
     wrong_backend,
     missing_target_index,
-    missing_execution_plan,
     data_only_physical_package,
 };
 
@@ -505,14 +503,6 @@ class NativeVulkanProgram final
 
             auto frame_plan = FramePlan{
                 .name = "native_graph"};
-            if (fault_ !=
-                NativeProgramFault::
-                    missing_execution_plan) {
-                variant.execution_plans.emplace(
-                    "native_graph",
-                    makeCompatibilityFrameExecutionPlan(
-                        frame_plan));
-            }
             variant.frame_plans.emplace(
                 "native_graph",
                 std::move(frame_plan));
@@ -1050,17 +1040,6 @@ TEST_CASE(
                 "target-plan index is incomplete"));
     }
 
-    SECTION("execution graph index") {
-        NativeVulkanProgram program{
-            NativeProgramFault::
-                missing_execution_plan};
-        CHECK_THROWS_WITH(
-            runRenderCompilerProgram(
-                program, fixture.input()),
-            Catch::Matchers::ContainsSubstring(
-                "execution-plan coverage does not match"));
-    }
-
     SECTION("duplicate graph variant") {
         fixture.variants.push_back(
             fixture.variants.front());
@@ -1088,8 +1067,8 @@ TEST_CASE(
 
 
 // LP-Va: view_select travels from the rendering section through the
-// production compiler into the frame plan, the execution plan, and the
-// physical scope, and is checked by name at recompile time.
+// production compiler into the frame plan and the physical scope, and is
+// checked by name at recompile time.
 nlohmann::json lpvaViewSelectConfig(nlohmann::json first_select,
                                     std::string family = "$capture/cube") {
     const auto face_pass = [&](std::string name, nlohmann::json select) {
@@ -1184,12 +1163,6 @@ TEST_CASE("LP-Va view_select reaches the frame plan and the physical scope",
         }
     }
     CHECK(reported);
-    const auto &execution = variant.execution_plans.at("main");
-    const auto executed = std::find_if(
-        execution.nodes.begin(), execution.nodes.end(),
-        [](const auto &entry) { return entry.name == "face_first"; });
-    REQUIRE(executed != execution.nodes.end());
-    CHECK(executed->view_select == RenderViewSelect{{"face", 2}});
 
     const auto &physical =
         requireVulkanRenderCompilerPhysicalPackage(
@@ -1530,7 +1503,6 @@ TEST_CASE("VF-2 the reported reference is the one VF-1 refuses against",
 // planning compiles no shader).
 struct Lp0eCompiled {
     nlohmann::json frame_plan;
-    FrameExecutionPlan execution;
 };
 
 Lp0eCompiled lp0eCompile(nlohmann::json nodes, nlohmann::json definitions,
@@ -1558,8 +1530,7 @@ Lp0eCompiled lp0eCompile(nlohmann::json nodes, nlohmann::json definitions,
     const auto &variant = output.variants.front();
     REQUIRE(variant.compiled_pipeline != nullptr);
     return {framePlanToJson(variant.frame_plans.at("main_render"),
-                            variant.compiled_pipeline.get()),
-            variant.execution_plans.at("main_render")};
+                            variant.compiled_pipeline.get())};
 }
 
 nlohmann::json lp0eImageType(const char *semantic, const char *topology) {
@@ -1600,7 +1571,7 @@ TEST_CASE("LP-0e graph shadow_depth and snapshot_copy nodes compile in the "
           "features' passes' place",
           "[rendercompiler][view-select][lp0e][shadow][snapshot][cube]") {
     using Json = nlohmann::json;
-    SECTION("a cube capture copy: the same frame plan node and execution edge") {
+    SECTION("a cube capture copy: the same frame plan node and barriers") {
         const Json copy{
             {"id", "opaque_color_copy"},
             {"op", "render.snapshot_copy"},
@@ -1634,24 +1605,24 @@ TEST_CASE("LP-0e graph shadow_depth and snapshot_copy nodes compile in the "
               lp0ePlanNode(kept.frame_plan,
                            "cube_capture_snapshot_opaque_color",
                            "opaque_color_copy"));
-        const auto edge = [](const FrameExecutionPlan &plan,
-                             const std::string &to) {
+        const auto barriers = [](const nlohmann::json &plan,
+                                 const std::string &to) {
             std::vector<std::pair<std::string, std::string>> found;
-            for (const auto &dependency : plan.dependencies) {
-                if (dependency.to == to) {
-                    found.emplace_back(dependency.from, dependency.reason);
+            for (const auto &barrier : plan.at("barriers")) {
+                if (barrier.at("to") == to) {
+                    found.emplace_back(barrier.at("from").get<std::string>(),
+                                       barrier.at("kind").get<std::string>());
                 }
             }
             return found;
         };
-        const auto graph_edges = edge(graph.execution, "opaque_color_copy");
-        CHECK(graph_edges ==
-              edge(kept.execution, "cube_capture_snapshot_opaque_color"));
-        CHECK(std::find(graph_edges.begin(), graph_edges.end(),
-                        std::pair<std::string, std::string>{
-                            "cube_capture_forward_opaque",
-                            "pelican.dependency.snapshot_after@1"}) !=
-              graph_edges.end());
+        const auto graph_barriers =
+            barriers(graph.frame_plan, "opaque_color_copy");
+        CHECK_FALSE(graph_barriers.empty());
+        CHECK(graph_barriers ==
+              barriers(kept.frame_plan, "cube_capture_snapshot_opaque_color"));
+        CHECK(lpva2Node(graph.frame_plan, "opaque_color_copy")
+                  .at("snapshot_after") == "cube_capture_forward_opaque");
     }
     SECTION("a loop over the cascades, each copy selecting its own") {
         const Json body{
@@ -1699,14 +1670,6 @@ TEST_CASE("LP-0e graph shadow_depth and snapshot_copy nodes compile in the "
             CHECK(node.at("view_select") == Json{{"cascade", element}});
             CHECK(node.at("view_axes") == axes);
             CHECK(node.at("writes") == Json::array({"shadow_map"}));
-            const auto executed = std::find_if(
-                compiled.execution.nodes.begin(),
-                compiled.execution.nodes.end(),
-                [&](const auto &entry) { return entry.name == name; });
-            REQUIRE(executed != compiled.execution.nodes.end());
-            CHECK(executed->view_select ==
-                  RenderViewSelect{
-                      {"cascade", static_cast<std::uint32_t>(element)}});
         }
         for (const auto &node : compiled.frame_plan.at("nodes")) {
             CHECK(node.at("name") != "shadow_depth");
