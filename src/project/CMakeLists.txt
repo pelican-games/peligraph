@@ -37,6 +37,7 @@ add_library(pelican_project
     openpbrmapping.cpp
     packagemanifest.cpp
     passfieldownership.cpp
+    passfusion.cpp
     passshapepolicy.cpp
     physicaltargetplanwire.cpp
     prefab.cpp
