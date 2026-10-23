@@ -2546,13 +2546,16 @@ G-4 の時点では、保存していない scene の編集は確認なしにこ
 
 engine の RC-1 から、`get_frame_plan` は物理計画の image ごとの `bytes` と `memory_summary` を返します(数え方と注意は[第6章](06_rendering.md#physical-plan-memory) §6.6「物理 image の bytes と `memory_summary`」)。Frame Plan はそれを読んで 3 か所に出します。
 
+engine の RC-1b で `total_bytes` の意味が「この計画の image の和」から「公開中の世代が登録した render target 全部の和(どの graph も使わないものも入る)」に変わり、`unused_bytes`・`unused_resources`・`peak_graph` の鍵が増えました。Studio の側は変えていません。新しい 3 つの鍵は表示せず、読む所は知らない鍵を無視するので、RC-1b の engine の plan もそのまま開きます([読む所](../../src/devstudio/model/frameplanmodel.cpp#L2061))。
+
 - **status 行の末尾**: ` · RT <total_bytes> / peak <peak_live_bytes> at <peak_node>` を足します([足す所](../../src/devstudio/view/frameplanwidget.cpp#L4301))。`peak_node` が `null` なら ` at <peak_node>` は付きません。大きさの字は KiB / MiB の小数 1 桁です。
+  - RC-1b の engine では、`RT` は世代全体の登録の合計、`peak` は開いている graph の計画の値です。どの graph も使わない render target の分(`unused_bytes`)は `RT` に含まれますが、内訳としては出ません。
   - 例: test の 160×90 の plan で ` · RT 852.7 KiB / peak 576.6 KiB at lighting_pass`。1920×1080 の example なら `RT 119.9 MiB / peak 81.1 MiB at lighting_pass` です(第6章の test の数を同じ書式で丸めた値で、画面では確かめていません)。
   - `memory_summary` の無い plan(RC-1 より前の engine、物理計画の無い plan)では何も足しません。
 - **Resources のタブ**: 行の `Resource facts` に `Bytes` の行が出ます([足す所](../../src/devstudio/view/frameplanwidget.cpp#L4920))。external の image(swapchain)と buffer には出ません。
 - **Physical plan のタブの `GPU resource arena (N)`**: 登録の行の 4 列目(Detail)が `declared_bytes` です([列に出す所](../../src/devstudio/view/frameplanwidget.cpp#L5151))。
   - RC-1 から render target の行に値が入ります(以前は `0 B`)。frame graph buffer は以前から buffer の大きさで、shader bundle・pipeline・pass 系と acceleration structure は `0 B` のままです。
-  - この列は登録時の値です。登録の後に同じ id のまま image を作り直す経路(window 以外の出力の resize、影の layer 数の変更)では古いままで、status 行や `Bytes`(plan を読み直すたびの今の大きさ)と食い違います。viewport の窓の大きさを変えたあとの値は未確認です(第6章の同じ節)。
+  - RC-1b の engine では、dump に出る render target の `declared_bytes` は dump を書き出す時点の metadata から数え直した値なので、登録の後に同じ id のまま image を作り直す経路(window 以外の出力の resize、影の layer 数の変更)の後も、status 行や `Bytes` と同じ今の大きさです。RC-1 の engine では登録時の値のままで、食い違うことがありました。viewport の窓の大きさを変えたあとの表示は画面では確かめていません(第6章の同じ節)。
 - test: `devstudio_frameplan_graph_test` の [「RC-1 the Frame Plan says on its status line what the physical plan's images take and where most of them are alive, and each image's bytes」](../../test/devstudio_frameplan_graph_test.cpp#L12920)。
 
 ## 15.9 Pass Editor

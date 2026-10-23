@@ -162,6 +162,10 @@
 - **RC-1 で済み(2026-10-23、`631caac21`)**: 計算は `src/project/targetrendermemory`、arena は登録時に render target の bytes を写す
   (frame graph buffer は以前から大きさ。shader bundle / pipeline / pass 系と acceleration structure は 0 のまま)。
   arena の値は登録時のもので、同じ id のまま image を作り直す経路(window 以外の resize、影の layer 数の変更)では更新されない。上の「今」の行は RC-1 の前の状態。
+- **RC-1b(2026-10-23、`504a6492a`)**: arena の構造体の `declared_bytes` は登録時のままだが、`get_frame_plan` の dump に出す render target の `declared_bytes` は書き出す時点の metadata から数え直す
+  (上の作り直しの経路の後も今の値。Studio の bytes 列は dump の値なのでそのまま今の値になる)。arena を直接読む消費者を足すと登録時の値を読む。
+  `memory_summary.total_bytes` は計画の和から「公開中の世代の arena に登録された render target 全部(runtime の alias の組ごとに 1 回)」に変わり、
+  `unused_bytes` / `unused_resources` / `peak_graph` の鍵が増えた(上の判定の「鍵は増えず」は RC-1 の時点のもの)。
 
 ### 2-5 anchor ノードと順序の二重化 — [段メモ](design_render_stage_as_canvas_filter.md) §3.2〜3.3 の通り
 

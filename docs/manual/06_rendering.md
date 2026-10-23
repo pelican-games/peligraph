@@ -1811,7 +1811,7 @@ request-local な preview graph はこの renderer runtime 投影の対象外で
 **同じ世代の `get_frame_plan` は、世代で決まる部分を使い回します。**返り値の形と bytes は変わりません。renderer は返り値を、公開した世代とその program で決まる部分と、呼ぶたびに読む部分に分けます。前者はその世代で最初に呼ばれたときに 1 回だけ組み、以後は写しに後者を足して返します([`framePlanGenerationPartJson()`](../../src/core/vkcore/renderer.cpp#L4303))。
 
 - 世代で決まる部分: `framePlanToJson` の plan(ループ・`diagnostics`・fold の決定を含む)、`gpu_owner_scope`、`window_output`、`gpu_resource_arena`、`physical_target_plan`(と `from_nodes`)、`native_scope_executors`、`sample_count_plan` など。
-- 呼ぶたびに読む部分: `shader_resolution`(source の file が在るかは今の file system)、`preview`、PS-1 の `last_run_*`・MP-1 の `drawn_materials`・LP-3a の draw_loop の要素など frame で変わる node の field、material filter、`runtime_resolution`、照明(`lighting_data_runtime`)、`sprite`、`initial_asset`、RC-1 の `memory_summary` と `physical_target_plan.resources[].bytes`(下の「[物理 image の bytes と `memory_summary`](#physical-plan-memory)」)など。
+- 呼ぶたびに読む部分: `shader_resolution`(source の file が在るかは今の file system)、`preview`、PS-1 の `last_run_*`・MP-1 の `drawn_materials`・LP-3a の draw_loop の要素など frame で変わる node の field、material filter、`runtime_resolution`、照明(`lighting_data_runtime`)、`sprite`、`initial_asset`、RC-1 の `memory_summary` と `physical_target_plan.resources[].bytes`、RC-1b の `gpu_resource_arena` の render target の `declared_bytes`(arena の他の部分は世代で決まる部分。下の「[物理 image の bytes と `memory_summary`](#physical-plan-memory)」)など。
 - 組み直すのは、世代(の object)・世代の番号・rendering pass の id・rendering の root の参照のどれかが変わったときです([FP-1 で組み直しを決める所](../../src/core/vkcore/renderer.cpp#L4615))。
 - commit の記録の計測: Debug の player、約 197 KB の返り値で、往復 190〜222 ms → 68〜84 ms(15 回の中央値、前後を交互に)。前後 6 組の返り値は byte 一致でした。test: `engine_primitives_test` の [「FP-1 get_frame_plan builds its generation's part once and reads a frame's part on every call」](../../test/engine_primitives_test.cpp#L2801)(GPU)。
 
@@ -1925,23 +1925,28 @@ flowchart TB
 
 注: tile-local の storage / transfer / host / non-render access、snapshot 由来、history / materialization 必須、store 必須、external depth export は対象外です。scope 融合には view family / view_select / sample 数の一致、node 制約、extent などの検査も要ります。cost は rendering scopes → materialized resources → external stores → transient bytes → bandwidth class → candidate 名の順で比較します。候補が全滅した場合や固定した pin が不適合なら拒否します。各表現のメモリと shader の扱い、format 非対応や複数 graph 共有の例外は以下に残します。
 
-#### 物理 image の bytes と `memory_summary`(RC-1)
+#### 物理 image の bytes と `memory_summary`(RC-1 / RC-1b)
 
 <a id="physical-plan-memory"></a>
 
-`get_frame_plan` は、物理計画の image が占める bytes を 2 か所に出します。数える式は planner 側に 1 つで([`targetrendermemory.hpp`](../../src/project/targetrendermemory.hpp#L18))、renderer・GPU arena・Studio はその答えを写すだけです。
+`get_frame_plan` は、render target の image が占める bytes を 3 か所に出します。1 枚の bytes を数える式は planner 側に 1 つで([`targetrendermemory.hpp`](../../src/project/targetrendermemory.hpp#L18))、renderer・GPU arena・Studio はその答えを写すだけです。合計(`total_bytes`)は RC-1b から、計画ではなく runtime が実際に登録したものから数えます。
 
 - **`physical_target_plan.resources[].bytes`**: その資源の image の bytes。texel の bytes × 幅 × 高さ × layers を mip の全段で足し(段ごとに幅と高さを半分にして切り捨て、1 より小さくしない)、history の target は 2 面分です。MSAA の target は面ごとに、sample する 1 sample の image(mip 込み)と、描き込む samples 倍の image(mip 0 だけ)の 2 枚を数えます([`imageResourceBytes()`](../../src/project/targetrendermemory.cpp#L78))。
-  - 付くのは representation が `materialized_image` / `transient_attachment` / `tile_local_attachment` の資源だけです。external(swapchain)と buffer、renderer が登録した render target を持たない資源には付きません。
-  - texel の大きさの表は engine に 1 つです([表](../../src/project/targetrendermemory.cpp#L19))。render target に書ける format は全部載っています(test で確かめています)。renderer の snapshot の `byte_size` や readback も同じ表を引きます。
-- **最上位の `memory_summary {total_bytes, peak_live_bytes, peak_node}`**([`summarizeVulkanTargetPlanMemory()`](../../src/project/targetrendermemory.cpp#L138)):
-  - `total_bytes` は image を 1 回ずつ足した和です。`alias_groups` の組は 1 つの確保を寿命の重ならない住人が順に使うので、組は最大の住人の bytes で 1 回だけ数えます。
-  - `peak_live_bytes` は、lowering graph の node の順番(order)ごとに、寿命 `[first_use, last_use]` がその order を含む image の bytes を足した和の最大です。`peak_node` はその最大を最初に取った order の node の名前で、bytes を持つ image が 1 つも無ければ `null` です。
+  - 付くのは representation が `materialized_image` / `transient_attachment` / `tile_local_attachment` の資源だけです。external(swapchain)と buffer には付きません。
+  - texel の大きさの表は engine に 1 つです([表](../../src/project/targetrendermemory.cpp#L19))。render target の JSON parser が受け付ける format(46 種)は全部この表に bytes を持ちます(test で固定しています)。renderer の snapshot の `byte_size` や readback も同じ表を引きます。
+- **最上位の `memory_summary {total_bytes, unused_bytes, unused_resources, peak_live_bytes, peak_node, peak_graph}`**:
+  - `total_bytes` は、**公開中の世代の GPU arena に登録された render target 全部**を、今の metadata で 1 回ずつ足した和です([`totalRegisteredTargetMemory()`](../../src/project/targetrendermemory.cpp#L185))。どの graph も使わない render target も入ります(登録は render target の定義を全部登録して確保するためです)。
+    - alias の組は、runtime の登録が残した組(registry の `aliasGroup(id)`)ごとに 1 回、組の中で最大の住人の 1 sample の image の bytes で数えます。MSAA の住人が描き込む samples 倍の image は住人ごとの確保なので、住人ごとに数えます。複数の graph で runtime が alias を取り消した資源は、計画に組があっても別々の確保として数えます。
+    - RC-1 では「この計画の image の和(計画の `alias_groups` の組は 1 回)」でした。graph が 1 本で未使用の render target が無ければ値は同じです(下の example の 125,776,320 は変わりません)。
+  - `unused_bytes` は `total_bytes` のうち、どの graph の物理計画にも出てこない render target の分です。alias の組の共有分は、住人が 1 つも使われないときだけ入ります。`unused_resources` はその render target の名前(sort 済み)です。OpenXR の mirror の中間 image は graph の外で engine が使うので、使用として扱います。
+  - `peak_live_bytes` は、**この graph の計画**の lowering graph の node の順番(order)ごとに、寿命 `[first_use, last_use]` がその order を含む image の bytes を足した和の最大です([`summarizeVulkanTargetPlanMemory()`](../../src/project/targetrendermemory.cpp#L138))。`peak_node` はその最大を最初に取った order の node の名前で、bytes を持つ image が 1 つも無ければ `null` です。`peak_graph` はその計画の graph 名です。`get_frame_plan` は 1 つの graph の dump なので、peak もその graph の分だけで、ほかの graph の peak はその graph の `get_frame_plan` が出します。total だけが世代全体の値です。
   - 物理計画の無い plan には `memory_summary` がありません。
+- **数えられない image は名前付きのエラーです**: 計画の image に runtime の render target の binding が無いとき、または arena や binding が指す id を生きている登録が持っていないとき、renderer は `frame_plan.memory_unmeasured@1: {"resource": <名前>, "reason": "unbound" | "not_registered"}` の文で例外を投げ、一部だけ数えた summary は返しません([投げる所](../../src/core/vkcore/renderer.cpp#L4480))。正しい状態では起きません(runtime の計画の検証が定義の無い image を先に拒否し、登録は定義を全部登録するため)。`get_frame_plan` の RPC のエラーとしての code / data の形は未確認です。
 - **上限として読みます**: transient / tile_local の image も同じ式で満額を数えます(lazily allocated memory に置かれれば、実際の確保はこれより小さいことがあります)。bytes は texel × extent の大きさで、`VkMemoryRequirements.size` の alignment や圧縮のメタデータは含みません。
-- **呼ぶたびに数えます**: renderer は `get_frame_plan` を呼ぶたびに、登録した image の今の extent と解決済みの mip 数から数えます([数える所](../../src/core/vkcore/renderer.cpp#L4896))。窓の大きさを変えた後は新しい大きさの値です(上の「プランダンプ」の、呼ぶたびに読む部分)。
-- **GPU arena の `declared_bytes` は登録時の値です**: `gpu_resource_arena` の render target の登録も同じ式の bytes を持ちます([登録で写す所](../../src/core/renderingpass/renderpipelinegpuarena.cpp#L582))。ただし登録の後に同じ id のまま image を作り直す経路(window 以外の出力の resize、影の view の数に合わせた layer 数の変更)では更新されません。window の出力は extent だけが変わっても構成ごと組み直すので(コードの注記)、そのあとの arena の値は未確認です。frame graph buffer は buffer の大きさ、shader bundle・pipeline・pass 系と acceleration structure は 0 です。
-- 例(test、GPU 不要): example を 1920×1080 の出力で計画すると、`total_bytes` は 125,776,320(119.95 MiB。21 枚が alias の 1 組を分け合って 20 の確保)、`peak_live_bytes` は 85,017,600(81.08 MiB)、`peak_node` は `lighting_pass`(order 3。G-buffer 5 枚・`offscreen_depth`・`ssao_blur`・`lit_color` が生きています)。`display` は出力の大きさ(1920×1080)で数えます([test](../../test/frameplanner_test.cpp#L2827))。
+- **呼ぶたびに数えます**: renderer は `get_frame_plan` を呼ぶたびに、登録した image の今の metadata(extent・layers・解決済みの mip 数)から数えます([数える所](../../src/core/vkcore/renderer.cpp#L4896))。窓の大きさを変えた後は新しい大きさの値です(上の「プランダンプ」の、呼ぶたびに読む部分)。
+- **GPU arena の `declared_bytes`**: `gpu_resource_arena` の render target の登録も同じ式の bytes を登録時に写します([登録で写す所](../../src/core/renderingpass/renderpipelinegpuarena.cpp#L582))。RC-1b から、dump に出す render target の `declared_bytes` は、書き出す時点の metadata から数え直した値です。登録の後に同じ id のまま image を作り直す経路(window 以外の出力の resize、影の view の数に合わせた layer 数の変更 `setRuntimeArrayLayers()`)の後も今の値になります。arena の構造体が持つ値そのものは登録時のままです(dump だけが今の値)。frame graph buffer は buffer の大きさ、shader bundle・pipeline・pass 系と acceleration structure は 0 です。
+- 例(test、GPU 不要): example を 1920×1080 の出力で計画すると、`total_bytes` は 125,776,320(119.95 MiB。21 枚が alias の 1 組を分け合って 20 の確保)、`unused_bytes` は 0、`peak_live_bytes` は 85,017,600(81.08 MiB)、`peak_node` は `lighting_pass`(order 3。G-buffer 5 枚・`offscreen_depth`・`ssao_blur`・`lit_color` が生きています)。`display` は出力の大きさ(1920×1080)で数えます([test](../../test/frameplanner_test.cpp#L2827))。
+  - どの graph も使わない 64×64 R8 の render target を 1 枚足して登録すると、`total_bytes` は 125,780,416、`unused_bytes` は 4,096、`unused_resources` は `["rc1b_unused"]` です。その後 `lit_color` の layers を 2 にすると、arena の `declared_bytes`・資源の `bytes`・`total_bytes`・`peak_live_bytes` がそろって 16,588,800 増えます([test](../../test/frameplanner_test.cpp#L2929)。renderer の `currentFramePlanJson()` を CPU だけの代役の登録で通します)。
 
 #### 自動 transient attachment
 

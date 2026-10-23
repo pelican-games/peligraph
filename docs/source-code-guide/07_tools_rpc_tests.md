@@ -460,7 +460,7 @@ plan の公開フィールドと2層を辿る規則は[第13章の frame plan](.
 
 `framePlanToJson()` は compiled pipeline の pass / resource provenance、once flag、fold planning を JSON へ変換します。root の文書参照は planner が持たないため renderer が渡します([変換](../../src/core/renderingpass/frameplanner.cpp#L1959))。
 
-`currentFramePlanJson()` は現在の世代を参照し、once 実行記録、画像の初期資産、直近 frame の material 描画記録を加えます。描画記録の program と generation が一致しない場合は加えません([renderer の付加処理](../../src/core/vkcore/renderer.cpp#L4656))。物理計画の image ごとの `bytes` と `memory_summary`(✅RC-1)も呼ぶたびに今の image から数えて加えます(式は `src/project/targetrendermemory`。第6章 §6.4「物理 image の bytes と `memory_summary`」)。
+`currentFramePlanJson()` は現在の世代を参照し、once 実行記録、画像の初期資産、直近 frame の material 描画記録を加えます。描画記録の program と generation が一致しない場合は加えません([renderer の付加処理](../../src/core/vkcore/renderer.cpp#L4656))。物理計画の image ごとの `bytes` と `memory_summary`(✅RC-1)も呼ぶたびに今の image から数えて加えます(式は `src/project/targetrendermemory`。第6章 §6.4「物理 image の bytes と `memory_summary`」)。RC-1b から `memory_summary.total_bytes` / `unused_bytes` / `unused_resources` は公開中の世代の GPU arena に登録された render target 全部から、peak と `peak_graph` は今の program の計画から数え、`gpu_resource_arena` の render target の `declared_bytes` も今の metadata で書き換えます([`appendFramePlanMemoryJson()`](../../src/core/vkcore/renderer.cpp#L4496))。数えられない計画の image は `frame_plan.memory_unmeasured@1` の例外で、一部だけの summary は返しません。
 
 `appendFramePlanPhysicalNodeReferences()` は物理層と論理 node の関係を結び、fold の参照も付けます。diagnostics は planner の未読出力判定と renderer の未使用 binding 判定から作ります。後者は reflection の `accessed` を使い、stage 間は OR です([参照の付加](../../src/core/renderingpass/frameplanner.cpp#L2270))。
 
