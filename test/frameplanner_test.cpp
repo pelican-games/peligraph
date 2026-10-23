@@ -132,6 +132,21 @@ void requirePlanFixture(const nlohmann::json &actual, const std::filesystem::pat
     REQUIRE(actual == readJson(path));
 }
 
+// A plan's node names in the order the plan runs them.
+std::vector<std::string> planOrder(const nlohmann::json &plan) {
+    std::vector<std::pair<std::size_t, std::string>> nodes;
+    for (const auto &node : plan.at("nodes")) {
+        nodes.emplace_back(node.at("order").get<std::size_t>(),
+                           node.at("name").get<std::string>());
+    }
+    std::sort(nodes.begin(), nodes.end());
+    std::vector<std::string> names;
+    for (auto &[order, name] : nodes) {
+        names.push_back(std::move(name));
+    }
+    return names;
+}
+
 std::vector<std::string> passNames(const RenderingPassDefinition &definition) {
     std::vector<std::string> names;
     names.reserve(definition.passes.size());
@@ -660,7 +675,6 @@ TEST_CASE("PO-1 a write nothing consumes is an unread_output diagnostic of the f
             .kind = FramePlanNodeKind::render,
             .declaration_index = order,
             .order = order,
-            .level = order,
             .reads = std::move(reads),
             .reads_history = std::move(reads_history),
             .writes = std::move(writes),
@@ -1541,7 +1555,7 @@ TEST_CASE("canonical C1b frame-plan diff preserves every legacy pass and target 
     REQUIRE(new_plan.nodes.back().name == "output_transform");
 }
 
-TEST_CASE("frame planner explicit after and before edges change levels", "[frameplanner]") {
+TEST_CASE("frame planner explicit after and before edges change the order", "[frameplanner]") {
     const auto base_graph = parseFrameGraphDefinitionFromJson(nlohmann::json::parse(R"json({
   "name": "explicit_edges_base",
   "render_targets": [
@@ -1596,7 +1610,18 @@ TEST_CASE("frame planner explicit after and before edges change levels", "[frame
 
     requirePlanFixture(base_plan_json, fixtureRoot() / "plans" / "explicit_edges_base.json");
     requirePlanFixture(edged_plan_json, fixtureRoot() / "plans" / "explicit_edges_after_before.json");
-    REQUIRE(base_plan_json.at("levels") != edged_plan_json.at("levels"));
+    // The edges move clear_b ahead of clear_a and clear_c. They are ordering
+    // only: nothing is read across them, so they add no barrier.
+    REQUIRE(planOrder(base_plan_json) ==
+            std::vector<std::string>{"clear_a", "clear_b", "clear_c", "present"});
+    REQUIRE(planOrder(edged_plan_json) ==
+            std::vector<std::string>{"clear_b", "clear_a", "clear_c", "present"});
+    REQUIRE(base_plan_json.at("barriers") == edged_plan_json.at("barriers"));
+    // RC-2: the plan publishes the order and the barriers, no levels.
+    REQUIRE_FALSE(edged_plan_json.contains("levels"));
+    for (const auto &node : edged_plan_json.at("nodes")) {
+        REQUIRE_FALSE(node.contains("level"));
+    }
 }
 
 TEST_CASE("frame planner feature-composed config plan matches fixture", "[frameplanner]") {
@@ -2421,12 +2446,13 @@ TEST_CASE(
             const auto after = framePlanToJson(
                 planFrameGraph(after_graphs[graph_index]));
 
-            // nodes includes each node's reads/writes; barriers and levels
-            // cover the data/control dependency topology. The final equality
-            // intentionally checks every other serialized plan field too.
+            // nodes includes each node's reads/writes; the order and the
+            // barriers cover the data/control dependency topology. The final
+            // equality intentionally checks every other serialized plan field
+            // too.
             REQUIRE(before.at("nodes") == after.at("nodes"));
+            REQUIRE(planOrder(before) == planOrder(after));
             REQUIRE(before.at("barriers") == after.at("barriers"));
-            REQUIRE(before.at("levels") == after.at("levels"));
             REQUIRE(before == after);
             ++compared_plans;
         }

@@ -32,16 +32,6 @@ struct FramePlanAttachmentOps {
     bool operator==(const FramePlanAttachmentOps &) const = default;
 };
 
-struct FramePlanResourceUse {
-    std::string resource;
-    std::string epoch;
-    std::string access;
-    std::string intent;
-    std::string footprint;
-
-    bool operator==(const FramePlanResourceUse &) const = default;
-};
-
 struct FramePlanMaterialFilter {
     std::vector<std::string> include;
     std::vector<std::string> exclude;
@@ -344,7 +334,6 @@ struct FramePlanNode {
     std::string provider_reference;
     std::size_t declaration_index = 0;
     std::size_t order = 0;
-    std::size_t level = 0;
     std::vector<std::string> reads;
     std::vector<std::string> history_reads;
     std::vector<std::string> writes;
@@ -385,14 +374,6 @@ struct FramePlanNode {
     std::string depth_store_op;
     std::vector<FramePlanAttachmentOps> attachments;
 
-    // Backend-independent execution-plan facts. Backend-native target-plan
-    // details intentionally do not enter this model.
-    std::string semantic_dialect;
-    std::string selected_implementation;
-    std::string selected_endpoint;
-    std::vector<std::string> required_capabilities;
-    std::vector<FramePlanResourceUse> resource_uses;
-
     std::vector<std::size_t> incoming_barriers;
     std::vector<std::size_t> outgoing_barriers;
 
@@ -406,15 +387,6 @@ struct FramePlanBarrier {
     std::string to;
 
     bool operator==(const FramePlanBarrier &) const = default;
-};
-
-struct FramePlanDependency {
-    std::string from;
-    std::string to;
-    std::string reason;
-    std::string resource;
-
-    bool operator==(const FramePlanDependency &) const = default;
 };
 
 struct FramePlanExtent {
@@ -633,29 +605,6 @@ struct FramePlanRewrite {
     bool operator==(const FramePlanRewrite &) const = default;
 };
 
-enum class FramePlanExecutionPlanState {
-    unavailable,
-    available,
-};
-
-struct FramePlanExecutionPlan {
-    FramePlanExecutionPlanState state =
-        FramePlanExecutionPlanState::unavailable;
-    std::string unavailable_reason_code = "execution_plan_missing";
-    std::string unavailable_reason =
-        "execution_plan_missing: execution_plan was not published";
-    std::string schema;
-    std::size_t schema_version = 0;
-    std::string graph;
-    std::string fingerprint;
-
-    [[nodiscard]] bool available() const noexcept {
-        return state == FramePlanExecutionPlanState::available;
-    }
-
-    bool operator==(const FramePlanExecutionPlan &) const = default;
-};
-
 enum class FramePlanPhysicalPlanState {
     unavailable,
     available,
@@ -815,14 +764,12 @@ struct FramePlanModel {
     // LP-4c: loops[], empty when the composed graph has no graph.loop.
     std::vector<FramePlanLoop> loops;
     std::vector<FramePlanBarrier> barriers;
-    std::vector<FramePlanDependency> dependencies;
     std::vector<FramePlanResource> resources;
     std::vector<FramePlanMaterialRoute> material_routes;
     std::vector<FramePlanDecisionGroup> decision_groups;
     std::string selected_backend_candidate;
     std::vector<FramePlanBackendCandidate> backend_candidates;
     std::vector<FramePlanPlanningDiagnostic> backend_diagnostics;
-    FramePlanExecutionPlan execution_plan;
     FramePlanPhysicalPlan physical_plan;
     std::optional<FramePlanGpuResourceArena> gpu_resource_arena;
     // UX-15b, decision 4: absent from a plan that predates the member.

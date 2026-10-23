@@ -119,18 +119,24 @@ if(MODE STREQUAL "refusal")
     # Names are exact: the variable is not read case-insensitively.
     expect_refused(environment_case "NULL" "PELICAN_AUDIO_BACKEND")
 elseif(MODE STREQUAL "status")
+    # AT-1 decision 6: the clock and the master ride beside the voices (the
+    # keys sort: available, backend, clock, master, voices). Offline the clock
+    # is the frames the device-less engine mixed; null has none and the game
+    # clock stands in for it.
+    set(offline_audio [=[\{"available":true,"backend":"offline","clock":\{"audio_time":[^,]+,"drift_seconds":0\.0,"latency_source":"none","output_latency_seconds":0\.0,"played_frames":[0-9]+,"sample_rate":48000,"source":"offline"\},"master":null,"voices":\[\]\}]=])
+    set(null_audio [=[\{"available":true,"backend":"null","clock":\{"audio_time":[^,]+,"drift_seconds":0\.0,"latency_source":"none","output_latency_seconds":0\.0,"played_frames":0,"sample_rate":0,"source":"game_clock"\},"master":null,"voices":\[\]\}]=])
     # The control: nothing named, a headless player runs the device-less engine.
-    expect_backend(default "" [=[\{"available":true,"backend":"offline","voices":\[\]\}]=])
+    expect_backend(default "" "${offline_audio}")
     # The environment silences a player that names nothing itself.
-    expect_backend(environment_null "null" [=[\{"available":true,"backend":"null","voices":\[\]\}]=])
+    expect_backend(environment_null "null" "${null_audio}")
     # The argument wins over the environment, whichever way round.
-    expect_backend(argument_over_environment "null" [=[\{"available":true,"backend":"offline","voices":\[\]\}]=]
+    expect_backend(argument_over_environment "null" "${offline_audio}"
         --audio-backend offline)
-    expect_backend(argument_null "offline" [=[\{"available":true,"backend":"null","voices":\[\]\}]=]
+    expect_backend(argument_null "offline" "${null_audio}"
         --audio-backend null)
     # An argument that wins leaves the environment unread: a name it would
     # refuse does not stop the launch.
-    expect_backend(argument_over_unknown_environment "speakers" [=[\{"available":true,"backend":"null","voices":\[\]\}]=]
+    expect_backend(argument_over_unknown_environment "speakers" "${null_audio}"
         --audio-backend null)
 else()
     message(FATAL_ERROR "unknown MODE: ${MODE}")

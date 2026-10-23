@@ -4,7 +4,6 @@ target_sources(pelican_core PRIVATE
     framegraphbuffercontainer.cpp
     debugdrawpassinfojsonparser.cpp
     debugtextpassinfojsonparser.cpp
-    frameexecutionadapter.cpp
     frameplanner.cpp
     oncescheduler.cpp
     framegraphruntime.cpp

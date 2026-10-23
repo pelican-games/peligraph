@@ -40,7 +40,6 @@
 #include "../src/project/renderconfigsection.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/render_algorithms/cube_capture/cubecaptureview.hpp"
-#include "../src/core/renderingpass/frameexecutionadapter.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/renderingpass.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
@@ -48,7 +47,6 @@
 #include "../src/core/renderingpass/viewexecutionscheduler.hpp"
 #include "../src/core/shader/shaderreference.hpp"
 #include "../src/core/vkcore/shaderresolution.hpp"
-#include "../src/project/executionplan.hpp"
 #include "../src/project/frameresolutionwire.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/project/targetrendermemory.hpp"
@@ -319,15 +317,6 @@ Json resolvedFramePlan(Pelican::ResolvedRenderPipeline resolved,
     const Pelican::FramePlan plan = Pelican::planFrameGraph(graphs.front());
     Json wire = Pelican::framePlanToJson(plan, &compiled);
     addRuntimeShaderContract(wire);
-    const Pelican::FrameExecutionPlan execution =
-        Pelican::compileFrameExecutionPlan(
-            graphs.front(), plan,
-            Pelican::ExecutionEndpoint{
-                .id = "device:0",
-                .endpoint_class = Pelican::ExecutionEndpointClass::device,
-                .backend = "vulkan",
-            });
-    wire["execution_plan"] = Pelican::frameExecutionPlanToJson(execution);
     if (!publish_physical_plan) {
         return wire;
     }
@@ -590,17 +579,6 @@ const Wp348CubeCaptureMeasurement &wp348CubeCaptureMeasurement() {
             Pelican::planFrameGraph(graphs.front());
         Json wire = Pelican::framePlanToJson(plan, &compiled);
         addRuntimeShaderContract(wire);
-        const Pelican::FrameExecutionPlan execution =
-            Pelican::compileFrameExecutionPlan(
-                graphs.front(), plan,
-                Pelican::ExecutionEndpoint{
-                    .id = "device:0",
-                    .endpoint_class =
-                        Pelican::ExecutionEndpointClass::device,
-                    .backend = "vulkan",
-                });
-        wire["execution_plan"] =
-            Pelican::frameExecutionPlanToJson(execution);
 
         const auto targets =
             Pelican::parseRenderTargetDefinitionsFromJson(
@@ -1327,15 +1305,6 @@ Json independentOpportunityFramePlan(
     const Pelican::FramePlan plan = Pelican::planFrameGraph(graphs.front());
     Json wire = Pelican::framePlanToJson(plan);
     addRuntimeShaderContract(wire);
-    const Pelican::FrameExecutionPlan execution =
-        Pelican::compileFrameExecutionPlan(
-            graphs.front(), plan,
-            Pelican::ExecutionEndpoint{
-                .id = "device:0",
-                .endpoint_class = Pelican::ExecutionEndpointClass::device,
-                .backend = "vulkan",
-            });
-    wire["execution_plan"] = Pelican::frameExecutionPlanToJson(execution);
     wire["physical_target_plan"] =
         Pelican::vulkanTargetPlanToJson(*compilation.plans.front());
     publishRuntimeResolution(
@@ -1393,15 +1362,6 @@ Json fractionalScaleFramePlan() {
         Pelican::planFrameGraph(graphs.front());
     Json wire = Pelican::framePlanToJson(plan);
     addRuntimeShaderContract(wire);
-    wire["execution_plan"] = Pelican::frameExecutionPlanToJson(
-        Pelican::compileFrameExecutionPlan(
-            graphs.front(), plan,
-            Pelican::ExecutionEndpoint{
-                .id = "device:0",
-                .endpoint_class =
-                    Pelican::ExecutionEndpointClass::device,
-                .backend = "vulkan",
-            }));
     wire["physical_target_plan"] =
         Pelican::vulkanTargetPlanToJson(*compilation.plans.front());
     publishRuntimeResolution(
@@ -1847,13 +1807,13 @@ bool visibleSceneTextContains(QGraphicsScene &value,
 StringSet boundaryTargetsFor(const FramePlanModel &model,
                              const StringSet &members) {
     StringSet result;
-    for (const auto &dependency : model.dependencies) {
-        const bool from_inside = members.contains(dependency.from);
-        const bool to_inside = members.contains(dependency.to);
+    for (const auto &barrier : model.barriers) {
+        const bool from_inside = members.contains(barrier.from);
+        const bool to_inside = members.contains(barrier.to);
         if (from_inside == to_inside) {
             continue;
         }
-        result.insert(from_inside ? dependency.to : dependency.from);
+        result.insert(from_inside ? barrier.to : barrier.from);
     }
     return result;
 }
@@ -1867,12 +1827,12 @@ void renameNode(FramePlanModel &model, std::string_view old_name,
     }
     const std::string previous = node->name;
     node->name = std::move(new_name);
-    for (auto &dependency : model.dependencies) {
-        if (dependency.from == previous) {
-            dependency.from = node->name;
+    for (auto &barrier : model.barriers) {
+        if (barrier.from == previous) {
+            barrier.from = node->name;
         }
-        if (dependency.to == previous) {
-            dependency.to = node->name;
+        if (barrier.to == previous) {
+            barrier.to = node->name;
         }
     }
 }
@@ -1963,11 +1923,6 @@ void makeGroupingPhysicalPlanAvailable(FramePlanModel &model) {
 FramePlanModel nonConvexGroupingModel() {
     FramePlanModel model;
     model.graph = "non_convex_grouping_graph";
-    model.execution_plan.state =
-        FramePlanExecutionPlanState::available;
-    model.execution_plan.unavailable_reason_code.clear();
-    model.execution_plan.unavailable_reason.clear();
-    model.execution_plan.graph = model.graph;
 
     FramePlanResource focus;
     focus.name = "focus";
@@ -1979,9 +1934,11 @@ FramePlanModel nonConvexGroupingModel() {
         groupingNode("project_peer", 3),
         groupingNode("single_feature_node", 4, "single"),
     };
-    model.dependencies = {
-        {"inside_a", "outside", "pelican.dependency.leave@1", "leave"},
-        {"outside", "inside_b", "pelican.dependency.return@1", "return"},
+    model.barriers = {
+        {.kind = "read_after_write", .resource = "leave",
+         .from = "inside_a", .to = "outside"},
+        {.kind = "read_after_write", .resource = "return",
+         .from = "outside", .to = "inside_b"},
     };
     makeGroupingPhysicalPlanAvailable(model);
     for (const auto &node : model.nodes) {
@@ -1994,7 +1951,6 @@ FramePlanModel nonConvexGroupingModel() {
 FramePlanModel nonConvexRegionGroupingModel() {
     FramePlanModel model = nonConvexGroupingModel();
     model.graph = "non_convex_region_grouping_graph";
-    model.execution_plan.graph = model.graph;
     makeGroupingPhysicalPlanAvailable(model);
     for (auto &node : model.nodes) {
         node.provider_feature.clear();
@@ -2015,11 +1971,6 @@ FramePlanModel nonConvexRegionGroupingModel() {
 FramePlanModel overlappingRegionGroupingModel() {
     FramePlanModel model;
     model.graph = "overlapping_region_grouping_graph";
-    model.execution_plan.state =
-        FramePlanExecutionPlanState::available;
-    model.execution_plan.unavailable_reason_code.clear();
-    model.execution_plan.unavailable_reason.clear();
-    model.execution_plan.graph = model.graph;
 
     FramePlanResource focus;
     focus.name = "focus";
@@ -2097,16 +2048,6 @@ StringSet wireNodeNames(const Json &wire) {
     return result;
 }
 
-EdgeSet wireEdges(const Json &wire) {
-    EdgeSet result;
-    for (const auto &dependency :
-         wire.at("execution_plan").at("dependencies")) {
-        result.emplace(dependency.at("from").get<std::string>(),
-                       dependency.at("to").get<std::string>());
-    }
-    return result;
-}
-
 template <typename Set>
 Set removedFrom(const Set &enabled, const Set &disabled) {
     Set result;
@@ -2127,13 +2068,6 @@ struct ExpectedNode {
     std::string name;
     std::string source;
     bool anchor = false;
-};
-
-struct ExpectedDependency {
-    std::string from;
-    std::string to;
-    std::string reason;
-    std::string resource;
 };
 
 const std::vector<ExpectedNode> &expectedExpandedNodes() {
@@ -2183,239 +2117,6 @@ const StringSet &expectedBloomMembers() {
         "VerticalBlur_3",
     };
     return expected;
-}
-
-const std::vector<ExpectedDependency> &expectedExpandedDependencies() {
-    static const auto expected = [] {
-        constexpr std::string_view explicit_after =
-            "pelican.dependency.explicit_after@1";
-        constexpr std::string_view read_after_write =
-            "pelican.dependency.read_after_write@1";
-        constexpr std::string_view snapshot_after =
-            "pelican.dependency.snapshot_after@1";
-        std::vector<ExpectedDependency> result;
-        result.reserve(100);
-        const auto add = [&](std::string_view from, std::string_view to,
-                             std::string_view reason,
-                             std::string_view resource = {}) {
-            result.push_back(ExpectedDependency{
-                std::string{from}, std::string{to}, std::string{reason},
-                std::string{resource}});
-        };
-
-        add("__anchor_debug_draw", "__anchor_debug_text", explicit_after);
-        add("__anchor_debug_text", "__anchor_imgui", explicit_after);
-        add("__anchor_imgui", "output_transform", explicit_after);
-        add("__anchor_pelican_ui", "__anchor_debug_draw", explicit_after);
-        add("__anchor_pelican_ui", "pelican_ui", explicit_after);
-        add("__anchor_post_main", "__anchor_tonemap", explicit_after);
-        add("__anchor_sprite", "__anchor_post_main", explicit_after);
-        add("__anchor_tonemap", "__anchor_post_ldr", explicit_after);
-
-        add("__snapshot_opaque_color", "__anchor_sprite", explicit_after);
-        add("__snapshot_opaque_color", "__snapshot_opaque_depth",
-            explicit_after);
-        add("__snapshot_opaque_color", "forward_transparent",
-            read_after_write, "opaque_color");
-        add("__snapshot_opaque_depth", "__anchor_sprite", explicit_after);
-        add("__snapshot_opaque_depth", "forward_transparent",
-            explicit_after);
-        add("__snapshot_opaque_depth", "forward_transparent",
-            read_after_write, "opaque_depth");
-        add("forward_transparent", "__anchor_sprite", explicit_after);
-        add("forward_transparent", "FinalBloomComposite", read_after_write,
-            "lit_color");
-        add("forward_transparent", "HighLuminanceExtraction",
-            read_after_write, "lit_color");
-
-        add("gbuffer_pass", "__anchor_sprite", explicit_after);
-        add("gbuffer_pass", "__snapshot_opaque_depth", read_after_write,
-            "offscreen_depth");
-        add("gbuffer_pass", "forward_transparent", read_after_write,
-            "offscreen_depth");
-        for (const std::string_view resource :
-             {std::string_view{"g_emissive"},
-              std::string_view{"gbuffer_albedo"},
-              std::string_view{"gbuffer_material"},
-              std::string_view{"gbuffer_normal"},
-              std::string_view{"gbuffer_worldpos"}}) {
-            add("gbuffer_pass", "lighting_pass", read_after_write, resource);
-        }
-        add("gbuffer_pass", "ssao_pass", explicit_after);
-        add("gbuffer_pass", "ssao_pass", read_after_write,
-            "gbuffer_normal");
-        add("gbuffer_pass", "ssao_pass", read_after_write,
-            "gbuffer_worldpos");
-
-        add("lighting_pass", "__anchor_sprite", explicit_after);
-        add("lighting_pass", "__snapshot_opaque_color", explicit_after);
-        add("lighting_pass", "__snapshot_opaque_color", read_after_write,
-            "lit_color");
-        add("lighting_pass", "__snapshot_opaque_color", snapshot_after);
-        add("lighting_pass", "__snapshot_opaque_depth", snapshot_after);
-        add("lighting_pass", "forward_transparent", read_after_write,
-            "lit_color");
-        add("pelican_ui", "__anchor_debug_draw", explicit_after);
-        add("pelican_ui", "output_transform", read_after_write, "display");
-        add("ssao_blur_pass", "__anchor_sprite", explicit_after);
-        add("ssao_blur_pass", "lighting_pass", explicit_after);
-        add("ssao_blur_pass", "lighting_pass", read_after_write,
-            "ssao_blur");
-        add("ssao_pass", "__anchor_sprite", explicit_after);
-        add("ssao_pass", "ssao_blur_pass", explicit_after);
-        add("ssao_pass", "ssao_blur_pass", read_after_write,
-            "ssao_output");
-
-        constexpr std::array bloom_members{
-            std::string_view{"FinalBloomComposite"},
-            std::string_view{"HighLuminanceExtraction"},
-            std::string_view{"HorizontalBlur_0"},
-            std::string_view{"HorizontalBlur_1"},
-            std::string_view{"HorizontalBlur_2"},
-            std::string_view{"HorizontalBlur_3"},
-            std::string_view{"UpsampleBlend_1"},
-            std::string_view{"UpsampleBlend_2"},
-            std::string_view{"UpsampleBlend_3"},
-            std::string_view{"VerticalBlur_0"},
-            std::string_view{"VerticalBlur_1"},
-            std::string_view{"VerticalBlur_2"},
-            std::string_view{"VerticalBlur_3"},
-        };
-        for (const auto member : bloom_members) {
-            add("__anchor_post_ldr", member, explicit_after);
-        }
-        add("__anchor_post_ldr", "__anchor_pelican_ui", explicit_after);
-
-        add("HighLuminanceExtraction", "HorizontalBlur_0",
-            explicit_after);
-        add("HighLuminanceExtraction", "HorizontalBlur_0",
-            read_after_write, "Bloom_Threshold_RT");
-        add("HighLuminanceExtraction", "__anchor_pelican_ui",
-            explicit_after);
-        for (int index = 0; index != 3; ++index) {
-            const std::string horizontal =
-                "HorizontalBlur_" + std::to_string(index);
-            const std::string vertical =
-                "VerticalBlur_" + std::to_string(index);
-            const std::string resource =
-                "Bloom_Downsample_H_" + std::to_string(index) + "_RT";
-            add(horizontal, vertical, explicit_after);
-            add(horizontal, vertical, read_after_write, resource);
-            add(horizontal, "__anchor_pelican_ui", explicit_after);
-        }
-        add("HorizontalBlur_3", "VerticalBlur_3", explicit_after);
-        add("HorizontalBlur_3", "VerticalBlur_3", read_after_write,
-            "Bloom_Downsample_H_3_RT");
-        add("HorizontalBlur_3", "__anchor_pelican_ui", explicit_after);
-
-        for (int index = 0; index != 3; ++index) {
-            const std::string vertical =
-                "VerticalBlur_" + std::to_string(index);
-            const std::string horizontal =
-                "HorizontalBlur_" + std::to_string(index + 1);
-            const std::string upsample =
-                "UpsampleBlend_" + std::to_string(index + 1);
-            const std::string resource =
-                "Bloom_Upsample_V_" + std::to_string(index) + "_RT";
-            add(vertical, horizontal, explicit_after);
-            add(vertical, horizontal, read_after_write, resource);
-            add(vertical, upsample, read_after_write, resource);
-            add(vertical, "__anchor_pelican_ui", explicit_after);
-        }
-        add("VerticalBlur_3", "UpsampleBlend_3", explicit_after);
-        add("VerticalBlur_3", "UpsampleBlend_3", read_after_write,
-            "Bloom_Upsample_V_3_RT");
-        add("VerticalBlur_3", "__anchor_pelican_ui", explicit_after);
-
-        for (int index = 3; index != 0; --index) {
-            const std::string from =
-                "UpsampleBlend_" + std::to_string(index);
-            const std::string to =
-                index == 1
-                    ? std::string{"FinalBloomComposite"}
-                    : "UpsampleBlend_" + std::to_string(index - 1);
-            const std::string resource =
-                "Bloom_Upsample_V_" + std::to_string(index - 1) +
-                "_RT";
-            add(from, to, explicit_after);
-            add(from, to, read_after_write, resource);
-            add(from, "__anchor_pelican_ui", explicit_after);
-        }
-        add("FinalBloomComposite", "__anchor_pelican_ui", explicit_after);
-        add("FinalBloomComposite", "pelican_ui", read_after_write,
-            "display");
-
-        if (result.size() != 97) {
-            throw std::logic_error(
-                "independent WP357 dependency expectation must contain 97 records");
-        }
-        return result;
-    }();
-    return expected;
-}
-
-std::string expectedRecordIdentity(const ExpectedDependency &dependency) {
-    constexpr char separator = '\x1f';
-    return dependency.from + separator + dependency.to + separator +
-           dependency.reason + separator + dependency.resource;
-}
-
-QStringList expectedStrings(const std::vector<std::string> &values) {
-    QStringList result;
-    for (const auto &value : values) {
-        result.push_back(QString::fromStdString(value));
-    }
-    return result;
-}
-
-using ExpectedBundles =
-    std::map<EdgePair, std::vector<ExpectedDependency>, std::less<>>;
-
-ExpectedBundles expectedExpandedBundles() {
-    auto dependencies = expectedExpandedDependencies();
-    std::ranges::sort(
-        dependencies, {}, [](const ExpectedDependency &dependency) {
-            return std::tie(dependency.from, dependency.to,
-                            dependency.reason, dependency.resource);
-        });
-    ExpectedBundles result;
-    for (const auto &dependency : dependencies) {
-        result[{dependency.from, dependency.to}].push_back(dependency);
-    }
-    return result;
-}
-
-QString expectedDependencyLabel(
-    const std::vector<ExpectedDependency> &dependencies) {
-    std::set<std::string, std::less<>> resources;
-    std::set<std::string, std::less<>> reasons;
-    for (const auto &dependency : dependencies) {
-        if (!dependency.resource.empty()) {
-            resources.insert(dependency.resource);
-        }
-        reasons.insert(dependency.reason);
-    }
-    QStringList parts;
-    for (const auto &resource : resources) {
-        parts.push_back(QString::fromStdString(resource));
-    }
-    if (parts.empty()) {
-        for (const auto &reason : reasons) {
-            const auto marker = reason.rfind('.');
-            const auto version = reason.rfind('@');
-            parts.push_back(QString::fromStdString(reason.substr(
-                marker == std::string::npos ? 0 : marker + 1,
-                version == std::string::npos
-                    ? std::string::npos
-                    : version - (marker == std::string::npos ? 0
-                                                              : marker + 1))));
-        }
-    }
-    QString result = parts.join(QStringLiteral(", "));
-    if (dependencies.size() > 1) {
-        result += QStringLiteral("  x%1").arg(dependencies.size());
-    }
-    return result;
 }
 
 std::vector<QGraphicsItem *> itemsWithEndpoints(QGraphicsScene &value,
@@ -2500,188 +2201,6 @@ sceneNodePositions(QGraphicsScene &value) {
                        item->scenePos());
     }
     return result;
-}
-
-void requireExpectedExpandedScene(QGraphicsScene &value) {
-    constexpr auto graph = "main_render";
-    const auto &expected_nodes = expectedExpandedNodes();
-    const auto expected_positions = expandedNodePositions();
-    const auto expected_bundles = expectedExpandedBundles();
-
-    REQUIRE(itemsOfKind(value, FramePlanNodeItem).size() ==
-            expected_nodes.size());
-    REQUIRE(itemsOfKind(value, FramePlanNodeLabelItem).size() ==
-            expected_nodes.size());
-    for (const auto &expected : expected_nodes) {
-        QGraphicsItem *item = nodeItem(value, expected.name);
-        REQUIRE(item != nullptr);
-        auto *path_item = dynamic_cast<QGraphicsPathItem *>(item);
-        REQUIRE(path_item != nullptr);
-        REQUIRE(item->isVisible());
-        REQUIRE(item->scenePos() == expected_positions.at(expected.name));
-        REQUIRE(item->data(FramePlanGraphRole).toString() ==
-                QLatin1String{graph});
-        REQUIRE(item->data(FramePlanNameRole).toString() ==
-                QString::fromStdString(expected.name));
-        REQUIRE(item->data(FramePlanSourceRole).toString() ==
-                QString::fromStdString(expected.source));
-        const QColor fill = expectedNodeColor(expected.source);
-        REQUIRE(item->data(FramePlanColorRole).toString() ==
-                fill.name(QColor::HexRgb));
-        REQUIRE(item->data(FramePlanAnchorRole).toBool() == expected.anchor);
-        REQUIRE(item->data(FramePlanMembersRole).toStringList() ==
-                QStringList{QString::fromStdString(expected.name)});
-        REQUIRE(item->data(FramePlanInternalEdgeRecordsRole)
-                    .toStringList()
-                    .empty());
-        REQUIRE(path_item->path() == expectedNodePath(expected.anchor));
-        REQUIRE(path_item->brush() == QBrush{fill});
-        QPen expected_pen{expected.anchor
-                              ? QColor{QStringLiteral("#d8e3ec")}
-                              : QColor{QStringLiteral("#edf2f6")}};
-        expected_pen.setWidthF(1.3);
-        if (expected.anchor) {
-            expected_pen.setStyle(Qt::DashLine);
-        }
-        REQUIRE(path_item->pen() == expected_pen);
-
-        QGraphicsItem *label_item = nodeLabelItem(value, expected.name);
-        auto *label =
-            dynamic_cast<QGraphicsSimpleTextItem *>(label_item);
-        REQUIRE(label != nullptr);
-        REQUIRE(label->parentItem() == item);
-        REQUIRE(label->isVisible());
-        REQUIRE(label->text() == QString::fromStdString(expected.name));
-        REQUIRE(label->brush() ==
-                QBrush{QColor{QStringLiteral("#f7f9fb")}});
-        REQUIRE(label->font().bold());
-        REQUIRE(label->data(FramePlanGraphRole).toString() ==
-                QLatin1String{graph});
-        REQUIRE(label->data(FramePlanNameRole).toString() ==
-                QString::fromStdString(expected.name));
-    }
-
-    REQUIRE(itemsOfKind(value, FramePlanEdgeItem).size() ==
-            expected_bundles.size());
-    REQUIRE(itemsOfKind(value, FramePlanEdgeArrowItem).size() ==
-            expected_bundles.size());
-    REQUIRE(itemsOfKind(value, FramePlanEdgeLabelItem).size() ==
-            expected_bundles.size());
-    const QPen edge_pen = [] {
-        QPen result{QColor{QStringLiteral("#748394")}};
-        result.setWidthF(1.35);
-        return result;
-    }();
-    const QPen arrow_pen{QColor{QStringLiteral("#748394")}};
-    const QBrush arrow_brush{QColor{QStringLiteral("#748394")}};
-    const QPen label_pen{QColor{QStringLiteral("#9aa7b4")}};
-    const QBrush label_brush{QColor{QStringLiteral("#f5f7f9")}};
-    std::size_t lane = 0;
-    StringSet expected_records;
-    for (const auto &[endpoints, dependencies] : expected_bundles) {
-        const auto &[from, to] = endpoints;
-        INFO("expected logical edge: " << from << " -> " << to);
-        QGraphicsItem *item = singleItemWithEndpoints(
-            value, FramePlanEdgeItem, from, to);
-        auto *path_item = dynamic_cast<QGraphicsPathItem *>(item);
-        REQUIRE(path_item != nullptr);
-        REQUIRE(item->isVisible());
-        const QString identity = QString::fromStdString(from + "->" + to);
-        REQUIRE(item->data(FramePlanGraphRole).toString() ==
-                QLatin1String{graph});
-        REQUIRE(item->data(FramePlanNameRole).toString() == identity);
-        REQUIRE(item->data(FramePlanFromNameRole).toString() ==
-                QString::fromStdString(from));
-        REQUIRE(item->data(FramePlanToNameRole).toString() ==
-                QString::fromStdString(to));
-
-        std::vector<std::string> identities;
-        std::set<std::string, std::less<>> resources;
-        for (const auto &dependency : dependencies) {
-            identities.push_back(expectedRecordIdentity(dependency));
-            expected_records.insert(identities.back());
-            if (!dependency.resource.empty()) {
-                resources.insert(dependency.resource);
-            }
-        }
-        const std::vector<std::string> resource_values{resources.begin(),
-                                                       resources.end()};
-        REQUIRE(item->data(FramePlanEdgeRecordsRole).toStringList() ==
-                expectedStrings(identities));
-        REQUIRE(item->data(FramePlanResourcesRole).toStringList() ==
-                expectedStrings(resource_values));
-
-        const QPointF from_position = expected_positions.at(from);
-        const QPointF to_position = expected_positions.at(to);
-        const QPointF start{from_position.x() + 240.0, 32.0};
-        const QPointF tip{to_position.x(), 32.0};
-        const qreal left_turn = start.x() + 18.0;
-        const qreal right_turn = tip.x() - 18.0;
-        const qreal lane_y = 134.0 + static_cast<qreal>(lane) * 34.0;
-        QPainterPath expected_path{start};
-        expected_path.lineTo(left_turn, start.y());
-        expected_path.lineTo(left_turn, lane_y);
-        expected_path.lineTo(right_turn, lane_y);
-        expected_path.lineTo(right_turn, tip.y());
-        expected_path.lineTo(tip);
-        REQUIRE(path_item->path() == expected_path);
-        REQUIRE(path_item->pen() == edge_pen);
-        REQUIRE(path_item->brush().style() == Qt::NoBrush);
-
-        QGraphicsItem *arrow_item = singleItemWithEndpoints(
-            value, FramePlanEdgeArrowItem, from, to);
-        auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(arrow_item);
-        REQUIRE(arrow != nullptr);
-        REQUIRE(arrow->isVisible());
-        QPolygonF expected_arrow;
-        expected_arrow << tip << QPointF{tip.x() - 10.0, tip.y() - 5.0}
-                       << QPointF{tip.x() - 10.0, tip.y() + 5.0};
-        REQUIRE(arrow->polygon() == expected_arrow);
-        REQUIRE(arrow->pen() == arrow_pen);
-        REQUIRE(arrow->brush() == arrow_brush);
-        REQUIRE(arrow->data(FramePlanGraphRole).toString() ==
-                QLatin1String{graph});
-        REQUIRE(arrow->data(FramePlanNameRole).toString() == identity);
-        REQUIRE(arrow->data(FramePlanFromNameRole).toString() ==
-                QString::fromStdString(from));
-        REQUIRE(arrow->data(FramePlanToNameRole).toString() ==
-                QString::fromStdString(to));
-
-        QGraphicsItem *label_item = singleItemWithEndpoints(
-            value, FramePlanEdgeLabelItem, from, to);
-        auto *label_box = dynamic_cast<QGraphicsRectItem *>(label_item);
-        REQUIRE(label_box != nullptr);
-        REQUIRE(label_box->isVisible());
-        REQUIRE(label_box->rect().topLeft() == QPointF{});
-        REQUIRE(label_box->rect().height() == 24.0);
-        REQUIRE(label_box->scenePos().y() == lane_y - 12.0);
-        REQUIRE(label_box->scenePos().x() +
-                    label_box->rect().width() / 2.0 ==
-                (left_turn + right_turn) / 2.0);
-        REQUIRE(label_box->pen() == label_pen);
-        REQUIRE(label_box->brush() == label_brush);
-        REQUIRE(label_box->data(FramePlanGraphRole).toString() ==
-                QLatin1String{graph});
-        REQUIRE(label_box->data(FramePlanNameRole).toString() == identity);
-        REQUIRE(label_box->data(FramePlanFromNameRole).toString() ==
-                QString::fromStdString(from));
-        REQUIRE(label_box->data(FramePlanToNameRole).toString() ==
-                QString::fromStdString(to));
-        REQUIRE(label_box->data(FramePlanEdgeRecordsRole).toStringList() ==
-                expectedStrings(identities));
-        REQUIRE(label_box->data(FramePlanResourcesRole).toStringList() ==
-                expectedStrings(resource_values));
-        REQUIRE(label_box->childItems().size() == 1);
-        auto *label = dynamic_cast<QGraphicsSimpleTextItem *>(
-            label_box->childItems().front());
-        REQUIRE(label != nullptr);
-        REQUIRE(label->isVisible());
-        REQUIRE(label->text() == expectedDependencyLabel(dependencies));
-        REQUIRE(label->brush() ==
-                QBrush{QColor{QStringLiteral("#263441")}});
-        ++lane;
-    }
-    REQUIRE(sceneDependencyRecords(value) == expected_records);
 }
 
 void requireReadableLabels(QGraphicsScene &value) {
@@ -3443,43 +2962,32 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP347 production edges distinguish barriers order-only dependencies and fused absorption",
-    "[devstudio][frame-plan][barrier-visibility][grouping][wp347][negative-contrast]") {
+    "WP347 production edges are the plan's barriers and show fused absorption",
+    "[devstudio][frame-plan][barrier-visibility][grouping][wp347][rc2][negative-contrast]") {
     (void)application();
     CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
     const Json &wire = wp347BarrierFramePlan();
     const FramePlanModel model = buildFramePlanModel(wire.dump());
     const StringSet members{std::string{Wp347Producer},
                             std::string{Wp347Consumer}};
-    REQUIRE(model.execution_plan.available());
     REQUIRE(model.physical_plan.available());
     REQUIRE(model.physical_plan.loweringGraphAvailable());
     REQUIRE(wireRegionMembers(wire, Wp347Region) == members);
     REQUIRE_FALSE(model.barriers.empty());
-
-    const auto consumer = std::ranges::find(
-        model.nodes, std::string{Wp347Consumer}, &FramePlanNode::name);
-    REQUIRE(consumer != model.nodes.end());
-    const auto tile_use = std::ranges::find(
-        consumer->resource_uses, std::string{Wp347Tile},
-        &FramePlanResourceUse::resource);
-    REQUIRE(tile_use != consumer->resource_uses.end());
-    REQUIRE(tile_use->footprint == "same_pixel");
-
-    const auto same_pixel_attachment_barrier = std::ranges::find_if(
-        model.barriers, [&](const FramePlanBarrier &barrier) {
-            const auto destination = std::ranges::find(
-                model.nodes, barrier.to, &FramePlanNode::name);
-            return destination != model.nodes.end() &&
-                   std::ranges::any_of(
-                       destination->resource_uses,
-                       [&](const FramePlanResourceUse &use) {
-                           return use.resource == barrier.resource &&
-                                  use.footprint == "same_pixel" &&
-                                  use.intent == "attachment";
-                       });
-        });
-    REQUIRE(same_pixel_attachment_barrier != model.barriers.end());
+    // The ordered tail's `after` puts it behind the producer with no
+    // resource between them: the plan orders it and has no barrier there.
+    const auto order_of = [&](std::string_view name) {
+        const auto found = std::ranges::find(
+            model.nodes, std::string{name}, &FramePlanNode::name);
+        REQUIRE(found != model.nodes.end());
+        return found->order;
+    };
+    REQUIRE(order_of(Wp347Producer) < order_of(Wp347Ordered));
+    REQUIRE(std::ranges::none_of(
+        model.barriers, [](const FramePlanBarrier &barrier) {
+            return barrier.from == Wp347Producer &&
+                   barrier.to == Wp347Ordered;
+        }));
 
     const auto fused_scope = std::ranges::find_if(
         model.physical_plan.scopes,
@@ -3533,27 +3041,17 @@ TEST_CASE(
     // to preserve the actual shape and visible label distinction.
     const auto barrier_items = edgeShapesAndLabels(
         logical, Wp347Producer, Wp347Consumer);
-    const auto order_items = edgeShapesAndLabels(
-        logical, Wp347Producer, Wp347Ordered);
     REQUIRE_FALSE(barrier_items.empty());
-    REQUIRE_FALSE(order_items.empty());
-    // The canvas distinction that replaced the two label boxes: an order-only
-    // dependency is a dashed grey line, a barrier is a solid coloured one.
+    // RC-2: the lines are the plan's barriers. The `after` alone draws none.
+    REQUIRE(edgeShapesAndLabels(logical, Wp347Producer, Wp347Ordered)
+                .empty());
     auto *barrier_edge = dynamic_cast<QGraphicsPathItem *>(
         edgeItem(logical, Wp347Producer, Wp347Consumer));
-    auto *order_edge = dynamic_cast<QGraphicsPathItem *>(
-        edgeItem(logical, Wp347Producer, Wp347Ordered));
     REQUIRE(barrier_edge != nullptr);
-    REQUIRE(order_edge != nullptr);
-    REQUIRE(order_edge->pen().style() == Qt::DashLine);
     REQUIRE(barrier_edge->pen().style() != Qt::DashLine);
-    REQUIRE(barrier_edge->pen().color() != order_edge->pen().color());
 
     const QString barrier_text = edgeVisibleText(
         logical, Wp347Producer, Wp347Consumer);
-    const QString order_text = edgeVisibleText(
-        logical, Wp347Producer, Wp347Ordered);
-    REQUIRE(barrier_text != order_text);
     REQUIRE(barrier_text.contains(QStringLiteral("barrier")));
     for (const auto &barrier : model.barriers) {
         if (barrier.from == Wp347Producer &&
@@ -3566,22 +3064,6 @@ TEST_CASE(
         QStringLiteral("absorbed in fused scope")));
     REQUIRE_FALSE(barrier_text.contains(QStringLiteral("stage")));
     REQUIRE_FALSE(barrier_text.contains(QStringLiteral("layout")));
-    REQUIRE(order_text.contains(
-        QStringLiteral("order only: explicit_after")));
-    REQUIRE_FALSE(order_text.contains(QStringLiteral("barrier")));
-
-    const auto by_region_items = edgeShapesAndLabels(
-        logical, same_pixel_attachment_barrier->from,
-        same_pixel_attachment_barrier->to);
-    REQUIRE_FALSE(by_region_items.empty());
-    const QString by_region_text = edgeVisibleText(
-        logical, same_pixel_attachment_barrier->from,
-        same_pixel_attachment_barrier->to);
-    REQUIRE(by_region_text.contains(QStringLiteral("barrier")));
-    REQUIRE(by_region_text.contains(
-        QStringLiteral("same-pixel attachment")));
-    REQUIRE_FALSE(by_region_text.contains(QStringLiteral("stage")));
-    REQUIRE_FALSE(by_region_text.contains(QStringLiteral("layout")));
 
     QGraphicsItem *member = nodeItem(logical, Wp347Producer);
     REQUIRE(member != nullptr);
@@ -3619,7 +3101,6 @@ TEST_CASE(
     CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
     const Json &wire = wp347BarrierFramePlan();
     const FramePlanModel model = buildFramePlanModel(wire.dump());
-    REQUIRE(model.execution_plan.available());
     REQUIRE_FALSE(model.barriers.empty());
 
     EmbeddedViewport viewport;
@@ -3675,32 +3156,6 @@ TEST_CASE(
                 .toString()
                 .contains(no_target_phrase));
     REQUIRE(framePlanStatus(widget).text().contains(no_target_phrase));
-
-    Json missing_execution = wire;
-    missing_execution.erase("execution_plan");
-    const FramePlanModel unavailable_model =
-        buildFramePlanModel(missing_execution.dump());
-    REQUIRE_FALSE(unavailable_model.execution_plan.available());
-    REQUIRE(unavailable_model.dependencies.empty());
-    REQUIRE(unavailable_model.barriers == model.barriers);
-    widget.receiveResult(
-        QByteArray::fromStdString(missing_execution.dump()));
-    QApplication::processEvents();
-
-    REQUIRE(logical.property("pelicanExecutionPlanState").toString() ==
-            QStringLiteral("unavailable"));
-    REQUIRE(logical.property("pelicanVisibleBarrierRecordCount")
-                .toULongLong() == 0);
-    REQUIRE(itemsOfKind(logical, FramePlanEdgeItem).empty());
-    const QString unavailable_phrase =
-        QStringLiteral(
-            "%1 cannot be placed because the execution plan is unavailable")
-            .arg(static_cast<qulonglong>(model.barriers.size()));
-    REQUIRE(logical.property("pelicanBarrierCoverage")
-                .toString()
-                .contains(unavailable_phrase));
-    REQUIRE(visibleSceneTextContains(logical, unavailable_phrase));
-    REQUIRE(framePlanStatus(widget).text().contains(unavailable_phrase));
 }
 
 TEST_CASE(
@@ -3809,26 +3264,27 @@ TEST_CASE(
     INFO("collapsed planar prefilter leaving targets: "
          << joinedValues(leaving_targets).toStdString());
     REQUIRE(entering_edges == 1);
-    REQUIRE(leaving_edges == 2);
+    REQUIRE(leaving_edges == 1);
     REQUIRE(edgeItem(logical,
                      "planar_reflection_forward_transparent",
                      group_name) != nullptr);
     REQUIRE(edgeItem(logical, group_name,
                      "forward_transparent") != nullptr);
-    // In production composition, featurecompose.cpp:458 adds the output_transform terminal dependency.
+    // In production composition, featurecompose.cpp:458 orders output_transform
+    // after the region with no resource between them. RC-2: the edges are the
+    // plan's barriers, and the plan has none there, so no edge is drawn.
     REQUIRE(edgeItem(logical, group_name,
-                     "output_transform") != nullptr);
+                     "output_transform") == nullptr);
 
     REQUIRE(logical.enterGroup(group_id));
     REQUIRE(sceneNodeNames(logical) == members);
     REQUIRE(itemsOfKind(logical, FramePlanGroupItem).empty());
     REQUIRE(boundaryTargets(logical) ==
             StringSet{"forward_transparent",
-                      "output_transform",
                       "planar_reflection_forward_transparent"});
-    REQUIRE(itemsOfKind(logical, FramePlanBoundaryStubItem).size() == 3);
+    REQUIRE(itemsOfKind(logical, FramePlanBoundaryStubItem).size() == 2);
     REQUIRE(logical.property("pelicanBoundaryStubCount").toULongLong() ==
-            3);
+            2);
 #endif
 }
 
@@ -3859,7 +3315,6 @@ TEST_CASE(
         "cube_capture_snapshot_opaque_depth",
         "cube_capture_forward_transparent",
     };
-    REQUIRE(model.execution_plan.available());
     REQUIRE(model.physical_plan.available());
     REQUIRE(model.physical_plan.loweringGraphAvailable());
     REQUIRE(members == expected_members);
@@ -3948,49 +3403,39 @@ TEST_CASE(
     const std::size_t repeated_node_barriers =
         static_cast<std::size_t>(std::ranges::count_if(
             model.barriers, repeated_node_barrier));
-    const Json &wire_dependencies =
-        measurement.wire.at("execution_plan").at("dependencies");
-    const std::size_t repeated_node_dependencies =
-        static_cast<std::size_t>(std::ranges::count_if(
-            wire_dependencies, [&members](const Json &dependency) {
-                const std::string from =
-                    dependency.at("from").get<std::string>();
-                return from ==
-                           dependency.at("to").get<std::string>() &&
-                       members.contains(from);
-            }));
     INFO("WP348 measured same-node model.barriers: "
          << repeated_node_barriers);
-    INFO("WP348 measured same-node execution_plan.dependencies: "
-         << repeated_node_dependencies);
-    REQUIRE(model.dependencies.size() == wire_dependencies.size());
+    REQUIRE(model.barriers.size() ==
+            measurement.wire.at("barriers").size());
     REQUIRE(repeated_node_barriers == 0);
-    REQUIRE(repeated_node_dependencies == 0);
 
-    std::vector<std::string> full_boundary_dependencies;
+    std::vector<std::string> full_boundary_barriers;
     StringSet full_entering_sources;
     StringSet full_leaving_targets;
-    for (const auto &dependency : model.dependencies) {
-        const bool from_inside = members.contains(dependency.from);
-        const bool to_inside = members.contains(dependency.to);
+    for (const auto &barrier : model.barriers) {
+        const bool from_inside = members.contains(barrier.from);
+        const bool to_inside = members.contains(barrier.to);
         if (from_inside == to_inside) {
             continue;
         }
-        full_boundary_dependencies.push_back(
-            dependency.from + " -> " + dependency.to + " [" +
-            dependency.reason + "," + dependency.resource + "]");
+        full_boundary_barriers.push_back(
+            barrier.from + " -> " + barrier.to + " [" + barrier.kind +
+            "," + barrier.resource + "]");
         if (to_inside) {
-            full_entering_sources.insert(dependency.from);
+            full_entering_sources.insert(barrier.from);
         } else {
-            full_leaving_targets.insert(dependency.to);
+            full_leaving_targets.insert(barrier.to);
         }
     }
-    INFO("WP348 measured full quotient boundary dependencies: "
-         << joinedValues(full_boundary_dependencies).toStdString());
-    REQUIRE(full_boundary_dependencies.size() == 9);
+    INFO("WP348 measured full quotient boundary barriers: "
+         << joinedValues(full_boundary_barriers).toStdString());
+    // RC-2: the quotient's boundary is the plan's barriers. Nothing outside
+    // the region reads what it writes, so none crosses it; the nine order
+    // edges to __anchor_sprite and deferred_geometry were the execution
+    // plan's, not barriers.
+    REQUIRE(full_boundary_barriers.empty());
     REQUIRE(full_entering_sources.empty());
-    REQUIRE(full_leaving_targets ==
-            StringSet{"__anchor_sprite", "deferred_geometry"});
+    REQUIRE(full_leaving_targets.empty());
 
     FramePlanGraphicsScene logical;
     logical.populate(
@@ -4018,24 +3463,19 @@ TEST_CASE(
     for (const auto &name : members) {
         REQUIRE(namedShapesAndLabels(logical, name).empty());
     }
-    // cube_capture_color's resource subtree contains only the region. The
-    // full quotient has the two measured exits above, but both destinations
-    // are outside this visible window, so WP347 draws no outer edge here.
+    // cube_capture_color's resource subtree contains only the region, and no
+    // barrier leaves the quotient (above), so WP347 draws no outer edge here.
     REQUIRE(itemsOfKind(logical, FramePlanEdgeItem).empty());
 
+    // Inside the region no barrier crosses its boundary either, so there is
+    // no stub. RC-2: the two outgoing stubs this drew before (__anchor_sprite,
+    // deferred_geometry) were the execution plan's order edges.
     REQUIRE(logical.enterGroup(group_id));
     REQUIRE(sceneNodeNames(logical) == members);
-    REQUIRE(boundaryTargets(logical) ==
-            StringSet{"__anchor_sprite", "deferred_geometry"});
-    const auto boundary_stubs =
-        itemsOfKind(logical, FramePlanBoundaryStubItem);
-    REQUIRE(boundary_stubs.size() == 2);
+    REQUIRE(boundaryTargets(logical).empty());
+    REQUIRE(itemsOfKind(logical, FramePlanBoundaryStubItem).empty());
     REQUIRE(logical.property("pelicanBoundaryStubCount").toULongLong() ==
-            2);
-    for (QGraphicsItem *stub : boundary_stubs) {
-        REQUIRE(stub->data(FramePlanBoundaryDirectionRole).toString() ==
-                QStringLiteral("outgoing"));
-    }
+            0);
 #endif
 }
 
@@ -4279,7 +3719,6 @@ TEST_CASE(
     CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
     const Json &wire = mixedMembershipFramePlan(false);
     const FramePlanModel model = buildFramePlanModel(wire.dump());
-    REQUIRE(model.execution_plan.available());
     REQUIRE(model.physical_plan.loweringGraphAvailable());
     REQUIRE(wireFeatureMembers(wire, "wp343_mixed_membership") ==
             StringSet{"wp343_mixed_a", "wp343_mixed_b",
@@ -4434,7 +3873,6 @@ TEST_CASE(
     CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER);
     const Json &wire = mixedMembershipFramePlan(false);
     const FramePlanModel model = buildFramePlanModel(wire.dump());
-    REQUIRE(model.execution_plan.available());
     REQUIRE(model.physical_plan.loweringGraphAvailable());
 
     EmbeddedViewport viewport;
@@ -4507,7 +3945,6 @@ TEST_CASE(
     const std::string config_before = readText(config_path);
     const Json &wire = mixedMembershipFramePlan(false);
     const FramePlanModel model = buildFramePlanModel(wire.dump());
-    REQUIRE(model.execution_plan.available());
     REQUIRE(model.physical_plan.loweringGraphAvailable());
 
     FramePlanGraphicsScene logical;
@@ -4845,7 +4282,6 @@ TEST_CASE(
     FramePlanModel first =
         buildFramePlanModel(taaGroupingFramePlan().dump());
     first.graph = "g";
-    first.execution_plan.graph = first.graph;
     for (auto &node : first.nodes) {
         if (node.provider_feature == "taa") {
             node.provider_feature = "x\x1f" "feature:y";
@@ -4864,7 +4300,6 @@ TEST_CASE(
     FramePlanModel second =
         buildFramePlanModel(taaGroupingFramePlan().dump());
     second.graph = "g\x1f" "feature:x";
-    second.execution_plan.graph = second.graph;
     for (auto &node : second.nodes) {
         if (node.provider_feature == "taa") {
             node.provider_feature = "y";
@@ -5001,9 +4436,9 @@ TEST_CASE(
     // that leaves and re-enters it. The rejection reason remains visible in
     // the outer scope after the forced exit.
     FramePlanModel initially_convex = model;
-    initially_convex.dependencies = {
-        {"inside_a", "inside_b", "pelican.dependency.inside@1",
-         "inside"},
+    initially_convex.barriers = {
+        {.kind = "read_after_write", .resource = "inside",
+         .from = "inside_a", .to = "inside_b"},
     };
     FramePlanGraphicsScene scope_update;
     scope_update.populate(initially_convex, target, 1);
@@ -5080,69 +4515,27 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP317 missing execution plan is a named logical error rather than a valid zero-dependency graph",
-    "[devstudio][frame-plan][logical-graph][wp317][negative-contrast]") {
+    "RC-2 the logical graph opens on a plan with no execution plan",
+    "[devstudio][frame-plan][logical-graph][rc2][negative-contrast]") {
     (void)application();
-    const Json zero_dependencies = independentOpportunityFramePlan(
+    const Json plan = independentOpportunityFramePlan(
         Pelican::PlanningProfileKind::conservative_debug);
-    REQUIRE(zero_dependencies.at("execution_plan")
-                .at("dependencies")
-                .empty());
-    REQUIRE_FALSE(zero_dependencies.at("nodes").empty());
-
-    Json missing = zero_dependencies;
-    missing.erase("execution_plan");
-    REQUIRE(missing.at("nodes") == zero_dependencies.at("nodes"));
-    REQUIRE(missing.at("barriers") == zero_dependencies.at("barriers"));
+    REQUIRE_FALSE(plan.contains("execution_plan"));
+    REQUIRE_FALSE(plan.contains("levels"));
+    REQUIRE(plan.at("barriers").empty());
+    REQUIRE_FALSE(plan.at("nodes").empty());
 
     EmbeddedViewport viewport;
     FramePlanWidget widget{&viewport};
-    widget.receiveResult(QByteArray::fromStdString(missing.dump()));
-    QApplication::processEvents();
-    QGraphicsScene &logical = scene(widget);
-
-    REQUIRE(logical.property("pelicanExecutionPlanState").toString() ==
-            QStringLiteral("unavailable"));
-    REQUIRE(logical.property("pelicanExecutionPlanReasonCode").toString() ==
-            QStringLiteral("execution_plan_missing"));
-    REQUIRE(logical.property("pelicanDependencyRecordCount").toULongLong() ==
-            0);
-    REQUIRE(itemsOfKind(logical, FramePlanNodeItem).empty());
-    REQUIRE(itemsOfKind(logical, FramePlanEdgeItem).empty());
-    const auto unavailable =
-        itemsOfKind(logical, FramePlanLogicalUnavailableItem);
-    REQUIRE(unavailable.size() == 1);
-    REQUIRE(unavailable.front()
-                ->data(FramePlanLogicalStateRole)
-                .toString() == QStringLiteral("unavailable"));
-    REQUIRE(unavailable.front()
-                ->data(FramePlanReasonCodeRole)
-                .toString() == QStringLiteral("execution_plan_missing"));
-    REQUIRE(unavailable.front()->toolTip().contains(
-        QStringLiteral("execution_plan was not published")));
-    auto *unavailable_panel =
-        dynamic_cast<QGraphicsRectItem *>(unavailable.front());
-    REQUIRE(unavailable_panel != nullptr);
-    const QRectF reserved_error_region =
-        unavailable_panel->sceneBoundingRect();
-    REQUIRE(reserved_error_region.width() >= 600.0);
-    REQUIRE(reserved_error_region.height() >= 120.0);
-    REQUIRE(logical.sceneRect().contains(reserved_error_region));
-
-    // Same production entry and widget; the only difference is the valid,
-    // compiler-published execution plan whose dependency array is truly empty.
-    widget.receiveResult(
-        QByteArray::fromStdString(zero_dependencies.dump()));
+    widget.receiveResult(QByteArray::fromStdString(plan.dump()));
     QApplication::processEvents();
     showFirstTarget(widget);
-    REQUIRE(logical.property("pelicanExecutionPlanState").toString() ==
-            QStringLiteral("available"));
-    REQUIRE(logical.property("pelicanExecutionPlanReasonCode")
-                .toString()
-                .isEmpty());
+    QGraphicsScene &logical = scene(widget);
+
+    // Before RC-2 this reply drew an "unavailable" panel and no node: the
+    // nodes are drawn now.
     REQUIRE(logical.property("pelicanDependencyRecordCount").toULongLong() ==
             0);
-    REQUIRE(itemsOfKind(logical, FramePlanLogicalUnavailableItem).empty());
     const auto valid_nodes = itemsOfKind(logical, FramePlanNodeItem);
     REQUIRE(valid_nodes.size() == 1);
     REQUIRE(logical.property("pelicanSubtreeDepth").toInt() == 1);
@@ -5151,6 +4544,15 @@ TEST_CASE(
     for (const QGraphicsItem *node : valid_nodes) {
         REQUIRE(logical.sceneRect().contains(node->sceneBoundingRect()));
     }
+
+    // The example's captured reply: every barrier is a record on an edge.
+    const Json captured = capturedRuntimeFramePlan();
+    REQUIRE_FALSE(captured.contains("execution_plan"));
+    widget.receiveResult(QByteArray::fromStdString(captured.dump()));
+    QApplication::processEvents();
+    REQUIRE(logical.property("pelicanDependencyRecordCount").toULongLong() ==
+            captured.at("barriers").size());
+    REQUIRE_FALSE(itemsOfKind(logical, FramePlanNodeItem).empty());
 }
 
 TEST_CASE(
@@ -5288,7 +4690,7 @@ TEST_CASE(
     FramePlanModel ordered = buildFramePlanModel(wire.dump());
     FramePlanModel reversed = ordered;
     std::reverse(reversed.nodes.begin(), reversed.nodes.end());
-    std::reverse(reversed.dependencies.begin(), reversed.dependencies.end());
+    std::reverse(reversed.barriers.begin(), reversed.barriers.end());
     std::reverse(reversed.resources.begin(), reversed.resources.end());
     std::reverse(reversed.physical_plan.alias_groups.begin(),
                  reversed.physical_plan.alias_groups.end());
@@ -6434,7 +5836,6 @@ TEST_CASE(
               {"kind", "render"},
               {"declaration_index", 0},
               {"order", 0},
-              {"level", 0},
               {"reads", Json::array()},
               {"writes", Json::array()},
               {"shader_resolution",
@@ -6446,7 +5847,6 @@ TEST_CASE(
               {"kind", "render"},
               {"declaration_index", 1},
               {"order", 1},
-              {"level", 1},
               {"reads", Json::array()},
               {"writes", Json::array()},
               {"shader_resolution",
@@ -6574,7 +5974,6 @@ TEST_CASE(
               {"kind", "compute"},
               {"declaration_index", 0},
               {"order", 0},
-              {"level", 0},
               {"reads", Json::array()},
               {"writes", Json::array()}},
          })},
@@ -13246,7 +12645,7 @@ struct Fx9CanvasFixture {
     static Json pass(const std::string &name, int order,
                      const Json &reads, const Json &writes) {
         return {{"name", name}, {"kind", "render"}, {"order", order},
-                {"level", order}, {"source", "project"}, {"reads", reads},
+                {"source", "project"}, {"reads", reads},
                 {"writes", writes}, {"reads_history", Json::array()},
                 {"declaration_index", order},
                 {"shader_resolution", {{"state", "not_applicable"}}}};
@@ -13277,24 +12676,6 @@ struct Fx9CanvasFixture {
                             {"root_declaration", declaration}}})}}})}};
     }
 
-    void publishExecution() {
-        Pelican::FrameGraphDefinition graph;
-        graph.name = "main_render";
-        for (const auto &value : wire["nodes"]) {
-            Pelican::FrameGraphNodeDefinition node;
-            node.name = value.at("name").get<std::string>();
-            node.declaration_index = value.at("declaration_index").get<std::size_t>();
-            node.reads = value.at("reads").get<std::vector<std::string>>();
-            node.writes = value.at("writes").get<std::vector<std::string>>();
-            graph.nodes.push_back(std::move(node));
-        }
-        wire["execution_plan"] = Pelican::frameExecutionPlanToJson(
-            Pelican::compileFrameExecutionPlan(graph, Pelican::planFrameGraph(graph),
-                Pelican::ExecutionEndpoint{.id = "device:0",
-                    .endpoint_class = Pelican::ExecutionEndpointClass::device,
-                    .backend = "vulkan"}));
-        REQUIRE(buildFramePlanModel(wire.dump()).execution_plan.available());
-    }
     void contextReply() {
         recorder.result(recorder.context_id, QByteArray::fromStdString(context.dump()));
     }
@@ -13302,11 +12683,9 @@ struct Fx9CanvasFixture {
         recorder.result(recorder.task_id, QByteArray::fromStdString(authoredTaskCatalog().dump()));
     }
     void planReply() {
-        publishExecution();
         Q_EMIT viewport.inspectorRpcSucceeded(plan_id, QByteArray::fromStdString(wire.dump()));
     }
     void open() {
-        publishExecution();
         widget.resize(1400, 900);
         widget.show();
         widget.setEditCapability(recorder.capability());
@@ -13371,6 +12750,7 @@ TEST_CASE("FX-9 a plan reply during a socket drag sends present input exactly on
         f.widget.refresh();
         f.wire["nodes"].push_back(Fx9CanvasFixture::pass("late_plan", 3, Json::array(), Json::array()));
         f.planReply();
+        CHECK(f.recorder.submits == 0);
     }
     SECTION("authoring context changes the visible input bands") {
         f.widget.refreshAuthoringContext();
@@ -13382,8 +12762,8 @@ TEST_CASE("FX-9 a plan reply during a socket drag sends present input exactly on
     }
     SECTION("scene-level population also preserves the gesture") {
         f.wire["nodes"].push_back(Fx9CanvasFixture::pass("late_plan", 3, Json::array(), Json::array()));
-        f.publishExecution();
         f.logical().populateWholeFrame(buildFramePlanModel(f.wire.dump()));
+        CHECK(f.recorder.submits == 0);
     }
     QApplication::processEvents();
     CHECK(view.isEnabled());

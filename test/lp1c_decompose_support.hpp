@@ -65,7 +65,8 @@ inline std::string lp1cRenamed(const std::map<std::string, std::string> &names, 
 // A main_render frame plan with every name the one-piece feature gave a pass,
 // a task or a resource spelled as the decomposed graph spells it, and without
 // what says who authored a node (a feature's pass and a graph node's copy
-// differ only there). Reads, writes, barriers and levels are compared as sets.
+// differ only there). Reads, writes and barriers are compared as sets; `order`
+// is the node names in plan order.
 inline nlohmann::json lp1cComparablePlan(const nlohmann::json &plan, const std::map<std::string, std::string> &names) {
     using Json = nlohmann::json;
     const auto renamedList = [&](const Json &list) {
@@ -74,8 +75,11 @@ inline nlohmann::json lp1cComparablePlan(const nlohmann::json &plan, const std::
         std::sort(result.begin(), result.end());
         return Json(result);
     };
-    Json result{{"nodes", Json::array()}, {"barriers", Json::array()}, {"levels", Json::array()}};
+    Json result{{"nodes", Json::array()}, {"barriers", Json::array()}, {"order", Json::array()}};
+    std::vector<std::pair<std::size_t, std::string>> order;
     for (auto node : plan.at("nodes")) {
+        order.emplace_back(node.at("order").get<std::size_t>(),
+                           lp1cRenamed(names, node.at("name").get<std::string>()));
         for (const auto *key :
              {"source", "provider_feature", "provider_ref", "authored_name", "loop_origin", "origin", "replaces"})
             node.erase(key);
@@ -91,7 +95,8 @@ inline nlohmann::json lp1cComparablePlan(const nlohmann::json &plan, const std::
     }
     std::sort(barriers.begin(), barriers.end(), [](const Json &lhs, const Json &rhs) { return lhs.dump() < rhs.dump(); });
     result["barriers"] = barriers;
-    for (const auto &level : plan.at("levels")) result["levels"].push_back(renamedList(level));
+    std::sort(order.begin(), order.end());
+    for (const auto &[position, name] : order) result["order"].push_back(name);
     return result;
 }
 

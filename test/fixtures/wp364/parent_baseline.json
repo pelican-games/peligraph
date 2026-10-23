@@ -44,7 +44,6 @@
       {
         "declaration_index": 1,
         "kind": "render",
-        "level": 1,
         "name": "rt_shadow_mask",
         "order": 1,
         "reads": ["gbuffer_worldpos", "gbuffer_normal"],
@@ -55,7 +54,6 @@
       {
         "declaration_index": 19,
         "kind": "compute",
-        "level": 1,
         "name": "rt_shadow_mask_pipeline",
         "order": 18,
         "reads": ["gbuffer_worldpos", "gbuffer_normal"],

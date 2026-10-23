@@ -14,18 +14,17 @@ TEST_CASE("plan viewer model is an exact deterministic projection of frame plan 
         {"version", 1},
         {"profile", "runtime"},
         {"graph", "main"},
-        {"levels", {{"opaque"}, {"__snapshot_opaque_color"}, {"refract"}}},
         {"nodes",
          nlohmann::json::array({
-             {{"name", "refract"}, {"kind", "render"}, {"order", 2}, {"level", 2},
+             {{"name", "refract"}, {"kind", "render"}, {"order", 2},
               {"reads", {"opaque_color"}}, {"writes", {"display"}},
               {"shader_resolution", {{"state", "material_owned"}}}},
-             {{"name", "opaque"}, {"kind", "render"}, {"order", 0}, {"level", 0},
+             {{"name", "opaque"}, {"kind", "render"}, {"order", 0},
               {"reads", nlohmann::json::array()}, {"writes", {"display"}},
               {"source", "project"},
               {"shader_resolution", {{"state", "material_owned"}}}},
              {{"name", "__snapshot_opaque_color"}, {"kind", "snapshot_copy"},
-              {"order", 1}, {"level", 1}, {"reads", {"display"}},
+              {"order", 1}, {"reads", {"display"}},
               {"writes", {"opaque_color"}}, {"snapshot_after", "post_ldr"},
               {"byte_size", 8294400}, {"source", "engine"},
               {"shader_resolution", {{"state", "not_applicable"}}}},
@@ -90,6 +89,11 @@ TEST_CASE("plan viewer model is an exact deterministic projection of frame plan 
     REQUIRE(model.nodes[2].source == "feature:refraction");
     REQUIRE(model.nodes[2].color_load_op == "load");
     REQUIRE(model.edges.size() == 2);
+    // RC-2: the plan has no levels; the viewer places each node one column
+    // right of the node it waits on through a barrier.
+    REQUIRE(model.nodes[0].column == 0);
+    REQUIRE(model.nodes[1].column == 1);
+    REQUIRE(model.nodes[2].column == 2);
     REQUIRE(model.resources.size() == 2);
     REQUIRE(model.resources[0].format == "B8G8R8A8_SRGB");
     REQUIRE(model.resources[1].name == "opaque_color");
@@ -112,11 +116,10 @@ TEST_CASE("plan viewer rejects data outside the public frame plan contract",
         {"version", 1},
         {"profile", "runtime"},
         {"graph", "suffix_contract"},
-        {"levels", {{"pass"}}},
         {"nodes",
          nlohmann::json::array({
              {{"name", "pass"}, {"kind", "render"}, {"order", 0},
-              {"level", 0}, {"reads", nlohmann::json::array()},
+              {"reads", nlohmann::json::array()},
               {"writes", nlohmann::json::array()},
               {"shader_resolution",
                {{"state", "resolved"},
@@ -151,10 +154,9 @@ TEST_CASE("WP367 PlanViewer strictly consumes sparse anyhit slots",
         {"version", 1},
         {"profile", "runtime"},
         {"graph", "wp367"},
-        {"levels", {{"trace"}}},
         {"nodes", nlohmann::json::array({
              {{"name", "trace"}, {"kind", "compute"}, {"order", 0},
-              {"level", 0}, {"reads", nlohmann::json::array()},
+              {"reads", nlohmann::json::array()},
               {"writes", nlohmann::json::array()},
               {"shader_resolution",
                {{"state", "resolved"},

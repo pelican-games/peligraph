@@ -1,7 +1,8 @@
 # plan の層の棚卸し: 実装待ちの器と、概念の拡張で増えただけの層を分ける
 
 対象読者: エンジン担当(描画コンパイラ / renderer)。
-ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。
+ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。2-1 と 2-2 は RC-2 で済み(2026-10-23、`e15e31bb5`。
+下の数字と行番号は削除前のもの。fixture `example_frame_plan.json` は RC-2 で 3 種の鍵が抜けて 168,354 → 139,348 byte)。
 前提: [design_render_stage_as_canvas_filter.md](design_render_stage_as_canvas_filter.md)(アンカー)、
 [design_render_target_memory_reduction.md](design_render_target_memory_reduction.md)(RT の計測)、
 [design_heterogeneous_execution_graph.md](design_heterogeneous_execution_graph.md)(`ExecutionPlan` の目標語彙、2026-07-23)、
@@ -37,8 +38,8 @@
 
 | # | 層 | 明言された決定 | 推奨 | 残っている判断 |
 |---|---|---|---|---|
-| 2-1 | `execution_plan` | **削除**(第 2 backend は書かない。mac は MoltenVK) | 同じ | なし(順番は §6) |
-| 2-2 | `levels` | **完全に消す**(2026-10-18) | 同じ | なし |
+| 2-1 | `execution_plan` | **削除**(第 2 backend は書かない。mac は MoltenVK) | 同じ | なし(順番は §6)。**RC-2 で済み**(`e15e31bb5`、2026-10-23) |
+| 2-2 | `levels` | **完全に消す**(2026-10-18) | 同じ | なし。**RC-2 で済み**(`e15e31bb5`、2026-10-23) |
 | 2-3 | 物理計画の固定ルート(pin / freeze / complete) | **方針決定(2026-10-22): 固定のルートを `target_planning` の policy に一本化する**。細部は後で詰める | 同じ | 語彙、`require` / `prefer`、優先順位(§2-3) |
 | 2-4 | `declared_bytes` = 0 | **埋める**(2026-10-22) | 同じ(RT メモ段 0 と同じ WP、v0 可) | なし |
 | 2-5 | anchor と順序の二重化 | **段タグ + canvas のフィルター階層へ**(段メモ) | 同じ | 段メモ §7 の残り 1 件 |
@@ -48,13 +49,22 @@
 
 ### 2-1 `execution_plan`(WP238a) — (2) 削除(2026-10-17 決定。MoltenVK 採用で第 2 backend の理由が消えた)
 
+- **RC-2 で済み(2026-10-23、`e15e31bb5`)**: 下の表の削除を全部やった(57 ファイル、+434 −4,540。丸ごと消したのは
+  `src/project/executionplan.{hpp,cpp}`・`executionplanwire.{hpp,cpp}`、`src/core/renderingpass/frameexecutionadapter.{hpp,cpp}`、
+  `test/frameexecutionplan_test.cpp`)。表に無かった分も消した: `FrameGraphNodeDefinition::semantic_dialect` /
+  `execution_implementation`(raster pass に入れて、消した adapter だけが読んでいた欄)と、imgui の Plan Viewer の `level`
+  (node の副題は `#<order>`、列は viewer が barrier から出す)。`targetrenderplanning.*` / `vulkanphysicalfragment.cpp` /
+  `vulkanviewplanning.*` / `renderingsamplecount.*` には基点の時点で参照が無く、変えていない。Studio の scenario で
+  `pelicanExecutionPlanState` / `execution_plan` を読むものも基点の時点で無かった(`git grep`)。帯の L3 と barrier 行の access 注記は
+  置き換えずに消した(barrier の行は既に `from → to · resource · kind`)。Logical graph の縁は §6。
+  ECS の `ExecutionPlan` と `view_execution_plan` は残る。以下は削除前の記録で、行番号も削除前のもの。
 - 何か: plan ダンプに併記される backend 非依存 IR(`src/project/executionplan.hpp`)。dialect、implementation、endpoint、
   capability、resource use、依存、bridge、fingerprint。
 - 出自: [design_heterogeneous_execution_graph.md](design_heterogeneous_execution_graph.md) §2 の目標語彙 `ExecutionPlan` の
   frame 版 `FrameExecutionPlan`。同設計では **FramePlan の方が「互換 artifact として段階移行する」側**で、
   Metal は「共通 logical / execution contract から別の physical plan を作る兄弟 backend」(決定 12)。
-- 今の実態: [`makeCompatibilityFrameExecutionPlan`](../src/core/renderingpass/frameexecutionadapter.cpp#L560) が FramePlan から
-  表引きで導き、[`:568`](../src/core/renderingpass/frameexecutionadapter.cpp#L568) が FramePlan と一致を検証、以後はダンプだけ。
+- 今の実態(削除前): `makeCompatibilityFrameExecutionPlan`(`frameexecutionadapter.cpp:560`。RC-2 でファイルごと削除)が FramePlan から
+  表引きで導き、`:568` が FramePlan と一致を検証、以後はダンプだけ。
   設計の意図と**権威の向きが逆**(FramePlan が権威、`execution_plan` が写し)のまま止まっている。約 1,900 行、ダンプ 30 KB。
 - 判定: 削除。Metal backend を書かない(MoltenVK で動かす)と決めたので、目標語彙として残す理由が無い。
   [design_heterogeneous_execution_graph.md](design_heterogeneous_execution_graph.md) は「兄弟 backend は当面作らない」と
@@ -74,8 +84,13 @@
 
 ### 2-2 `levels` — (2) 削除(決定 2026-10-18。`diagnostics` にも残さない)
 
-- 何か: [`computeLevels()`](../src/core/renderingpass/frameplanner.cpp#L1598) が依存辺から node の深さ(ASAP)を出し、
-  [`:1899`](../src/core/renderingpass/frameplanner.cpp#L1899) で層にまとめて [`:2125`](../src/core/renderingpass/frameplanner.cpp#L2125) で JSON へ。
+- **RC-2 で済み(2026-10-23、`e15e31bb5`)**: `computeLevels()`、`FramePlanNode::level`、`FramePlan::levels`、ダンプの `levels` と
+  node の `level` を消した。`diagnostics` にも出していない。`levels` を代理にしていた比較は、node 名を `order` で並べた列と
+  `barriers` の比較にした(`frameplanner_test` の 2 件、`lp1c_decompose_support.hpp` の `lp1cComparablePlan` を使う
+  `golden_bloom_upsample_harness`・`renderconfigeditor_test`・`featurecompose_test`、`featurecompose_test` の `lp0eComparablePlan`)。
+  第6章の三層の説明は「順序付けとバリア導出」にした。以下は削除前の記録で、行番号も削除前のもの。
+- 何か: `computeLevels()`(削除前の `frameplanner.cpp:1598`)が依存辺から node の深さ(ASAP)を出し、
+  `:1899` で層にまとめて `:2125` で JSON へ。
 - 消費者: runtime・Studio・web に無し。2-1 の一致検証が `level` を比べるだけ。マニュアル 06:1146 は「機械最適化で層を作る」と説明。
 - 並列化のときに使えるか: 使えるのは半分だけ。queue への振り分けには ASAP(= `levels`)と ALAP の両方、資源の寿命(同時確保の山)、
   queue の capability、同期点(timeline semaphore、queue ownership transfer)のコストが要る。設計 §4.2 では
@@ -196,7 +211,7 @@
 | 0 | 文書の修正(2-7)、コードマップに 3-1 の「未使用」 | v0 可 | 文書のみ |
 | 1 | 2-4: `declared_bytes` を計測で埋める(RT メモ段 0 と同じ WP)。**RC-1 で済み(`631caac21`)** | v0 可(鍵は増えない) | planner 単体、手計算 120 / 81 MiB と一致 → 実測は 119.95 / 81.08 MiB(RT メモ §1) |
 | 2 | 2-3: 固定ルートの policy 一本化(語彙 → 強度・優先順位 → Pin / Freeze の置換 → package と RPC の削除)。3-2 / 3-3: 選ばれなかった候補と 1 node scope を既定で隠す | v1(物理計画 WP。RT メモの区間詰めと同じ場所) | policy → plan の golden、Frame Plan の scenario(Pin / Freeze の置換後) |
-| 3 | 2-1: `execution_plan` の削除(上の表)。2-2: `levels` を契約から外す | v1 | golden 不変、GPU gate、Studio scenario |
+| 3 | 2-1: `execution_plan` の削除(上の表)。2-2: `levels` を契約から外す。**RC-2 で済み**(`e15e31bb5`、2026-10-23) | v1 | golden 不変、GPU gate、Studio scenario。RC-2 の実装者の報告では触った家族の非 GPU test 628 / 628 緑。GPU gate と Studio scenario は統合側で回す(この記録の時点で結果は未確認) |
 | 4 | 2-6: 段階 2 を typed 論理 graph に育て、core の JSON parse を消す。2-5 と preset レシピ化に合流 | v1 | 純ロジック test、golden 不変 |
 
 1 は Windows 無しでも planner 単体で進む。2〜4 は `get_frame_plan` を読む Studio と web が動く環境(Windows の `studio_cpu`)で確認する。
@@ -208,6 +223,12 @@
 - **2-1 を消したあとの帯の L3(backend の名前)** → 第 2 backend を作らないので L3 は消す。barrier 行の access 注記は FramePlan の barrier(kind と resource)で足りる。
   access mask が要るなら runtime の `makeTransitionInfo`([`render_target_layout_tracker.cpp:9`](../src/core/vkcore/render_target_layout_tracker.cpp#L9))から出す。
 - **2-2 の `level`** → Studio の自動配置([`nodelayout.cpp`](../src/devstudio/view/nodelayout.cpp))は自前で列を計算していて plan の `level` を読まない。契約から外して問題ない。
+  (RC-2 で、imgui の Plan Viewer が `level` で列を決めていたと分かった。viewer が barrier から自分で列を出す形にした)
+- **RC-2 の Logical graph の縁(順序だけの縁)** → RC-2 では付けず、Studio の Frame Plan の Logical graph の縁は plan の `barriers` だけにした。
+  以前の縁は `execution_plan.dependencies` から引いていたので、資源を渡さない順序だけの縁(明示の `after` / `before` / `snapshot_after`。
+  灰色の破線、ラベル `order only: <理由>`)とラベルの `same-pixel attachment` が出ていたが、execution plan と一緒に消えた。
+  順序だけの縁を残すには dump に `after` / `before` を足す必要があり(今の dump の node に無い。`snapshot_after` は snapshot_copy の node にある)、
+  削除の WP の範囲外として足さなかった。要るなら小さく足せる。
 - **2-3 の形** → policy 一本化に発展(§2-3)。ダンプは plan + policy + 説明。web 鏡像は plan を読まないので制約なし。
 - **3-2 / 3-3 を隠す** → Freeze は fragment、Unpin は pin package、`hazard_stress` は planner の profile で、どれも「選ばれなかった候補の resource 全文」を読まない。候補名と理由(`backend_selection`)は残す。
 
@@ -215,3 +236,4 @@
 
 - **削除の順番**。2-1 の削除は Studio の Frame Plan と scenario に触るので、`develop` → `develop_v1` のマージ後に置くのは確定。
   カーネル抽出([canvas メモ](design_studio_node_canvas_kernel.md))より前か後かは、どちらも `frameplangraphics.cpp` に触るので同じ人が続けてやる前提で前に置く案。
+  (2026-10-23: 削除は RC-2 として、develop を develop_v1 へ取り込んだ `5b79ac2d1` の後に済んだ。canvas メモのステータスはこの時点で「改善案メモ(WP 化・レビュー前)」のまま)

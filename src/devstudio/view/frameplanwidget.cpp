@@ -4282,15 +4282,11 @@ struct FramePlanWidget::Impl {
                                                    .arg(static_cast<qulonglong>(model->physical_plan.alias_candidates.size()))
                                              : owner.tr("physical unavailable (%1)")
                                                    .arg(text(model->physical_plan.unavailable_reason));
-        const QString execution_summary =
-            model->execution_plan.available()
-                ? owner.tr("%1 dependencies")
-                      .arg(static_cast<qulonglong>(model->dependencies.size()))
-                : owner.tr("execution unavailable (%1)")
-                      .arg(text(model->execution_plan.unavailable_reason));
+        const QString barrier_count =
+            owner.tr("%1 barriers")
+                .arg(static_cast<qulonglong>(model->barriers.size()));
         status->setStyleSheet(
-            model->physical_plan.available() &&
-                    model->execution_plan.available()
+            model->physical_plan.available()
                 ? QStringLiteral("color: #388e3c;")
                 : QStringLiteral("color: #b36b00;"));
         const QString target_summary =
@@ -4319,8 +4315,8 @@ struct FramePlanWidget::Impl {
                                 text(memory.peak_node)));
         }
         // N-7 rule 2: the line names what was loaded and what is on screen.
-        // Generation, physical and execution planning, the response size and
-        // the refresh time are facts a reader asks for, not facts that have
+        // Generation, the barrier count, physical planning, the response size
+        // and the refresh time are facts a reader asks for, not facts that have
         // to be read every time -- so they are the row's tooltip.
         showStatus(
             owner.tr("%1 \u00b7 %2 \u00b7 %3 passes (%4 compute) \u00b7 "
@@ -4338,7 +4334,7 @@ struct FramePlanWidget::Impl {
                 .arg(text(model->graph), target_summary, generation)
                 .arg(static_cast<qulonglong>(model->nodes.size()))
                 .arg(static_cast<qulonglong>(compute_count))
-                .arg(execution_summary)
+                .arg(barrier_count)
                 .arg(static_cast<qulonglong>(model->resources.size()))
                 .arg(barrier_summary)
                 .arg(physical_summary, byteCount(model->response_bytes),
@@ -4554,8 +4550,6 @@ struct FramePlanWidget::Impl {
                     text(node.provider_feature));
             addFact(facts, owner.tr("Provider ref"),
                     text(node.provider_reference));
-            addFact(facts, owner.tr("Level"),
-                    QString::number(static_cast<qulonglong>(node.level)));
             addFact(facts, owner.tr("Declaration index"),
                     QString::number(
                         static_cast<qulonglong>(node.declaration_index)));
@@ -4665,31 +4659,6 @@ struct FramePlanWidget::Impl {
                                               .arg(text(barrier.to)));
                     barrier_item->setText(2, text(barrier.kind));
                     barrier_item->setText(4, text(barrier.resource));
-                }
-            }
-
-            if (!node.semantic_dialect.empty() || !node.resource_uses.empty()) {
-                auto *execution = groupItem(item, owner.tr("Execution"));
-                addFact(execution, owner.tr("Dialect"),
-                        text(node.semantic_dialect));
-                addFact(execution, owner.tr("Implementation"),
-                        text(node.selected_implementation));
-                addFact(execution, owner.tr("Endpoint"),
-                        text(node.selected_endpoint));
-                addFact(execution, owner.tr("Capabilities"),
-                        joined(node.required_capabilities));
-                if (!node.resource_uses.empty()) {
-                    auto *uses = groupItem(execution, owner.tr("Resource uses"),
-                                           node.resource_uses.size());
-                    for (const auto &use : node.resource_uses) {
-                        auto *use_item = new QTreeWidgetItem(uses);
-                        use_item->setText(1, text(use.resource));
-                        use_item->setText(
-                            2, QStringLiteral("%1 / %2")
-                                   .arg(text(use.access), text(use.intent)));
-                        use_item->setText(3, text(use.epoch));
-                        use_item->setText(4, text(use.footprint));
-                    }
                 }
             }
 
@@ -5154,28 +5123,6 @@ struct FramePlanWidget::Impl {
                 auto *item = new QTreeWidgetItem(wire_group);
                 item->setText(0, text(section.name));
                 item->setText(2, byteCount(section.json.size()));
-            }
-        }
-
-        if (!model->execution_plan.available()) {
-            auto *execution_state =
-                groupItem(state, owner.tr("Execution plan unavailable"));
-            execution_state->setText(
-                1, text(model->execution_plan.unavailable_reason_code));
-            execution_state->setText(
-                2, text(model->execution_plan.unavailable_reason));
-        } else {
-            auto *dependency_group = groupItem(
-                state, owner.tr("Execution dependencies"),
-                model->dependencies.size());
-            for (const auto &dependency : model->dependencies) {
-                auto *item = new QTreeWidgetItem(dependency_group);
-                setRowNodes(item, {dependency.from, dependency.to});
-                item->setText(
-                    0, QStringLiteral("%1 -> %2")
-                           .arg(text(dependency.from), text(dependency.to)));
-                item->setText(1, text(dependency.reason));
-                item->setText(2, text(dependency.resource));
             }
         }
 

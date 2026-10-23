@@ -492,7 +492,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「途中で失敗したら、それまでの副作用を取り消す」を例外安全に書く定型です。ローカルなガード型のデストラクタに巻き戻し処理を書き、正常系の最後で「もう巻き戻さない」印(commit / dismiss と呼ばれることが多い)を立ててガードを無効化します。こうすると、途中のどの `throw` からでも巻き戻しが走り、成功経路でだけ走りません(`std::scope_exit` / `scope_fail` は C++ 標準ライブラリ拡張の同種の道具です)。ガードに「そもそも何もしていない」状態を表す番兵(世代番号が 0、ハンドルが無効など)を持たせて、staging 前に抜けたときに巻き戻しを飛ばす形もよく使われます。
 
-**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3126) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3153) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L406)(`catch (...)` で確保済みの範囲を返す)
+**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L3129) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L3156) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L406)(`catch (...)` で確保済みの範囲を返す)
 
 ### double-checked locking と acquire / release
 
@@ -1087,7 +1087,7 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 **このコードベースでの注意**: 登録されている semantic は 11 種です。
 
-値・音・イベントの 3 つ(`pelican.value.scalar@1` / `pelican.audio.voice@1` / `pelican.event.playback_control@1`)に加えて、`pelican.render` module が 6 つ(`storage_buffer@1` / `attribute@1` / `color_signal@1` / `depth@1` / `legacy_opaque_image@1` / `legacy_opaque_resource@1`、[`logicalrendertype.cpp`](../../src/project/logicalrendertype.cpp#L583) を [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L947) が登録し、[`renderPorts()`](../../src/project/graphmodule.cpp#L391) 経由でポートに現れます)、pose module が 2 つ(`pelican.pose@1` / `pelican.rig@1`、[`posegraphmodule.cpp`](../../src/project/posegraphmodule.cpp#L74))です。
+値・音・イベントの 3 つ(`pelican.value.scalar@1` / `pelican.audio.voice@1` / `pelican.event.playback_control@1`)に加えて、`pelican.render` module が 6 つ(`storage_buffer@1` / `attribute@1` / `color_signal@1` / `depth@1` / `legacy_opaque_image@1` / `legacy_opaque_resource@1`、[`logicalrendertype.cpp`](../../src/project/logicalrendertype.cpp#L583) を [`graphmodule.cpp`](../../src/project/graphmodule.cpp#L950) が登録し、[`renderPorts()`](../../src/project/graphmodule.cpp#L391) 経由でポートに現れます)、pose module が 2 つ(`pelican.pose@1` / `pelican.rig@1`、[`posegraphmodule.cpp`](../../src/project/posegraphmodule.cpp#L74))です。
 
 `opaque` を持つのは姿勢とリグの 2 つで、ただし `pelican.rig@1` はポートには現れません(ノードの parameter として名前で指定します)。Studio 側は**型名にソケットの形を割り当てる表**を JSON で持っており、新しい型は C++ を書かずに [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json) へ名前を足すだけで絵が付きます。
 

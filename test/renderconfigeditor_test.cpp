@@ -10769,7 +10769,7 @@ TEST_CASE("GT-1 apply_graph_template takes bloom_loop in place of the bloom feat
         INFO(one_piece.at("nodes").at(index).dump() << "\n" << decomposed.at("nodes").at(index).dump());
         CHECK(one_piece.at("nodes").at(index) == decomposed.at("nodes").at(index));
     }
-    CHECK(one_piece.at("levels") == decomposed.at("levels"));
+    CHECK(one_piece.at("order") == decomposed.at("order"));
     CHECK(one_piece.at("barriers") == decomposed.at("barriers"));
     CHECK(std::ranges::count(gt1PlanNames(harness.runtime.frame_plan), std::string{"HighLuminanceExtraction"}) == 0);
 

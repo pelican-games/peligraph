@@ -442,7 +442,10 @@ Table makeTable() {
          enumeration("bus", {"se", "bgm"}).fallback("se"), wrap(), mapping("source_begin", 0.0),
          mapping("source_end", std::nullopt).describe("A literal, or the input edge of the same name; absent: the "
                                                       "sound's length."),
-         mapping("speed", 1.0), mapping("delay", 0.0)});
+         mapping("speed", 1.0), mapping("delay", 0.0),
+         // AT-1 decision 4.
+         boolean("master").fallback(false).describe(
+             "The game clock follows this voice while it plays (never sought for drift); one master at a time.")});
     for (const auto *op : {"audio.volume", "audio.pitch"})
         add(table, op, true,
             {string("target").required({"voice"}).choicesFromGraph({"audio.playback"})

@@ -1,7 +1,6 @@
 #include "frameplanmodel.hpp"
 #include "frameplanresourcekind.hpp"
 
-#include "executionplanwire.hpp"
 #include "frameresolutionwire.hpp"
 #include "physicaltargetplanwire.hpp"
 #include "../../project/shadersourceresolver.hpp"
@@ -449,21 +448,6 @@ std::vector<FramePlanOpportunityPair> parseOpportunityPairs(
         result.push_back(std::move(pair));
     }
     return result;
-}
-
-std::string footprintName(const Json &use, std::string_view context) {
-    const auto found = use.find("footprint");
-    if (found == use.end() || found->is_null()) {
-        return {};
-    }
-    if (found->is_string()) {
-        return found->get<std::string>();
-    }
-    if (!found->is_object()) {
-        throw invalid(std::string{context} + ".footprint must be an object");
-    }
-    return optionalStringField(*found, "kind", std::string{context} +
-                                                   ".footprint");
 }
 
 std::string aggregateAttachmentOp(const FramePlanNode &node,
@@ -1381,7 +1365,6 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         node.declaration_index =
             requireSizeField(value, "declaration_index", context);
         node.order = requireSizeField(value, "order", context);
-        node.level = requireSizeField(value, "level", context);
         node.reads = stringArray(value, "reads", context, true);
         node.history_reads = stringArray(value, "reads_history", context);
         node.writes = stringArray(value, "writes", context, true);
@@ -1498,94 +1481,6 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
     }
     std::vector<std::string> logical_resource_context{
         logical_resource_names.begin(), logical_resource_names.end()};
-    const Json *execution_plan_json = nullptr;
-    if (const auto execution = root.find("execution_plan");
-        execution != root.end() && !execution->is_null()) {
-        execution_plan_json = &*execution;
-    }
-    const auto execution_validation = Pelican::validateExecutionPlanWire(
-        execution_plan_json,
-        Pelican::ExecutionPlanWireContext{
-            .expected_graph = model.graph,
-            .frame_nodes = frame_node_names,
-            .logical_resources = logical_resource_context,
-        });
-
-    std::vector<std::string> execution_node_names = frame_node_names;
-    if (!execution_validation.available()) {
-        model.execution_plan.state = FramePlanExecutionPlanState::unavailable;
-        model.execution_plan.unavailable_reason_code =
-            execution_validation.reason_code;
-        model.execution_plan.unavailable_reason =
-            execution_validation.reason();
-    } else {
-        const Json &execution = *execution_plan_json;
-        model.execution_plan.state = FramePlanExecutionPlanState::available;
-        model.execution_plan.unavailable_reason_code.clear();
-        model.execution_plan.unavailable_reason.clear();
-        model.execution_plan.schema =
-            requireStringField(execution, "schema", "execution_plan");
-        model.execution_plan.schema_version =
-            requireSizeField(execution, "schema_version", "execution_plan");
-        model.execution_plan.graph =
-            requireStringField(execution, "graph", "execution_plan");
-        model.execution_plan.fingerprint =
-            requireStringField(execution, "fingerprint", "execution_plan");
-
-        const auto &execution_nodes =
-            requireArrayField(execution, "nodes", "execution_plan");
-        execution_node_names.clear();
-        execution_node_names.reserve(execution_nodes.size());
-        for (std::size_t index = 0; index < execution_nodes.size(); ++index) {
-            const auto &value = execution_nodes.at(index);
-            const std::string context =
-                "execution_plan.nodes[" + std::to_string(index) + "]";
-            const std::string name = requireStringField(value, "name", context);
-            execution_node_names.push_back(name);
-            auto &node = model.nodes[node_indices.at(name)];
-            node.semantic_dialect =
-                optionalStringField(value, "semantic_dialect", context);
-            node.selected_implementation =
-                optionalStringField(value, "selected_implementation", context);
-            node.selected_endpoint =
-                optionalStringField(value, "selected_endpoint", context);
-            node.required_capabilities =
-                stringArray(value, "required_capabilities", context);
-            if (const auto uses = value.find("resource_uses");
-                uses != value.end()) {
-                node.resource_uses.reserve(uses->size());
-                for (std::size_t use_index = 0; use_index < uses->size();
-                     ++use_index) {
-                    const auto &use = uses->at(use_index);
-                    const std::string use_context =
-                        context + ".resource_uses[" +
-                        std::to_string(use_index) + "]";
-                    node.resource_uses.push_back(FramePlanResourceUse{
-                        .resource = requireStringField(use, "resource", use_context),
-                        .epoch = optionalStringField(use, "epoch", use_context),
-                        .access = optionalStringField(use, "access", use_context),
-                        .intent = optionalStringField(use, "intent", use_context),
-                        .footprint = footprintName(use, use_context),
-                    });
-                }
-            }
-        }
-
-        const auto &dependencies =
-            requireArrayField(execution, "dependencies", "execution_plan");
-        model.dependencies.reserve(dependencies.size());
-        for (std::size_t index = 0; index < dependencies.size(); ++index) {
-            const auto context =
-                "execution_plan.dependencies[" + std::to_string(index) + "]";
-            const auto &value = dependencies[index];
-            model.dependencies.push_back(FramePlanDependency{
-                .from = requireStringField(value, "from", context),
-                .to = requireStringField(value, "to", context),
-                .reason = requireStringField(value, "reason", context),
-                .resource = optionalStringField(value, "resource", context),
-            });
-        }
-    }
 
     std::unordered_map<std::string, std::size_t> decision_group_indices;
     const Json *physical_plan_json = nullptr;
@@ -1597,7 +1492,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         physical_plan_json,
         Pelican::PhysicalTargetPlanWireContext{
             .expected_graph = model.graph,
-            .execution_nodes = execution_node_names,
+            .execution_nodes = frame_node_names,
             .logical_resources = std::move(logical_resource_context),
         });
     if (!physical_validation.available()) {
