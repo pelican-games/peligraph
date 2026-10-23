@@ -447,7 +447,7 @@ process 終了時も pending request を失敗にするため、入力 pipe や 
 到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L112) が view 表示なしで検査します。
 
 読む前に、応答の階層だけ掴んでおきます。`get_frame_plan` の 1 応答の中に、名前の層と物理の層が入れ子で
-入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L4521))。
+入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L4471))。
 
 | get_frame_plan 応答 = pelican.frame_plan v1 | 意味 |
 |---|---|
@@ -460,7 +460,7 @@ plan の公開フィールドと2層を辿る規則は[第13章の frame plan](.
 
 `framePlanToJson()` は compiled pipeline の pass / resource provenance、once flag、fold planning を JSON へ変換します。root の文書参照は planner が持たないため renderer が渡します([変換](../../src/core/renderingpass/frameplanner.cpp#L1995))。
 
-`currentFramePlanJson()` は現在の世代を参照し、once 実行記録、画像の初期資産、直近 frame の material 描画記録を加えます。描画記録の program と generation が一致しない場合は加えません([renderer の付加処理](../../src/core/vkcore/renderer.cpp#L4589))。
+`currentFramePlanJson()` は現在の世代を参照し、once 実行記録、画像の初期資産、直近 frame の material 描画記録を加えます。描画記録の program と generation が一致しない場合は加えません([renderer の付加処理](../../src/core/vkcore/renderer.cpp#L4539))。物理計画の image ごとの `bytes` と `memory_summary`(✅RC-1)も呼ぶたびに今の image から数えて加えます(式は `src/project/targetrendermemory`。第6章 §6.4「物理 image の bytes と `memory_summary`」)。
 
 `appendFramePlanPhysicalNodeReferences()` は物理層と論理 node の関係を結び、fold の参照も付けます。diagnostics は planner の未読出力判定と renderer の未使用 binding 判定から作ります。後者は reflection の `accessed` を使い、stage 間は OR です([参照の付加](../../src/core/renderingpass/frameplanner.cpp#L2307))。
 
@@ -940,8 +940,8 @@ Studio の target を必要としません)。
   ([L476](../../test/devstudio_frameplan_test.cpp#L476) / [L588](../../test/devstudio_frameplan_test.cpp#L588) /
   [L686](../../test/devstudio_frameplan_test.cpp#L686) / L689 / L722–L724 / L793 / L841)と
   `devstudio_frameplan_graph_test.cpp` の **2 箇所**
-  ([Target combo の項目数の検査(F-7 から Whole frame の 1 件を足して 23)](../../test/devstudio_frameplan_graph_test.cpp#L5179) /
-  [L5896](../../test/devstudio_frameplan_graph_test.cpp#L5866))で、
+  ([Target combo の項目数の検査(F-7 から Whole frame の 1 件を足して 23)](../../test/devstudio_frameplan_graph_test.cpp#L5206) /
+  [L5896](../../test/devstudio_frameplan_graph_test.cpp#L5893))で、
   多い方は graph test ではなく frameplan test です。同じ commit で `devstudio_*` の 4 テストが
   **読みだけで編集され、実行されていない**ことも同じ完了記録 `e1c326c1` の申告で(Studio 無しの
   worktree では走らないため、primary の全数で見る、という運用です)、本章で実行を確かめてはいません。
@@ -1100,7 +1100,7 @@ engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/commu
 | `render_frame` | [登録 `render_frame`](../../src/core/communication/rpcserver.cpp#L2439) | time / frame を進めず、pending flush → seq update → render | [第10章 基盤メソッド一覧](../manual/10_tools.md#基盤メソッド一覧) |
 | `capture_gpu` | [登録 `capture_gpu`](../../src/core/communication/rpcserver.cpp#L2447) | `render_frame` と同じ 1 回の描画を、RenderDoc の明示の Start/End で捕る | 同上 |
 | `get_frame_plan` | [登録 `get_frame_plan`](../../src/core/communication/rpcserver.cpp#L2478) | `Renderer::currentFramePlanJson()`。fallback の世代なら `render_pipeline` を足し、draw_loop の要素を `pageDrawLoopElements()` で切り出す | 同上 |
-| `rerun_once` | [登録 `rerun_once`](../../src/core/communication/rpcserver.cpp#L2508) | [`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4296) が今の frame plan から once の plan node を集めて `Renderer::once_rerun_requests` に入れ、次の frame の [`planOnceRuns()`](../../src/core/renderingpass/oncescheduler.cpp#L5) が走らせる。無い名前の `std::invalid_argument` は handler が invalid params にする | 同上 |
+| `rerun_once` | [登録 `rerun_once`](../../src/core/communication/rpcserver.cpp#L2508) | [`Renderer::requestOnceRerun()`](../../src/core/vkcore/renderer.cpp#L4246) が今の frame plan から once の plan node を集めて `Renderer::once_rerun_requests` に入れ、次の frame の [`planOnceRuns()`](../../src/core/renderingpass/oncescheduler.cpp#L5) が走らせる。無い名前の `std::invalid_argument` は handler が invalid params にする | 同上 |
 | `pick_object` | [登録 `pick_object`](../../src/core/communication/rpcserver.cpp#L2539) | feature が作った `picking_id` を同期で読み、同じ frame の token を宣言の identity へ解く | 同上 |
 | `set_gizmo` / `query_gizmo_drag_basis` / `query_gizmo_handle` | [登録 `set_gizmo`](../../src/core/communication/rpcserver.cpp#L2569) / [登録 `query_gizmo_drag_basis`](../../src/core/communication/rpcserver.cpp#L2605) / [登録 `query_gizmo_handle`](../../src/core/communication/rpcserver.cpp#L2750) | 表示の要求 / 軸か view-plane の論理 pixel 当たりのドラッグ基底を状態を変えずに返す / 状態なしの hit query。下の段落 | `set_gizmo` と `query_gizmo_handle` は [第10章 基盤メソッド一覧](../manual/10_tools.md#基盤メソッド一覧)。`query_gizmo_drag_basis` は [第10章 ギズモのドラッグ基底と modal transform](../manual/10_tools.md#ギズモのドラッグ基底と-modal-transform) |
 | `get_modal_transform` / `cancel_modal_transform` / `ack_modal_transform` | [登録 `get_modal_transform`](../../src/core/communication/rpcserver.cpp#L2691) / [登録 `cancel_modal_transform`](../../src/core/communication/rpcserver.cpp#L2703) / [登録 `ack_modal_transform`](../../src/core/communication/rpcserver.cpp#L2727) | player 側の modal transform の snapshot を読む / cancel を求める / operation と revision が合う snapshot を acknowledge する | [第10章 ギズモのドラッグ基底と modal transform](../manual/10_tools.md#ギズモのドラッグ基底と-modal-transform) |
@@ -1191,7 +1191,7 @@ editor service を通らず、handler が project の文書の transaction(読�
 - **段 D(RTL-1a)**: `procedural_records` を渡すと asset_data を同じ候補の追加文書として書き、runtime の `apply_candidate`(`editorruntimefactory.cpp`)が layout の世代を staged にする直前に procedural の record を scene へ publish し、世代が committed にならなければ前の bytes を publish し直します(`publishCandidateAssetData()`)。
 - **段 E(RTL-1a)**: 行に当たらない binding は `RaySceneRowSnapshot::unresolved_binding_indices` と `bindings_digest_sha256` に残し、`get_ray_layout` がその digest が今の bindings と同じときだけ出します。staged の世代の巻き戻りの `failure` には、`renderer.cpp` の thread_local の 1 変数が持つ frame の例外の文を足します。
 - **catalog(RTL-1b)**: `GraphParameterSchema::key_choices_from`(builder の `keyChoicesFrom()`、出力は `choices_from` と同じ `choicesJson()`)。
-- **frame plan(RTL-1b)**: `RayQueryAccelerationStructureDiagnostics::named_tlas_blas`。診断は [`Renderer::rayQueryAccelerationStructureDiagnostics()`](../../src/core/vkcore/renderer.cpp#L5345) が返し、本番の [`get_frame_plan` の投影](../../src/core/vkcore/renderer.cpp#L4785) でも使います。
+- **frame plan(RTL-1b)**: `RayQueryAccelerationStructureDiagnostics::named_tlas_blas`。診断は [`Renderer::rayQueryAccelerationStructureDiagnostics()`](../../src/core/vkcore/renderer.cpp#L5320) が返し、本番の [`get_frame_plan` の投影](../../src/core/vkcore/renderer.cpp#L4735) でも使います。
 - test は manual 第13章の同じ節の一覧です。新しい test のファイルは `test/rtl1b_ray_layout_restart_test.cpp`(GPU。headless の `pelican_player --rpc --render-fallback` を子 process で起こし、起こし直しまで通す)です。
 
 **`edit_batch` の中の `heldDocument()`(✅FR-4、`2eb08d21`)。**FR-3 の batch は、各 edit が書き換える文書を editor の持つもの(`document_`、managed fragment、`currentDocumentSet()` の authoring context)から読むことを前提にしていました。`edit_preset_pass` の feature の分岐と preset の分岐、`edit_compute_task` / `remove_compute_task`(`changeComputeTask()`)は project の preset / feature をディスクから読んでいたので、外していました。FR-4 はこの読みを [`RenderConfigEditorService::heldDocument()`](../../src/core/communication/renderconfigeditor.cpp#L1320) に替えて、3 つを `batchEdits()` に足しました。
@@ -1220,9 +1220,9 @@ CAS は受けた時の `base_source_digest` なので、間に root が変われ
 
 **起動時の拒否と fallback の世代(✅BS-1 `d9811bfc` / BS-1b `40318ffe`)。**利用者から見た形は manual 第6章 §6.16 の「起動時に組めない構成と `--render-fallback`」と第13章 §13.5 の「起動時に断られた構成を直す」です。
 
-- **起動引数と renderer**: [`render_fallback` の宣言(BS-1)](../../src/core/launchconfig.hpp#L60) が真のときだけ、`PelicanCore::run()` の ray layout の先読みの例外は [`RenderPipelineStartupRefusal`](../../src/core/vkcore/renderer.hpp#L165) に書かれ、[`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L3238) は自分の構成の読み込みの例外も拒否にして、fallback の世代で起動します(第2章 §2.1 の 7 番と 10 番)。拒否を持つ `render_pipeline_fallback_refusal` は、`RenderPipelinePublicationTransaction::publish()` が project の構成を publish するたびに `reset()` します([publish で fallback を終える所(guide)](../../src/core/vkcore/renderer.cpp#L178))。
+- **起動引数と renderer**: [`render_fallback` の宣言(BS-1)](../../src/core/launchconfig.hpp#L60) が真のときだけ、`PelicanCore::run()` の ray layout の先読みの例外は [`RenderPipelineStartupRefusal`](../../src/core/vkcore/renderer.hpp#L165) に書かれ、[`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L3188) は自分の構成の読み込みの例外も拒否にして、fallback の世代で起動します(第2章 §2.1 の 7 番と 10 番)。拒否を持つ `render_pipeline_fallback_refusal` は、`RenderPipelinePublicationTransaction::publish()` が project の構成を publish するたびに `reset()` します([publish で fallback を終える所(guide)](../../src/core/vkcore/renderer.cpp#L179))。
 - **拒否の JSON**: [`renderPipelineRefusalJson()`](../../src/core/vkcore/renderer_config.cpp#L469) は、BS-1b から先に root の bytes を `renderDocumentSyntax()` に通し、JSON でなければ例外の種類に関わらず `render_document_syntax@1` にします。そうでなければ、`GraphRegistryError` は `graphRefusalInDocument()`(CT-2)、`splitCodedRefusalMessage()` が分けられる文は code と fields に `addGraphRefusalSource()` を足したもの(code が `render_document_syntax@1` なら message を読める文に組み直す)、それ以外は `render_pipeline_preflight_failed` と `what()` です。
-- **RPC**: `get_status` は常に [`Renderer::renderPipelineStatusJson()`](../../src/core/vkcore/renderer.cpp#L3353) を `render_pipeline` に入れ、`get_frame_plan` は `renderPipelineFallback()` が真のときだけ入れます([get_frame_plan に入れる所(guide)](../../src/core/communication/rpcserver.cpp#L2492))。
+- **RPC**: `get_status` は常に [`Renderer::renderPipelineStatusJson()`](../../src/core/vkcore/renderer.cpp#L3303) を `render_pipeline` に入れ、`get_frame_plan` は `renderPipelineFallback()` が真のときだけ入れます([get_frame_plan に入れる所(guide)](../../src/core/communication/rpcserver.cpp#L2492))。
 - **editor の依存**: [`runtime_fallback` の依存(BS-1)](../../src/core/communication/renderconfigeditor.hpp#L253)(本番は `Renderer::renderPipelineFallback()`。[factory の配線(BS-1)](../../src/core/communication/editorruntimefactory.cpp#L2467))が真の間、`reloadRenderDocuments()` は `no_change` にしません([fallback の間は no_change にしない所(guide)](../../src/core/communication/renderconfigeditor.cpp#L7898))。`renderDocumentsOf()` は authoring context の解決が投げたら、`namedRenderDocuments()` で root の rendering 節が名指す文書を拾い、ディスクにあって種類が合うもの(BS-1b からは JSON でないものも)を返します([組めない root の一覧(guide)](../../src/core/communication/renderconfigeditor.cpp#L6569))。
 - **JSON でない文書(BS-1b)**: 判定と文は `pelican_project` の [`renderDocumentSyntax()`](../../src/project/renderconfigdocument.cpp#L435) / [`renderDocumentSyntaxMessage()`](../../src/project/renderconfigdocument.cpp#L464) です。composer の feature の読みと preset の読みは [`parseRenderDocument()`](../../src/project/renderconfigdocument.cpp#L479) を通り、`RenderDocumentSyntaxError`(`what()` が `render_document_syntax@1: <fields の JSON>`)を投げます。editor はこの code を [`isCarriedRefusalCode()`](../../src/core/communication/renderconfigeditor.cpp#L82) の運ぶ code に加え、`carriedRefusalMessage()` が読める文に戻します。
   - editor の constructor は、root が `Json::accept()` を通らなければ [`AuthoredRenderConfigDocument::unparsed()`](../../src/project/renderconfigdocument.cpp#L710) で bytes と digest だけを持ちます(`loadManagedDocumentBaselines()` は何も拾いません)。
@@ -1552,7 +1552,7 @@ launcher は起動のたびに最初に [`sweep_lease_logs()`](../../test/gpu_le
 |---|---|---|
 | pure parser/value | [`sceneformat_test.cpp`](../../test/sceneformat_test.cpp#L122)、[`materialformat_test.cpp`](../../test/materialformat_test.cpp#L104)、[`jsonrpc_test.cpp`](../../test/jsonrpc_test.cpp#L38) | schema、型変換、error 文言。GPU 不要 |
 | subsystem unit | [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L204)、[`inputstate_test.cpp`](../../test/inputstate_test.cpp#L9)、[`deletionqueue_test.cpp`](../../test/deletionqueue_test.cpp#L30) | lifecycle、generation、frame 境界、遅延破棄 |
-| headless runtime | [`headless_render_test.cpp`](../../test/headless_render_test.cpp#L124)、[`vulkan_headless_test.cpp`](../../test/vulkan_headless_test.cpp#L13) | window なし Vulkan、render/readback |
+| headless runtime | [`headless_render_test.cpp`](../../test/headless_render_test.cpp#L125)、[`vulkan_headless_test.cpp`](../../test/vulkan_headless_test.cpp#L13) | window なし Vulkan、render/readback |
 | process integration | [`run_rpc_headless.cmake`](../../test/run_rpc_headless.cmake#L1)、[`run_compute_headless.cmake`](../../test/run_compute_headless.cmake#L1)、devcli scripts | 実 executable、stdin/stdout、filesystem、終了 code |
 
 ### 執筆時点以降に増えた主なテスト群
@@ -1610,7 +1610,7 @@ launcher は起動のたびに最初に [`sweep_lease_logs()`](../../test/gpu_le
 | action map と layer consumption | [`inputactions_test.cpp`](../../test/inputactions_test.cpp#L107) |
 | project/path/security | [`projectconfig_test.cpp`](../../test/projectconfig_test.cpp#L188)、[`pathresolver_test.cpp`](../../test/pathresolver_test.cpp#L157) |
 | physics の幾何と world binding | [`physquery_test.cpp`](../../test/physquery_test.cpp#L112)、[`physworld_test.cpp`](../../test/physworld_test.cpp#L55) |
-| frame graph の順序/異常系 | [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp#L302) |
+| frame graph の順序/異常系 | [`frameplanner_test.cpp`](../../test/frameplanner_test.cpp#L307) |
 | rendering JSON | [`renderingpass_helpers_test.cpp`](../../test/renderingpass_helpers_test.cpp#L21) |
 | shader compile/reflection/reload | [`shader_compiler_reflection_test.cpp`](../../test/shader_compiler_reflection_test.cpp#L34)、[`shader_library_test.cpp`](../../test/shader_library_test.cpp#L94) |
 | feature composition | [`featurecompose_test.cpp`](../../test/featurecompose_test.cpp#L372) |
@@ -1722,7 +1722,7 @@ TEST_CASE("...") {
 >
 > - **engine の throw(素の文)**: SKIP で隠れる。
 >
-> **手がかり**: 「capability が無い」と「実行して失敗した」を分ける方法は2つです。(1) **明示的な能力問い合わせ** — [XR segmented draw の multiview capability 検査](../../test/golden_harness.cpp#L12798) / [`.dynamic_rendering_local_read`](../../test/headless_render_test.cpp#L4990) を見て skip し、本体は囲まない。(2) **device 初期化エラーを厳密に絞って再送出** — [`requireVulkanDevice()`](../../test/vulkan_test_support.hpp) は `No suitable Vulkan physical device found` のときだけ skip し、それ以外は `throw;` します。後始末の catch も同じ判定を使い、非該当なら再送出します。**(1) が本来の形**で、(2) は既存テストを最小限の変更で救う形です。
+> **手がかり**: 「capability が無い」と「実行して失敗した」を分ける方法は2つです。(1) **明示的な能力問い合わせ** — [XR segmented draw の multiview capability 検査](../../test/golden_harness.cpp#L12798) / [`.dynamic_rendering_local_read`](../../test/headless_render_test.cpp#L4991) を見て skip し、本体は囲まない。(2) **device 初期化エラーを厳密に絞って再送出** — [`requireVulkanDevice()`](../../test/vulkan_test_support.hpp) は `No suitable Vulkan physical device found` のときだけ skip し、それ以外は `throw;` します。後始末の catch も同じ判定を使い、非該当なら再送出します。**(1) が本来の形**で、(2) は既存テストを最小限の変更で救う形です。
 >
 > **不変条件**: skip は「実行できない理由」を**問い合わせて**決める。`std::exception` を捕まえて skip にしない。どうしても囲むなら、囲む範囲を bring-up だけに限り、bring-up を抜けたら再送出する。
 

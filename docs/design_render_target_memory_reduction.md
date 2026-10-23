@@ -1,11 +1,12 @@
 # 不要な render target の削減: 寿命の正確化と区間詰めによるメモリ共有
 
 対象読者: エンジン担当(描画コンパイラ / renderer)。
-ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。
+ステータス: 改善案メモ(2026-10-16。議論の記録。WP 化・レビュー前)。段 0(計測)は RC-1 で済み(2026-10-23、`631caac21`。§5)。
 前提: マニュアル [第6章 §6.6 target planning](manual/06_rendering.md#target-planning-tree)、
 [design_render_pipeline_extensibility.md](design_render_pipeline_extensibility.md)、
 [v1 開発計画](v1_development_plan.md)「保守上の整理候補」。
 数字は `test/fixtures/devstudio/example_frame_plan.json`(example の実機の物理計画)から 1920×1080 で手計算したもの。
+§1 の display の行と合計は RC-1 の計測(planner の test)に合わせて直した。
 行番号は `develop`(v0.1.0 + WR-1)時点。
 
 ## 0. 要約
@@ -27,9 +28,13 @@
 | opaque_color / opaque_depth(snapshot) | R16G16B16A16 / D32 | 1920×1080 | 15.8 / 7.9 | 4–**29** / 5–**29** | ×(require_store) |
 | Bloom_Threshold_RT | B8G8R8A8 | 1920×1080 | 7.9 | 11–12 | ○(g_emissive と alias) |
 | Bloom_Downsample_H_k / Upsample_V_k(k=0..3) | B8G8R8A8 | 1/2 … 1/16 | 2.0 … 0.03 | 12–23 | ○ |
-| display | B8G8R8A8 | 160×90 | 0.05 | 23–29 | × |
+| display | B8G8R8A8 | 1920×1080(出力の大きさ) | 7.9 | 23–29 | × |
 
-- 合計 120.0 MiB、同時最大 81.1 MiB(order 3 = lighting_pass)。
+- display は format_class `display` で、runtime の正規化([`resolveRenderTargetFormatClassesV2()`](../src/core/renderingpass/rendertargetjsonparser.cpp))が出力の extent を書き込む。
+  fixture の 160×90 は、その fixture を取ったときの出力の大きさ。
+- 合計 119.95 MiB(125,776,320 B)、同時最大 81.08 MiB(85,017,600 B、order 3 = lighting_pass)。RC-1(`631caac21`)の planner の test の値。
+  合計は alias の組を 1 回と数える(組は最大の住人の bytes で 1 回。21 枚が 20 の確保)。
+- 以前この行にあった手計算の 120.0 MiB は、2 つのずれがほぼ打ち消し合った値だった: display を 160×90 で数えた(1080p の実物より 8,236,800 B 少ない)のと、alias の組の 1 枚(8,294,400 B)を引かなかった(多い)。差は 57,600 B。
 - gbuffer 5 枚 + depth = 63 MiB は lighting の後に空く。bloom 鎖 9 枚 = 13 MiB は order 11 から始まるので、全部その跡地に入る大きさ。
 - `opaque_*`(24 MiB)は `forward_transparent`(order 6)しか読まないのに末尾まで生きている。
 - 物理計画の `reason`: 21 枚中 15 枚が `arbitrary read requires a materialized resource`(sampler 読みなので妥当)。
@@ -100,12 +105,15 @@ renderer(executePlannedFrameGraph)
 
 | 段 | 内容 | 規模 | 検証 |
 |---|---|---|---|
-| 0 | 計測: `get_frame_plan` に `memory_summary {total_bytes, peak_live_bytes, peak_node}` と資源ごとの `bytes` を出す。Studio の Frame Plan に表示 | 小 | planner の単体テスト(GPU 不要)。手計算の 120 / 81 MiB と一致 |
+| 0 | 計測: `get_frame_plan` に `memory_summary {total_bytes, peak_live_bytes, peak_node}` と資源ごとの `bytes` を出す。Studio の Frame Plan に表示。**RC-1 で済み(`631caac21`)** | 小 | planner の単体テスト(GPU 不要)。手計算の 120 / 81 MiB と一致 → 実測は 119.95 / 81.08 MiB(合計のずれは §1 の注) |
 | 1 | A: required / require_store の末尾延長の理由を特定し、必要な経路だけ opt-in に | 小〜中 | 物理計画の fixture 差分、golden 不変、headless 読み出し・picking・capture の回帰 |
 | 2 | B: 区間詰め alias(planner → runtime → barrier) | 大 | planner 単体(詰め結果の決定性、no_alias、memoryTypeBits 拒否)、GPU gate 全数、`hazard_stress` での揺さぶり、validation layer |
 | 3 | C: dead pass elimination、store 自動 discard | 中 | frame plan の fixture、golden 不変 |
 
 0 と 1 は純ロジック中心。2 は GPU gate 必須(Windows)。
+
+段 0 の完了記録(RC-1、2026-10-23、`631caac21`。検証は実装者の報告): 非 GPU の家族 305/305 緑(RC-1 の 7 本を含む)。`imageResourceBytes()` を 0 にした対照で 7 本中 5 本が赤。
+GPU の `hybrid_v1 preset registers and renders a headless frame` に足した assert(arena と plan の bytes の照合)は報告の時点で未実行。
 
 ## 6. 未決(2026-10-17 更新)
 
@@ -113,6 +121,8 @@ renderer(executePlannedFrameGraph)
 
 - **計測の表示場所** → arena の `declared_bytes`([棚卸しメモ](design_plan_layer_inventory.md) 2-4)。今 0 固定の field を埋めれば
   Frame Plan の bytes 列がそのまま表示になる。`get_status` の VRAM 区分は後。
+  → **RC-1 で済み(`631caac21`)**: render target の `declared_bytes` が埋まり、Frame Plan の status 行に合計と同時最大の 1 行、Resources の行に `Bytes` も出る。
+  arena の値は登録時のもので、同じ id のまま image を作り直す経路(window 以外の resize、影の layer 数の変更)では更新されない(`get_frame_plan` の `bytes` と `memory_summary` は呼ぶたびに数える)。
 - **優先度** → 上がった。mac(統合メモリ)と Blender の教訓(OpenGL ドライバは GPU メモリを RAM に退避できるが Vulkan はできない。
   Blender 5.0 が Vulkan を既定にしなかった理由)で、同時最大の VRAM がそのまま体験に効く。
 - **Apple GPU での効き方** → MoltenVK では transient 候補が memoryless texture に落ちるので、A の寿命短縮は alias だけでなく

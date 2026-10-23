@@ -144,6 +144,9 @@
   shader bundle / pipeline / pass 系は 0 のまま(VRAM を占めない)。埋めるまで列は出さない。
 - 置き場: 計算は project の planner 側(物理計画の resource から bytes を出す純ロジック)、arena は登録時にその値を写す。`get_frame_plan` の
   `memory_summary {total_bytes, peak_live_bytes, peak_node}` と同じ WP(RT メモ段 0)。v0 で可(鍵は増えず値が変わるだけ)。
+- **RC-1 で済み(2026-10-23、`631caac21`)**: 計算は `src/project/targetrendermemory`、arena は登録時に render target の bytes を写す
+  (frame graph buffer は以前から大きさ。shader bundle / pipeline / pass 系と acceleration structure は 0 のまま)。
+  arena の値は登録時のもので、同じ id のまま image を作り直す経路(window 以外の resize、影の layer 数の変更)では更新されない。上の「今」の行は RC-1 の前の状態。
 
 ### 2-5 anchor ノードと順序の二重化 — [段メモ](design_render_stage_as_canvas_filter.md) §3.2〜3.3 の通り
 
@@ -191,7 +194,7 @@
 | 段 | 内容 | 振り分け | 検証 |
 |---|---|---|---|
 | 0 | 文書の修正(2-7)、コードマップに 3-1 の「未使用」 | v0 可 | 文書のみ |
-| 1 | 2-4: `declared_bytes` を計測で埋める(RT メモ段 0 と同じ WP) | v0 可(鍵は増えない) | planner 単体、手計算 120 / 81 MiB と一致 |
+| 1 | 2-4: `declared_bytes` を計測で埋める(RT メモ段 0 と同じ WP)。**RC-1 で済み(`631caac21`)** | v0 可(鍵は増えない) | planner 単体、手計算 120 / 81 MiB と一致 → 実測は 119.95 / 81.08 MiB(RT メモ §1) |
 | 2 | 2-3: 固定ルートの policy 一本化(語彙 → 強度・優先順位 → Pin / Freeze の置換 → package と RPC の削除)。3-2 / 3-3: 選ばれなかった候補と 1 node scope を既定で隠す | v1(物理計画 WP。RT メモの区間詰めと同じ場所) | policy → plan の golden、Frame Plan の scenario(Pin / Freeze の置換後) |
 | 3 | 2-1: `execution_plan` の削除(上の表)。2-2: `levels` を契約から外す | v1 | golden 不変、GPU gate、Studio scenario |
 | 4 | 2-6: 段階 2 を typed 論理 graph に育て、core の JSON parse を消す。2-5 と preset レシピ化に合流 | v1 | 純ロジック test、golden 不変 |
