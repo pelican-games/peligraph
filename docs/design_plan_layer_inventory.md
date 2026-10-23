@@ -70,6 +70,7 @@
   [design_heterogeneous_execution_graph.md](design_heterogeneous_execution_graph.md) は「兄弟 backend は当面作らない」と
   ステータスに追記し、`ExecutionPlan` / `ExecutionLinker` / `BackendProbe` の節は履歴として残す。
 - 削除の対象(`develop` で全列挙):
+- **RC-2b(2026-10-23、`7cee11733`)**: 消えた一致検証が FramePlan 自身の構造も守っていた(codex の敵対レビュー)。node 名の重複・order の連続・配列と order の一致を 1 つの検査にし、compiler の出口(variant の検証)と runtime の登録(`compileExecution()`)の両方で断る: `frame_plan.duplicate_node@1`、`frame_plan.order_gap@1`、`frame_plan.order_mismatch@1`。明示順序の `before` も単独の test で固定。差し替えた compiler が古い FramePlan と新しい計画を混ぜて返す穴は、FramePlan と論理 graph を同じものから導く RC-3 で閉じる。
 
 | 層 | ファイル | 中身 |
 |---|---|---|

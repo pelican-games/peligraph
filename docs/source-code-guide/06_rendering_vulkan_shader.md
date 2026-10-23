@@ -30,9 +30,9 @@
 
 | 層 | 主な責務 | 入口 |
 |---|---|---|
-| コンパイラ program | rendering JSON を variant family ごとまとめて受け、feature 合成・変換 registry・型付き定義への parse・計画までを **GPU に触らずに** 済ませる | [`registerRenderingPassConfigVariantsData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1629) → [`runRenderCompilerProgram()`](../../src/core/renderingpass/rendercompilerprogram.cpp#L212) |
+| コンパイラ program | rendering JSON を variant family ごとまとめて受け、feature 合成・変換 registry・型付き定義への parse・計画までを **GPU に触らずに** 済ませる | [`registerRenderingPassConfigVariantsData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1629) → [`runRenderCompilerProgram()`](../../src/core/renderingpass/rendercompilerprogram.cpp#L214) |
 | 計画(2系統が並行) | 論理グラフ+物理ターゲットプラン / FramePlan | [`compileDefaultVulkanVariant()`](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L753) |
-| GPU 登録と世代 publish | 画像実体・buffer・shader・pipeline・descriptor を作り、不変な publication root を差し替える | [`registerPreparedRenderingPassConfigVariant()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L497) / [`prepareGeneration()`](../../src/core/renderingpass/framegraphruntime.cpp#L315) |
+| GPU 登録と世代 publish | 画像実体・buffer・shader・pipeline・descriptor を作り、不変な publication root を差し替える | [`registerPreparedRenderingPassConfigVariant()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L497) / [`prepareGeneration()`](../../src/core/renderingpass/framegraphruntime.cpp#L319) |
 | pass dispatch | pass 種別を Material、Fullscreen、UI などの renderer へ振り分ける | [`renderDynamicPassDrawCalls()`](../../src/core/vkcore/render_pass_dispatch.cpp#L193) |
 | Vulkan backend | device、frame target、image layout、pipeline、GPU resource を扱う | [`VulkanManageCore::VulkanManageCore()`](../../src/core/vkcore/core.cpp#L1027) |
 
@@ -617,7 +617,7 @@ flowchart LR
 >
 > **何をする所か**: resource ごとの「直前の writer → 後続 reader」から自動 edge と RAW barrier を作り、そのあとで **すべての順序 edge**(`after` / `before` 由来を含む)を走査して、from が書き to が読む resource に barrier を足します。
 >
-> **素朴に読むと**: 罠が 3 つ重なっています。第一に `addBarriersForOrderedResourceEdges()` は `for (const auto &edge : planner_edges.edges)` と、**要素を追加しうる関数を呼びながら同じ vector を range-for しています**。安全なのは偶然ではなく、走査対象がすでに `exists[from][to] == true` の edge だけなので `addEdge()` の `push_back` に到達しないからです。ここに「新しい edge を張る」処理を足すと、その場で iterator 無効化 → UB になります。第二に、だからこそ [`addDataEdge()`](../../src/core/renderingpass/frameplanner.cpp#L1422) の barrier 重複チェックが要ります(自動 RAW edge は `buildEdges` で 1 度積まれ、同じ組がここでもう 1 度来る)。第三に barrier は plan 上の順序を前提にした index へ落ちるので、登録時([`framegraphruntime.cpp` 内](../../src/core/renderingpass/framegraphruntime.cpp#L207))と毎フレーム実行時([`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L921))で **同じ不変条件を二重チェック**します。
+> **素朴に読むと**: 罠が 3 つ重なっています。第一に `addBarriersForOrderedResourceEdges()` は `for (const auto &edge : planner_edges.edges)` と、**要素を追加しうる関数を呼びながら同じ vector を range-for しています**。安全なのは偶然ではなく、走査対象がすでに `exists[from][to] == true` の edge だけなので `addEdge()` の `push_back` に到達しないからです。ここに「新しい edge を張る」処理を足すと、その場で iterator 無効化 → UB になります。第二に、だからこそ [`addDataEdge()`](../../src/core/renderingpass/frameplanner.cpp#L1422) の barrier 重複チェックが要ります(自動 RAW edge は `buildEdges` で 1 度積まれ、同じ組がここでもう 1 度来る)。第三に barrier は plan 上の順序を前提にした index へ落ちるので、登録時([`framegraphruntime.cpp` 内](../../src/core/renderingpass/framegraphruntime.cpp#L211))と毎フレーム実行時([`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L921))で **同じ不変条件を二重チェック**します。
 >
 > **骨子**:
 > ```text
@@ -681,7 +681,7 @@ plan の `level` で列と副題を決めていた ImGui の Plan Viewer は、p
 
 ### 計画と実行 ID の結合
 
-planner は名前しか知りません。[`FrameGraphRuntimeContainer::registerExecutionPlan()`](../../src/core/renderingpass/framegraphruntime.cpp#L812) が各 plan node の名前を `CompiledRenderingPass::passes` / `compute_tasks` から探し、実配列 index と incoming barrier を持つ `CompiledFrameGraphExecution` を作ります。実行時には plan と実行 node の name/kind がまだ一致しているかも [`executePlannedFrameGraph()` 冒頭](../../src/core/vkcore/renderer.cpp#L1806) で再確認します。
+planner は名前しか知りません。[`FrameGraphRuntimeContainer::registerExecutionPlan()`](../../src/core/renderingpass/framegraphruntime.cpp#L816) が各 plan node の名前を `CompiledRenderingPass::passes` / `compute_tasks` から探し、実配列 index と incoming barrier を持つ `CompiledFrameGraphExecution` を作ります。実行時には plan と実行 node の name/kind がまだ一致しているかも [`executePlannedFrameGraph()` 冒頭](../../src/core/vkcore/renderer.cpp#L1806) で再確認します。
 
 なお現在の frame graph 定義には、history 付き render target の前フレーム面を読む入力(`history_read`、fixture は [`fixtures/frameplanner/plans/history_read.json`](../../test/fixtures/frameplanner/plans/history_read.json))と、`snapshot_copy` node(frameplanner.cpp#L160-L164)も入ります。
 
@@ -874,7 +874,7 @@ logical frame には不変条件があり、破ると例外になります。**�
 - 残した穴(RC-1b の実装者の報告): `unbound` の分岐を通す test は無い(`not_registered` だけ)。owner scope を置き換えたあと、置き換えられた scope の render target が別 owner の program の lease で生きている間は arena から消えているので total に入らない(数え漏れの方向。普段の 1 owner では起きない)。未使用の render target を確保していること自体の除去は RC-7 の範囲です。
 - test(GPU 不要):
   - `targetrenderplanning_test` の [「RC-1 image bytes count every mip, layer and history surface and the multisampled image」](../../test/targetrenderplanning_test.cpp#L3784)、[「RC-1 memory summary counts an alias group once and finds the node most bytes are alive at」](../../test/targetrenderplanning_test.cpp#L3844)(RC-1b で、counter の throw が名前付きで伝わることも見ます)、[「RC-1 the memory total counts each allocation registration made once and names the targets no graph uses」](../../test/targetrenderplanning_test.cpp#L3970)(RC-1b)。
-  - `frameplanner_test` の [「RC-1 every format a render target can be authored with has a texel size」](../../test/frameplanner_test.cpp#L2788)(RC-1b)、[example の 1920×1080](../../test/frameplanner_test.cpp#L2827)(total 125,776,320 / peak 85,017,600 at `lighting_pass`。RC-1b から total は登録の代役 [`registerRenderTargetsWithoutDevice()`](../../test/registered_render_targets_test_support.hpp#L35) → `totalRegisteredTargetMemory()` で数え、値は同じ)、[「RC-1 get_frame_plan reports what the published generation registered, as it is now, through the renderer's frame plan」](../../test/frameplanner_test.cpp#L2929)(RC-1b、tag `[production-seam]`。世代を `prepareGeneration` → `publishPreparedGeneration` で公開し、`Renderer{RendererFramePlanCpuSeam{lookup}}` の `currentFramePlanJson()` を通します。未使用の 64×64 R8 を足した total・unused、layers を変えた後の arena / `bytes` / total / peak、登録を消したときの `memory_unmeasured@1`)。この test は arena への登録そのもの(Vulkan device が要る)は通しません。
+  - `frameplanner_test` の [「RC-1 every format a render target can be authored with has a texel size」](../../test/frameplanner_test.cpp#L2829)(RC-1b)、[example の 1920×1080](../../test/frameplanner_test.cpp#L2868)(total 125,776,320 / peak 85,017,600 at `lighting_pass`。RC-1b から total は登録の代役 [`registerRenderTargetsWithoutDevice()`](../../test/registered_render_targets_test_support.hpp#L35) → `totalRegisteredTargetMemory()` で数え、値は同じ)、[「RC-1 get_frame_plan reports what the published generation registered, as it is now, through the renderer's frame plan」](../../test/frameplanner_test.cpp#L2970)(RC-1b、tag `[production-seam]`。世代を `prepareGeneration` → `publishPreparedGeneration` で公開し、`Renderer{RendererFramePlanCpuSeam{lookup}}` の `currentFramePlanJson()` を通します。未使用の 64×64 R8 を足した total・unused、layers を変えた後の arena / `bytes` / total / peak、登録を消したときの `memory_unmeasured@1`)。この test は arena への登録そのもの(Vulkan device が要る)は通しません。
   - `renderingsamplecount_test` の [「RC-1 when graph variants do not share an alias group, the memory total counts its targets as two allocations」](../../test/renderingsamplecount_test.cpp#L1805)(RC-1b)。
   - GPU: `headless_render_test` の「hybrid_v1 preset registers and renders a headless frame」(arena と plan の bytes の照合)を含む、`get_frame_plan` を呼ぶ GPU test 10 本は RC-1b の後に統合側で実行して緑です。
 
