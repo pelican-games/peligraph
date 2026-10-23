@@ -154,11 +154,49 @@ Builder::Builder(QGraphicsScene &scene, QString scope)
       heading_font_{drawingFont(-0.5, true)},
       heading_metrics_{heading_font_}, row_metrics_{detail_font_} {}
 
+void Builder::setPickedLayer(std::string scope, std::string stack, std::string input) {
+    picked_layer_scope_ = std::move(scope);
+    picked_layer_stack_ = std::move(stack);
+    picked_layer_input_ = std::move(input);
+}
+
 Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &node,
                           GraphCanvasNodeView view,
-                          const std::set<std::string, std::less<>> &linked_outputs) const {
+                          const std::set<std::string, std::less<>> &linked_outputs,
+                          const std::optional<std::string> &scope) const {
     Node entry;
     entry.node = &node;
+    // NB-2b: a stack's rows, as the Layers dock reads them.
+    if (node.op == "canvas.stack") {
+        const std::string node_scope = scope ? *scope : scope_text_.toStdString();
+        const auto nodes = model.nodes(node_scope);
+        auto read_only = read_only_scopes_.find(node_scope);
+        if (read_only == read_only_scopes_.end())
+            read_only = read_only_scopes_.emplace(node_scope, layerScopeReadOnly(model, node_scope)).first;
+        entry.layers_read_only = read_only->second;
+        const auto &blends = graphCanvasBlendChoices();
+        for (auto &row : graphCanvasLayerRows(nodes, node.id)) {
+            LayerLine line;
+            if (row.blend != "normal") {
+                const auto choice = std::ranges::find(blends, row.blend, &GraphCanvasBlendChoice::name);
+                line.blend = qtext(choice != blends.end() ? choice->label : row.blend);
+            }
+            if (row.kind != "adjustment" && !row.filters.empty()) {
+                QStringList names;
+                for (const auto &filter : row.filters)
+                    if (const auto found = std::ranges::find(nodes, filter, &GraphCanvasNode::id);
+                        found != nodes.end())
+                        names.push_back(qtext(graphCanvasFilterLabel(found->op)));
+                line.filters = QObject::tr("Filtered: %1").arg(names.join(QStringLiteral(", ")));
+            }
+            line.enters = (row.kind == "group" && !row.source.empty()) ||
+                          (row.kind == "import" && !row.definition.empty());
+            line.row = std::move(row);
+            entry.layers.push_back(std::move(line));
+        }
+        if (node_scope == picked_layer_scope_ && node.id == picked_layer_stack_)
+            entry.picked_layer = qtext(picked_layer_input_);
+    }
     for (const auto &output : node.outputs) {
         entry.outputs.push_back(Row{
             qtext(output.port),
@@ -427,9 +465,8 @@ const NodeBody &defaultNodeBody() {
 }
 
 const NodeBody &nodeBodyFor(std::string_view op) {
-    // NB-2 (`canvas.stack`) and NB-3 (the canvas sources and filters) put
-    // their bodies here, by op.
-    (void)op;
+    // NB-3 (the canvas sources and filters) puts its body here, by op.
+    if (op == "canvas.stack") return layerStackNodeBody();
     return defaultNodeBody();
 }
 

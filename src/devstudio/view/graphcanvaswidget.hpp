@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../model/graphcanvaslayerstack.hpp"
 #include "../model/graphcanvasmodel.hpp"
 #include "frameplanedit.hpp"
 #include "graphcanvasreadcapability.hpp"
@@ -7,6 +8,7 @@
 
 #include <QAction>
 #include <QGraphicsScene>
+#include <QLineF>
 #include <QPointF>
 #include <QStringList>
 #include <QWidget>
@@ -24,8 +26,10 @@ class QAction;
 class QMenu;
 class QTabWidget;
 class QTimer;
+class QGraphicsLineItem;
 class QGraphicsSceneContextMenuEvent;
 class QGraphicsSceneMouseEvent;
+class QGraphicsSimpleTextItem;
 class QKeyEvent;
 
 namespace PelicanStudio {
@@ -112,6 +116,15 @@ inline constexpr int GraphCanvasPassInputRole = Qt::UserRole + 3152;
 // the view a press on it goes to.
 inline constexpr int GraphCanvasNodeViewRole = Qt::UserRole + 3153;
 inline constexpr int GraphCanvasNextViewRole = Qt::UserRole + 3154;
+// NB-2b (design_node_bodies 2.3): on each part of a layer row of a
+// canvas.stack's body, the element of `layers` it stands for (0 the bottom),
+// whether that layer is shown, whether the row is the picked one, and whether
+// the stack is read only (an imported PSD's). The row's port role is the
+// layer's input; the node's name role the stack.
+inline constexpr int GraphCanvasLayerIndexRole = Qt::UserRole + 3155;
+inline constexpr int GraphCanvasLayerVisibleRole = Qt::UserRole + 3156;
+inline constexpr int GraphCanvasLayerPickedRole = Qt::UserRole + 3157;
+inline constexpr int GraphCanvasLayerReadOnlyRole = Qt::UserRole + 3158;
 enum class GraphCanvasZoneAnchor : int {
     none = 0,
     left = 1,
@@ -192,6 +205,31 @@ inline constexpr auto GraphCanvasPassInputEdgeItem = "graph_pass_input_edge";
 // GL-2b, decision 2. `graph_layer_band#<id>`: the line under a root node
 // that says what its lower layers hold (`×3 copies · 2 barriers`).
 inline constexpr auto GraphCanvasLayerBandItem = "graph_layer_band";
+// NB-2b, a canvas.stack's body (design_node_bodies 2.3). Every part is named
+// `<kind>#<stack>/<input>` by the layer's input, top row first on screen:
+// `graph_stack_row` the row (a press picks it, a drag moves it), its
+// `graph_stack_eye`, `graph_stack_thumb` (the empty 32 px frame NB-3 fills),
+// `graph_stack_name` (a double-click renames), `graph_stack_blend`,
+// `graph_stack_opacity` (a sideways drag sets it), `graph_stack_filters`
+// (`f`), `graph_stack_mask` and `graph_stack_enter` (`›`). Without a port:
+// `graph_stack_composite#<stack>` (the 64 px frame), and on the band under
+// the rows `graph_stack_add#<stack>` (+ ▾), `graph_stack_delete#<stack>`
+// and `graph_stack_note#<stack>`. `graph_stack_drop_line` is the line a drag
+// or a line being drawn says it will land on.
+inline constexpr auto GraphCanvasStackRowItem = "graph_stack_row";
+inline constexpr auto GraphCanvasStackEyeItem = "graph_stack_eye";
+inline constexpr auto GraphCanvasStackThumbItem = "graph_stack_thumb";
+inline constexpr auto GraphCanvasStackNameItem = "graph_stack_name";
+inline constexpr auto GraphCanvasStackBlendItem = "graph_stack_blend";
+inline constexpr auto GraphCanvasStackOpacityItem = "graph_stack_opacity";
+inline constexpr auto GraphCanvasStackFiltersItem = "graph_stack_filters";
+inline constexpr auto GraphCanvasStackMaskItem = "graph_stack_mask";
+inline constexpr auto GraphCanvasStackEnterItem = "graph_stack_enter";
+inline constexpr auto GraphCanvasStackCompositeItem = "graph_stack_composite";
+inline constexpr auto GraphCanvasStackAddItem = "graph_stack_add";
+inline constexpr auto GraphCanvasStackDeleteItem = "graph_stack_delete";
+inline constexpr auto GraphCanvasStackNoteItem = "graph_stack_note";
+inline constexpr auto GraphCanvasStackDropLineItem = "graph_stack_drop_line";
 
 // The node is a heading band over two socket sections, so its height follows
 // its port count rather than a constant. The numbers are here so the scene
@@ -551,6 +589,53 @@ class GraphCanvasScene final : public QGraphicsScene {
     // says why (decision 2's other body without the output).
     std::function<void()> noticeChanged;
 
+    // --- NB-2b (design_node_bodies 2.3): a canvas.stack's body. Each gesture
+    // on it sends the op list the Layers dock sends for the same gesture,
+    // built by the same model function (graphcanvaslayerstack).
+
+    // The row picked on a stack's body: the stack (its scope and id) and the
+    // layer's input, or an empty input -- the stack, no row.
+    struct LayerPick {
+        std::string scope;
+        std::string stack;
+        std::string input;
+
+        friend bool operator==(const LayerPick &, const LayerPick &) = default;
+    };
+    [[nodiscard]] const std::optional<LayerPick> &pickedLayer() const noexcept { return picked_layer_; }
+    // The dock picked a row (an empty stack: none at all). Drawn where it
+    // stands, nothing is drawn again, and the dock is not told back.
+    void setPickedLayer(const std::string &scope, const std::string &stack, const std::string &input);
+    // A row picked on a node: the owner picks the same row in the dock.
+    std::function<void(const std::string &scope, const std::string &stack, const std::string &input)>
+        layerPicked;
+    // + ▾ was pressed: the owner opens the menu of additions at `screen`.
+    // Its entries call addLayer.
+    std::function<void(const QPoint &screen)> layerMenuRequested;
+    // + Text… and + Image… (`what` "text" or "image"): the owner opens the
+    // dock's dialog, for a layer on `stack` just above `above`.
+    std::function<void(const std::string &what, const std::string &scope, const std::string &stack,
+                       std::optional<std::size_t> above)>
+        layerDialogRequested;
+    // Where a + puts its layer: the picked row's stack, just above the row
+    // (on top when the stack is picked with no row), else the picked node
+    // when it is a canvas.stack (on top). Nothing for a read only stack.
+    struct LayerTarget {
+        std::string scope;
+        std::string stack;
+        std::optional<std::size_t> above;
+    };
+    [[nodiscard]] std::optional<LayerTarget> layerTarget() const;
+    // + Rect, + Ellipse, + Group ("rect", "ellipse", "group"), + Adjustment
+    // ("adjustment:<filter op>"), + Text… and + Image… ("text", "image") on
+    // layerTarget(). The layer it adds is picked.
+    bool addLayer(const std::string &what);
+    // The bin and Delete: the picked row's layer (graphCanvasDeleteLayerOps).
+    bool deletePickedLayer();
+    // The name of a row edited in place (a double-click on it); Esc sends
+    // nothing.
+    bool beginLayerNameEdit(const std::string &scope, const std::string &stack, const std::string &input);
+
     // Delete: an edge clears the input it lands on, a node is removed.
     bool deleteSelection();
 
@@ -568,7 +653,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     // moves nothing at all. The owner waits, the same way it waits for an
     // in-place editor to close.
     [[nodiscard]] bool dragging() const {
-        return handling_press_ || pending_connection_.has_value() || mouseGrabberItem() != nullptr;
+        return handling_press_ || pending_connection_.has_value() || layer_drag_.has_value() ||
+               mouseGrabberItem() != nullptr;
     }
     // What the open editor currently holds, and a way to set it without a
     // keyboard: the same text the user would have typed.
@@ -748,6 +834,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     // person typing into it -- and what they had typed comes with it.
     struct CarriedInlineEdit {
         bool label = false;
+        // NB-2b: a layer row's name (`node` the stack, `port` the input).
+        bool layer = false;
         std::string scope;
         std::string node;
         std::string port;
@@ -825,6 +913,54 @@ class GraphCanvasScene final : public QGraphicsScene {
     std::vector<std::size_t> selected_ties_;
     std::optional<PendingConnection> pending_connection_;
     QGraphicsPathItem *pending_edge_ = nullptr;
+    // NB-2b. A row of a stack's body held by the mouse: dragged to another
+    // place (`opacity` false), or its opacity mark dragged sideways. One edit
+    // when it is let go; a press and a release in place is a pick.
+    struct LayerDrag {
+        bool opacity = false;
+        std::string scope;
+        std::string stack;
+        std::string input;
+        std::size_t from = 0;
+        QPointF press;
+        bool moved = false;
+        double start = 1.0;
+        double value = 1.0;
+        QGraphicsSimpleTextItem *text = nullptr;
+        // The stack's rows where they stood at the press: their element of
+        // `layers` and their box, top first.
+        std::vector<std::pair<std::size_t, QRectF>> rows;
+    };
+    std::optional<LayerDrag> layer_drag_;
+    std::optional<LayerPick> picked_layer_;
+    // The line a dragged row, or a line being drawn, says it will land on.
+    QGraphicsLineItem *layer_drop_line_ = nullptr;
+    // Where a row dragged to `at` goes: the insert place in `layers` (0 the
+    // bottom) and the line between rows it is drawn on.
+    struct LayerGap {
+        std::string scope;
+        std::string stack;
+        std::size_t place = 0;
+        QLineF line;
+    };
+    [[nodiscard]] std::optional<LayerGap> dragGapAt(const LayerDrag &drag, const QPointF &at) const;
+    // A line from an output let go between two rows of a stack (within a
+    // few units of the line between them, or above the top one or under the
+    // bottom one): the place it goes in. Nothing on a row, or off the rows.
+    [[nodiscard]] std::optional<LayerGap> lineGapAt(const QPointF &at) const;
+    bool pressStackPart(QGraphicsItem &item, const QGraphicsSceneMouseEvent &event);
+    void pickLayerRow(const std::string &scope, const std::string &stack, const std::string &input);
+    void pickStackNode(const std::string &scope, const std::string &stack, QGraphicsItem &part);
+    void refreshLayerPicks();
+    void showLayerDropLine(const QLineF &line);
+    void hideLayerDropLine();
+    void followLayerDrag(const QPointF &at);
+    void finishLayerDrag(const QPointF &at);
+    void enterLayer(const std::string &scope, const std::string &stack, const std::string &input);
+    // One stack gesture's ops sent; the layer they put on `stack` is picked.
+    bool submitLayerOps(const std::string &scope, const std::string &stack, nlohmann::json ops);
+    [[nodiscard]] std::optional<GraphCanvasStackRow> layerRow(const std::string &scope, const std::string &stack,
+                                                              const std::string &input) const;
     std::optional<PassInputPick> selected_pass_input_;
     TabEditOrder *edit_order_ = nullptr;
     // The builders' inputs, from the model: the authoring context parsed

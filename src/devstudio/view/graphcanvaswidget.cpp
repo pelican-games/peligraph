@@ -50,8 +50,11 @@
 #include <QFont>
 #include <QFontMetrics>
 #include <QFormLayout>
+#include <QApplication>
+#include <QGraphicsLineItem>
 #include <QGraphicsPathItem>
 #include <QGraphicsPolygonItem>
+#include <QGraphicsRectItem>
 #include <QGraphicsProxyWidget>
 #include <QGraphicsSceneContextMenuEvent>
 #include <QGraphicsSceneMouseEvent>
@@ -127,7 +130,22 @@ bool isNodeSurface(const QString &kind) {
            // inside ends belong to the loop.
            kind == QLatin1String{GraphCanvasZoneItem} ||
            kind == QLatin1String{GraphCanvasZoneLabelItem} ||
-           kind == QLatin1String{GraphCanvasZoneSocketItem};
+           kind == QLatin1String{GraphCanvasZoneSocketItem} ||
+           // NB-2b: the parts of a canvas.stack's body.
+           (kind.startsWith(QLatin1String{"graph_stack_"}) &&
+            kind != QLatin1String{GraphCanvasStackDropLineItem});
+}
+
+// NB-2b: a part of a stack's body a press on is the body's to answer.
+bool isStackPart(const QString &kind) {
+    return kind.startsWith(QLatin1String{"graph_stack_"}) &&
+           kind != QLatin1String{GraphCanvasStackDropLineItem};
+}
+
+QGraphicsItem *nodeItemOf(QGraphicsItem *item) {
+    while (item != nullptr && nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeItem})
+        item = item->parentItem();
+    return item;
 }
 
 std::string itemScope(const QGraphicsItem &item) {
@@ -1786,6 +1804,9 @@ void GraphCanvasScene::repopulate() {
     rebuilding_ = true;
     closeEditor();
     clearPendingConnection();
+    // NB-2b: a row held by the mouse is let go of: its items are deleted.
+    layer_drag_.reset();
+    hideLayerDropLine();
     // A refresh is not a deselection: the node the user is working on stays
     // selected as long as the document still holds it (N-1's recorded hole).
     const auto previous_node = selected_node_;
@@ -1975,6 +1996,7 @@ void GraphCanvasScene::repopulate() {
     const qreal crumb_top = display_trail.size() > 1 ? NodeGraphBreadcrumbHeight + 18.0 : 0.0;
     const qreal top = crumb_top + (decomposable ? NodeGraphBreadcrumbHeight : 0.0);
     GraphCanvasDrawing::Builder drawing{*this, scope_text};
+    if (picked_layer_) drawing.setPickedLayer(picked_layer_->scope, picked_layer_->stack, picked_layer_->input);
 
     // LP-4d1: every root loop is drawn as a zone around the body its tab
     // shows. The zones are planned before the root is placed, because a
@@ -2038,7 +2060,7 @@ void GraphCanvasScene::repopulate() {
             for (const auto &output : plan.outputs) body_linked[output.node].insert(output.port);
             for (const auto &inside : plan.nodes)
                 plan.drawn.push_back(drawing.prepareNode(*model_, inside, nodeView(body, inside.id),
-                                                         linkedOf(body_linked, inside.id)));
+                                                         linkedOf(body_linked, inside.id), body));
             // Decision 6: a body node the document never placed is placed
             // inside the frame, as the root places its own.
             std::vector<GraphCanvasEdge> inner;
@@ -3147,6 +3169,7 @@ void GraphCanvasScene::clearPendingConnection() {
     }
     lit_sockets_.clear();
     snap_target_ = nullptr;
+    if (!layer_drag_) hideLayerDropLine();
     if (pending_edge_ != nullptr) {
         removeItem(pending_edge_);
         delete pending_edge_;
@@ -3220,7 +3243,21 @@ void GraphCanvasScene::followCursor(const QPointF &at) {
     const qreal reach = GraphCanvasSnapRadius / (zoom > 0.0 ? zoom : 1.0);
     const LitSocket *nearest = nullptr;
     qreal best = reach;
+    // NB-2b: between two rows of a stack, a line from an output goes in
+    // there -- the rows' own sockets do not draw it to themselves.
+    auto gap = pending_connection_->from_output && pending_connection_->carry_loop.empty() &&
+                       !pending_connection_->from_folded
+                   ? lineGapAt(at)
+                   : std::nullopt;
+    if (gap && (gap->scope != pending_connection_->scope || gap->stack == pending_connection_->node ||
+                !GraphCanvasModel::canConnectAmong(model_->nodes(gap->scope), pending_connection_->node,
+                                                   pending_connection_->port, gap->stack,
+                                                   std::string{graphCanvasStackAddPort})))
+        gap.reset();
+    if (gap) showLayerDropLine(gap->line);
+    else hideLayerDropLine();
     for (const LitSocket &lit : lit_sockets_) {
+        if (gap) break;
         if (!lit.target) continue;
         const qreal distance = QLineF{lit.centre, at}.length();
         if (distance <= best) {
@@ -3242,7 +3279,7 @@ void GraphCanvasScene::followCursor(const QPointF &at) {
                                                           ? snapped->data(GraphCanvasPortRole)
                                                           : QVariant{});
     }
-    const QPointF end = nearest != nullptr ? nearest->centre : at;
+    const QPointF end = nearest != nullptr ? nearest->centre : gap ? gap->line.p1() : at;
     const bool from_output = pending_connection_->from_output;
     pending_edge_->setPath(curveGeometryBetween(from_output ? pending_connection_->origin : end,
                                                 from_output ? end : pending_connection_->origin)
@@ -3420,6 +3457,20 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
                 continue;
             if (clickInputSocket(pending.scope, pending.node, pending.socket_key, false)) return;
             break;
+        }
+    // NB-2b: let go between two rows of a stack, a line from a layer output
+    // is a layer at that place (graphCanvasInsertLayerOps), one edit.
+    if (pending.from_output && pending.carry_loop.empty() && !pending.from_folded)
+        if (const auto gap = lineGapAt(position); gap && gap->scope == pending.scope) {
+            const auto nodes = model_->nodes(gap->scope);
+            if (pending.node != gap->stack &&
+                GraphCanvasModel::canConnectAmong(nodes, pending.node, pending.port, gap->stack,
+                                                  std::string{graphCanvasStackAddPort})) {
+                (void)submitLayerOps(gap->scope, gap->stack,
+                                     graphCanvasInsertLayerOps(nodes, gap->scope, gap->stack, gap->place,
+                                                               pending.node, pending.port));
+                return;
+            }
         }
     // UX-1, decision 1: the socket the line was drawn onto, else what is
     // under the hand -- judged by the one function that lit them.
@@ -3619,6 +3670,12 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
                 beginConnection(*item);
                 return;
             }
+            // NB-2b: a row of a stack's body, its eye, name, marks, + ▾ and
+            // the bin. The node is not dragged from them.
+            if (isStackPart(kind) && model_ != nullptr && pressStackPart(*item, *event)) {
+                event->accept();
+                return;
+            }
             // UX-5c: a folded node's output row (what a feature, the preset
             // or the rendering section writes, by name) starts a line that a
             // rendering-section pass's input takes -- the ray-traced mask onto
@@ -3687,7 +3744,14 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
     if (generation != rebuild_generation_ || picked_control) return;
     for (QGraphicsItem *item : items(event->scenePos())) {
         if (!isNodeSurface(nodeGraphItemKind(*item))) continue;
-        selectNode(itemScope(*item), item->data(NodeGraphNameRole).toString().toStdString());
+        const auto picked_scope = itemScope(*item);
+        const auto picked = item->data(NodeGraphNameRole).toString().toStdString();
+        selectNode(picked_scope, picked);
+        // NB-2b: a press on a stack off its rows (its heading) lets go of
+        // the row picked in it, so Delete means the node again.
+        if (picked_layer_ && picked_layer_->scope == picked_scope && picked_layer_->stack == picked &&
+            !picked_layer_->input.empty())
+            pickLayerRow(picked_scope, picked, {});
         return;
     }
 }
@@ -3698,10 +3762,21 @@ void GraphCanvasScene::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
         followCursor(event->scenePos());
         return;
     }
+    if (layer_drag_) {
+        event->accept();
+        followLayerDrag(event->scenePos());
+        return;
+    }
     QGraphicsScene::mouseMoveEvent(event);
 }
 
 void GraphCanvasScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
+    if (layer_drag_) {
+        event->accept();
+        finishLayerDrag(event->scenePos());
+        if (gestureEnded) gestureEnded();
+        return;
+    }
     if (pending_connection_) {
         event->accept();
         finishConnection(event->scenePos());
@@ -3946,7 +4021,9 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
 // One editor at a time, over the thing it edits. It owns nothing the scene
 // owns: the proxy is an item like any other, and clearing the scene ends it.
 struct GraphCanvasScene::InlineEditor {
-    enum class Kind { label, value };
+    // NB-2b: `layer_name` is a layer row's name (`node` the stack, `port`
+    // the layer's input).
+    enum class Kind { label, value, layer_name };
 
     Kind kind = Kind::label;
     std::string scope;
@@ -3978,15 +4055,17 @@ QString editorText(const QWidget *widget);
 std::optional<GraphCanvasScene::CarriedInlineEdit>
 GraphCanvasScene::carryInlineEdit() const {
     if (!editor_) return std::nullopt;
-    return CarriedInlineEdit{editor_->kind == InlineEditor::Kind::label,
-                             editor_->scope, editor_->node, editor_->port,
-                             editorText(editor_->widget)};
+    CarriedInlineEdit carried{editor_->kind == InlineEditor::Kind::label,
+                              editor_->kind == InlineEditor::Kind::layer_name,
+                              editor_->scope, editor_->node, editor_->port,
+                              editorText(editor_->widget)};
+    return carried;
 }
 
 void GraphCanvasScene::restoreInlineEdit(const CarriedInlineEdit &carried) {
-    const bool opened = carried.label
-                            ? beginLabelEdit(carried.scope, carried.node)
-                            : beginValueEdit(carried.scope, carried.node, carried.port);
+    const bool opened = carried.layer   ? beginLayerNameEdit(carried.scope, carried.node, carried.port)
+                        : carried.label ? beginLabelEdit(carried.scope, carried.node)
+                                        : beginValueEdit(carried.scope, carried.node, carried.port);
     if (!opened) return;
     setInlineEditText(carried.text);
     if (editor_ && editor_->widget != nullptr)
@@ -4332,6 +4411,14 @@ bool GraphCanvasScene::commitInlineEdit() {
         afterEdit(submitted);
         return submitted;
     }
+    // NB-2b: the dock's name field sends the same (graphCanvasSetLayerOps).
+    if (kind == InlineEditor::Kind::layer_name) {
+        const auto row = layerRow(scope, node, port);
+        const auto name = text.trimmed().toStdString();
+        if (!row || name == row->name) return false;
+        return submitLayerOps(scope, node,
+                              graphCanvasSetLayerOps(model_->nodes(scope), scope, node, row->index, "name", name));
+    }
     nlohmann::json value;
     switch (value_kind) {
     case ValueEditorKind::boolean:
@@ -4603,6 +4690,13 @@ void GraphCanvasScene::keyPressEvent(QKeyEvent *event) {
             event->accept();
             return;
         }
+        // NB-2b: a row picked on the picked stack goes, not the stack.
+        if (!editingInline() && picked_layer_ && !picked_layer_->input.empty() && selected_node_ &&
+            *selected_node_ == picked_layer_->stack && selection_scope_ == picked_layer_->scope) {
+            event->accept();
+            (void)deletePickedLayer();
+            return;
+        }
         // GL-5e, decision 3: a picked folded node the project authored.
         if (foldedNodeDelete && selected_node_ && selectedScope().empty() && model_ != nullptr &&
             model_->currentScope().empty() && foldedNodeDelete(*selected_node_)) {
@@ -4620,6 +4714,402 @@ void GraphCanvasScene::keyPressEvent(QKeyEvent *event) {
         }
     }
     QGraphicsScene::keyPressEvent(event);
+}
+
+// --- NB-2b (design_node_bodies 2.3): a canvas.stack's body.
+
+std::optional<GraphCanvasStackRow> GraphCanvasScene::layerRow(const std::string &scope, const std::string &stack,
+                                                              const std::string &input) const {
+    if (model_ == nullptr || input.empty()) return std::nullopt;
+    for (auto &row : graphCanvasLayerRows(model_->nodes(scope), stack))
+        if (row.input == input) return row;
+    return std::nullopt;
+}
+
+void GraphCanvasScene::setPickedLayer(const std::string &scope, const std::string &stack,
+                                      const std::string &input) {
+    std::optional<LayerPick> pick;
+    if (!stack.empty()) pick = LayerPick{scope, stack, input};
+    if (pick == picked_layer_) return;
+    picked_layer_ = std::move(pick);
+    refreshLayerPicks();
+}
+
+void GraphCanvasScene::pickLayerRow(const std::string &scope, const std::string &stack, const std::string &input) {
+    const LayerPick pick{scope, stack, input};
+    if (picked_layer_ == pick) return;
+    picked_layer_ = pick;
+    refreshLayerPicks();
+    if (layerPicked) layerPicked(scope, stack, input);
+}
+
+void GraphCanvasScene::pickStackNode(const std::string &scope, const std::string &stack, QGraphicsItem &part) {
+    if (!selected_node_ || *selected_node_ != stack || selection_scope_ != scope) selectNode(scope, stack);
+    if (QGraphicsItem *node = nodeItemOf(&part); node != nullptr && !node->isSelected()) {
+        clearSelection();
+        node->setSelected(true);
+    }
+}
+
+void GraphCanvasScene::refreshLayerPicks() {
+    const QColor picked_fill = [] {
+        QColor fill = currentStudioTheme().canvas.edge_selected;
+        fill.setAlphaF(0.24F);
+        return fill;
+    }();
+    for (QGraphicsItem *item : items()) {
+        const QString kind = nodeGraphItemKind(*item);
+        if (!isStackPart(kind)) continue;
+        const auto scope = itemScope(*item);
+        const auto stack = item->data(NodeGraphNameRole).toString().toStdString();
+        const bool here = picked_layer_ && picked_layer_->scope == scope && picked_layer_->stack == stack;
+        if (kind == QLatin1String{GraphCanvasStackDeleteItem}) {
+            // The bin is faint until a row of its stack is picked.
+            if (item->parentItem() != nullptr &&
+                nodeGraphItemKind(*item->parentItem()) == QLatin1String{GraphCanvasStackDeleteItem})
+                continue;
+            const bool row = here && layerRow(scope, stack, picked_layer_->input).has_value();
+            item->setOpacity(row ? 1.0 : 0.45);
+            item->setToolTip(row ? QObject::tr("Delete the picked layer (Delete)")
+                                 : QObject::tr("Delete the picked layer: pick a row first"));
+            continue;
+        }
+        if (!item->data(GraphCanvasLayerPickedRole).isValid()) continue;
+        const bool picked = here && item->data(GraphCanvasPortRole).toString() == qtext(picked_layer_->input);
+        item->setData(GraphCanvasLayerPickedRole, picked);
+        if (kind == QLatin1String{GraphCanvasStackRowItem})
+            if (auto *row = dynamic_cast<QGraphicsRectItem *>(item))
+                row->setBrush(picked ? QBrush{picked_fill} : QBrush{QColor{0, 0, 0, 0}});
+    }
+}
+
+std::optional<GraphCanvasScene::LayerTarget> GraphCanvasScene::layerTarget() const {
+    if (model_ == nullptr) return std::nullopt;
+    const auto isStack = [this](const std::string &scope, const std::string &id) {
+        const auto nodes = model_->nodes(scope);
+        const auto found = std::ranges::find(nodes, id, &GraphCanvasNode::id);
+        return found != nodes.end() && found->op == "canvas.stack";
+    };
+    std::optional<LayerTarget> target;
+    if (picked_layer_ && isStack(picked_layer_->scope, picked_layer_->stack)) {
+        target = LayerTarget{picked_layer_->scope, picked_layer_->stack, std::nullopt};
+        if (const auto row = layerRow(picked_layer_->scope, picked_layer_->stack, picked_layer_->input))
+            target->above = row->index;
+    } else if (selected_node_ && isStack(selection_scope_, *selected_node_)) {
+        target = LayerTarget{selection_scope_, *selected_node_, std::nullopt};
+    }
+    if (target && GraphCanvasDrawing::layerScopeReadOnly(*model_, target->scope)) return std::nullopt;
+    return target;
+}
+
+bool GraphCanvasScene::submitLayerOps(const std::string &scope, const std::string &stack, nlohmann::json ops) {
+    if (model_ == nullptr || ops.empty() || !model_->canEdit()) return false;
+    // The layer a gesture puts on this stack is the one picked next: the
+    // input its new `layers` holds that the stack's did not (the dock's rule).
+    std::string added;
+    const auto before = graphCanvasLayerRows(model_->nodes(scope), stack);
+    for (const auto &op : ops)
+        if (op.value("op", std::string{}) == "set_node_parameters" && op.value("node", std::string{}) == stack)
+            for (const auto &element : op["parameters"].value("layers", nlohmann::json::array()))
+                if (const auto input = element.value("input", std::string{});
+                    !input.empty() && std::ranges::find(before, input, &GraphCanvasStackRow::input) == before.end())
+                    added = input;
+    const bool submitted = model_->submitEdit(std::move(ops));
+    afterEdit(submitted);
+    if (!submitted) {
+        if (noticeChanged) noticeChanged();
+        return false;
+    }
+    if (!added.empty()) pickLayerRow(scope, stack, added);
+    return true;
+}
+
+bool GraphCanvasScene::addLayer(const std::string &what) {
+    const auto target = layerTarget();
+    if (!target || model_ == nullptr || !model_->canEdit()) return false;
+    const auto nodes = model_->nodes(target->scope);
+    if (what == "rect" || what == "ellipse")
+        return submitLayerOps(target->scope, target->stack,
+                              graphCanvasAddShapeLayerOps(nodes, target->scope, target->stack, what, target->above));
+    if (what == "group")
+        return submitLayerOps(target->scope, target->stack,
+                              graphCanvasAddGroupLayerOps(nodes, target->scope, target->stack, target->above));
+    if (what.starts_with("adjustment:"))
+        return submitLayerOps(target->scope, target->stack,
+                              graphCanvasAddAdjustmentLayerOps(nodes, target->scope, target->stack, target->above,
+                                                               std::string_view{what}.substr(11)));
+    if (what == "text" || what == "image") {
+        if (!layerDialogRequested) return false;
+        layerDialogRequested(what, target->scope, target->stack, target->above);
+        return true;
+    }
+    return false;
+}
+
+bool GraphCanvasScene::deletePickedLayer() {
+    if (model_ == nullptr || !picked_layer_ || picked_layer_->input.empty()) return false;
+    const auto pick = *picked_layer_;
+    if (GraphCanvasDrawing::layerScopeReadOnly(*model_, pick.scope)) return false;
+    const auto row = layerRow(pick.scope, pick.stack, pick.input);
+    if (!row) return false;
+    const bool submitted = submitLayerOps(
+        pick.scope, pick.stack, graphCanvasDeleteLayerOps(model_->nodes(pick.scope), pick.scope, pick.stack, row->index));
+    if (submitted) pickLayerRow(pick.scope, pick.stack, {});
+    return submitted;
+}
+
+bool GraphCanvasScene::beginLayerNameEdit(const std::string &scope, const std::string &stack,
+                                          const std::string &input) {
+    if (model_ == nullptr || !model_->canEdit() || GraphCanvasDrawing::layerScopeReadOnly(*model_, scope))
+        return false;
+    const auto row = layerRow(scope, stack, input);
+    if (!row) return false;
+    QGraphicsItem *anchor = nullptr;
+    for (QGraphicsItem *item : items())
+        if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasStackNameItem} && itemScope(*item) == scope &&
+            item->data(NodeGraphNameRole).toString() == qtext(stack) &&
+            item->data(GraphCanvasPortRole).toString() == qtext(input)) {
+            anchor = item;
+            break;
+        }
+    if (anchor == nullptr) return false;
+    closeEditor();
+    auto editor = std::make_unique<InlineEditor>();
+    editor->kind = InlineEditor::Kind::layer_name;
+    editor->scope = scope;
+    editor->node = stack;
+    editor->port = input;
+    auto *line = new QLineEdit;
+    line->setObjectName(QStringLiteral("pelican.graphCanvasLayerName"));
+    line->setText(qtext(row->name));
+    line->setPlaceholderText(qtext(row->input));
+    line->selectAll();
+    editor->widget = line;
+    auto *proxy = addWidget(line);
+    proxy->setZValue(6.0);
+    const QRectF area = anchor->sceneBoundingRect();
+    line->resize(std::max<int>(120, static_cast<int>(area.width() + 60)),
+                 static_cast<int>(GraphCanvasDrawing::LayerSlimRowHeight + 2.0));
+    proxy->setPos(area.left() - 2.0, area.center().y() - line->height() / 2.0);
+    proxy->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasEditorItem));
+    proxy->setData(NodeGraphNameRole, qtext(stack));
+    proxy->setData(GraphCanvasPortRole, qtext(input));
+    proxy->setData(GraphCanvasZoneScopeRole, anchor->data(GraphCanvasZoneScopeRole));
+    editor->proxy = proxy;
+    editor->filter = std::make_unique<InlineEditFilter>([this](bool commit) {
+        QMetaObject::invokeMethod(
+            this, [this, commit] {
+                if (commit) commitInlineEdit();
+                else cancelInlineEdit();
+            },
+            Qt::QueuedConnection);
+    });
+    line->installEventFilter(editor->filter.get());
+    editor_ = std::move(editor);
+    line->setFocus();
+    return true;
+}
+
+void GraphCanvasScene::enterLayer(const std::string &scope, const std::string &stack, const std::string &input) {
+    const auto row = layerRow(scope, stack, input);
+    if (!row || model_ == nullptr) return;
+    if (row->kind == "import") {
+        // An imported canvas is its definition, entered as a double-click on
+        // the instance enters it (read only there: the dock's rule).
+        if (model_->currentScope() == scope && model_->canEnterInstance(row->source)) enterInstanceScope(row->source);
+        return;
+    }
+    if (row->kind != "group" || row->source.empty()) return;
+    // A group's own stack is a node of the same scope: it is picked and
+    // brought into view, and the dock shows its layers.
+    selectNode(scope, row->source);
+    pickLayerRow(scope, row->source, {});
+    for (QGraphicsItem *item : items())
+        if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasNodeItem} && itemScope(*item) == scope &&
+            item->data(NodeGraphNameRole).toString() == qtext(row->source)) {
+            clearSelection();
+            item->setSelected(true);
+            for (QGraphicsView *view : views()) view->centerOn(item);
+            break;
+        }
+}
+
+bool GraphCanvasScene::pressStackPart(QGraphicsItem &item, const QGraphicsSceneMouseEvent &event) {
+    if (event.button() != Qt::LeftButton) return false;
+    const QString kind = nodeGraphItemKind(item);
+    const std::string scope = itemScope(item);
+    const std::string stack = item.data(NodeGraphNameRole).toString().toStdString();
+    const std::string input = item.data(GraphCanvasPortRole).toString().toStdString();
+    const bool editable = model_->canEdit() && !GraphCanvasDrawing::layerScopeReadOnly(*model_, scope);
+    layer_drag_.reset();
+    pickStackNode(scope, stack, item);
+    if (kind == QLatin1String{GraphCanvasStackAddItem}) {
+        // The stack is what the menu adds to, just above its picked row.
+        if (!picked_layer_ || picked_layer_->scope != scope || picked_layer_->stack != stack)
+            pickLayerRow(scope, stack, {});
+        if (editable && layerMenuRequested) {
+            const QPoint screen = event.screenPos();
+            QMetaObject::invokeMethod(
+                this, [this, screen] {
+                    if (layerMenuRequested) layerMenuRequested(screen);
+                },
+                Qt::QueuedConnection);
+        }
+        return true;
+    }
+    if (kind == QLatin1String{GraphCanvasStackDeleteItem}) {
+        if (editable && picked_layer_ && picked_layer_->scope == scope && picked_layer_->stack == stack)
+            QMetaObject::invokeMethod(
+                this, [this] { (void)deletePickedLayer(); }, Qt::QueuedConnection);
+        return true;
+    }
+    if (kind == QLatin1String{GraphCanvasStackNoteItem} || kind == QLatin1String{GraphCanvasStackCompositeItem}) {
+        pickLayerRow(scope, stack, {});
+        return true;
+    }
+    const auto row = layerRow(scope, stack, input);
+    if (!row) return true;
+    if (kind == QLatin1String{GraphCanvasStackEyeItem}) {
+        // The dock's eye: one member of one element (graphCanvasSetLayerOps).
+        if (editable)
+            (void)submitLayerOps(scope, stack,
+                                 graphCanvasSetLayerOps(model_->nodes(scope), scope, stack, row->index, "visible",
+                                                        !row->visible));
+        return true;
+    }
+    if (kind == QLatin1String{GraphCanvasStackEnterItem}) {
+        QMetaObject::invokeMethod(
+            this, [this, scope, stack, input] { enterLayer(scope, stack, input); }, Qt::QueuedConnection);
+        return true;
+    }
+    pickLayerRow(scope, stack, input);
+    if (!editable) return true;
+    LayerDrag drag;
+    drag.scope = scope;
+    drag.stack = stack;
+    drag.input = input;
+    drag.from = row->index;
+    drag.press = event.scenePos();
+    drag.start = drag.value = row->opacity;
+    if (kind == QLatin1String{GraphCanvasStackOpacityItem}) {
+        // A line drives a driven opacity: nothing to drag.
+        if (row->opacity_driven) return true;
+        drag.opacity = true;
+        drag.text = dynamic_cast<QGraphicsSimpleTextItem *>(&item);
+    } else {
+        for (QGraphicsItem *each : items())
+            if (nodeGraphItemKind(*each) == QLatin1String{GraphCanvasStackRowItem} && itemScope(*each) == scope &&
+                each->data(NodeGraphNameRole).toString() == qtext(stack))
+                drag.rows.emplace_back(static_cast<std::size_t>(each->data(GraphCanvasLayerIndexRole).toULongLong()),
+                                       each->sceneBoundingRect());
+        std::ranges::sort(drag.rows, [](const auto &a, const auto &b) { return a.second.top() < b.second.top(); });
+    }
+    layer_drag_ = std::move(drag);
+    return true;
+}
+
+std::optional<GraphCanvasScene::LayerGap> GraphCanvasScene::dragGapAt(const LayerDrag &drag, const QPointF &at) const {
+    if (drag.rows.empty()) return std::nullopt;
+    QRectF all;
+    for (const auto &[index, box] : drag.rows) all = all.isNull() ? box : all.united(box);
+    // Let go far from the rows: no move.
+    if (!all.adjusted(-32.0, -GraphCanvasDrawing::LayerRowHeight, 32.0, GraphCanvasDrawing::LayerRowHeight)
+             .contains(at))
+        return std::nullopt;
+    // The rows above the hand, top first; `layers` is bottom first.
+    std::size_t above = 0;
+    for (const auto &[index, box] : drag.rows)
+        if (box.center().y() < at.y()) ++above;
+    const std::size_t count = drag.rows.size();
+    const qreal y = above == 0 ? drag.rows.front().second.top() : drag.rows[above - 1].second.bottom();
+    return LayerGap{drag.scope, drag.stack, count - above, QLineF{all.left(), y, all.right(), y}};
+}
+
+std::optional<GraphCanvasScene::LayerGap> GraphCanvasScene::lineGapAt(const QPointF &at) const {
+    if (model_ == nullptr) return std::nullopt;
+    // A few units either side of the line between two rows (a third of a
+    // row's height is the row itself), and a little left of the node, where
+    // the line comes in.
+    constexpr qreal Reach = 7.0;
+    const QRectF near{at.x() - GraphCanvasSocketSize - 4.0, at.y() - Reach, 2.0 * (GraphCanvasSocketSize + 4.0),
+                      2.0 * Reach};
+    // The rows themselves, not what is drawn on them.
+    const auto under = items(near);
+    for (QGraphicsItem *item : under) {
+        if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasStackRowItem}) continue;
+        if (item->data(GraphCanvasLayerReadOnlyRole).toBool()) continue;
+        const QRectF box = item->sceneBoundingRect();
+        if (at.x() < box.left() - GraphCanvasSocketSize - 4.0 || at.x() > box.right()) continue;
+        const auto index = static_cast<std::size_t>(item->data(GraphCanvasLayerIndexRole).toULongLong());
+        const auto scope = itemScope(*item);
+        const auto stack = item->data(NodeGraphNameRole).toString().toStdString();
+        if (std::abs(at.y() - box.top()) <= Reach)
+            return LayerGap{scope, stack, index + 1, QLineF{box.left(), box.top(), box.right(), box.top()}};
+        if (std::abs(at.y() - box.bottom()) <= Reach)
+            return LayerGap{scope, stack, index, QLineF{box.left(), box.bottom(), box.right(), box.bottom()}};
+    }
+    return std::nullopt;
+}
+
+void GraphCanvasScene::showLayerDropLine(const QLineF &line) {
+    if (layer_drop_line_ == nullptr) {
+        layer_drop_line_ = new QGraphicsLineItem;
+        addItem(layer_drop_line_);
+        layer_drop_line_->setZValue(5.0);
+        layer_drop_line_->setPen(QPen{currentStudioTheme().canvas.edge_selected, 2.6, Qt::SolidLine, Qt::RoundCap});
+        layer_drop_line_->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasStackDropLineItem));
+        layer_drop_line_->setAcceptedMouseButtons(Qt::NoButton);
+    }
+    layer_drop_line_->setLine(line);
+}
+
+void GraphCanvasScene::hideLayerDropLine() {
+    if (layer_drop_line_ == nullptr) return;
+    removeItem(layer_drop_line_);
+    delete layer_drop_line_;
+    layer_drop_line_ = nullptr;
+}
+
+void GraphCanvasScene::followLayerDrag(const QPointF &at) {
+    auto &drag = *layer_drag_;
+    if (!drag.moved && QLineF{drag.press, at}.length() < 4.0) return;
+    drag.moved = true;
+    if (drag.opacity) {
+        // A hundred percent is 150 units of the hand, sideways; whole percents.
+        const double percent = std::clamp(std::round((drag.start + (at.x() - drag.press.x()) / 150.0) * 100.0), 0.0,
+                                          100.0);
+        drag.value = percent / 100.0;
+        if (drag.text != nullptr) {
+            drag.text->setText(QStringLiteral("%1%").arg(static_cast<int>(percent)));
+            drag.text->setData(GraphCanvasValueTextRole, drag.text->text());
+        }
+        return;
+    }
+    if (const auto gap = dragGapAt(drag, at)) showLayerDropLine(gap->line);
+    else hideLayerDropLine();
+}
+
+void GraphCanvasScene::finishLayerDrag(const QPointF &at) {
+    const auto drag = std::move(*layer_drag_);
+    layer_drag_.reset();
+    hideLayerDropLine();
+    if (!drag.moved || model_ == nullptr) return;
+    const auto nodes = model_->nodes(drag.scope);
+    if (drag.opacity) {
+        const auto row = layerRow(drag.scope, drag.stack, drag.input);
+        if (!row || std::lround(drag.value * 100.0) == std::lround(row->opacity * 100.0)) return;
+        (void)submitLayerOps(drag.scope, drag.stack,
+                             graphCanvasSetLayerOps(nodes, drag.scope, drag.stack, row->index, "opacity", drag.value));
+        return;
+    }
+    const auto gap = dragGapAt(drag, at);
+    if (!gap) return;
+    // The insert place, less the row taken out from under it (the model's
+    // header says the same).
+    const std::size_t to = gap->place > drag.from ? gap->place - 1 : gap->place;
+    if (to == drag.from) return;
+    (void)submitLayerOps(drag.scope, drag.stack,
+                         graphCanvasMoveLayerToOps(nodes, drag.scope, drag.stack, drag.from, to));
 }
 
 void GraphCanvasScene::undoEdit() {
@@ -4925,6 +5415,19 @@ void GraphCanvasScene::mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) {
             if (isNodeSurface(nodeGraphItemKind(*item))) break;
         }
     if (model_ != nullptr && event->button() == Qt::LeftButton) {
+        // NB-2b: a layer row's name is renamed in place.
+        for (QGraphicsItem *item : items(event->scenePos())) {
+            const QString kind = nodeGraphItemKind(*item);
+            if (kind == QLatin1String{GraphCanvasEditorItem}) break;
+            if (kind == QLatin1String{GraphCanvasStackNameItem}) {
+                event->accept();
+                layer_drag_.reset();
+                beginLayerNameEdit(itemScope(*item), item->data(NodeGraphNameRole).toString().toStdString(),
+                                   item->data(GraphCanvasPortRole).toString().toStdString());
+                return;
+            }
+            if (isNodeSurface(kind)) break;
+        }
         // GL-1, decision 3: a folded node is looked inside, read only. Its
         // heading renames nothing, and a line the plan implies takes no
         // control point.
@@ -5464,6 +5967,9 @@ struct GraphCanvasWidget::Impl {
     GraphCanvasValueFields *value_fields = nullptr;
     // SG-1: a canvas.stack's layers.
     GraphCanvasLayersPanel *canvas_layers = nullptr;
+    // NB-2b: + ▾ on a stack's body; its entries are named actions
+    // (pelican.graphCanvas.layerAdd.<what>).
+    QMenu *layer_menu = nullptr;
     // SG-2: the canvas.output the Layers dock's + Canvas placed, to be put
     // on present's inputs once the engine has it (and until when to try).
     std::string present_hookup;
@@ -6266,6 +6772,60 @@ struct GraphCanvasWidget::Impl {
             present_hookup_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{60};
             return true;
         };
+        // NB-2b (design_node_bodies 2.3): the row picked on a stack's body
+        // and in the dock are one row, whichever picked it.
+        canvas_layers->rowShown = [this](const std::string &scope, const std::string &stack,
+                                         const std::string &input) {
+            scene->setPickedLayer(scope, stack, input);
+        };
+        scene->layerPicked = [this](const std::string &scope, const std::string &stack,
+                                    const std::string &input) {
+            canvas_layers->pickLayer(scope, stack, input);
+        };
+        // + Text… and + Image… open the dock's own dialogs, for the stack the
+        // node's + is on and just above its picked row.
+        scene->layerDialogRequested = [this](const std::string &what, const std::string &scope,
+                                             const std::string &stack, std::optional<std::size_t> above) {
+            canvas_layers->pickLayer(scope, stack, {});
+            if (what == "text") canvas_layers->openTextDialog(above);
+            else canvas_layers->chooseImages(false, above);
+        };
+        layer_menu = new QMenu(&view);
+        layer_menu->setObjectName(QStringLiteral("pelican.graphCanvasLayerMenu"));
+        {
+            const auto entry = [this](QMenu *menu, const QString &text, const QString &what) {
+                auto *action = new QAction(text, &view);
+                action->setObjectName(QStringLiteral("pelican.graphCanvas.layerAdd.") +
+                                      QString{what}.replace(QLatin1Char(':'), QLatin1Char('.')));
+                view.addAction(action);
+                menu->addAction(action);
+                QObject::connect(action, &QAction::triggered, &view, [this, what] {
+                    // Fired by name, the menu may still be open.
+                    layer_menu->hide();
+                    (void)scene->addLayer(what.toStdString());
+                });
+            };
+            entry(layer_menu, QObject::tr("Rect"), QStringLiteral("rect"));
+            entry(layer_menu, QObject::tr("Ellipse"), QStringLiteral("ellipse"));
+            entry(layer_menu, QObject::tr("Text\xE2\x80\xA6"), QStringLiteral("text"));
+            entry(layer_menu, QObject::tr("Image\xE2\x80\xA6"), QStringLiteral("image"));
+            entry(layer_menu, QObject::tr("Group"), QStringLiteral("group"));
+            auto *adjustments = layer_menu->addMenu(QObject::tr("Adjustment"));
+            adjustments->setObjectName(QStringLiteral("pelican.graphCanvasLayerMenu.adjustment"));
+            for (const auto &choice : graphCanvasAdjustmentChoices()) {
+                auto kind = choice.op;
+                if (kind.starts_with("filter.")) kind = kind.substr(7);
+                auto *action = new QAction(qtext(choice.label), &view);
+                action->setObjectName(QStringLiteral("pelican.graphCanvas.layerAdd.adjustment.") + qtext(kind));
+                view.addAction(action);
+                adjustments->addAction(action);
+                QObject::connect(action, &QAction::triggered, &view, [this, op = choice.op] {
+                    layer_menu->hide();
+                    (void)scene->addLayer("adjustment:" + op);
+                });
+            }
+        }
+        scene->layerMenuRequested = [this](const QPoint &screen) { layer_menu->popup(screen); };
         // GL-5d: the picked node's operations from the Frame Plan, as
         // buttons -- the same actions its right-click lists.
         node_actions = new QWidget(side);

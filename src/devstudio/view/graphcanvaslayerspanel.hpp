@@ -104,8 +104,23 @@ class GraphCanvasLayersPanel final : public QWidget {
     std::function<bool(nlohmann::json ops, const std::string &output)> addCanvas;
 
     [[nodiscard]] const std::string &stack() const noexcept { return stack_; }
-    // UX-8's rule for the dialogs: the pictures picked or dropped.
-    void addImages(const std::vector<std::filesystem::path> &files);
+    // UX-8's rule for the dialogs: the pictures picked or dropped. NB-2b:
+    // with `above`, the first goes just above that layer and each next one
+    // above the one before (the node's + Image…); without, on top.
+    void addImages(const std::vector<std::filesystem::path> &files,
+                   std::optional<std::size_t> above = std::nullopt);
+
+    // NB-2b (design_node_bodies 2.3): the row picked on a canvas.stack's
+    // node is the dock's picked row, and the other way. `rowShown` says the
+    // stack on show (its scope) and the picked row's input (empty: none)
+    // each time either changes; pickLayer shows `stack` of `scope` with that
+    // row picked (an empty input: none), and says nothing back.
+    std::function<void(const std::string &scope, const std::string &stack, const std::string &input)> rowShown;
+    void pickLayer(const std::string &scope, const std::string &stack, const std::string &input);
+    // The node's + Text… and + Image…: the dock's dialogs, for the stack on
+    // show, the layer going just above `above` (on top without one).
+    void openTextDialog(std::optional<std::size_t> above = std::nullopt);
+    void chooseImages(bool mask, std::optional<std::size_t> above = std::nullopt);
     void importPsdOutput(const std::filesystem::path &graph_json);
 
   protected:
@@ -145,7 +160,8 @@ class GraphCanvasLayersPanel final : public QWidget {
                          const nlohmann::json &value);
     void commitTransform();
     void say(const QString &line);
-    void chooseImages(bool mask);
+    // NB-2b: rowShown, when what it said last is not what is shown now.
+    void tellRow();
     void chooseFile(const QString &title, const QString &name, const QString &filter,
                     std::function<void(const QStringList &)> picked);
     void addMaskImage(const std::filesystem::path &file);
@@ -155,7 +171,6 @@ class GraphCanvasLayersPanel final : public QWidget {
     // SG-3.
     void buildSg3Fields(QVBoxLayout *body);
     void loadSg3Fields(const std::optional<GraphCanvasStackRow> &row);
-    void openTextDialog();
     void chooseFont(QWidget *over, std::function<void(const std::string &reference)> imported);
     void reloadFonts();
     void fillFontCombo(QComboBox *combo, const std::string &current);
@@ -181,6 +196,8 @@ class GraphCanvasLayersPanel final : public QWidget {
     std::vector<GraphCanvasStackRow> shown_rows_;
     std::string shown_stack_;
     std::vector<GraphCanvasOutputStack> shown_outputs_;
+    // NB-2b: what rowShown said last (scope, stack, input).
+    std::optional<std::array<std::string, 3>> told_row_;
     bool loading_ = false;
     bool transform_open_ = false;
     std::string transform_row_;

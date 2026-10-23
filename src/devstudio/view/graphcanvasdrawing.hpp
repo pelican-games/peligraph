@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../model/graphcanvaslayerstack.hpp"
 #include "../model/graphcanvasmodel.hpp"
 #include "nodegraphics.hpp"
 #include "nodelayout.hpp"
@@ -14,6 +15,10 @@
 #include <QRectF>
 
 #include <functional>
+#include <map>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace PelicanStudio {
@@ -67,6 +72,19 @@ struct Row {
 
 class NodeBody;
 
+// NB-2b (design_node_bodies 2.3): one row of a canvas.stack's body -- one
+// element of its `layers`, the rows top first -- and the words its marks say.
+struct LayerLine {
+    GraphCanvasStackRow row;
+    // The blend's words when it is not normal ("Screen"), else empty.
+    QString blend;
+    // "Filtered: Gaussian Blur, Invert" for a layer with filters (not an
+    // adjustment's own), else empty: the `f` and its tooltip.
+    QString filters;
+    // A group or an import: `›` goes into it.
+    bool enters = false;
+};
+
 // Borrowed from the model's node snapshot for the duration of one rebuild.
 // No graphics item or callback retains this drawing data.
 struct Node {
@@ -82,6 +100,11 @@ struct Node {
     // LP-4d1: a root loop whose zone is folded: drawn as its node, sockets
     // and all, with the triangle that opens the zone again.
     bool zone_folded = false;
+    // NB-2b: a canvas.stack's layers (top first), whether its scope is an
+    // imported canvas (read only), and the input of the row picked in it.
+    std::vector<LayerLine> layers;
+    bool layers_read_only = false;
+    QString picked_layer;
 
     // The heading alone: the old folded node.
     [[nodiscard]] bool minimal() const noexcept { return view == GraphCanvasNodeView::minimal; }
@@ -126,6 +149,20 @@ class NodeBody {
 // The default body: a band of output rows, then the input rows, 21 high.
 // Compact keeps the linked rows, minimal the heading with one point a side.
 [[nodiscard]] const NodeBody &defaultNodeBody();
+// NB-2b (design_node_bodies 2.3, graphcanvasstackbody.cpp): a canvas.stack's
+// body. Open: the composite's frame and the output, the layer rows top first
+// (each with its layer's socket, the eye, a thumbnail frame, the name and the
+// marks), and the band with + ▾, the bin and `+ layer`. Compact: the
+// composite's frame and one slim row per layer, its sockets kept. Minimal:
+// the heading, as every body's.
+[[nodiscard]] const NodeBody &layerStackNodeBody();
+// NB-2b: whether `scope` is an imported canvas (a PSD's definition, which a
+// layer of some stack of the document reads): its stacks are read only.
+[[nodiscard]] bool layerScopeReadOnly(const GraphCanvasModel &model, std::string_view scope);
+// The rows of a stack body as the canvas draws them: open rows are this tall
+// (a 32 px thumbnail and its margin), compact ones a socket row's height.
+inline constexpr qreal LayerRowHeight = 40.0;
+inline constexpr qreal LayerSlimRowHeight = 21.0;
 
 // GL-1b: `extra_nodes` and `extra_edges` go into the same one placement after
 // the graph's own -- the root's folded nodes and the lines the plan implies --
@@ -246,9 +283,15 @@ class Builder {
     Builder(QGraphicsScene &scene, QString scope);
     // NB-1: `linked_outputs` names the node's outputs a line is drawn from
     // (the compact view keeps their rows); the inputs say so themselves.
+    // NB-2b: `scope` is the scope `node` is in when it is not the Builder's
+    // (a zone's body); a canvas.stack reads its layers' rows from it.
     Node prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &node,
                      GraphCanvasNodeView view,
-                     const std::set<std::string, std::less<>> &linked_outputs = {}) const;
+                     const std::set<std::string, std::less<>> &linked_outputs = {},
+                     const std::optional<std::string> &scope = std::nullopt) const;
+    // NB-2b: the layer row picked on the canvas (its stack's scope and id,
+    // and the layer's input), drawn picked.
+    void setPickedLayer(std::string scope, std::string stack, std::string input);
     // LP-4d1: draw inside a zone's body item instead of at the top of the
     // scene. Positions are then the body's own, and every item carries the
     // definition in GraphCanvasZoneScopeRole.
@@ -328,6 +371,11 @@ class Builder {
     QFont heading_font_;
     QFontMetricsF heading_metrics_;
     QFontMetricsF row_metrics_;
+    // NB-2b.
+    std::string picked_layer_scope_;
+    std::string picked_layer_stack_;
+    std::string picked_layer_input_;
+    mutable std::map<std::string, bool, std::less<>> read_only_scopes_;
 };
 
 } // namespace GraphCanvasDrawing

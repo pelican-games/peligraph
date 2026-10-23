@@ -9,6 +9,7 @@
 #include "graphcanvasrenderfields.hpp"
 #include "graphcanvasvaluefields.hpp"
 #include "graphcanvaswidget.hpp"
+#include "graphcanvasdrawing.hpp"
 #include "graphcanvasfoldgroups.hpp"
 #include "rendertargetform.hpp"
 #include "renderedithistory.hpp"
@@ -16343,4 +16344,442 @@ TEST_CASE("NB-1 a document opened with canvas nodes shows Canvas; one without ke
         tab.read(nb1CanvasDocument(), "nb1-values-2");
         CHECK_FALSE(tab.field<QCheckBox>("pelican.graphCanvasShow.canvas")->isChecked());
     }
+}
+
+// --- NB-2b (design_node_bodies 2.3): a canvas.stack's body.
+
+namespace {
+
+Json nb2bShape(const char *id, const char *op) {
+    return Json{{"id", id}, {"op", op},
+                {"parameters", {{"size", Json::array({320, 180})}, {"center", Json::array({640, 360})}}},
+                {"outputs", Json::array({"geometry"})}};
+}
+
+Json nb2bFill(const char *id, const char *shape) {
+    return Json{{"id", id}, {"op", "shape.fill"}, {"parameters", {{"color", Json::array({1, 1, 1, 1})}}},
+                {"inputs", {{"geometry", {{"node", shape}, {"port", "geometry"}}}}},
+                {"outputs", Json::array({"layer"})}};
+}
+
+// `hud`, bottom first: Background, Card (screen at 80 %), Dot (its opacity
+// driven by a value line). `extra_fill` is on no stack.
+Json nb2bDocument() {
+    const Json layers = Json::array(
+        {{{"input", "bg_fill"}, {"name", "Background"}},
+         {{"input", "card_fill"}, {"name", "Card"}, {"opacity", 0.8}, {"blend", "screen"}},
+         {{"input", "dot_fill"}, {"name", "Dot"}}});
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+                {"definitions", Json::object()},
+                {"nodes", Json::array({
+                    nb2bShape("bg", "shape.rect"), nb2bFill("bg_fill", "bg"),
+                    nb2bShape("card", "shape.rect"), nb2bFill("card_fill", "card"),
+                    nb2bShape("dot", "shape.ellipse"), nb2bFill("dot_fill", "dot"),
+                    nb2bShape("extra", "shape.ellipse"), nb2bFill("extra_fill", "extra"),
+                    {{"id", "pulse"}, {"op", "value.constant"}, {"parameters", {{"value", 0.5}}},
+                     {"outputs", Json::array({"value"})}},
+                    {{"id", "hud"}, {"op", "canvas.stack"},
+                     {"parameters", {{"size", Json::array({1280, 720})}, {"layers", layers}}},
+                     {"inputs", {{"bg_fill", {{"node", "bg_fill"}, {"port", "layer"}}},
+                                 {"card_fill", {{"node", "card_fill"}, {"port", "layer"}}},
+                                 {"dot_fill", {{"node", "dot_fill"}, {"port", "layer"}}},
+                                 {"dot_fill.opacity", {{"node", "pulse"}, {"port", "value"}}}}},
+                     {"outputs", Json::array({"layer"})}},
+                    {{"id", "screen"}, {"op", "canvas.output"},
+                     {"inputs", {{"layer", {{"node", "hud"}, {"port", "layer"}}}}},
+                     {"outputs", Json::array({"image"})}}})}};
+}
+
+// An imported PSD: `logo_psd` (its root stack `psd_root`, one layer) as the
+// one layer of the root's `hud`.
+Json nb2bImportDocument() {
+    Json definition{
+        {"nodes", Json::array({nb2bShape("a", "shape.rect"), nb2bFill("a_fill", "a"),
+                               {{"id", "psd_root"}, {"op", "canvas.stack"},
+                                {"parameters", {{"size", Json::array({64, 64})},
+                                                {"layers", Json::array({{{"input", "a_fill"}, {"name", "A"}}})}}},
+                                {"inputs", {{"a_fill", {{"node", "a_fill"}, {"port", "layer"}}}}},
+                                {"outputs", Json::array({"layer"})}}})},
+        {"outputs", {{"layer", {{"node", "psd_root"}, {"port", "layer"}}}}}};
+    return Json{{"schema", "pelican.graph"}, {"version", 1}, {"outputs", Json::object()},
+                {"definitions", {{"logo_psd", definition}}},
+                {"nodes", Json::array({
+                    {{"id", "logo_psd_1"}, {"op", "graph.instance"}, {"definition", "logo_psd"},
+                     {"parameters", Json::object()}, {"outputs", Json::array({"layer"})}},
+                    {{"id", "hud"}, {"op", "canvas.stack"},
+                     {"parameters", {{"size", Json::array({1280, 720})},
+                                     {"layers", Json::array({{{"input", "logo_psd_1"}, {"name", "PSD: logo"}}})}}},
+                     {"inputs", {{"logo_psd_1", {{"node", "logo_psd_1"}, {"port", "layer"}}}}},
+                     {"outputs", Json::array({"layer"})}},
+                    {{"id", "screen"}, {"op", "canvas.output"},
+                     {"inputs", {{"layer", {{"node", "hud"}, {"port", "layer"}}}}},
+                     {"outputs", Json::array({"image"})}}})}};
+}
+
+void nb2bOpen(ZoneHarness &h) {
+    h.open();
+    // The canvas domain, as a document with canvas nodes opens in the tab.
+    (void)h.model.setDomainShown("canvas", true);
+    h.scene.repopulate();
+}
+
+// The stack's rows as drawn, top first.
+std::vector<QGraphicsItem *> nb2bRows(QGraphicsScene &scene, const QString &stack) {
+    std::vector<QGraphicsItem *> rows;
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() ==
+                QLatin1String{PelicanStudio::GraphCanvasStackRowItem} &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == stack)
+            rows.push_back(item);
+    std::ranges::sort(rows, [](const QGraphicsItem *a, const QGraphicsItem *b) {
+        return a->sceneBoundingRect().top() < b->sceneBoundingRect().top();
+    });
+    return rows;
+}
+
+QStringList nb2bOrder(QGraphicsScene &scene, const QString &stack) {
+    QStringList order;
+    for (QGraphicsItem *row : nb2bRows(scene, stack))
+        order << row->data(PelicanStudio::GraphCanvasPortRole).toString();
+    return order;
+}
+
+QGraphicsItem *nb2bPart(QGraphicsScene &scene, const char *kind, const QString &stack,
+                        const QString &input = {}) {
+    for (QGraphicsItem *item : scene.items())
+        if (item->data(PelicanStudio::NodeGraphItemKindRole).toString() == QLatin1String{kind} &&
+            item->data(PelicanStudio::NodeGraphNameRole).toString() == stack &&
+            (input.isNull() || item->data(PelicanStudio::GraphCanvasPortRole).toString() == input))
+            return item;
+    return nullptr;
+}
+
+QString nb2bText(QGraphicsItem *item) {
+    auto *text = dynamic_cast<QGraphicsSimpleTextItem *>(item);
+    return text != nullptr ? text->text() : QString{};
+}
+
+// A press and a release in one place.
+void nb2bClick(QGraphicsScene &scene, const QPointF &at) {
+    QGraphicsSceneMouseEvent press{QEvent::GraphicsSceneMousePress};
+    press.setScenePos(at);
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &press);
+    QGraphicsSceneMouseEvent release{QEvent::GraphicsSceneMouseRelease};
+    release.setScenePos(at);
+    release.setButton(Qt::LeftButton);
+    QApplication::sendEvent(&scene, &release);
+    QCoreApplication::processEvents();
+}
+
+// `layers` of `stack` in the document, by input, bottom first.
+QStringList nb2bLayers(const Json &document, const std::string &stack) {
+    QStringList inputs;
+    for (const auto &node : document.at("nodes"))
+        if (node.value("id", std::string{}) == stack)
+            for (const auto &element : node.at("parameters").at("layers"))
+                inputs << QString::fromStdString(element.value("input", std::string{}));
+    return inputs;
+}
+
+} // namespace
+
+TEST_CASE("NB-2b a stack's rows are its layers front to back, each with the socket its line ends on",
+          "[devstudio][graph-canvas][scene][nb2b]") {
+    (void)application();
+    ZoneHarness h{nb2bDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    REQUIRE(nodeItem(scene, QStringLiteral("hud")) != nullptr);
+    // Top first: the last element of `layers` is the row on top.
+    CHECK(nb2bOrder(scene, QStringLiteral("hud")) ==
+          QStringList{QStringLiteral("dot_fill"), QStringLiteral("card_fill"), QStringLiteral("bg_fill")});
+    const auto rows = nb2bRows(scene, QStringLiteral("hud"));
+    REQUIRE(rows.size() == 3);
+    for (QGraphicsItem *row : rows) {
+        const QString input = row->data(PelicanStudio::GraphCanvasPortRole).toString();
+        INFO(input.toStdString());
+        QGraphicsItem *socket = socketItem(scene, QStringLiteral("hud"), input, QStringLiteral("input"));
+        REQUIRE(socket != nullptr);
+        const QRectF box = row->sceneBoundingRect();
+        const QPointF at = centreOf(socket);
+        // On the row's left edge, inside its height: the line goes into it.
+        CHECK(at.y() > box.top());
+        CHECK(at.y() < box.bottom());
+        CHECK(std::abs(at.x() - box.left()) < 0.01);
+        QGraphicsPathItem *line = edgeItem(scene, input, QStringLiteral("layer"), QStringLiteral("hud"), input);
+        REQUIRE(line != nullptr);
+        CHECK(QLineF{nb1PathEnd(*line, true), at}.length() < 0.01);
+        CHECK(box.height() == PelicanStudio::GraphCanvasDrawing::LayerRowHeight);
+        // Its empty thumbnail frame (NB-3 fills it).
+        QGraphicsItem *thumb = nb2bPart(scene, PelicanStudio::GraphCanvasStackThumbItem, QStringLiteral("hud"), input);
+        REQUIRE(thumb != nullptr);
+        CHECK(std::abs(thumb->sceneBoundingRect().width() - 32.0) < 1.5);
+    }
+    // The driven opacity has a small socket on Dot's row; Card's has none.
+    QGraphicsItem *driven = socketItem(scene, QStringLiteral("hud"), QStringLiteral("dot_fill.opacity"),
+                                       QStringLiteral("input"));
+    REQUIRE(driven != nullptr);
+    CHECK(centreOf(driven).y() > rows[0]->sceneBoundingRect().top());
+    CHECK(centreOf(driven).y() < rows[0]->sceneBoundingRect().bottom());
+    CHECK(socketItem(scene, QStringLiteral("hud"), QStringLiteral("card_fill.opacity"), QStringLiteral("input")) ==
+          nullptr);
+    // `+ layer` stays, on the band under the rows; the output by the composite.
+    QGraphicsItem *add = socketItem(scene, QStringLiteral("hud"), QStringLiteral("+ layer"), QStringLiteral("input"));
+    REQUIRE(add != nullptr);
+    CHECK(centreOf(add).y() > rows.back()->sceneBoundingRect().bottom());
+    QGraphicsItem *out = socketItem(scene, QStringLiteral("hud"), QStringLiteral("layer"), QStringLiteral("output"));
+    REQUIRE(out != nullptr);
+    CHECK(centreOf(out).y() < rows.front()->sceneBoundingRect().top());
+    REQUIRE(nb2bPart(scene, PelicanStudio::GraphCanvasStackCompositeItem, QStringLiteral("hud")) != nullptr);
+    // The marks: Card's blend and opacity, none on Dot's 100 %.
+    CHECK(nb2bText(nb2bPart(scene, PelicanStudio::GraphCanvasStackBlendItem, QStringLiteral("hud"),
+                            QStringLiteral("card_fill"))) == QStringLiteral("Screen"));
+    CHECK(nb2bText(nb2bPart(scene, PelicanStudio::GraphCanvasStackOpacityItem, QStringLiteral("hud"),
+                            QStringLiteral("card_fill"))) == QStringLiteral("80%"));
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasStackOpacityItem, QStringLiteral("hud"),
+                   QStringLiteral("dot_fill")) == nullptr);
+    CHECK(nb2bText(nb2bPart(scene, PelicanStudio::GraphCanvasStackNameItem, QStringLiteral("hud"),
+                            QStringLiteral("bg_fill"))) == QStringLiteral("Background"));
+    REQUIRE(nb2bPart(scene, PelicanStudio::GraphCanvasStackAddItem, QStringLiteral("hud")) != nullptr);
+    REQUIRE(nb2bPart(scene, PelicanStudio::GraphCanvasStackDeleteItem, QStringLiteral("hud")) != nullptr);
+    // Another node's body is the default one, as before.
+    CHECK(socketItem(scene, QStringLiteral("card_fill"), QStringLiteral("geometry"), QStringLiteral("input")) !=
+          nullptr);
+
+    // Compact: the composite and one slim row a layer, the sockets kept.
+    REQUIRE(scene.setNodeView({}, "hud", PelicanStudio::GraphCanvasNodeView::compact));
+    h.commit();
+    const auto slim = nb2bRows(scene, QStringLiteral("hud"));
+    REQUIRE(slim.size() == 3);
+    CHECK(nb2bOrder(scene, QStringLiteral("hud")) ==
+          QStringList{QStringLiteral("dot_fill"), QStringLiteral("card_fill"), QStringLiteral("bg_fill")});
+    CHECK(slim[1]->sceneBoundingRect().height() == PelicanStudio::GraphCanvasDrawing::LayerSlimRowHeight);
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasStackAddItem, QStringLiteral("hud")) == nullptr);
+    REQUIRE(nb2bPart(scene, PelicanStudio::GraphCanvasStackCompositeItem, QStringLiteral("hud")) != nullptr);
+    for (QGraphicsItem *row : slim) {
+        const QString input = row->data(PelicanStudio::GraphCanvasPortRole).toString();
+        QGraphicsItem *socket = socketItem(scene, QStringLiteral("hud"), input, QStringLiteral("input"));
+        REQUIRE(socket != nullptr);
+        QGraphicsPathItem *line = edgeItem(scene, input, QStringLiteral("layer"), QStringLiteral("hud"), input);
+        REQUIRE(line != nullptr);
+        CHECK(QLineF{nb1PathEnd(*line, true), centreOf(socket)}.length() < 0.01);
+    }
+    CHECK(socketItem(scene, QStringLiteral("hud"), QStringLiteral("dot_fill.opacity"), QStringLiteral("input")) !=
+          nullptr);
+
+    // Minimal: the heading, NB-1's.
+    REQUIRE(scene.setNodeView({}, "hud", PelicanStudio::GraphCanvasNodeView::minimal));
+    h.commit();
+    CHECK(nodeHeight(scene, QStringLiteral("hud")) == PelicanStudio::GraphCanvasHeaderHeight);
+    CHECK(nb2bRows(scene, QStringLiteral("hud")).empty());
+    CHECK(socketItem(scene, QStringLiteral("hud"), QString{}, QStringLiteral("input")) != nullptr);
+}
+
+TEST_CASE("NB-2b the eye, the name, the opacity, + and the bin on the node send the ops the dock sends",
+          "[devstudio][graph-canvas][scene][nb2b]") {
+    (void)application();
+    ZoneHarness h{nb2bDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+    using PelicanStudio::graphCanvasSetLayerOps;
+
+    // The eye of Card (layers[1]): its `visible`, as the dock's eye.
+    auto expected = graphCanvasSetLayerOps(h.model.nodes(""), "", "hud", 1, "visible", false);
+    QGraphicsItem *eye = nb2bPart(scene, PelicanStudio::GraphCanvasStackEyeItem, hud, QStringLiteral("card_fill"));
+    REQUIRE(eye != nullptr);
+    nb2bClick(scene, centreOf(eye));
+    CHECK(h.commit() == expected);
+    CHECK_FALSE(nb2bPart(scene, PelicanStudio::GraphCanvasStackEyeItem, hud, QStringLiteral("card_fill"))
+                    ->data(PelicanStudio::GraphCanvasLayerVisibleRole)
+                    .toBool());
+
+    // The name of Background, in place; Esc sends nothing.
+    QGraphicsItem *name = nb2bPart(scene, PelicanStudio::GraphCanvasStackNameItem, hud, QStringLiteral("bg_fill"));
+    REQUIRE(name != nullptr);
+    click(scene, centreOf(name), QEvent::GraphicsSceneMouseDoubleClick);
+    REQUIRE(scene.editingInline());
+    CHECK(scene.inlineEditText() == QStringLiteral("Background"));
+    scene.cancelInlineEdit();
+    requireNoEdit(h.model);
+    click(scene, centreOf(name), QEvent::GraphicsSceneMouseDoubleClick);
+    REQUIRE(scene.editingInline());
+    scene.setInlineEditText(QStringLiteral("Back"));
+    expected = graphCanvasSetLayerOps(h.model.nodes(""), "", "hud", 0, "name", "Back");
+    REQUIRE(scene.commitInlineEdit());
+    CHECK(h.commit() == expected);
+
+    // Card's 80 % dragged 30 units left is 60 %: one edit, when let go.
+    expected = graphCanvasSetLayerOps(h.model.nodes(""), "", "hud", 1, "opacity", 0.6);
+    QGraphicsItem *opacity =
+        nb2bPart(scene, PelicanStudio::GraphCanvasStackOpacityItem, hud, QStringLiteral("card_fill"));
+    REQUIRE(opacity != nullptr);
+    const QPointF grab = centreOf(opacity);
+    drag(scene, grab, grab - QPointF{30.0, 0.0});
+    CHECK(h.commit() == expected);
+
+    // + with Card's row picked: just above it, as the dock's + with `above`.
+    nb2bClick(scene,
+              centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, hud, QStringLiteral("card_fill"))));
+    REQUIRE(scene.pickedLayer().has_value());
+    CHECK(*scene.pickedLayer() == GraphCanvasScene::LayerPick{"", "hud", "card_fill"});
+    CHECK(scene.selectedNode() == std::optional<std::string>{"hud"});
+    requireNoEdit(h.model);
+    nb2bClick(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackAddItem, hud)));
+    const auto target = scene.layerTarget();
+    REQUIRE(target.has_value());
+    CHECK(target->stack == "hud");
+    CHECK(target->above == std::optional<std::size_t>{1});
+    expected = PelicanStudio::graphCanvasAddShapeLayerOps(h.model.nodes(""), "", "hud", "rect", std::size_t{1});
+    REQUIRE(scene.addLayer("rect"));
+    CHECK(h.commit() == expected);
+    // The layer it put there is picked, drawn just above Card.
+    REQUIRE(scene.pickedLayer().has_value());
+    const auto added = scene.pickedLayer()->input;
+    CHECK(nb2bLayers(h.document, "hud").at(2).toStdString() == added);
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, hud, QString::fromStdString(added))
+              ->data(PelicanStudio::GraphCanvasLayerPickedRole)
+              .toBool());
+    const auto &adjustment = PelicanStudio::graphCanvasAdjustmentChoices().front().op;
+    expected = PelicanStudio::graphCanvasAddAdjustmentLayerOps(h.model.nodes(""), "", "hud", std::size_t{2},
+                                                               adjustment);
+    REQUIRE(scene.addLayer("adjustment:" + adjustment));
+    CHECK(h.commit() == expected);
+
+    // The bin: the picked row.
+    nb2bClick(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, hud,
+                                       QString::fromStdString(added))));
+    expected = PelicanStudio::graphCanvasDeleteLayerOps(h.model.nodes(""), "", "hud", 2);
+    nb2bClick(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackDeleteItem, hud)));
+    CHECK(h.commit() == expected);
+
+    // Delete with the stack and a row picked: the row, not the stack.
+    nb2bClick(scene,
+              centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, hud, QStringLiteral("bg_fill"))));
+    expected = PelicanStudio::graphCanvasDeleteLayerOps(h.model.nodes(""), "", "hud", 0);
+    pressKey(scene, Qt::Key_Delete);
+    CHECK(h.commit() == expected);
+    CHECK(nodeItem(scene, hud) != nullptr);
+}
+
+TEST_CASE("NB-2b a row dragged anywhere is one move undone in one; a line let go between two rows is a layer there",
+          "[devstudio][graph-canvas][scene][nb2b]") {
+    (void)application();
+    ZoneHarness h{nb2bDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    const QString hud = QStringLiteral("hud");
+
+    // The bottom row onto the top one's upper edge: on top, one edit.
+    auto rows = nb2bRows(scene, hud);
+    REQUIRE(rows.size() == 3);
+    const auto expected = PelicanStudio::graphCanvasMoveLayerToOps(h.model.nodes(""), "", "hud", 0, 2);
+    const QPointF from = centreOf(rows[2]);
+    drag(scene, from, QPointF{from.x(), rows[0]->sceneBoundingRect().top() + 4.0});
+    CHECK(h.commit() == expected);
+    CHECK(nb2bLayers(h.document, "hud") ==
+          QStringList{QStringLiteral("card_fill"), QStringLiteral("dot_fill"), QStringLiteral("bg_fill")});
+    CHECK(nb2bOrder(scene, hud) ==
+          QStringList{QStringLiteral("bg_fill"), QStringLiteral("dot_fill"), QStringLiteral("card_fill")});
+    // Undo is the one edit back.
+    REQUIRE(h.model.canUndo());
+    scene.undoEdit();
+    h.commit();
+    CHECK(nb2bLayers(h.document, "hud") ==
+          QStringList{QStringLiteral("bg_fill"), QStringLiteral("card_fill"), QStringLiteral("dot_fill")});
+
+    // A press and a release in place is a pick: nothing moves.
+    rows = nb2bRows(scene, hud);
+    REQUIRE(rows.size() == 3);
+    nb2bClick(scene, centreOf(rows[1]));
+    requireNoEdit(h.model);
+    // The middle row onto the bottom one's lower half: at the bottom.
+    drag(scene, centreOf(rows[1]), QPointF{centreOf(rows[2]).x(), rows[2]->sceneBoundingRect().bottom() - 4.0});
+    CHECK(h.commit() == PelicanStudio::graphCanvasMoveLayerToOps(h.model.nodes(""), "", "hud", 1, 0));
+    scene.undoEdit();
+    h.commit();
+
+    // extra_fill's line let go between Dot (top) and Card: a layer at 2.
+    rows = nb2bRows(scene, hud);
+    REQUIRE(rows.size() == 3);
+    QGraphicsItem *socket = socketItem(scene, QStringLiteral("extra_fill"), QStringLiteral("layer"),
+                                       QStringLiteral("output"));
+    REQUIRE(socket != nullptr);
+    const QRectF top = rows[0]->sceneBoundingRect();
+    const auto inserted =
+        PelicanStudio::graphCanvasInsertLayerOps(h.model.nodes(""), "", "hud", 2, "extra_fill", "layer");
+    REQUIRE_FALSE(inserted.empty());
+    drag(scene, centreOf(socket), QPointF{top.left() + 40.0, top.bottom() + 1.0});
+    CHECK(h.commit() == inserted);
+    CHECK(nb2bLayers(h.document, "hud") == QStringList{QStringLiteral("bg_fill"), QStringLiteral("card_fill"),
+                                                       QStringLiteral("extra_fill"), QStringLiteral("dot_fill")});
+}
+
+TEST_CASE("NB-2b an imported canvas's stack shows its rows and eyes, with no +, bin, drag or rename",
+          "[devstudio][graph-canvas][scene][nb2b]") {
+    (void)application();
+    ZoneHarness h{nb2bImportDocument()};
+    nb2bOpen(h);
+    auto &scene = h.scene;
+    // At the root, hud is the document's own: its + and its bin.
+    REQUIRE(nb2bPart(scene, PelicanStudio::GraphCanvasStackAddItem, QStringLiteral("hud")) != nullptr);
+    QGraphicsItem *enter = nb2bPart(scene, PelicanStudio::GraphCanvasStackEnterItem, QStringLiteral("hud"),
+                                    QStringLiteral("logo_psd_1"));
+    REQUIRE(enter != nullptr);
+    // `›` goes into the imported canvas.
+    nb2bClick(scene, centreOf(enter));
+    CHECK(h.model.currentScope() == "logo_psd");
+    h.answerReads();
+    requireNoEdit(h.model);
+    const QString root = QStringLiteral("psd_root");
+    REQUIRE(nodeItem(scene, root) != nullptr);
+    REQUIRE(nb2bRows(scene, root).size() == 1);
+    // Read only: the eye is there; + ▾, the bin and `+ layer` are not.
+    REQUIRE(nb2bPart(scene, PelicanStudio::GraphCanvasStackEyeItem, root, QStringLiteral("a_fill")) != nullptr);
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasStackAddItem, root) == nullptr);
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasStackDeleteItem, root) == nullptr);
+    CHECK(socketItem(scene, root, QStringLiteral("+ layer"), QStringLiteral("input")) == nullptr);
+    CHECK(nb2bRows(scene, root).front()->data(PelicanStudio::GraphCanvasLayerReadOnlyRole).toBool());
+    // A drag moves nothing, a double-click renames nothing, + adds nothing.
+    QGraphicsItem *row = nb2bRows(scene, root).front();
+    drag(scene, centreOf(row), centreOf(row) + QPointF{0.0, -60.0});
+    requireNoEdit(h.model);
+    click(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackNameItem, root, QStringLiteral("a_fill"))),
+          QEvent::GraphicsSceneMouseDoubleClick);
+    CHECK_FALSE(scene.editingInline());
+    nb2bClick(scene, centreOf(nb2bRows(scene, root).front()));
+    CHECK_FALSE(scene.layerTarget().has_value());
+    CHECK_FALSE(scene.addLayer("rect"));
+    nb2bClick(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackEyeItem, root, QStringLiteral("a_fill"))));
+    pressKey(scene, Qt::Key_Delete);
+    requireNoEdit(h.model);
+    CHECK(nodeItem(scene, root) != nullptr);
+}
+
+TEST_CASE("NB-2b a row picked on the node is the Layers dock's picked row, and the other way",
+          "[devstudio][graph-canvas][scene][nb2b]") {
+    (void)application();
+    Ux2Tab tab{false};
+    tab.read(nb2bDocument(), "nb2b");
+    auto &scene = tab.widget->scene();
+    REQUIRE(nodeItem(scene, QStringLiteral("hud")) != nullptr);
+    // On the node: Card's row (the dock's second row from the top).
+    nb2bClick(scene, centreOf(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, QStringLiteral("hud"),
+                                       QStringLiteral("card_fill"))));
+    CHECK(tab.field<QPushButton>("pelican.canvasLayers.row1.pick")->isChecked());
+    CHECK_FALSE(tab.field<QPushButton>("pelican.canvasLayers.row0.pick")->isChecked());
+    // In the dock: Dot's row.
+    tab.field<QPushButton>("pelican.canvasLayers.row0.pick")->click();
+    QCoreApplication::processEvents();
+    REQUIRE(scene.pickedLayer().has_value());
+    CHECK(*scene.pickedLayer() == GraphCanvasScene::LayerPick{"", "hud", "dot_fill"});
+    CHECK(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, QStringLiteral("hud"), QStringLiteral("dot_fill"))
+              ->data(PelicanStudio::GraphCanvasLayerPickedRole)
+              .toBool());
+    CHECK_FALSE(nb2bPart(scene, PelicanStudio::GraphCanvasStackRowItem, QStringLiteral("hud"),
+                         QStringLiteral("card_fill"))
+                    ->data(PelicanStudio::GraphCanvasLayerPickedRole)
+                    .toBool());
 }

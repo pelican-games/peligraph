@@ -2,6 +2,7 @@
 
 #include "../model/graphcanvasimport.hpp"
 #include "../model/graphcanvasmodel.hpp"
+#include "graphcanvasdrawing.hpp"
 #include "studiotheme.hpp"
 
 #include <QCheckBox>
@@ -788,6 +789,7 @@ void GraphCanvasLayersPanel::reload(bool force) {
         shown_stack_.clear();
         rebuildRows();
         followEditable();
+        tellRow();
         return;
     }
     title_->setText(read_only_ ? tr("Canvas layers \xE2\x80\x94 %1 (imported, read only)").arg(qtext(stack->heading()))
@@ -805,6 +807,7 @@ void GraphCanvasLayersPanel::reload(bool force) {
     empty_->setVisible(shown_rows_.empty());
     loadFields();
     followEditable();
+    tellRow();
 }
 
 void GraphCanvasLayersPanel::rebuildRows() {
@@ -949,6 +952,7 @@ void GraphCanvasLayersPanel::pickRow(const std::string &input, bool tell) {
     }
     loadFields();
     followEditable();
+    tellRow();
     const auto row = pickedRow();
     if (tell && !read_only_ && row && !row->source.empty() && nodePicked) nodePicked(scope_, row->source);
 }
@@ -1168,6 +1172,7 @@ void GraphCanvasLayersPanel::commit(Json ops) {
     if (sent) {
         note_->hide();
         if (!added.empty()) picked_ = added;
+        tellRow();
     } else {
         // Refused before it was sent (the model's notice says why) or the
         // last edit is still out: the fields say what the document says.
@@ -1213,24 +1218,50 @@ void GraphCanvasLayersPanel::chooseFile(const QString &title, const QString &nam
     dialog->open();
 }
 
-void GraphCanvasLayersPanel::chooseImages(bool mask) {
+void GraphCanvasLayersPanel::chooseImages(bool mask, std::optional<std::size_t> above) {
     if (!projectRoot || projectRoot().empty()) {
         say(tr("Open a project to add pictures to."));
         return;
     }
     chooseFile(mask ? tr("Mask image") : tr("Add images"), QStringLiteral("pelican.canvasImageDialog"),
-               tr("Pictures (*.png *.jpg *.jpeg *.PNG *.JPG *.JPEG)"), [this, mask](const QStringList &picked) {
+               tr("Pictures (*.png *.jpg *.jpeg *.PNG *.JPG *.JPEG)"), [this, mask, above](const QStringList &picked) {
                    std::vector<std::filesystem::path> files;
                    for (const auto &file : picked) files.push_back(localPath(file));
                    if (mask) {
                        if (!files.empty()) addMaskImage(files.front());
                    } else {
-                       addImages(files);
+                       addImages(files, above);
                    }
                });
 }
 
-void GraphCanvasLayersPanel::addImages(const std::vector<std::filesystem::path> &files) {
+void GraphCanvasLayersPanel::pickLayer(const std::string &scope, const std::string &stack, const std::string &input) {
+    if (stack.empty()) return;
+    if (scope != scope_ || stack != stack_) {
+        // The node's stack: shown from where it is, as a pick in the Graph
+        // shows it (a group's own stack too).
+        trail_.clear();
+        read_only_ = GraphCanvasDrawing::layerScopeReadOnly(model_, scope);
+        scope_ = scope;
+        stack_ = stack;
+        place_.clear();
+        note_->hide();
+    }
+    picked_ = input;
+    // The same pick, made again by the Graph, leaves this one alone.
+    told_row_ = std::array<std::string, 3>{scope_, stack_, picked_};
+    reload(true);
+}
+
+void GraphCanvasLayersPanel::tellRow() {
+    const std::array<std::string, 3> now{scope_, stack_, picked_};
+    if (told_row_ == now) return;
+    told_row_ = now;
+    if (rowShown) rowShown(now[0], now[1], now[2]);
+}
+
+void GraphCanvasLayersPanel::addImages(const std::vector<std::filesystem::path> &files,
+                                       std::optional<std::size_t> above) {
     if (files.empty() || stack_.empty()) return;
     const auto root = projectRoot ? projectRoot() : std::filesystem::path{};
     const auto imported = importCanvasImages(root, files);
@@ -1238,6 +1269,7 @@ void GraphCanvasLayersPanel::addImages(const std::vector<std::filesystem::path> 
     auto nodes = model_.nodes(scope_);
     Json ops = Json::array();
     std::string error = imported.error;
+    std::size_t placed = 0;
     for (std::size_t at = 0; at < imported.copies.size(); ++at) {
         const auto size = pixelSize(imported.copies[at]);
         if (!size) {
@@ -1246,7 +1278,9 @@ void GraphCanvasLayersPanel::addImages(const std::vector<std::filesystem::path> 
         }
         auto more = graphCanvasAddImageLayerOps(nodes, scope_, stack_, imported.references[at], *size,
                                                 utf8Stem(files.size() == imported.copies.size() ? files[at]
-                                                                                                : imported.copies[at]));
+                                                                                                : imported.copies[at]),
+                                                above ? std::optional<std::size_t>{*above + placed} : std::nullopt);
+        if (!more.empty()) ++placed;
         applyLocally(nodes, more);
         for (auto &op : more) ops.push_back(std::move(op));
     }
@@ -2128,7 +2162,7 @@ void GraphCanvasLayersPanel::chooseFont(QWidget *over, std::function<void(const 
     dialog->open();
 }
 
-void GraphCanvasLayersPanel::openTextDialog() {
+void GraphCanvasLayersPanel::openTextDialog(std::optional<std::size_t> above) {
     if (stack_.empty()) return;
     if (!projectRoot || projectRoot().empty()) {
         say(tr("Open a project to add text to."));
@@ -2181,11 +2215,11 @@ void GraphCanvasLayersPanel::openTextDialog() {
     });
     connect(buttons, &QDialogButtonBox::accepted, dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
-    connect(dialog, &QDialog::accepted, this, [this, text, font, size] {
+    connect(dialog, &QDialog::accepted, this, [this, text, font, size, above] {
         const auto chosen = sizeOf(*size);
         if (!chosen || font->currentIndex() < 0) return;
         commit(graphCanvasAddTextLayerOps(model_.nodes(scope_), scope_, stack_, text->text().toStdString(),
-                                          font->currentData().toString().toStdString(), *chosen));
+                                          font->currentData().toString().toStdString(), *chosen, above));
     });
     dialog->open();
 }

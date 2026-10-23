@@ -608,6 +608,8 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_sources(pelican_test_devstudio_graphcanvas_scene_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasdrawing.cpp
+    # NB-2b: a canvas.stack node's body.
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasstackbody.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasloopfields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasrenderfields.cpp
     # UX-11: the tag picker and a material pass's settings (UX-4a's form).
@@ -678,6 +680,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_sources(pelican_test_devstudio_graph_fold_scene_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasdrawing.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasstackbody.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasloopfields.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasrenderfields.cpp
     # UX-11: the tag picker and a material pass's settings (UX-4a's form).
