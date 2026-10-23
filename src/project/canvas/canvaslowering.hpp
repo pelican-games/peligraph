@@ -71,6 +71,29 @@ namespace Pelican {
 // unit a static run is folded at) and a layer's `bake: "texture"` (fold the
 // run it is in even when it holds shapes and text only). The edit policy
 // draws them as it draws any image and ignores the other two.
+// CV-3a adds the neighbourhood filters (canvasblend.hpp): filter.blur,
+// filter.drop_shadow and filter.outer_glow. A shadow or a glow straight on a
+// shape.fill / shape.stroke (of a rect, an ellipse or a text) is drawn from
+// the shape's distance in the same draw: an item per item the paint draws,
+// below them all (CanvasItem::effect). Anything else -- and every blur -- is
+// drawn through images (CanvasBlur): two more passes (across, then down) and
+// one per halving, named in the diagnostic canvas.draw_split {output, reason:
+// "neighbourhood_filter", node, op, why, passes, levels}; `why` is "blur" (a
+// blur is always drawn so), "no_distance" (the input is not a paint of a
+// shape or a text), "glyph_range" (a text's shadow reaches past its atlas's
+// distances) or "glyph_size_edge" (a text whose size an edge drives). A
+// filter's numbers take value edges; a radius an edge drives needs
+// `max_radius` (the passes are made for it):
+//   canvas.range_unbounded@1             {node, parameter}      a radius an edge drives without max_radius
+//   canvas.filter_backdrop_unsupported@1 {node, op}             a neighbourhood filter of a canvas.backdrop
+//   canvas.filter_size_exceeded@1        {node, pixels, limit}  its image past 16384 pixels a side
+// and the diagnostics canvas.radius_clamped {node, radius, max_radius} (an
+// authored radius past max_radius, drawn at it) and
+// canvas.glyph_range_exceeded {node, radius, range, limit} (a text's shadow
+// or glow cut to what its atlas's distances reach; `node` the filter).
+// CV-3a also writes `extent_scale: 1` beside a fixed image's width and height
+// (canvas.output `size`, a canvas.place's groups, the filters' images): the
+// engine's render target needs it and draws at the fixed size.
 
 enum class CanvasShape : std::uint8_t { rect, ellipse };
 enum class CanvasPaint : std::uint8_t { fill, stroke };
@@ -99,8 +122,9 @@ enum class CanvasEncode : std::uint8_t { none, linear_to_srgb, srgb_to_linear };
 // render.image `source` (`linear` reads the file's bytes as they are, else
 // the sRGB decode); a graph image is the endpoint a canvas.from_image reads;
 // a group is the image of CanvasOutput::groups[group].
+// CV-3a: a blur is the image CanvasOutput::blurs[group] made.
 struct CanvasTexture {
-    enum class Origin : std::uint8_t { file, graph, group };
+    enum class Origin : std::uint8_t { file, graph, group, blur };
     Origin origin = Origin::file;
     std::string asset;
     bool linear = false;
@@ -123,20 +147,8 @@ struct CanvasMask {
     std::string node;
 };
 
-// The producer endpoint of a value edge that drives a parameter.
-struct CanvasValueSource {
-    std::string node;
-    std::string port;
-    auto operator<=>(const CanvasValueSource &) const = default;
-};
-
-struct CanvasParameter {
-    // The authored number; for a parameter an edge drives, the number the
-    // parameters hold (0 when they hold none), which is the frame table's
-    // first value.
-    double value = 0.0;
-    std::optional<CanvasValueSource> edge;
-};
+// CanvasValueSource and CanvasParameter (canvasblend.hpp): a value edge into
+// a parameter, and a parameter's number.
 
 // An item's kind is its shape times its paint:
 //   0 rect_fill, 1 rect_stroke, 2 ellipse_fill, 3 ellipse_stroke.
@@ -178,6 +190,24 @@ inline constexpr std::size_t canvas_glyph_parameter_count = 12;
 // filter numbers (canvasblend.hpp) follow its parameters in the bake table.
 inline constexpr std::uint32_t canvas_kind_backdrop = 9;
 inline constexpr std::uint32_t canvas_kind_style_stride = 256;
+// CV-3a, a neighbourhood filter's shadow or glow:
+//   10 image_effect: offset.x offset.y size.x size.y radius radius_limit spread color.r .. color.a
+//      the alpha of the image a CanvasBlur made (its rect), spread, in the colour
+//   16 + k, the effect of an item of kind k (0..3, 7, 8: rect_fill_effect ..
+//      glyph_stroke_effect): kind k's parameters, then
+//      offset.x offset.y radius radius_limit spread color.r .. color.a
+//      drawn from that item's distance, moved by offset.
+// The radius is read clamped to radius_limit (max_radius, or the radius).
+// The colour is sRGB, straight; its alpha and the item's opacity (the
+// filter's opacity) multiply.
+inline constexpr std::uint32_t canvas_kind_effect_image = 10;
+inline constexpr std::uint32_t canvas_kind_effect_offset = 16;
+inline constexpr std::size_t canvas_effect_parameter_count = 9;
+inline constexpr std::size_t canvas_effect_image_parameter_count = 11;
+// Photoshop's largest Size and Gaussian Blur radius the filters take.
+inline constexpr double canvas_filter_radius_limit = 250.0;
+// A neighbourhood filter's images go up to this many pixels a side.
+inline constexpr std::uint32_t canvas_filter_pixel_limit = 16384;
 
 // The images one draw may read; past it the items are split across draws of
 // the same image. The engine sizes a pass's descriptor budget by the same
@@ -194,6 +224,14 @@ struct CanvasGlyph {
     std::array<double, 2> pen{};
     // shape.text atlas_cell, or 0 for the size the codepoint asks for.
     std::uint32_t cell = 0;
+    // CV-3a: the glyph's box in em from the text's origin, +y down: x0 y0 x1 y1.
+    std::array<double, 4> bounds{};
+};
+
+// CV-3a: the filter a shadow or glow item belongs to.
+struct CanvasEffectOrigin {
+    std::string node;
+    std::string op;
 };
 
 struct CanvasItem {
@@ -232,6 +270,10 @@ struct CanvasItem {
     double depth = 0.0;
     std::optional<CanvasParameter> depth_edge;
     nlohmann::json depth_layer;
+    // CV-3a: set on a shadow or glow item (canvas_kind_effect_image, or a
+    // distance item's kind + canvas_kind_effect_offset), whose parameters
+    // carry the effect's past its source's.
+    std::optional<CanvasEffectOrigin> effect;
 };
 
 // CV-2b: the item reads what is below it in its list (a blend other than
@@ -249,6 +291,33 @@ struct CanvasGroup {
     bool srgb = false;
     // The authored stack (or clip base) it was made for.
     std::string node;
+};
+
+// CV-3a: a neighbourhood filter drawn through images. `source` is the
+// filter's layer as one item in the filter's own space (the layer's item, or
+// a group of its items). It is read over `rect` at one pixel per unit --
+// halved `levels` times first (each a 2 x 2 average), the first halving
+// reading the source at the four pixel centres -- then blurred across and
+// down with a Gaussian of `taps` taps either side, sigma =
+// canvasBlurLevelSigma(sigma_scale * min(radius, radius_limit), levels).
+// `rect` is a whole number of pixels, a multiple of 2^levels, and holds the
+// source's extent plus 3 sigma (clipped to what the canvas can show). The
+// raster `<output>$canvas_blur<k>` (k its index in CanvasOutput::blurs)
+// writes the result into `<output>$canvas_blur<k>_image`, rect / 2^levels
+// pixels, premultiplied in the list's blend space; an image item reads it.
+struct CanvasBlur {
+    CanvasItem source;
+    std::array<double, 4> rect{}; // origin.x origin.y size.x size.y
+    CanvasParameter radius;
+    double radius_limit = 0.0;
+    // 1 for filter.blur (sigma = radius), 1/3 for a shadow or glow.
+    double sigma_scale = 1.0;
+    std::uint32_t levels = 0;
+    std::uint32_t taps = 0;
+    bool srgb = false;
+    // The filter.
+    std::string node;
+    std::string op;
 };
 
 // CV-4: an output's glyph atlas for one font face (canvastext.hpp has the
@@ -314,6 +383,9 @@ struct CanvasOutput {
     std::vector<CanvasGroup> groups;
     // CV-4: one per font face its glyph items read, in first-use order.
     std::vector<CanvasAtlas> atlases;
+    // CV-3a: the neighbourhood filters drawn through images, in the order
+    // the walk meets them (one's source may read an earlier one's image).
+    std::vector<CanvasBlur> blurs;
     // CV-6a: set for a canvas.place, whose items are drawn in 3D in this
     // order (by depth, then the stack's order); its groups are images of the
     // stack's size (one pixel per stack unit).
@@ -409,6 +481,12 @@ std::string canvasFrameSinkNodeId(const std::string &output, std::size_t index);
 std::string canvasGroupImageNodeId(const std::string &output, std::size_t group);
 std::string canvasGroupRasterNodeId(const std::string &output, std::size_t group);
 std::string canvasAssetNodeId(const std::string &output, std::size_t index);
+// CV-3a: blur k of an output is the raster `<output>$canvas_blur<k>` (the
+// pass down) writing `<output>$canvas_blur<k>_image`; before it
+// `<output>$canvas_blur<k>_down<l>` (l = 1 .. levels) and
+// `<output>$canvas_blur<k>_across`, each writing `<its name>_image`, read the
+// tables `<output>$canvas_blur<k>_bake` / `_frame` / `_set_<n>`.
+std::string canvasBlurNodeId(const std::string &output, std::size_t index);
 // CV-6a: a canvas.place `<id>` lowers the same way, with the reserved names
 // `<id>$canvas_...`: its groups' images and rasters as above, its tables
 // `<id>$canvas_items` / `_bake` / `_frame` / `_set_<k>` (a split draw's

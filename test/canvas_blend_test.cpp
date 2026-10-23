@@ -238,7 +238,8 @@ TEST_CASE("CV-2b an adjustment layer mixes the filtered backdrop in by its opaci
     std::string fragment;
     for (const auto &source : lowering.generated_sources)
         if (source.stage == "frag" && source.text.find("canvasStyle") != std::string::npos) fragment = source.text;
-    CHECK(fragment.find("canvasFilter0(c, r)") != std::string::npos);
+    // CV-3a: a filter reads its numbers as the item's parameters (canvasParam).
+    CHECK(fragment.find("canvasFilter0(c, it, r)") != std::string::npos);
     CHECK(fragment.find("CANVAS_BACKDROP_SLOT") != std::string::npos);
     bool copies = false;
     for (const auto &diagnostic : lowering.diagnostics)

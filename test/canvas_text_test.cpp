@@ -732,3 +732,93 @@ TEST_CASE("CV-4 the authoring hook reads the font through its context and writes
     CHECK(std::filesystem::last_write_time(written) == first_time);
     std::filesystem::remove_all(root);
 }
+
+TEST_CASE("CV-3a a text's shadow and glow come from its distances in the same draw, until they reach past them",
+          "[canvas][cv3a]") {
+    // B and X, 64 high: the atlas (32-texel cells, 24 texels an em, 4 texels
+    // of distances) holds 4 / 24 em = 10.67 of distances around a glyph.
+    const auto with = [](Json effect, std::vector<Json> more = {}) {
+        Json nodes = Json::array({textNode("title", defaultText("BX")),
+                                  paintNode("title_fill", "shape.fill", "title", {{"color", {1, 1, 1, 1}}})});
+        std::vector<std::string> layers;
+        if (effect.is_null()) {
+            layers.push_back("title_fill");
+        } else {
+            effect["id"] = "fx";
+            effect["inputs"] = {{"layer", {{"node", "title_fill"}, {"port", "layer"}}}};
+            effect["outputs"] = Json::array({"layer"});
+            nodes.push_back(std::move(effect));
+            layers.push_back("fx");
+        }
+        for (auto &node : more) {
+            if (node.at("op") == "shape.fill") layers.push_back(node.at("id"));
+            nodes.push_back(std::move(node));
+        }
+        return canvasDocument(std::move(nodes), layers);
+    };
+    const auto rasters = [](const Json &document) {
+        return std::count_if(document.at("nodes").begin(), document.at("nodes").end(),
+                             [](const Json &node) { return node.at("op") == "render.raster"; });
+    };
+    const auto kinds = [](const Pelican::CanvasLowering &lowering) {
+        std::vector<std::string> result;
+        for (const auto &item : lowering.items) result.push_back(item.at("kind"));
+        return result;
+    };
+    const auto plain = Pelican::lowerCanvasNodes(with(nullptr), {}, testReader());
+    REQUIRE(rasters(plain.document) == 1);
+
+    const auto shadow = with({{"op", "filter.drop_shadow"},
+                              {"parameters", {{"offset", {3, 3}}, {"radius", 4}, {"opacity", 0.8}}}});
+    const auto lowered = Pelican::lowerCanvasNodes(shadow, {}, testReader());
+    // The same passes as the text alone: the shadows are items of its draw,
+    // all below the glyphs.
+    CHECK(rasters(lowered.document) == rasters(plain.document));
+    CHECK(kinds(lowered) ==
+          std::vector<std::string>{"glyph_fill_effect", "glyph_fill_effect", "glyph_fill", "glyph_fill"});
+    for (const auto &diagnostic : lowered.diagnostics) CHECK(diagnostic.at("code") != "canvas.draw_split");
+    // Below and to the right of the B, past the glyph: the shadow.
+    const auto &output = lowered.ir.outputs.front();
+    const auto picture = Pelican::renderCanvasReference(output, 256, 128);
+    const auto bare = Pelican::renderCanvasReference(plain.ir.outputs.front(), 256, 128);
+    const auto alpha = [](const Pelican::CanvasImage &image, int x, int y) {
+        return image.pixels[(static_cast<std::size_t>(y) * image.width + x) * 4 + 3];
+    };
+    CHECK(alpha(bare, 56, 98) == 0.0f);
+    CHECK(alpha(picture, 56, 98) > 0.5f);
+    CHECK(alpha(picture, 56, 98) <= 0.8f + 1e-6f);
+
+    const auto glow = Pelican::lowerCanvasNodes(with({{"op", "filter.outer_glow"}, {"parameters", {{"radius", 6}}}}), {},
+                                                testReader());
+    CHECK(rasters(glow.document) == rasters(plain.document));
+
+    // A shadow reaching past the distances is drawn through images instead:
+    // the glyphs as a group, its passes.
+    const auto far = Pelican::lowerCanvasNodes(with({{"op", "filter.drop_shadow"}, {"parameters", {{"radius", 20}}}}), {},
+                                               testReader());
+    CHECK(rasters(far.document) == rasters(plain.document) + 3);
+    bool split = false;
+    for (const auto &diagnostic : far.diagnostics)
+        if (diagnostic.at("code") == "canvas.draw_split") {
+            split = true;
+            CHECK(diagnostic.at("why") == "glyph_range");
+        }
+    CHECK(split);
+
+    // Another text of the output asks for 64-texel cells: the atlas's
+    // distances reach 4 / 56 em = 4.57 there, and a glow of 8 is cut to that.
+    auto big = textNode("big", defaultText("X"));
+    big.at("parameters")["atlas_cell"] = 64;
+    big.at("parameters").at("origin") = Json::array({160, 96});
+    const auto cut = Pelican::lowerCanvasNodes(
+        with({{"op", "filter.outer_glow"}, {"parameters", {{"radius", 8}}}},
+             {big, paintNode("big_fill", "shape.fill", "big", {{"color", {1, 1, 1, 1}}})}),
+        {}, testReader());
+    std::vector<Json> exceeded;
+    for (const auto &diagnostic : cut.diagnostics)
+        if (diagnostic.at("code") == "canvas.glyph_range_exceeded") exceeded.push_back(diagnostic);
+    REQUIRE(exceeded.size() == 1);
+    CHECK(exceeded.front().at("node") == "fx");
+    CHECK_THAT(exceeded.front().at("radius").get<double>(), WithinAbs(8.0, 1e-9));
+    CHECK_THAT(exceeded.front().at("limit").get<double>(), WithinAbs(4.0 * 64.0 / 56.0, 1e-6));
+}
